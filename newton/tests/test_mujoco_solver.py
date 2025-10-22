@@ -675,6 +675,102 @@ class TestMuJoCoSolverJointProperties(TestMuJoCoSolverPropertiesBase):
                     msg=f"Updated MuJoCo DOF {dof_idx} in world {world_idx} friction should match Newton value",
                 )
 
+    def test_joint_limit_solref_conversion(self):
+        """
+        Verify that joint_limit_ke and joint_limit_kd are properly converted to MuJoCo's solref_limit
+        using the negative convention: solref_limit = (-stiffness, -damping)
+        """
+        # Skip if no joints
+        if self.model.joint_dof_count == 0:
+            self.skipTest("No joints in model, skipping joint limit solref test")
+
+        # Set initial joint limit stiffness and damping values
+        dofs_per_world = self.model.joint_dof_count // self.model.num_worlds
+
+        initial_limit_ke = np.zeros(self.model.joint_dof_count)
+        initial_limit_kd = np.zeros(self.model.joint_dof_count)
+
+        # Set different values for each DOF to catch indexing bugs
+        for world_idx in range(self.model.num_worlds):
+            world_dof_offset = world_idx * dofs_per_world
+
+            for dof_idx in range(dofs_per_world):
+                global_dof_idx = world_dof_offset + dof_idx
+                # Stiffness: 1000 + dof_idx * 100 + world_idx * 1000
+                initial_limit_ke[global_dof_idx] = 1000.0 + dof_idx * 100.0 + world_idx * 1000.0
+                # Damping: 10 + dof_idx * 1 + world_idx * 10
+                initial_limit_kd[global_dof_idx] = 10.0 + dof_idx * 1.0 + world_idx * 10.0
+
+        self.model.joint_limit_ke.assign(initial_limit_ke)
+        self.model.joint_limit_kd.assign(initial_limit_kd)
+
+        # Create solver (this should convert ke/kd to solref_limit)
+        solver = SolverMuJoCo(self.model, iterations=1, disable_contacts=True)
+
+        # Verify initial conversion to jnt_solref
+        # Only revolute joints have limits in this model
+        # In MuJoCo: joints 0,1 are FREE joints, joints 2,3 are revolute joints
+        # Newton DOF mapping: FREE joints use DOFs 0-11, revolute joints use DOFs 12-13
+        mjc_revolute_indices = [2, 3]  # MuJoCo joint indices for revolute joints
+        newton_revolute_dof_indices = [12, 13]  # Newton DOF indices for revolute joints
+
+        for world_idx in range(self.model.num_worlds):
+            for _i, (mjc_idx, newton_dof_idx) in enumerate(
+                zip(mjc_revolute_indices, newton_revolute_dof_indices, strict=False)
+            ):
+                global_dof_idx = world_idx * dofs_per_world + newton_dof_idx
+                expected_ke = -initial_limit_ke[global_dof_idx]
+                expected_kd = -initial_limit_kd[global_dof_idx]
+
+                # Get actual values from MuJoCo's jnt_solref array
+                actual_solref = solver.mjw_model.jnt_solref.numpy()[world_idx, mjc_idx]
+                self.assertAlmostEqual(
+                    actual_solref[0],
+                    expected_ke,
+                    places=3,
+                    msg=f"Initial solref stiffness for MuJoCo joint {mjc_idx} (Newton DOF {newton_dof_idx}) in world {world_idx}",
+                )
+                self.assertAlmostEqual(
+                    actual_solref[1],
+                    expected_kd,
+                    places=3,
+                    msg=f"Initial solref damping for MuJoCo joint {mjc_idx} (Newton DOF {newton_dof_idx}) in world {world_idx}",
+                )
+
+        # Test runtime update capability - update joint limit ke/kd values
+        updated_limit_ke = initial_limit_ke * 2.0
+        updated_limit_kd = initial_limit_kd * 2.0
+
+        self.model.joint_limit_ke.assign(updated_limit_ke)
+        self.model.joint_limit_kd.assign(updated_limit_kd)
+
+        # Notify solver of changes - jnt_solref is updated via JOINT_PROPERTIES
+        solver.notify_model_changed(SolverNotifyFlags.JOINT_PROPERTIES)
+
+        # Verify runtime updates to jnt_solref
+        for world_idx in range(self.model.num_worlds):
+            for _i, (mjc_idx, newton_dof_idx) in enumerate(
+                zip(mjc_revolute_indices, newton_revolute_dof_indices, strict=False)
+            ):
+                global_dof_idx = world_idx * dofs_per_world + newton_dof_idx
+                expected_ke = -updated_limit_ke[global_dof_idx]
+                expected_kd = -updated_limit_kd[global_dof_idx]
+
+                # Get actual values from MuJoCo's jnt_solref array
+                actual_solref = solver.mjw_model.jnt_solref.numpy()[world_idx, mjc_idx]
+                self.assertAlmostEqual(
+                    actual_solref[0],
+                    expected_ke,
+                    places=3,
+                    msg=f"Updated solref stiffness for MuJoCo joint {mjc_idx} (Newton DOF {newton_dof_idx}) in world {world_idx}",
+                )
+                self.assertAlmostEqual(
+                    actual_solref[1],
+                    expected_kd,
+                    places=3,
+                    msg=f"Updated solref damping for MuJoCo joint {mjc_idx} (Newton DOF {newton_dof_idx}) in world {world_idx}",
+                )
+
 
 class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
     def test_geom_property_conversion(self):
@@ -1333,29 +1429,31 @@ class TestMuJoCoConversion(unittest.TestCase):
         state.joint_q.assign([0.1])  # Start above lower limit
         state.joint_qd.assign([-10.0])  # Very strong velocity towards lower limit
 
-        # Create two solvers with different global solver parameters
-        # Soft solver - more compliant, should allow more penetration
-        solver_soft = newton.solvers.SolverMuJoCo(
-            model,
-            joint_solref_limit=(0.5, 10.0),  # Much softer response
-            joint_solimp_limit=(0.1, 0.2, 0.01, 0.5, 2.0),  # Much lower stiffness
-        )
+        # Create two models with different joint limit stiffness/damping
+        # Soft model - more compliant, should allow more penetration
+        model_soft = builder.finalize(requires_grad=False)
+        # Set soft joint limits (low stiffness and damping)
+        model_soft.joint_limit_ke.assign([100.0])  # Low stiffness
+        model_soft.joint_limit_kd.assign([10.0])  # Low damping
 
-        # Stiff solver - less compliant, should allow less penetration
-        solver_stiff = newton.solvers.SolverMuJoCo(
-            model,
-            joint_solref_limit=(0.002, 0.1),  # Very stiff response
-            joint_solimp_limit=(0.99, 0.999, 0.00001, 0.5, 2.0),  # Very high stiffness
-        )
+        # Stiff model - less compliant, should allow less penetration
+        model_stiff = builder.finalize(requires_grad=False)
+        # Set stiff joint limits (high stiffness and damping)
+        model_stiff.joint_limit_ke.assign([10000.0])  # High stiffness
+        model_stiff.joint_limit_kd.assign([100.0])  # High damping
+
+        # Create solvers
+        solver_soft = newton.solvers.SolverMuJoCo(model_soft)
+        solver_stiff = newton.solvers.SolverMuJoCo(model_stiff)
 
         dt = 0.005
         num_steps = 50
 
         # Simulate both systems
-        state_soft_in = model.state()
-        state_soft_out = model.state()
-        state_stiff_in = model.state()
-        state_stiff_out = model.state()
+        state_soft_in = model_soft.state()
+        state_soft_out = model_soft.state()
+        state_stiff_in = model_stiff.state()
+        state_stiff_out = model_stiff.state()
 
         # Copy initial state
         state_soft_in.joint_q.assign(state.joint_q.numpy())
@@ -1363,8 +1461,10 @@ class TestMuJoCoConversion(unittest.TestCase):
         state_stiff_in.joint_q.assign(state.joint_q.numpy())
         state_stiff_in.joint_qd.assign(state.joint_qd.numpy())
 
-        control = model.control()
-        contacts = model.collide(state_soft_in)
+        control_soft = model_soft.control()
+        control_stiff = model_stiff.control()
+        contacts_soft = model_soft.collide(state_soft_in)
+        contacts_stiff = model_stiff.collide(state_stiff_in)
 
         # Track minimum positions during simulation
         min_q_soft = float("inf")
@@ -1372,11 +1472,11 @@ class TestMuJoCoConversion(unittest.TestCase):
 
         # Run simulations
         for _ in range(num_steps):
-            solver_soft.step(state_soft_in, state_soft_out, control, contacts, dt)
+            solver_soft.step(state_soft_in, state_soft_out, control_soft, contacts_soft, dt)
             min_q_soft = min(min_q_soft, state_soft_out.joint_q.numpy()[0])
             state_soft_in, state_soft_out = state_soft_out, state_soft_in
 
-            solver_stiff.step(state_stiff_in, state_stiff_out, control, contacts, dt)
+            solver_stiff.step(state_stiff_in, state_stiff_out, control_stiff, contacts_stiff, dt)
             min_q_stiff = min(min_q_stiff, state_stiff_out.joint_q.numpy()[0])
             state_stiff_in, state_stiff_out = state_stiff_out, state_stiff_in
 
