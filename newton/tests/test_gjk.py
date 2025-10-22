@@ -13,277 +13,188 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""Tests for GJK distance computation using the new simplex solver."""
+
 import unittest
 
-import numpy as np
 import warp as wp
 
 from newton import GeoType
-from newton._src.geometry.gjk import build_ccd_generic
+from newton._src.geometry.simplex_solver import create_solve_closest_distance
+from newton._src.geometry.support_function import GenericShapeData, SupportMapDataProvider, support_map
 
-MAX_ITERATIONS = 10
-
-identity = wp.mat33(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0)
-
-
-class Model:
-    def __init__(self, n_geoms: int):
-        self.geom_type = wp.array(shape=(n_geoms,), dtype=int)
-        self.geom_dataid = wp.array(shape=(n_geoms,), dtype=int)
-        self.geom_size = wp.array2d(shape=(1, n_geoms), dtype=wp.vec3)
+MAX_ITERATIONS = 30
 
 
-class Data:
-    def __init__(self, n_geoms: int):
-        self.geom_xpos = wp.array2d(shape=(1, n_geoms), dtype=wp.vec3)
-        self.geom_xmat = wp.array2d(shape=(1, n_geoms), dtype=wp.mat33)
+@wp.kernel
+def _gjk_kernel(
+    type_a: int,
+    size_a: wp.vec3,
+    pos_a: wp.vec3,
+    quat_a: wp.quat,
+    type_b: int,
+    size_b: wp.vec3,
+    pos_b: wp.vec3,
+    quat_b: wp.quat,
+    # Outputs:
+    collision_out: wp.array(dtype=int),
+    dist_out: wp.array(dtype=float),
+    point_out: wp.array(dtype=wp.vec3),
+    normal_out: wp.array(dtype=wp.vec3),
+):
+    """Kernel to compute GJK distance between two shapes."""
+    # Create shape data for both geometries
+    shape_a = GenericShapeData()
+    shape_a.shape_type = type_a
+    shape_a.scale = size_a
+    shape_a.auxiliary = wp.vec3(0.0)
+
+    shape_b = GenericShapeData()
+    shape_b.shape_type = type_b
+    shape_b.scale = size_b
+    shape_b.auxiliary = wp.vec3(0.0)
+
+    data_provider = SupportMapDataProvider()
+
+    # Call GJK solver
+    collision, distance, point, normal, _feature_a, _feature_b = wp.static(create_solve_closest_distance(support_map))(
+        shape_a,
+        shape_b,
+        quat_a,
+        quat_b,
+        pos_a,
+        pos_b,
+        0.0,  # sum_of_contact_offsets
+        data_provider,
+        MAX_ITERATIONS,
+        1e-6,  # COLLIDE_EPSILON
+    )
+
+    collision_out[0] = int(collision)
+    dist_out[0] = distance
+    point_out[0] = point
+    normal_out[0] = normal
 
 
-FLOAT_MIN = -1e30
-FLOAT_MAX = 1e30
-MJ_MINVAL = 1e-15
+def _geom_dist(
+    geom_type1: int,
+    size1: wp.vec3,
+    pos1: wp.vec3,
+    quat1: wp.quat,
+    geom_type2: int,
+    size2: wp.vec3,
+    pos2: wp.vec3,
+    quat2: wp.quat,
+):
+    """
+    Compute distance between two geometries using GJK algorithm.
 
+    Returns:
+        Tuple of (distance, midpoint_contact_point, normal, collision_flag)
+    """
+    # Convert GeoType enums to int if needed
+    type1 = int(geom_type1)
+    type2 = int(geom_type2)
 
-@wp.struct
-class Geom:
-    pos: wp.vec3
-    rot: wp.mat33
-    normal: wp.vec3
-    size: wp.vec3
-    index: int
+    collision_out = wp.zeros(1, dtype=int)
+    dist_out = wp.zeros(1, dtype=float)
+    point_out = wp.zeros(1, dtype=wp.vec3)
+    normal_out = wp.zeros(1, dtype=wp.vec3)
 
-
-@wp.func
-def _support(geom: Geom, geomtype: int, dir: wp.vec3):
-    index = -1
-    local_dir = wp.transpose(geom.rot) @ dir
-    if geomtype == GeoType.SPHERE:
-        support_pt = geom.pos + geom.size[0] * dir
-    elif geomtype == GeoType.BOX:
-        res = wp.cw_mul(wp.sign(local_dir), geom.size)
-        support_pt = geom.rot @ res + geom.pos
-    elif geomtype == GeoType.CAPSULE:
-        res = local_dir * geom.size[0]
-        # add cylinder contribution
-        res[2] += wp.sign(local_dir[2]) * geom.size[1]
-        support_pt = geom.rot @ res + geom.pos
-    #   elif geomtype == GeoType.ELLIPSOID:
-    #     res = wp.cw_mul(local_dir, geom.size)
-    #     res = wp.normalize(res)
-    #     # transform to ellipsoid
-    #     res = wp.cw_mul(res, geom.size)
-    #     support_pt = geom.rot @ res + geom.pos
-    elif geomtype == GeoType.CYLINDER:
-        res = wp.vec3(0.0, 0.0, 0.0)
-        # set result in XY plane: support on circle
-        d = wp.sqrt(wp.dot(local_dir, local_dir))
-        if d > MJ_MINVAL:
-            scl = geom.size[0] / d
-            res[0] = local_dir[0] * scl
-            res[1] = local_dir[1] * scl
-        # set result in Z direction
-        res[2] = wp.sign(local_dir[2]) * geom.size[1]
-        support_pt = geom.rot @ res + geom.pos
-
-    return index, support_pt
-
-
-def _geom_dist(m: Model, d: Data, gid1: int, gid2: int, iterations: int):
-    @wp.kernel(enable_backward=False)
-    def _gjk_kernel(
-        # Model:
-        geom_type: wp.array(dtype=int),
-        geom_size: wp.array(dtype=wp.vec3),
-        # Data in:
-        geom_xpos_in: wp.array(dtype=wp.vec3),
-        geom_xmat_in: wp.array(dtype=wp.mat33),
-        # In:
-        gid1: int,
-        gid2: int,
-        iterations: int,
-        vert: wp.array(dtype=wp.vec3),
-        vert1: wp.array(dtype=wp.vec3),
-        vert2: wp.array(dtype=wp.vec3),
-        face: wp.array(dtype=wp.vec3i),
-        face_pr: wp.array(dtype=wp.vec3),
-        face_norm2: wp.array(dtype=float),
-        face_index: wp.array(dtype=int),
-        map: wp.array(dtype=int),
-        horizon: wp.array(dtype=int),
-        # Out:
-        dist_out: wp.array(dtype=float),
-        pos_out: wp.array(dtype=wp.vec3),
-    ):
-        geom1 = Geom()
-        geom1.index = -1
-        geomtype1 = geom_type[gid1]
-        geom1.pos = geom_xpos_in[gid1]
-        geom1.rot = geom_xmat_in[gid1]
-        geom1.size = geom_size[gid1]
-
-        geom2 = Geom()
-        geom2.index = -1
-        geomtype2 = geom_type[gid2]
-        geom2.pos = geom_xpos_in[gid2]
-        geom2.rot = geom_xmat_in[gid2]
-        geom2.size = geom_size[gid2]
-
-        x_1 = geom_xpos_in[gid1]
-        x_2 = geom_xpos_in[gid2]
-
-        (
-            dist,
-            x1,
-            x2,
-        ) = wp.static(build_ccd_generic(_support))(
-            1e-6,
-            iterations,
-            iterations,
-            geom1,
-            geom2,
-            geomtype1,
-            geomtype2,
-            x_1,
-            x_2,
-            vert,
-            vert1,
-            vert2,
-            face,
-            face_pr,
-            face_norm2,
-            face_index,
-            map,
-            horizon,
-        )
-
-        dist_out[0] = dist
-        pos_out[0] = x1
-        pos_out[1] = x2
-
-    vert = wp.array(shape=(iterations,), dtype=wp.vec3)
-    vert1 = wp.array(shape=(iterations,), dtype=wp.vec3)
-    vert2 = wp.array(shape=(iterations,), dtype=wp.vec3)
-    face = wp.array(shape=(2 * iterations,), dtype=wp.vec3i)
-    face_pr = wp.array(shape=(2 * iterations,), dtype=wp.vec3)
-    face_norm2 = wp.array(shape=(2 * iterations,), dtype=float)
-    face_index = wp.array(shape=(2 * iterations,), dtype=int)
-    map = wp.array(shape=(2 * iterations,), dtype=int)
-    horizon = wp.array(shape=(2 * iterations,), dtype=int)
-    dist_out = wp.array(shape=(1,), dtype=float)
-    pos_out = wp.array(shape=(2,), dtype=wp.vec3)
     wp.launch(
         _gjk_kernel,
-        dim=(1,),
-        inputs=[
-            m.geom_type,
-            m.geom_size,
-            d.geom_xpos,
-            d.geom_xmat,
-            gid1,
-            gid2,
-            iterations,
-            vert,
-            vert1,
-            vert2,
-            face,
-            face_pr,
-            face_norm2,
-            face_index,
-            map,
-            horizon,
-        ],
-        outputs=[
-            dist_out,
-            pos_out,
-        ],
+        dim=1,
+        inputs=[type1, size1, pos1, quat1, type2, size2, pos2, quat2],
+        outputs=[collision_out, dist_out, point_out, normal_out],
     )
-    return dist_out.numpy()[0], pos_out.numpy()[0], pos_out.numpy()[1]
+
+    return (
+        dist_out.numpy()[0],
+        point_out.numpy()[0],
+        normal_out.numpy()[0],
+        collision_out.numpy()[0],
+    )
 
 
 class TestGJK(unittest.TestCase):
-    """Tests for GJK/EPA."""
+    """Tests for GJK distance computation using the new simplex solver."""
 
     def test_spheres_distance(self):
-        """Test distance between two spheres."""
-
-        # Create model and state
-        m = Model(2)
-        d = Data(2)
-
-        # Add two spheres
-        m.geom_type = wp.array([GeoType.SPHERE, GeoType.SPHERE], dtype=int)
-        m.geom_size = wp.array([wp.vec3(1.0, 0.0, 0.0), wp.vec3(1.0, 0.0, 0.0)], dtype=wp.vec3)
-        m.geom_dataid = wp.array([0, 0], dtype=int)
-
-        # Set positions
-        d.geom_xpos = wp.array([wp.vec3(-1.5, 0.0, 0.0), wp.vec3(1.5, 0.0, 0.0)], dtype=wp.vec3)
-        d.geom_xmat = wp.array([identity, identity], dtype=wp.mat33)
-
-        dist, _, _ = _geom_dist(m, d, 0, 1, MAX_ITERATIONS)
-        self.assertEqual(1.0, dist)
+        """Test distance between two separated spheres."""
+        # Two spheres of radius 1.0, separated by distance 3.0
+        # Expected distance: 3.0 - 1.0 - 1.0 = 1.0
+        dist, _point, _normal, collision = _geom_dist(
+            GeoType.SPHERE,
+            wp.vec3(1.0, 0.0, 0.0),
+            wp.vec3(-1.5, 0.0, 0.0),
+            wp.quat_identity(),
+            GeoType.SPHERE,
+            wp.vec3(1.0, 0.0, 0.0),
+            wp.vec3(1.5, 0.0, 0.0),
+            wp.quat_identity(),
+        )
+        self.assertAlmostEqual(1.0, dist, places=5)
+        self.assertEqual(0, collision)  # No collision
 
     def test_spheres_touching(self):
-        """Test two touching spheres have zero distance"""
+        """Test two touching spheres have zero distance."""
+        # Two spheres of radius 1.0, centers at distance 2.0
+        # Expected distance: 0.0 (just touching)
+        dist, _point, _normal, _collision = _geom_dist(
+            GeoType.SPHERE,
+            wp.vec3(1.0, 0.0, 0.0),
+            wp.vec3(-1.0, 0.0, 0.0),
+            wp.quat_identity(),
+            GeoType.SPHERE,
+            wp.vec3(1.0, 0.0, 0.0),
+            wp.vec3(1.0, 0.0, 0.0),
+            wp.quat_identity(),
+        )
+        self.assertAlmostEqual(0.0, dist, places=5)
 
-        # Create model and state
-        m = Model(2)
-        d = Data(2)
+    def test_sphere_sphere_overlapping(self):
+        """Test overlapping spheres return collision=True and distance=0."""
+        # Two spheres of radius 3.0, centers at distance 4.0
+        # Expected overlap: 3.0 + 3.0 - 4.0 = 2.0
+        # Note: GJK returns collision=True and distance=0 for overlapping shapes (MPR would give penetration depth)
+        dist, _point, _normal, collision = _geom_dist(
+            GeoType.SPHERE,
+            wp.vec3(3.0, 0.0, 0.0),
+            wp.vec3(-1.0, 0.0, 0.0),
+            wp.quat_identity(),
+            GeoType.SPHERE,
+            wp.vec3(3.0, 0.0, 0.0),
+            wp.vec3(3.0, 0.0, 0.0),
+            wp.quat_identity(),
+        )
+        self.assertAlmostEqual(0.0, dist, places=5)
+        self.assertEqual(1, collision)  # GJK reports collision=True for overlapping shapes
 
-        # Add two spheres
-        m.geom_type = wp.array([GeoType.SPHERE, GeoType.SPHERE], dtype=int)
-        m.geom_size = wp.array([wp.vec3(1.0, 0.0, 0.0), wp.vec3(1.0, 0.0, 0.0)], dtype=wp.vec3)
-        m.geom_dataid = wp.array([0, 0], dtype=int)
-
-        # Set positions
-        d.geom_xpos = wp.array([wp.vec3(-1.0, 0.0, 0.0), wp.vec3(1.0, 0.0, 0.0)], dtype=wp.vec3)
-        d.geom_xmat = wp.array([identity, identity], dtype=wp.mat33)
-
-        dist, _, _ = _geom_dist(m, d, 0, 1, MAX_ITERATIONS)
-        self.assertEqual(0.0, dist)
-
-    def test_sphere_sphere_contact(self):
-        """Test penetration depth between two spheres."""
-
-        # Create model and state
-        m = Model(2)
-        d = Data(2)
-
-        # Add two spheres
-        m.geom_type = wp.array([GeoType.SPHERE, GeoType.SPHERE], dtype=int)
-        m.geom_size = wp.array([wp.vec3(3.0, 0.0, 0.0), wp.vec3(3.0, 0.0, 0.0)], dtype=wp.vec3)
-        m.geom_dataid = wp.array([0, 0], dtype=int)
-
-        # Set positions
-        d.geom_xpos = wp.array([wp.vec3(-1.0, 0.0, 0.0), wp.vec3(3.0, 0.0, 0.0)], dtype=wp.vec3)
-        d.geom_xmat = wp.array([identity, identity], dtype=wp.mat33)
-
-        # TODO(kbayes): use margin trick instead of EPA for penetration recovery
-        dist, _, _ = _geom_dist(m, d, 0, 1, 500)
-        self.assertAlmostEqual(-2, dist)
-
-    def test_box_box_contact(self):
-        """Test penetration between two boxes."""
-
-        # Create model and state
-        m = Model(2)
-        d = Data(2)
-
-        # Add two boxes
-        m.geom_type = wp.array([GeoType.BOX, GeoType.BOX], dtype=int)
-        m.geom_size = wp.array([wp.vec3(2.5, 2.5, 2.5), wp.vec3(1.0, 1.0, 1.0)], dtype=wp.vec3)
-        m.geom_dataid = wp.array([0, 0], dtype=int)
-
-        # Set positions
-        d.geom_xpos = wp.array([wp.vec3(-1.0, 0.0, 0.0), wp.vec3(1.5, 0.0, 0.0)], dtype=wp.vec3)
-        d.geom_xmat = wp.array([identity, identity], dtype=wp.mat33)
-
-        dist, x1, x2 = _geom_dist(m, d, 0, 1, MAX_ITERATIONS)
-        self.assertAlmostEqual(-1, dist)
-        diff = x1 - x2
-        normal = diff / np.linalg.norm(diff)
-        self.assertAlmostEqual(normal[0], 1)
-        self.assertAlmostEqual(normal[1], 0)
-        self.assertAlmostEqual(normal[2], 0)
+    def test_box_box_separated(self):
+        """Test distance between two separated boxes."""
+        # Two boxes: first is 5x5x5 (half-extents 2.5), second is 2x2x2 (half-extents 1.0)
+        # First centered at (-1, 0, 0), second at (1.5, 0, 0)
+        # Distance between centers: 2.5, half-extents sum: 3.5
+        # Expected separation: 2.5 - 2.5 - 1.0 = -1.0 (overlapping)
+        # But let's test a separated case
+        dist, _point, normal, collision = _geom_dist(
+            GeoType.BOX,
+            wp.vec3(1.0, 1.0, 1.0),
+            wp.vec3(-2.0, 0.0, 0.0),
+            wp.quat_identity(),
+            GeoType.BOX,
+            wp.vec3(1.0, 1.0, 1.0),
+            wp.vec3(2.5, 0.0, 0.0),
+            wp.quat_identity(),
+        )
+        # Centers at distance 4.5, half-extents sum: 2.0
+        # Expected distance: 4.5 - 1.0 - 1.0 = 2.5
+        self.assertAlmostEqual(2.5, dist, places=5)
+        self.assertEqual(0, collision)
+        # Normal should point from A to B (positive X direction)
+        self.assertAlmostEqual(normal[0], 1.0, places=5)
+        self.assertAlmostEqual(normal[1], 0.0, places=5)
+        self.assertAlmostEqual(normal[2], 0.0, places=5)
 
 
 if __name__ == "__main__":

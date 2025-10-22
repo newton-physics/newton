@@ -46,6 +46,7 @@ ROBOT_CONFIGS = {
         "njmax": 80,
         "nconmax": 25,
         "ls_parallel": True,
+        "cone": "pyramidal",
     },
     "g1": {
         "solver": "newton",
@@ -53,6 +54,7 @@ ROBOT_CONFIGS = {
         "njmax": 210,
         "nconmax": 35,
         "ls_parallel": True,
+        "cone": "pyramidal",
     },
     "h1": {
         "solver": "newton",
@@ -60,6 +62,7 @@ ROBOT_CONFIGS = {
         "njmax": 65,
         "nconmax": 15,
         "ls_parallel": True,
+        "cone": "pyramidal",
     },
     "cartpole": {  # TODO: use the Lab version of cartpole and revert param value
         "solver": "newton",
@@ -67,6 +70,7 @@ ROBOT_CONFIGS = {
         "njmax": 24,  # 5
         "nconmax": 6,  # 5
         "ls_parallel": False,
+        "cone": "pyramidal",
     },
     "ant": {
         "solver": "newton",
@@ -74,6 +78,7 @@ ROBOT_CONFIGS = {
         "njmax": 38,
         "nconmax": 15,
         "ls_parallel": True,
+        "cone": "pyramidal",
     },
     "quadruped": {
         "solver": "newton",
@@ -81,6 +86,7 @@ ROBOT_CONFIGS = {
         "njmax": 75,
         "nconmax": 50,
         "ls_parallel": True,
+        "cone": "pyramidal",
     },
     "allegro": {
         "solver": "newton",
@@ -88,6 +94,7 @@ ROBOT_CONFIGS = {
         "njmax": 60,
         "nconmax": 35,
         "ls_parallel": True,
+        "cone": "elliptic",
     },
     "kitchen": {
         "setup_builder": lambda x: _setup_kitchen(x),
@@ -279,6 +286,7 @@ class Example:
         nconmax=None,
         builder=None,
         ls_parallel=None,
+        cone=None,
     ):
         fps = 600
         self.sim_time = 0.0
@@ -317,6 +325,7 @@ class Example:
             njmax=njmax,
             nconmax=nconmax,
             ls_parallel=ls_parallel,
+            cone=cone,
         )
 
         if stage_path and not headless:
@@ -423,6 +432,7 @@ class Example:
         njmax=None,
         nconmax=None,
         ls_parallel=None,
+        cone=None,
     ):
         solver_iteration = solver_iteration if solver_iteration is not None else 100
         ls_iteration = ls_iteration if ls_iteration is not None else 50
@@ -431,6 +441,7 @@ class Example:
         njmax = njmax if njmax is not None else ROBOT_CONFIGS[robot]["njmax"]
         nconmax = nconmax if nconmax is not None else ROBOT_CONFIGS[robot]["nconmax"]
         ls_parallel = ls_parallel if ls_parallel is not None else ROBOT_CONFIGS[robot]["ls_parallel"]
+        cone = cone if cone is not None else ROBOT_CONFIGS[robot]["cone"]
 
         njmax += ROBOT_CONFIGS.get(environment, {}).get("njmax", 0)
         nconmax += ROBOT_CONFIGS.get(environment, {}).get("nconmax", 0)
@@ -445,6 +456,7 @@ class Example:
             njmax=njmax,
             ncon_per_world=nconmax,
             ls_parallel=ls_parallel,
+            cone=cone,
         )
 
     def add_trace(self, stack, new_stack):
@@ -526,6 +538,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--ls-parallel", default=None, action=argparse.BooleanOptionalAction, help="Use parallel line search."
     )
+    parser.add_argument("--cone", type=str, default=None, choices=["pyramidal", "elliptic"], help="Friction cone type.")
 
     args = parser.parse_known_args()[0]
 
@@ -553,6 +566,7 @@ if __name__ == "__main__":
                 njmax=args.njmax,
                 nconmax=args.nconmax,
                 ls_parallel=args.ls_parallel,
+                cone=args.cone,
             )
 
             # Print simulation configuration summary
@@ -579,6 +593,10 @@ if __name__ == "__main__":
                 3: "Implicitfast",
             }  # mjINT_EULER = 0, mjINT_RK4 = 1, mjINT_IMPLICIT = 2, mjINT_IMPLICITFAST = 3
             actual_integrator = integrator_map.get(example.solver.mj_model.opt.integrator, "unknown")
+            # Map MuJoCo cone enum back to string
+            cone_value = example.solver.mj_model.opt.cone
+            cone_map = {0: "pyramidal", 1: "elliptic"}  # mjCONE_PYRAMIDAL = 0, mjCONE_ELLIPTIC = 1
+            actual_cone = cone_map.get(cone_value, f"unknown({cone_value})")
             # Get actual max constraints and contacts from MuJoCo Warp data
             actual_njmax = example.solver.mjw_data.njmax
             actual_nconmax = (
@@ -586,9 +604,11 @@ if __name__ == "__main__":
                 if args.num_worlds > 0
                 else example.solver.mjw_data.nconmax
             )
+
             print(f"{'Solver':<{LABEL_WIDTH}}: {actual_solver}")
             print(f"{'Integrator':<{LABEL_WIDTH}}: {actual_integrator}")
             # print(f"{'Parallel Line Search':<{LABEL_WIDTH}}: {example.solver.mj_model.opt.ls_parallel}")
+            print(f"{'Cone':<{LABEL_WIDTH}}: {actual_cone}")
             print(f"{'Solver Iterations':<{LABEL_WIDTH}}: {example.solver.mj_model.opt.iterations}")
             print(f"{'Line Search Iterations':<{LABEL_WIDTH}}: {example.solver.mj_model.opt.ls_iterations}")
             print(f"{'Max Constraints / world':<{LABEL_WIDTH}}: {actual_njmax}")
