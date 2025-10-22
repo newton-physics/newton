@@ -1274,6 +1274,48 @@ class TestMuJoCoConversion(unittest.TestCase):
         solver = SolverMuJoCo(model)
         self.assertEqual(solver.mj_model.nv, 1)
 
+    def test_separate_worlds_false_multi_world_validation(self):
+        """Test that separate_worlds=False is rejected for multi-world models."""
+        # Create a model with 2 worlds
+        template_builder = newton.ModelBuilder()
+        body = template_builder.add_body(mass=1.0, com=wp.vec3(0.0, 0.0, 0.0), I_m=wp.mat33(np.eye(3)))
+        template_builder.add_joint_revolute(-1, body, axis=(0.0, 0.0, 1.0))
+        template_builder.add_shape_box(body=body, hx=0.1, hy=0.1, hz=0.1)
+
+        builder = newton.ModelBuilder()
+        builder.add_ground_plane()
+        for i in range(2):
+            world_transform = wp.transform((i * 2.0, 0.0, 0.0), wp.quat_identity())
+            builder.add_builder(template_builder, xform=world_transform, update_num_world_count=True)
+
+        model = builder.finalize()
+        self.assertEqual(model.num_worlds, 2, "Model should have 2 worlds")
+
+        # Test that separate_worlds=False raises ValueError
+        with self.assertRaises(ValueError) as context:
+            SolverMuJoCo(model, separate_worlds=False)
+
+        self.assertIn("separate_worlds=False", str(context.exception))
+        self.assertIn("single-world", str(context.exception))
+        self.assertIn("num_worlds=2", str(context.exception))
+
+        # Test that separate_worlds=True works fine
+        solver = SolverMuJoCo(model, separate_worlds=True)
+        self.assertIsNotNone(solver)
+
+    def test_separate_worlds_false_single_world_works(self):
+        """Test that separate_worlds=False works correctly for single-world models."""
+        builder = newton.ModelBuilder()
+        b = builder.add_body(mass=1.0, com=wp.vec3(0.0, 0.0, 0.0), I_m=wp.mat33(np.eye(3)))
+        builder.add_joint_revolute(-1, b, axis=(0.0, 0.0, 1.0))
+        builder.add_shape_box(body=b, hx=0.1, hy=0.1, hz=0.1)
+        model = builder.finalize()
+
+        # Should work fine with single world
+        solver = SolverMuJoCo(model, separate_worlds=False)
+        self.assertIsNotNone(solver)
+        self.assertEqual(solver.mj_model.nv, 1)
+
     def test_joint_transform_composition(self):
         """
         Test that the MuJoCo solver correctly handles joint transform composition,

@@ -153,6 +153,7 @@ class BroadPhaseAllPairs:
         # Outputs
         candidate_pair: wp.array(dtype=wp.vec2i, ndim=1),  # Array to store overlapping geometry pairs
         num_candidate_pair: wp.array(dtype=int, ndim=1),
+        device=None,  # Device to launch on
     ):
         """Launch the N x N broad phase collision detection.
 
@@ -172,6 +173,7 @@ class BroadPhaseAllPairs:
             geom_count: Number of active bounding boxes to check
             candidate_pair: Output array to store overlapping geometry pairs
             num_candidate_pair: Output array to store number of overlapping pairs found
+            device: Device to launch on. If None, uses the device of the input arrays.
 
         The method will populate candidate_pair with the indices of geometry pairs (i,j) where i < j whose AABBs overlap
         when expanded by their cutoff distances, whose collision groups allow interaction, and whose world indices
@@ -186,6 +188,9 @@ class BroadPhaseAllPairs:
 
         num_candidate_pair.zero_()
 
+        if device is None:
+            device = geom_lower.device
+
         wp.launch(
             _nxn_broadphase_kernel,
             dim=num_lower_tri_elements,
@@ -198,6 +203,7 @@ class BroadPhaseAllPairs:
                 geom_shape_world,
             ],
             outputs=[candidate_pair, num_candidate_pair, max_candidate_pair],
+            device=device,
         )
 
 
@@ -225,6 +231,7 @@ class BroadPhaseExplicit:
         # Outputs
         candidate_pair: wp.array(dtype=wp.vec2i, ndim=1),  # Array to store overlapping geometry pairs
         num_candidate_pair: wp.array(dtype=int, ndim=1),
+        device=None,  # Device to launch on
     ):
         """Launch the explicit pairs broad phase collision detection.
 
@@ -240,6 +247,7 @@ class BroadPhaseExplicit:
             geom_pair_count: Number of geometry pairs to check
             candidate_pair: Output array to store overlapping geometry pairs
             num_candidate_pair: Output array to store number of overlapping pairs found
+            device: Device to launch on. If None, uses the device of the input arrays.
 
         The method will populate candidate_pair with the indices of geometry pairs whose AABBs overlap
         when expanded by their cutoff distances, but only checking the explicitly provided pairs.
@@ -261,4 +269,5 @@ class BroadPhaseExplicit:
                 num_candidate_pair,
                 max_candidate_pair,
             ],
+            device=device,
         )
