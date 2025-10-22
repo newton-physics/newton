@@ -186,7 +186,7 @@ class FastCartpole(_FastBenchmark):
 
 
 class KpiCartpole(_KpiBenchmark):
-    params = [8192]
+    params = [[8192]]
     num_frames = 50
     robot = "cartpole"
     samples = 4
@@ -205,7 +205,7 @@ class FastG1(_FastBenchmark):
 
 
 class KpiG1(_KpiBenchmark):
-    params = [8192]
+    params = [[8192]]
     num_frames = 50
     robot = "g1"
     timeout = 900
@@ -216,7 +216,7 @@ class KpiG1(_KpiBenchmark):
 
 
 class FastNewtonOverheadG1(_NewtonOverheadBenchmark):
-    params = [256]
+    params = [[256]]
     num_frames = 25
     robot = "g1"
     repeat = 2
@@ -225,7 +225,7 @@ class FastNewtonOverheadG1(_NewtonOverheadBenchmark):
 
 
 class KpiNewtonOverheadG1(_NewtonOverheadBenchmark):
-    params = [8192]
+    params = [[8192]]
     num_frames = 50
     robot = "g1"
     timeout = 900
@@ -244,7 +244,7 @@ class FastHumanoid(_FastBenchmark):
 
 
 class KpiHumanoid(_KpiBenchmark):
-    params = [8192]
+    params = [[8192]]
     num_frames = 100
     robot = "humanoid"
     samples = 4
@@ -254,7 +254,7 @@ class KpiHumanoid(_KpiBenchmark):
 
 
 class FastNewtonOverheadHumanoid(_NewtonOverheadBenchmark):
-    params = [256]
+    params = [[256]]
     num_frames = 50
     robot = "humanoid"
     repeat = 8
@@ -263,7 +263,7 @@ class FastNewtonOverheadHumanoid(_NewtonOverheadBenchmark):
 
 
 class KpiNewtonOverheadHumanoid(_NewtonOverheadBenchmark):
-    params = [8192]
+    params = [[8192]]
     num_frames = 100
     robot = "humanoid"
     samples = 4
@@ -281,7 +281,7 @@ class FastAllegro(_FastBenchmark):
 
 
 class KpiAllegro(_KpiBenchmark):
-    params = [8192]
+    params = [[8192]]
     num_frames = 300
     robot = "allegro"
     samples = 2
@@ -300,7 +300,7 @@ class FastKitchenG1(_FastBenchmark):
 
 
 class KpiKitchenG1(_KpiBenchmark):
-    params = [512]
+    params = [[512]]
     num_frames = 50
     robot = "g1"
     timeout = 900
