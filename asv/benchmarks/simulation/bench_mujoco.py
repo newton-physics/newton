@@ -130,8 +130,8 @@ class _KpiBenchmark:
     track_simulate.unit = "ms/world-step"
 
 
-class _SwizzleBenchmark:
-    """Utility base class for measuring swizzling overhead."""
+class _NewtonOverheadBenchmark:
+    """Utility base class for measuring Newton overhead."""
 
     param_names = ["num_worlds"]
     num_frames = None
@@ -215,8 +215,8 @@ class KpiG1(_KpiBenchmark):
     environment = "None"
 
 
-class FastSwizzleG1(_SwizzleBenchmark):
-    params = [[256]]
+class FastNewtonOverheadG1(_NewtonOverheadBenchmark):
+    params = [256]
     num_frames = 25
     robot = "g1"
     repeat = 2
@@ -224,8 +224,8 @@ class FastSwizzleG1(_SwizzleBenchmark):
     random_init = True
 
 
-class KpiSwizzleG1(_SwizzleBenchmark):
-    params = [[8192]]
+class KpiNewtonOverheadG1(_NewtonOverheadBenchmark):
+    params = [8192]
     num_frames = 50
     robot = "g1"
     timeout = 900
@@ -253,8 +253,8 @@ class KpiHumanoid(_KpiBenchmark):
     environment = "None"
 
 
-class FastSwizzleHumanoid(_SwizzleBenchmark):
-    params = [[256]]
+class FastNewtonOverheadHumanoid(_NewtonOverheadBenchmark):
+    params = [256]
     num_frames = 50
     robot = "humanoid"
     repeat = 8
@@ -262,8 +262,8 @@ class FastSwizzleHumanoid(_SwizzleBenchmark):
     random_init = True
 
 
-class KpiSwizzleHumanoid(_SwizzleBenchmark):
-    params = [[8192]]
+class KpiNewtonOverheadHumanoid(_NewtonOverheadBenchmark):
+    params = [8192]
     num_frames = 100
     robot = "humanoid"
     samples = 4
@@ -321,11 +321,15 @@ if __name__ == "__main__":
         "FastHumanoid": FastHumanoid,
         "FastAllegro": FastAllegro,
         "FastKitchenG1": FastKitchenG1,
+        "FastNewtonOverheadG1": FastNewtonOverheadG1,
+        "FastNewtonOverheadHumanoid": FastNewtonOverheadHumanoid,
         "KpiCartpole": KpiCartpole,
         "KpiG1": KpiG1,
         "KpiHumanoid": KpiHumanoid,
         "KpiAllegro": KpiAllegro,
         "KpiKitchenG1": KpiKitchenG1,
+        "KpiNewtonOverheadG1": KpiNewtonOverheadG1,
+        "KpiNewtonOverheadHumanoid": KpiNewtonOverheadHumanoid,
     }
 
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
