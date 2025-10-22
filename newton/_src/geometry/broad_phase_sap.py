@@ -349,6 +349,7 @@ class BroadPhaseSAP:
         # Outputs
         candidate_pair: wp.array(dtype=wp.vec2i, ndim=1),  # Array to store overlapping geometry pairs
         num_candidate_pair: wp.array(dtype=int, ndim=1),
+        device=None,  # Device to launch on
     ):
         """Launch the sweep and prune broad phase collision detection.
 
@@ -360,7 +361,7 @@ class BroadPhaseSAP:
             geom_lower: Array of lower bounds for each geometry's AABB
             geom_upper: Array of upper bounds for each geometry's AABB
             geom_cutoffs: Array of cutoff distances for each geometry
-            geom_collision_groups: Array of collision group IDs for each geometry. Positive values indicate
+            geom_collision_group: Array of collision group IDs for each geometry. Positive values indicate
                 groups that only collide with themselves (and with negative groups). Negative values indicate
                 groups that collide with everything except their negative counterpart. Zero indicates no collisions.
             geom_shape_world: Array of world indices for each geometry. Index -1 indicates global entities
@@ -369,6 +370,7 @@ class BroadPhaseSAP:
             geom_count: Number of active bounding boxes to check
             candidate_pair: Output array to store overlapping geometry pairs
             num_candidate_pair: Output array to store number of overlapping pairs found
+            device: Device to launch on. If None, uses the device of the input arrays.
 
         The method will populate candidate_pair with the indices of geometry pairs whose AABBs overlap
         when expanded by their cutoff distances, whose collision groups allow interaction, and whose worlds
@@ -387,6 +389,9 @@ class BroadPhaseSAP:
         self.sap_cumulative_sum.zero_()
         num_candidate_pair.zero_()
 
+        if device is None:
+            device = geom_lower.device
+
         wp.launch(
             kernel=_flag_group_id_kernel,
             dim=geom_count,
@@ -396,6 +401,7 @@ class BroadPhaseSAP:
                 self.negative_group_counter,
                 self.negative_group_indices,
             ],
+            device=device,
         )
 
         wp.launch(
@@ -406,6 +412,7 @@ class BroadPhaseSAP:
                 self.unique_group_ids,
                 self.unique_group_id_counter,
             ],
+            device=device,
         )
 
         wp.launch(
@@ -428,6 +435,7 @@ class BroadPhaseSAP:
                 self.sap_projection_upper,
                 self.sap_sort_index,
             ],
+            device=device,
         )
 
         wp.utils.radix_sort_pairs(
@@ -448,6 +456,7 @@ class BroadPhaseSAP:
                 self.sap_sort_index,
                 self.sap_range,
             ],
+            device=device,
         )
 
         wp.utils.array_scan(self.sap_range.reshape(-1), self.sap_cumulative_sum, True)
@@ -478,4 +487,5 @@ class BroadPhaseSAP:
                 num_candidate_pair,
                 max_candidate_pair,
             ],
+            device=device,
         )

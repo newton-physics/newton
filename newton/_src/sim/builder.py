@@ -1984,6 +1984,8 @@ class ModelBuilder:
                 return "sdf"
             if type == GeoType.PLANE:
                 return "plane"
+            if type == GeoType.CONVEX_MESH:
+                return "convex_hull"
             if type == GeoType.NONE:
                 return "none"
             return "unknown"
@@ -2796,6 +2798,41 @@ class ModelBuilder:
             key=key,
         )
 
+    def add_shape_convex_hull(
+        self,
+        body: int,
+        xform: Transform | None = None,
+        mesh: Mesh | None = None,
+        scale: Vec3 | None = None,
+        cfg: ShapeConfig | None = None,
+        key: str | None = None,
+    ) -> int:
+        """Adds a convex hull collision shape to a body.
+
+        Args:
+            body (int): The index of the parent body this shape belongs to. Use -1 for shapes not attached to any specific body.
+            xform (Transform | None): The transform of the convex hull in the parent body's local frame. If `None`, the identity transform `wp.transform()` is used. Defaults to `None`.
+            mesh (Mesh | None): The :class:`Mesh` object containing the vertex data for the convex hull. Defaults to `None`.
+            scale (Vec3 | None): The scale of the convex hull. Defaults to `None`, in which case the scale is `(1.0, 1.0, 1.0)`.
+            cfg (ShapeConfig | None): The configuration for the shape's physical and collision properties. If `None`, :attr:`default_shape_cfg` is used. Defaults to `None`.
+            key (str | None): An optional unique key for identifying the shape. If `None`, a default key is automatically generated. Defaults to `None`.
+
+        Returns:
+            int: The index of the newly added shape.
+        """
+
+        if cfg is None:
+            cfg = self.default_shape_cfg
+        return self.add_shape(
+            body=body,
+            type=GeoType.CONVEX_MESH,
+            xform=xform,
+            cfg=cfg,
+            scale=scale,
+            src=mesh,
+            key=key,
+        )
+
     def approximate_meshes(
         self,
         method: Literal["coacd", "vhacd", "bounding_sphere", "bounding_box"] | RemeshingMethod = "convex_hull",
@@ -2904,6 +2941,8 @@ class ModelBuilder:
                     self.shape_source[shape] = self.shape_source[shape].copy(
                         vertices=decomposition[0][0], indices=decomposition[0][1]
                     )
+                    # mark as convex mesh type
+                    self.shape_type[shape] = GeoType.CONVEX_MESH
                     if len(decomposition) > 1:
                         body = self.shape_body[shape]
                         xform = self.shape_transform[shape]
@@ -2922,13 +2961,14 @@ class ModelBuilder:
                         )
                         cfg.flags = self.shape_flags[shape]
                         for i in range(1, len(decomposition)):
-                            self.add_shape_mesh(
+                            # add additional convex parts as convex meshes
+                            self.add_shape_convex_hull(
                                 body=body,
                                 xform=xform,
-                                cfg=cfg,
                                 mesh=Mesh(decomposition[i][0], decomposition[i][1]),
-                                key=f"{self.shape_key[shape]}_convex_{i}",
                                 scale=scale,
+                                cfg=cfg,
+                                key=f"{self.shape_key[shape]}_convex_{i}",
                             )
                     remeshed_shapes.add(shape)
             except Exception as e:
