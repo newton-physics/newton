@@ -254,7 +254,7 @@ def parse_usd(
         has_particle_collision=False,
     )
 
-    def _load_visual_shapes_impl(parent_body_id, prim, incoming_xform: wp.transform, incoming_scale:wp.vec3=wp.vec3(1.0)):
+    def _load_visual_shapes_impl(parent_body_id, prim, incoming_xform: wp.transform, incoming_scale: wp.vec3):
         if (
             prim.HasAPI(UsdPhysics.RigidBodyAPI)
             or prim.HasAPI(UsdPhysics.MassAPI)
@@ -445,7 +445,7 @@ def parse_usd(
         path_body_map[key] = b
         if load_sites or load_visual_shapes:
             for child in prim.GetChildren():
-                _load_visual_shapes_impl(b, child, wp.transform_identity())
+                _load_visual_shapes_impl(b, child, wp.transform_identity(), wp.vec3(1.0))
         return b
 
     def parse_body(rigid_body_desc, prim, incoming_xform=None, add_body_to_builder=True):
@@ -1177,7 +1177,7 @@ def parse_usd(
                 parent_id, child_id = resolve_joint_parent_child(joint_desc, body_ids, get_transforms=False)
                 joint_edges.append((parent_id, child_id))
 
-            articulation_xform = wp.mul(incoming_world_xform, usd.get_transform(articulation_prim))
+            articulation_xform = wp.mul(incoming_world_xform, usd.get_transform(articulation_prim, local=False))
             articulation_joint_indices = []
 
             if len(joint_edges) == 0:
