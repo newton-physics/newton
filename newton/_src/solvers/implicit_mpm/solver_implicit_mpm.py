@@ -1346,6 +1346,7 @@ class ImplicitMPMModel:
 @wp.kernel
 def compute_bounds(
     pos: wp.array(dtype=wp.vec3),
+    particle_flags: wp.array(dtype=wp.int32),
     lower_bounds: wp.array(dtype=wp.vec3),
     upper_bounds: wp.array(dtype=wp.vec3),
 ):
@@ -1357,13 +1358,13 @@ def compute_bounds(
     # no tile_atomic_min yet, extract first and use lane 0
 
     if i >= pos.shape[0]:
-        min_x = _INFINITY
-        min_y = _INFINITY
-        min_z = _INFINITY
-        max_x = -_INFINITY
-        max_y = -_INFINITY
-        max_z = -_INFINITY
+        valid = False
+    elif ~particle_flags[i] & newton.ParticleFlags.ACTIVE:
+        valid = False
     else:
+        valid = True
+
+    if valid:
         p = pos[i]
         min_x = p[0]
         min_y = p[1]
@@ -1371,6 +1372,13 @@ def compute_bounds(
         max_x = p[0]
         max_y = p[1]
         max_z = p[2]
+    else:
+        min_x = _INFINITY
+        min_y = _INFINITY
+        min_z = _INFINITY
+        max_x = -_INFINITY
+        max_y = -_INFINITY
+        max_z = -_INFINITY
 
     tile_min_x = wp.tile_min(wp.tile(min_x))[0]
     tile_max_x = wp.tile_max(wp.tile(max_x))[0]
@@ -1484,8 +1492,12 @@ def mark_active_cells(
     s: fem.Sample,
     domain: fem.Domain,
     positions: wp.array(dtype=wp.vec3),
+    particle_flags: wp.array(dtype=int),
     active_cells: wp.array(dtype=int),
 ):
+    if ~particle_flags[s.qp_index] & newton.ParticleFlags.ACTIVE:
+        return
+
     x = positions[s.qp_index]
     s_grid = fem.lookup(domain, x)
 
@@ -1778,7 +1790,12 @@ class SolverImplicitMPM(SolverBase):
         return update_render_grains(state_prev, state, grains, self.mpm_model.particle_radius, dt)
 
     def _allocate_grid(
-        self, positions: wp.array, voxel_size, temporary_store: fem.TemporaryStore, padding_voxels: int = 0
+        self,
+        positions: wp.array,
+        particle_flags: wp.array,
+        voxel_size: float,
+        temporary_store: fem.TemporaryStore,
+        padding_voxels: int = 0,
     ):
         """Create a grid (sparse or dense) covering all particle positions.
 
@@ -1819,7 +1836,7 @@ class SolverImplicitMPM(SolverBase):
                         compute_bounds,
                         dim=((positions.shape[0] + tile_size - 1) // tile_size, tile_size),
                         block_dim=tile_size,
-                        inputs=[positions, min_dev.array, max_dev.array],
+                        inputs=[positions, particle_flags, min_dev.array, max_dev.array],
                         device=device,
                     )
 
@@ -1848,7 +1865,9 @@ class SolverImplicitMPM(SolverBase):
 
         return grid
 
-    def _create_geometry_partition(self, grid: fem.Geometry, positions: wp.array, max_cell_count: int):
+    def _create_geometry_partition(
+        self, grid: fem.Geometry, positions: wp.array, particle_flags: wp.array, max_cell_count: int
+    ):
         """Create a geometry partition for the given positions."""
 
         active_cells = fem.borrow_temporary(self.temporary_store, shape=grid.cell_count(), dtype=int)
@@ -1859,6 +1878,7 @@ class SolverImplicitMPM(SolverBase):
             domain=fem.Cells(grid),
             values={
                 "positions": positions,
+                "particle_flags": particle_flags,
                 "active_cells": active_cells,
             },
         )
@@ -1884,6 +1904,7 @@ class SolverImplicitMPM(SolverBase):
             # Rebuild grid
             grid = self._allocate_grid(
                 positions,
+                self.model.particle_flags,
                 voxel_size=self.mpm_model.voxel_size,
                 temporary_store=self.temporary_store,
                 padding_voxels=self.grid_padding,
@@ -1901,7 +1922,9 @@ class SolverImplicitMPM(SolverBase):
                 geo_partition = grid
             else:
                 max_cell_count = self.max_active_cell_count
-                geo_partition = self._create_geometry_partition(grid, positions, max_cell_count)
+                geo_partition = self._create_geometry_partition(
+                    grid, positions, self.model.particle_flags, max_cell_count
+                )
 
             # Rebuild space partitions and fields from active cells
             self._scratchpad.create_function_spaces(
