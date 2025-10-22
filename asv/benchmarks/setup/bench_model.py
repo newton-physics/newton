@@ -79,7 +79,7 @@ class KpiInitializeSolver:
         del self._model
 
 
-class KpiInitializeRender:
+class KpiInitializeViewerGL:
     params = (["g1"], [8192])
     param_names = ["robot", "num_worlds"]
 
@@ -102,11 +102,6 @@ class KpiInitializeRender:
         # Setting up the renderer
         self.renderer = ViewerGL(headless=True)
         self.renderer.set_model(self._model)
-
-        # Rendering one frame
-        self.renderer.begin_frame(0.0)
-        self.renderer.log_state(self._state)
-        self.renderer.end_frame()
 
         wp.synchronize_device()
         self.renderer.close()
@@ -177,7 +172,7 @@ class FastInitializeSolver:
         del self._model
 
 
-class FastInitializeRender:
+class FastInitializeViewerGL:
     params = (["g1"], [256])
     param_names = ["robot", "num_worlds"]
 
@@ -201,11 +196,6 @@ class FastInitializeRender:
         self.renderer = ViewerGL(headless=True)
         self.renderer.set_model(self._model)
 
-        # Rendering one frame
-        self.renderer.begin_frame(0.0)
-        self.renderer.log_state(self._state)
-        self.renderer.end_frame()
-
         wp.synchronize_device()
         self.renderer.close()
 
@@ -224,8 +214,8 @@ if __name__ == "__main__":
         "FastInitializeModel": FastInitializeModel,
         "KpiInitializeSolver": KpiInitializeSolver,
         "FastInitializeSolver": FastInitializeSolver,
-        "KpiInitializeRender": KpiInitializeRender,
-        "FastInitializeRender": FastInitializeRender,
+        "KpiInitializeViewerGL": KpiInitializeViewerGL,
+        "FastInitializeViewerGL": FastInitializeViewerGL,
     }
 
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
