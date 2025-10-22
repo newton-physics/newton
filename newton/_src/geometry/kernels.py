@@ -768,7 +768,7 @@ def create_soft_contacts(
         d = cone_sdf(geo_scale[0], geo_scale[1], x_local)
         n = cone_sdf_grad(geo_scale[0], geo_scale[1], x_local)
 
-    if geo_type == GeoType.MESH:
+    if geo_type == GeoType.MESH or geo_type == GeoType.CONVEX_MESH:
         mesh = shape_source_ptr[shape_index]
 
         face_index = int(0)
@@ -872,7 +872,7 @@ def count_contact_points_for_pair(
                 return 8, 0  # vertex-based collision
             else:
                 return 8 + 4, 0  # vertex-based collision + plane edges
-        if type_b == GeoType.MESH:
+        if type_b == GeoType.MESH or type_b == GeoType.CONVEX_MESH:
             mesh_b = wp.mesh_get(shape_source_ptr[shape_b])
             return mesh_b.points.shape[0], 0
 
@@ -886,7 +886,7 @@ def count_contact_points_for_pair(
             return 2, 0
         if type_b == GeoType.BOX:
             return 8, 0
-        if type_b == GeoType.MESH:
+        if type_b == GeoType.MESH or type_b == GeoType.CONVEX_MESH:
             num_contacts_a = 2
             mesh_b = wp.mesh_get(shape_source_ptr[shape_b])
             num_contacts_b = mesh_b.points.shape[0]
@@ -901,17 +901,17 @@ def count_contact_points_for_pair(
     elif type_a == GeoType.BOX:
         if type_b == GeoType.BOX:
             return 12, 12
-        if type_b == GeoType.MESH:
+        if type_b == GeoType.MESH or type_b == GeoType.CONVEX_MESH:
             num_contacts_a = 8
             mesh_b = wp.mesh_get(shape_source_ptr[shape_b])
             num_contacts_b = mesh_b.points.shape[0]
             return num_contacts_a, num_contacts_b
 
     # MESH against all other types
-    elif type_a == GeoType.MESH:
+    elif type_a == GeoType.MESH or type_a == GeoType.CONVEX_MESH:
         mesh_a = wp.mesh_get(shape_source_ptr[shape_a])
         num_contacts_a = mesh_a.points.shape[0]
-        if type_b == GeoType.MESH:
+        if type_b == GeoType.MESH or type_b == GeoType.CONVEX_MESH:
             mesh_b = wp.mesh_get(shape_source_ptr[shape_b])
             num_contacts_b = mesh_b.points.shape[0]
             return num_contacts_a, num_contacts_b
@@ -1992,7 +1992,9 @@ def generate_handle_contact_pairs_kernel(enable_backward: bool):
         elif geo_a.geo_type == GeoType.SPHERE and geo_b.geo_type == GeoType.CAPSULE:
             p_a_world, p_b_world, normal, distance = sphere_capsule_collision(geo_a, geo_b)
 
-        elif geo_a.geo_type == GeoType.SPHERE and geo_b.geo_type == GeoType.MESH:
+        elif geo_a.geo_type == GeoType.SPHERE and (
+            geo_b.geo_type == GeoType.MESH or geo_b.geo_type == GeoType.CONVEX_MESH
+        ):
             p_a_world, p_b_world, normal, distance, valid = sphere_mesh_collision(
                 geo_a, geo_b, shape_source_ptr, shape_b, rigid_contact_margin, thickness
             )
@@ -2024,14 +2026,18 @@ def generate_handle_contact_pairs_kernel(enable_backward: bool):
         elif geo_a.geo_type == GeoType.CAPSULE and geo_b.geo_type == GeoType.CAPSULE:
             p_a_world, p_b_world, normal, distance = capsule_capsule_collision(geo_a, geo_b, point_id, edge_sdf_iter)
 
-        elif geo_a.geo_type == GeoType.CAPSULE and geo_b.geo_type == GeoType.MESH:
+        elif geo_a.geo_type == GeoType.CAPSULE and (
+            geo_b.geo_type == GeoType.MESH or geo_b.geo_type == GeoType.CONVEX_MESH
+        ):
             p_a_world, p_b_world, normal, distance, valid = capsule_mesh_collision(
                 geo_a, geo_b, point_id, shape_source_ptr, shape_b, rigid_contact_margin, thickness, edge_sdf_iter
             )
             if not valid:
                 return
 
-        elif geo_a.geo_type == GeoType.MESH and geo_b.geo_type == GeoType.CAPSULE:
+        elif (
+            geo_a.geo_type == GeoType.MESH or geo_a.geo_type == GeoType.CONVEX_MESH
+        ) and geo_b.geo_type == GeoType.CAPSULE:
             p_a_world, p_b_world, normal, distance = mesh_capsule_collision(
                 geo_a, geo_b, point_id, shape_source_ptr, shape_a
             )
@@ -2050,26 +2056,34 @@ def generate_handle_contact_pairs_kernel(enable_backward: bool):
             if distance >= 1.0e5:  # Use a reasonable threshold instead of exact wp.inf comparison
                 return
 
-        elif geo_a.geo_type == GeoType.MESH and geo_b.geo_type == GeoType.BOX:
+        elif (
+            geo_a.geo_type == GeoType.MESH or geo_a.geo_type == GeoType.CONVEX_MESH
+        ) and geo_b.geo_type == GeoType.BOX:
             p_a_world, p_b_world, normal, distance = mesh_box_collision(
                 geo_a, geo_b, point_id, shape_source_ptr, shape_a
             )
 
-        elif geo_a.geo_type == GeoType.BOX and geo_b.geo_type == GeoType.MESH:
+        elif geo_a.geo_type == GeoType.BOX and (
+            geo_b.geo_type == GeoType.MESH or geo_b.geo_type == GeoType.CONVEX_MESH
+        ):
             p_a_world, p_b_world, normal, distance, valid = box_mesh_collision(
                 geo_a, geo_b, point_id, shape_source_ptr, shape_b, rigid_contact_margin, thickness
             )
             if not valid:
                 return
 
-        elif geo_a.geo_type == GeoType.MESH and geo_b.geo_type == GeoType.MESH:
+        elif (geo_a.geo_type == GeoType.MESH or geo_a.geo_type == GeoType.CONVEX_MESH) and (
+            geo_b.geo_type == GeoType.MESH or geo_b.geo_type == GeoType.CONVEX_MESH
+        ):
             p_a_world, p_b_world, normal, distance, valid = mesh_mesh_collision(
                 geo_a, geo_b, point_id, shape_source_ptr, shape_a, shape_b, rigid_contact_margin, thickness
             )
             if not valid:
                 return
 
-        elif geo_a.geo_type == GeoType.PLANE and geo_b.geo_type == GeoType.MESH:
+        elif geo_a.geo_type == GeoType.PLANE and (
+            geo_b.geo_type == GeoType.MESH or geo_b.geo_type == GeoType.CONVEX_MESH
+        ):
             p_b_world, p_a_world, neg_normal, distance, valid = mesh_plane_collision(
                 geo_b, geo_a, point_id, shape_source_ptr, shape_b, rigid_contact_margin
             )
