@@ -54,7 +54,7 @@ from ..geometry import (
 )
 from ..geometry.inertia import validate_and_correct_inertia_kernel, verify_and_correct_inertia
 from ..geometry.utils import RemeshingMethod, compute_inertia_obb, remesh_mesh
-from .graph_coloring import ColoringAlgorithm, color_trimesh, combine_independent_particle_coloring
+from .graph_coloring import ColoringAlgorithm, color_rigid_bodies, color_trimesh, combine_independent_particle_coloring
 from .joints import (
     EqType,
     JointMode,
@@ -455,6 +455,8 @@ class ModelBuilder:
         # set to -1 to create global entities shared across all worlds.
         # note: this value is temporarily overridden when using add_builder().
         self.current_world = -1
+
+        self.body_color_groups: list[nparray] = []
 
         self.up_axis: Axis = Axis.from_any(up_axis)
         self.gravity: float = gravity
@@ -1775,6 +1777,71 @@ class ModelBuilder:
             enabled=enabled,
         )
 
+    def add_joint_cable(
+        self,
+        parent: int,
+        child: int,
+        parent_xform: Transform | None = None,
+        child_xform: Transform | None = None,
+        bend_stiffness: float | None = None,
+        bend_damping: float | None = None,
+        stretch_stiffness: float | None = None,
+        stretch_damping: float | None = None,
+        key: str | None = None,
+        collision_filter_parent: bool = True,
+        enabled: bool = True,
+    ) -> int:
+        """Adds a cable joint to the model.
+
+        A cable joint couples two attachment frames on connected bodies.
+        Solver support: currently only :class:`newton.solvers.SolverVBD`.
+
+        The joint enforces both:
+        - Stretch (1 linear DOF): Scalar distance constraint between attachment points.
+          User can specify ``stretch_stiffness``/``stretch_damping``. Defaults to 1.0e9 (high stiffness).
+        - Bend/twist (1 angular DOF): Penalizes relative rotation between attachment frames.
+          Specify with ``bend_stiffness``/``bend_damping``.
+
+        Args:
+            parent: The index of the parent body.
+            child: The index of the child body.
+            parent_xform (Transform): Joint frame in the parent body (translation = attachment point).
+            child_xform (Transform): Joint frame in the child body (translation = attachment point).
+            bend_stiffness: Angular bend/twist stiffness. If None, defaults to 0.0.
+            bend_damping: Angular bend/twist damping. If None, defaults to 0.0.
+            stretch_stiffness: Linear stretch stiffness. If None, defaults to 1.0e9 (high stiffness for AVBD).
+            stretch_damping: Linear stretch damping. If None, defaults to 0.0.
+            key: The key of the joint.
+            collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies.
+            enabled: Whether the joint is enabled.
+
+        Returns:
+            The index of the added joint.
+
+        """
+        # Angular DOF (bend/twist)
+        bend_ke = 0.0 if bend_stiffness is None else bend_stiffness
+        bend_kd = 0.0 if bend_damping is None else bend_damping
+        ax_ang = ModelBuilder.JointDofConfig(target_ke=bend_ke, target_kd=bend_kd)
+
+        # Linear DOF (stretch)
+        se_ke = 1.0e9 if stretch_stiffness is None else stretch_stiffness
+        se_kd = 0.0 if stretch_damping is None else stretch_damping
+        ax_lin = ModelBuilder.JointDofConfig(target_ke=se_ke, target_kd=se_kd)
+
+        return self.add_joint(
+            JointType.CABLE,
+            parent,
+            child,
+            parent_xform=parent_xform,
+            child_xform=child_xform,
+            linear_axes=[ax_lin],
+            angular_axes=[ax_ang],
+            key=key,
+            collision_filter_parent=collision_filter_parent,
+            enabled=enabled,
+        )
+
     def add_equality_constraint(
         self,
         constraint_type: Any,
@@ -3040,6 +3107,141 @@ class ModelBuilder:
 
         return remeshed_shapes
 
+    def add_rod_mesh(
+        self,
+        positions: list[Vec3],
+        quaternions: list[Quat],
+        radius: float = 0.1,
+        cfg: ShapeConfig | None = None,
+        bend_stiffness: float | None = None,
+        bend_damping: float | None = None,
+        stretch_stiffness: float | None = None,
+        stretch_damping: float | None = None,
+        closed: bool = False,
+        key: str | None = None,
+    ) -> tuple[list[int], list[int]]:
+        """Creates a rod composed of multiple capsule bodies connected by cable joints.
+
+        Builds a chain of capsule bodies from centerline points and orientations. Each segment is a
+        capsule aligned by the corresponding quaternion, and adjacent capsules are connected by cable
+        joints that apply bend/twist stiffness derived from ``bend_stiffness``.
+
+        Args:
+            positions: World-space centerline points. Must have exactly ``len(quaternions) + 1`` elements.
+            quaternions: World-space orientations of each segment. Each quaternion should align the
+                capsule's local +Z with the segment direction ``positions[i+1] - positions[i]``.
+            radius: The radius of the capsule shapes.
+            cfg: The shape configuration for the capsules. If None, uses default_shape_cfg.
+            bend_stiffness: Bend/twist stiffness for the cable joints. If None, defaults to 0.0.
+            bend_damping: Damping parameter passed to the cable joint. If None, defaults to 0.0.
+            stretch_stiffness: Stretch stiffness for the cable joints. If None, defaults to 1.0e9 (high stiffness for AVBD).
+            stretch_damping: Stretch damping for the cable joints. If None, defaults to 0.0.
+            closed: If True, adds a closing joint connecting the last segment back to the first, forming a closed loop (e.g., ring, rubber band). If False, creates an open chain. Defaults to False.
+            key: Optional key prefix for naming bodies, shapes, and joints.
+
+        Returns:
+            A tuple (body_indices, joint_indices) where:
+                - body_indices: List of created body indices (length = num_segments)
+                - joint_indices: List of created cable joint indices (length = num_segments - 1 if open, num_segments if closed)
+
+        Raises:
+            ValueError: If positions and quaternions have incompatible lengths.
+        """
+        if cfg is None:
+            cfg = self.default_shape_cfg
+
+        # Bend defaults: 0.0 (users must explicitly set for bending resistance)
+        bend_stiffness = 0.0 if bend_stiffness is None else bend_stiffness
+        bend_damping = 0.0 if bend_damping is None else bend_damping
+        # Stretch defaults: high stiffness for AVBD
+        stretch_stiffness = 1.0e9 if stretch_stiffness is None else stretch_stiffness
+        stretch_damping = 0.0 if stretch_damping is None else stretch_damping
+
+        # Input validation
+        num_segments = len(quaternions)
+        if len(positions) != num_segments + 1:
+            raise ValueError(
+                f"positions must have {num_segments + 1} elements for {num_segments} segments, "
+                f"got {len(positions)} positions"
+            )
+
+        link_bodies = []
+        link_joints = []
+
+        # Create all bodies first
+        for i in range(num_segments):
+            p0 = positions[i]
+            p1 = positions[i + 1]
+            q = quaternions[i]
+
+            # Calculate segment properties
+            segment_length = wp.length(p1 - p0)
+            half_height = 0.5 * segment_length
+
+            # Position body at start point, with COM offset to segment center
+            body_q = wp.transform(p0, q)
+
+            # COM offset in local coordinates: from start point to center
+            com_offset = wp.vec3(0.0, 0.0, half_height)
+
+            # Generate unique keys for each entity type to avoid conflicts
+            body_key = f"{key}_body_{i}" if key else None
+            shape_key = f"{key}_capsule_{i}" if key else None
+
+            child_body = self.add_body(body_q, com=com_offset, key=body_key)
+
+            # Place capsule so it spans from start to end along +Z
+            capsule_xform = wp.transform(wp.vec3(0.0, 0.0, half_height), wp.quat_identity())
+            self.add_shape_capsule(
+                child_body,
+                xform=capsule_xform,
+                radius=radius,
+                half_height=half_height,
+                cfg=cfg,
+                key=shape_key,
+            )
+            link_bodies.append(child_body)
+
+        # Create joints connecting consecutive segments
+        # For open chains: num_segments - 1 joints
+        # For closed loops: num_segments joints (including closing joint)
+        num_joints = num_segments if closed else num_segments - 1
+        for i in range(num_joints):
+            parent_idx = i
+            child_idx = (i + 1) % num_segments  # Wraps around for closing joint when closed
+
+            parent_body = link_bodies[parent_idx]
+            child_body = link_bodies[child_idx]
+
+            # Parent anchor at segment end
+            segment_length = wp.length(positions[child_idx] - positions[parent_idx])
+            parent_xform = wp.transform_identity()
+            parent_xform.p = wp.vec3(0.0, 0.0, segment_length)
+
+            # Child anchor at segment start
+            child_xform = wp.transform_identity()
+            child_xform.p = wp.vec3(0.0, 0.0, 0.0)
+
+            # Joint key: numbered 1 through num_joints
+            joint_key = f"{key}_cable_{i + 1}" if key else None
+
+            joint = self.add_joint_cable(
+                parent=parent_body,
+                child=child_body,
+                parent_xform=parent_xform,
+                child_xform=child_xform,
+                bend_stiffness=bend_stiffness,
+                bend_damping=bend_damping,
+                stretch_stiffness=stretch_stiffness,
+                stretch_damping=stretch_damping,
+                key=joint_key,
+                collision_filter_parent=True,
+                enabled=True,
+            )
+            link_joints.append(joint)
+
+        return link_bodies, link_joints
+
     # endregion
 
     # particles
@@ -4095,13 +4297,29 @@ class ModelBuilder:
             Ordered Greedy: Ton-That, Q. M., Kry, P. G., & Andrews, S. (2023). Parallel block Neo-Hookean XPBD using graph clustering. Computers & Graphics, 110, 1-10.
 
         """
-        # ignore bending energy if it is too small
-        edge_indices = np.array(self.edge_indices)
+        # Color particles only if we have edges (cloth/soft bodies)
+        if len(self.edge_indices) > 0:
+            edge_indices = np.array(self.edge_indices)
+            self.particle_color_groups = color_trimesh(
+                len(self.particle_q),
+                edge_indices,
+                include_bending,
+                algorithm=coloring_algorithm,
+                balance_colors=balance_colors,
+                target_max_min_color_ratio=target_max_min_color_ratio,
+            )
+        else:
+            # No edges to color - assign all particles to single color group
+            if len(self.particle_q) > 0:
+                self.particle_color_groups = [np.arange(len(self.particle_q), dtype=int)]
+            else:
+                self.particle_color_groups = []
 
-        self.particle_color_groups = color_trimesh(
-            len(self.particle_q),
-            edge_indices,
-            include_bending,
+        # Also color rigid bodies based on joint connectivity
+        self.body_color_groups = color_rigid_bodies(
+            len(self.body_q),
+            self.joint_parent,
+            self.joint_child,
             algorithm=coloring_algorithm,
             balance_colors=balance_colors,
             target_max_min_color_ratio=target_max_min_color_ratio,
@@ -4169,6 +4387,15 @@ class ModelBuilder:
 
             # hash-grid for particle interactions
             m.particle_grid = wp.HashGrid(128, 128, 128)
+
+            # ---------------------
+            # rigid bodies
+
+            body_colors = np.empty(len(self.body_q), dtype=int)
+            for color in range(len(self.body_color_groups)):
+                body_colors[self.body_color_groups[color]] = color
+            m.body_colors = wp.array(body_colors, dtype=int)
+            m.body_color_groups = [wp.array(group, dtype=int) for group in self.body_color_groups]
 
             # ---------------------
             # collision geometry
