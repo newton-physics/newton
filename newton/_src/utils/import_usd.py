@@ -404,7 +404,14 @@ def parse_usd(
                         else:
                             continue
                         face_id += count
-                    m = Mesh(points, np.array(faces, dtype=np.int32).flatten())
+
+                    faces = np.array(faces, dtype=np.int32)
+                    handedness = mesh.GetOrientationAttr().Get()
+                    flip_winding = handedness.lower() == "lefthanded"
+                    if flip_winding:
+                        faces = faces[:, ::-1]
+
+                    m = Mesh(points, faces.flatten())
                     shape_id = builder.add_shape_mesh(
                         parent_body_id,
                         xform,
@@ -1169,7 +1176,7 @@ def parse_usd(
                 parent_id, child_id = resolve_joint_parent_child(joint_desc, body_ids, get_transforms=False)
                 joint_edges.append((parent_id, child_id))
 
-            articulation_xform = wp.mul(incoming_world_xform, usd.get_transform(articulation_prim))
+            articulation_xform = wp.mul(incoming_world_xform, usd.get_transform(articulation_prim, local=False))
 
             if len(joint_edges) == 0:
                 # We have an articulation without joints, i.e. only free rigid bodies
@@ -1428,6 +1435,13 @@ def parse_usd(
                             )
                             continue
                         face_id += count
+
+                    faces = np.array(faces, dtype=np.int32)
+                    handedness = mesh.GetOrientationAttr().Get()
+                    flip_winding = handedness.lower() == "lefthanded"
+                    if flip_winding:
+                        faces = faces[:, ::-1]
+
                     # Resolve mesh hull vertex limit from schema with fallback to parameter
                     resolved_maxhullvert = R.get_value(
                         prim,
@@ -1436,7 +1450,7 @@ def parse_usd(
                         default=mesh_maxhullvert,
                         verbose=verbose,
                     )
-                    m = Mesh(points, np.array(faces, dtype=np.int32).flatten(), maxhullvert=resolved_maxhullvert)
+                    m = Mesh(points, faces.flatten(), maxhullvert=resolved_maxhullvert)
                     shape_id = builder.add_shape_mesh(
                         scale=scale,
                         mesh=m,
