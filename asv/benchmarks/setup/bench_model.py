@@ -95,8 +95,6 @@ class KpiInitializeViewerGL:
         # finalize model
         self._model = builder.finalize()
 
-        self._state = self._model.state()
-
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
     def time_initialize_renderer(self, robot, num_worlds):
         # Setting up the renderer
@@ -108,7 +106,6 @@ class KpiInitializeViewerGL:
 
     def teardown(self, robot, num_worlds):
         del self._model
-        del self._state
 
 
 class FastInitializeModel:
@@ -188,8 +185,6 @@ class FastInitializeViewerGL:
         # finalize model
         self._model = builder.finalize()
 
-        self._state = self._model.state()
-
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
     def time_initialize_renderer(self, robot, num_worlds):
         # Setting up the renderer
@@ -201,7 +196,6 @@ class FastInitializeViewerGL:
 
     def teardown(self, robot, num_worlds):
         del self._model
-        del self._state
 
 
 if __name__ == "__main__":

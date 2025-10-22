@@ -56,11 +56,11 @@ class KpiViewerGL:
         self.renderer.begin_frame(0.0)
         self.renderer.log_state(self._state)
         self.renderer.end_frame()
-
         wp.synchronize_device()
-        self.renderer.close()
 
     def teardown(self, robot, num_worlds):
+        self.renderer.close()
+        del self.renderer
         del self._model
         del self._state
 
@@ -92,11 +92,11 @@ class FastViewerGL:
         self.renderer.begin_frame(0.0)
         self.renderer.log_state(self._state)
         self.renderer.end_frame()
-
         wp.synchronize_device()
-        self.renderer.close()
 
     def teardown(self, robot, num_worlds):
+        self.renderer.close()
+        del self.renderer
         del self._model
         del self._state
 
