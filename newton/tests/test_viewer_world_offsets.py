@@ -91,7 +91,7 @@ class TestViewerWorldOffsets(unittest.TestCase):
         assert np.allclose(z_values, z_values[0]), "Auto-computed offsets should use 2D grid (constant Z)"
 
         # Test that explicit set_world_offsets overrides auto-computed offsets
-        viewer.set_world_offsets(num_worlds, spacing=(10.0, 0.0, 0.0))
+        viewer.set_world_offsets((10.0, 0.0, 0.0))
         new_offsets = viewer.world_offsets.numpy()
         expected = [[-15.0, 0.0, 0.0], [-5.0, 0.0, 0.0], [5.0, 0.0, 0.0], [15.0, 0.0, 0.0]]
         assert_np_equal(new_offsets, np.array(expected), tol=1e-5)
@@ -341,13 +341,70 @@ class TestViewerWorldOffsets(unittest.TestCase):
             viewer = ViewerNull(num_frames=1)
             # Set model is required before set_world_offsets
             builder = newton.ModelBuilder()
+
+            # Create a simple world to replicate
+            if num_worlds > 0:
+                world = newton.ModelBuilder()
+                world.add_body(
+                    xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
+                    mass=1.0,
+                    I_m=wp.mat33(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0),
+                    key="test_body",
+                )
+                builder.replicate(world, num_worlds)
+
             model = builder.finalize()
             viewer.set_model(model)
 
-            viewer.set_world_offsets(num_worlds, spacing)
+            viewer.set_world_offsets(spacing)
 
             actual = viewer.world_offsets.numpy()
             assert_np_equal(actual, np.array(expected), tol=1e-5)
+
+    def test_set_world_offsets_requires_model(self):
+        """Test that set_world_offsets raises RuntimeError if model is not set."""
+        viewer = ViewerNull(num_frames=1)
+
+        # Should raise RuntimeError when model is not set
+        with self.assertRaises(RuntimeError) as context:
+            viewer.set_world_offsets((5.0, 5.0, 0.0))
+
+        self.assertIn("Model must be set before calling set_world_offsets()", str(context.exception))
+
+    def test_set_world_offsets_input_formats(self):
+        """Test that set_world_offsets accepts various input formats."""
+        num_worlds = 4
+        expected_offsets = np.array([[-2.5, -2.5, 0.0], [-2.5, 2.5, 0.0], [2.5, -2.5, 0.0], [2.5, 2.5, 0.0]])
+
+        # Create a simple model with worlds
+        builder = newton.ModelBuilder()
+        world = newton.ModelBuilder()
+        world.add_body(
+            xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
+            mass=1.0,
+            I_m=wp.mat33(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0),
+            key="test_body",
+        )
+        builder.replicate(world, num_worlds)
+        model = builder.finalize()
+
+        # Test 1: Tuple (most common)
+        viewer1 = ViewerNull(num_frames=1)
+        viewer1.set_model(model)
+        viewer1.set_world_offsets((5.0, 5.0, 0.0))
+        assert_np_equal(viewer1.world_offsets.numpy(), expected_offsets, tol=1e-5)
+
+        # Test 2: List
+        viewer2 = ViewerNull(num_frames=1)
+        viewer2.set_model(model)
+        viewer2.set_world_offsets([5.0, 5.0, 0.0])
+        assert_np_equal(viewer2.world_offsets.numpy(), expected_offsets, tol=1e-5)
+
+        # Test 3: wp.vec3
+        viewer3 = ViewerNull(num_frames=1)
+        viewer3.set_model(model)
+        viewer3.set_world_offsets(wp.vec3(5.0, 5.0, 0.0))
+        assert_np_equal(viewer3.world_offsets.numpy(), expected_offsets, tol=1e-5)
 
     def test_global_entities_unaffected(self):
         """Test that global entities (world -1) are not affected by world offsets."""
@@ -385,7 +442,7 @@ class TestViewerWorldOffsets(unittest.TestCase):
         # Create viewer and set offsets
         viewer = ViewerNull(num_frames=1)
         viewer.set_model(model)
-        viewer.set_world_offsets(num_worlds, spacing)
+        viewer.set_world_offsets(spacing)
 
         # Find ground plane shape instance (should be static)
         ground_instance = None
@@ -445,7 +502,7 @@ def test_visual_separation(test: TestViewerWorldOffsets, device):
     # Create viewer and set offsets
     viewer = ViewerNull(num_frames=1)
     viewer.set_model(model)
-    viewer.set_world_offsets(num_worlds, spacing)
+    viewer.set_world_offsets(spacing)
 
     # Get shape instances from viewer
     shape_instances = next(iter(viewer._shape_instances.values()))

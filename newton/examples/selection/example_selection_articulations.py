@@ -188,7 +188,7 @@ class Example:
             wp.launch(init_masks, dim=num_worlds, inputs=[self.mask_0, self.mask_1])
 
         self.viewer.set_model(self.model)
-        self.viewer.set_world_offsets(self.num_worlds, spacing=(4.0, 4.0, 0.0))
+        self.viewer.set_world_offsets((4.0, 4.0, 0.0))
 
         # reset all
         self.reset()

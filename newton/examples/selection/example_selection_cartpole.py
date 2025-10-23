@@ -111,7 +111,7 @@ class Example:
             self.cartpoles.eval_fk(self.state_0)
 
         self.viewer.set_model(self.model)
-        self.viewer.set_world_offsets(self.num_worlds, spacing=(2.0, 0.0, 0.0))
+        self.viewer.set_world_offsets((2.0, 0.0, 0.0))
 
         # Ensure FK evaluation (for non-MuJoCo solvers):
         newton.eval_fk(

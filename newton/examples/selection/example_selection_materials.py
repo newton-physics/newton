@@ -147,7 +147,7 @@ class Example:
             self.default_ant_dof_velocities = wp.clone(self.ants.get_dof_velocities(self.model))
 
         self.viewer.set_model(self.model)
-        self.viewer.set_world_offsets(self.num_worlds, spacing=(4.0, 4.0, 0.0))
+        self.viewer.set_world_offsets((4.0, 4.0, 0.0))
 
         # Ensure FK evaluation (for non-MuJoCo solvers):
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)

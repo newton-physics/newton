@@ -104,15 +104,27 @@ class ViewerBase:
     def set_camera(self, pos: wp.vec3, pitch: float, yaw: float):
         pass
 
-    def set_world_offsets(self, num_worlds: int, spacing: tuple[float, float, float]):
+    def set_world_offsets(self, spacing: tuple[float, float, float] | list[float] | wp.vec3):
         """Set world offsets for visual separation of multiple worlds.
 
         Args:
-            num_worlds: Number of worlds
-            spacing: Spacing between worlds along each axis (x, y, z)
+            spacing: Spacing between worlds along each axis as a tuple, list, or wp.vec3.
+                     Example: (5.0, 5.0, 0.0) for 5 units spacing in X and Y.
+
+        Raises:
+            RuntimeError: If model has not been set yet
         """
-        # Get up axis from model if available
-        up_axis = self.model.up_axis if self.model else None
+        if self.model is None:
+            raise RuntimeError("Model must be set before calling set_world_offsets()")
+
+        num_worlds = self.model.num_worlds
+
+        # Get up axis from model
+        up_axis = self.model.up_axis
+
+        # Convert to tuple if needed
+        if isinstance(spacing, (list, wp.vec3)):
+            spacing = (float(spacing[0]), float(spacing[1]), float(spacing[2]))
 
         # Compute offsets using the shared utility function
         world_offsets = compute_world_offsets(num_worlds, spacing, up_axis)
@@ -177,7 +189,7 @@ class ViewerBase:
         spacing[self.model.up_axis] = 0.0
 
         # Set world offsets with computed spacing
-        self.set_world_offsets(num_worlds, spacing=tuple(spacing))
+        self.set_world_offsets(tuple(spacing))
 
     def begin_frame(self, time):
         self.time = time
