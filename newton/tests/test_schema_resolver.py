@@ -33,13 +33,14 @@ and MuJoCo physics solvers when importing USD files. Tests cover:
 
 ## Custom Attributes & State Initialization:
 9. **Newton Custom Attributes** - Tests custom Newton attributes (model/state/control assignments)
-10. **PhysX Solver Attributes** - Validates PhysX-specific attribute collection from ant_mixed.usda
-11. **Joint State Initialization** - Tests joint position/velocity initialization from USD attributes
-12. **D6 Joint State Initialization** - Tests complex D6 joint state initialization from humanoid.usda
+10. **Namespaced Custom Attributes** - Tests namespace isolation and independent attributes with same name
+11. **PhysX Solver Attributes** - Validates PhysX-specific attribute collection from ant_mixed.usda
+12. **Joint State Initialization** - Tests joint position/velocity initialization from USD attributes
+13. **D6 Joint State Initialization** - Tests complex D6 joint state initialization from humanoid.usda
 
 ## Test Assets:
 - `ant.usda`: Basic ant robot with PhysX attributes
-- `ant_mixed.usda`: Extended ant with Newton custom attributes and mixed solver attributes
+- `ant_mixed.usda`: Extended ant with Newton custom attributes, namespaced attributes, and mixed solver attributes
 - `humanoid.usda`: mujoco humanoid with D6 joints and Newton state attributes
 """
 
@@ -407,31 +408,31 @@ class TestSchemaResolver(unittest.TestCase):
         # Body property checks
         body_path = "/ant/front_left_leg"
         self.assertIn(body_path, solver_attrs["newton"])
-        self.assertIn("newton:model:body:testBodyScalar", solver_attrs["newton"][body_path])
-        self.assertIn("newton:model:body:testBodyVec", solver_attrs["newton"][body_path])
-        self.assertIn("newton:model:body:testBodyBool", solver_attrs["newton"][body_path])
-        self.assertIn("newton:model:body:testBodyInt", solver_attrs["newton"][body_path])
-        self.assertIn("newton:state:body:testBodyVec3B", solver_attrs["newton"][body_path])
-        self.assertIn("newton:state:body:localmarkerRot", solver_attrs["newton"][body_path])
-        self.assertAlmostEqual(solver_attrs["newton"][body_path]["newton:model:body:testBodyScalar"], 1.5, places=6)
+        self.assertIn("newton:testBodyScalar", solver_attrs["newton"][body_path])
+        self.assertIn("newton:testBodyVec", solver_attrs["newton"][body_path])
+        self.assertIn("newton:testBodyBool", solver_attrs["newton"][body_path])
+        self.assertIn("newton:testBodyInt", solver_attrs["newton"][body_path])
+        self.assertIn("newton:testBodyVec3B", solver_attrs["newton"][body_path])
+        self.assertIn("newton:localmarkerRot", solver_attrs["newton"][body_path])
+        self.assertAlmostEqual(solver_attrs["newton"][body_path]["newton:testBodyScalar"], 1.5, places=6)
         # also validate vector value in solver attrs
-        vec_val = solver_attrs["newton"][body_path]["newton:model:body:testBodyVec"]
+        vec_val = solver_attrs["newton"][body_path]["newton:testBodyVec"]
         self.assertAlmostEqual(float(vec_val[0]), 0.1, places=6)
         self.assertAlmostEqual(float(vec_val[1]), 0.2, places=6)
         self.assertAlmostEqual(float(vec_val[2]), 0.3, places=6)
         # Joint property checks (authored on front_left_leg joint)
         joint_name = "/ant/joints/front_left_leg"
         self.assertIn(joint_name, solver_attrs["newton"])  # solver attrs recorded
-        self.assertIn("newton:state:joint:testJointScalar", solver_attrs["newton"][joint_name])
+        self.assertIn("newton:testJointScalar", solver_attrs["newton"][joint_name])
         # also validate state/control joint custom attrs in solver attrs
-        self.assertIn("newton:state:joint:testStateJointScalar", solver_attrs["newton"][joint_name])
-        self.assertIn("newton:control:joint:testControlJointScalar", solver_attrs["newton"][joint_name])
-        self.assertIn("newton:state:joint:testStateJointBool", solver_attrs["newton"][joint_name])
-        self.assertIn("newton:control:joint:testControlJointInt", solver_attrs["newton"][joint_name])
-        self.assertIn("newton:model:joint:testJointVec", solver_attrs["newton"][joint_name])
+        self.assertIn("newton:testStateJointScalar", solver_attrs["newton"][joint_name])
+        self.assertIn("newton:testControlJointScalar", solver_attrs["newton"][joint_name])
+        self.assertIn("newton:testStateJointBool", solver_attrs["newton"][joint_name])
+        self.assertIn("newton:testControlJointInt", solver_attrs["newton"][joint_name])
+        self.assertIn("newton:testJointVec", solver_attrs["newton"][joint_name])
         # new data type assertions
-        self.assertIn("newton:control:joint:testControlJointVec2", solver_attrs["newton"][joint_name])
-        self.assertIn("newton:model:joint:testJointQuat", solver_attrs["newton"][joint_name])
+        self.assertIn("newton:testControlJointVec2", solver_attrs["newton"][joint_name])
+        self.assertIn("newton:testJointQuat", solver_attrs["newton"][joint_name])
 
         model = builder.finalize()
         state = model.state()
@@ -1044,9 +1045,9 @@ class TestSchemaResolver(unittest.TestCase):
 
         # Check specific Newton custom attributes
         newton_joint_attrs = newton_attrs[joint_path]
-        self.assertIn("newton:state:joint:testJointScalar", newton_joint_attrs)
-        self.assertAlmostEqual(newton_joint_attrs["newton:state:joint:testJointScalar"], 2.25, places=2)
-        self.assertIn("newton:model:joint:testJointVec", newton_joint_attrs)
+        self.assertIn("newton:testJointScalar", newton_joint_attrs)
+        self.assertAlmostEqual(newton_joint_attrs["newton:testJointScalar"], 2.25, places=2)
+        self.assertIn("newton:testJointVec", newton_joint_attrs)
 
         # Verify MuJoCo attributes are collected
         self.assertIn("mjc", solver_attrs, "MuJoCo solver attributes should be collected")
@@ -1062,6 +1063,131 @@ class TestSchemaResolver(unittest.TestCase):
         self.assertAlmostEqual(float(mjc_vec[0]), 1.0, places=1)
         self.assertAlmostEqual(float(mjc_vec[1]), 2.0, places=1)
         self.assertAlmostEqual(float(mjc_vec[2]), 3.0, places=1)
+
+    def test_namespaced_custom_attributes(self):
+        """
+        Test that custom attributes with namespaces are isolated from default namespace attributes.
+
+        This test verifies:
+        1. Attributes with the same name in different namespaces are treated as separate attributes
+        2. Each namespace maintains its own values independent of other namespaces
+        3. After finalization, separate attribute objects are created for each namespace
+        4. Namespace attributes are accessible via namespace prefix on model/state/control objects
+        """
+        test_dir = Path(__file__).parent
+        assets_dir = test_dir / "assets"
+        ant_mixed_path = assets_dir / "ant_mixed.usda"
+        self.assertTrue(ant_mixed_path.exists(), f"Missing mixed USD: {ant_mixed_path}")
+
+        builder = ModelBuilder()
+        result = parse_usd(
+            builder=builder,
+            source=str(ant_mixed_path),
+            schema_resolvers=[SchemaResolverNewton(), SchemaResolverPhysx(), SchemaResolverMjc()],
+            collect_solver_specific_attrs=True,
+            verbose=False,
+        )
+
+        model = builder.finalize()
+        state = model.state()
+        control = model.control()
+
+        body_map = result["path_body_map"]
+        body_path = "/ant/front_left_leg"
+        self.assertIn(body_path, body_map)
+        body_idx = body_map[body_path]
+
+        joint_name = "/ant/joints/front_left_leg"
+        self.assertIn(joint_name, builder.joint_key)
+        joint_idx = builder.joint_key.index(joint_name)
+
+        # Test 1: Verify that testBodyScalar exists in both default and namespace_a
+        # Default namespace: newton:testBodyScalar = 1.5 (model assignment)
+        self.assertTrue(hasattr(model, "testBodyScalar"), "Default namespace testBodyScalar should exist on model")
+        default_body_scalar = model.testBodyScalar.numpy()
+        self.assertAlmostEqual(
+            float(default_body_scalar[body_idx]), 1.5, places=6, msg="Default namespace testBodyScalar should be 1.5"
+        )
+
+        # Namespace_a: newton:namespace_a:testBodyScalar = 2.5 (model assignment)
+        self.assertTrue(hasattr(model, "namespace_a"), "namespace_a should exist on model")
+        self.assertTrue(hasattr(model.namespace_a, "testBodyScalar"), "testBodyScalar should exist in namespace_a")
+        namespaced_body_scalar = model.namespace_a.testBodyScalar.numpy()
+        self.assertAlmostEqual(
+            float(namespaced_body_scalar[body_idx]),
+            2.5,
+            places=6,
+            msg="namespace_a testBodyScalar should be 2.5 (different from default)",
+        )
+
+        # Test 2: Verify that testBodyInt exists in both default and namespace_b with different assignments
+        # Default namespace: newton:testBodyInt = 7 (model assignment)
+        self.assertTrue(hasattr(model, "testBodyInt"), "Default namespace testBodyInt should exist on model")
+        default_body_int = model.testBodyInt.numpy()
+        self.assertEqual(int(default_body_int[body_idx]), 7, msg="Default namespace testBodyInt should be 7")
+
+        # Namespace_b: newton:namespace_b:testBodyInt = 42 (state assignment)
+        self.assertTrue(hasattr(state, "namespace_b"), "namespace_b should exist on state")
+        self.assertTrue(hasattr(state.namespace_b, "testBodyInt"), "testBodyInt should exist in namespace_b on state")
+        namespaced_body_int = state.namespace_b.testBodyInt.numpy()
+        self.assertEqual(
+            int(namespaced_body_int[body_idx]), 42, msg="namespace_b testBodyInt should be 42 (different from default)"
+        )
+
+        # Test 3: Verify that testJointVec exists in both default and namespace_a with different assignments
+        # Default namespace: newton:testJointVec = (0.5, 0.6, 0.7) (model assignment)
+        self.assertTrue(hasattr(model, "testJointVec"), "Default namespace testJointVec should exist on model")
+        default_joint_vec = model.testJointVec.numpy()
+        self.assertAlmostEqual(float(default_joint_vec[joint_idx, 0]), 0.5, places=6)
+        self.assertAlmostEqual(float(default_joint_vec[joint_idx, 1]), 0.6, places=6)
+        self.assertAlmostEqual(float(default_joint_vec[joint_idx, 2]), 0.7, places=6)
+
+        # Namespace_a: newton:namespace_a:testJointVec = (1.5, 2.5, 3.5) (control assignment)
+        self.assertTrue(hasattr(control, "namespace_a"), "namespace_a should exist on control")
+        self.assertTrue(
+            hasattr(control.namespace_a, "testJointVec"), "testJointVec should exist in namespace_a on control"
+        )
+        namespaced_joint_vec = control.namespace_a.testJointVec.numpy()
+        self.assertAlmostEqual(
+            float(namespaced_joint_vec[joint_idx, 0]), 1.5, places=6, msg="namespace_a testJointVec[0] should be 1.5"
+        )
+        self.assertAlmostEqual(
+            float(namespaced_joint_vec[joint_idx, 1]), 2.5, places=6, msg="namespace_a testJointVec[1] should be 2.5"
+        )
+        self.assertAlmostEqual(
+            float(namespaced_joint_vec[joint_idx, 2]), 3.5, places=6, msg="namespace_a testJointVec[2] should be 3.5"
+        )
+
+        # Test 4: Verify unique namespace attributes that don't exist in default namespace
+        # namespace_a:uniqueBodyAttr = 100.0 (state assignment)
+        self.assertTrue(hasattr(state, "namespace_a"), "namespace_a should exist on state")
+        self.assertTrue(
+            hasattr(state.namespace_a, "uniqueBodyAttr"), "uniqueBodyAttr should exist in namespace_a on state"
+        )
+        unique_body_attr = state.namespace_a.uniqueBodyAttr.numpy()
+        self.assertAlmostEqual(float(unique_body_attr[body_idx]), 100.0, places=6)
+
+        # namespace_b:uniqueJointAttr = 999.0 (model assignment)
+        self.assertTrue(hasattr(model, "namespace_b"), "namespace_b should exist on model")
+        self.assertTrue(
+            hasattr(model.namespace_b, "uniqueJointAttr"), "uniqueJointAttr should exist in namespace_b on model"
+        )
+        unique_joint_attr = model.namespace_b.uniqueJointAttr.numpy()
+        self.assertAlmostEqual(float(unique_joint_attr[joint_idx]), 999.0, places=6)
+
+        # Test 5: Verify that default namespace attributes don't have the unique namespace attributes
+        self.assertFalse(
+            hasattr(model, "uniqueBodyAttr"), "uniqueBodyAttr should NOT exist in default namespace on model"
+        )
+        self.assertFalse(
+            hasattr(state, "uniqueBodyAttr"), "uniqueBodyAttr should NOT exist in default namespace on state"
+        )
+        self.assertFalse(
+            hasattr(model, "uniqueJointAttr"), "uniqueJointAttr should NOT exist in default namespace on model"
+        )
+        self.assertFalse(
+            hasattr(control, "uniqueJointAttr"), "uniqueJointAttr should NOT exist in default namespace on control"
+        )
 
 
 def run_tests():

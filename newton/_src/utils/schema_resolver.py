@@ -16,7 +16,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import IntEnum
 from typing import Any, ClassVar
 
@@ -57,23 +57,6 @@ class Attribute:
     usd_name: str
     default: Any | None = None
     transformer: Callable[[Any], Any] | None = None
-
-
-@dataclass
-class AttributePrimMap:
-    """
-    Maps a custom attribute specification to its USD prim occurrences.
-
-    This class combines a CustomAttribute definition with a mapping of where
-    that attribute appears in the USD scene (prim paths to authored values).
-
-    Attributes:
-        attribute: The custom attribute specification
-        occurrences: Dictionary mapping prim paths to authored values
-    """
-
-    attribute: CustomAttribute
-    occurrences: dict[str, Any] = field(default_factory=dict)
 
 
 class SchemaResolver:
@@ -457,10 +440,12 @@ class _ResolverManager:
         # Pre-initialize maps for each configured resolver
         self.solver_specific_attrs: dict[str, dict[str, dict[str, Any]]] = {r.name: {} for r in self.resolvers}
 
-        # accumulator for special custom assignment attributes following the pattern:
-        #   newton:assignment:frequency:variable_name
-        # we store per-variable specs and occurrences by prim path.
-        self._custom_attributes: dict[str, AttributePrimMap] = {}
+        # accumulator for declared custom attributes (declaration-first pattern)
+        # Key format: "namespace:attr_name" or "attr_name" for default namespace
+        self._custom_attributes: dict[str, CustomAttribute] = {}
+
+        # Flag to track if declarations have been parsed from PhysicsScene
+        self._declarations_parsed = False
 
     def _collect_on_first_use(self, resolver: SchemaResolver, prim) -> None:
         """Collect and store solver-specific attributes for this resolver/prim on first use."""
@@ -475,95 +460,185 @@ class _ResolverManager:
         if attrs:
             self.solver_specific_attrs[resolver.name][prim_path] = attrs
 
-        # also scan and accumulate custom assignment attributes from the
-        # "newton" solver-specific attributes we just collected
-        newton_attrs = self.solver_specific_attrs.get("newton", {}).get(prim_path)
-        if newton_attrs:
-            self._accumulate_custom_attributes(prim_path, newton_attrs)
+    def _parse_custom_attr_name(self, name: str) -> tuple[str | None, str] | None:
+        """
+        Parse custom attribute names in the format 'newton:namespace:attr_name' or 'newton:attr_name'.
 
-    def _parse_custom_attr_name(
-        self, name: str
-    ) -> tuple[ModelAttributeAssignment, ModelAttributeFrequency, str] | None:
-        """Parse names like 'newton:assignment:frequency:variable_name'."""
-        try:
-            head, assignment, frequency, variable = name.split(":", 3)
-        except ValueError:
-            return None
-        if head != "newton":
+        Returns:
+            Tuple of (namespace, attr_name) where namespace can be None for default namespace,
+            or None if the name doesn't match the expected format.
+        """
+        parts = name.split(":")
+        if len(parts) < 2 or parts[0] != "newton":
             return None
 
-        try:
-            assignment_enum = ModelAttributeAssignment[assignment.upper()]
-            frequency_enum = ModelAttributeFrequency[frequency.upper()]
-        except KeyError:
+        if len(parts) == 2:
+            # newton:attr_name (default namespace)
+            return None, parts[1]
+        elif len(parts) == 3:
+            # newton:namespace:attr_name
+            return parts[1], parts[2]
+        else:
+            # Invalid format
             return None
 
-        if not variable:
-            return None
-        return assignment_enum, frequency_enum, variable
+    def parse_custom_attribute_declarations(self, physics_scene_prim) -> None:
+        """
+        Parse custom attribute declarations from PhysicsScene prim.
 
-    def _accumulate_custom_attributes(self, prim_path: str, attrs: dict[str, Any]) -> None:
-        """collect custom attributes from a pre-fetched attribute map (name->value)."""
+        Supports metadata format with assignment and frequency specified as customData:
+           custom float newton:namespace:attr_name = 150.0 (
+               customData = {
+                   string assignment = "control"
+                   string frequency = "joint_dof"
+               }
+           )
+        Args:
+            physics_scene_prim: USD PhysicsScene prim to parse declarations from
+        """
+        if physics_scene_prim is None or self._declarations_parsed:
+            return
 
-        def _usd_to_wp(v: Any):
-            # Convert USD types to Warp-friendly representations
-            try:
-                # Handle Gf.Quat[f/d] → wp.quat(x, y, z, w) normalized
-                if hasattr(v, "real") and hasattr(v, "imaginary"):
-                    try:
-                        return wp.normalize(wp.quat(*v.imaginary, v.real))
-                    except Exception:
-                        pass
-            except Exception:
-                pass
-            return v
+        self._declarations_parsed = True
 
-        def _infer_wp_dtype(v: Any):
-            # Heuristic mapping from USD value to Warp dtype
-            try:
-                # Check for quat first (before generic length checks)
-                if hasattr(v, "real") and hasattr(v, "imaginary"):
-                    return wp.quat
-                # wp.quat-like (object with x,y,z,w after conversion)
-                if all(hasattr(v, c) for c in ("x", "y", "z", "w")):
-                    return wp.quat
-                # Vector3-like
-                if hasattr(v, "__len__") and len(v) == 3:
-                    return wp.vec3
-                # Vector2-like
-                if hasattr(v, "__len__") and len(v) == 2:
-                    return wp.vec2
-                # Vector4-like (but not quat)
-                if hasattr(v, "__len__") and len(v) == 4:
-                    return wp.vec4
-            except Exception:
-                pass
-            if isinstance(v, bool):
-                return wp.bool
-            if isinstance(v, int):
-                return wp.int32
-            # default to float32 for scalars
-            return wp.float32
-
-        for name, value in attrs.items():
-            parsed = self._parse_custom_attr_name(name)
+        for attr in physics_scene_prim.GetAttributes():
+            attr_name = attr.GetName()
+            parsed = self._parse_custom_attr_name(attr_name)
             if not parsed:
                 continue
-            # Convert USD typed values (e.g., quatf) to Warp-friendly values
-            converted_value = _usd_to_wp(value)
-            assignment, frequency, variable = parsed
-            prim_map = self._custom_attributes.get(variable)
-            if prim_map is None:
-                dtype = _infer_wp_dtype(converted_value)
-                custom_attr = CustomAttribute(
-                    assignment=assignment,
-                    frequency=frequency,
-                    name=variable,
-                    dtype=dtype,
+
+            namespace, local_name = parsed
+            default_value = attr.Get()
+
+            # Try to read customData for assignment and frequency
+            assignment_meta = attr.GetCustomDataByKey("assignment")
+            frequency_meta = attr.GetCustomDataByKey("frequency")
+
+            if assignment_meta and frequency_meta:
+                # Metadata format
+                try:
+                    assignment_val = ModelAttributeAssignment[assignment_meta.upper()]
+                    frequency_val = ModelAttributeFrequency[frequency_meta.upper()]
+                except KeyError:
+                    print(
+                        f"Warning: Attribute '{attr_name}' has invalid assignment or frequency in customData. Skipping."
+                    )
+                    continue
+            else:
+                # No metadata found - skip with warning
+                print(
+                    f"Warning: Attribute '{attr_name}' is missing required customData (assignment and frequency). Skipping."
                 )
-                prim_map = AttributePrimMap(attribute=custom_attr)
-                self._custom_attributes[variable] = prim_map
-            prim_map.occurrences[prim_path] = converted_value
+                continue
+
+            # Infer dtype from default value
+            converted_value = self._usd_to_wp(default_value)
+            dtype = self._infer_wp_dtype(converted_value)
+
+            # Create full key: "namespace:attr_name" or "attr_name"
+            full_key = f"{namespace}:{local_name}" if namespace else local_name
+
+            # Create custom attribute specification
+            # Note: name should be the local name, namespace is stored separately
+            custom_attr = CustomAttribute(
+                assignment=assignment_val,
+                frequency=frequency_val,
+                name=local_name,
+                dtype=dtype,
+                default=converted_value,
+                namespace=namespace,
+            )
+
+            self._custom_attributes[full_key] = custom_attr
+
+    def _usd_to_wp(self, v: Any):
+        """Convert USD types to Warp-friendly representations."""
+        try:
+            # Handle Gf.Quat[f/d] → wp.quat(x, y, z, w) normalized
+            if hasattr(v, "real") and hasattr(v, "imaginary"):
+                try:
+                    return wp.normalize(wp.quat(*v.imaginary, v.real))
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        return v
+
+    def _infer_wp_dtype(self, v: Any):
+        """Heuristic mapping from USD value to Warp dtype."""
+        try:
+            # Check for quat first (before generic length checks)
+            if hasattr(v, "real") and hasattr(v, "imaginary"):
+                return wp.quat
+            # wp.quat-like (object with x,y,z,w after conversion)
+            if all(hasattr(v, c) for c in ("x", "y", "z", "w")):
+                return wp.quat
+            # Vector3-like
+            if hasattr(v, "__len__") and len(v) == 3:
+                return wp.vec3
+            # Vector2-like
+            if hasattr(v, "__len__") and len(v) == 2:
+                return wp.vec2
+            # Vector4-like (but not quat)
+            if hasattr(v, "__len__") and len(v) == 4:
+                return wp.vec4
+        except Exception:
+            pass
+        if isinstance(v, bool):
+            return wp.bool
+        if isinstance(v, int):
+            return wp.int32
+        # default to float32 for scalars
+        return wp.float32
+
+    def get_custom_attributes_for_prim(self, prim, expected_frequency: ModelAttributeFrequency) -> dict[str, Any]:
+        """
+        Extract custom attributes from a prim that match the expected frequency.
+        Providing the frequency is an additional check to ensure the attributes are used with the correct prim type.
+
+        This method reads custom attributes from a USD prim, validates they are
+        declared and match the expected frequency, then returns them as a
+        dictionary.
+
+        Args:
+            prim: USD prim to extract attributes from
+            expected_frequency: Expected frequency for the prim type
+
+        Returns:
+            Dictionary of custom attribute values keyed by full name
+            (namespace:attr_name or attr_name)
+        """
+        if prim is None:
+            return {}
+
+        result = {}
+
+        for attr in prim.GetAttributes():
+            attr_name = attr.GetName()
+            parsed = self._parse_custom_attr_name(attr_name)
+            if not parsed:
+                continue
+
+            namespace, local_name = parsed
+            full_key = f"{namespace}:{local_name}" if namespace else local_name
+
+            # Check if this attribute was declared
+            custom_attr = self._custom_attributes.get(full_key)
+            if custom_attr is None:
+                # Attribute not declared - skip it since we only collect attributes that are declared
+                continue
+
+            # Verify frequency matches (use frequency from declaration)
+            if custom_attr.frequency != expected_frequency:
+                continue
+
+            # Get the value and convert it
+            value = attr.Get()
+            converted_value = self._usd_to_wp(value)
+
+            result[full_key] = converted_value
+
+        return result
 
     def get_value(self, prim, prim_type: PrimType, key: str, default: Any = None) -> Any:
         """
@@ -635,9 +710,6 @@ class _ResolverManager:
                 attrs = resolver.collect_prim_solver_attrs(prim)
                 if attrs:
                     self.solver_specific_attrs[resolver.name][prim_path] = attrs
-                    # accumulate custom attributes from newton attrs if available
-                    if resolver.name == "newton":
-                        self._accumulate_custom_attributes(prim_path, attrs)
 
     def get_solver_specific_attrs(self) -> dict[str, dict[str, dict[str, Any]]]:
         """
@@ -649,11 +721,13 @@ class _ResolverManager:
         """
         return self.solver_specific_attrs.copy()
 
-    def get_custom_attributes(self) -> dict[str, AttributePrimMap]:
+    def get_custom_attribute_declarations(
+        self,
+    ) -> dict[str, CustomAttribute]:
         """
-        Get accumulated custom property specifications and occurrences.
+        Get custom attribute declarations parsed from PhysicsScene.
 
         Returns:
-            Dictionary keyed by variable name with AttributePrimMap values.
+            Dictionary keyed by full attribute name with CustomAttribute values.
         """
         return self._custom_attributes.copy()

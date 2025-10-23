@@ -108,6 +108,126 @@ def PhysicsScene "physicsScene" (
     vector3f physics:gravityDirection = (0, 0, -1)
     float physics:gravityMagnitude = 10
     custom float TimeStepsPerSecond = 120
+    
+    # Custom attribute declarations for newton
+    custom float newton:testJointScalar = 0.0 (
+        customData = {
+            string assignment = "state"
+            string frequency = "joint"
+        }
+    )
+    custom float newton:testStateJointScalar = 0.0 (
+        customData = {
+            string assignment = "state"
+            string frequency = "joint"
+        }
+    )
+    custom float newton:testControlJointScalar = 0.0 (
+        customData = {
+            string assignment = "control"
+            string frequency = "joint"
+        }
+    )
+    custom bool newton:testStateJointBool = 0 (
+        customData = {
+            string assignment = "state"
+            string frequency = "joint"
+        }
+    )
+    custom int newton:testControlJointInt = 0 (
+        customData = {
+            string assignment = "control"
+            string frequency = "joint"
+        }
+    )
+    custom vector3f newton:testJointVec = (0.0, 0.0, 0.0) (
+        customData = {
+            string assignment = "model"
+            string frequency = "joint"
+        }
+    )
+    custom float2 newton:testControlJointVec2 = (0.0, 0.0) (
+        customData = {
+            string assignment = "control"
+            string frequency = "joint"
+        }
+    )
+    custom quatf newton:testJointQuat = (1.0, 0.0, 0.0, 0.0) (
+        customData = {
+            string assignment = "model"
+            string frequency = "joint"
+        }
+    )
+    custom float newton:testBodyScalar = 0.0 (
+        customData = {
+            string assignment = "model"
+            string frequency = "body"
+        }
+    )
+    custom vector3f newton:testBodyVec = (0.0, 0.0, 0.0) (
+        customData = {
+            string assignment = "model"
+            string frequency = "body"
+        }
+    )
+    custom bool newton:testBodyBool = 0 (
+        customData = {
+            string assignment = "model"
+            string frequency = "body"
+        }
+    )
+    custom int newton:testBodyInt = 0 (
+        customData = {
+            string assignment = "model"
+            string frequency = "body"
+        }
+    )
+    custom vector3f newton:testBodyVec3B = (0.0, 0.0, 0.0) (
+        customData = {
+            string assignment = "state"
+            string frequency = "body"
+        }
+    )
+    custom quatf newton:localmarkerRot = (1.0, 0.0, 0.0, 0.0) (
+        customData = {
+            string assignment = "state"
+            string frequency = "body"
+        }
+    )
+    
+    # Custom attributes with namespace_a (same names as default namespace for testing)
+    custom float newton:namespace_a:testBodyScalar = 0.0 (
+        customData = {
+            string assignment = "model"
+            string frequency = "body"
+        }
+    )
+    custom vector3f newton:namespace_a:testJointVec = (0.0, 0.0, 0.0) (
+        customData = {
+            string assignment = "control"
+            string frequency = "joint"
+        }
+    )
+    custom float newton:namespace_a:uniqueBodyAttr = 0.0 (
+        customData = {
+            string assignment = "state"
+            string frequency = "body"
+        }
+    )
+    
+    # Custom attributes with namespace_b
+    custom int newton:namespace_b:testBodyInt = 0 (
+        customData = {
+            string assignment = "state"
+            string frequency = "body"
+        }
+    )
+    custom float newton:namespace_b:uniqueJointAttr = 0.0 (
+        customData = {
+            string assignment = "model"
+            string frequency = "joint"
+        }
+    )
 }
 
 def Xform "ant" (
@@ -287,17 +407,20 @@ def Xform "ant" (
             float state:angular:physics:velocity = 0.1
             float physxJoint:armature = 0.02
             
-            # custom newton property (joint frequency)
-            float newton:state:joint:testJointScalar = 2.25
-            # additional custom newton properties (state/control on joint)
-            float newton:state:joint:testStateJointScalar = 4.0
-            float newton:control:joint:testControlJointScalar = 5.5
-            bool newton:state:joint:testStateJointBool = 1
-            int newton:control:joint:testControlJointInt = 3
-            vector3f newton:model:joint:testJointVec = (0.5, 0.6, 0.7)
-            # new types for testing
-            float2 newton:control:joint:testControlJointVec2 = (0.25, -0.75)
-            quatf newton:model:joint:testJointQuat = (0.70710677, 0, 0, 0.70710677)
+            # Custom newton properties (using shortened notation)
+            custom float newton:testJointScalar = 2.25
+            custom float newton:testStateJointScalar = 4.0
+            custom float newton:testControlJointScalar = 5.5
+            custom bool newton:testStateJointBool = 1
+            custom int newton:testControlJointInt = 3
+            custom vector3f newton:testJointVec = (0.5, 0.6, 0.7)
+            custom float2 newton:testControlJointVec2 = (0.25, -0.75)
+            custom quatf newton:testJointQuat = (0.70710677, 0, 0, 0.70710677)
+            
+            # Namespaced attributes (same name as default namespace but different values)
+            custom vector3f newton:namespace_a:testJointVec = (1.5, 2.5, 3.5)
+            custom float newton:namespace_b:uniqueJointAttr = 999.0
+            
             # These are made up attributes for mjc that is used only for testing engine specific attribute collection
             float mjc:model:joint:testMjcJointScalar = 3.14
             vector3f mjc:state:joint:testMjcJointVec3 = (1.0, 2.0, 3.0)
@@ -580,13 +703,18 @@ def Xform "ant" (
             }
         }
         
-        # custom newton properties (body frequency)
-        float newton:model:body:testBodyScalar = 1.5
-        vector3f newton:model:body:testBodyVec = (0.1, 0.2, 0.3)
-        bool newton:model:body:testBodyBool = 1
-        int newton:model:body:testBodyInt = 7
-        vector3f newton:state:body:testBodyVec3B = (1.1, 2.2, 3.3)
-        quatf newton:state:body:localmarkerRot = (0.9238795, 0, 0, 0.3826834)
+        # Custom newton properties (using shortened notation)
+        custom float newton:testBodyScalar = 1.5
+        custom vector3f newton:testBodyVec = (0.1, 0.2, 0.3)
+        custom bool newton:testBodyBool = 1
+        custom int newton:testBodyInt = 7
+        custom vector3f newton:testBodyVec3B = (1.1, 2.2, 3.3)
+        custom quatf newton:localmarkerRot = (0.9238795, 0, 0, 0.3826834)
+        
+        # Namespaced attributes (same name as default namespace but different values)
+        custom float newton:namespace_a:testBodyScalar = 2.5
+        custom float newton:namespace_a:uniqueBodyAttr = 100.0
+        custom int newton:namespace_b:testBodyInt = 42
     }
 
     def Xform "front_left_foot" (

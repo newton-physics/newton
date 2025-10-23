@@ -37,17 +37,47 @@ Newton's ``parse_usd()`` function provides a USD import pipeline that:
 
 When working with USD assets authored for other physics solvers like PhysX or MuJoCo, Newton's schema resolver system can automatically remap various solver attributes to Newton's internal representation. This enables Newton to use physics properties from assets originally designed for other simulators without manual conversion.
 
-Example: Consider the physics time step parameter:
+The following tables show examples of how solver-specific attributes are mapped to Newton's internal representation. Some attributes map directly while others require mathematical transformations.
 
-* Newton uses ``newton:timeStep`` (direct time step value in seconds)
-* PhysX uses ``physxScene:timeStepsPerSecond`` (frequency, requiring inversion to get the time step)
-* MuJoCo uses ``mjc:option:timestep`` (direct time step value in seconds)
+**PhysX Attribute Remapping Examples:**
 
-Newton can use the time step value from any of these sources and convert it to the internal representation via the schema resolver system.
-This allows the USD parser to ingest assets authored for other physics solvers without manual intervention.
+The table below demonstrates PhysX attribute remapping with both direct mapping and transformation examples:
 
+.. list-table:: PhysX Attribute Remapping
+   :header-rows: 1
+   :widths: 30 30 40
 
-Example USD with PhysX Attributes that are remapped to Newton's internal representation:
+   * - **PhysX Attribute**
+     - **Newton Equivalent**
+     - **Transformation**
+   * - ``physxJoint:armature``
+     - ``armature``
+     - Direct mapping
+   * - ``physxScene:timeStepsPerSecond``
+     - ``time_step``
+     - ``1.0 / timeStepsPerSecond``
+
+**MuJoCo Attribute Remapping Examples:**
+
+Similarly, MuJoCo attributes can be remapped to Newton. Note that ``mjc:solref`` requires a more complex transformation to convert MuJoCo's solver reference parameters into stiffness and damping coefficients:
+
+.. list-table:: MuJoCo Attribute Remapping  
+   :header-rows: 1
+   :widths: 30 30 40
+
+   * - **MuJoCo Attribute**
+     - **Newton Equivalent**
+     - **Transformation**
+   * - ``mjc:armature``
+     - ``armature``
+     - Direct mapping
+   * - ``mjc:solref``
+     - ``stiffness``/``damping``
+     - ``k = 1/(timeconst^2)``, ``b = 2*dampratio/timeconst``
+
+**Example USD with remapped attributes:**
+
+The following USD example demonstrates how PhysX attributes are authored in a USD file. The schema resolver automatically applies the transformations shown in the table above during import:
 
 .. code-block:: usda
 
@@ -88,16 +118,15 @@ When multiple physics solvers define conflicting attributes for the same propert
 
 **Resolution Hierarchy:**
 
-The resolver system follows a three-layer fallback hierarchy:
+The attribute resolution process follows a three-layer fallback hierarchy to determine which value to use:
 
 1. **Authored Values**: First resolver in priority order with an authored value wins
 2. **Explicit Defaults**: User-provided default parameter in ``Resolver.get_value(default=...)`` calls with a non-None value wins if no authored value is found
 3. **Schema Mapping Defaults**: Resolver-specific default values from the schema definition if no authored value or explicit default is found
 
-Configuring Resolver Priority:
+**Configuring Resolver Priority:**
 
-The order of resolvers in the ``schema_resolvers`` list determines priority, with earlier entries taking precedence. For example, 
-consider a USD asset with conflicting armature values from different solvers:
+The order of resolvers in the ``schema_resolvers`` list determines priority, with earlier entries taking precedence. To demonstrate this, consider a USD asset where the same joint has conflicting armature values authored for different solvers:
 
 .. code-block:: usda
 
@@ -106,6 +135,8 @@ consider a USD asset with conflicting armature values from different solvers:
        float physxJoint:armature = 0.02  
        float mjc:armature = 0.03
    }
+
+By changing the order of resolvers in the ``schema_resolvers`` list, different attribute values will be selected from the same USD file. The following examples show how the same asset produces different results based on resolver priority:
 
 .. testcode::
    :skipif: True
@@ -142,9 +173,7 @@ consider a USD asset with conflicting armature values from different solvers:
 3. Solver-Specific Attribute Collection
 ----------------------------------------
 
-Some attributes are solver-specific and cannot be directly used by Newton's simulation. These are usually prefixed with defined terms like ``physxCollision``, ``physxRigidBody``, ``physxSDFMeshCollision``, etc. For MuJoCo, these could be specialized attributes that don't have direct Newton equivalents.
-
-The schema resolver system preserves these solver-specific attributes during import, making them accessible as part of the parsing results. This is useful for:
+Some attributes are solver-specific and cannot be directly used by Newton's simulation. The schema resolver system preserves these solver-specific attributes during import, making them accessible as part of the parsing results. This is useful for:
 
 * Debugging and inspection of solver-specific properties
 * Future compatibility when Newton adds support for additional attributes  
@@ -153,215 +182,263 @@ The schema resolver system preserves these solver-specific attributes during imp
 
 **Solver-Specific Attribute Namespaces:**
 
-Each resolver collects attributes from specific namespaces defined in its ``extra_attr_namespaces``:
+Each solver has its own namespace prefixes for solver-specific attributes. The table below shows the namespace conventions and provides examples of attributes that would be collected from each solver:
 
-* PhysX: ``physxScene``, ``physxRigidBody``, ``physxCollision``, ``physxConvexHullCollision``, ``physxSDFMeshCollision``, ``physxMaterial``, ``physxArticulation``
-* MuJoCo: ``mjc``  
-* Newton: ``newton``
+.. list-table:: Solver-Specific Namespaces
+   :header-rows: 1
+   :widths: 20 40 40
 
-Accessing Collected Solver-Specific Attributes:
+   * - **Engine**
+     - **Namespace Prefixes**
+     - **Example Attributes**
+   * - **PhysX**
+     - ``physx``, ``physxScene``, ``physxRigidBody``, ``physxCollision``, ``physxArticulation``
+     - ``physxArticulation:enabledSelfCollisions``, ``physxSDFMeshCollision:meshScale``
+   * - **MuJoCo**  
+     - ``mjc``
+     - ``mjc:model:joint:testMjcJointScalar``, ``mjc:state:joint:testMjcJointVec3``
+   * - **Newton**
+     - ``newton``
+     - ``newton:hullVertexLimit``, ``newton:contactMargin``
+
+**Accessing Collected Solver-Specific Attributes:**
+
+To enable collection of solver-specific attributes, set ``collect_solver_specific_attrs=True`` when calling ``parse_usd()``. The collected attributes are returned in the result dictionary and can be accessed by solver namespace:
 
 .. testcode::
    :skipif: True
 
    from newton import ModelBuilder
-   from newton.utils.schema_resolver import SchemaResolverPhysx, SchemaResolverNewton
+   from newton._src.utils.import_usd import parse_usd
+   from newton._src.utils.schema_resolver import SchemaResolverPhysx, SchemaResolverNewton
    
    builder = ModelBuilder()
-   result = builder.add_usd(
+   result = parse_usd(
+       builder=builder,
        source="physx_humanoid.usda", 
        schema_resolvers=[SchemaResolverPhysx(), SchemaResolverNewton()],
-       collect_solver_specific_attrs=True
+       collect_solver_specific_attrs=True  # Enable collection
    )
    
-   # Access the collected solver-specific attributes
-   solver_attrs = result["solver_specific_attrs"]
+   # Access collected solver-specific attributes
+   solver_attrs = result.get("solver_specific_attrs", {})
    
-   # Inspect PhysX-specific attributes
    if "physx" in solver_attrs:
        physx_attrs = solver_attrs["physx"]
        for prim_path, attrs in physx_attrs.items():
-           print(f"\nPrim: {prim_path}")
-           for attr_name, attr_value in attrs.items():
-               print(f"  {attr_name}: {attr_value}")
+           if "physxJoint:armature" in attrs:
+               armature_value = attrs["physxJoint:armature"]
+               print(f"PhysX joint {prim_path} has armature: {armature_value}")
    
-   # Example output:
-   # Found PhysX attributes on 12 prims
-   #
-   # Prim: /World/Humanoid/torso
-   # physxRigidBody:retainAccelerations: True
-   # physxRigidBody:enableCCD: False
-   #
-   # Prim: /World/Humanoid/left_hand  
-   # physxSDFMeshCollision:sdfResolution: 256
-   # physxSDFMeshCollision:sdfSubgridResolution: 6
+   # Disable collection for performance when not needed
+   result_fast = parse_usd(
+       builder=builder,
+       source="asset.usda",
+       collect_solver_specific_attrs=False  # Skip collection
+   )
 
+**When to Enable/Disable Collection:**
 
-.. note::
-   When ``collect_solver_specific_attrs=False``, the parser skips scanning for solver-specific namespaces, which can improve import performance for large USD files.
+Enable ``collect_solver_specific_attrs=True`` when:
+
+* Developing and debugging USD import pipelines
+* Need to inspect solver-native properties for validation
+* Building custom workflows that process solver-specific data
+* Preparing for sim-to-sim asset conversion
+
+Disable ``collect_solver_specific_attrs=False`` for:
+
+* Production imports where solver-specific data is not needed
+* Large USD files where scanning performance matters
+* Final deployments after import pipeline is validated
 
 4. Custom Attribute Framework
 -----------------------------
 
-USD assets can define custom attributes that become part of the model/state/control attributes. Newton's schema resolver system supports these custom attributes that follow a structured naming convention and are automatically parsed and integrated into the simulation model.
+USD assets can define custom attributes that become part of the model/state/control attributes. Newton's schema resolver system supports these custom attributes using a declaration-first pattern with optional namespace support.
 
-For a comprehensive guide to custom attributes, including declaration, authoring via Python API, use cases, and constraints, see :doc:`custom_attributes`.
+**Overview:**
 
-This section focuses specifically on USD authoring and integration of custom attributes. Custom attributes enable users to:
+Custom attributes enable users to:
 
 * Extend Newton's data model with application-specific properties
 * Store per-body/joint/dof/shape data directly in USD assets  
 * Implement custom simulation behaviors driven by USD-authored data
+* Organize related attributes using namespaces
 
-**Custom Attribute Naming Convention:** 
+**Declaration-First Pattern:**
 
-Newton supports two naming formats for custom attributes in USD:
+Custom attributes must be declared on the ``PhysicsScene`` prim with metadata before being used on individual prims:
 
-1. **Default namespace:** ``newton:assignment:frequency:attribute_name``
-2. **Custom namespace:** ``newton:assignment:namespace:frequency:attribute_name``
+1. **Declare on PhysicsScene**: Define attributes with ``customData`` metadata specifying assignment and frequency
+2. **Assign on individual prims**: Override default values using shortened attribute names
+
+**Declaration Format:**
+
+.. code-block:: usda
+
+   custom <type> newton:namespace:attr_name = default_value (
+       customData = {
+           string assignment = "model|state|control|contact"
+           string frequency = "body|shape|joint|joint_dof|joint_coord"
+       }
+   )
 
 Where:
 
-* **assignment**: Determines where the attribute is stored (``model``, ``state``, ``control``, or ``contact``)
-* **namespace** (optional): Custom namespace for organizing related attributes
-* **frequency**: Defines the per-entity granularity (``body``, ``shape``, ``joint``, ``joint_dof``, or ``joint_coord``)
-* **attribute_name**: User-defined attribute name
+* **namespace** (optional): Custom namespace for organizing related attributes (omit for default namespace)
+* **attr_name**: User-defined attribute name
+* **assignment**: Storage location (``model``, ``state``, ``control``, ``contact``)
+* **frequency**: Per-entity granularity (``body``, ``shape``, ``joint``, ``joint_dof``, ``joint_coord``)
 
-Assignment Types:
+**Supported Data Types:**
 
-.. list-table:: Custom Attribute Assignments
-   :header-rows: 1
-   :widths: 15 25 60
-
-   * - Assignment
-     - Storage Location
-     - Use Cases
-   * - ``model``
-     - ``Model`` object
-     - Static configuration, physical properties, metadata that doesn't change
-   * - ``state``
-     - ``State`` object  
-     - Dynamic quantities, targets, sensor readings, time-varying data
-   * - ``control``
-     - ``Control`` object
-     - Control parameters, actuator settings, PID gains, command limits
-   * - ``contact``
-     - Contact system
-     - Contact-specific properties
-
-Frequency Types:
-
-.. list-table:: Custom Attribute Frequencies  
-   :header-rows: 1
-   :widths: 20 80
-
-   * - Frequency
-     - Description
-   * - ``body``
-     - One value per rigid body in the model
-   * - ``shape``
-     - One value per collision shape
-   * - ``joint``
-     - One value per joint
-   * - ``joint_dof``
-     - One value per joint degree of freedom
-   * - ``joint_coord``
-     - One value per joint coordinate
-
-Supported Data Types:
-
-The system infers Warp data types from authored USD values:
+The system automatically infers data types from authored USD values. The following table shows the mapping between USD types and Warp types used internally by Newton:
 
 .. list-table:: Custom Attribute Data Types
    :header-rows: 1
    :widths: 25 25 50
 
-   * - USD Type
-     - Warp Type
-     - Example Usage
+   * - **USD Type**
+     - **Warp Type**
+     - **Example**
    * - ``float``
      - ``wp.float32``
-     - Scalar values, gains, thresholds
+     - Scalar values
    * - ``bool``
      - ``wp.bool``
-     - Boolean flags, enable/disable states
+     - Boolean flags  
    * - ``int``
      - ``wp.int32``
-     - Integer indices, counts, modes
+     - Integer values
    * - ``float2``
      - ``wp.vec2``
-     - 2D vectors, ranges, limits
+     - 2D vectors
    * - ``float3``
      - ``wp.vec3``
-     - 3D vectors, positions, orientations
+     - 3D vectors, positions
    * - ``float4``
      - ``wp.vec4``
-     - 4D vectors, extended parameters
+     - 4D vectors
    * - ``quatf``/``quatd``
      - ``wp.quat``
-     - Quaternions (with automatic normalization and reordering from USD convention to Newton's convention)
+     - Quaternions (with automatic reordering)
 
-Example USD Authoring with Custom Attributes:
+**Assignment Types:**
+
+The ``assignment`` field in the declaration determines where the custom attribute data will be stored. The following table describes each assignment type and its typical use cases:
+
+.. list-table:: Custom Attribute Assignments
+   :header-rows: 1
+   :widths: 15 25 60
+
+   * - **Assignment**
+     - **Storage Location**
+     - **Use Cases**
+   * - ``model``
+     - ``Model`` object
+     - Static configuration, physical properties, metadata
+   * - ``state``
+     - ``State`` object  
+     - Dynamic quantities, targets, sensor readings
+   * - ``control``
+     - ``Control`` object
+     - Control parameters, actuator settings, gains
+   * - ``contact``
+     - Contact container
+     - Contact-specific properties (future use)
+
+**USD Authoring with Custom Attributes:**
+
+The following USD example demonstrates the complete workflow for authoring custom attributes. Note how attributes are first declared on the ``PhysicsScene`` with their metadata, then assigned with specific values on individual prims:
 
 .. code-block:: usda
 
+   # robot_with_custom_attrs.usda
    #usda 1.0
    
-   def Xform "Robot" {
-       def Xform "torso" (
-           prepend apiSchemas = ["PhysicsRigidBodyAPI"]
-       ) {
-           # Default namespace - stored directly on Model object
-           float newton:model:body:float_attr = 1.5
-           float3 newton:model:body:vec3_attr = (0.1, 0.2, 0.3)
-           bool newton:model:body:bool_attr = true
-           
-           # Custom namespace "namespace_a" - stored on model.namespace_a object
-           float newton:model:namespace_a:body:float_attr = 0.05
-           float3 newton:model:namespace_a:body:vec3_attr = (1.0, 0.5, 0.0)
-           
-           # Custom namespace "namespace_b" - stored on state.namespace_b object
-           bool newton:state:namespace_b:body:bool_attr = true
-           float newton:state:namespace_b:body:float_attr = 0.005
-           
-           # Default namespace state attribute
-           float3 newton:state:body:vec3_attr = (1.0, 2.0, 3.0)
-       }
+   def PhysicsScene "physicsScene" {
+       # Declare custom attributes with metadata (default namespace)
+       custom float newton:mass_scale = 1.0 (
+           customData = {
+               string assignment = "model"
+               string frequency = "body"
+           }
+       )
+       custom float3 newton:local_marker = (0.0, 0.0, 0.0) (
+           customData = {
+               string assignment = "model"
+               string frequency = "body"
+           }
+       )
+       custom bool newton:is_sensor = false (
+           customData = {
+               string assignment = "model"
+               string frequency = "body"
+           }
+       )
+       custom float3 newton:target_position = (0.0, 0.0, 0.0) (
+           customData = {
+               string assignment = "state"
+               string frequency = "body"
+           }
+       )
        
-       def RevoluteJoint "shoulder_joint" {
-           # Default namespace joint properties
-           float newton:model:joint:float_attr = 2.25
-           
-           # Custom namespace control attributes
-           float newton:control:namespace_a:joint_dof:float_attr = 150.0
-           float newton:control:namespace_a:joint_dof:float_attr2 = 0.01
-           
-           # Custom namespace model attributes
-           float newton:model:namespace_b:joint:float_attr = 1000.0
-       }
+       # Declare namespaced custom attributes (namespace_a)
+       custom float newton:namespace_a:mass_scale = 1.0 (
+           customData = {
+               string assignment = "state"
+               string frequency = "body"
+           }
+       )
+       custom float newton:namespace_a:gear_ratio = 1.0 (
+           customData = {
+               string assignment = "model"
+               string frequency = "joint"
+           }
+       )
+       custom float2 newton:namespace_a:pid_gains = (0.0, 0.0) (
+           customData = {
+               string assignment = "control"
+               string frequency = "joint"
+           }
+       )
+   }
+   
+   def Xform "robot_body" (
+       prepend apiSchemas = ["PhysicsRigidBodyAPI"]
+   ) {
+       # Assign values to declared attributes (default namespace)
+       custom float newton:mass_scale = 1.5
+       custom float3 newton:local_marker = (0.1, 0.2, 0.3)
+       custom bool newton:is_sensor = true
+       custom float3 newton:target_position = (1.0, 2.0, 3.0)
        
-       def Mesh "gripper_finger" (
-           prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsCollisionAPI"]
-       ) {
-           # Default namespace shape attributes
-           float newton:model:shape:float_attr = 5000.0
-           
-           # Custom namespace shape attributes
-           int newton:model:namespace_a:shape:int_attr = 1
-           int newton:model:namespace_a:shape:int_attr2 = 2
-       }
+       # Assign values to namespaced attributes (namespace_a)
+       custom float newton:namespace_a:mass_scale = 2.5
+   }
+   
+   def RevoluteJoint "joint1" {
+       # Assign joint attributes (namespace_a)
+       custom float newton:namespace_a:gear_ratio = 2.25
+       custom float2 newton:namespace_a:pid_gains = (100.0, 10.0)
    }
 
-Importing and Accessing Custom Attributes:
+**Accessing Custom Attributes in Python:**
 
-.. testcode::
-   :skipif: True
+After importing the USD file with the custom attributes shown above, they become accessible as properties on the appropriate objects (``Model``, ``State``, or ``Control``) based on their assignment. The following example shows how to import and access these attributes:
+
+.. code-block:: python
 
    from newton import ModelBuilder
-   from newton.utils.schema_resolver import SchemaResolverNewton
+   from newton._src.utils.import_usd import parse_usd
+   from newton._src.utils.schema_resolver import SchemaResolverNewton
 
    builder = ModelBuilder()
-   result = builder.add_usd(
+   
+   # Import the USD file with custom attributes (from example above)
+   result = parse_usd(
+       builder=builder,
        source="robot_with_custom_attrs.usda",
        schema_resolvers=[SchemaResolverNewton()],
        collect_solver_specific_attrs=True
@@ -371,40 +448,25 @@ Importing and Accessing Custom Attributes:
    state = model.state()
    control = model.control()
    
-   # Access default namespace MODEL attributes
-   body_float_attrs = model.float_attr.numpy()  # Per-body scalar array
-   body_vec3_attrs = model.vec3_attr.numpy()   # Per-body vec3 array
-   body_bool_attrs = model.bool_attr.numpy()      # Per-body bool array
-   joint_float_attrs = model.float_attr.numpy()       # Per-joint scalar array
+   # Access default namespace model-assigned attributes
+   body_mass_scale = model.mass_scale.numpy()        # Per-body scalar
+   local_markers = model.local_marker.numpy()        # Per-body vec3
+   sensor_flags = model.is_sensor.numpy()            # Per-body bool
    
-   print(f"Body float attributes: {body_float_attrs}")
-   print(f"Body bool attributes: {body_bool_attrs}")
+   # Access default namespace state-assigned attributes
+   target_positions = state.target_position.numpy()  # Per-body vec3
    
-   # Access custom namespace "namespace_a" MODEL attributes
-   namespace_a_float = model.namespace_a.float_attr.numpy()  # Per-body scalar
-   namespace_a_vec3 = model.namespace_a.vec3_attr.numpy()  # Per-body vec3
-   namespace_a_int = model.namespace_a.int_attr.numpy()  # Per-shape int
+   # Access namespaced attributes (namespace_a)
+   # Note: Same attribute name can exist in different namespaces with different assignments
+   namespaced_mass = state.namespace_a.mass_scale.numpy()  # Per-body scalar (state assignment)
+   gear_ratios = model.namespace_a.gear_ratio.numpy()       # Per-joint scalar
+   pid_gains = control.namespace_a.pid_gains.numpy()        # Per-joint vec2
    
-   print(f"Namespace A float: {namespace_a_float}")
-   print(f"Namespace A vec3: {namespace_a_vec3}")
-   
-   # Access default namespace STATE attributes
-   state_vec3_attrs = state.vec3_attr.numpy()  # Per-body vec3 array
-   
-   # Access custom namespace "namespace_b" STATE attributes  
-   namespace_b_bool = state.namespace_b.bool_attr.numpy()  # Per-body bool
-   namespace_b_float = state.namespace_b.float_attr.numpy()  # Per-body float
-   
-   print(f"State vec3 attributes: {state_vec3_attrs}")
-   print(f"Namespace B bool: {namespace_b_bool}")
-   
-   # Access custom namespace "namespace_a" CONTROL attributes
-   namespace_a_control_float = control.namespace_a.float_attr.numpy()  # Per-joint-DOF scalar
-   namespace_a_control_float2 = control.namespace_a.float_attr2.numpy()   # Per-joint-DOF scalar
-   
-   print(f"Namespace A control float: {namespace_a_control_float}")
-   print(f"Namespace A control float2: {namespace_a_control_float2}")
+   # Namespace isolation: model.mass_scale and state.namespace_a.mass_scale are independent
+   # - model.mass_scale has value 1.5 for robot_body (default namespace, model assignment)
+   # - state.namespace_a.mass_scale has value 2.5 for the same robot_body (namespace_a, state assignment)
+   # These are separate attributes stored in different objects with independent values
 
-This custom attribute framework allows embedding application-specific data directly into USD assets, enabling data-driven simulations.
+**Namespace Isolation:**
 
-For detailed information about declaring custom attributes via Python API, default values, validation constraints, and complete usage examples, refer to :doc:`custom_attributes`.
+Attributes with the same name in different namespaces are completely independent and stored separately. This allows the same attribute name to be used for different purposes across namespaces. In the example above, ``mass_scale`` appears in both the default namespace (as a model attribute) and in ``namespace_a`` (as a state attribute). These are treated as completely separate attributes with independent values, assignments, and storage locations.

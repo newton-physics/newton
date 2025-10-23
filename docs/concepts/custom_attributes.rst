@@ -36,11 +36,12 @@ Custom attributes must be declared before use. Each declaration specifies the fo
 * **frequency**: Array size and indexing pattern (``BODY``, ``SHAPE``, ``JOINT``, ``JOINT_DOF``, or ``JOINT_COORD``)
 * **assignment**: Which simulation object owns the attribute (``MODEL``, ``STATE``, ``CONTROL``, ``CONTACT``)  
 * **dtype**: Warp data type (``wp.float32``, ``wp.vec3``, ``wp.quat``, etc.)
+* **default** (optional): Default value for entities that don't explicitly specify values. If not specified, dtype-specific defaults are used: 0.0 for floats, 0 for integers, False for booleans, and zero vectors for vector types.
 * **namespace** (optional): Hierarchical organization for grouping related attributes
 
 When **no namespace** is specified, attributes are added directly to their assignment object (e.g., ``model.temperature``). When a **namespace** is provided, Newton creates a namespace container to organize related attributes hierarchically (e.g., ``model.namespace_a.float_attr``).
 
-The following example demonstrates declaring attributes with and without namespaces:
+The following example demonstrates declaring attributes with and without namespaces, and with explicit default values:
 
 .. testcode::
 
@@ -54,6 +55,7 @@ The following example demonstrates declaring attributes with and without namespa
        name="temperature",
        frequency=ModelAttributeFrequency.BODY,
        dtype=wp.float32,
+       default=20.0,  # Explicit default value
        assignment=ModelAttributeAssignment.MODEL
    )
    # → Accessible as: model.temperature
@@ -62,6 +64,7 @@ The following example demonstrates declaring attributes with and without namespa
        name="velocity_limit",
        frequency=ModelAttributeFrequency.BODY,
        dtype=wp.vec3,
+       default=(1.0, 1.0, 1.0),  # Default vector value
        assignment=ModelAttributeAssignment.STATE
    )
    # → Accessible as: state.velocity_limit
@@ -71,6 +74,7 @@ The following example demonstrates declaring attributes with and without namespa
        name="float_attr",
        frequency=ModelAttributeFrequency.BODY,
        dtype=wp.float32,
+       default=0.5,
        assignment=ModelAttributeAssignment.MODEL,
        namespace="namespace_a"
    )
@@ -80,10 +84,38 @@ The following example demonstrates declaring attributes with and without namespa
        name="bool_attr",
        frequency=ModelAttributeFrequency.SHAPE,
        dtype=wp.bool,
+       default=False,
        assignment=ModelAttributeAssignment.MODEL,
        namespace="namespace_a"
    )
    # → Accessible as: model.namespace_a.bool_attr
+
+**Default Value Behavior:**
+
+When entities don't explicitly specify custom attribute values, the default value is used:
+
+.. testcode::
+
+   # First body uses the default value (20.0)
+   body1 = builder.add_body(mass=1.0)
+   
+   # Second body overrides with explicit value
+   body2 = builder.add_body(
+       mass=1.0,
+       custom_attributes={"temperature": 37.5}
+   )
+   
+   # After finalization, access both values
+   model = builder.finalize()
+   temps = model.temperature.numpy()
+   
+   print(f"Body 1: {temps[body1]}")  # 20.0 (default)
+   print(f"Body 2: {temps[body2]}")  # 37.5 (authored)
+
+.. testoutput::
+
+   Body 1: 20.0
+   Body 2: 37.5
 
 .. note::
    Uniqueness is determined by the full identifier (namespace + name):
@@ -121,11 +153,11 @@ The following example creates bodies and shapes with custom attribute values:
        }
    )
 
-For joints, Newton provides three frequency types to store different granularities of data. The attribute name prefix determines which frequency is used when authoring:
+For joints, Newton provides three frequency types to store different granularities of data. The system determines how to process attribute values based on the declared frequency:
 
-* **No prefix** → JOINT frequency (one value per joint)
-* **dof_ prefix** → JOINT_DOF frequency (one value per degree of freedom)
-* **coord_ prefix** → JOINT_COORD frequency (one value per position coordinate)
+* **JOINT frequency** → One value per joint
+* **JOINT_DOF frequency** → List of values with one per degree of freedom
+* **JOINT_COORD frequency** → List of values with one per position coordinate
 
 The following example demonstrates declaring and authoring attributes for each joint frequency type:
 
@@ -133,17 +165,17 @@ The following example demonstrates declaring and authoring attributes for each j
 
    # Declare joint attributes with different frequencies
    builder.add_custom_attribute(
-       "int_attr",                    # No prefix
+       "int_attr",
        ModelAttributeFrequency.JOINT,
        dtype=wp.int32
    )
    builder.add_custom_attribute(
-       "dof_float_attr",              # dof_ prefix
+       "float_attr_dof",
        ModelAttributeFrequency.JOINT_DOF,
        dtype=wp.float32
    )
    builder.add_custom_attribute(
-       "coord_float_attr",            # coord_ prefix
+       "float_attr_coord",
        ModelAttributeFrequency.JOINT_COORD,
        dtype=wp.float32
    )
@@ -159,9 +191,9 @@ The following example demonstrates declaring and authoring attributes for each j
        linear_axes=[cfg(axis=[1, 0, 0])],      # 1 linear DOF
        angular_axes=[cfg(axis=[0, 0, 1])],     # 1 angular DOF
        custom_attributes={
-           "int_attr": 5,                      # Per-joint (no prefix): 1 value
-           "dof_float_attr": [100.0, 200.0],  # Per-DOF (dof_ prefix): 2 values (one per DOF)
-           "coord_float_attr": [0.5, 0.7],    # Per-coordinate (coord_ prefix): 2 values (one per coordinate)
+           "int_attr": 5,                      # JOINT frequency: single value
+           "float_attr_dof": [100.0, 200.0],   # JOINT_DOF frequency: list with 2 values (one per DOF)
+           "float_attr_coord": [0.5, 0.7],     # JOINT_COORD frequency: list with 2 values (one per coordinate)
        }
    )
 
@@ -201,84 +233,67 @@ The following example shows how to access all the attributes we declared and aut
 
 Custom attributes follow the same GPU/CPU synchronization rules as built-in attributes and can be modified during simulation.
 
-Default Values
---------------
-
-Custom attributes use default values for entities that don't explicitly specify values. When declaring an attribute, you can provide a ``default`` parameter. If not specified, dtype-specific defaults are used: 0.0 for floats, 0 for integers, False for booleans, and zero vectors for vector types.
-
-The following example demonstrates default value behavior with two bodies, where only one explicitly sets the attribute:
-
-.. testcode::
-
-   # Create a new builder to demonstrate defaults
-   builder_defaults = ModelBuilder()
-   
-   # Declare attribute with explicit default value
-   builder_defaults.add_custom_attribute(
-       name="float_attr",
-       frequency=ModelAttributeFrequency.BODY,
-       dtype=wp.float32,
-       default=20.0,
-       assignment=ModelAttributeAssignment.MODEL
-   )
-   
-   # First body uses the default value
-   body1 = builder_defaults.add_body(mass=1.0)
-   
-   # Second body overrides with explicit value
-   body2 = builder_defaults.add_body(
-       mass=1.0,
-       custom_attributes={"float_attr": 65.0}
-   )
-   
-   # After finalization, access both values
-   model_d = builder_defaults.finalize()
-   values = model_d.float_attr.numpy()
-   
-   print(f"Body 1: {values[body1]}")  # 20.0 (default)
-   print(f"Body 2: {values[body2]}")  # 65.0 (authored)
-
-.. testoutput::
-
-   Body 1: 20.0
-   Body 2: 65.0
-
 USD Integration
 ---------------
 
-Custom attributes can be authored directly in USD files using Newton's naming convention. The USD parser automatically discovers and integrates these attributes during import.
+Custom attributes can be authored in USD files using a declaration-first pattern, similar to the Python API. Declarations are placed on the PhysicsScene prim, and individual prims can then assign values to these attributes.
 
-**USD Naming Convention:**
+**USD Declaration Pattern:**
 
-* Default namespace: ``newton:assignment:frequency:attribute_name``
-* Custom namespace: ``newton:assignment:namespace:frequency:attribute_name``
+1. **Declare on PhysicsScene**: Define custom attributes with metadata specifying assignment and frequency
+2. **Assign on Prims**: Override default values using the attribute name
 
-The following USD file demonstrates custom attributes with both default and namespaced organization:
+**Declaration Format (on PhysicsScene prim):**
 
 .. code-block:: usda
 
-   #usda 1.0
-   
+   def PhysicsScene "physicsScene" {
+       # Default namespace attributes
+       custom float newton:float_attr = 0.0 (
+           customData = {
+               string assignment = "model"
+               string frequency = "body"
+           }
+       )
+       custom float3 newton:vec3_attr = (0.0, 0.0, 0.0) (
+           customData = {
+               string assignment = "state"
+               string frequency = "body"
+           }
+       )
+       
+       # Custom namespace attributes
+       custom float newton:namespace_a:some_attrib = 150.0 (
+           customData = {
+               string assignment = "control"
+               string frequency = "joint_dof"
+           }
+       )
+       custom bool newton:namespace_a:bool_attr = false (
+           customData = {
+               string assignment = "model"
+               string frequency = "shape"
+           }
+       )
+   }
+
+**Assignment Format (on individual prims):**
+
+.. code-block:: usda
+
    def Xform "robot_arm" (
        prepend apiSchemas = ["PhysicsRigidBodyAPI"]
    ) {
-       # Default namespace - stored directly on assignment objects
-       float newton:model:body:float_attr = 850.0
-       int newton:model:body:int_attr = 42
-       float3 newton:state:body:vec3_attr = (1.0, 0.5, 0.3)
-       
-       # Custom namespaces - stored under namespace containers
-       float newton:model:namespace_a:body:float_attr = 1.5
-       bool newton:model:namespace_a:body:bool_attr = true
-       float newton:state:namespace_b:body:float_attr = 100.0
+       # Override declared attributes with custom values
+       custom float newton:float_attr = 850.0
+       custom float3 newton:vec3_attr = (1.0, 0.5, 0.3)
+       custom float newton:namespace_a:some_attrib = 250.0
    }
    
-   def RevoluteJoint "elbow" {
-       # Default namespace
-       float newton:model:joint:float_attr = 2.5
-       
-       # Namespaced control attributes
-       float newton:control:namespace_a:joint_dof:float_attr = 50.0
+   def Mesh "gripper" (
+       prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsCollisionAPI"]
+   ) {
+       custom bool newton:namespace_a:bool_attr = true
    }
 
 After importing the USD file, attributes are accessible following the same patterns as programmatically declared attributes:
@@ -302,7 +317,7 @@ After importing the USD file, attributes are accessible following the same patte
    # Access namespaced attributes
    namespace_a_floats = model.namespace_a.float_attr.numpy()
    namespace_b_floats = state.namespace_b.float_attr.numpy()
-   control_floats = control.namespace_a.float_attr.numpy()
+   control_floats = control.namespace_a.float_attr_dof.numpy()
 
 For more information about USD integration and the schema resolver system, see :doc:`usd_parsing`.
 

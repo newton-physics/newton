@@ -250,10 +250,10 @@ class TestCustomAttributes(unittest.TestCase):
         builder = newton.ModelBuilder()
 
         # Declare custom attributes before use
-        builder.add_custom_attribute("dof_custom_float", newton.ModelAttributeFrequency.JOINT_DOF, dtype=wp.float32)
-        builder.add_custom_attribute("dof_custom_int", newton.ModelAttributeFrequency.JOINT_DOF, dtype=wp.int32)
-        builder.add_custom_attribute("coord_custom_float", newton.ModelAttributeFrequency.JOINT_COORD, dtype=wp.float32)
-        builder.add_custom_attribute("coord_custom_int", newton.ModelAttributeFrequency.JOINT_COORD, dtype=wp.int32)
+        builder.add_custom_attribute("custom_float_dof", newton.ModelAttributeFrequency.JOINT_DOF, dtype=wp.float32)
+        builder.add_custom_attribute("custom_int_dof", newton.ModelAttributeFrequency.JOINT_DOF, dtype=wp.int32)
+        builder.add_custom_attribute("custom_float_coord", newton.ModelAttributeFrequency.JOINT_COORD, dtype=wp.float32)
+        builder.add_custom_attribute("custom_int_coord", newton.ModelAttributeFrequency.JOINT_COORD, dtype=wp.int32)
 
         robot_entities = self._add_test_robot(builder)
 
@@ -263,30 +263,30 @@ class TestCustomAttributes(unittest.TestCase):
             child=body,
             axis=[0.0, 0.0, 1.0],
             custom_attributes={
-                "dof_custom_float": [0.05],
-                "dof_custom_int": [15],
-                "coord_custom_float": [0.5],
-                "coord_custom_int": [12],
+                "custom_float_dof": [0.05],
+                "custom_int_dof": [15],
+                "custom_float_coord": [0.5],
+                "custom_int_coord": [12],
             },
         )
 
         model = builder.finalize(device=self.device)
 
         # Verify DOF attributes
-        dof_float_numpy = model.dof_custom_float.numpy()
+        dof_float_numpy = model.custom_float_dof.numpy()
         self.assertAlmostEqual(dof_float_numpy[2], 0.05, places=5)
         self.assertAlmostEqual(dof_float_numpy[0], 0.0, places=5)
 
-        dof_int_numpy = model.dof_custom_int.numpy()
+        dof_int_numpy = model.custom_int_dof.numpy()
         self.assertEqual(dof_int_numpy[2], 15)
         self.assertEqual(dof_int_numpy[1], 0)
 
         # Verify coordinate attributes
-        coord_float_numpy = model.coord_custom_float.numpy()
+        coord_float_numpy = model.custom_float_coord.numpy()
         self.assertAlmostEqual(coord_float_numpy[2], 0.5, places=5)
         self.assertAlmostEqual(coord_float_numpy[0], 0.0, places=5)
 
-        coord_int_numpy = model.coord_custom_int.numpy()
+        coord_int_numpy = model.custom_int_coord.numpy()
         self.assertEqual(coord_int_numpy[2], 12)
         self.assertEqual(coord_int_numpy[1], 0)
 
@@ -295,8 +295,8 @@ class TestCustomAttributes(unittest.TestCase):
         builder = newton.ModelBuilder()
 
         # Declare custom attributes before use
-        builder.add_custom_attribute("dof_custom_float", newton.ModelAttributeFrequency.JOINT_DOF, dtype=wp.float32)
-        builder.add_custom_attribute("coord_custom_int", newton.ModelAttributeFrequency.JOINT_COORD, dtype=wp.int32)
+        builder.add_custom_attribute("custom_float_dof", newton.ModelAttributeFrequency.JOINT_DOF, dtype=wp.float32)
+        builder.add_custom_attribute("custom_int_coord", newton.ModelAttributeFrequency.JOINT_COORD, dtype=wp.int32)
 
         robot_entities = self._add_test_robot(builder)
         cfg = newton.ModelBuilder.JointDofConfig
@@ -308,22 +308,22 @@ class TestCustomAttributes(unittest.TestCase):
             linear_axes=[cfg(axis=newton.Axis.X), cfg(axis=newton.Axis.Y)],
             angular_axes=[cfg(axis=[0, 0, 1])],
             custom_attributes={
-                "dof_custom_float": [0.1, 0.2, 0.3],
-                "coord_custom_int": [100, 200, 300],
+                "custom_float_dof": [0.1, 0.2, 0.3],
+                "custom_int_coord": [100, 200, 300],
             },
         )
 
         model = builder.finalize(device=self.device)
 
         # Verify individual DOF values
-        dof_float_numpy = model.dof_custom_float.numpy()
+        dof_float_numpy = model.custom_float_dof.numpy()
         self.assertAlmostEqual(dof_float_numpy[2], 0.1, places=5)
         self.assertAlmostEqual(dof_float_numpy[3], 0.2, places=5)
         self.assertAlmostEqual(dof_float_numpy[4], 0.3, places=5)
         self.assertAlmostEqual(dof_float_numpy[0], 0.0, places=5)
 
         # Verify individual coordinate values
-        coord_int_numpy = model.coord_custom_int.numpy()
+        coord_int_numpy = model.custom_int_coord.numpy()
         self.assertEqual(coord_int_numpy[2], 100)
         self.assertEqual(coord_int_numpy[3], 200)
         self.assertEqual(coord_int_numpy[4], 300)
@@ -334,8 +334,8 @@ class TestCustomAttributes(unittest.TestCase):
         builder = newton.ModelBuilder()
 
         # Declare custom attributes before use
-        builder.add_custom_attribute("dof_custom_vec2", newton.ModelAttributeFrequency.JOINT_DOF, dtype=wp.vec2)
-        builder.add_custom_attribute("coord_custom_vec3", newton.ModelAttributeFrequency.JOINT_COORD, dtype=wp.vec3)
+        builder.add_custom_attribute("custom_vec2_dof", newton.ModelAttributeFrequency.JOINT_DOF, dtype=wp.vec2)
+        builder.add_custom_attribute("custom_vec3_coord", newton.ModelAttributeFrequency.JOINT_COORD, dtype=wp.vec3)
 
         robot_entities = self._add_test_robot(builder)
         cfg = newton.ModelBuilder.JointDofConfig
@@ -347,22 +347,22 @@ class TestCustomAttributes(unittest.TestCase):
             linear_axes=[cfg(axis=newton.Axis.X), cfg(axis=newton.Axis.Y)],
             angular_axes=[cfg(axis=[0, 0, 1])],
             custom_attributes={
-                "dof_custom_vec2": [[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]],
-                "coord_custom_vec3": [[0.1, 0.2, 0.3], [0.4, 0.5, 0.6], [0.7, 0.8, 0.9]],
+                "custom_vec2_dof": [[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]],
+                "custom_vec3_coord": [[0.1, 0.2, 0.3], [0.4, 0.5, 0.6], [0.7, 0.8, 0.9]],
             },
         )
 
         model = builder.finalize(device=self.device)
 
         # Verify DOF vector values
-        dof_vec2_numpy = model.dof_custom_vec2.numpy()
+        dof_vec2_numpy = model.custom_vec2_dof.numpy()
         np.testing.assert_array_almost_equal(dof_vec2_numpy[2], [1.0, 2.0], decimal=5)
         np.testing.assert_array_almost_equal(dof_vec2_numpy[3], [3.0, 4.0], decimal=5)
         np.testing.assert_array_almost_equal(dof_vec2_numpy[4], [5.0, 6.0], decimal=5)
         np.testing.assert_array_almost_equal(dof_vec2_numpy[0], [0.0, 0.0], decimal=5)
 
         # Verify coordinate vector values
-        coord_vec3_numpy = model.coord_custom_vec3.numpy()
+        coord_vec3_numpy = model.custom_vec3_coord.numpy()
         np.testing.assert_array_almost_equal(coord_vec3_numpy[2], [0.1, 0.2, 0.3], decimal=5)
         np.testing.assert_array_almost_equal(coord_vec3_numpy[3], [0.4, 0.5, 0.6], decimal=5)
         np.testing.assert_array_almost_equal(coord_vec3_numpy[4], [0.7, 0.8, 0.9], decimal=5)
@@ -373,8 +373,8 @@ class TestCustomAttributes(unittest.TestCase):
         builder = newton.ModelBuilder()
 
         # Declare custom attributes before use
-        builder.add_custom_attribute("dof_custom_float", newton.ModelAttributeFrequency.JOINT_DOF, dtype=wp.float32)
-        builder.add_custom_attribute("coord_custom_float", newton.ModelAttributeFrequency.JOINT_COORD, dtype=wp.float32)
+        builder.add_custom_attribute("custom_float_dof", newton.ModelAttributeFrequency.JOINT_DOF, dtype=wp.float32)
+        builder.add_custom_attribute("custom_float_coord", newton.ModelAttributeFrequency.JOINT_COORD, dtype=wp.float32)
 
         robot_entities = self._add_test_robot(builder)
         cfg = newton.ModelBuilder.JointDofConfig
@@ -386,7 +386,7 @@ class TestCustomAttributes(unittest.TestCase):
                 parent=robot_entities["link2"],
                 child=body1,
                 axis=[0, 0, 1],
-                custom_attributes={"dof_custom_float": 0.1},
+                custom_attributes={"custom_float_dof": 0.1},
             )
 
         # Test wrong DOF list length (value error)
@@ -397,7 +397,7 @@ class TestCustomAttributes(unittest.TestCase):
                 child=body2,
                 linear_axes=[cfg(axis=newton.Axis.X), cfg(axis=newton.Axis.Y)],
                 angular_axes=[cfg(axis=[0, 0, 1])],
-                custom_attributes={"dof_custom_float": [0.1, 0.2]},  # 2 values for 3-DOF joint
+                custom_attributes={"custom_float_dof": [0.1, 0.2]},  # 2 values for 3-DOF joint
             )
 
         # Test coordinate attribute must be a list (type error)
@@ -407,7 +407,7 @@ class TestCustomAttributes(unittest.TestCase):
                 parent=robot_entities["link2"],
                 child=body3,
                 axis=[1, 0, 0],
-                custom_attributes={"coord_custom_float": 0.5},
+                custom_attributes={"custom_float_coord": 0.5},
             )
 
     def test_vector_type_inference(self):
@@ -572,7 +572,7 @@ class TestCustomAttributes(unittest.TestCase):
             assignment=ModelAttributeAssignment.MODEL,
         )
         sub_builder.add_custom_attribute(
-            "dof_gain",
+            "gain_dof",
             newton.ModelAttributeFrequency.JOINT_DOF,
             dtype=wp.float32,
             assignment=ModelAttributeAssignment.CONTROL,
@@ -601,7 +601,7 @@ class TestCustomAttributes(unittest.TestCase):
             parent=body1,
             child=body2,
             axis=[0, 0, 1],
-            custom_attributes={"dof_gain": [1.5]},
+            custom_attributes={"gain_dof": [1.5]},
         )
 
         # Create main builder and add sub-builder multiple times
@@ -616,14 +616,14 @@ class TestCustomAttributes(unittest.TestCase):
         self.assertIn("robot_id", main_builder.custom_attributes)
         self.assertIn("temperature", main_builder.custom_attributes)
         self.assertIn("shape_color", main_builder.custom_attributes)
-        self.assertIn("dof_gain", main_builder.custom_attributes)
+        self.assertIn("gain_dof", main_builder.custom_attributes)
 
         # Verify frequencies and assignments
         self.assertEqual(main_builder.custom_attributes["robot_id"].frequency, newton.ModelAttributeFrequency.BODY)
         self.assertEqual(main_builder.custom_attributes["robot_id"].assignment, ModelAttributeAssignment.MODEL)
         self.assertEqual(main_builder.custom_attributes["temperature"].assignment, ModelAttributeAssignment.STATE)
         self.assertEqual(main_builder.custom_attributes["shape_color"].frequency, newton.ModelAttributeFrequency.SHAPE)
-        self.assertEqual(main_builder.custom_attributes["dof_gain"].frequency, newton.ModelAttributeFrequency.JOINT_DOF)
+        self.assertEqual(main_builder.custom_attributes["gain_dof"].frequency, newton.ModelAttributeFrequency.JOINT_DOF)
 
         # Build model and verify values
         model = main_builder.finalize(device=self.device)
@@ -658,7 +658,7 @@ class TestCustomAttributes(unittest.TestCase):
         np.testing.assert_array_almost_equal(shape_colors[3], [0.0, 1.0, 0.0], decimal=5)
 
         # Verify JOINT_DOF attributes (1 DOF per instance, 2 instances = 2 DOFs total)
-        dof_gains = control.dof_gain.numpy()
+        dof_gains = control.gain_dof.numpy()
 
         # First instance (DOF 0)
         self.assertAlmostEqual(dof_gains[0], 1.5, places=5)

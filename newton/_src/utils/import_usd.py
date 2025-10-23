@@ -504,10 +504,14 @@ def parse_usd(
             load_visual_shapes(parent_body_id, child, xform)
 
     def add_body(prim, xform, key, armature):
+        # Extract custom attributes for this body
+        body_custom_attrs = R.get_custom_attributes_for_prim(prim, ModelAttributeFrequency.BODY)
+
         b = builder.add_body(
             xform=xform,
             key=key,
             armature=armature,
+            custom_attributes=body_custom_attrs,
         )
         path_body_map[key] = b
         if load_non_physics_prims:
@@ -595,6 +599,10 @@ def parse_usd(
             joint_prim, prim_type=PrimType.JOINT, key="armature", default=default_joint_armature
         )
         joint_friction = R.get_value(joint_prim, prim_type=PrimType.JOINT, key="friction", default=0.0)
+
+        # Extract custom attributes for this joint
+        joint_custom_attrs = R.get_custom_attributes_for_prim(joint_prim, ModelAttributeFrequency.JOINT)
+
         joint_params = {
             "parent": parent_id,
             "child": child_id,
@@ -602,6 +610,7 @@ def parse_usd(
             "child_xform": child_tf,
             "key": str(joint_path),
             "enabled": joint_desc.jointEnabled,
+            "custom_attributes": joint_custom_attrs,
         }
 
         # joint index before insertion
@@ -932,6 +941,22 @@ def parse_usd(
         physics_scene_prim = stage.GetPrimAtPath(path)
         for a in physics_scene_prim.GetAttributes():
             scene_attributes[a.GetName()] = a.Get()
+
+        # Parse custom attribute declarations from PhysicsScene prim
+        # This must happen before processing any other prims
+        R.parse_custom_attribute_declarations(physics_scene_prim)
+
+        # Declare all custom attributes in the builder
+        declarations = R.get_custom_attribute_declarations()
+        for _full_key, attr in declarations.items():
+            builder.add_custom_attribute(
+                name=attr.name,
+                frequency=attr.frequency,
+                dtype=attr.dtype,
+                default=attr.default,
+                assignment=attr.assignment,
+                namespace=attr.namespace,
+            )
 
         # Updating joint_drive_gains_scaling if set of the PhysicsScene
         joint_drive_gains_scaling = parse_float(
@@ -1320,6 +1345,9 @@ def parse_usd(
                     shape_xform = incoming_world_xform * local_xform
                 else:
                     shape_xform = local_xform
+                # Extract custom attributes for this shape
+                shape_custom_attrs = R.get_custom_attributes_for_prim(prim, ModelAttributeFrequency.SHAPE)
+
                 shape_params = {
                     "body": body_id,
                     "xform": shape_xform,
@@ -1338,6 +1366,7 @@ def parse_usd(
                         is_visible=not hide_collision_shapes,
                     ),
                     "key": path,
+                    "custom_attributes": shape_custom_attrs,
                 }
                 # print(path, shape_params)
                 if key == UsdPhysics.ObjectType.CubeShape:
@@ -1636,54 +1665,6 @@ def parse_usd(
             builder = multi_world_builder
 
     solver_specific_attrs = R.get_solver_specific_attrs() if collect_solver_specific_attrs else {}
-    custom_props = R.get_custom_attributes() or {}
-
-    def _assign_value(cp_name: str, frequency: ModelAttributeFrequency, prim_path: str, value) -> None:
-        v = value
-        spec = builder.custom_attributes.get(cp_name)
-        if spec is None:
-            return
-        overrides = spec.values
-        if overrides is None:
-            return
-        if frequency == ModelAttributeFrequency.BODY:
-            idx = path_body_map.get(prim_path, -1)
-            if idx >= 0:
-                overrides[int(idx)] = v
-        elif frequency == ModelAttributeFrequency.SHAPE:
-            idx = path_shape_map.get(prim_path, -1)
-            if idx >= 0:
-                overrides[int(idx)] = v
-        elif frequency == ModelAttributeFrequency.JOINT:
-            idx = path_joint_map.get(prim_path, -1)
-            if idx >= 0:
-                overrides[int(idx)] = v
-        elif frequency == ModelAttributeFrequency.JOINT_DOF:
-            j = path_joint_map.get(prim_path, -1)
-            if j >= 0:
-                dof_begin = builder.joint_qd_start[j]
-                dof_end = (
-                    builder.joint_qd_start[j + 1] if (j + 1) < len(builder.joint_qd_start) else builder.joint_dof_count
-                )
-                for k in range(int(dof_begin), int(dof_end)):
-                    overrides[k] = v
-        elif frequency == ModelAttributeFrequency.JOINT_COORD:
-            j = path_joint_map.get(prim_path, -1)
-            if j >= 0:
-                coord_begin = builder.joint_q_start[j]
-                coord_end = (
-                    builder.joint_q_start[j + 1] if (j + 1) < len(builder.joint_q_start) else builder.joint_coord_count
-                )
-                for k in range(int(coord_begin), int(coord_end)):
-                    overrides[k] = v
-
-    for variable, prim_map in custom_props.items():
-        attr = prim_map.attribute
-        builder.add_custom_attribute(
-            variable, attr.frequency, attr.dtype, default=attr.default, assignment=attr.assignment
-        )
-        for pth, val in prim_map.occurrences.items():
-            _assign_value(variable, attr.frequency, pth, val)
     return {
         "fps": stage.GetFramesPerSecond(),
         "duration": stage.GetEndTimeCode() - stage.GetStartTimeCode(),
