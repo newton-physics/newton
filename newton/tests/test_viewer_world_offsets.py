@@ -110,6 +110,143 @@ class TestViewerWorldOffsets(unittest.TestCase):
         z_values_large = offsets_large[:, 2]
         assert np.allclose(z_values_large, z_values_large[0]), "Large grid should also use 2D arrangement"
 
+    def test_auto_compute_with_different_up_axes(self):
+        """Test that auto-computed world offsets respect the model's up axis."""
+        num_worlds = 4
+
+        # Test with Z-up (default)
+        builder_z = newton.ModelBuilder(up_axis="Z")
+        world_z = newton.ModelBuilder(up_axis="Z")
+        world_z.add_body(
+            xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
+            mass=1.0,
+            I_m=wp.mat33(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0),
+            key="test_body",
+        )
+        world_z.add_shape_box(body=0, hx=1.0, hy=1.0, hz=1.0)
+        builder_z.replicate(world_z, num_worlds)
+        model_z = builder_z.finalize()
+
+        viewer_z = ViewerNull(num_frames=1)
+        viewer_z.set_model(model_z)
+        offsets_z = viewer_z.world_offsets.numpy()
+
+        # For Z-up, offsets should be in XY plane (Z=0)
+        assert np.allclose(offsets_z[:, 2], 0.0), "Z-up should have zero Z offsets"
+        assert not np.allclose(offsets_z[:, 0], 0.0) or not np.allclose(offsets_z[:, 1], 0.0), (
+            "Z-up should have non-zero X or Y offsets"
+        )
+
+        # Test with Y-up
+        builder_y = newton.ModelBuilder(up_axis="Y")
+        world_y = newton.ModelBuilder(up_axis="Y")
+        world_y.add_body(
+            xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
+            mass=1.0,
+            I_m=wp.mat33(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0),
+            key="test_body",
+        )
+        world_y.add_shape_box(body=0, hx=1.0, hy=1.0, hz=1.0)
+        builder_y.replicate(world_y, num_worlds)
+        model_y = builder_y.finalize()
+
+        viewer_y = ViewerNull(num_frames=1)
+        viewer_y.set_model(model_y)
+        offsets_y = viewer_y.world_offsets.numpy()
+
+        # For Y-up, offsets should be in XZ plane (Y=0)
+        assert np.allclose(offsets_y[:, 1], 0.0), "Y-up should have zero Y offsets"
+        assert not np.allclose(offsets_y[:, 0], 0.0) or not np.allclose(offsets_y[:, 2], 0.0), (
+            "Y-up should have non-zero X or Z offsets"
+        )
+
+    def test_auto_compute_skips_large_collision_radii(self):
+        """Test that auto-compute ignores shapes with unreasonably large collision radii."""
+        num_worlds = 2
+        builder = newton.ModelBuilder()
+
+        # Create a world with a normal box and an infinite plane
+        world = newton.ModelBuilder()
+
+        # Add a normal box
+        world.add_body(
+            xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
+            mass=1.0,
+            I_m=wp.mat33(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0),
+            key="box_body",
+        )
+        world.add_shape_box(body=0, hx=1.0, hy=1.0, hz=1.0)
+
+        # Add an infinite plane (which has very large collision radius)
+        world.add_ground_plane()
+
+        # Replicate
+        builder.replicate(world, num_worlds)
+        model = builder.finalize()
+
+        # Create viewer and set model - should auto-compute offsets
+        viewer = ViewerNull(num_frames=1)
+        viewer.set_model(model)
+
+        # Check that world offsets were computed based on the box, not the plane
+        offsets = viewer.world_offsets.numpy()
+
+        # The spacing should be reasonable (based on box size ~2.0 with margin)
+        # Not huge due to the infinite plane
+        for i in range(1, num_worlds):
+            distance = np.linalg.norm(offsets[i] - offsets[0])
+            assert distance < 10.0, f"Spacing too large ({distance}), likely included infinite plane"
+            assert distance > 2.0, f"Spacing too small ({distance})"
+
+    def test_auto_compute_with_body_attached_shapes(self):
+        """Test auto-compute works correctly with shapes attached to bodies at non-zero positions."""
+        num_worlds = 4
+        builder = newton.ModelBuilder()
+
+        # Create a world with a body at non-zero position
+        world = newton.ModelBuilder()
+        # Add a body at (2, 3, 1) - away from origin
+        body_pos = wp.vec3(2.0, 3.0, 1.0)
+        world.add_body(
+            xform=wp.transform(body_pos, wp.quat_identity()),
+            mass=1.0,
+            I_m=wp.mat33(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0),
+            key="offset_body",
+        )
+        # Add shape with local offset
+        world.add_shape_box(
+            body=0,
+            xform=wp.transform(wp.vec3(0.5, 0.0, 0.0), wp.quat_identity()),  # Local offset
+            hx=0.5,
+            hy=0.5,
+            hz=0.5,
+        )
+
+        # Replicate without spacing
+        builder.replicate(world, num_worlds)
+        model = builder.finalize()
+
+        # Create viewer and let it auto-compute offsets
+        viewer = ViewerNull(num_frames=1)
+        viewer.set_model(model)
+
+        # Verify offsets were computed
+        assert viewer.world_offsets is not None
+        offsets = viewer.world_offsets.numpy()
+
+        # The bounds should account for body position + shape offset
+        # Body at (2, 3, 1), shape local offset (0.5, 0, 0), so shape center at (2.5, 3, 1)
+        # With shape radius ~0.866 (for box with half-extents 0.5), bounds extend to about (3.366, 3.866, 1.866)
+        # With 1.5x margin, spacing should be reasonable but not necessarily > 3.0
+        for i in range(1, num_worlds):
+            distance = np.linalg.norm(offsets[i] - offsets[0])
+            # Should have reasonable spacing based on actual world bounds
+            assert distance > 2.0, f"World {i} spacing too small: {distance}"
+
+        # Verify 2D grid arrangement
+        z_values = offsets[:, 2]
+        assert np.allclose(z_values, z_values[0]), "Auto-computed offsets should use 2D grid"
+
     def test_physics_at_origin(self):
         """Test that physics simulation runs with all worlds at origin."""
         num_worlds = 4

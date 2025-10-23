@@ -228,6 +228,64 @@ def update_shape_xforms(
 
 
 @wp.kernel
+def estimate_world_extents(
+    shape_transform: wp.array(dtype=wp.transform),
+    shape_body: wp.array(dtype=int),
+    shape_collision_radius: wp.array(dtype=float),
+    shape_world: wp.array(dtype=int),
+    body_q: wp.array(dtype=wp.transform),
+    num_worlds: int,
+    # outputs (num_worlds x 3 arrays for min/max xyz per world)
+    world_bounds_min: wp.array(dtype=float, ndim=2),
+    world_bounds_max: wp.array(dtype=float, ndim=2),
+):
+    tid = wp.tid()
+
+    # Get shape's world assignment
+    world_idx = shape_world[tid]
+
+    # Skip global shapes (world -1) or invalid world indices
+    if world_idx < 0 or world_idx >= num_worlds:
+        return
+
+    # Get collision radius and skip shapes with unreasonably large radii
+    radius = shape_collision_radius[tid]
+    if radius > 1.0e5:  # Skip outliers like infinite planes
+        return
+
+    # Get shape's world position
+    shape_xform = shape_transform[tid]
+    shape_parent = shape_body[tid]
+
+    # Compute world transform
+    if shape_parent >= 0:
+        # Shape attached to body: world_xform = body_xform * shape_xform
+        body_xform = body_q[shape_parent]
+        world_xform = wp.transform_multiply(body_xform, shape_xform)
+    else:
+        # Static shape: already in world space
+        world_xform = shape_xform
+
+    # Get position and radius
+    pos = wp.transform_get_translation(world_xform)
+    radius = shape_collision_radius[tid]
+
+    # Update bounds for this world using atomic operations
+    min_pos = pos - wp.vec3(radius, radius, radius)
+    max_pos = pos + wp.vec3(radius, radius, radius)
+
+    # Atomic min for each component
+    wp.atomic_min(world_bounds_min, world_idx, 0, min_pos[0])
+    wp.atomic_min(world_bounds_min, world_idx, 1, min_pos[1])
+    wp.atomic_min(world_bounds_min, world_idx, 2, min_pos[2])
+
+    # Atomic max for each component
+    wp.atomic_max(world_bounds_max, world_idx, 0, max_pos[0])
+    wp.atomic_max(world_bounds_max, world_idx, 1, max_pos[1])
+    wp.atomic_max(world_bounds_max, world_idx, 2, max_pos[2])
+
+
+@wp.kernel
 def compute_contact_lines(
     body_q: wp.array(dtype=wp.transform),
     shape_body: wp.array(dtype=int),
