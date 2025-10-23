@@ -45,6 +45,71 @@ class TestViewerWorldOffsets(unittest.TestCase):
             offsets_with_up = newton.utils.compute_world_offsets(num_worlds, spacing, up_axis=newton.Axis.Z)
             assert_np_equal(offsets_with_up, np.array(expected), tol=1e-5)
 
+    def test_auto_compute_world_offsets(self):
+        """Test that viewer automatically computes world offsets when not explicitly set."""
+        num_worlds = 4
+        builder = newton.ModelBuilder()
+
+        # Create a simple world with known extents
+        world = newton.ModelBuilder()
+        # Add a box at origin with size 2x2x2
+        world.add_body(
+            xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
+            mass=1.0,
+            I_m=wp.mat33(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0),
+            key="test_body",
+        )
+        world.add_shape_box(
+            body=0,
+            hx=1.0,
+            hy=1.0,
+            hz=1.0,
+        )
+
+        # Replicate without spacing
+        builder.replicate(world, num_worlds)
+        model = builder.finalize()
+
+        # Create viewer and set model - should auto-compute offsets
+        viewer = ViewerNull(num_frames=1)
+        viewer.set_model(model)
+
+        # Check that world offsets were computed
+        assert viewer.world_offsets is not None
+        offsets = viewer.world_offsets.numpy()
+        assert len(offsets) == num_worlds
+
+        # Verify offsets are reasonable - worlds should be spaced apart
+        # The auto-compute should create spacing based on world 0 extents
+        # Box has size 2x2x2, so with 1.5x margin, spacing should be around 3.0
+        for i in range(1, num_worlds):
+            distance = np.linalg.norm(offsets[i] - offsets[0])
+            assert distance > 2.0, f"World {i} too close to world 0: distance={distance}"
+
+        # Verify 2D grid arrangement (all Z values should be the same)
+        z_values = offsets[:, 2]
+        assert np.allclose(z_values, z_values[0]), "Auto-computed offsets should use 2D grid (constant Z)"
+
+        # Test that explicit set_world_offsets overrides auto-computed offsets
+        viewer.set_world_offsets(num_worlds, spacing=(10.0, 0.0, 0.0))
+        new_offsets = viewer.world_offsets.numpy()
+        expected = [[-15.0, 0.0, 0.0], [-5.0, 0.0, 0.0], [5.0, 0.0, 0.0], [15.0, 0.0, 0.0]]
+        assert_np_equal(new_offsets, np.array(expected), tol=1e-5)
+
+        # Test with more worlds to verify 2D grid arrangement
+        num_worlds_large = 16
+        builder_large = newton.ModelBuilder()
+        builder_large.replicate(world, num_worlds_large)
+        model_large = builder_large.finalize()
+
+        viewer_large = ViewerNull(num_frames=1)
+        viewer_large.set_model(model_large)
+
+        # Check 2D grid for 16 worlds (should be 4x4 grid in XY plane)
+        offsets_large = viewer_large.world_offsets.numpy()
+        z_values_large = offsets_large[:, 2]
+        assert np.allclose(z_values_large, z_values_large[0]), "Large grid should also use 2D arrangement"
+
     def test_physics_at_origin(self):
         """Test that physics simulation runs with all worlds at origin."""
         num_worlds = 4

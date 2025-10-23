@@ -95,6 +95,10 @@ class ViewerBase:
             self.device = model.device
             self._populate_shapes()
 
+            # Auto-compute world offsets if not already set
+            if self.world_offsets is None:
+                self._auto_compute_world_offsets()
+
     def set_camera(self, pos: wp.vec3, pitch: float, yaw: float):
         pass
 
@@ -113,6 +117,52 @@ class ViewerBase:
 
         # Convert to warp array
         self.world_offsets = wp.array(world_offsets, dtype=wp.vec3, device=self.device)
+
+    def _auto_compute_world_offsets(self):
+        """Automatically compute world offsets based on model extents."""
+        # Get shape world assignments
+        shape_worlds = self.model.shape_world.numpy()
+
+        # Determine number of worlds (max world index + 1)
+        num_worlds = int(np.max(shape_worlds[shape_worlds >= 0]) + 1) if len(shape_worlds) > 0 else 0
+
+        # If only one world or no shapes, no offsets needed
+        if num_worlds <= 1:
+            return
+
+        # Compute bounding box of world 0 shapes
+        world0_mask = shape_worlds == 0
+        if not np.any(world0_mask):
+            # No shapes in world 0, use default spacing
+            self.set_world_offsets(num_worlds)
+            return
+
+        # Get transforms and collision radii for world 0 shapes
+        shape_transforms = self.model.shape_transform.numpy()[world0_mask]
+        shape_collision_radii = self.model.shape_collision_radius.numpy()[world0_mask]
+
+        # Compute bounding box of world 0 using collision radii
+        min_bound = np.array([float("inf"), float("inf"), float("inf")])
+        max_bound = np.array([float("-inf"), float("-inf"), float("-inf")])
+
+        for i in range(len(shape_transforms)):
+            # shape_transform is (x, y, z, qx, qy, qz, qw) - first 3 are position
+            pos = shape_transforms[i][:3]
+            radius = shape_collision_radii[i]
+
+            # Update bounds using collision radius
+            min_bound = np.minimum(min_bound, pos - radius)
+            max_bound = np.maximum(max_bound, pos + radius)
+
+        # Compute extents and add margin
+        extents = max_bound - min_bound
+        margin = 1.5  # 50% margin between worlds
+
+        # Default to 2D grid arrangement (XY plane)
+        spacing = (extents[0] * margin, extents[1] * margin, 0.0)
+
+        # Set world offsets with computed spacing
+        self.set_world_offsets(num_worlds, spacing=spacing)
 
     def begin_frame(self, time):
         self.time = time
