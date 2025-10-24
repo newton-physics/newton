@@ -199,3 +199,13 @@ reportUnknownMemberType = false
 reportUnknownParameterType = false
 reportOptionalOperand = false
 reportUnusedCallResult = false
+
+[tool.typos]
+files.extend-exclude = ["/examples/assets", "*.urdf", "*.usd", "*.usda", "*.mjcf"]
+
+[tool.typos.default.extend-words]
+ba = "ba"
+HAA = "HAA"
+
+[tool.typos.default.extend-identifiers]
+PNGs = "PNGs"
