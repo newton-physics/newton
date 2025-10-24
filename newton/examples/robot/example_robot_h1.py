@@ -71,7 +71,7 @@ class Example:
             h1.joint_target_kd[i] = 5
 
         builder = newton.ModelBuilder()
-        builder.replicate(h1, self.num_worlds, spacing=(3, 3, 0))
+        builder.replicate(h1, self.num_worlds)
 
         builder.add_ground_plane()
 
@@ -84,6 +84,7 @@ class Example:
         self.contacts = self.model.collide(self.state_0)
 
         self.viewer.set_model(self.model)
+        self.viewer.set_world_offsets((3.0, 3.0, 0.0))
 
         self.capture()
 

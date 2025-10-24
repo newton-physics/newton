@@ -114,7 +114,7 @@ class Example:
             allegro_hand.joint_target[i] = 0.0
 
         builder = newton.ModelBuilder()
-        builder.replicate(allegro_hand, self.num_worlds, spacing=(1, 1, 0))
+        builder.replicate(allegro_hand, self.num_worlds)
 
         builder.add_ground_plane()
 
@@ -144,6 +144,7 @@ class Example:
         self.contacts = self.model.collide(self.state_0)
 
         self.viewer.set_model(self.model)
+        self.viewer.set_world_offsets((1.0, 1.0, 0.0))
 
         self.capture()
 

@@ -54,6 +54,7 @@ from ..geometry import (
 )
 from ..geometry.inertia import validate_and_correct_inertia_kernel, verify_and_correct_inertia
 from ..geometry.utils import RemeshingMethod, compute_inertia_obb, remesh_mesh
+from ..utils import compute_world_offsets
 from .graph_coloring import ColoringAlgorithm, color_trimesh, combine_independent_particle_coloring
 from .joints import (
     EqType,
@@ -576,50 +577,11 @@ class ModelBuilder:
 
     # endregion
 
-    def _compute_replicate_offsets(self, num_worlds: int, spacing: tuple[float, float, float]):
-        # compute positional offsets per world
-        spacing = np.array(spacing, dtype=np.float32)
-        nonzeros = np.nonzero(spacing)[0]
-        num_dim = nonzeros.shape[0]
-        if num_dim > 0:
-            side_length = int(np.ceil(num_worlds ** (1.0 / num_dim)))
-            spacings = []
-            if num_dim == 1:
-                for i in range(num_worlds):
-                    spacings.append(i * spacing)
-            elif num_dim == 2:
-                for i in range(num_worlds):
-                    d0 = i // side_length
-                    d1 = i % side_length
-                    offset = np.zeros(3)
-                    offset[nonzeros[0]] = d0 * spacing[nonzeros[0]]
-                    offset[nonzeros[1]] = d1 * spacing[nonzeros[1]]
-                    spacings.append(offset)
-            elif num_dim == 3:
-                for i in range(num_worlds):
-                    d0 = i // (side_length * side_length)
-                    d1 = (i // side_length) % side_length
-                    d2 = i % side_length
-                    offset = np.zeros(3)
-                    offset[0] = d0 * spacing[0]
-                    offset[1] = d1 * spacing[1]
-                    offset[2] = d2 * spacing[2]
-                    spacings.append(offset)
-            spacings = np.array(spacings, dtype=np.float32)
-        else:
-            spacings = np.zeros((num_worlds, 3), dtype=np.float32)
-        min_offsets = np.min(spacings, axis=0)
-        correction = min_offsets + (np.max(spacings, axis=0) - min_offsets) / 2.0
-        # ensure the worlds are not shifted below the ground plane
-        correction[Axis.from_any(self.up_axis)] = 0.0
-        spacings -= correction
-        return spacings
-
     def replicate(
         self,
         builder: ModelBuilder,
         num_worlds: int,
-        spacing: tuple[float, float, float] = (5.0, 5.0, 0.0),
+        spacing: tuple[float, float, float] = (0.0, 0.0, 0.0),
     ):
         """
         Replicates the given builder multiple times, offsetting each copy according to the supplied spacing.
@@ -628,14 +590,19 @@ class ModelBuilder:
         arranged in a regular grid or along a line. Each copy is offset in space by a multiple of the
         specified spacing vector, and all entities from each copy are assigned to a new world.
 
+        Note:
+            For visual separation of worlds, it is recommended to use the viewer's
+            `set_world_offsets()` method instead of physical spacing. This improves numerical
+            stability by keeping all worlds at the origin in the physics simulation.
+
         Args:
             builder (ModelBuilder): The builder to replicate. All entities from this builder will be copied.
             num_worlds (int): The number of worlds to create.
             spacing (tuple[float, float, float], optional): The spacing between each copy along each axis.
                 For example, (5.0, 5.0, 0.0) arranges copies in a 2D grid in the XY plane.
-                Defaults to (5.0, 5.0, 0.0).
+                Defaults to (0.0, 0.0, 0.0).
         """
-        offsets = self._compute_replicate_offsets(num_worlds, spacing)
+        offsets = compute_world_offsets(num_worlds, spacing, self.up_axis)
         xform = wp.transform_identity()
         for i in range(num_worlds):
             xform[:3] = offsets[i]
