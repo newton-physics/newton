@@ -204,6 +204,8 @@ def update_shape_xforms(
     shape_xforms: wp.array(dtype=wp.transform),
     shape_parents: wp.array(dtype=int),
     body_q: wp.array(dtype=wp.transform),
+    shape_worlds: wp.array(dtype=int, ndim=1),
+    world_offsets: wp.array(dtype=wp.vec3, ndim=1),
     world_xforms: wp.array(dtype=wp.transform),
 ):
     tid = wp.tid()
@@ -216,7 +218,71 @@ def update_shape_xforms(
     else:
         world_xform = shape_xform
 
+    if world_offsets:
+        shape_world = shape_worlds[tid]
+        if shape_world >= 0 and shape_world < world_offsets.shape[0]:
+            offset = world_offsets[shape_world]
+            world_xform = wp.transform(world_xform.p + offset, world_xform.q)
+
     world_xforms[tid] = world_xform
+
+
+@wp.kernel
+def estimate_world_extents(
+    shape_transform: wp.array(dtype=wp.transform),
+    shape_body: wp.array(dtype=int),
+    shape_collision_radius: wp.array(dtype=float),
+    shape_world: wp.array(dtype=int),
+    body_q: wp.array(dtype=wp.transform),
+    num_worlds: int,
+    # outputs (num_worlds x 3 arrays for min/max xyz per world)
+    world_bounds_min: wp.array(dtype=float, ndim=2),
+    world_bounds_max: wp.array(dtype=float, ndim=2),
+):
+    tid = wp.tid()
+
+    # Get shape's world assignment
+    world_idx = shape_world[tid]
+
+    # Skip global shapes (world -1) or invalid world indices
+    if world_idx < 0 or world_idx >= num_worlds:
+        return
+
+    # Get collision radius and skip shapes with unreasonably large radii
+    radius = shape_collision_radius[tid]
+    if radius > 1.0e5:  # Skip outliers like infinite planes
+        return
+
+    # Get shape's world position
+    shape_xform = shape_transform[tid]
+    shape_parent = shape_body[tid]
+
+    # Compute world transform
+    if shape_parent >= 0:
+        # Shape attached to body: world_xform = body_xform * shape_xform
+        body_xform = body_q[shape_parent]
+        world_xform = wp.transform_multiply(body_xform, shape_xform)
+    else:
+        # Static shape: already in world space
+        world_xform = shape_xform
+
+    # Get position and radius
+    pos = wp.transform_get_translation(world_xform)
+    radius = shape_collision_radius[tid]
+
+    # Update bounds for this world using atomic operations
+    min_pos = pos - wp.vec3(radius, radius, radius)
+    max_pos = pos + wp.vec3(radius, radius, radius)
+
+    # Atomic min for each component
+    wp.atomic_min(world_bounds_min, world_idx, 0, min_pos[0])
+    wp.atomic_min(world_bounds_min, world_idx, 1, min_pos[1])
+    wp.atomic_min(world_bounds_min, world_idx, 2, min_pos[2])
+
+    # Atomic max for each component
+    wp.atomic_max(world_bounds_max, world_idx, 0, max_pos[0])
+    wp.atomic_max(world_bounds_max, world_idx, 1, max_pos[1])
+    wp.atomic_max(world_bounds_max, world_idx, 2, max_pos[2])
 
 
 @wp.kernel

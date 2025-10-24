@@ -72,13 +72,9 @@ class Example:
             articulation_builder.joint_target_ke[i] = 150
             articulation_builder.joint_target_kd[i] = 5
 
-        spacing = 3.0
-        sqn = int(wp.ceil(wp.sqrt(float(self.num_worlds))))
-
         builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
-        for i in range(self.num_worlds):
-            pos = wp.vec3((i % sqn) * spacing, (i // sqn) * spacing, 0)
-            builder.add_builder(articulation_builder, xform=wp.transform(pos, wp.quat_identity()))
+        for _ in range(self.num_worlds):
+            builder.add_builder(articulation_builder)
 
         builder.add_ground_plane()
 
@@ -99,6 +95,7 @@ class Example:
 
         # ensure this is called at the end of the Example constructor
         self.viewer.set_model(self.model)
+        self.viewer.set_world_offsets((3.0, 3.0, 0.0))
 
         # put graph capture into it's own function
         self.capture()

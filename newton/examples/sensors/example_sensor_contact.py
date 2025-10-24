@@ -114,7 +114,7 @@ class Example:
         )
 
         builder = newton.ModelBuilder()
-        builder.replicate(world_builder, self.num_worlds, spacing=(4.0, 4.0, 0.0))
+        builder.replicate(world_builder, self.num_worlds)
 
         builder.add_ground_plane()
         # stores contact info required by contact sensors
@@ -139,6 +139,7 @@ class Example:
         self.solver = newton.solvers.SolverMuJoCo(self.model, njmax=100, ncon_per_world=100)
 
         self.viewer.set_model(self.model)
+        self.viewer.set_world_offsets((4.0, 4.0, 0.0))
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
