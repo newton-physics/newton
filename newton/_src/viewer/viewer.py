@@ -199,6 +199,7 @@ class ViewerBase:
         materials=None,
         geo_thickness: float = 0.0,
         geo_is_solid: bool = True,
+        geo_src=None,
         hidden=False,
     ):
         """
@@ -218,6 +219,7 @@ class ViewerBase:
             materials: wp.array(dtype=wp.vec4) or None (broadcasted if length 1)
             thickness: Optional thickness (used for hashing consistency)
             is_solid: If False, can be used for wire/solid hashing parity
+            geo_src: Source geometry to use only when `geo_type` is `newton.GeoType.MESH`
             hidden: If True, the shape will not be rendered
         """
 
@@ -236,6 +238,7 @@ class ViewerBase:
             tuple(geo_scale),
             float(geo_thickness),
             bool(geo_is_solid),
+            geo_src=geo_src,
         )
 
         # prepare instance properties
@@ -292,9 +295,9 @@ class ViewerBase:
         """
 
         # GEO_MESH handled by provided source geometry
-        if geo_type == newton.GeoType.MESH:
+        if geo_type in (newton.GeoType.MESH, newton.GeoType.CONVEX_MESH):
             if geo_src is None:
-                raise ValueError("log_geo requires geo_src for GEO_MESH")
+                raise ValueError(f"log_geo requires geo_src for MESH or CONVEX_MESH (name={name})")
 
             # resolve points/indices from source, solidify if requested
             from warp.render.utils import solidify_mesh  # noqa: PLC0415
@@ -349,7 +352,7 @@ class ViewerBase:
                 ext = tuple(geo_scale[:3])
             vertices, indices = create_box_mesh(ext)
         else:
-            raise ValueError(f"log_geo does not support geo_type={geo_type}")
+            raise ValueError(f"log_geo does not support geo_type={geo_type} (name={name})")
 
         # Convert to Warp arrays and forward to log_mesh
         points = wp.array(vertices[:, 0:3], dtype=wp.vec3, device=self.device)
@@ -526,6 +529,7 @@ class ViewerBase:
             newton.GeoType.CONE: "cone",
             newton.GeoType.BOX: "box",
             newton.GeoType.MESH: "mesh",
+            newton.GeoType.CONVEX_MESH: "convex_hull",
         }.get(geo_type)
 
         if base_name is None:
@@ -538,7 +542,7 @@ class ViewerBase:
             tuple(scale_list),
             float(thickness),
             bool(is_solid),
-            geo_src=geo_src if geo_type == newton.GeoType.MESH else None,
+            geo_src=geo_src if geo_type in (newton.GeoType.MESH, newton.GeoType.CONVEX_MESH) else None,
             hidden=True,
         )
         self._geometry_cache[geo_hash] = mesh_path
@@ -585,7 +589,7 @@ class ViewerBase:
                     tuple(geo_scale),
                     float(geo_thickness),
                     bool(geo_is_solid),
-                    geo_src=geo_src if geo_type == newton.GeoType.MESH else None,
+                    geo_src=geo_src if geo_type in (newton.GeoType.MESH, newton.GeoType.CONVEX_MESH) else None,
                 )
             else:
                 mesh_name = self._geometry_cache[geo_hash]
@@ -615,7 +619,7 @@ class ViewerBase:
 
             material = wp.vec4(0.5, 0.0, 0.0, 0.0)  # roughness, metallic, checker, unused
 
-            if geo_type == newton.GeoType.MESH:
+            if geo_type in (newton.GeoType.MESH, newton.GeoType.CONVEX_MESH):
                 scale = np.asarray(geo_scale, dtype=np.float32)
 
                 if geo_src._color is not None:

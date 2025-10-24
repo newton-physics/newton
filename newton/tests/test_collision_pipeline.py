@@ -44,12 +44,23 @@ def type_to_str(shape_type: GeoType):
         return "cylinder"
     elif shape_type == GeoType.MESH:
         return "mesh"
+    elif shape_type == GeoType.CONVEX_MESH:
+        return "convex_hull"
     else:
         return "unknown"
 
 
 class CollisionSetup:
-    def __init__(self, viewer, device, shape_type_a, shape_type_b, solver_fn, sim_substeps):
+    def __init__(
+        self,
+        viewer,
+        device,
+        shape_type_a,
+        shape_type_b,
+        solver_fn,
+        sim_substeps,
+        use_unified_pipeline=False,
+    ):
         self.sim_substeps = sim_substeps
         self.frame_dt = 1 / 60
         self.sim_dt = self.frame_dt / self.sim_substeps
@@ -57,6 +68,7 @@ class CollisionSetup:
 
         self.shape_type_a = shape_type_a
         self.shape_type_b = shape_type_b
+        self.use_unified_pipeline = use_unified_pipeline
 
         self.builder = newton.ModelBuilder(gravity=0.0)
         self.builder.add_articulation()
@@ -76,7 +88,19 @@ class CollisionSetup:
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.control = self.model.control()
-        self.contacts = self.model.collide(self.state_0)
+
+        # Initialize collision pipeline
+        if use_unified_pipeline:
+            self.collision_pipeline = newton.CollisionPipelineUnified.from_model(
+                self.model,
+                rigid_contact_max_per_pair=10,
+                rigid_contact_margin=0.01,
+                broad_phase_mode=newton.BroadPhaseMode.EXPLICIT,
+            )
+            self.contacts = self.model.collide(self.state_0, collision_pipeline=self.collision_pipeline)
+        else:
+            self.collision_pipeline = None
+            self.contacts = self.model.collide(self.state_0)
 
         self.solver = solver_fn(self.model)
 
@@ -101,6 +125,11 @@ class CollisionSetup:
         elif shape_type == GeoType.MESH:
             vertices, indices = newton.utils.create_sphere_mesh(radius=0.5)
             self.builder.add_shape_mesh(body, mesh=newton.Mesh(vertices[:, :3], indices), key=type_to_str(shape_type))
+        elif shape_type == GeoType.CONVEX_MESH:
+            # Use a sphere mesh as it's already convex
+            vertices, indices = newton.utils.create_sphere_mesh(radius=0.5)
+            mesh = newton.Mesh(vertices[:, :3], indices)
+            self.builder.add_shape_convex_hull(body, mesh=mesh, key=type_to_str(shape_type))
         else:
             raise NotImplementedError(f"Shape type {shape_type} not implemented")
 
@@ -113,7 +142,11 @@ class CollisionSetup:
             self.graph = None
 
     def simulate(self):
-        self.contacts = self.model.collide(self.state_0)
+        if self.use_unified_pipeline:
+            self.contacts = self.model.collide(self.state_0, collision_pipeline=self.collision_pipeline)
+        else:
+            self.contacts = self.model.collide(self.state_0)
+
         for _ in range(self.sim_substeps):
             self.state_0.clear_forces()
 
@@ -218,6 +251,58 @@ for shape_type_a, shape_type_b, test_level_a, test_level_b in contact_tests:
         TestCollisionPipeline,
         f"test_{type_to_str(shape_type_a)}_{type_to_str(shape_type_b)}",
         test_collision_pipeline,
+        devices=devices,
+        shape_type_a=shape_type_a,
+        shape_type_b=shape_type_b,
+        test_level_a=test_level_a,
+        test_level_b=test_level_b,
+    )
+
+
+class TestUnifiedCollisionPipeline(unittest.TestCase):
+    pass
+
+
+# Unified collision pipeline tests - replace MESH with CONVEX_MESH
+# MESH is not supported yet in the unified pipeline
+unified_contact_tests = [
+    (GeoType.SPHERE, GeoType.SPHERE, TestLevel.VELOCITY_YZ, TestLevel.STRICT),
+    (GeoType.SPHERE, GeoType.BOX, TestLevel.VELOCITY_YZ, TestLevel.STRICT),
+    (GeoType.SPHERE, GeoType.CAPSULE, TestLevel.VELOCITY_YZ, TestLevel.STRICT),
+    (GeoType.SPHERE, GeoType.CONVEX_MESH, TestLevel.VELOCITY_YZ, TestLevel.STRICT),  # MESH -> CONVEX_MESH
+    (GeoType.BOX, GeoType.BOX, TestLevel.VELOCITY_YZ, TestLevel.VELOCITY_LINEAR),
+    (GeoType.BOX, GeoType.CONVEX_MESH, TestLevel.VELOCITY_YZ, TestLevel.STRICT),  # MESH -> CONVEX_MESH
+    (GeoType.CAPSULE, GeoType.CAPSULE, TestLevel.VELOCITY_YZ, TestLevel.VELOCITY_LINEAR),
+    (GeoType.CAPSULE, GeoType.CONVEX_MESH, TestLevel.VELOCITY_YZ, TestLevel.STRICT),  # MESH -> CONVEX_MESH
+    (GeoType.CONVEX_MESH, GeoType.CONVEX_MESH, TestLevel.VELOCITY_YZ, TestLevel.STRICT),  # MESH -> CONVEX_MESH
+]
+
+
+def test_unified_collision_pipeline(
+    _test, device, shape_type_a: GeoType, shape_type_b: GeoType, test_level_a: TestLevel, test_level_b: TestLevel
+):
+    viewer = newton.viewer.ViewerNull()
+    setup = CollisionSetup(
+        viewer=viewer,
+        device=device,
+        solver_fn=newton.solvers.SolverXPBD,
+        sim_substeps=10,
+        shape_type_a=shape_type_a,
+        shape_type_b=shape_type_b,
+        use_unified_pipeline=True,
+    )
+    for _ in range(200):
+        setup.step()
+        setup.render()
+    setup.test(test_level_a, 0)
+    setup.test(test_level_b, 1)
+
+
+for shape_type_a, shape_type_b, test_level_a, test_level_b in unified_contact_tests:
+    add_function_test(
+        TestUnifiedCollisionPipeline,
+        f"test_{type_to_str(shape_type_a)}_{type_to_str(shape_type_b)}",
+        test_unified_collision_pipeline,
         devices=devices,
         shape_type_a=shape_type_a,
         shape_type_b=shape_type_b,

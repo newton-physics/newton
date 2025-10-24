@@ -491,8 +491,8 @@ def compute_shape_inertia(
             assert isinstance(thickness, float), "thickness must be a float for a hollow cone geom"
             hollow = compute_cone_inertia(density, r - thickness, h - 2.0 * thickness)
             return solid[0] - hollow[0], solid[1], solid[2] - hollow[2]
-    elif type == GeoType.MESH or type == GeoType.SDF:
-        assert src is not None, "src must be provided for mesh or SDF shapes"
+    elif type == GeoType.MESH or type == GeoType.SDF or type == GeoType.CONVEX_MESH:
+        assert src is not None, "src must be provided for mesh, SDF, or convex hull shapes"
         if src.has_inertia and src.mass > 0.0 and src.is_solid == is_solid:
             m, c, I = src.mass, src.com, src.I
             scale = wp.vec3(scale)
@@ -513,8 +513,8 @@ def compute_shape_inertia(
             I_new = wp.mat33([[Ixx, Ixy, Ixz], [Ixy, Iyy, Iyz], [Ixz, Iyz, Izz]])
 
             return m_new, c_new, I_new
-        elif type == GeoType.MESH:
-            assert isinstance(src, Mesh), "src must be a Mesh for mesh shapes"
+        elif type == GeoType.MESH or type == GeoType.CONVEX_MESH:
+            assert isinstance(src, Mesh), "src must be a Mesh for mesh or convex hull shapes"
             # fall back to computing inertia from mesh geometry
             vertices = np.array(src.vertices) * np.array(scale)
             m, c, I, _vol = compute_mesh_inertia(density, vertices, src.indices, is_solid, thickness)
