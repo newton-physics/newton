@@ -14,6 +14,10 @@
 # limitations under the License.
 
 import gc
+import os
+
+# Force headless mode for CI environments before any pyglet imports
+os.environ["PYGLET_HEADLESS"] = "1"
 
 import warp as wp
 
@@ -23,6 +27,7 @@ wp.config.quiet = True
 from asv_runner.benchmarks.mark import skip_benchmark_if
 
 from newton.examples.example_mujoco import Example
+from newton.viewer import ViewerGL
 
 
 class KpiInitializeModel:
@@ -58,10 +63,6 @@ class KpiInitializeSolver:
     timeout = 3600
 
     def setup(self, robot, num_worlds):
-        if robot == "h1":
-            # use more samples for H1 to reduce variance
-            self.repeat = 10
-
         wp.init()
         builder = Example.create_model_builder(robot, num_worlds, randomize=True, seed=123)
 
@@ -75,6 +76,35 @@ class KpiInitializeSolver:
 
     def teardown(self, robot, num_worlds):
         del self._solver
+        del self._model
+
+
+class KpiInitializeViewerGL:
+    params = (["g1"], [8192])
+    param_names = ["robot", "num_worlds"]
+
+    rounds = 1
+    repeat = 3
+    number = 1
+    min_run_count = 1
+
+    def setup(self, robot, num_worlds):
+        wp.init()
+        builder = Example.create_model_builder(robot, num_worlds, randomize=True, seed=123)
+
+        # finalize model
+        self._model = builder.finalize()
+
+    @skip_benchmark_if(wp.get_cuda_device_count() == 0)
+    def time_initialize_renderer(self, robot, num_worlds):
+        # Setting up the renderer
+        self.renderer = ViewerGL(headless=True)
+        self.renderer.set_model(self._model)
+
+        wp.synchronize_device()
+        self.renderer.close()
+
+    def teardown(self, robot, num_worlds):
         del self._model
 
 
@@ -123,10 +153,6 @@ class FastInitializeSolver:
     min_run_count = 1
 
     def setup(self, robot, num_worlds):
-        if robot == "h1":
-            # use more samples for H1 to reduce variance
-            self.repeat = 10
-
         wp.init()
         builder = Example.create_model_builder(robot, num_worlds, randomize=True, seed=123)
 
@@ -143,6 +169,35 @@ class FastInitializeSolver:
         del self._model
 
 
+class FastInitializeViewerGL:
+    params = (["g1"], [256])
+    param_names = ["robot", "num_worlds"]
+
+    rounds = 1
+    repeat = 3
+    number = 1
+    min_run_count = 1
+
+    def setup(self, robot, num_worlds):
+        wp.init()
+        builder = Example.create_model_builder(robot, num_worlds, randomize=True, seed=123)
+
+        # finalize model
+        self._model = builder.finalize()
+
+    @skip_benchmark_if(wp.get_cuda_device_count() == 0)
+    def time_initialize_renderer(self, robot, num_worlds):
+        # Setting up the renderer
+        self.renderer = ViewerGL(headless=True)
+        self.renderer.set_model(self._model)
+
+        wp.synchronize_device()
+        self.renderer.close()
+
+    def teardown(self, robot, num_worlds):
+        del self._model
+
+
 if __name__ == "__main__":
     import argparse
 
@@ -153,6 +208,8 @@ if __name__ == "__main__":
         "FastInitializeModel": FastInitializeModel,
         "KpiInitializeSolver": KpiInitializeSolver,
         "FastInitializeSolver": FastInitializeSolver,
+        "KpiInitializeViewerGL": KpiInitializeViewerGL,
+        "FastInitializeViewerGL": FastInitializeViewerGL,
     }
 
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
