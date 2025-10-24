@@ -209,4 +209,3 @@ HAA = "HAA"
 
 [tool.typos.default.extend-identifiers]
 PNGs = "PNGs"
-typ = "typ"
