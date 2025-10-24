@@ -144,7 +144,6 @@ class Example:
         self.contacts = self.model.collide(self.state_0)
 
         self.viewer.set_model(self.model)
-        self.viewer.set_world_offsets((1.0, 1.0, 0.0))
 
         self.capture()
 
