@@ -107,11 +107,10 @@ class Example:
                 allegro_hand.shape_flags[i] &= ~newton.ShapeFlags.VISIBLE
 
         # set joint targets and joint drive gains
-        for i in range(len(allegro_hand.joint_dof_mode)):
-            allegro_hand.joint_dof_mode[i] = newton.JointMode.TARGET_POSITION
+        for i in range(len(allegro_hand.joint_target_ke)):
             allegro_hand.joint_target_ke[i] = 150
             allegro_hand.joint_target_kd[i] = 5
-            allegro_hand.joint_target[i] = 0.0
+            allegro_hand.joint_target_pos[i] = 0.0
 
         builder = newton.ModelBuilder()
         builder.replicate(allegro_hand, self.num_worlds, spacing=(1, 1, 0))
@@ -172,7 +171,7 @@ class Example:
                     self.world_time,
                     self.sim_dt,
                 ],
-                outputs=[self.control.joint_target, self.model.joint_X_p],
+                outputs=[self.control.joint_target_pos, self.model.joint_X_p],
             )
 
             # # update the solver since we have updated the joint parent transforms

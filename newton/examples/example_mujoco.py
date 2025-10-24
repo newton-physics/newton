@@ -163,8 +163,7 @@ def _setup_h1(articulation_builder):
     # approximate meshes for faster collision detection
     articulation_builder.approximate_meshes("bounding_box")
 
-    for i in range(len(articulation_builder.joint_dof_mode)):
-        articulation_builder.joint_dof_mode[i] = newton.JointMode.TARGET_POSITION
+    for i in range(len(articulation_builder.joint_target_ke)):
         articulation_builder.joint_target_ke[i] = 150
         articulation_builder.joint_target_kd[i] = 5
 
@@ -236,11 +235,10 @@ def _setup_allegro(articulation_builder):
     )
 
     # set joint targets and joint drive gains
-    for i in range(len(articulation_builder.joint_dof_mode)):
-        articulation_builder.joint_dof_mode[i] = newton.JointMode.TARGET_POSITION
+    for i in range(len(articulation_builder.joint_target_ke)):
         articulation_builder.joint_target_ke[i] = 150
         articulation_builder.joint_target_kd[i] = 5
-        articulation_builder.joint_target[i] = 0.0
+        articulation_builder.joint_target_pos[i] = 0.0
     root_dofs = 1
 
     return root_dofs
