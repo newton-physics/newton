@@ -840,7 +840,7 @@ class ModelBuilder:
             xform[:3] = offsets[i]
             self.add_builder(builder, xform=xform)
 
-    def add_articulation(self, key: str | None = None):
+    def add_articulation(self, key: str | None = None, custom_attributes: dict[str, Any] | None = None):
         """
         Adds an articulation to the model.
         An articulation is a set of contiguous joints from ``articulation_start[i]`` to ``articulation_start[i+1]``.
@@ -848,11 +848,22 @@ class ModelBuilder:
         Articulations are automatically 'closed' when calling :meth:`~newton.ModelBuilder.finalize`.
 
         Args:
-            key (str | None): The key of the articulation. If None, a default key will be created.
+            key: The key of the articulation. If None, a default key will be created.
+            custom_attributes: Dictionary of custom attribute values for ARTICULATION frequency attributes.
         """
+        # local index since self.articulation_count will change after appending the articulation
+        articulation_idx = self.articulation_count
         self.articulation_start.append(self.joint_count)
-        self.articulation_key.append(key or f"articulation_{self.articulation_count}")
+        self.articulation_key.append(key or f"articulation_{articulation_idx}")
         self.articulation_world.append(self.current_world)
+
+        # Process custom attributes for this articulation
+        if custom_attributes:
+            self._process_custom_attributes(
+                entity_index=articulation_idx,
+                custom_attrs=custom_attributes,
+                expected_frequency=ModelAttributeFrequency.ARTICULATION,
+            )
 
     # region importers
     def add_urdf(
@@ -1211,6 +1222,7 @@ class ModelBuilder:
         start_joint_idx = self.joint_count
         start_joint_dof_idx = self.joint_dof_count
         start_joint_coord_idx = self.joint_coord_count
+        start_articulation_idx = self.articulation_count
 
         if builder.particle_count:
             self.particle_max_velocity = builder.particle_max_velocity
@@ -1448,6 +1460,8 @@ class ModelBuilder:
                     offset = start_joint_dof_idx
                 elif attr.frequency == ModelAttributeFrequency.JOINT_COORD:
                     offset = start_joint_coord_idx
+                elif attr.frequency == ModelAttributeFrequency.ARTICULATION:
+                    offset = start_articulation_idx
                 else:
                     continue
 
@@ -4810,6 +4824,8 @@ class ModelBuilder:
                     count = m.joint_dof_count
                 elif frequency == ModelAttributeFrequency.JOINT_COORD:
                     count = m.joint_coord_count
+                elif frequency == ModelAttributeFrequency.ARTICULATION:
+                    count = m.articulation_count
                 else:
                     continue
 

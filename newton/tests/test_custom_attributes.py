@@ -903,6 +903,122 @@ class TestCustomAttributes(unittest.TestCase):
         self.assertIn("already exists", str(context.exception))
         self.assertIn("frequency", str(context.exception))
 
+    def test_mixed_free_and_articulated_bodies(self):
+        """Test BODY and ARTICULATION frequency custom attributes with mixed free and articulated bodies."""
+        builder = newton.ModelBuilder()
+
+        # Declare custom attributes
+        builder.add_custom_attribute(
+            "temperature",
+            newton.ModelAttributeFrequency.BODY,
+            dtype=wp.float32,
+            assignment=ModelAttributeAssignment.MODEL,
+            default=20.0,
+        )
+        builder.add_custom_attribute(
+            "density",
+            newton.ModelAttributeFrequency.BODY,
+            dtype=wp.float32,
+            assignment=ModelAttributeAssignment.STATE,
+            default=1.0,
+        )
+        builder.add_custom_attribute(
+            "articulation_stiffness",
+            newton.ModelAttributeFrequency.ARTICULATION,
+            dtype=wp.float32,
+            assignment=ModelAttributeAssignment.MODEL,
+            default=100.0,
+        )
+
+        # Create free bodies (no articulation)
+        free_body_ids = []
+        for i in range(3):
+            body = builder.add_body(
+                xform=wp.transform([float(i), 0.0, 0.0], wp.quat_identity()),
+                mass=1.0,
+                custom_attributes={
+                    "temperature": 25.0 + float(i) * 5.0,
+                    "density": 0.5 + float(i) * 0.1,
+                }
+                if i > 0
+                else None,
+            )
+            builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
+            free_body_ids.append(body)
+
+        # Create articulations with bodies and joints
+        artic_body_ids = []
+        for i in range(2):
+            builder.add_articulation(
+                custom_attributes={
+                    "articulation_stiffness": 100.0 + float(i) * 50.0,
+                }
+            )
+
+            # Create 2-link articulation
+            # Temperature NOT assigned to articulated bodies (use defaults)
+            # Density assigned with different values than free bodies
+            base = builder.add_body(
+                xform=wp.transform([3.0 + float(i), 0.0, 0.0], wp.quat_identity()),
+                mass=1.0,
+                custom_attributes={"density": 2.0 + float(i) * 0.5},
+            )
+            builder.add_shape_box(base, hx=0.1, hy=0.1, hz=0.1)
+
+            link = builder.add_body(
+                xform=wp.transform([3.0 + float(i), 0.0, 0.5], wp.quat_identity()),
+                mass=0.5,
+                custom_attributes={"density": 3.0 + float(i) * 0.5},
+            )
+            builder.add_shape_capsule(link, radius=0.05, half_height=0.2)
+
+            builder.add_joint_revolute(
+                parent=base,
+                child=link,
+                parent_xform=wp.transform([0.0, 0.0, 0.1], wp.quat_identity()),
+                child_xform=wp.transform([0.0, 0.0, -0.2], wp.quat_identity()),
+                axis=[0.0, 1.0, 0.0],
+            )
+            artic_body_ids.extend([base, link])
+
+        # Finalize and verify
+        model = builder.finalize(device=self.device)
+        state = model.state()
+
+        # Check temperature attribute (MODEL assignment)
+        temps = model.temperature.numpy()
+
+        # Free bodies: first uses default, rest use custom values
+        self.assertAlmostEqual(temps[free_body_ids[0]], 20.0, places=5)  # Default
+        self.assertAlmostEqual(temps[free_body_ids[1]], 30.0, places=5)  # Custom
+        self.assertAlmostEqual(temps[free_body_ids[2]], 35.0, places=5)  # Custom
+
+        # Articulated bodies: all use default (temperature not assigned)
+        self.assertAlmostEqual(temps[artic_body_ids[0]], 20.0, places=5)  # artic1 base - default
+        self.assertAlmostEqual(temps[artic_body_ids[1]], 20.0, places=5)  # artic1 link - default
+        self.assertAlmostEqual(temps[artic_body_ids[2]], 20.0, places=5)  # artic2 base - default
+        self.assertAlmostEqual(temps[artic_body_ids[3]], 20.0, places=5)  # artic2 link - default
+
+        # Check density attribute (STATE assignment)
+        densities = state.density.numpy()
+
+        # Free bodies: first uses default, rest use custom values (different from articulated)
+        self.assertAlmostEqual(densities[free_body_ids[0]], 1.0, places=5)  # Default
+        self.assertAlmostEqual(densities[free_body_ids[1]], 0.6, places=5)  # Custom (0.5 + 1*0.1)
+        self.assertAlmostEqual(densities[free_body_ids[2]], 0.7, places=5)  # Custom (0.5 + 2*0.1)
+
+        # Articulated bodies: all use custom values (different range from free bodies)
+        self.assertAlmostEqual(densities[artic_body_ids[0]], 2.0, places=5)  # artic1 base
+        self.assertAlmostEqual(densities[artic_body_ids[1]], 3.0, places=5)  # artic1 link
+        self.assertAlmostEqual(densities[artic_body_ids[2]], 2.5, places=5)  # artic2 base
+        self.assertAlmostEqual(densities[artic_body_ids[3]], 3.5, places=5)  # artic2 link
+
+        # Check ARTICULATION attributes
+        artic_stiff = model.articulation_stiffness.numpy()
+        self.assertEqual(len(artic_stiff), 2)
+        self.assertAlmostEqual(artic_stiff[0], 100.0, places=5)
+        self.assertAlmostEqual(artic_stiff[1], 150.0, places=5)
+
 
 def run_tests():
     """Run all custom attributes tests."""

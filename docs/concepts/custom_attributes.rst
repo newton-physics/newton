@@ -33,7 +33,7 @@ Declaring Custom Attributes
 
 Custom attributes must be declared before use. Each declaration specifies the following properties:
 
-* **frequency**: Array size and indexing pattern (``BODY``, ``SHAPE``, ``JOINT``, ``JOINT_DOF``, or ``JOINT_COORD``)
+* **frequency**: Array size and indexing pattern (``BODY``, ``SHAPE``, ``JOINT``, ``JOINT_DOF``, ``JOINT_COORD``, or ``ARTICULATION``)
 * **assignment**: Which simulation object owns the attribute (``MODEL``, ``STATE``, ``CONTROL``, ``CONTACT``)  
 * **dtype**: Warp data type (``wp.float32``, ``wp.vec3``, ``wp.quat``, etc.)
 * **default** (optional): Default value for entities that don't explicitly specify values. If not specified, dtype-specific defaults are used: 0.0 for floats, 0 for integers, False for booleans, and zero vectors for vector types.
@@ -89,6 +89,16 @@ The following example demonstrates declaring attributes with and without namespa
        namespace="namespace_a"
    )
    # → Accessible as: model.namespace_a.bool_attr
+   
+   # Articulation frequency attributes - one value per articulation
+   builder.add_custom_attribute(
+       name="articulation_stiffness",
+       frequency=ModelAttributeFrequency.ARTICULATION,
+       dtype=wp.float32,
+       default=100.0,
+       assignment=ModelAttributeAssignment.MODEL
+   )
+   # → Accessible as: model.articulation_stiffness
 
 **Default Value Behavior:**
 
@@ -105,26 +115,40 @@ When entities don't explicitly specify custom attribute values, the default valu
        custom_attributes={"temperature": 37.5}
    )
    
-   # After finalization, access both values
+   # Articulation attributes: create multiple articulations with custom values
+   for i in range(3):
+       builder.add_articulation(
+           custom_attributes={
+               "articulation_stiffness": 100.0 + float(i) * 50.0  # 100, 150, 200
+           }
+       )
+       base = builder.add_body(mass=1.0)
+   
+   # After finalization, access both types of attributes
    model = builder.finalize()
    temps = model.temperature.numpy()
+   artic_stiff = model.articulation_stiffness.numpy()
    
    print(f"Body 1: {temps[body1]}")  # 20.0 (default)
    print(f"Body 2: {temps[body2]}")  # 37.5 (authored)
+   print(f"Articulation 0: {artic_stiff[0]}")  # 100.0
+   print(f"Articulation 2: {artic_stiff[2]}")  # 200.0
 
 .. testoutput::
 
    Body 1: 20.0
    Body 2: 37.5
+   Articulation 0: 100.0
+   Articulation 2: 200.0
 
 .. note::
    Uniqueness is determined by the full identifier (namespace + name):
+     
+     - ``model.float_attr`` (key: ``"float_attr"``) and ``model.namespace_a.float_attr`` (key: ``"namespace_a:float_attr"``) can coexist
+     - ``model.float_attr`` (key: ``"float_attr"``) and ``state.namespace_a.float_attr`` (key: ``"namespace_a:float_attr"``) can coexist
+     - ``model.float_attr`` (key: ``"float_attr"``) and ``state.float_attr`` (key: ``"float_attr"``) cannot coexist - same key
+     - ``model.namespace_a.float_attr`` and ``state.namespace_a.float_attr`` cannot coexist - same key ``"namespace_a:float_attr"``
    
-   - ``model.float_attr`` (key: ``"float_attr"``) and ``model.namespace_a.float_attr`` (key: ``"namespace_a:float_attr"``) can coexist
-   - ``model.float_attr`` (key: ``"float_attr"``) and ``state.namespace_a.float_attr`` (key: ``"namespace_a:float_attr"``) can coexist
-   - ``model.float_attr`` (key: ``"float_attr"``) and ``state.float_attr`` (key: ``"float_attr"``) cannot coexist - same key
-   - ``model.namespace_a.float_attr`` and ``state.namespace_a.float_attr`` cannot coexist - same key ``"namespace_a:float_attr"``
-
 Authoring Custom Attributes
 ----------------------------
 
@@ -259,6 +283,14 @@ Custom attributes can be authored in USD files using a declaration-first pattern
            customData = {
                string assignment = "state"
                string frequency = "body"
+           }
+       )
+       
+       # ARTICULATION frequency attribute
+       custom float newton:articulation_stiffness = 100.0 (
+           customData = {
+               string assignment = "model"
+               string frequency = "articulation"
            }
        )
        

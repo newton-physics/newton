@@ -327,32 +327,55 @@ class SchemaResolverPhysx(SchemaResolver):
 def _solref_to_stiffness(solref):
     """Convert MuJoCo solref (timeconst, dampratio) to internal stiffness.
 
-    k = 1 / (timeconst^2)
+    Standard mode (timeconst > 0): k = 1 / (timeconst^2 * dampratio^2)
+    Direct mode (timeconst <= 0): k = -timeconst
     """
     try:
         timeconst = float(solref[0])
-    except Exception:
+        dampratio = float(solref[1])
+    except (TypeError, ValueError, IndexError):
+        print(f"Warning: Invalid solref format {solref}. Expected tuple of two numbers (timeconst, dampratio).")
         return None
-    # Direct mode: both negative → interpret as (stiffness, damping)
+
+    # Direct mode: timeconst <= 0 → stiffness encoded directly as -solref[0]
     if timeconst <= 0.0:
         return -timeconst
-    return 1.0 / (timeconst * timeconst)
+
+    # Standard mode: k = 1 / (timeconst^2 * dampratio^2)
+    # Guard against zero dampratio to avoid divide-by-zero
+    if dampratio == 0.0:
+        print(f"Warning: solref dampratio is zero {solref}. Cannot compute stiffness (would cause divide-by-zero).")
+        return None
+
+    return 1.0 / (timeconst * timeconst * dampratio * dampratio)
 
 
 def _solref_to_damping(solref):
     """Convert MuJoCo solref (timeconst, dampratio) to internal damping.
 
-    b = 2 * dampratio / timeconst
+    Standard mode (dampratio > 0): b = 2 / timeconst
+    Direct mode (dampratio <= 0): b = -dampratio
     """
     try:
         timeconst = float(solref[0])
         dampratio = float(solref[1])
-    except Exception:
+    except (TypeError, ValueError, IndexError):
+        print(f"Warning: Invalid solref format {solref}. Expected tuple of two numbers (timeconst, dampratio).")
         return None
-    # Direct mode: both negative → interpret as (stiffness, damping)
-    if timeconst <= 0.0 or dampratio <= 0.0:
+
+    # Direct mode: dampratio <= 0 → damping encoded directly as -solref[1]
+    if dampratio <= 0.0:
         return -dampratio
-    return (2.0 * dampratio) / timeconst
+
+    # Standard mode: b = 2 / timeconst
+    # Guard against zero/negative timeconst to avoid divide-by-zero
+    if timeconst <= 0.0:
+        print(
+            f"Warning: solref timeconst is non-positive {solref}. Cannot compute damping (would cause divide-by-zero)."
+        )
+        return None
+
+    return 2.0 / timeconst
 
 
 class SchemaResolverMjc(SchemaResolver):

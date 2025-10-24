@@ -1111,6 +1111,28 @@ def parse_usd(
                     parent_prim = None
                 if parent_prim is not None and parent_prim.IsValid():
                     R.collect_prim_solver_attrs(parent_prim)
+
+            # Extract custom attributes for articulation frequency from the articulation root prim
+            # (the one with PhysicsArticulationRootAPI, typically the articulation_prim itself or its parent)
+            articulation_custom_attrs = {}
+            # First check if articulation_prim itself has the PhysicsArticulationRootAPI
+            if articulation_prim.HasAPI(UsdPhysics.ArticulationRootAPI):
+                if verbose:
+                    print(f"Extracting articulation custom attributes from {articulation_prim.GetPath()}")
+                articulation_custom_attrs = R.get_custom_attributes_for_prim(
+                    articulation_prim, ModelAttributeFrequency.ARTICULATION
+                )
+            # If not, check the parent prim
+            elif (
+                parent_prim is not None and parent_prim.IsValid() and parent_prim.HasAPI(UsdPhysics.ArticulationRootAPI)
+            ):
+                if verbose:
+                    print(f"Extracting articulation custom attributes from parent {parent_prim.GetPath()}")
+                articulation_custom_attrs = R.get_custom_attributes_for_prim(
+                    parent_prim, ModelAttributeFrequency.ARTICULATION
+                )
+            if verbose and articulation_custom_attrs:
+                print(f"Extracted articulation custom attributes: {articulation_custom_attrs}")
             body_ids = {}
             body_keys = []
             current_body_id = 0
@@ -1190,7 +1212,7 @@ def parse_usd(
                 # We have an articulation without joints, i.e. only free rigid bodies
                 if bodies_follow_joint_ordering:
                     for i in body_ids.values():
-                        builder.add_articulation(body_data[i]["key"])
+                        builder.add_articulation(body_data[i]["key"], custom_attributes=articulation_custom_attrs)
                         child_body_id = add_body(**body_data[i])
                         # apply the articulation transform to the body
                         builder.body_q[child_body_id] = articulation_xform
@@ -1199,7 +1221,7 @@ def parse_usd(
                         # child body
                 else:
                     for i, child_body_id in enumerate(art_bodies):
-                        builder.add_articulation(body_keys[i])
+                        builder.add_articulation(body_keys[i], custom_attributes=articulation_custom_attrs)
                         # apply the articulation transform to the body
                         builder.body_q[child_body_id] = articulation_xform
                         builder.add_joint_free(child=child_body_id)
@@ -1208,7 +1230,7 @@ def parse_usd(
                 sorted_joints = []
             else:
                 # we have an articulation with joints, we need to sort them topologically
-                builder.add_articulation(articulation_path)
+                builder.add_articulation(articulation_path, custom_attributes=articulation_custom_attrs)
                 if joint_ordering is not None:
                     if verbose:
                         print(f"Sorting joints using {joint_ordering} ordering...")

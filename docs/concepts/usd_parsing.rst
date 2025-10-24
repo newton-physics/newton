@@ -280,7 +280,7 @@ Custom attributes must be declared on the ``PhysicsScene`` prim with metadata be
    custom <type> newton:namespace:attr_name = default_value (
        customData = {
            string assignment = "model|state|control|contact"
-           string frequency = "body|shape|joint|joint_dof|joint_coord"
+           string frequency = "body|shape|joint|joint_dof|joint_coord|articulation"
        }
    )
 
@@ -289,7 +289,7 @@ Where:
 * **namespace** (optional): Custom namespace for organizing related attributes (omit for default namespace)
 * **attr_name**: User-defined attribute name
 * **assignment**: Storage location (``model``, ``state``, ``control``, ``contact``)
-* **frequency**: Per-entity granularity (``body``, ``shape``, ``joint``, ``joint_dof``, ``joint_coord``)
+* **frequency**: Per-entity granularity (``body``, ``shape``, ``joint``, ``joint_dof``, ``joint_coord``, ``articulation``)
 
 **Supported Data Types:**
 
@@ -403,6 +403,14 @@ The following USD example demonstrates the complete workflow for authoring custo
                string frequency = "joint"
            }
        )
+       
+       # ARTICULATION frequency attribute
+       custom float newton:articulation_stiffness = 100.0 (
+           customData = {
+               string assignment = "model"
+               string frequency = "articulation"
+           }
+       )
    }
    
    def Xform "robot_body" (
@@ -423,6 +431,17 @@ The following USD example demonstrates the complete workflow for authoring custo
        custom float newton:namespace_a:gear_ratio = 2.25
        custom float2 newton:namespace_a:pid_gains = (100.0, 10.0)
    }
+   
+   # Articulation frequency attributes must be defined on the prim with PhysicsArticulationRootAPI
+   def Xform "robot_articulation" (
+       prepend apiSchemas = ["PhysicsArticulationRootAPI"]
+   ) {
+       # Assign articulation-level attributes
+       custom float newton:articulation_stiffness = 150.0
+   }
+
+.. note::
+   **Articulation Frequency Attributes**: Attributes with ``frequency = "articulation"`` store per-articulation values and must be authored on USD prims that have the ``PhysicsArticulationRootAPI`` schema applied. The USD parser automatically detects articulation root prims and extracts custom articulation attributes when importing the scene.
 
 **Accessing Custom Attributes in Python:**
 
@@ -461,6 +480,9 @@ After importing the USD file with the custom attributes shown above, they become
    namespaced_mass = state.namespace_a.mass_scale.numpy()  # Per-body scalar (state assignment)
    gear_ratios = model.namespace_a.gear_ratio.numpy()       # Per-joint scalar
    pid_gains = control.namespace_a.pid_gains.numpy()        # Per-joint vec2
+   
+   # Access ARTICULATION frequency attributes
+   artic_stiff = model.articulation_stiffness.numpy()       # Per-articulation scalar (ARTICULATION frequency)
    
    # Namespace isolation: model.mass_scale and state.namespace_a.mass_scale are independent
    # - model.mass_scale has value 1.5 for robot_body (default namespace, model assignment)

@@ -1189,6 +1189,63 @@ class TestSchemaResolver(unittest.TestCase):
             hasattr(control, "uniqueJointAttr"), "uniqueJointAttr should NOT exist in default namespace on control"
         )
 
+    def test_articulation_frequency_attributes(self):
+        """
+        Test ARTICULATION frequency attributes from USD import.
+
+        Uses ant_mixed.usda which has an articulation with PhysicsArticulationRootAPI
+        and tests that custom articulation attributes are correctly parsed and materialized.
+        """
+        test_dir = Path(__file__).parent
+        ant_usd_path = test_dir / "assets" / "ant_mixed.usda"
+
+        # Import the ant USD file
+        builder = ModelBuilder()
+        parse_usd(
+            builder=builder,
+            source=str(ant_usd_path),
+            schema_resolvers=[SchemaResolverNewton(), SchemaResolverPhysx()],
+            collect_solver_specific_attrs=True,
+            verbose=False,
+        )
+
+        # Finalize the model
+        model = builder.finalize()
+        state = model.state()
+        control = model.control()
+
+        # Validate ARTICULATION frequency attributes exist
+        self.assertTrue(hasattr(model, "articulation_default_stiffness"))
+        self.assertTrue(hasattr(state, "articulation_default_damping"))
+
+        # Check attribute frequencies
+        self.assertEqual(
+            model.get_attribute_frequency("articulation_default_stiffness"), ModelAttributeFrequency.ARTICULATION
+        )
+        self.assertEqual(
+            model.get_attribute_frequency("articulation_default_damping"), ModelAttributeFrequency.ARTICULATION
+        )
+
+        # Validate namespaced attributes
+        self.assertTrue(hasattr(control, "pd_control"))
+        self.assertTrue(hasattr(control.pd_control, "articulation_default_pd_gains"))
+
+        # Check that the ant articulation has the custom attribute values we set
+        # The ant USD file defines:
+        #   - articulation_stiffness = 150.0 (on ant Xform prim)
+        #   - articulation_damping = 15.0 (on ant Xform prim)
+        #   - pd_control:pd_gains = (2.0, 0.2) (on ant Xform prim)
+        artic_stiff = model.articulation_default_stiffness.numpy()
+        artic_damp = state.articulation_default_damping.numpy()
+        pd_gains = control.pd_control.articulation_default_pd_gains.numpy()
+
+        # The ant is the first (and likely only) articulation
+        self.assertGreater(len(artic_stiff), 0)
+        self.assertAlmostEqual(artic_stiff[0], 150.0, places=5)
+        self.assertAlmostEqual(artic_damp[0], 15.0, places=5)
+        self.assertAlmostEqual(pd_gains[0][0], 2.0, places=5)
+        self.assertAlmostEqual(pd_gains[0][1], 0.2, places=5)
+
 
 def run_tests():
     """Run all tests."""

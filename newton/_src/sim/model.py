@@ -66,6 +66,8 @@ class ModelAttributeFrequency(IntEnum):
     """Attribute frequency follows the number of bodies (see :attr:`~newton.Model.body_count`)."""
     SHAPE = 4
     """Attribute frequency follows the number of shapes (see :attr:`~newton.Model.shape_count`)."""
+    ARTICULATION = 5
+    """Attribute frequency follows the number of articulations (see :attr:`~newton.Model.articulation_count`)."""
 
 
 class AttributeNamespace:

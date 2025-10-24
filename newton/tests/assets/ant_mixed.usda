@@ -110,6 +110,26 @@ def PhysicsScene "physicsScene" (
     custom float TimeStepsPerSecond = 120
     
     # Custom attribute declarations for newton
+    # ARTICULATION frequency attributes
+    custom float newton:articulation_default_stiffness = 100.0 (
+        customData = {
+            string assignment = "model"
+            string frequency = "articulation"
+        }
+    )
+    custom float newton:articulation_default_damping = 10.0 (
+        customData = {
+            string assignment = "state"
+            string frequency = "articulation"
+        }
+    )
+    custom float2 newton:pd_control:articulation_default_pd_gains = (1.0, 0.1) (
+        customData = {
+            string assignment = "control"
+            string frequency = "articulation"
+        }
+    )
+    
     custom float newton:testJointScalar = 0.0 (
         customData = {
             string assignment = "state"
@@ -235,6 +255,12 @@ def Xform "ant" (
 )
 {
     bool physxArticulation:enabledSelfCollisions = 0
+    
+    # Custom articulation attributes
+    custom float newton:articulation_default_stiffness = 150.0
+    custom float newton:articulation_default_damping = 15.0
+    custom float2 newton:pd_control:articulation_default_pd_gains = (2.0, 0.2)
+    
     float3 xformOp:rotateXYZ = (0, 0, 0)
     float3 xformOp:scale = (1, 1, 1)
     double3 xformOp:translate = (0, 0, 1)
