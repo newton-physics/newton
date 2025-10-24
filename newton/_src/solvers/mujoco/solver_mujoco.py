@@ -1008,8 +1008,14 @@ def update_joint_transforms_kernel(
         ai = mjc_dof_start + i
         joint_axis[worldid, ai] = wp.quat_rotate(child_xform.q, axis)
         joint_pos[worldid, ai] = child_xform.p
-        # update joint limit solref using negative convention
-        joint_solref[worldid, ai] = wp.vec2(-joint_limit_ke[newton_dof_index], -joint_limit_kd[newton_dof_index])
+        # Convert stiffness/damping to timeconst/dampratio
+        # timeconst = 2/sqrt(ke), dampratio = kd/(2*sqrt(ke))
+        ke = joint_limit_ke[newton_dof_index]
+        kd = joint_limit_kd[newton_dof_index]
+        if ke > 0.0:
+            timeconst = 2.0 / wp.sqrt(ke)
+            dampratio = kd / (2.0 * wp.sqrt(ke))
+            joint_solref[worldid, ai] = wp.vec2(timeconst, dampratio)
 
     # update angular dofs
     for i in range(ang_axis_count):
@@ -1018,8 +1024,14 @@ def update_joint_transforms_kernel(
         ai = mjc_dof_start + lin_axis_count + i
         joint_axis[worldid, ai] = wp.quat_rotate(child_xform.q, axis)
         joint_pos[worldid, ai] = child_xform.p
-        # update joint limit solref using negative convention
-        joint_solref[worldid, ai] = wp.vec2(-joint_limit_ke[newton_dof_index], -joint_limit_kd[newton_dof_index])
+        # Convert stiffness/damping to timeconst/dampratio
+        # timeconst = 2/sqrt(ke), dampratio = kd/(2*sqrt(ke))
+        ke = joint_limit_ke[newton_dof_index]
+        kd = joint_limit_kd[newton_dof_index]
+        if ke > 0.0:
+            timeconst = 2.0 / wp.sqrt(ke)
+            dampratio = kd / (2.0 * wp.sqrt(ke))
+            joint_solref[worldid, ai] = wp.vec2(timeconst, dampratio)
 
     # update body pos and quat from parent joint transform
     child = joint_child[joint_in_world]  # Newton body id
@@ -2256,8 +2268,14 @@ class SolverMuJoCo(SolverBase):
                     else:
                         joint_params["limited"] = True
                         joint_params["range"] = (lower, upper)
-                        # Use negative convention for solref_limit: (-stiffness, -damping)
-                        joint_params["solref_limit"] = (-joint_limit_ke[ai], -joint_limit_kd[ai])
+                        # Convert stiffness/damping to timeconst/dampratio
+                        # timeconst = 2/sqrt(ke), dampratio = kd/(2*sqrt(ke))
+                        ke = joint_limit_ke[ai]
+                        kd = joint_limit_kd[ai]
+                        if ke > 0:
+                            timeconst = 2.0 / np.sqrt(ke)
+                            dampratio = kd / (2.0 * np.sqrt(ke))
+                            joint_params["solref_limit"] = (timeconst, dampratio)
                         if self.joint_solimp_limit is not None:
                             joint_params["solimp_limit"] = self.joint_solimp_limit
                     axname = name
@@ -2321,8 +2339,14 @@ class SolverMuJoCo(SolverBase):
                     else:
                         joint_params["limited"] = True
                         joint_params["range"] = (np.rad2deg(lower), np.rad2deg(upper))
-                        # Use negative convention for solref_limit: (-stiffness, -damping)
-                        joint_params["solref_limit"] = (-joint_limit_ke[ai], -joint_limit_kd[ai])
+                        # Convert stiffness/damping to timeconst/dampratio
+                        # timeconst = 2/sqrt(ke), dampratio = kd/(2*sqrt(ke))
+                        ke = joint_limit_ke[ai]
+                        kd = joint_limit_kd[ai]
+                        if ke > 0:
+                            timeconst = 2.0 / np.sqrt(ke)
+                            dampratio = kd / (2.0 * np.sqrt(ke))
+                            joint_params["solref_limit"] = (timeconst, dampratio)
                         if self.joint_solimp_limit is not None:
                             joint_params["solimp_limit"] = self.joint_solimp_limit
                     axname = name

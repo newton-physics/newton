@@ -46,7 +46,7 @@ class Example:
         self.device = wp.get_device()
 
         h1 = newton.ModelBuilder()
-        h1.default_joint_cfg = newton.ModelBuilder.JointDofConfig(limit_ke=1.0e2, limit_kd=1.0e0, friction=1e-5)
+        h1.default_joint_cfg = newton.ModelBuilder.JointDofConfig(limit_ke=1.0e3, limit_kd=1.0e1, friction=1e-5)
         h1.default_shape_cfg.ke = 5.0e4
         h1.default_shape_cfg.kd = 5.0e2
         h1.default_shape_cfg.kf = 1.0e3
