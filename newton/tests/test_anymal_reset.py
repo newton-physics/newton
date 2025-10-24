@@ -101,7 +101,7 @@ class TestAnymalReset(unittest.TestCase):
             impratio = 100.0
 
         self.solver = newton.solvers.SolverMuJoCo(
-            self.model, solver=2, cone=cone_type, impratio=impratio, iterations=100, ls_iterations=50, njmax=300
+            self.model, solver=2, cone=cone_type, impratio=impratio, iterations=100, ls_iterations=50, njmax=200
         )
 
         if self.headless:
