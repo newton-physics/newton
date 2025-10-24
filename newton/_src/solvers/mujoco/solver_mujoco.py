@@ -2367,8 +2367,8 @@ class SolverMuJoCo(SolverBase):
 
             add_geoms(child)
 
-        for i, typ in enumerate(eq_constraint_type):
-            if typ == EqType.CONNECT:
+        for i, type in enumerate(eq_constraint_type):
+            if type == EqType.CONNECT:
                 eq = spec.add_equality(objtype=mujoco.mjtObj.mjOBJ_BODY)
                 eq.type = mujoco.mjtEq.mjEQ_CONNECT
                 eq.active = eq_constraint_enabled[i]
@@ -2376,7 +2376,7 @@ class SolverMuJoCo(SolverBase):
                 eq.name2 = model.body_key[eq_constraint_body2[i]]
                 eq.data[0:3] = eq_constraint_anchor[i]
 
-            elif typ == EqType.JOINT:
+            elif type == EqType.JOINT:
                 eq = spec.add_equality(objtype=mujoco.mjtObj.mjOBJ_JOINT)
                 eq.type = mujoco.mjtEq.mjEQ_JOINT
                 eq.active = eq_constraint_enabled[i]
@@ -2384,7 +2384,7 @@ class SolverMuJoCo(SolverBase):
                 eq.name2 = model.joint_key[eq_constraint_joint2[i]]
                 eq.data[0:5] = eq_constraint_polycoef[i]
 
-            elif typ == EqType.WELD:
+            elif type == EqType.WELD:
                 eq = spec.add_equality(objtype=mujoco.mjtObj.mjOBJ_BODY)
                 eq.type = mujoco.mjtEq.mjEQ_WELD
                 eq.active = eq_constraint_enabled[i]
