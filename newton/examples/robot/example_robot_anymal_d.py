@@ -95,7 +95,6 @@ class Example:
 
         # ensure this is called at the end of the Example constructor
         self.viewer.set_model(self.model)
-        self.viewer.set_world_offsets((3.0, 3.0, 0.0))
 
         # put graph capture into it's own function
         self.capture()

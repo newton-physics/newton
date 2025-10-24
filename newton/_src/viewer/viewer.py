@@ -185,7 +185,7 @@ class ViewerBase:
         margin = 1.5  # 50% margin between worlds
 
         # Default to 2D square grid arrangement perpendicular to up axis
-        spacing = [max(max_extents) * margin] * 3
+        spacing = [np.ceil(max(max_extents) * margin)] * 3
         spacing[self.model.up_axis] = 0.0
 
         # Set world offsets with computed spacing
