@@ -177,7 +177,7 @@ class TestAnymalReset(unittest.TestCase):
             "collision_pairid",
             "solver_nisland",
             "nefc",
-            "ncon",
+            "nacon",
             "cfrc_int",
             "collision_worldid",
             "epa_face",
