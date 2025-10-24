@@ -46,7 +46,7 @@ class Example:
 
         articulation_builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
         articulation_builder.default_joint_cfg = newton.ModelBuilder.JointDofConfig(
-            limit_ke=1.0e3, limit_kd=1.0e1, friction=1e-5
+            limit_ke=1.0e2, limit_kd=1.0e0, friction=1e-5
         )
         articulation_builder.default_shape_cfg.ke = 5.0e4
         articulation_builder.default_shape_cfg.kd = 5.0e2

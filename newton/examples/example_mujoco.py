@@ -119,7 +119,7 @@ def _setup_humanoid(articulation_builder):
 
 def _setup_g1(articulation_builder):
     articulation_builder.default_joint_cfg = newton.ModelBuilder.JointDofConfig(
-        limit_ke=1.0e3, limit_kd=1.0e1, friction=1e-5
+        limit_ke=1.0e2, limit_kd=1.0e0, friction=1e-5
     )
     articulation_builder.default_shape_cfg.ke = 5.0e4
     articulation_builder.default_shape_cfg.kd = 5.0e2
@@ -150,7 +150,7 @@ def _setup_g1(articulation_builder):
 
 def _setup_h1(articulation_builder):
     articulation_builder.default_joint_cfg = newton.ModelBuilder.JointDofConfig(
-        limit_ke=1.0e3, limit_kd=1.0e1, friction=1e-5
+        limit_ke=1.0e2, limit_kd=1.0e0, friction=1e-5
     )
     articulation_builder.default_shape_cfg.ke = 5.0e4
     articulation_builder.default_shape_cfg.kd = 5.0e2

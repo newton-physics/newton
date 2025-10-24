@@ -83,8 +83,8 @@ class Example:
         builder = newton.ModelBuilder()
         builder.default_joint_cfg = newton.ModelBuilder.JointDofConfig(
             armature=0.06,
-            limit_ke=1.0e3,
-            limit_kd=1.0e1,
+            limit_ke=1.0e2,
+            limit_kd=1.0e0,
         )
         builder.default_shape_cfg.ke = 5.0e4
         builder.default_shape_cfg.kd = 5.0e2
