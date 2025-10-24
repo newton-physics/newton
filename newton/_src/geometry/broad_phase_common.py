@@ -15,7 +15,10 @@
 
 from typing import Any
 
+import numpy as np
 import warp as wp
+
+from .flags import ShapeFlags
 
 
 @wp.func
@@ -115,3 +118,95 @@ def test_world_and_group_pair(world_a: int, world_b: int, collision_group_a: int
 
     # If same world or at least one is global (-1), check collision groups
     return test_group_pair(collision_group_a, collision_group_b)
+
+
+def precompute_world_map(geom_world: np.ndarray, geom_flags: np.ndarray | None = None):
+    """Precompute an index map that groups geometries by world ID with shared geometries.
+
+    This method creates an index mapping where geometries belonging to the same world
+    (positive or zero world ID) are grouped together, and shared geometries
+    (negative world ID) are appended to each world's slice.
+
+    Optionally filters out geometries that should not participate in collision detection
+    based on their flags (e.g., visual-only shapes without COLLIDE_SHAPES flag).
+
+    Args:
+        geom_world: Array of world IDs. Positive/zero values represent distinct worlds,
+            negative values (typically -1) represent shared entities that belong to all worlds.
+        geom_flags: Optional array of shape flags. If provided, only geometries with the
+            COLLIDE_SHAPES flag (bit 1) set will be included in the output map. This allows
+            efficient filtering of visual-only shapes that shouldn't participate in collision.
+
+    Returns:
+        tuple: (index_map, slice_ends)
+            - index_map: 1D array of indices into geom_world, arranged such that
+                each world's indices are followed by all shared (negative) indices.
+                Only includes geometries that pass the collision flag filter.
+            - slice_ends: 1D array containing the end index (exclusive) of each world's slice
+                in the index_map
+    """
+    # Ensure geom_world is a numpy array (might be a list from builder)
+    if not isinstance(geom_world, np.ndarray):
+        geom_world = np.array(geom_world)
+
+    # Filter out non-colliding shapes if flags are provided
+    if geom_flags is not None:
+        # Ensure geom_flags is also a numpy array
+        if not isinstance(geom_flags, np.ndarray):
+            geom_flags = np.array(geom_flags)
+        colliding_mask = (geom_flags & ShapeFlags.COLLIDE_SHAPES) != 0
+    else:
+        colliding_mask = np.ones(len(geom_world), dtype=bool)
+
+    # Apply collision filter to get valid indices
+    valid_indices = np.where(colliding_mask)[0]
+
+    # Work with filtered world IDs
+    filtered_world_ids = geom_world[valid_indices]
+
+    # Count how many negative world IDs (global entities) are in filtered set -> num_shared
+    negative_mask = filtered_world_ids < 0
+    num_shared = np.sum(negative_mask)
+
+    # Get indices of negative (shared) entries in the valid set
+    shared_local_indices = np.where(negative_mask)[0]
+    # Map back to original geometry indices
+    shared_indices = valid_indices[shared_local_indices]
+
+    # Count how many distinct positive (or zero) world IDs are in filtered set -> num_worlds
+    # Get unique positive/zero world IDs
+    positive_mask = filtered_world_ids >= 0
+    positive_world_ids = filtered_world_ids[positive_mask]
+    unique_worlds = np.unique(positive_world_ids)
+    num_worlds = len(unique_worlds)
+
+    # Calculate total size of result
+    # Each world gets its own indices + all shared indices
+    num_positive = np.sum(positive_mask)
+    total_size = num_positive + (num_shared * num_worlds)
+
+    # Allocate output arrays
+    index_map = np.empty(total_size, dtype=np.int32)
+    slice_ends = np.empty(num_worlds, dtype=np.int32)
+
+    # Build the index map
+    current_pos = 0
+    for world_idx, world_id in enumerate(unique_worlds):
+        # Get indices for this world in the filtered set
+        world_local_indices = np.where(filtered_world_ids == world_id)[0]
+        # Map back to original geometry indices
+        world_indices = valid_indices[world_local_indices]
+        num_world_geoms = len(world_indices)
+
+        # Copy world-specific indices (using original geometry indices)
+        index_map[current_pos : current_pos + num_world_geoms] = world_indices
+        current_pos += num_world_geoms
+
+        # Append shared (negative) indices (using original geometry indices)
+        index_map[current_pos : current_pos + num_shared] = shared_indices
+        current_pos += num_shared
+
+        # Store the end position of this slice
+        slice_ends[world_idx] = current_pos
+
+    return index_map, slice_ends

@@ -162,8 +162,8 @@ class ModelBuilder:
         """The thickness of the shape."""
         is_solid: bool = True
         """Indicates whether the shape is solid or hollow. Defaults to True."""
-        collision_group: int = -1
-        """The collision group ID for the shape. Defaults to -1."""
+        collision_group: int = 1
+        """The collision group ID for the shape. Defaults to 1 (default group). Set to 0 to disable collisions for this shape."""
         collision_filter_parent: bool = True
         """Whether to inherit collision filtering from the parent. Defaults to True."""
         has_shape_collision: bool = True
@@ -453,9 +453,9 @@ class ModelBuilder:
         self.joint_coord_count = 0
 
         # current world index for entities being added directly to this builder.
-        # set to -1 to create global entities shared across all worlds.
+        # set to 0 by default (first world), or set to -1 to create global entities shared across all worlds.
         # note: this value is temporarily overridden when using add_builder().
-        self.current_world = -1
+        self.current_world = 0
 
         self.up_axis: Axis = Axis.from_any(up_axis)
         self.gravity: float = gravity
@@ -4074,7 +4074,9 @@ class ModelBuilder:
             target_max_min_color_ratio=target_max_min_color_ratio,
         )
 
-    def finalize(self, device: Devicelike | None = None, requires_grad: bool = False) -> Model:
+    def finalize(
+        self, device: Devicelike | None = None, requires_grad: bool = False, build_shape_contact_pairs: bool = True
+    ) -> Model:
         """
         Finalize the builder and create a concrete Model for simulation.
 
@@ -4085,6 +4087,9 @@ class ModelBuilder:
         Args:
             device: The simulation device to use (e.g., 'cpu', 'cuda'). If None, uses the current Warp device.
             requires_grad: If True, enables gradient computation for the model (for differentiable simulation).
+            build_shape_contact_pairs: If True, builds static shape contact pairs for collision detection.
+                Set to False when using dynamic broad phase (BroadPhaseMode.NXN or SAP) to skip this expensive O(N²) computation.
+                When False, you can also use EXPLICIT mode with custom pairs via shape_pairs_filtered parameter.
 
         Returns:
             Model: A fully constructed Model object containing all simulation data on the specified device.
@@ -4181,7 +4186,7 @@ class ModelBuilder:
             )
 
             m.shape_collision_filter_pairs = set(self.shape_collision_filter_pairs)
-            m.shape_collision_group = self.shape_collision_group
+            m.shape_collision_group = wp.array(self.shape_collision_group, dtype=wp.int32)
 
             # ---------------------
             # springs
@@ -4414,8 +4419,19 @@ class ModelBuilder:
             m.articulation_count = len(self.articulation_start)
             m.equality_constraint_count = len(self.equality_constraint_type)
 
-            self.find_shape_contact_pairs(m)
-            m.rigid_contact_max = count_rigid_contact_points(m)
+            # Build shape contact pairs if requested (can skip for dynamic broad phase)
+            if build_shape_contact_pairs:
+                self.find_shape_contact_pairs(m)
+                m.rigid_contact_max = count_rigid_contact_points(m)
+            else:
+                # Skip expensive O(N²) pair computation - will use dynamic broad phase (NXN/SAP)
+                # or explicit mode with custom pairs
+                m.shape_contact_pairs = None
+                m.shape_contact_pair_count = 0
+                # Use conservative estimate for rigid_contact_max
+                # Assumption: each shape can collide with up to 30 other shapes,
+                # and each shape pair can generate up to 5 contact points
+                m.rigid_contact_max = m.shape_count * 30 * 5
 
             m.rigid_contact_torsional_friction = self.rigid_contact_torsional_friction
             m.rigid_contact_rolling_friction = self.rigid_contact_rolling_friction
@@ -4434,6 +4450,49 @@ class ModelBuilder:
 
             return m
 
+    def _test_group_pair(self, group_a: int, group_b: int) -> bool:
+        """Test if two collision groups should interact.
+
+        This matches the exact logic from broad_phase_common.test_group_pair kernel function.
+
+        Args:
+            group_a: First collision group ID
+            group_b: Second collision group ID
+
+        Returns:
+            bool: True if the groups should collide, False otherwise
+        """
+        if group_a == 0 or group_b == 0:
+            return False
+        if group_a > 0:
+            return group_a == group_b or group_b < 0
+        if group_a < 0:
+            return group_a != group_b
+        return False
+
+    def _test_world_and_group_pair(
+        self, world_a: int, world_b: int, collision_group_a: int, collision_group_b: int
+    ) -> bool:
+        """Test if two entities should collide based on world indices and collision groups.
+
+        This matches the exact logic from broad_phase_common.test_world_and_group_pair kernel function.
+
+        Args:
+            world_a: World index of first entity
+            world_b: World index of second entity
+            collision_group_a: Collision group of first entity
+            collision_group_b: Collision group of second entity
+
+        Returns:
+            bool: True if the entities should collide, False otherwise
+        """
+        # Check world indices first
+        if world_a != -1 and world_b != -1 and world_a != world_b:
+            return False
+
+        # If same world or at least one is global (-1), check collision groups
+        return self._test_group_pair(collision_group_a, collision_group_b)
+
     def find_shape_contact_pairs(self, model: Model):
         """
         Identifies and stores all potential shape contact pairs for collision detection.
@@ -4443,6 +4502,9 @@ class ModelBuilder:
         any user-specified collision filter pairs to avoid redundant or undesired contacts.
 
         The resulting contact pairs are stored in the model as a 2D array of shape indices.
+
+        Uses the exact same filtering logic as the broad phase kernels (test_world_and_group_pair)
+        to ensure consistency between EXPLICIT mode (precomputed pairs) and NXN/SAP modes.
 
         Args:
             model (Model): The simulation model to which the contact pairs will be assigned.
@@ -4454,26 +4516,22 @@ class ModelBuilder:
         filters: set[tuple[int, int]] = model.shape_collision_filter_pairs
         contact_pairs: list[tuple[int, int]] = []
 
-        # Sort shapes by world in case they are not sorted, keep only colliding shapes
+        # Keep only colliding shapes (those with COLLIDE_SHAPES flag)
         colliding_indices = [i for i, flag in enumerate(self.shape_flags) if flag & ShapeFlags.COLLIDE_SHAPES]
-        sorted_indices = sorted(colliding_indices, key=lambda i: self.shape_world[i])
 
-        # Iterate over all shapes candidates
-        for i1 in range(len(sorted_indices)):
-            s1 = sorted_indices[i1]
+        # Iterate over all pairs of colliding shapes
+        for i1 in range(len(colliding_indices)):
+            s1 = colliding_indices[i1]
             world1 = self.shape_world[s1]
             collision_group1 = self.shape_collision_group[s1]
-            for i2 in range(i1 + 1, len(sorted_indices)):
-                s2 = sorted_indices[i2]
-                world2 = self.shape_world[s2]
-                # Skip shapes from different worlds (unless one is global). As the shapes are sorted,
-                # this means the shapes in this world have all been processed.
-                if world1 != -1 and world1 != world2:
-                    break
 
-                # Skip shapes from different collision group (unless one is global).
+            for i2 in range(i1 + 1, len(colliding_indices)):
+                s2 = colliding_indices[i2]
+                world2 = self.shape_world[s2]
                 collision_group2 = self.shape_collision_group[s2]
-                if collision_group1 != -1 and collision_group2 != -1 and collision_group1 != collision_group2:
+
+                # Apply the exact same filtering logic as test_world_and_group_pair kernel
+                if not self._test_world_and_group_pair(world1, world2, collision_group1, collision_group2):
                     continue
 
                 # Ensure canonical order (smaller_element, larger_element)
@@ -4482,6 +4540,7 @@ class ModelBuilder:
                 else:
                     shape_a, shape_b = s1, s2
 
+                # Skip if explicitly filtered
                 if (shape_a, shape_b) not in filters:
                     contact_pairs.append((shape_a, shape_b))
 

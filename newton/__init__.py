@@ -36,6 +36,7 @@ from ._src.geometry import (
     GeoType,
     Mesh,
     ParticleFlags,
+    SAPSortType,
     ShapeFlags,
 )
 
@@ -44,6 +45,7 @@ __all__ += [
     "GeoType",
     "Mesh",
     "ParticleFlags",
+    "SAPSortType",
     "ShapeFlags",
 ]
 
