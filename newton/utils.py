@@ -83,6 +83,7 @@ __all__ += [
 # ==================================================================================
 from ._src.utils import (  # noqa: E402
     boltzmann,
+    compute_world_offsets,
     leaky_max,
     leaky_min,
     smooth_max,
@@ -98,6 +99,7 @@ from ._src.utils import (  # noqa: E402
 
 __all__ += [
     "boltzmann",
+    "compute_world_offsets",
     "leaky_max",
     "leaky_min",
     "smooth_max",
