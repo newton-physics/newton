@@ -1443,7 +1443,6 @@ class ModelBuilder:
         target_vel: float | None = None,
         target_ke: float | None = None,
         target_kd: float | None = None,
-        mode: int | None = None,
         limit_lower: float | None = None,
         limit_upper: float | None = None,
         limit_ke: float | None = None,
@@ -1468,7 +1467,6 @@ class ModelBuilder:
             target_vel: The target velocity of the joint.
             target_ke: The stiffness of the joint target.
             target_kd: The damping of the joint target.
-            mode: The control mode of the joint. If None, the default value from :attr:`default_joint_control_mode` is used.
             limit_lower: The lower limit of the joint. If None, the default value from :attr:`default_joint_limit_lower` is used.
             limit_upper: The upper limit of the joint. If None, the default value from :attr:`default_joint_limit_upper` is used.
             limit_ke: The stiffness of the joint limit. If None, the default value from :attr:`default_joint_limit_ke` is used.
@@ -2319,6 +2317,8 @@ class ModelBuilder:
                 self.joint_target_pos.append(axis["target_pos"])
                 self.joint_target_vel.append(axis["target_vel"])
                 self.joint_effort_limit.append(axis["effort_limit"])
+                self.joint_gear_ratio.append(axis["gear_ratio"])
+                self.joint_actuator_type.append(axis["actuator_type"])
 
         return {
             "body_remap": body_remap,

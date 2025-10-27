@@ -125,6 +125,7 @@ def pd_actuator_kernel(
     joint_type: wp.array(dtype=wp.int32),
     joint_f: wp.array(dtype=wp.float32),
     gear_ratio: wp.array(dtype=wp.float32),
+    joint_effort_limit:wp.array(dtype=wp.float32),
     # outputs
     joint_f_total: wp.array(dtype=wp.float32),
 ):
@@ -136,7 +137,8 @@ def pd_actuator_kernel(
     if joint_type[joint_id] == JointType.FREE:
         for j in range(dim):
             qdj = qdi + j
-            joint_f_total[qdj] = joint_f[qdj]
+            force = joint_f[qdj]
+            joint_f_total[qdj] = force
     else:
         for j in range(dim):
             qj = qi + j
@@ -149,7 +151,9 @@ def pd_actuator_kernel(
             Kp = kp_dof[qdj]
             Kd = kd_dof[qdj]
             tq = Kp * (tq - q) + Kd * (tqd - qd)
-            joint_f_total[qdj] += gear_ratio[qdj] * (tq + joint_f[qdj])
+            force = gear_ratio[qdj] * (tq + joint_f[qdj])
+            limit = joint_effort_limit[qdj]
+            joint_f_total[qdj] += wp.clamp(force, -limit, limit)
 
 
 class Actuator(ABC):
@@ -204,6 +208,7 @@ class PDActuator(Actuator):
                 model.joint_type,
                 control.joint_f,
                 self.gear_ratio,
+                model.joint_effort_limit,
             ],
             outputs=[
                 control.joint_f_total,

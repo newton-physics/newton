@@ -552,10 +552,11 @@ class Model:
 
         if self.joint_count > 0:
             joint_gear_ratio_numpy = self.joint_gear_ratio.numpy()
+            joint_actuator_type_numpy = self.joint_actuator_type.numpy()
 
             actuator_type_to_dofs = {}
             for dof_idx in range(self.joint_dof_count):
-                actuator_type = int(self.joint_actuator_type.numpy()[dof_idx])
+                actuator_type = int(joint_actuator_type_numpy[dof_idx])
                 if actuator_type not in actuator_type_to_dofs:
                     actuator_type_to_dofs[actuator_type] = []
                 actuator_type_to_dofs[actuator_type].append(dof_idx)
