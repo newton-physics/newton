@@ -247,7 +247,7 @@ def project_outside_collider(
         return
 
     # project outside of collider
-    sdf, sdf_gradient, sdf_vel, collider_id, material_id = collision_sdf(pos_adv, collider, body_q, body_qd)
+    sdf, sdf_gradient, sdf_vel, _collider_id, material_id = collision_sdf(pos_adv, collider, body_q, body_qd)
 
     sdf_end = sdf - wp.dot(sdf_vel, sdf_gradient) * dt + collider.material_projection_threshold[material_id]
     if sdf_end < 0:
