@@ -781,9 +781,9 @@ class ArraySquaredNorm:
             dim=(num_blocks, self.tile_size),
             inputs=(
                 square_input,
-                self.partial_sums_a.array,
+                self.partial_sums_a,
             ),
-            outputs=(self.partial_sums_b.array,),
+            outputs=(self.partial_sums_b,),
             block_dim=self.tile_size,
             record_cmd=True,
         )
@@ -800,7 +800,7 @@ class ArraySquaredNorm:
         flip_flop = False
         while True:
             num_blocks = (array_length + self.tile_size - 1) // self.tile_size
-            partial_sums = (self.partial_sums_a if flip_flop else self.partial_sums_b).array[:num_blocks]
+            partial_sums = (self.partial_sums_a if flip_flop else self.partial_sums_b)[:num_blocks]
 
             self.sum_launch.set_param_at_index(0, square_input)
             self.sum_launch.set_param_at_index(1, data)
@@ -1023,9 +1023,9 @@ def solve_rheology(
             stress,
         ],
         outputs=[
-            delassus_rotation.array,
-            delassus_diagonal.array,
-            delassus_normal.array,
+            delassus_rotation,
+            delassus_diagonal,
+            delassus_normal,
             local_strain_mat_values,
             local_strain_rhs,
             local_stress,
@@ -1040,8 +1040,8 @@ def solve_rheology(
                 compliance_mat_offsets,
                 compliance_mat_columns,
                 compliance_mat_values,
-                delassus_rotation.array,
-                delassus_diagonal.array,
+                delassus_rotation,
+                delassus_diagonal,
             ],
         )
 
@@ -1066,7 +1066,7 @@ def solve_rheology(
                 strain_mat.offsets,
                 strain_mat.columns,
                 local_strain_mat_values,
-                delassus_diagonal.array,
+                delassus_diagonal,
                 inv_volume,
                 local_stress,
             ],
@@ -1100,8 +1100,8 @@ def solve_rheology(
                 strain_mat.offsets,
                 strain_mat.columns,
                 strain_mat.values,
-                delassus_diagonal.array,
-                delassus_normal.array,
+                delassus_diagonal,
+                delassus_normal,
                 inv_volume,
                 strain_rhs,
                 unilateral_strain_offset,
@@ -1109,7 +1109,7 @@ def solve_rheology(
             outputs=[
                 velocity,
                 local_stress,
-                delta_stress.array,
+                delta_stress,
             ],
             block_dim=color_block_dim,
             max_blocks=color_block_count,
@@ -1126,8 +1126,8 @@ def solve_rheology(
                 transposed_strain_mat.columns,
                 transposed_strain_mat.values,
                 inv_volume,
-                delassus_rotation.array,
-                delassus_diagonal.array,
+                delassus_rotation,
+                delassus_diagonal,
             ],
         )
 
@@ -1146,15 +1146,15 @@ def solve_rheology(
                 strain_mat.offsets,
                 strain_mat.columns,
                 local_strain_mat_values,
-                delassus_diagonal.array,
-                delassus_normal.array,
+                delassus_diagonal,
+                delassus_normal,
                 local_strain_rhs,
                 unilateral_strain_offset,
                 velocity,
                 local_stress,
             ],
             outputs=[
-                delta_stress.array,
+                delta_stress,
             ],
             record_cmd=True,
         )
@@ -1163,7 +1163,7 @@ def solve_rheology(
 
     if rigidity_mat is not None:
         prev_collider_velocity = fem.borrow_temporary_like(collider_velocities, temporary_store)
-        wp.copy(dest=prev_collider_velocity.array, src=collider_velocities)
+        wp.copy(dest=prev_collider_velocity, src=collider_velocities)
         _D, J, _IJtm = rigidity_mat
         delta_body_qd = fem.borrow_temporary(temporary_store, shape=J.shape[1], dtype=float)
 
@@ -1181,7 +1181,7 @@ def solve_rheology(
         ],
     )
     if rigidity_mat is not None:
-        apply_rigidity_matrix(rigidity_mat, prev_collider_velocity.array, collider_velocities, delta_body_qd)
+        apply_rigidity_matrix(rigidity_mat, prev_collider_velocity, collider_velocities, delta_body_qd)
 
     solve_collider_launch = wp.launch(
         kernel=solve_nodal_friction,
@@ -1203,7 +1203,7 @@ def solve_rheology(
         # solve contacts
         solve_collider_launch.launch()
         if rigidity_mat is not None:
-            apply_rigidity_matrix(rigidity_mat, prev_collider_velocity.array, collider_velocities, delta_body_qd)
+            apply_rigidity_matrix(rigidity_mat, prev_collider_velocity, collider_velocities, delta_body_qd)
 
         # solve stress
         if gs:
@@ -1215,12 +1215,12 @@ def solve_rheology(
             # Add jacobi delta
             sp.bsr_mv(
                 A=transposed_strain_mat,
-                x=delta_stress.array,
+                x=delta_stress,
                 y=velocity,
                 alpha=1.0,
                 beta=1.0,
             )
-            fem.utils.array_axpy(x=delta_stress.array, y=local_stress, alpha=1.0, beta=1.0)
+            fem.utils.array_axpy(x=delta_stress, y=local_stress, alpha=1.0, beta=1.0)
 
     # Run solver loop
 
@@ -1228,8 +1228,8 @@ def solve_rheology(
 
     # Utility to compute the squared norm of the residual
     residual_squared_norm_computer = ArraySquaredNorm(
-        max_length=delta_stress.array.shape[0] * 6,
-        device=delta_stress.array.device,
+        max_length=delta_stress.shape[0] * 6,
+        device=delta_stress.device,
         temporary_store=temporary_store,
     )
 
@@ -1237,14 +1237,14 @@ def solve_rheology(
     if use_graph:
         min_iterations = 5
         iteration_and_condition = fem.borrow_temporary(temporary_store, shape=(2,), dtype=int)
-        iteration_and_condition.array.fill_(1)
+        iteration_and_condition.fill_(1)
 
-        iteration = iteration_and_condition.array[:1]
-        condition = iteration_and_condition.array[1:]
+        iteration = iteration_and_condition[:1]
+        condition = iteration_and_condition[1:]
 
         def do_iteration_with_condition():
             do_iteration()
-            residual = residual_squared_norm_computer.compute_squared_norm(delta_stress.array)
+            residual = residual_squared_norm_computer.compute_squared_norm(delta_stress)
             wp.launch(
                 update_condition,
                 dim=1,
@@ -1258,7 +1258,7 @@ def solve_rheology(
                 ],
             )
 
-        device = delta_stress.array.device
+        device = delta_stress.device
         if device.is_capturing:
             gc.disable()
             wp.capture_while(condition, do_iteration_with_condition)
@@ -1272,11 +1272,11 @@ def solve_rheology(
             wp.capture_launch(solve_graph)
 
             if verbose:
-                residual = residual_squared_norm_computer.compute_squared_norm(delta_stress.array)
+                residual = residual_squared_norm_computer.compute_squared_norm(delta_stress)
                 res = math.sqrt(residual.numpy()[0]) / residual_scale
                 print(
                     f"{'Gauss-Seidel' if gs else 'Jacobi'} terminated after "
-                    f"{iteration_and_condition.array.numpy()[0]} iterations with residual {res}"
+                    f"{iteration_and_condition.numpy()[0]} iterations with residual {res}"
                 )
     else:
         solve_granularity = 25 if gs else 50
@@ -1285,7 +1285,7 @@ def solve_rheology(
             for _k in range(solve_granularity):
                 do_iteration()
 
-            residual = residual_squared_norm_computer.compute_squared_norm(delta_stress.array)
+            residual = residual_squared_norm_computer.compute_squared_norm(delta_stress)
             res = math.sqrt(residual.numpy()[0]) / residual_scale
 
             if verbose:
@@ -1298,13 +1298,13 @@ def solve_rheology(
     # Convert stress back to world space,
     # and compute final elastic strain
 
-    delta_stress.array.assign(local_stress)
+    delta_stress.assign(local_stress)
     wp.launch(
         kernel=postprocess_stress_and_strain,
         dim=stress.shape[0],
         inputs=[
-            delassus_rotation.array,
-            delassus_diagonal.array,
+            delassus_rotation,
+            delassus_diagonal,
             compliance_mat_offsets,
             compliance_mat_columns,
             local_compliance_mat_values,
@@ -1312,7 +1312,7 @@ def solve_rheology(
             strain_mat.columns,
             local_strain_mat_values,
             node_volume,
-            delta_stress.array,
+            delta_stress,
             velocity,
         ],
         outputs=[

@@ -1828,15 +1828,15 @@ class SolverImplicitMPM(SolverBase):
                     min_dev = fem.borrow_temporary(temporary_store, shape=1, dtype=wp.vec3, device=device)
                     max_dev = fem.borrow_temporary(temporary_store, shape=1, dtype=wp.vec3, device=device)
 
-                    min_dev.array.fill_(wp.vec3(_INFINITY))
-                    max_dev.array.fill_(wp.vec3(-_INFINITY))
+                    min_dev.fill_(wp.vec3(_INFINITY))
+                    max_dev.fill_(wp.vec3(-_INFINITY))
 
                     tile_size = 256
                     wp.launch(
                         compute_bounds,
                         dim=((positions.shape[0] + tile_size - 1) // tile_size, tile_size),
                         block_dim=tile_size,
-                        inputs=[positions, particle_flags, min_dev.array, max_dev.array],
+                        inputs=[positions, particle_flags, min_dev, max_dev],
                         device=device,
                     )
 
@@ -1846,10 +1846,10 @@ class SolverImplicitMPM(SolverBase):
                     max_host = fem.borrow_temporary(
                         temporary_store, shape=1, dtype=wp.vec3, device="cpu", pinned=device.is_cuda
                     )
-                    wp.copy(src=min_dev.array, dest=min_host.array)
-                    wp.copy(src=max_dev.array, dest=max_host.array)
+                    wp.copy(src=min_dev, dest=min_host)
+                    wp.copy(src=max_dev, dest=max_host)
                     wp.synchronize_stream()
-                    bbox_min, bbox_max = min_host.array.numpy(), max_host.array.numpy()
+                    bbox_min, bbox_max = min_host.numpy(), max_host.numpy()
                 else:
                     bbox_min, bbox_max = np.min(positions.numpy(), axis=0), np.max(positions.numpy(), axis=0)
 
@@ -2026,10 +2026,10 @@ class SolverImplicitMPM(SolverBase):
                     dt,
                     state_out.collider_position_field.dof_values,
                     scratch.collider_distance_field.dof_values,
-                    scratch.collider_velocity.array,
+                    scratch.collider_velocity,
                     scratch.collider_normal_field.dof_values,
-                    scratch.collider_friction.array,
-                    scratch.collider_adhesion.array,
+                    scratch.collider_friction,
+                    scratch.collider_adhesion,
                     state_out.collider_ids,
                 ],
             )
@@ -2110,7 +2110,7 @@ class SolverImplicitMPM(SolverBase):
                     drag,
                 ],
                 outputs=[
-                    scratch.inv_mass_matrix.array,
+                    scratch.inv_mass_matrix,
                     state_out.velocity_field.dof_values,
                 ],
             )
@@ -2127,32 +2127,32 @@ class SolverImplicitMPM(SolverBase):
                     fields={"phi": scratch.fraction_test},
                     values={"inv_cell_volume": inv_cell_volume},
                     assembly="nodal",
-                    output=scratch.collider_vel_node_volume.array,
+                    output=scratch.collider_vel_node_volume,
                 )
                 allot_collider_mass(
                     cell_volume=cell_volume,
-                    node_volumes=scratch.collider_vel_node_volume.array,
+                    node_volumes=scratch.collider_vel_node_volume,
                     collider=self.mpm_model.collider,
                     body_mass=self.mpm_model.collider_body_mass,
                     collider_ids=state_out.collider_ids,
-                    collider_total_volumes=scratch.collider_total_volumes.array,
-                    collider_inv_mass_matrix=scratch.collider_inv_mass_matrix.array,
+                    collider_total_volumes=scratch.collider_total_volumes,
+                    collider_inv_mass_matrix=scratch.collider_inv_mass_matrix,
                 )
 
                 rigidity_matrix = build_rigidity_matrix(
                     cell_volume=cell_volume,
-                    node_volumes=scratch.collider_vel_node_volume.array,
+                    node_volumes=scratch.collider_vel_node_volume,
                     node_positions=state_out.collider_position_field.dof_values,
                     collider=self.mpm_model.collider,
                     body_q=state_in.body_q,
                     body_mass=self.mpm_model.collider_body_mass,
                     body_inv_inertia=self.mpm_model.collider_body_inv_inertia,
                     collider_ids=state_out.collider_ids,
-                    collider_total_volumes=scratch.collider_total_volumes.array,
+                    collider_total_volumes=scratch.collider_total_volumes,
                 )
         else:
             rigidity_matrix = None
-            scratch.collider_inv_mass_matrix.array.zero_()
+            scratch.collider_inv_mass_matrix.zero_()
 
         self._require_strain_space_fields(state_out)
         strain_node_count = scratch.sym_strain_test.space_partition.node_count()
@@ -2204,7 +2204,7 @@ class SolverImplicitMPM(SolverBase):
                         "inv_cell_volume": inv_cell_volume,
                         "dt": dt,
                     },
-                    output=scratch.int_symmetric_strain.array,
+                    output=scratch.int_symmetric_strain,
                 )
 
                 C = fem.integrate(
@@ -2223,7 +2223,7 @@ class SolverImplicitMPM(SolverBase):
                     output_dtype=float,
                 )
         else:
-            scratch.int_symmetric_strain.array.zero_()
+            scratch.int_symmetric_strain.zero_()
 
         with wp.ScopedTimer(
             "Compute strain-node volumes",
@@ -2236,7 +2236,7 @@ class SolverImplicitMPM(SolverBase):
                 quadrature=pic,
                 fields={"phi": scratch.divergence_test},
                 values={"inv_cell_volume": inv_cell_volume},
-                output=scratch.strain_node_particle_volume.array,
+                output=scratch.strain_node_particle_volume,
             )
 
         with wp.ScopedTimer(
@@ -2261,16 +2261,16 @@ class SolverImplicitMPM(SolverBase):
 
             wp.launch(
                 average_yield_parameters,
-                dim=scratch.strain_node_particle_volume.array.shape[0],
+                dim=scratch.strain_node_particle_volume.shape[0],
                 inputs=[
                     yield_parameters_int,
-                    scratch.strain_node_particle_volume.array,
+                    scratch.strain_node_particle_volume,
                     scratch.strain_yield_parameters_field.dof_values,
                 ],
             )
 
         # Void fraction (unilateral incompressibility offset)
-        unilateral_strain_offset = wp.zeros_like(scratch.strain_node_particle_volume.array)
+        unilateral_strain_offset = wp.zeros_like(scratch.strain_node_particle_volume)
         if mpm_model.critical_fraction > 0.0:
             with wp.ScopedTimer(
                 "Unilateral offset",
@@ -2282,7 +2282,7 @@ class SolverImplicitMPM(SolverBase):
                     integrate_fraction,
                     fields={"phi": scratch.divergence_test},
                     values={"inv_cell_volume": inv_cell_volume},
-                    output=scratch.strain_node_volume.array,
+                    output=scratch.strain_node_volume,
                 )
 
                 fem.integrate(
@@ -2294,7 +2294,7 @@ class SolverImplicitMPM(SolverBase):
                     values={
                         "inv_cell_volume": inv_cell_volume,
                     },
-                    output=scratch.strain_node_collider_volume.array,
+                    output=scratch.strain_node_collider_volume,
                 )
 
                 wp.launch(
@@ -2302,9 +2302,9 @@ class SolverImplicitMPM(SolverBase):
                     dim=strain_node_count,
                     inputs=[
                         mpm_model.critical_fraction,
-                        scratch.strain_node_particle_volume.array,
-                        scratch.strain_node_collider_volume.array,
-                        scratch.strain_node_volume.array,
+                        scratch.strain_node_particle_volume,
+                        scratch.strain_node_collider_volume,
+                        scratch.strain_node_volume,
                         unilateral_strain_offset,
                     ],
                 )
@@ -2352,22 +2352,22 @@ class SolverImplicitMPM(SolverBase):
                 scratch.strain_matrix,
                 scratch.transposed_strain_matrix,
                 C if has_compliant_particles else None,
-                scratch.inv_mass_matrix.array,
-                scratch.strain_node_particle_volume.array,
+                scratch.inv_mass_matrix,
+                scratch.strain_node_particle_volume,
                 scratch.strain_yield_parameters_field.dof_values,
                 unilateral_strain_offset,
-                scratch.int_symmetric_strain.array,
+                scratch.int_symmetric_strain,
                 scratch.plastic_strain_delta_field.dof_values,
                 state_out.stress_field.dof_values,
                 state_out.velocity_field.dof_values,
-                scratch.collider_friction.array,
-                scratch.collider_adhesion.array,
+                scratch.collider_friction,
+                scratch.collider_adhesion,
                 scratch.collider_normal_field.dof_values,
-                scratch.collider_velocity.array,
-                scratch.collider_inv_mass_matrix.array,
+                scratch.collider_velocity,
+                scratch.collider_inv_mass_matrix,
                 state_out.impulse_field.dof_values,
                 color_offsets=scratch.color_offsets,
-                color_indices=None if scratch.color_indices is None else scratch.color_indices.array,
+                color_indices=None if scratch.color_indices is None else scratch.color_indices,
                 color_nodes_per_element=scratch.color_nodes_per_element,
                 rigidity_mat=rigidity_matrix,
                 temporary_store=self.temporary_store,
@@ -2389,7 +2389,7 @@ class SolverImplicitMPM(SolverBase):
                 dim=strain_node_count,
                 inputs=[
                     delta_strain,
-                    scratch.strain_node_particle_volume.array,
+                    scratch.strain_node_particle_volume,
                     scratch.elastic_strain_delta_field.dof_values,
                 ],
             )
@@ -2585,23 +2585,23 @@ class SolverImplicitMPM(SolverBase):
                 stencil_size,
                 voxels,
                 res,
-                colors.array,
-                color_indices.array,
+                colors,
+                color_indices,
             ],
         )
 
         wp.utils.radix_sort_pairs(
-            keys=colors.array,
-            values=color_indices.array,
+            keys=colors,
+            values=color_indices,
             count=colored_element_count,
         )
 
-        unique_colors = colors.array[colored_element_count:]
+        unique_colors = colors[colored_element_count:]
         color_count = unique_colors[colored_element_count:]
-        color_node_counts = color_indices.array[colored_element_count:]
+        color_node_counts = color_indices[colored_element_count:]
 
         wp.utils.runlength_encode(
-            colors.array,
+            colors,
             value_count=colored_element_count,
             run_values=unique_colors,
             run_lengths=color_node_counts,
