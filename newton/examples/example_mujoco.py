@@ -331,6 +331,7 @@ class Example:
         if stage_path and not headless:
             self.renderer = newton.viewer.ViewerGL()
             self.renderer.set_model(self.model)
+            self.renderer.set_world_offsets((4.0, 4.0, 0.0))
         else:
             self.renderer = None
 
@@ -407,7 +408,7 @@ class Example:
             custom_setup_fn(articulation_builder)
 
         builder = newton.ModelBuilder()
-        builder.replicate(articulation_builder, num_worlds, spacing=(4.0, 4.0, 0.0))
+        builder.replicate(articulation_builder, num_worlds)
         if randomize:
             njoint = len(articulation_builder.joint_q)
             for i in range(num_worlds):

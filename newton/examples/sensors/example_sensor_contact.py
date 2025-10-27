@@ -114,7 +114,7 @@ class Example:
         )
 
         builder = newton.ModelBuilder()
-        builder.replicate(world_builder, self.num_worlds, spacing=(4.0, 4.0, 0.0))
+        builder.replicate(world_builder, self.num_worlds)
 
         builder.add_ground_plane()
         # stores contact info required by contact sensors
