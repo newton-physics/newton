@@ -229,6 +229,8 @@ class Model:
         """Generalized joint velocities for state initialization, shape [joint_dof_count], float."""
         self.joint_f = None
         """Generalized joint forces for state initialization, shape [joint_dof_count], float."""
+        self.joint_f_total = None
+        """Generalized joint total forces, shape [joint_dof_count], float."""
         self.joint_gear_ratio = None
         """Generalized joint gear ratio, shape [joint_dof_count], float."""
         self.joint_actuator_type = None
@@ -414,6 +416,7 @@ class Model:
         # attributes per joint dof
         self.attribute_frequency["joint_qd"] = "joint_dof"
         self.attribute_frequency["joint_f"] = "joint_dof"
+        self.attribute_frequency["joint_f_total"] = "joint_dof"
         self.attribute_frequency["joint_gear_ratio"] = "joint_dof"
         self.attribute_frequency["joint_actuator_type"] = "joint_dof"
         self.attribute_frequency["joint_armature"] = "joint_dof"
@@ -505,6 +508,7 @@ class Model:
                 c.joint_target_pos = wp.clone(self.joint_target_pos, requires_grad=requires_grad)
                 c.joint_target_vel = wp.clone(self.joint_target_vel, requires_grad=requires_grad)
                 c.joint_f = wp.clone(self.joint_f, requires_grad=requires_grad)
+                c.joint_f_total = wp.clone(self.joint_f_total, requires_grad=requires_grad)
             if self.tri_count:
                 c.tri_activations = wp.clone(self.tri_activations, requires_grad=requires_grad)
             if self.tet_count:
@@ -515,6 +519,7 @@ class Model:
             c.joint_target_pos = self.joint_target_pos
             c.joint_target_vel = self.joint_target_vel
             c.joint_f = self.joint_f
+            c.joint_f_total = self.joint_f_total
             c.tri_activations = self.tri_activations
             c.tet_activations = self.tet_activations
             c.muscle_activations = self.muscle_activations

@@ -417,6 +417,7 @@ class ModelBuilder:
         self.joint_q = []
         self.joint_qd = []
         self.joint_f = []
+        self.joint_f_total = []
         self.joint_gear_ratio = []
         self.joint_actuator_type = []
         self.joint_type = []
@@ -1081,6 +1082,7 @@ class ModelBuilder:
             "joint_key",
             "joint_qd",
             "joint_f",
+            "joint_f_total",
             "joint_gear_ratio",
             "joint_actuator_type",
             "joint_target_pos",
@@ -1319,6 +1321,7 @@ class ModelBuilder:
         for _ in range(dof_count):
             self.joint_qd.append(0.0)
             self.joint_f.append(0.0)
+            self.joint_f_total.append(0.0)
             self.joint_gear_ratio.append(1.0)
             self.joint_actuator_type.append(ActuatorType.PD)
 
@@ -4363,6 +4366,7 @@ class ModelBuilder:
             m.joint_target_pos = wp.array(self.joint_target_pos, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_target_vel = wp.array(self.joint_target_vel, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_f = wp.array(self.joint_f, dtype=wp.float32, requires_grad=requires_grad)
+            m.joint_f_total = wp.array(self.joint_f_total, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_gear_ratio = wp.array(self.joint_gear_ratio, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_actuator_type = wp.array(self.joint_actuator_type, dtype=wp.int32, requires_grad=requires_grad)
             m.joint_effort_limit = wp.array(self.joint_effort_limit, dtype=wp.float32, requires_grad=requires_grad)

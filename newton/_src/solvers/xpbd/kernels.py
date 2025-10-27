@@ -1698,6 +1698,10 @@ def solve_body_joints(
             err = 0.0
             compliance = linear_compliance
             damping = 0.0
+            
+            target_vel = axis_target_vel[dim]
+            derr_rel = derr - target_vel
+            
             # consider joint limits irrespective of axis mode
             lower = axis_limits_lower[dim]
             upper = axis_limits_upper[dim]
@@ -1709,13 +1713,14 @@ def solve_body_joints(
                 target_pos = axis_target_pos[dim]
                 target_pos = wp.clamp(target_pos, lower, upper)
 
-                target_vel = axis_target_vel[dim]
-                derr_rel = derr - target_vel
-
                 if axis_stiffness[dim] > 0.0:
                     pos_err = e - target_pos
                     err = pos_err + derr_rel * dt
                     compliance = 1.0 / axis_stiffness[dim]
+                    damping = axis_damping[dim]
+                elif axis_damping[dim] > 0.0:
+                    err = derr_rel * dt
+                    compliance = 0.0
                     damping = axis_damping[dim]
 
             if wp.abs(err) > 1e-9:
@@ -1901,6 +1906,9 @@ def solve_body_joints(
             err = 0.0
             compliance = angular_compliance
             damping = 0.0
+            
+            target_vel = axis_target_vel[dim]
+            derr_rel = derr - target_vel
 
             # consider joint limits irrespective of mode
             lower = axis_limits_lower[dim]
@@ -1913,13 +1921,14 @@ def solve_body_joints(
                 target_pos = axis_target_pos[dim]
                 target_pos = wp.clamp(target_pos, lower, upper)
 
-                target_vel = axis_target_vel[dim]
-                derr_rel = derr - target_vel
-
                 if axis_stiffness[dim] > 0.0:
                     pos_err = e - target_pos
                     err = pos_err + derr_rel * dt
                     compliance = 1.0 / axis_stiffness[dim]
+                    damping = axis_damping[dim]
+                elif axis_damping[dim] > 0.0:
+                    err = derr_rel * dt
+                    compliance = 0.0
                     damping = axis_damping[dim]
 
             d_lambda = (
