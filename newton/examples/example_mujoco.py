@@ -331,6 +331,7 @@ class Example:
         if stage_path and not headless:
             self.renderer = newton.viewer.ViewerGL()
             self.renderer.set_model(self.model)
+            self.renderer.set_world_offsets((4.0, 4.0, 0.0))
         else:
             self.renderer = None
 
@@ -407,7 +408,7 @@ class Example:
             custom_setup_fn(articulation_builder)
 
         builder = newton.ModelBuilder()
-        builder.replicate(articulation_builder, num_worlds, spacing=(4.0, 4.0, 0.0))
+        builder.replicate(articulation_builder, num_worlds)
         if randomize:
             njoint = len(articulation_builder.joint_q)
             for i in range(num_worlds):
@@ -599,12 +600,7 @@ if __name__ == "__main__":
             actual_cone = cone_map.get(cone_value, f"unknown({cone_value})")
             # Get actual max constraints and contacts from MuJoCo Warp data
             actual_njmax = example.solver.mjw_data.njmax
-            actual_nconmax = (
-                example.solver.mjw_data.nconmax // args.num_worlds
-                if args.num_worlds > 0
-                else example.solver.mjw_data.nconmax
-            )
-
+            actual_nconmax = example.solver.mjw_data.nconmax
             print(f"{'Solver':<{LABEL_WIDTH}}: {actual_solver}")
             print(f"{'Integrator':<{LABEL_WIDTH}}: {actual_integrator}")
             # print(f"{'Parallel Line Search':<{LABEL_WIDTH}}: {example.solver.mj_model.opt.ls_parallel}")
