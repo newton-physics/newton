@@ -590,6 +590,14 @@ add_example_test(
     use_viewer=True,
 )
 
+add_example_test(
+    TestMPMExamples,
+    name="mpm.example_mpm_2way_coupling",
+    devices=cuda_test_devices,
+    test_options={"viewer": "null", "num-frames": 80},
+    use_viewer=True,
+)
+
 if __name__ == "__main__":
     # force rebuild of all kernels
     # wp.clear_kernel_cache()

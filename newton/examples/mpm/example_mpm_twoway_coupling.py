@@ -45,6 +45,12 @@ def compute_body_forces(
     body_com: wp.array(dtype=wp.vec3),
     body_f: wp.array(dtype=wp.spatial_vector),
 ):
+    """Compute forces applied by sand to rigid bodies.
+
+    Sum the impulses applied on each mpm grid node and convert to
+    forces and torques at the body's center of mass.
+    """
+
     i = wp.tid()
 
     cid = collider_ids[i]
@@ -72,6 +78,12 @@ def subtract_body_force(
     body_q_res: wp.array(dtype=wp.transform),
     body_qd_res: wp.array(dtype=wp.spatial_vector),
 ):
+    """Update the rigid bodies velocity to remove the forces applied by sand at the last step.
+
+    This is necessary to compute the total impulses that are required to enforce the complementarity-based
+    frictional contact boundary conditions.
+    """
+
     body_id = wp.tid()
 
     # Remove previously applied force
@@ -96,12 +108,212 @@ class Example:
 
         self.viewer = viewer
 
+        # setup rigid-body model builder
         builder = newton.ModelBuilder()
         builder.default_shape_cfg.mu = 0.5
+        self._emit_rigid_bodies(builder)
 
         # add ground plane
         builder.add_ground_plane()
 
+        # setup sand model builder
+        sand_builder = newton.ModelBuilder()
+        voxel_size = 0.05  # 5 cm
+        self._emit_particles(sand_builder, voxel_size)
+
+        # finalize models
+        self.model = builder.finalize()
+        self.sand_model = sand_builder.finalize()
+
+        # basic particle material params
+        self.sand_model.particle_mu = 0.48
+        self.sand_model.particle_ke = 1.0e15
+
+        # setup mpm solver
+        mpm_options = SolverImplicitMPM.Options()
+        mpm_options.voxel_size = voxel_size
+        mpm_options.tolerance = 1.0e-6
+        mpm_options.grid_type = "fixed"  # fixed grid so we can graph-capture
+        mpm_options.grid_padding = 50
+        mpm_options.max_active_cell_count = 1 << 15
+
+        mpm_options.strain_basis = "P0"
+        mpm_options.max_iterations = 50
+        mpm_options.critical_fraction = 0.0
+
+        mpm_model = SolverImplicitMPM.Model(self.sand_model, mpm_options)
+        # read colliders from the RB model rather than the sand model
+        mpm_model.setup_collider(model=self.model)
+
+        self.mpm_solver = SolverImplicitMPM(mpm_model, mpm_options)
+
+        # setup rigid-body solver
+        self.solver = newton.solvers.SolverXPBD(self.model)
+
+        # simulation state
+        self.state_0 = self.model.state()
+        self.state_1 = self.model.state()
+
+        self.sand_state_0 = self.sand_model.state()
+        self.mpm_solver.enrich_state(self.sand_state_0)
+
+        self.control = self.model.control()
+        self.contacts = self.model.collide(self.state_0)
+
+        # viewer
+        self.viewer.set_model(self.model)
+        if isinstance(self.viewer, newton.viewer.ViewerGL):
+            self.viewer.register_ui_callback(self.render_ui, position="side")
+        self.viewer.show_particles = True
+        self.show_impulses = False
+
+        # not required for MuJoCo, but required for other solvers
+        newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
+
+        # Additional buffers for tracking two-way coupling forces
+        max_nodes = 1 << 20
+        self.collider_impulses = wp.zeros(max_nodes, dtype=wp.vec3, device=self.model.device)
+        self.collider_impulse_pos = wp.zeros(max_nodes, dtype=wp.vec3, device=self.model.device)
+        self.collider_impulse_ids = wp.full(max_nodes, value=-1, dtype=int, device=self.model.device)
+        self.collect_collider_impulses()
+
+        # map from collider index to body index
+        self.collider_body_id = mpm_model.collider.collider_body_index
+
+        # per-body forces and torques applied by sand to rigid bodies
+        self.body_sand_forces = wp.zeros_like(self.state_0.body_f)
+
+        self.particle_render_colors = wp.full(
+            self.sand_model.particle_count, value=wp.vec3(0.7, 0.6, 0.4), dtype=wp.vec3, device=self.sand_model.device
+        )
+
+        self.capture()
+
+    def capture(self):
+        if wp.get_device().is_cuda:
+            with wp.ScopedCapture() as capture:
+                self.simulate()
+            self.graph = capture.graph
+        else:
+            self.graph = None
+
+    def simulate(self):
+        for _ in range(self.sim_substeps):
+            self.state_0.clear_forces()
+
+            wp.launch(
+                compute_body_forces,
+                dim=self.collider_impulse_ids.shape[0],
+                inputs=[
+                    self.frame_dt,
+                    self.collider_impulse_ids,
+                    self.collider_impulses,
+                    self.collider_impulse_pos,
+                    self.collider_body_id,
+                    self.state_0.body_q,
+                    self.model.body_com,
+                    self.state_0.body_f,
+                ],
+            )
+            # saved applied force to subtract later on
+            self.body_sand_forces.assign(self.state_0.body_f)
+
+            # apply forces to the model
+            self.viewer.apply_forces(self.state_0)
+
+            self.contacts = self.model.collide(self.state_0)
+            self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
+
+            # swap states
+            self.state_0, self.state_1 = self.state_1, self.state_0
+
+        self.simulate_sand()
+
+    def collect_collider_impulses(self):
+        collider_impulses, collider_impulse_pos, collider_impulse_ids = self.mpm_solver.collect_collider_impulses(
+            self.sand_state_0
+        )
+        self.collider_impulse_ids.fill_(-1)
+        n_colliders = min(collider_impulses.shape[0], self.collider_impulses.shape[0])
+        self.collider_impulses[:n_colliders].assign(collider_impulses[:n_colliders])
+        self.collider_impulse_pos[:n_colliders].assign(collider_impulse_pos[:n_colliders])
+        self.collider_impulse_ids[:n_colliders].assign(collider_impulse_ids[:n_colliders])
+
+    def simulate_sand(self):
+        # Subtract previously applied impulses from body velocities
+
+        if self.sand_state_0.body_q is not None:
+            wp.launch(
+                subtract_body_force,
+                dim=self.sand_state_0.body_q.shape,
+                inputs=[
+                    self.frame_dt,
+                    self.state_0.body_q,
+                    self.state_0.body_qd,
+                    self.body_sand_forces,
+                    self.model.body_inv_inertia,
+                    self.model.body_inv_mass,
+                    self.sand_state_0.body_q,
+                    self.sand_state_0.body_qd,
+                ],
+            )
+
+        self.mpm_solver.step(self.sand_state_0, self.sand_state_0, contacts=None, control=None, dt=self.frame_dt)
+
+        # Save impulses to apply back to rigid bodies
+        self.collect_collider_impulses()
+
+    def step(self):
+        if self.graph:
+            wp.capture_launch(self.graph)
+        else:
+            self.simulate()
+
+        self.sim_time += self.frame_dt
+
+    def test(self):
+        newton.examples.test_body_state(
+            self.model,
+            self.state_0,
+            "all bodies are above the sand",
+            lambda q, qd: q[2] > 0.45,
+        )
+        newton.examples.test_particle_state(
+            self.sand_state_0,
+            "all particles are above the ground",
+            lambda q, qd: q[2] > -0.05,
+        )
+
+    def render(self):
+        self.viewer.begin_frame(self.sim_time)
+        self.viewer.log_state(self.state_0)
+        self.viewer.log_contacts(self.contacts, self.state_0)
+
+        self.viewer.log_points(
+            "/sand",
+            points=self.sand_state_0.particle_q,
+            radii=self.sand_model.particle_radius,
+            colors=self.particle_render_colors,
+            hidden=not self.viewer.show_particles,
+        )
+
+        if self.show_impulses:
+            impulses, pos, _cid = self.mpm_solver.collect_collider_impulses(self.sand_state_0)
+            self.viewer.log_lines(
+                "/impulses",
+                starts=pos,
+                ends=pos + impulses,
+                colors=wp.full(pos.shape[0], value=wp.vec3(1.0, 0.0, 0.0), dtype=wp.vec3),
+            )
+        else:
+            self.viewer.log_lines("/impulses", None, None, None)
+
+        self.viewer.end_frame()
+
+    def render_ui(self, imgui):
+        _changed, self.show_impulses = imgui.checkbox("Show Impulses", self.show_impulses)
+
+    def _emit_rigid_bodies(self, builder: newton.ModelBuilder):
         # z height to drop shapes from
         drop_z = 2.0
 
@@ -147,10 +359,11 @@ class Example:
             )
             builder.add_shape_box(body, hx=float(hx), hy=float(hy), hz=float(hz))
 
+    def _emit_particles(self, sand_builder: newton.ModelBuilder, voxel_size: float):
         # ------------------------------------------
         # Add sand bed (2m x 2m x 0.5m) above ground
         # ------------------------------------------
-        voxel_size = 0.05  # 5 cm
+
         particles_per_cell = 3.0
         density = 2500.0
 
@@ -174,184 +387,11 @@ class Example:
         points += 2.0 * radius * (rng.random(points.shape) - 0.5)
         vel = np.zeros_like(points)
 
-        sand_builder = newton.ModelBuilder()
         sand_builder.particle_q = points
         sand_builder.particle_qd = vel
         sand_builder.particle_mass = np.full(points.shape[0], mass)
         sand_builder.particle_radius = np.full(points.shape[0], radius)
         sand_builder.particle_flags = np.ones(points.shape[0], dtype=int)
-
-        # finalize models
-        # for now keep two separate models, as we do not have enough control
-        # over the collision pipeline
-        self.model = builder.finalize()
-        self.sand_model = sand_builder.finalize()
-
-        # basic particle material params
-        self.sand_model.particle_mu = 0.48
-        self.sand_model.particle_ke = 1.0e15
-
-        # setup rigid-body solver
-        self.solver = newton.solvers.SolverXPBD(self.model)
-
-        # setup mpm solver
-        mpm_options = SolverImplicitMPM.Options()
-        mpm_options.voxel_size = voxel_size
-        mpm_options.tolerance = 1.0e-6
-        mpm_options.grid_type = "fixed"
-        mpm_options.grid_padding = 50
-        mpm_options.max_active_cell_count = 1 << 15
-
-        mpm_options.strain_basis = "P0"
-        mpm_options.max_iterations = 50
-        mpm_options.critical_fraction = 0.0
-
-        mpm_model = SolverImplicitMPM.Model(self.sand_model, mpm_options)
-        # read colliders from the RB model rather than the sand model
-        mpm_model.setup_collider(model=self.model)
-
-        self.mpm_solver = SolverImplicitMPM(mpm_model, mpm_options)
-
-        # simulation state
-        self.state_0 = self.model.state()
-        self.state_1 = self.model.state()
-
-        self.sand_state_0 = self.sand_model.state()
-
-        self.sand_body_forces = wp.zeros_like(self.state_0.body_f)
-
-        # enrich states for MPM particles
-        self.mpm_solver.enrich_state(self.sand_state_0)
-
-        self.control = self.model.control()
-        self.contacts = self.model.collide(self.state_0)
-
-        self.viewer.set_model(self.model)
-
-        # not required for MuJoCo, but required for other solvers
-        newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
-
-        max_nodes = 1 << 20
-        self.collider_impulses = wp.zeros(max_nodes, dtype=wp.vec3, device=self.model.device)
-        self.collider_impulse_pos = wp.zeros(max_nodes, dtype=wp.vec3, device=self.model.device)
-        self.collider_impulse_ids = wp.full(max_nodes, value=-1, dtype=int, device=self.model.device)
-        self.collect_collider_impulses()
-
-        # map from collider index to body index
-        self.collider_body_id = mpm_model.collider.collider_body_index
-
-        self.particle_render_colors = wp.full(
-            self.sand_model.particle_count, value=wp.vec3(0.7, 0.6, 0.4), dtype=wp.vec3, device=self.sand_model.device
-        )
-
-        self.capture()
-
-    def capture(self):
-        if wp.get_device().is_cuda:
-            with wp.ScopedCapture() as capture:
-                self.simulate()
-            self.graph = capture.graph
-        else:
-            self.graph = None
-
-    def simulate(self):
-        for _ in range(self.sim_substeps):
-            self.state_0.clear_forces()
-
-            wp.launch(
-                compute_body_forces,
-                dim=self.collider_impulse_ids.shape[0],
-                inputs=[
-                    self.frame_dt,
-                    self.collider_impulse_ids,
-                    self.collider_impulses,
-                    self.collider_impulse_pos,
-                    self.collider_body_id,
-                    self.state_0.body_q,
-                    self.model.body_com,
-                    self.state_0.body_f,
-                ],
-            )
-            # saved applied force to subtract later on
-            self.sand_body_forces.assign(self.state_0.body_f)
-
-            # apply forces to the model
-            self.viewer.apply_forces(self.state_0)
-
-            self.contacts = self.model.collide(self.state_0)
-            self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
-
-            # swap states
-            self.state_0, self.state_1 = self.state_1, self.state_0
-
-        self.simulate_sand()
-
-    def collect_collider_impulses(self):
-        collider_impulses, collider_impulse_pos, collider_impulse_ids = self.mpm_solver.collect_collider_impulses(
-            self.sand_state_0
-        )
-        self.collider_impulse_ids.fill_(-1)
-        n_colliders = min(collider_impulses.shape[0], self.collider_impulses.shape[0])
-        self.collider_impulses[:n_colliders].assign(collider_impulses[:n_colliders])
-        self.collider_impulse_pos[:n_colliders].assign(collider_impulse_pos[:n_colliders])
-        self.collider_impulse_ids[:n_colliders].assign(collider_impulse_ids[:n_colliders])
-
-    def simulate_sand(self):
-        # Subtract previously applied impulses from body velocities
-
-        if self.sand_state_0.body_q is not None:
-            wp.launch(
-                subtract_body_force,
-                dim=self.sand_state_0.body_q.shape,
-                inputs=[
-                    self.frame_dt,
-                    self.state_0.body_q,
-                    self.state_0.body_qd,
-                    self.sand_body_forces,
-                    self.model.body_inv_inertia,
-                    self.model.body_inv_mass,
-                    self.sand_state_0.body_q,
-                    self.sand_state_0.body_qd,
-                ],
-            )
-
-        self.mpm_solver.step(self.sand_state_0, self.sand_state_0, contacts=None, control=None, dt=self.frame_dt)
-
-        # Save applied impulses
-        self.collect_collider_impulses()
-
-    def step(self):
-        if self.graph:
-            wp.capture_launch(self.graph)
-        else:
-            self.simulate()
-
-        self.sim_time += self.frame_dt
-
-    def test(self):
-        pass
-
-    def render(self):
-        self.viewer.begin_frame(self.sim_time)
-        self.viewer.log_state(self.state_0)
-        self.viewer.log_contacts(self.contacts, self.state_0)
-        self.viewer.log_points(
-            "sand",
-            points=self.sand_state_0.particle_q,
-            radii=self.sand_model.particle_radius,
-            colors=self.particle_render_colors,
-            hidden=False,
-        )
-
-        impulses, pos, _cid = self.mpm_solver.collect_collider_impulses(self.sand_state_0)
-        self.viewer.log_lines(
-            "impulses",
-            starts=pos,
-            ends=pos + impulses,
-            colors=wp.full(pos.shape[0], value=wp.vec3(1.0, 0.0, 0.0), dtype=wp.vec3),
-        )
-
-        self.viewer.end_frame()
 
 
 if __name__ == "__main__":
