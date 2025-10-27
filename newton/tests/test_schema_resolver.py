@@ -1235,14 +1235,14 @@ class TestSchemaResolver(unittest.TestCase):
         #   - articulation_stiffness = 150.0 (on ant Xform prim)
         #   - articulation_damping = 15.0 (on ant Xform prim)
         #   - pd_control:pd_gains = (2.0, 0.2) (on ant Xform prim)
-        artic_stiff = model.articulation_default_stiffness.numpy()
-        artic_damp = state.articulation_default_damping.numpy()
+        arctic_stiff = model.articulation_default_stiffness.numpy()
+        arctic_damp = state.articulation_default_damping.numpy()
         pd_gains = control.pd_control.articulation_default_pd_gains.numpy()
 
         # The ant is the first (and likely only) articulation
-        self.assertGreater(len(artic_stiff), 0)
-        self.assertAlmostEqual(artic_stiff[0], 150.0, places=5)
-        self.assertAlmostEqual(artic_damp[0], 15.0, places=5)
+        self.assertGreater(len(arctic_stiff), 0)
+        self.assertAlmostEqual(arctic_stiff[0], 150.0, places=5)
+        self.assertAlmostEqual(arctic_damp[0], 15.0, places=5)
         self.assertAlmostEqual(pd_gains[0][0], 2.0, places=5)
         self.assertAlmostEqual(pd_gains[0][1], 0.2, places=5)
 

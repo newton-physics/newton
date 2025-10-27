@@ -15,6 +15,7 @@
 
 from __future__ import annotations
 
+import warnings as _w
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import IntEnum
@@ -60,7 +61,7 @@ class Attribute:
 
 
 class SchemaResolver:
-    # mapping is a dictionary for known variables in Newton. Its purpose is to map usd attributes to exisiting Newton data.
+    # mapping is a dictionary for known variables in Newton. Its purpose is to map usd attributes to existing Newton data.
     # PrimType -> variable -> list[Attribute]
     mapping: ClassVar[dict[PrimType, dict[str, list[Attribute]]]] = {}
 
@@ -573,10 +574,10 @@ class _ResolverManager:
             if hasattr(v, "real") and hasattr(v, "imaginary"):
                 try:
                     return wp.normalize(wp.quat(*v.imaginary, v.real))
-                except Exception:
-                    pass
-        except Exception:
-            pass
+                except (TypeError, ValueError, AttributeError):
+                    _w.warn("Failed converting USD quat to wp.quat; returning original value", stacklevel=2)
+        except (AttributeError, RuntimeError):
+            _w.warn("Unexpected attribute access while converting USD value; returning original value", stacklevel=2)
         return v
 
     def _infer_wp_dtype(self, v: Any):
@@ -597,7 +598,8 @@ class _ResolverManager:
             # Vector4-like (but not quat)
             if hasattr(v, "__len__") and len(v) == 4:
                 return wp.vec4
-        except Exception:
+        except (TypeError, AttributeError):
+            # fallthrough to scalar checks
             pass
         if isinstance(v, bool):
             return wp.bool
@@ -697,7 +699,7 @@ class _ResolverManager:
         # Nothing found
         try:
             prim_path = str(prim.GetPath()) if prim is not None else "<None>"
-        except Exception:
+        except (AttributeError, RuntimeError):
             prim_path = "<invalid>"
         print(
             f"Error: Cannot resolve value for '{prim_type.name.lower()}:{key}' on prim '{prim_path}'; "

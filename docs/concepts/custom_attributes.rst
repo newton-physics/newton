@@ -127,12 +127,12 @@ When entities don't explicitly specify custom attribute values, the default valu
    # After finalization, access both types of attributes
    model = builder.finalize()
    temps = model.temperature.numpy()
-   artic_stiff = model.articulation_stiffness.numpy()
+   arctic_stiff = model.articulation_stiffness.numpy()
    
    print(f"Body 1: {temps[body1]}")  # 20.0 (default)
    print(f"Body 2: {temps[body2]}")  # 37.5 (authored)
-   print(f"Articulation 0: {artic_stiff[0]}")  # 100.0
-   print(f"Articulation 2: {artic_stiff[2]}")  # 200.0
+   print(f"Articulation 0: {arctic_stiff[0]}")  # 100.0
+   print(f"Articulation 2: {arctic_stiff[2]}")  # 200.0
 
 .. testoutput::
 

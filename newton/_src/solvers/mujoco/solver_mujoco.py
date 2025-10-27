@@ -219,7 +219,7 @@ def convert_newton_contacts_to_mjwarp_kernel(
     bodies_per_world: int,
     to_mjc_geom_index: wp.array(dtype=wp.vec2i),
     # Mujoco warp contacts
-    ncon_out: wp.array(dtype=int),
+    nacon_out: wp.array(dtype=int),
     contact_dist_out: wp.array(dtype=float),
     contact_pos_out: wp.array(dtype=wp.vec3),
     contact_frame_out: wp.array(dtype=wp.mat33),
@@ -241,7 +241,7 @@ def convert_newton_contacts_to_mjwarp_kernel(
 
     # Set number of contacts (for a single world)
     if tid == 0:
-        ncon_out[0] = rigid_contact_count[0]
+        nacon_out[0] = rigid_contact_count[0]
         ncollision_out[0] = 0
 
     if tid >= rigid_contact_count[0]:
@@ -484,7 +484,7 @@ def convert_mjw_contact_to_warp_kernel(
     # inputs
     contact_geom_mapping: wp.array2d(dtype=wp.int32),
     pyramidal_cone: bool,
-    mj_ncon: wp.array(dtype=wp.int32),
+    mj_nacon: wp.array(dtype=wp.int32),
     mj_contact_frame: wp.array(dtype=wp.mat33f),
     mj_contact_dim: wp.array(dtype=int),
     mj_contact_geom: wp.array(dtype=wp.vec2i),
@@ -496,7 +496,7 @@ def convert_mjw_contact_to_warp_kernel(
     contact_normal: wp.array(dtype=wp.vec3f),
     contact_force: wp.array(dtype=float),
 ):
-    n_contacts = mj_ncon[0]
+    n_contacts = mj_nacon[0]
     contact_idx = wp.tid()
 
     if contact_idx >= n_contacts:
@@ -1397,7 +1397,7 @@ class SolverMuJoCo(SolverBase):
                 bodies_per_world,
                 self.to_mjc_geom_index,
                 # Mujoco warp contacts
-                self.mjw_data.ncon,
+                self.mjw_data.nacon,
                 self.mjw_data.contact.dist,
                 self.mjw_data.contact.pos,
                 self.mjw_data.contact.frame,
@@ -1729,30 +1729,30 @@ class SolverMuJoCo(SolverBase):
         # TODO: ensure that class invariants are preserved
         # TODO: fill actual contact arrays instead of creating new ones
         mj_data = self.mjw_data
-        nconmax = mj_data.nconmax
+        naconmax = mj_data.naconmax
         mj_contact = mj_data.contact
 
-        contacts.rigid_contact_max = nconmax
-        contacts.rigid_contact_count = mj_data.ncon
+        contacts.rigid_contact_max = naconmax
+        contacts.rigid_contact_count = mj_data.nacon
         contacts.position = mj_contact.pos
         contacts.separation = mj_contact.dist
 
         if not hasattr(contacts, "pair"):
-            contacts.pair = wp.empty(nconmax, dtype=wp.vec2i, device=self.model.device)
+            contacts.pair = wp.empty(naconmax, dtype=wp.vec2i, device=self.model.device)
 
         if not hasattr(contacts, "normal"):
-            contacts.normal = wp.empty(nconmax, dtype=wp.vec3f, device=self.model.device)
+            contacts.normal = wp.empty(naconmax, dtype=wp.vec3f, device=self.model.device)
 
         if not hasattr(contacts, "force"):
-            contacts.force = wp.empty(nconmax, dtype=wp.float32, device=self.model.device)
+            contacts.force = wp.empty(naconmax, dtype=wp.float32, device=self.model.device)
 
         wp.launch(
             convert_mjw_contact_to_warp_kernel,
-            dim=mj_data.nconmax,
+            dim=mj_data.naconmax,
             inputs=[
                 self.to_newton_shape_index,
                 self.mjw_model.opt.cone == int(self._mujoco.mjtCone.mjCONE_PYRAMIDAL),
-                mj_data.ncon,
+                mj_data.nacon,
                 mj_contact.frame,
                 mj_contact.dim,
                 mj_contact.geom,
@@ -1767,7 +1767,7 @@ class SolverMuJoCo(SolverBase):
             ],
             device=self.model.device,
         )
-        contacts.n_contacts = mj_data.ncon
+        contacts.n_contacts = mj_data.nacon
 
     def convert_to_mjc(
         self,
@@ -2367,8 +2367,8 @@ class SolverMuJoCo(SolverBase):
 
             add_geoms(child)
 
-        for i, typ in enumerate(eq_constraint_type):
-            if typ == EqType.CONNECT:
+        for i, constraint_type in enumerate(eq_constraint_type):
+            if constraint_type == EqType.CONNECT:
                 eq = spec.add_equality(objtype=mujoco.mjtObj.mjOBJ_BODY)
                 eq.type = mujoco.mjtEq.mjEQ_CONNECT
                 eq.active = eq_constraint_enabled[i]
@@ -2376,7 +2376,7 @@ class SolverMuJoCo(SolverBase):
                 eq.name2 = model.body_key[eq_constraint_body2[i]]
                 eq.data[0:3] = eq_constraint_anchor[i]
 
-            elif typ == EqType.JOINT:
+            elif constraint_type == EqType.JOINT:
                 eq = spec.add_equality(objtype=mujoco.mjtObj.mjOBJ_JOINT)
                 eq.type = mujoco.mjtEq.mjEQ_JOINT
                 eq.active = eq_constraint_enabled[i]
@@ -2384,7 +2384,7 @@ class SolverMuJoCo(SolverBase):
                 eq.name2 = model.joint_key[eq_constraint_joint2[i]]
                 eq.data[0:5] = eq_constraint_polycoef[i]
 
-            elif typ == EqType.WELD:
+            elif constraint_type == EqType.WELD:
                 eq = spec.add_equality(objtype=mujoco.mjtObj.mjOBJ_BODY)
                 eq.type = mujoco.mjtEq.mjEQ_WELD
                 eq.active = eq_constraint_enabled[i]
@@ -2514,9 +2514,9 @@ class SolverMuJoCo(SolverBase):
             # now complete the data from the Newton model
             self.notify_model_changed(SolverNotifyFlags.ALL)
 
-            # TODO find better heuristics to determine nconmax and njmax
+            # TODO find better heuristics to determine naconmax and njmax
             if disable_contacts:
-                nconmax = 0
+                naconmax = 0
             else:
                 if ncon_per_world is not None:
                     rigid_contact_max = nworld * ncon_per_world
@@ -2525,11 +2525,11 @@ class SolverMuJoCo(SolverBase):
                             f"[WARNING] Value for ncon_per_world is changed from {ncon_per_world} to {self.mj_data.ncon} following an MjWarp requirement.",
                             stacklevel=2,
                         )
-                        nconmax = self.mj_data.ncon * nworld
+                        naconmax = self.mj_data.ncon * nworld
                     else:
-                        nconmax = rigid_contact_max
+                        naconmax = rigid_contact_max
                 else:
-                    nconmax = self.mj_data.ncon * nworld
+                    naconmax = max(512, self.mj_data.ncon * nworld)
 
             if njmax is not None:
                 if njmax < self.mj_data.nefc:
@@ -2545,7 +2545,7 @@ class SolverMuJoCo(SolverBase):
                 self.mj_model,
                 self.mj_data,
                 nworld=nworld,
-                nconmax=nconmax,
+                naconmax=naconmax,
                 njmax=njmax,
             )
 
@@ -2562,7 +2562,6 @@ class SolverMuJoCo(SolverBase):
             "body_iquat",
             "body_mass",
             # "body_subtreemass",
-            # "subtree_mass",
             "body_inertia",
             # "body_invweight0",
             # "body_gravcomp",

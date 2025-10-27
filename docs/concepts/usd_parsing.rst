@@ -482,7 +482,7 @@ After importing the USD file with the custom attributes shown above, they become
    pid_gains = control.namespace_a.pid_gains.numpy()        # Per-joint vec2
    
    # Access ARTICULATION frequency attributes
-   artic_stiff = model.articulation_stiffness.numpy()       # Per-articulation scalar (ARTICULATION frequency)
+   arctic_stiff = model.articulation_stiffness.numpy()       # Per-articulation scalar (ARTICULATION frequency)
    
    # Namespace isolation: model.mass_scale and state.namespace_a.mass_scale are independent
    # - model.mass_scale has value 1.5 for robot_body (default namespace, model assignment)

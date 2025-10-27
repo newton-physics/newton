@@ -947,7 +947,7 @@ class TestCustomAttributes(unittest.TestCase):
             free_body_ids.append(body)
 
         # Create articulations with bodies and joints
-        artic_body_ids = []
+        arctic_body_ids = []
         for i in range(2):
             builder.add_articulation(
                 custom_attributes={
@@ -979,7 +979,7 @@ class TestCustomAttributes(unittest.TestCase):
                 child_xform=wp.transform([0.0, 0.0, -0.2], wp.quat_identity()),
                 axis=[0.0, 1.0, 0.0],
             )
-            artic_body_ids.extend([base, link])
+            arctic_body_ids.extend([base, link])
 
         # Finalize and verify
         model = builder.finalize(device=self.device)
@@ -994,10 +994,10 @@ class TestCustomAttributes(unittest.TestCase):
         self.assertAlmostEqual(temps[free_body_ids[2]], 35.0, places=5)  # Custom
 
         # Articulated bodies: all use default (temperature not assigned)
-        self.assertAlmostEqual(temps[artic_body_ids[0]], 20.0, places=5)  # artic1 base - default
-        self.assertAlmostEqual(temps[artic_body_ids[1]], 20.0, places=5)  # artic1 link - default
-        self.assertAlmostEqual(temps[artic_body_ids[2]], 20.0, places=5)  # artic2 base - default
-        self.assertAlmostEqual(temps[artic_body_ids[3]], 20.0, places=5)  # artic2 link - default
+        self.assertAlmostEqual(temps[arctic_body_ids[0]], 20.0, places=5)  # arctic1 base - default
+        self.assertAlmostEqual(temps[arctic_body_ids[1]], 20.0, places=5)  # arctic1 link - default
+        self.assertAlmostEqual(temps[arctic_body_ids[2]], 20.0, places=5)  # arctic2 base - default
+        self.assertAlmostEqual(temps[arctic_body_ids[3]], 20.0, places=5)  # arctic2 link - default
 
         # Check density attribute (STATE assignment)
         densities = state.density.numpy()
@@ -1008,16 +1008,16 @@ class TestCustomAttributes(unittest.TestCase):
         self.assertAlmostEqual(densities[free_body_ids[2]], 0.7, places=5)  # Custom (0.5 + 2*0.1)
 
         # Articulated bodies: all use custom values (different range from free bodies)
-        self.assertAlmostEqual(densities[artic_body_ids[0]], 2.0, places=5)  # artic1 base
-        self.assertAlmostEqual(densities[artic_body_ids[1]], 3.0, places=5)  # artic1 link
-        self.assertAlmostEqual(densities[artic_body_ids[2]], 2.5, places=5)  # artic2 base
-        self.assertAlmostEqual(densities[artic_body_ids[3]], 3.5, places=5)  # artic2 link
+        self.assertAlmostEqual(densities[arctic_body_ids[0]], 2.0, places=5)  # arctic1 base
+        self.assertAlmostEqual(densities[arctic_body_ids[1]], 3.0, places=5)  # arctic1 link
+        self.assertAlmostEqual(densities[arctic_body_ids[2]], 2.5, places=5)  # arctic2 base
+        self.assertAlmostEqual(densities[arctic_body_ids[3]], 3.5, places=5)  # arctic2 link
 
         # Check ARTICULATION attributes
-        artic_stiff = model.articulation_stiffness.numpy()
-        self.assertEqual(len(artic_stiff), 2)
-        self.assertAlmostEqual(artic_stiff[0], 100.0, places=5)
-        self.assertAlmostEqual(artic_stiff[1], 150.0, places=5)
+        arctic_stiff = model.articulation_stiffness.numpy()
+        self.assertEqual(len(arctic_stiff), 2)
+        self.assertAlmostEqual(arctic_stiff[0], 100.0, places=5)
+        self.assertAlmostEqual(arctic_stiff[1], 150.0, places=5)
 
 
 def run_tests():
