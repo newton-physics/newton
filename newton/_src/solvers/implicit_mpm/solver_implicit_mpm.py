@@ -34,6 +34,7 @@ from .rasterized_collisions import (
     Collider,
     allot_collider_mass,
     build_rigidity_matrix,
+    interpolate_collider_normals,
     project_outside_collider,
     rasterize_collider,
 )
@@ -511,14 +512,6 @@ def compliance_form(
     )
 
 
-@fem.integrand
-def world_position(
-    s: fem.Sample,
-    domain: fem.Domain,
-):
-    return domain(s)
-
-
 @dataclass
 class ImplicitMPMOptions:
     """Implicit MPM solver options."""
@@ -572,6 +565,8 @@ class ImplicitMPMOptions:
     # experimental
     collider_normal_from_sdf_gradient: bool = False
     """Compute collider normals from sdf gradient rather than closest point"""
+    collider_basis: str = "P1"
+    """Collider basis functions. May be one of P1, S2"""
 
 
 class _ImplicitMPMScratchpad:
@@ -606,6 +601,8 @@ class _ImplicitMPMScratchpad:
 
         self.inv_mass_matrix = None
 
+        self.collider_fraction_test = None
+
         self.collider_normal_field = None
         self.collider_distance_field = None
 
@@ -614,6 +611,9 @@ class _ImplicitMPMScratchpad:
         self.collider_adhesion = None
         self.collider_inv_mass_matrix = None
 
+        self.collider_matrix = sp.bsr_zeros(0, 0, block_type=float)
+        self.transposed_collider_matrix = sp.bsr_zeros(0, 0, block_type=float)
+
         self.strain_node_particle_volume = None
         self.strain_node_volume = None
         self.strain_node_collider_volume = None
@@ -621,9 +621,9 @@ class _ImplicitMPMScratchpad:
         self.int_symmetric_strain = None
 
         self.collider_total_volumes = None
-        self.collider_vel_node_volume = None
+        self.collider_node_volume = None
 
-    def create_basis_spaces(self, grid: fem.Geometry, strain_basis_str: str):
+    def create_basis_spaces(self, grid: fem.Geometry, strain_basis_str: str, collider_basis_str: str):
         """Define velocity and strain function spaces over the given geometry."""
 
         self.grid = grid
@@ -631,6 +631,13 @@ class _ImplicitMPMScratchpad:
         # Define function spaces: linear (Q1) for velocity and volume fraction,
         # zero or first order for pressure
         self._velocity_basis = fem.make_polynomial_basis_space(grid, degree=1)
+
+        if collider_basis_str == "S2":
+            self._collision_basis = fem.make_polynomial_basis_space(
+                grid, degree=2, element_basis=fem.ElementBasis.SERENDIPITY
+            )
+        else:
+            self._collision_basis = self._velocity_basis
 
         if strain_basis_str not in ("P0", "Q1"):
             raise ValueError(f"Unsupported strain basis: {strain_basis_str}")
@@ -656,6 +663,7 @@ class _ImplicitMPMScratchpad:
         self.domain = fem.Cells(geo_partition)
 
         self._create_velocity_function_space(temporary_store, max_cell_count)
+        self._create_collider_function_space(temporary_store, max_cell_count)
         self._create_strain_function_space(temporary_store, max_cell_count)
 
     def _create_velocity_function_space(self, temporary_store: fem.TemporaryStore, max_cell_count: int = -1):
@@ -682,6 +690,37 @@ class _ImplicitMPMScratchpad:
 
         self._velocity_space = velocity_space
         self._vel_space_restriction = vel_space_restriction
+
+    def _create_collider_function_space(self, temporary_store: fem.TemporaryStore, max_cell_count: int = -1):
+        """Create velocity and fraction spaces and their partition/restriction."""
+
+        if self._velocity_basis == self._collision_basis:
+            self._collision_space = self._velocity_space
+            self._collision_space_restriction = self._vel_space_restriction
+            return
+
+        domain = self.domain
+
+        collision_space = fem.make_collocated_function_space(self._collision_basis, dtype=wp.vec3)
+
+        # overly conservative
+        max_collision_node_count = (
+            collision_space.topology.MAX_NODES_PER_ELEMENT * domain.element_count() if max_cell_count >= 0 else -1
+        )
+
+        collision_space_partition = fem.make_space_partition(
+            space_topology=collision_space.topology,
+            geometry_partition=domain.geometry_partition,
+            with_halo=False,
+            max_node_count=max_collision_node_count,
+            temporary_store=temporary_store,
+        )
+        collision_space_restriction = fem.make_space_restriction(
+            space_partition=collision_space_partition, domain=domain, temporary_store=temporary_store
+        )
+
+        self._collision_space = collision_space
+        self._collision_space_restriction = collision_space_restriction
 
     def _create_strain_function_space(self, temporary_store: fem.TemporaryStore, max_cell_count: int = -1):
         """Create symmetric strain space (P0 or Q1) and its partition/restriction."""
@@ -732,38 +771,65 @@ class _ImplicitMPMScratchpad:
             self.fraction_test = fem.make_test(fraction_space, space_restriction=vel_space_restriction)
 
             self.velocity_trial = fem.make_trial(velocity_space, domain=domain, space_partition=vel_space_partition)
+            self.fraction_trial = fem.make_trial(fraction_space, domain=domain, space_partition=vel_space_partition)
 
             self.fraction_field = fem.make_discrete_field(fraction_space, space_partition=vel_space_partition)
-            self.collider_velocity_field = velocity_space.make_field(space_partition=vel_space_partition)
-            self.collider_distance_field = fraction_space.make_field(space_partition=vel_space_partition)
-            self.collider_normal_field = velocity_space.make_field(space_partition=vel_space_partition)
 
             if has_compliant_particles:
                 elastic_parameters_space = fem.make_collocated_function_space(velocity_basis, dtype=wp.vec3)
                 self.elastic_parameters_field = elastic_parameters_space.make_field(space_partition=vel_space_partition)
 
-            self.background_impulse_field = fem.UniformField(domain, wp.vec3(0.0))
         else:
             self.velocity_test.rebind(velocity_space, vel_space_restriction)
             self.fraction_test.rebind(fraction_space, vel_space_restriction)
 
             self.velocity_trial.rebind(velocity_space, vel_space_partition, domain)
-
+            self.fraction_trial.rebind(fraction_space, vel_space_partition, domain)
             self.fraction_field.rebind(fraction_space, vel_space_partition)
-            self.collider_velocity_field.rebind(velocity_space, vel_space_partition)
-            self.collider_distance_field.rebind(fraction_space, vel_space_partition)
-            self.collider_normal_field.rebind(velocity_space, vel_space_partition)
 
             if has_compliant_particles:
                 elastic_parameters_space = fem.make_collocated_function_space(velocity_basis, dtype=wp.vec3)
                 self.elastic_parameters_field.rebind(elastic_parameters_space, vel_space_partition)
 
+        self.velocity_field = velocity_space.make_field(space_partition=vel_space_partition)
+
+    def require_collision_space_fields(self):
+        collision_basis = self._collision_basis
+        collision_space = self._collision_space
+        collision_space_restriction = self._collision_space_restriction
+        domain = collision_space_restriction.domain
+        collision_space_partition = collision_space_restriction.space_partition
+
+        if (
+            self.collider_fraction_test is not None
+            and self.collider_fraction_test.space_restriction.space_partition == collision_space_partition
+        ):
+            return
+        collider_fraction_space = fem.make_collocated_function_space(collision_basis, dtype=float)
+
+        # test, trial and discrete fields
+        if self.collider_fraction_test is None:
+            self.collider_fraction_test = fem.make_test(
+                collider_fraction_space, space_restriction=collision_space_restriction
+            )
+            self.collider_distance_field = collider_fraction_space.make_field(space_partition=collision_space_partition)
+
+            self.collider_velocity_field = collision_space.make_field(space_partition=collision_space_partition)
+            self.collider_normal_field = collision_space.make_field(space_partition=collision_space_partition)
+
+            self.background_impulse_field = fem.UniformField(domain, wp.vec3(0.0))
+        else:
+            self.collider_fraction_test.rebind(collider_fraction_space, collision_space_restriction)
+            self.collider_distance_field.rebind(collider_fraction_space, collision_space_partition)
+
+            self.collider_velocity_field.rebind(collision_space, collision_space_partition)
+            self.collider_normal_field.rebind(collision_space, collision_space_partition)
+
             self.background_impulse_field.domain = domain
 
-        self.velocity_field = velocity_space.make_field(space_partition=vel_space_partition)
-        self.impulse_field = velocity_space.make_field(space_partition=vel_space_partition)
-        self.collider_position_field = velocity_space.make_field(space_partition=vel_space_partition)
-        self.collider_ids = wp.empty(vel_space_partition.node_count(), dtype=int)
+        self.impulse_field = collision_space.make_field(space_partition=collision_space_partition)
+        self.collider_position_field = collision_space.make_field(space_partition=collision_space_partition)
+        self.collider_ids = wp.empty(collision_space_partition.node_count(), dtype=int)
 
     def require_strain_space_fields(self):
         """Ensure strain-space fields exist and match current spaces."""
@@ -824,14 +890,15 @@ class _ImplicitMPMScratchpad:
     ):
         """Allocate transient arrays sized to current grid and options."""
         vel_node_count = self._vel_space_restriction.space_partition.node_count()
+        collider_node_count = self._collision_space_restriction.space_partition.node_count()
         strain_node_count = self._strain_space_restriction.space_partition.node_count()
 
         self.inv_mass_matrix = fem.borrow_temporary(temporary_store, shape=(vel_node_count,), dtype=float)
 
-        self.collider_velocity = fem.borrow_temporary(temporary_store, shape=(vel_node_count,), dtype=wp.vec3)
-        self.collider_friction = fem.borrow_temporary(temporary_store, shape=(vel_node_count,), dtype=float)
-        self.collider_adhesion = fem.borrow_temporary(temporary_store, shape=(vel_node_count,), dtype=float)
-        self.collider_inv_mass_matrix = fem.borrow_temporary(temporary_store, shape=(vel_node_count,), dtype=float)
+        self.collider_velocity = fem.borrow_temporary(temporary_store, shape=(collider_node_count,), dtype=wp.vec3)
+        self.collider_friction = fem.borrow_temporary(temporary_store, shape=(collider_node_count,), dtype=float)
+        self.collider_adhesion = fem.borrow_temporary(temporary_store, shape=(collider_node_count,), dtype=float)
+        self.collider_inv_mass_matrix = fem.borrow_temporary(temporary_store, shape=(collider_node_count,), dtype=float)
 
         self.strain_node_particle_volume = fem.borrow_temporary(temporary_store, shape=strain_node_count, dtype=float)
         self.int_symmetric_strain = fem.borrow_temporary(temporary_store, shape=strain_node_count, dtype=vec6)
@@ -847,7 +914,7 @@ class _ImplicitMPMScratchpad:
 
         if has_compliant_bodies:
             self.collider_total_volumes = fem.borrow_temporary(temporary_store, shape=collider_count, dtype=float)
-            self.collider_vel_node_volume = fem.borrow_temporary(temporary_store, shape=(vel_node_count,), dtype=float)
+            self.collider_node_volume = fem.borrow_temporary(temporary_store, shape=collider_node_count, dtype=float)
 
         if max_colors > 0:
             self.color_indices = fem.borrow_temporary(temporary_store, shape=strain_node_count * 2, dtype=int)
@@ -867,9 +934,9 @@ class _ImplicitMPMScratchpad:
             self.strain_node_volume.release()
             self.strain_node_collider_volume.release()
 
-        if self.collider_vel_node_volume is not None:
+        if self.collider_node_volume is not None:
             self.collider_total_volumes.release()
-            self.collider_vel_node_volume.release()
+            self.collider_node_volume.release()
 
         if self.color_indices is not None:
             self.color_indices.release()
@@ -1525,32 +1592,6 @@ wp.overload(scatter_field_dof_values, {"src": wp.array(dtype=wp.vec3), "dest": w
 wp.overload(scatter_field_dof_values, {"src": wp.array(dtype=vec6), "dest": wp.array(dtype=vec6)})
 
 
-@fem.integrand
-def collider_gradient_field(s: fem.Sample, distance: fem.Field, voxel_size: float):
-    for k in range(8):
-        # if any node is outside of narrow band, ignore
-        if distance(fem.at_node(distance, s, k)) > 1.0e6:
-            return wp.vec3(0.0)
-
-    g = fem.grad(distance, s)
-
-    # weight by exponential of negative distance
-    d = distance(s)
-    return g * wp.exp(-wp.abs(d) / voxel_size)
-
-
-@wp.kernel
-def normalize_gradient(gradient: wp.array(dtype=wp.vec3)):
-    i = wp.tid()
-    gradient[i] = wp.normalize(gradient[i])
-
-
-@wp.kernel
-def reset_collider_node_position(node_positions: wp.array(dtype=wp.vec3)):
-    i = wp.tid()
-    node_positions[i] = wp.vec3(fem.OUTSIDE)
-
-
 class SolverImplicitMPM(SolverBase):
     """Implicit MPM solver.
 
@@ -1596,7 +1637,9 @@ class SolverImplicitMPM(SolverBase):
         self.coloring = options.solver == "gauss-seidel"
         self.apic = options.transfer_scheme == "apic"
         self.max_active_cell_count = options.max_active_cell_count
+
         self.collider_normal_from_sdf_gradient = options.collider_normal_from_sdf_gradient
+        self.collider_basis = options.collider_basis
 
         self.temporary_store = fem.TemporaryStore()
 
@@ -1647,6 +1690,7 @@ class SolverImplicitMPM(SolverBase):
         state.ws_stress_field = None
         with wp.ScopedDevice(self.model.device):
             self._require_velocity_space_fields(state)
+            self._require_collision_space_fields(state)
             self._require_strain_space_fields(state)
 
             if state.body_q is None and self.mpm_model.collider_body_count > 0:
@@ -1916,7 +1960,9 @@ class SolverImplicitMPM(SolverBase):
                 temporary_store=self.temporary_store,
                 padding_voxels=self.grid_padding,
             )
-            self._scratchpad.create_basis_spaces(grid, strain_basis_str=self.strain_basis)
+            self._scratchpad.create_basis_spaces(
+                grid, strain_basis_str=self.strain_basis, collider_basis_str=self.collider_basis
+            )
 
         with wp.ScopedTimer(
             "Scratchpad",
@@ -1995,6 +2041,10 @@ class SolverImplicitMPM(SolverBase):
                     inputs=[pic.particle_coords],
                 )
 
+        # Rasterize collider to grid
+        self._require_collision_space_fields(state_out)
+        collider_node_count = scratch.collider_fraction_test.space_partition.node_count()
+
         self._require_velocity_space_fields(state_out)
         vel_node_count = scratch.velocity_test.space_partition.node_count()
 
@@ -2004,54 +2054,41 @@ class SolverImplicitMPM(SolverBase):
             use_nvtx=self._timers_use_nvtx,
             synchronize=not self._timers_use_nvtx,
         ):
-            wp.launch(
-                reset_collider_node_position,
-                dim=vel_node_count,
-                inputs=[
-                    state_out.collider_position_field.dof_values,
-                ],
-            )
-
-            fem.interpolate(
-                world_position,
-                dest=fem.make_restriction(
-                    state_out.collider_position_field, space_restriction=scratch.velocity_test.space_restriction
-                ),
-            )
-
-            wp.launch(
-                rasterize_collider,
-                dim=vel_node_count,
-                inputs=[
-                    self.mpm_model.collider,
-                    state_in.body_q,
-                    state_in.body_qd,
-                    self.mpm_model.voxel_size,
-                    dt,
-                    state_out.collider_position_field.dof_values,
-                    scratch.collider_distance_field.dof_values,
-                    scratch.collider_velocity,
-                    scratch.collider_normal_field.dof_values,
-                    scratch.collider_friction,
-                    scratch.collider_adhesion,
-                    state_out.collider_ids,
-                ],
+            rasterize_collider(
+                self.mpm_model.collider,
+                state_in.body_q,
+                state_in.body_qd,
+                self.mpm_model.voxel_size,
+                dt,
+                scratch.collider_fraction_test.space_restriction,
+                state_out.collider_position_field,
+                scratch.collider_distance_field,
+                scratch.collider_normal_field,
+                scratch.collider_velocity,
+                scratch.collider_friction,
+                scratch.collider_adhesion,
+                state_out.collider_ids,
             )
 
             if self.collider_normal_from_sdf_gradient:
-                fem.interpolate(
-                    collider_gradient_field,
-                    dest=fem.make_restriction(
-                        scratch.collider_normal_field, space_restriction=scratch.velocity_test.space_restriction
-                    ),
-                    fields={"distance": scratch.collider_distance_field},
-                    values={"voxel_size": self.mpm_model.voxel_size},
+                interpolate_collider_normals(
+                    self.mpm_model.voxel_size,
+                    scratch.collider_fraction_test.space_restriction,
+                    scratch.collider_distance_field,
+                    scratch.collider_normal_field,
                 )
 
-                wp.launch(
-                    normalize_gradient,
-                    dim=scratch.collider_normal_field.dof_values.shape,
-                    inputs=[scratch.collider_normal_field.dof_values],
+            if scratch.fraction_trial.space.basis is not scratch.collider_fraction_test.space.basis:
+                #  Map from collider nodes to velocity nodes
+                sp.bsr_set_zero(
+                    scratch.collider_matrix, rows_of_blocks=collider_node_count, cols_of_blocks=vel_node_count
+                )
+                fem.interpolate(
+                    scratch.fraction_trial,
+                    dest=scratch.collider_matrix,
+                    dest_space=scratch.collider_fraction_test.space,
+                    location=scratch.collider_fraction_test.space_restriction,
+                    assume_continuous=True,
                 )
 
         # Velocity right-hand side and inverse mass matrix
@@ -2128,14 +2165,14 @@ class SolverImplicitMPM(SolverBase):
             ):
                 fem.integrate(
                     integrate_fraction,
-                    fields={"phi": scratch.fraction_test},
+                    fields={"phi": scratch.collider_fraction_test},
                     values={"inv_cell_volume": inv_cell_volume},
                     assembly="nodal",
-                    output=scratch.collider_vel_node_volume,
+                    output=scratch.collider_node_volume,
                 )
                 allot_collider_mass(
                     cell_volume=cell_volume,
-                    node_volumes=scratch.collider_vel_node_volume,
+                    node_volumes=scratch.collider_node_volume,
                     collider=self.mpm_model.collider,
                     body_mass=self.mpm_model.collider_body_mass,
                     collider_ids=state_out.collider_ids,
@@ -2145,7 +2182,7 @@ class SolverImplicitMPM(SolverBase):
 
                 rigidity_matrix = build_rigidity_matrix(
                     cell_volume=cell_volume,
-                    node_volumes=scratch.collider_vel_node_volume,
+                    node_volumes=scratch.collider_node_volume,
                     node_positions=state_out.collider_position_field.dof_values,
                     collider=self.mpm_model.collider,
                     body_q=state_in.body_q,
@@ -2366,6 +2403,8 @@ class SolverImplicitMPM(SolverBase):
                 scratch.plastic_strain_delta_field.dof_values,
                 state_out.stress_field.dof_values,
                 state_out.velocity_field.dof_values,
+                scratch.collider_matrix,
+                scratch.transposed_collider_matrix,
                 scratch.collider_friction,
                 scratch.collider_adhesion,
                 scratch.collider_normal_field.dof_values,
@@ -2456,6 +2495,25 @@ class SolverImplicitMPM(SolverBase):
 
         has_compliant_particles = self.mpm_model.min_young_modulus < _INFINITY
         scratch.require_velocity_space_fields(has_compliant_particles)
+        scratch.require_collision_space_fields()
+
+        # Necessary fields for two-way coupling and grains rendering
+        # Re-generated at each step, defined on space partition
+        state_out.velocity_field = scratch.velocity_field
+        state_out.impulse_field = scratch.impulse_field
+        state_out.collider_ids = scratch.collider_ids
+        state_out.collider_position_field = scratch.collider_position_field
+
+        # Impulse warmstarting, defined at space level
+        velocity_space = scratch.velocity_test.space
+        if state_out.ws_impulse_field is None or state_out.ws_impulse_field.geometry != velocity_space.geometry:
+            state_out.ws_impulse_field = velocity_space.make_field()
+
+    def _require_collision_space_fields(self, state_out: newton.State):
+        """Ensure collision-space fields exist and match current spaces."""
+        scratch = self._scratchpad
+
+        scratch.require_collision_space_fields()
 
         # Necessary fields for two-way coupling and grains rendering
         # Re-generated at each step, defined on space partition
@@ -2497,8 +2555,7 @@ class SolverImplicitMPM(SolverBase):
             domain, prev_impulse_field, background=scratch.background_impulse_field
         )
         fem.interpolate(
-            prev_impulse_field,
-            dest=fem.make_restriction(scratch.impulse_field, space_restriction=scratch.velocity_test.space_restriction),
+            prev_impulse_field, dest=scratch.impulse_field, location=scratch.collider_fraction_test.space_restriction
         )
 
         # Interpolate previous stress
@@ -2507,9 +2564,8 @@ class SolverImplicitMPM(SolverBase):
         )
         fem.interpolate(
             prev_stress_field,
-            dest=fem.make_restriction(
-                scratch.stress_field, space_restriction=scratch.sym_strain_test.space_restriction
-            ),
+            dest=scratch.stress_field,
+            location=scratch.sym_strain_test.space_restriction,
         )
 
     def _save_for_next_warmstart(self, state_out: newton.State):

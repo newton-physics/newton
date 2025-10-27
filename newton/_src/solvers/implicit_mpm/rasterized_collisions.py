@@ -25,6 +25,7 @@ __all__ = [
     "Collider",
     "allot_collider_mass",
     "build_rigidity_matrix",
+    "interpolate_collider_normals",
     "project_outside_collider",
     "rasterize_collider",
 ]
@@ -272,7 +273,7 @@ def project_outside_collider(
 
 
 @wp.kernel
-def rasterize_collider(
+def rasterize_collider_kernel(
     collider: Collider,
     body_q: wp.array(dtype=wp.transform),
     body_qd: wp.array(dtype=wp.spatial_vector),
@@ -413,6 +414,110 @@ def fill_collider_rigidity_matrices(
         J_rows[2 * i + 1] = -1
 
         non_rigid_diagonal[i] = wp.mat33(0.0)
+
+
+@fem.integrand
+def world_position(
+    s: fem.Sample,
+    domain: fem.Domain,
+):
+    return domain(s)
+
+
+@fem.integrand
+def collider_gradient_field(s: fem.Sample, distance: fem.Field, voxel_size: float):
+    for k in range(8):
+        # if any node is outside of narrow band, ignore
+        if distance(fem.at_node(distance, s, k)) > 1.0e6:
+            return wp.vec3(0.0)
+
+    g = fem.grad(distance, s)
+
+    # weight by exponential of negative distance
+    d = distance(s)
+    return g * wp.exp(-wp.abs(d) / voxel_size)
+
+
+@wp.kernel
+def normalize_gradient(gradient: wp.array(dtype=wp.vec3)):
+    i = wp.tid()
+    gradient[i] = wp.normalize(gradient[i])
+
+
+@wp.kernel
+def reset_collider_node_position(node_positions: wp.array(dtype=wp.vec3)):
+    i = wp.tid()
+    node_positions[i] = wp.vec3(fem.OUTSIDE)
+
+
+def rasterize_collider(
+    collider: Collider,
+    body_q: wp.array(dtype=wp.transform),
+    body_qd: wp.array(dtype=wp.spatial_vector),
+    voxel_size: float,
+    dt: float,
+    collider_space_restriction: fem.SpaceRestriction,
+    collider_position_field: fem.DiscreteField,
+    collider_distance_field: fem.DiscreteField,
+    collider_normal_field: fem.DiscreteField,
+    collider_velocity: wp.array(dtype=wp.vec3),
+    collider_friction: wp.array(dtype=float),
+    collider_adhesion: wp.array(dtype=float),
+    collider_ids: wp.array(dtype=int),
+):
+    collision_node_count = collider_position_field.dof_values.shape[0]
+
+    wp.launch(
+        reset_collider_node_position,
+        dim=collision_node_count,
+        inputs=[
+            collider_position_field.dof_values,
+        ],
+    )
+
+    fem.interpolate(
+        world_position,
+        dest=fem.make_restriction(collider_position_field, space_restriction=collider_space_restriction),
+    )
+
+    wp.launch(
+        rasterize_collider_kernel,
+        dim=collision_node_count,
+        inputs=[
+            collider,
+            body_q,
+            body_qd,
+            voxel_size,
+            dt,
+            collider_position_field.dof_values,
+            collider_distance_field.dof_values,
+            collider_velocity,
+            collider_normal_field.dof_values,
+            collider_friction,
+            collider_adhesion,
+            collider_ids,
+        ],
+    )
+
+
+def interpolate_collider_normals(
+    voxel_size: float,
+    collider_space_restriction: fem.SpaceRestriction,
+    collider_distance_field: fem.DiscreteField,
+    collider_normal_field: fem.DiscreteField,
+):
+    fem.interpolate(
+        collider_gradient_field,
+        dest=fem.make_restriction(collider_normal_field, space_restriction=collider_space_restriction),
+        fields={"distance": collider_distance_field},
+        values={"voxel_size": voxel_size},
+    )
+
+    wp.launch(
+        normalize_gradient,
+        dim=collider_normal_field.dof_values.shape,
+        inputs=[collider_normal_field.dof_values],
+    )
 
 
 def allot_collider_mass(
