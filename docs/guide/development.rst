@@ -161,6 +161,28 @@ To automatically run pre-commit hooks with ``git commit``:
 
 The hooks can be uninstalled with ``pre-commit uninstall``.
 
+Typos
+-----
+
+To proactively catch spelling mistakes, Newton uses the `typos <https://github.com/crate-ci/typos>`_ tool. Typos scans source files for common misspellings and is integrated into our pre-commit hooks, so spelling errors in both code and documentation are flagged when you run or install pre-commit (see above). You can also run ``typos`` manually if needed. Refer to the `typos documentation <https://github.com/crate-ci/typos>`_ for more details on usage and configuration options.
+
+Dealing with false positives
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Typos may occasionally flag legitimate project-specific terminology, domain terms, or variable names as misspellings (false positives). To handle these, the Newton codebase configures typos in ``pyproject.toml`` at the repository root.
+
+False positives are managed as follows:
+
+- **File exclusions:** The ``[tool.typos]`` section includes ``files.extend-exclude`` to ignore matching files and directories, such as ``examples/assets`` and specific model or asset file types (e.g., ``*.urdf``, ``*.usd``).
+- **Word allowlist:** Words or acronyms that would otherwise be flagged can be listed in ``[tool.typos.default.extend-words]`` (e.g., ``ba``, ``HAA``).
+- **Identifier allowlist:** Specific identifiers, such as variable or constant names, can be declared in ``[tool.typos.default.extend-identifiers]`` (e.g., ``PNGs``).
+
+When typos reports a word that is valid within the Newton codebase, you can add it to the appropriate section in ``pyproject.toml`` to suppress future warnings. After updating, re-run typos (or pre-commit) to confirm that the word is ignored. Use these options to keep the codebase clean while ensuring needed flexibility for accepted project-specific words and identifiers.
+
+
+
+
+
 Using a local Warp installation with uv
 ---------------------------------------
 
