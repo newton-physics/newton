@@ -20,7 +20,7 @@
 # fall and collide using the XPBD solver. Demonstrates basic builder APIs
 # and the standard example structure.
 #
-# Command: python -m newton.examples mpm_2way_coupling
+# Command: python -m newton.examples mpm_twoway_coupling
 #
 ###########################################################################
 

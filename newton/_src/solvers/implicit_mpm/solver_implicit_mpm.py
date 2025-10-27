@@ -663,7 +663,7 @@ class _ImplicitMPMScratchpad:
 
         # overly conservative
         max_vel_node_count = (
-            velocity_space.topology.MAX_NODES_PER_ELEMENT * domain.element_count() if max_cell_count >= 0 else -1
+            velocity_space.topology.MAX_NODES_PER_ELEMENT * max_cell_count if max_cell_count >= 0 else -1
         )
 
         vel_space_partition = fem.make_space_partition(
@@ -690,7 +690,7 @@ class _ImplicitMPMScratchpad:
         )
 
         max_strain_node_count = (
-            sym_strain_space.topology.MAX_NODES_PER_ELEMENT * domain.element_count() if max_cell_count >= 0 else -1
+            sym_strain_space.topology.MAX_NODES_PER_ELEMENT * max_cell_count if max_cell_count >= 0 else -1
         )
 
         strain_space_partition = fem.make_space_partition(

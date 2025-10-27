@@ -37,7 +37,7 @@ class Example:
         builder = newton.ModelBuilder()
         Example.emit_particles(builder, options)
 
-        if options.collider:
+        if options.collider and options.collider != "none":
             extents = (0.5, 2.0, 0.6)
             if options.collider == "cube":
                 xform = wp.transform(wp.vec3(0.75, 0.0, 0.9), wp.quat_identity())

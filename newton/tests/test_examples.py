@@ -592,7 +592,7 @@ add_example_test(
 
 add_example_test(
     TestMPMExamples,
-    name="mpm.example_mpm_2way_coupling",
+    name="mpm.example_mpm_twoway_coupling",
     devices=cuda_test_devices,
     test_options={"viewer": "null", "num-frames": 80},
     use_viewer=True,
