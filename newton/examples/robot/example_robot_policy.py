@@ -250,7 +250,8 @@ class Example:
         builder.approximate_meshes("convex_hull")
 
         builder.add_ground_plane()
-        builder.gravity = wp.vec3(0.0, 0.0, -9.81)
+        # builder's gravity isn't a vec3. use model.set_gravity()
+        # builder.gravity = wp.vec3(0.0, 0.0, -9.81)
 
         builder.joint_q[:3] = [0.0, 0.0, 0.76]
         builder.joint_q[3:7] = [0.0, 0.0, 0.7071, 0.7071]
@@ -265,11 +266,13 @@ class Example:
             builder.joint_armature[i + 6] = config["mjw_joint_armature"][i]
 
         self.model = builder.finalize()
+        self.model.set_gravity((0.0, 0.0, -9.81))
+
         self.solver = newton.solvers.SolverMuJoCo(
             self.model,
             use_mujoco_cpu=self.use_mujoco,
             solver="newton",
-            ncon_per_env=30,
+            ncon_per_world=30,
             njmax=100,
         )
 
@@ -407,7 +410,12 @@ class Example:
         self.viewer.end_frame()
 
     def test(self):
-        pass
+        newton.examples.test_body_state(
+            self.model,
+            self.state_0,
+            "all bodies are above the ground",
+            lambda q, qd: q[2] > 0.0,
+        )
 
 
 if __name__ == "__main__":
@@ -466,4 +474,4 @@ if __name__ == "__main__":
     load_policy_and_setup_tensors(example, policy_path, config["num_dofs"], slice(7, None))
 
     # Run using standard example loop
-    newton.examples.run(example)
+    newton.examples.run(example, args)

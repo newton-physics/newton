@@ -19,7 +19,7 @@
 # Shows how to set up a simulation of a H1 articulation
 # from a USD file using newton.ModelBuilder.add_usd().
 #
-# Command: python -m newton.examples robot_h1 --num-envs 16
+# Command: python -m newton.examples robot_h1 --num-worlds 16
 #
 ###########################################################################
 
@@ -31,7 +31,7 @@ import newton.utils
 
 
 class Example:
-    def __init__(self, viewer, num_envs=4):
+    def __init__(self, viewer, num_worlds=4):
         self.fps = 50
         self.frame_dt = 1.0 / self.fps
 
@@ -39,7 +39,7 @@ class Example:
         self.sim_substeps = 4
         self.sim_dt = self.frame_dt / self.sim_substeps
 
-        self.num_envs = num_envs
+        self.num_worlds = num_worlds
 
         self.viewer = viewer
 
@@ -71,7 +71,7 @@ class Example:
             h1.joint_target_kd[i] = 5
 
         builder = newton.ModelBuilder()
-        builder.replicate(h1, self.num_envs, spacing=(3, 3, 0))
+        builder.replicate(h1, self.num_worlds)
 
         builder.add_ground_plane()
 
@@ -84,6 +84,7 @@ class Example:
         self.contacts = self.model.collide(self.state_0)
 
         self.viewer.set_model(self.model)
+        self.viewer.set_world_offsets((3.0, 3.0, 0.0))
 
         self.capture()
 
@@ -122,15 +123,26 @@ class Example:
         self.viewer.end_frame()
 
     def test(self):
-        pass
+        newton.examples.test_body_state(
+            self.model,
+            self.state_0,
+            "all bodies are above the ground",
+            lambda q, qd: q[2] > 0.0,
+        )
+        newton.examples.test_body_state(
+            self.model,
+            self.state_0,
+            "all body velocities are small",
+            lambda q, qd: max(abs(qd)) < 5e-3,
+        )
 
 
 if __name__ == "__main__":
     parser = newton.examples.create_parser()
-    parser.add_argument("--num-envs", type=int, default=4, help="Total number of simulated environments.")
+    parser.add_argument("--num-worlds", type=int, default=4, help="Total number of simulated worlds.")
 
     viewer, args = newton.examples.init(parser)
 
-    example = Example(viewer, args.num_envs)
+    example = Example(viewer, args.num_worlds)
 
-    newton.examples.run(example)
+    newton.examples.run(example, args)

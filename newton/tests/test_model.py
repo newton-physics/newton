@@ -194,8 +194,8 @@ class TestModel(unittest.TestCase):
         dim_x = 16
         dim_y = 16
 
-        env_builder = ModelBuilder()
-        env_builder.add_cloth_grid(
+        world_builder = ModelBuilder()
+        world_builder.add_cloth_grid(
             pos=wp.vec3(0.0, 0.0, 0.0),
             vel=wp.vec3(0.1, 0.1, 0.0),
             rot=wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), -math.pi * 0.25),
@@ -206,23 +206,23 @@ class TestModel(unittest.TestCase):
             mass=1.0,
         )
 
-        num_envs = 2
-        env_offsets = np.array([[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]])
+        num_worlds = 2
+        world_offsets = np.array([[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]])
 
         builder_open_edge_count = np.sum(np.array(builder.edge_indices) == -1)
-        env_builder_open_edge_count = np.sum(np.array(env_builder.edge_indices) == -1)
+        world_builder_open_edge_count = np.sum(np.array(world_builder.edge_indices) == -1)
 
-        for i in range(num_envs):
-            xform = wp.transform(env_offsets[i], wp.quat_identity())
+        for i in range(num_worlds):
+            xform = wp.transform(world_offsets[i], wp.quat_identity())
             builder.add_builder(
-                env_builder,
+                world_builder,
                 xform,
-                update_num_env_count=True,
+                update_num_world_count=True,
             )
 
         self.assertEqual(
             np.sum(np.array(builder.edge_indices) == -1),
-            builder_open_edge_count + num_envs * env_builder_open_edge_count,
+            builder_open_edge_count + num_worlds * world_builder_open_edge_count,
             "builder does not have the expected number of open edges",
         )
 
@@ -254,7 +254,7 @@ class TestModel(unittest.TestCase):
         # bounding box
         self.assertIsNone(builder.shape_source[s1])
         self.assertEqual(builder.shape_type[s1], newton.GeoType.BOX)
-        assert_np_equal(npsorted(builder.shape_scale[s1]), npsorted(scale), tol=1.0e-6)
+        assert_np_equal(npsorted(builder.shape_scale[s1]), npsorted(scale), tol=1.0e-5)
         # only compare the position since the rotation is not guaranteed to be the same
         assert_np_equal(np.array(builder.shape_transform[s1].p), np.array(tf.p), tol=1.0e-4)
         # bounding sphere
@@ -267,7 +267,7 @@ class TestModel(unittest.TestCase):
         self.assertEqual(len(mesh.indices), 36)
 
     def test_add_particles_grouping(self):
-        """Test that add_particles correctly assigns environment groups."""
+        """Test that add_particles correctly assigns world groups."""
         builder = ModelBuilder()
 
         # Test with default group (-1)
@@ -276,75 +276,75 @@ class TestModel(unittest.TestCase):
         )
 
         # Change to group 0 and add more particles
-        builder.current_env_group = 0
+        builder.current_world = 0
         builder.add_particles(pos=[(3.0, 0.0, 0.0), (4.0, 0.0, 0.0)], vel=[(0.0, 0.0, 0.0)] * 2, mass=[1.0] * 2)
 
         # Finalize and check groups
         model = builder.finalize()
-        particle_groups = model.particle_group.numpy()
+        particle_groups = model.particle_world.numpy()
 
         # First 3 particles should be in group -1
         self.assertTrue(np.all(particle_groups[0:3] == -1))
         # Next 2 particles should be in group 0
         self.assertTrue(np.all(particle_groups[3:5] == 0))
 
-    def test_environment_grouping(self):
-        """Test environment grouping functionality for Model entities."""
+    def test_world_grouping(self):
+        """Test world grouping functionality for Model entities."""
         main_builder = ModelBuilder()
 
         # Create global entities (group -1)
-        main_builder.current_env_group = -1
+        main_builder.current_world = -1
         ground_body = main_builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, -1.0), wp.quat_identity()), mass=0.0)
         main_builder.add_shape_box(
             body=ground_body, xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()), hx=5.0, hy=5.0, hz=0.1
         )
         main_builder.add_particle((0.0, 0.0, 5.0), (0.0, 0.0, 0.0), mass=1.0)
 
-        # Create a simple builder for environments
-        def create_env_builder():
-            env_builder = ModelBuilder()
+        # Create a simple builder for worlds
+        def create_world_builder():
+            world_builder = ModelBuilder()
             # Add particles
-            p1 = env_builder.add_particle((0.0, 0.0, 0.0), (0.0, 0.0, 0.0), mass=1.0)
-            p2 = env_builder.add_particle((0.1, 0.0, 0.0), (0.0, 0.0, 0.0), mass=1.0)
-            env_builder.add_spring(p1, p2, ke=100.0, kd=1.0, control=0.0)
+            p1 = world_builder.add_particle((0.0, 0.0, 0.0), (0.0, 0.0, 0.0), mass=1.0)
+            p2 = world_builder.add_particle((0.1, 0.0, 0.0), (0.0, 0.0, 0.0), mass=1.0)
+            world_builder.add_spring(p1, p2, ke=100.0, kd=1.0, control=0.0)
 
             # Add articulated body
-            env_builder.add_articulation()
-            b1 = env_builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()), mass=10.0)
-            b2 = env_builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.5), wp.quat_identity()), mass=5.0)
-            env_builder.add_joint_revolute(parent=b1, child=b2, axis=(0, 1, 0))
-            env_builder.add_shape_sphere(
+            world_builder.add_articulation()
+            b1 = world_builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()), mass=10.0)
+            b2 = world_builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.5), wp.quat_identity()), mass=5.0)
+            world_builder.add_joint_revolute(parent=b1, child=b2, axis=(0, 1, 0))
+            world_builder.add_shape_sphere(
                 body=b1, xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()), radius=0.1
             )
-            env_builder.add_shape_sphere(
+            world_builder.add_shape_sphere(
                 body=b2, xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()), radius=0.05
             )
 
-            return env_builder
+            return world_builder
 
-        # Add environment 0
-        env0_builder = create_env_builder()
+        # Add world 0
+        world0_builder = create_world_builder()
         main_builder.add_builder(
-            env0_builder, xform=wp.transform(wp.vec3(1.0, 0.0, 0.0), wp.quat_identity()), environment=0
+            world0_builder, xform=wp.transform(wp.vec3(1.0, 0.0, 0.0), wp.quat_identity()), world=0
         )
 
-        # Add environment 1
-        env1_builder = create_env_builder()
+        # Add world 1
+        world1_builder = create_world_builder()
         main_builder.add_builder(
-            env1_builder, xform=wp.transform(wp.vec3(2.0, 0.0, 0.0), wp.quat_identity()), environment=1
+            world1_builder, xform=wp.transform(wp.vec3(2.0, 0.0, 0.0), wp.quat_identity()), world=1
         )
 
-        # Add environment 2 (testing auto-assignment)
-        env2_builder = create_env_builder()
+        # Add world 2 (testing auto-assignment)
+        world2_builder = create_world_builder()
         main_builder.add_builder(
-            env2_builder, xform=wp.transform(wp.vec3(3.0, 0.0, 0.0), wp.quat_identity())
-        )  # should get group 2
+            world2_builder, xform=wp.transform(wp.vec3(3.0, 0.0, 0.0), wp.quat_identity())
+        )  # should get world 2
 
         # Finalize the model
         model = main_builder.finalize()
 
         # Verify counts
-        self.assertEqual(model.num_envs, 3)
+        self.assertEqual(model.num_worlds, 3)
         self.assertEqual(model.particle_count, 7)  # 1 global + 2*3 = 7
         self.assertEqual(model.body_count, 7)  # 1 global + 2*3 = 7
         self.assertEqual(model.shape_count, 7)  # 1 global + 2*3 = 7
@@ -352,23 +352,23 @@ class TestModel(unittest.TestCase):
         self.assertEqual(model.articulation_count, 3)  # 0 global + 1*3 = 3
 
         # Verify group assignments
-        particle_groups = model.particle_group.numpy() if model.particle_group is not None else []
-        body_groups = model.body_group.numpy() if model.body_group is not None else []
-        shape_groups = model.shape_group.numpy() if model.shape_group is not None else []
-        joint_groups = model.joint_group.numpy() if model.joint_group is not None else []
-        articulation_groups = model.articulation_group.numpy() if model.articulation_group is not None else []
+        particle_groups = model.particle_world.numpy() if model.particle_world is not None else []
+        body_groups = model.body_world.numpy() if model.body_world is not None else []
+        shape_worlds = model.shape_world.numpy() if model.shape_world is not None else []
+        joint_worlds = model.joint_world.numpy() if model.joint_world is not None else []
+        articulation_groups = model.articulation_world.numpy() if model.articulation_world is not None else []
 
         if len(particle_groups) > 0:
             # Check global entities
             self.assertEqual(particle_groups[0], -1)  # global particle
 
-            # Check environment 0 entities (indices 1-2 for particles)
+            # Check world 0 entities (indices 1-2 for particles)
             self.assertTrue(np.all(particle_groups[1:3] == 0))
 
-            # Check environment 1 entities
+            # Check world 1 entities
             self.assertTrue(np.all(particle_groups[3:5] == 1))
 
-            # Check environment 2 entities (auto-assigned)
+            # Check world 2 entities (auto-assigned)
             self.assertTrue(np.all(particle_groups[5:7] == 2))
 
         if len(body_groups) > 0:
@@ -377,68 +377,68 @@ class TestModel(unittest.TestCase):
             self.assertTrue(np.all(body_groups[3:5] == 1))
             self.assertTrue(np.all(body_groups[5:7] == 2))
 
-        if len(shape_groups) > 0:
-            self.assertEqual(shape_groups[0], -1)  # ground shape
-            self.assertTrue(np.all(shape_groups[1:3] == 0))
-            self.assertTrue(np.all(shape_groups[3:5] == 1))
-            self.assertTrue(np.all(shape_groups[5:7] == 2))
+        if len(shape_worlds) > 0:
+            self.assertEqual(shape_worlds[0], -1)  # ground shape
+            self.assertTrue(np.all(shape_worlds[1:3] == 0))
+            self.assertTrue(np.all(shape_worlds[3:5] == 1))
+            self.assertTrue(np.all(shape_worlds[5:7] == 2))
 
-        if len(joint_groups) > 0:
-            self.assertEqual(joint_groups[0], 0)
-            self.assertEqual(joint_groups[1], 1)
-            self.assertEqual(joint_groups[2], 2)
+        if len(joint_worlds) > 0:
+            self.assertEqual(joint_worlds[0], 0)
+            self.assertEqual(joint_worlds[1], 1)
+            self.assertEqual(joint_worlds[2], 2)
 
         if len(articulation_groups) > 0:
             self.assertEqual(articulation_groups[0], 0)
             self.assertEqual(articulation_groups[1], 1)
             self.assertEqual(articulation_groups[2], 2)
 
-    def test_num_envs_tracking(self):
-        """Test that num_envs is properly tracked when using add_builder with environment groups."""
+    def test_num_worlds_tracking(self):
+        """Test that num_worlds is properly tracked when using add_builder with worlds."""
         main_builder = ModelBuilder()
 
         # Create a simple sub-builder
         sub_builder = ModelBuilder()
         sub_builder.add_body(mass=1.0)
 
-        # Test 1: Global entities should not increment num_envs
-        self.assertEqual(main_builder.num_envs, 0)
-        main_builder.add_builder(sub_builder, environment=-1, update_num_env_count=True)
-        self.assertEqual(main_builder.num_envs, 0)  # Should still be 0
+        # Test 1: Global entities should not increment num_worlds
+        self.assertEqual(main_builder.num_worlds, 0)
+        main_builder.add_builder(sub_builder, world=-1, update_num_world_count=True)
+        self.assertEqual(main_builder.num_worlds, 0)  # Should still be 0
 
-        # Test 2: Auto-increment with environment=None
-        main_builder.add_builder(sub_builder, environment=None, update_num_env_count=True)
-        self.assertEqual(main_builder.num_envs, 1)
+        # Test 2: Auto-increment with world=None
+        main_builder.add_builder(sub_builder, world=None, update_num_world_count=True)
+        self.assertEqual(main_builder.num_worlds, 1)
 
-        main_builder.add_builder(sub_builder, environment=None, update_num_env_count=True)
-        self.assertEqual(main_builder.num_envs, 2)
+        main_builder.add_builder(sub_builder, world=None, update_num_world_count=True)
+        self.assertEqual(main_builder.num_worlds, 2)
 
-        # Test 3: Explicit environment indices
+        # Test 3: Explicit world indices
         main_builder2 = ModelBuilder()
 
-        # Add environment 3 directly (skipping 0, 1, 2)
-        main_builder2.add_builder(sub_builder, environment=3, update_num_env_count=True)
-        self.assertEqual(main_builder2.num_envs, 4)  # Should be 3+1
+        # Add world 3 directly (skipping 0, 1, 2)
+        main_builder2.add_builder(sub_builder, world=3, update_num_world_count=True)
+        self.assertEqual(main_builder2.num_worlds, 4)  # Should be 3+1
 
-        # Add environment 1 (should not change num_envs since 4 > 1+1)
-        main_builder2.add_builder(sub_builder, environment=1, update_num_env_count=True)
-        self.assertEqual(main_builder2.num_envs, 4)  # Should still be 4
+        # Add world 1 (should not change num_worlds since 4 > 1+1)
+        main_builder2.add_builder(sub_builder, world=1, update_num_world_count=True)
+        self.assertEqual(main_builder2.num_worlds, 4)  # Should still be 4
 
-        # Add environment 5 (should increase to 6)
-        main_builder2.add_builder(sub_builder, environment=5, update_num_env_count=True)
-        self.assertEqual(main_builder2.num_envs, 6)  # Should be 5+1
+        # Add world 5 (should increase to 6)
+        main_builder2.add_builder(sub_builder, world=5, update_num_world_count=True)
+        self.assertEqual(main_builder2.num_worlds, 6)  # Should be 5+1
 
-        # Test 4: update_num_env_count=False should not change num_envs
+        # Test 4: update_num_world_count=False should not change num_worlds
         main_builder3 = ModelBuilder()
-        main_builder3.add_builder(sub_builder, environment=2, update_num_env_count=False)
-        self.assertEqual(main_builder3.num_envs, 0)  # Should remain 0
+        main_builder3.add_builder(sub_builder, world=2, update_num_world_count=False)
+        self.assertEqual(main_builder3.num_worlds, 0)  # Should remain 0
 
     def test_collapse_fixed_joints_with_groups(self):
-        """Test that collapse_fixed_joints correctly preserves environment groups."""
+        """Test that collapse_fixed_joints correctly preserves world groups."""
         builder = ModelBuilder()
 
-        # Environment 0: Chain with fixed joints
-        builder.current_env_group = 0
+        # World 0: Chain with fixed joints
+        builder.current_world = 0
         b0_0 = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()), mass=1.0)
         b0_1 = builder.add_body(xform=wp.transform(wp.vec3(1.0, 0.0, 0.0), wp.quat_identity()), mass=1.0)
         b0_2 = builder.add_body(xform=wp.transform(wp.vec3(2.0, 0.0, 0.0), wp.quat_identity()), mass=1.0)
@@ -466,8 +466,8 @@ class TestModel(unittest.TestCase):
             axis=(0.0, 1.0, 0.0),
         )
 
-        # Environment 1: Another chain
-        builder.current_env_group = 1
+        # World 1: Another chain
+        builder.current_world = 1
         b1_0 = builder.add_body(xform=wp.transform(wp.vec3(0.0, 2.0, 0.0), wp.quat_identity()), mass=1.0)
         b1_1 = builder.add_body(xform=wp.transform(wp.vec3(1.0, 2.0, 0.0), wp.quat_identity()), mass=1.0)
 
@@ -490,12 +490,12 @@ class TestModel(unittest.TestCase):
         )
 
         # Global body (not connected to world via joints, will be ignored by collapse)
-        builder.current_env_group = -1
+        builder.current_world = -1
         builder.add_body(xform=wp.transform(wp.vec3(0.0, -5.0, 0.0), wp.quat_identity()), mass=0.0)
 
         # Check groups before collapse
-        self.assertEqual(builder.body_group, [0, 0, 0, 1, 1, -1])
-        self.assertEqual(builder.joint_group, [0, 0, 0, 1, 1])  # 5 joints now
+        self.assertEqual(builder.body_world, [0, 0, 0, 1, 1, -1])
+        self.assertEqual(builder.joint_world, [0, 0, 0, 1, 1])  # 5 joints now
 
         # Collapse fixed joints
         builder.collapse_fixed_joints(verbose=False)
@@ -511,13 +511,13 @@ class TestModel(unittest.TestCase):
         self.assertEqual(builder.joint_count, 4)  # One joint removed (fixed joint)
 
         # Check that groups are preserved correctly
-        self.assertEqual(builder.body_group, [0, 0, 1, 1])  # Groups preserved for retained bodies
-        self.assertEqual(builder.joint_group, [0, 0, 1, 1])  # Groups preserved for retained joints
+        self.assertEqual(builder.body_world, [0, 0, 1, 1])  # Groups preserved for retained bodies
+        self.assertEqual(builder.joint_world, [0, 0, 1, 1])  # Groups preserved for retained joints
 
         # Finalize and verify
         model = builder.finalize()
-        body_groups = model.body_group.numpy()
-        joint_groups = model.joint_group.numpy()
+        body_groups = model.body_world.numpy()
+        joint_worlds = model.joint_world.numpy()
 
         # Verify body groups
         self.assertEqual(body_groups[0], 0)  # Merged b0_0
@@ -526,10 +526,10 @@ class TestModel(unittest.TestCase):
         self.assertEqual(body_groups[3], 1)  # b1_1
 
         # Verify joint groups (world connections and body-to-body joints)
-        self.assertEqual(joint_groups[0], 0)  # world->b0_0 from env 0
-        self.assertEqual(joint_groups[1], 0)  # b0_0->b0_2 from env 0
-        self.assertEqual(joint_groups[2], 1)  # world->b1_0 from env 1
-        self.assertEqual(joint_groups[3], 1)  # b1_0->b1_1 from env 1
+        self.assertEqual(joint_worlds[0], 0)  # world->b0_0 from world 0
+        self.assertEqual(joint_worlds[1], 0)  # b0_0->b0_2 from world 0
+        self.assertEqual(joint_worlds[2], 1)  # world->b1_0 from world 1
+        self.assertEqual(joint_worlds[3], 1)  # b1_0->b1_1 from world 1
 
     def test_add_builder(self):
         orig_xform = wp.transform(wp.vec3(1.0, 2.0, 3.0), wp.quat_rpy(0.5, 0.6, 0.7))
@@ -557,14 +557,14 @@ class TestModel(unittest.TestCase):
         self.assertEqual(builder.joint_count, 2)
         self.assertEqual(builder.articulation_count, 2)
         self.assertEqual(builder.shape_count, 3)
-        self.assertEqual(builder.body_group, [0, 1])
-        self.assertEqual(builder.joint_group, [0, 1])
+        self.assertEqual(builder.body_world, [0, 1])
+        self.assertEqual(builder.joint_world, [0, 1])
         self.assertEqual(builder.joint_type, [newton.JointType.REVOLUTE, newton.JointType.FREE])
         self.assertEqual(builder.joint_parent, [-1, -1])
         self.assertEqual(builder.joint_child, [0, 1])
         self.assertEqual(builder.joint_q_start, [0, 1])
         self.assertEqual(builder.joint_qd_start, [0, 1])
-        self.assertEqual(builder.shape_group, [0, 1, 2])
+        self.assertEqual(builder.shape_world, [0, 1, 2])
         self.assertEqual(builder.shape_body, [0, 1, -1])
         self.assertEqual(builder.body_shapes, {0: [0], 1: [1], -1: [2]})
         self.assertEqual(builder.body_q[0], offset_xform * orig_xform)

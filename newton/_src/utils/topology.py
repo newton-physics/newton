@@ -18,17 +18,17 @@ from __future__ import annotations
 from collections import defaultdict, deque
 
 
-def topological_sort(joints: list[tuple[int, int]], use_dfs: bool = True) -> list[int]:
+def topological_sort(joints: list[tuple[int | str, int | str]], use_dfs: bool = True) -> list[int]:
     """
     Topological sort of a list of joints connecting rigid bodies.
 
     Args:
-        joints (List[Tuple[int, int]]): A list of joint pairs (parent, child).
+        joints (list[tuple[int | str, int | str]]): A list of body link pairs (parent, child). Bodies can be identified by their name or index.
         use_dfs (bool): If True, use depth-first search for topological sorting.
             If False, use Kahn's algorithm. Default is True.
 
     Returns:
-        List[int]: A list of joint indices in topological order.
+        list[int]: A list of joint indices in topological order.
     """
     incoming = defaultdict(set)
     outgoing = defaultdict(set)
@@ -45,7 +45,7 @@ def topological_sort(joints: list[tuple[int, int]], use_dfs: bool = True) -> lis
     if len(roots) == 0:
         raise ValueError("No root found in the joint graph.")
 
-    joint_order = []
+    joint_order: list[int] = []
     visited = set()
 
     if use_dfs:

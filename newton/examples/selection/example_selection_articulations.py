@@ -18,8 +18,8 @@
 #
 # Demonstrates batch control of multiple articulated robots using
 # ArticulationView. This example spawns ant and humanoid robots across
-# multiple environments, applies random forces to their joints, and
-# performs selective resets on subsets of environments.
+# multiple worlds, applies random forces to their joints, and
+# performs selective resets on subsets of worlds.
 #
 # Command: python -m newton.examples selection_articulations
 #
@@ -77,14 +77,14 @@ def reset_kernel(
 
 
 @wp.kernel
-def random_forces_kernel(dof_forces: wp.array2d(dtype=float), seed: int, num_envs: int):
+def random_forces_kernel(dof_forces: wp.array2d(dtype=float), seed: int, num_worlds: int):
     i, j = wp.tid()
-    rng = wp.rand_init(seed, i * num_envs + j)
+    rng = wp.rand_init(seed, i * num_worlds + j)
     dof_forces[i, j] = 5.0 - 10.0 * wp.randf(rng)
 
 
 class Example:
-    def __init__(self, viewer, num_envs=16):
+    def __init__(self, viewer, num_worlds=16):
         self.fps = 60
         self.frame_dt = 1.0 / self.fps
 
@@ -92,16 +92,16 @@ class Example:
         self.sim_substeps = 10
         self.sim_dt = self.frame_dt / self.sim_substeps
 
-        self.num_envs = num_envs
+        self.num_worlds = num_worlds
 
-        env = newton.ModelBuilder()
-        env.add_mjcf(
+        world = newton.ModelBuilder()
+        world.add_mjcf(
             newton.examples.get_asset("nv_ant.xml"),
             ignore_names=["floor", "ground"],
             xform=wp.transform((0.0, 0.0, 1.0), wp.quat_identity()),
             collapse_fixed_joints=COLLAPSE_FIXED_JOINTS,
         )
-        env.add_mjcf(
+        world.add_mjcf(
             newton.examples.get_asset("nv_humanoid.xml"),
             ignore_names=["floor", "ground"],
             xform=wp.transform((0.0, 0.0, 3.5), wp.quat_identity()),
@@ -111,12 +111,12 @@ class Example:
         scene = newton.ModelBuilder()
 
         scene.add_ground_plane()
-        scene.replicate(env, num_copies=self.num_envs, spacing=(4.0, 4.0, 0.0))
+        scene.replicate(world, num_worlds=self.num_worlds)
 
         # finalize model
         self.model = scene.finalize()
 
-        self.solver = newton.solvers.SolverMuJoCo(self.model, njmax=100, ncon_per_env=50)
+        self.solver = newton.solvers.SolverMuJoCo(self.model, njmax=100, ncon_per_world=50)
 
         self.viewer = viewer
 
@@ -155,10 +155,10 @@ class Example:
             self.default_hum_dof_velocities = wp.to_torch(self.hums.get_dof_velocities(self.model)).clone()
 
             # create disjoint subsets to alternate resets
-            all_indices = torch.arange(num_envs, dtype=torch.int32)
-            self.mask_0 = torch.zeros(num_envs, dtype=bool)
+            all_indices = torch.arange(num_worlds, dtype=torch.int32)
+            self.mask_0 = torch.zeros(num_worlds, dtype=bool)
             self.mask_0[all_indices[::2]] = True
-            self.mask_1 = torch.zeros(num_envs, dtype=bool)
+            self.mask_1 = torch.zeros(num_worlds, dtype=bool)
             self.mask_1[all_indices[1::2]] = True
         else:
             # default ant root states
@@ -183,9 +183,9 @@ class Example:
             self.default_hum_dof_velocities = wp.clone(self.hums.get_dof_velocities(self.model))
 
             # create disjoint subsets to alternate resets
-            self.mask_0 = wp.empty(num_envs, dtype=bool)
-            self.mask_1 = wp.empty(num_envs, dtype=bool)
-            wp.launch(init_masks, dim=num_envs, inputs=[self.mask_0, self.mask_1])
+            self.mask_0 = wp.empty(num_worlds, dtype=bool)
+            self.mask_1 = wp.empty(num_worlds, dtype=bool)
+            wp.launch(init_masks, dim=num_worlds, inputs=[self.mask_0, self.mask_1])
 
         self.viewer.set_model(self.model)
 
@@ -227,10 +227,10 @@ class Example:
         if USE_TORCH:
             import torch  # noqa: PLC0415
 
-            dof_forces = 5.0 - 10.0 * torch.rand((self.num_envs, self.ants.joint_dof_count))
+            dof_forces = 5.0 - 10.0 * torch.rand((self.num_worlds, self.ants.joint_dof_count))
         else:
             dof_forces = self.ants.get_dof_forces(self.control)
-            wp.launch(random_forces_kernel, dim=dof_forces.shape, inputs=[dof_forces, self.step_count, self.num_envs])
+            wp.launch(random_forces_kernel, dim=dof_forces.shape, inputs=[dof_forces, self.step_count, self.num_worlds])
 
         self.ants.set_dof_forces(self.control, dof_forces)
 
@@ -251,8 +251,8 @@ class Example:
             import torch  # noqa: PLC0415
 
             # randomize ant velocities
-            self.default_ant_root_velocities[:, 2] = 4.0 * torch.pi * (0.5 - torch.rand(self.num_envs))
-            self.default_ant_root_velocities[:, 5] = 3.0 * torch.rand(self.num_envs)
+            self.default_ant_root_velocities[:, 2] = 4.0 * torch.pi * (0.5 - torch.rand(self.num_worlds))
+            self.default_ant_root_velocities[:, 5] = 3.0 * torch.rand(self.num_worlds)
 
             # humanoids spin in the opposite direction
             self.default_hum_root_velocities[:, 2] = -self.default_ant_root_velocities[:, 2]
@@ -261,7 +261,7 @@ class Example:
         else:
             wp.launch(
                 reset_kernel,
-                dim=self.num_envs,
+                dim=self.num_worlds,
                 inputs=[self.default_ant_root_velocities, self.default_hum_root_velocities, mask, self.step_count],
             )
 
@@ -284,10 +284,18 @@ class Example:
         self.viewer.log_state(self.state_0)
         self.viewer.end_frame()
 
+    def test(self):
+        newton.examples.test_body_state(
+            self.model,
+            self.state_0,
+            "all bodies are above the ground",
+            lambda q, qd: q[2] > 0.01,
+        )
+
 
 if __name__ == "__main__":
     parser = newton.examples.create_parser()
-    parser.add_argument("--num-envs", type=int, default=16, help="Total number of simulated environments.")
+    parser.add_argument("--num-worlds", type=int, default=16, help="Total number of simulated worlds.")
 
     viewer, args = newton.examples.init(parser)
 
@@ -296,6 +304,6 @@ if __name__ == "__main__":
 
         torch.set_device(args.device)
 
-    example = Example(viewer, num_envs=args.num_envs)
+    example = Example(viewer, num_worlds=args.num_worlds)
 
-    newton.examples.run(example)
+    newton.examples.run(example, args)

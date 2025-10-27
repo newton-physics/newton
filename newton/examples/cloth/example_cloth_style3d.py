@@ -21,7 +21,6 @@ import newton
 import newton.examples
 import newton.utils
 from newton import Mesh, ParticleFlags
-from newton._src.solvers.style3d import CollisionHandler
 
 
 class Example:
@@ -124,12 +123,11 @@ class Example:
         self.model.soft_contact_ke = 1.0e1
         self.model.soft_contact_kd = 1.0e-6
         self.model.soft_contact_mu = 0.2
-        self.model.gravity = wp.vec3(0.0, 0.0, -9.81)
+        self.model.set_gravity((0.0, 0.0, -9.81))
 
         self.solver = newton.solvers.SolverStyle3D(
             model=self.model,
             iterations=self.iterations,
-            collision_handler=CollisionHandler(self.model),
         )
         self.solver.precompute(
             builder,
@@ -171,7 +169,13 @@ class Example:
         self.sim_time += self.frame_dt
 
     def test(self):
-        pass
+        p_lower = wp.vec3(-0.5, -0.2, 0.9)
+        p_upper = wp.vec3(0.5, 0.2, 1.6)
+        newton.examples.test_particle_state(
+            self.state_0,
+            "particles are within a reasonable volume",
+            lambda q, qd: newton.utils.vec_inside_limits(q, p_lower, p_upper),
+        )
 
     def render(self):
         self.viewer.begin_frame(self.sim_time)
@@ -187,4 +191,4 @@ if __name__ == "__main__":
     # Create example and run
     example = Example(viewer)
 
-    newton.examples.run(example)
+    newton.examples.run(example, args)

@@ -13,10 +13,34 @@ on:
       - release-*
 
 jobs:
+  minimal-import-test:
+    strategy:
+      fail-fast: false
+      matrix:
+        # Test boundary versions: 3.10 (oldest, needs fallback), 3.12 (typing.override added), 3.14 (latest)
+        python-version: ["3.10", "3.12", "3.14"]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Install uv and set the Python version
+        uses: astral-sh/setup-uv@6b9c6063abd6010835644d4c2e1bef4cf5cd0fca
+        with:
+          version: "0.9.0"
+          python-version: ${{ matrix.python-version }}
+      - name: Test minimal import
+        run: uv run python -c "import newton; print(f'Newton {newton.__version__} imported successfully')"
+
   newton-unittests:
     strategy:
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        os:
+          [
+            ubuntu-latest,
+            ubuntu-24.04-arm,
+            windows-latest,
+            macos-latest,
+          ]
     runs-on: ${{ matrix.os }}
     env:
       OS: ${{ matrix.os }}
@@ -24,10 +48,15 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+      - name: Install system dependencies (Ubuntu ARM)
+        if: matrix.os == 'ubuntu-24.04-arm'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libgl1-mesa-dev
       - name: Install uv
         uses: astral-sh/setup-uv@6b9c6063abd6010835644d4c2e1bef4cf5cd0fca
         with:
-          version: "0.7.14"
+          version: "0.9.0"
       - name: Set up Python
         uses: actions/setup-python@v5
         with:

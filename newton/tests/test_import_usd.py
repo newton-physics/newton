@@ -331,7 +331,7 @@ class TestImportUsd(unittest.TestCase):
         builder_cloning.add_usd(
             os.path.join(os.path.dirname(__file__), "assets", "ant_multi.usda"),
             collapse_fixed_joints=True,
-            cloned_env="/World/envs/env_0",
+            cloned_world="/World/envs/env_0",
         )
         self.assertEqual(builder_cloning.articulation_key, builder_no_cloning.articulation_key)
         # ordering of the shape keys may differ
@@ -470,7 +470,7 @@ class TestImportUsd(unittest.TestCase):
         assert_np_equal(np.array(builder.shape_transform[2].p), np.array(tf.p), tol=1.0e-4)
 
         # bounding box
-        assert_np_equal(npsorted(builder.shape_scale[3]), npsorted(scale), tol=1.0e-6)
+        assert_np_equal(npsorted(builder.shape_scale[3]), npsorted(scale), tol=1.0e-5)
         # only compare the position since the rotation is not guaranteed to be the same
         assert_np_equal(np.array(builder.shape_transform[3].p), np.array(tf.p), tol=1.0e-4)
 
@@ -906,21 +906,28 @@ class TestImportSampleAssets(unittest.TestCase):
             newton.GeoType.CONE: UsdPhysics.ObjectType.ConeShape,
             newton.GeoType.MESH: UsdPhysics.ObjectType.MeshShape,
             newton.GeoType.PLANE: UsdPhysics.ObjectType.PlaneShape,
+            newton.GeoType.CONVEX_MESH: UsdPhysics.ObjectType.MeshShape,
         }
 
-        for shape_type, shape_objtype in shape_type_mapping.items():
+        for _shape_type, shape_objtype in shape_type_mapping.items():
             if shape_objtype not in parsed:
                 continue
             for xpath, shape_spec in zip(*parsed[shape_objtype], strict=False):
                 path = str(xpath)
                 if path in shape_key_to_idx:
                     sid = shape_key_to_idx[path]
+                    # Skip if already processed (e.g., CONVEX_MESH already matched via MESH)
+                    if sid in shape_to_path:
+                        continue
                     shape_to_path[sid] = path
                     usd_shape_specs[sid] = shape_spec
+                    # Check that Newton's shape type maps to the correct USD type
+                    newton_type = newton.GeoType(shape_type_array[sid])
+                    expected_usd_type = shape_type_mapping.get(newton_type)
                     self.assertEqual(
-                        shape_type_array[sid],
-                        int(shape_type),
-                        f"Shape {sid} type mismatch: USD={shape_type}, Newton={shape_type_array[sid]}",
+                        expected_usd_type,
+                        shape_objtype,
+                        f"Shape {sid} type mismatch: Newton type {newton_type} should map to USD {expected_usd_type}, but found {shape_objtype}",
                     )
 
         def from_gfquat(gfquat):

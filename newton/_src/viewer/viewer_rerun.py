@@ -18,6 +18,7 @@ import subprocess
 import numpy as np
 import warp as wp
 
+from ..core.types import override
 from .viewer import ViewerBase
 
 try:
@@ -78,13 +79,14 @@ class ViewerRerun(ViewerBase):
         self._meshes = {}
         self._instances = {}
 
+    @override
     def log_mesh(
         self,
         name,
         points: wp.array,
         indices: wp.array,
-        normals: wp.array = None,
-        uvs: wp.array = None,
+        normals: wp.array | None = None,
+        uvs: wp.array | None = None,
         hidden=False,
         backface_culling=True,
         face_varying_uv=False,
@@ -133,6 +135,7 @@ class ViewerRerun(ViewerBase):
 
         rr.log(name, mesh_3d, static=True)
 
+    @override
     def log_instances(self, name, mesh, xforms, scales, colors, materials, hidden=False):
         """
         Log instanced mesh data to rerun using InstancePoses3D.
@@ -144,6 +147,7 @@ class ViewerRerun(ViewerBase):
             scales (wp.array): Instance scales (wp.vec3).
             colors (wp.array): Instance colors (wp.vec3).
             materials (wp.array): Instance materials (wp.vec4).
+            hidden (bool): Whether the instances are hidden. (unused)
         """
         # Check that mesh exists
         if mesh not in self._meshes:
@@ -205,6 +209,7 @@ class ViewerRerun(ViewerBase):
             # Log the instance poses
             rr.log(name, instance_poses)
 
+    @override
     def begin_frame(self, time):
         """
         Begin a new frame and set the timeline for rerun.
@@ -216,6 +221,7 @@ class ViewerRerun(ViewerBase):
         # Set the timeline for this frame
         rr.set_time("time", timestamp=time)
 
+    @override
     def end_frame(self):
         """
         End the current frame.
@@ -226,6 +232,7 @@ class ViewerRerun(ViewerBase):
         # Rerun handles frame finishing automatically
         pass
 
+    @override
     def is_running(self) -> bool:
         """
         Check if the viewer is still running.
@@ -238,6 +245,7 @@ class ViewerRerun(ViewerBase):
             return self._viewer_process.poll() is None
         return self._running
 
+    @override
     def close(self):
         """
         Close the viewer and clean up resources.
@@ -264,6 +272,7 @@ class ViewerRerun(ViewerBase):
             pass
 
     # Not implemented yet - placeholder methods from ViewerBase
+    @override
     def log_lines(self, name, starts, ends, colors, width: float = 0.01, hidden=False):
         """
         Placeholder for logging lines to rerun.
@@ -277,7 +286,8 @@ class ViewerRerun(ViewerBase):
         """
         pass
 
-    def log_points(self, name, points, radii, colors, width: float = 0.01, hidden=False):
+    @override
+    def log_points(self, name, points, radii, colors, hidden=False):
         """
         Placeholder for logging points to rerun.
 
@@ -290,6 +300,7 @@ class ViewerRerun(ViewerBase):
         """
         pass
 
+    @override
     def log_array(self, name, array):
         """
         Placeholder for logging a generic array to rerun.
@@ -300,6 +311,7 @@ class ViewerRerun(ViewerBase):
         """
         pass
 
+    @override
     def log_scalar(self, name, value):
         """
         Placeholder for logging a scalar value to rerun.

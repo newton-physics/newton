@@ -20,6 +20,7 @@ import warp as wp
 
 import newton
 from newton.utils import (
+    compute_world_offsets,
     create_box_mesh,
     create_capsule_mesh,
     create_cone_mesh,
@@ -27,6 +28,8 @@ from newton.utils import (
     create_plane_mesh,
     create_sphere_mesh,
 )
+
+from .kernels import estimate_world_extents
 
 
 class ViewerBase:
@@ -44,7 +47,7 @@ class ViewerBase:
         # maps from geometry hash -> mesh path
         self._geometry_cache: dict[str, str] = {}
 
-        # line vertices for contact vizualization
+        # line vertices for contact visualization
         self._contact_points0 = None
         self._contact_points1 = None
 
@@ -52,6 +55,9 @@ class ViewerBase:
         self._joint_points0 = None
         self._joint_points1 = None
         self._joint_colors = None
+
+        # World offset support
+        self.world_offsets = None  # Array of vec3 offsets per world
 
         # Display options as individual boolean attributes
         self.show_joints = False
@@ -91,14 +97,102 @@ class ViewerBase:
             self.device = model.device
             self._populate_shapes()
 
+            # Auto-compute world offsets if not already set
+            if self.world_offsets is None:
+                self._auto_compute_world_offsets()
+
     def set_camera(self, pos: wp.vec3, pitch: float, yaw: float):
         pass
 
+    def set_world_offsets(self, spacing: tuple[float, float, float] | list[float] | wp.vec3):
+        """Set world offsets for visual separation of multiple worlds.
+
+        Args:
+            spacing: Spacing between worlds along each axis as a tuple, list, or wp.vec3.
+                     Example: (5.0, 5.0, 0.0) for 5 units spacing in X and Y.
+
+        Raises:
+            RuntimeError: If model has not been set yet
+        """
+        if self.model is None:
+            raise RuntimeError("Model must be set before calling set_world_offsets()")
+
+        num_worlds = self.model.num_worlds
+
+        # Get up axis from model
+        up_axis = self.model.up_axis
+
+        # Convert to tuple if needed
+        if isinstance(spacing, (list, wp.vec3)):
+            spacing = (float(spacing[0]), float(spacing[1]), float(spacing[2]))
+
+        # Compute offsets using the shared utility function
+        world_offsets = compute_world_offsets(num_worlds, spacing, up_axis)
+
+        # Convert to warp array
+        self.world_offsets = wp.array(world_offsets, dtype=wp.vec3, device=self.device)
+
+    def _auto_compute_world_offsets(self):
+        """Automatically compute world offsets based on model extents."""
+        # If only one world or no worlds, no offsets needed
+        if self.model.num_worlds <= 1:
+            return
+
+        num_worlds = self.model.num_worlds
+
+        # Initialize bounds arrays for all worlds
+        world_bounds_min = wp.full((num_worlds, 3), float("inf"), dtype=float, device=self.device)
+        world_bounds_max = wp.full((num_worlds, 3), float("-inf"), dtype=float, device=self.device)
+
+        # Get initial state for body transforms
+        state = self.model.state()
+
+        # Launch kernel to compute bounds for all worlds
+        wp.launch(
+            kernel=estimate_world_extents,
+            dim=self.model.shape_count,
+            inputs=[
+                self.model.shape_transform,
+                self.model.shape_body,
+                self.model.shape_collision_radius,
+                self.model.shape_world,
+                state.body_q,
+                num_worlds,
+            ],
+            outputs=[world_bounds_min, world_bounds_max],
+            device=self.device,
+        )
+
+        # Get bounds back to CPU
+        bounds_min_np = world_bounds_min.numpy()
+        bounds_max_np = world_bounds_max.numpy()
+
+        # Find maximum extents across all worlds
+        # Mask out invalid bounds (inf values)
+        valid_mask = ~np.isinf(bounds_min_np[:, 0])
+
+        if not valid_mask.any():
+            # No valid worlds found, no offsets needed
+            return
+
+        # Compute extents for valid worlds and take maximum
+        valid_min = bounds_min_np[valid_mask]
+        valid_max = bounds_max_np[valid_mask]
+        world_extents = valid_max - valid_min
+        max_extents = np.max(world_extents, axis=0)
+
+        # Add margin
+        margin = 1.5  # 50% margin between worlds
+
+        # Default to 2D square grid arrangement perpendicular to up axis
+        spacing = [np.ceil(max(max_extents) * margin)] * 3
+        spacing[self.model.up_axis] = 0.0
+
+        # Set world offsets with computed spacing
+        self.set_world_offsets(tuple(spacing))
+
     def begin_frame(self, time):
         self.time = time
-
-    def is_paused(self):
-        return False
 
     def log_state(self, state):
         """Render the Newton model."""
@@ -111,7 +205,7 @@ class ViewerBase:
             visible = self._should_show_shape(shapes.flags, shapes.static)
 
             if visible:
-                shapes.update(state)
+                shapes.update(state, world_offsets=self.world_offsets)
 
             self.log_instances(
                 shapes.name,
@@ -202,6 +296,7 @@ class ViewerBase:
         materials=None,
         geo_thickness: float = 0.0,
         geo_is_solid: bool = True,
+        geo_src=None,
         hidden=False,
     ):
         """
@@ -221,6 +316,7 @@ class ViewerBase:
             materials: wp.array(dtype=wp.vec4) or None (broadcasted if length 1)
             thickness: Optional thickness (used for hashing consistency)
             is_solid: If False, can be used for wire/solid hashing parity
+            geo_src: Source geometry to use only when `geo_type` is `newton.GeoType.MESH`
             hidden: If True, the shape will not be rendered
         """
 
@@ -239,6 +335,7 @@ class ViewerBase:
             tuple(geo_scale),
             float(geo_thickness),
             bool(geo_is_solid),
+            geo_src=geo_src,
         )
 
         # prepare instance properties
@@ -295,9 +392,9 @@ class ViewerBase:
         """
 
         # GEO_MESH handled by provided source geometry
-        if geo_type == newton.GeoType.MESH:
+        if geo_type in (newton.GeoType.MESH, newton.GeoType.CONVEX_MESH):
             if geo_src is None:
-                raise ValueError("log_geo requires geo_src for GEO_MESH")
+                raise ValueError(f"log_geo requires geo_src for MESH or CONVEX_MESH (name={name})")
 
             # resolve points/indices from source, solidify if requested
             from warp.render.utils import solidify_mesh  # noqa: PLC0415
@@ -352,7 +449,7 @@ class ViewerBase:
                 ext = tuple(geo_scale[:3])
             vertices, indices = create_box_mesh(ext)
         else:
-            raise ValueError(f"log_geo does not support geo_type={geo_type}")
+            raise ValueError(f"log_geo does not support geo_type={geo_type} (name={name})")
 
         # Convert to Warp arrays and forward to log_mesh
         points = wp.array(vertices[:, 0:3], dtype=wp.vec3, device=self.device)
@@ -364,7 +461,7 @@ class ViewerBase:
 
     def log_gizmo(
         self,
-        gid,
+        name,
         transform,
     ):
         # Optional: for interactive viewers
@@ -376,8 +473,8 @@ class ViewerBase:
         name,
         points: wp.array,
         indices: wp.array,
-        normals: wp.array = None,
-        uvs: wp.array = None,
+        normals: wp.array | None = None,
+        uvs: wp.array | None = None,
         hidden=False,
         backface_culling=True,
         face_varying_uv=False,
@@ -429,16 +526,18 @@ class ViewerBase:
             self.scales = []
             self.colors = []
             self.materials = []
+            self.worlds = []  # World index for each shape
 
             self.world_xforms = None
 
-        def add(self, parent, xform, scale, color, material):
+        def add(self, parent, xform, scale, color, material, world=-1):
             # add an instance of the geometry to the batch
             self.parents.append(parent)
             self.xforms.append(xform)
             self.scales.append(scale)
             self.colors.append(color)
             self.materials.append(material)
+            self.worlds.append(world)
 
         def finalize(self):
             # convert to warp arrays
@@ -447,16 +546,23 @@ class ViewerBase:
             self.scales = wp.array(self.scales, dtype=wp.vec3, device=self.device)
             self.colors = wp.array(self.colors, dtype=wp.vec3, device=self.device)
             self.materials = wp.array(self.materials, dtype=wp.vec4, device=self.device)
+            self.worlds = wp.array(self.worlds, dtype=int, device=self.device)
 
             self.world_xforms = wp.zeros_like(self.xforms)
 
-        def update(self, state):
+        def update(self, state, world_offsets=None):
             from .kernels import update_shape_xforms  # noqa: PLC0415
 
             wp.launch(
                 kernel=update_shape_xforms,
                 dim=len(self.xforms),
-                inputs=[self.xforms, self.parents, state.body_q],
+                inputs=[
+                    self.xforms,
+                    self.parents,
+                    state.body_q,
+                    self.worlds,
+                    world_offsets,
+                ],
                 outputs=[self.world_xforms],
                 device=self.device,
             )
@@ -530,6 +636,7 @@ class ViewerBase:
             newton.GeoType.CONE: "cone",
             newton.GeoType.BOX: "box",
             newton.GeoType.MESH: "mesh",
+            newton.GeoType.CONVEX_MESH: "convex_hull",
         }.get(geo_type)
 
         if base_name is None:
@@ -542,7 +649,7 @@ class ViewerBase:
             tuple(scale_list),
             float(thickness),
             bool(is_solid),
-            geo_src=geo_src if geo_type == newton.GeoType.MESH else None,
+            geo_src=geo_src if geo_type in (newton.GeoType.MESH, newton.GeoType.CONVEX_MESH) else None,
             hidden=True,
         )
         self._geometry_cache[geo_hash] = mesh_path
@@ -559,6 +666,7 @@ class ViewerBase:
         shape_geo_is_solid = self.model.shape_is_solid.numpy()
         shape_transform = self.model.shape_transform.numpy()
         shape_flags = self.model.shape_flags.numpy()
+        shape_world = self.model.shape_world.numpy()
         shape_count = len(shape_body)
 
         # loop over shapes
@@ -589,7 +697,7 @@ class ViewerBase:
                     tuple(geo_scale),
                     float(geo_thickness),
                     bool(geo_is_solid),
-                    geo_src=geo_src if geo_type == newton.GeoType.MESH else None,
+                    geo_src=geo_src if geo_type in (newton.GeoType.MESH, newton.GeoType.CONVEX_MESH) else None,
                 )
             else:
                 mesh_name = self._geometry_cache[geo_hash]
@@ -619,7 +727,7 @@ class ViewerBase:
 
             material = wp.vec4(0.5, 0.0, 0.0, 0.0)  # roughness, metallic, checker, unused
 
-            if geo_type == newton.GeoType.MESH:
+            if geo_type in (newton.GeoType.MESH, newton.GeoType.CONVEX_MESH):
                 scale = np.asarray(geo_scale, dtype=np.float32)
 
                 if geo_src._color is not None:
@@ -631,7 +739,7 @@ class ViewerBase:
                 material = wp.vec4(0.5, 0.5, 1.0, 0.0)
 
             # add render instance
-            batch.add(parent, xform, scale, color, material)
+            batch.add(parent, xform, scale, color, material, shape_world[s])
 
         # upload all batches to the GPU
         for batch in self._shape_instances.values():

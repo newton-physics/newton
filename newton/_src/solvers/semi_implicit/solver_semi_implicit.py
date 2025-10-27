@@ -18,22 +18,28 @@ import warp as wp
 from ...core.types import override
 from ...sim import Contacts, Control, Model, State
 from ..solver import SolverBase
-from .kernels import (
-    eval_bending_forces,
-    eval_body_contact_forces,
+from .kernels_body import (
     eval_body_joint_forces,
-    eval_muscle_forces,
+)
+from .kernels_contact import (
+    eval_body_contact_forces,
     eval_particle_body_contact_forces,
-    eval_spring_forces,
-    eval_tetrahedral_forces,
+    eval_particle_contact_forces,
     eval_triangle_contact_forces,
+)
+from .kernels_muscle import (
+    eval_muscle_forces,
+)
+from .kernels_particle import (
+    eval_bending_forces,
+    eval_spring_forces,
+    eval_tetrahedra_forces,
     eval_triangle_forces,
 )
-from .particles import eval_particle_forces
 
 
 class SolverSemiImplicit(SolverBase):
-    """A semi-implicit integrator using symplectic Euler
+    """A semi-implicit integrator using symplectic Euler.
 
     After constructing `Model` and `State` objects this time-integrator
     may be used to advance the simulation state forward in time.
@@ -67,10 +73,9 @@ class SolverSemiImplicit(SolverBase):
         joint_attach_kd: float = 1.0e2,
         enable_tri_contact: bool = True,
     ):
-        """Create a new Euler solver.
-
+        """
         Args:
-            model (Model): Model to use by this solver.
+            model (Model): the model to be simulated.
             angular_damping (float, optional): Angular damping factor to be used in rigid body integration. Defaults to 0.05.
             friction_smoothing (float, optional): Huber norm delta used for friction velocity normalization (see :func:`warp.math.norm_huber`). Defaults to 1.0.
             joint_attach_ke (float, optional): Joint attachment spring stiffness. Defaults to 1.0e4.
@@ -89,8 +94,8 @@ class SolverSemiImplicit(SolverBase):
         self,
         state_in: State,
         state_out: State,
-        control: Control,
-        contacts: Contacts,
+        control: Control | None,
+        contacts: Contacts | None,
         dt: float,
     ):
         with wp.ScopedTimer("simulate", False):
@@ -114,21 +119,25 @@ class SolverSemiImplicit(SolverBase):
             # triangle elastic and lift/drag forces
             eval_triangle_forces(model, state_in, control, particle_f)
 
-            # triangle/triangle contacts
-            if self.enable_tri_contact:
-                eval_triangle_contact_forces(model, state_in, particle_f)
-
             # triangle bending
             eval_bending_forces(model, state_in, particle_f)
 
             # tetrahedral FEM
-            eval_tetrahedral_forces(model, state_in, control, particle_f)
+            eval_tetrahedra_forces(model, state_in, control, particle_f)
 
             # body joints
             eval_body_joint_forces(model, state_in, control, body_f, self.joint_attach_ke, self.joint_attach_kd)
 
+            # muscles
+            if False:
+                eval_muscle_forces(model, state_in, control, body_f)
+
             # particle-particle interactions
-            eval_particle_forces(model, state_in, particle_f)
+            eval_particle_contact_forces(model, state_in, particle_f)
+
+            # triangle/triangle contacts
+            if self.enable_tri_contact:
+                eval_triangle_contact_forces(model, state_in, particle_f)
 
             # body contacts
             eval_body_contact_forces(model, state_in, contacts, friction_smoothing=self.friction_smoothing)
@@ -138,12 +147,8 @@ class SolverSemiImplicit(SolverBase):
                 model, state_in, contacts, particle_f, body_f, body_f_in_world_frame=False
             )
 
-            # muscles
-            if False:
-                eval_muscle_forces(model, state_in, control, body_f)
+            self.integrate_particles(model, state_in, state_out, dt)
 
             self.integrate_bodies(model, state_in, state_out, dt, self.angular_damping)
-
-            self.integrate_particles(model, state_in, state_out, dt)
 
             return state_out

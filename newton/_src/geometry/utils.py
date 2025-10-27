@@ -31,6 +31,57 @@ from .types import (
 )
 
 
+# Warp kernel for inertia-based OBB computation
+@wp.kernel(enable_backward=False)
+def compute_obb_candidates(
+    vertices: wp.array(dtype=wp.vec3),
+    base_quat: wp.quat,
+    volumes: wp.array2d(dtype=float),
+    transforms: wp.array2d(dtype=wp.transform),
+    extents: wp.array2d(dtype=wp.vec3),
+):
+    """Compute OBB candidates for different rotations around principal axes."""
+    angle_idx, axis_idx = wp.tid()
+    num_angles_per_axis = volumes.shape[0]
+
+    # Compute rotation angle around one of the principal axes (X=0, Y=1, Z=2)
+    angle = float(angle_idx) * (2.0 * wp.pi) / float(num_angles_per_axis)
+
+    # Select the standard basis vector for the current axis
+    local_axis = wp.vec3(0.0, 0.0, 0.0)
+    local_axis[axis_idx] = 1.0
+
+    # Create incremental rotation around principal axis
+    incremental_quat = wp.quat_from_axis_angle(local_axis, angle)
+
+    # Compose rotations: first rotate into principal frame, then apply incremental rotation
+    quat = base_quat * incremental_quat
+
+    # Initialize bounds
+    min_bounds = wp.vec3(1e10, 1e10, 1e10)
+    max_bounds = wp.vec3(-1e10, -1e10, -1e10)
+
+    # Compute bounds for all vertices
+    num_verts = vertices.shape[0]
+    for i in range(num_verts):
+        rotated = wp.quat_rotate(quat, vertices[i])
+        min_bounds = wp.min(min_bounds, rotated)
+        max_bounds = wp.max(max_bounds, rotated)
+
+    # Compute extents and volume
+    box_extents = (max_bounds - min_bounds) * 0.5
+    volume = box_extents[0] * box_extents[1] * box_extents[2]
+
+    # Compute center in rotated space and transform back
+    center = (max_bounds + min_bounds) * 0.5
+    world_center = wp.quat_rotate_inv(quat, center)
+
+    # Store results
+    volumes[angle_idx, axis_idx] = volume
+    extents[angle_idx, axis_idx] = box_extents
+    transforms[angle_idx, axis_idx] = wp.transform(world_center, wp.quat_inverse(quat))
+
+
 def compute_shape_radius(geo_type: int, scale: Vec3, src: Mesh | SDF | None) -> float:
     """
     Calculates the radius of a sphere that encloses the shape, used for broadphase collision detection.
@@ -41,7 +92,7 @@ def compute_shape_radius(geo_type: int, scale: Vec3, src: Mesh | SDF | None) -> 
         return np.linalg.norm(scale)
     elif geo_type == GeoType.CAPSULE or geo_type == GeoType.CYLINDER or geo_type == GeoType.CONE:
         return scale[0] + scale[1]
-    elif geo_type == GeoType.MESH:
+    elif geo_type == GeoType.MESH or geo_type == GeoType.CONVEX_MESH:
         vmax = np.max(np.abs(src.vertices), axis=0) * np.max(scale)
         return np.linalg.norm(vmax)
     elif geo_type == GeoType.PLANE:
@@ -61,7 +112,7 @@ def compute_aabb(vertices: nparray) -> tuple[Vec3, Vec3]:
     return min_coords, max_coords
 
 
-def compute_obb(vertices: nparray) -> tuple[wp.transform, wp.vec3]:
+def compute_pca_obb(vertices: nparray) -> tuple[wp.transform, wp.vec3]:
     """Compute the oriented bounding box of a set of vertices.
 
     Args:
@@ -129,6 +180,97 @@ def compute_obb(vertices: nparray) -> tuple[wp.transform, wp.vec3]:
     orientation = wp.quat_from_matrix(wp.mat33(rotation_matrix))
 
     return wp.transform(wp.vec3(center), orientation), wp.vec3(extents)
+
+
+def compute_inertia_obb(
+    vertices: nparray,
+    num_angle_steps: int = 360,
+) -> tuple[wp.transform, wp.vec3]:
+    """
+    Compute oriented bounding box using inertia-based principal axes.
+
+    This method provides more stable results than PCA for symmetric objects:
+    1. Computes convex hull of the input vertices
+    2. Computes inertia tensor of the hull and extracts principal axes
+    3. Uses Warp kernels to test rotations around each principal axis
+    4. Returns the OBB with minimum volume
+
+    Args:
+        vertices: Array of shape (N, 3) containing the vertex positions
+        num_angle_steps: Number of angle steps to test per axis (default: 360)
+
+    Returns:
+        Tuple of (transform, extents)
+    """
+    if len(vertices) == 0:
+        return wp.transform_identity(), wp.vec3(0.0, 0.0, 0.0)
+
+    if len(vertices) == 1:
+        return wp.transform(wp.vec3(vertices[0]), wp.quat_identity()), wp.vec3(0.0, 0.0, 0.0)
+
+    # Step 1: Compute convex hull
+    hull_vertices, hull_faces = remesh_convex_hull(vertices, maxhullvert=0)  # 0 = no limit
+    hull_indices = hull_faces.flatten()
+
+    # Step 2: Compute mesh inertia
+    _mass, com, inertia_tensor, _volume = compute_mesh_inertia(
+        density=1.0,  # Unit density
+        vertices=hull_vertices.tolist(),
+        indices=hull_indices.tolist(),
+        is_solid=True,
+    )
+
+    # Adjust vertices to be centered at COM
+    center = np.array(com)
+    centered_vertices = hull_vertices - center
+
+    # Convert inertia tensor to numpy array for diagonalization
+    inertia = np.array(inertia_tensor).reshape(3, 3)
+
+    # Get principal axes by diagonalizing inertia tensor
+    eigenvalues, eigenvectors = np.linalg.eigh(inertia)
+
+    # Sort by eigenvalues in ascending order (largest inertia = smallest dimension)
+    # This helps with consistent ordering
+    sorted_indices = np.argsort(eigenvalues)
+    eigenvectors = eigenvectors[:, sorted_indices]
+
+    # Ensure no reflection in the transformation
+    if np.linalg.det(eigenvectors) < 0:
+        eigenvectors[:, 2] *= -1
+
+    principal_axes = eigenvectors
+
+    # Convert principal axes rotation matrix to quaternion
+    # The principal_axes matrix transforms from world to principal frame
+    base_quat = wp.quat_from_matrix(wp.mat33(principal_axes.T.flatten()))
+
+    # Step 3: Warp kernel search
+    # Allocate 2D arrays: (num_angle_steps, 3 axes)
+    vertices_wp = wp.array(centered_vertices, dtype=wp.vec3)
+    volumes = wp.zeros((num_angle_steps, 3), dtype=float)
+    transforms = wp.zeros((num_angle_steps, 3), dtype=wp.transform)
+    extents = wp.zeros((num_angle_steps, 3), dtype=wp.vec3)
+
+    # Launch kernel with 2D dimensions
+    wp.launch(
+        compute_obb_candidates,
+        dim=(num_angle_steps, 3),
+        inputs=[vertices_wp, base_quat, volumes, transforms, extents],
+    )
+
+    # Find minimum volume
+    volumes_host = volumes.numpy()
+    best_idx = np.unravel_index(np.argmin(volumes_host), volumes_host.shape)
+
+    # Get results
+    best_transform = transforms.numpy()[best_idx]
+    best_extents = extents.numpy()[best_idx]
+
+    # Adjust transform to account for original center
+    best_transform[0:3] += center
+
+    return wp.transform(*best_transform), wp.vec3(*best_extents)
 
 
 def load_mesh(filename: str, method: str | None = None):

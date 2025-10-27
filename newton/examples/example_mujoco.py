@@ -22,9 +22,12 @@
 #
 # Future improvements:
 # - Add options to run with a pre-trained policy
-# - Add the Anymal environment
+# - Add the Anymal world
 # - Fix the use-mujoco-cpu option (currently crashes)
 ###########################################################################
+
+
+import time
 
 import numpy as np
 import warp as wp
@@ -38,45 +41,64 @@ import newton.utils
 ROBOT_CONFIGS = {
     "humanoid": {
         "solver": "newton",
-        "integrator": "euler",
+        "integrator": "implicitfast",
         "njmax": 80,
         "nconmax": 25,
         "ls_parallel": True,
+        "cone": "pyramidal",
     },
     "g1": {
         "solver": "newton",
-        "integrator": "implicit",
+        "integrator": "implicitfast",
         "njmax": 210,
         "nconmax": 35,
         "ls_parallel": True,
+        "cone": "pyramidal",
     },
     "h1": {
         "solver": "newton",
-        "integrator": "implicit",
+        "integrator": "implicitfast",
         "njmax": 65,
         "nconmax": 15,
         "ls_parallel": True,
+        "cone": "pyramidal",
     },
-    "cartpole": {
+    "cartpole": {  # TODO: use the Lab version of cartpole and revert param value
         "solver": "newton",
-        "integrator": "euler",
-        "njmax": 5,
-        "nconmax": 5,
+        "integrator": "implicitfast",
+        "njmax": 24,  # 5
+        "nconmax": 6,  # 5
         "ls_parallel": False,
+        "cone": "pyramidal",
     },
     "ant": {
         "solver": "newton",
-        "integrator": "euler",
+        "integrator": "implicitfast",
         "njmax": 38,
         "nconmax": 15,
         "ls_parallel": True,
+        "cone": "pyramidal",
     },
     "quadruped": {
         "solver": "newton",
-        "integrator": "euler",
+        "integrator": "implicitfast",
         "njmax": 75,
         "nconmax": 50,
         "ls_parallel": True,
+        "cone": "pyramidal",
+    },
+    "allegro": {
+        "solver": "newton",
+        "integrator": "implicitfast",
+        "njmax": 60,
+        "nconmax": 35,
+        "ls_parallel": True,
+        "cone": "elliptic",
+    },
+    "kitchen": {
+        "setup_builder": lambda x: _setup_kitchen(x),
+        "njmax": 3800,
+        "nconmax": 900,
     },
 }
 
@@ -209,12 +231,47 @@ def _setup_quadruped(articulation_builder):
     return root_dofs
 
 
+def _setup_allegro(articulation_builder):
+    asset_path = newton.utils.download_asset("wonik_allegro")
+    asset_file = str(asset_path / "usd" / "allegro_left_hand_with_cube.usda")
+    articulation_builder.add_usd(
+        asset_file,
+        xform=wp.transform(wp.vec3(0, 0, 0.5)),
+        enable_self_collisions=True,
+        ignore_paths=[".*Dummy", ".*CollisionPlane", ".*goal", ".*DexCube/visuals"],
+        load_non_physics_prims=True,
+    )
+
+    # set joint targets and joint drive gains
+    for i in range(len(articulation_builder.joint_dof_mode)):
+        articulation_builder.joint_dof_mode[i] = newton.JointMode.TARGET_POSITION
+        articulation_builder.joint_target_ke[i] = 150
+        articulation_builder.joint_target_kd[i] = 5
+        articulation_builder.joint_target[i] = 0.0
+    root_dofs = 1
+
+    return root_dofs
+
+
+def _setup_kitchen(articulation_builder):
+    asset_path = newton.utils.download_asset("kitchen")
+    asset_file = str(asset_path / "mjcf" / "kitchen.xml")
+    articulation_builder.add_mjcf(
+        asset_file,
+        collapse_fixed_joints=True,
+    )
+
+    # Change pose of the robot to minimize overlap
+    articulation_builder.joint_q[:2] = [1.5, -1.5]
+
+
 class Example:
     def __init__(
         self,
         robot="humanoid",
+        environment="None",
         stage_path=None,
-        num_envs=1,
+        num_worlds=1,
         use_cuda_graph=True,
         use_mujoco_cpu=False,
         randomize=False,
@@ -228,14 +285,16 @@ class Example:
         nconmax=None,
         builder=None,
         ls_parallel=None,
+        cone=None,
     ):
         fps = 600
         self.sim_time = 0.0
+        self.benchmark_time = 0.0
         self.frame_dt = 1.0 / fps
         self.sim_substeps = 10
         self.contacts = None
         self.sim_dt = self.frame_dt / self.sim_substeps
-        self.num_envs = num_envs
+        self.num_worlds = num_worlds
         self.use_cuda_graph = use_cuda_graph
         self.use_mujoco_cpu = use_mujoco_cpu
         self.actuation = actuation
@@ -248,7 +307,7 @@ class Example:
             stage_path = "example_" + robot + ".usd"
 
         if builder is None:
-            builder = Example.create_model_builder(robot, num_envs, randomize, self.seed)
+            builder = Example.create_model_builder(robot, num_worlds, environment, randomize, self.seed)
 
         # finalize model
         self.model = builder.finalize()
@@ -256,19 +315,22 @@ class Example:
         self.solver = Example.create_solver(
             self.model,
             robot,
-            use_mujoco_cpu,
-            solver,
-            integrator,
-            solver_iteration,
-            ls_iteration,
-            njmax,
-            nconmax,
-            ls_parallel,
+            use_mujoco_cpu=use_mujoco_cpu,
+            environment=environment,
+            solver=solver,
+            integrator=integrator,
+            solver_iteration=solver_iteration,
+            ls_iteration=ls_iteration,
+            njmax=njmax,
+            nconmax=nconmax,
+            ls_parallel=ls_parallel,
+            cone=cone,
         )
 
         if stage_path and not headless:
             self.renderer = newton.viewer.ViewerGL()
             self.renderer.set_model(self.model)
+            self.renderer.set_world_offsets((4.0, 4.0, 0.0))
         else:
             self.renderer = None
 
@@ -298,10 +360,16 @@ class Example:
             joint_target = wp.array(self.rng.uniform(-1.0, 1.0, size=self.model.joint_dof_count), dtype=float)
             wp.copy(self.control.joint_target, joint_target)
 
+        wp.synchronize_device()
+        start_time = time.time()
         if self.use_cuda_graph:
             wp.capture_launch(self.graph)
         else:
             self.simulate()
+        wp.synchronize_device()
+        end_time = time.time()
+
+        self.benchmark_time += end_time - start_time
         self.sim_time += self.frame_dt
 
     def render(self):
@@ -313,7 +381,7 @@ class Example:
         self.renderer.end_frame()
 
     @staticmethod
-    def create_model_builder(robot, num_envs, randomize=False, seed=123) -> newton.ModelBuilder:
+    def create_model_builder(robot, num_worlds, environment="None", randomize=False, seed=123) -> newton.ModelBuilder:
         rng = np.random.default_rng(seed)
 
         articulation_builder = newton.ModelBuilder()
@@ -329,14 +397,20 @@ class Example:
             root_dofs = _setup_ant(articulation_builder)
         elif robot == "quadruped":
             root_dofs = _setup_quadruped(articulation_builder)
+        elif robot == "allegro":
+            root_dofs = _setup_allegro(articulation_builder)
         else:
             raise ValueError(f"Name of the provided robot not recognized: {robot}")
 
+        custom_setup_fn = ROBOT_CONFIGS.get(environment, {}).get("setup_builder", None)
+        if custom_setup_fn is not None:
+            custom_setup_fn(articulation_builder)
+
         builder = newton.ModelBuilder()
-        builder.replicate(articulation_builder, num_envs, spacing=(4.0, 4.0, 0.0))
+        builder.replicate(articulation_builder, num_worlds)
         if randomize:
             njoint = len(articulation_builder.joint_q)
-            for i in range(num_envs):
+            for i in range(num_worlds):
                 istart = i * njoint
                 builder.joint_q[istart + root_dofs : istart + njoint] = rng.uniform(
                     -1.0, 1.0, size=(njoint - root_dofs)
@@ -348,7 +422,9 @@ class Example:
     def create_solver(
         model,
         robot,
-        use_mujoco_cpu,
+        *,
+        use_mujoco_cpu=False,
+        environment="None",
         solver=None,
         integrator=None,
         solver_iteration=None,
@@ -356,6 +432,7 @@ class Example:
         njmax=None,
         nconmax=None,
         ls_parallel=None,
+        cone=None,
     ):
         solver_iteration = solver_iteration if solver_iteration is not None else 100
         ls_iteration = ls_iteration if ls_iteration is not None else 50
@@ -364,6 +441,10 @@ class Example:
         njmax = njmax if njmax is not None else ROBOT_CONFIGS[robot]["njmax"]
         nconmax = nconmax if nconmax is not None else ROBOT_CONFIGS[robot]["nconmax"]
         ls_parallel = ls_parallel if ls_parallel is not None else ROBOT_CONFIGS[robot]["ls_parallel"]
+        cone = cone if cone is not None else ROBOT_CONFIGS[robot]["cone"]
+
+        njmax += ROBOT_CONFIGS.get(environment, {}).get("njmax", 0)
+        nconmax += ROBOT_CONFIGS.get(environment, {}).get("nconmax", 0)
 
         return newton.solvers.SolverMuJoCo(
             model,
@@ -373,8 +454,9 @@ class Example:
             iterations=solver_iteration,
             ls_iterations=ls_iteration,
             njmax=njmax,
-            ncon_per_env=nconmax,
+            ncon_per_world=nconmax,
             ls_parallel=ls_parallel,
+            cone=cone,
         )
 
 
@@ -383,6 +465,7 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument("--robot", type=str, default="humanoid", help="Name of the robot to simulate.")
+    parser.add_argument("--env", type=str, default="None", help="Name of the environment where the robot is located.")
     parser.add_argument("--device", type=str, default=None, help="Override the default Warp device.")
     parser.add_argument(
         "--stage-path",
@@ -391,7 +474,7 @@ if __name__ == "__main__":
         help="Path to the output USD file.",
     )
     parser.add_argument("--num-frames", type=int, default=12000, help="Total number of frames.")
-    parser.add_argument("--num-envs", type=int, default=1, help="Total number of simulated environments.")
+    parser.add_argument("--num-worlds", type=int, default=1, help="Total number of simulated worlds.")
     parser.add_argument("--use-cuda-graph", default=True, action=argparse.BooleanOptionalAction)
     parser.add_argument(
         "--use-mujoco-cpu",
@@ -422,11 +505,12 @@ if __name__ == "__main__":
     )
     parser.add_argument("--solver-iteration", type=int, default=None, help="Number of solver iterations.")
     parser.add_argument("--ls-iteration", type=int, default=None, help="Number of linesearch iterations.")
-    parser.add_argument("--njmax", type=int, default=None, help="Maximum number of constraints per environment.")
-    parser.add_argument("--nconmax", type=int, default=None, help="Maximum number of collision per environment.")
+    parser.add_argument("--njmax", type=int, default=None, help="Maximum number of constraints per world.")
+    parser.add_argument("--nconmax", type=int, default=None, help="Maximum number of collision per world.")
     parser.add_argument(
         "--ls-parallel", default=None, action=argparse.BooleanOptionalAction, help="Use parallel line search."
     )
+    parser.add_argument("--cone", type=str, default=None, choices=["pyramidal", "elliptic"], help="Friction cone type.")
 
     args = parser.parse_known_args()[0]
 
@@ -437,8 +521,9 @@ if __name__ == "__main__":
     with wp.ScopedDevice(args.device):
         example = Example(
             robot=args.robot,
+            environment=args.env,
             stage_path=args.stage_path,
-            num_envs=args.num_envs,
+            num_worlds=args.num_worlds,
             use_cuda_graph=args.use_cuda_graph,
             use_mujoco_cpu=args.use_mujoco_cpu,
             randomize=args.random_init,
@@ -451,6 +536,7 @@ if __name__ == "__main__":
             njmax=args.njmax,
             nconmax=args.nconmax,
             ls_parallel=args.ls_parallel,
+            cone=args.cone,
         )
 
         # Print simulation configuration summary
@@ -459,7 +545,7 @@ if __name__ == "__main__":
         title = " Simulation Configuration "
         print(f"\n{title.center(TOTAL_WIDTH, '=')}")
         print(f"{'Simulation Steps':<{LABEL_WIDTH}}: {args.num_frames * example.sim_substeps}")
-        print(f"{'Environment Count':<{LABEL_WIDTH}}: {args.num_envs}")
+        print(f"{'World Count':<{LABEL_WIDTH}}: {args.num_worlds}")
         print(f"{'Robot Type':<{LABEL_WIDTH}}: {args.robot}")
         print(f"{'Timestep (dt)':<{LABEL_WIDTH}}: {example.sim_dt:.6f}s")
         print(f"{'Randomize Initial Pose':<{LABEL_WIDTH}}: {args.random_init!s}")
@@ -477,18 +563,26 @@ if __name__ == "__main__":
             3: "Implicitfast",
         }  # mjINT_EULER = 0, mjINT_RK4 = 1, mjINT_IMPLICIT = 2, mjINT_IMPLICITFAST = 3
         actual_integrator = integrator_map.get(example.solver.mj_model.opt.integrator, "unknown")
+        # Map MuJoCo cone enum back to string
+        cone_value = example.solver.mj_model.opt.cone
+        cone_map = {0: "pyramidal", 1: "elliptic"}  # mjCONE_PYRAMIDAL = 0, mjCONE_ELLIPTIC = 1
+        actual_cone = cone_map.get(cone_value, f"unknown({cone_value})")
         # Get actual max constraints and contacts from MuJoCo Warp data
         actual_njmax = example.solver.mjw_data.njmax
         actual_nconmax = (
-            example.solver.mjw_data.nconmax // args.num_envs if args.num_envs > 0 else example.solver.mjw_data.nconmax
+            example.solver.mjw_data.nconmax // args.num_worlds
+            if args.num_worlds > 0
+            else example.solver.mjw_data.nconmax
         )
+
         print(f"{'Solver':<{LABEL_WIDTH}}: {actual_solver}")
         print(f"{'Integrator':<{LABEL_WIDTH}}: {actual_integrator}")
         # print(f"{'Parallel Line Search':<{LABEL_WIDTH}}: {example.solver.mj_model.opt.ls_parallel}")
+        print(f"{'Cone':<{LABEL_WIDTH}}: {actual_cone}")
         print(f"{'Solver Iterations':<{LABEL_WIDTH}}: {example.solver.mj_model.opt.iterations}")
         print(f"{'Line Search Iterations':<{LABEL_WIDTH}}: {example.solver.mj_model.opt.ls_iterations}")
-        print(f"{'Max Constraints / env':<{LABEL_WIDTH}}: {actual_njmax}")
-        print(f"{'Max Contacts / env':<{LABEL_WIDTH}}: {actual_nconmax}")
+        print(f"{'Max Constraints / world':<{LABEL_WIDTH}}: {actual_njmax}")
+        print(f"{'Max Contacts / world':<{LABEL_WIDTH}}: {actual_nconmax}")
         print(f"{'Joint DOFs':<{LABEL_WIDTH}}: {example.model.joint_dof_count}")
         print(f"{'Body Count':<{LABEL_WIDTH}}: {example.model.body_count}")
         print("-" * TOTAL_WIDTH)

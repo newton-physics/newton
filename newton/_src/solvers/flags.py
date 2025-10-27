@@ -42,7 +42,17 @@ class SolverNotifyFlags(IntEnum):
     SHAPE_PROPERTIES = 1 << 4
     """Indicates shape property updates: shape_transform, shape geometry and material properties"""
 
-    ALL = JOINT_PROPERTIES | JOINT_DOF_PROPERTIES | BODY_PROPERTIES | BODY_INERTIAL_PROPERTIES | SHAPE_PROPERTIES
+    MODEL_PROPERTIES = 1 << 5
+    """Indicates model property updates: gravity and other global parameters."""
+
+    ALL = (
+        JOINT_PROPERTIES
+        | JOINT_DOF_PROPERTIES
+        | BODY_PROPERTIES
+        | BODY_INERTIAL_PROPERTIES
+        | SHAPE_PROPERTIES
+        | MODEL_PROPERTIES
+    )
     """Indicates all property updates."""
 
 

@@ -17,16 +17,20 @@ import warp as wp
 
 from ...core.types import override
 from ...sim import Contacts, Control, Model, State, eval_fk
-from ..euler.kernels import (
-    eval_bending_forces,
-    eval_muscle_forces,
+from ..semi_implicit.kernels_contact import (
+    eval_body_contact,
     eval_particle_body_contact_forces,
-    eval_rigid_contacts,
+    eval_particle_contact_forces,
+)
+from ..semi_implicit.kernels_muscle import (
+    eval_muscle_forces,
+)
+from ..semi_implicit.kernels_particle import (
+    eval_bending_forces,
     eval_spring_forces,
-    eval_tetrahedral_forces,
+    eval_tetrahedra_forces,
     eval_triangle_forces,
 )
-from ..euler.particles import eval_particle_forces
 from ..solver import SolverBase
 from .kernels import (
     compute_com_transforms,
@@ -71,6 +75,8 @@ class SolverFeatherstone(SolverBase):
     small enough to support the required stiffness and damping forces.
 
     See: https://en.wikipedia.org/wiki/Semi-implicit_Euler_method
+
+    This solver uses the routines from :class:`~newton.solvers.SolverSemiImplicit` to simulate particles, cloth, and soft bodies.
 
     Example
     -------
@@ -318,10 +324,10 @@ class SolverFeatherstone(SolverBase):
             eval_bending_forces(model, state_in, particle_f)
 
             # tetrahedral FEM
-            eval_tetrahedral_forces(model, state_in, control, particle_f)
+            eval_tetrahedra_forces(model, state_in, control, particle_f)
 
             # particle-particle interactions
-            eval_particle_forces(model, state_in, particle_f)
+            eval_particle_contact_forces(model, state_in, particle_f)
 
             # particle shape contact
             eval_particle_body_contact_forces(model, state_in, contacts, particle_f, body_f, body_f_in_world_frame=True)
@@ -361,6 +367,7 @@ class SolverFeatherstone(SolverBase):
 
                 # evaluate joint inertias, motion vectors, and forces
                 state_aug.body_f_s.zero_()
+
                 wp.launch(
                     eval_rigid_id,
                     dim=model.articulation_count,
@@ -391,7 +398,7 @@ class SolverFeatherstone(SolverBase):
 
                 if contacts is not None and contacts.rigid_contact_max:
                     wp.launch(
-                        kernel=eval_rigid_contacts,
+                        kernel=eval_body_contact,
                         dim=contacts.rigid_contact_max,
                         inputs=[
                             state_in.body_q,

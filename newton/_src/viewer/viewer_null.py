@@ -16,6 +16,7 @@
 
 import warp as wp
 
+from ..core.types import override
 from .viewer import ViewerBase
 
 
@@ -24,7 +25,7 @@ class ViewerNull(ViewerBase):
     A no-operation (no-op) viewer implementation for Newton.
 
     This class provides a minimal, non-interactive viewer that does not perform any rendering
-    or visualization. It is intended for use in headless or automated environments where
+    or visualization. It is intended for use in headless or automated worlds where
     visualization is not required. The viewer runs for a fixed number of frames and provides
     stub implementations for all logging and frame management methods.
     """
@@ -41,13 +42,14 @@ class ViewerNull(ViewerBase):
         self.num_frames = num_frames
         self.frame_count = 0
 
+    @override
     def log_mesh(
         self,
         name,
         points: wp.array,
         indices: wp.array,
-        normals: wp.array = None,
-        uvs: wp.array = None,
+        normals: wp.array | None = None,
+        uvs: wp.array | None = None,
         hidden=False,
         backface_culling=True,
         face_varying_uv=False,
@@ -78,6 +80,7 @@ class ViewerNull(ViewerBase):
             scales: Instance scales.
             colors: Instance colors.
             materials: Instance materials.
+            hidden: Whether the instances are hidden.
         """
         pass
 

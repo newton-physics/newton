@@ -51,23 +51,28 @@ class Example:
         drop_z = 2.0
 
         # SPHERE
-        body_sphere = builder.add_body(xform=wp.transform(p=wp.vec3(0.0, -2.0, drop_z), q=wp.quat_identity()))
+        self.sphere_pos = wp.vec3(0.0, -2.0, drop_z)
+        body_sphere = builder.add_body(xform=wp.transform(p=self.sphere_pos, q=wp.quat_identity()), key="sphere")
         builder.add_shape_sphere(body_sphere, radius=0.5)
 
         # CAPSULE
-        body_capsule = builder.add_body(xform=wp.transform(p=wp.vec3(0.0, 0.0, drop_z), q=wp.quat_identity()))
+        self.capsule_pos = wp.vec3(0.0, 0.0, drop_z)
+        body_capsule = builder.add_body(xform=wp.transform(p=self.capsule_pos, q=wp.quat_identity()), key="capsule")
         builder.add_shape_capsule(body_capsule, radius=0.3, half_height=0.7)
 
-        # CYLINDER (no collision support)
-        # body_cylinder = builder.add_body(xform=wp.transform(p=wp.vec3(0.0, -4.0, drop_z), q=wp.quat_identity()))
-        # builder.add_shape_cylinder(body_cylinder, radius=0.4, half_height=0.6)
+        # CYLINDER
+        self.cylinder_pos = wp.vec3(0.0, -4.0, drop_z)
+        body_cylinder = builder.add_body(xform=wp.transform(p=self.cylinder_pos, q=wp.quat_identity()), key="cylinder")
+        builder.add_shape_cylinder(body_cylinder, radius=0.4, half_height=0.6)
 
         # BOX
-        body_box = builder.add_body(xform=wp.transform(p=wp.vec3(0.0, 2.0, drop_z), q=wp.quat_identity()))
+        self.box_pos = wp.vec3(0.0, 2.0, drop_z)
+        body_box = builder.add_body(xform=wp.transform(p=self.box_pos, q=wp.quat_identity()), key="box")
         builder.add_shape_box(body_box, hx=0.5, hy=0.35, hz=0.25)
 
         # CONE (no collision support)
-        # body_cone = builder.add_body(xform=wp.transform(p=wp.vec3(0.0, 6.0, drop_z), q=wp.quat_identity()))
+        # self.cone_pos = wp.vec3(0.0, 6.0, drop_z)
+        # body_cone = builder.add_body(xform=wp.transform(p=self.cone_pos, q=wp.quat_identity()), key="cone")
         # builder.add_shape_cone(body_cone, radius=0.45, half_height=0.6)
 
         # MESH (bunny)
@@ -79,15 +84,14 @@ class Example:
 
         demo_mesh = newton.Mesh(mesh_vertices, mesh_indices)
 
-        body_mesh = builder.add_body(
-            xform=wp.transform(p=wp.vec3(0.0, 4.0, drop_z - 0.5), q=wp.quat(0.5, 0.5, 0.5, 0.5))
-        )
+        self.mesh_pos = wp.vec3(0.0, 4.0, drop_z - 0.5)
+        body_mesh = builder.add_body(xform=wp.transform(p=self.mesh_pos, q=wp.quat(0.5, 0.5, 0.5, 0.5)), key="mesh")
         builder.add_shape_mesh(body_mesh, mesh=demo_mesh)
 
         # finalize model
         self.model = builder.finalize()
 
-        self.solver = newton.solvers.SolverXPBD(self.model)
+        self.solver = newton.solvers.SolverXPBD(self.model, iterations=10)
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
@@ -96,7 +100,7 @@ class Example:
 
         self.viewer.set_model(self.model)
 
-        # not required for MuJoCo, but required for other solvers
+        # not required for MuJoCo, but required for maximal-coordinate solvers like XPBD
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
 
         self.capture()
@@ -131,7 +135,50 @@ class Example:
         self.sim_time += self.frame_dt
 
     def test(self):
-        pass
+        self.sphere_pos[2] = 0.5
+        sphere_q = wp.transform(self.sphere_pos, wp.quat_identity())
+        newton.examples.test_body_state(
+            self.model,
+            self.state_0,
+            "sphere at rest pose",
+            lambda q, qd: newton.utils.vec_allclose(q, sphere_q, atol=1e-4),
+            [0],
+        )
+        self.capsule_pos[2] = 1.0
+        capsule_q = wp.transform(self.capsule_pos, wp.quat_identity())
+        newton.examples.test_body_state(
+            self.model,
+            self.state_0,
+            "capsule at rest pose",
+            lambda q, qd: newton.utils.vec_allclose(q, capsule_q, atol=1e-4),
+            [1],
+        )
+        self.cylinder_pos[2] = 0.6
+        cylinder_q = wp.transform(self.cylinder_pos, wp.quat_identity())
+        newton.examples.test_body_state(
+            self.model,
+            self.state_0,
+            "cylinder at rest pose",
+            lambda q, qd: newton.utils.vec_allclose(q, cylinder_q, atol=1e-4),
+            [2],
+        )
+        self.box_pos[2] = 0.25
+        box_q = wp.transform(self.box_pos, wp.quat_identity())
+        newton.examples.test_body_state(
+            self.model,
+            self.state_0,
+            "box at rest pose",
+            lambda q, qd: newton.utils.vec_allclose(q, box_q, atol=0.1),
+            [3],
+        )
+        # we only test that the bunny didn't fall through the ground and didn't slide too far
+        newton.examples.test_body_state(
+            self.model,
+            self.state_0,
+            "bunny at rest pose",
+            lambda q, qd: q[2] > 0.01 and abs(q[0]) < 0.1 and abs(q[1] - 4.0) < 0.1,
+            [4],
+        )
 
     def render(self):
         self.viewer.begin_frame(self.sim_time)
@@ -147,4 +194,4 @@ if __name__ == "__main__":
     # Create viewer and run
     example = Example(viewer)
 
-    newton.examples.run(example)
+    newton.examples.run(example, args)

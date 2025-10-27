@@ -133,6 +133,70 @@ JOINT_URDF = """
 </robot>
 """
 
+JOINT_TREE_URDF = """
+<robot name="joint_tree_test">
+<!-- Mixed ordering of links -->
+<link name="grandchild_link_1b"/>
+<link name="base_link"/>
+<link name="child_link_1"/>
+<link name="grandchild_link_2b"/>
+<link name="grandchild_link_1a"/>
+<link name="grandchild_link_2a"/>
+<link name="child_link_2"/>
+
+<!-- Level 1: Two joints from base_link -->
+<joint name="joint_2" type="revolute">
+<parent link="base_link"/>
+<child link="child_link_2"/>
+<origin xyz="1.0 0 0" rpy="0 0 0"/>
+<axis xyz="0 0 1"/>
+<limit lower="-1.23" upper="3.45"/>
+</joint>
+
+<joint name="joint_1" type="revolute">
+<parent link="base_link"/>
+<child link="child_link_1"/>
+<origin xyz="0 1.0 0" rpy="0 0 0"/>
+<axis xyz="0 0 1"/>
+<limit lower="-1.23" upper="3.45"/>
+</joint>
+
+<!-- Level 2: Two joints from child_link_1 -->
+<joint name="joint_1a" type="revolute">
+<parent link="child_link_1"/>
+<child link="grandchild_link_1a"/>
+<origin xyz="0 0.5 0" rpy="0 0 0"/>
+<axis xyz="0 0 1"/>
+<limit lower="-1.23" upper="3.45"/>
+</joint>
+
+<joint name="joint_1b" type="revolute">
+<parent link="child_link_1"/>
+<child link="grandchild_link_1b"/>
+<origin xyz="0.5 0 0" rpy="0 0 0"/>
+<axis xyz="0 0 1"/>
+<limit lower="-1.23" upper="3.45"/>
+</joint>
+
+<!-- Level 2: Two joints from child_link_2 -->
+<joint name="joint_2b" type="revolute">
+<parent link="child_link_2"/>
+<child link="grandchild_link_2b"/>
+<origin xyz="0.5 0 0" rpy="0 0 0"/>
+<axis xyz="0 0 1"/>
+<limit lower="-1.23" upper="3.45"/>
+</joint>
+
+<joint name="joint_2a" type="revolute">
+<parent link="child_link_2"/>
+<child link="grandchild_link_2a"/>
+<origin xyz="0 0.5 0" rpy="0 0 0"/>
+<axis xyz="0 0 1"/>
+<limit lower="-1.23" upper="3.45"/>
+</joint>
+</robot>
+"""
+
 
 class TestImportUrdf(unittest.TestCase):
     @staticmethod
@@ -303,6 +367,102 @@ class TestImportUrdf(unittest.TestCase):
             shape_scale = builder.shape_scale[0]
             self.assertAlmostEqual(shape_scale[0], 0.5)  # radius
             self.assertAlmostEqual(shape_scale[1], 1.0)  # half_height (length/2)
+
+    def test_joint_ordering_original(self):
+        builder = newton.ModelBuilder()
+        self.parse_urdf(JOINT_TREE_URDF, builder, bodies_follow_joint_ordering=False, joint_ordering=None)
+        assert builder.body_count == 7
+        assert builder.joint_count == 7
+        assert builder.body_key == [
+            "grandchild_link_1b",
+            "base_link",
+            "child_link_1",
+            "grandchild_link_2b",
+            "grandchild_link_1a",
+            "grandchild_link_2a",
+            "child_link_2",
+        ]
+        assert builder.joint_key == ["fixed_base", "joint_2", "joint_1", "joint_1a", "joint_1b", "joint_2b", "joint_2a"]
+
+    def test_joint_ordering_dfs(self):
+        builder = newton.ModelBuilder()
+        self.parse_urdf(JOINT_TREE_URDF, builder, bodies_follow_joint_ordering=False, joint_ordering="dfs")
+        assert builder.body_count == 7
+        assert builder.joint_count == 7
+        assert builder.body_key == [
+            "grandchild_link_1b",
+            "base_link",
+            "child_link_1",
+            "grandchild_link_2b",
+            "grandchild_link_1a",
+            "grandchild_link_2a",
+            "child_link_2",
+        ]
+        assert builder.joint_key == ["fixed_base", "joint_2", "joint_2b", "joint_2a", "joint_1", "joint_1a", "joint_1b"]
+
+    def test_joint_ordering_bfs(self):
+        builder = newton.ModelBuilder()
+        self.parse_urdf(JOINT_TREE_URDF, builder, bodies_follow_joint_ordering=False, joint_ordering="bfs")
+        assert builder.body_count == 7
+        assert builder.joint_count == 7
+        assert builder.body_key == [
+            "grandchild_link_1b",
+            "base_link",
+            "child_link_1",
+            "grandchild_link_2b",
+            "grandchild_link_1a",
+            "grandchild_link_2a",
+            "child_link_2",
+        ]
+        assert builder.joint_key == ["fixed_base", "joint_2", "joint_1", "joint_2b", "joint_2a", "joint_1a", "joint_1b"]
+
+    def test_joint_body_ordering_original(self):
+        builder = newton.ModelBuilder()
+        self.parse_urdf(JOINT_TREE_URDF, builder, bodies_follow_joint_ordering=True, joint_ordering=None)
+        assert builder.body_count == 7
+        assert builder.joint_count == 7
+        assert builder.body_key == [
+            "base_link",
+            "child_link_2",
+            "child_link_1",
+            "grandchild_link_1a",
+            "grandchild_link_1b",
+            "grandchild_link_2b",
+            "grandchild_link_2a",
+        ]
+        assert builder.joint_key == ["fixed_base", "joint_2", "joint_1", "joint_1a", "joint_1b", "joint_2b", "joint_2a"]
+
+    def test_joint_body_ordering_dfs(self):
+        builder = newton.ModelBuilder()
+        self.parse_urdf(JOINT_TREE_URDF, builder, bodies_follow_joint_ordering=True, joint_ordering="dfs")
+        assert builder.body_count == 7
+        assert builder.joint_count == 7
+        assert builder.body_key == [
+            "base_link",
+            "child_link_2",
+            "grandchild_link_2b",
+            "grandchild_link_2a",
+            "child_link_1",
+            "grandchild_link_1a",
+            "grandchild_link_1b",
+        ]
+        assert builder.joint_key == ["fixed_base", "joint_2", "joint_2b", "joint_2a", "joint_1", "joint_1a", "joint_1b"]
+
+    def test_joint_body_ordering_bfs(self):
+        builder = newton.ModelBuilder()
+        self.parse_urdf(JOINT_TREE_URDF, builder, bodies_follow_joint_ordering=True, joint_ordering="bfs")
+        assert builder.body_count == 7
+        assert builder.joint_count == 7
+        assert builder.body_key == [
+            "base_link",
+            "child_link_2",
+            "child_link_1",
+            "grandchild_link_2b",
+            "grandchild_link_2a",
+            "grandchild_link_1a",
+            "grandchild_link_1b",
+        ]
+        assert builder.joint_key == ["fixed_base", "joint_2", "joint_1", "joint_2b", "joint_2a", "joint_1a", "joint_1b"]
 
 
 if __name__ == "__main__":

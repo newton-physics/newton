@@ -9,7 +9,7 @@ license = "Apache-2.0"
 license-files = ["LICENSE.md", "newton/licenses/**/*.txt"]
 authors = [{ name = "Newton Developers", email = "warp-python@nvidia.com" }]
 classifiers = [
-    "Development Status :: 2 - Pre-Alpha",
+    "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
     "Intended Audience :: Science/Research",
     "Natural Language :: English",
@@ -32,7 +32,7 @@ dependencies = ["warp-lang>=1.7.0.dev20250823"]
 sim = [
     # MuJoCo simulation
     "mujoco-warp>=0.0.1",         # MuJoCo, warp-accelerated
-    "mujoco>=3.3.3.dev769049331", # MuJoCo physics engine
+    "mujoco>=3.3.6.dev802089588", # MuJoCo physics engine
     "cbor2>=5.7.0",
 ]
 
@@ -102,7 +102,7 @@ explicit = true
 
 [tool.uv.sources]
 mujoco-warp = { git = "https://github.com/google-deepmind/mujoco_warp" }
-warp-lang = { index = "nvidia", marker = "sys_platform != 'darwin'" }
+warp-lang = { index = "nvidia" }
 mujoco = { index = "mujoco" }
 torch = [{ index = "pytorch-cu129", extra = "torch-cu12" }]
 

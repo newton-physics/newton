@@ -17,8 +17,8 @@
 # Example Contact Sensor
 #
 # Shows how to use the ContactSensor class to evaluate contact forces and torques.
-# The example spawns ant and humanoid robots across multiple environments,
-# applies random forces to their joints, and performs selective resets on subsets of environments.
+# The example spawns ant and humanoid robots across multiple worlds,
+# applies random forces to their joints, and performs selective resets on subsets of worlds.
 #
 # Command: python -m newton.examples sensor_contact
 #
@@ -29,9 +29,9 @@ import warp as wp
 import newton
 import newton.examples
 from newton import Contacts
-from newton.examples import compute_env_offsets
 from newton.selection import ArticulationView
 from newton.sensors import ContactSensor, populate_contacts
+from newton.tests.unittest_utils import find_nonfinite_members
 
 USE_TORCH = False
 COLLAPSE_FIXED_JOINTS = False
@@ -77,14 +77,14 @@ def reset_kernel(
 
 
 @wp.kernel
-def random_forces_kernel(dof_forces: wp.array2d(dtype=float), seed: int, num_envs: int):
+def random_forces_kernel(dof_forces: wp.array2d(dtype=float), seed: int, num_worlds: int):
     i, j = wp.tid()
-    rng = wp.rand_init(seed, i * num_envs + j)
+    rng = wp.rand_init(seed, i * num_worlds + j)
     dof_forces[i, j] = 5.0 - 10.0 * wp.randf(rng)
 
 
 class Example:
-    def __init__(self, viewer, num_envs=16, use_cuda_graph=True):
+    def __init__(self, viewer, num_worlds=16, use_cuda_graph=True):
         # setup simulation parameters first
         self.fps = 60
         self.frame_dt = 1.0 / self.fps
@@ -92,20 +92,20 @@ class Example:
         self.sim_substeps = 10
         self.sim_dt = self.frame_dt / self.sim_substeps
 
-        self.num_envs = num_envs
+        self.num_worlds = num_worlds
         self.viewer = viewer
 
         up_axis = newton.Axis.Z
 
-        env_builder = newton.ModelBuilder(up_axis=up_axis)
-        env_builder.add_mjcf(
+        world_builder = newton.ModelBuilder(up_axis=up_axis)
+        world_builder.add_mjcf(
             newton.examples.get_asset("nv_ant.xml"),
             ignore_names=["floor", "ground"],
             up_axis=up_axis,
             xform=wp.transform((0.0, 0.0, 1.0), wp.quat_identity()),
             collapse_fixed_joints=COLLAPSE_FIXED_JOINTS,
         )
-        env_builder.add_mjcf(
+        world_builder.add_mjcf(
             newton.examples.get_asset("nv_humanoid.xml"),
             ignore_names=["floor", "ground"],
             up_axis=up_axis,
@@ -113,11 +113,8 @@ class Example:
             collapse_fixed_joints=COLLAPSE_FIXED_JOINTS,
         )
 
-        env_offsets = compute_env_offsets(num_envs, env_offset=(4.0, 4.0, 0.0), up_axis=up_axis)
-
         builder = newton.ModelBuilder()
-        for i in range(self.num_envs):
-            builder.add_builder(env_builder, xform=wp.transform(env_offsets[i], wp.quat_identity()))
+        builder.replicate(world_builder, self.num_worlds)
 
         builder.add_ground_plane()
         # stores contact info required by contact sensors
@@ -139,7 +136,7 @@ class Example:
             prune_noncolliding=True,
         )
 
-        self.solver = newton.solvers.SolverMuJoCo(self.model, njmax=100, ncon_per_env=100)
+        self.solver = newton.solvers.SolverMuJoCo(self.model, njmax=100, ncon_per_world=100)
 
         self.viewer.set_model(self.model)
 
@@ -154,7 +151,7 @@ class Example:
         # create articulation views
         # ===========================================================
         self.ants = ArticulationView(self.model, "ant", verbose=VERBOSE, exclude_joint_types=[newton.JointType.FREE])
-        self.hums = ArticulationView(
+        self.humanoids = ArticulationView(
             self.model, "humanoid", verbose=VERBOSE, exclude_joint_types=[newton.JointType.FREE]
         )
 
@@ -172,16 +169,16 @@ class Example:
             self.default_ant_dof_velocities = wp.to_torch(self.ants.get_dof_velocities(self.model)).clone()
 
             # default humanoid states
-            self.default_hum_root_transforms = wp.to_torch(self.hums.get_root_transforms(self.model)).clone()
-            self.default_hum_root_velocities = wp.to_torch(self.hums.get_root_velocities(self.model)).clone()
-            self.default_hum_dof_positions = wp.to_torch(self.hums.get_dof_positions(self.model)).clone()
-            self.default_hum_dof_velocities = wp.to_torch(self.hums.get_dof_velocities(self.model)).clone()
+            self.default_hum_root_transforms = wp.to_torch(self.humanoids.get_root_transforms(self.model)).clone()
+            self.default_hum_root_velocities = wp.to_torch(self.humanoids.get_root_velocities(self.model)).clone()
+            self.default_hum_dof_positions = wp.to_torch(self.humanoids.get_dof_positions(self.model)).clone()
+            self.default_hum_dof_velocities = wp.to_torch(self.humanoids.get_dof_velocities(self.model)).clone()
 
             # create disjoint subsets to alternate resets
-            all_indices = torch.arange(num_envs, dtype=torch.int32)
-            self.mask_0 = torch.zeros(num_envs, dtype=bool)
+            all_indices = torch.arange(num_worlds, dtype=torch.int32)
+            self.mask_0 = torch.zeros(num_worlds, dtype=bool)
             self.mask_0[all_indices[::2]] = True
-            self.mask_1 = torch.zeros(num_envs, dtype=bool)
+            self.mask_1 = torch.zeros(num_worlds, dtype=bool)
             self.mask_1[all_indices[1::2]] = True
         else:
             # default ant root states
@@ -200,15 +197,15 @@ class Example:
             self.default_ant_dof_velocities = wp.clone(self.ants.get_dof_velocities(self.model))
 
             # default humanoid states
-            self.default_hum_root_transforms = wp.clone(self.hums.get_root_transforms(self.model))
-            self.default_hum_root_velocities = wp.clone(self.hums.get_root_velocities(self.model))
-            self.default_hum_dof_positions = wp.clone(self.hums.get_dof_positions(self.model))
-            self.default_hum_dof_velocities = wp.clone(self.hums.get_dof_velocities(self.model))
+            self.default_hum_root_transforms = wp.clone(self.humanoids.get_root_transforms(self.model))
+            self.default_hum_root_velocities = wp.clone(self.humanoids.get_root_velocities(self.model))
+            self.default_hum_dof_positions = wp.clone(self.humanoids.get_dof_positions(self.model))
+            self.default_hum_dof_velocities = wp.clone(self.humanoids.get_dof_velocities(self.model))
 
             # create disjoint subsets to alternate resets
-            self.mask_0 = wp.empty(num_envs, dtype=bool)
-            self.mask_1 = wp.empty(num_envs, dtype=bool)
-            wp.launch(init_masks, dim=num_envs, inputs=[self.mask_0, self.mask_1])
+            self.mask_0 = wp.empty(num_worlds, dtype=bool)
+            self.mask_1 = wp.empty(num_worlds, dtype=bool)
+            wp.launch(init_masks, dim=num_worlds, inputs=[self.mask_0, self.mask_1])
 
         # reset all
         self.reset()
@@ -254,10 +251,10 @@ class Example:
         if USE_TORCH:
             import torch  # noqa: PLC0415
 
-            dof_forces = 5.0 - 10.0 * torch.rand((self.num_envs, self.ants.joint_dof_count))
+            dof_forces = 5.0 - 10.0 * torch.rand((self.num_worlds, self.ants.joint_dof_count))
         else:
             dof_forces = self.ants.get_dof_forces(self.control)
-            wp.launch(random_forces_kernel, dim=dof_forces.shape, inputs=[dof_forces, self.seed, self.num_envs])
+            wp.launch(random_forces_kernel, dim=dof_forces.shape, inputs=[dof_forces, self.seed, self.num_worlds])
 
         self.ants.set_dof_forces(self.control, dof_forces)
 
@@ -284,8 +281,8 @@ class Example:
             import torch  # noqa: PLC0415
 
             # randomize ant velocities
-            self.default_ant_root_velocities[:, 2] = 4.0 * torch.pi * (0.5 - torch.rand(self.num_envs))
-            self.default_ant_root_velocities[:, 5] = 3.0 * torch.rand(self.num_envs)
+            self.default_ant_root_velocities[:, 2] = 4.0 * torch.pi * (0.5 - torch.rand(self.num_worlds))
+            self.default_ant_root_velocities[:, 5] = 3.0 * torch.rand(self.num_worlds)
 
             # humanoids spin in the opposite direction
             self.default_hum_root_velocities[:, 2] = -self.default_ant_root_velocities[:, 2]
@@ -294,7 +291,7 @@ class Example:
         else:
             wp.launch(
                 reset_kernel,
-                dim=self.num_envs,
+                dim=self.num_worlds,
                 inputs=[self.default_ant_root_velocities, self.default_hum_root_velocities, mask, self.seed],
             )
 
@@ -303,16 +300,18 @@ class Example:
         self.ants.set_dof_positions(self.state_0, self.default_ant_dof_positions, mask=mask)
         self.ants.set_dof_velocities(self.state_0, self.default_ant_dof_velocities, mask=mask)
 
-        self.hums.set_root_transforms(self.state_0, self.default_hum_root_transforms, mask=mask)
-        self.hums.set_root_velocities(self.state_0, self.default_hum_root_velocities, mask=mask)
-        self.hums.set_dof_positions(self.state_0, self.default_hum_dof_positions, mask=mask)
-        self.hums.set_dof_velocities(self.state_0, self.default_hum_dof_velocities, mask=mask)
+        self.humanoids.set_root_transforms(self.state_0, self.default_hum_root_transforms, mask=mask)
+        self.humanoids.set_root_velocities(self.state_0, self.default_hum_root_velocities, mask=mask)
+        self.humanoids.set_dof_positions(self.state_0, self.default_hum_dof_positions, mask=mask)
+        self.humanoids.set_dof_velocities(self.state_0, self.default_hum_dof_velocities, mask=mask)
 
         if not isinstance(self.solver, newton.solvers.SolverMuJoCo):
             self.ants.eval_fk(self.state_0, mask=mask)
 
     def test(self):
-        pass
+        assert len(find_nonfinite_members(self.torso_all_contact_sensor)) == 0
+        assert len(find_nonfinite_members(self.arm_ground_contact_sensor)) == 0
+        assert len(find_nonfinite_members(self.foot_arm_contact_sensor)) == 0
 
     def render(self):
         with wp.ScopedTimer("render", active=False):
@@ -343,12 +342,12 @@ class ScopedDevice:
 if __name__ == "__main__":
     # Parse arguments and initialize viewer
     parser = newton.examples.create_parser()
-    parser.add_argument("--num-envs", type=int, default=16, help="Total number of simulated environments.")
+    parser.add_argument("--num-worlds", type=int, default=16, help="Total number of simulated worlds.")
 
     viewer, args = newton.examples.init(parser)
 
     with ScopedDevice(args.device):
         # Create viewer and run
-        example = Example(viewer, num_envs=args.num_envs)
+        example = Example(viewer, num_worlds=args.num_worlds)
 
-        newton.examples.run(example)
+        newton.examples.run(example, args)

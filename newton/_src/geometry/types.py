@@ -31,7 +31,7 @@ class GeoType(enum.IntEnum):
     """
 
     PLANE = 0
-    """Infinite plane."""
+    """Plane."""
 
     HFIELD = 1
     """Height field (terrain)."""
@@ -60,7 +60,10 @@ class GeoType(enum.IntEnum):
     CONE = 9
     """Cone."""
 
-    NONE = 10
+    CONVEX_MESH = 10
+    """Convex hull."""
+
+    NONE = 11
     """No geometry (placeholder)."""
 
 

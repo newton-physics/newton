@@ -161,7 +161,7 @@ def accumulate_dragging_pd_diag_kernel(
 @wp.kernel
 def init_step_kernel(
     dt: float,
-    gravity: wp.vec3,
+    gravity: wp.array(dtype=wp.vec3),
     f_ext: wp.array(dtype=wp.vec3),
     v_curr: wp.array(dtype=wp.vec3),
     x_curr: wp.array(dtype=wp.vec3),
@@ -186,7 +186,7 @@ def init_step_kernel(
         v_prev = v_curr[tid]
         mass = particle_masses[tid]
         static_A_diags[tid] = pd_diags[tid] + mass / (dt * dt)
-        x_inertia[tid] = x_last + v_prev * dt + (gravity + f_ext[tid] / mass) * (dt * dt)
+        x_inertia[tid] = x_last + v_prev * dt + (gravity[0] + f_ext[tid] / mass) * (dt * dt)
         dx[tid] = v_prev * dt
 
         # temp

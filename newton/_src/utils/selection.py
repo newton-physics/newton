@@ -177,8 +177,8 @@ class ArticulationView:
         model_shape_body = model.shape_body.numpy()
 
         # FIXME:
-        # - this assumes homogeneous envs with one selected articulation per env
-        # - we're going to have problems if there are any bodies or joints in the "global" env
+        # - this assumes homogeneous worlds with one selected articulation per world
+        # - we're going to have problems if there are any bodies or joints in the "global" world
 
         arti_0 = articulation_ids[0]
 
@@ -325,18 +325,18 @@ class ArticulationView:
                     selected_joint_coord_ids.append(int(coord_begin + coord))
 
         # HACK: skip any leading and trailing static shapes
-        envs_shape_start = 0
-        envs_shape_end = model.shape_count
+        worlds_shape_start = 0
+        worlds_shape_end = model.shape_count
         for i in range(model.shape_count):
             if model_shape_body[i] > -1 and model_shape_body[-i - 1] > -1:
                 break
             if model_shape_body[i] == -1:
-                envs_shape_start += 1
+                worlds_shape_start += 1
             if model_shape_body[-i - 1] == -1:
-                envs_shape_end -= 1
-        self._envs_shape_start = envs_shape_start
-        self._envs_shape_end = envs_shape_end
-        self._envs_shape_count = envs_shape_end - envs_shape_start
+                worlds_shape_end -= 1
+        self._worlds_shape_start = worlds_shape_start
+        self._worlds_shape_end = worlds_shape_end
+        self._worlds_shape_count = worlds_shape_end - worlds_shape_start
 
         # populate info for selected links and shapes
         for idx in selected_link_indices:
@@ -439,7 +439,7 @@ class ArticulationView:
             if self.shapes_contiguous:
                 # HACK: we need to skip leading static shapes
                 self._frequency_slices["shape"] = slice(
-                    selected_shape_ids[0] - envs_shape_start, selected_shape_ids[-1] + 1 - envs_shape_start
+                    selected_shape_ids[0] - worlds_shape_start, selected_shape_ids[-1] + 1 - worlds_shape_start
                 )
             else:
                 self._frequency_indices["shape"] = wp.array(selected_shape_ids, dtype=int, device=self.device)
@@ -504,7 +504,7 @@ class ArticulationView:
 
         # HACK: trim leading and trailing static shapes
         if frequency == "shape":
-            attrib = attrib[self._envs_shape_start : self._envs_shape_end]
+            attrib = attrib[self._worlds_shape_start : self._worlds_shape_end]
 
         # reshape with batch dim at front
         assert attrib.shape[0] % self.count == 0

@@ -179,6 +179,44 @@ def main(argv=None):
     wp.clear_kernel_cache()
     print("Cleared Warp kernel cache")
 
+    # TODO: Drop this pre-download once download_asset is safe under multiprocessing.
+    # For now this avoids races and conflicting downloads in parallel test runs.
+    from concurrent.futures import ThreadPoolExecutor, as_completed  # noqa: PLC0415
+
+    import newton.utils  # noqa: PLC0415
+
+    assets_to_download = [
+        "anybotics_anymal_c",
+        "anybotics_anymal_d",
+        "anybotics_anymal_d/usd",
+        "franka_emika_panda",
+        "unitree_go2",
+        "unitree_g1",
+        "unitree_g1/usd",
+        "unitree_h1",
+        "unitree_h1/usd",
+        "style3d",
+        "universal_robots_ur10",
+        "wonik_allegro",
+    ]
+
+    # Respect CLI cap for parallelism
+    max_workers = max(1, min(args.maxjobs, len(assets_to_download)))
+    futures = {}
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        for asset in assets_to_download:
+            futures[executor.submit(newton.utils.download_asset, asset)] = asset
+
+        for future in as_completed(futures):
+            asset = futures[future]
+            try:
+                future.result()
+            except Exception as e:
+                print(f"Asset download failed: {asset}: {e}", file=sys.stderr)
+                raise
+
+    print("Downloaded assets")
+
     # Create the temporary directory (for coverage files)
     with tempfile.TemporaryDirectory() as temp_dir:
         # Discover tests

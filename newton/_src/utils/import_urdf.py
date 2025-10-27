@@ -19,6 +19,7 @@ import os
 import tempfile
 import warnings
 import xml.etree.ElementTree as ET
+from typing import Literal
 from urllib.parse import unquote, urlsplit
 
 import numpy as np
@@ -28,6 +29,7 @@ from ..core import Axis, AxisType, quat_between_axes
 from ..core.types import Transform
 from ..geometry import MESH_MAXHULLVERT, Mesh
 from ..sim import ModelBuilder
+from .topology import topological_sort
 
 
 def _download_file(dst, url: str) -> None:
@@ -65,6 +67,8 @@ def parse_urdf(
     ignore_inertial_definitions: bool = True,
     ensure_nonstatic_links: bool = True,
     static_link_mass: float = 1e-2,
+    joint_ordering: Literal["bfs", "dfs"] | None = "dfs",
+    bodies_follow_joint_ordering: bool = True,
     collapse_fixed_joints: bool = False,
     mesh_maxhullvert: int = MESH_MAXHULLVERT,
 ):
@@ -86,6 +90,8 @@ def parse_urdf(
         ignore_inertial_definitions (bool): If True, the inertial parameters defined in the URDF are ignored and the inertia is calculated from the shape geometry.
         ensure_nonstatic_links (bool): If True, links with zero mass are given a small mass (see `static_link_mass`) to ensure they are dynamic.
         static_link_mass (float): The mass to assign to links with zero mass (if `ensure_nonstatic_links` is set to True).
+        joint_ordering (str): The ordering of the joints in the simulation. Can be either "bfs" or "dfs" for breadth-first or depth-first search, or ``None`` to keep joints in the order in which they appear in the URDF. Default is "dfs".
+        bodies_follow_joint_ordering (bool): If True, the bodies are added to the builder in the same order as the joints (parent then child body). Otherwise, bodies are added in the order they appear in the URDF. Default is True.
         collapse_fixed_joints (bool): If True, fixed joints are removed and the respective bodies are merged.
         mesh_maxhullvert (int): Maximum vertices for convex hull approximation of meshes.
     """
@@ -246,18 +252,83 @@ def parse_urdf(
 
         return shapes
 
-    # maps from link name -> link index
-    link_index = {}
-
-    visual_shapes = []
-
     builder.add_articulation(key=root.attrib.get("name"))
 
+    # add joints
+
+    # mapping from parent, child link names to joint
+    parent_child_joint = {}
+
+    joints = []
+    for joint in root.findall("joint"):
+        parent = joint.find("parent").get("link")
+        child = joint.find("child").get("link")
+        joint_data = {
+            "name": joint.get("name"),
+            "parent": parent,
+            "child": child,
+            "type": joint.get("type"),
+            "origin": parse_transform(joint),
+            "damping": default_joint_damping,
+            "friction": 0.0,
+            "axis": wp.vec3(1.0, 0.0, 0.0),
+            "limit_lower": default_joint_limit_lower,
+            "limit_upper": default_joint_limit_upper,
+        }
+        el_axis = joint.find("axis")
+        if el_axis is not None:
+            ax = el_axis.get("xyz", "1 0 0").strip().split()
+            joint_data["axis"] = wp.vec3(float(ax[0]), float(ax[1]), float(ax[2]))
+        el_dynamics = joint.find("dynamics")
+        if el_dynamics is not None:
+            joint_data["damping"] = float(el_dynamics.get("damping", default_joint_damping))
+            joint_data["friction"] = float(el_dynamics.get("friction", 0))
+        el_limit = joint.find("limit")
+        if el_limit is not None:
+            joint_data["limit_lower"] = float(el_limit.get("lower", default_joint_limit_lower))
+            joint_data["limit_upper"] = float(el_limit.get("upper", default_joint_limit_upper))
+        el_mimic = joint.find("mimic")
+        if el_mimic is not None:
+            joint_data["mimic_joint"] = el_mimic.get("joint")
+            joint_data["mimic_multiplier"] = float(el_mimic.get("multiplier", 1))
+            joint_data["mimic_offset"] = float(el_mimic.get("offset", 0))
+
+        parent_child_joint[(parent, child)] = joint_data
+        joints.append(joint_data)
+
+    # topological sorting of joints because the FK function will resolve body transforms
+    # in joint order and needs the parent link transform to be resolved before the child
+    urdf_links = []
+    sorted_joints = []
+    if len(joints) > 0:
+        if joint_ordering is not None:
+            joint_edges = [(joint["parent"], joint["child"]) for joint in joints]
+            sorted_joint_ids = topological_sort(joint_edges, use_dfs=joint_ordering == "dfs")
+            sorted_joints = [joints[i] for i in sorted_joint_ids]
+        else:
+            sorted_joints = joints
+
+        if bodies_follow_joint_ordering:
+            body_order: list[str] = [sorted_joints[0]["parent"]] + [joint["child"] for joint in sorted_joints]
+            for body in body_order:
+                urdf_link = root.find(f"link[@name='{body}']")
+                if urdf_link is None:
+                    raise ValueError(f"Link {body} not found in URDF")
+                urdf_links.append(urdf_link)
+    if len(urdf_links) == 0:
+        urdf_links = root.findall("link")
+
+    # add links and shapes
+
+    # maps from link name -> link index
+    link_index: dict[str, int] = {}
+    visual_shapes: list[int] = []
     start_shape_count = len(builder.shape_type)
 
-    # add links
-    for urdf_link in root.findall("link"):
+    for urdf_link in urdf_links:
         name = urdf_link.get("name")
+        if name is None:
+            raise ValueError("Link has no name")
         link = builder.add_body(key=name)
 
         # add ourselves to the index
@@ -316,84 +387,13 @@ def parse_urdf(
             m = static_link_mass
             # cube with side length 0.5
             I_m = wp.mat33(np.eye(3)) * m / 12.0 * (0.5 * scale) ** 2 * 2.0
-            I_m += wp.mat33(default_shape_density * np.eye(3))
+            I_m += wp.mat33(builder.default_body_armature * np.eye(3))
             builder.body_mass[link] = m
             builder.body_inv_mass[link] = 1.0 / m
             builder.body_inertia[link] = I_m
             builder.body_inv_inertia[link] = wp.inverse(I_m)
 
     end_shape_count = len(builder.shape_type)
-
-    # find joints per body
-    body_children = {name: [] for name in link_index.keys()}
-    # mapping from parent, child link names to joint
-    parent_child_joint = {}
-
-    joints = []
-    for joint in root.findall("joint"):
-        parent = joint.find("parent").get("link")
-        child = joint.find("child").get("link")
-        body_children[parent].append(child)
-        joint_data = {
-            "name": joint.get("name"),
-            "parent": parent,
-            "child": child,
-            "type": joint.get("type"),
-            "origin": parse_transform(joint),
-            "damping": default_joint_damping,
-            "friction": 0.0,
-        }
-        el_axis = joint.find("axis")
-        if el_axis is not None:
-            ax = el_axis.get("xyz", "1 0 0")
-            joint_data["axis"] = np.array([float(x) for x in ax.split()])
-        else:
-            joint_data["axis"] = np.array([1.0, 0.0, 0.0])
-        el_dynamics = joint.find("dynamics")
-        if el_dynamics is not None:
-            joint_data["damping"] = float(el_dynamics.get("damping", default_joint_damping))
-            joint_data["friction"] = float(el_dynamics.get("friction", 0))
-        else:
-            joint_data["damping"] = default_joint_damping
-            joint_data["friction"] = 0.0
-        el_limit = joint.find("limit")
-        if el_limit is not None:
-            joint_data["limit_lower"] = float(el_limit.get("lower", default_joint_limit_lower))
-            joint_data["limit_upper"] = float(el_limit.get("upper", default_joint_limit_upper))
-        else:
-            joint_data["limit_lower"] = default_joint_limit_lower
-            joint_data["limit_upper"] = default_joint_limit_upper
-        el_mimic = joint.find("mimic")
-        if el_mimic is not None:
-            joint_data["mimic_joint"] = el_mimic.get("joint")
-            joint_data["mimic_multiplier"] = float(el_mimic.get("multiplier", 1))
-            joint_data["mimic_offset"] = float(el_mimic.get("offset", 0))
-
-        parent_child_joint[(parent, child)] = joint_data
-        joints.append(joint_data)
-
-    # topological sorting of joints because the FK solver will resolve body transforms
-    # in joint order and needs the parent link transform to be resolved before the child
-    visited = dict.fromkeys(link_index.keys(), False)
-    sorted_joints = []
-
-    # depth-first search
-    def dfs(joint):
-        link = joint["child"]
-        if visited[link]:
-            return
-        visited[link] = True
-
-        for child in body_children[link]:
-            if not visited[child]:
-                dfs(parent_child_joint[(link, child)])
-
-        sorted_joints.insert(0, joint)
-
-    # start DFS from each unvisited joint
-    for joint in joints:
-        if not visited[joint["parent"]]:
-            dfs(joint)
 
     # add base joint
     if len(sorted_joints) > 0:
@@ -453,7 +453,7 @@ def parse_urdf(
     else:
         builder.add_joint_fixed(-1, root, parent_xform=xform, key="fixed_base")
 
-    # add joints, in topological order starting from root body
+    # add joints, in the desired order starting from root body
     for joint in sorted_joints:
         parent = link_index[joint["parent"]]
         child = link_index[joint["child"]]
@@ -466,13 +466,11 @@ def parse_urdf(
         joint_damping = joint["damping"]
 
         parent_xform = joint["origin"]
-        child_xform = wp.transform_identity()
 
         joint_params = {
             "parent": parent,
             "child": child,
             "parent_xform": parent_xform,
-            "child_xform": child_xform,
             "key": joint["name"],
         }
 

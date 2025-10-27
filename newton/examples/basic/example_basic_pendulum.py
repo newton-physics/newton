@@ -56,11 +56,13 @@ class Example:
         builder.add_shape_box(link_1, hx=hx, hy=hy, hz=hz)
 
         # add joints
+        rot = wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), -wp.pi * 0.5)
         builder.add_joint_revolute(
             parent=-1,
             child=link_0,
             axis=wp.vec3(0.0, 1.0, 0.0),
-            parent_xform=wp.transform(p=wp.vec3(0.0, 0.0, 5.0), q=wp.quat_identity()),
+            # rotate pendulum around the z-axis to appear sideways to the viewer
+            parent_xform=wp.transform(p=wp.vec3(0.0, 0.0, 5.0), q=rot),
             child_xform=wp.transform(p=wp.vec3(-hx, 0.0, 0.0), q=wp.quat_identity()),
         )
         builder.add_joint_revolute(
@@ -121,7 +123,29 @@ class Example:
         self.sim_time += self.frame_dt
 
     def test(self):
-        pass
+        # rough check that the pendulum links are in the correct area
+        newton.examples.test_body_state(
+            self.model,
+            self.state_0,
+            "pendulum links in correct area",
+            lambda q, qd: abs(q[0]) < 1e-5 and abs(q[1]) < 1.0 and q[2] < 5.0 and q[2] > 0.0,
+            [0, 1],
+        )
+
+        def check_velocities(_, qd):
+            # velocity outside the plane of the pendulum should be close to zero
+            check = abs(qd[0]) < 1e-4 and abs(qd[6]) < 1e-4
+            # velocity in the plane of the pendulum should be reasonable
+            check = check and abs(qd[1]) < 10.0 and abs(qd[2]) < 5.0 and abs(qd[3]) < 10.0 and abs(qd[4]) < 10.0
+            return check
+
+        newton.examples.test_body_state(
+            self.model,
+            self.state_0,
+            "pendulum links have reasonable velocities",
+            check_velocities,
+            [0, 1],
+        )
 
     def render(self):
         self.viewer.begin_frame(self.sim_time)
@@ -137,4 +161,4 @@ if __name__ == "__main__":
     # Create viewer and run
     example = Example(viewer)
 
-    newton.examples.run(example)
+    newton.examples.run(example, args)

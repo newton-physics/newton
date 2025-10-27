@@ -15,7 +15,7 @@
 
 import warp as wp
 
-from .broad_phase_common import check_aabb_overlap, test_environment_and_group_pair, write_pair
+from .broad_phase_common import check_aabb_overlap, test_world_and_group_pair, write_pair
 
 
 @wp.kernel
@@ -82,7 +82,7 @@ def _nxn_broadphase_kernel(
     num_boxes: int,
     geom_cutoff: wp.array(dtype=float, ndim=1),  # per-geom (take the max)
     collision_group: wp.array(dtype=int, ndim=1),  # per-geom
-    shape_group: wp.array(dtype=int, ndim=1),  # per-geom environment groups
+    shape_world: wp.array(dtype=int, ndim=1),  # per-geom world indices
     # Output arrays
     candidate_pair: wp.array(dtype=wp.vec2i, ndim=1),
     num_candidate_pair: wp.array(dtype=int, ndim=1),  # Size one array
@@ -95,14 +95,14 @@ def _nxn_broadphase_kernel(
     geom1 = pair[0]
     geom2 = pair[1]
 
-    # Get environment and collision groups
-    env_group1 = shape_group[geom1]
-    env_group2 = shape_group[geom2]
+    # Get world and collision groups
+    world1 = shape_world[geom1]
+    world2 = shape_world[geom2]
     collision_group1 = collision_group[geom1]
     collision_group2 = collision_group[geom2]
 
-    # Check both environment and collision groups
-    if not test_environment_and_group_pair(env_group1, env_group2, collision_group1, collision_group2):
+    # Check both world and collision groups
+    if not test_world_and_group_pair(world1, world2, collision_group1, collision_group2):
         return
 
     # wp.printf("geom1=%d, geom2=%d\n", geom1, geom2)
@@ -148,11 +148,12 @@ class BroadPhaseAllPairs:
         geom_upper: wp.array(dtype=wp.vec3, ndim=1),  # Upper bounds of geometry bounding boxes
         geom_cutoffs: wp.array(dtype=float, ndim=1),  # Cutoff distance per geometry box
         geom_collision_group: wp.array(dtype=int, ndim=1),  # Collision group ID per box
-        geom_shape_group: wp.array(dtype=int, ndim=1),  # Environment group ID per box
+        geom_shape_world: wp.array(dtype=int, ndim=1),  # World index per box
         geom_count: int,  # Number of active bounding boxes
         # Outputs
         candidate_pair: wp.array(dtype=wp.vec2i, ndim=1),  # Array to store overlapping geometry pairs
         num_candidate_pair: wp.array(dtype=int, ndim=1),
+        device=None,  # Device to launch on
     ):
         """Launch the N x N broad phase collision detection.
 
@@ -167,15 +168,16 @@ class BroadPhaseAllPairs:
             geom_collision_group: Array of collision group IDs for each geometry. Positive values indicate
                 groups that only collide with themselves (and with negative groups). Negative values indicate
                 groups that collide with everything except their negative counterpart. Zero indicates no collisions.
-            geom_shape_group: Array of environment group IDs for each geometry. Group -1 indicates global entities
-                that collide with all environments. Groups 0, 1, 2, ... indicate environment-specific entities.
+            geom_shape_world: Array of world indices for each geometry. Index -1 indicates global entities
+                that collide with all worlds. Indices 0, 1, 2, ... indicate world-specific entities.
             geom_count: Number of active bounding boxes to check
             candidate_pair: Output array to store overlapping geometry pairs
             num_candidate_pair: Output array to store number of overlapping pairs found
+            device: Device to launch on. If None, uses the device of the input arrays.
 
         The method will populate candidate_pair with the indices of geometry pairs (i,j) where i < j whose AABBs overlap
-        when expanded by their cutoff distances, whose collision groups allow interaction, and whose environment groups
-        are compatible (same environment or at least one is global). The number of pairs found will be written to
+        when expanded by their cutoff distances, whose collision groups allow interaction, and whose world indices
+        are compatible (same world or at least one is global). The number of pairs found will be written to
         num_candidate_pair[0].
         """
         # The number of elements in the lower triangular part of an n x n matrix (excluding the diagonal)
@@ -186,6 +188,9 @@ class BroadPhaseAllPairs:
 
         num_candidate_pair.zero_()
 
+        if device is None:
+            device = geom_lower.device
+
         wp.launch(
             _nxn_broadphase_kernel,
             dim=num_lower_tri_elements,
@@ -195,9 +200,10 @@ class BroadPhaseAllPairs:
                 geom_count,
                 geom_cutoffs,
                 geom_collision_group,
-                geom_shape_group,
+                geom_shape_world,
             ],
             outputs=[candidate_pair, num_candidate_pair, max_candidate_pair],
+            device=device,
         )
 
 
@@ -225,6 +231,7 @@ class BroadPhaseExplicit:
         # Outputs
         candidate_pair: wp.array(dtype=wp.vec2i, ndim=1),  # Array to store overlapping geometry pairs
         num_candidate_pair: wp.array(dtype=int, ndim=1),
+        device=None,  # Device to launch on
     ):
         """Launch the explicit pairs broad phase collision detection.
 
@@ -240,6 +247,7 @@ class BroadPhaseExplicit:
             geom_pair_count: Number of geometry pairs to check
             candidate_pair: Output array to store overlapping geometry pairs
             num_candidate_pair: Output array to store number of overlapping pairs found
+            device: Device to launch on. If None, uses the device of the input arrays.
 
         The method will populate candidate_pair with the indices of geometry pairs whose AABBs overlap
         when expanded by their cutoff distances, but only checking the explicitly provided pairs.
@@ -261,4 +269,5 @@ class BroadPhaseExplicit:
                 num_candidate_pair,
                 max_candidate_pair,
             ],
+            device=device,
         )

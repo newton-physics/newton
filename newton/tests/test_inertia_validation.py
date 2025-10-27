@@ -50,7 +50,7 @@ class TestInertiaValidation(unittest.TestCase):
         inertia = wp.mat33([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]])
 
         with warnings.catch_warnings(record=True) as w:
-            corrected_mass, corrected_inertia, was_corrected = verify_and_correct_inertia(
+            corrected_mass, _corrected_inertia, was_corrected = verify_and_correct_inertia(
                 mass, inertia, bound_mass=bound_mass
             )
 

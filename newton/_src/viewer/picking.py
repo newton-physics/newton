@@ -23,7 +23,23 @@ from .kernels import apply_picking_force_kernel, compute_pick_state_kernel, upda
 
 
 class Picking:
-    def __init__(self, model, pick_stiffness=500.0, pick_damping=50.0):
+    """
+    Picking system.
+
+    Allows to pick a body in the viewer by right clicking on it and dragging the mouse.
+    This can be used to move objects around in the viewer, a typical use case is to check for solver resilience or
+    see how well a RL policy is coping with disturbances.
+    """
+
+    def __init__(self, model: newton.Model, pick_stiffness: float = 500.0, pick_damping: float = 50.0) -> None:
+        """
+        Initializes the picking system.
+
+        Args:
+            model (newton.Model): The model to pick from.
+            pick_stiffness (float): The stiffness that will be used to compute the force applied to the picked body.
+            pick_damping (float): The damping that will be used to compute the force applied to the picked body.
+        """
         self.model = model
         self.pick_stiffness = pick_stiffness
         self.pick_damping = pick_damping
@@ -59,8 +75,10 @@ class Picking:
 
         self._default_on_mouse_drag = None
 
-    def _apply_picking_force(self, state: newton.State):
-        """Applies a force to the body at the picking position.
+    def _apply_picking_force(self, state: newton.State) -> None:
+        """
+        Applies a force to the picked body.
+
         Args:
             state (newton.State): The simulation state.
         """
@@ -83,14 +101,29 @@ class Picking:
             device=self.model.device,
         )
 
-    def is_picking(self):
+    def is_picking(self) -> bool:
+        """Checks if picking is active.
+
+        Returns:
+            bool: True if picking is active, False otherwise.
+        """
         return self.picking_active
 
-    def release(self):
+    def release(self) -> None:
+        """Releases the picking."""
         self.pick_body.fill_(-1)
         self.picking_active = False
 
-    def update(self, ray_start, ray_dir):
+    def update(self, ray_start: wp.vec3f, ray_dir: wp.vec3f) -> None:
+        """
+        Updates the picking target.
+
+        This function is used to track the force that needs to be applied to the picked body as the mouse is dragged.
+
+        Args:
+            ray_start (wp.vec3f): The start point of the ray.
+            ray_dir (wp.vec3f): The direction of the ray.
+        """
         if not self.is_picking():
             return
 
@@ -105,7 +138,17 @@ class Picking:
             device=self.model.device,
         )
 
-    def pick(self, state, ray_start, ray_dir):
+    def pick(self, state: newton.State, ray_start: wp.vec3f, ray_dir: wp.vec3f) -> None:
+        """
+        Picks the selected geometry and computes the initial state of the picking. I.e. the force that
+        will be applied to the picked body.
+
+        Args:
+            state (newton.State): The simulation state.
+            ray_start (wp.vec3f): The start point of the ray.
+            ray_dir (wp.vec3f): The direction of the ray.
+        """
+
         if self.model is None:
             return
 
@@ -152,6 +195,9 @@ class Picking:
         if dist < 1.0e10 and body_index >= 0:
             self.pick_dist = dist
 
+            # Ensures that the ray direction and start point are vec3f objects
+            d = wp.vec3f(d[0], d[1], d[2])
+            p = wp.vec3f(p[0], p[1], p[2])
             # world space hit point
             hit_point_world = p + d * float(dist)
 

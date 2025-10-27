@@ -126,7 +126,7 @@ def collider_volumes(
 ):
     x = domain(s)
 
-    sdf, sdf_gradient, sdf_vel, collider_id = collision_sdf(x, collider)
+    sdf, _sdf_gradient, _sdf_vel, collider_id = collision_sdf(x, collider)
     bc_active = collision_is_active(sdf, voxel_size)
 
     if bc_active and collider_id >= 0:

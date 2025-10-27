@@ -13,8 +13,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from .solver_euler import SolverSemiImplicit
+from .collision import Collision
+from .collision_legacy import CollisionHandler
 
 __all__ = [
-    "SolverSemiImplicit",
+    "Collision",
+    "CollisionHandler",
 ]

@@ -16,7 +16,7 @@
 ###########################################################################
 # Example Selection Cartpole
 #
-# Demonstrates batch control of multiple cartpole environments using
+# Demonstrates batch control of multiple cartpole worlds using
 # ArticulationView. This example spawns multiple cartpole robots and applies
 # simple random control policy.
 #
@@ -55,7 +55,7 @@ def apply_forces_kernel(joint_q: wp.array2d(dtype=float), joint_f: wp.array2d(dt
 
 
 class Example:
-    def __init__(self, viewer, num_envs=16, verbose=True):
+    def __init__(self, viewer, num_worlds=16, verbose=True):
         self.fps = 60
         self.frame_dt = 1.0 / self.fps
 
@@ -63,18 +63,17 @@ class Example:
         self.sim_substeps = 10
         self.sim_dt = self.frame_dt / self.sim_substeps
 
-        self.num_envs = num_envs
+        self.num_worlds = num_worlds
 
-        env = newton.ModelBuilder()
-        env.add_usd(
+        world = newton.ModelBuilder()
+        world.add_usd(
             newton.examples.get_asset("cartpole.usda"),
-            xform=wp.transform((0.0, 0.0, 2.0), wp.quat_identity()),
             collapse_fixed_joints=COLLAPSE_FIXED_JOINTS,
             enable_self_collisions=False,
         )
 
         scene = newton.ModelBuilder()
-        scene.replicate(env, num_copies=self.num_envs, spacing=(2.0, 0.0, 0.0))
+        scene.replicate(world, num_worlds=self.num_worlds)
 
         # finalize model
         self.model = scene.finalize()
@@ -98,13 +97,13 @@ class Example:
         if USE_TORCH:
             import torch  # noqa: PLC0415
 
-            cart_positions = 2.0 - 4.0 * torch.rand(num_envs)
-            pole1_angles = torch.pi / 8.0 - torch.pi / 4.0 * torch.rand(num_envs)
-            pole2_angles = torch.pi / 8.0 - torch.pi / 4.0 * torch.rand(num_envs)
+            cart_positions = 2.0 - 4.0 * torch.rand(num_worlds)
+            pole1_angles = torch.pi / 8.0 - torch.pi / 4.0 * torch.rand(num_worlds)
+            pole2_angles = torch.pi / 8.0 - torch.pi / 4.0 * torch.rand(num_worlds)
             joint_q = torch.stack([cart_positions, pole1_angles, pole2_angles], dim=1)
         else:
             joint_q = self.cartpoles.get_attribute("joint_q", self.state_0)
-            wp.launch(randomize_states_kernel, dim=num_envs, inputs=[joint_q, 42])
+            wp.launch(randomize_states_kernel, dim=num_worlds, inputs=[joint_q, 42])
 
         self.cartpoles.set_attribute("joint_q", self.state_0, joint_q)
 
@@ -112,6 +111,7 @@ class Example:
             self.cartpoles.eval_fk(self.state_0)
 
         self.viewer.set_model(self.model)
+        self.viewer.set_world_offsets((2.0, 0.0, 0.0))
 
         # Ensure FK evaluation (for non-MuJoCo solvers):
         newton.eval_fk(
@@ -175,16 +175,57 @@ class Example:
         self.viewer.end_frame()
 
     def test(self):
-        pass
+        num_bodies_per_world = self.model.body_count // self.num_worlds
+        newton.examples.test_body_state(
+            self.model,
+            self.state_0,
+            "cart is at ground level and has correct orientation",
+            lambda q, qd: q[2] == 0.0 and newton.utils.vec_allclose(q.q, wp.quat_identity()),
+            indices=[i * num_bodies_per_world for i in range(self.num_worlds)],
+        )
+        newton.examples.test_body_state(
+            self.model,
+            self.state_0,
+            "cart only moves along y direction",
+            lambda q, qd: qd[0] == 0.0
+            and abs(qd[1]) > 0.05
+            and qd[2] == 0.0
+            and wp.length_sq(wp.spatial_bottom(qd)) == 0.0,
+            indices=[i * num_bodies_per_world for i in range(self.num_worlds)],
+        )
+        newton.examples.test_body_state(
+            self.model,
+            self.state_0,
+            "pole1 only has y-axis linear velocity and x-axis angular velocity",
+            lambda q, qd: qd[0] == 0.0
+            and abs(qd[1]) > 0.05
+            and qd[2] == 0.0
+            and abs(qd[3]) > 0.3
+            and qd[4] == 0.0
+            and qd[5] == 0.0,
+            indices=[i * num_bodies_per_world + 1 for i in range(self.num_worlds)],
+        )
+        newton.examples.test_body_state(
+            self.model,
+            self.state_0,
+            "pole2 only has yz-plane linear velocity and x-axis angular velocity",
+            lambda q, qd: qd[0] == 0.0
+            and abs(qd[1]) > 0.05
+            and abs(qd[2]) > 0.05
+            and abs(qd[3]) > 0.2
+            and qd[4] == 0.0
+            and qd[5] == 0.0,
+            indices=[i * num_bodies_per_world + 2 for i in range(self.num_worlds)],
+        )
 
 
 if __name__ == "__main__":
     parser = newton.examples.create_parser()
     parser.add_argument(
-        "--num-envs",
+        "--num-worlds",
         type=int,
         default=16,
-        help="Total number of simulated environments.",
+        help="Total number of simulated worlds.",
     )
 
     viewer, args = newton.examples.init(parser)
@@ -194,6 +235,6 @@ if __name__ == "__main__":
 
         torch.set_device(args.device)
 
-    example = Example(viewer, num_envs=args.num_envs)
+    example = Example(viewer, num_worlds=args.num_worlds)
 
-    newton.examples.run(example)
+    newton.examples.run(example, args)

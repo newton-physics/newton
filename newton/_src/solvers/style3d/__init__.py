@@ -13,10 +13,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from .collision import CollisionHandler
+from .collision import Collision, CollisionHandler
 from .solver_style3d import SolverStyle3D
 
 __all__ = [
+    "Collision",
     "CollisionHandler",
     "SolverStyle3D",
 ]

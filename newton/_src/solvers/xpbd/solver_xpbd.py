@@ -613,6 +613,7 @@ class SolverXPBD(SolverBase):
 
                 if model.body_count:
                     body_deltas.zero_()
+
                     wp.launch(
                         kernel=apply_rigid_restitution,
                         dim=contacts.rigid_contact_max,

@@ -83,11 +83,14 @@ __all__ += [
 # ==================================================================================
 from ._src.utils import (  # noqa: E402
     boltzmann,
+    compute_world_offsets,
     leaky_max,
     leaky_min,
     smooth_max,
     smooth_min,
     vec_abs,
+    vec_allclose,
+    vec_inside_limits,
     vec_leaky_max,
     vec_leaky_min,
     vec_max,
@@ -96,11 +99,14 @@ from ._src.utils import (  # noqa: E402
 
 __all__ += [
     "boltzmann",
+    "compute_world_offsets",
     "leaky_max",
     "leaky_min",
     "smooth_max",
     "smooth_min",
     "vec_abs",
+    "vec_allclose",
+    "vec_inside_limits",
     "vec_leaky_max",
     "vec_leaky_min",
     "vec_max",

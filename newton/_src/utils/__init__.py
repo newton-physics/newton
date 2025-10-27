@@ -13,9 +13,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from typing import Any
+
+import numpy as np
 import warp as wp
 from warp.context import assert_conditional_graph_support
 
+from ..core.types import Axis
 from .download_assets import clear_git_cache, download_asset
 from .topology import topological_sort
 
@@ -194,9 +198,31 @@ def vec_abs(a: wp.vec3):
     return wp.vec3(wp.abs(a[0]), wp.abs(a[1]), wp.abs(a[2]))
 
 
+@wp.func
+def vec_allclose(a: Any, b: Any, rtol: float = 1e-5, atol: float = 1e-8) -> bool:
+    """
+    Check if two Warp vectors are all close.
+    """
+    for i in range(wp.static(len(a))):
+        if wp.abs(a[i] - b[i]) > atol + rtol * wp.abs(b[i]):
+            return False
+    return True
+
+
+@wp.func
+def vec_inside_limits(a: Any, lower: Any, upper: Any) -> bool:
+    """
+    Check if a Warp vector is inside the given limits.
+    """
+    for i in range(wp.static(len(a))):
+        if a[i] < lower[i] or a[i] > upper[i]:
+            return False
+    return True
+
+
 def check_conditional_graph_support():
     """
-    Check if conditional graph support is available in the current environment.
+    Check if conditional graph support is available in the current world.
 
     Returns:
         bool: True if conditional graph support is available, False otherwise.
@@ -208,10 +234,80 @@ def check_conditional_graph_support():
     return True
 
 
+def compute_world_offsets(num_worlds: int, spacing: tuple[float, float, float], up_axis: Any = None):
+    """
+    Compute positional offsets for multiple worlds arranged in a grid.
+
+    This function computes 3D offsets for arranging multiple worlds based on the provided spacing.
+    The worlds are arranged in a regular grid pattern, with the layout automatically determined
+    based on the non-zero dimensions in the spacing tuple.
+
+    Args:
+        num_worlds (int): The number of worlds to arrange.
+        spacing (tuple[float, float, float]): The spacing between worlds along each axis.
+            Non-zero values indicate active dimensions for the grid layout.
+        up_axis (Any, optional): The up axis to ensure worlds are not shifted below the ground plane.
+            If provided, the offset correction along this axis will be zero.
+
+    Returns:
+        np.ndarray: An array of shape (num_worlds, 3) containing the 3D offsets for each world.
+    """
+    # Handle edge case
+    if num_worlds <= 0:
+        return np.zeros((0, 3), dtype=np.float32)
+
+    # Compute positional offsets per world
+    spacing = np.array(spacing, dtype=np.float32)
+    nonzeros = np.nonzero(spacing)[0]
+    num_dim = nonzeros.shape[0]
+
+    if num_dim > 0:
+        side_length = int(np.ceil(num_worlds ** (1.0 / num_dim)))
+        spacings = []
+
+        if num_dim == 1:
+            for i in range(num_worlds):
+                spacings.append(i * spacing)
+        elif num_dim == 2:
+            for i in range(num_worlds):
+                d0 = i // side_length
+                d1 = i % side_length
+                offset = np.zeros(3)
+                offset[nonzeros[0]] = d0 * spacing[nonzeros[0]]
+                offset[nonzeros[1]] = d1 * spacing[nonzeros[1]]
+                spacings.append(offset)
+        elif num_dim == 3:
+            for i in range(num_worlds):
+                d0 = i // (side_length * side_length)
+                d1 = (i // side_length) % side_length
+                d2 = i % side_length
+                offset = np.zeros(3)
+                offset[0] = d0 * spacing[0]
+                offset[1] = d1 * spacing[1]
+                offset[2] = d2 * spacing[2]
+                spacings.append(offset)
+
+        spacings = np.array(spacings, dtype=np.float32)
+    else:
+        spacings = np.zeros((num_worlds, 3), dtype=np.float32)
+
+    # Center the grid
+    min_offsets = np.min(spacings, axis=0)
+    correction = min_offsets + (np.max(spacings, axis=0) - min_offsets) / 2.0
+
+    # Ensure the worlds are not shifted below the ground plane
+    if up_axis is not None:
+        correction[Axis.from_any(up_axis)] = 0.0
+
+    spacings -= correction
+    return spacings
+
+
 __all__ = [
     "boltzmann",
     "check_conditional_graph_support",
     "clear_git_cache",
+    "compute_world_offsets",
     "download_asset",
     "leaky_max",
     "leaky_min",
@@ -219,6 +315,8 @@ __all__ = [
     "smooth_min",
     "topological_sort",
     "vec_abs",
+    "vec_allclose",
+    "vec_inside_limits",
     "vec_leaky_max",
     "vec_leaky_min",
     "vec_max",

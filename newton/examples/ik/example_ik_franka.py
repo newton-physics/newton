@@ -174,4 +174,4 @@ if __name__ == "__main__":
     # Parse arguments and initialize viewer
     viewer, args = newton.examples.init()
     example = Example(viewer)
-    newton.examples.run(example)
+    newton.examples.run(example, args)

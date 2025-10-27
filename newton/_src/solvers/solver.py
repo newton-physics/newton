@@ -26,7 +26,7 @@ def integrate_particles(
     f: wp.array(dtype=wp.vec3),
     w: wp.array(dtype=float),
     particle_flags: wp.array(dtype=wp.int32),
-    gravity: wp.vec3,
+    gravity: wp.array(dtype=wp.vec3),
     dt: float,
     v_max: float,
     x_new: wp.array(dtype=wp.vec3),
@@ -45,7 +45,7 @@ def integrate_particles(
     inv_mass = w[tid]
 
     # simple semi-implicit Euler. v1 = v0 + a dt, x1 = x0 + v1 dt
-    v1 = v0 + (f0 * inv_mass + gravity * wp.step(-inv_mass)) * dt
+    v1 = v0 + (f0 * inv_mass + gravity[0] * wp.step(-inv_mass)) * dt
     # enforce velocity limit to prevent instability
     v1_mag = wp.length(v1)
     if v1_mag > v_max:
@@ -65,7 +65,7 @@ def integrate_rigid_body(
     inertia: wp.mat33,
     inv_mass: float,
     inv_inertia: wp.mat33,
-    gravity: wp.vec3,
+    gravity: wp.array(dtype=wp.vec3),
     angular_damping: float,
     dt: float,
 ):
@@ -84,7 +84,7 @@ def integrate_rigid_body(
     x_com = x0 + wp.quat_rotate(r0, com)
 
     # linear part
-    v1 = v0 + (f0 * inv_mass + gravity * wp.nonzero(inv_mass)) * dt
+    v1 = v0 + (f0 * inv_mass + gravity[0] * wp.nonzero(inv_mass)) * dt
     x1 = x_com + v1 * dt
 
     # angular part (compute in body frame)
@@ -114,7 +114,7 @@ def integrate_bodies(
     I: wp.array(dtype=wp.mat33),
     inv_m: wp.array(dtype=float),
     inv_I: wp.array(dtype=wp.mat33),
-    gravity: wp.vec3,
+    gravity: wp.array(dtype=wp.vec3),
     angular_damping: float,
     dt: float,
     # outputs
@@ -283,6 +283,7 @@ class SolverBase:
         ``SolverNotifyFlags.BODY_PROPERTIES``             Rigid-body pose or velocity buffers have changed.
         ``SolverNotifyFlags.BODY_INERTIAL_PROPERTIES``    Rigid-body mass or inertia tensors have changed.
         ``SolverNotifyFlags.SHAPE_PROPERTIES``            Shape transforms or geometry have changed.
+        ``SolverNotifyFlags.MODEL_PROPERTIES``            Model global properties (e.g., gravity) have changed.
         ==============================================  =============================================================
 
         Args:

@@ -175,7 +175,7 @@ def project_initial_stress(
     # Otherwise there's risk of amplifying instabilities in the stress space
     # (e.g. checkerboard patterns)
     # TODO find a more focused way to do this
-    p_min, p_max = normal_yield_bounds(yield_params)
+    p_min, _p_max = normal_yield_bounds(yield_params)
     if p_min < 0.0:
         sig = vec6(0.0)
 

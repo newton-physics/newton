@@ -17,7 +17,6 @@
 
 from __future__ import annotations
 
-import sys
 from collections.abc import Sequence
 from enum import IntEnum
 from typing import Any, Literal
@@ -26,13 +25,13 @@ import numpy as np
 import warp as wp
 from warp.context import Devicelike
 
-if sys.version_info >= (3, 12):
+try:
     from typing import override
-else:
+except ImportError:
     try:
         from typing_extensions import override
     except ImportError:
-        # Fallback no-op decorator if typing_extensions is not available
+        # Fallback no-op decorator if override is not available
         def override(func):
             return func
 
@@ -187,4 +186,5 @@ __all__ = [
     "Vec3",
     "Vec4",
     "flag_to_int",
+    "override",
 ]

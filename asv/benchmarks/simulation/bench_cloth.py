@@ -35,7 +35,7 @@ class FastExampleClothManipulation:
 
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
     def time_simulate(self):
-        newton.examples.run(self.example)
+        newton.examples.run(self.example, args=None)
 
         wp.synchronize_device()
 
@@ -50,7 +50,7 @@ class FastExampleClothTwist:
 
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
     def time_simulate(self):
-        newton.examples.run(self.example)
+        newton.examples.run(self.example, None)
 
         wp.synchronize_device()
 

@@ -170,7 +170,7 @@ def update_render_grains(
      1) a particle-local affine update using the particle velocity gradient and
         particle positions (APIC-like), and 2) a grid-based PIC advection using
         the current velocity field. After advection, positions are projected
-        back using an ellipsoidal appoximation of the particle defined by its
+        back using an ellipsoidal approximation of the particle defined by its
         deformation frame and ``particle_radius``.
 
     If no velocity field is available in the ``state`` the function

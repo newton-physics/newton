@@ -101,14 +101,13 @@ linting:
     - when: manual # If not auto-triggered, allow any pipeline to run this job manually
       allow_failure: true
   script:
-    - uv run --extra dev --extra torch-cu12 -m newton.tests --junit-report-xml rspec.xml --coverage --coverage-xml coverage.xml --serial-fallback
+    - uv run --extra dev --extra torch-cu12 -m newton.tests --junit-report-xml rspec.xml --coverage --coverage-xml coverage.xml
 
 linux-x86_64 test:
   image: ghcr.io/astral-sh/uv:bookworm
   extends:
+    - .ipp_lnx_x86_64_gpu
     - .test_common
-  tags:
-    - lnx-x86_64-gpu-1x-570.158.01
 
 # TODO: mujoco load dll often fails on Windows, disabling
 .windows-x86_64 test:
@@ -123,13 +122,34 @@ linux-x86_64 test:
   tags:
     - win-x86_64-gpu-1x-573.42
 
+linux-x86_64 test warp nightly:
+  image: ghcr.io/astral-sh/uv:bookworm
+  extends:
+    - .ipp_lnx_x86_64_gpu
+  stage: test
+  needs: []
+  artifacts:
+    when: always
+    paths:
+      - rspec.xml
+    reports:
+      junit: rspec.xml
+  before_script:
+    - uv venv
+    - source .venv/bin/activate
+    - uv sync --extra dev --extra torch-cu12
+    - uv pip install -U --pre warp-lang
+  script:
+    - python -m newton.tests --junit-report-xml rspec.xml
+  allow_failure: true # TODO: Remove this after outstanding issues are resolved
+
 # --- Stage: Build ---
 build_package:
   stage: build
   image: ghcr.io/astral-sh/uv:bookworm
   needs: []
   extends:
-    - .omni_nvks_micro_runner
+    - .ipp_lnx_x86_64_cpu_micro
   script:
     - uv build --wheel
     - uvx twine check dist/*
@@ -143,7 +163,7 @@ build_package:
   image: ghcr.io/astral-sh/uv:bookworm
   needs: []
   extends:
-    - .omni_nvks_micro_runner
+    - .ipp_lnx_x86_64_cpu_micro
   artifacts:
     paths:
       - public
@@ -172,10 +192,10 @@ doctest:
   stage: docs
   image: ghcr.io/astral-sh/uv:bookworm
   needs: []
+  extends:
+    - .ipp_lnx_x86_64_gpu
   script:
     - uv run --extra docs sphinx-build -W -b doctest docs docs/_build/doctest
-  tags:
-    - lnx-x86_64-gpu-1x-570.158.01
 
 # Build documentation and publish on gitlab-master
 # This only runs in the default branch pipeline. The "pages" name is special for GitLab.
