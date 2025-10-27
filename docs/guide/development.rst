@@ -167,7 +167,7 @@ Typos
 To proactively catch spelling mistakes, Newton uses the `typos <https://github.com/crate-ci/typos>`_ tool. Typos scans source files for common misspellings and is integrated into our pre-commit hooks, so spelling errors in both code and documentation are flagged when you run or install pre-commit (see above). You can also run ``typos`` manually if needed. Refer to the `typos documentation <https://github.com/crate-ci/typos>`_ for more details on usage and configuration options.
 
 Dealing with false positives
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 Typos may occasionally flag legitimate project-specific terminology, domain terms, or variable names as misspellings (false positives). To handle these, the Newton codebase configures typos in ``pyproject.toml`` at the repository root.
 
