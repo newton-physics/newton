@@ -719,25 +719,22 @@ class TestMuJoCoSolverJointProperties(TestMuJoCoSolverPropertiesBase):
                 zip(mjc_revolute_indices, newton_revolute_dof_indices, strict=False)
             ):
                 global_dof_idx = world_idx * dofs_per_world + newton_dof_idx
-                # Convert to timeconst/dampratio as done in solver
-                ke = initial_limit_ke[global_dof_idx]
-                kd = initial_limit_kd[global_dof_idx]
-                expected_timeconst = 2.0 / np.sqrt(ke)
-                expected_dampratio = kd / (2.0 * np.sqrt(ke))
+                expected_ke = -initial_limit_ke[global_dof_idx]
+                expected_kd = -initial_limit_kd[global_dof_idx]
 
                 # Get actual values from MuJoCo's jnt_solref array
                 actual_solref = solver.mjw_model.jnt_solref.numpy()[world_idx, mjc_idx]
                 self.assertAlmostEqual(
                     actual_solref[0],
-                    expected_timeconst,
+                    expected_ke,
                     places=3,
-                    msg=f"Initial solref timeconst for MuJoCo joint {mjc_idx} (Newton DOF {newton_dof_idx}) in world {world_idx}",
+                    msg=f"Initial solref stiffness for MuJoCo joint {mjc_idx} (Newton DOF {newton_dof_idx}) in world {world_idx}",
                 )
                 self.assertAlmostEqual(
                     actual_solref[1],
-                    expected_dampratio,
+                    expected_kd,
                     places=3,
-                    msg=f"Initial solref dampratio for MuJoCo joint {mjc_idx} (Newton DOF {newton_dof_idx}) in world {world_idx}",
+                    msg=f"Initial solref damping for MuJoCo joint {mjc_idx} (Newton DOF {newton_dof_idx}) in world {world_idx}",
                 )
 
         # Test runtime update capability - update joint limit ke/kd values
@@ -756,25 +753,22 @@ class TestMuJoCoSolverJointProperties(TestMuJoCoSolverPropertiesBase):
                 zip(mjc_revolute_indices, newton_revolute_dof_indices, strict=False)
             ):
                 global_dof_idx = world_idx * dofs_per_world + newton_dof_idx
-                # Convert updated values to timeconst/dampratio as done in solver
-                ke = updated_limit_ke[global_dof_idx]
-                kd = updated_limit_kd[global_dof_idx]
-                expected_timeconst = 2.0 / np.sqrt(ke)
-                expected_dampratio = kd / (2.0 * np.sqrt(ke))
+                expected_ke = -updated_limit_ke[global_dof_idx]
+                expected_kd = -updated_limit_kd[global_dof_idx]
 
                 # Get actual values from MuJoCo's jnt_solref array
                 actual_solref = solver.mjw_model.jnt_solref.numpy()[world_idx, mjc_idx]
                 self.assertAlmostEqual(
                     actual_solref[0],
-                    expected_timeconst,
+                    expected_ke,
                     places=3,
-                    msg=f"Updated solref timeconst for MuJoCo joint {mjc_idx} (Newton DOF {newton_dof_idx}) in world {world_idx}",
+                    msg=f"Updated solref stiffness for MuJoCo joint {mjc_idx} (Newton DOF {newton_dof_idx}) in world {world_idx}",
                 )
                 self.assertAlmostEqual(
                     actual_solref[1],
-                    expected_dampratio,
+                    expected_kd,
                     places=3,
-                    msg=f"Updated solref dampratio for MuJoCo joint {mjc_idx} (Newton DOF {newton_dof_idx}) in world {world_idx}",
+                    msg=f"Updated solref damping for MuJoCo joint {mjc_idx} (Newton DOF {newton_dof_idx}) in world {world_idx}",
                 )
 
 
