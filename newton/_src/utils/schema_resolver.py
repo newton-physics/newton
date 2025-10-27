@@ -694,7 +694,7 @@ class _ResolverManager:
             for spec in specs:
                 d = getattr(spec, "default", None)
                 if d is not None:
-                    return d
+                    return spec.transformer(d) if getattr(spec, "transformer", None) else d
 
         # Nothing found
         try:

@@ -514,6 +514,9 @@ class ModelBuilder:
         # Create a full key that includes namespace for uniqueness checking
         full_key = f"{namespace}:{name}" if namespace else name
 
+        if dtype is None:
+            raise TypeError(f"Custom attribute '{full_key}': dtype must be a Warp dtype (e.g., wp.float32); got None")
+
         if full_key in self.custom_attributes:
             # validate that specification matches exactly
             existing = self.custom_attributes[full_key]
@@ -523,11 +526,7 @@ class ModelBuilder:
                 or existing.assignment != assignment
                 or existing.namespace != namespace
             ):
-                raise ValueError(
-                    f"Custom attribute '{full_key}' already exists with frequency='{existing.frequency}', "
-                    f"dtype='{existing.dtype}', assignment='{existing.assignment}', namespace='{existing.namespace}'. "
-                    f"Cannot redefine with frequency='{frequency}', dtype='{dtype}', assignment='{assignment}', namespace='{namespace}'."
-                )
+                raise ValueError(f"Custom attribute '{full_key}' already exists with incompatible spec")
             return
 
         self.custom_attributes[full_key] = CustomAttribute(

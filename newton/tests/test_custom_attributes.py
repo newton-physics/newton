@@ -815,7 +815,7 @@ class TestCustomAttributes(unittest.TestCase):
                 assignment=ModelAttributeAssignment.STATE,  # Different assignment, same key
             )
         self.assertIn("already exists", str(context.exception))
-        self.assertIn("assignment", str(context.exception))
+        self.assertIn("incompatible spec", str(context.exception))
 
         # Test 3: Same namespace:name with different assignments - SHOULD FAIL
         # Both use key "namespace_a:float_attr"
@@ -901,7 +901,7 @@ class TestCustomAttributes(unittest.TestCase):
                 assignment=ModelAttributeAssignment.MODEL,
             )
         self.assertIn("already exists", str(context.exception))
-        self.assertIn("frequency", str(context.exception))
+        self.assertIn("incompatible spec", str(context.exception))
 
     def test_mixed_free_and_articulated_bodies(self):
         """Test BODY and ARTICULATION frequency custom attributes with mixed free and articulated bodies."""
