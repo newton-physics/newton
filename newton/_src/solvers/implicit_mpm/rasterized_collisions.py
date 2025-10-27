@@ -35,6 +35,9 @@ _COLLIDER_EXTRAPOLATION_DISTANCE = wp.constant(0.5)
 _INFINITY = wp.constant(1.0e12)
 """Mass over which colliders are considered kinematic"""
 
+_CLOSEST_POINT_NORMAL_EPSILON = wp.constant(1.0e-3)
+"""Epsilon for closest point normal calculation"""
+
 _NULL_COLLIDER_ID = -2
 _GROUND_COLLIDER_ID = -1
 _GROUND_COLLIDER_MATERIAL_INDEX = 0
@@ -127,7 +130,7 @@ def collision_sdf(
 
             if sdf < min_sdf:
                 min_sdf = sdf
-                if wp.abs(d) < 0.001:
+                if wp.abs(d) < _CLOSEST_POINT_NORMAL_EPSILON:
                     sdf_grad = wp.mesh_eval_face_normal(mesh, query.face)
                 else:
                     sdf_grad = wp.normalize(offset) * query.sign

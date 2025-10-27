@@ -983,7 +983,6 @@ def _get_shape_collision_materials(model: newton.Model, shape_ids: list[int]):
 
 def _create_body_collider_mesh(
     model: newton.Model,
-    body_index: int,
     shape_ids: list[int],
     material_ids: list[int],
 ):
@@ -1312,7 +1311,7 @@ class ImplicitMPMModel:
                     mesh_face_material_ids = np.full(face_count, material_id, dtype=int)
                 else:
                     collider_meshes[collider_id], mesh_face_material_ids = _create_body_collider_mesh(
-                        model, body_index, body_shapes[body_index], collider_material_ids[collider_id]
+                        model, body_shapes[body_index], collider_material_ids[collider_id]
                     )
 
                 face_material_ids.append(mesh_face_material_ids)

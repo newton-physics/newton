@@ -118,8 +118,8 @@ class Example:
             "all particles are above the ground",
             lambda q, qd: q[2] > -0.05,
         )
-        cube_extents = wp.vec3(0.5, 2.0, 1.0) * 0.9
-        cube_center = wp.vec3(0.75, 0, 0.5)
+        cube_extents = wp.vec3(0.5, 2.0, 0.6) * 0.9
+        cube_center = wp.vec3(0.75, 0, 0.9)
         cube_lower = cube_center - cube_extents
         cube_upper = cube_center + cube_extents
         newton.examples.test_particle_state(
