@@ -208,7 +208,6 @@ class ViewerUSD(ViewerBase):
         uvs: wp.array | None = None,
         hidden=False,
         backface_culling=True,
-        face_varying_uv=False,
     ):
         """
         Create a USD mesh prototype from vertex and index data.
@@ -219,17 +218,9 @@ class ViewerUSD(ViewerBase):
             indices (wp.array): Triangle indices as a warp array of wp.uint32.
             normals (wp.array, optional): Vertex normals as a warp array of wp.vec3.
             uvs (wp.array, optional): UV coordinates as a warp array of wp.vec2.
-                - If `face_varying_uv=False`, this array is expected to contain one UV per vertex,
-                  aligned with the `points` array (i.e., indexed by vertex indices).
-                - This allows each vertex to share the same UV across all faces that reference it.
             hidden (bool, optional): If True, mesh will be hidden. Default is False.
             backface_culling (bool, optional): If True, enable backface culling. Default is True.
-            face_varying_uv (bool, optional): Whether the mesh UVs are face-varying.
-                - If `False` (default): `uvs` are treated as vertex-varying, meaning each vertex has
-                  a single UV coordinate that is reused across all faces.
-                - If `True`: `uvs` are treated as face-varying, meaning each triangle corner can
-                  have its own UV coordinate. In this case, the `uvs` array must have the same length
-                  as the `indices` array, so each face index corresponds to a unique UV coordinate.
+
         Returns:
             str: The mesh prototype path.
         """
@@ -248,35 +239,6 @@ class ViewerUSD(ViewerBase):
             mesh_prim.GetFaceVertexCountsAttr().Set(face_vertex_counts)
             mesh_prim.GetFaceVertexIndicesAttr().Set(indices_np)
 
-            # Set UVs if provided (do not set every frame)
-            if uvs is not None:
-                primvars_api = UsdGeom.PrimvarsAPI(mesh_prim)
-
-                # Get or create the 'st' primvar
-                if not primvars_api.GetPrimvar("st"):
-                    st = primvars_api.CreatePrimvar("st", Sdf.ValueTypeNames.TexCoord2fArray, UsdGeom.Tokens.vertex)
-                else:
-                    st = primvars_api.GetPrimvar("st")
-
-                st.Set(uvs.numpy().astype(np.float32))
-
-                if face_varying_uv:
-                    if len(uvs) != len(indices_np):
-                        raise RuntimeError(
-                            "UV count mismatch: when using face-varying UVs, "
-                            "the length of 'uvs' must equal the length of 'indices'."
-                        )
-                    else:
-                        st.SetInterpolation(UsdGeom.Tokens.faceVarying)
-                else:
-                    if len(uvs) != len(points_np):
-                        raise RuntimeError(
-                            "UV count mismatch: when using vertex-varying UVs, "
-                            "the length of 'uvs' must equal the length of 'points'."
-                        )
-                    else:
-                        st.SetInterpolation(UsdGeom.Tokens.vertex)
-
             # Store the prototype path
             self._meshes[name] = mesh_prim
 
@@ -288,6 +250,11 @@ class ViewerUSD(ViewerBase):
             normals_np = normals.numpy().astype(np.float32)
             mesh_prim.GetNormalsAttr().Set(normals_np, self._frame_index)
             mesh_prim.SetNormalsInterpolation(UsdGeom.Tokens.vertex)
+
+        # Set UVs if provided (simplified for now)
+        if uvs is not None:
+            # TODO: Implement UV support for USD meshes
+            pass
 
         # how to hide the prototype mesh but not the instances in USD?
         mesh_prim.GetVisibilityAttr().Set("inherited" if not hidden else "invisible", self._frame_index)

@@ -99,7 +99,6 @@ class ViewerFile(ViewerBase):
         uvs: wp.array = None,
         hidden=False,
         backface_culling=True,
-        face_varying_uv=False,
     ):
         """File viewer doesn't render meshes, so this is a no-op."""
         pass

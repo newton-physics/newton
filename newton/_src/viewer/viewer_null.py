@@ -52,7 +52,6 @@ class ViewerNull(ViewerBase):
         uvs: wp.array | None = None,
         hidden=False,
         backface_culling=True,
-        face_varying_uv=False,
     ):
         """
         No-op implementation for logging a mesh.
@@ -65,7 +64,6 @@ class ViewerNull(ViewerBase):
             uvs: Texture coordinates (optional).
             hidden: Whether the mesh is hidden.
             backface_culling: Whether to enable backface culling.
-            face_varying_uv: Whether the mesh UVs are face-varying (optional).
         """
         pass
 

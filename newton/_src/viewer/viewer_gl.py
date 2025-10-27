@@ -215,7 +215,6 @@ class ViewerGL(ViewerBase):
         uvs: wp.array | None = None,
         hidden=False,
         backface_culling=True,
-        face_varying_uv=False,
     ):
         """
         Log a mesh for rendering.
@@ -228,8 +227,6 @@ class ViewerGL(ViewerBase):
             uvs (wp.array, optional): Vertex UVs.
             hidden (bool): Whether the mesh is hidden.
             backface_culling (bool): Enable backface culling.
-            face_varying_uv (bool, optional): Whether the mesh UVs are face-varying
-                                              (currently not used, always vertex-varying).
         """
         assert isinstance(points, wp.array)
         assert isinstance(indices, wp.array)
