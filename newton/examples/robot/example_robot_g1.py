@@ -68,7 +68,7 @@ class Example:
         g1.approximate_meshes("bounding_box")
 
         builder = newton.ModelBuilder()
-        builder.replicate(g1, self.num_worlds, spacing=(3, 3, 0))
+        builder.replicate(g1, self.num_worlds)
 
         builder.add_ground_plane()
 

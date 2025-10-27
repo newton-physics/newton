@@ -62,12 +62,12 @@ class Example:
             humanoid.joint_target_kd[i] = 5
 
         builder = newton.ModelBuilder()
-        builder.replicate(humanoid, self.num_worlds, spacing=(3, 3, 0))
+        builder.replicate(humanoid, self.num_worlds)
 
         builder.add_ground_plane()
 
         self.model = builder.finalize()
-        self.solver = newton.solvers.SolverMuJoCo(self.model, njmax=100)
+        self.solver = newton.solvers.SolverMuJoCo(self.model, njmax=100, ncon_per_world=50)
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
