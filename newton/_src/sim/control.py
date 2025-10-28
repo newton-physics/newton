@@ -121,6 +121,7 @@ def pd_actuator_kernel(
     qd_target: wp.array(dtype=wp.float32),
     joint_q_start: wp.array(dtype=wp.int32),
     joint_qd_start: wp.array(dtype=wp.int32),
+    joint_actuator_start: wp.array(dtype=wp.int32),
     joint_dof_dim: wp.array(dtype=wp.int32, ndim=2),
     joint_type: wp.array(dtype=wp.int32),
     joint_f: wp.array(dtype=wp.float32),
@@ -132,6 +133,7 @@ def pd_actuator_kernel(
     joint_id = wp.tid()
     qi = joint_q_start[joint_id]
     qdi = joint_qd_start[joint_id]
+    actuator_start = joint_actuator_start[joint_id]
     dim = joint_dof_dim[joint_id, 0] + joint_dof_dim[joint_id, 1]
 
     if joint_type[joint_id] == JointType.FREE:
@@ -146,10 +148,10 @@ def pd_actuator_kernel(
             q = joint_q[qj]
             qd = joint_qd[qdj]
 
-            tq = q_target[qdj]
-            tqd = qd_target[qdj]
-            Kp = kp_dof[qdj]
-            Kd = kd_dof[qdj]
+            tq = q_target[actuator_start + j]
+            tqd = qd_target[actuator_start + j]
+            Kp = kp_dof[actuator_start + j]
+            Kd = kd_dof[actuator_start + j]
             tq = Kp * (tq - q) + Kd * (tqd - qd)
             force = gear_ratio[qdj] * (tq + joint_f[qdj])
             limit = joint_effort_limit[qdj]
@@ -204,6 +206,7 @@ class PDActuator(Actuator):
                 control.joint_target_vel,
                 model.joint_q_start,
                 model.joint_qd_start,
+                model.joint_actuator_start,
                 model.joint_dof_dim,
                 model.joint_type,
                 control.joint_f,

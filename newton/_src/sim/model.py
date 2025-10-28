@@ -285,6 +285,8 @@ class Model:
         """Start index of the first position coordinate per joint (last value is a sentinel for dimension queries), shape [joint_count + 1], int."""
         self.joint_qd_start = None
         """Start index of the first velocity coordinate per joint (last value is a sentinel for dimension queries), shape [joint_count + 1], int."""
+        self.joint_actuator_start = None
+        """Start index of the first actuator coordinate per joint (last value is a sentinel for dimension queries), shape [joint_count + 1], int."""
         self.joint_key = []
         """Joint keys, shape [joint_count], str."""
         self.joint_world = None

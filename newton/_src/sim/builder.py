@@ -444,6 +444,7 @@ class ModelBuilder:
 
         self.joint_q_start = []
         self.joint_qd_start = []
+        self.joint_actuator_start = []
         self.joint_dof_dim = []
         self.joint_world = []  # world index for each joint
 
@@ -453,6 +454,7 @@ class ModelBuilder:
 
         self.joint_dof_count = 0
         self.joint_coord_count = 0
+        self.joint_actuator_count = 0
 
         # current world index for entities being added directly to this builder.
         # set to -1 to create global entities shared across all worlds.
@@ -1022,6 +1024,7 @@ class ModelBuilder:
 
             self.joint_q_start.extend([c + self.joint_coord_count for c in builder.joint_q_start])
             self.joint_qd_start.extend([c + self.joint_dof_count for c in builder.joint_qd_start])
+            self.joint_actuator_start.extend([c + self.joint_actuator_count for c in builder.joint_actuator_start])
 
         if xform is not None:
             for i in range(builder.body_count):
@@ -1146,6 +1149,7 @@ class ModelBuilder:
 
         self.joint_dof_count += builder.joint_dof_count
         self.joint_coord_count += builder.joint_coord_count
+        self.joint_actuator_count += builder.joint_actuator_count
 
         if update_num_world_count:
             # Globals do not contribute to the world count
@@ -1313,6 +1317,12 @@ class ModelBuilder:
             add_axis_dim(dim)
         for dim in angular_axes:
             add_axis_dim(dim)
+        l = len(linear_axes) + len(angular_axes)
+        if l > 0:
+             self.joint_actuator_start.append(self.joint_actuator_count)
+             self.joint_actuator_count += l
+        else:
+             self.joint_actuator_start.append(-1)
 
         dof_count, coord_count = get_joint_dof_count(joint_type, len(linear_axes) + len(angular_axes))
 
@@ -4384,6 +4394,8 @@ class ModelBuilder:
             joint_q_start.append(self.joint_coord_count)
             joint_qd_start = copy.copy(self.joint_qd_start)
             joint_qd_start.append(self.joint_dof_count)
+            joint_actuator_start = copy.copy(self.joint_actuator_start)
+            joint_actuator_start.append(self.joint_actuator_count)
             articulation_start = copy.copy(self.articulation_start)
             articulation_start.append(self.joint_count)
 
@@ -4397,6 +4409,7 @@ class ModelBuilder:
 
             m.joint_q_start = wp.array(joint_q_start, dtype=wp.int32)
             m.joint_qd_start = wp.array(joint_qd_start, dtype=wp.int32)
+            m.joint_actuator_start = wp.array(joint_actuator_start, dtype=wp.int32)
             m.articulation_start = wp.array(articulation_start, dtype=wp.int32)
             m.articulation_key = self.articulation_key
             m.articulation_world = wp.array(self.articulation_world, dtype=wp.int32)
