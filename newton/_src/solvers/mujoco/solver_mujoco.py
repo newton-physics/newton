@@ -1228,7 +1228,7 @@ class SolverMuJoCo(SolverBase):
         mjw_data: MjWarpData | None = None,
         separate_worlds: bool | None = None,
         njmax: int | None = None,
-        ncon_per_world: int | None = None,
+        nconmax: int | None = None,
         iterations: int = 20,
         ls_iterations: int = 10,
         solver: int | str = "cg",
@@ -1254,7 +1254,7 @@ class SolverMuJoCo(SolverBase):
             mjw_data (MjWarpData | None): Optional pre-existing MuJoCo Warp data. If provided with `mjw_model`, conversion from Newton model is skipped.
             separate_worlds (bool | None): If True, each Newton world is mapped to a separate MuJoCo world. Defaults to `not use_mujoco_cpu`.
             njmax (int): Maximum number of constraints per world. If None, a default value is estimated from the initial state. Note that the larger of the user-provided value or the default value is used.
-            ncon_per_world (int | None): Number of contact points per world. If None, a default value is estimated from the initial state. Note that the larger of the user-provided value or the default value is used.
+            nconmax (int | None): Number of contact points per world. If None, a default value is estimated from the initial state. Note that the larger of the user-provided value or the default value is used.
             iterations (int): Number of solver iterations.
             ls_iterations (int): Number of line search iterations for the solver.
             solver (int | str): Solver type. Can be "cg" or "newton", or their corresponding MuJoCo integer constants.
@@ -1325,7 +1325,7 @@ class SolverMuJoCo(SolverBase):
                     disable_contacts=disable_contacts,
                     separate_worlds=separate_worlds,
                     njmax=njmax,
-                    ncon_per_world=ncon_per_world,
+                    nconmax=nconmax,
                     iterations=iterations,
                     ls_iterations=ls_iterations,
                     cone=cone,
@@ -1778,7 +1778,7 @@ class SolverMuJoCo(SolverBase):
         iterations: int = 20,
         ls_iterations: int = 10,
         njmax: int | None = None,  # number of constraints per world
-        ncon_per_world: int | None = None,
+        nconmax: int | None = None,
         solver: int | str = "cg",
         integrator: int | str = "implicitfast",
         disableflags: int = 0,
@@ -2518,11 +2518,11 @@ class SolverMuJoCo(SolverBase):
             if disable_contacts:
                 naconmax = 0
             else:
-                if ncon_per_world is not None:
-                    rigid_contact_max = nworld * ncon_per_world
+                if nconmax is not None:
+                    rigid_contact_max = nworld * nconmax
                     if rigid_contact_max < self.mj_data.ncon * nworld:
                         warnings.warn(
-                            f"[WARNING] Value for ncon_per_world is changed from {ncon_per_world} to {self.mj_data.ncon} following an MjWarp requirement.",
+                            f"[WARNING] Value for nconmax is changed from {nconmax} to {self.mj_data.ncon} following an MjWarp requirement.",
                             stacklevel=2,
                         )
                         naconmax = self.mj_data.ncon * nworld

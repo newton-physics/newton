@@ -77,7 +77,7 @@ class Example:
 
         self.model = builder.finalize()
         self.solver = newton.solvers.SolverMuJoCo(
-            self.model, iterations=100, ls_iterations=50, njmax=100, ncon_per_world=50
+            self.model, iterations=100, ls_iterations=50, njmax=100, nconmax=50
         )
 
         self.state_0 = self.model.state()

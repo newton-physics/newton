@@ -116,7 +116,7 @@ class Example:
         # finalize model
         self.model = scene.finalize()
 
-        self.solver = newton.solvers.SolverMuJoCo(self.model, njmax=100, ncon_per_world=50)
+        self.solver = newton.solvers.SolverMuJoCo(self.model, njmax=100, nconmax=50)
 
         self.viewer = viewer
 

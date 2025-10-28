@@ -454,7 +454,7 @@ class Example:
             iterations=solver_iteration,
             ls_iterations=ls_iteration,
             njmax=njmax,
-            ncon_per_world=nconmax,
+            nconmax=nconmax,
             ls_parallel=ls_parallel,
             cone=cone,
         )
