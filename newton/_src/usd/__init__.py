@@ -13,6 +13,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+try:
+    # register the newton schema plugin before any other USD code is executed
+    import newton_usd_schemas  # noqa: F401
+except ImportError:
+    pass
+
 from .utils import (
     convert_warp_type,
     convert_warp_value,

@@ -152,6 +152,8 @@ def parse_usd(
     class PhysicsMaterial:
         staticFriction: float = builder.default_shape_cfg.mu
         dynamicFriction: float = builder.default_shape_cfg.mu
+        torsionalFriction: float = builder.default_shape_cfg.torsional_friction
+        rollingFriction: float = builder.default_shape_cfg.rolling_friction
         restitution: float = builder.default_shape_cfg.restitution
         density: float = builder.default_shape_cfg.density
 
@@ -936,20 +938,17 @@ def parse_usd(
         joint_drive_gains_scaling = usd.get_float(
             physics_scene_prim, "newton:joint_drive_gains_scaling", joint_drive_gains_scaling
         )
-        # Resolve scene time step, gravity settings, and contact margin
-        physics_dt = R.get_value(
-            physics_scene_prim, prim_type=PrimType.SCENE, key="time_step", default=None, verbose=verbose
+
+        time_steps_per_second = R.get_value(
+            physics_scene_prim, prim_type=PrimType.SCENE, key="time_steps_per_second", default=1000, verbose=verbose
         )
+        physics_dt = (1.0 / time_steps_per_second) if time_steps_per_second > 0 else 0.001
+
         gravity_enabled = R.get_value(
-            physics_scene_prim, prim_type=PrimType.SCENE, key="enable_gravity", default=True, verbose=verbose
+            physics_scene_prim, prim_type=PrimType.SCENE, key="gravity_enabled", default=True, verbose=verbose
         )
         if not gravity_enabled:
             builder.gravity = 0.0
-        contact_margin = R.get_value(
-            physics_scene_prim, prim_type=PrimType.SCENE, key="rigid_contact_margin", default=None, verbose=verbose
-        )
-        if contact_margin is not None:
-            builder.rigid_contact_margin = contact_margin
         max_solver_iters = R.get_value(
             physics_scene_prim, prim_type=PrimType.SCENE, key="max_solver_iterations", default=None, verbose=verbose
         )
@@ -1037,10 +1036,25 @@ def parse_usd(
     for sdf_path, desc in data_for_key(ret_dict, UsdPhysics.ObjectType.RigidBodyMaterial):
         if warn_invalid_desc(sdf_path, desc):
             continue
+        prim = stage.GetPrimAtPath(sdf_path)
         material_specs[str(sdf_path)] = PhysicsMaterial(
             staticFriction=desc.staticFriction,
             dynamicFriction=desc.dynamicFriction,
             restitution=desc.restitution,
+            torsionalFriction=R.get_value(
+                prim,
+                prim_type=PrimType.MATERIAL,
+                key="torsional_friction",
+                default=builder.default_shape_cfg.torsional_friction,
+                verbose=verbose,
+            ),
+            rollingFriction=R.get_value(
+                prim,
+                prim_type=PrimType.MATERIAL,
+                key="rolling_friction",
+                default=builder.default_shape_cfg.rolling_friction,
+                verbose=verbose,
+            ),
             # TODO: if desc.density is 0, then we should look for mass somewhere
             density=desc.density if desc.density > 0.0 else default_shape_density,
         )
@@ -1390,7 +1404,7 @@ def parse_usd(
                     material = material_specs[str(shape_spec.materials[0])]
                     if verbose:
                         print(
-                            f"\tMaterial of '{path}':\tfriction: {material.dynamicFriction},\trestitution: {material.restitution},\tdensity: {material.density}"
+                            f"\tMaterial of '{path}':\tfriction: {material.dynamicFriction},\ttorsional friction: {material.torsionalFriction},\trolling friction: {material.rollingFriction},\trestitution: {material.restitution},\tdensity: {material.density}"
                         )
                 elif verbose:
                     print(f"No material found for shape at '{path}'.")
@@ -1402,6 +1416,12 @@ def parse_usd(
                     shape_xform = local_xform
                 # Extract custom attributes for this shape
                 shape_custom_attrs = usd.get_custom_attribute_values(prim, builder_custom_attr_shape)
+                if collect_schema_attrs:
+                    R.collect_prim_attrs(prim)
+
+                contact_margin = R.get_value(prim, prim_type=PrimType.SHAPE, key="contact_margin", verbose=verbose)
+                if contact_margin == float("-inf"):
+                    contact_margin = builder.default_shape_cfg.contact_margin
 
                 shape_params = {
                     "body": body_id,
@@ -1422,8 +1442,11 @@ def parse_usd(
                         thickness=usd.get_float_with_fallback(
                             prim_and_scene, "newton:contact_thickness", builder.default_shape_cfg.thickness
                         ),
+                        contact_margin=contact_margin,
                         mu=material.dynamicFriction,
                         restitution=material.restitution,
+                        torsional_friction=material.torsionalFriction,
+                        rolling_friction=material.rollingFriction,
                         density=body_density.get(body_path, default_shape_density),
                         collision_group=collision_group,
                         is_visible=not hide_collision_shapes,
@@ -1480,15 +1503,14 @@ def parse_usd(
                     )
                 elif key == UsdPhysics.ObjectType.MeshShape:
                     # Resolve mesh hull vertex limit from schema with fallback to parameter
-                    resolved_maxhullvert = R.get_value(
+                    mesh = usd.get_mesh(prim)
+                    mesh.maxhullvert = R.get_value(
                         prim,
                         prim_type=PrimType.SHAPE,
-                        key="mesh_hull_vertex_limit",
+                        key="max_hull_vertices",
                         default=mesh_maxhullvert,
                         verbose=verbose,
                     )
-                    mesh = usd.get_mesh(prim)
-                    mesh.maxhullvert = resolved_maxhullvert
                     shape_id = builder.add_shape_mesh(
                         scale=scale,
                         mesh=mesh,
