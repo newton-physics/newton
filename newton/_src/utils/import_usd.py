@@ -283,7 +283,10 @@ def parse_usd(
         key for key, attr in builder.custom_attributes.items() if attr.frequency == ModelAttributeFrequency.BODY
     ]
     builder_custom_attr_joint = [
-        key for key, attr in builder.custom_attributes.items() if attr.frequency in [ModelAttributeFrequency.JOINT, ModelAttributeFrequency.JOINT_DOF, ModelAttributeFrequency.JOINT_COORD]
+        key
+        for key, attr in builder.custom_attributes.items()
+        if attr.frequency
+        in [ModelAttributeFrequency.JOINT, ModelAttributeFrequency.JOINT_DOF, ModelAttributeFrequency.JOINT_COORD]
     ]
     builder_custom_attr_articulation = [
         key for key, attr in builder.custom_attributes.items() if attr.frequency == ModelAttributeFrequency.ARTICULATION

@@ -305,10 +305,11 @@ def parse_mjcf(
                 "key": geom_name,
                 "body": link,
                 "cfg": shape_cfg,
+                "custom_attributes": {},
             }
             condim = geom_attrib.get("condim")
             if condim is not None:
-                shape_kwargs["mujoco:condim"] = condim
+                shape_kwargs["custom_attributes"]["mjc:condim"] = condim
 
             if incoming_xform is not None:
                 tf = incoming_xform * tf
