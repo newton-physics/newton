@@ -272,6 +272,23 @@ def parse_usd(
         if verbose:
             print(f"Failed to get linear unit: {e}")
 
+    # process custom attributes defined for different kinds of prim
+    builder_custom_attr_model = [
+        key for key, attr in builder.custom_attributes.items() if attr.frequency == ModelAttributeFrequency.ONCE
+    ]
+    builder_custom_attr_shape = [
+        key for key, attr in builder.custom_attributes.items() if attr.frequency == ModelAttributeFrequency.SHAPE
+    ]
+    builder_custom_attr_body = [
+        key for key, attr in builder.custom_attributes.items() if attr.frequency == ModelAttributeFrequency.BODY
+    ]
+    builder_custom_attr_joint = [
+        key for key, attr in builder.custom_attributes.items() if attr.frequency in [ModelAttributeFrequency.JOINT, ModelAttributeFrequency.JOINT_DOF, ModelAttributeFrequency.JOINT_COORD]
+    ]
+    builder_custom_attr_articulation = [
+        key for key, attr in builder.custom_attributes.items() if attr.frequency == ModelAttributeFrequency.ARTICULATION
+    ]
+
     # resolve cloned worlds
     if cloned_world is not None:
         cloned_world_prim = stage.GetPrimAtPath(cloned_world)
@@ -507,6 +524,11 @@ def parse_usd(
         # Extract custom attributes for this body
         body_custom_attrs = R.get_custom_attributes_for_prim(prim, ModelAttributeFrequency.BODY)
 
+        for attr_name in builder_custom_attr_body:
+            usd_attr_name = f"newton:{attr_name}"
+            if prim.HasAttribute(usd_attr_name):
+                body_custom_attrs[attr_name] = prim.GetAttribute(usd_attr_name).Get()
+
         b = builder.add_body(
             xform=xform,
             key=key,
@@ -602,6 +624,11 @@ def parse_usd(
 
         # Extract custom attributes for this joint
         joint_custom_attrs = R.get_custom_attributes_for_prim(joint_prim, ModelAttributeFrequency.JOINT)
+
+        for attr_name in builder_custom_attr_joint:
+            usd_attr_name = f"newton:{attr_name}"
+            if joint_prim.HasAttribute(usd_attr_name):
+                joint_custom_attrs[attr_name] = joint_prim.GetAttribute(usd_attr_name).Get()
 
         joint_params = {
             "parent": parent_id,
@@ -942,6 +969,12 @@ def parse_usd(
         for a in physics_scene_prim.GetAttributes():
             scene_attributes[a.GetName()] = a.Get()
 
+        # Extract custom attributes for model frequency from the PhysicsScene prim
+        for attr_name in builder_custom_attr_model:
+            usd_attr_name = f"newton:{attr_name}"
+            if physics_scene_prim.HasAttribute(usd_attr_name):
+                scene_attributes[attr_name] = physics_scene_prim.GetAttribute(usd_attr_name).Get()
+
         # Parse custom attribute declarations from PhysicsScene prim
         # This must happen before processing any other prims
         R.parse_custom_attribute_declarations(physics_scene_prim)
@@ -1122,6 +1155,10 @@ def parse_usd(
                 articulation_custom_attrs = R.get_custom_attributes_for_prim(
                     articulation_prim, ModelAttributeFrequency.ARTICULATION
                 )
+                for attr_name in builder_custom_attr_articulation:
+                    usd_attr_name = f"newton:{attr_name}"
+                    if articulation_prim.HasAttribute(usd_attr_name):
+                        articulation_custom_attrs[attr_name] = articulation_prim.GetAttribute(usd_attr_name).Get()
             # If not, check the parent prim
             elif (
                 parent_prim is not None and parent_prim.IsValid() and parent_prim.HasAPI(UsdPhysics.ArticulationRootAPI)
@@ -1131,6 +1168,10 @@ def parse_usd(
                 articulation_custom_attrs = R.get_custom_attributes_for_prim(
                     parent_prim, ModelAttributeFrequency.ARTICULATION
                 )
+                for attr_name in builder_custom_attr_articulation:
+                    usd_attr_name = f"newton:{attr_name}"
+                    if parent_prim.HasAttribute(usd_attr_name):
+                        articulation_custom_attrs[attr_name] = parent_prim.GetAttribute(usd_attr_name).Get()
             if verbose and articulation_custom_attrs:
                 print(f"Extracted articulation custom attributes: {articulation_custom_attrs}")
             body_ids = {}
@@ -1369,6 +1410,11 @@ def parse_usd(
                     shape_xform = local_xform
                 # Extract custom attributes for this shape
                 shape_custom_attrs = R.get_custom_attributes_for_prim(prim, ModelAttributeFrequency.SHAPE)
+
+                for attr_name in builder_custom_attr_shape:
+                    usd_attr_name = f"newton:{attr_name}"
+                    if prim.HasAttribute(usd_attr_name):
+                        shape_custom_attrs[attr_name] = prim.GetAttribute(usd_attr_name).Get()
 
                 shape_params = {
                     "body": body_id,
