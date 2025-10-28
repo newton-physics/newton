@@ -31,6 +31,9 @@ from ...sim import (
     JointMode,
     JointType,
     Model,
+    ModelAttributeAssignment,
+    ModelAttributeFrequency,
+    ModelBuilder,
     State,
     color_graph,
     plot_graph,
@@ -1220,6 +1223,18 @@ class SolverMuJoCo(SolverBase):
                 ) from e
         return cls._mujoco, cls._mujoco_warp
 
+    @override
+    @classmethod
+    def register_custom_attributes(cls, builder: ModelBuilder) -> None:
+        builder.add_custom_attribute(
+            name="condim",
+            frequency=ModelAttributeFrequency.SHAPE,
+            assignment=ModelAttributeAssignment.MODEL,
+            dtype=int,
+            default=3,
+            namespace="mujoco",
+        )
+
     def __init__(
         self,
         model: Model,
@@ -1979,6 +1994,19 @@ class SolverMuJoCo(SolverBase):
         shape_world = model.shape_world.numpy()
         shape_mu = model.shape_material_mu.numpy()
 
+        # retrieve MuJoCo-specific attributes
+        mujoco_attrs = getattr(model, "mujoco", None)
+
+        def get_custom_attribute(name: str) -> nparray | None:
+            if mujoco_attrs is None:
+                return None
+            attr = getattr(mujoco_attrs, name, None)
+            if attr is None:
+                return None
+            return attr.numpy()
+
+        shape_condim = get_custom_attribute("condim")
+
         eq_constraint_type = model.equality_constraint_type.numpy()
         eq_constraint_body1 = model.equality_constraint_body1.numpy()
         eq_constraint_body2 = model.equality_constraint_body2.numpy()
@@ -2155,6 +2183,8 @@ class SolverMuJoCo(SolverBase):
                     model.rigid_contact_torsional_friction * mu,
                     model.rigid_contact_rolling_friction * mu,
                 ]
+                if shape_condim is not None:
+                    geom_params["condim"] = shape_condim[shape]
 
                 body.add_geom(**geom_params)
                 # store the geom name instead of assuming index
