@@ -2514,22 +2514,22 @@ class SolverMuJoCo(SolverBase):
             # now complete the data from the Newton model
             self.notify_model_changed(SolverNotifyFlags.ALL)
 
-            # TODO find better heuristics to determine naconmax and njmax
+            # TODO find better heuristics to determine nconmax and njmax
             if disable_contacts:
-                naconmax = 0
+                nconmax = 0
             else:
                 if nconmax is not None:
-                    rigid_contact_max = nworld * nconmax
-                    if rigid_contact_max < self.mj_data.ncon * nworld:
+                    rigid_contact_max = nconmax
+                    if rigid_contact_max < self.mj_data.ncon:
                         warnings.warn(
                             f"[WARNING] Value for nconmax is changed from {nconmax} to {self.mj_data.ncon} following an MjWarp requirement.",
                             stacklevel=2,
                         )
-                        naconmax = self.mj_data.ncon * nworld
+                        nconmax = self.mj_data.ncon
                     else:
-                        naconmax = rigid_contact_max
+                        nconmax = rigid_contact_max
                 else:
-                    naconmax = max(512, self.mj_data.ncon * nworld)
+                    nconmax = self.mj_data.ncon
 
             if njmax is not None:
                 if njmax < self.mj_data.nefc:
@@ -2545,7 +2545,7 @@ class SolverMuJoCo(SolverBase):
                 self.mj_model,
                 self.mj_data,
                 nworld=nworld,
-                naconmax=naconmax,
+                nconmax=nconmax,
                 njmax=njmax,
             )
 
