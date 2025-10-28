@@ -536,9 +536,9 @@ class ViewerBase:
             self.model_shapes = []
 
             self.world_xforms = None
+            self.colors_changed = False
 
         def add(self, parent, xform, scale, color, material, shape_index, world=-1):
-            self.colors_changed = False
             # add an instance of the geometry to the batch
             self.parents.append(parent)
             self.xforms.append(xform)
@@ -554,6 +554,7 @@ class ViewerBase:
             self.xforms = wp.array(self.xforms, dtype=wp.transform, device=self.device)
             self.scales = wp.array(self.scales, dtype=wp.vec3, device=self.device)
             if colors_array is not None:
+                assert len(colors_array) == len(self.scales), "colors_array length mismatch"
                 self.colors = colors_array
             else:
                 self.colors = wp.array(self.colors, dtype=wp.vec3, device=self.device)
@@ -760,8 +761,6 @@ class ViewerBase:
         # Allocate single contiguous color buffer and copy initial per-batch colors
         if total_instances:
             self.model_shape_color = wp.zeros(total_instances, dtype=wp.vec3, device=self.device)
-        else:
-            self.model_shape_color = None
 
         for b_idx, batch in enumerate(batches):
             if total_instances:
@@ -785,11 +784,11 @@ class ViewerBase:
                 shape_to_batch[s_idx] = batch
         self._shape_to_batch = shape_to_batch
 
-    def update_shape_colors(self, shape_colors):
+    def update_shape_colors(self, shape_colors: dict[int, wp.vec3 | tuple[float, float, float]]):
         """
         Set colors for a set of shapes at runtime.
         Args:
-            shape_colors: mapping from shape index -> wp.vec3 color
+            shape_colors: mapping from shape index -> color
         """
         if self.model_shape_color is None or self._shape_to_slot is None or self._shape_to_batch is None:
             return
