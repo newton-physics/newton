@@ -1230,7 +1230,7 @@ class SolverMuJoCo(SolverBase):
             name="condim",
             frequency=ModelAttributeFrequency.SHAPE,
             assignment=ModelAttributeAssignment.MODEL,
-            dtype=int,
+            dtype=wp.int32,
             default=3,
             namespace="mjc",
         )

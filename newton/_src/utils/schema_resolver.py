@@ -23,6 +23,7 @@ from typing import Any, ClassVar
 
 import warp as wp
 
+from ..geometry import MESH_MAXHULLVERT
 from ..sim.model import CustomAttribute, ModelAttributeAssignment, ModelAttributeFrequency
 
 try:
@@ -164,7 +165,7 @@ def _collect_solver_specific_attrs(prim, namespaces: list[str]) -> dict[str, Any
 
     for ns in namespaces:
         for prop in prim.GetAuthoredPropertiesInNamespace(ns):
-            if Usd is not None and isinstance(prop, Usd.Attribute) and prop.IsValid() and prop.HasAuthoredValue():
+            if isinstance(prop, Usd.Attribute) and prop.IsValid() and prop.HasAuthoredValue():
                 out[prop.GetName()] = prop.Get()
 
     return out
@@ -404,7 +405,7 @@ class SchemaResolverMjc(SchemaResolver):
         },
         PrimType.SHAPE: {
             # Mesh
-            "mesh_hull_vertex_limit": [Attribute("mjc:maxhullvert", -1)],
+            "mesh_hull_vertex_limit": [Attribute("mjc:maxhullvert", MESH_MAXHULLVERT)],
             # Collisions
             "rigid_contact_margin": [Attribute("mjc:margin", 0.0)],
         },

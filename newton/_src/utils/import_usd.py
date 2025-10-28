@@ -972,7 +972,7 @@ def parse_usd(
         for a in physics_scene_prim.GetAttributes():
             scene_attributes[a.GetName()] = a.Get()
 
-        # Extract custom attributes for model frequency from the PhysicsScene prim
+        # Extract custom attributes for model (ONCE) frequency from the PhysicsScene prim
         for attr_name in builder_custom_attr_model:
             usd_attr_name = f"newton:{attr_name}"
             if physics_scene_prim.HasAttribute(usd_attr_name):
