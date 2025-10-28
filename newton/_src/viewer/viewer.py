@@ -70,6 +70,10 @@ class ViewerBase:
         self.show_visual = True  # show visual shapes (non collider)
         self.show_static = False  # force static shapes to be visible
 
+        self.model_shape_color = None
+        self._shape_to_slot = None  # color offset of each shape
+        self._shape_to_batch = None
+
     def is_running(self) -> bool:
         return True
 
@@ -212,10 +216,12 @@ class ViewerBase:
                 shapes.mesh,
                 shapes.world_xforms,
                 shapes.scales if self.model_changed else None,
-                shapes.colors if self.model_changed else None,
+                shapes.colors if self.model_changed or shapes.colors_changed else None,
                 shapes.materials if self.model_changed else None,
                 hidden=not visible,
             )
+
+            shapes.colors_changed = False
 
         self._log_triangles(state)
         self._log_particles(state)
@@ -527,9 +533,12 @@ class ViewerBase:
             self.materials = []
             self.worlds = []  # World index for each shape
 
+            self.model_shapes = []
+
             self.world_xforms = None
 
-        def add(self, parent, xform, scale, color, material, world=-1):
+        def add(self, parent, xform, scale, color, material, shape_index, world=-1):
+            self.colors_changed = False
             # add an instance of the geometry to the batch
             self.parents.append(parent)
             self.xforms.append(xform)
@@ -537,13 +546,17 @@ class ViewerBase:
             self.colors.append(color)
             self.materials.append(material)
             self.worlds.append(world)
+            self.model_shapes.append(shape_index)
 
-        def finalize(self):
+        def finalize(self, colors_array=None):
             # convert to warp arrays
             self.parents = wp.array(self.parents, dtype=int, device=self.device)
             self.xforms = wp.array(self.xforms, dtype=wp.transform, device=self.device)
             self.scales = wp.array(self.scales, dtype=wp.vec3, device=self.device)
-            self.colors = wp.array(self.colors, dtype=wp.vec3, device=self.device)
+            if colors_array is not None:
+                self.colors = colors_array
+            else:
+                self.colors = wp.array(self.colors, dtype=wp.vec3, device=self.device)
             self.materials = wp.array(self.materials, dtype=wp.vec4, device=self.device)
             self.worlds = wp.array(self.worlds, dtype=int, device=self.device)
 
@@ -738,11 +751,59 @@ class ViewerBase:
                 material = wp.vec4(0.5, 0.5, 1.0, 0.0)
 
             # add render instance
-            batch.add(parent, xform, scale, color, material, shape_world[s])
+            batch.add(parent, xform, scale, color, material, s, shape_world[s])
 
-        # upload all batches to the GPU
-        for batch in self._shape_instances.values():
-            batch.finalize()
+        batches = list(self._shape_instances.values())
+        offsets = np.cumsum(np.array([0, *[len(b.scales) for b in batches]], dtype=np.int32)).tolist()
+        total_instances = int(offsets[-1])
+
+        # Allocate single contiguous color buffer and copy initial per-batch colors
+        if total_instances:
+            self.model_shape_color = wp.zeros(total_instances, dtype=wp.vec3, device=self.device)
+        else:
+            self.model_shape_color = None
+
+        for b_idx, batch in enumerate(batches):
+            if total_instances:
+                color_array = self.model_shape_color[offsets[b_idx] : offsets[b_idx + 1]]
+                color_array.assign(wp.array(batch.colors, dtype=wp.vec3, device=self.device))
+                batch.finalize(colors_array=color_array)
+            else:
+                batch.finalize()
+
+        shape_to_slot = np.full(shape_count, -1, dtype=np.int32)
+        for b_idx, batch in enumerate(batches):
+            start = offsets[b_idx]
+            for local_idx, s_idx in enumerate(batch.model_shapes):
+                shape_to_slot[s_idx] = start + local_idx
+        self._shape_to_slot = shape_to_slot
+
+        # Build shape -> batch reference mapping for change signalling
+        shape_to_batch = [None] * shape_count
+        for batch in batches:
+            for s_idx in batch.model_shapes:
+                shape_to_batch[s_idx] = batch
+        self._shape_to_batch = shape_to_batch
+
+    def update_shape_colors(self, shape_colors):
+        """
+        Set colors for a set of shapes at runtime.
+        Args:
+            shape_colors: mapping from shape index -> wp.vec3 color
+        """
+        if self.model_shape_color is None or self._shape_to_slot is None or self._shape_to_batch is None:
+            return
+
+        for s_idx, col in shape_colors.items():
+            if s_idx < 0 or s_idx >= len(self._shape_to_slot):
+                raise ValueError(f"Shape index {s_idx} out of bounds")
+            slot = int(self._shape_to_slot[s_idx])
+            if slot < 0:
+                continue
+            self.model_shape_color[slot : slot + 1].fill_(wp.vec3(col))
+            batch_ref = self._shape_to_batch[s_idx]
+            if batch_ref is not None:
+                batch_ref.colors_changed = True
 
     def _log_joints(self, state):
         """
