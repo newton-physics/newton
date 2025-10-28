@@ -1232,7 +1232,7 @@ class SolverMuJoCo(SolverBase):
             assignment=ModelAttributeAssignment.MODEL,
             dtype=int,
             default=3,
-            namespace="mujoco",
+            namespace="mjc",
         )
 
     def __init__(
@@ -1995,7 +1995,7 @@ class SolverMuJoCo(SolverBase):
         shape_mu = model.shape_material_mu.numpy()
 
         # retrieve MuJoCo-specific attributes
-        mujoco_attrs = getattr(model, "mujoco", None)
+        mujoco_attrs = getattr(model, "mjc", None)
 
         def get_custom_attribute(name: str) -> nparray | None:
             if mujoco_attrs is None:
