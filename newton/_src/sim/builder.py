@@ -1416,6 +1416,8 @@ class ModelBuilder:
                     continue
 
                 # Determine the offset based on frequency
+                if attr.frequency == ModelAttributeFrequency.ONCE:
+                    offset = 0
                 if attr.frequency == ModelAttributeFrequency.BODY:
                     offset = start_body_idx
                 elif attr.frequency == ModelAttributeFrequency.SHAPE:
@@ -4820,6 +4822,8 @@ class ModelBuilder:
                 frequency = custom_attr.frequency
 
                 # determine count by frequency
+                if frequency == ModelAttributeFrequency.ONCE:
+                    count = 1
                 if frequency == ModelAttributeFrequency.BODY:
                     count = m.body_count
                 elif frequency == ModelAttributeFrequency.SHAPE:

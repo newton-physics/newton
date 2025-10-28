@@ -56,17 +56,19 @@ class ModelAttributeFrequency(IntEnum):
     should be indexed in relation to the model's entities such as joints, bodies, shapes, etc.
     """
 
-    JOINT = 0
+    ONCE = 0
+    """Attribute frequency is a single value."""
+    JOINT = 1
     """Attribute frequency follows the number of joints (see :attr:`~newton.Model.joint_count`)."""
-    JOINT_DOF = 1
+    JOINT_DOF = 2
     """Attribute frequency follows the number of joint degrees of freedom (see :attr:`~newton.Model.joint_dof_count`)."""
-    JOINT_COORD = 2
+    JOINT_COORD = 3
     """Attribute frequency follows the number of joint positional coordinates (see :attr:`~newton.Model.joint_coord_count`)."""
-    BODY = 3
+    BODY = 4
     """Attribute frequency follows the number of bodies (see :attr:`~newton.Model.body_count`)."""
-    SHAPE = 4
+    SHAPE = 5
     """Attribute frequency follows the number of shapes (see :attr:`~newton.Model.shape_count`)."""
-    ARTICULATION = 5
+    ARTICULATION = 6
     """Attribute frequency follows the number of articulations (see :attr:`~newton.Model.articulation_count`)."""
 
 
@@ -78,19 +80,19 @@ class AttributeNamespace:
     allowing hierarchical organization of related properties.
     """
 
-    def __init__(self, namespace_name: str):
+    def __init__(self, name: str):
         """Initialize the namespace container.
 
         Args:
-            namespace_name: The name of the namespace
+            name: The name of the namespace
         """
-        self._namespace_name = namespace_name
+        self._name = name
 
     def __repr__(self):
         """Return a string representation showing the namespace and its attributes."""
         # List all public attributes (not starting with _)
         attrs = [k for k in self.__dict__ if not k.startswith("_")]
-        return f"AttributeNamespace('{self._namespace_name}', attributes={attrs})"
+        return f"AttributeNamespace('{self._name}', attributes={attrs})"
 
 
 @dataclass
