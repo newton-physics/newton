@@ -66,7 +66,7 @@ class Collider:
     """Friction coefficient for each collider material. Shape (material_count,)"""
 
     material_adhesion: wp.array(dtype=float)
-    """Adhesion coeffient for each collider material (Pa). Shape (material_count,)"""
+    """Adhesion coefficient for each collider material (Pa). Shape (material_count,)"""
 
     material_projection_threshold: wp.array(dtype=float)
     """Projection threshold for each collider material. Shape (material_count,)"""
