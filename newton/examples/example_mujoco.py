@@ -454,7 +454,7 @@ class Example:
             iterations=solver_iteration,
             ls_iterations=ls_iteration,
             njmax=njmax,
-            ncon_per_world=nconmax,
+            nconmax=nconmax,
             ls_parallel=ls_parallel,
             cone=cone,
         )
@@ -569,7 +569,11 @@ if __name__ == "__main__":
         actual_cone = cone_map.get(cone_value, f"unknown({cone_value})")
         # Get actual max constraints and contacts from MuJoCo Warp data
         actual_njmax = example.solver.mjw_data.njmax
-        actual_nconmax = example.solver.mjw_data.nconmax
+        actual_nconmax = (
+            example.solver.mjw_data.naconmax // args.num_worlds
+            if args.num_worlds > 0
+            else example.solver.mjw_data.naconmax
+        )
         print(f"{'Solver':<{LABEL_WIDTH}}: {actual_solver}")
         print(f"{'Integrator':<{LABEL_WIDTH}}: {actual_integrator}")
         # print(f"{'Parallel Line Search':<{LABEL_WIDTH}}: {example.solver.mj_model.opt.ls_parallel}")

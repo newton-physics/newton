@@ -130,7 +130,7 @@ class Example:
             solver="newton",
             integrator="implicitfast",
             njmax=200,
-            ncon_per_world=150,
+            nconmax=150,
             impratio=10.0,
             cone="elliptic",
             iterations=100,
