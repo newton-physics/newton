@@ -974,7 +974,7 @@ def _get_body_collision_shapes(model: newton.Model, body_index: int):
 
 
 def _get_shape_collision_materials(model: newton.Model, shape_ids: list[int]):
-    """Returns the collision materials from the modle for a list of shapes"""
+    """Returns the collision materials from the model for a list of shapes"""
     thicknesses = model.shape_thickness.numpy()[shape_ids]
     friction = model.shape_material_mu.numpy()[shape_ids]
 

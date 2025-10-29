@@ -3743,6 +3743,9 @@ class ModelBuilder:
         rng = np.random.default_rng(42 + len(self.particle_q))
         points += (rng.random(points.shape) - 0.5) * jitter
 
+        if radius_mean is None:
+            radius_mean = self.default_particle_radius
+
         radii = np.full(points.shape[0], fill_value=radius_mean)
         if radius_std > 0.0:
             radii += rng.standard_normal(radii.shape) * radius_std
