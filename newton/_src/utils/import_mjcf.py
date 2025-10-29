@@ -525,7 +525,7 @@ def parse_mjcf(
                 axis_vec = parse_vec(joint_attrib, "axis", (0.0, 0.0, 0.0))
                 limit_lower = np.deg2rad(joint_range[0]) if is_angular and use_degrees else joint_range[0]
                 limit_upper = np.deg2rad(joint_range[1]) if is_angular and use_degrees else joint_range[1]
-                
+
                 # Parse solreflimit for joint limit stiffness and damping
                 solreflimit = parse_vec(joint_attrib, "solreflimit", (0.02, 1.0))
                 limit_ke = _solref_to_stiffness(solreflimit)
@@ -535,7 +535,7 @@ def parse_mjcf(
                     limit_ke = 2500.0  # From MuJoCo's default solref (0.02, 1.0)
                 if limit_kd is None:
                     limit_kd = 100.0  # From MuJoCo's default solref (0.02, 1.0)
-                
+
                 ax = ModelBuilder.JointDofConfig(
                     axis=axis_vec,
                     limit_lower=limit_lower,

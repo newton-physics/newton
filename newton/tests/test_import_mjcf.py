@@ -647,13 +647,13 @@ class TestImportMjcf(unittest.TestCase):
             <joint name="joint1" type="hinge" axis="0 0 1" range="-45 45" solreflimit="0.03 0.9"/>
             <geom type="box" size="0.1 0.1 0.1"/>
         </body>
-        
+
         <!-- Joint with direct mode solreflimit (negative values) -->
         <body name="body2" pos="1 0 1">
             <joint name="joint2" type="hinge" axis="0 0 1" range="-30 30" solreflimit="-100 -1"/>
             <geom type="box" size="0.1 0.1 0.1"/>
         </body>
-        
+
         <!-- Joint without solreflimit (should use defaults) -->
         <body name="body3" pos="2 0 1">
             <joint name="joint3" type="hinge" axis="0 0 1" range="-60 60"/>
