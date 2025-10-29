@@ -93,7 +93,7 @@ class CollisionSetup:
         if use_unified_pipeline:
             self.collision_pipeline = newton.CollisionPipelineUnified.from_model(
                 self.model,
-                rigid_contact_max_per_pair=10,
+                rigid_contact_max_per_pair=20,
                 rigid_contact_margin=0.01,
                 broad_phase_mode=newton.BroadPhaseMode.EXPLICIT,
             )
@@ -123,7 +123,11 @@ class CollisionSetup:
         elif shape_type == GeoType.CYLINDER:
             self.builder.add_shape_cylinder(body, radius=0.25, half_height=0.4, key=type_to_str(shape_type))
         elif shape_type == GeoType.MESH:
-            vertices, indices = newton.utils.create_sphere_mesh(radius=0.5)
+            # Use box mesh for unified pipeline (works correctly), sphere mesh for legacy pipeline (box mesh has issues)
+            if self.use_unified_pipeline:
+                vertices, indices = newton.utils.create_box_mesh(extents=(0.5, 0.5, 0.5))
+            else:
+                vertices, indices = newton.utils.create_sphere_mesh(radius=0.5)
             self.builder.add_shape_mesh(body, mesh=newton.Mesh(vertices[:, :3], indices), key=type_to_str(shape_type))
         elif shape_type == GeoType.CONVEX_MESH:
             # Use a sphere mesh as it's already convex
@@ -263,18 +267,23 @@ class TestUnifiedCollisionPipeline(unittest.TestCase):
     pass
 
 
-# Unified collision pipeline tests - replace MESH with CONVEX_MESH
-# MESH is not supported yet in the unified pipeline
+# Unified collision pipeline tests - now supports both MESH and CONVEX_MESH
+# Note: MESH vs MESH is not yet supported
 unified_contact_tests = [
     (GeoType.SPHERE, GeoType.SPHERE, TestLevel.VELOCITY_YZ, TestLevel.STRICT),
     (GeoType.SPHERE, GeoType.BOX, TestLevel.VELOCITY_YZ, TestLevel.STRICT),
     (GeoType.SPHERE, GeoType.CAPSULE, TestLevel.VELOCITY_YZ, TestLevel.STRICT),
-    (GeoType.SPHERE, GeoType.CONVEX_MESH, TestLevel.VELOCITY_YZ, TestLevel.STRICT),  # MESH -> CONVEX_MESH
+    (GeoType.SPHERE, GeoType.MESH, TestLevel.VELOCITY_YZ, TestLevel.STRICT),
+    (GeoType.SPHERE, GeoType.CONVEX_MESH, TestLevel.VELOCITY_YZ, TestLevel.STRICT),
     (GeoType.BOX, GeoType.BOX, TestLevel.VELOCITY_YZ, TestLevel.VELOCITY_LINEAR),
-    (GeoType.BOX, GeoType.CONVEX_MESH, TestLevel.VELOCITY_YZ, TestLevel.STRICT),  # MESH -> CONVEX_MESH
+    (GeoType.BOX, GeoType.MESH, TestLevel.VELOCITY_YZ, TestLevel.STRICT),
+    (GeoType.BOX, GeoType.CONVEX_MESH, TestLevel.VELOCITY_YZ, TestLevel.STRICT),
     (GeoType.CAPSULE, GeoType.CAPSULE, TestLevel.VELOCITY_YZ, TestLevel.VELOCITY_LINEAR),
-    (GeoType.CAPSULE, GeoType.CONVEX_MESH, TestLevel.VELOCITY_YZ, TestLevel.STRICT),  # MESH -> CONVEX_MESH
-    (GeoType.CONVEX_MESH, GeoType.CONVEX_MESH, TestLevel.VELOCITY_YZ, TestLevel.STRICT),  # MESH -> CONVEX_MESH
+    (GeoType.CAPSULE, GeoType.MESH, TestLevel.VELOCITY_YZ, TestLevel.STRICT),
+    (GeoType.CAPSULE, GeoType.CONVEX_MESH, TestLevel.VELOCITY_YZ, TestLevel.STRICT),
+    # (GeoType.MESH, GeoType.MESH, TestLevel.VELOCITY_YZ, TestLevel.STRICT),  # Not yet supported
+    (GeoType.MESH, GeoType.CONVEX_MESH, TestLevel.VELOCITY_YZ, TestLevel.STRICT),
+    (GeoType.CONVEX_MESH, GeoType.CONVEX_MESH, TestLevel.VELOCITY_YZ, TestLevel.STRICT),
 ]
 
 
