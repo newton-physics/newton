@@ -1275,7 +1275,7 @@ class SolverMuJoCo(SolverBase):
             use_mujoco_contacts (bool): If True, use the MuJoCo contact solver. If False, use the Newton contact solver (newton contacts must be passed in through the step function in that case).
             joint_solref_limit (tuple[float, float] | None): Global solver reference parameters for all joint limits. If provided, applies these solref values to all joints created. Defaults to None (uses MuJoCo defaults).
             joint_solimp_limit (tuple[float, float, float, float, float] | None): Global solver impedance parameters for all joint limits. If provided, applies these solimp values to all joints created. Defaults to None (uses MuJoCo defaults).
-            tolerance (float | None): Solver tolerance for early termination of the iterative solver. Defaults to 1e-6.
+            tolerance (float | None): Solver tolerance for early termination of the iterative solver. Defaults to 1e-6 and will be increase to 1e-6 if a smaller value is provided.
             ls_tolerance (float | None): Solver tolerance for early termination of the line search. Defaults to 0.01.
         """
         super().__init__(model)
