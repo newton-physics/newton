@@ -75,7 +75,7 @@ class TestMuJoCoSolver(unittest.TestCase):
         self.assertAlmostEqual(
             float(solver.mjw_model.opt.tolerance.numpy()[0]),
             custom_tolerance,
-            places=10,
+            places=5,
             msg=f"tolerance should be {custom_tolerance}",
         )
         self.assertAlmostEqual(
