@@ -45,7 +45,9 @@ class _FastBenchmark:
 
     def setup(self):
         if not hasattr(self, "builder") or self.builder is None:
-            self.builder = Example.create_model_builder(self.robot, self.num_worlds, randomize=self.random_init, seed=123)
+            self.builder = Example.create_model_builder(
+                self.robot, self.num_worlds, randomize=self.random_init, seed=123
+            )
 
         self.example = Example(
             stage_path=None,
@@ -100,7 +102,9 @@ class _KpiBenchmark:
         if not hasattr(self, "builder") or self.builder is None:
             self.builder = {}
         if num_worlds not in self.builder:
-            self.builder[num_worlds] = Example.create_model_builder(self.robot, num_worlds, randomize=self.random_init, seed=123)
+            self.builder[num_worlds] = Example.create_model_builder(
+                self.robot, num_worlds, randomize=self.random_init, seed=123
+            )
 
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
     def track_simulate(self, num_worlds):
