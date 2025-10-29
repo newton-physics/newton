@@ -309,13 +309,6 @@ class Example:
         if builder is None:
             builder = Example.create_model_builder(robot, num_worlds, environment, randomize, self.seed)
 
-        # have to reset all limits' stiffness and damping to the values
-        # correspondent to MuJoCo's default solref (0.02, 1) -> (2500, 100)
-        for i in range(len(builder.joint_limit_ke)):
-            if builder.joint_limit_ke[i] > 0:
-                builder.joint_limit_ke[i] = 2500.0
-                builder.joint_limit_kd[i] = 100.0
-
         # finalize model
         self.model = builder.finalize()
 
