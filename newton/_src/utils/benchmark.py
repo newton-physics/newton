@@ -84,6 +84,16 @@ class EventTracer:
 
         return ret
 
+    def add_trace(self, stack, new_stack):
+        """Sums elapsed times from two difference traces."""
+        ret = {}
+        for k in new_stack:
+            times, sub_stack = stack[k] if k in stack.keys() else (0, {})
+            new_times, new_sub_stack = new_stack[k]
+            times = times + sum(new_times)
+            ret[k] = (times, self.add_trace(sub_stack, new_sub_stack))
+        return ret
+
     def __exit__(self, type, value, traceback):
         self._STACK = None
         if EventTracer._active_instance is self:

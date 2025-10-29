@@ -460,15 +460,6 @@ class Example:
             cone=cone,
         )
 
-    def add_trace(self, stack, new_stack):
-        ret = {}
-        for k in new_stack:
-            times, sub_stack = stack[k] if k in stack.keys() else (0, {})
-            new_times, new_sub_stack = new_stack[k]
-            times = times + sum(new_times)
-            ret[k] = (times, self.add_trace(sub_stack, new_sub_stack))
-        return ret
-
 
 def print_trace(trace, indent, steps):
     if indent == 0:
@@ -621,7 +612,7 @@ if __name__ == "__main__":
                 example.step()
                 example.render()
                 if args.event_trace:
-                    trace = example.add_trace(trace, tracer.trace())
+                    trace = EventTracer.add_trace(trace, tracer.trace())
 
     if args.event_trace:
         print_trace(trace, 0, args.num_frames * example.sim_substeps)
