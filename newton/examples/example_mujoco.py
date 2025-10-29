@@ -612,7 +612,7 @@ if __name__ == "__main__":
                 example.step()
                 example.render()
                 if args.event_trace:
-                    trace = EventTracer.add_trace(trace, tracer.trace())
+                    trace = tracer.add_trace(trace, tracer.trace())
 
     if args.event_trace:
         print_trace(trace, 0, args.num_frames * example.sim_substeps)

@@ -166,7 +166,7 @@ class _NewtonOverheadBenchmark:
 
                 for _ in range(self.num_frames):
                     example.step()
-                    trace = EventTracer.add_trace(trace, tracer.trace())
+                    trace = tracer.add_trace(trace, tracer.trace())
 
         step_time = trace["step"][0]
         mujoco_warp_step_time = trace["step"][1]["mujoco_warp_step"][0]
