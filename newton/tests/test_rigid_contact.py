@@ -517,6 +517,108 @@ for device in devices:
     )
 
 
+def test_mesh_box_on_ground(test: TestRigidContact, device):
+    """Test that a mesh box (created with create_box_mesh) rests stably on a ground plane.
+
+    This test verifies that mesh collision works correctly by ensuring a box mesh
+    placed on a ground plane remains at rest with zero velocities.
+    """
+    builder = newton.ModelBuilder()
+    builder.default_shape_cfg.ke = 1.0e5
+    builder.default_shape_cfg.kd = 1.0e3
+    builder.default_shape_cfg.mu = 0.5
+
+    # Add ground plane
+    builder.add_ground_plane()
+
+    # Create a box mesh (half extents = 0.5)
+    box_half = 0.5
+    vertices, indices = create_box_mesh((box_half, box_half, box_half))
+    box_mesh = newton.Mesh(vertices, indices)
+
+    # Add mesh box body, positioned so bottom face is at z=0 (center at z=box_half)
+    body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, box_half), wp.quat_identity()))
+    builder.add_joint_free(body)
+    builder.add_shape_mesh(body=body, mesh=box_mesh)
+
+    # Finalize model
+    model = builder.finalize(device=device)
+
+    # Create collision pipeline (unified)
+    collision_pipeline = newton.CollisionPipelineUnified.from_model(
+        model,
+        rigid_contact_max_per_pair=20,
+        rigid_contact_margin=0.01,
+        broad_phase_mode=newton.BroadPhaseMode.EXPLICIT,
+    )
+
+    # Create solver and states
+    solver = newton.solvers.SolverXPBD(model, iterations=2)
+    state_0 = model.state()
+    state_1 = model.state()
+    control = model.control()
+
+    # Initialize kinematics
+    newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
+
+    # Simulate for 1 second to let it settle
+    sim_dt = 1.0 / 60.0
+    substeps = 10
+    max_frames = 60
+
+    for _ in range(max_frames):
+        for _ in range(substeps):
+            state_0.clear_forces()
+            contacts = model.collide(state_0, collision_pipeline=collision_pipeline)
+            solver.step(state_0, state_1, control, contacts, sim_dt / substeps)
+            state_0, state_1 = state_1, state_0
+
+    # Get final state
+    final_body_q = state_0.body_q.numpy()
+    final_body_qd = state_0.body_qd.numpy()
+
+    # Check position - should remain at approximately z=box_half
+    final_z = final_body_q[body, 2]
+    test.assertGreater(
+        final_z,
+        box_half * 0.9,
+        f"Mesh box fell through ground (z={final_z:.6f}, expected ~{box_half:.6f})",
+    )
+    test.assertLess(
+        final_z,
+        box_half * 1.1,
+        f"Mesh box jumped up unexpectedly (z={final_z:.6f}, expected ~{box_half:.6f})",
+    )
+
+    # Check all velocities are near zero (at rest)
+    linear_vel = final_body_qd[body, :3]
+    angular_vel = final_body_qd[body, 3:]
+
+    for i, vel in enumerate(linear_vel):
+        test.assertLess(
+            abs(vel),
+            0.01,
+            f"Mesh box has non-zero linear velocity[{i}] = {vel:.6f}, should be at rest",
+        )
+
+    for i, vel in enumerate(angular_vel):
+        test.assertLess(
+            abs(vel),
+            0.01,
+            f"Mesh box has non-zero angular velocity[{i}] = {vel:.6f}, should be at rest",
+        )
+
+
+# Add test for mesh box on ground with unified pipeline
+for device in devices:
+    add_function_test(
+        TestRigidContact,
+        "test_mesh_box_on_ground",
+        test_mesh_box_on_ground,
+        devices=[device],
+    )
+
+
 def test_mujoco_warp_newton_contacts(test: TestRigidContact, device):
     """Test that MuJoCo Warp solver correctly handles contact transfer from Newton's unified collision pipeline.
 
