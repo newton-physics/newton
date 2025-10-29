@@ -437,7 +437,7 @@ def allot_collider_mass(
       collider receive an inverse mass of zero.
 
     Args:
-        cell_volume: Grid cell volume as scalaing factor to node_volumes.
+        cell_volume: Grid cell volume as scaling factor to node_volumes.
         node_volumes: Per-velocity-node volume fractions (in voxel units).
         collider: Packed collider parameters and geometry handles.
         collider_ids: Per-velocity-node collider id, or `_NULL_COLLIDER_ID` when not active.
@@ -500,7 +500,7 @@ def build_rigidity_matrix(
     propagate rigid coupling when solving collider friction.
 
     Args:
-        cell_volume: Grid cell volume as scalaing factor to node_volumes.
+        cell_volume: Grid cell volume as scaling factor to node_volumes.
         node_volumes: Per-velocity-node volume fractions.
         node_positions: World-space node positions (3D).
         collider: Packed collider parameters and geometry handles.
