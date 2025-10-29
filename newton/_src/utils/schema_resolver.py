@@ -62,9 +62,9 @@ class Attribute:
 
 
 class SchemaResolver:
-    # mapping is a dictionary for known variables in Newton. Its purpose is to map usd attributes to existing Newton data.
-    # PrimType -> variable -> list[Attribute]
-    mapping: ClassVar[dict[PrimType, dict[str, list[Attribute]]]] = {}
+    # mapping is a dictionary for known variables in Newton. Its purpose is to map USD attributes to existing Newton data.
+    # PrimType -> variable -> Attribute
+    mapping: ClassVar[dict[PrimType, dict[str, Attribute]]] = {}
 
     # Name of the schema resolver
     name: ClassVar[str] = ""
@@ -84,9 +84,8 @@ class SchemaResolver:
                 var_items = var_map.items()
             except AttributeError:
                 continue
-            for _var, specs in var_items:
-                for spec in specs:
-                    names.add(spec.usd_name)
+            for _var, spec in var_items:
+                names.add(spec.usd_name)
         self._solver_attributes: list[str] = list(names)
 
     def get_value(self, prim, prim_type: PrimType, key: str) -> tuple[Any, str] | None:
@@ -103,7 +102,8 @@ class SchemaResolver:
         """
         if prim is None:
             return None
-        for spec in self.mapping.get(prim_type, {}).get(key, []):
+        spec = self.mapping.get(prim_type, {}).get(key)
+        if spec is not None:
             v = _get_attr(prim, spec.usd_name)
             if v is not None:
                 return (spec.transformer(v) if spec.transformer is not None else v), spec.usd_name
@@ -173,72 +173,72 @@ def _collect_solver_specific_attrs(prim, namespaces: list[str]) -> dict[str, Any
 
 class SchemaResolverNewton(SchemaResolver):
     name: ClassVar[str] = "newton"
-    mapping: ClassVar[dict[PrimType, dict[str, list[Attribute]]]] = {
+    mapping: ClassVar[dict[PrimType, dict[str, Attribute]]] = {
         PrimType.SCENE: {
-            "time_step": [Attribute("newton:timeStep", 0.002)],
-            "max_solver_iterations": [Attribute("newton:maxSolverIterations", 5)],
-            "enable_gravity": [Attribute("newton:enableGravity", True)],
-            "rigid_contact_margin": [Attribute("newton:rigidContactMargin", 0.0)],
+            "time_step": Attribute("newton:timeStep", 0.002),
+            "max_solver_iterations": Attribute("newton:maxSolverIterations", 5),
+            "enable_gravity": Attribute("newton:enableGravity", True),
+            "rigid_contact_margin": Attribute("newton:rigidContactMargin", 0.0),
         },
         PrimType.JOINT: {
-            "armature": [Attribute("newton:armature", 1.0e-2)],
-            "friction": [Attribute("newton:friction", 0.0)],
-            "limit_linear_ke": [Attribute("newton:linear:limitStiffness", 1.0e4)],
-            "limit_angular_ke": [Attribute("newton:angular:limitStiffness", 1.0e4)],
-            "limit_rotX_ke": [Attribute("newton:rotX:limitStiffness", 1.0e4)],
-            "limit_rotY_ke": [Attribute("newton:rotY:limitStiffness", 1.0e4)],
-            "limit_rotZ_ke": [Attribute("newton:rotZ:limitStiffness", 1.0e4)],
-            "limit_linear_kd": [Attribute("newton:linear:limitDamping", 1.0e1)],
-            "limit_angular_kd": [Attribute("newton:angular:limitDamping", 1.0e1)],
-            "limit_rotX_kd": [Attribute("newton:rotX:limitDamping", 1.0e1)],
-            "limit_rotY_kd": [Attribute("newton:rotY:limitDamping", 1.0e1)],
-            "limit_rotZ_kd": [Attribute("newton:rotZ:limitDamping", 1.0e1)],
-            "angular_position": [Attribute("newton:angular:position", 0.0)],
-            "linear_position": [Attribute("newton:linear:position", 0.0)],
-            "rotX_position": [Attribute("newton:rotX:position", 0.0)],
-            "rotY_position": [Attribute("newton:rotY:position", 0.0)],
-            "rotZ_position": [Attribute("newton:rotZ:position", 0.0)],
-            "angular_velocity": [Attribute("newton:angular:velocity", 0.0)],
-            "linear_velocity": [Attribute("newton:linear:velocity", 0.0)],
-            "rotX_velocity": [Attribute("newton:rotX:velocity", 0.0)],
-            "rotY_velocity": [Attribute("newton:rotY:velocity", 0.0)],
-            "rotZ_velocity": [Attribute("newton:rotZ:velocity", 0.0)],
+            "armature": Attribute("newton:armature", 1.0e-2),
+            "friction": Attribute("newton:friction", 0.0),
+            "limit_linear_ke": Attribute("newton:linear:limitStiffness", 1.0e4),
+            "limit_angular_ke": Attribute("newton:angular:limitStiffness", 1.0e4),
+            "limit_rotX_ke": Attribute("newton:rotX:limitStiffness", 1.0e4),
+            "limit_rotY_ke": Attribute("newton:rotY:limitStiffness", 1.0e4),
+            "limit_rotZ_ke": Attribute("newton:rotZ:limitStiffness", 1.0e4),
+            "limit_linear_kd": Attribute("newton:linear:limitDamping", 1.0e1),
+            "limit_angular_kd": Attribute("newton:angular:limitDamping", 1.0e1),
+            "limit_rotX_kd": Attribute("newton:rotX:limitDamping", 1.0e1),
+            "limit_rotY_kd": Attribute("newton:rotY:limitDamping", 1.0e1),
+            "limit_rotZ_kd": Attribute("newton:rotZ:limitDamping", 1.0e1),
+            "angular_position": Attribute("newton:angular:position", 0.0),
+            "linear_position": Attribute("newton:linear:position", 0.0),
+            "rotX_position": Attribute("newton:rotX:position", 0.0),
+            "rotY_position": Attribute("newton:rotY:position", 0.0),
+            "rotZ_position": Attribute("newton:rotZ:position", 0.0),
+            "angular_velocity": Attribute("newton:angular:velocity", 0.0),
+            "linear_velocity": Attribute("newton:linear:velocity", 0.0),
+            "rotX_velocity": Attribute("newton:rotX:velocity", 0.0),
+            "rotY_velocity": Attribute("newton:rotY:velocity", 0.0),
+            "rotZ_velocity": Attribute("newton:rotZ:velocity", 0.0),
         },
         PrimType.SHAPE: {
-            "mesh_hull_vertex_limit": [Attribute("newton:hullVertexLimit", -1)],
+            "mesh_hull_vertex_limit": Attribute("newton:hullVertexLimit", -1),
             # Use ShapeConfig.thickness default for contact margin
-            "rigid_contact_margin": [Attribute("newton:rigidContactMargin", 1.0e-5)],
+            "rigid_contact_margin": Attribute("newton:rigidContactMargin", 1.0e-5),
         },
         PrimType.BODY: {
-            "rigid_body_linear_damping": [Attribute("newton:damping", 0.0)],
+            "rigid_body_linear_damping": Attribute("newton:damping", 0.0),
         },
         PrimType.MATERIAL: {
-            "priority": [Attribute("newton:priority", 0)],
-            "weight": [Attribute("newton:weight", 1.0)],
-            "stiffness": [Attribute("newton:stiffness", 1.0e5)],
-            "damping": [Attribute("newton:damping", 1000.0)],
+            "priority": Attribute("newton:priority", 0),
+            "weight": Attribute("newton:weight", 1.0),
+            "stiffness": Attribute("newton:stiffness", 1.0e5),
+            "damping": Attribute("newton:damping", 1000.0),
         },
         PrimType.ACTUATOR: {
             # Mirror MuJoCo actuator defaults when applicable
-            "ctrl_low": [Attribute("newton:ctrlRange:low", 0.0)],
-            "ctrl_high": [Attribute("newton:ctrlRange:high", 0.0)],
-            "force_low": [Attribute("newton:forceRange:low", 0.0)],
-            "force_high": [Attribute("newton:forceRange:high", 0.0)],
-            "act_low": [Attribute("newton:actRange:low", 0.0)],
-            "act_high": [Attribute("newton:actRange:high", 0.0)],
-            "length_low": [Attribute("newton:lengthRange:low", 0.0)],
-            "length_high": [Attribute("newton:lengthRange:high", 0.0)],
-            "gainPrm": [Attribute("newton:gainPrm", [1, 0, 0, 0, 0, 0, 0, 0, 0, 0])],
-            "gainType": [Attribute("newton:gainType", "fixed")],
-            "biasPrm": [Attribute("newton:biasPrm", [0, 0, 0, 0, 0, 0, 0, 0, 0, 0])],
-            "biasType": [Attribute("newton:biasType", "none")],
-            "dynPrm": [Attribute("newton:dynPrm", [1, 0, 0, 0, 0, 0, 0, 0, 0, 0])],
-            "dynType": [Attribute("newton:dynType", "none")],
+            "ctrl_low": Attribute("newton:ctrlRange:low", 0.0),
+            "ctrl_high": Attribute("newton:ctrlRange:high", 0.0),
+            "force_low": Attribute("newton:forceRange:low", 0.0),
+            "force_high": Attribute("newton:forceRange:high", 0.0),
+            "act_low": Attribute("newton:actRange:low", 0.0),
+            "act_high": Attribute("newton:actRange:high", 0.0),
+            "length_low": Attribute("newton:lengthRange:low", 0.0),
+            "length_high": Attribute("newton:lengthRange:high", 0.0),
+            "gainPrm": Attribute("newton:gainPrm", [1, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
+            "gainType": Attribute("newton:gainType", "fixed"),
+            "biasPrm": Attribute("newton:biasPrm", [0, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
+            "biasType": Attribute("newton:biasType", "none"),
+            "dynPrm": Attribute("newton:dynPrm", [1, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
+            "dynType": Attribute("newton:dynType", "none"),
             # The following have no MuJoCo counterpart; keep unspecified defaults
-            "speedTorqueGradient": [Attribute("newton:speedTorqueGradient", None)],
-            "torqueSpeedGradient": [Attribute("newton:torqueSpeedGradient", None)],
-            "maxVelocity": [Attribute("newton:maxVelocity", None)],
-            "gear": [Attribute("newton:gear", [1, 0, 0, 0, 0, 0])],
+            "speedTorqueGradient": Attribute("newton:speedTorqueGradient", None),
+            "torqueSpeedGradient": Attribute("newton:torqueSpeedGradient", None),
+            "maxVelocity": Attribute("newton:maxVelocity", None),
+            "gear": Attribute("newton:gear", [1, 0, 0, 0, 0, 0]),
         },
     }
 
@@ -269,59 +269,57 @@ class SchemaResolverPhysx(SchemaResolver):
         "drive",
     ]
 
-    mapping: ClassVar[dict[PrimType, dict[str, list[Attribute]]]] = {
+    mapping: ClassVar[dict[PrimType, dict[str, Attribute]]] = {
         PrimType.SCENE: {
-            "time_step": [
-                Attribute("physxScene:timeStepsPerSecond", 60, lambda hz: (1.0 / hz) if (hz and hz > 0) else None)
-            ],
-            "max_solver_iterations": [Attribute("physxScene:maxVelocityIterationCount", 255)],
-            "enable_gravity": [Attribute("physxRigidBody:disableGravity", False, lambda value: not value)],
-            "rigid_contact_margin": [Attribute("physxScene:contactOffset", 0.0)],
+            "time_step": Attribute("physxScene:timeStepsPerSecond", 60, lambda hz: (1.0 / hz) if (hz and hz > 0) else None),
+            "max_solver_iterations": Attribute("physxScene:maxVelocityIterationCount", 255),
+            "enable_gravity": Attribute("physxRigidBody:disableGravity", False, lambda value: not value),
+            "rigid_contact_margin": Attribute("physxScene:contactOffset", 0.0),
         },
         PrimType.JOINT: {
-            "armature": [Attribute("physxJoint:armature", 0.0)],
+            "armature": Attribute("physxJoint:armature", 0.0),
             # Per-axis linear limit aliases
-            "limit_transX_ke": [Attribute("physxLimit:linear:stiffness", 0.0)],
-            "limit_transY_ke": [Attribute("physxLimit:linear:stiffness", 0.0)],
-            "limit_transZ_ke": [Attribute("physxLimit:linear:stiffness", 0.0)],
-            "limit_transX_kd": [Attribute("physxLimit:linear:damping", 0.0)],
-            "limit_transY_kd": [Attribute("physxLimit:linear:damping", 0.0)],
-            "limit_transZ_kd": [Attribute("physxLimit:linear:damping", 0.0)],
-            "limit_linear_ke": [Attribute("physxLimit:linear:stiffness", 0.0)],
-            "limit_angular_ke": [Attribute("physxLimit:angular:stiffness", 0.0)],
-            "limit_rotX_ke": [Attribute("physxLimit:rotX:stiffness", 0.0)],
-            "limit_rotY_ke": [Attribute("physxLimit:rotY:stiffness", 0.0)],
-            "limit_rotZ_ke": [Attribute("physxLimit:rotZ:stiffness", 0.0)],
-            "limit_linear_kd": [Attribute("physxLimit:linear:damping", 0.0)],
-            "limit_angular_kd": [Attribute("physxLimit:angular:damping", 0.0)],
-            "limit_rotX_kd": [Attribute("physxLimit:rotX:damping", 0.0)],
-            "limit_rotY_kd": [Attribute("physxLimit:rotY:damping", 0.0)],
-            "limit_rotZ_kd": [Attribute("physxLimit:rotZ:damping", 0.0)],
-            "angular_position": [Attribute("state:angular:physics:position", 0.0)],
-            "linear_position": [Attribute("state:linear:physics:position", 0.0)],
-            "rotX_position": [Attribute("state:rotX:physics:position", 0.0)],
-            "rotY_position": [Attribute("state:rotY:physics:position", 0.0)],
-            "rotZ_position": [Attribute("state:rotZ:physics:position", 0.0)],
-            "angular_velocity": [Attribute("state:angular:physics:velocity", 0.0)],
-            "linear_velocity": [Attribute("state:linear:physics:velocity", 0.0)],
-            "rotX_velocity": [Attribute("state:rotX:physics:velocity", 0.0)],
-            "rotY_velocity": [Attribute("state:rotY:physics:velocity", 0.0)],
-            "rotZ_velocity": [Attribute("state:rotZ:physics:velocity", 0.0)],
+            "limit_transX_ke": Attribute("physxLimit:linear:stiffness", 0.0),
+            "limit_transY_ke": Attribute("physxLimit:linear:stiffness", 0.0),
+            "limit_transZ_ke": Attribute("physxLimit:linear:stiffness", 0.0),
+            "limit_transX_kd": Attribute("physxLimit:linear:damping", 0.0),
+            "limit_transY_kd": Attribute("physxLimit:linear:damping", 0.0),
+            "limit_transZ_kd": Attribute("physxLimit:linear:damping", 0.0),
+            "limit_linear_ke": Attribute("physxLimit:linear:stiffness", 0.0),
+            "limit_angular_ke": Attribute("physxLimit:angular:stiffness", 0.0),
+            "limit_rotX_ke": Attribute("physxLimit:rotX:stiffness", 0.0),
+            "limit_rotY_ke": Attribute("physxLimit:rotY:stiffness", 0.0),
+            "limit_rotZ_ke": Attribute("physxLimit:rotZ:stiffness", 0.0),
+            "limit_linear_kd": Attribute("physxLimit:linear:damping", 0.0),
+            "limit_angular_kd": Attribute("physxLimit:angular:damping", 0.0),
+            "limit_rotX_kd": Attribute("physxLimit:rotX:damping", 0.0),
+            "limit_rotY_kd": Attribute("physxLimit:rotY:damping", 0.0),
+            "limit_rotZ_kd": Attribute("physxLimit:rotZ:damping", 0.0),
+            "angular_position": Attribute("state:angular:physics:position", 0.0),
+            "linear_position": Attribute("state:linear:physics:position", 0.0),
+            "rotX_position": Attribute("state:rotX:physics:position", 0.0),
+            "rotY_position": Attribute("state:rotY:physics:position", 0.0),
+            "rotZ_position": Attribute("state:rotZ:physics:position", 0.0),
+            "angular_velocity": Attribute("state:angular:physics:velocity", 0.0),
+            "linear_velocity": Attribute("state:linear:physics:velocity", 0.0),
+            "rotX_velocity": Attribute("state:rotX:physics:velocity", 0.0),
+            "rotY_velocity": Attribute("state:rotY:physics:velocity", 0.0),
+            "rotZ_velocity": Attribute("state:rotZ:physics:velocity", 0.0),
         },
         PrimType.SHAPE: {
             # Mesh hull vertex limit
-            "mesh_hull_vertex_limit": [Attribute("physxConvexHullCollision:hullVertexLimit", 64)],
+            "mesh_hull_vertex_limit": Attribute("physxConvexHullCollision:hullVertexLimit", 64),
             # Collision contact offset
-            "rigid_contact_margin": [Attribute("physxCollision:contactOffset", float("-inf"))],
+            "rigid_contact_margin": Attribute("physxCollision:contactOffset", float("-inf")),
         },
         PrimType.MATERIAL: {
-            "stiffness": [Attribute("physxMaterial:compliantContactStiffness", 0.0)],
-            "damping": [Attribute("physxMaterial:compliantContactDamping", 0.0)],
+            "stiffness": Attribute("physxMaterial:compliantContactStiffness", 0.0),
+            "damping": Attribute("physxMaterial:compliantContactDamping", 0.0),
         },
         PrimType.BODY: {
             # Rigid body damping
-            "rigid_body_linear_damping": [Attribute("physxRigidBody:linearDamping", 0.0)],
-            "rigid_body_angular_damping": [Attribute("physxRigidBody:angularDamping", 0.05)],
+            "rigid_body_linear_damping": Attribute("physxRigidBody:linearDamping", 0.0),
+            "rigid_body_angular_damping": Attribute("physxRigidBody:angularDamping", 0.05),
         },
     }
 
@@ -375,68 +373,68 @@ def _solref_to_damping(solref):
 class SchemaResolverMjc(SchemaResolver):
     name: ClassVar[str] = "mjc"
 
-    mapping: ClassVar[dict[PrimType, dict[str, list[Attribute]]]] = {
+    mapping: ClassVar[dict[PrimType, dict[str, Attribute]]] = {
         PrimType.SCENE: {
-            "time_step": [Attribute("mjc:option:timestep", 0.002)],
-            "max_solver_iterations": [Attribute("mjc:option:iterations", 100)],
-            "enable_gravity": [Attribute("mjc:flag:gravity", True)],
-            "rigid_contact_margin": [Attribute("mjc:option:o_margin", 0.0)],
+            "time_step": Attribute("mjc:option:timestep", 0.002),
+            "max_solver_iterations": Attribute("mjc:option:iterations", 100),
+            "enable_gravity": Attribute("mjc:flag:gravity", True),
+            "rigid_contact_margin": Attribute("mjc:option:o_margin", 0.0),
         },
         PrimType.JOINT: {
-            "armature": [Attribute("mjc:armature", 0.0)],
-            "friction": [Attribute("mjc:frictionloss", 0.0)],
+            "armature": Attribute("mjc:armature", 0.0),
+            "friction": Attribute("mjc:frictionloss", 0.0),
             # Per-axis linear aliases mapped to solref
-            "limit_transX_ke": [Attribute("mjc:solref", [0.02, 1.0], _solref_to_stiffness)],
-            "limit_transY_ke": [Attribute("mjc:solref", [0.02, 1.0], _solref_to_stiffness)],
-            "limit_transZ_ke": [Attribute("mjc:solref", [0.02, 1.0], _solref_to_stiffness)],
-            "limit_transX_kd": [Attribute("mjc:solref", [0.02, 1.0], _solref_to_damping)],
-            "limit_transY_kd": [Attribute("mjc:solref", [0.02, 1.0], _solref_to_damping)],
-            "limit_transZ_kd": [Attribute("mjc:solref", [0.02, 1.0], _solref_to_damping)],
-            "limit_linear_ke": [Attribute("mjc:solref", [0.02, 1.0], _solref_to_stiffness)],
-            "limit_angular_ke": [Attribute("mjc:solref", [0.02, 1.0], _solref_to_stiffness)],
-            "limit_rotX_ke": [Attribute("mjc:solref", [0.02, 1.0], _solref_to_stiffness)],
-            "limit_rotY_ke": [Attribute("mjc:solref", [0.02, 1.0], _solref_to_stiffness)],
-            "limit_rotZ_ke": [Attribute("mjc:solref", [0.02, 1.0], _solref_to_stiffness)],
-            "limit_linear_kd": [Attribute("mjc:solref", [0.02, 1.0], _solref_to_damping)],
-            "limit_angular_kd": [Attribute("mjc:solref", [0.02, 1.0], _solref_to_damping)],
-            "limit_rotX_kd": [Attribute("mjc:solref", [0.02, 1.0], _solref_to_damping)],
-            "limit_rotY_kd": [Attribute("mjc:solref", [0.02, 1.0], _solref_to_damping)],
-            "limit_rotZ_kd": [Attribute("mjc:solref", [0.02, 1.0], _solref_to_damping)],
+            "limit_transX_ke": Attribute("mjc:solref", [0.02, 1.0], _solref_to_stiffness),
+            "limit_transY_ke": Attribute("mjc:solref", [0.02, 1.0], _solref_to_stiffness),
+            "limit_transZ_ke": Attribute("mjc:solref", [0.02, 1.0], _solref_to_stiffness),
+            "limit_transX_kd": Attribute("mjc:solref", [0.02, 1.0], _solref_to_damping),
+            "limit_transY_kd": Attribute("mjc:solref", [0.02, 1.0], _solref_to_damping),
+            "limit_transZ_kd": Attribute("mjc:solref", [0.02, 1.0], _solref_to_damping),
+            "limit_linear_ke": Attribute("mjc:solref", [0.02, 1.0], _solref_to_stiffness),
+            "limit_angular_ke": Attribute("mjc:solref", [0.02, 1.0], _solref_to_stiffness),
+            "limit_rotX_ke": Attribute("mjc:solref", [0.02, 1.0], _solref_to_stiffness),
+            "limit_rotY_ke": Attribute("mjc:solref", [0.02, 1.0], _solref_to_stiffness),
+            "limit_rotZ_ke": Attribute("mjc:solref", [0.02, 1.0], _solref_to_stiffness),
+            "limit_linear_kd": Attribute("mjc:solref", [0.02, 1.0], _solref_to_damping),
+            "limit_angular_kd": Attribute("mjc:solref", [0.02, 1.0], _solref_to_damping),
+            "limit_rotX_kd": Attribute("mjc:solref", [0.02, 1.0], _solref_to_damping),
+            "limit_rotY_kd": Attribute("mjc:solref", [0.02, 1.0], _solref_to_damping),
+            "limit_rotZ_kd": Attribute("mjc:solref", [0.02, 1.0], _solref_to_damping),
         },
         PrimType.SHAPE: {
             # Mesh
-            "mesh_hull_vertex_limit": [Attribute("mjc:maxhullvert", MESH_MAXHULLVERT)],
+            "mesh_hull_vertex_limit": Attribute("mjc:maxhullvert", MESH_MAXHULLVERT),
             # Collisions
-            "rigid_contact_margin": [Attribute("mjc:margin", 0.0)],
+            "rigid_contact_margin": Attribute("mjc:margin", 0.0),
         },
         PrimType.MATERIAL: {
             # Materials and contact models
-            "priority": [Attribute("mjc:priority", 0)],
-            "weight": [Attribute("mjc:solmix", 1.0)],
-            "stiffness": [Attribute("mjc:solref", [0.02, 1.0], _solref_to_stiffness)],
-            "damping": [Attribute("mjc:solref", [0.02, 1.0], _solref_to_damping)],
+            "priority": Attribute("mjc:priority", 0),
+            "weight": Attribute("mjc:solmix", 1.0),
+            "stiffness": Attribute("mjc:solref", [0.02, 1.0], _solref_to_stiffness),
+            "damping": Attribute("mjc:solref", [0.02, 1.0], _solref_to_damping),
         },
         PrimType.BODY: {
             # Rigid body / joint domain
-            "rigid_body_linear_damping": [Attribute("mjc:damping", 0.0)],
+            "rigid_body_linear_damping": Attribute("mjc:damping", 0.0),
         },
         PrimType.ACTUATOR: {
             # Actuators
-            "ctrl_low": [Attribute("mjc:ctrlRange:min", 0.0)],
-            "ctrl_high": [Attribute("mjc:ctrlRange:max", 0.0)],
-            "force_low": [Attribute("mjc:forceRange:min", 0.0)],
-            "force_high": [Attribute("mjc:forceRange:max", 0.0)],
-            "act_low": [Attribute("mjc:actRange:min", 0.0)],
-            "act_high": [Attribute("mjc:actRange:max", 0.0)],
-            "length_low": [Attribute("mjc:lengthRange:min", 0.0)],
-            "length_high": [Attribute("mjc:lengthRange:max", 0.0)],
-            "gainPrm": [Attribute("mjc:gainPrm", [1, 0, 0, 0, 0, 0, 0, 0, 0, 0])],
-            "gainType": [Attribute("mjc:gainType", "fixed")],
-            "biasPrm": [Attribute("mjc:biasPrm", [0, 0, 0, 0, 0, 0, 0, 0, 0, 0])],
-            "biasType": [Attribute("mjc:biasType", "none")],
-            "dynPrm": [Attribute("mjc:dynPrm", [1, 0, 0, 0, 0, 0, 0, 0, 0, 0])],
-            "dynType": [Attribute("mjc:dynType", "none")],
-            "gear": [Attribute("mjc:gear", [1, 0, 0, 0, 0, 0])],
+            "ctrl_low": Attribute("mjc:ctrlRange:min", 0.0),
+            "ctrl_high": Attribute("mjc:ctrlRange:max", 0.0),
+            "force_low": Attribute("mjc:forceRange:min", 0.0),
+            "force_high": Attribute("mjc:forceRange:max", 0.0),
+            "act_low": Attribute("mjc:actRange:min", 0.0),
+            "act_high": Attribute("mjc:actRange:max", 0.0),
+            "length_low": Attribute("mjc:lengthRange:min", 0.0),
+            "length_high": Attribute("mjc:lengthRange:max", 0.0),
+            "gainPrm": Attribute("mjc:gainPrm", [1, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
+            "gainType": Attribute("mjc:gainType", "fixed"),
+            "biasPrm": Attribute("mjc:biasPrm", [0, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
+            "biasType": Attribute("mjc:biasType", "none"),
+            "dynPrm": Attribute("mjc:dynPrm", [1, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
+            "dynType": Attribute("mjc:dynType", "none"),
+            "gear": Attribute("mjc:gear", [1, 0, 0, 0, 0, 0]),
         },
     }
 
@@ -691,11 +689,12 @@ class _ResolverManager:
 
         # 3) Solver mapping defaults in priority order
         for resolver in self.resolvers:
-            specs = resolver.mapping.get(prim_type, {}).get(key, []) if hasattr(resolver, "mapping") else []
-            for spec in specs:
+            spec = resolver.mapping.get(prim_type, {}).get(key) if hasattr(resolver, "mapping") else None
+            if spec is not None:
                 d = getattr(spec, "default", None)
                 if d is not None:
-                    return spec.transformer(d) if getattr(spec, "transformer", None) else d
+                    transformer = getattr(spec, "transformer", None)
+                    return transformer(d) if transformer is not None else d
 
         # Nothing found
         try:
