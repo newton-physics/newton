@@ -45,6 +45,11 @@ _mat53f = wp.types.matrix((5, 3), wp.float32)
 _vec5 = wp.types.vector(5, wp.float32)
 _vec5i = wp.types.vector(5, wp.int32)
 
+# Single-contact types (saves registers)
+_mat13f = wp.types.matrix((1, 3), wp.float32)
+_vec1 = wp.types.vector(1, wp.float32)
+_vec1i = wp.types.vector(1, wp.int32)
+
 
 def create_solve_convex_multi_contact(support_func: Any):
     """
@@ -170,3 +175,115 @@ def create_solve_convex_multi_contact(support_func: Any):
         return count, normal, signed_distances, points, features
 
     return solve_convex_multi_contact
+
+
+def create_solve_convex_single_contact(support_func: Any):
+    """
+    Factory function to create a single-contact collision solver for convex shapes.
+
+    This function creates a collision detector that generates 1 contact point.
+    It combines GJK and MPR but skips manifold generation:
+    1. MPR for initial collision detection and signed distance (fast for overlapping shapes)
+    2. GJK as fallback for separated shapes
+
+    Args:
+        support_func: Support mapping function for shapes that takes
+                     (geometry, direction, data_provider) and returns (point, feature_id)
+
+    Returns:
+        solve_convex_single_contact function that computes a single contact point.
+    """
+
+    @wp.func
+    def solve_convex_single_contact(
+        geom_a: Any,
+        geom_b: Any,
+        orientation_a: wp.quat,
+        orientation_b: wp.quat,
+        position_a: wp.vec3,
+        position_b: wp.vec3,
+        sum_of_contact_offsets: float,
+        data_provider: Any,
+        contact_threshold: float = 0.0,
+    ) -> tuple[
+        int,
+        wp.vec3,
+        _vec1,
+        _mat13f,
+        _vec1i,
+    ]:
+        """
+        Compute a single contact point between two convex shapes.
+
+        This function skips multi-contact manifold generation for faster performance:
+        1. Runs MPR first (fast for overlapping shapes, which is the common case)
+        2. Falls back to GJK if MPR detects no collision
+
+        Args:
+            geom_a: Shape A geometry data
+            geom_b: Shape B geometry data
+            orientation_a: Orientation quaternion of shape A
+            orientation_b: Orientation quaternion of shape B
+            position_a: World position of shape A
+            position_b: World position of shape B
+            sum_of_contact_offsets: Sum of contact offsets for both shapes
+            data_provider: Support mapping data provider
+            contact_threshold: Signed distance threshold; skip contact if signed_distance > threshold (default: 0.0)
+            skip_multi_contact: Unused parameter for API compatibility
+        Returns:
+            Tuple of:
+                count (int): Number of valid contact points (0 or 1)
+                normal (wp.vec3): Contact normal from A to B
+                signed_distances (_vec1): Signed distance (negative when overlapping)
+                points (_mat13f): Contact point in world space (midpoint between shapes)
+                features (_vec1i): Feature ID for contact tracking (always 0 for single contacts)
+        """
+        # Enlarge a little bit to avoid contact flickering when the signed distance is close to 0
+        enlarge = 1e-4
+        # Try MPR first (optimized for overlapping shapes, which is the common case)
+        collision, signed_distance, point, normal, _feature_a_id, _feature_b_id = wp.static(
+            create_solve_mpr(support_func)
+        )(
+            geom_a,
+            geom_b,
+            orientation_a,
+            orientation_b,
+            position_a,
+            position_b,
+            sum_of_contact_offsets + enlarge,
+            data_provider,
+        )
+        signed_distance += enlarge
+
+        if not collision:
+            # MPR reported no collision, fall back to GJK for separated shapes
+            collision, signed_distance, point, normal, _feature_a_id, _feature_b_id = wp.static(
+                create_solve_closest_distance(support_func)
+            )(
+                geom_a,
+                geom_b,
+                orientation_a,
+                orientation_b,
+                position_a,
+                position_b,
+                sum_of_contact_offsets,
+                data_provider,
+            )
+
+        # Skip multi-contact manifold generation if requested or signed distance exceeds threshold
+        if skip_multi_contact or signed_distance > contact_threshold:
+            count = 1
+            signed_distances = _vec1(signed_distance)
+            points = _mat13f()
+            points[0] = point
+            features = _vec1i(0)
+            return count, normal, signed_distances, points, features
+
+        count = 1
+        signed_distances = _vec1(signed_distance)
+        points = _mat13f()
+        points[0] = point
+        features = _vec1i(0)
+        return count, normal, signed_distances, points, features
+
+    return solve_convex_single_contact
