@@ -1009,7 +1009,8 @@ def update_joint_transforms_kernel(
         joint_axis[worldid, ai] = wp.quat_rotate(child_xform.q, axis)
         joint_pos[worldid, ai] = child_xform.p
         # update joint limit solref using negative convention
-        joint_solref[worldid, ai] = wp.vec2(-joint_limit_ke[newton_dof_index], -joint_limit_kd[newton_dof_index])
+        if joint_limit_ke[newton_dof_index] > 0:
+            joint_solref[worldid, ai] = wp.vec2(-joint_limit_ke[newton_dof_index], -joint_limit_kd[newton_dof_index])
 
     # update angular dofs
     for i in range(ang_axis_count):
@@ -1019,7 +1020,8 @@ def update_joint_transforms_kernel(
         joint_axis[worldid, ai] = wp.quat_rotate(child_xform.q, axis)
         joint_pos[worldid, ai] = child_xform.p
         # update joint limit solref using negative convention
-        joint_solref[worldid, ai] = wp.vec2(-joint_limit_ke[newton_dof_index], -joint_limit_kd[newton_dof_index])
+        if joint_limit_ke[newton_dof_index] > 0:
+            joint_solref[worldid, ai] = wp.vec2(-joint_limit_ke[newton_dof_index], -joint_limit_kd[newton_dof_index])
 
     # update body pos and quat from parent joint transform
     child = joint_child[joint_in_world]  # Newton body id
@@ -2257,7 +2259,8 @@ class SolverMuJoCo(SolverBase):
                         joint_params["limited"] = True
                         joint_params["range"] = (lower, upper)
                         # Use negative convention for solref_limit: (-stiffness, -damping)
-                        joint_params["solref_limit"] = (-joint_limit_ke[ai], -joint_limit_kd[ai])
+                        if joint_limit_ke[ai] > 0:
+                            joint_params["solref_limit"] = (-joint_limit_ke[ai], -joint_limit_kd[ai])
                         if self.joint_solimp_limit is not None:
                             joint_params["solimp_limit"] = self.joint_solimp_limit
                     axname = name
@@ -2322,7 +2325,8 @@ class SolverMuJoCo(SolverBase):
                         joint_params["limited"] = True
                         joint_params["range"] = (np.rad2deg(lower), np.rad2deg(upper))
                         # Use negative convention for solref_limit: (-stiffness, -damping)
-                        joint_params["solref_limit"] = (-joint_limit_ke[ai], -joint_limit_kd[ai])
+                        if joint_limit_ke[ai] > 0:
+                            joint_params["solref_limit"] = (-joint_limit_ke[ai], -joint_limit_kd[ai])
                         if self.joint_solimp_limit is not None:
                             joint_params["solimp_limit"] = self.joint_solimp_limit
                     axname = name
