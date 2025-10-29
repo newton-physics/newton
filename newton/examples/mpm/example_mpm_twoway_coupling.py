@@ -371,27 +371,25 @@ class Example:
         bed_hi = np.array([1.0, 1.0, 0.5])
         bed_res = np.array(np.ceil(particles_per_cell * (bed_hi - bed_lo) / voxel_size), dtype=int)
 
-        # spawn particles on a jittered grid
-        Nx, Ny, Nz = bed_res
-        px = np.linspace(bed_lo[0], bed_hi[0], Nx + 1)
-        py = np.linspace(bed_lo[1], bed_hi[1], Ny + 1)
-        pz = np.linspace(bed_lo[2], bed_hi[2], Nz + 1)
-        points = np.stack(np.meshgrid(px, py, pz)).reshape(3, -1).T
-
         cell_size = (bed_hi - bed_lo) / bed_res
         cell_volume = np.prod(cell_size)
         radius = float(np.max(cell_size) * 0.5)
         mass = float(np.prod(cell_volume) * density)
 
-        rng = np.random.default_rng()
-        points += 2.0 * radius * (rng.random(points.shape) - 0.5)
-        vel = np.zeros_like(points)
-
-        sand_builder.particle_q = points
-        sand_builder.particle_qd = vel
-        sand_builder.particle_mass = np.full(points.shape[0], mass)
-        sand_builder.particle_radius = np.full(points.shape[0], radius)
-        sand_builder.particle_flags = np.ones(points.shape[0], dtype=int)
+        sand_builder.add_particle_grid(
+            pos=wp.vec3(bed_lo),
+            rot=wp.quat_identity(),
+            vel=wp.vec3(0.0),
+            dim_x=bed_res[0] + 1,
+            dim_y=bed_res[1] + 1,
+            dim_z=bed_res[2] + 1,
+            cell_x=cell_size[0],
+            cell_y=cell_size[1],
+            cell_z=cell_size[2],
+            mass=mass,
+            jitter=2.0 * radius,
+            radius_mean=radius,
+        )
 
 
 if __name__ == "__main__":

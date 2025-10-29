@@ -146,42 +146,26 @@ class Example:
             dtype=int,
         )
 
-        Example._spawn_particles(builder, particle_res, particle_lo, particle_hi, density)
-
-    @staticmethod
-    def _spawn_particles(
-        builder: newton.ModelBuilder,
-        res,
-        bounds_lo,
-        bounds_hi,
-        density,
-    ):
-        Nx = res[0]
-        Ny = res[1]
-        Nz = res[2]
-
-        px = np.linspace(bounds_lo[0], bounds_hi[0], Nx + 1)
-        py = np.linspace(bounds_lo[1], bounds_hi[1], Ny + 1)
-        pz = np.linspace(bounds_lo[2], bounds_hi[2], Nz + 1)
-
-        points = np.stack(np.meshgrid(px, py, pz)).reshape(3, -1).T
-
-        cell_size = (bounds_hi - bounds_lo) / res
+        cell_size = (particle_hi - particle_lo) / particle_res
         cell_volume = np.prod(cell_size)
 
         radius = np.max(cell_size) * 0.5
         mass = np.prod(cell_volume) * density
 
-        rng = np.random.default_rng(42)
-        points += 2.0 * radius * (rng.random(points.shape) - 0.5)
-        vel = np.zeros_like(points)
-
-        builder.particle_q = points
-        builder.particle_qd = vel
-        builder.particle_mass = np.full(points.shape[0], mass)
-        builder.particle_radius = np.full(points.shape[0], radius)
-
-        builder.particle_flags = np.ones(points.shape[0], dtype=int)
+        builder.add_particle_grid(
+            pos=wp.vec3(particle_lo),
+            rot=wp.quat_identity(),
+            vel=wp.vec3(0.0),
+            dim_x=particle_res[0] + 1,
+            dim_y=particle_res[1] + 1,
+            dim_z=particle_res[2] + 1,
+            cell_x=cell_size[0],
+            cell_y=cell_size[1],
+            cell_z=cell_size[2],
+            mass=mass,
+            jitter=2.0 * radius,
+            radius_mean=radius,
+        )
 
 
 if __name__ == "__main__":

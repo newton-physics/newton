@@ -3699,6 +3699,7 @@ class ModelBuilder:
         jitter: float,
         radius_mean: float | None = None,
         radius_std: float = 0.0,
+        flags: int | None = None,
     ):
         """
         Adds a regular 3D grid of particles to the model.
@@ -3721,26 +3722,42 @@ class ModelBuilder:
             jitter (float): Maximum random offset to apply to each particle position.
             radius_mean (float, optional): Mean radius for particles. If None, uses the builder's default.
             radius_std (float, optional): Standard deviation for particle radii. If > 0, radii are sampled from a normal distribution.
+            flags (int, optional): Flags to assign to each particle. If None, uses the builder's default.
 
         Returns:
             None
         """
-        radius_mean = radius_mean if radius_mean is not None else self.default_particle_radius
 
-        rng = np.random.default_rng(42)
-        for z in range(dim_z):
-            for y in range(dim_y):
-                for x in range(dim_x):
-                    v = wp.vec3(x * cell_x, y * cell_y, z * cell_z)
-                    m = mass
+        # local grid
+        px = np.arange(dim_x) * cell_x
+        py = np.arange(dim_y) * cell_y
+        pz = np.arange(dim_z) * cell_z
+        points = np.stack(np.meshgrid(px, py, pz)).reshape(3, -1).T
 
-                    p = wp.quat_rotate(rot, v) + pos + wp.vec3(rng.random(3) * jitter)
+        # apply transform to points
+        rot_mat = wp.quat_to_matrix(rot)
+        points = points @ np.array(rot_mat).reshape(3, 3).T + np.array(pos)
+        velocity = np.broadcast_to(np.array(vel).reshape(1, 3), points.shape)
 
-                    if radius_std > 0.0:
-                        r = radius_mean + rng.standard_normal() * radius_std
-                    else:
-                        r = radius_mean
-                    self.add_particle(p, vel, m, r)
+        # add jitter
+        rng = np.random.default_rng(42 + len(self.particle_q))
+        points += (rng.random(points.shape) - 0.5) * jitter
+
+        radii = np.full(points.shape[0], fill_value=radius_mean)
+        if radius_std > 0.0:
+            radii += rng.standard_normal(radii.shape) * radius_std
+
+        masses = [mass] * points.shape[0]
+        if flags is not None:
+            flags = [flags] * points.shape[0]
+
+        self.add_particles(
+            pos=points.tolist(),
+            vel=velocity.tolist(),
+            mass=masses,
+            radius=radii.tolist(),
+            flags=flags,
+        )
 
     def add_soft_grid(
         self,

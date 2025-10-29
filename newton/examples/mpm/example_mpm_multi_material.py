@@ -174,39 +174,30 @@ class Example:
             dtype=int,
         )
 
-        px = np.linspace(bounds_lo[0], bounds_hi[0], res[0] + 1)
-        py = np.linspace(bounds_lo[1], bounds_hi[1], res[1] + 1)
-        pz = np.linspace(bounds_lo[2], bounds_hi[2], res[2] + 1)
-
-        points = np.stack(np.meshgrid(px, py, pz)).reshape(3, -1).T
-
         cell_size = (bounds_hi - bounds_lo) / res
         cell_volume = np.prod(cell_size)
-
         radius = np.max(cell_size) * 0.5
         mass = np.prod(cell_volume) * density
 
-        rng = np.random.default_rng(42)
-        points += 2.0 * radius * (rng.random(points.shape) - 0.5)
-        vel = np.zeros_like(points)
+        begin_id = len(builder.particle_q)
+        builder.add_particle_grid(
+            pos=wp.vec3(bounds_lo),
+            rot=wp.quat_identity(),
+            vel=wp.vec3(0.0),
+            dim_x=res[0] + 1,
+            dim_y=res[1] + 1,
+            dim_z=res[2] + 1,
+            cell_x=cell_size[0],
+            cell_y=cell_size[1],
+            cell_z=cell_size[2],
+            mass=mass,
+            jitter=2.0 * radius,
+            radius_mean=radius,
+            flags=flags,
+        )
 
-        first_id = len(builder.particle_q)
-        if first_id == 0:
-            builder.particle_q = points
-            builder.particle_qd = vel
-            builder.particle_mass = np.full(points.shape[0], mass)
-            builder.particle_radius = np.full(points.shape[0], radius)
-            builder.particle_flags = np.full(points.shape[0], flags, dtype=int)
-        else:
-            builder.particle_q = np.concatenate([builder.particle_q, points])
-            builder.particle_qd = np.concatenate([builder.particle_qd, vel])
-            builder.particle_mass = np.concatenate([builder.particle_mass, np.full(points.shape[0], mass)])
-            builder.particle_radius = np.concatenate([builder.particle_radius, np.full(points.shape[0], radius)])
-            builder.particle_flags = np.concatenate(
-                [builder.particle_flags, np.full(points.shape[0], flags, dtype=int)]
-            )
-
-        return np.arange(first_id, first_id + points.shape[0], dtype=int)
+        end_id = len(builder.particle_q)
+        return np.arange(begin_id, end_id, dtype=int)
 
 
 if __name__ == "__main__":
