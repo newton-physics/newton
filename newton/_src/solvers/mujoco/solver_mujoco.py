@@ -1323,7 +1323,7 @@ class SolverMuJoCo(SolverBase):
             if separate_worlds is None:
                 separate_worlds = not use_mujoco_cpu
             with wp.ScopedTimer("convert_model_to_mujoco", active=False):
-                self.convert_to_mjc(
+                self._convert_to_mjc(
                     model,
                     disableflags=disableflags,
                     disable_contacts=disable_contacts,
@@ -1775,7 +1775,7 @@ class SolverMuJoCo(SolverBase):
         )
         contacts.n_contacts = mj_data.nacon
 
-    def convert_to_mjc(
+    def _convert_to_mjc(
         self,
         model: Model,
         state: State | None = None,
