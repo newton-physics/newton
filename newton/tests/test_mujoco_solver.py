@@ -67,7 +67,7 @@ class TestMuJoCoSolver(unittest.TestCase):
         model = builder.finalize()
 
         # Test with custom tolerance and ls_tolerance values
-        custom_tolerance = 1e-8
+        custom_tolerance = 1e-2
         custom_ls_tolerance = 0.001
         solver = SolverMuJoCo(model, tolerance=custom_tolerance, ls_tolerance=custom_ls_tolerance)
 
