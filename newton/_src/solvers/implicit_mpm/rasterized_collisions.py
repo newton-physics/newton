@@ -231,7 +231,6 @@ def project_outside_collider(
         collider: Collider description and geometry.
         body_q: Rigid body transforms.
         body_qd: Rigid body velocities.
-        voxel_size: Grid voxel edge length (used for thresholds/scales).
         dt: Timestep length.
         positions_out: Output particle positions.
         velocities_out: Output particle velocities.
