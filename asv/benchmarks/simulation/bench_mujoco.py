@@ -145,7 +145,7 @@ class _NewtonOverheadBenchmark:
         if not hasattr(self, "builder") or self.builder is None:
             self.builder = {}
         if num_worlds not in self.builder:
-            self.builder[num_worlds] = Example.create_model_builder(self.robot, num_worlds, randomize=True, seed=123)
+            self.builder[num_worlds] = Example.create_model_builder(self.robot, num_worlds, randomize=self.random_init, seed=123)
 
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
     def track_simulate(self, num_worlds):
