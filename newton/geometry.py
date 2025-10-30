@@ -30,17 +30,13 @@ from ._src.geometry import (
     collide_sphere_cylinder,
     collide_sphere_sphere,
 )
-from ._src.geometry.flags import ShapeFlags
 from ._src.geometry.inertia import compute_shape_inertia, transform_inertia
-from ._src.geometry.types import GeoType
 from ._src.geometry.utils import remesh_mesh
 
 __all__ = [
     "BroadPhaseAllPairs",
     "BroadPhaseExplicit",
     "BroadPhaseSAP",
-    "GeoType",
-    "ShapeFlags",
     "collide_box_box",
     "collide_capsule_box",
     "collide_capsule_capsule",
