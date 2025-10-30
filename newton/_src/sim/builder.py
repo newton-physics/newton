@@ -56,7 +56,7 @@ from ..geometry import (
 from ..geometry.inertia import validate_and_correct_inertia_kernel, verify_and_correct_inertia
 from ..geometry.utils import RemeshingMethod, compute_inertia_obb, remesh_mesh
 from ..utils import compute_world_offsets
-from ..utils.schema_resolver import SchemaResolver
+from ..usd import SchemaResolver
 from .graph_coloring import ColoringAlgorithm, color_trimesh, combine_independent_particle_coloring
 from .joints import (
     EqType,

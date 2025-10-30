@@ -26,7 +26,6 @@ import numpy as np
 import warp as wp
 
 from ..core.types import Devicelike
-from ..usd import utils as usd
 from .contacts import Contacts
 from .control import Control
 from .state import State
@@ -138,6 +137,8 @@ class CustomAttribute:
         if self.mjcf_attribute_name is None:
             self.mjcf_attribute_name = self.name
         if self.usd_value_transformer is None:
+            from ..usd import utils as usd  # noqa: PLC0415
+
             self.usd_value_transformer = lambda v: usd.convert_warp_value(v, self.dtype)
 
     @staticmethod
