@@ -445,6 +445,79 @@ def parse_mjcf(
 
         return shapes
 
+    def parse_sites(defaults, body_name, link, sites, incoming_xform=None):
+        """Parse site elements from MJCF."""
+        from ..geometry import GeoType  # noqa: PLC0415
+
+        site_shapes = []
+        for site_count, site in enumerate(sites):
+            site_defaults = defaults
+            if "class" in site.attrib:
+                site_class = site.attrib["class"]
+                ignore_site = False
+                for pattern in ignore_classes:
+                    if re.match(pattern, site_class):
+                        ignore_site = True
+                        break
+                if ignore_site:
+                    continue
+                if site_class in class_defaults:
+                    site_defaults = merge_attrib(defaults, class_defaults[site_class])
+
+            if "site" in site_defaults:
+                site_attrib = merge_attrib(site_defaults["site"], site.attrib)
+            else:
+                site_attrib = site.attrib
+
+            site_name = site_attrib.get("name", f"{body_name}_site_{site_count}")
+
+            # Check if site should be ignored by name
+            ignore_site = False
+            for pattern in ignore_names:
+                if re.match(pattern, site_name):
+                    ignore_site = True
+                    break
+            if ignore_site:
+                continue
+
+            # Parse site transform
+            site_pos = parse_vec(site_attrib, "pos", (0.0, 0.0, 0.0)) * scale
+            site_rot = parse_orientation(site_attrib)
+            site_xform = wp.transform(site_pos, site_rot)
+
+            if incoming_xform is not None:
+                site_xform = incoming_xform * site_xform
+
+            # Parse site type (defaults to sphere if not specified)
+            site_type = site_attrib.get("type", "sphere")
+            site_size = parse_vec(site_attrib, "size", [0.01, 0.01, 0.01]) * scale
+
+            # Map MuJoCo site types to Newton GeoType
+            type_map = {
+                "sphere": GeoType.SPHERE,
+                "box": GeoType.BOX,
+                "capsule": GeoType.CAPSULE,
+                "cylinder": GeoType.CYLINDER,
+                "ellipsoid": GeoType.ELLIPSOID,
+            }
+            geo_type = type_map.get(site_type, GeoType.SPHERE)
+
+            # Sites are typically hidden by default
+            visible = False
+
+            # Add site using builder.add_site()
+            s = builder.add_site(
+                body=link,
+                xform=site_xform,
+                type=geo_type,
+                scale=tuple(site_size),
+                key=site_name,
+                visible=visible,
+            )
+            site_shapes.append(s)
+
+        return site_shapes
+
     def parse_body(
         body,
         parent,
@@ -705,6 +778,16 @@ def parse_mjcf(
             visible=show_colliders,
         )
 
+        # Parse sites (non-colliding reference points)
+        sites = body.findall("site")
+        if sites:
+            parse_sites(
+                defaults,
+                body_name,
+                link,
+                sites=sites,
+            )
+
         m = builder.body_mass[link]
         if not ignore_inertial_definitions and body.find("inertial") is not None:
             inertial = body.find("inertial")
@@ -905,6 +988,14 @@ def parse_mjcf(
         link=-1,
         geoms=world.findall("geom"),
         density=default_shape_density,
+        incoming_xform=xform,
+    )
+
+    parse_sites(
+        defaults=world_defaults,
+        body_name="world",
+        link=-1,
+        sites=world.findall("site"),
         incoming_xform=xform,
     )
 
