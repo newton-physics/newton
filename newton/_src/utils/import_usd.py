@@ -363,6 +363,10 @@ def parse_usd(
             return
         scale = parse_scale(prim)
         shape_id = -1
+
+        # Check if this prim is a site (has MjcSiteAPI applied)
+        is_site = prim.HasAPI("MjcSiteAPI")
+
         if path_name not in path_shape_map:
             if type_name == "cube":
                 size = parse_float(prim, "size", 2.0)
@@ -373,15 +377,28 @@ def parse_usd(
                     extents = extents[1] - extents[0]
                 else:
                     extents = scale * size
-                shape_id = builder.add_shape_box(
-                    parent_body_id,
-                    xform,
-                    hx=extents[0] / 2,
-                    hy=extents[1] / 2,
-                    hz=extents[2] / 2,
-                    cfg=visual_shape_cfg,
-                    key=path_name,
-                )
+
+                if is_site:
+                    from ..geometry import GeoType  # noqa: PLC0415
+
+                    shape_id = builder.add_site(
+                        parent_body_id,
+                        xform,
+                        type=GeoType.BOX,
+                        scale=extents,
+                        key=path_name,
+                        visible=False,
+                    )
+                else:
+                    shape_id = builder.add_shape_box(
+                        parent_body_id,
+                        xform,
+                        hx=extents[0] / 2,
+                        hy=extents[1] / 2,
+                        hz=extents[2] / 2,
+                        cfg=visual_shape_cfg,
+                        key=path_name,
+                    )
             elif type_name == "sphere":
                 if not (scale[0] == scale[1] == scale[2]):
                     print("Warning: Non-uniform scaling of spheres is not supported.")
@@ -395,13 +412,26 @@ def parse_usd(
                     radius = extents[0]
                 else:
                     radius = parse_float(prim, "radius", 1.0) * scale[0]
-                shape_id = builder.add_shape_sphere(
-                    parent_body_id,
-                    xform,
-                    radius,
-                    cfg=visual_shape_cfg,
-                    key=path_name,
-                )
+
+                if is_site:
+                    from ..geometry import GeoType  # noqa: PLC0415
+
+                    shape_id = builder.add_site(
+                        parent_body_id,
+                        xform,
+                        type=GeoType.SPHERE,
+                        scale=(radius, 0.0, 0.0),
+                        key=path_name,
+                        visible=False,
+                    )
+                else:
+                    shape_id = builder.add_shape_sphere(
+                        parent_body_id,
+                        xform,
+                        radius,
+                        cfg=visual_shape_cfg,
+                        key=path_name,
+                    )
             elif type_name == "plane":
                 axis_str = parse_generic(prim, "axis", "Z").upper()
                 plane_xform = xform
@@ -426,14 +456,27 @@ def parse_usd(
                 # Apply axis rotation to transform
                 axis_idx = "XYZ".index(axis_str)
                 xform = wp.transform(xform.p, xform.q * quat_between_axes(Axis.Z, axis_idx))
-                shape_id = builder.add_shape_capsule(
-                    parent_body_id,
-                    xform,
-                    radius,
-                    half_height,
-                    cfg=visual_shape_cfg,
-                    key=path_name,
-                )
+
+                if is_site:
+                    from ..geometry import GeoType  # noqa: PLC0415
+
+                    shape_id = builder.add_site(
+                        parent_body_id,
+                        xform,
+                        type=GeoType.CAPSULE,
+                        scale=(radius, half_height, 0.0),
+                        key=path_name,
+                        visible=False,
+                    )
+                else:
+                    shape_id = builder.add_shape_capsule(
+                        parent_body_id,
+                        xform,
+                        radius,
+                        half_height,
+                        cfg=visual_shape_cfg,
+                        key=path_name,
+                    )
             elif type_name == "cylinder":
                 axis_str = parse_generic(prim, "axis", "Z").upper()
                 radius = parse_float(prim, "radius", 0.5) * scale[0]
@@ -442,14 +485,27 @@ def parse_usd(
                 # Apply axis rotation to transform
                 axis_idx = "XYZ".index(axis_str)
                 xform = wp.transform(xform.p, xform.q * quat_between_axes(Axis.Z, axis_idx))
-                shape_id = builder.add_shape_cylinder(
-                    parent_body_id,
-                    xform,
-                    radius,
-                    half_height,
-                    cfg=visual_shape_cfg,
-                    key=path_name,
-                )
+
+                if is_site:
+                    from ..geometry import GeoType  # noqa: PLC0415
+
+                    shape_id = builder.add_site(
+                        parent_body_id,
+                        xform,
+                        type=GeoType.CYLINDER,
+                        scale=(radius, half_height, 0.0),
+                        key=path_name,
+                        visible=False,
+                    )
+                else:
+                    shape_id = builder.add_shape_cylinder(
+                        parent_body_id,
+                        xform,
+                        radius,
+                        half_height,
+                        cfg=visual_shape_cfg,
+                        key=path_name,
+                    )
             elif type_name == "cone":
                 axis_str = parse_generic(prim, "axis", "Z").upper()
                 radius = parse_float(prim, "radius", 0.5) * scale[0]
