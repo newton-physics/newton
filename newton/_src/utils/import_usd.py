@@ -394,7 +394,7 @@ def parse_usd(
                         print("Warning: Non-uniform extents of spheres are not supported.")
                     radius = extents[0]
                 else:
-                    radius = parse_float(prim, "radius", 1.0)
+                    radius = parse_float(prim, "radius", 1.0) * max(scale)
                 shape_id = builder.add_shape_sphere(
                     parent_body_id,
                     xform,
@@ -1412,8 +1412,8 @@ def parse_usd(
                     )
                     shape_id = builder.add_shape_capsule(
                         **shape_params,
-                        radius=shape_spec.radius * scale[(int(shape_spec.axis) + 1) % 3],
-                        half_height=shape_spec.halfHeight * scale[int(shape_spec.axis)],
+                        radius=shape_spec.radius,
+                        half_height=shape_spec.halfHeight,
                     )
                 elif key == UsdPhysics.ObjectType.CylinderShape:
                     # Apply axis rotation to transform
@@ -1423,8 +1423,8 @@ def parse_usd(
                     )
                     shape_id = builder.add_shape_cylinder(
                         **shape_params,
-                        radius=shape_spec.radius * scale[(int(shape_spec.axis) + 1) % 3],
-                        half_height=shape_spec.halfHeight * scale[int(shape_spec.axis)],
+                        radius=shape_spec.radius,
+                        half_height=shape_spec.halfHeight,
                     )
                 elif key == UsdPhysics.ObjectType.ConeShape:
                     # Apply axis rotation to transform
@@ -1434,8 +1434,8 @@ def parse_usd(
                     )
                     shape_id = builder.add_shape_cone(
                         **shape_params,
-                        radius=shape_spec.radius * scale[(int(shape_spec.axis) + 1) % 3],
-                        half_height=shape_spec.halfHeight * scale[int(shape_spec.axis)],
+                        radius=shape_spec.radius,
+                        half_height=shape_spec.halfHeight,
                     )
                 elif key == UsdPhysics.ObjectType.MeshShape:
                     mesh = UsdGeom.Mesh(prim)
