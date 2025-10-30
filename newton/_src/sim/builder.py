@@ -3229,9 +3229,8 @@ class ModelBuilder:
         cfg = self.default_shape_cfg.copy()
         cfg.is_visible = visible
         cfg.has_shape_collision = False
-        cfg.flags = ShapeFlags.SITE
-        if visible:
-            cfg.flags |= ShapeFlags.VISIBLE
+        cfg.has_particle_collision = False
+        cfg.is_site = True
 
         return self.add_shape(
             body=body,
