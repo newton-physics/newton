@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from .broad_phase_common import test_group_pair, test_world_and_group_pair
 from .broad_phase_nxn import BroadPhaseAllPairs, BroadPhaseExplicit
 from .broad_phase_sap import BroadPhaseSAP
 from .collision_primitive import (
@@ -64,5 +65,7 @@ __all__ = [
     "compute_shape_inertia",
     "compute_shape_radius",
     "compute_sphere_inertia",
+    "test_group_pair",
+    "test_world_and_group_pair",
     "transform_inertia",
 ]

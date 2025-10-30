@@ -1344,11 +1344,12 @@ def parse_usd(
                 body_id = path_body_map.get(body_path, -1)
                 # scale = np.array(shape_spec.localScale)
                 scale = parse_scale(prim)
-                collision_group = -1
+                collision_group = 1  # See test_world_and_group_pair for full filtering logic
                 if len(shape_spec.collisionGroups) > 0:
                     cgroup_name = str(shape_spec.collisionGroups[0])
                     if cgroup_name not in collision_group_ids:
-                        collision_group_ids[cgroup_name] = len(collision_group_ids)
+                        # Start from 1 to avoid collision_group = 0 (which means "no collisions")
+                        collision_group_ids[cgroup_name] = len(collision_group_ids) + 1
                     collision_group = collision_group_ids[cgroup_name]
                 material = material_specs[""]
                 if len(shape_spec.materials) >= 1:
