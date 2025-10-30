@@ -637,6 +637,69 @@ class TestImportMjcf(unittest.TestCase):
             self.assertAlmostEqual(shape_scale[0], 0.75)  # radius
             self.assertAlmostEqual(shape_scale[1], 1.5)  # half_height
 
+    def test_solreflimit_parsing(self):
+        """Test that solreflimit joint attribute is correctly parsed and converted to limit_ke/limit_kd."""
+        mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="solreflimit_test">
+    <worldbody>
+        <!-- Joint with standard mode solreflimit -->
+        <body name="body1" pos="0 0 1">
+            <joint name="joint1" type="hinge" axis="0 0 1" range="-45 45" solreflimit="0.03 0.9"/>
+            <geom type="box" size="0.1 0.1 0.1"/>
+        </body>
+
+        <!-- Joint with direct mode solreflimit (negative values) -->
+        <body name="body2" pos="1 0 1">
+            <joint name="joint2" type="hinge" axis="0 0 1" range="-30 30" solreflimit="-100 -1"/>
+            <geom type="box" size="0.1 0.1 0.1"/>
+        </body>
+
+        <!-- Joint without solreflimit (should use defaults) -->
+        <body name="body3" pos="2 0 1">
+            <joint name="joint3" type="hinge" axis="0 0 1" range="-60 60"/>
+            <geom type="box" size="0.1 0.1 0.1"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mjcf_path = os.path.join(tmpdir, "solreflimit_test.xml")
+            with open(mjcf_path, "w") as f:
+                f.write(mjcf_content)
+
+            builder = newton.ModelBuilder()
+            builder.add_mjcf(mjcf_path)
+            model = builder.finalize()
+
+            # Test we have 3 joints
+            self.assertEqual(model.joint_count, 3)
+            self.assertEqual(len(model.joint_limit_ke), 3)
+            self.assertEqual(len(model.joint_limit_kd), 3)
+
+            # Convert warp arrays to numpy for testing
+            joint_limit_ke = model.joint_limit_ke.numpy()
+            joint_limit_kd = model.joint_limit_kd.numpy()
+
+            # Test joint1: standard mode solreflimit="0.03 0.9"
+            # Expected: ke = 1/(0.03^2) = 1111.11..., kd = 2*0.9/0.03 = 60.0
+            expected_ke_1 = 1.0 / (0.03 * 0.03)
+            expected_kd_1 = 2.0 * 0.9 / 0.03
+            self.assertAlmostEqual(joint_limit_ke[0], expected_ke_1, places=2)
+            self.assertAlmostEqual(joint_limit_kd[0], expected_kd_1, places=2)
+
+            # Test joint2: direct mode solreflimit="-100 -1"
+            # Expected: ke = 100, kd = 1
+            self.assertAlmostEqual(joint_limit_ke[1], 100.0, places=2)
+            self.assertAlmostEqual(joint_limit_kd[1], 1.0, places=2)
+
+            # Test joint3: no solreflimit (should use default 0.02, 1.0)
+            # Expected: ke = 1/(0.02^2) = 2500.0, kd = 2*1.0/0.02 = 100.0
+            expected_ke_3 = 1.0 / (0.02 * 0.02)
+            expected_kd_3 = 2.0 * 1.0 / 0.02
+            self.assertAlmostEqual(joint_limit_ke[2], expected_ke_3, places=2)
+            self.assertAlmostEqual(joint_limit_kd[2], expected_kd_3, places=2)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

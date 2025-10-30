@@ -46,7 +46,7 @@ class TestEqualityConstraints(unittest.TestCase):
             iterations=100,
             ls_iterations=50,
             njmax=100,
-            ncon_per_world=50,
+            nconmax=50,
         )
 
         self.control = self.model.control()
