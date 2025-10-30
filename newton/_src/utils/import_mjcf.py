@@ -505,12 +505,17 @@ def parse_mjcf(
             # Sites are typically hidden by default
             visible = False
 
+            # Expand to 3-element vector
+            if len(site_size) == 2:
+                # Two values (e.g., capsule/cylinder: radius, half-height)
+                site_size = wp.vec3(site_size.x, site_size.y, 1.0)
+
             # Add site using builder.add_site()
             s = builder.add_site(
                 body=link,
                 xform=site_xform,
                 type=geo_type,
-                scale=tuple(site_size),
+                scale=site_size,
                 key=site_name,
                 visible=visible,
             )
