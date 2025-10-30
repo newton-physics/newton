@@ -2096,12 +2096,14 @@ class SolverMuJoCo(SolverBase):
                 if shape not in selected_shapes_set:
                     # skip shapes that are not selected for this world
                     continue
-                if skip_visual_only_geoms and not (shape_flags[shape] & ShapeFlags.COLLIDE_SHAPES):
+                # Skip visual-only geoms, but don't skip sites
+                is_site = shape_flags[shape] & ShapeFlags.SITE
+                if skip_visual_only_geoms and not is_site and not (shape_flags[shape] & ShapeFlags.COLLIDE_SHAPES):
                     continue
                 stype = shape_type[shape]
                 name = f"{model.shape_key[shape]}_{shape}"
 
-                if include_sites and shape_flags[shape] & ShapeFlags.SITE:
+                if include_sites and is_site:
                     tf = wp.transform(*shape_transform[shape])
                     site_params = {
                         "type": geom_type_mapping[stype],
