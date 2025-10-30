@@ -67,6 +67,10 @@ from ._src.sim import (  # noqa: E402
     eval_ik,
     get_joint_dof_count,
 )
+from ._src.sim.model import (  # noqa: E402
+    ModelAttributeAssignment,
+    ModelAttributeFrequency,
+)
 
 __all__ += [
     "BroadPhaseMode",
@@ -78,6 +82,8 @@ __all__ += [
     "JointMode",
     "JointType",
     "Model",
+    "ModelAttributeAssignment",
+    "ModelAttributeFrequency",
     "ModelBuilder",
     "State",
     "count_rigid_contact_points",

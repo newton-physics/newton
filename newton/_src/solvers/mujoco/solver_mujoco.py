@@ -36,6 +36,7 @@ from ...sim import (
     plot_graph,
 )
 from ...utils import topological_sort
+from ...utils.benchmark import event_scope
 from ..flags import SolverNotifyFlags
 from ..solver import SolverBase
 
@@ -219,7 +220,7 @@ def convert_newton_contacts_to_mjwarp_kernel(
     bodies_per_world: int,
     to_mjc_geom_index: wp.array(dtype=wp.vec2i),
     # Mujoco warp contacts
-    ncon_out: wp.array(dtype=int),
+    nacon_out: wp.array(dtype=int),
     contact_dist_out: wp.array(dtype=float),
     contact_pos_out: wp.array(dtype=wp.vec3),
     contact_frame_out: wp.array(dtype=wp.mat33),
@@ -241,7 +242,7 @@ def convert_newton_contacts_to_mjwarp_kernel(
 
     # Set number of contacts (for a single world)
     if tid == 0:
-        ncon_out[0] = rigid_contact_count[0]
+        nacon_out[0] = rigid_contact_count[0]
         ncollision_out[0] = 0
 
     if tid >= rigid_contact_count[0]:
@@ -484,7 +485,7 @@ def convert_mjw_contact_to_warp_kernel(
     # inputs
     contact_geom_mapping: wp.array2d(dtype=wp.int32),
     pyramidal_cone: bool,
-    mj_ncon: wp.array(dtype=wp.int32),
+    mj_nacon: wp.array(dtype=wp.int32),
     mj_contact_frame: wp.array(dtype=wp.mat33f),
     mj_contact_dim: wp.array(dtype=int),
     mj_contact_geom: wp.array(dtype=wp.vec2i),
@@ -496,7 +497,7 @@ def convert_mjw_contact_to_warp_kernel(
     contact_normal: wp.array(dtype=wp.vec3f),
     contact_force: wp.array(dtype=float),
 ):
-    n_contacts = mj_ncon[0]
+    n_contacts = mj_nacon[0]
     contact_idx = wp.tid()
 
     if contact_idx >= n_contacts:
@@ -969,12 +970,15 @@ def update_joint_transforms_kernel(
     joint_original_axis: wp.array(dtype=wp.vec3),
     joint_child: wp.array(dtype=wp.int32),
     joint_type: wp.array(dtype=wp.int32),
+    joint_limit_ke: wp.array(dtype=float),
+    joint_limit_kd: wp.array(dtype=float),
     joint_mjc_dof_start: wp.array(dtype=wp.int32),
     body_mapping: wp.array(dtype=wp.int32),
     joints_per_world: int,
     # outputs
     joint_pos: wp.array2d(dtype=wp.vec3),
     joint_axis: wp.array2d(dtype=wp.vec3),
+    joint_solref: wp.array2d(dtype=wp.vec2),
     body_pos: wp.array2d(dtype=wp.vec3),
     body_quat: wp.array2d(dtype=wp.quat),
 ):
@@ -1000,17 +1004,25 @@ def update_joint_transforms_kernel(
 
     # update linear dofs
     for i in range(lin_axis_count):
-        axis = joint_original_axis[newton_dof_start + i]
+        newton_dof_index = newton_dof_start + i
+        axis = joint_original_axis[newton_dof_index]
         ai = mjc_dof_start + i
         joint_axis[worldid, ai] = wp.quat_rotate(child_xform.q, axis)
         joint_pos[worldid, ai] = child_xform.p
+        # update joint limit solref using negative convention
+        if joint_limit_ke[newton_dof_index] > 0:
+            joint_solref[worldid, ai] = wp.vec2(-joint_limit_ke[newton_dof_index], -joint_limit_kd[newton_dof_index])
 
     # update angular dofs
     for i in range(ang_axis_count):
-        axis = joint_original_axis[newton_dof_start + lin_axis_count + i]
+        newton_dof_index = newton_dof_start + lin_axis_count + i
+        axis = joint_original_axis[newton_dof_index]
         ai = mjc_dof_start + lin_axis_count + i
         joint_axis[worldid, ai] = wp.quat_rotate(child_xform.q, axis)
         joint_pos[worldid, ai] = child_xform.p
+        # update joint limit solref using negative convention
+        if joint_limit_ke[newton_dof_index] > 0:
+            joint_solref[worldid, ai] = wp.vec2(-joint_limit_ke[newton_dof_index], -joint_limit_kd[newton_dof_index])
 
     # update body pos and quat from parent joint transform
     child = joint_child[joint_in_world]  # Newton body id
@@ -1228,7 +1240,7 @@ class SolverMuJoCo(SolverBase):
         mjw_data: MjWarpData | None = None,
         separate_worlds: bool | None = None,
         njmax: int | None = None,
-        ncon_per_world: int | None = None,
+        nconmax: int | None = None,
         iterations: int = 20,
         ls_iterations: int = 10,
         solver: int | str = "cg",
@@ -1244,7 +1256,6 @@ class SolverMuJoCo(SolverBase):
         contact_stiffness_time_const: float = 0.02,
         ls_parallel: bool = False,
         use_mujoco_contacts: bool = True,
-        joint_solref_limit: tuple[float, float] | None = None,
         joint_solimp_limit: tuple[float, float, float, float, float] | None = None,
     ):
         """
@@ -1254,7 +1265,7 @@ class SolverMuJoCo(SolverBase):
             mjw_data (MjWarpData | None): Optional pre-existing MuJoCo Warp data. If provided with `mjw_model`, conversion from Newton model is skipped.
             separate_worlds (bool | None): If True, each Newton world is mapped to a separate MuJoCo world. Defaults to `not use_mujoco_cpu`.
             njmax (int): Maximum number of constraints per world. If None, a default value is estimated from the initial state. Note that the larger of the user-provided value or the default value is used.
-            ncon_per_world (int | None): Number of contact points per world. If None, a default value is estimated from the initial state. Note that the larger of the user-provided value or the default value is used.
+            nconmax (int | None): Number of contact points per world. If None, a default value is estimated from the initial state. Note that the larger of the user-provided value or the default value is used.
             iterations (int): Number of solver iterations.
             ls_iterations (int): Number of line search iterations for the solver.
             solver (int | str): Solver type. Can be "cg" or "newton", or their corresponding MuJoCo integer constants.
@@ -1271,14 +1282,12 @@ class SolverMuJoCo(SolverBase):
             contact_stiffness_time_const (float): Time constant for contact stiffness in MuJoCo's solver reference model. Defaults to 0.02 (20ms). Can be set to match the simulation timestep for tighter coupling.
             ls_parallel (bool): If True, enable parallel line search in MuJoCo. Defaults to False.
             use_mujoco_contacts (bool): If True, use the MuJoCo contact solver. If False, use the Newton contact solver (newton contacts must be passed in through the step function in that case).
-            joint_solref_limit (tuple[float, float] | None): Global solver reference parameters for all joint limits. If provided, applies these solref values to all joints created. Defaults to None (uses MuJoCo defaults).
             joint_solimp_limit (tuple[float, float, float, float, float] | None): Global solver impedance parameters for all joint limits. If provided, applies these solimp values to all joints created. Defaults to None (uses MuJoCo defaults).
         """
         super().__init__(model)
         # Import and cache MuJoCo modules (only happens once per class)
         mujoco, _ = self.import_mujoco()
         self.contact_stiffness_time_const = contact_stiffness_time_const
-        self.joint_solref_limit = joint_solref_limit
         self.joint_solimp_limit = joint_solimp_limit
 
         if use_mujoco_cpu and not use_mujoco_contacts:
@@ -1325,7 +1334,7 @@ class SolverMuJoCo(SolverBase):
                     disable_contacts=disable_contacts,
                     separate_worlds=separate_worlds,
                     njmax=njmax,
-                    ncon_per_world=ncon_per_world,
+                    nconmax=nconmax,
                     iterations=iterations,
                     ls_iterations=ls_iterations,
                     cone=cone,
@@ -1343,6 +1352,11 @@ class SolverMuJoCo(SolverBase):
         if self.mjw_model is not None:
             self.mjw_model.opt.run_collision_detection = use_mujoco_contacts
 
+    @event_scope
+    def mujoco_warp_step(self):
+        self._mujoco_warp.step(self.mjw_model, self.mjw_data)
+
+    @event_scope
     @override
     def step(self, state_in: State, state_out: State, control: Control, contacts: Contacts, dt: float):
         if self.use_mujoco_cpu:
@@ -1360,10 +1374,10 @@ class SolverMuJoCo(SolverBase):
             self.mjw_model.opt.timestep.fill_(dt)
             with wp.ScopedDevice(self.model.device):
                 if self.mjw_model.opt.run_collision_detection:
-                    self._mujoco_warp.step(self.mjw_model, self.mjw_data)
+                    self.mujoco_warp_step()
                 else:
                     self.convert_contacts_to_mjwarp(self.model, state_in, contacts)
-                    self._mujoco_warp.step(self.mjw_model, self.mjw_data)
+                    self.mujoco_warp_step()
 
             self.update_newton_state(self.model, state_out, self.mjw_data)
         self._step += 1
@@ -1397,7 +1411,7 @@ class SolverMuJoCo(SolverBase):
                 bodies_per_world,
                 self.to_mjc_geom_index,
                 # Mujoco warp contacts
-                self.mjw_data.ncon,
+                self.mjw_data.nacon,
                 self.mjw_data.contact.dist,
                 self.mjw_data.contact.pos,
                 self.mjw_data.contact.frame,
@@ -1729,30 +1743,30 @@ class SolverMuJoCo(SolverBase):
         # TODO: ensure that class invariants are preserved
         # TODO: fill actual contact arrays instead of creating new ones
         mj_data = self.mjw_data
-        nconmax = mj_data.nconmax
+        naconmax = mj_data.naconmax
         mj_contact = mj_data.contact
 
-        contacts.rigid_contact_max = nconmax
-        contacts.rigid_contact_count = mj_data.ncon
+        contacts.rigid_contact_max = naconmax
+        contacts.rigid_contact_count = mj_data.nacon
         contacts.position = mj_contact.pos
         contacts.separation = mj_contact.dist
 
         if not hasattr(contacts, "pair"):
-            contacts.pair = wp.empty(nconmax, dtype=wp.vec2i, device=self.model.device)
+            contacts.pair = wp.empty(naconmax, dtype=wp.vec2i, device=self.model.device)
 
         if not hasattr(contacts, "normal"):
-            contacts.normal = wp.empty(nconmax, dtype=wp.vec3f, device=self.model.device)
+            contacts.normal = wp.empty(naconmax, dtype=wp.vec3f, device=self.model.device)
 
         if not hasattr(contacts, "force"):
-            contacts.force = wp.empty(nconmax, dtype=wp.float32, device=self.model.device)
+            contacts.force = wp.empty(naconmax, dtype=wp.float32, device=self.model.device)
 
         wp.launch(
             convert_mjw_contact_to_warp_kernel,
-            dim=mj_data.nconmax,
+            dim=mj_data.naconmax,
             inputs=[
                 self.to_newton_shape_index,
                 self.mjw_model.opt.cone == int(self._mujoco.mjtCone.mjCONE_PYRAMIDAL),
-                mj_data.ncon,
+                mj_data.nacon,
                 mj_contact.frame,
                 mj_contact.dim,
                 mj_contact.geom,
@@ -1767,7 +1781,7 @@ class SolverMuJoCo(SolverBase):
             ],
             device=self.model.device,
         )
-        contacts.n_contacts = mj_data.ncon
+        contacts.n_contacts = mj_data.nacon
 
     def convert_to_mjc(
         self,
@@ -1778,7 +1792,7 @@ class SolverMuJoCo(SolverBase):
         iterations: int = 20,
         ls_iterations: int = 10,
         njmax: int | None = None,  # number of constraints per world
-        ncon_per_world: int | None = None,
+        nconmax: int | None = None,
         solver: int | str = "cg",
         integrator: int | str = "implicitfast",
         disableflags: int = 0,
@@ -1955,6 +1969,8 @@ class SolverMuJoCo(SolverBase):
         joint_child_xform = model.joint_X_c.numpy()
         joint_limit_lower = model.joint_limit_lower.numpy()
         joint_limit_upper = model.joint_limit_upper.numpy()
+        joint_limit_ke = model.joint_limit_ke.numpy()
+        joint_limit_kd = model.joint_limit_kd.numpy()
         joint_type = model.joint_type.numpy()
         joint_axis = model.joint_axis.numpy()
         joint_dof_dim = model.joint_dof_dim.numpy()
@@ -2248,9 +2264,9 @@ class SolverMuJoCo(SolverBase):
                     else:
                         joint_params["limited"] = True
                         joint_params["range"] = (lower, upper)
-                        # Add global solver parameters if provided
-                        if self.joint_solref_limit is not None:
-                            joint_params["solref_limit"] = self.joint_solref_limit
+                        # Use negative convention for solref_limit: (-stiffness, -damping)
+                        if joint_limit_ke[ai] > 0:
+                            joint_params["solref_limit"] = (-joint_limit_ke[ai], -joint_limit_kd[ai])
                         if self.joint_solimp_limit is not None:
                             joint_params["solimp_limit"] = self.joint_solimp_limit
                     axname = name
@@ -2314,9 +2330,9 @@ class SolverMuJoCo(SolverBase):
                     else:
                         joint_params["limited"] = True
                         joint_params["range"] = (np.rad2deg(lower), np.rad2deg(upper))
-                        # Add global solver parameters if provided
-                        if self.joint_solref_limit is not None:
-                            joint_params["solref_limit"] = self.joint_solref_limit
+                        # Use negative convention for solref_limit: (-stiffness, -damping)
+                        if joint_limit_ke[ai] > 0:
+                            joint_params["solref_limit"] = (-joint_limit_ke[ai], -joint_limit_kd[ai])
                         if self.joint_solimp_limit is not None:
                             joint_params["solimp_limit"] = self.joint_solimp_limit
                     axname = name
@@ -2367,8 +2383,8 @@ class SolverMuJoCo(SolverBase):
 
             add_geoms(child)
 
-        for i, typ in enumerate(eq_constraint_type):
-            if typ == EqType.CONNECT:
+        for i, constraint_type in enumerate(eq_constraint_type):
+            if constraint_type == EqType.CONNECT:
                 eq = spec.add_equality(objtype=mujoco.mjtObj.mjOBJ_BODY)
                 eq.type = mujoco.mjtEq.mjEQ_CONNECT
                 eq.active = eq_constraint_enabled[i]
@@ -2376,7 +2392,7 @@ class SolverMuJoCo(SolverBase):
                 eq.name2 = model.body_key[eq_constraint_body2[i]]
                 eq.data[0:3] = eq_constraint_anchor[i]
 
-            elif typ == EqType.JOINT:
+            elif constraint_type == EqType.JOINT:
                 eq = spec.add_equality(objtype=mujoco.mjtObj.mjOBJ_JOINT)
                 eq.type = mujoco.mjtEq.mjEQ_JOINT
                 eq.active = eq_constraint_enabled[i]
@@ -2384,7 +2400,7 @@ class SolverMuJoCo(SolverBase):
                 eq.name2 = model.joint_key[eq_constraint_joint2[i]]
                 eq.data[0:5] = eq_constraint_polycoef[i]
 
-            elif typ == EqType.WELD:
+            elif constraint_type == EqType.WELD:
                 eq = spec.add_equality(objtype=mujoco.mjtObj.mjOBJ_BODY)
                 eq.type = mujoco.mjtEq.mjEQ_WELD
                 eq.active = eq_constraint_enabled[i]
@@ -2518,18 +2534,18 @@ class SolverMuJoCo(SolverBase):
             if disable_contacts:
                 nconmax = 0
             else:
-                if ncon_per_world is not None:
-                    rigid_contact_max = nworld * ncon_per_world
-                    if rigid_contact_max < self.mj_data.ncon * nworld:
+                if nconmax is not None:
+                    rigid_contact_max = nconmax
+                    if rigid_contact_max < self.mj_data.ncon:
                         warnings.warn(
-                            f"[WARNING] Value for ncon_per_world is changed from {ncon_per_world} to {self.mj_data.ncon} following an MjWarp requirement.",
+                            f"[WARNING] Value for nconmax is changed from {nconmax} to {self.mj_data.ncon} following an MjWarp requirement.",
                             stacklevel=2,
                         )
-                        nconmax = self.mj_data.ncon * nworld
+                        nconmax = self.mj_data.ncon
                     else:
                         nconmax = rigid_contact_max
                 else:
-                    nconmax = self.mj_data.ncon * nworld
+                    nconmax = self.mj_data.ncon
 
             if njmax is not None:
                 if njmax < self.mj_data.nefc:
@@ -2562,11 +2578,10 @@ class SolverMuJoCo(SolverBase):
             "body_iquat",
             "body_mass",
             # "body_subtreemass",
-            # "subtree_mass",
             "body_inertia",
             # "body_invweight0",
             # "body_gravcomp",
-            # "jnt_solref",
+            "jnt_solref",
             # "jnt_solimp",
             "jnt_pos",
             "jnt_axis",
@@ -2735,7 +2750,7 @@ class SolverMuJoCo(SolverBase):
 
         joints_per_world = self.model.joint_count // self.model.num_worlds
 
-        # Update joint positions, joint axes, and relative body transforms
+        # Update joint positions, joint axes, relative body transforms, and joint limit solref
         wp.launch(
             update_joint_transforms_kernel,
             dim=self.model.joint_count,
@@ -2747,6 +2762,8 @@ class SolverMuJoCo(SolverBase):
                 self.model.joint_axis,
                 self.model.joint_child,
                 self.model.joint_type,
+                self.model.joint_limit_ke,
+                self.model.joint_limit_kd,
                 self.joint_mjc_dof_start,
                 self.to_mjc_body_index,
                 joints_per_world,
@@ -2754,6 +2771,7 @@ class SolverMuJoCo(SolverBase):
             outputs=[
                 self.mjw_model.jnt_pos,
                 self.mjw_model.jnt_axis,
+                self.mjw_model.jnt_solref,
                 self.mjw_model.body_pos,
                 self.mjw_model.body_quat,
             ],
