@@ -365,7 +365,18 @@ def parse_usd(
         shape_id = -1
 
         # Check if this prim is a site (has MjcSiteAPI applied)
+        # First check if the API is formally applied (schema is registered)
         is_site = prim.HasAPI("MjcSiteAPI")
+        # If not, check the apiSchemas metadata directly (for unregistered schemas)
+        if not is_site:
+            schemas_listop = prim.GetMetadata("apiSchemas")
+            if schemas_listop:
+                all_schemas = (
+                    list(schemas_listop.prependedItems)
+                    + list(schemas_listop.appendedItems)
+                    + list(schemas_listop.explicitItems)
+                )
+                is_site = "MjcSiteAPI" in all_schemas
 
         if path_name not in path_shape_map:
             if type_name == "cube":
