@@ -27,6 +27,7 @@ from ...geometry import MESH_MAXHULLVERT, GeoType, ShapeFlags
 from ...sim import (
     Contacts,
     Control,
+    CustomAttribute,
     EqType,
     JointMode,
     JointType,
@@ -1226,13 +1227,17 @@ class SolverMuJoCo(SolverBase):
     @override
     @classmethod
     def register_custom_attributes(cls, builder: ModelBuilder) -> None:
+        # note that we declare "usd_attribute_name" here to leverage the MuJoCo USD schema
         builder.add_custom_attribute(
-            name="condim",
-            frequency=ModelAttributeFrequency.SHAPE,
-            assignment=ModelAttributeAssignment.MODEL,
-            dtype=wp.int32,
-            default=3,
-            namespace="mjc",
+            CustomAttribute(
+                name="condim",
+                frequency=ModelAttributeFrequency.SHAPE,
+                assignment=ModelAttributeAssignment.MODEL,
+                dtype=wp.int32,
+                default=3,
+                namespace="mujoco",
+                usd_attribute_name="mjc:condim",
+            )
         )
 
     def __init__(

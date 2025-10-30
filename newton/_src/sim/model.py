@@ -17,6 +17,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from enum import IntEnum
 from typing import Any
@@ -25,6 +26,7 @@ import numpy as np
 import warp as wp
 
 from ..core.types import Devicelike
+from ..usd import utils as usd
 from .contacts import Contacts
 from .control import Control
 from .state import State
@@ -108,6 +110,9 @@ class CustomAttribute:
         namespace: Namespace for the attribute
         default: Default value for the attribute
         values: Dictionary mapping indices to specific values (overrides)
+        usd_attribute_name: Name of the corresponding USD attribute. If None, the USD attribute name "newton:<namespace>:<name>" is used.
+        mjcf_attribute_name: Name of the attribute in the MJCF definition. If None, the attribute name is used.
+        usd_value_transformer: Transformer function that converts a USD attribute value to a valid Warp dtype
     """
 
     assignment: ModelAttributeAssignment
@@ -117,15 +122,23 @@ class CustomAttribute:
     namespace: str | None = None
     default: Any = None
     values: dict[int, Any] | None = None
+    usd_attribute_name: str | None = None
+    mjcf_attribute_name: str | None = None
+    usd_value_transformer: Callable[[Any], Any] | None = None
 
     def __post_init__(self):
         """Initialize default values and ensure values dict exists."""
         # Set dtype-specific default value if none was provided
         if self.default is None:
             self.default = self._default_for_dtype(self.dtype)
-
         if self.values is None:
             self.values = {}
+        if self.usd_attribute_name is None:
+            self.usd_attribute_name = f"newton:{self.key}"
+        if self.mjcf_attribute_name is None:
+            self.mjcf_attribute_name = self.name
+        if self.usd_value_transformer is None:
+            self.usd_value_transformer = lambda v: usd.convert_warp_value(v, self.dtype)
 
     @staticmethod
     def _default_for_dtype(d: object) -> Any:
@@ -133,17 +146,16 @@ class CustomAttribute:
         # quaternions get identity quaternion
         if d is wp.quat:
             return wp.quat_identity()
-        # vectors default to zeros of their length
-        if wp.types.type_is_vector(d):
-            length = getattr(d, "_shape_", (1,))[0] or 1
-            return np.zeros(
-                length,
-                dtype=wp.types.warp_type_to_np_dtype.get(getattr(d, "_wp_scalar_type_", wp.float32), np.float32),
-            )
         # scalars
         if d is wp.bool:
             return False
-        return 0
+        # vectors, matrices, scalars
+        return d(0)
+
+    @property
+    def key(self) -> str:
+        """Return the full name of the attribute, formatted as "namespace:name" or "name" if no namespace is specified."""
+        return f"{self.namespace}:{self.name}" if self.namespace else self.name
 
     def build_array(self, count: int, device: Devicelike | None = None, requires_grad: bool = False) -> wp.array:
         """Build wp.array from count, dtype, default and overrides."""

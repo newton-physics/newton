@@ -27,7 +27,7 @@ from .joints import (
     JointType,
     get_joint_dof_count,
 )
-from .model import Model, ModelAttributeAssignment, ModelAttributeFrequency
+from .model import CustomAttribute, Model, ModelAttributeAssignment, ModelAttributeFrequency
 from .state import State
 from .style3d import Style3DModel, Style3DModelBuilder
 
@@ -37,6 +37,7 @@ __all__ = [
     "CollisionPipelineUnified",
     "Contacts",
     "Control",
+    "CustomAttribute",
     "EqType",
     "JointMode",
     "JointType",

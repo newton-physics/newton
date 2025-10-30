@@ -64,7 +64,7 @@ from .joints import (
     JointType,
     get_joint_dof_count,
 )
-from .model import CustomAttribute, Model, ModelAttributeAssignment, ModelAttributeFrequency
+from .model import CustomAttribute, Model, ModelAttributeFrequency
 
 
 class ModelBuilder:
@@ -489,54 +489,23 @@ class ModelBuilder:
         # Custom attributes (user-defined per-frequency arrays)
         self.custom_attributes: dict[str, CustomAttribute] = {}
 
-    def add_custom_attribute(
-        self,
-        name: str,
-        frequency: ModelAttributeFrequency,
-        dtype: Any,
-        default=None,
-        assignment: ModelAttributeAssignment = ModelAttributeAssignment.MODEL,
-        namespace: str | None = None,
-    ):
-        """Define a custom per-entity attribute to be added to the Model.
+    def add_custom_attribute(self, attribute: CustomAttribute) -> None:
+        """Define a custom per-entity attribute to be added to the Model."""
+        key = attribute.key
 
-        Args:
-            name: Variable name to expose on the Model (or within the namespace if namespace is specified)
-            frequency: ModelAttributeFrequency enum value
-            dtype: Warp dtype (e.g., wp.float32, wp.int32, wp.bool, wp.vec3). Required.
-            default: Default value for the attribute. If None, will use dtype-specific default
-                (e.g., 0.0 for scalars, zeros vector for vectors, False for booleans)
-            assignment: ModelAttributeAssignment enum value determining where the attribute appears
-            namespace: Optional namespace for organizing attributes hierarchically.
-                If None, attribute is added directly to the assignment object (e.g., model.attr_name).
-                If specified, creates a namespace object under the assignment (e.g., model.namespace.attr_name)
-        """
-        # Create a full key that includes namespace for uniqueness checking
-        full_key = f"{namespace}:{name}" if namespace else name
-
-        if dtype is None:
-            raise TypeError(f"Custom attribute '{full_key}': dtype must be a Warp dtype (e.g., wp.float32); got None")
-
-        if full_key in self.custom_attributes:
+        existing = self.custom_attributes.get(key)
+        if existing:
             # validate that specification matches exactly
-            existing = self.custom_attributes[full_key]
             if (
-                existing.frequency != frequency
-                or existing.dtype != dtype
-                or existing.assignment != assignment
-                or existing.namespace != namespace
+                existing.frequency != attribute.frequency
+                or existing.dtype != attribute.dtype
+                or existing.assignment != attribute.assignment
+                or existing.namespace != attribute.namespace
             ):
-                raise ValueError(f"Custom attribute '{full_key}' already exists with incompatible spec")
+                raise ValueError(f"Custom attribute '{key}' already exists with incompatible spec")
             return
 
-        self.custom_attributes[full_key] = CustomAttribute(
-            assignment=assignment,
-            frequency=frequency,
-            name=name,
-            dtype=dtype,
-            namespace=namespace,
-            default=default,
-        )
+        self.custom_attributes[key] = attribute
 
     def _process_custom_attributes(
         self,
@@ -953,7 +922,7 @@ class ModelBuilder:
                 (e.g., ``physxScene:*``, ``physxRigidBody:*``, ``physxSDFMeshCollision:*``), and ``mjc:*`` that
                 are authored in the USD but not strictly required to build the simulation. This is useful for
                 inspection, experimentation, or custom pipelines that read these values via
-                :meth:`_ResolverManager.get_solver_specific_attrs`. If set to ``False``, the parser skips scanning these
+                :meth:`ResolverManager.get_solver_specific_attrs`. If set to ``False``, the parser skips scanning these
                 namespaces to avoid unnecessary overhead. For example, if an asset authors PhysX SDF mesh
                 properties (``physxSDFMeshCollision:*``) that Newton does not currently use, disabling this flag
                 prevents parsing them. Default is ``True``.
