@@ -3178,6 +3178,66 @@ class ModelBuilder:
             key=key,
         )
 
+    def add_site(
+        self,
+        body: int,
+        xform: Transform | None = None,
+        type: int = GeoType.SPHERE,
+        scale: Vec3 = (0.01, 0.01, 0.01),
+        key: str | None = None,
+        visible: bool = False,
+        custom_attributes: dict[str, Any] | None = None,
+    ) -> int:
+        """Adds a site (non-colliding reference point) to a body.
+
+        Sites are abstract markers that don't participate in physics simulation or collision detection.
+        They are useful for:
+        - Sensor attachment points (IMU, camera, etc.)
+        - Frame of reference definitions
+        - Debugging and visualization markers
+        - Spatial tendon attachment points (when exported to MuJoCo)
+
+        Args:
+            body (int): The index of the parent body this site belongs to. Use -1 for sites not attached to any specific body.
+            xform (Transform | None): The transform of the site in the parent body's local frame. If `None`, the identity transform `wp.transform()` is used. Defaults to `None`.
+            type (int): The geometry type for visualization (e.g., `GeoType.SPHERE`, `GeoType.BOX`). Defaults to `GeoType.SPHERE`.
+            scale (Vec3): The scale/size of the site for visualization. Defaults to `(0.01, 0.01, 0.01)`.
+            key (str | None): An optional unique key for identifying the site. If `None`, a default key is automatically generated. Defaults to `None`.
+            visible (bool): If True, the site will be visible for debugging. If False (default), the site is hidden.
+            custom_attributes: Dictionary of custom attribute names to values.
+
+        Returns:
+            int: The index of the newly added site (which is stored as a shape internally).
+
+        Example:
+            Add an IMU sensor site to a robot torso::
+
+                body = builder.add_body()
+                imu_site = builder.add_site(
+                    body,
+                    xform=wp.transform((0.0, 0.0, 0.1), wp.quat_identity()),
+                    key="imu_sensor",
+                    visible=True,  # Show for debugging
+                )
+        """
+        # Create config for non-colliding site
+        cfg = self.default_shape_cfg.copy()
+        cfg.is_visible = visible
+        cfg.has_shape_collision = False
+        cfg.flags = ShapeFlags.SITE
+        if visible:
+            cfg.flags |= ShapeFlags.VISIBLE
+
+        return self.add_shape(
+            body=body,
+            type=type,
+            xform=xform,
+            cfg=cfg,
+            scale=scale,
+            key=key,
+            custom_attributes=custom_attributes,
+        )
+
     def approximate_meshes(
         self,
         method: Literal["coacd", "vhacd", "bounding_sphere", "bounding_box"] | RemeshingMethod = "convex_hull",
