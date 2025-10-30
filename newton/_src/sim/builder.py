@@ -175,6 +175,9 @@ class ModelBuilder:
         is_visible: bool = True
         """Indicates whether the shape is visible in the simulation. Defaults to True."""
 
+        is_site: bool = False
+        """Indicates whether the shape is a site (non-colliding reference point). Defaults to False."""
+
         @property
         def flags(self) -> int:
             """Returns the flags for the shape."""
@@ -182,6 +185,7 @@ class ModelBuilder:
             shape_flags = ShapeFlags.VISIBLE if self.is_visible else 0
             shape_flags |= ShapeFlags.COLLIDE_SHAPES if self.has_shape_collision else 0
             shape_flags |= ShapeFlags.COLLIDE_PARTICLES if self.has_particle_collision else 0
+            shape_flags |= ShapeFlags.SITE if self.is_site else 0
             return shape_flags
 
         @flags.setter
@@ -191,6 +195,7 @@ class ModelBuilder:
             self.is_visible = bool(value & ShapeFlags.VISIBLE)
             self.has_shape_collision = bool(value & ShapeFlags.COLLIDE_SHAPES)
             self.has_particle_collision = bool(value & ShapeFlags.COLLIDE_PARTICLES)
+            self.is_site = bool(value & ShapeFlags.SITE)
 
         def copy(self) -> ModelBuilder.ShapeConfig:
             return copy.copy(self)
