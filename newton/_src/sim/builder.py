@@ -3227,6 +3227,7 @@ class ModelBuilder:
         """
         # Create config for non-colliding site
         cfg = self.default_shape_cfg.copy()
+        cfg.density = 0.0  # Sites don't contribute to mass
         cfg.is_visible = visible
         cfg.has_shape_collision = False
         cfg.has_particle_collision = False
