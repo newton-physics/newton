@@ -18,7 +18,6 @@
 from __future__ import annotations
 
 import copy
-import ctypes
 import math
 import warnings
 from collections.abc import Iterable
@@ -1172,16 +1171,6 @@ class ModelBuilder:
         prev_world = self.current_world
         self.current_world = group_idx
 
-        # explicitly resolve the transform multiplication function to avoid
-        # repeatedly resolving builtin overloads during shape transformation
-        transform_mul_cfunc = wp.context.runtime.core.wp_builtin_mul_transformf_transformf
-
-        # dispatches two transform multiplies to the native implementation
-        def transform_mul(a, b):
-            out = wp.transform.from_buffer(np.empty(7, dtype=np.float32))
-            transform_mul_cfunc(a, b, ctypes.byref(out))
-            return out
-
         start_particle_idx = self.particle_count
         start_body_idx = self.body_count
         start_shape_idx = self.shape_count
@@ -1228,7 +1217,7 @@ class ModelBuilder:
                 self.shape_body.append(-1)
                 # apply offset transform to root bodies
                 if xform is not None:
-                    self.shape_transform.append(transform_mul(xform, builder.shape_transform[s]))
+                    self.shape_transform.append(xform * builder.shape_transform[s])
                 else:
                     self.shape_transform.append(builder.shape_transform[s])
 
@@ -1248,11 +1237,11 @@ class ModelBuilder:
                     if builder.joint_type[i] == JointType.FREE:
                         qi = builder.joint_q_start[i]
                         xform_prev = wp.transform(*builder.joint_q[qi : qi + 7])
-                        tf = transform_mul(xform, xform_prev)
+                        tf = xform * xform_prev
                         qi += start_q
                         self.joint_q[qi : qi + 7] = tf
                     elif builder.joint_parent[i] == -1:
-                        self.joint_X_p[start_X_p + i] = transform_mul(xform, builder.joint_X_p[i])
+                        self.joint_X_p[start_X_p + i] = xform * builder.joint_X_p[i]
 
             # offset the indices
             self.articulation_start.extend([a + self.joint_count for a in builder.articulation_start])
@@ -1264,7 +1253,7 @@ class ModelBuilder:
 
         if xform is not None:
             for i in range(builder.body_count):
-                self.body_q.append(transform_mul(xform, builder.body_q[i]))
+                self.body_q.append(xform * builder.body_q[i])
         else:
             self.body_q.extend(builder.body_q)
 
