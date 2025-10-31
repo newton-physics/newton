@@ -1702,7 +1702,8 @@ class SolverMuJoCo(SolverBase):
         # find graph coloring of collision filter pairs
         num_shapes = len(selected_shapes)
         shape_a, shape_b = np.triu_indices(num_shapes, k=1)
-        cgroup = [model.shape_collision_group[i] for i in selected_shapes]
+        shape_collision_group_np = model.shape_collision_group.numpy()
+        cgroup = [shape_collision_group_np[i] for i in selected_shapes]
         # edges representing colliding shape pairs
         graph_edges = [
             (i, j)
