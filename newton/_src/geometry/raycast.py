@@ -595,7 +595,7 @@ def ray_for_pixel(
     # Apply field of view and aspect ratio
     cam_x = ndc_x * fov_scale * camera_aspect_ratio
     cam_y = ndc_y * fov_scale
-    cam_z = -1.0  # Forward is negative Z in camera space
+    cam_z = 1.0  # Forward is negative Z in camera space (camera_direction already looks at -Z)
 
     ray_dir_camera = wp.vec3(cam_x, cam_y, cam_z)
 
