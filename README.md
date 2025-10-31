@@ -305,7 +305,9 @@ uv sync --extra examples
       </a>
     </td>
     <td align="center" width="33%">
-      <!-- Future MPM example -->
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/mpm/example_mpm_twoway_coupling.py">
+        <img src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_mpm_twoway_coupling.jpg" alt="MPM two-way coupling">
+      </a>
     </td>
   </tr>
   <tr>
@@ -316,7 +318,7 @@ uv sync --extra examples
       <code>uv run --extra torch-cu12 -m newton.examples mpm_anymal</code>
     </td>
     <td align="center">
-      <!-- Future MPM example -->
+      <code>uv run -m newton.examples mpm_twoway_coupling</code>
     </td>
   </tr>
 </table>

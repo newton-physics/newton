@@ -37,20 +37,25 @@ class Example:
         builder = newton.ModelBuilder()
         Example.emit_particles(builder, options)
 
-        colliders = []
-        if options.collider is not None:
-            collider = _create_collider_mesh(options.collider)
-            if collider is not None:
-                builder.add_shape_mesh(
-                    body=-1,
-                    mesh=newton.Mesh(collider.points.numpy(), collider.indices.numpy()),
+        if options.collider and options.collider != "none":
+            extents = (0.5, 2.0, 0.6)
+            if options.collider == "cube":
+                xform = wp.transform(wp.vec3(0.75, 0.0, 0.9), wp.quat_identity())
+            elif options.collider == "wedge":
+                xform = wp.transform(
+                    wp.vec3(0.0, 0.0, 0.9), wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), np.pi / 4.0)
                 )
-                colliders.append(collider)
 
-        builder.add_ground_plane()
+            builder.add_shape_box(
+                body=-1,
+                cfg=newton.ModelBuilder.ShapeConfig(mu=0.1),
+                xform=xform,
+                hx=extents[0],
+                hy=extents[1],
+                hz=extents[2],
+            )
 
-        # builder's gravity isn't a vec3. use model.set_gravity()
-        # builder.gravity = wp.vec3(options.gravity)
+        builder.add_ground_plane(cfg=newton.ModelBuilder.ShapeConfig(mu=0.5))
 
         self.model = builder.finalize()
         self.model.particle_mu = options.friction_coeff
@@ -71,8 +76,6 @@ class Example:
 
         # Create MPM model from Newton model
         mpm_model = SolverImplicitMPM.Model(self.model, mpm_options)
-        mpm_model.setup_collider(colliders, collider_friction=[0.1] * len(colliders))
-
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
 
@@ -84,16 +87,29 @@ class Example:
 
         self.viewer.set_model(self.model)
         self.viewer.show_particles = True
+        self.capture()
+
+    def capture(self):
+        self.graph = None
+        if wp.get_device().is_cuda and self.solver.grid_type == "fixed":
+            if self.sim_substeps % 2 != 0:
+                wp.utils.warn("Sim substeps must be even for graph capture of MPM step")
+            else:
+                with wp.ScopedCapture() as capture:
+                    self.simulate()
+                self.graph = capture.graph
 
     def simulate(self):
         for _ in range(self.sim_substeps):
-            self.state_0.clear_forces()
             self.solver.step(self.state_0, self.state_1, None, None, self.sim_dt)
             self.solver.project_outside(self.state_1, self.state_1, self.sim_dt)
             self.state_0, self.state_1 = self.state_1, self.state_0
 
     def step(self):
-        self.simulate()
+        if self.graph:
+            wp.capture_launch(self.graph)
+        else:
+            self.simulate()
         self.sim_time += self.frame_dt
 
     def test(self):
@@ -102,8 +118,8 @@ class Example:
             "all particles are above the ground",
             lambda q, qd: q[2] > -0.05,
         )
-        cube_extents = wp.vec3(0.5, 2.0, 1.0) * 0.9
-        cube_center = wp.vec3(0.75, 0, 0.5)
+        cube_extents = wp.vec3(0.5, 2.0, 0.6) * 0.9
+        cube_center = wp.vec3(0.75, 0, 0.9)
         cube_lower = cube_center - cube_extents
         cube_upper = cube_center + cube_extents
         newton.examples.test_particle_state(
@@ -130,71 +146,26 @@ class Example:
             dtype=int,
         )
 
-        Example._spawn_particles(builder, particle_res, particle_lo, particle_hi, density)
-
-    @staticmethod
-    def _spawn_particles(
-        builder: newton.ModelBuilder,
-        res,
-        bounds_lo,
-        bounds_hi,
-        density,
-    ):
-        Nx = res[0]
-        Ny = res[1]
-        Nz = res[2]
-
-        px = np.linspace(bounds_lo[0], bounds_hi[0], Nx + 1)
-        py = np.linspace(bounds_lo[1], bounds_hi[1], Ny + 1)
-        pz = np.linspace(bounds_lo[2], bounds_hi[2], Nz + 1)
-
-        points = np.stack(np.meshgrid(px, py, pz)).reshape(3, -1).T
-
-        cell_size = (bounds_hi - bounds_lo) / res
+        cell_size = (particle_hi - particle_lo) / particle_res
         cell_volume = np.prod(cell_size)
 
         radius = np.max(cell_size) * 0.5
         mass = np.prod(cell_volume) * density
 
-        rng = np.random.default_rng(42)
-        points += 2.0 * radius * (rng.random(points.shape) - 0.5)
-        vel = np.zeros_like(points)
-
-        builder.particle_q = points
-        builder.particle_qd = vel
-        builder.particle_mass = np.full(points.shape[0], mass)
-        builder.particle_radius = np.full(points.shape[0], radius)
-
-        builder.particle_flags = np.ones(points.shape[0], dtype=int)
-
-
-def _create_collider_mesh(collider: str):
-    """Create a collider mesh."""
-
-    if collider == "cube":
-        cube_points, cube_indices = newton.utils.create_box_mesh(extents=(0.5, 2.0, 1.0))
-
-        return wp.Mesh(
-            wp.array(cube_points[:, 0:3] + [0.75, 0, 0.5], dtype=wp.vec3),
-            wp.array(cube_indices, dtype=int),
+        builder.add_particle_grid(
+            pos=wp.vec3(particle_lo),
+            rot=wp.quat_identity(),
+            vel=wp.vec3(0.0),
+            dim_x=particle_res[0] + 1,
+            dim_y=particle_res[1] + 1,
+            dim_z=particle_res[2] + 1,
+            cell_x=cell_size[0],
+            cell_y=cell_size[1],
+            cell_z=cell_size[2],
+            mass=mass,
+            jitter=2.0 * radius,
+            radius_mean=radius,
         )
-    elif collider == "wedge":
-        cube_points, cube_indices = newton.utils.create_box_mesh(extents=(0.5, 2.0, 1.0))
-
-        cube_points = cube_points[:, 0:3] @ np.array(
-            [
-                [np.cos(np.pi / 4), 0, -np.sin(np.pi / 4)],
-                [0, 1, 0],
-                [np.sin(np.pi / 4), 0, np.cos(np.pi / 4)],
-            ]
-        )
-
-        return wp.Mesh(
-            wp.array(cube_points + np.array([0.0, 0, 0.25]), dtype=wp.vec3),
-            wp.array(cube_indices, dtype=int),
-        )
-    else:
-        return None
 
 
 if __name__ == "__main__":
@@ -224,6 +195,8 @@ if __name__ == "__main__":
     parser.add_argument("--hardening", type=float, default=0.0)
 
     parser.add_argument("--grid-type", "-gt", type=str, default="sparse", choices=["sparse", "fixed", "dense"])
+    parser.add_argument("--grid-padding", "-gp", type=int, default=0)
+    parser.add_argument("--max-active-cell-count", "-mac", type=int, default=-1)
     parser.add_argument("--solver", "-s", type=str, default="gauss-seidel", choices=["gauss-seidel", "jacobi"])
     parser.add_argument("--transfer-scheme", "-ts", type=str, default="apic", choices=["apic", "pic"])
 

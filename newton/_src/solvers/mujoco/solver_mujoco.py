@@ -36,6 +36,7 @@ from ...sim import (
     plot_graph,
 )
 from ...utils import topological_sort
+from ...utils.benchmark import event_scope
 from ..flags import SolverNotifyFlags
 from ..solver import SolverBase
 
@@ -1346,6 +1347,11 @@ class SolverMuJoCo(SolverBase):
         if self.mjw_model is not None:
             self.mjw_model.opt.run_collision_detection = use_mujoco_contacts
 
+    @event_scope
+    def mujoco_warp_step(self):
+        self._mujoco_warp.step(self.mjw_model, self.mjw_data)
+
+    @event_scope
     @override
     def step(self, state_in: State, state_out: State, control: Control, contacts: Contacts, dt: float):
         if self.use_mujoco_cpu:
@@ -1363,10 +1369,10 @@ class SolverMuJoCo(SolverBase):
             self.mjw_model.opt.timestep.fill_(dt)
             with wp.ScopedDevice(self.model.device):
                 if self.mjw_model.opt.run_collision_detection:
-                    self._mujoco_warp.step(self.mjw_model, self.mjw_data)
+                    self.mujoco_warp_step()
                 else:
                     self.convert_contacts_to_mjwarp(self.model, state_in, contacts)
-                    self._mujoco_warp.step(self.mjw_model, self.mjw_data)
+                    self.mujoco_warp_step()
 
             self.update_newton_state(self.model, state_out, self.mjw_data)
         self._step += 1
