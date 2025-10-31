@@ -490,7 +490,33 @@ class ModelBuilder:
         self.custom_attributes: dict[str, CustomAttribute] = {}
 
     def add_custom_attribute(self, attribute: CustomAttribute) -> None:
-        """Define a custom per-entity attribute to be added to the Model."""
+        """
+        Define a custom per-entity attribute to be added to the Model.
+
+        Args:
+            attribute: The custom attribute to add.
+
+        Example:
+
+            .. doctest::
+
+                builder = ModelBuilder()
+                builder.add_custom_attribute(
+                    name="my_attribute",
+                    frequency=ModelAttributeFrequency.BODY,
+                    dtype=wp.float32,
+                    default=20.0,
+                    assignment=ModelAttributeAssignment.MODEL,
+                    namespace="my_namespace",
+                )
+                builder.add_body(custom_attributes={"my_namespace:my_attribute": 30.0})
+                builder.add_body()  # we leave out the custom_attributes, so the attribute will use the default value 20.0
+                model = builder.finalize()
+                # the model has now an AttributeNamespace object with the name "my_namespace"
+                # and an attribute "my_attribute" that is a wp.array of shape (body_count, 1)
+                # with the default value 20.0
+                assert np.allclose(model.my_namespace.my_attribute.numpy(), [30.0, 20.0])
+        """
         key = attribute.key
 
         existing = self.custom_attributes.get(key)
@@ -510,6 +536,22 @@ class ModelBuilder:
     def has_custom_attribute(self, key: str) -> bool:
         """Check if a custom attribute is defined."""
         return key in self.custom_attributes
+
+    def get_custom_attributes_by_frequency(
+        self, frequencies: Sequence[ModelAttributeFrequency]
+    ) -> list[CustomAttribute]:
+        """
+        Get custom attributes by frequency.
+        This is useful for processing custom attributes for different kinds of simulation objects.
+        For example, you can get all the custom attributes for bodies, shapes, joints, etc.
+
+        Args:
+            frequencies: The frequencies to get custom attributes for.
+
+        Returns:
+            A list of custom attributes.
+        """
+        return [attr for attr in self.custom_attributes.values() if attr.frequency in frequencies]
 
     def _process_custom_attributes(
         self,
@@ -1494,7 +1536,7 @@ class ModelBuilder:
 
     def add_joint(
         self,
-        joint_type: wp.constant,
+        joint_type: JointType,
         parent: int,
         child: int,
         linear_axes: list[JointDofConfig] | None = None,
@@ -1510,7 +1552,7 @@ class ModelBuilder:
         Generic method to add any type of joint to this ModelBuilder.
 
         Args:
-            joint_type (constant): The type of joint to add (see :ref:'joint-types').
+            joint_type (JointType): The type of joint to add (see :ref:'joint-types').
             parent (int): The index of the parent body (-1 is the world).
             child (int): The index of the child body.
             linear_axes (list(:class:`JointDofConfig`)): The linear axes (see :class:`JointDofConfig`) of the joint.
@@ -1520,7 +1562,7 @@ class ModelBuilder:
             child_xform (Transform): The transform of the joint in the child body's local frame. If None, the identity transform is used.
             collision_filter_parent (bool): Whether to filter collisions between shapes of the parent and child bodies.
             enabled (bool): Whether the joint is enabled (not considered by :class:`SolverFeatherstone`).
-            custom_attributes: Dictionary of custom attribute names to values.
+            custom_attributes: Dictionary of custom attribute keys (see :attr:`CustomAttribute.key`) to values. Note that custom attributes with frequency :attr:`ModelAttributeFrequency.JOINT_DOF` or :attr:`ModelAttributeFrequency.JOINT_COORD` require the respective values to be provided as lists with length equal to the joint's DOF or coordinate count. Custom attributes with frequency :attr:`ModelAttributeFrequency.JOINT` require a single value to be defined.
 
         Returns:
             The index of the added joint.

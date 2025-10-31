@@ -27,7 +27,9 @@ from ..core import quat_between_axes, quat_from_euler
 from ..core.types import Axis, AxisType, Sequence, Transform
 from ..geometry import MESH_MAXHULLVERT, Mesh
 from ..sim import JointType, ModelBuilder
+from ..sim.model import CustomAttribute, ModelAttributeFrequency
 from ..usd.schemas import solref_to_damping, solref_to_stiffness
+from .import_utils import parse_custom_attributes
 
 
 def parse_mjcf(
@@ -130,6 +132,20 @@ def parse_mjcf(
     # load shape defaults
     default_shape_density = builder.default_shape_cfg.density
 
+    # Process custom attributes defined for different kinds of shapes, bodies, joints, etc.
+    builder_custom_attr_shape: list[CustomAttribute] = builder.get_custom_attributes_by_frequency(
+        [ModelAttributeFrequency.SHAPE]
+    )
+    builder_custom_attr_body: list[CustomAttribute] = builder.get_custom_attributes_by_frequency(
+        [ModelAttributeFrequency.BODY]
+    )
+    builder_custom_attr_joint: list[CustomAttribute] = builder.get_custom_attributes_by_frequency(
+        [ModelAttributeFrequency.JOINT]
+    )
+    builder_custom_attr_dof: list[CustomAttribute] = builder.get_custom_attributes_by_frequency(
+        [ModelAttributeFrequency.JOINT_DOF]
+    )
+
     compiler = root.find("compiler")
     if compiler is not None:
         use_degrees = compiler.attrib.get("angle", "degree").lower() == "degree"
@@ -197,10 +213,7 @@ def parse_mjcf(
         return attrib
 
     axis_xform = wp.transform(wp.vec3(0.0), quat_between_axes(up_axis, builder.up_axis))
-    if xform is None:
-        xform = axis_xform
-    else:
-        xform = wp.transform(*xform) * axis_xform
+    xform = wp.transform(*xform) * axis_xform
 
     def parse_float(attrib, key, default) -> float:
         if key in attrib:
@@ -302,15 +315,13 @@ def parse_mjcf(
             shape_cfg.has_particle_collision = not just_visual
             shape_cfg.density = geom_density
 
+            custom_attributes = parse_custom_attributes(geom_attrib, builder_custom_attr_shape)
             shape_kwargs = {
                 "key": geom_name,
                 "body": link,
                 "cfg": shape_cfg,
-                "custom_attributes": {},
+                "custom_attributes": custom_attributes,
             }
-            condim = geom_attrib.get("condim")
-            if condim is not None and builder.has_custom_attribute("mujoco:condim"):
-                shape_kwargs["custom_attributes"]["mujoco:condim"] = int(condim)
 
             if incoming_xform is not None:
                 tf = incoming_xform * tf
@@ -488,6 +499,8 @@ def parse_mjcf(
         joint_armature = []
         joint_name = []
         joint_pos = []
+        joint_custom_attributes: dict[str, Any] = {}
+        dof_custom_attributes: dict[str, list[Any]] = {}
 
         linear_axes = []
         angular_axes = []
@@ -498,6 +511,7 @@ def parse_mjcf(
             joint_type = JointType.FREE
             joint_name.append(freejoint_tags[0].attrib.get("name", f"{body_name}_freejoint"))
             joint_armature.append(0.0)
+            joint_custom_attributes = parse_custom_attributes(freejoint_tags[0].attrib, builder_custom_attr_joint)
         else:
             joints = body.findall("joint")
             for i, joint in enumerate(joints):
@@ -555,9 +569,17 @@ def parse_mjcf(
                 else:
                     linear_axes.append(ax)
 
+                dof_attr = parse_custom_attributes(joint_attrib, builder_custom_attr_dof)
+                # assemble custom attributes for each DOF (list of values per custom attribute key)
+                for key, value in dof_attr.items():
+                    if key not in dof_custom_attributes:
+                        dof_custom_attributes[key] = []
+                    dof_custom_attributes[key].append(value)
+
         link = builder.add_body(
             xform=world_xform,  # Use the composed world transform
             key=body_name,
+            custom_attributes=parse_custom_attributes(body_attrib, builder_custom_attr_body),
         )
 
         if joint_type is None:
@@ -623,6 +645,7 @@ def parse_mjcf(
                 builder.add_joint_free(
                     link,
                     key="_".join(joint_name),
+                    custom_attributes=joint_custom_attributes,
                 )
             else:
                 # TODO parse ref, springref values from joint_attrib
@@ -635,6 +658,7 @@ def parse_mjcf(
                     key="_".join(joint_name),
                     parent_xform=wp.transform(body_pos_for_joints + joint_pos, body_ori_for_joints),
                     child_xform=wp.transform(joint_pos, wp.quat_identity()),
+                    custom_attributes=joint_custom_attributes | dof_custom_attributes,
                 )
 
         # -----------------

@@ -904,24 +904,21 @@ def parse_usd(
             f"Scaling PD gains by (joint_drive_gains_scaling / DegreesToRadian) = {joint_drive_gains_scaling / DegreesToRadian}, default scale for joint_drive_gains_scaling=1 is 1.0/DegreesToRadian = {1.0 / DegreesToRadian}"
         )
 
-    # process custom attributes defined for different kinds of prim
-    # note that at this time we may have more custom attributes than before since they may have been
-    # declared on the PhysicsScene prim
-    builder_custom_attr_shape: list[CustomAttribute] = [
-        attr for attr in builder.custom_attributes.values() if attr.frequency == ModelAttributeFrequency.SHAPE
-    ]
-    builder_custom_attr_body: list[CustomAttribute] = [
-        attr for attr in builder.custom_attributes.values() if attr.frequency == ModelAttributeFrequency.BODY
-    ]
-    builder_custom_attr_joint: list[CustomAttribute] = [
-        attr
-        for attr in builder.custom_attributes.values()
-        if attr.frequency
-        in [ModelAttributeFrequency.JOINT, ModelAttributeFrequency.JOINT_DOF, ModelAttributeFrequency.JOINT_COORD]
-    ]
-    builder_custom_attr_articulation: list[CustomAttribute] = [
-        attr for attr in builder.custom_attributes.values() if attr.frequency == ModelAttributeFrequency.ARTICULATION
-    ]
+    # Process custom attributes defined for different kinds of prim.
+    # Note that at this time we may have more custom attributes than before since they may have been
+    # declared on the PhysicsScene prim.
+    builder_custom_attr_shape: list[CustomAttribute] = builder.get_custom_attributes_by_frequency(
+        [ModelAttributeFrequency.SHAPE]
+    )
+    builder_custom_attr_body: list[CustomAttribute] = builder.get_custom_attributes_by_frequency(
+        [ModelAttributeFrequency.BODY]
+    )
+    builder_custom_attr_joint: list[CustomAttribute] = builder.get_custom_attributes_by_frequency(
+        [ModelAttributeFrequency.JOINT, ModelAttributeFrequency.JOINT_DOF, ModelAttributeFrequency.JOINT_COORD]
+    )
+    builder_custom_attr_articulation: list[CustomAttribute] = builder.get_custom_attributes_by_frequency(
+        [ModelAttributeFrequency.ARTICULATION]
+    )
 
     if physics_scene_prim is not None:
         # Extract custom attributes for model (ONCE) frequency from the PhysicsScene prim

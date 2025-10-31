@@ -20,15 +20,20 @@ newton
    :nosignatures:
 
    Axis
+   BroadPhaseMode
    CollisionPipeline
+   CollisionPipelineUnified
    Contacts
    Control
+   CustomAttribute
    EqType
    GeoType
    JointMode
    JointType
    Mesh
    Model
+   ModelAttributeAssignment
+   ModelAttributeFrequency
    ModelBuilder
    ParticleFlags
    SDF
