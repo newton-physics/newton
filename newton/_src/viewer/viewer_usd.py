@@ -108,7 +108,8 @@ class ViewerUSD(ViewerBase):
 
         # Create USD stage
         self.stage = Usd.Stage.CreateNew(output_path)
-        self.stage.SetFramesPerSecond(fps)
+        self.stage.SetTimeCodesPerSecond(fps)  # number of timeCodes per second for data storage
+        self.stage.SetFramesPerSecond(fps)  # display frame rate (timeline FPS in DCC tools)
         self.stage.SetStartTimeCode(0)
 
         axis_token = {
