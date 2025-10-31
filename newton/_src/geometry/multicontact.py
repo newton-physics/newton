@@ -94,20 +94,47 @@ def signed_area(a: wp.vec2, b: wp.vec2, query_point: wp.vec2) -> float:
 
 @wp.func
 def ray_plane_intersection(
-    ray_origin: wp.vec3, ray_direction: wp.vec3, point_on_plane: wp.vec3, plane_normal: wp.vec3
+    ray_origin: wp.vec3, ray_direction: wp.vec3, plane_d: float, plane_normal: wp.vec3
 ) -> wp.vec3:
-    """Compute intersection of a ray with a plane."""
+    """
+    Compute intersection of a ray with a plane.
+
+    The plane is defined by the equation: dot(point, plane_normal) + plane_d = 0
+    where plane_d = -dot(point_on_plane, plane_normal).
+
+    Args:
+        ray_origin: Starting point of the ray.
+        ray_direction: Direction vector of the ray.
+        plane_d: Plane distance parameter (negative dot product of any point on plane with normal).
+        plane_normal: Normal vector of the plane.
+
+    Returns:
+        Intersection point of the ray with the plane.
+    """
     denom = wp.dot(ray_direction, plane_normal)
     # Avoid division by zero; if denom is near zero, return origin unchanged
     if wp.abs(denom) < 1.0e-12:
         return ray_origin
-    t = wp.dot(point_on_plane - ray_origin, plane_normal) / denom
+    # Plane equation: dot(point, normal) + d = 0
+    # Solve for t: dot(ray_origin + t*ray_direction, normal) + d = 0
+    # t = -(dot(ray_origin, normal) + d) / dot(ray_direction, normal)
+    t = -(wp.dot(ray_origin, plane_normal) + plane_d) / denom
     return ray_origin + ray_direction * t
 
 
 @wp.struct
 class BodyProjector:
-    point_on_plane: wp.vec3
+    """
+    Plane projector for back-projecting contact points onto shape surfaces.
+
+    The plane is defined by the equation: dot(point, normal) + plane_d = 0
+    where plane_d = -dot(point_on_plane, normal) for any point on the plane.
+
+    This representation uses a single float instead of storing a full point_on_plane vector,
+    saving 8 bytes per projector (2 floats on typical architectures with alignment).
+    """
+
+    plane_d: float
     normal: wp.vec3
 
 
@@ -128,10 +155,9 @@ def make_body_projector_from_polygon(
         anchor_point: Reference point on the plane (typically the contact anchor point).
 
     Returns:
-        BodyProjector with the plane normal and anchor point.
+        BodyProjector with the plane normal and plane_d parameter.
     """
     proj = BodyProjector()
-    proj.point_on_plane = anchor_point
     # Find the triangle with the largest area for numerical stability
     # This avoids issues with nearly collinear points
     best_normal = wp.vec3(0.0, 0.0, 0.0)
@@ -151,6 +177,8 @@ def make_body_projector_from_polygon(
     # Normalize, avoid zero
     len_n = wp.sqrt(wp.max(1.0e-12, max_area_sq))
     proj.normal = best_normal / len_n
+    # Compute plane_d from the plane equation: dot(point, normal) + plane_d = 0
+    proj.plane_d = -wp.dot(anchor_point, proj.normal)
     return proj
 
 
@@ -194,11 +222,13 @@ def create_body_projectors(
         dir_a = poly_a[1] - poly_a[0]
         dir_b = poly_b[1] - poly_b[0]
 
+        point_on_plane_a = 0.5 * (poly_a[0] + poly_a[1])
         projector_a.normal = compute_line_segment_projector_normal(dir_a, contact_normal)
-        projector_a.point_on_plane = 0.5 * (poly_a[0] + poly_a[1])
+        projector_a.plane_d = -wp.dot(point_on_plane_a, projector_a.normal)
 
+        point_on_plane_b = 0.5 * (poly_b[0] + poly_b[1])
         projector_b.normal = compute_line_segment_projector_normal(dir_b, contact_normal)
-        projector_b.point_on_plane = 0.5 * (poly_b[0] + poly_b[1])
+        projector_b.plane_d = -wp.dot(point_on_plane_b, projector_b.normal)
 
         return projector_a, projector_b
 
@@ -209,13 +239,15 @@ def create_body_projectors(
 
     if poly_count_a < 3:
         dir = poly_a[1] - poly_a[0]
+        point_on_plane_a = 0.5 * (poly_a[0] + poly_a[1])
         projector_a.normal = compute_line_segment_projector_normal(dir, projector_b.normal)
-        projector_a.point_on_plane = 0.5 * (poly_a[0] + poly_a[1])
+        projector_a.plane_d = -wp.dot(point_on_plane_a, projector_a.normal)
 
     if poly_count_b < 3:
         dir = poly_b[1] - poly_b[0]
+        point_on_plane_b = 0.5 * (poly_b[0] + poly_b[1])
         projector_b.normal = compute_line_segment_projector_normal(dir, projector_a.normal)
-        projector_b.point_on_plane = 0.5 * (poly_b[0] + poly_b[1])
+        projector_b.plane_d = -wp.dot(point_on_plane_b, projector_b.normal)
 
     return projector_a, projector_b
 
@@ -241,7 +273,7 @@ def body_projector_project(
         Projected point on the shape's surface in world space.
     """
     # Only plane projection is supported
-    return ray_plane_intersection(input, contact_normal, proj.point_on_plane, proj.normal)
+    return ray_plane_intersection(input, contact_normal, proj.plane_d, proj.normal)
 
 
 @wp.func
@@ -577,7 +609,6 @@ def approx_max_quadrilateral_area_with_calipers(hull: wp.array(dtype=wp.vec3), h
     # --- Step 1: Find the hull's diameter using Rotating Calipers in O(n) ---
     p1 = int(0)
     p3 = int(1)
-    # Use XYZ distance (match C# vec3 distance)
     hp1 = hull[p1]
     hp3 = hull[p3]
     diff = wp.vec3(hp1[0] - hp3[0], hp1[1] - hp3[1], hp1[2] - hp3[2])

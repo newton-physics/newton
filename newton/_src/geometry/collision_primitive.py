@@ -24,6 +24,19 @@
 ###########################################################################
 
 
+"""Collision detection functions for primitive geometric shapes.
+
+Conventions:
+    - Normal: points from first geometry into second geometry (unit length)
+    - Position: midpoint between the two contacting surfaces
+    - Distance: negative = penetration, positive = separation, zero = touching
+    - Geometry order: collide_A_B() means A is geom 0, B is geom 1
+
+Returns (single contact): (distance: float, position: vec3, normal: vec3)
+Returns (multi contact): (distances: vecN, positions: matNx3, normals: vecN or matNx3)
+                        Use wp.inf for unpopulated contact slots.
+"""
+
 from typing import Any
 
 import warp as wp
@@ -821,7 +834,7 @@ def collide_box_box(
                 points[n] = points[i]
 
             points[n, 2] *= 0.5
-            depth[n] = points[n, 2]
+            depth[n] = points[n, 2] * 2.0
             n += 1
 
         # Set up contact frame
