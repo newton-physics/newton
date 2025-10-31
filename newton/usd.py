@@ -17,11 +17,34 @@
 # USD utility functions
 # ==================================================================================
 from ._src.usd.utils import (
+    convert_warp_type,
     convert_warp_value,
+    get_attribute,
+    get_attributes_in_namespace,
+    get_axis,
+    get_custom_attribute_declarations,
+    get_custom_attribute_values,
+    get_float,
+    get_quat,
+    get_scale,
+    get_transform,
+    has_attribute,
 )
 
 __all__ = [
+    "convert_warp_type",
+    "convert_warp_type",
     "convert_warp_value",
+    "get_attribute",
+    "get_attributes_in_namespace",
+    "get_axis",
+    "get_custom_attribute_declarations",
+    "get_custom_attribute_values",
+    "get_float",
+    "get_quat",
+    "get_scale",
+    "get_transform",
+    "has_attribute",
 ]
 
 
