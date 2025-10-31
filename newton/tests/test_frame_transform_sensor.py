@@ -480,6 +480,95 @@ class TestFrameTransformSensor(unittest.TestCase):
         np.testing.assert_allclose([pos1[0], pos1[1], pos1[2]], [0, 1, 0], atol=1e-5)
         np.testing.assert_allclose([pos2[0], pos2[1], pos2[2]], [0, 3, 0], atol=1e-5)
 
+    def test_sensor_sparse_non_sorted_indices(self):
+        """Test sensor with non-continuous, non-sorted shape indices."""
+        builder = newton.ModelBuilder()
+
+        # Create reference site
+        base = builder.add_body()
+        ref_site = builder.add_site(base, key="ref")
+
+        # Create multiple bodies with multiple sites to get many shapes
+        all_sites = []
+
+        # Body 1 with 3 sites at different positions
+        body1 = builder.add_body(xform=wp.transform(wp.vec3(1, 0, 0), wp.quat_identity()))
+        all_sites.append(builder.add_site(body1, xform=wp.transform(wp.vec3(0, 0, 0), wp.quat_identity()), key="b1_s0"))
+        all_sites.append(
+            builder.add_site(body1, xform=wp.transform(wp.vec3(0.1, 0, 0), wp.quat_identity()), key="b1_s1")
+        )
+        all_sites.append(
+            builder.add_site(body1, xform=wp.transform(wp.vec3(0.2, 0, 0), wp.quat_identity()), key="b1_s2")
+        )
+        builder.add_joint_free(body1)
+
+        # Body 2 with 3 sites at different positions
+        body2 = builder.add_body(xform=wp.transform(wp.vec3(2, 0, 0), wp.quat_identity()))
+        all_sites.append(builder.add_site(body2, xform=wp.transform(wp.vec3(0, 0, 0), wp.quat_identity()), key="b2_s0"))
+        all_sites.append(
+            builder.add_site(body2, xform=wp.transform(wp.vec3(0.1, 0, 0), wp.quat_identity()), key="b2_s1")
+        )
+        all_sites.append(
+            builder.add_site(body2, xform=wp.transform(wp.vec3(0.2, 0, 0), wp.quat_identity()), key="b2_s2")
+        )
+        builder.add_joint_free(body2)
+
+        # Body 3 with 3 sites at different positions
+        body3 = builder.add_body(xform=wp.transform(wp.vec3(3, 0, 0), wp.quat_identity()))
+        all_sites.append(builder.add_site(body3, xform=wp.transform(wp.vec3(0, 0, 0), wp.quat_identity()), key="b3_s0"))
+        all_sites.append(
+            builder.add_site(body3, xform=wp.transform(wp.vec3(0.1, 0, 0), wp.quat_identity()), key="b3_s1")
+        )
+        all_sites.append(
+            builder.add_site(body3, xform=wp.transform(wp.vec3(0.2, 0, 0), wp.quat_identity()), key="b3_s2")
+        )
+        builder.add_joint_free(body3)
+
+        model = builder.finalize()
+        state = model.state()
+        eval_fk(model, state.joint_q, state.joint_qd, state)
+
+        # Shape indices accounting for ref_site being index 0:
+        # ref_site = 0
+        # all_sites[0] = 1 (b1_s0) at (1, 0, 0)
+        # all_sites[1] = 2 (b1_s1) at (1.1, 0, 0)
+        # all_sites[2] = 3 (b1_s2) at (1.2, 0, 0)
+        # all_sites[3] = 4 (b2_s0) at (2, 0, 0)
+        # all_sites[4] = 5 (b2_s1) at (2.1, 0, 0)
+        # all_sites[5] = 6 (b2_s2) at (2.2, 0, 0)
+        # all_sites[6] = 7 (b3_s0) at (3, 0, 0)
+        # all_sites[7] = 8 (b3_s1) at (3.1, 0, 0)
+        # all_sites[8] = 9 (b3_s2) at (3.2, 0, 0)
+
+        # Select sparse, non-sorted subset: indices 8, 3, 9, 2, 6
+        # This ensures: gaps (missing 0, 1, 4, 5, 7), non-sorted order
+        sparse_indices = [8, 3, 9, 2, 6]
+
+        expected_positions = [
+            (3.1, 0, 0),  # index 8: b3_s1
+            (1.2, 0, 0),  # index 3: b1_s2
+            (3.2, 0, 0),  # index 9: b3_s2
+            (1.1, 0, 0),  # index 2: b1_s1
+            (2.2, 0, 0),  # index 6: b2_s2
+        ]
+
+        sensor = FrameTransformSensor(model, shape_indices=sparse_indices, reference_site_indices=[ref_site])
+
+        sensor.update(model, state)
+        transforms = sensor.transforms.numpy()
+
+        # Verify each transform corresponds to the correct site
+        self.assertEqual(len(transforms), len(sparse_indices))
+
+        for i, expected_pos in enumerate(expected_positions):
+            pos = wp.transform_get_translation(wp.transform(*transforms[i]))
+            np.testing.assert_allclose(
+                [pos[0], pos[1], pos[2]],
+                expected_pos,
+                atol=1e-5,
+                err_msg=f"Site {sparse_indices[i]} at index {i} has incorrect position",
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

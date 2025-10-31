@@ -48,10 +48,10 @@ def compute_shape_transforms_kernel(
         # Shape attached to a body
         X_wb = body_q[body_idx]
         X_bs = shape_transform[shape_idx]
-        world_transforms[tid] = wp.transform_multiply(X_wb, X_bs)
+        world_transforms[shape_idx] = wp.transform_multiply(X_wb, X_bs)
     else:
         # Static shape in world frame
-        world_transforms[tid] = shape_transform[shape_idx]
+        world_transforms[shape_idx] = shape_transform[shape_idx]
 
 
 @wp.kernel
