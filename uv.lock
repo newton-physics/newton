@@ -72,6 +72,15 @@ wheels = [
 ]
 
 [[package]]
+name = "appdirs"
+version = "1.4.4"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/d7/d8/05696357e0311f5b5c316d7b95f46c669dd9c15aaeecbb48c7d0aeb88c40/appdirs-1.4.4.tar.gz", hash = "sha256:7d5d0167b2b1ba821647616af46a749d1c653740dd0d2415100fe26e27afdf41", size = 13470, upload-time = "2020-05-11T07:59:51.037Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/3b/00/2344469e2084fb287c2e0b57b72910309874c3245463acd6cf5e3db69324/appdirs-1.4.4-py2.py3-none-any.whl", hash = "sha256:a841dacd6b99318a741b166adb07e19ee71a274450e68237b4650ca1055ab128", size = 9566, upload-time = "2020-05-11T07:59:49.499Z" },
+]
+
+[[package]]
 name = "asv"
 version = "0.6.4"
 source = { registry = "https://pypi.org/simple" }
@@ -839,6 +848,7 @@ wheels = [
 name = "newton"
 source = { editable = "." }
 dependencies = [
+    { name = "appdirs" },
     { name = "warp-lang" },
 ]
 
@@ -938,6 +948,7 @@ requires-dist = [
     { name = "alphashape", marker = "extra == 'examples'", specifier = ">=1.3.1" },
     { name = "alphashape", marker = "extra == 'importers'", specifier = ">=1.3.1" },
     { name = "alphashape", marker = "extra == 'torch-cu12'", specifier = ">=1.3.1" },
+    { name = "appdirs", specifier = ">=1.4.4" },
     { name = "cbor2", marker = "extra == 'dev'", specifier = ">=5.7.0" },
     { name = "cbor2", marker = "extra == 'examples'", specifier = ">=5.7.0" },
     { name = "cbor2", marker = "extra == 'sim'", specifier = ">=5.7.0" },

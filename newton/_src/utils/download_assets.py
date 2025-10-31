@@ -19,8 +19,16 @@ import hashlib
 import os
 import shutil
 import stat
-import tempfile
 from pathlib import Path
+
+from appdirs import user_cache_dir
+
+
+def _get_newton_cache_dir() -> str:
+    if "NEWTON_CACHE_PATH" in os.environ:
+        return os.environ["NEWTON_CACHE_PATH"]
+
+    return user_cache_dir("newton", "newton-physics")
 
 
 def _handle_remove_readonly(func, path, exc):
@@ -46,7 +54,10 @@ def download_git_folder(
     Args:
         git_url: The git repository URL (HTTPS or SSH)
         folder_path: The path to the folder within the repository (e.g., "assets/models")
-        cache_dir: Directory to cache downloads. If None, uses system temp directory
+        cache_dir: Directory to cache downloads.
+            If ``None``, the path is determined in the following order:
+            1. ``NEWTON_CACHE_PATH`` environment variable.
+            2. System's user cache directory (via ``appdirs.user_cache_directory``).
         branch: Git branch/tag/commit to checkout (default: "main")
         force_refresh: If True, re-downloads even if cached version exists
 
@@ -71,7 +82,7 @@ def download_git_folder(
 
     # Set up cache directory
     if cache_dir is None:
-        cache_dir = os.path.join(tempfile.gettempdir(), "newton_git_cache")
+        cache_dir = _get_newton_cache_dir()
 
     cache_path = Path(cache_dir)
     cache_path.mkdir(parents=True, exist_ok=True)
@@ -142,9 +153,12 @@ def clear_git_cache(cache_dir: str | None = None) -> None:
 
     Args:
         cache_dir: Cache directory to clear. If None, uses default temp directory
+            If ``None``, the path is determined in the following order:
+            1. ``NEWTON_CACHE_PATH`` environment variable.
+            2. System's user cache directory (via ``appdirs.user_cache_directory``).
     """
     if cache_dir is None:
-        cache_dir = os.path.join(tempfile.gettempdir(), "newton_git_cache")
+        cache_dir = _get_newton_cache_dir()
 
     cache_path = Path(cache_dir)
     if cache_path.exists():
@@ -161,6 +175,9 @@ def download_asset(asset_folder: str, cache_dir: str | None = None, force_refres
     Args:
         asset_folder: The folder within the repository to download (e.g., "assets/models")
         cache_dir: Directory to cache downloads. If None, uses system temp directory
+            If ``None``, the path is determined in the following order:
+            1. ``NEWTON_CACHE_PATH`` environment variable.
+            2. System's user cache directory (via ``appdirs.user_cache_directory``).
         force_refresh: If True, re-downloads even if cached version exists
 
     Returns:
