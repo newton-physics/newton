@@ -26,10 +26,11 @@ wp.config.quiet = True
 
 from asv_runner.benchmarks.mark import skip_benchmark_if
 
-parent_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+parent_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.append(parent_dir)
 
 from benchmark_mujoco import Example
+
 from newton.viewer import ViewerGL
 
 

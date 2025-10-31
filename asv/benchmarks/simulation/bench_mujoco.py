@@ -13,8 +13,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import sys
 import os
+import sys
+
 import warp as wp
 
 wp.config.enable_backward = False
@@ -22,10 +23,11 @@ wp.config.quiet = True
 
 from asv_runner.benchmarks.mark import SkipNotImplemented, skip_benchmark_if
 
-parent_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+parent_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.append(parent_dir)
 
 from benchmark_mujoco import Example
+
 from newton.utils import EventTracer
 
 
