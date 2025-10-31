@@ -67,6 +67,11 @@ torch-cu12 = [
     "torch>=2.7.0",     # Cuda 12 PyTorch
 ]
 
+# Data IO dependencies
+data = [
+    "h5py>=3.13.0", # for saving/loading HDF5 data
+]
+
 # Development and Testing
 # Contains all w/o torch, plus development debugging dependencies
 dev = [

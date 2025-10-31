@@ -1,0 +1,114 @@
+#usda 1.0
+(
+    doc = """Authored manually for testing purposes."""
+    defaultPrim = "test_joint_d6_prismatic_passive"
+    timeCodesPerSecond = 1000
+    kilogramsPerUnit = 1
+    metersPerUnit = 1
+    upAxis = "Z"
+)
+
+def PhysicsScene "World"
+{
+    float physics:gravityMagnitude = 9.8067
+    vector3f physics:gravityDirection = (0, 0, -1)
+}
+
+def Xform "Robot"
+{
+    def Scope "RigidBodies"
+    {
+        def Xform "body_0" (
+            prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI"]
+        )
+        {
+            # Body Frame
+            quatf xformOp:orient = (1, 0, 0, 0)
+            double3 xformOp:translate = (0, 0, 0)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient"]
+
+            # Body Velocities
+            vector3f physics:linearVelocity = (0, 0, 0)
+            vector3f physics:angularVelocity = (0, 0, 0)
+
+            # Mass Properties
+            float physics:mass = 1.0
+            float3 physics:diagonalInertia = (1, 1, 1)
+            point3f physics:centerOfMass = (0, 0, 0)
+            quatf physics:principalAxes = (1, 0, 0, 0)
+        }
+
+        def Xform "body_1" (
+            prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI"]
+        )
+        {
+            # Body Frame
+            quatf xformOp:orient = (1, 0, 0, 0)
+            double3 xformOp:translate = (1, 0, 0)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient"]
+
+            # Body Velocities
+            vector3f physics:linearVelocity = (0, 0, 0)
+            vector3f physics:angularVelocity = (0, 0, 0)
+
+            # Mass Properties
+            float physics:mass = 1.0
+            float3 physics:diagonalInertia = (1, 1, 1)
+            point3f physics:centerOfMass = (0, 0, 0)
+            quatf physics:principalAxes = (1, 0, 0, 0)
+        }
+    }
+
+    def Scope "Joints"
+    {
+        # NOTE: The `PhysicsD6Joint` type does not work, D6 joints are specified using `PhysicsJoint`
+        def PhysicsJoint "passive_d6_prismatic_joint" (
+            prepend apiSchemas = [
+                # NOTE: These enable the UsdPhysics.JointLimit(...) attributes
+                "PhysicsLimitAPI:transX",
+                "PhysicsLimitAPI:transY",
+                "PhysicsLimitAPI:transZ",
+                "PhysicsLimitAPI:rotX",
+                "PhysicsLimitAPI:rotY",
+                "PhysicsLimitAPI:rotZ",
+            ]
+        )
+        {
+            bool physics:jointEnabled = 1
+
+            rel physics:body0 = </Robot/RigidBodies/body_0>
+            rel physics:body1 = </Robot/RigidBodies/body_1>
+
+            point3f physics:localPos0 = (0, 0, 0)
+            point3f physics:localPos1 = (-0.5, 0, 0)
+            quatf physics:localRot0 = (1, 0, 0, 0)
+            quatf physics:localRot1 = (1, 0, 0, 0)
+
+            bool physics:collisionEnabled = 0
+
+            # transX is the DoF of the prismatic joint
+            float limit:transX:physics:low = -10
+            float limit:transX:physics:high = 10
+
+            # low > high makes rotX a constraint axis
+            float limit:transY:physics:low = 1
+            float limit:transY:physics:high = -1
+
+            # low > high makes rotX a constraint axis
+            float limit:transZ:physics:low = 1
+            float limit:transZ:physics:high = -1
+
+            # low > high makes rotX a constraint axis
+            float limit:rotX:physics:low = 1
+            float limit:rotX:physics:high = -1
+
+            # low > high makes rotY a constraint axis
+            float limit:rotY:physics:low = 1
+            float limit:rotY:physics:high = -1
+
+            # low > high makes rotZ a constraint axis
+            float limit:rotZ:physics:low = 1
+            float limit:rotZ:physics:high = -1
+        }
+    }
+}

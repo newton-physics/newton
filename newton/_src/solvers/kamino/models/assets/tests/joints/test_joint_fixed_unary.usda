@@ -1,0 +1,60 @@
+#usda 1.0
+(
+    doc = """Authored manually for testing purposes."""
+    defaultPrim = "test_joint_fixed"
+    timeCodesPerSecond = 1000
+    kilogramsPerUnit = 1
+    metersPerUnit = 1
+    upAxis = "Z"
+)
+
+def PhysicsScene "World"
+{
+    float physics:gravityMagnitude = 9.8067
+    vector3f physics:gravityDirection = (0, 0, -1)
+}
+
+def Xform "Robot"
+{
+    def Scope "RigidBodies"
+    {
+        def Xform "body_1" (
+            prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI"]
+        )
+        {
+            # Body Frame
+            quatf xformOp:orient = (1, 0, 0, 0)
+            double3 xformOp:translate = (0.00889736, 0.0229802, -0.0126245)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient"]
+
+            # Body Velocities
+            vector3f physics:linearVelocity = (0, 0, 0)
+            vector3f physics:angularVelocity = (0, 0, 0)
+
+            # Mass Properties
+            float physics:mass = 0.1872
+            float3 physics:diagonalInertia = (1.248e-05, 6.24e-05, 6.24e-05)
+            point3f physics:centerOfMass = (0, 0, 0)
+            quatf physics:principalAxes = (0.797479, 0.546428, 0.144599, -0.211034)
+        }
+    }
+
+    def Scope "Joints"
+    {
+        def PhysicsFixedJoint "passive_fixed_joint"
+        {
+            bool physics:jointEnabled = 1
+
+            rel physics:body1 = </Robot/RigidBodies/body_1>
+
+            uniform token physics:axis = "X"
+
+            point3f physics:localPos0 = (-0.0181115, 0.0227982, 0.0310381)
+            point3f physics:localPos1 = (-0.0270088, -0.00018202, 0.0436626)
+            quatf physics:localRot0 = (1, 0, 0, 0)
+            quatf physics:localRot1 = (1, 0, 0, 0)
+
+            bool physics:collisionEnabled = 0
+        }
+    }
+}
