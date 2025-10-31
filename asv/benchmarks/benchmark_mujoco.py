@@ -14,16 +14,11 @@
 # limitations under the License.
 
 ###########################################################################
-# Example using MuJoCo solver
+# Used for benchmarking MjWarp.
 #
 # This script allows us to choose between several predefined robots and
 # provides a large range of customizable options.
-# The simulation runs with MuJoCo solver.
 #
-# Future improvements:
-# - Add options to run with a pre-trained policy
-# - Add the Anymal world
-# - Fix the use-mujoco-cpu option (currently crashes)
 ###########################################################################
 
 
