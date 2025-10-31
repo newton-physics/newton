@@ -1089,6 +1089,7 @@ def update_geom_properties_kernel(
     shape_transform: wp.array(dtype=wp.transform),
     to_newton_shape_index: wp.array2d(dtype=wp.int32),
     geom_type: wp.array(dtype=int),
+    GEOM_TYPE_MESH: int,
     geom_dataid: wp.array(dtype=int),
     mesh_pos: wp.array(dtype=wp.vec3),
     mesh_quat: wp.array(dtype=wp.quat),
@@ -1142,19 +1143,17 @@ def update_geom_properties_kernel(
     # get shape transform
     tf = shape_transform[shape_idx]
 
-    # check if this is a mesh geom (type 7 = mjGEOM_MESH) and apply mesh transformation
-    if geom_type[geom_idx] == 7:
+    # check if this is a mesh geom and apply mesh transformation
+    if geom_type[geom_idx] == GEOM_TYPE_MESH:
         mesh_id = geom_dataid[geom_idx]
         mesh_p = mesh_pos[mesh_id]
         mesh_q = mesh_quat[mesh_id]
-        mesh_tf = wp.transform(mesh_p, mesh_q)
-        tf = mesh_tf * tf
+        mesh_tf = wp.transform(mesh_p, wp.quat(mesh_q.y, mesh_q.z, mesh_q.w, mesh_q.x))
+        tf = tf * mesh_tf
 
     # store position and orientation
-    pos = tf.p
-    quat = tf.q
-    geom_pos[worldid, geom_idx] = pos
-    geom_quat[worldid, geom_idx] = wp.quatf(quat.w, quat.x, quat.y, quat.z)
+    geom_pos[worldid, geom_idx] = tf.p
+    geom_quat[worldid, geom_idx] = wp.quat(tf.q.w, tf.q.x, tf.q.y, tf.q.z)
 
 
 class SolverMuJoCo(SolverBase):
@@ -2786,6 +2785,7 @@ class SolverMuJoCo(SolverBase):
                 self.model.shape_transform,
                 self.to_newton_shape_index,
                 self.mjw_model.geom_type,
+                self._mujoco.mjtGeom.mjGEOM_MESH,
                 self.mjw_model.geom_dataid,
                 self.mjw_model.mesh_pos,
                 self.mjw_model.mesh_quat,
