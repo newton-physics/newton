@@ -13,6 +13,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import os
+import sys
 
 import warp as wp
 
@@ -21,7 +23,11 @@ wp.config.quiet = True
 
 from asv_runner.benchmarks.mark import SkipNotImplemented, skip_benchmark_if
 
-from newton.examples.example_mujoco import Example
+parent_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+sys.path.append(parent_dir)
+
+from benchmark_mujoco import Example
+
 from newton.utils import EventTracer
 
 
