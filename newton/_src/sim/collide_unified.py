@@ -1516,6 +1516,10 @@ class CollisionPipelineUnified:
         requires_grad: bool = False,
         device: Devicelike = None,
         broad_phase_mode: BroadPhaseMode = BroadPhaseMode.NXN,
+        shape_collision_group: wp.array(dtype=int) | None = None,
+        shape_world: wp.array(dtype=int) | None = None,
+        shape_flags: wp.array(dtype=int) | None = None,
+        sap_sort_type=None,
     ):
         """
         Initialize the CollisionPipeline.
@@ -1541,6 +1545,16 @@ class CollisionPipelineUnified:
                 - BroadPhaseMode.SAP: Use sweep-and-prune AABB broad phase (O(N log N), better for larger scenes)
                 - BroadPhaseMode.EXPLICIT: Use precomputed shape pairs (most efficient when pairs known)
                 Defaults to BroadPhaseMode.NXN.
+            shape_collision_group (wp.array | None, optional): Array of collision group IDs for each shape.
+                Used during broad phase kernel execution to filter pairs based on collision group rules.
+            shape_world (wp.array | None, optional): Array of world indices for each shape.
+                Required by NXN and SAP broad phases to organize geometries by world. If None, will be set during collide().
+            shape_flags (wp.array | None, optional): Array of shape flags (ShapeFlags) for each shape.
+                Used by NXN and SAP broad phases to filter out non-colliding shapes (e.g., visual-only).
+                If provided, only shapes with COLLIDE_SHAPES flag will participate in broad phase.
+            sap_sort_type (SAPSortType | None, optional): Sorting algorithm for SAP broad phase.
+                Only used when broad_phase_mode is BroadPhaseMode.SAP. Options: SEGMENTED or TILE.
+                If None, uses default (SEGMENTED).
         """
         # will be allocated during collide
         self.contacts = None  # type: Contacts | None
@@ -1559,25 +1573,20 @@ class CollisionPipelineUnified:
 
         # Initialize broad phase based on mode
         if self.broad_phase_mode == BroadPhaseMode.NXN:
-            raise NotImplementedError(
-                "NxN broad phase mode is currently not supported due to open collision filtering issues"
-            )
-            self.nxn_broadphase = BroadPhaseAllPairs()
+            if shape_world is None:
+                raise ValueError("shape_world must be provided when using BroadPhaseMode.NXN")
+            self.nxn_broadphase = BroadPhaseAllPairs(shape_world, geom_flags=shape_flags, device=device)
             self.sap_broadphase = None
             self.explicit_broadphase = None
             self.shape_pairs_filtered = None
         elif self.broad_phase_mode == BroadPhaseMode.SAP:
-            raise NotImplementedError(
-                "SAP broad phase mode is currently not supported due to open collision filtering issues"
-            )
-            # Estimate max groups for SAP - use reasonable defaults
-            max_num_negative_group_members = max(int(shape_count**0.5), 10)
-            max_num_distinct_positive_groups = max(int(shape_count**0.5), 10)
-            self.sap_broadphase = BroadPhaseSAP(
-                max_broad_phase_elements=shape_count,
-                max_num_distinct_positive_groups=max_num_distinct_positive_groups,
-                max_num_negative_group_members=max_num_negative_group_members,
-            )
+            if shape_world is None:
+                raise ValueError("shape_world must be provided when using BroadPhaseMode.SAP")
+            # Pass sort_type if provided, otherwise use default
+            sap_kwargs = {"geom_flags": shape_flags, "device": device}
+            if sap_sort_type is not None:
+                sap_kwargs["sort_type"] = sap_sort_type
+            self.sap_broadphase = BroadPhaseSAP(shape_world, **sap_kwargs)
             self.nxn_broadphase = None
             self.explicit_broadphase = None
             self.shape_pairs_filtered = None
@@ -1647,6 +1656,7 @@ class CollisionPipelineUnified:
         requires_grad: bool | None = None,
         broad_phase_mode: BroadPhaseMode = BroadPhaseMode.NXN,
         shape_pairs_filtered: wp.array(dtype=wp.vec2i) | None = None,
+        sap_sort_type=None,
     ) -> CollisionPipelineUnified:
         """
         Create a CollisionPipelineUnified instance from a Model.
@@ -1664,6 +1674,8 @@ class CollisionPipelineUnified:
             broad_phase_mode (BroadPhaseMode, optional): Broad phase collision detection mode. Defaults to BroadPhaseMode.NXN.
             shape_pairs_filtered (wp.array | None, optional): Precomputed shape pairs for EXPLICIT mode.
                 Required when broad_phase_mode is BroadPhaseMode.EXPLICIT. For NXN/SAP modes, can use model.shape_contact_pairs if available.
+            sap_sort_type (SAPSortType | None, optional): Sorting algorithm for SAP broad phase.
+                Only used when broad_phase_mode is BroadPhaseMode.SAP. If None, uses default (SEGMENTED).
 
         Returns:
             CollisionPipeline: The constructed collision pipeline.
@@ -1699,6 +1711,10 @@ class CollisionPipelineUnified:
             requires_grad,
             model.device,
             broad_phase_mode,
+            shape_collision_group=model.shape_collision_group if hasattr(model, "shape_collision_group") else None,
+            shape_world=model.shape_world if hasattr(model, "shape_world") else None,
+            shape_flags=model.shape_flags if hasattr(model, "shape_flags") else None,
+            sap_sort_type=sap_sort_type,
         )
 
     def collide(self, model: Model, state: State) -> Contacts:
