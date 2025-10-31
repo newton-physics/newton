@@ -396,7 +396,7 @@ def parse_usd(
                         parent_body_id,
                         xform,
                         type=GeoType.BOX,
-                        scale=extents,
+                        scale=(extents[0] / 2, extents[1] / 2, extents[2] / 2),
                         key=path_name,
                         visible=False,
                     )
