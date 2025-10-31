@@ -32,6 +32,7 @@ from .collision_primitive import (
 )
 from .flags import ParticleFlags, ShapeFlags
 from .inertia import compute_shape_inertia, compute_sphere_inertia, transform_inertia
+from .terrain_generator import generate_terrain_grid
 from .types import (
     MESH_MAXHULLVERT,
     SDF,
@@ -66,6 +67,7 @@ __all__ = [
     "compute_shape_inertia",
     "compute_shape_radius",
     "compute_sphere_inertia",
+    "generate_terrain_grid",
     "test_group_pair",
     "test_world_and_group_pair",
     "transform_inertia",

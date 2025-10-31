@@ -1129,6 +1129,9 @@ def find_pair_from_cumulative_index(
     return pair_idx, local_idx
 
 
+cos_threshold = wp.static(wp.cos(wp.radians(10.0)))
+
+
 @wp.kernel(enable_backward=False)
 def process_mesh_triangle_contacts_kernel(
     body_q: wp.array(dtype=wp.transform),
@@ -1252,6 +1255,27 @@ def process_mesh_triangle_contacts_kernel(
             pos_b,
             rigid_contact_margin,
         )
+
+        # Compute triangle normal (cross product of edges)
+        edge1 = v1_world - v0_world  # B - A
+        edge2 = v2_world - v0_world  # C - A
+        triangle_normal = wp.normalize(wp.cross(edge1, edge2))
+
+        # Post-process contacts: check if contact normal is pushing object into the triangle
+        # Only apply correction if the contact normal is nearly parallel to the triangle normal
+        # (within 10 degrees, meaning cos(angle) > cos(10°) ≈ 0.985)
+        dot_product = wp.dot(normal, triangle_normal)
+        abs_dot = wp.abs(dot_product)
+
+        # Check if nearly parallel (within 10 degrees of 0° or 180°)
+        if abs_dot > cos_threshold:
+            # If dot product is negative, contact normal is pointing opposite to triangle normal
+            # (pushing object into the triangle), so we need to flip the penetration depth sign
+            # to push the object out in the correct direction
+            if dot_product < 0.0:
+                # Flip penetration depths to reverse the contact force direction
+                for contact_id in range(count):
+                    signed_distances[contact_id] = -signed_distances[contact_id]
 
         # Write contacts
         for contact_id in range(count):
