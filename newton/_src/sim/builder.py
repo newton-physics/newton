@@ -55,8 +55,8 @@ from ..geometry import (
 )
 from ..geometry.inertia import validate_and_correct_inertia_kernel, verify_and_correct_inertia
 from ..geometry.utils import RemeshingMethod, compute_inertia_obb, remesh_mesh
+from ..usd import SchemaResolver
 from ..utils import compute_world_offsets
-from ..utils.schema_resolver import SchemaResolver
 from .graph_coloring import ColoringAlgorithm, color_trimesh, combine_independent_particle_coloring
 from .joints import (
     EqType,
@@ -64,7 +64,7 @@ from .joints import (
     JointType,
     get_joint_dof_count,
 )
-from .model import CustomAttribute, Model, ModelAttributeAssignment, ModelAttributeFrequency
+from .model import CustomAttribute, Model, ModelAttributeFrequency
 
 
 class ModelBuilder:
@@ -489,54 +489,69 @@ class ModelBuilder:
         # Custom attributes (user-defined per-frequency arrays)
         self.custom_attributes: dict[str, CustomAttribute] = {}
 
-    def add_custom_attribute(
-        self,
-        name: str,
-        frequency: ModelAttributeFrequency,
-        dtype: Any,
-        default=None,
-        assignment: ModelAttributeAssignment = ModelAttributeAssignment.MODEL,
-        namespace: str | None = None,
-    ):
-        """Define a custom per-entity attribute to be added to the Model.
+    def add_custom_attribute(self, attribute: CustomAttribute) -> None:
+        """
+        Define a custom per-entity attribute to be added to the Model.
 
         Args:
-            name: Variable name to expose on the Model (or within the namespace if namespace is specified)
-            frequency: ModelAttributeFrequency enum value
-            dtype: Warp dtype (e.g., wp.float32, wp.int32, wp.bool, wp.vec3). Required.
-            default: Default value for the attribute. If None, will use dtype-specific default
-                (e.g., 0.0 for scalars, zeros vector for vectors, False for booleans)
-            assignment: ModelAttributeAssignment enum value determining where the attribute appears
-            namespace: Optional namespace for organizing attributes hierarchically.
-                If None, attribute is added directly to the assignment object (e.g., model.attr_name).
-                If specified, creates a namespace object under the assignment (e.g., model.namespace.attr_name)
+            attribute: The custom attribute to add.
+
+        Example:
+
+            .. doctest::
+
+                builder = ModelBuilder()
+                builder.add_custom_attribute(
+                    name="my_attribute",
+                    frequency=ModelAttributeFrequency.BODY,
+                    dtype=wp.float32,
+                    default=20.0,
+                    assignment=ModelAttributeAssignment.MODEL,
+                    namespace="my_namespace",
+                )
+                builder.add_body(custom_attributes={"my_namespace:my_attribute": 30.0})
+                builder.add_body()  # we leave out the custom_attributes, so the attribute will use the default value 20.0
+                model = builder.finalize()
+                # the model has now an AttributeNamespace object with the name "my_namespace"
+                # and an attribute "my_attribute" that is a wp.array of shape (body_count, 1)
+                # with the default value 20.0
+                assert np.allclose(model.my_namespace.my_attribute.numpy(), [30.0, 20.0])
         """
-        # Create a full key that includes namespace for uniqueness checking
-        full_key = f"{namespace}:{name}" if namespace else name
+        key = attribute.key
 
-        if dtype is None:
-            raise TypeError(f"Custom attribute '{full_key}': dtype must be a Warp dtype (e.g., wp.float32); got None")
-
-        if full_key in self.custom_attributes:
+        existing = self.custom_attributes.get(key)
+        if existing:
             # validate that specification matches exactly
-            existing = self.custom_attributes[full_key]
             if (
-                existing.frequency != frequency
-                or existing.dtype != dtype
-                or existing.assignment != assignment
-                or existing.namespace != namespace
+                existing.frequency != attribute.frequency
+                or existing.dtype != attribute.dtype
+                or existing.assignment != attribute.assignment
+                or existing.namespace != attribute.namespace
             ):
-                raise ValueError(f"Custom attribute '{full_key}' already exists with incompatible spec")
+                raise ValueError(f"Custom attribute '{key}' already exists with incompatible spec")
             return
 
-        self.custom_attributes[full_key] = CustomAttribute(
-            assignment=assignment,
-            frequency=frequency,
-            name=name,
-            dtype=dtype,
-            namespace=namespace,
-            default=default,
-        )
+        self.custom_attributes[key] = attribute
+
+    def has_custom_attribute(self, key: str) -> bool:
+        """Check if a custom attribute is defined."""
+        return key in self.custom_attributes
+
+    def get_custom_attributes_by_frequency(
+        self, frequencies: Sequence[ModelAttributeFrequency]
+    ) -> list[CustomAttribute]:
+        """
+        Get custom attributes by frequency.
+        This is useful for processing custom attributes for different kinds of simulation objects.
+        For example, you can get all the custom attributes for bodies, shapes, joints, etc.
+
+        Args:
+            frequencies: The frequencies to get custom attributes for.
+
+        Returns:
+            A list of custom attributes.
+        """
+        return [attr for attr in self.custom_attributes.values() if attr.frequency in frequencies]
 
     def _process_custom_attributes(
         self,
@@ -904,7 +919,6 @@ class ModelBuilder:
         only_load_enabled_rigid_bodies: bool = False,
         only_load_enabled_joints: bool = True,
         joint_drive_gains_scaling: float = 1.0,
-        invert_rotations: bool = True,
         verbose: bool = False,
         ignore_paths: list[str] | None = None,
         cloned_world: str | None = None,
@@ -919,7 +933,7 @@ class ModelBuilder:
         hide_collision_shapes: bool = False,
         mesh_maxhullvert: int = MESH_MAXHULLVERT,
         schema_resolvers: list[SchemaResolver] | None = None,
-        collect_solver_specific_attrs: bool = True,
+        collect_schema_attrs: bool = True,
     ) -> dict[str, Any]:
         """
         Parses a Universal Scene Description (USD) stage containing UsdPhysics schema definitions for rigid-body articulations and adds the bodies, shapes and joints to the given ModelBuilder.
@@ -932,7 +946,6 @@ class ModelBuilder:
             only_load_enabled_rigid_bodies (bool): If True, only rigid bodies which do not have `physics:rigidBodyEnabled` set to False are loaded.
             only_load_enabled_joints (bool): If True, only joints which do not have `physics:jointEnabled` set to False are loaded.
             joint_drive_gains_scaling (float): The default scaling of the PD control gains (stiffness and damping), if not set in the PhysicsScene with as "newton:joint_drive_gains_scaling".
-            invert_rotations (bool): If True, inverts any rotations defined in the shape transforms.
             verbose (bool): If True, print additional information about the parsed USD file. Default is False.
             ignore_paths (List[str]): A list of regular expressions matching prim paths to ignore.
             cloned_world (str): The prim path of a world which is cloned within this USD file. Siblings of this world prim will not be parsed but instead be replicated via `ModelBuilder.add_builder(builder, xform)` to speed up the loading of many instantiated worlds.
@@ -948,12 +961,12 @@ class ModelBuilder:
             mesh_maxhullvert (int): Maximum vertices for convex hull approximation of meshes.
             schema_resolvers (list[SchemaResolver]): Resolver instances in priority order. Default is
                 [SchemaResolverNewton()].
-            collect_solver_specific_attrs (bool): If True, collect per-prim "solver-specific" attributes for the
+            collect_schema_attrs (bool): If True, collect per-prim "solver-specific" attributes for the
                 configured schema resolvers. These include namespaced attributes such as ``newton:*``, ``physx*``
                 (e.g., ``physxScene:*``, ``physxRigidBody:*``, ``physxSDFMeshCollision:*``), and ``mjc:*`` that
                 are authored in the USD but not strictly required to build the simulation. This is useful for
                 inspection, experimentation, or custom pipelines that read these values via
-                :meth:`_ResolverManager.get_solver_specific_attrs`. If set to ``False``, the parser skips scanning these
+                :meth:`ResolverManager.get_schema_attrs`. If set to ``False``, the parser skips scanning these
                 namespaces to avoid unnecessary overhead. For example, if an asset authors PhysX SDF mesh
                 properties (``physxSDFMeshCollision:*``) that Newton does not currently use, disabling this flag
                 prevents parsing them. Default is ``True``.
@@ -986,8 +999,8 @@ class ModelBuilder:
                   - Dictionary returned by :meth:`newton.ModelBuilder.collapse_fixed_joints` if `collapse_fixed_joints` is True, otherwise None.
                 * - "physics_dt"
                   - The resolved physics scene time step (float or None)
-                * - "solver_specific_attrs"
-                  - Dictionary of collected per-prim solver-specific attributes (dict or empty dict if `collect_solver_specific_attrs` is False)
+                * - "schema_attrs"
+                  - Dictionary of collected per-prim schema attributes (dict or empty dict if `collect_schema_attrs` is False)
                 * - "max_solver_iterations"
                   - The resolved maximum solver iterations (int or None)
                 * - "path_body_relative_transform"
@@ -1004,7 +1017,6 @@ class ModelBuilder:
             only_load_enabled_rigid_bodies,
             only_load_enabled_joints,
             joint_drive_gains_scaling,
-            invert_rotations,
             verbose,
             ignore_paths,
             cloned_world,
@@ -1019,7 +1031,7 @@ class ModelBuilder:
             hide_collision_shapes,
             mesh_maxhullvert,
             schema_resolvers,
-            collect_solver_specific_attrs,
+            collect_schema_attrs,
         )
 
     def add_mjcf(
@@ -1387,14 +1399,8 @@ class ModelBuilder:
         if builder.custom_attributes:
             for full_key, attr in builder.custom_attributes.items():
                 # Declare the attribute if it doesn't exist in the main builder
-                self.add_custom_attribute(
-                    name=attr.name,
-                    frequency=attr.frequency,
-                    dtype=attr.dtype,
-                    default=attr.default,
-                    assignment=attr.assignment,
-                    namespace=attr.namespace,
-                )
+                self.add_custom_attribute(attr)
+                self.custom_attributes[full_key].values = copy.copy(attr.values)
                 merged = self.custom_attributes[full_key]
                 # Prevent silent divergence if defaults differ
                 # Handle array/vector types by converting to comparable format
@@ -1416,7 +1422,9 @@ class ModelBuilder:
                     continue
 
                 # Determine the offset based on frequency
-                if attr.frequency == ModelAttributeFrequency.BODY:
+                if attr.frequency == ModelAttributeFrequency.ONCE:
+                    offset = 0
+                elif attr.frequency == ModelAttributeFrequency.BODY:
                     offset = start_body_idx
                 elif attr.frequency == ModelAttributeFrequency.SHAPE:
                     offset = start_shape_idx
@@ -1528,7 +1536,7 @@ class ModelBuilder:
 
     def add_joint(
         self,
-        joint_type: wp.constant,
+        joint_type: JointType,
         parent: int,
         child: int,
         linear_axes: list[JointDofConfig] | None = None,
@@ -1544,7 +1552,7 @@ class ModelBuilder:
         Generic method to add any type of joint to this ModelBuilder.
 
         Args:
-            joint_type (constant): The type of joint to add (see :ref:'joint-types').
+            joint_type (JointType): The type of joint to add (see :ref:'joint-types').
             parent (int): The index of the parent body (-1 is the world).
             child (int): The index of the child body.
             linear_axes (list(:class:`JointDofConfig`)): The linear axes (see :class:`JointDofConfig`) of the joint.
@@ -1554,10 +1562,7 @@ class ModelBuilder:
             child_xform (Transform): The transform of the joint in the child body's local frame. If None, the identity transform is used.
             collision_filter_parent (bool): Whether to filter collisions between shapes of the parent and child bodies.
             enabled (bool): Whether the joint is enabled (not considered by :class:`SolverFeatherstone`).
-            custom_attributes: Dictionary of custom attribute names to values.
-                Attribute names with ``dof_`` prefix use JOINT_DOF frequency (requires list of values per DOF).
-                Attribute names with ``coord_`` prefix use JOINT_COORD frequency (requires list of values per coordinate).
-                Attribute names without prefix use JOINT frequency (single value per joint).
+            custom_attributes: Dictionary of custom attribute keys (see :attr:`CustomAttribute.key`) to values. Note that custom attributes with frequency :attr:`ModelAttributeFrequency.JOINT_DOF` or :attr:`ModelAttributeFrequency.JOINT_COORD` require the respective values to be provided as lists with length equal to the joint's DOF or coordinate count. Custom attributes with frequency :attr:`ModelAttributeFrequency.JOINT` require a single value to be defined.
 
         Returns:
             The index of the added joint.
@@ -4840,7 +4845,9 @@ class ModelBuilder:
                 frequency = custom_attr.frequency
 
                 # determine count by frequency
-                if frequency == ModelAttributeFrequency.BODY:
+                if frequency == ModelAttributeFrequency.ONCE:
+                    count = 1
+                elif frequency == ModelAttributeFrequency.BODY:
                     count = m.body_count
                 elif frequency == ModelAttributeFrequency.SHAPE:
                     count = m.shape_count

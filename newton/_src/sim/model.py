@@ -17,6 +17,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from enum import IntEnum
 from typing import Any
@@ -35,7 +36,7 @@ class ModelAttributeAssignment(IntEnum):
 
     Defines which component of the simulation system owns and manages specific attributes.
     This categorization determines where custom attributes are attached during simulation
-    object creation (State, Control, or Contacts).
+    object creation (Model, State, Control, or Contacts).
     """
 
     MODEL = 0
@@ -56,17 +57,19 @@ class ModelAttributeFrequency(IntEnum):
     should be indexed in relation to the model's entities such as joints, bodies, shapes, etc.
     """
 
-    JOINT = 0
+    ONCE = 0
+    """Attribute frequency is a single value."""
+    JOINT = 1
     """Attribute frequency follows the number of joints (see :attr:`~newton.Model.joint_count`)."""
-    JOINT_DOF = 1
+    JOINT_DOF = 2
     """Attribute frequency follows the number of joint degrees of freedom (see :attr:`~newton.Model.joint_dof_count`)."""
-    JOINT_COORD = 2
+    JOINT_COORD = 3
     """Attribute frequency follows the number of joint positional coordinates (see :attr:`~newton.Model.joint_coord_count`)."""
-    BODY = 3
+    BODY = 4
     """Attribute frequency follows the number of bodies (see :attr:`~newton.Model.body_count`)."""
-    SHAPE = 4
+    SHAPE = 5
     """Attribute frequency follows the number of shapes (see :attr:`~newton.Model.shape_count`)."""
-    ARTICULATION = 5
+    ARTICULATION = 6
     """Attribute frequency follows the number of articulations (see :attr:`~newton.Model.articulation_count`)."""
 
 
@@ -78,34 +81,42 @@ class AttributeNamespace:
     allowing hierarchical organization of related properties.
     """
 
-    def __init__(self, namespace_name: str):
+    def __init__(self, name: str):
         """Initialize the namespace container.
 
         Args:
-            namespace_name: The name of the namespace
+            name: The name of the namespace
         """
-        self._namespace_name = namespace_name
+        self._name = name
 
     def __repr__(self):
         """Return a string representation showing the namespace and its attributes."""
         # List all public attributes (not starting with _)
         attrs = [k for k in self.__dict__ if not k.startswith("_")]
-        return f"AttributeNamespace('{self._namespace_name}', attributes={attrs})"
+        return f"AttributeNamespace('{self._name}', attributes={attrs})"
 
 
 @dataclass
 class CustomAttribute:
     """
     Represents a custom attribute definition for the ModelBuilder.
+    This is used to define custom attributes that are not part of the standard ModelBuilder API.
+    Custom attributes can be defined for the Model, State, Control, or Contacts objects, depending on the :class:`ModelAttributeAssignment` category.
 
     Attributes:
-        assignment: Assignment category (see ModelAttributeAssignment enum)
-        frequency: Frequency category (see ModelAttributeFrequency enum)
+        assignment: Assignment category (see :class:`ModelAttributeAssignment`)
+        frequency: Frequency category (see :class:`ModelAttributeFrequency`)
         name: Variable name to expose on the Model
         dtype: Warp dtype (e.g., wp.float32, wp.int32, wp.bool, wp.vec3)
         namespace: Namespace for the attribute
         default: Default value for the attribute
         values: Dictionary mapping indices to specific values (overrides)
+        usd_attribute_name: Name of the corresponding USD attribute. If None, the USD attribute name ``"newton:<namespace>:<name>"`` is used.
+        mjcf_attribute_name: Name of the attribute in the MJCF definition. If None, the attribute name is used.
+        urdf_attribute_name: Name of the attribute in the URDF definition. If None, the attribute name is used.
+        usd_value_transformer: Transformer function that converts a USD attribute value to a valid Warp dtype. If undefined, the generic converter from :func:`newton.usd.convert_warp_value` is used.
+        mjcf_value_transformer: Transformer function that converts a MJCF attribute value string to a valid Warp dtype. If undefined, the generic converter from :func:`newton.mjcf.convert_warp_value` is used.
+        urdf_value_transformer: Transformer function that converts a URDF attribute value string to a valid Warp dtype. If undefined, the generic converter from :func:`newton.urdf.convert_warp_value` is used.
     """
 
     assignment: ModelAttributeAssignment
@@ -115,33 +126,50 @@ class CustomAttribute:
     namespace: str | None = None
     default: Any = None
     values: dict[int, Any] | None = None
+    usd_attribute_name: str | None = None
+    mjcf_attribute_name: str | None = None
+    urdf_attribute_name: str | None = None
+    usd_value_transformer: Callable[[Any], Any] | None = None
+    mjcf_value_transformer: Callable[[str], Any] | None = None
+    urdf_value_transformer: Callable[[str], Any] | None = None
 
     def __post_init__(self):
         """Initialize default values and ensure values dict exists."""
+        # ensure dtype is a valid Warp dtype
+        try:
+            _size = wp.types.type_size_in_bytes(self.dtype)
+        except TypeError as e:
+            raise ValueError(
+                f"Invalid dtype: {self.dtype}. Must be a valid Warp dtype that is compatible with Warp arrays."
+            ) from e
+
         # Set dtype-specific default value if none was provided
         if self.default is None:
             self.default = self._default_for_dtype(self.dtype)
-
         if self.values is None:
             self.values = {}
+        if self.usd_attribute_name is None:
+            self.usd_attribute_name = f"newton:{self.key}"
+        if self.mjcf_attribute_name is None:
+            self.mjcf_attribute_name = self.name
+        if self.urdf_attribute_name is None:
+            self.urdf_attribute_name = self.name
 
     @staticmethod
-    def _default_for_dtype(d: object) -> Any:
+    def _default_for_dtype(dtype: object) -> Any:
         """Get default value for dtype when not specified."""
         # quaternions get identity quaternion
-        if d is wp.quat:
-            return wp.quat_identity()
-        # vectors default to zeros of their length
-        if wp.types.type_is_vector(d):
-            length = getattr(d, "_shape_", (1,))[0] or 1
-            return np.zeros(
-                length,
-                dtype=wp.types.warp_type_to_np_dtype.get(getattr(d, "_wp_scalar_type_", wp.float32), np.float32),
-            )
-        # scalars
-        if d is wp.bool:
+        if wp.types.type_is_quaternion(dtype):
+            return wp.quat_identity(dtype._wp_scalar_type_)
+        if dtype is wp.bool or dtype is bool:
             return False
-        return 0
+        # vectors, matrices, scalars
+        return dtype(0)
+
+    @property
+    def key(self) -> str:
+        """Return the full name of the attribute, formatted as "namespace:name" or "name" if no namespace is specified."""
+        return f"{self.namespace}:{self.name}" if self.namespace else self.name
 
     def build_array(self, count: int, device: Devicelike | None = None, requires_grad: bool = False) -> wp.array:
         """Build wp.array from count, dtype, default and overrides."""
@@ -833,7 +861,7 @@ class Model:
         if assignment is not None:
             self.attribute_assignment[full_name] = assignment
 
-    def get_attribute_frequency(self, name):
+    def get_attribute_frequency(self, name: str) -> ModelAttributeFrequency:
         """
         Get the frequency of an attribute.
 
