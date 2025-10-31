@@ -599,7 +599,9 @@ def parse_usd(
         joint_armature = R.get_value(
             joint_prim, prim_type=PrimType.JOINT, key="armature", default=default_joint_armature
         )
-        joint_friction = R.get_value(joint_prim, prim_type=PrimType.JOINT, key="friction", default=default_joint_friction)
+        joint_friction = R.get_value(
+            joint_prim, prim_type=PrimType.JOINT, key="friction", default=default_joint_friction
+        )
 
         # Extract custom attributes for this joint
         joint_custom_attrs = R.get_custom_attributes_for_prim(joint_prim, ModelAttributeFrequency.JOINT)
