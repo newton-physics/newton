@@ -1648,10 +1648,10 @@ class TestMuJoCoAttributes(unittest.TestCase):
         newton.solvers.SolverMuJoCo.register_custom_attributes(builder)
         b0 = builder.add_body()
         builder.add_joint_revolute(-1, b0, axis=(0.0, 0.0, 1.0))
-        builder.add_shape_box(body=b0, hx=0.1, hy=0.1, hz=0.1, custom_attributes={"mjc:condim": 6})
+        builder.add_shape_box(body=b0, hx=0.1, hy=0.1, hz=0.1, custom_attributes={"mujoco:condim": 6})
         b1 = builder.add_body()
         builder.add_joint_revolute(b0, b1, axis=(0.0, 0.0, 1.0))
-        builder.add_shape_box(body=b1, hx=0.1, hy=0.1, hz=0.1, custom_attributes={"mjc:condim": 4})
+        builder.add_shape_box(body=b1, hx=0.1, hy=0.1, hz=0.1, custom_attributes={"mujoco:condim": 4})
         b2 = builder.add_body()
         builder.add_joint_revolute(b1, b2, axis=(0.0, 0.0, 1.0))
         builder.add_shape_box(body=b2, hx=0.1, hy=0.1, hz=0.1)
@@ -1660,7 +1660,9 @@ class TestMuJoCoAttributes(unittest.TestCase):
         # Should work fine with single world
         solver = SolverMuJoCo(model, separate_worlds=False)
 
-        assert np.allclose(model.mjc.condim.numpy(), [6, 4, 3])
+        assert hasattr(model, "mujoco")
+        assert hasattr(model.mujoco, "condim")
+        assert np.allclose(model.mujoco.condim.numpy(), [6, 4, 3])
         assert np.allclose(solver.mjw_model.geom_condim.numpy(), [6, 4, 3])
 
     def test_custom_attributes_from_mjcf(self):
@@ -1687,7 +1689,9 @@ class TestMuJoCoAttributes(unittest.TestCase):
         builder.add_mjcf(mjcf)
         model = builder.finalize()
         solver = SolverMuJoCo(model, separate_worlds=False)
-        assert np.allclose(model.mjc.condim.numpy(), [6, 4, 3])
+        assert hasattr(model, "mujoco")
+        assert hasattr(model.mujoco, "condim")
+        assert np.allclose(model.mujoco.condim.numpy(), [6, 4, 3])
         assert np.allclose(solver.mjw_model.geom_condim.numpy(), [6, 4, 3])
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
@@ -1705,7 +1709,7 @@ class TestMuJoCoAttributes(unittest.TestCase):
         UsdPhysics.RigidBodyAPI.Apply(prim)
         UsdPhysics.ArticulationRootAPI.Apply(prim)
         UsdPhysics.CollisionAPI.Apply(prim)
-        prim.CreateAttribute("newton:mjc:condim", Sdf.ValueTypeNames.Int, True).Set(6)
+        prim.CreateAttribute("mjc:condim", Sdf.ValueTypeNames.Int, True).Set(6)
 
         joint_path = "/joint"
         joint = UsdPhysics.RevoluteJoint.Define(stage, joint_path)
@@ -1717,7 +1721,9 @@ class TestMuJoCoAttributes(unittest.TestCase):
         builder.add_usd(stage)
         model = builder.finalize()
         solver = SolverMuJoCo(model, separate_worlds=False)
-        assert np.allclose(model.mjc.condim.numpy(), [6])
+        assert hasattr(model, "mujoco")
+        assert hasattr(model.mujoco, "condim")
+        assert np.allclose(model.mujoco.condim.numpy(), [6])
         assert np.allclose(solver.mjw_model.geom_condim.numpy(), [6])
 
 

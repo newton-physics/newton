@@ -23,3 +23,28 @@ from ._src.usd.utils import (
 __all__ = [
     "convert_warp_value",
 ]
+
+
+# ==================================================================================
+# USD schema resolution
+# ==================================================================================
+
+from ._src.usd.schema_resolver import (
+    PrimType,
+    SchemaResolver,
+    SchemaResolverManager,
+)
+from ._src.usd.schemas import (
+    SchemaResolverMjc,
+    SchemaResolverNewton,
+    SchemaResolverPhysx,
+)
+
+__all__ += [
+    "PrimType",
+    "SchemaResolver",
+    "SchemaResolverManager",
+    "SchemaResolverMjc",
+    "SchemaResolverNewton",
+    "SchemaResolverPhysx",
+]

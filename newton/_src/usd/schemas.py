@@ -256,8 +256,6 @@ class SchemaResolverMjc(SchemaResolver):
             "mesh_hull_vertex_limit": SchemaAttribute("mjc:maxhullvert", MESH_MAXHULLVERT),
             # Collisions
             "rigid_contact_margin": SchemaAttribute("mjc:margin", 0.0),
-            # MuJoCo-specific custom attributes
-            "mujoco:condim": SchemaAttribute("mjc:condim", 3),
         },
         PrimType.MATERIAL: {
             # Materials and contact models

@@ -21,7 +21,7 @@ import os
 import re
 import warnings
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 import numpy as np
 import warp as wp
@@ -35,15 +35,17 @@ from ..sim.model import CustomAttribute, ModelAttributeFrequency
 from ..usd import PrimType, SchemaResolver, SchemaResolverManager, SchemaResolverNewton
 from ..usd import utils as usd
 
+if TYPE_CHECKING:
+    from pxr import Usd
+
 
 def parse_usd(
     builder: ModelBuilder,
-    source,
+    source: str | Usd.Stage,
     xform: Transform | None = None,
     only_load_enabled_rigid_bodies: bool = False,
     only_load_enabled_joints: bool = True,
     joint_drive_gains_scaling: float = 1.0,
-    invert_rotations: bool = True,
     verbose: bool = False,
     ignore_paths: list[str] | None = None,
     cloned_world: str | None = None,
@@ -58,7 +60,7 @@ def parse_usd(
     hide_collision_shapes: bool = False,
     mesh_maxhullvert: int = MESH_MAXHULLVERT,
     schema_resolvers: list[SchemaResolver] | None = None,
-    collect_solver_specific_attrs: bool = True,
+    collect_schema_attrs: bool = True,
 ) -> dict[str, Any]:
     """
     Parses a Universal Scene Description (USD) stage containing UsdPhysics schema definitions for rigid-body articulations and adds the bodies, shapes and joints to the given ModelBuilder.
@@ -88,12 +90,12 @@ def parse_usd(
         mesh_maxhullvert (int): Maximum vertices for convex hull approximation of meshes.
         schema_resolvers (list[SchemaResolver]): Resolver instances in priority order. Default is
             [SchemaResolverNewton()].
-        collect_solver_specific_attrs (bool): If True, collect per-prim "solver-specific" attributes for the
+        collect_schema_attrs (bool): If True, collect per-prim "solver-specific" attributes for the
             configured schema resolvers. These include namespaced attributes such as ``newton:*``, ``physx*``
             (e.g., ``physxScene:*``, ``physxRigidBody:*``, ``physxSDFMeshCollision:*``), and ``mjc:*`` that
             are authored in the USD but not strictly required to build the simulation. This is useful for
             inspection, experimentation, or custom pipelines that read these values via
-            :meth:`ResolverManager.get_solver_specific_attrs`. If set to ``False``, the parser skips scanning these
+            :meth:`ResolverManager.get_schema_attrs`. If set to ``False``, the parser skips scanning these
             namespaces to avoid unnecessary overhead. For example, if an asset authors PhysX SDF mesh
             properties (``physxSDFMeshCollision:*``) that Newton does not currently use, disabling this flag
             prevents parsing them. Default is ``True``.
@@ -126,8 +128,8 @@ def parse_usd(
               - Dictionary returned by :meth:`newton.ModelBuilder.collapse_fixed_joints` if `collapse_fixed_joints` is True, otherwise None.
             * - "physics_dt"
               - The resolved physics scene time step (float or None)
-            * - "solver_specific_attrs"
-              - Dictionary of collected per-prim solver-specific attributes (dict or empty dict if `collect_solver_specific_attrs` is False)
+            * - "schema_attrs"
+              - Dictionary of collected per-prim schema attributes (dict or empty dict if `collect_schema_attrs` is False)
             * - "max_solver_iterations"
               - The resolved maximum solver iterations (int or None)
             * - "path_body_relative_transform"
@@ -203,26 +205,6 @@ def parse_usd(
         if verbose:
             print(f"Failed to get linear unit: {e}")
 
-    # process custom attributes defined for different kinds of prim
-    builder_custom_attr_model: list[CustomAttribute] = [
-        attr for attr in builder.custom_attributes.values() if attr.frequency == ModelAttributeFrequency.ONCE
-    ]
-    builder_custom_attr_shape: list[CustomAttribute] = [
-        attr for attr in builder.custom_attributes.values() if attr.frequency == ModelAttributeFrequency.SHAPE
-    ]
-    builder_custom_attr_body: list[CustomAttribute] = [
-        attr for attr in builder.custom_attributes.values() if attr.frequency == ModelAttributeFrequency.BODY
-    ]
-    builder_custom_attr_joint: list[CustomAttribute] = [
-        attr
-        for attr in builder.custom_attributes.values()
-        if attr.frequency
-        in [ModelAttributeFrequency.JOINT, ModelAttributeFrequency.JOINT_DOF, ModelAttributeFrequency.JOINT_COORD]
-    ]
-    builder_custom_attr_articulation: list[CustomAttribute] = [
-        attr for attr in builder.custom_attributes.values() if attr.frequency == ModelAttributeFrequency.ARTICULATION
-    ]
-
     # resolve cloned worlds
     if cloned_world is not None:
         cloned_world_prim = stage.GetPrimAtPath(cloned_world)
@@ -257,7 +239,7 @@ def parse_usd(
     ret_dict = UsdPhysics.LoadUsdPhysicsFromRange(stage, [root_path], excludePaths=non_regex_ignore_paths)
 
     # Initialize schema resolver according to precedence
-    R = SchemaResolverManager(schema_resolvers, collect_solver_attrs=collect_solver_specific_attrs)
+    R = SchemaResolverManager(schema_resolvers)
 
     # for key, value in ret_dict.items():
     #     print(f"Object type: {key}")
@@ -452,12 +434,7 @@ def parse_usd(
 
     def add_body(prim, xform, key, armature):
         # Extract custom attributes for this body
-        body_custom_attrs = R.get_custom_attributes_for_prim(prim, ModelAttributeFrequency.BODY)
-
-        for attr_name in builder_custom_attr_body:
-            usd_attr_name = f"newton:{attr_name}"
-            if prim.HasAttribute(usd_attr_name):
-                body_custom_attrs[attr_name] = prim.GetAttribute(usd_attr_name).Get()
+        body_custom_attrs = usd.get_custom_attribute_values(prim, builder_custom_attr_body)
 
         b = builder.add_body(
             xform=xform,
@@ -531,7 +508,7 @@ def parse_usd(
         key = joint_desc.type
         joint_prim = stage.GetPrimAtPath(joint_desc.primPath)
         # collect engine-specific attributes on the joint prim if requested
-        if collect_solver_specific_attrs:
+        if collect_schema_attrs:
             R.collect_prim_attrs(joint_prim)
         parent_id, child_id, parent_tf, child_tf = resolve_joint_parent_child(
             joint_desc, path_body_map, get_transforms=True
@@ -545,13 +522,7 @@ def parse_usd(
         joint_friction = R.get_value(joint_prim, prim_type=PrimType.JOINT, key="friction", default=0.0)
 
         # Extract custom attributes for this joint
-        joint_custom_attrs = R.get_custom_attributes_for_prim(joint_prim, ModelAttributeFrequency.JOINT)
-
-        for attr_name in builder_custom_attr_joint:
-            usd_attr_name = f"newton:{attr_name}"
-            if joint_prim.HasAttribute(usd_attr_name):
-                joint_custom_attrs[attr_name] = joint_prim.GetAttribute(usd_attr_name).Get()
-
+        joint_custom_attrs = usd.get_custom_attribute_values(joint_prim, builder_custom_attr_joint)
         joint_params = {
             "parent": parent_id,
             "child": child_id,
@@ -874,6 +845,7 @@ def parse_usd(
 
     # Looking for and parsing the attributes on PhysicsScene prims
     scene_attributes = {}
+    physics_scene_prim = None
     if UsdPhysics.ObjectType.Scene in ret_dict:
         paths, scene_descs = ret_dict[UsdPhysics.ObjectType.Scene]
         if len(paths) > 1 and verbose:
@@ -884,26 +856,17 @@ def parse_usd(
             print("Gravity direction:", scene_desc.gravityDirection)
             print("Gravity magnitude:", scene_desc.gravityMagnitude)
         builder.gravity = -scene_desc.gravityMagnitude * linear_unit
-        axis = Axis.from_any(int(np.argmax(np.abs(scene_desc.gravityDirection))))
+        stage_up_axis = Axis.from_any(int(np.argmax(np.abs(scene_desc.gravityDirection))))
 
         # Storing Physics Scene attributes
         physics_scene_prim = stage.GetPrimAtPath(path)
         for a in physics_scene_prim.GetAttributes():
             scene_attributes[a.GetName()] = a.Get()
 
-        # Extract custom attributes for model (ONCE) frequency from the PhysicsScene prim
-        for attr_name in builder_custom_attr_model:
-            usd_attr_name = f"newton:{attr_name}"
-            if physics_scene_prim.HasAttribute(usd_attr_name):
-                scene_attributes[attr_name] = physics_scene_prim.GetAttribute(usd_attr_name).Get()
-
         # Parse custom attribute declarations from PhysicsScene prim
         # This must happen before processing any other prims
-        R.parse_custom_attribute_declarations(physics_scene_prim)
-
-        # Declare all custom attributes in the builder
-        declarations = R.get_custom_attribute_declarations()
-        for _full_key, attr in declarations.items():
+        declarations = usd.get_custom_attribute_declarations(physics_scene_prim)
+        for attr in declarations.values():
             builder.add_custom_attribute(attr)
 
         # Updating joint_drive_gains_scaling if set of the PhysicsScene
@@ -924,18 +887,17 @@ def parse_usd(
             physics_scene_prim, prim_type=PrimType.SCENE, key="max_solver_iterations", default=None
         )
     else:
-        # builder.up_vector, builder.up_axis = get_up_vector_and_axis(stage)
-        axis = Axis.from_string(str(UsdGeom.GetStageUpAxis(stage)))
+        stage_up_axis = Axis.from_string(str(UsdGeom.GetStageUpAxis(stage)))
 
     if apply_up_axis_from_stage:
-        builder.up_axis = axis
+        builder.up_axis = stage_up_axis
         axis_xform = wp.transform_identity()
         if verbose:
-            print(f"Using stage up axis {axis} as builder up axis")
+            print(f"Using stage up axis {stage_up_axis} as builder up axis")
     else:
-        axis_xform = wp.transform(wp.vec3(0.0), quat_between_axes(axis, builder.up_axis))
+        axis_xform = wp.transform(wp.vec3(0.0), quat_between_axes(stage_up_axis, builder.up_axis))
         if verbose:
-            print(f"Rotating stage to align its up axis {axis} with builder up axis {builder.up_axis}")
+            print(f"Rotating stage to align its up axis {stage_up_axis} with builder up axis {builder.up_axis}")
     if xform is None:
         incoming_world_xform = axis_xform
     else:
@@ -945,6 +907,33 @@ def parse_usd(
         print(
             f"Scaling PD gains by (joint_drive_gains_scaling / DegreesToRadian) = {joint_drive_gains_scaling / DegreesToRadian}, default scale for joint_drive_gains_scaling=1 is 1.0/DegreesToRadian = {1.0 / DegreesToRadian}"
         )
+
+    # process custom attributes defined for different kinds of prim
+    # note that at this time we may have more custom attributes than before since they may have been
+    # declared on the PhysicsScene prim
+    builder_custom_attr_shape: list[CustomAttribute] = [
+        attr for attr in builder.custom_attributes.values() if attr.frequency == ModelAttributeFrequency.SHAPE
+    ]
+    builder_custom_attr_body: list[CustomAttribute] = [
+        attr for attr in builder.custom_attributes.values() if attr.frequency == ModelAttributeFrequency.BODY
+    ]
+    builder_custom_attr_joint: list[CustomAttribute] = [
+        attr
+        for attr in builder.custom_attributes.values()
+        if attr.frequency
+        in [ModelAttributeFrequency.JOINT, ModelAttributeFrequency.JOINT_DOF, ModelAttributeFrequency.JOINT_COORD]
+    ]
+    builder_custom_attr_articulation: list[CustomAttribute] = [
+        attr for attr in builder.custom_attributes.values() if attr.frequency == ModelAttributeFrequency.ARTICULATION
+    ]
+
+    if physics_scene_prim is not None:
+        # Extract custom attributes for model (ONCE) frequency from the PhysicsScene prim
+        builder_custom_attr_model: list[CustomAttribute] = [
+            attr for attr in builder.custom_attributes.values() if attr.frequency == ModelAttributeFrequency.ONCE
+        ]
+        scene_custom_attrs = usd.get_custom_attribute_values(physics_scene_prim, builder_custom_attr_model)
+        scene_attributes.update(scene_custom_attrs)
 
     joint_descriptions = {}
     # maps from joint prim path to joint index in builder
@@ -1041,6 +1030,7 @@ def parse_usd(
         paths, articulation_descs = ret_dict[UsdPhysics.ObjectType.Articulation]
 
         articulation_id = builder.articulation_count
+        parent_prim = None
         body_data = {}
         for path, desc in zip(paths, articulation_descs, strict=False):
             if warn_invalid_desc(path, desc):
@@ -1050,15 +1040,15 @@ def parse_usd(
                 continue
             articulation_prim = stage.GetPrimAtPath(path)
             # Collect engine-specific attributes for the articulation root on first encounter
-            if collect_solver_specific_attrs:
-                R.collect_prim_solver_attrs(articulation_prim)
+            if collect_schema_attrs:
+                R.collect_prim_attrs(articulation_prim)
                 # Also collect on the parent prim (e.g. Xform with PhysxArticulationAPI)
                 try:
                     parent_prim = articulation_prim.GetParent()
                 except Exception:
                     parent_prim = None
                 if parent_prim is not None and parent_prim.IsValid():
-                    R.collect_prim_solver_attrs(parent_prim)
+                    R.collect_prim_attrs(parent_prim)
 
             # Extract custom attributes for articulation frequency from the articulation root prim
             # (the one with PhysicsArticulationRootAPI, typically the articulation_prim itself or its parent)
@@ -1067,26 +1057,18 @@ def parse_usd(
             if articulation_prim.HasAPI(UsdPhysics.ArticulationRootAPI):
                 if verbose:
                     print(f"Extracting articulation custom attributes from {articulation_prim.GetPath()}")
-                articulation_custom_attrs = R.get_custom_attributes_for_prim(
-                    articulation_prim, ModelAttributeFrequency.ARTICULATION
+                articulation_custom_attrs = usd.get_custom_attribute_values(
+                    articulation_prim, builder_custom_attr_articulation
                 )
-                for attr_name in builder_custom_attr_articulation:
-                    usd_attr_name = f"newton:{attr_name}"
-                    if articulation_prim.HasAttribute(usd_attr_name):
-                        articulation_custom_attrs[attr_name] = articulation_prim.GetAttribute(usd_attr_name).Get()
             # If not, check the parent prim
             elif (
                 parent_prim is not None and parent_prim.IsValid() and parent_prim.HasAPI(UsdPhysics.ArticulationRootAPI)
             ):
                 if verbose:
                     print(f"Extracting articulation custom attributes from parent {parent_prim.GetPath()}")
-                articulation_custom_attrs = R.get_custom_attributes_for_prim(
-                    parent_prim, ModelAttributeFrequency.ARTICULATION
+                articulation_custom_attrs = usd.get_custom_attribute_values(
+                    parent_prim, builder_custom_attr_articulation
                 )
-                for attr_name in builder_custom_attr_articulation:
-                    usd_attr_name = f"newton:{attr_name}"
-                    if parent_prim.HasAttribute(usd_attr_name):
-                        articulation_custom_attrs[attr_name] = parent_prim.GetAttribute(usd_attr_name).Get()
             if verbose and articulation_custom_attrs:
                 print(f"Extracted articulation custom attributes: {articulation_custom_attrs}")
             body_ids = {}
@@ -1106,9 +1088,9 @@ def parse_usd(
                     continue
                 else:
                     usd_prim = stage.GetPrimAtPath(p)
-                    if collect_solver_specific_attrs:
+                    if collect_schema_attrs:
                         # Collect on each articulated body prim encountered
-                        R.collect_prim_solver_attrs(usd_prim)
+                        R.collect_prim_attrs(usd_prim)
                     if "TensorPhysicsArticulationRootAPI" in usd_prim.GetPrimTypeInfo().GetAppliedAPISchemas():
                         usd_prim.CreateAttribute(
                             "physics:newton:articulation_index", Sdf.ValueTypeNames.UInt, True
@@ -1324,12 +1306,7 @@ def parse_usd(
                 else:
                     shape_xform = local_xform
                 # Extract custom attributes for this shape
-                shape_custom_attrs = R.get_custom_attributes_for_prim(prim, ModelAttributeFrequency.SHAPE)
-
-                for attr_name in builder_custom_attr_shape:
-                    usd_attr_name = f"newton:{attr_name}"
-                    if prim.HasAttribute(usd_attr_name):
-                        shape_custom_attrs[attr_name] = prim.GetAttribute(usd_attr_name).Get()
+                shape_custom_attrs = usd.get_custom_attribute_values(prim, builder_custom_attr_shape)
 
                 shape_params = {
                     "body": body_id,
@@ -1520,7 +1497,7 @@ def parse_usd(
             if com is not None:
                 builder.body_com[body_id] = com
             i_diag = usd.get_vector(prim, "physics:diagonalInertia", np.zeros(3, dtype=np.float32))
-            i_rot = get_quat(prim, "physics:principalAxes", wp.quat_identity())
+            i_rot = usd.get_quat(prim, "physics:principalAxes", wp.quat_identity())
             if np.linalg.norm(i_diag) > 0.0:
                 rot = np.array(wp.quat_to_matrix(i_rot), dtype=np.float32).reshape(3, 3)
                 inertia = rot @ np.diag(i_diag) @ rot.T
@@ -1655,11 +1632,10 @@ def parse_usd(
 
             builder = multi_world_builder
 
-    solver_specific_attrs = R.get_solver_specific_attrs() if collect_solver_specific_attrs else {}
     return {
         "fps": stage.GetFramesPerSecond(),
         "duration": stage.GetEndTimeCode() - stage.GetStartTimeCode(),
-        "up_axis": Axis.from_string(UsdGeom.GetStageUpAxis(stage)),
+        "up_axis": stage_up_axis,
         "path_shape_map": path_shape_map,
         "path_body_map": path_body_map,
         "path_shape_scale": path_shape_scale,
@@ -1668,7 +1644,7 @@ def parse_usd(
         "scene_attributes": scene_attributes,
         "physics_dt": physics_dt,
         "collapse_results": collapse_results,
-        "solver_specific_attrs": solver_specific_attrs,  # ! it's not necessarily a "solver" schema
+        "schema_attrs": R.schema_attrs,
         # "articulation_roots": articulation_roots,
         # "articulation_bodies": articulation_bodies,
         "path_body_relative_transform": path_body_relative_transform,

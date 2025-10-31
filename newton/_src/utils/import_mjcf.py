@@ -308,8 +308,8 @@ def parse_mjcf(
                 "custom_attributes": {},
             }
             condim = geom_attrib.get("condim")
-            if condim is not None:
-                shape_kwargs["custom_attributes"]["mjc:condim"] = int(condim)
+            if condim is not None and builder.has_custom_attribute("mujoco:condim"):
+                shape_kwargs["custom_attributes"]["mujoco:condim"] = int(condim)
 
             if incoming_xform is not None:
                 tf = incoming_xform * tf

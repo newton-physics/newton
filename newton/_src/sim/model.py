@@ -111,7 +111,7 @@ class CustomAttribute:
         values: Dictionary mapping indices to specific values (overrides)
         usd_attribute_name: Name of the corresponding USD attribute. If None, the USD attribute name "newton:<namespace>:<name>" is used.
         mjcf_attribute_name: Name of the attribute in the MJCF definition. If None, the attribute name is used.
-        usd_value_transformer: Transformer function that converts a USD attribute value to a valid Warp dtype
+        usd_value_transformer: Transformer function that converts a USD attribute value to a valid Warp dtype. If undefined, the generic converter from :func:`newton.usd.convert_warp_value` is used.
     """
 
     assignment: ModelAttributeAssignment
@@ -136,10 +136,6 @@ class CustomAttribute:
             self.usd_attribute_name = f"newton:{self.key}"
         if self.mjcf_attribute_name is None:
             self.mjcf_attribute_name = self.name
-        if self.usd_value_transformer is None:
-            from ..usd import utils as usd  # noqa: PLC0415
-
-            self.usd_value_transformer = lambda v: usd.convert_warp_value(v, self.dtype)
 
     @staticmethod
     def _default_for_dtype(d: object) -> Any:

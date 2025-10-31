@@ -1227,7 +1227,12 @@ class SolverMuJoCo(SolverBase):
     @override
     @classmethod
     def register_custom_attributes(cls, builder: ModelBuilder) -> None:
-        # note that we declare "usd_attribute_name" here to leverage the MuJoCo USD schema
+        """
+        Declare custom attributes to be allocated on the Model object within the
+        "Model.mujoco" namespace.
+        Note that we declare "usd_attribute_name" here to leverage the MuJoCo USD schema
+        where attributes are named "mjc:attr" rather than "newton:mujoco:attr".
+        """
         builder.add_custom_attribute(
             CustomAttribute(
                 name="condim",
@@ -2000,7 +2005,7 @@ class SolverMuJoCo(SolverBase):
         shape_mu = model.shape_material_mu.numpy()
 
         # retrieve MuJoCo-specific attributes
-        mujoco_attrs = getattr(model, "mjc", None)
+        mujoco_attrs = getattr(model, "mujoco", None)
 
         def get_custom_attribute(name: str) -> nparray | None:
             if mujoco_attrs is None:

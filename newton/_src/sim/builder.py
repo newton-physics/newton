@@ -55,8 +55,8 @@ from ..geometry import (
 )
 from ..geometry.inertia import validate_and_correct_inertia_kernel, verify_and_correct_inertia
 from ..geometry.utils import RemeshingMethod, compute_inertia_obb, remesh_mesh
-from ..utils import compute_world_offsets
 from ..usd import SchemaResolver
+from ..utils import compute_world_offsets
 from .graph_coloring import ColoringAlgorithm, color_trimesh, combine_independent_particle_coloring
 from .joints import (
     EqType,
@@ -507,6 +507,10 @@ class ModelBuilder:
 
         self.custom_attributes[key] = attribute
 
+    def has_custom_attribute(self, key: str) -> bool:
+        """Check if a custom attribute is defined."""
+        return key in self.custom_attributes
+
     def _process_custom_attributes(
         self,
         entity_index: int,
@@ -888,7 +892,7 @@ class ModelBuilder:
         hide_collision_shapes: bool = False,
         mesh_maxhullvert: int = MESH_MAXHULLVERT,
         schema_resolvers: list[SchemaResolver] | None = None,
-        collect_solver_specific_attrs: bool = True,
+        collect_schema_attrs: bool = True,
     ) -> dict[str, Any]:
         """
         Parses a Universal Scene Description (USD) stage containing UsdPhysics schema definitions for rigid-body articulations and adds the bodies, shapes and joints to the given ModelBuilder.
@@ -901,7 +905,6 @@ class ModelBuilder:
             only_load_enabled_rigid_bodies (bool): If True, only rigid bodies which do not have `physics:rigidBodyEnabled` set to False are loaded.
             only_load_enabled_joints (bool): If True, only joints which do not have `physics:jointEnabled` set to False are loaded.
             joint_drive_gains_scaling (float): The default scaling of the PD control gains (stiffness and damping), if not set in the PhysicsScene with as "newton:joint_drive_gains_scaling".
-            invert_rotations (bool): If True, inverts any rotations defined in the shape transforms.
             verbose (bool): If True, print additional information about the parsed USD file. Default is False.
             ignore_paths (List[str]): A list of regular expressions matching prim paths to ignore.
             cloned_world (str): The prim path of a world which is cloned within this USD file. Siblings of this world prim will not be parsed but instead be replicated via `ModelBuilder.add_builder(builder, xform)` to speed up the loading of many instantiated worlds.
@@ -917,12 +920,12 @@ class ModelBuilder:
             mesh_maxhullvert (int): Maximum vertices for convex hull approximation of meshes.
             schema_resolvers (list[SchemaResolver]): Resolver instances in priority order. Default is
                 [SchemaResolverNewton()].
-            collect_solver_specific_attrs (bool): If True, collect per-prim "solver-specific" attributes for the
+            collect_schema_attrs (bool): If True, collect per-prim "solver-specific" attributes for the
                 configured schema resolvers. These include namespaced attributes such as ``newton:*``, ``physx*``
                 (e.g., ``physxScene:*``, ``physxRigidBody:*``, ``physxSDFMeshCollision:*``), and ``mjc:*`` that
                 are authored in the USD but not strictly required to build the simulation. This is useful for
                 inspection, experimentation, or custom pipelines that read these values via
-                :meth:`ResolverManager.get_solver_specific_attrs`. If set to ``False``, the parser skips scanning these
+                :meth:`ResolverManager.get_schema_attrs`. If set to ``False``, the parser skips scanning these
                 namespaces to avoid unnecessary overhead. For example, if an asset authors PhysX SDF mesh
                 properties (``physxSDFMeshCollision:*``) that Newton does not currently use, disabling this flag
                 prevents parsing them. Default is ``True``.
@@ -955,8 +958,8 @@ class ModelBuilder:
                   - Dictionary returned by :meth:`newton.ModelBuilder.collapse_fixed_joints` if `collapse_fixed_joints` is True, otherwise None.
                 * - "physics_dt"
                   - The resolved physics scene time step (float or None)
-                * - "solver_specific_attrs"
-                  - Dictionary of collected per-prim solver-specific attributes (dict or empty dict if `collect_solver_specific_attrs` is False)
+                * - "schema_attrs"
+                  - Dictionary of collected per-prim solver-specific attributes (dict or empty dict if `collect_schema_attrs` is False)
                 * - "max_solver_iterations"
                   - The resolved maximum solver iterations (int or None)
                 * - "path_body_relative_transform"
@@ -973,7 +976,6 @@ class ModelBuilder:
             only_load_enabled_rigid_bodies,
             only_load_enabled_joints,
             joint_drive_gains_scaling,
-            invert_rotations,
             verbose,
             ignore_paths,
             cloned_world,
@@ -988,7 +990,7 @@ class ModelBuilder:
             hide_collision_shapes,
             mesh_maxhullvert,
             schema_resolvers,
-            collect_solver_specific_attrs,
+            collect_schema_attrs,
         )
 
     def add_mjcf(
@@ -1356,14 +1358,8 @@ class ModelBuilder:
         if builder.custom_attributes:
             for full_key, attr in builder.custom_attributes.items():
                 # Declare the attribute if it doesn't exist in the main builder
-                self.add_custom_attribute(
-                    name=attr.name,
-                    frequency=attr.frequency,
-                    dtype=attr.dtype,
-                    default=attr.default,
-                    assignment=attr.assignment,
-                    namespace=attr.namespace,
-                )
+                self.add_custom_attribute(attr)
+                self.custom_attributes[full_key].values = copy.copy(attr.values)
                 merged = self.custom_attributes[full_key]
                 # Prevent silent divergence if defaults differ
                 # Handle array/vector types by converting to comparable format

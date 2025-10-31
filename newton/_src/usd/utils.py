@@ -16,7 +16,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Sequence
-from typing import TYPE_CHECKING, Any
+from typing import Any, overload
 
 import numpy as np
 import warp as wp
@@ -24,8 +24,12 @@ import warp as wp
 from ..core.types import Axis, AxisType, nparray
 from ..sim.model import CustomAttribute, ModelAttributeAssignment, ModelAttributeFrequency
 
-if TYPE_CHECKING:
+try:
     from pxr import Gf, Usd, UsdGeom
+except ImportError:
+    Usd = None
+    Gf = None
+    UsdGeom = None
 
 
 def get_attribute(prim: Usd.Prim, name: str, default: Any | None = None) -> Any | None:
@@ -77,6 +81,14 @@ def has_attribute(prim: Usd.Prim, name: str) -> bool:
     """
     attr = prim.GetAttribute(name)
     return attr.IsValid() and attr.HasAuthoredValue()
+
+
+@overload
+def get_float(prim: Usd.Prim, name: str, default: float) -> float: ...
+
+
+@overload
+def get_float(prim: Usd.Prim, name: str, default: None = None) -> float | None: ...
 
 
 def get_float(prim: Usd.Prim, name: str, default: float | None = None) -> float | None:
@@ -140,6 +152,14 @@ def from_gfquat(gfquat: Gf.Quat) -> wp.quat:
     return wp.normalize(wp.quat(*gfquat.imaginary, gfquat.real))
 
 
+@overload
+def get_quat(prim: Usd.Prim, name: str, default: wp.quat) -> wp.quat: ...
+
+
+@overload
+def get_quat(prim: Usd.Prim, name: str, default: None = None) -> wp.quat | None: ...
+
+
 def get_quat(prim: Usd.Prim, name: str, default: wp.quat | None = None) -> wp.quat | None:
     """
     Get a quaternion attribute value from a USD prim, validating that it's finite and non-zero.
@@ -162,6 +182,14 @@ def get_quat(prim: Usd.Prim, name: str, default: wp.quat | None = None) -> wp.qu
     if np.isfinite(l) and l > 0.0:
         return quat
     return default
+
+
+@overload
+def get_vector(prim: Usd.Prim, name: str, default: nparray) -> nparray: ...
+
+
+@overload
+def get_vector(prim: Usd.Prim, name: str, default: None = None) -> nparray | None: ...
 
 
 def get_vector(prim: Usd.Prim, name: str, default: nparray | None = None) -> nparray | None:
@@ -220,14 +248,14 @@ def get_axis(prim: Usd.Prim, name: str = "axis", default: AxisType = "Z") -> Axi
     return Axis.from_string(axis_str)
 
 
-def get_transform(prim: Usd.Prim, local: bool = True, invert_rotations: bool = True) -> wp.transform:
+def get_transform(prim: Usd.Prim, local: bool = True, invert_rotation: bool = True) -> wp.transform:
     """
-    Extract the transform (position and rotation) from a USD prim.
+    Extract the transform (position and rotation) from a USD Xform prim.
 
     Args:
         prim: The USD prim to query.
         local: If True, get the local transformation; if False, get the world transformation.
-        invert_rotations: If True, transpose the rotation matrix before converting to quaternion.
+        invert_rotation: If True, transpose the rotation matrix before converting to quaternion.
 
     Returns:
         A Warp transform containing the position and rotation extracted from the prim.
@@ -237,7 +265,7 @@ def get_transform(prim: Usd.Prim, local: bool = True, invert_rotations: bool = T
         mat = np.array(xform.GetLocalTransformation(), dtype=np.float32)
     else:
         mat = np.array(xform.GetWorldTransformation(), dtype=np.float32)
-    if invert_rotations:
+    if invert_rotation:
         rot = wp.quat_from_matrix(wp.mat33(mat[:3, :3].T.flatten()))
     else:
         rot = wp.quat_from_matrix(wp.mat33(mat[:3, :3].flatten()))
@@ -247,13 +275,13 @@ def get_transform(prim: Usd.Prim, local: bool = True, invert_rotations: bool = T
 
 def convert_warp_value(v: Any, warp_dtype: Any | None = None) -> Any:
     """
-    Convert a USD value to a Warp value.
+    Convert a USD value (such as Gf.Quat, Gf.Vec3, or float) to a Warp value.
     If a dtype is given, the value will be converted to that dtype.
-    If no match is found, the value is returned as is.
+    Otherwise, the value will be converted to the most appropriate Warp dtype.
 
     Args:
         v: The value to convert.
-        warp_dtype: The Warp dtype to convert to.
+        warp_dtype: The Warp dtype to convert to. If None, the value will be converted to the most appropriate Warp dtype.
 
     Returns:
         The converted value.
@@ -262,7 +290,10 @@ def convert_warp_value(v: Any, warp_dtype: Any | None = None) -> Any:
         return from_gfquat(v)
     if warp_dtype is not None:
         # assume the type is a vector, matrix, or scalar
-        return warp_dtype(*v)
+        if hasattr(v, "__len__"):
+            return warp_dtype(*v)
+        else:
+            return warp_dtype(v)
     # without a given Warp dtype, we attempt to infer the dtype from the value
     if hasattr(v, "__len__"):
         if len(v) == 2:
@@ -277,7 +308,7 @@ def convert_warp_value(v: Any, warp_dtype: Any | None = None) -> Any:
 
 def convert_warp_type(v: Any) -> Any:
     """
-    Determine the Warp type, i.e., wp.quat, wp.vec2, wp.vec3, wp.vec4, wp.bool, wp.int32, or wp.float32, from a USD value.
+    Determine the Warp type, e.g. wp.quat, wp.vec3, or wp.float32, from a USD value.
 
     Args:
         v: The USD value from which to infer the Warp type.
@@ -421,5 +452,8 @@ def get_custom_attribute_values(prim: Usd.Prim, custom_attributes: Sequence[Cust
         usd_attr_name = attr.usd_attribute_name
         usd_attr = prim.GetAttribute(usd_attr_name)
         if usd_attr is not None and usd_attr.HasAuthoredValue():
-            out[attr.key] = attr.usd_value_transformer(usd_attr.Get())
+            if attr.usd_value_transformer is not None:
+                out[attr.key] = attr.usd_value_transformer(usd_attr.Get())
+            else:
+                out[attr.key] = convert_warp_value(usd_attr.Get(), attr.dtype)
     return out

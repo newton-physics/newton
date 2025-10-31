@@ -203,7 +203,7 @@ Each solver has its own namespace prefixes for solver-specific attributes. The t
 
 **Accessing Collected Solver-Specific Attributes:**
 
-To enable collection of solver-specific attributes, set ``collect_solver_specific_attrs=True`` when calling ``parse_usd()``. The collected attributes are returned in the result dictionary and can be accessed by solver namespace:
+To enable collection of solver-specific attributes, set ``collect_schema_attrs=True`` when calling ``parse_usd()``. The collected attributes are returned in the result dictionary and can be accessed by solver namespace:
 
 .. testcode::
    :skipif: True
@@ -217,11 +217,11 @@ To enable collection of solver-specific attributes, set ``collect_solver_specifi
        builder=builder,
        source="physx_humanoid.usda", 
        schema_resolvers=[SchemaResolverPhysx(), SchemaResolverNewton()],
-       collect_solver_specific_attrs=True  # Enable collection
+       collect_schema_attrs=True  # Enable collection
    )
    
    # Access collected solver-specific attributes
-   solver_attrs = result.get("solver_specific_attrs", {})
+   solver_attrs = result.get("schema_attrs", {})
    
    if "physx" in solver_attrs:
        physx_attrs = solver_attrs["physx"]
@@ -234,19 +234,19 @@ To enable collection of solver-specific attributes, set ``collect_solver_specifi
    result_fast = parse_usd(
        builder=builder,
        source="asset.usda",
-       collect_solver_specific_attrs=False  # Skip collection
+       collect_schema_attrs=False  # Skip collection
    )
 
 **When to Enable/Disable Collection:**
 
-Enable ``collect_solver_specific_attrs=True`` when:
+Enable ``collect_schema_attrs=True`` when:
 
 * Developing and debugging USD import pipelines
 * Need to inspect solver-native properties for validation
 * Building custom workflows that process solver-specific data
 * Preparing for sim-to-sim asset conversion
 
-Disable ``collect_solver_specific_attrs=False`` for:
+Disable ``collect_schema_attrs=False`` for:
 
 * Production imports where solver-specific data is not needed
 * Large USD files where scanning performance matters
@@ -460,7 +460,7 @@ After importing the USD file with the custom attributes shown above, they become
        builder=builder,
        source="robot_with_custom_attrs.usda",
        schema_resolvers=[SchemaResolverNewton()],
-       collect_solver_specific_attrs=True
+       collect_schema_attrs=True
    )
    
    model = builder.finalize()
