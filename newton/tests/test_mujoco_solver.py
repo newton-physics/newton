@@ -798,7 +798,6 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
         shape_sizes = self.model.shape_scale.numpy()
         shape_transforms = self.model.shape_transform.numpy()
         shape_bodies = self.model.shape_body.numpy()
-        shape_incoming_xform = solver.shape_incoming_xform.numpy()
 
         # Get all property arrays from MuJoCo
         geom_friction = solver.mjw_model.geom_friction.numpy()
@@ -892,14 +891,12 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
                             msg=f"Size mismatch for shape {shape_idx} in world {world_idx}, geom {geom_idx}, dimension {dim}",
                         )
 
-                # Test 4: Position and orientation
+                # Test 4: Position and orientation (body-local coordinates)
                 actual_pos = geom_pos[world_idx, geom_idx]
                 actual_quat = geom_quat[world_idx, geom_idx]
 
-                # Get expected transform from Newton
-                incoming_xform = wp.transform(*shape_incoming_xform[shape_idx])
-                # account for incoming transform due to joint child transform
-                shape_transform = incoming_xform * wp.transform(*shape_transforms[shape_idx])
+                # Get expected transform from Newton (body-local coordinates)
+                shape_transform = wp.transform(*shape_transforms[shape_idx])
                 expected_pos = wp.vec3(*shape_transform.p)
                 expected_quat = wp.quat(*shape_transform.q)
 
@@ -948,7 +945,6 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
 
         # Get mappings
         to_newton_shape_index = solver.to_newton_shape_index.numpy()
-        shape_incoming_xform = solver.shape_incoming_xform.numpy()
         num_geoms = solver.mj_model.ngeom
 
         # Run an initial simulation step
@@ -1105,10 +1101,9 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
                         break
                 self.assertTrue(size_changed, f"Size should have changed for shape {shape_idx}")
 
-                # Verify 5: Position and orientation updated
+                # Verify 5: Position and orientation updated (body-local coordinates)
                 # Compute expected values based on new transforms
-                incoming_xform = wp.transform(*shape_incoming_xform[shape_idx])
-                new_transform = incoming_xform * wp.transform(*new_transforms[shape_idx])
+                new_transform = wp.transform(*new_transforms[shape_idx])
                 expected_pos = new_transform.p
                 expected_quat = new_transform.q
 
@@ -1740,6 +1735,219 @@ class TestMuJoCoConversion(unittest.TestCase):
                 expected_mjc_types_fixed,
                 err_msg=f"MuJoCo should have joint types {expected_mjc_types_fixed} (free=0, hinge=3) after topological sort",
             )
+
+    def test_shape_scaling_across_worlds(self):
+        """Test that shape scaling works correctly across different worlds in MuJoCo solver."""
+        # Create a simple model with 2 worlds
+        builder = newton.ModelBuilder()
+
+        # Create shapes for world 1 at normal scale
+        env1 = newton.ModelBuilder()
+        body1 = env1.add_body(key="body1", mass=1.0)  # Add mass to make it dynamic
+
+        # Add a free joint so the body can move
+        env1.add_joint_free(parent=-1, child=body1)
+
+        # Add two spheres - one at origin, one offset
+        env1.add_shape_sphere(
+            body=body1,
+            radius=0.1,
+            xform=wp.transform([0, 0, 0], wp.quat_identity()),
+        )
+        env1.add_shape_sphere(
+            body=body1,
+            radius=0.1,
+            xform=wp.transform([1.0, 0, 0], wp.quat_identity()),  # offset by 1 unit
+        )
+
+        # Add world 1 at normal scale
+        builder.add_builder(env1, xform=wp.transform([0, 0, 0], wp.quat_identity()))
+
+        # Create shapes for world 2 at 0.5x scale
+        env2 = newton.ModelBuilder()
+        body2 = env2.add_body(key="body2", mass=1.0)  # Add mass to make it dynamic
+
+        # Add a free joint so the body can move
+        env2.add_joint_free(parent=-1, child=body2)
+
+        # Add two spheres with manually scaled properties
+        env2.add_shape_sphere(
+            body=body2,
+            radius=0.05,  # scaled radius
+            xform=wp.transform([0, 0, 0], wp.quat_identity()),
+        )
+        env2.add_shape_sphere(
+            body=body2,
+            radius=0.05,  # scaled radius
+            xform=wp.transform([0.5, 0, 0], wp.quat_identity()),  # scaled offset
+        )
+
+        # Add world 2 at different location
+        builder.add_builder(env2, xform=wp.transform([2.0, 0, 0], wp.quat_identity()))
+
+        # Finalize model
+        model = builder.finalize()
+
+        # Create MuJoCo solver
+        solver = newton.solvers.SolverMuJoCo(model)
+
+        # Check geom positions in MuJoCo model
+        # geom_pos stores body-local coordinates
+        # World 0: sphere 1 at [0,0,0], sphere 2 at [1,0,0] (unscaled)
+        # World 1: sphere 1 at [0,0,0], sphere 2 at [0.5,0,0] (scaled by 0.5)
+
+        # Get geom positions from MuJoCo warp model
+        geom_pos = solver.mjw_model.geom_pos.numpy()
+
+        # Check body-local positions
+        # World 0, Sphere 2 should be at x=1.0 (local offset)
+        world0_sphere2_x = geom_pos[0, 1, 0]
+        self.assertAlmostEqual(world0_sphere2_x, 1.0, places=3, msg="World 0 sphere 2 should have local x=1.0")
+
+        # World 1, Sphere 2 should be at x=0.5 (scaled local offset)
+        world1_sphere2_x = geom_pos[1, 1, 0]
+        expected_x = 0.5
+
+        # Check that the second sphere in world 1 has the correctly scaled local position
+        self.assertAlmostEqual(
+            world1_sphere2_x,
+            expected_x,
+            places=3,
+            msg=f"World 1 sphere 2 should have local x={expected_x} (scaled offset)",
+        )
+
+    def test_mesh_geoms_across_worlds(self):
+        """Test that mesh geoms work correctly across different worlds in MuJoCo solver."""
+        # Create a simple model with 2 worlds, each containing a mesh
+        builder = newton.ModelBuilder()
+
+        # Create a simple box mesh that is NOT centered at origin
+        # The mesh center will be at (0.5, 0.5, 0.5)
+        vertices = np.array(
+            [
+                # Bottom face (z=0)
+                [0.0, 0.0, 0.0],  # 0
+                [1.0, 0.0, 0.0],  # 1
+                [1.0, 1.0, 0.0],  # 2
+                [0.0, 1.0, 0.0],  # 3
+                # Top face (z=1)
+                [0.0, 0.0, 1.0],  # 4
+                [1.0, 0.0, 1.0],  # 5
+                [1.0, 1.0, 1.0],  # 6
+                [0.0, 1.0, 1.0],  # 7
+            ],
+            dtype=np.float32,
+        )
+
+        # Define triangular faces (2 triangles per face)
+        indices = np.array(
+            [
+                # Bottom face
+                0,
+                1,
+                2,
+                0,
+                2,
+                3,
+                # Top face
+                4,
+                6,
+                5,
+                4,
+                7,
+                6,
+                # Front face
+                0,
+                5,
+                1,
+                0,
+                4,
+                5,
+                # Back face
+                2,
+                7,
+                3,
+                2,
+                6,
+                7,
+                # Left face
+                0,
+                3,
+                7,
+                0,
+                7,
+                4,
+                # Right face
+                1,
+                5,
+                6,
+                1,
+                6,
+                2,
+            ],
+            dtype=np.int32,
+        )
+
+        # Create mesh source
+        mesh_src = newton.Mesh(vertices=vertices, indices=indices)
+
+        # Create shapes for world 1
+        env1 = newton.ModelBuilder()
+        body1 = env1.add_body(key="mesh_body1", mass=1.0)
+        env1.add_joint_free(parent=-1, child=body1)
+
+        # Add mesh shape at specific position
+        env1.add_shape_mesh(
+            body=body1,
+            mesh=mesh_src,
+            xform=wp.transform([1.0, 0, 0], wp.quat_identity()),  # offset by 1 unit in x
+        )
+
+        # Add world 1 at origin
+        builder.add_builder(env1, xform=wp.transform([0, 0, 0], wp.quat_identity()))
+
+        # Create shapes for world 2
+        env2 = newton.ModelBuilder()
+        body2 = env2.add_body(key="mesh_body2", mass=1.0)
+        env2.add_joint_free(parent=-1, child=body2)
+
+        # Add mesh shape at different position
+        env2.add_shape_mesh(
+            body=body2,
+            mesh=mesh_src,
+            xform=wp.transform([2.0, 0, 0], wp.quat_identity()),  # offset by 2 units in x
+        )
+
+        # Add world 2 at different location
+        builder.add_builder(env2, xform=wp.transform([5.0, 0, 0], wp.quat_identity()))
+
+        # Finalize model
+        model = builder.finalize()
+
+        # Create MuJoCo solver
+        solver = newton.solvers.SolverMuJoCo(model)
+
+        # Verify that mesh_pos is non-zero (mesh center should be at 0.5, 0.5, 0.5)
+        mesh_pos = solver.mjw_model.mesh_pos.numpy()
+        self.assertEqual(len(mesh_pos), 1, "Should have exactly one mesh")
+        self.assertAlmostEqual(mesh_pos[0][0], 0.5, places=3, msg="Mesh center x should be 0.5")
+        self.assertAlmostEqual(mesh_pos[0][1], 0.5, places=3, msg="Mesh center y should be 0.5")
+        self.assertAlmostEqual(mesh_pos[0][2], 0.5, places=3, msg="Mesh center z should be 0.5")
+
+        # Check geom positions (body-local coordinates)
+        geom_pos = solver.mjw_model.geom_pos.numpy()
+
+        # World 0 mesh should be at x=1.5 (1.0 local offset + 0.5 mesh center)
+        world0_mesh_x = geom_pos[0, 0, 0]
+        self.assertAlmostEqual(
+            world0_mesh_x, 1.5, places=3, msg="World 0 mesh should have local x=1.5 (local offset + mesh_pos)"
+        )
+
+        # World 1 mesh should be at x=2.5 (2.0 local offset + 0.5 mesh center)
+        world1_mesh_x = geom_pos[1, 0, 0]
+        self.assertAlmostEqual(
+            world1_mesh_x, 2.5, places=3, msg="World 1 mesh should have local x=2.5 (local offset + mesh_pos)"
+        )
 
 
 class TestMuJoCoAttributes(unittest.TestCase):

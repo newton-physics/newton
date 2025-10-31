@@ -4584,7 +4584,7 @@ class ModelBuilder:
             )
 
             m.shape_collision_filter_pairs = set(self.shape_collision_filter_pairs)
-            m.shape_collision_group = self.shape_collision_group
+            m.shape_collision_group = wp.array(self.shape_collision_group, dtype=wp.int32)
 
             # ---------------------
             # springs

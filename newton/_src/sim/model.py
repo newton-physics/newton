@@ -286,8 +286,8 @@ class Model:
         self.shape_filter = None
         """Shape filter group, shape [shape_count], int."""
 
-        self.shape_collision_group = []
-        """Collision group of each shape, shape [shape_count], int."""
+        self.shape_collision_group = None
+        """Collision group of each shape, shape [shape_count], int. Array populated during finalization."""
         self.shape_collision_filter_pairs: set[tuple[int, int]] = set()
         """Pairs of shape indices that should not collide."""
         self.shape_collision_radius = None

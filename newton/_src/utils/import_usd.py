@@ -152,6 +152,7 @@ def parse_usd(
         density: float = builder.default_shape_cfg.density
 
     # load joint defaults
+    default_joint_friction = builder.default_joint_cfg.friction
     default_joint_limit_ke = builder.default_joint_cfg.limit_ke
     default_joint_limit_kd = builder.default_joint_cfg.limit_kd
     default_joint_armature = builder.default_joint_cfg.armature
@@ -515,7 +516,9 @@ def parse_usd(
         joint_armature = R.get_value(
             joint_prim, prim_type=PrimType.JOINT, key="armature", default=default_joint_armature
         )
-        joint_friction = R.get_value(joint_prim, prim_type=PrimType.JOINT, key="friction", default=0.0)
+        joint_friction = R.get_value(
+            joint_prim, prim_type=PrimType.JOINT, key="friction", default=default_joint_friction
+        )
 
         # Extract custom attributes for this joint
         joint_custom_attrs = usd.get_custom_attribute_values(joint_prim, builder_custom_attr_joint)
