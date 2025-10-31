@@ -21,7 +21,7 @@ import os
 import re
 import warnings
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Literal
+from typing import Any, Literal
 
 import numpy as np
 import warp as wp
@@ -35,13 +35,10 @@ from ..sim.model import CustomAttribute, ModelAttributeFrequency
 from ..usd import PrimType, SchemaResolver, SchemaResolverManager, SchemaResolverNewton
 from ..usd import utils as usd
 
-if TYPE_CHECKING:
-    from pxr import Usd
-
 
 def parse_usd(
     builder: ModelBuilder,
-    source: str | Usd.Stage,
+    source,
     xform: Transform | None = None,
     only_load_enabled_rigid_bodies: bool = False,
     only_load_enabled_joints: bool = True,
@@ -74,7 +71,6 @@ def parse_usd(
         only_load_enabled_rigid_bodies (bool): If True, only rigid bodies which do not have `physics:rigidBodyEnabled` set to False are loaded.
         only_load_enabled_joints (bool): If True, only joints which do not have `physics:jointEnabled` set to False are loaded.
         joint_drive_gains_scaling (float): The default scaling of the PD control gains (stiffness and damping), if not set in the PhysicsScene with as "newton:joint_drive_gains_scaling".
-        invert_rotations (bool): If True, inverts any rotations defined in the shape transforms.
         verbose (bool): If True, print additional information about the parsed USD file. Default is False.
         ignore_paths (List[str]): A list of regular expressions matching prim paths to ignore.
         cloned_world (str): The prim path of a world which is cloned within this USD file. Siblings of this world prim will not be parsed but instead be replicated via `ModelBuilder.add_builder(builder, xform)` to speed up the loading of many instantiated worlds.

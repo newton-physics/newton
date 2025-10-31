@@ -174,7 +174,7 @@ class SchemaResolverPhysx(SchemaResolver):
     }
 
 
-def _solref_to_stiffness(solref):
+def solref_to_stiffness(solref):
     """Convert MuJoCo solref (timeconst, dampratio) to internal stiffness.
 
     Standard mode (timeconst > 0): k = 1 / (timeconst^2)
@@ -197,7 +197,7 @@ def _solref_to_stiffness(solref):
     return 1.0 / (timeconst * timeconst)
 
 
-def _solref_to_damping(solref):
+def solref_to_damping(solref):
     """Convert MuJoCo solref (timeconst, dampratio) to internal damping.
 
     Standard mode (both positive): b = 2 * dampratio / timeconst
@@ -234,22 +234,22 @@ class SchemaResolverMjc(SchemaResolver):
             "armature": SchemaAttribute("mjc:armature", 0.0),
             "friction": SchemaAttribute("mjc:frictionloss", 0.0),
             # Per-axis linear aliases mapped to solref
-            "limit_transX_ke": SchemaAttribute("mjc:solref", [0.02, 1.0], _solref_to_stiffness),
-            "limit_transY_ke": SchemaAttribute("mjc:solref", [0.02, 1.0], _solref_to_stiffness),
-            "limit_transZ_ke": SchemaAttribute("mjc:solref", [0.02, 1.0], _solref_to_stiffness),
-            "limit_transX_kd": SchemaAttribute("mjc:solref", [0.02, 1.0], _solref_to_damping),
-            "limit_transY_kd": SchemaAttribute("mjc:solref", [0.02, 1.0], _solref_to_damping),
-            "limit_transZ_kd": SchemaAttribute("mjc:solref", [0.02, 1.0], _solref_to_damping),
-            "limit_linear_ke": SchemaAttribute("mjc:solref", [0.02, 1.0], _solref_to_stiffness),
-            "limit_angular_ke": SchemaAttribute("mjc:solref", [0.02, 1.0], _solref_to_stiffness),
-            "limit_rotX_ke": SchemaAttribute("mjc:solref", [0.02, 1.0], _solref_to_stiffness),
-            "limit_rotY_ke": SchemaAttribute("mjc:solref", [0.02, 1.0], _solref_to_stiffness),
-            "limit_rotZ_ke": SchemaAttribute("mjc:solref", [0.02, 1.0], _solref_to_stiffness),
-            "limit_linear_kd": SchemaAttribute("mjc:solref", [0.02, 1.0], _solref_to_damping),
-            "limit_angular_kd": SchemaAttribute("mjc:solref", [0.02, 1.0], _solref_to_damping),
-            "limit_rotX_kd": SchemaAttribute("mjc:solref", [0.02, 1.0], _solref_to_damping),
-            "limit_rotY_kd": SchemaAttribute("mjc:solref", [0.02, 1.0], _solref_to_damping),
-            "limit_rotZ_kd": SchemaAttribute("mjc:solref", [0.02, 1.0], _solref_to_damping),
+            "limit_transX_ke": SchemaAttribute("mjc:solref", [0.02, 1.0], solref_to_stiffness),
+            "limit_transY_ke": SchemaAttribute("mjc:solref", [0.02, 1.0], solref_to_stiffness),
+            "limit_transZ_ke": SchemaAttribute("mjc:solref", [0.02, 1.0], solref_to_stiffness),
+            "limit_transX_kd": SchemaAttribute("mjc:solref", [0.02, 1.0], solref_to_damping),
+            "limit_transY_kd": SchemaAttribute("mjc:solref", [0.02, 1.0], solref_to_damping),
+            "limit_transZ_kd": SchemaAttribute("mjc:solref", [0.02, 1.0], solref_to_damping),
+            "limit_linear_ke": SchemaAttribute("mjc:solref", [0.02, 1.0], solref_to_stiffness),
+            "limit_angular_ke": SchemaAttribute("mjc:solref", [0.02, 1.0], solref_to_stiffness),
+            "limit_rotX_ke": SchemaAttribute("mjc:solref", [0.02, 1.0], solref_to_stiffness),
+            "limit_rotY_ke": SchemaAttribute("mjc:solref", [0.02, 1.0], solref_to_stiffness),
+            "limit_rotZ_ke": SchemaAttribute("mjc:solref", [0.02, 1.0], solref_to_stiffness),
+            "limit_linear_kd": SchemaAttribute("mjc:solref", [0.02, 1.0], solref_to_damping),
+            "limit_angular_kd": SchemaAttribute("mjc:solref", [0.02, 1.0], solref_to_damping),
+            "limit_rotX_kd": SchemaAttribute("mjc:solref", [0.02, 1.0], solref_to_damping),
+            "limit_rotY_kd": SchemaAttribute("mjc:solref", [0.02, 1.0], solref_to_damping),
+            "limit_rotZ_kd": SchemaAttribute("mjc:solref", [0.02, 1.0], solref_to_damping),
         },
         PrimType.SHAPE: {
             # Mesh
@@ -261,8 +261,8 @@ class SchemaResolverMjc(SchemaResolver):
             # Materials and contact models
             "priority": SchemaAttribute("mjc:priority", 0),
             "weight": SchemaAttribute("mjc:solmix", 1.0),
-            "stiffness": SchemaAttribute("mjc:solref", [0.02, 1.0], _solref_to_stiffness),
-            "damping": SchemaAttribute("mjc:solref", [0.02, 1.0], _solref_to_damping),
+            "stiffness": SchemaAttribute("mjc:solref", [0.02, 1.0], solref_to_stiffness),
+            "damping": SchemaAttribute("mjc:solref", [0.02, 1.0], solref_to_damping),
         },
         PrimType.BODY: {
             # Rigid body / joint domain

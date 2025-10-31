@@ -877,7 +877,6 @@ class ModelBuilder:
         only_load_enabled_rigid_bodies: bool = False,
         only_load_enabled_joints: bool = True,
         joint_drive_gains_scaling: float = 1.0,
-        invert_rotations: bool = True,
         verbose: bool = False,
         ignore_paths: list[str] | None = None,
         cloned_world: str | None = None,
@@ -959,7 +958,7 @@ class ModelBuilder:
                 * - "physics_dt"
                   - The resolved physics scene time step (float or None)
                 * - "schema_attrs"
-                  - Dictionary of collected per-prim solver-specific attributes (dict or empty dict if `collect_schema_attrs` is False)
+                  - Dictionary of collected per-prim schema attributes (dict or empty dict if `collect_schema_attrs` is False)
                 * - "max_solver_iterations"
                   - The resolved maximum solver iterations (int or None)
                 * - "path_body_relative_transform"
