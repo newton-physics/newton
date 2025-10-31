@@ -35,30 +35,6 @@ from newton.examples.robot.example_robot_anymal_c_walk import compute_obs, lab_t
 from newton.solvers import SolverImplicitMPM
 
 
-@wp.kernel
-def update_collider_mesh(
-    src_points: wp.array(dtype=wp.vec3),
-    src_shape: wp.array(dtype=int),
-    res_mesh: wp.uint64,
-    shape_transforms: wp.array(dtype=wp.transform),
-    shape_body_id: wp.array(dtype=int),
-    body_q: wp.array(dtype=wp.transform),
-    dt: float,
-):
-    v = wp.tid()
-    res = wp.mesh_get(res_mesh)
-
-    shape_id = src_shape[v]
-    p = wp.transform_point(shape_transforms[shape_id], src_points[v])
-
-    X_wb = body_q[shape_body_id[shape_id]]
-
-    cur_p = res.points[v] + dt * res.velocities[v]
-    next_p = wp.transform_point(X_wb, p)
-    res.velocities[v] = (next_p - cur_p) / dt
-    res.points[v] = cur_p
-
-
 class Example:
     def __init__(
         self,
@@ -66,7 +42,7 @@ class Example:
         voxel_size=0.05,
         particles_per_cell=3,
         tolerance=1.0e-5,
-        sand_friction=0.48,
+        grid_type="sparse",
     ):
         # setup simulation parameters first
         self.fps = 60
@@ -101,6 +77,12 @@ class Example:
             collapse_fixed_joints=True,
             ignore_inertial_definitions=False,
         )
+
+        # Disable collisions with bodies other than shanks
+        for body in range(builder.body_count):
+            if "SHANK" not in builder.body_key[body]:
+                for shape in builder.body_shapes[body]:
+                    builder.shape_flags[shape] = builder.shape_flags[shape] & ~newton.ShapeFlags.COLLIDE_PARTICLES
 
         builder.add_ground_plane()
 
@@ -148,7 +130,7 @@ class Example:
         # finalize model
         self.model = builder.finalize()
 
-        self.model.particle_mu = sand_friction
+        self.model.particle_mu = 0.48
         self.model.particle_ke = 1.0e15
 
         # setup mpm solver
@@ -156,11 +138,13 @@ class Example:
         mpm_options.voxel_size = voxel_size
         mpm_options.tolerance = tolerance
         mpm_options.transfer_scheme = "pic"
-        mpm_options.grid_type = "sparse"
+        mpm_options.grid_type = grid_type
+
+        mpm_options.grid_padding = 50 if grid_type == "fixed" else 0
+        mpm_options.max_active_cell_count = 1 << 15 if grid_type == "fixed" else -1
+
         mpm_options.strain_basis = "P0"
         mpm_options.max_iterations = 50
-
-        # global defaults
         mpm_options.hardening = 0.0
         mpm_options.critical_fraction = 0.0
         mpm_options.air_drag = 1.0
@@ -168,23 +152,9 @@ class Example:
         mpm_model = SolverImplicitMPM.Model(self.model, mpm_options)
 
         # Select and merge meshes for robot/sand collisions
-        collider_body_idx = [idx for idx, key in enumerate(builder.body_key) if "SHANK" in key]
-        collider_shape_ids = np.concatenate(
-            [[m for m in self.model.body_shapes[b] if self.model.shape_source[m]] for b in collider_body_idx]
+        mpm_model.setup_collider(
+            body_mass=wp.zeros_like(self.model.body_mass),  # so that the robot bodies are considered as kinematic
         )
-
-        collider_points, collider_indices, collider_v_shape_ids = _merge_meshes(
-            [self.model.shape_source[m].vertices for m in collider_shape_ids],
-            [self.model.shape_source[m].indices for m in collider_shape_ids],
-            [self.model.shape_scale.numpy()[m] for m in collider_shape_ids],
-            collider_shape_ids,
-        )
-
-        self.collider_mesh = wp.Mesh(wp.clone(collider_points), collider_indices, wp.zeros_like(collider_points))
-        self.collider_rest_points = collider_points
-        self.collider_shape_ids = wp.array(collider_v_shape_ids, dtype=int)
-
-        mpm_model.setup_collider([self.collider_mesh], collider_friction=[0.5], collider_adhesion=[0.0])
 
         # setup solvers
         self.solver = newton.solvers.SolverMuJoCo(self.model, ls_parallel=True, njmax=50)
@@ -199,7 +169,6 @@ class Example:
 
         # not required for MuJoCo, but required for other solvers
         newton.eval_fk(self.model, self.state_0.joint_q, self.state_0.joint_qd, self.state_0)
-        self._update_collider_mesh(self.state_0)
 
         # Setup control policy
         self.control = self.model.control()
@@ -238,6 +207,12 @@ class Example:
                 self.simulate_robot()
             self.graph = capture.graph
 
+        self.sand_graph = None
+        if wp.get_device().is_cuda and self.mpm_solver.grid_type == "fixed":
+            with wp.ScopedCapture() as capture:
+                self.simulate_sand()
+            self.sand_graph = capture.graph
+
     def apply_control(self):
         obs = compute_obs(
             self.act,
@@ -267,7 +242,6 @@ class Example:
 
     def simulate_sand(self):
         # sand step (in-place on frame dt)
-        self._update_collider_mesh(self.state_0)
         self.mpm_solver.step(self.state_0, self.state_0, contacts=None, control=None, dt=self.frame_dt)
 
     def step(self):
@@ -295,8 +269,10 @@ class Example:
         else:
             self.simulate_robot()
 
-        # MPM solver step is not graph-capturable yet
-        self.simulate_sand()
+        if self.sand_graph:
+            wp.capture_launch(self.sand_graph)
+        else:
+            self.simulate_sand()
 
         self.sim_time += self.frame_dt
 
@@ -334,71 +310,26 @@ class Example:
         self.viewer.log_state(self.state_0)
         self.viewer.end_frame()
 
-    def _update_collider_mesh(self, state):
-        wp.launch(
-            update_collider_mesh,
-            dim=self.collider_rest_points.shape[0],
-            inputs=[
-                self.collider_rest_points,
-                self.collider_shape_ids,
-                self.collider_mesh.id,
-                self.model.shape_transform,
-                self.model.shape_body,
-                state.body_q,
-                self.frame_dt,
-            ],
-        )
-        self.collider_mesh.refit()
-
 
 def _spawn_particles(builder: newton.ModelBuilder, res, bounds_lo, bounds_hi, density):
-    Nx = res[0]
-    Ny = res[1]
-    Nz = res[2]
-
-    px = np.linspace(bounds_lo[0], bounds_hi[0], Nx + 1)
-    py = np.linspace(bounds_lo[1], bounds_hi[1], Ny + 1)
-    pz = np.linspace(bounds_lo[2], bounds_hi[2], Nz + 1)
-
-    points = np.stack(np.meshgrid(px, py, pz)).reshape(3, -1).T
-
     cell_size = (bounds_hi - bounds_lo) / res
     cell_volume = np.prod(cell_size)
-
     radius = np.max(cell_size) * 0.5
     mass = np.prod(cell_volume) * density
 
-    rng = np.random.default_rng()
-    points += 2.0 * radius * (rng.random(points.shape) - 0.5)
-    vel = np.zeros_like(points)
-
-    builder.particle_q = points
-    builder.particle_qd = vel
-
-    builder.particle_mass = np.full(points.shape[0], mass)
-    builder.particle_radius = np.full(points.shape[0], radius)
-    builder.particle_flags = np.ones(points.shape[0], dtype=int)
-
-
-def _merge_meshes(
-    points: list[np.array],
-    indices: list[np.array],
-    scales: list[np.array],
-    shape_ids: list[int],
-):
-    pt_count = np.array([len(pts) for pts in points])
-    offsets = np.cumsum(pt_count) - pt_count
-
-    mesh_id = np.repeat(np.arange(len(points), dtype=int), repeats=pt_count)
-
-    merged_points = np.vstack([pts * scale for pts, scale in zip(points, scales, strict=False)])
-
-    merged_indices = np.concatenate([idx + offsets[k] for k, idx in enumerate(indices)])
-
-    return (
-        wp.array(merged_points, dtype=wp.vec3),
-        wp.array(merged_indices, dtype=int),
-        wp.array(np.array(shape_ids)[mesh_id], dtype=int),
+    builder.add_particle_grid(
+        pos=wp.vec3(bounds_lo),
+        rot=wp.quat_identity(),
+        vel=wp.vec3(0.0),
+        dim_x=res[0] + 1,
+        dim_y=res[1] + 1,
+        dim_z=res[2] + 1,
+        cell_x=cell_size[0],
+        cell_y=cell_size[1],
+        cell_z=cell_size[2],
+        mass=mass,
+        jitter=2.0 * radius,
+        radius_mean=radius,
     )
 
 
@@ -407,7 +338,7 @@ if __name__ == "__main__":
     parser = newton.examples.create_parser()
     parser.add_argument("--voxel-size", "-dx", type=float, default=0.03)
     parser.add_argument("--particles-per-cell", "-ppc", type=float, default=3.0)
-    parser.add_argument("--sand-friction", "-mu", type=float, default=0.48)
+    parser.add_argument("--grid-type", "-gt", choices=["sparse", "dense", "fixed"], default="sparse")
     parser.add_argument("--tolerance", "-tol", type=float, default=1.0e-6)
 
     # Parse arguments and initialize viewer
@@ -424,7 +355,7 @@ if __name__ == "__main__":
         voxel_size=args.voxel_size,
         particles_per_cell=args.particles_per_cell,
         tolerance=args.tolerance,
-        sand_friction=args.sand_friction,
+        grid_type=args.grid_type,
     )
 
     # Run via unified example runner
