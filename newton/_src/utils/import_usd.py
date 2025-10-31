@@ -327,7 +327,7 @@ def parse_usd(
                         print("Warning: Non-uniform extents of spheres are not supported.")
                     radius = extents[0]
                 else:
-                    radius = usd.get_float(prim, "radius", 1.0) * scale[0]
+                    radius = parse_float(prim, "radius", 1.0) * max(scale)
                 shape_id = builder.add_shape_sphere(
                     parent_body_id,
                     xform,
@@ -1282,11 +1282,12 @@ def parse_usd(
                 body_id = path_body_map.get(body_path, -1)
                 # scale = np.array(shape_spec.localScale)
                 scale = usd.get_scale(prim)
-                collision_group = -1
+                collision_group = 1  # See test_world_and_group_pair for full filtering logic
                 if len(shape_spec.collisionGroups) > 0:
                     cgroup_name = str(shape_spec.collisionGroups[0])
                     if cgroup_name not in collision_group_ids:
-                        collision_group_ids[cgroup_name] = len(collision_group_ids)
+                        # Start from 1 to avoid collision_group = 0 (which means "no collisions")
+                        collision_group_ids[cgroup_name] = len(collision_group_ids) + 1
                     collision_group = collision_group_ids[cgroup_name]
                 material = material_specs[""]
                 if len(shape_spec.materials) >= 1:
@@ -1348,7 +1349,7 @@ def parse_usd(
                 elif key == UsdPhysics.ObjectType.SphereShape:
                     shape_id = builder.add_shape_sphere(
                         **shape_params,
-                        radius=shape_spec.radius * scale[0],
+                        radius=shape_spec.radius,
                     )
                 elif key == UsdPhysics.ObjectType.CapsuleShape:
                     # Apply axis rotation to transform
@@ -1358,8 +1359,8 @@ def parse_usd(
                     )
                     shape_id = builder.add_shape_capsule(
                         **shape_params,
-                        radius=shape_spec.radius * scale[(int(shape_spec.axis) + 1) % 3],
-                        half_height=shape_spec.halfHeight * scale[int(shape_spec.axis)],
+                        radius=shape_spec.radius,
+                        half_height=shape_spec.halfHeight,
                     )
                 elif key == UsdPhysics.ObjectType.CylinderShape:
                     # Apply axis rotation to transform
@@ -1369,8 +1370,8 @@ def parse_usd(
                     )
                     shape_id = builder.add_shape_cylinder(
                         **shape_params,
-                        radius=shape_spec.radius * scale[(int(shape_spec.axis) + 1) % 3],
-                        half_height=shape_spec.halfHeight * scale[int(shape_spec.axis)],
+                        radius=shape_spec.radius,
+                        half_height=shape_spec.halfHeight,
                     )
                 elif key == UsdPhysics.ObjectType.ConeShape:
                     # Apply axis rotation to transform
@@ -1380,8 +1381,8 @@ def parse_usd(
                     )
                     shape_id = builder.add_shape_cone(
                         **shape_params,
-                        radius=shape_spec.radius * scale[(int(shape_spec.axis) + 1) % 3],
-                        half_height=shape_spec.halfHeight * scale[int(shape_spec.axis)],
+                        radius=shape_spec.radius,
+                        half_height=shape_spec.halfHeight,
                     )
                 elif key == UsdPhysics.ObjectType.MeshShape:
                     mesh = UsdGeom.Mesh(prim)

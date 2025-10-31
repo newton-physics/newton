@@ -164,8 +164,8 @@ class ModelBuilder:
         """The thickness of the shape."""
         is_solid: bool = True
         """Indicates whether the shape is solid or hollow. Defaults to True."""
-        collision_group: int = -1
-        """The collision group ID for the shape. Defaults to -1."""
+        collision_group: int = 1
+        """The collision group ID for the shape. Defaults to 1 (default group). Set to 0 to disable collisions for this shape."""
         collision_filter_parent: bool = True
         """Whether to inherit collision filtering from the parent. Defaults to True."""
         has_shape_collision: bool = True
@@ -4041,6 +4041,7 @@ class ModelBuilder:
         jitter: float,
         radius_mean: float | None = None,
         radius_std: float = 0.0,
+        flags: int | None = None,
     ):
         """
         Adds a regular 3D grid of particles to the model.
@@ -4063,26 +4064,45 @@ class ModelBuilder:
             jitter (float): Maximum random offset to apply to each particle position.
             radius_mean (float, optional): Mean radius for particles. If None, uses the builder's default.
             radius_std (float, optional): Standard deviation for particle radii. If > 0, radii are sampled from a normal distribution.
+            flags (int, optional): Flags to assign to each particle. If None, uses the builder's default.
 
         Returns:
             None
         """
-        radius_mean = radius_mean if radius_mean is not None else self.default_particle_radius
 
-        rng = np.random.default_rng(42)
-        for z in range(dim_z):
-            for y in range(dim_y):
-                for x in range(dim_x):
-                    v = wp.vec3(x * cell_x, y * cell_y, z * cell_z)
-                    m = mass
+        # local grid
+        px = np.arange(dim_x) * cell_x
+        py = np.arange(dim_y) * cell_y
+        pz = np.arange(dim_z) * cell_z
+        points = np.stack(np.meshgrid(px, py, pz)).reshape(3, -1).T
 
-                    p = wp.quat_rotate(rot, v) + pos + wp.vec3(rng.random(3) * jitter)
+        # apply transform to points
+        rot_mat = wp.quat_to_matrix(rot)
+        points = points @ np.array(rot_mat).reshape(3, 3).T + np.array(pos)
+        velocity = np.broadcast_to(np.array(vel).reshape(1, 3), points.shape)
 
-                    if radius_std > 0.0:
-                        r = radius_mean + rng.standard_normal() * radius_std
-                    else:
-                        r = radius_mean
-                    self.add_particle(p, vel, m, r)
+        # add jitter
+        rng = np.random.default_rng(42 + len(self.particle_q))
+        points += (rng.random(points.shape) - 0.5) * jitter
+
+        if radius_mean is None:
+            radius_mean = self.default_particle_radius
+
+        radii = np.full(points.shape[0], fill_value=radius_mean)
+        if radius_std > 0.0:
+            radii += rng.standard_normal(radii.shape) * radius_std
+
+        masses = [mass] * points.shape[0]
+        if flags is not None:
+            flags = [flags] * points.shape[0]
+
+        self.add_particles(
+            pos=points.tolist(),
+            vel=velocity.tolist(),
+            mass=masses,
+            radius=radii.tolist(),
+            flags=flags,
+        )
 
     def add_soft_grid(
         self,
@@ -4806,6 +4826,49 @@ class ModelBuilder:
 
             return m
 
+    def _test_group_pair(self, group_a: int, group_b: int) -> bool:
+        """Test if two collision groups should interact.
+
+        This matches the exact logic from broad_phase_common.test_group_pair kernel function.
+
+        Args:
+            group_a: First collision group ID
+            group_b: Second collision group ID
+
+        Returns:
+            bool: True if the groups should collide, False otherwise
+        """
+        if group_a == 0 or group_b == 0:
+            return False
+        if group_a > 0:
+            return group_a == group_b or group_b < 0
+        if group_a < 0:
+            return group_a != group_b
+        return False
+
+    def _test_world_and_group_pair(
+        self, world_a: int, world_b: int, collision_group_a: int, collision_group_b: int
+    ) -> bool:
+        """Test if two entities should collide based on world indices and collision groups.
+
+        This matches the exact logic from broad_phase_common.test_world_and_group_pair kernel function.
+
+        Args:
+            world_a: World index of first entity
+            world_b: World index of second entity
+            collision_group_a: Collision group of first entity
+            collision_group_b: Collision group of second entity
+
+        Returns:
+            bool: True if the entities should collide, False otherwise
+        """
+        # Check world indices first
+        if world_a != -1 and world_b != -1 and world_a != world_b:
+            return False
+
+        # If same world or at least one is global (-1), check collision groups
+        return self._test_group_pair(collision_group_a, collision_group_b)
+
     def find_shape_contact_pairs(self, model: Model):
         """
         Identifies and stores all potential shape contact pairs for collision detection.
@@ -4815,6 +4878,9 @@ class ModelBuilder:
         any user-specified collision filter pairs to avoid redundant or undesired contacts.
 
         The resulting contact pairs are stored in the model as a 2D array of shape indices.
+
+        Uses the exact same filtering logic as the broad phase kernels (test_world_and_group_pair)
+        to ensure consistency between EXPLICIT mode (precomputed pairs) and NXN/SAP modes.
 
         Args:
             model (Model): The simulation model to which the contact pairs will be assigned.
@@ -4826,26 +4892,29 @@ class ModelBuilder:
         filters: set[tuple[int, int]] = model.shape_collision_filter_pairs
         contact_pairs: list[tuple[int, int]] = []
 
-        # Sort shapes by world in case they are not sorted, keep only colliding shapes
+        # Keep only colliding shapes (those with COLLIDE_SHAPES flag) and sort by world for optimization
         colliding_indices = [i for i, flag in enumerate(self.shape_flags) if flag & ShapeFlags.COLLIDE_SHAPES]
         sorted_indices = sorted(colliding_indices, key=lambda i: self.shape_world[i])
 
-        # Iterate over all shapes candidates
+        # Iterate over all pairs of colliding shapes
         for i1 in range(len(sorted_indices)):
             s1 = sorted_indices[i1]
             world1 = self.shape_world[s1]
             collision_group1 = self.shape_collision_group[s1]
+
             for i2 in range(i1 + 1, len(sorted_indices)):
                 s2 = sorted_indices[i2]
                 world2 = self.shape_world[s2]
-                # Skip shapes from different worlds (unless one is global). As the shapes are sorted,
-                # this means the shapes in this world have all been processed.
-                if world1 != -1 and world1 != world2:
+                collision_group2 = self.shape_collision_group[s2]
+
+                # Early break optimization: if both shapes are in non-global worlds and different worlds,
+                # they can never collide. Since shapes are sorted by world, all remaining shapes will also
+                # be in different worlds, so we can break early.
+                if world1 != -1 and world2 != -1 and world1 != world2:
                     break
 
-                # Skip shapes from different collision group (unless one is global).
-                collision_group2 = self.shape_collision_group[s2]
-                if collision_group1 != -1 and collision_group2 != -1 and collision_group1 != collision_group2:
+                # Apply the exact same filtering logic as test_world_and_group_pair kernel
+                if not self._test_world_and_group_pair(world1, world2, collision_group1, collision_group2):
                     continue
 
                 # Ensure canonical order (smaller_element, larger_element)
@@ -4854,6 +4923,7 @@ class ModelBuilder:
                 else:
                     shape_a, shape_b = s1, s2
 
+                # Skip if explicitly filtered
                 if (shape_a, shape_b) not in filters:
                     contact_pairs.append((shape_a, shape_b))
 

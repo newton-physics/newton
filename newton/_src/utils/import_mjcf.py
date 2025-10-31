@@ -27,6 +27,7 @@ from ..core import quat_between_axes, quat_from_euler
 from ..core.types import Axis, AxisType, Sequence, Transform
 from ..geometry import MESH_MAXHULLVERT, Mesh
 from ..sim import JointType, ModelBuilder
+from .schema_resolver import _solref_to_damping, _solref_to_stiffness
 
 
 def parse_mjcf(
@@ -528,10 +529,23 @@ def parse_mjcf(
                 axis_vec = parse_vec(joint_attrib, "axis", (0.0, 0.0, 0.0))
                 limit_lower = np.deg2rad(joint_range[0]) if is_angular and use_degrees else joint_range[0]
                 limit_upper = np.deg2rad(joint_range[1]) if is_angular and use_degrees else joint_range[1]
+
+                # Parse solreflimit for joint limit stiffness and damping
+                solreflimit = parse_vec(joint_attrib, "solreflimit", (0.02, 1.0))
+                limit_ke = _solref_to_stiffness(solreflimit)
+                limit_kd = _solref_to_damping(solreflimit)
+                # Handle None return values (invalid solref)
+                if limit_ke is None:
+                    limit_ke = 2500.0  # From MuJoCo's default solref (0.02, 1.0)
+                if limit_kd is None:
+                    limit_kd = 100.0  # From MuJoCo's default solref (0.02, 1.0)
+
                 ax = ModelBuilder.JointDofConfig(
                     axis=axis_vec,
                     limit_lower=limit_lower,
                     limit_upper=limit_upper,
+                    limit_ke=limit_ke,
+                    limit_kd=limit_kd,
                     target_ke=parse_float(joint_attrib, "stiffness", default_joint_stiffness),
                     target_kd=parse_float(joint_attrib, "damping", default_joint_damping),
                     armature=joint_armature[-1],
