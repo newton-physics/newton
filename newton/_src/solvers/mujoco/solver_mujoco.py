@@ -1809,6 +1809,7 @@ class SolverMuJoCo(SolverBase):
         actuator_gears: dict[str, float] | None = None,
         actuated_axes: list[int] | None = None,
         skip_visual_only_geoms: bool = True,
+        include_sites: bool = True,
         add_axes: bool = False,
         mesh_maxhullvert: int = MESH_MAXHULLVERT,
         ls_parallel: bool = False,
@@ -2107,10 +2108,38 @@ class SolverMuJoCo(SolverBase):
                 if shape not in selected_shapes_set:
                     # skip shapes that are not selected for this world
                     continue
-                if skip_visual_only_geoms and not (shape_flags[shape] & ShapeFlags.COLLIDE_SHAPES):
+                # Skip visual-only geoms, but don't skip sites
+                is_site = shape_flags[shape] & ShapeFlags.SITE
+                if skip_visual_only_geoms and not is_site and not (shape_flags[shape] & ShapeFlags.COLLIDE_SHAPES):
                     continue
                 stype = shape_type[shape]
                 name = f"{model.shape_key[shape]}_{shape}"
+
+                if include_sites and is_site:
+                    tf = wp.transform(*shape_transform[shape])
+                    site_params = {
+                        "type": geom_type_mapping[stype],
+                        "name": name,
+                        "pos": tf.p,
+                        "quat": quat_to_mjc(tf.q),
+                    }
+
+                    size = shape_size[shape]
+                    if np.any(size > 0.0):
+                        nonzero = size[size > 0.0][0]
+                        size[size == 0.0] = nonzero
+                        site_params["size"] = size
+                    else:
+                        site_params["size"] = [0.01, 0.01, 0.01]
+
+                    if shape_flags[shape] & ShapeFlags.VISIBLE:
+                        site_params["rgba"] = [0.0, 1.0, 0.0, 0.5]
+                    else:
+                        site_params["rgba"] = [0.0, 1.0, 0.0, 0.0]
+
+                    body.add_site(**site_params)
+                    continue
+
                 if stype == GeoType.PLANE and newton_body_id != -1:
                     raise ValueError("Planes can only be attached to static bodies")
                 geom_params = {

@@ -175,6 +175,9 @@ class ModelBuilder:
         is_visible: bool = True
         """Indicates whether the shape is visible in the simulation. Defaults to True."""
 
+        is_site: bool = False
+        """Indicates whether the shape is a site (non-colliding reference point). Defaults to False."""
+
         @property
         def flags(self) -> int:
             """Returns the flags for the shape."""
@@ -182,6 +185,7 @@ class ModelBuilder:
             shape_flags = ShapeFlags.VISIBLE if self.is_visible else 0
             shape_flags |= ShapeFlags.COLLIDE_SHAPES if self.has_shape_collision else 0
             shape_flags |= ShapeFlags.COLLIDE_PARTICLES if self.has_particle_collision else 0
+            shape_flags |= ShapeFlags.SITE if self.is_site else 0
             return shape_flags
 
         @flags.setter
@@ -191,6 +195,7 @@ class ModelBuilder:
             self.is_visible = bool(value & ShapeFlags.VISIBLE)
             self.has_shape_collision = bool(value & ShapeFlags.COLLIDE_SHAPES)
             self.has_particle_collision = bool(value & ShapeFlags.COLLIDE_PARTICLES)
+            self.is_site = bool(value & ShapeFlags.SITE)
 
         def copy(self) -> ModelBuilder.ShapeConfig:
             return copy.copy(self)
@@ -3176,6 +3181,66 @@ class ModelBuilder:
             scale=scale,
             src=mesh,
             key=key,
+        )
+
+    def add_site(
+        self,
+        body: int,
+        xform: Transform | None = None,
+        type: int = GeoType.SPHERE,
+        scale: Vec3 = (0.01, 0.01, 0.01),
+        key: str | None = None,
+        visible: bool = False,
+        custom_attributes: dict[str, Any] | None = None,
+    ) -> int:
+        """Adds a site (non-colliding reference point) to a body.
+
+        Sites are abstract markers that don't participate in physics simulation or collision detection.
+        They are useful for:
+        - Sensor attachment points (IMU, camera, etc.)
+        - Frame of reference definitions
+        - Debugging and visualization markers
+        - Spatial tendon attachment points (when exported to MuJoCo)
+
+        Args:
+            body (int): The index of the parent body this site belongs to. Use -1 for sites not attached to any specific body.
+            xform (Transform | None): The transform of the site in the parent body's local frame. If `None`, the identity transform `wp.transform()` is used. Defaults to `None`.
+            type (int): The geometry type for visualization (e.g., `GeoType.SPHERE`, `GeoType.BOX`). Defaults to `GeoType.SPHERE`.
+            scale (Vec3): The scale/size of the site for visualization. Defaults to `(0.01, 0.01, 0.01)`.
+            key (str | None): An optional unique key for identifying the site. If `None`, a default key is automatically generated. Defaults to `None`.
+            visible (bool): If True, the site will be visible for debugging. If False (default), the site is hidden.
+            custom_attributes: Dictionary of custom attribute names to values.
+
+        Returns:
+            int: The index of the newly added site (which is stored as a shape internally).
+
+        Example:
+            Add an IMU sensor site to a robot torso::
+
+                body = builder.add_body()
+                imu_site = builder.add_site(
+                    body,
+                    xform=wp.transform((0.0, 0.0, 0.1), wp.quat_identity()),
+                    key="imu_sensor",
+                    visible=True,  # Show for debugging
+                )
+        """
+        # Create config for non-colliding site
+        cfg = self.default_shape_cfg.copy()
+        cfg.density = 0.0  # Sites don't contribute to mass
+        cfg.is_visible = visible
+        cfg.has_shape_collision = False
+        cfg.has_particle_collision = False
+        cfg.is_site = True
+
+        return self.add_shape(
+            body=body,
+            type=type,
+            xform=xform,
+            cfg=cfg,
+            scale=scale,
+            key=key,
+            custom_attributes=custom_attributes,
         )
 
     def approximate_meshes(

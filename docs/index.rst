@@ -24,6 +24,8 @@ Newton Physics
    :caption: Concepts
    
    Articulations <concepts/articulations>
+   Sites <concepts/sites>
+   Sensors <concepts/sensors>
    Conventions <concepts/conventions>
    USD Parsing <concepts/usd_parsing>
    Custom Attributes <concepts/custom_attributes>
