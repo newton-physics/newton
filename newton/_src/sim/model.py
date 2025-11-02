@@ -104,10 +104,10 @@ class CustomAttribute:
     Custom attributes can be defined for the Model, State, Control, or Contacts objects, depending on the :class:`ModelAttributeAssignment` category.
 
     Attributes:
-        assignment: Assignment category (see :class:`ModelAttributeAssignment`)
-        frequency: Frequency category (see :class:`ModelAttributeFrequency`)
         name: Variable name to expose on the Model
         dtype: Warp dtype (e.g., wp.float32, wp.int32, wp.bool, wp.vec3)
+        frequency: Frequency category (see :class:`ModelAttributeFrequency`)
+        assignment: Assignment category (see :class:`ModelAttributeAssignment`), defaults to :attr:`ModelAttributeAssignment.MODEL`
         namespace: Namespace for the attribute
         default: Default value for the attribute
         values: Dictionary mapping indices to specific values (overrides)
@@ -119,10 +119,10 @@ class CustomAttribute:
         urdf_value_transformer: Transformer function that converts a URDF attribute value string to a valid Warp dtype. If undefined, the generic converter from :func:`newton.urdf.convert_warp_value` is used.
     """
 
-    assignment: ModelAttributeAssignment
-    frequency: ModelAttributeFrequency
     name: str
-    dtype: object
+    dtype: type
+    frequency: ModelAttributeFrequency
+    assignment: ModelAttributeAssignment = ModelAttributeAssignment.MODEL
     namespace: str | None = None
     default: Any = None
     values: dict[int, Any] | None = None

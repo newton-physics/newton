@@ -1396,54 +1396,53 @@ class ModelBuilder:
         self.joint_coord_count += builder.joint_coord_count
 
         # Merge custom attributes from the sub-builder
-        if builder.custom_attributes:
-            for full_key, attr in builder.custom_attributes.items():
-                # Declare the attribute if it doesn't exist in the main builder
-                self.add_custom_attribute(attr)
-                self.custom_attributes[full_key].values = copy.copy(attr.values)
-                merged = self.custom_attributes[full_key]
-                # Prevent silent divergence if defaults differ
-                # Handle array/vector types by converting to comparable format
-                try:
-                    defaults_match = merged.default == attr.default
-                    # Handle array-like comparisons
-                    if hasattr(defaults_match, "__iter__") and not isinstance(defaults_match, (str, bytes)):
-                        defaults_match = all(defaults_match)
-                except (ValueError, TypeError):
-                    # If comparison fails, assume they're different
-                    defaults_match = False
+        for full_key, attr in builder.custom_attributes.items():
+            # Declare the attribute if it doesn't exist in the main builder
+            merged = self.custom_attributes.get(full_key)
+            if merged is None:
+                self.custom_attributes[full_key] = attr
+                continue
+            # Prevent silent divergence if defaults differ
+            # Handle array/vector types by converting to comparable format
+            try:
+                defaults_match = merged.default == attr.default
+                # Handle array-like comparisons
+                if hasattr(defaults_match, "__iter__") and not isinstance(defaults_match, (str, bytes)):
+                    defaults_match = all(defaults_match)
+            except (ValueError, TypeError):
+                # If comparison fails, assume they're different
+                defaults_match = False
 
-                if not defaults_match:
-                    raise ValueError(
-                        f"Custom attribute '{full_key}' default mismatch when merging builders: "
-                        f"existing={merged.default}, incoming={attr.default}"
-                    )
-                if not attr.values:
-                    continue
+            if not defaults_match:
+                raise ValueError(
+                    f"Custom attribute '{full_key}' default mismatch when merging builders: "
+                    f"existing={merged.default}, incoming={attr.default}"
+                )
+            if not attr.values:
+                continue
 
-                # Determine the offset based on frequency
-                if attr.frequency == ModelAttributeFrequency.ONCE:
-                    offset = 0
-                elif attr.frequency == ModelAttributeFrequency.BODY:
-                    offset = start_body_idx
-                elif attr.frequency == ModelAttributeFrequency.SHAPE:
-                    offset = start_shape_idx
-                elif attr.frequency == ModelAttributeFrequency.JOINT:
-                    offset = start_joint_idx
-                elif attr.frequency == ModelAttributeFrequency.JOINT_DOF:
-                    offset = start_joint_dof_idx
-                elif attr.frequency == ModelAttributeFrequency.JOINT_COORD:
-                    offset = start_joint_coord_idx
-                elif attr.frequency == ModelAttributeFrequency.ARTICULATION:
-                    offset = start_articulation_idx
-                else:
-                    continue
+            # Determine the offset based on frequency
+            if attr.frequency == ModelAttributeFrequency.ONCE:
+                offset = 0
+            elif attr.frequency == ModelAttributeFrequency.BODY:
+                offset = start_body_idx
+            elif attr.frequency == ModelAttributeFrequency.SHAPE:
+                offset = start_shape_idx
+            elif attr.frequency == ModelAttributeFrequency.JOINT:
+                offset = start_joint_idx
+            elif attr.frequency == ModelAttributeFrequency.JOINT_DOF:
+                offset = start_joint_dof_idx
+            elif attr.frequency == ModelAttributeFrequency.JOINT_COORD:
+                offset = start_joint_coord_idx
+            elif attr.frequency == ModelAttributeFrequency.ARTICULATION:
+                offset = start_articulation_idx
+            else:
+                continue
 
-                # Remap indices and copy values
-                if merged.values is None:
-                    merged.values = {}
-                for idx, value in attr.values.items():
-                    merged.values[offset + idx] = value
+            # Remap indices and copy values
+            if merged.values is None:
+                merged.values = {}
+            merged.values.update({offset + idx: value for idx, value in attr.values.items()})
 
         if update_num_world_count:
             # Globals do not contribute to the world count
