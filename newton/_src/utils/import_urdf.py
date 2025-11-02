@@ -144,11 +144,10 @@ def parse_urdf(
         shape_cfg.is_visible = visible
         shape_cfg.has_shape_collision = not just_visual
         shape_cfg.has_particle_collision = not just_visual
-        custom_attributes = parse_custom_attributes(geom_attrib, builder_custom_attr_shape)
         shape_kwargs = {
             "body": link,
             "cfg": shape_cfg,
-            "custom_attributes": custom_attributes,
+            "custom_attributes": {},
         }
         shapes = []
         # add geometry
@@ -156,6 +155,8 @@ def parse_urdf(
             geo = geom_group.find("geometry")
             if geo is None:
                 continue
+            custom_attributes = parse_custom_attributes(geom_group.attrib, builder_custom_attr_shape)
+            shape_kwargs["custom_attributes"] = custom_attributes
 
             tf = parse_transform(geom_group)
             if incoming_xform is not None:
