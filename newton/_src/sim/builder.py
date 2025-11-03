@@ -713,6 +713,24 @@ class ModelBuilder:
                 )
 
     @property
+    def default_site_cfg(self) -> ShapeConfig:
+        """Returns a ShapeConfig configured for sites (non-colliding reference points).
+
+        This config has all site invariants enforced:
+        - is_site = True
+        - has_shape_collision = False
+        - has_particle_collision = False
+        - density = 0.0
+        - collision_group = 0
+
+        Returns:
+            ShapeConfig: A new configuration suitable for creating sites.
+        """
+        cfg = self.ShapeConfig()
+        cfg.mark_as_site()
+        return cfg
+
+    @property
     def up_vector(self) -> Vec3:
         """
         Returns the 3D unit vector corresponding to the current up axis (read-only).
@@ -2928,25 +2946,30 @@ class ModelBuilder:
         xform: Transform | None = None,
         radius: float = 1.0,
         cfg: ShapeConfig | None = None,
+        as_site: bool = False,
         key: str | None = None,
         custom_attributes: dict[str, Any] | None = None,
     ) -> int:
-        """Adds a sphere collision shape to a body.
+        """Adds a sphere collision shape or site to a body.
 
         Args:
             body (int): The index of the parent body this shape belongs to. Use -1 for shapes not attached to any specific body.
             xform (Transform | None): The transform of the sphere in the parent body's local frame. The sphere is centered at this transform's position. If `None`, the identity transform `wp.transform()` is used. Defaults to `None`.
             radius (float): The radius of the sphere. Defaults to `1.0`.
-            cfg (ShapeConfig | None): The configuration for the shape's physical and collision properties. If `None`, :attr:`default_shape_cfg` is used. Defaults to `None`.
+            cfg (ShapeConfig | None): The configuration for the shape's physical and collision properties. If `None`, :attr:`default_shape_cfg` is used. Ignored if `as_site=True`. Defaults to `None`.
+            as_site (bool): If `True`, creates a site (non-colliding reference point) instead of a collision shape. Defaults to `False`.
             key (str | None): An optional unique key for identifying the shape. If `None`, a default key is automatically generated. Defaults to `None`.
             custom_attributes: Dictionary of custom attribute names to values.
 
         Returns:
-            int: The index of the newly added shape.
+            int: The index of the newly added shape or site.
         """
-
         if cfg is None:
-            cfg = self.default_shape_cfg
+            cfg = self.default_site_cfg if as_site else self.default_shape_cfg
+        elif as_site:
+            cfg = cfg.copy()
+            cfg.mark_as_site()
+
         scale: Any = wp.vec3(radius, 0.0, 0.0)
         return self.add_shape(
             body=body,
@@ -2966,10 +2989,11 @@ class ModelBuilder:
         hy: float = 0.5,
         hz: float = 0.5,
         cfg: ShapeConfig | None = None,
+        as_site: bool = False,
         key: str | None = None,
         custom_attributes: dict[str, Any] | None = None,
     ) -> int:
-        """Adds a box collision shape to a body.
+        """Adds a box collision shape or site to a body.
 
         The box is centered at its local origin as defined by `xform`.
 
@@ -2979,16 +3003,20 @@ class ModelBuilder:
             hx (float): The half-extent of the box along its local X-axis. Defaults to `0.5`.
             hy (float): The half-extent of the box along its local Y-axis. Defaults to `0.5`.
             hz (float): The half-extent of the box along its local Z-axis. Defaults to `0.5`.
-            cfg (ShapeConfig | None): The configuration for the shape's physical and collision properties. If `None`, :attr:`default_shape_cfg` is used. Defaults to `None`.
+            cfg (ShapeConfig | None): The configuration for the shape's physical and collision properties. If `None`, :attr:`default_shape_cfg` is used. Ignored if `as_site=True`. Defaults to `None`.
+            as_site (bool): If `True`, creates a site (non-colliding reference point) instead of a collision shape. Defaults to `False`.
             key (str | None): An optional unique key for identifying the shape. If `None`, a default key is automatically generated. Defaults to `None`.
             custom_attributes: Dictionary of custom attribute names to values.
 
         Returns:
-            int: The index of the newly added shape.
+            int: The index of the newly added shape or site.
         """
-
         if cfg is None:
-            cfg = self.default_shape_cfg
+            cfg = self.default_site_cfg if as_site else self.default_shape_cfg
+        elif as_site:
+            cfg = cfg.copy()
+            cfg.mark_as_site()
+
         scale = wp.vec3(hx, hy, hz)
         return self.add_shape(
             body=body, type=GeoType.BOX, xform=xform, cfg=cfg, scale=scale, key=key, custom_attributes=custom_attributes
@@ -3001,10 +3029,11 @@ class ModelBuilder:
         radius: float = 1.0,
         half_height: float = 0.5,
         cfg: ShapeConfig | None = None,
+        as_site: bool = False,
         key: str | None = None,
         custom_attributes: dict[str, Any] | None = None,
     ) -> int:
-        """Adds a capsule collision shape to a body.
+        """Adds a capsule collision shape or site to a body.
 
         The capsule is centered at its local origin as defined by `xform`. Its length extends along the Z-axis.
 
@@ -3013,21 +3042,25 @@ class ModelBuilder:
             xform (Transform | None): The transform of the capsule in the parent body's local frame. If `None`, the identity transform `wp.transform()` is used. Defaults to `None`.
             radius (float): The radius of the capsule's hemispherical ends and its cylindrical segment. Defaults to `1.0`.
             half_height (float): The half-length of the capsule's central cylindrical segment (excluding the hemispherical ends). Defaults to `0.5`.
-            cfg (ShapeConfig | None): The configuration for the shape's physical and collision properties. If `None`, :attr:`default_shape_cfg` is used. Defaults to `None`.
+            cfg (ShapeConfig | None): The configuration for the shape's physical and collision properties. If `None`, :attr:`default_shape_cfg` is used. Ignored if `as_site=True`. Defaults to `None`.
+            as_site (bool): If `True`, creates a site (non-colliding reference point) instead of a collision shape. Defaults to `False`.
             key (str | None): An optional unique key for identifying the shape. If `None`, a default key is automatically generated. Defaults to `None`.
             custom_attributes: Dictionary of custom attribute names to values.
 
         Returns:
-            int: The index of the newly added shape.
+            int: The index of the newly added shape or site.
         """
+        if cfg is None:
+            cfg = self.default_site_cfg if as_site else self.default_shape_cfg
+        elif as_site:
+            cfg = cfg.copy()
+            cfg.mark_as_site()
 
         if xform is None:
             xform = wp.transform()
         else:
             xform = wp.transform(*xform)
 
-        if cfg is None:
-            cfg = self.default_shape_cfg
         scale = wp.vec3(radius, half_height, 0.0)
         return self.add_shape(
             body=body,
@@ -3046,10 +3079,11 @@ class ModelBuilder:
         radius: float = 1.0,
         half_height: float = 0.5,
         cfg: ShapeConfig | None = None,
+        as_site: bool = False,
         key: str | None = None,
         custom_attributes: dict[str, Any] | None = None,
     ) -> int:
-        """Adds a cylinder collision shape to a body.
+        """Adds a cylinder collision shape or site to a body.
 
         The cylinder is centered at its local origin as defined by `xform`. Its length extends along the Z-axis.
 
@@ -3058,21 +3092,25 @@ class ModelBuilder:
             xform (Transform | None): The transform of the cylinder in the parent body's local frame. If `None`, the identity transform `wp.transform()` is used. Defaults to `None`.
             radius (float): The radius of the cylinder. Defaults to `1.0`.
             half_height (float): The half-length of the cylinder along the Z-axis. Defaults to `0.5`.
-            cfg (ShapeConfig | None): The configuration for the shape's physical and collision properties. If `None`, :attr:`default_shape_cfg` is used. Defaults to `None`.
+            cfg (ShapeConfig | None): The configuration for the shape's physical and collision properties. If `None`, :attr:`default_shape_cfg` is used. Ignored if `as_site=True`. Defaults to `None`.
+            as_site (bool): If `True`, creates a site (non-colliding reference point) instead of a collision shape. Defaults to `False`.
             key (str | None): An optional unique key for identifying the shape. If `None`, a default key is automatically generated. Defaults to `None`.
             custom_attributes: Dictionary of custom attribute values for SHAPE frequency attributes.
 
         Returns:
-            int: The index of the newly added shape.
+            int: The index of the newly added shape or site.
         """
+        if cfg is None:
+            cfg = self.default_site_cfg if as_site else self.default_shape_cfg
+        elif as_site:
+            cfg = cfg.copy()
+            cfg.mark_as_site()
 
         if xform is None:
             xform = wp.transform()
         else:
             xform = wp.transform(*xform)
 
-        if cfg is None:
-            cfg = self.default_shape_cfg
         scale = wp.vec3(radius, half_height, 0.0)
         return self.add_shape(
             body=body,
