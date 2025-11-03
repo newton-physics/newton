@@ -59,11 +59,9 @@ class Example:
         self.control = self.model.control()
 
         if viewer is not None:
-            self.plot_window = ViewerPlot(
-                viewer, "Body Acceleration (Z, clamped to 0)", scale_min=0, graph_size=(400, 200)
-            )
-            self.viewer.register_ui_callback(self.plot_window.render, "free")
             self.viewer.set_model(self.model)
+            self.init_plot(scale_min=0, graph_size=(400, 200))
+            self.viewer.register_ui_callback(self.render_plot, "side")
 
         self.capture()
 
@@ -95,7 +93,7 @@ class Example:
             self.simulate()
 
         pendulum_acc = self.solver.data.body_acceleration.numpy()[0]
-        self.plot_window.add_point(pendulum_acc[2])
+        self.add_plot_point(pendulum_acc[2])
         print(f"Pendulum acceleration: {pendulum_acc}")
 
         self.sim_time += self.frame_dt
@@ -109,45 +107,32 @@ class Example:
         self.viewer.log_contacts(self.contacts, self.state_0)
         self.viewer.end_frame()
 
-
-class ViewerPlot:
-    def __init__(self, viewer=None, title="Plot", n_points=200, avg=4, **kwargs):
-        self.viewer = viewer
-        self.avg = avg
-        self.title = title
-        self.data = np.zeros(n_points, dtype=np.float32)
-        self.plot_kwargs = kwargs
+    def init_plot(self, **plot_kwargs):
         self.cache = []
+        self.avg = 4
+        n_points = 200
+        self.plot_kwargs = plot_kwargs
+        self.data = np.zeros(n_points, dtype=np.float32)
 
-    def add_point(self, point):
+    def add_plot_point(self, point):
         self.cache.append(point)
         if len(self.cache) == self.avg:
             self.data[0] = sum(self.cache) / self.avg
             self.data = np.roll(self.data, -1)
             self.cache.clear()
 
-    def render(self, imgui):
-        """
-        Render the replay UI controls.
-
-        Args:
-            imgui: The ImGui object passed by the ViewerGL callback system
-        """
+    def render_plot(self, imgui):
         if not self.viewer or not self.viewer.ui.is_available:
             return
 
+        window_shape = (400, 250)
         io = self.viewer.ui.io
-
-        # Position the replay controls window
-        window_shape = (400, 350)
         imgui.set_next_window_pos(
             imgui.ImVec2(io.display_size[0] - window_shape[0] - 10, io.display_size[1] - window_shape[1] - 10)
         )
         imgui.set_next_window_size(imgui.ImVec2(*window_shape))
 
-        flags = imgui.WindowFlags_.no_resize.value
-
-        if imgui.begin(self.title, flags=flags):
+        if imgui.begin("Body Acceleration (World Z, clamped to 0)"):
             imgui.plot_lines("Body acceleration", self.data, **self.plot_kwargs)
         imgui.end()
 

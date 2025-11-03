@@ -100,7 +100,6 @@ class SolverData:
 
         for field_name in generic_fields:
             if typing.get_type_hints(self).get(field_name) is None:
-                breakpoint()
                 raise TypeError(
                     f'Unknown generic SolverData field "{field_name}" defined by {self.__class__.__name__}.'
                 )
@@ -126,17 +125,13 @@ class SolverData:
                 )
 
     def _register_custom_fields(self, data_fields: list[CustomDataField]):
-        # Register sizes/types from list of CustomDataField
         for f in data_fields:
             if not f.name.startswith(f.frequency + "_"):
                 raise ValueError("Custom field name must be prefixed with frequency.")
-            # Ensure frequency entry exists
+            # TODO: handle namespace before frequency
             if f.frequency not in self.frequency_sizes:
                 self.frequency_sizes[f.frequency] = None
-            # Update frequency sizes based on declared field size
             self._update_frequency_sizes({f.name: f.size})
-            # Persist on self.custom_fields
-            self.custom_fields[f.name] = f
             if self.verbose:
                 print(f"Registering custom field {f.name}")
 
