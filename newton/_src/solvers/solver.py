@@ -17,6 +17,7 @@ import warp as wp
 
 from ..geometry import ParticleFlags
 from ..sim import Contacts, Control, Model, State
+from .solver_data import SolverData
 
 
 @wp.kernel
@@ -164,6 +165,7 @@ class SolverBase:
 
     def __init__(self, model: Model):
         self.model = model
+        self.data = None  # Created lazily when require_data is first called
 
     @property
     def device(self) -> wp.context.Device:
@@ -292,6 +294,32 @@ class SolverBase:
 
         """
         pass
+
+    def get_data_fields(self) -> dict[str, int]:
+        """Return the data fields that can be requested from the solver, along with their size.
+        Returns:
+            The data fields supported by the solver, with their sizes.
+
+        In solvers that do not support the SolverData interface, `get_data_fields()` raises NotImplementedError()
+        """
+        raise NotImplementedError()
+
+    def require_data(self, *fields: str) -> None:
+        """Require the solver to provide data fields `fields` (which must be listed in `get_data_fields()`).
+
+        Triggers allocation of the required buffers and ensures that the field data is made available during `step()`.
+
+        Args:
+            *fields: The names of the fields requested
+        Raises:
+            TypeError: If a requested field is not supported by the solver.
+            NotImplementedError: If the solver does not support the SolverData interface.
+
+        """
+        if self.data is None:  # Created on first require_data()
+            # TODO: non verbose
+            self.data = SolverData(self.model, data_fields=self.get_data_fields(), verbose=True)
+        self.data._require_fields(dict.fromkeys(fields, True))
 
     def update_contacts(self, contacts: Contacts) -> None:
         """Update a Contacts object with forces from the solver state. Where the solver state contains
