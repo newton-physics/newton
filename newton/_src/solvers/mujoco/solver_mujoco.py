@@ -1171,6 +1171,8 @@ def data_rigid_force_kernel(
 ):
     worldid, bodyid = wp.tid()
     wbi, mbi = bodies_per_world * worldid + bodyid, to_mjc_body_index[bodyid]
+    if mbi < 0:
+        return
 
     R = mjw_xmat[worldid, mbi]
 
@@ -2895,13 +2897,14 @@ class SolverMuJoCo(SolverBase):
         fields = {f for f, k in self.data.required_fields.items() if k}
         rigid_force_fields = ["body_acceleration", "body_parent_joint_force"]
 
+        bodies_per_world = self.model.body_count // self.model.num_worlds
         if fields.intersection(rigid_force_fields):
             wp.launch(
                 data_rigid_force_kernel,
-                (self.mjw_data.nworld, self.mjw_model.nbody),
+                (self.mjw_data.nworld, bodies_per_world),
                 inputs=[
                     self.to_mjc_body_index,
-                    self.model.body_count // self.model.num_worlds,
+                    bodies_per_world,
                     self.mjw_data.xmat,
                     self.mjw_data.cacc,
                     self.mjw_data.cfrc_int,

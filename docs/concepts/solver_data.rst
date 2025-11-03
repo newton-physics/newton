@@ -60,15 +60,6 @@ Methods
    :raises RuntimeError: If fields have not been required before activation/deactivation
 
 
-Properties
-~~~~~~~~~~
-
-.. py:property:: device
-
-   Get the device used by the solver.
-
-   :return: The ``wp.Device`` used by the solver
-
 Integration with Solvers
 ------------------------
 
@@ -84,10 +75,10 @@ Solvers supporting the SolverData interface must:
 Example Solver Integration
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-.. code-block:: python
+.. testcode:: python
 
     import warp as wp
-    from newton.solvers.solver_data import CustomDataField
+    from newton.solvers import CustomDataField, SolverBase
 
     class MySolver(SolverBase):
         def get_generic_data_fields(self) -> dict[str, int]:

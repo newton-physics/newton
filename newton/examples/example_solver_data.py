@@ -30,8 +30,6 @@ class Example:
         self.sim_dt = self.frame_dt / self.sim_substeps
 
         self.viewer = viewer
-        self.plot_window = ViewerPlot(viewer, "Body Acceleration (Z)", scale_min=0, graph_size=(400, 200))
-        self.viewer.register_ui_callback(self.plot_window.render, "free")
 
         builder = newton.ModelBuilder()
 
@@ -39,8 +37,11 @@ class Example:
         builder.add_ground_plane()
 
         # pendulum
-        body_sphere = builder.add_body(key="sphere")
+        body_sphere = builder.add_body(key="pendulum")
         builder.add_shape_sphere(body_sphere, radius=0.2)
+        builder.add_shape_capsule(
+            body_sphere, xform=wp.transform(p=(0, 0, 0.5)), radius=0.05, cfg=newton.ModelBuilder.ShapeConfig(density=0)
+        )
         builder.add_joint_revolute(
             -1, body_sphere, parent_xform=wp.transform(p=(0.0, 0.0, 2.0)), child_xform=wp.transform(p=(0.0, 0.0, 1.0))
         )
@@ -57,7 +58,12 @@ class Example:
         self.state_1 = self.model.state()
         self.control = self.model.control()
 
-        self.viewer.set_model(self.model)
+        if viewer is not None:
+            self.plot_window = ViewerPlot(
+                viewer, "Body Acceleration (Z, clamped to 0)", scale_min=0, graph_size=(400, 200)
+            )
+            self.viewer.register_ui_callback(self.plot_window.render, "free")
+            self.viewer.set_model(self.model)
 
         self.capture()
 
@@ -81,8 +87,6 @@ class Example:
 
             # swap states
             self.state_0, self.state_1 = self.state_1, self.state_0
-        # for update in step graph
-        # self.solver.update_data()
 
     def step(self):
         if self.graph:
@@ -90,7 +94,6 @@ class Example:
         else:
             self.simulate()
 
-        # self.solver.update_data()  # implicit
         pendulum_acc = self.solver.data.body_acceleration.numpy()[0]
         self.plot_window.add_point(pendulum_acc[2])
         print(f"Pendulum acceleration: {pendulum_acc}")
