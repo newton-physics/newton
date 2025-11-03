@@ -64,6 +64,39 @@ Sites can also be attached to the world frame (body=-1) to create fixed referenc
        key="world_origin"
    )
 
+Alternative: Using Shape Methods with ``as_site=True``
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Sites can also be created using shape creation methods (``add_shape_sphere``, ``add_shape_box``, ``add_shape_capsule``, ``add_shape_cylinder``) by passing ``as_site=True``. This is particularly useful when programmatically generating shapes or conditionally creating sites:
+
+.. code-block:: python
+
+   # Create sites using shape methods
+   sphere_site = builder.add_shape_sphere(
+       body=body,
+       radius=0.05,
+       as_site=True,
+       key="sphere_marker"
+   )
+   
+   box_site = builder.add_shape_box(
+       body=body,
+       hx=0.1, hy=0.1, hz=0.1,
+       as_site=True,
+       key="box_marker"
+   )
+   
+   # Useful for conditional creation
+   is_sensor_point = True
+   shape_idx = builder.add_shape_sphere(
+       body=body,
+       radius=0.05,
+       as_site=is_sensor_point,  # Conditionally a site
+       key="measurement_point"
+   )
+
+When ``as_site=True``, the shape is automatically configured with all site invariants (no collision, zero density, collision_group=0), regardless of any custom configuration passed
+
 Importing Sites
 ---------------
 
