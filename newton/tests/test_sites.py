@@ -265,5 +265,163 @@ class TestSiteNonCollision(unittest.TestCase):
         self.assertEqual(count, 0, "Sites should not generate contacts")
 
 
+class TestSiteInvariantEnforcement(unittest.TestCase):
+    """Tests for site invariant enforcement mechanisms."""
+
+    def test_mark_as_site_enforces_invariants(self):
+        """Test that mark_as_site() method enforces all invariants."""
+        builder = newton.ModelBuilder()
+        cfg = builder.ShapeConfig()
+
+        # Initially has default values (not a site)
+        self.assertFalse(cfg.is_site)
+        self.assertGreater(cfg.density, 0.0)
+        self.assertNotEqual(cfg.collision_group, 0)
+        self.assertTrue(cfg.has_shape_collision)
+        self.assertTrue(cfg.has_particle_collision)
+
+        # Call mark_as_site() to enforce invariants
+        cfg.mark_as_site()
+
+        # Verify all invariants are enforced
+        self.assertTrue(cfg.is_site)
+        self.assertEqual(cfg.density, 0.0, "Site must have zero density")
+        self.assertEqual(cfg.collision_group, 0, "Site must have collision_group=0")
+        self.assertFalse(cfg.has_shape_collision, "Site must not have shape collision")
+        self.assertFalse(cfg.has_particle_collision, "Site must not have particle collision")
+
+    def test_flags_setter_enforces_invariants(self):
+        """Test that setting flags with SITE enforces invariants."""
+        builder = newton.ModelBuilder()
+        cfg = builder.ShapeConfig()
+
+        # Set flags with SITE bit
+        cfg.flags = ShapeFlags.SITE
+
+        # Verify invariants are enforced
+        self.assertTrue(cfg.is_site)
+        self.assertEqual(cfg.density, 0.0)
+        self.assertEqual(cfg.collision_group, 0)
+        self.assertFalse(cfg.has_shape_collision)
+        self.assertFalse(cfg.has_particle_collision)
+
+    def test_flags_setter_clears_collision_when_site_set(self):
+        """Test that SITE flag overrides collision flags."""
+        builder = newton.ModelBuilder()
+        cfg = builder.ShapeConfig()
+
+        # Try to set SITE along with collision flags
+        cfg.flags = ShapeFlags.SITE | ShapeFlags.COLLIDE_SHAPES | ShapeFlags.COLLIDE_PARTICLES
+
+        # SITE should override collision flags
+        self.assertTrue(cfg.is_site)
+        self.assertFalse(cfg.has_shape_collision, "Collision flags should be cleared by SITE")
+        self.assertFalse(cfg.has_particle_collision, "Collision flags should be cleared by SITE")
+
+    def test_add_shape_validates_collision_flags(self):
+        """Test that add_shape rejects sites with collision enabled."""
+        builder = newton.ModelBuilder()
+        body = builder.add_body()
+
+        # Create config with is_site=True but collision enabled
+        cfg = builder.ShapeConfig()
+        cfg.is_site = True
+        cfg.has_shape_collision = True  # Violate invariant
+
+        # Should raise ValueError
+        with self.assertRaises(ValueError) as ctx:
+            builder.add_shape(body=body, type=GeoType.SPHERE, cfg=cfg)
+
+        self.assertIn("cannot have collision enabled", str(ctx.exception))
+
+    def test_add_shape_validates_density(self):
+        """Test that add_shape rejects sites with non-zero density."""
+        builder = newton.ModelBuilder()
+        body = builder.add_body()
+
+        # Create config with is_site=True but non-zero density
+        cfg = builder.ShapeConfig()
+        cfg.is_site = True
+        cfg.has_shape_collision = False
+        cfg.has_particle_collision = False
+        cfg.density = 1.0  # Violate invariant
+
+        # Should raise ValueError
+        with self.assertRaises(ValueError) as ctx:
+            builder.add_shape(body=body, type=GeoType.SPHERE, cfg=cfg)
+
+        self.assertIn("must have zero density", str(ctx.exception))
+
+    def test_add_shape_validates_collision_group(self):
+        """Test that add_shape rejects sites with non-zero collision group."""
+        builder = newton.ModelBuilder()
+        body = builder.add_body()
+
+        # Create config with is_site=True but non-zero collision_group
+        cfg = builder.ShapeConfig()
+        cfg.is_site = True
+        cfg.has_shape_collision = False
+        cfg.has_particle_collision = False
+        cfg.density = 0.0
+        cfg.collision_group = 5  # Violate invariant
+
+        # Should raise ValueError
+        with self.assertRaises(ValueError) as ctx:
+            builder.add_shape(body=body, type=GeoType.SPHERE, cfg=cfg)
+
+        self.assertIn("must have collision_group=0", str(ctx.exception))
+
+    def test_add_site_uses_mark_as_site(self):
+        """Test that add_site() properly enforces invariants via mark_as_site()."""
+        builder = newton.ModelBuilder()
+        body = builder.add_body()
+
+        # Create site
+        site = builder.add_site(body=body, key="test_site")
+
+        model = builder.finalize()
+
+        # Verify site has all correct invariants
+        flags = model.shape_flags.numpy()[site]
+        self.assertTrue(flags & ShapeFlags.SITE)
+        self.assertFalse(flags & ShapeFlags.COLLIDE_SHAPES)
+        self.assertFalse(flags & ShapeFlags.COLLIDE_PARTICLES)
+
+        # Verify collision_group is 0
+        collision_group = model.shape_collision_group[site]
+        self.assertEqual(collision_group, 0)
+
+    def test_direct_is_site_assignment_no_enforcement(self):
+        """Test that directly setting is_site=True does not enforce invariants (as documented)."""
+        builder = newton.ModelBuilder()
+        cfg = builder.ShapeConfig()
+
+        # Directly set is_site without using mark_as_site()
+        cfg.is_site = True
+
+        # Other properties should NOT be automatically changed
+        # (This is intentional behavior per the docstring warning)
+        self.assertTrue(cfg.is_site)
+        # Note: density, collision_group, etc. are NOT automatically updated
+        # This test documents that direct assignment doesn't enforce invariants
+
+    def test_multiple_mark_as_site_calls_idempotent(self):
+        """Test that calling mark_as_site() multiple times is safe."""
+        builder = newton.ModelBuilder()
+        cfg = builder.ShapeConfig()
+
+        # Call mark_as_site() multiple times
+        cfg.mark_as_site()
+        cfg.mark_as_site()
+        cfg.mark_as_site()
+
+        # Should still have correct invariants
+        self.assertTrue(cfg.is_site)
+        self.assertEqual(cfg.density, 0.0)
+        self.assertEqual(cfg.collision_group, 0)
+        self.assertFalse(cfg.has_shape_collision)
+        self.assertFalse(cfg.has_particle_collision)
+
+
 if __name__ == "__main__":
     unittest.main()
