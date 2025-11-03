@@ -174,7 +174,6 @@ class ModelBuilder:
         """Whether the shape can collide with particles. Defaults to True."""
         is_visible: bool = True
         """Indicates whether the shape is visible in the simulation. Defaults to True."""
-
         is_site: bool = False
         """Indicates whether the shape is a site (non-colliding reference point). Directly setting this to True will NOT enforce site invariants. Use `mark_as_site()` or set via the `flags` property to ensure invariants. Defaults to False."""
 
