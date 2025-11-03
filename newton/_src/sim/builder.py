@@ -3257,7 +3257,7 @@ class ModelBuilder:
         - Spatial tendon attachment points (when exported to MuJoCo)
 
         Args:
-            body (int): The index of the parent body this site belongs to. Use -1 for sites not attached to any specific body.
+            body (int): The index of the parent body this site belongs to. Use -1 for sites not attached to any specific body (for sites defined a at static world position).
             xform (Transform | None): The transform of the site in the parent body's local frame. If `None`, the identity transform `wp.transform()` is used. Defaults to `None`.
             type (int): The geometry type for visualization (e.g., `GeoType.SPHERE`, `GeoType.BOX`). Defaults to `GeoType.SPHERE`.
             scale (Vec3): The scale/size of the site for visualization. Defaults to `(0.01, 0.01, 0.01)`.
