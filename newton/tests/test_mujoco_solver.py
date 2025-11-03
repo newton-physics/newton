@@ -2002,6 +2002,53 @@ class TestMuJoCoAttributes(unittest.TestCase):
         assert np.allclose(model.mujoco.condim.numpy(), [6, 4, 3])
         assert np.allclose(solver.mjw_model.geom_condim.numpy(), [6, 4, 3])
 
+    def test_custom_attributes_from_urdf(self):
+        urdf = """
+        <robot name="test_robot">
+            <link name="body1">
+                <joint type="revolute" axis="0 0 1" />
+                <collision>
+                    <geometry condim="6">
+                        <box size="0.1 0.1 0.1" />
+                    </geometry>
+                </collision>
+            </link>
+            <link name="body2">
+                <joint type="revolute" axis="0 0 1" />
+                <collision>
+                    <geometry condim="4">
+                        <box size="0.1 0.1 0.1" />
+                    </geometry>
+                </collision>
+            </link>
+            <link name="body3">
+                <joint type="revolute" axis="0 0 1" />
+                <collision>
+                    <geometry>
+                        <box size="0.1 0.1 0.1" />
+                    </geometry>
+                </collision>
+            </link>
+            <joint name="joint1" type="revolute">
+                <parent link="body1" />
+                <child link="body2" />
+            </joint>
+            <joint name="joint2" type="revolute">
+                <parent link="body2" />
+                <child link="body3" />
+            </joint>
+        </robot>
+        """
+        builder = newton.ModelBuilder()
+        newton.solvers.SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_urdf(urdf)
+        model = builder.finalize()
+        solver = SolverMuJoCo(model, separate_worlds=False)
+        assert hasattr(model, "mujoco")
+        assert hasattr(model.mujoco, "condim")
+        assert np.allclose(model.mujoco.condim.numpy(), [6, 4, 3])
+        assert np.allclose(solver.mjw_model.geom_condim.numpy(), [6, 4, 3])
+
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_custom_attributes_from_usd(self):
         from pxr import Sdf, Usd, UsdGeom, UsdPhysics  # noqa: PLC0415

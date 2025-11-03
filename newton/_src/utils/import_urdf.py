@@ -30,7 +30,7 @@ from ..core.types import Transform
 from ..geometry import MESH_MAXHULLVERT, Mesh
 from ..sim import ModelBuilder
 from ..sim.model import CustomAttribute, ModelAttributeFrequency
-from .import_utils import parse_custom_attributes
+from .import_utils import parse_custom_attributes, sanitize_xml_content
 from .topology import topological_sort
 
 
@@ -79,7 +79,7 @@ def parse_urdf(
 
     Args:
         builder (ModelBuilder): The :class:`ModelBuilder` to add the bodies and joints to.
-        source (str): The filename of the URDF file to parse.
+        source (str): The filename of the URDF file to parse, or the URDF XML string content.
         xform (Transform): The transform to apply to the root body. If None, the transform is set to identity.
         floating (bool): If True, the root body is a free joint. If False, the root body is connected via a fixed joint to the world, unless a `base_joint` is defined.
         base_joint (Union[str, dict]): The joint by which the root body is connected to the world. This can be either a string defining the joint axes of a D6 joint with comma-separated positional and angular axis names (e.g. "px,py,rz" for a D6 joint with linear axes in x, y and an angular axis in z) or a dict with joint parameters (see :meth:`ModelBuilder.add_joint`).
@@ -103,8 +103,12 @@ def parse_urdf(
     else:
         xform = wp.transform(*xform) * axis_xform
 
-    file = ET.parse(source)
-    root = file.getroot()
+    if os.path.isfile(source):
+        file = ET.parse(source)
+        root = file.getroot()
+    else:
+        xml_content = sanitize_xml_content(source)
+        root = ET.fromstring(xml_content)
 
     # load joint defaults
     default_joint_limit_lower = builder.default_joint_cfg.limit_lower
@@ -155,7 +159,7 @@ def parse_urdf(
             geo = geom_group.find("geometry")
             if geo is None:
                 continue
-            custom_attributes = parse_custom_attributes(geom_group.attrib, builder_custom_attr_shape)
+            custom_attributes = parse_custom_attributes(geo.attrib, builder_custom_attr_shape, parsing_mode="urdf")
             shape_kwargs["custom_attributes"] = custom_attributes
 
             tf = parse_transform(geom_group)
@@ -271,7 +275,7 @@ def parse_urdf(
 
     builder.add_articulation(
         key=root.attrib.get("name"),
-        custom_attributes=parse_custom_attributes(root.attrib, builder_custom_attr_articulation),
+        custom_attributes=parse_custom_attributes(root.attrib, builder_custom_attr_articulation, parsing_mode="urdf"),
     )
 
     # add joints
@@ -283,7 +287,7 @@ def parse_urdf(
     for joint in root.findall("joint"):
         parent = joint.find("parent").get("link")
         child = joint.find("child").get("link")
-        joint_custom_attributes = parse_custom_attributes(joint.attrib, builder_custom_attr_joint)
+        joint_custom_attributes = parse_custom_attributes(joint.attrib, builder_custom_attr_joint, parsing_mode="urdf")
         joint_data = {
             "name": joint.get("name"),
             "parent": parent,
@@ -352,7 +356,8 @@ def parse_urdf(
         if name is None:
             raise ValueError("Link has no name")
         link = builder.add_body(
-            key=name, custom_attributes=parse_custom_attributes(urdf_link.attrib, builder_custom_attr_body)
+            key=name,
+            custom_attributes=parse_custom_attributes(urdf_link.attrib, builder_custom_attr_body, parsing_mode="urdf"),
         )
 
         # add ourselves to the index

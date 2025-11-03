@@ -65,7 +65,7 @@ def parse_warp_value_from_string(value: str, warp_dtype: Any) -> Any:
 def parse_custom_attributes(
     dictlike: dict[str, str],
     custom_attributes: Sequence[CustomAttribute],
-    parsing_mode: Literal["usd", "mjcf", "urdf"] = "usd",
+    parsing_mode: Literal["usd", "mjcf", "urdf"],
 ) -> dict[str, Any]:
     """
     Parse custom attributes from a dictionary.
@@ -104,3 +104,20 @@ def parse_custom_attributes(
         if dict_value is not None:
             out[attr.key] = transformer(dict_value)
     return out
+
+
+def sanitize_xml_content(source: str) -> str:
+    # Strip leading whitespace and byte-order marks
+    xml_content = source.strip()
+    # Remove BOM if present
+    if xml_content.startswith("\ufeff"):
+        xml_content = xml_content[1:]
+    # Remove leading XML comments
+    while xml_content.strip().startswith("<!--"):
+        end_comment = xml_content.find("-->")
+        if end_comment != -1:
+            xml_content = xml_content[end_comment + 3 :].strip()
+        else:
+            break
+    xml_content = xml_content.strip()
+    return xml_content

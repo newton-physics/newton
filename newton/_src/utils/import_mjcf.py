@@ -29,7 +29,7 @@ from ..geometry import MESH_MAXHULLVERT, Mesh
 from ..sim import JointType, ModelBuilder
 from ..sim.model import CustomAttribute, ModelAttributeFrequency
 from ..usd.schemas import solref_to_damping, solref_to_stiffness
-from .import_utils import parse_custom_attributes
+from .import_utils import parse_custom_attributes, sanitize_xml_content
 
 
 def parse_mjcf(
@@ -90,32 +90,16 @@ def parse_mjcf(
         mesh_maxhullvert (int): Maximum vertices for convex hull approximation of meshes.
     """
     if xform is None:
-        xform = wp.transform()
+        xform = wp.transform_identity()
     else:
         xform = wp.transform(*xform)
 
-    # Check if input is a file path first
     if os.path.isfile(source):
-        # It's a file path
         mjcf_dirname = os.path.dirname(source)
         file = ET.parse(source)
         root = file.getroot()
     else:
-        # It's XML string content
-        # Strip leading whitespace and byte-order marks
-        xml_content = source.strip()
-        # Remove BOM if present
-        if xml_content.startswith("\ufeff"):
-            xml_content = xml_content[1:]
-        # Remove leading XML comments
-        while xml_content.strip().startswith("<!--"):
-            end_comment = xml_content.find("-->")
-            if end_comment != -1:
-                xml_content = xml_content[end_comment + 3 :].strip()
-            else:
-                break
-        xml_content = xml_content.strip()
-
+        xml_content = sanitize_xml_content(source)
         root = ET.fromstring(xml_content)
         mjcf_dirname = "."
 
@@ -315,7 +299,7 @@ def parse_mjcf(
             shape_cfg.has_particle_collision = not just_visual
             shape_cfg.density = geom_density
 
-            custom_attributes = parse_custom_attributes(geom_attrib, builder_custom_attr_shape)
+            custom_attributes = parse_custom_attributes(geom_attrib, builder_custom_attr_shape, parsing_mode="mjcf")
             shape_kwargs = {
                 "key": geom_name,
                 "body": link,
@@ -511,7 +495,9 @@ def parse_mjcf(
             joint_type = JointType.FREE
             joint_name.append(freejoint_tags[0].attrib.get("name", f"{body_name}_freejoint"))
             joint_armature.append(0.0)
-            joint_custom_attributes = parse_custom_attributes(freejoint_tags[0].attrib, builder_custom_attr_joint)
+            joint_custom_attributes = parse_custom_attributes(
+                freejoint_tags[0].attrib, builder_custom_attr_joint, parsing_mode="mjcf"
+            )
         else:
             joints = body.findall("joint")
             for i, joint in enumerate(joints):
@@ -569,17 +555,18 @@ def parse_mjcf(
                 else:
                     linear_axes.append(ax)
 
-                dof_attr = parse_custom_attributes(joint_attrib, builder_custom_attr_dof)
+                dof_attr = parse_custom_attributes(joint_attrib, builder_custom_attr_dof, parsing_mode="mjcf")
                 # assemble custom attributes for each DOF (list of values per custom attribute key)
                 for key, value in dof_attr.items():
                     if key not in dof_custom_attributes:
                         dof_custom_attributes[key] = []
                     dof_custom_attributes[key].append(value)
 
+        body_custom_attributes = parse_custom_attributes(body_attrib, builder_custom_attr_body, parsing_mode="mjcf")
         link = builder.add_body(
             xform=world_xform,  # Use the composed world transform
             key=body_name,
-            custom_attributes=parse_custom_attributes(body_attrib, builder_custom_attr_body),
+            custom_attributes=body_custom_attributes,
         )
 
         if joint_type is None:
