@@ -24,11 +24,8 @@ Creating Sites
 
 Sites are created using the ``add_site()`` method on ModelBuilder:
 
-.. code-block:: python
+.. testcode::
 
-   import newton
-   import warp as wp
-   
    builder = newton.ModelBuilder()
    
    # Create a body
@@ -55,8 +52,10 @@ Sites are created using the ``add_site()`` method on ModelBuilder:
 
 Sites can also be attached to the world frame (body=-1) to create fixed reference points:
 
-.. code-block:: python
+.. testcode::
 
+   builder = newton.ModelBuilder()
+   
    # World-frame reference site
    world_origin = builder.add_site(
        body=-1,
@@ -69,8 +68,11 @@ Alternative: Using Shape Methods with ``as_site=True``
 
 Sites can also be created using shape creation methods (``add_shape_sphere``, ``add_shape_box``, ``add_shape_capsule``, ``add_shape_cylinder``) by passing ``as_site=True``. This is particularly useful when programmatically generating shapes or conditionally creating sites:
 
-.. code-block:: python
+.. testcode::
 
+   builder = newton.ModelBuilder()
+   body = builder.add_body(mass=1.0)
+   
    # Create sites using shape methods
    sphere_site = builder.add_shape_sphere(
        body=body,
@@ -149,19 +151,23 @@ For detailed information on using sites with sensors, see :doc:`sensors`.
 MuJoCo Interoperability
 -----------------------
 
-When using ``SolverMuJoCo``, Newton sites can be exported to MuJoCo's native site representation:
+When using ``SolverMuJoCo``, Newton sites are automatically exported to MuJoCo's native site representation:
 
-.. code-block:: python
+.. testcode::
 
    from newton.solvers import SolverMuJoCo
    
-   solver = SolverMuJoCo(
-       model,
-       worlds=[0],
-       include_sites=True  # Export sites to MuJoCo (default: True)
-   )
+   # Create a simple model with a site
+   builder = newton.ModelBuilder()
+   body = builder.add_body(mass=1.0, I_m=wp.mat33(np.eye(3)))
+   site = builder.add_site(body=body, key="sensor")
+   builder.add_joint_free(body)
+   model = builder.finalize()
+   
+   # Create MuJoCo solver (sites are exported by default)
+   solver = SolverMuJoCo(model)
 
-Sites are exported with their visual properties (color, size) and can be used with MuJoCo's native sensors and actuators.
+Sites are exported with their visual properties (color, size) and can be used with MuJoCo's native sensors and actuators. To disable site export, pass ``include_sites=False`` to the ``convert_to_mjc()`` method if calling it manually.
 
 Implementation Details
 ----------------------
