@@ -176,7 +176,23 @@ class ModelBuilder:
         """Indicates whether the shape is visible in the simulation. Defaults to True."""
 
         is_site: bool = False
-        """Indicates whether the shape is a site (non-colliding reference point). Defaults to False."""
+        """Indicates whether the shape is a site (non-colliding reference point). Directly setting this to True will NOT enforce site invariants. Use `mark_as_site()` or set via the `flags` property to ensure invariants. Defaults to False."""
+
+        def mark_as_site(self) -> None:
+            """Marks this shape as a site and enforces all site invariants.
+
+            Sets:
+            - is_site = True
+            - has_shape_collision = False
+            - has_particle_collision = False
+            - density = 0.0
+            - collision_group = 0
+            """
+            self.is_site = True
+            self.has_shape_collision = False
+            self.has_particle_collision = False
+            self.density = 0.0
+            self.collision_group = 0
 
         @property
         def flags(self) -> int:
@@ -193,9 +209,18 @@ class ModelBuilder:
             """Sets the flags for the shape."""
 
             self.is_visible = bool(value & ShapeFlags.VISIBLE)
-            self.has_shape_collision = bool(value & ShapeFlags.COLLIDE_SHAPES)
-            self.has_particle_collision = bool(value & ShapeFlags.COLLIDE_PARTICLES)
-            self.is_site = bool(value & ShapeFlags.SITE)
+
+            # Check if SITE flag is being set
+            is_site_flag = bool(value & ShapeFlags.SITE)
+
+            if is_site_flag:
+                # Use mark_as_site() to enforce invariants
+                self.mark_as_site()
+                # Collision flags will be cleared by mark_as_site()
+            else:
+                self.is_site = False
+                self.has_shape_collision = bool(value & ShapeFlags.COLLIDE_SHAPES)
+                self.has_particle_collision = bool(value & ShapeFlags.COLLIDE_PARTICLES)
 
         def copy(self) -> ModelBuilder.ShapeConfig:
             return copy.copy(self)
@@ -2745,6 +2770,36 @@ class ModelBuilder:
             cfg = self.default_shape_cfg
         if scale is None:
             scale = (1.0, 1.0, 1.0)
+
+        # Validate site invariants
+        if cfg.is_site:
+            shape_key = key or f"shape_{self.shape_count}"
+
+            # Sites must not have collision enabled
+            if cfg.has_shape_collision or cfg.has_particle_collision:
+                raise ValueError(
+                    f"Site shape '{shape_key}' cannot have collision enabled. "
+                    f"Sites must be non-colliding reference points. "
+                    f"has_shape_collision={cfg.has_shape_collision}, "
+                    f"has_particle_collision={cfg.has_particle_collision}"
+                )
+
+            # Sites must have zero density (no mass contribution)
+            if cfg.density != 0.0:
+                raise ValueError(
+                    f"Site shape '{shape_key}' must have zero density. "
+                    f"Sites do not contribute to body mass. "
+                    f"Got density={cfg.density}"
+                )
+
+            # Sites must have collision group 0 (no collision filtering)
+            if cfg.collision_group != 0:
+                raise ValueError(
+                    f"Site shape '{shape_key}' must have collision_group=0. "
+                    f"Sites do not participate in collision detection. "
+                    f"Got collision_group={cfg.collision_group}"
+                )
+
         self.shape_body.append(body)
         shape = self.shape_count
         if cfg.has_shape_collision:
@@ -3227,11 +3282,8 @@ class ModelBuilder:
         """
         # Create config for non-colliding site
         cfg = self.default_shape_cfg.copy()
-        cfg.density = 0.0  # Sites don't contribute to mass
+        cfg.mark_as_site()  # Enforces all site invariants
         cfg.is_visible = visible
-        cfg.has_shape_collision = False
-        cfg.has_particle_collision = False
-        cfg.is_site = True
 
         return self.add_shape(
             body=body,
