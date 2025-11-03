@@ -17,7 +17,7 @@ import warp as wp
 
 from ..geometry import ParticleFlags
 from ..sim import Contacts, Control, Model, State
-from .solver_data import SolverData
+from .solver_data import CustomDataField, SolverData
 
 
 @wp.kernel
@@ -295,17 +295,35 @@ class SolverBase:
         """
         pass
 
-    def get_data_fields(self) -> dict[str, int]:
+    def get_generic_data_fields(self) -> dict[str, int]:
         """Return the data fields that can be requested from the solver, along with their size.
         Returns:
             The data fields supported by the solver, with their sizes.
 
-        In solvers that do not support the SolverData interface, `get_data_fields()` raises NotImplementedError()
+        In solvers that do not support the SolverData interface, `get_generic_data_fields()` raises NotImplementedError()
         """
         raise NotImplementedError()
 
+    def get_custom_data_fields(self) -> list[CustomDataField]:
+        """Return the list of custom data fields defined by the solver.
+
+        Returns:
+            The custom data fields supported by the solver.
+
+        In solvers that do not support the SolverData interface, `get_custom_data_fields()` raises NotImplementedError()
+        """
+        raise NotImplementedError()
+
+    @property
+    def data_fields(self):
+        """Get the names of all supported data fields, or None if not supported."""
+        try:
+            return [*self.get_generic_data_fields(), *self.get_custom_data_fields()]
+        except NotImplementedError:
+            return None
+
     def require_data(self, *fields: str) -> None:
-        """Require the solver to provide data fields `fields` (which must be listed in `get_data_fields()`).
+        """Require the solver to provide data fields `fields` (which must be listed in `data_fields`).
 
         Triggers allocation of the required buffers and ensures that the field data is made available during `step()`.
 
@@ -318,7 +336,9 @@ class SolverBase:
         """
         if self.data is None:  # Created on first require_data()
             # TODO: non verbose
-            self.data = SolverData(self.model, data_fields=self.get_data_fields(), verbose=True)
+            self.data = SolverData(
+                self.model, self.get_generic_data_fields(), self.get_custom_data_fields(), verbose=True
+            )
         self.data._require_fields(dict.fromkeys(fields, True))
 
     def update_contacts(self, contacts: Contacts) -> None:

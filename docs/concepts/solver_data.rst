@@ -11,12 +11,14 @@ that are of interest for sensors, learning frameworks, or debugging. The ``Solve
 for solvers to provide such simulation data, which may include accelerations, contact forces, constraint forces. Fields are organized by frequency
 (``body_``, ``shape_``, ``joint_``, ``contact_``, etc.).
 
-SolverData defines *generic* fields, which are specified in the SolverData class. It also supports *solver-specific* fields, which can
-be registered through ``register_custom_field()``, enabling solvers to expose additional data that is not part of the generic SolverData API.
+SolverData defines *generic* fields, which are specified in the ``SolverData`` class, and also supports *solver-specific* custom fields. Solvers
+surface supported fields via two methods on ``SolverBase``:
 
-Solvers providing extra data implement ``get_data_fields()``, which returns the names of the data fields supported by the solver. These fields
-can be requested via ``require_data()``, triggering their allocation. After the solver step, the data can be read from the attributes on ``Solver.data``.
+- ``get_generic_data_fields() -> dict[str, int]``: Declares the generic fields supported by the solver and their sizes.
+- ``get_custom_data_fields() -> list[CustomDataField]``: Declares solver-defined fields that are not part of the generic API.
 
+Use the ``SolverBase.data_fields`` property to enumerate all supported field names. These fields can be requested via ``require_data()``, triggering
+their allocation. After the solver step, the data can be read from the attributes on ``Solver.data``.
 For generic fields, all coordinate frames and transformations follow the :ref:`Twist conventions in Newton <Twist conventions>`, where applicable.
 
 
@@ -43,7 +45,7 @@ Methods
 
 .. py:method:: require_data(*fields: str) -> None
 
-   Require the solver to provide specified data fields. Fields must be listed in ``get_data_fields()``.
+   Require the solver to provide specified data fields. Fields must be listed in ``SolverBase.data_fields``.
 
    :param fields: Variable number of field names to require
    :raises TypeError: If a requested field is not supported by the solver
@@ -57,21 +59,6 @@ Methods
    :param active: Whether to activate (True) or deactivate (False) the fields
    :raises RuntimeError: If fields have not been required before activation/deactivation
 
-.. py:method:: register_custom_field(field_name: str, field_frequency: str, field_type: type) -> None
-
-   Register a custom solver-specific field. Intended to be called by solver implementations.
-
-   :param field_name: Name of the custom field
-   :param field_frequency: Frequency prefix for the field
-   :param field_type: Data type of the field
-
-.. py:method:: get_attribute_frequency(name: str) -> str
-
-   Get the frequency of an attribute based on its name prefix.
-
-   :param name: Name of the attribute
-   :return: The frequency of the attribute
-   :raises AttributeError: If the attribute frequency is not known
 
 Properties
 ~~~~~~~~~~
@@ -90,32 +77,46 @@ Solver Requirements
 
 Solvers supporting the SolverData interface must:
 
-1. Implement ``get_data_fields()`` to return supported fields and their sizes
-2. Populate required and activated fields during ``step()``
+1. Implement ``get_generic_data_fields()`` to return supported generic fields and their sizes
+2. Implement ``get_custom_data_fields()`` to return supported custom fields as ``CustomDataField`` entries
+3. Populate required and activated fields (as provided in ``data.required_fields``) during ``step()``
 
 Example Solver Integration
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 .. code-block:: python
 
+    import warp as wp
+    from newton.solvers.solver_data import CustomDataField
+
     class MySolver(SolverBase):
-        def get_data_fields(self) -> dict[str, int]:
-            """Return supported data fields and their sizes."""
+        def get_generic_data_fields(self) -> dict[str, int]:
+            """Return supported generic data fields and their sizes."""
             return {
                 "body_acceleration": self.model.body_count,
                 "contact_force_scalar": self.max_contacts,
-                # ... other supported fields
+                # ... other generic fields
             }
+
+        def get_custom_data_fields(self) -> list[CustomDataField]:
+            """Return solver-specific fields that are not part of the generic API."""
+            return [
+                CustomDataField(
+                    name="body_my_metric",
+                    frequency="body",
+                    field_type=wp.array(dtype=float),
+                    size=self.model.body_count,
+                    namespace="my_solver",
+                )
+            ]
 
         def step(self, state_in, state_out, control, contacts, dt):
             # Perform simulation step
             # ...
 
             # Populate required fields
-            if self.data and "body_acceleration" in self.data.required_fields:
-                if self.data.required_fields["body_acceleration"]:
-                    # Compute and store body accelerations
-                    compute_accelerations(self.data.body_acceleration)
+            if self.data and self.data.required_fields.get("body_acceleration", False):
+                compute_accelerations(self.data.body_acceleration)
 
 Field Reference
 ---------------
@@ -155,5 +156,6 @@ See Also
 --------
 
 - :class:`newton.SolverBase` - Base class for all solvers
+- ``SolverBase.data_fields`` - Property exposing all supported field names
 - :ref:`Twist conventions` - Coordinate frame and transformation conventions
 - ``newton/examples/example_solver_data.py`` - Example usage of SolverData

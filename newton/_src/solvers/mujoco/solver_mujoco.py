@@ -2857,17 +2857,21 @@ class SolverMuJoCo(SolverBase):
                 )
 
     @override
-    def get_data_fields(self) -> dict[str:int]:
-        """Return the data fields that can be requested from the solver, along with their size.
-        Returns:
-            The data fields supported by the solver, with their sizes.
-        """
+    def get_generic_data_fields(self):
         if self.use_mujoco_cpu:
-            raise NotImplementedError
+            # Currently not supported
+            return {}
         return {
             "body_acceleration": self.model.body_count,
             "body_parent_joint_force": self.model.body_count,
         }
+
+    @override
+    def get_custom_data_fields(self):
+        if self.use_mujoco_cpu:
+            # Currently not supported
+            return []
+        return []
 
     def data_prepare_for_step(self):
         """Preparations for required data fields to be computed on step()."""

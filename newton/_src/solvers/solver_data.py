@@ -14,6 +14,7 @@
 # limitations under the License.
 
 import typing
+from dataclasses import dataclass
 
 import warp as wp
 from warp.types import matrix
@@ -23,6 +24,15 @@ from ..sim import Model
 
 class mat32(matrix(shape=(3, 2), dtype=wp.float32)):
     pass
+
+
+@dataclass
+class CustomDataField:
+    name: str
+    frequency: str
+    field_type: type
+    size: int
+    namespace: str
 
 
 class SolverData:
@@ -37,19 +47,16 @@ class SolverData:
     See :ref:`SolverDataFields` in the documentation for detailed usage and field reference.
     """
 
-    solver_fields: dict[str, int]
+    generic_fields: dict[str, int]
     """Fields supported by the solver."""
-
-    custom_fields: dict[str, str]
-    """Solver-defined field names, mapping to frequency."""
-
-    required_fields: dict[str, bool]
-    """Fields that have been marked as required, mapping each field name to a bool
-    indicating whether it is active."""
-
+    custom_fields: dict[str, CustomDataField]
+    """Solver-defined field names, mapping to field type."""
     frequency_sizes: dict[str, int | None]
     """Mapping from frequency prefix to the count/size for that frequency.
     Runtime-determined frequencies (e.g., 'contact') are added on first use."""
+    required_fields: dict[str, bool]
+    """Fields that have been marked as required, mapping each field name to a bool
+    indicating whether it is active."""
 
     body_acceleration: wp.array(dtype=wp.spatial_vector)
     """Linear and angular acceleration of the body (COM-referenced) in world frame."""
@@ -67,14 +74,19 @@ class SolverData:
     """Unit vectors z and x defining the contact frame in world frame, where z and x define the
     normal and first tangent directions, respectively. The second tangent is cross(z, x)."""
 
-    def __init__(self, model: Model, data_fields: dict[str, int], verbose: bool | None = None):
+    def __init__(
+        self,
+        model: Model,
+        generic_fields: dict[str, int],
+        custom_fields: list[CustomDataField],
+        verbose: bool | None = None,
+    ):
         self.verbose = verbose if verbose is not None else wp.config.verbose
 
         self.model = model
-        self.custom_fields = {}
+        self.generic_fields = generic_fields
+        self.custom_fields = {f.name: f for f in custom_fields}
         self.required_fields = {}
-        self.solver_fields = data_fields
-
         # Initialize frequency sizes with known model-based frequencies
         self.frequency_sizes = {
             "body": model.body_count,
@@ -86,23 +98,51 @@ class SolverData:
             "contact": None,
         }
 
+        for field_name in generic_fields:
+            if typing.get_type_hints(self).get(field_name) is None:
+                breakpoint()
+                raise TypeError(
+                    f'Unknown generic SolverData field "{field_name}" defined by {self.__class__.__name__}.'
+                )
+
         # Verify known & extract unknown frequencies from solver
+        self._update_frequency_sizes(generic_fields)
+
+        self._register_custom_fields(custom_fields)
+
+    def _update_frequency_sizes(self, data_fields):
         for field_name, field_size in data_fields.items():
             frequency = self.find_attribute_frequency(field_name)
             # For unknown frequencies (like 'contact'), set size from first occurrence
-            if frequency not in self.frequency_sizes:
+            expected_size = self.frequency_sizes.get(frequency, None)
+            if expected_size is None:
                 self.frequency_sizes[frequency] = field_size
                 if self.verbose:
                     print(f"Setting frequency size from solver data fields: {frequency} = {field_size}")
-            elif field_size != self.frequency_sizes[frequency]:
+            elif field_size != expected_size:
                 raise ValueError(
                     f"Solver field '{field_name}' size {field_size} does not match "
                     f"expected {frequency} size {self.frequency_sizes[frequency]}"
                 )
 
+    def _register_custom_fields(self, data_fields: list[CustomDataField]):
+        # Register sizes/types from list of CustomDataField
+        for f in data_fields:
+            if not f.name.startswith(f.frequency + "_"):
+                raise ValueError("Custom field name must be prefixed with frequency.")
+            # Ensure frequency entry exists
+            if f.frequency not in self.frequency_sizes:
+                self.frequency_sizes[f.frequency] = None
+            # Update frequency sizes based on declared field size
+            self._update_frequency_sizes({f.name: f.size})
+            # Persist on self.custom_fields
+            self.custom_fields[f.name] = f
+            if self.verbose:
+                print(f"Registering custom field {f.name}")
+
     def _require_fields(self, fields: dict[str, bool]):
         """If not allocated, allocate and zero-initialize fields"""
-        if missing_fields := set(fields).difference(self.solver_fields):
+        if missing_fields := set(fields).difference(self.supported_fields):
             raise TypeError(
                 f"Solver {self.__class__.__name__} does not support required data fields: {list(missing_fields)}"
             )
@@ -110,20 +150,22 @@ class SolverData:
         for field in fields:
             if hasattr(self, field):
                 continue
-            frequency = self.find_attribute_frequency(field)
-            field_size = self.frequency_sizes[frequency]
-
+            field_size = self.frequency_sizes[self.find_attribute_frequency(field)]
             if self.verbose:
                 print(f"Initializing SolverData field {field} with size {field_size}")
 
-            hint = typing.get_type_hints(self).get(field)
-            if hint is None:
-                raise TypeError(f"SolverData field {field} is not defined.")
-
-            if isinstance(hint, wp.array):
-                setattr(self, field, wp.zeros(field_size, dtype=hint.dtype, device=self.device))
+            if field in self.custom_fields:
+                field_type = self.custom_fields[field].field_type
             else:
-                raise NotImplementedError(f"Field {field} has unimplemented type {hint}")
+                field_type = typing.get_type_hints(self).get(field)
+                if field_type is None:
+                    raise TypeError(f"Generic SolverData field {field} is not defined.")
+
+            if isinstance(field_type, wp.array):
+                setattr(self, field, wp.zeros(field_size, dtype=field_type.dtype, device=self.device))
+            else:
+                raise NotImplementedError(f"Field {field} has unimplemented type {field_type}")
+
         self.required_fields.update(fields)
 
     def set_field_active(self, *fields, active=True):
@@ -131,11 +173,6 @@ class SolverData:
         if missing := set(fields).difference(self.required_fields):
             raise RuntimeError(f"Fields {missing} must be required before they can be (de-)activated.")
         self.required_fields.update(dict.fromkeys(fields, active))
-
-    def register_custom_field(self, field_name: str, field_frequency: str, field_type: type) -> None:
-        """Register a custom solver-specific field."""
-        pass
-        # TODO: implement
 
     def find_attribute_frequency(self, name: str):
         """
@@ -162,3 +199,7 @@ class SolverData:
     def device(self) -> wp.context.Device:
         """Device used by the solver."""
         return self.model.device
+
+    @property
+    def supported_fields(self):
+        return [*self.generic_fields, *self.custom_fields]
