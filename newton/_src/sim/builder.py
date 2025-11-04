@@ -57,7 +57,6 @@ from ..geometry.utils import RemeshingMethod, compute_inertia_obb, remesh_mesh
 from ..utils import compute_world_offsets
 from .graph_coloring import ColoringAlgorithm, color_trimesh, combine_independent_particle_coloring
 from .joints import (
-    ActuatorType,
     EqType,
     JointType,
     get_joint_dof_count,
@@ -417,9 +416,6 @@ class ModelBuilder:
         self.joint_q = []
         self.joint_qd = []
         self.joint_f = []
-        self.joint_f_total = []
-        self.joint_gear_ratio = []
-        self.joint_actuator_type = []
         self.joint_type = []
         self.joint_key = []
         self.joint_armature = []
@@ -1085,9 +1081,6 @@ class ModelBuilder:
             "joint_key",
             "joint_qd",
             "joint_f",
-            "joint_f_total",
-            "joint_gear_ratio",
-            "joint_actuator_type",
             "joint_target_pos",
             "joint_target_vel",
             "joint_limit_lower",
@@ -1331,9 +1324,6 @@ class ModelBuilder:
         for _ in range(dof_count):
             self.joint_qd.append(0.0)
             self.joint_f.append(0.0)
-            self.joint_f_total.append(0.0)
-            self.joint_gear_ratio.append(1.0)
-            self.joint_actuator_type.append(ActuatorType.PD)
 
         if joint_type == JointType.FREE or joint_type == JointType.DISTANCE or joint_type == JointType.BALL:
             # ensure that a valid quaternion is used for the angular dofs
@@ -2111,8 +2101,6 @@ class ModelBuilder:
                         "target_pos": self.joint_target_pos[j],
                         "target_vel": self.joint_target_vel[j],
                         "effort_limit": self.joint_effort_limit[j],
-                        "gear_ratio": self.joint_gear_ratio[j],
-                        "actuator_type": self.joint_actuator_type[j],
                     }
                 )
 
@@ -2330,8 +2318,6 @@ class ModelBuilder:
                 self.joint_target_pos.append(axis["target_pos"])
                 self.joint_target_vel.append(axis["target_vel"])
                 self.joint_effort_limit.append(axis["effort_limit"])
-                self.joint_gear_ratio.append(axis["gear_ratio"])
-                self.joint_actuator_type.append(axis["actuator_type"])
 
         return {
             "body_remap": body_remap,
@@ -4376,9 +4362,6 @@ class ModelBuilder:
             m.joint_target_pos = wp.array(self.joint_target_pos, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_target_vel = wp.array(self.joint_target_vel, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_f = wp.array(self.joint_f, dtype=wp.float32, requires_grad=requires_grad)
-            m.joint_f_total = wp.array(self.joint_f_total, dtype=wp.float32, requires_grad=requires_grad)
-            m.joint_gear_ratio = wp.array(self.joint_gear_ratio, dtype=wp.float32, requires_grad=requires_grad)
-            m.joint_actuator_type = wp.array(self.joint_actuator_type, dtype=wp.int32, requires_grad=requires_grad)
             m.joint_effort_limit = wp.array(self.joint_effort_limit, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_velocity_limit = wp.array(self.joint_velocity_limit, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_friction = wp.array(self.joint_friction, dtype=wp.float32, requires_grad=requires_grad)
@@ -4462,9 +4445,6 @@ class ModelBuilder:
                 device=device,
                 requires_grad=requires_grad,
             )
-
-            m.initialize_actuators(requires_grad=requires_grad)
-
             return m
 
     def find_shape_contact_pairs(self, model: Model):

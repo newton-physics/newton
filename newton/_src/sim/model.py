@@ -22,8 +22,7 @@ import warp as wp
 
 from ..core.types import Devicelike
 from .contacts import Contacts
-from .control import Control, PDActuator, Actuator
-from .joints import ActuatorType
+from .control import Control
 from .state import State
 
 
@@ -229,12 +228,6 @@ class Model:
         """Generalized joint velocities for state initialization, shape [joint_dof_count], float."""
         self.joint_f = None
         """Generalized joint forces for state initialization, shape [joint_dof_count], float."""
-        self.joint_f_total = None
-        """Generalized joint total forces, shape [joint_dof_count], float."""
-        self.joint_gear_ratio = None
-        """Generalized joint gear ratio, shape [joint_dof_count], float."""
-        self.joint_actuator_type = None
-        """Generalized joint actuator type, shape [joint_dof_count], int."""
         self.joint_target_pos = None
         """Generalized joint position targets, shape [joint_dof_count], float."""
         self.joint_target_vel = None
@@ -418,9 +411,6 @@ class Model:
         # attributes per joint dof
         self.attribute_frequency["joint_qd"] = "joint_dof"
         self.attribute_frequency["joint_f"] = "joint_dof"
-        self.attribute_frequency["joint_f_total"] = "joint_dof"
-        self.attribute_frequency["joint_gear_ratio"] = "joint_dof"
-        self.attribute_frequency["joint_actuator_type"] = "joint_dof"
         self.attribute_frequency["joint_armature"] = "joint_dof"
         self.attribute_frequency["joint_axis"] = "joint_dof"
         self.attribute_frequency["joint_target_ke"] = "joint_dof"
@@ -510,7 +500,6 @@ class Model:
                 c.joint_target_pos = wp.clone(self.joint_target_pos, requires_grad=requires_grad)
                 c.joint_target_vel = wp.clone(self.joint_target_vel, requires_grad=requires_grad)
                 c.joint_f = wp.clone(self.joint_f, requires_grad=requires_grad)
-                c.joint_f_total = wp.clone(self.joint_f_total, requires_grad=requires_grad)
             if self.tri_count:
                 c.tri_activations = wp.clone(self.tri_activations, requires_grad=requires_grad)
             if self.tet_count:
@@ -521,7 +510,6 @@ class Model:
             c.joint_target_pos = self.joint_target_pos
             c.joint_target_vel = self.joint_target_vel
             c.joint_f = self.joint_f
-            c.joint_f_total = self.joint_f_total
             c.tri_activations = self.tri_activations
             c.tet_activations = self.tet_activations
             c.muscle_activations = self.muscle_activations
@@ -549,37 +537,6 @@ class Model:
             self.gravity.assign([wp.vec3(gravity[0], gravity[1], gravity[2])])
         else:
             self.gravity.assign([gravity])
-
-    def initialize_actuators(self, requires_grad: bool | None = None) -> None:
-        """Initialize actuators based on joint configuration."""
-        if requires_grad is None:
-            requires_grad = self.requires_grad
-
-        self.actuators.clear()
-
-        if self.joint_count > 0:
-            joint_gear_ratio_numpy = self.joint_gear_ratio.numpy()
-            joint_actuator_type_numpy = self.joint_actuator_type.numpy()
-
-            actuator_type_to_dofs = {}
-            for dof_idx in range(self.joint_dof_count):
-                actuator_type = int(joint_actuator_type_numpy[dof_idx])
-                if actuator_type not in actuator_type_to_dofs:
-                    actuator_type_to_dofs[actuator_type] = []
-                actuator_type_to_dofs[actuator_type].append(dof_idx)
-
-            for actuator_type, dof_indices in actuator_type_to_dofs.items():
-                if actuator_type == ActuatorType.PD:
-                    actuator = PDActuator()
-
-                    gear_array = np.zeros(self.joint_dof_count, dtype=np.float32)
-                    for dof_idx in dof_indices:
-                        gear_array[dof_idx] = joint_gear_ratio_numpy[dof_idx]
-
-                    actuator.gear_ratio = wp.array(
-                        gear_array, dtype=wp.float32, device=self.device, requires_grad=requires_grad
-                    )
-                    self.actuators.append(actuator)
 
     def collide(
         self: Model,
