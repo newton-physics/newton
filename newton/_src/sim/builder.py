@@ -500,14 +500,16 @@ class ModelBuilder:
 
             .. doctest::
 
-                builder = ModelBuilder()
+                builder = newton.ModelBuilder()
                 builder.add_custom_attribute(
-                    name="my_attribute",
-                    frequency=ModelAttributeFrequency.BODY,
-                    dtype=wp.float32,
-                    default=20.0,
-                    assignment=ModelAttributeAssignment.MODEL,
-                    namespace="my_namespace",
+                    newton.CustomAttribute(
+                        name="my_attribute",
+                        frequency=newton.ModelAttributeFrequency.BODY,
+                        dtype=wp.float32,
+                        default=20.0,
+                        assignment=newton.ModelAttributeAssignment.MODEL,
+                        namespace="my_namespace",
+                    )
                 )
                 builder.add_body(custom_attributes={"my_namespace:my_attribute": 30.0})
                 builder.add_body()  # we leave out the custom_attributes, so the attribute will use the default value 20.0

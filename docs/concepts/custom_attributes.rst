@@ -45,58 +45,68 @@ The following example demonstrates declaring attributes with and without namespa
 
 .. testcode::
 
-   from newton import ModelBuilder, ModelAttributeFrequency, ModelAttributeAssignment
+   from newton import CustomAttribute, ModelBuilder, ModelAttributeFrequency, ModelAttributeAssignment
    import warp as wp
    
    builder = ModelBuilder()
    
    # Default namespace attributes - added directly to assignment objects
    builder.add_custom_attribute(
-       name="temperature",
-       frequency=ModelAttributeFrequency.BODY,
-       dtype=wp.float32,
-       default=20.0,  # Explicit default value
-       assignment=ModelAttributeAssignment.MODEL
+       CustomAttribute(
+           name="temperature",
+           frequency=ModelAttributeFrequency.BODY,
+           dtype=wp.float32,
+           default=20.0,  # Explicit default value
+           assignment=ModelAttributeAssignment.MODEL
+       )
    )
    # → Accessible as: model.temperature
    
    builder.add_custom_attribute(
-       name="velocity_limit",
-       frequency=ModelAttributeFrequency.BODY,
-       dtype=wp.vec3,
-       default=(1.0, 1.0, 1.0),  # Default vector value
-       assignment=ModelAttributeAssignment.STATE
+       CustomAttribute(
+           name="velocity_limit",
+           frequency=ModelAttributeFrequency.BODY,
+           dtype=wp.vec3,
+           default=(1.0, 1.0, 1.0),  # Default vector value
+           assignment=ModelAttributeAssignment.STATE
+       )
    )
    # → Accessible as: state.velocity_limit
    
    # Namespaced attributes - organized under namespace containers
    builder.add_custom_attribute(
-       name="float_attr",
-       frequency=ModelAttributeFrequency.BODY,
-       dtype=wp.float32,
-       default=0.5,
-       assignment=ModelAttributeAssignment.MODEL,
-       namespace="namespace_a"
+       CustomAttribute(
+           name="float_attr",
+           frequency=ModelAttributeFrequency.BODY,
+           dtype=wp.float32,
+           default=0.5,
+           assignment=ModelAttributeAssignment.MODEL,
+           namespace="namespace_a"
+       )
    )
    # → Accessible as: model.namespace_a.float_attr
    
    builder.add_custom_attribute(
-       name="bool_attr",
-       frequency=ModelAttributeFrequency.SHAPE,
-       dtype=wp.bool,
-       default=False,
-       assignment=ModelAttributeAssignment.MODEL,
-       namespace="namespace_a"
+       CustomAttribute(
+           name="bool_attr",
+           frequency=ModelAttributeFrequency.SHAPE,
+           dtype=wp.bool,
+           default=False,
+           assignment=ModelAttributeAssignment.MODEL,
+           namespace="namespace_a"
+       )
    )
    # → Accessible as: model.namespace_a.bool_attr
    
    # Articulation frequency attributes - one value per articulation
    builder.add_custom_attribute(
-       name="articulation_stiffness",
-       frequency=ModelAttributeFrequency.ARTICULATION,
-       dtype=wp.float32,
-       default=100.0,
-       assignment=ModelAttributeAssignment.MODEL
+       CustomAttribute(
+           name="articulation_stiffness",
+            frequency=ModelAttributeFrequency.ARTICULATION,
+            dtype=wp.float32,
+            default=100.0,
+            assignment=ModelAttributeAssignment.MODEL
+       )
    )
    # → Accessible as: model.articulation_stiffness
 
@@ -189,19 +199,25 @@ The following example demonstrates declaring and authoring attributes for each j
 
    # Declare joint attributes with different frequencies
    builder.add_custom_attribute(
-       "int_attr",
-       ModelAttributeFrequency.JOINT,
-       dtype=wp.int32
+       CustomAttribute(
+           name="int_attr",
+           frequency=ModelAttributeFrequency.JOINT,
+           dtype=wp.int32
+       )
    )
    builder.add_custom_attribute(
-       "float_attr_dof",
-       ModelAttributeFrequency.JOINT_DOF,
-       dtype=wp.float32
+       CustomAttribute(
+           name="float_attr_dof",
+           frequency=ModelAttributeFrequency.JOINT_DOF,
+           dtype=wp.float32
+       )
    )
    builder.add_custom_attribute(
-       "float_attr_coord",
-       ModelAttributeFrequency.JOINT_COORD,
-       dtype=wp.float32
+       CustomAttribute(
+           name="float_attr_coord",
+           frequency=ModelAttributeFrequency.JOINT_COORD,
+           dtype=wp.float32
+       )
    )
    
    # Create a D6 joint with 2 DOFs (1 linear + 1 angular) and 2 coordinates
