@@ -136,8 +136,10 @@ __all__ += [
 # run benchmark
 # ==================================================================================
 
-from ._src.utils.benchmark import run_benchmark  # noqa: E402
+from ._src.utils.benchmark import EventTracer, event_scope, run_benchmark  # noqa: E402
 
 __all__ += [
+    "EventTracer",
+    "event_scope",
     "run_benchmark",
 ]

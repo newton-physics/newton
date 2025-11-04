@@ -154,6 +154,7 @@ def parse_usd(
         density: float = builder.default_shape_cfg.density
 
     # load joint defaults
+    default_joint_friction = builder.default_joint_cfg.friction
     default_joint_limit_ke = builder.default_joint_cfg.limit_ke
     default_joint_limit_kd = builder.default_joint_cfg.limit_kd
     default_joint_armature = builder.default_joint_cfg.armature
@@ -394,7 +395,7 @@ def parse_usd(
                         print("Warning: Non-uniform extents of spheres are not supported.")
                     radius = extents[0]
                 else:
-                    radius = parse_float(prim, "radius", 1.0) * scale[0]
+                    radius = parse_float(prim, "radius", 1.0) * max(scale)
                 shape_id = builder.add_shape_sphere(
                     parent_body_id,
                     xform,
@@ -598,7 +599,9 @@ def parse_usd(
         joint_armature = R.get_value(
             joint_prim, prim_type=PrimType.JOINT, key="armature", default=default_joint_armature
         )
-        joint_friction = R.get_value(joint_prim, prim_type=PrimType.JOINT, key="friction", default=0.0)
+        joint_friction = R.get_value(
+            joint_prim, prim_type=PrimType.JOINT, key="friction", default=default_joint_friction
+        )
 
         # Extract custom attributes for this joint
         joint_custom_attrs = R.get_custom_attributes_for_prim(joint_prim, ModelAttributeFrequency.JOINT)
@@ -1403,7 +1406,7 @@ def parse_usd(
                 elif key == UsdPhysics.ObjectType.SphereShape:
                     shape_id = builder.add_shape_sphere(
                         **shape_params,
-                        radius=shape_spec.radius * scale[0],
+                        radius=shape_spec.radius,
                     )
                 elif key == UsdPhysics.ObjectType.CapsuleShape:
                     # Apply axis rotation to transform
@@ -1413,8 +1416,8 @@ def parse_usd(
                     )
                     shape_id = builder.add_shape_capsule(
                         **shape_params,
-                        radius=shape_spec.radius * scale[(int(shape_spec.axis) + 1) % 3],
-                        half_height=shape_spec.halfHeight * scale[int(shape_spec.axis)],
+                        radius=shape_spec.radius,
+                        half_height=shape_spec.halfHeight,
                     )
                 elif key == UsdPhysics.ObjectType.CylinderShape:
                     # Apply axis rotation to transform
@@ -1424,8 +1427,8 @@ def parse_usd(
                     )
                     shape_id = builder.add_shape_cylinder(
                         **shape_params,
-                        radius=shape_spec.radius * scale[(int(shape_spec.axis) + 1) % 3],
-                        half_height=shape_spec.halfHeight * scale[int(shape_spec.axis)],
+                        radius=shape_spec.radius,
+                        half_height=shape_spec.halfHeight,
                     )
                 elif key == UsdPhysics.ObjectType.ConeShape:
                     # Apply axis rotation to transform
@@ -1435,8 +1438,8 @@ def parse_usd(
                     )
                     shape_id = builder.add_shape_cone(
                         **shape_params,
-                        radius=shape_spec.radius * scale[(int(shape_spec.axis) + 1) % 3],
-                        half_height=shape_spec.halfHeight * scale[int(shape_spec.axis)],
+                        radius=shape_spec.radius,
+                        half_height=shape_spec.halfHeight,
                     )
                 elif key == UsdPhysics.ObjectType.MeshShape:
                     mesh = UsdGeom.Mesh(prim)

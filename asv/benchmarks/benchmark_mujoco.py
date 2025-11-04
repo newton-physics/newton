@@ -14,16 +14,11 @@
 # limitations under the License.
 
 ###########################################################################
-# Example using MuJoCo solver
+# Used for benchmarking MjWarp.
 #
 # This script allows us to choose between several predefined robots and
 # provides a large range of customizable options.
-# The simulation runs with MuJoCo solver.
 #
-# Future improvements:
-# - Add options to run with a pre-trained policy
-# - Add the Anymal world
-# - Fix the use-mujoco-cpu option (currently crashes)
 ###########################################################################
 
 
@@ -37,6 +32,7 @@ wp.config.enable_backward = False
 import newton
 import newton.examples
 import newton.utils
+from newton.utils import EventTracer
 
 ROBOT_CONFIGS = {
     "humanoid": {
@@ -460,12 +456,31 @@ class Example:
         )
 
 
+def print_trace(trace, indent, steps):
+    if indent == 0:
+        print("================= Profiling =================")
+    for k, v in trace.items():
+        times, sub_trace = v
+        print("  " * indent + f"{k}: {times / steps:.4f}")
+        print_trace(sub_trace, indent + 1, steps)
+    if indent == 0:
+        step_time = trace["step"][0]
+        mujoco_warp_step_time = trace["step"][1]["mujoco_warp_step"][0]
+        overhead = 100.0 * (step_time - mujoco_warp_step_time) / step_time
+        print("---------------------------------------------")
+        print(f"Newton overhead:\t{overhead:.2f} %")
+        print("=============================================")
+
+
 if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument("--robot", type=str, default="humanoid", help="Name of the robot to simulate.")
     parser.add_argument("--env", type=str, default="None", help="Name of the environment where the robot is located.")
+    parser.add_argument(
+        "--event-trace", default=False, action=argparse.BooleanOptionalAction, help="Print profiling information."
+    )
     parser.add_argument("--device", type=str, default=None, help="Override the default Warp device.")
     parser.add_argument(
         "--stage-path",
@@ -518,78 +533,85 @@ if __name__ == "__main__":
         args.use_mujoco_cpu = False
         print("The option ``use-mujoco-cpu`` is not yet supported. Disabling it.")
 
-    with wp.ScopedDevice(args.device):
-        example = Example(
-            robot=args.robot,
-            environment=args.env,
-            stage_path=args.stage_path,
-            num_worlds=args.num_worlds,
-            use_cuda_graph=args.use_cuda_graph,
-            use_mujoco_cpu=args.use_mujoco_cpu,
-            randomize=args.random_init,
-            headless=args.headless,
-            actuation=args.actuation,
-            solver=args.solver,
-            integrator=args.integrator,
-            solver_iteration=args.solver_iteration,
-            ls_iteration=args.ls_iteration,
-            njmax=args.njmax,
-            nconmax=args.nconmax,
-            ls_parallel=args.ls_parallel,
-            cone=args.cone,
-        )
+    trace = {}
+    with EventTracer(enabled=args.event_trace) as tracer:
+        with wp.ScopedDevice(args.device):
+            example = Example(
+                robot=args.robot,
+                environment=args.env,
+                stage_path=args.stage_path,
+                num_worlds=args.num_worlds,
+                use_cuda_graph=args.use_cuda_graph,
+                use_mujoco_cpu=args.use_mujoco_cpu,
+                randomize=args.random_init,
+                headless=args.headless,
+                actuation=args.actuation,
+                solver=args.solver,
+                integrator=args.integrator,
+                solver_iteration=args.solver_iteration,
+                ls_iteration=args.ls_iteration,
+                njmax=args.njmax,
+                nconmax=args.nconmax,
+                ls_parallel=args.ls_parallel,
+                cone=args.cone,
+            )
 
-        # Print simulation configuration summary
-        LABEL_WIDTH = 25
-        TOTAL_WIDTH = 45
-        title = " Simulation Configuration "
-        print(f"\n{title.center(TOTAL_WIDTH, '=')}")
-        print(f"{'Simulation Steps':<{LABEL_WIDTH}}: {args.num_frames * example.sim_substeps}")
-        print(f"{'World Count':<{LABEL_WIDTH}}: {args.num_worlds}")
-        print(f"{'Robot Type':<{LABEL_WIDTH}}: {args.robot}")
-        print(f"{'Timestep (dt)':<{LABEL_WIDTH}}: {example.sim_dt:.6f}s")
-        print(f"{'Randomize Initial Pose':<{LABEL_WIDTH}}: {args.random_init!s}")
-        print("-" * TOTAL_WIDTH)
+            # Print simulation configuration summary
+            LABEL_WIDTH = 25
+            TOTAL_WIDTH = 45
+            title = " Simulation Configuration "
+            print(f"\n{title.center(TOTAL_WIDTH, '=')}")
+            print(f"{'Simulation Steps':<{LABEL_WIDTH}}: {args.num_frames * example.sim_substeps}")
+            print(f"{'World Count':<{LABEL_WIDTH}}: {args.num_worlds}")
+            print(f"{'Robot Type':<{LABEL_WIDTH}}: {args.robot}")
+            print(f"{'Timestep (dt)':<{LABEL_WIDTH}}: {example.sim_dt:.6f}s")
+            print(f"{'Randomize Initial Pose':<{LABEL_WIDTH}}: {args.random_init!s}")
+            print("-" * TOTAL_WIDTH)
 
-        # Map MuJoCo solver enum back to string
-        solver_value = example.solver.mj_model.opt.solver
-        solver_map = {0: "PGS", 1: "CG", 2: "Newton"}  # mjSOL_PGS = 0, mjSOL_CG = 1, mjSOL_NEWTON = 2
-        actual_solver = solver_map.get(solver_value, f"unknown({solver_value})")
-        # Map MuJoCo integrator enum back to string
-        integrator_map = {
-            0: "Euler",
-            1: "RK4",
-            2: "Implicit",
-            3: "Implicitfast",
-        }  # mjINT_EULER = 0, mjINT_RK4 = 1, mjINT_IMPLICIT = 2, mjINT_IMPLICITFAST = 3
-        actual_integrator = integrator_map.get(example.solver.mj_model.opt.integrator, "unknown")
-        # Map MuJoCo cone enum back to string
-        cone_value = example.solver.mj_model.opt.cone
-        cone_map = {0: "pyramidal", 1: "elliptic"}  # mjCONE_PYRAMIDAL = 0, mjCONE_ELLIPTIC = 1
-        actual_cone = cone_map.get(cone_value, f"unknown({cone_value})")
-        # Get actual max constraints and contacts from MuJoCo Warp data
-        actual_njmax = example.solver.mjw_data.njmax
-        actual_nconmax = (
-            example.solver.mjw_data.naconmax // args.num_worlds
-            if args.num_worlds > 0
-            else example.solver.mjw_data.naconmax
-        )
-        print(f"{'Solver':<{LABEL_WIDTH}}: {actual_solver}")
-        print(f"{'Integrator':<{LABEL_WIDTH}}: {actual_integrator}")
-        # print(f"{'Parallel Line Search':<{LABEL_WIDTH}}: {example.solver.mj_model.opt.ls_parallel}")
-        print(f"{'Cone':<{LABEL_WIDTH}}: {actual_cone}")
-        print(f"{'Solver Iterations':<{LABEL_WIDTH}}: {example.solver.mj_model.opt.iterations}")
-        print(f"{'Line Search Iterations':<{LABEL_WIDTH}}: {example.solver.mj_model.opt.ls_iterations}")
-        print(f"{'Max Constraints / world':<{LABEL_WIDTH}}: {actual_njmax}")
-        print(f"{'Max Contacts / world':<{LABEL_WIDTH}}: {actual_nconmax}")
-        print(f"{'Joint DOFs':<{LABEL_WIDTH}}: {example.model.joint_dof_count}")
-        print(f"{'Body Count':<{LABEL_WIDTH}}: {example.model.body_count}")
-        print("-" * TOTAL_WIDTH)
+            # Map MuJoCo solver enum back to string
+            solver_value = example.solver.mj_model.opt.solver
+            solver_map = {0: "PGS", 1: "CG", 2: "Newton"}  # mjSOL_PGS = 0, mjSOL_CG = 1, mjSOL_NEWTON = 2
+            actual_solver = solver_map.get(solver_value, f"unknown({solver_value})")
+            # Map MuJoCo integrator enum back to string
+            integrator_map = {
+                0: "Euler",
+                1: "RK4",
+                2: "Implicit",
+                3: "Implicitfast",
+            }  # mjINT_EULER = 0, mjINT_RK4 = 1, mjINT_IMPLICIT = 2, mjINT_IMPLICITFAST = 3
+            actual_integrator = integrator_map.get(example.solver.mj_model.opt.integrator, "unknown")
+            # Map MuJoCo cone enum back to string
+            cone_value = example.solver.mj_model.opt.cone
+            cone_map = {0: "pyramidal", 1: "elliptic"}  # mjCONE_PYRAMIDAL = 0, mjCONE_ELLIPTIC = 1
+            actual_cone = cone_map.get(cone_value, f"unknown({cone_value})")
+            # Get actual max constraints and contacts from MuJoCo Warp data
+            actual_njmax = example.solver.mjw_data.njmax
+            actual_nconmax = (
+                example.solver.mjw_data.naconmax // args.num_worlds
+                if args.num_worlds > 0
+                else example.solver.mjw_data.naconmax
+            )
+            print(f"{'Solver':<{LABEL_WIDTH}}: {actual_solver}")
+            print(f"{'Integrator':<{LABEL_WIDTH}}: {actual_integrator}")
+            # print(f"{'Parallel Line Search':<{LABEL_WIDTH}}: {example.solver.mj_model.opt.ls_parallel}")
+            print(f"{'Cone':<{LABEL_WIDTH}}: {actual_cone}")
+            print(f"{'Solver Iterations':<{LABEL_WIDTH}}: {example.solver.mj_model.opt.iterations}")
+            print(f"{'Line Search Iterations':<{LABEL_WIDTH}}: {example.solver.mj_model.opt.ls_iterations}")
+            print(f"{'Max Constraints / world':<{LABEL_WIDTH}}: {actual_njmax}")
+            print(f"{'Max Contacts / world':<{LABEL_WIDTH}}: {actual_nconmax}")
+            print(f"{'Joint DOFs':<{LABEL_WIDTH}}: {example.model.joint_dof_count}")
+            print(f"{'Body Count':<{LABEL_WIDTH}}: {example.model.body_count}")
+            print("-" * TOTAL_WIDTH)
 
-        print(f"{'Execution Device':<{LABEL_WIDTH}}: {wp.get_device()}")
-        print(f"{'Use CUDA Graph':<{LABEL_WIDTH}}: {example.use_cuda_graph!s}")
-        print("=" * TOTAL_WIDTH + "\n")
+            print(f"{'Execution Device':<{LABEL_WIDTH}}: {wp.get_device()}")
+            print(f"{'Use CUDA Graph':<{LABEL_WIDTH}}: {example.use_cuda_graph!s}")
+            print("=" * TOTAL_WIDTH + "\n")
 
-        for _ in range(args.num_frames):
-            example.step()
-            example.render()
+            for _ in range(args.num_frames):
+                example.step()
+                example.render()
+                if args.event_trace:
+                    trace = tracer.add_trace(trace, tracer.trace())
+
+    if args.event_trace:
+        print_trace(trace, 0, args.num_frames * example.sim_substeps)
