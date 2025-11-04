@@ -154,11 +154,36 @@ When entities don't explicitly specify custom attribute values, the default valu
 .. note::
    Uniqueness is determined by the full identifier (namespace + name):
      
-     - ``model.float_attr`` (key: ``"float_attr"``) and ``model.namespace_a.float_attr`` (key: ``"namespace_a:float_attr"``) can coexist
-     - ``model.float_attr`` (key: ``"float_attr"``) and ``state.namespace_a.float_attr`` (key: ``"namespace_a:float_attr"``) can coexist
-     - ``model.float_attr`` (key: ``"float_attr"``) and ``state.float_attr`` (key: ``"float_attr"``) cannot coexist - same key
-     - ``model.namespace_a.float_attr`` and ``state.namespace_a.float_attr`` cannot coexist - same key ``"namespace_a:float_attr"``
+   - ``model.float_attr`` (key: ``"float_attr"``) and ``model.namespace_a.float_attr`` (key: ``"namespace_a:float_attr"``) can coexist
+   - ``model.float_attr`` (key: ``"float_attr"``) and ``state.namespace_a.float_attr`` (key: ``"namespace_a:float_attr"``) can coexist
+   - ``model.float_attr`` (key: ``"float_attr"``) and ``state.float_attr`` (key: ``"float_attr"``) cannot coexist - same key
+   - ``model.namespace_a.float_attr`` and ``state.namespace_a.float_attr`` cannot coexist - same key ``"namespace_a:float_attr"``
    
+**Registering Custom Attributes for a Solver:**
+
+Before setting up the scene and loading assets, make sure to allow the solver you are using to register its custom attributes
+in the :class:`newton.ModelBuilder` via the :meth:`newton.solvers.SolverBase.register_custom_attributes` method.
+
+For example, to allow the MuJoCo solver to register its custom attributes, you can do:
+
+.. testcode::
+
+   from newton.solvers import SolverMuJoCo
+   builder_mujoco = ModelBuilder()
+   # first register the custom attributes for the MuJoCo solver
+   SolverMuJoCo.register_custom_attributes(builder_mujoco)
+   # build a scene with a body and a shape
+   builder_mujoco.add_articulation()
+   body = builder_mujoco.add_body()
+   builder_mujoco.add_joint_free(body)
+   shape = builder_mujoco.add_shape_box(body=body, hx=0.1, hy=0.1, hz=0.1)
+   # finalize the model
+   model_mujoco = builder_mujoco.finalize()
+   # now the model has the custom attributes registered by the MuJoCo solver
+   assert hasattr(model_mujoco, "mujoco")
+   assert hasattr(model_mujoco.mujoco, "condim")
+   assert np.allclose(model_mujoco.mujoco.condim.numpy(), [3])
+
 Authoring Custom Attributes
 ----------------------------
 

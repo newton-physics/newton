@@ -234,7 +234,7 @@ def get_scale(prim: Usd.Prim) -> wp.vec3:
 
 def get_axis(prim: Usd.Prim, name: str = "axis", default: AxisType = "Z") -> Axis:
     """
-    Get an axis attribute from a USD prim and convert it to an Axis enum.
+    Get an axis attribute from a USD prim and convert it to an :class:`~newton.Axis` enum.
 
     Args:
         prim: The USD prim to query.
@@ -242,7 +242,7 @@ def get_axis(prim: Usd.Prim, name: str = "axis", default: AxisType = "Z") -> Axi
         default: The default axis string to use if the attribute is not found.
 
     Returns:
-        An Axis enum value converted from the attribute string.
+        An :class:`~newton.Axis` enum value converted from the attribute string.
     """
     axis_str = get_attribute(prim, name, default)
     return Axis.from_string(axis_str)
@@ -342,20 +342,21 @@ def convert_warp_type(v: Any) -> Any:
 
 def get_custom_attribute_declarations(prim: Usd.Prim) -> dict[str, CustomAttribute]:
     """
-    Get custom attribute declarations from a USD prim, typically from a PhysicsScene prim.
+    Get custom attribute declarations from a USD prim, typically from a ``PhysicsScene`` prim.
 
-    Supports metadata format with assignment and frequency specified as customData:
-    ```
+    Supports metadata format with assignment and frequency specified as ``customData``:
+
+    .. code-block:: usda
+
         custom float newton:namespace:attr_name = 150.0 (
             customData = {
                 string assignment = "control"
                 string frequency = "joint_dof"
             }
         )
-    ```
 
     Args:
-        prim: USD PhysicsScene prim to parse declarations from
+        prim: USD ``PhysicsScene`` prim to parse declarations from.
 
     Returns:
         A dictionary of custom attribute declarations mapping from attribute name to :class:`CustomAttribute` object.

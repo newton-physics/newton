@@ -32,6 +32,7 @@ newton.utils
    event_scope
    leaky_max
    leaky_min
+   parse_warp_value_from_string
    plot_graph
    quat_between_axes
    quat_decompose

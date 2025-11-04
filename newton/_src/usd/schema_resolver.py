@@ -64,6 +64,10 @@ class SchemaAttribute:
 
 
 class SchemaResolver:
+    """
+    Defines a mapping from USD schema attributes to Newton attributes.
+    """
+
     # mapping is a dictionary for known variables in Newton. Its purpose is to map USD attributes to existing Newton data.
     # PrimType -> Newton variable -> Attribute
     mapping: ClassVar[dict[PrimType, dict[str, SchemaAttribute]]]
@@ -158,6 +162,10 @@ def _collect_attrs_by_namespace(prim: Usd.Prim, namespaces: list[str]) -> dict[s
 
 
 class SchemaResolverManager:
+    """
+    Manager for resolving multiple USD schemas in a priority order.
+    """
+
     def __init__(self, resolvers: list[SchemaResolver]):
         """
         Initialize resolver manager with resolver instances in priority order.

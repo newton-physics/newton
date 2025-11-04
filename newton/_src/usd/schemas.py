@@ -20,6 +20,13 @@ from ..usd.schema_resolver import PrimType, SchemaAttribute, SchemaResolver
 
 
 class SchemaResolverNewton(SchemaResolver):
+    """
+    Resolver for the Newton USD schema.
+
+    .. note::
+        The Newton USD schema is under development and may change in the future.
+    """
+
     name: ClassVar[str] = "newton"
     mapping: ClassVar[dict[PrimType, dict[str, SchemaAttribute]]] = {
         PrimType.SCENE: {
@@ -92,6 +99,10 @@ class SchemaResolverNewton(SchemaResolver):
 
 
 class SchemaResolverPhysx(SchemaResolver):
+    """
+    Resolver for the PhysX USD schema.
+    """
+
     name: ClassVar[str] = "physx"
     extra_attr_namespaces: ClassVar[list[str]] = [
         # Scene and rigid body
@@ -221,6 +232,10 @@ def solref_to_damping(solref):
 
 
 class SchemaResolverMjc(SchemaResolver):
+    """
+    Resolver for the MuJoCo USD schema.
+    """
+
     name: ClassVar[str] = "mjc"
 
     mapping: ClassVar[dict[PrimType, dict[str, SchemaAttribute]]] = {

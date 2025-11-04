@@ -36,6 +36,7 @@ newton
    ModelAttributeFrequency
    ModelBuilder
    ParticleFlags
+   SAPSortType
    SDF
    ShapeFlags
    State

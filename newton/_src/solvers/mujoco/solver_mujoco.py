@@ -1238,9 +1238,9 @@ class SolverMuJoCo(SolverBase):
     def register_custom_attributes(cls, builder: ModelBuilder) -> None:
         """
         Declare custom attributes to be allocated on the Model object within the
-        "Model.mujoco" namespace.
-        Note that we declare "usd_attribute_name" here to leverage the MuJoCo USD schema
-        where attributes are named "mjc:attr" rather than "newton:mujoco:attr".
+        ``mujoco`` namespace.
+        Note that we declare all custom attributes with the :attr:`newton.CustomAttribute.usd_attribute_name` set to ``"mjc"`` here to leverage the MuJoCo USD schema
+        where attributes are named ``"mjc:attr"`` rather than ``"newton:mujoco:attr"``.
         """
         builder.add_custom_attribute(
             CustomAttribute(

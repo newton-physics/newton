@@ -13,6 +13,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""
+Utilities for working with the Universal Scene Description (USD) format.
+"""
+
 # ==================================================================================
 # USD utility functions
 # ==================================================================================

@@ -115,8 +115,8 @@ class CustomAttribute:
         mjcf_attribute_name: Name of the attribute in the MJCF definition. If None, the attribute name is used.
         urdf_attribute_name: Name of the attribute in the URDF definition. If None, the attribute name is used.
         usd_value_transformer: Transformer function that converts a USD attribute value to a valid Warp dtype. If undefined, the generic converter from :func:`newton.usd.convert_warp_value` is used.
-        mjcf_value_transformer: Transformer function that converts a MJCF attribute value string to a valid Warp dtype. If undefined, the generic converter from :func:`newton.mjcf.convert_warp_value` is used.
-        urdf_value_transformer: Transformer function that converts a URDF attribute value string to a valid Warp dtype. If undefined, the generic converter from :func:`newton.urdf.convert_warp_value` is used.
+        mjcf_value_transformer: Transformer function that converts a MJCF attribute value string to a valid Warp dtype. If undefined, the generic converter from :func:`newton.utils.parse_warp_value_from_string` is used.
+        urdf_value_transformer: Transformer function that converts a URDF attribute value string to a valid Warp dtype. If undefined, the generic converter from :func:`newton.utils.parse_warp_value_from_string` is used.
     """
 
     name: str
