@@ -181,17 +181,24 @@ def apply_picking_force_kernel(
 def update_pick_target_kernel(
     p: wp.vec3,
     d: wp.vec3,
+    world_offset: wp.vec3,
     # read-write
     pick_state: wp.array(dtype=float),
 ):
-    # get original mouse cursor target
+    # get original mouse cursor target (in physics space)
     original_target = wp.vec3(pick_state[8], pick_state[9], pick_state[10])
 
-    # compute distance from ray origin to original target (to maintain depth)
-    dist = wp.length(original_target - p)
+    # Add world offset to convert to offset space for distance calculation
+    original_target_offset = original_target + world_offset
 
-    # Project new mouse cursor target at the same depth
-    new_mouse_target = p + d * dist
+    # compute distance from ray origin to original target (to maintain depth)
+    dist = wp.length(original_target_offset - p)
+
+    # Project new mouse cursor target at the same depth (in offset space)
+    new_mouse_target_offset = p + d * dist
+
+    # Convert back to physics space by subtracting world offset
+    new_mouse_target = new_mouse_target_offset - world_offset
 
     # Update the original mouse cursor target (no smoothing here)
     pick_state[8] = new_mouse_target[0]
