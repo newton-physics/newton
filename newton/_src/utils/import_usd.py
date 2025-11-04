@@ -711,8 +711,8 @@ def parse_usd(
                     limit_lower = limit.second.lower
                     limit_upper = limit.second.upper
                 else:
-                    limit_lower = -np.inf
-                    limit_upper = np.inf
+                    limit_lower = builder.default_joint_cfg.limit_lower
+                    limit_upper = builder.default_joint_cfg.limit_upper
 
                 free_axis = limit_lower < limit_upper
 

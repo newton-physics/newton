@@ -15,6 +15,8 @@
 
 from enum import IntEnum
 
+import warp as wp
+
 
 # Types of joints linking rigid bodies
 class JointType(IntEnum):
@@ -114,7 +116,19 @@ class EqType(IntEnum):
     """Constrains the position or angle of one joint to be a quartic polynomial of another joint (like a prismatic or revolute joint)."""
 
 
+# Sentinel value for unlimited joint limits
+JOINT_LIMIT_UNLIMITED = wp.constant(1e10)
+"""
+Sentinel value indicating an unlimited joint limit.
+
+When used for joint_limit_upper, it means the joint has no upper limit.
+When used for joint_limit_lower (as -JOINT_LIMIT_UNLIMITED), it means the joint has no lower limit.
+A joint is considered fully unlimited only when both limits are set to these sentinel values.
+"""
+
+
 __all__ = [
+    "JOINT_LIMIT_UNLIMITED",
     "EqType",
     "JointMode",
     "JointType",
