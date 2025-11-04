@@ -869,6 +869,7 @@ class _ImplicitMPMScratchpad:
 
         if self.color_indices is not None:
             self.color_indices.release()
+            self.color_offsets.release()
 
 
 def _particle_parameter(
@@ -1882,13 +1883,16 @@ class SolverImplicitMPM(SolverBase):
             },
         )
 
-        return fem.ExplicitGeometryPartition(
+        partition = fem.ExplicitGeometryPartition(
             grid,
             cell_mask=active_cells,
             max_cell_count=max_cell_count,
             max_side_count=0,
             temporary_store=self.temporary_store,
         )
+        active_cells.release()
+
+        return partition
 
     def _rebuild_scratchpad(self, positions: wp.array):
         """(Re)create function spaces and allocate per-step temporaries.
@@ -2366,7 +2370,7 @@ class SolverImplicitMPM(SolverBase):
                 scratch.collider_inv_mass_matrix,
                 state_out.impulse_field.dof_values,
                 color_offsets=scratch.color_offsets,
-                color_indices=None if scratch.color_indices is None else scratch.color_indices,
+                color_indices=scratch.color_indices,
                 color_nodes_per_element=scratch.color_nodes_per_element,
                 rigidity_mat=rigidity_matrix,
                 temporary_store=self.temporary_store,
@@ -2613,3 +2617,5 @@ class SolverImplicitMPM(SolverBase):
         )
 
         scratch.color_nodes_per_element = nodes_per_element
+
+        colors.release()
