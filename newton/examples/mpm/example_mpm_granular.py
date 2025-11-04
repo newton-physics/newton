@@ -113,10 +113,11 @@ class Example:
         self.sim_time += self.frame_dt
 
     def test(self):
+        voxel_size = self.solver.mpm_model.voxel_size
         newton.examples.test_particle_state(
             self.state_0,
             "all particles are above the ground",
-            lambda q, qd: q[2] > -0.05,
+            lambda q, qd: q[2] > -voxel_size,
         )
         cube_extents = wp.vec3(0.5, 2.0, 0.6) * 0.9
         cube_center = wp.vec3(0.75, 0, 0.9)
