@@ -53,6 +53,7 @@ __all__ += [
 # sim
 # ==================================================================================
 from ._src.sim import (  # noqa: E402
+    JOINT_LIMIT_UNLIMITED,
     BroadPhaseMode,
     CollisionPipeline,
     CollisionPipelineUnified,
@@ -75,6 +76,7 @@ from ._src.sim.model import (  # noqa: E402
 )
 
 __all__ += [
+    "JOINT_LIMIT_UNLIMITED",
     "BroadPhaseMode",
     "CollisionPipeline",
     "CollisionPipelineUnified",
