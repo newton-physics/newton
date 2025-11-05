@@ -58,6 +58,33 @@ class TestMuJoCoSolver(unittest.TestCase):
         solver_default = SolverMuJoCo(model, ls_parallel=False)
         self.assertFalse(solver_default.mjw_model.opt.ls_parallel, "ls_parallel should be False when set to False")
 
+    def test_tolerance_options(self):
+        """Test that tolerance and ls_tolerance options are properly set on the MuJoCo Warp model."""
+        # Create minimal model with proper inertia
+        builder = newton.ModelBuilder()
+        body = builder.add_body(mass=1.0, com=wp.vec3(0.0, 0.0, 0.0), I_m=wp.mat33(np.eye(3)))
+        builder.add_joint_revolute(-1, body)
+        model = builder.finalize()
+
+        # Test with custom tolerance and ls_tolerance values
+        custom_tolerance = 1e-2
+        custom_ls_tolerance = 0.001
+        solver = SolverMuJoCo(model, tolerance=custom_tolerance, ls_tolerance=custom_ls_tolerance)
+
+        # Check that values made it to the mjw_model
+        self.assertAlmostEqual(
+            float(solver.mjw_model.opt.tolerance.numpy()[0]),
+            custom_tolerance,
+            places=5,
+            msg=f"tolerance should be {custom_tolerance}",
+        )
+        self.assertAlmostEqual(
+            float(solver.mjw_model.opt.ls_tolerance.numpy()[0]),
+            custom_ls_tolerance,
+            places=5,
+            msg=f"ls_tolerance should be {custom_ls_tolerance}",
+        )
+
     @unittest.skip("Trajectory rendering for debugging")
     def test_render_trajectory(self):
         """Simulates and renders a trajectory if solver and viewer are available."""

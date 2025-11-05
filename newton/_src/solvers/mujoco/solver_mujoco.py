@@ -1254,6 +1254,8 @@ class SolverMuJoCo(SolverBase):
         ls_parallel: bool = False,
         use_mujoco_contacts: bool = True,
         joint_solimp_limit: tuple[float, float, float, float, float] | None = None,
+        tolerance: float = 1e-6,
+        ls_tolerance: float = 0.01,
     ):
         """
         Args:
@@ -1280,6 +1282,8 @@ class SolverMuJoCo(SolverBase):
             ls_parallel (bool): If True, enable parallel line search in MuJoCo. Defaults to False.
             use_mujoco_contacts (bool): If True, use the MuJoCo contact solver. If False, use the Newton contact solver (newton contacts must be passed in through the step function in that case).
             joint_solimp_limit (tuple[float, float, float, float, float] | None): Global solver impedance parameters for all joint limits. If provided, applies these solimp values to all joints created. Defaults to None (uses MuJoCo defaults).
+            tolerance (float | None): Solver tolerance for early termination of the iterative solver. Defaults to 1e-6 and will be increased to 1e-6 by the MuJoCo solver if a smaller value is provided.
+            ls_tolerance (float | None): Solver tolerance for early termination of the line search. Defaults to 0.01.
         """
         super().__init__(model)
         # Import and cache MuJoCo modules (only happens once per class)
@@ -1323,7 +1327,7 @@ class SolverMuJoCo(SolverBase):
             if separate_worlds is None:
                 separate_worlds = not use_mujoco_cpu
             with wp.ScopedTimer("convert_model_to_mujoco", active=False):
-                self.convert_to_mjc(
+                self._convert_to_mjc(
                     model,
                     disableflags=disableflags,
                     disable_contacts=disable_contacts,
@@ -1340,6 +1344,8 @@ class SolverMuJoCo(SolverBase):
                     actuator_gears=actuator_gears,
                     target_filename=save_to_mjcf,
                     ls_parallel=ls_parallel,
+                    tolerance=tolerance,
+                    ls_tolerance=ls_tolerance,
                 )
         self.update_data_interval = update_data_interval
         self._step = 0
@@ -1702,7 +1708,8 @@ class SolverMuJoCo(SolverBase):
         # find graph coloring of collision filter pairs
         num_shapes = len(selected_shapes)
         shape_a, shape_b = np.triu_indices(num_shapes, k=1)
-        cgroup = [model.shape_collision_group[i] for i in selected_shapes]
+        shape_collision_group_np = model.shape_collision_group.numpy()
+        cgroup = [shape_collision_group_np[i] for i in selected_shapes]
         # edges representing colliding shape pairs
         graph_edges = [
             (i, j)
@@ -1778,7 +1785,7 @@ class SolverMuJoCo(SolverBase):
         )
         contacts.n_contacts = mj_data.nacon
 
-    def convert_to_mjc(
+    def _convert_to_mjc(
         self,
         model: Model,
         state: State | None = None,
@@ -1793,7 +1800,7 @@ class SolverMuJoCo(SolverBase):
         disableflags: int = 0,
         disable_contacts: bool = False,
         impratio: float = 1.0,
-        tolerance: float = 1e-8,
+        tolerance: float = 1e-6,
         ls_tolerance: float = 0.01,
         cone: int | str = "pyramidal",
         # maximum absolute joint limit value after which the joint is considered not limited
