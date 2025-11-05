@@ -418,18 +418,17 @@ class ModelBuilder:
         self.joint_q = []
         self.joint_qd = []
         self.joint_f = []
+
         self.joint_type = []
         self.joint_key = []
         self.joint_armature = []
         self.joint_target_ke = []
         self.joint_target_kd = []
-
         self.joint_limit_lower = []
         self.joint_limit_upper = []
         self.joint_limit_ke = []
         self.joint_limit_kd = []
         self.joint_target_pos = []
-
         self.joint_target_vel = []
         self.joint_effort_limit = []
         self.joint_velocity_limit = []
@@ -1616,7 +1615,6 @@ class ModelBuilder:
             add_axis_dim(dim)
         for dim in angular_axes:
             add_axis_dim(dim)
-        l = len(linear_axes) + len(angular_axes)
 
         dof_count, coord_count = get_joint_dof_count(joint_type, len(linear_axes) + len(angular_axes))
 
@@ -2614,7 +2612,6 @@ class ModelBuilder:
         self.joint_X_p.clear()
         self.joint_X_c.clear()
         self.joint_axis.clear()
-
         self.joint_target_ke.clear()
         self.joint_target_kd.clear()
         self.joint_limit_lower.clear()
@@ -2648,7 +2645,6 @@ class ModelBuilder:
                 self.joint_world.append(-1)
             for axis in joint["axes"]:
                 self.joint_axis.append(axis["axis"])
-
                 self.joint_target_ke.append(axis["target_ke"])
                 self.joint_target_kd.append(axis["target_kd"])
                 self.joint_limit_lower.append(axis["limit_lower"])
@@ -4704,6 +4700,7 @@ class ModelBuilder:
                             stacklevel=2,
                         )
 
+                    # Directly use the corrected arrays on the Model (avoids double allocation)
                     # Note: This means the ModelBuilder's internal state is NOT updated for the fast path
                     m.body_mass = body_mass_array
                     m.body_inv_mass = body_inv_mass_array
@@ -4747,7 +4744,6 @@ class ModelBuilder:
             m.joint_armature = wp.array(self.joint_armature, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_target_ke = wp.array(self.joint_target_ke, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_target_kd = wp.array(self.joint_target_kd, dtype=wp.float32, requires_grad=requires_grad)
-
             m.joint_target_pos = wp.array(self.joint_target_pos, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_target_vel = wp.array(self.joint_target_vel, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_f = wp.array(self.joint_f, dtype=wp.float32, requires_grad=requires_grad)
