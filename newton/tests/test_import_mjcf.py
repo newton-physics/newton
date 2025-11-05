@@ -23,6 +23,7 @@ import warp as wp
 import newton
 import newton.examples
 from newton._src.geometry.types import GeoType
+from newton._src.sim.builder import ShapeFlags
 
 
 class TestImportMjcf(unittest.TestCase):
@@ -38,9 +39,11 @@ class TestImportMjcf(unittest.TestCase):
             ignore_names=["floor", "ground"],
             up_axis="Z",
         )
-        self.assertTrue(all(np.array(builder.shape_material_ke) == 123.0))
-        self.assertTrue(all(np.array(builder.shape_material_kd) == 456.0))
-        self.assertTrue(all(np.array(builder.shape_material_mu) == 789.0))
+        # Filter out sites when checking shape material properties (sites don't have these attributes)
+        non_site_indices = [i for i, flags in enumerate(builder.shape_flags) if not (flags & ShapeFlags.SITE)]
+        self.assertTrue(all(np.array(builder.shape_material_ke)[non_site_indices] == 123.0))
+        self.assertTrue(all(np.array(builder.shape_material_kd)[non_site_indices] == 456.0))
+        self.assertTrue(all(np.array(builder.shape_material_mu)[non_site_indices] == 789.0))
         self.assertTrue(all(np.array(builder.joint_armature[:6]) == 0.0))
         self.assertEqual(
             builder.joint_armature[6:],
