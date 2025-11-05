@@ -1,3 +1,5 @@
+.. _custom_attributes:
+
 Custom Attributes
 =================
 
@@ -31,7 +33,7 @@ Custom attributes extend these objects with user-defined arrays that follow the 
 Declaring Custom Attributes
 ----------------------------
 
-Custom attributes must be declared before use. Each declaration specifies the following properties:
+Custom attributes must be declared before use via the :meth:`newton.ModelBuilder.add_custom_attribute` method. Each declaration specifies the following properties:
 
 * **frequency**: Array size and indexing pattern (``BODY``, ``SHAPE``, ``JOINT``, ``JOINT_DOF``, ``JOINT_COORD``, or ``ARTICULATION``)
 * **assignment**: Which simulation object owns the attribute (``MODEL``, ``STATE``, ``CONTROL``, ``CONTACT``)  
@@ -45,14 +47,14 @@ The following example demonstrates declaring attributes with and without namespa
 
 .. testcode::
 
-   from newton import CustomAttribute, ModelBuilder, ModelAttributeFrequency, ModelAttributeAssignment
+   from newton import ModelBuilder, ModelAttributeFrequency, ModelAttributeAssignment
    import warp as wp
    
    builder = ModelBuilder()
    
    # Default namespace attributes - added directly to assignment objects
    builder.add_custom_attribute(
-       CustomAttribute(
+       ModelBuilder.CustomAttribute(
            name="temperature",
            frequency=ModelAttributeFrequency.BODY,
            dtype=wp.float32,
@@ -63,7 +65,7 @@ The following example demonstrates declaring attributes with and without namespa
    # → Accessible as: model.temperature
    
    builder.add_custom_attribute(
-       CustomAttribute(
+       ModelBuilder.CustomAttribute(
            name="velocity_limit",
            frequency=ModelAttributeFrequency.BODY,
            dtype=wp.vec3,
@@ -75,7 +77,7 @@ The following example demonstrates declaring attributes with and without namespa
    
    # Namespaced attributes - organized under namespace containers
    builder.add_custom_attribute(
-       CustomAttribute(
+       ModelBuilder.CustomAttribute(
            name="float_attr",
            frequency=ModelAttributeFrequency.BODY,
            dtype=wp.float32,
@@ -87,7 +89,7 @@ The following example demonstrates declaring attributes with and without namespa
    # → Accessible as: model.namespace_a.float_attr
    
    builder.add_custom_attribute(
-       CustomAttribute(
+       ModelBuilder.CustomAttribute(
            name="bool_attr",
            frequency=ModelAttributeFrequency.SHAPE,
            dtype=wp.bool,
@@ -100,7 +102,7 @@ The following example demonstrates declaring attributes with and without namespa
    
    # Articulation frequency attributes - one value per articulation
    builder.add_custom_attribute(
-       CustomAttribute(
+       ModelBuilder.CustomAttribute(
            name="articulation_stiffness",
             frequency=ModelAttributeFrequency.ARTICULATION,
             dtype=wp.float32,
@@ -169,17 +171,23 @@ For example, to allow the MuJoCo solver to register its custom attributes, you c
 .. testcode::
 
    from newton.solvers import SolverMuJoCo
+
    builder_mujoco = ModelBuilder()
-   # first register the custom attributes for the MuJoCo solver
+
+   # First register the custom attributes for the MuJoCo solver
    SolverMuJoCo.register_custom_attributes(builder_mujoco)
-   # build a scene with a body and a shape
+
+   # Build a scene with a body and a shape
    builder_mujoco.add_articulation()
    body = builder_mujoco.add_body()
    builder_mujoco.add_joint_free(body)
    shape = builder_mujoco.add_shape_box(body=body, hx=0.1, hy=0.1, hz=0.1)
-   # finalize the model
+
+   # Finalize the model and allocate arrays for the custom attributes
    model_mujoco = builder_mujoco.finalize()
-   # now the model has the custom attributes registered by the MuJoCo solver
+
+   # Now the model has the custom attributes registered by the MuJoCo solver
+   # in the "mujoco" namespace.
    assert hasattr(model_mujoco, "mujoco")
    assert hasattr(model_mujoco.mujoco, "condim")
    assert np.allclose(model_mujoco.mujoco.condim.numpy(), [3])
@@ -224,21 +232,21 @@ The following example demonstrates declaring and authoring attributes for each j
 
    # Declare joint attributes with different frequencies
    builder.add_custom_attribute(
-       CustomAttribute(
+       ModelBuilder.CustomAttribute(
            name="int_attr",
            frequency=ModelAttributeFrequency.JOINT,
            dtype=wp.int32
        )
    )
    builder.add_custom_attribute(
-       CustomAttribute(
+       ModelBuilder.CustomAttribute(
            name="float_attr_dof",
            frequency=ModelAttributeFrequency.JOINT_DOF,
            dtype=wp.float32
        )
    )
    builder.add_custom_attribute(
-       CustomAttribute(
+       ModelBuilder.CustomAttribute(
            name="float_attr_coord",
            frequency=ModelAttributeFrequency.JOINT_COORD,
            dtype=wp.float32

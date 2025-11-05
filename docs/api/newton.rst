@@ -25,7 +25,6 @@ newton
    CollisionPipelineUnified
    Contacts
    Control
-   CustomAttribute
    EqType
    GeoType
    JointMode

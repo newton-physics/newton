@@ -5,19 +5,6 @@ Utilities for working with the Universal Scene Description (USD) format.
 
 .. currentmodule:: newton.usd
 
-.. rubric:: Classes
-
-.. autosummary::
-   :toctree: _generated
-   :nosignatures:
-
-   PrimType
-   SchemaResolver
-   SchemaResolverManager
-   SchemaResolverMjc
-   SchemaResolverNewton
-   SchemaResolverPhysx
-
 .. rubric:: Functions
 
 .. autosummary::

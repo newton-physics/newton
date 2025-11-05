@@ -271,6 +271,9 @@ class ModelBuilder:
         Represents a custom attribute definition for the ModelBuilder.
         This is used to define custom attributes that are not part of the standard ModelBuilder API.
         Custom attributes can be defined for the :class:`~newton.Model`, :class:`~newton.State`, :class:`~newton.Control`, or :class:`~newton.Contacts` objects, depending on the :class:`ModelAttributeAssignment` category.
+        Custom attributes must be declared before use via the :meth:`newton.ModelBuilder.add_custom_attribute` method.
+
+        See :ref:`custom_attributes` for more information.
 
         Attributes:
             name: Variable name to expose on the Model. Must be a valid Python identifier.
@@ -565,12 +568,14 @@ class ModelBuilder:
         self.equality_constraint_polycoef = []
         self.equality_constraint_key = []
         self.equality_constraint_enabled = []
+
         # Custom attributes (user-defined per-frequency arrays)
-        self.custom_attributes: dict[str, CustomAttribute] = {}
+        self.custom_attributes: dict[str, ModelBuilder.CustomAttribute] = {}
 
     def add_custom_attribute(self, attribute: CustomAttribute) -> None:
         """
         Define a custom per-entity attribute to be added to the Model.
+        See :ref:`custom_attributes` for more information.
 
         Args:
             attribute: The custom attribute to add.
@@ -581,7 +586,7 @@ class ModelBuilder:
 
                 builder = newton.ModelBuilder()
                 builder.add_custom_attribute(
-                    newton.CustomAttribute(
+                    newton.ModelBuilder.CustomAttribute(
                         name="my_attribute",
                         frequency=newton.ModelAttributeFrequency.BODY,
                         dtype=wp.float32,
@@ -1019,6 +1024,8 @@ class ModelBuilder:
 
         The USD description has to be either a path (file name or URL), or an existing USD stage instance that implements the `Stage <https://openusd.org/dev/api/class_usd_stage.html>`_ interface.
 
+        See :ref:`usd_parsing` for more information.
+
         Args:
             source (str | pxr.Usd.Stage): The file path to the USD file, or an existing USD stage instance.
             xform (Transform): The transform to apply to the entire scene.
@@ -1038,6 +1045,16 @@ class ModelBuilder:
             load_non_physics_prims (bool): If True, prims that are children of a rigid body that do not have a UsdPhysics schema applied are loaded as visual shapes in a separate pass (may slow down the loading process). Otherwise, non-physics prims are ignored. Default is True.
             hide_collision_shapes (bool): If True, collision shapes are hidden. Default is False.
             mesh_maxhullvert (int): Maximum vertices for convex hull approximation of meshes.
+            schema_resolvers (list[SchemaResolver]): Resolver instances in priority order. Default is no schema resolution.
+                Schema resolvers collect per-prim "solver-specific" attributes, see :ref:`schema_resolvers` for more information.
+                These include namespaced attributes such as ``newton:*``, ``physx*``
+                (e.g., ``physxScene:*``, ``physxRigidBody:*``, ``physxSDFMeshCollision:*``), and ``mjc:*`` that
+                are authored in the USD but not strictly required to build the simulation. This is useful for
+                inspection, experimentation, or custom pipelines that read these values via
+                :meth:`ResolverManager.get_schema_attrs`.
+
+                .. note::
+                    Using the ``schema_resolvers`` argument is an experimental feature that may be removed or changed significantly in the future.
 
         Returns:
             dict: Dictionary with the following entries:
