@@ -55,6 +55,7 @@ from ..geometry import (
 )
 from ..geometry.inertia import validate_and_correct_inertia_kernel, verify_and_correct_inertia
 from ..geometry.utils import RemeshingMethod, compute_inertia_obb, remesh_mesh
+from ..usd.schema_resolver import SchemaResolver
 from ..utils import compute_world_offsets
 from .graph_coloring import ColoringAlgorithm, color_trimesh, combine_independent_particle_coloring
 from .joints import (
@@ -1018,6 +1019,7 @@ class ModelBuilder:
         load_non_physics_prims: bool = True,
         hide_collision_shapes: bool = False,
         mesh_maxhullvert: int = MESH_MAXHULLVERT,
+        schema_resolvers: list[SchemaResolver] | None = None,
     ) -> dict[str, Any]:
         """
         Parses a Universal Scene Description (USD) stage containing UsdPhysics schema definitions for rigid-body articulations and adds the bodies, shapes and joints to the given ModelBuilder.
@@ -1113,6 +1115,7 @@ class ModelBuilder:
             load_non_physics_prims,
             hide_collision_shapes,
             mesh_maxhullvert,
+            schema_resolvers,
         )
 
     def add_mjcf(

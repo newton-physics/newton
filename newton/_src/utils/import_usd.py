@@ -32,9 +32,8 @@ from ..geometry import MESH_MAXHULLVERT, Mesh, ShapeFlags, compute_sphere_inerti
 from ..sim.builder import ModelBuilder
 from ..sim.joints import JointMode
 from ..sim.model import ModelAttributeFrequency
-from ..usd.schema_resolver import PrimType, SchemaResolver, SchemaResolverManager
-from ..usd.schemas import SchemaResolverNewton
 from ..usd import utils as usd
+from ..usd.schema_resolver import PrimType, SchemaResolver, SchemaResolverManager
 
 
 def parse_usd(

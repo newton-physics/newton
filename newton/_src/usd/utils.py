@@ -364,6 +364,7 @@ def get_custom_attribute_declarations(prim: Usd.Prim) -> dict[str, ModelBuilder.
     Returns:
         A dictionary of custom attribute declarations mapping from attribute name to :class:`ModelBuilder.CustomAttribute` object.
     """
+    from ..sim.builder import ModelBuilder  # noqa: PLC0415
 
     def parse_custom_attr_name(name: str) -> tuple[str | None, str] | None:
         """
@@ -373,6 +374,7 @@ def get_custom_attribute_declarations(prim: Usd.Prim) -> dict[str, ModelBuilder.
             Tuple of (namespace, attr_name) where namespace can be None for default namespace,
             or None if the name doesn't match the expected format.
         """
+
         parts = name.split(":")
         if len(parts) < 2 or parts[0] != "newton":
             return None

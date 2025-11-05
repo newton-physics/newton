@@ -239,7 +239,7 @@ The collected attributes are returned in the result dictionary and can be access
 -----------------------------
 
 USD assets can define custom attributes that become part of the model/state/control attributes, see :ref:`custom_attributes` for more information.
-Besides the programatic way of defining custom attributes through the :meth:`newton.ModelBuilder.add_custom_attribute` method, Newton's USD importer also supports declaring custom attributes from within a USD stage.
+Besides the programmatic way of defining custom attributes through the :meth:`newton.ModelBuilder.add_custom_attribute` method, Newton's USD importer also supports declaring custom attributes from within a USD stage.
 
 **Overview:**
 
