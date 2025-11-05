@@ -20,6 +20,8 @@ Provides various terrain generation functions that output Newton-compatible tria
 Supports creating grids of terrain blocks with different procedural patterns.
 """
 
+from typing import Any
+
 import numpy as np
 
 # ============================================================================
@@ -458,7 +460,7 @@ def generate_terrain_grid(
     grid_size: tuple[int, int] = (4, 4),
     block_size: tuple[float, float] = (5.0, 5.0),
     terrain_types: list[str] | str | object | None = None,
-    terrain_params: dict[str, dict[str, float]] | None = None,
+    terrain_params: dict[str, dict[str, Any]] | None = None,
     seed: int | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Generate a grid of procedural terrain blocks.
