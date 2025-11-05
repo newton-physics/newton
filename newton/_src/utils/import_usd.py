@@ -125,7 +125,7 @@ def parse_usd(
             * - "physics_dt"
               - The resolved physics scene time step (float or None)
             * - "schema_attrs"
-              - Dictionary of collected per-prim schema attributes (dict or empty dict if `collect_schema_attrs` is False)
+              - Dictionary of collected per-prim schema attributes (dict)
             * - "max_solver_iterations"
               - The resolved maximum solver iterations (int or None)
             * - "path_body_relative_transform"

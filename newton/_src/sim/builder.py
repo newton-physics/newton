@@ -1086,6 +1086,8 @@ class ModelBuilder:
                   - Dictionary returned by :meth:`newton.ModelBuilder.collapse_fixed_joints` if `collapse_fixed_joints` is True, otherwise None.
                 * - "physics_dt"
                   - The resolved physics scene time step (float or None)
+                * - "schema_attrs"
+                  - Dictionary of collected per-prim schema attributes (dict)
                 * - "max_solver_iterations"
                   - The resolved maximum solver iterations (int or None)
                 * - "path_body_relative_transform"
