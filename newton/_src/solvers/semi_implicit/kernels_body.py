@@ -48,7 +48,7 @@ def joint_force(
     damping_f = 0.0
     target_f = 0.0
 
-    target_f = target_ke * (joint_target_pos - q) - target_kd * (joint_target_vel - qd)
+    target_f = target_ke * (joint_target_pos - q) + target_kd * (joint_target_vel - qd)
 
     # compute limit forces, damping only active when limit is violated
     if q < limit_lower:
