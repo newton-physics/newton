@@ -3318,8 +3318,7 @@ class ModelBuilder:
                 )
         """
         # Create config for non-colliding site
-        cfg = self.default_shape_cfg.copy()
-        cfg.mark_as_site()  # Enforces all site invariants
+        cfg = self.default_site_cfg.copy()
         cfg.is_visible = visible
 
         return self.add_shape(
