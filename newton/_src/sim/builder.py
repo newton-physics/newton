@@ -451,7 +451,6 @@ class ModelBuilder:
 
         self.joint_dof_count = 0
         self.joint_coord_count = 0
-        self.joint_actuator_count = 0
 
         # current world index for entities being added directly to this builder.
         # set to -1 to create global entities shared across all worlds.
@@ -1381,60 +1380,6 @@ class ModelBuilder:
 
         self.joint_dof_count += builder.joint_dof_count
         self.joint_coord_count += builder.joint_coord_count
-
-        # Merge custom attributes from the sub-builder
-        if builder.custom_attributes:
-            for full_key, attr in builder.custom_attributes.items():
-                # Declare the attribute if it doesn't exist in the main builder
-                self.add_custom_attribute(
-                    name=attr.name,
-                    frequency=attr.frequency,
-                    dtype=attr.dtype,
-                    default=attr.default,
-                    assignment=attr.assignment,
-                    namespace=attr.namespace,
-                )
-                merged = self.custom_attributes[full_key]
-                # Prevent silent divergence if defaults differ
-                # Handle array/vector types by converting to comparable format
-                try:
-                    defaults_match = merged.default == attr.default
-                    # Handle array-like comparisons
-                    if hasattr(defaults_match, "__iter__") and not isinstance(defaults_match, (str, bytes)):
-                        defaults_match = all(defaults_match)
-                except (ValueError, TypeError):
-                    # If comparison fails, assume they're different
-                    defaults_match = False
-
-                if not defaults_match:
-                    raise ValueError(
-                        f"Custom attribute '{full_key}' default mismatch when merging builders: "
-                        f"existing={merged.default}, incoming={attr.default}"
-                    )
-                if not attr.values:
-                    continue
-
-                # Determine the offset based on frequency
-                if attr.frequency == ModelAttributeFrequency.BODY:
-                    offset = start_body_idx
-                elif attr.frequency == ModelAttributeFrequency.SHAPE:
-                    offset = start_shape_idx
-                elif attr.frequency == ModelAttributeFrequency.JOINT:
-                    offset = start_joint_idx
-                elif attr.frequency == ModelAttributeFrequency.JOINT_DOF:
-                    offset = start_joint_dof_idx
-                elif attr.frequency == ModelAttributeFrequency.JOINT_COORD:
-                    offset = start_joint_coord_idx
-                elif attr.frequency == ModelAttributeFrequency.ARTICULATION:
-                    offset = start_articulation_idx
-                else:
-                    continue
-
-                # Remap indices and copy values
-                if merged.values is None:
-                    merged.values = {}
-                for idx, value in attr.values.items():
-                    merged.values[offset + idx] = value
 
         # Merge custom attributes from the sub-builder
         if builder.custom_attributes:
