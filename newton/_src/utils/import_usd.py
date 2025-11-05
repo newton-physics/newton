@@ -895,22 +895,22 @@ def parse_usd(
     # Process custom attributes defined for different kinds of prim.
     # Note that at this time we may have more custom attributes than before since they may have been
     # declared on the PhysicsScene prim.
-    builder_custom_attr_shape: list[CustomAttribute] = builder.get_custom_attributes_by_frequency(
+    builder_custom_attr_shape: list[ModelBuilder.CustomAttribute] = builder.get_custom_attributes_by_frequency(
         [ModelAttributeFrequency.SHAPE]
     )
-    builder_custom_attr_body: list[CustomAttribute] = builder.get_custom_attributes_by_frequency(
+    builder_custom_attr_body: list[ModelBuilder.CustomAttribute] = builder.get_custom_attributes_by_frequency(
         [ModelAttributeFrequency.BODY]
     )
-    builder_custom_attr_joint: list[CustomAttribute] = builder.get_custom_attributes_by_frequency(
+    builder_custom_attr_joint: list[ModelBuilder.CustomAttribute] = builder.get_custom_attributes_by_frequency(
         [ModelAttributeFrequency.JOINT, ModelAttributeFrequency.JOINT_DOF, ModelAttributeFrequency.JOINT_COORD]
     )
-    builder_custom_attr_articulation: list[CustomAttribute] = builder.get_custom_attributes_by_frequency(
+    builder_custom_attr_articulation: list[ModelBuilder.CustomAttribute] = builder.get_custom_attributes_by_frequency(
         [ModelAttributeFrequency.ARTICULATION]
     )
 
     if physics_scene_prim is not None:
         # Extract custom attributes for model (ONCE) frequency from the PhysicsScene prim
-        builder_custom_attr_model: list[CustomAttribute] = [
+        builder_custom_attr_model: list[ModelBuilder.CustomAttribute] = [
             attr for attr in builder.custom_attributes.values() if attr.frequency == ModelAttributeFrequency.ONCE
         ]
         scene_custom_attrs = usd.get_custom_attribute_values(physics_scene_prim, builder_custom_attr_model)
