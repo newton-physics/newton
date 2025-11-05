@@ -13,6 +13,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""
+USD schema resolvers. Currently not used.
+"""
+
 from typing import ClassVar
 
 from ..geometry import MESH_MAXHULLVERT

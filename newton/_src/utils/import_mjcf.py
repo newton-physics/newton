@@ -19,6 +19,7 @@ import math
 import os
 import re
 import xml.etree.ElementTree as ET
+from typing import Any
 
 import numpy as np
 import warp as wp
@@ -27,7 +28,7 @@ from ..core import quat_between_axes, quat_from_euler
 from ..core.types import Axis, AxisType, Sequence, Transform
 from ..geometry import MESH_MAXHULLVERT, Mesh
 from ..sim import JointType, ModelBuilder
-from ..sim.model import CustomAttribute, ModelAttributeFrequency
+from ..sim.model import ModelAttributeFrequency
 from ..usd.schemas import solref_to_damping, solref_to_stiffness
 from .import_utils import parse_custom_attributes, sanitize_xml_content
 
@@ -117,16 +118,16 @@ def parse_mjcf(
     default_shape_density = builder.default_shape_cfg.density
 
     # Process custom attributes defined for different kinds of shapes, bodies, joints, etc.
-    builder_custom_attr_shape: list[CustomAttribute] = builder.get_custom_attributes_by_frequency(
+    builder_custom_attr_shape: list[ModelBuilder.CustomAttribute] = builder.get_custom_attributes_by_frequency(
         [ModelAttributeFrequency.SHAPE]
     )
-    builder_custom_attr_body: list[CustomAttribute] = builder.get_custom_attributes_by_frequency(
+    builder_custom_attr_body: list[ModelBuilder.CustomAttribute] = builder.get_custom_attributes_by_frequency(
         [ModelAttributeFrequency.BODY]
     )
-    builder_custom_attr_joint: list[CustomAttribute] = builder.get_custom_attributes_by_frequency(
+    builder_custom_attr_joint: list[ModelBuilder.CustomAttribute] = builder.get_custom_attributes_by_frequency(
         [ModelAttributeFrequency.JOINT]
     )
-    builder_custom_attr_dof: list[CustomAttribute] = builder.get_custom_attributes_by_frequency(
+    builder_custom_attr_dof: list[ModelBuilder.CustomAttribute] = builder.get_custom_attributes_by_frequency(
         [ModelAttributeFrequency.JOINT_DOF]
     )
 

@@ -13,16 +13,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from .schema_resolver import (
-    PrimType,
-    SchemaResolver,
-    SchemaResolverManager,
-)
-from .schemas import (
-    SchemaResolverMjc,
-    SchemaResolverNewton,
-    SchemaResolverPhysx,
-)
 from .utils import (
     convert_warp_type,
     convert_warp_value,
@@ -39,13 +29,6 @@ from .utils import (
 )
 
 __all__ = [
-    "PrimType",
-    "SchemaResolver",
-    "SchemaResolverManager",
-    "SchemaResolverMjc",
-    "SchemaResolverNewton",
-    "SchemaResolverPhysx",
-    "convert_warp_type",
     "convert_warp_type",
     "convert_warp_value",
     "get_attribute",

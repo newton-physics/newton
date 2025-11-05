@@ -20,7 +20,7 @@ from typing import Any, Literal
 
 import warp as wp
 
-from ..sim.model import CustomAttribute
+from ..sim.builder import ModelBuilder
 
 
 def parse_warp_value_from_string(value: str, warp_dtype: Any) -> Any:
@@ -64,7 +64,7 @@ def parse_warp_value_from_string(value: str, warp_dtype: Any) -> Any:
 
 def parse_custom_attributes(
     dictlike: dict[str, str],
-    custom_attributes: Sequence[CustomAttribute],
+    custom_attributes: Sequence[ModelBuilder.CustomAttribute],
     parsing_mode: Literal["usd", "mjcf", "urdf"],
 ) -> dict[str, Any]:
     """
@@ -72,11 +72,11 @@ def parse_custom_attributes(
 
     Args:
         dictlike: The dictionary (or XML element) to parse the custom attributes from. This object behaves like a string-valued dictionary that implements the ``get`` method and returns the value for the given key.
-        custom_attributes: The custom attributes to parse. This is a sequence of :class:`CustomAttribute` objects.
+        custom_attributes: The custom attributes to parse. This is a sequence of :class:`ModelBuilder.CustomAttribute` objects.
         parsing_mode: The parsing mode to use. This can be "usd", "mjcf", or "urdf". It determines which attribute name and value transformer to use.
 
     Returns:
-        A dictionary of the parsed custom attributes. The keys are the custom attribute keys :attr:`CustomAttribute.key` and the values are the parsed values.
+        A dictionary of the parsed custom attributes. The keys are the custom attribute keys :attr:`ModelBuilder.CustomAttribute.key` and the values are the parsed values.
     """
     out = {}
     for attr in custom_attributes:

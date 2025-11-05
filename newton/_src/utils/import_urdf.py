@@ -29,7 +29,7 @@ from ..core import Axis, AxisType, quat_between_axes
 from ..core.types import Transform
 from ..geometry import MESH_MAXHULLVERT, Mesh
 from ..sim import ModelBuilder
-from ..sim.model import CustomAttribute, ModelAttributeFrequency
+from ..sim.model import ModelAttributeFrequency
 from .import_utils import parse_custom_attributes, sanitize_xml_content
 from .topology import topological_sort
 
@@ -119,16 +119,16 @@ def parse_urdf(
     default_shape_density = builder.default_shape_cfg.density
 
     # Process custom attributes defined for different kinds of shapes, bodies, joints, etc.
-    builder_custom_attr_shape: list[CustomAttribute] = builder.get_custom_attributes_by_frequency(
+    builder_custom_attr_shape: list[ModelBuilder.CustomAttribute] = builder.get_custom_attributes_by_frequency(
         [ModelAttributeFrequency.SHAPE]
     )
-    builder_custom_attr_body: list[CustomAttribute] = builder.get_custom_attributes_by_frequency(
+    builder_custom_attr_body: list[ModelBuilder.CustomAttribute] = builder.get_custom_attributes_by_frequency(
         [ModelAttributeFrequency.BODY]
     )
-    builder_custom_attr_joint: list[CustomAttribute] = builder.get_custom_attributes_by_frequency(
+    builder_custom_attr_joint: list[ModelBuilder.CustomAttribute] = builder.get_custom_attributes_by_frequency(
         [ModelAttributeFrequency.JOINT]
     )
-    builder_custom_attr_articulation: list[CustomAttribute] = builder.get_custom_attributes_by_frequency(
+    builder_custom_attr_articulation: list[ModelBuilder.CustomAttribute] = builder.get_custom_attributes_by_frequency(
         [ModelAttributeFrequency.ARTICULATION]
     )
 

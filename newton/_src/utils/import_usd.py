@@ -31,8 +31,7 @@ from ..core.types import Axis, Transform
 from ..geometry import MESH_MAXHULLVERT, Mesh, ShapeFlags, compute_sphere_inertia
 from ..sim.builder import ModelBuilder
 from ..sim.joints import JointMode
-from ..sim.model import CustomAttribute, ModelAttributeFrequency
-from ..usd import PrimType, SchemaResolver, SchemaResolverManager, SchemaResolverNewton
+from ..sim.model import ModelAttributeFrequency
 from ..usd import utils as usd
 
 
@@ -56,8 +55,6 @@ def parse_usd(
     load_non_physics_prims: bool = True,
     hide_collision_shapes: bool = False,
     mesh_maxhullvert: int = MESH_MAXHULLVERT,
-    schema_resolvers: list[SchemaResolver] | None = None,
-    collect_schema_attrs: bool = True,
 ) -> dict[str, Any]:
     """
     Parses a Universal Scene Description (USD) stage containing UsdPhysics schema definitions for rigid-body articulations and adds the bodies, shapes and joints to the given ModelBuilder.
@@ -84,17 +81,6 @@ def parse_usd(
         load_non_physics_prims (bool): If True, prims that are children of a rigid body that do not have a UsdPhysics schema applied are loaded as visual shapes in a separate pass (may slow down the loading process). Otherwise, non-physics prims are ignored. Default is True.
         hide_collision_shapes (bool): If True, collision shapes are hidden. Default is False.
         mesh_maxhullvert (int): Maximum vertices for convex hull approximation of meshes.
-        schema_resolvers (list[SchemaResolver]): Resolver instances in priority order. Default is
-            [SchemaResolverNewton()].
-        collect_schema_attrs (bool): If True, collect per-prim "solver-specific" attributes for the
-            configured schema resolvers. These include namespaced attributes such as ``newton:*``, ``physx*``
-            (e.g., ``physxScene:*``, ``physxRigidBody:*``, ``physxSDFMeshCollision:*``), and ``mjc:*`` that
-            are authored in the USD but not strictly required to build the simulation. This is useful for
-            inspection, experimentation, or custom pipelines that read these values via
-            :meth:`ResolverManager.get_schema_attrs`. If set to ``False``, the parser skips scanning these
-            namespaces to avoid unnecessary overhead. For example, if an asset authors PhysX SDF mesh
-            properties (``physxSDFMeshCollision:*``) that Newton does not currently use, disabling this flag
-            prevents parsing them. Default is ``True``.
 
     Returns:
         dict: Dictionary with the following entries:
@@ -124,8 +110,6 @@ def parse_usd(
               - Dictionary returned by :meth:`newton.ModelBuilder.collapse_fixed_joints` if `collapse_fixed_joints` is True, otherwise None.
             * - "physics_dt"
               - The resolved physics scene time step (float or None)
-            * - "schema_attrs"
-              - Dictionary of collected per-prim schema attributes (dict or empty dict if `collect_schema_attrs` is False)
             * - "max_solver_iterations"
               - The resolved maximum solver iterations (int or None)
             * - "path_body_relative_transform"
@@ -133,9 +117,6 @@ def parse_usd(
             * - "path_original_body_map"
               - Mapping from prim path to original body index before `collapse_fixed_joints`
     """
-    # default schema resolvers (avoid mutable default argument)
-    if schema_resolvers is None:
-        schema_resolvers = [SchemaResolverNewton()]
 
     try:
         from pxr import Sdf, Usd, UsdGeom, UsdPhysics  # noqa: PLC0415
@@ -234,23 +215,6 @@ def parse_usd(
 
     non_regex_ignore_paths = [path for path in ignore_paths if ".*" not in path]
     ret_dict = UsdPhysics.LoadUsdPhysicsFromRange(stage, [root_path], excludePaths=non_regex_ignore_paths)
-
-    # Initialize schema resolver according to precedence
-    R = SchemaResolverManager(schema_resolvers)
-
-    # for key, value in ret_dict.items():
-    #     print(f"Object type: {key}")
-    #     prims, scene_descs = value
-    #     for prim, desc in zip(prims, scene_descs):
-    #         print(prim)
-    #         print(desc)
-    #     if key == UsdPhysics.ObjectType.CapsuleShape:
-    #         for prim, desc in zip(prims, scene_descs):
-    #             print(desc.halfHeight)
-    #     if key == UsdPhysics.ObjectType.RigidBody:
-    #         for prim, desc in zip(prims, scene_descs):
-    #             print(desc.simulationOwners)
-    # print("***************************************************************************")
 
     # mapping from prim path to body ID in Warp sim
     path_body_map = {}
@@ -873,18 +837,14 @@ def parse_usd(
             physics_scene_prim, "newton:joint_drive_gains_scaling", joint_drive_gains_scaling
         )
         # Resolve scene time step, gravity settings, and contact margin
-        physics_dt = R.get_value(physics_scene_prim, prim_type=PrimType.SCENE, key="time_step", default=None)
-        gravity_enabled = R.get_value(physics_scene_prim, prim_type=PrimType.SCENE, key="enable_gravity", default=True)
+        physics_dt = usd.get_float(physics_scene_prim, "time_step", default=None)
+        gravity_enabled = usd.get_attribute(physics_scene_prim, "enable_gravity", default=True)
         if not gravity_enabled:
             builder.gravity = 0.0
-        contact_margin = R.get_value(
-            physics_scene_prim, prim_type=PrimType.SCENE, key="rigid_contact_margin", default=None
-        )
+        contact_margin = usd.get_attribute(physics_scene_prim, key="rigid_contact_margin", default=None)
         if contact_margin is not None:
             builder.rigid_contact_margin = contact_margin
-        max_solver_iters = R.get_value(
-            physics_scene_prim, prim_type=PrimType.SCENE, key="max_solver_iterations", default=None
-        )
+        max_solver_iters = R.get_value(physics_scene_prim, key="max_solver_iterations", default=None)
     else:
         stage_up_axis = Axis.from_string(str(UsdGeom.GetStageUpAxis(stage)))
 
@@ -1641,7 +1601,6 @@ def parse_usd(
         "scene_attributes": scene_attributes,
         "physics_dt": physics_dt,
         "collapse_results": collapse_results,
-        "schema_attrs": R.schema_attrs,
         # "articulation_roots": articulation_roots,
         # "articulation_bodies": articulation_bodies,
         "path_body_relative_transform": path_body_relative_transform,

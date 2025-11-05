@@ -17,10 +17,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
-from dataclasses import dataclass
 from enum import IntEnum
-from typing import Any
 
 import numpy as np
 import warp as wp
@@ -94,87 +91,6 @@ class AttributeNamespace:
         # List all public attributes (not starting with _)
         attrs = [k for k in self.__dict__ if not k.startswith("_")]
         return f"AttributeNamespace('{self._name}', attributes={attrs})"
-
-
-@dataclass
-class CustomAttribute:
-    """
-    Represents a custom attribute definition for the ModelBuilder.
-    This is used to define custom attributes that are not part of the standard ModelBuilder API.
-    Custom attributes can be defined for the Model, State, Control, or Contacts objects, depending on the :class:`ModelAttributeAssignment` category.
-
-    Attributes:
-        name: Variable name to expose on the Model
-        dtype: Warp dtype (e.g., wp.float32, wp.int32, wp.bool, wp.vec3)
-        frequency: Frequency category (see :class:`ModelAttributeFrequency`)
-        assignment: Assignment category (see :class:`ModelAttributeAssignment`), defaults to :attr:`ModelAttributeAssignment.MODEL`
-        namespace: Namespace for the attribute
-        default: Default value for the attribute
-        values: Dictionary mapping indices to specific values (overrides)
-        usd_attribute_name: Name of the corresponding USD attribute. If None, the USD attribute name ``"newton:<namespace>:<name>"`` is used.
-        mjcf_attribute_name: Name of the attribute in the MJCF definition. If None, the attribute name is used.
-        urdf_attribute_name: Name of the attribute in the URDF definition. If None, the attribute name is used.
-        usd_value_transformer: Transformer function that converts a USD attribute value to a valid Warp dtype. If undefined, the generic converter from :func:`newton.usd.convert_warp_value` is used.
-        mjcf_value_transformer: Transformer function that converts a MJCF attribute value string to a valid Warp dtype. If undefined, the generic converter from :func:`newton.utils.parse_warp_value_from_string` is used.
-        urdf_value_transformer: Transformer function that converts a URDF attribute value string to a valid Warp dtype. If undefined, the generic converter from :func:`newton.utils.parse_warp_value_from_string` is used.
-    """
-
-    name: str
-    dtype: type
-    frequency: ModelAttributeFrequency
-    assignment: ModelAttributeAssignment = ModelAttributeAssignment.MODEL
-    namespace: str | None = None
-    default: Any = None
-    values: dict[int, Any] | None = None
-    usd_attribute_name: str | None = None
-    mjcf_attribute_name: str | None = None
-    urdf_attribute_name: str | None = None
-    usd_value_transformer: Callable[[Any], Any] | None = None
-    mjcf_value_transformer: Callable[[str], Any] | None = None
-    urdf_value_transformer: Callable[[str], Any] | None = None
-
-    def __post_init__(self):
-        """Initialize default values and ensure values dict exists."""
-        # ensure dtype is a valid Warp dtype
-        try:
-            _size = wp.types.type_size_in_bytes(self.dtype)
-        except TypeError as e:
-            raise ValueError(
-                f"Invalid dtype: {self.dtype}. Must be a valid Warp dtype that is compatible with Warp arrays."
-            ) from e
-
-        # Set dtype-specific default value if none was provided
-        if self.default is None:
-            self.default = self._default_for_dtype(self.dtype)
-        if self.values is None:
-            self.values = {}
-        if self.usd_attribute_name is None:
-            self.usd_attribute_name = f"newton:{self.key}"
-        if self.mjcf_attribute_name is None:
-            self.mjcf_attribute_name = self.name
-        if self.urdf_attribute_name is None:
-            self.urdf_attribute_name = self.name
-
-    @staticmethod
-    def _default_for_dtype(dtype: object) -> Any:
-        """Get default value for dtype when not specified."""
-        # quaternions get identity quaternion
-        if wp.types.type_is_quaternion(dtype):
-            return wp.quat_identity(dtype._wp_scalar_type_)
-        if dtype is wp.bool or dtype is bool:
-            return False
-        # vectors, matrices, scalars
-        return dtype(0)
-
-    @property
-    def key(self) -> str:
-        """Return the full name of the attribute, formatted as "namespace:name" or "name" if no namespace is specified."""
-        return f"{self.namespace}:{self.name}" if self.namespace else self.name
-
-    def build_array(self, count: int, device: Devicelike | None = None, requires_grad: bool = False) -> wp.array:
-        """Build wp.array from count, dtype, default and overrides."""
-        arr = [self.values.get(i, self.default) for i in range(count)]
-        return wp.array(arr, dtype=self.dtype, requires_grad=requires_grad, device=device)
 
 
 class Model:

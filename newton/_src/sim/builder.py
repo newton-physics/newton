@@ -21,7 +21,7 @@ import copy
 import ctypes
 import math
 import warnings
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -55,7 +55,6 @@ from ..geometry import (
 )
 from ..geometry.inertia import validate_and_correct_inertia_kernel, verify_and_correct_inertia
 from ..geometry.utils import RemeshingMethod, compute_inertia_obb, remesh_mesh
-from ..usd import SchemaResolver
 from ..utils import compute_world_offsets
 from .graph_coloring import ColoringAlgorithm, color_trimesh, combine_independent_particle_coloring
 from .joints import (
@@ -64,7 +63,7 @@ from .joints import (
     JointType,
     get_joint_dof_count,
 )
-from .model import CustomAttribute, Model, ModelAttributeFrequency
+from .model import Model, ModelAttributeAssignment, ModelAttributeFrequency
 
 
 class ModelBuilder:
@@ -265,6 +264,86 @@ class ModelBuilder:
                 limit_kd=0.0,
                 mode=JointMode.NONE,
             )
+
+    @dataclass
+    class CustomAttribute:
+        """
+        Represents a custom attribute definition for the ModelBuilder.
+        This is used to define custom attributes that are not part of the standard ModelBuilder API.
+        Custom attributes can be defined for the :class:`~newton.Model`, :class:`~newton.State`, :class:`~newton.Control`, or :class:`~newton.Contacts` objects, depending on the :class:`ModelAttributeAssignment` category.
+
+        Attributes:
+            name: Variable name to expose on the Model. Must be a valid Python identifier.
+            dtype: Warp dtype (e.g., wp.float32, wp.int32, wp.bool, wp.vec3) that is compatible with Warp arrays.
+            frequency: Frequency category (see :class:`ModelAttributeFrequency`) that determines how the attribute is indexed in the Model.
+            assignment: Assignment category (see :class:`ModelAttributeAssignment`), defaults to :attr:`ModelAttributeAssignment.MODEL`
+            namespace: Namespace for the attribute. If None, the attribute is added directly to the assigned object without a namespace.
+            default: Default value for the attribute. If None, the default value is determined based on the dtype.
+            values: Dictionary mapping indices to specific values (overrides). If None, the attribute is not initialized with any values. Values can be assigned in subsequent ``ModelBuilder.add_*(..., custom_attributes={...})`` method calls for specific entities after the CustomAttribute has been added through the :meth:`ModelBuilder.add_custom_attribute` method.
+            usd_attribute_name: Name of the corresponding USD attribute. If None, the USD attribute name ``"newton:<namespace>:<name>"`` is used.
+            mjcf_attribute_name: Name of the attribute in the MJCF definition. If None, the attribute name is used.
+            urdf_attribute_name: Name of the attribute in the URDF definition. If None, the attribute name is used.
+            usd_value_transformer: Transformer function that converts a USD attribute value to a valid Warp dtype. If undefined, the generic converter from :func:`newton.usd.convert_warp_value` is used.
+            mjcf_value_transformer: Transformer function that converts a MJCF attribute value string to a valid Warp dtype. If undefined, the generic converter from :func:`newton.utils.parse_warp_value_from_string` is used.
+            urdf_value_transformer: Transformer function that converts a URDF attribute value string to a valid Warp dtype. If undefined, the generic converter from :func:`newton.utils.parse_warp_value_from_string` is used.
+        """
+
+        name: str
+        dtype: type
+        frequency: ModelAttributeFrequency
+        assignment: ModelAttributeAssignment = ModelAttributeAssignment.MODEL
+        namespace: str | None = None
+        default: Any = None
+        values: dict[int, Any] | None = None
+        usd_attribute_name: str | None = None
+        mjcf_attribute_name: str | None = None
+        urdf_attribute_name: str | None = None
+        usd_value_transformer: Callable[[Any], Any] | None = None
+        mjcf_value_transformer: Callable[[str], Any] | None = None
+        urdf_value_transformer: Callable[[str], Any] | None = None
+
+        def __post_init__(self):
+            """Initialize default values and ensure values dict exists."""
+            # ensure dtype is a valid Warp dtype
+            try:
+                _size = wp.types.type_size_in_bytes(self.dtype)
+            except TypeError as e:
+                raise ValueError(
+                    f"Invalid dtype: {self.dtype}. Must be a valid Warp dtype that is compatible with Warp arrays."
+                ) from e
+
+            # Set dtype-specific default value if none was provided
+            if self.default is None:
+                self.default = self._default_for_dtype(self.dtype)
+            if self.values is None:
+                self.values = {}
+            if self.usd_attribute_name is None:
+                self.usd_attribute_name = f"newton:{self.key}"
+            if self.mjcf_attribute_name is None:
+                self.mjcf_attribute_name = self.name
+            if self.urdf_attribute_name is None:
+                self.urdf_attribute_name = self.name
+
+        @staticmethod
+        def _default_for_dtype(dtype: object) -> Any:
+            """Get default value for dtype when not specified."""
+            # quaternions get identity quaternion
+            if wp.types.type_is_quaternion(dtype):
+                return wp.quat_identity(dtype._wp_scalar_type_)
+            if dtype is wp.bool or dtype is bool:
+                return False
+            # vectors, matrices, scalars
+            return dtype(0)
+
+        @property
+        def key(self) -> str:
+            """Return the full name of the attribute, formatted as "namespace:name" or "name" if no namespace is specified."""
+            return f"{self.namespace}:{self.name}" if self.namespace else self.name
+
+        def build_array(self, count: int, device: Devicelike | None = None, requires_grad: bool = False) -> wp.array:
+            """Build wp.array from count, dtype, default and overrides."""
+            arr = [self.values.get(i, self.default) for i in range(count)]
+            return wp.array(arr, dtype=self.dtype, requires_grad=requires_grad, device=device)
 
     def __init__(self, up_axis: AxisType = Axis.Z, gravity: float = -9.81):
         """
@@ -934,8 +1013,6 @@ class ModelBuilder:
         load_non_physics_prims: bool = True,
         hide_collision_shapes: bool = False,
         mesh_maxhullvert: int = MESH_MAXHULLVERT,
-        schema_resolvers: list[SchemaResolver] | None = None,
-        collect_schema_attrs: bool = True,
     ) -> dict[str, Any]:
         """
         Parses a Universal Scene Description (USD) stage containing UsdPhysics schema definitions for rigid-body articulations and adds the bodies, shapes and joints to the given ModelBuilder.
@@ -961,17 +1038,6 @@ class ModelBuilder:
             load_non_physics_prims (bool): If True, prims that are children of a rigid body that do not have a UsdPhysics schema applied are loaded as visual shapes in a separate pass (may slow down the loading process). Otherwise, non-physics prims are ignored. Default is True.
             hide_collision_shapes (bool): If True, collision shapes are hidden. Default is False.
             mesh_maxhullvert (int): Maximum vertices for convex hull approximation of meshes.
-            schema_resolvers (list[SchemaResolver]): Resolver instances in priority order. Default is
-                [SchemaResolverNewton()].
-            collect_schema_attrs (bool): If True, collect per-prim "solver-specific" attributes for the
-                configured schema resolvers. These include namespaced attributes such as ``newton:*``, ``physx*``
-                (e.g., ``physxScene:*``, ``physxRigidBody:*``, ``physxSDFMeshCollision:*``), and ``mjc:*`` that
-                are authored in the USD but not strictly required to build the simulation. This is useful for
-                inspection, experimentation, or custom pipelines that read these values via
-                :meth:`ResolverManager.get_schema_attrs`. If set to ``False``, the parser skips scanning these
-                namespaces to avoid unnecessary overhead. For example, if an asset authors PhysX SDF mesh
-                properties (``physxSDFMeshCollision:*``) that Newton does not currently use, disabling this flag
-                prevents parsing them. Default is ``True``.
 
         Returns:
             dict: Dictionary with the following entries:
@@ -1001,8 +1067,6 @@ class ModelBuilder:
                   - Dictionary returned by :meth:`newton.ModelBuilder.collapse_fixed_joints` if `collapse_fixed_joints` is True, otherwise None.
                 * - "physics_dt"
                   - The resolved physics scene time step (float or None)
-                * - "schema_attrs"
-                  - Dictionary of collected per-prim schema attributes (dict or empty dict if `collect_schema_attrs` is False)
                 * - "max_solver_iterations"
                   - The resolved maximum solver iterations (int or None)
                 * - "path_body_relative_transform"
@@ -1032,8 +1096,6 @@ class ModelBuilder:
             load_non_physics_prims,
             hide_collision_shapes,
             mesh_maxhullvert,
-            schema_resolvers,
-            collect_schema_attrs,
         )
 
     def add_mjcf(

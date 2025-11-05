@@ -54,24 +54,25 @@ __all__ = [
 
 # ==================================================================================
 # USD schema resolution
+# TODO: Re-enable this when we have a finalized schema resolution system.
 # ==================================================================================
 
-from ._src.usd.schema_resolver import (
-    PrimType,
-    SchemaResolver,
-    SchemaResolverManager,
-)
-from ._src.usd.schemas import (
-    SchemaResolverMjc,
-    SchemaResolverNewton,
-    SchemaResolverPhysx,
-)
+# from ._src.usd.schema_resolver import (
+#     PrimType,
+#     SchemaResolver,
+#     SchemaResolverManager,
+# )
+# from ._src.usd.schemas import (
+#     SchemaResolverMjc,
+#     SchemaResolverNewton,
+#     SchemaResolverPhysx,
+# )
 
-__all__ += [
-    "PrimType",
-    "SchemaResolver",
-    "SchemaResolverManager",
-    "SchemaResolverMjc",
-    "SchemaResolverNewton",
-    "SchemaResolverPhysx",
-]
+# __all__ += [
+#     "PrimType",
+#     "SchemaResolver",
+#     "SchemaResolverManager",
+#     "SchemaResolverMjc",
+#     "SchemaResolverNewton",
+#     "SchemaResolverPhysx",
+# ]

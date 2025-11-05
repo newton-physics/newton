@@ -16,13 +16,16 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Sequence
-from typing import Any, overload
+from typing import TYPE_CHECKING, Any, overload
 
 import numpy as np
 import warp as wp
 
 from ..core.types import Axis, AxisType, nparray
-from ..sim.model import CustomAttribute, ModelAttributeAssignment, ModelAttributeFrequency
+from ..sim.model import ModelAttributeAssignment, ModelAttributeFrequency
+
+if TYPE_CHECKING:
+    from ..sim.builder import ModelBuilder
 
 try:
     from pxr import Gf, Usd, UsdGeom
@@ -45,7 +48,7 @@ def get_attribute(prim: Usd.Prim, name: str, default: Any | None = None) -> Any 
         The attribute value if it exists and is valid, otherwise the default value.
     """
     attr = prim.GetAttribute(name)
-    if not attr or not attr.HasAuthoredValue() or not attr.IsValid():
+    if not attr or not attr.HasAuthoredValue():
         return default
     return attr.Get()
 
@@ -80,7 +83,7 @@ def has_attribute(prim: Usd.Prim, name: str) -> bool:
         True if the attribute exists, is valid, and has an authored value, False otherwise.
     """
     attr = prim.GetAttribute(name)
-    return attr.IsValid() and attr.HasAuthoredValue()
+    return attr and attr.HasAuthoredValue()
 
 
 @overload
@@ -340,7 +343,7 @@ def convert_warp_type(v: Any) -> Any:
     return wp.float32
 
 
-def get_custom_attribute_declarations(prim: Usd.Prim) -> dict[str, CustomAttribute]:
+def get_custom_attribute_declarations(prim: Usd.Prim) -> dict[str, ModelBuilder.CustomAttribute]:
     """
     Get custom attribute declarations from a USD prim, typically from a ``PhysicsScene`` prim.
 
@@ -359,7 +362,7 @@ def get_custom_attribute_declarations(prim: Usd.Prim) -> dict[str, CustomAttribu
         prim: USD ``PhysicsScene`` prim to parse declarations from.
 
     Returns:
-        A dictionary of custom attribute declarations mapping from attribute name to :class:`CustomAttribute` object.
+        A dictionary of custom attribute declarations mapping from attribute name to :class:`ModelBuilder.CustomAttribute` object.
     """
 
     def parse_custom_attr_name(name: str) -> tuple[str | None, str] | None:
@@ -384,7 +387,7 @@ def get_custom_attribute_declarations(prim: Usd.Prim) -> dict[str, CustomAttribu
             # Invalid format
             return None
 
-    out: dict[str, CustomAttribute] = {}
+    out: dict[str, ModelBuilder.CustomAttribute] = {}
     for attr in prim.GetAttributes():
         attr_name = attr.GetName()
         parsed = parse_custom_attr_name(attr_name)
@@ -421,7 +424,7 @@ def get_custom_attribute_declarations(prim: Usd.Prim) -> dict[str, CustomAttribu
 
         # Create custom attribute specification
         # Note: name should be the local name, namespace is stored separately
-        custom_attr = CustomAttribute(
+        custom_attr = ModelBuilder.CustomAttribute(
             assignment=assignment_val,
             frequency=frequency_val,
             name=local_name,
@@ -435,11 +438,13 @@ def get_custom_attribute_declarations(prim: Usd.Prim) -> dict[str, CustomAttribu
     return out
 
 
-def get_custom_attribute_values(prim: Usd.Prim, custom_attributes: Sequence[CustomAttribute]) -> dict[str, Any]:
+def get_custom_attribute_values(
+    prim: Usd.Prim, custom_attributes: Sequence[ModelBuilder.CustomAttribute]
+) -> dict[str, Any]:
     """
     Get custom attribute values from a USD prim and a set of known custom attributes.
-    Returns a dictionary mapping from :attr:`CustomAttribute.key` to the converted Warp value.
-    The conversion is performed by :meth:`CustomAttribute.usd_value_transformer`.
+    Returns a dictionary mapping from :attr:`ModelBuilder.CustomAttribute.key` to the converted Warp value.
+    The conversion is performed by :meth:`ModelBuilder.CustomAttribute.usd_value_transformer`.
 
     Args:
         prim: The USD prim to query.
