@@ -51,7 +51,6 @@ from typing import Any
 import warp as wp
 
 from newton import ModelAttributeFrequency, ModelBuilder
-from newton.tests.unittest_utils import USD_AVAILABLE
 from newton._src.usd.schema_resolver import (
     PrimType,
     SchemaResolverManager,
@@ -61,6 +60,7 @@ from newton._src.usd.schemas import (
     SchemaResolverNewton,
     SchemaResolverPhysx,
 )
+from newton.tests.unittest_utils import USD_AVAILABLE
 
 if USD_AVAILABLE:
     try:
@@ -98,7 +98,6 @@ class TestSchemaResolver(unittest.TestCase):
         result = builder.add_usd(
             source=str(self.ant_usda_path),
             schema_resolvers=[SchemaResolverNewton(), SchemaResolverPhysx()],
-            
             verbose=False,
         )
 
@@ -134,7 +133,6 @@ class TestSchemaResolver(unittest.TestCase):
         builder.add_usd(
             source=str(ant_mixed_path),
             schema_resolvers=[SchemaResolverPhysx()],  # PhysX first
-            
             verbose=False,
         )
         armature_values_found = []
@@ -149,7 +147,6 @@ class TestSchemaResolver(unittest.TestCase):
         builder.add_usd(
             source=str(ant_mixed_path),
             schema_resolvers=[SchemaResolverNewton(), SchemaResolverMjc()],  # nothing should be found
-            
             verbose=False,
         )
         armature_values_found = []
@@ -175,7 +172,6 @@ class TestSchemaResolver(unittest.TestCase):
         result = builder.add_usd(
             source=str(self.ant_usda_path),
             schema_resolvers=[SchemaResolverNewton(), SchemaResolverPhysx()],
-            
             verbose=False,
         )
 
@@ -230,7 +226,6 @@ class TestSchemaResolver(unittest.TestCase):
         result1 = builder1.add_usd(
             source=str(self.ant_usda_path),
             schema_resolvers=[SchemaResolverNewton(), SchemaResolverPhysx()],
-            
             verbose=False,
         )
 
@@ -238,7 +233,6 @@ class TestSchemaResolver(unittest.TestCase):
         result2 = builder2.add_usd(
             source=str(self.ant_usda_path),
             schema_resolvers=[SchemaResolverPhysx(), SchemaResolverNewton()],
-            
             verbose=False,
         )
 
@@ -350,7 +344,6 @@ class TestSchemaResolver(unittest.TestCase):
         builder_newton.add_usd(
             source=str(dst),
             schema_resolvers=[SchemaResolverNewton(), SchemaResolverPhysx(), SchemaResolverMjc()],
-            
             verbose=False,
         )
 
@@ -358,7 +351,6 @@ class TestSchemaResolver(unittest.TestCase):
         builder_mjc.add_usd(
             source=str(dst),
             schema_resolvers=[SchemaResolverMjc(), SchemaResolverNewton(), SchemaResolverPhysx()],
-            
             verbose=False,
         )
         # With mjc priority and solref chosen as (0.5, 0.05):
@@ -389,7 +381,6 @@ class TestSchemaResolver(unittest.TestCase):
         result = builder.add_usd(
             source=str(dst),
             schema_resolvers=[SchemaResolverNewton(), SchemaResolverPhysx(), SchemaResolverMjc()],
-            
             verbose=False,
         )
 
@@ -554,7 +545,6 @@ class TestSchemaResolver(unittest.TestCase):
         result = builder.add_usd(
             source=str(usd_path),
             schema_resolvers=[SchemaResolverNewton(), SchemaResolverPhysx(), SchemaResolverMjc()],
-            
             verbose=False,
         )
 
@@ -677,7 +667,6 @@ class TestSchemaResolver(unittest.TestCase):
         builder.add_usd(
             source=str(usd_path),
             schema_resolvers=[SchemaResolverNewton(), SchemaResolverPhysx(), SchemaResolverMjc()],
-            
             verbose=False,
         )
 
@@ -761,7 +750,6 @@ class TestSchemaResolver(unittest.TestCase):
         builder.add_usd(
             source=str(humanoid_path),
             schema_resolvers=[SchemaResolverNewton(), SchemaResolverPhysx(), SchemaResolverMjc()],
-            
             verbose=False,
         )
 
@@ -890,7 +878,6 @@ class TestSchemaResolver(unittest.TestCase):
         builder.add_usd(
             source=str(humanoid_path),
             schema_resolvers=[SchemaResolverNewton(), SchemaResolverPhysx(), SchemaResolverMjc()],
-            
             verbose=False,
         )
 
@@ -1017,7 +1004,6 @@ class TestSchemaResolver(unittest.TestCase):
         result = builder.add_usd(
             source=str(ant_mixed_path),
             schema_resolvers=[SchemaResolverNewton(), SchemaResolverPhysx(), SchemaResolverMjc()],
-            
             verbose=False,
         )
 
@@ -1069,7 +1055,6 @@ class TestSchemaResolver(unittest.TestCase):
         result = builder.add_usd(
             source=str(ant_mixed_path),
             schema_resolvers=[SchemaResolverNewton(), SchemaResolverPhysx(), SchemaResolverMjc()],
-            
             verbose=False,
         )
 
@@ -1189,7 +1174,6 @@ class TestSchemaResolver(unittest.TestCase):
         builder.add_usd(
             source=str(ant_usd_path),
             schema_resolvers=[SchemaResolverNewton(), SchemaResolverPhysx()],
-            
             verbose=False,
         )
 
