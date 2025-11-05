@@ -409,6 +409,45 @@ def _gap_terrain(
 # ============================================================================
 
 
+def _heightfield_terrain(
+    size: tuple[float, float],
+    heightfield: np.ndarray | None = None,
+    center_x: float = 0.0,
+    center_y: float = 0.0,
+    ground_z: float = 0.0,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Generate terrain from a custom heightfield array.
+
+    This is a wrapper around heightfield_to_mesh that fits the terrain_funcs signature.
+
+    Args:
+        size: (width, height) size of the terrain block in meters
+        heightfield: (grid_size, grid_size) array of Z heights. If None, creates flat terrain.
+        center_x: Center X coordinate (default: 0.0)
+        center_y: Center Y coordinate (default: 0.0)
+        ground_z: Z coordinate of bottom surface (default: 0.0)
+
+    Returns:
+        tuple of (vertices, indices) where vertices is (N, 3) float32 array
+        and indices is (M,) int32 array of triangle indices (flattened)
+    """
+    if heightfield is None:
+        # Default to flat terrain if no heightfield provided
+        return _flat_terrain(size)
+
+    # Use heightfield_to_mesh to convert heightfield to mesh
+    vertices, indices = heightfield_to_mesh(
+        heightfield=heightfield,
+        extent_x=size[0],
+        extent_y=size[1],
+        center_x=center_x,
+        center_y=center_y,
+        ground_z=ground_z,
+    )
+
+    return vertices, indices
+
+
 def generate_terrain_grid(
     grid_size: tuple[int, int] = (4, 4),
     block_size: tuple[float, float] = (5.0, 5.0),
@@ -425,8 +464,9 @@ def generate_terrain_grid(
         block_size: (width, height) size of each terrain block in meters
         terrain_types: List of terrain type names, single terrain type string,
                       or callable function (any object with __call__). If None, uses all types.
-                      Available types: 'flat', 'pyramid_stairs', 'random_grid', 'wave', 'box', 'gap'
-        terrain_params: Dictionary mapping terrain types to their parameter dicts
+                      Available types: 'flat', 'pyramid_stairs', 'random_grid', 'wave', 'box', 'gap', 'heightfield'
+        terrain_params: Dictionary mapping terrain types to their parameter dicts.
+                       For 'heightfield' type, params should include 'heightfield' (np.ndarray)
         seed: Random seed for reproducibility
 
     Returns:
@@ -446,6 +486,7 @@ def generate_terrain_grid(
         "wave": _wave_terrain,
         "box": _box_terrain,
         "gap": _gap_terrain,
+        "heightfield": _heightfield_terrain,
     }
 
     if terrain_params is None:
@@ -551,3 +592,109 @@ def _to_newton_mesh(vertices: np.ndarray, indices: np.ndarray) -> tuple[np.ndarr
         tuple of (vertices, indices) with proper dtypes for Newton (float32 and int32)
     """
     return vertices.astype(np.float32), indices.astype(np.int32)
+
+
+def heightfield_to_mesh(
+    heightfield: np.ndarray,
+    extent_x: float,
+    extent_y: float,
+    center_x: float = 0.0,
+    center_y: float = 0.0,
+    ground_z: float = 0.0,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Convert a 2D heightfield array to a watertight triangle mesh.
+
+    Creates a closed mesh with top surface (from heightfield), bottom surface (at ground_z),
+    and side walls connecting them. Each grid cell becomes two triangles.
+
+    Args:
+        heightfield: (grid_size_x, grid_size_y) array of Z heights for top surface
+        extent_x: Physical size in X direction (meters)
+        extent_y: Physical size in Y direction (meters)
+        center_x: Center X coordinate (default: 0.0)
+        center_y: Center Y coordinate (default: 0.0)
+        ground_z: Z coordinate of bottom surface (default: 0.0)
+
+    Returns:
+        tuple of (vertices, indices) where vertices is (N, 3) float32 array
+        and indices is (M,) int32 array of triangle indices (flattened)
+    """
+    if heightfield.ndim != 2:
+        raise ValueError(f"heightfield must be 2D array, got shape {heightfield.shape}")
+
+    grid_size_x, grid_size_y = heightfield.shape
+
+    # Create grid coordinates
+    x = np.linspace(-extent_x / 2, extent_x / 2, grid_size_x) + center_x
+    y = np.linspace(-extent_y / 2, extent_y / 2, grid_size_y) + center_y
+    X, Y = np.meshgrid(x, y, indexing="ij")
+
+    # Top and bottom surface vertices
+    top_vertices = np.column_stack([X.ravel(), Y.ravel(), heightfield.ravel()]).astype(np.float32)
+    bottom_z = np.full_like(heightfield, ground_z)
+    bottom_vertices = np.column_stack([X.ravel(), Y.ravel(), bottom_z.ravel()]).astype(np.float32)
+    vertices = np.vstack([top_vertices, bottom_vertices])
+
+    # Generate quad indices for all grid cells
+    i_indices = np.arange(grid_size_x - 1)
+    j_indices = np.arange(grid_size_y - 1)
+    ii, jj = np.meshgrid(i_indices, j_indices, indexing="ij")
+    ii, jj = ii.ravel(), jj.ravel()
+
+    v0 = ii * grid_size_y + jj
+    v1 = ii * grid_size_y + (jj + 1)
+    v2 = (ii + 1) * grid_size_y + jj
+    v3 = (ii + 1) * grid_size_y + (jj + 1)
+
+    # Top surface faces (counter-clockwise)
+    top_faces = np.column_stack([np.column_stack([v0, v2, v1]), np.column_stack([v1, v2, v3])]).reshape(-1, 3)
+
+    # Bottom surface faces (clockwise)
+    num_top_vertices = len(top_vertices)
+    bottom_faces = np.column_stack(
+        [
+            np.column_stack([num_top_vertices + v0, num_top_vertices + v1, num_top_vertices + v2]),
+            np.column_stack([num_top_vertices + v1, num_top_vertices + v3, num_top_vertices + v2]),
+        ]
+    ).reshape(-1, 3)
+
+    # Side wall faces (4 edges)
+    side_faces_list = []
+    i_edge = np.arange(grid_size_x - 1)
+    j_edge = np.arange(grid_size_y - 1)
+
+    # Front edge (j=0)
+    t0, t1 = i_edge * grid_size_y, (i_edge + 1) * grid_size_y
+    b0, b1 = num_top_vertices + t0, num_top_vertices + t1
+    side_faces_list.append(
+        np.column_stack([np.column_stack([t0, b0, t1]), np.column_stack([t1, b0, b1])]).reshape(-1, 3)
+    )
+
+    # Back edge (j=grid_size_y-1)
+    t0 = i_edge * grid_size_y + (grid_size_y - 1)
+    t1 = (i_edge + 1) * grid_size_y + (grid_size_y - 1)
+    b0, b1 = num_top_vertices + t0, num_top_vertices + t1
+    side_faces_list.append(
+        np.column_stack([np.column_stack([t0, t1, b0]), np.column_stack([t1, b1, b0])]).reshape(-1, 3)
+    )
+
+    # Left edge (i=0)
+    t0, t1 = j_edge, j_edge + 1
+    b0, b1 = num_top_vertices + t0, num_top_vertices + t1
+    side_faces_list.append(
+        np.column_stack([np.column_stack([t0, t1, b0]), np.column_stack([t1, b1, b0])]).reshape(-1, 3)
+    )
+
+    # Right edge (i=grid_size_x-1)
+    t0 = (grid_size_x - 1) * grid_size_y + j_edge
+    t1 = (grid_size_x - 1) * grid_size_y + (j_edge + 1)
+    b0, b1 = num_top_vertices + t0, num_top_vertices + t1
+    side_faces_list.append(
+        np.column_stack([np.column_stack([t0, b0, t1]), np.column_stack([t1, b0, b1])]).reshape(-1, 3)
+    )
+
+    # Combine all faces
+    all_faces = np.vstack([top_faces, bottom_faces, *side_faces_list])
+    indices = all_faces.astype(np.int32).flatten()
+
+    return vertices, indices
