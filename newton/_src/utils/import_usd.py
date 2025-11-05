@@ -841,7 +841,6 @@ def parse_usd(
             print("Gravity direction:", scene_desc.gravityDirection)
             print("Gravity magnitude:", scene_desc.gravityMagnitude)
         builder.gravity = -scene_desc.gravityMagnitude * linear_unit
-        stage_up_axis = Axis.from_any(int(np.argmax(np.abs(scene_desc.gravityDirection))))
 
         # Storing Physics Scene attributes
         physics_scene_prim = stage.GetPrimAtPath(path)
@@ -871,8 +870,8 @@ def parse_usd(
         max_solver_iters = R.get_value(
             physics_scene_prim, prim_type=PrimType.SCENE, key="max_solver_iterations", default=None
         )
-    else:
-        stage_up_axis = Axis.from_string(str(UsdGeom.GetStageUpAxis(stage)))
+
+    stage_up_axis = Axis.from_string(str(UsdGeom.GetStageUpAxis(stage)))
 
     if apply_up_axis_from_stage:
         builder.up_axis = stage_up_axis
