@@ -1666,10 +1666,12 @@ def solve_body_joints(
         axis_stiffness = axis_target_pos_ke[1]
         axis_target_vel = axis_target_vel_kd[0]
         axis_damping = axis_target_vel_kd[1]
-        if ke_sum > 0.0:
-            axis_target_pos /= ke_sum
-        if kd_sum > 0.0:
-            axis_target_vel /= kd_sum
+        for i in range(3):
+            if axis_stiffness[i] > 0.0:
+                axis_target_pos[i] /= axis_stiffness[i]
+        for i in range(3):
+            if axis_damping[i] > 0.0:
+                axis_target_vel[i] /= axis_damping[i]
         axis_limits_lower = wp.spatial_top(axis_limits)
         axis_limits_upper = wp.spatial_bottom(axis_limits)
 
@@ -1875,10 +1877,12 @@ def solve_body_joints(
         axis_stiffness = axis_target_pos_ke[1]
         axis_target_vel = axis_target_vel_kd[0]
         axis_damping = axis_target_vel_kd[1]
-        if ke_sum > 0.0:
-            axis_target_pos /= ke_sum
-        if kd_sum > 0.0:
-            axis_target_vel /= kd_sum
+        for i in range(3):
+            if axis_stiffness[i] > 0.0:
+                axis_target_pos[i] /= axis_stiffness[i]
+        for i in range(3):
+            if axis_damping[i] > 0.0:
+                axis_target_vel[i] /= axis_damping[i]
         axis_limits_lower = wp.spatial_top(axis_limits)
         axis_limits_upper = wp.spatial_bottom(axis_limits)
 
