@@ -16,10 +16,10 @@ Utilities for working with the Universal Scene Description (USD) format.
    convert_warp_value
    get_attribute
    get_attributes_in_namespace
-   get_axis
    get_custom_attribute_declarations
    get_custom_attribute_values
    get_float
+   get_gprim_axis
    get_quat
    get_scale
    get_transform
