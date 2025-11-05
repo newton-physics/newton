@@ -15,21 +15,8 @@
 
 from __future__ import annotations
 
-from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING
 
 import warp as wp
-
-if TYPE_CHECKING:
-    from .model import Model
-from .joints import JointType
-from .state import State
-
-
-@wp.kernel
-def zero_array_kernel(arr: wp.array(dtype=wp.float32)):
-    i = wp.tid()
-    arr[i] = 0.0
 
 
 class Control:
@@ -85,7 +72,6 @@ class Control:
             self.tet_activations.zero_()
         if self.muscle_activations is not None:
             self.muscle_activations.zero_()
-
         if self.joint_target_pos is not None:
             self.joint_target_pos.zero_()
         if self.joint_target_vel is not None:
