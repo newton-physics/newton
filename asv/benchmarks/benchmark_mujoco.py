@@ -351,7 +351,7 @@ class Example:
 
     def step(self):
         if self.actuation == "random":
-            joint_target = wp.array(self.rng.uniform(-1.0, 1.0, size=self.model.joint_dof_count), dtype=float)
+            joint_target = wp.array(self.rng.uniform(-1.0, 1.0, size=self.model.joint_dof_count), dtype=wp.float32)
             wp.copy(self.control.joint_target_pos, joint_target)
 
         wp.synchronize_device()

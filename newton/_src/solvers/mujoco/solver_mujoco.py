@@ -2274,42 +2274,26 @@ class SolverMuJoCo(SolverBase):
                         **joint_params,
                     )
                     if actuated_axes is None or ai in actuated_axes:
-                        # add actuators for this axis
                         kp = joint_target_ke[ai]
                         kd = joint_target_kd[ai]
                         effort_limit = joint_effort_limit[ai]
-
-                        # Create position actuator
-                        pos_actuator_args = {
-                            "ctrllimited": False,
-                            "ctrlrange": (-1e6, 1e6),
-                            "gear": [1.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                            "trntype": mujoco.mjtTrn.mjTRN_JOINT,
-                            "dyntype": mujoco.mjtDyn.mjDYN_NONE,
-                            "gainprm": [kp, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-                            "biasprm": [0, -kp, 0, 0, 0, 0, 0, 0, 0, 0],
-                            "gaintype": mujoco.mjtGain.mjGAIN_FIXED,
-                            "biastype": mujoco.mjtBias.mjBIAS_AFFINE,
-                            "forcerange": [-effort_limit, effort_limit],
-                        }
-                        spec.add_actuator(target=axname, **pos_actuator_args)
+                        gear = actuator_gears.get(axname)
+                        if gear is not None:
+                            args = {}
+                            args.update(actuator_args)
+                            args["gear"] = [gear, 0.0, 0.0, 0.0, 0.0, 0.0]
+                        else:
+                            args = actuator_args
+                        args["forcerange"] = [-effort_limit, effort_limit]
+                        args["gainprm"] = [kp, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+                        args["biasprm"] = [0, -kp, 0, 0, 0, 0, 0, 0, 0, 0]
+                        spec.add_actuator(target=axname, **args)
                         axis_to_actuator[ai, 0] = actuator_count
                         actuator_count += 1
 
-                        # Create velocity actuator
-                        vel_actuator_args = {
-                            "ctrllimited": False,
-                            "ctrlrange": (-1e6, 1e6),
-                            "gear": [1.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                            "trntype": mujoco.mjtTrn.mjTRN_JOINT,
-                            "dyntype": mujoco.mjtDyn.mjDYN_NONE,
-                            "gainprm": [kd, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-                            "biasprm": [0, 0, -kd, 0, 0, 0, 0, 0, 0, 0],
-                            "gaintype": mujoco.mjtGain.mjGAIN_FIXED,
-                            "biastype": mujoco.mjtBias.mjBIAS_AFFINE,
-                            "forcerange": [-effort_limit, effort_limit],
-                        }
-                        spec.add_actuator(target=axname, **vel_actuator_args)
+                        args["gainprm"] = [kd, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+                        args["biasprm"] = [0, 0, -kd, 0, 0, 0, 0, 0, 0, 0]
+                        spec.add_actuator(target=axname, **args)
                         axis_to_actuator[ai, 1] = actuator_count
                         actuator_count += 1
 
@@ -2348,42 +2332,26 @@ class SolverMuJoCo(SolverBase):
                         **joint_params,
                     )
                     if actuated_axes is None or ai in actuated_axes:
-                        # add actuators for this axis
                         kp = joint_target_ke[ai]
                         kd = joint_target_kd[ai]
                         effort_limit = joint_effort_limit[ai]
-
-                        # Create position actuator
-                        pos_actuator_args = {
-                            "ctrllimited": False,
-                            "ctrlrange": (-1e6, 1e6),
-                            "gear": [1.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                            "trntype": mujoco.mjtTrn.mjTRN_JOINT,
-                            "dyntype": mujoco.mjtDyn.mjDYN_NONE,
-                            "gainprm": [kp, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-                            "biasprm": [0, -kp, 0, 0, 0, 0, 0, 0, 0, 0],
-                            "gaintype": mujoco.mjtGain.mjGAIN_FIXED,
-                            "biastype": mujoco.mjtBias.mjBIAS_AFFINE,
-                            "forcerange": [-effort_limit, effort_limit],
-                        }
-                        spec.add_actuator(target=axname, **pos_actuator_args)
+                        gear = actuator_gears.get(axname)
+                        if gear is not None:
+                            args = {}
+                            args.update(actuator_args)
+                            args["gear"] = [gear, 0.0, 0.0, 0.0, 0.0, 0.0]
+                        else:
+                            args = actuator_args
+                        args["forcerange"] = [-effort_limit, effort_limit]
+                        args["gainprm"] = [kp, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+                        args["biasprm"] = [0, -kp, 0, 0, 0, 0, 0, 0, 0, 0]
+                        spec.add_actuator(target=axname, **args)
                         axis_to_actuator[ai, 0] = actuator_count
                         actuator_count += 1
 
-                        # Create velocity actuator
-                        vel_actuator_args = {
-                            "ctrllimited": False,
-                            "ctrlrange": (-1e6, 1e6),
-                            "gear": [1.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                            "trntype": mujoco.mjtTrn.mjTRN_JOINT,
-                            "dyntype": mujoco.mjtDyn.mjDYN_NONE,
-                            "gainprm": [kd, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-                            "biasprm": [0, 0, -kd, 0, 0, 0, 0, 0, 0, 0],
-                            "gaintype": mujoco.mjtGain.mjGAIN_FIXED,
-                            "biastype": mujoco.mjtBias.mjBIAS_AFFINE,
-                            "forcerange": [-effort_limit, effort_limit],
-                        }
-                        spec.add_actuator(target=axname, **vel_actuator_args)
+                        args["gainprm"] = [kd, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+                        args["biasprm"] = [0, 0, -kd, 0, 0, 0, 0, 0, 0, 0]
+                        spec.add_actuator(target=axname, **args)
                         axis_to_actuator[ai, 1] = actuator_count
                         actuator_count += 1
 

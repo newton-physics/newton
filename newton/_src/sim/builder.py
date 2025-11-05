@@ -1695,7 +1695,6 @@ class ModelBuilder:
             target_vel: The target velocity of the joint.
             target_ke: The stiffness of the joint target.
             target_kd: The damping of the joint target.
-            mode: The control mode of the joint. If None, the default value from :attr:`default_joint_control_mode` is used.
             limit_lower: The lower limit of the joint. If None, the default value from :attr:`default_joint_limit_lower` is used.
             limit_upper: The upper limit of the joint. If None, the default value from :attr:`default_joint_limit_upper` is used.
             limit_ke: The stiffness of the joint limit. If None, the default value from :attr:`default_joint_limit_ke` is used.
