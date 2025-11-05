@@ -12,7 +12,6 @@ Utilities for working with the Universal Scene Description (USD) format.
    :signatures: long
 
    convert_warp_type
-   convert_warp_type
    convert_warp_value
    get_attribute
    get_attributes_in_namespace
