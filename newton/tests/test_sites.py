@@ -49,7 +49,7 @@ class TestSiteCreation(unittest.TestCase):
 
         self.assertTrue(shape_flags[site] & ShapeFlags.SITE)
         self.assertFalse(shape_flags[site] & ShapeFlags.COLLIDE_SHAPES)
-        self.assertEqual(model.shape_key.numpy()[site], "test_site")
+        self.assertEqual(model.shape_key[site], "test_site")
         self.assertEqual(shape_body[site], body)
         self.assertEqual(shape_type[site], GeoType.SPHERE)
 
