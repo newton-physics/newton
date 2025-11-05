@@ -42,6 +42,20 @@ def parse_warp_value_from_string(value: str, warp_dtype: Any) -> Any:
     def get_vector(scalar_type: Any):
         return [scalar_type(x) for x in value.split()]
 
+    def get_bool(tok: str) -> bool:
+        # just casting string to bool is not enough, we need to actually evaluate the
+        # falsey values
+        s = tok.strip().lower()
+        if s in {"1", "true", "t", "yes", "y"}:
+            return True
+        if s in {"0", "false", "f", "no", "n"}:
+            return False
+        # fall back to numeric interpretation if provided
+        try:
+            return bool(int(float(s)))
+        except Exception as e:
+            raise ValueError(f"Unable to parse boolean value: {tok}") from e
+
     if wp.types.type_is_quaternion(warp_dtype):
         return warp_dtype(*get_vector(float))
     if wp.types.type_is_int(warp_dtype):
@@ -49,7 +63,7 @@ def parse_warp_value_from_string(value: str, warp_dtype: Any) -> Any:
     if wp.types.type_is_float(warp_dtype):
         return warp_dtype(float(value))
     if warp_dtype is wp.bool or warp_dtype is bool:
-        return warp_dtype(bool(value))
+        return warp_dtype(get_bool(value))
     if wp.types.type_is_vector(warp_dtype) or wp.types.type_is_matrix(warp_dtype):
         scalar_type = warp_dtype._wp_scalar_type_
         if wp.types.type_is_int(scalar_type):
