@@ -104,10 +104,10 @@ def convert_up_axis_pos(pos: wp.vec3, up_axis: int):
 
 
 # Precomputed rotation quaternions for axis conversion
-# X-up to Z-up: Rotate 90 degrees around Y-axis
-CONVERT_ROT_X2Z = wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), wp.pi * 0.5)
-# Y-up to Z-up: Rotate 90 degrees around X-axis
-CONVERT_ROT_Y2Z = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), -wp.pi * 0.5)
+# X-up to Z-up: Rotate -90 degrees around Y-axis to match position conversion (x, y, z) -> (-z, y, x)
+CONVERT_ROT_X2Z = wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), -wp.pi * 0.5)
+# Y-up to Z-up: Rotate 90 degrees around X-axis to match position conversion (x, y, z) -> (x, -z, y)
+CONVERT_ROT_Y2Z = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), wp.pi * 0.5)
 
 
 @wp.func
@@ -1931,10 +1931,8 @@ class SolverMuJoCo(SolverBase):
 
         spec = mujoco.MjSpec()
         spec.option.disableflags = disableflags
-        # Convert gravity vector from Newton coordinate system to MuJoCo coordinate system
-        # (MuJoCo always uses Z-up)
         original_gravity = model.gravity.numpy()[0]
-        converted_gravity = np.array(convert_up_axis_pos(wp.vec3(*original_gravity), model.up_axis))
+        converted_gravity = np.array(convert_up_axis_pos(wp.vec3(*original_gravity), int(model.up_axis)))
         spec.option.gravity = converted_gravity
         spec.option.timestep = timestep
         spec.option.solver = solver
@@ -2829,7 +2827,7 @@ class SolverMuJoCo(SolverBase):
         """Update model properties including gravity in the MuJoCo model."""
         # Convert gravity vector from Newton coordinate system to MuJoCo coordinate system (Z-up)
         original_gravity = self.model.gravity.numpy()[0]
-        converted_gravity = np.array(convert_up_axis_pos(wp.vec3(*original_gravity), self.model.up_axis))
+        converted_gravity = np.array(convert_up_axis_pos(wp.vec3(*original_gravity), int(self.model.up_axis)))
 
         if self.use_mujoco_cpu:
             self.mj_model.opt.gravity[:] = converted_gravity
