@@ -132,8 +132,8 @@ class TestMuJoCoSiteExport(unittest.TestCase):
         self.assertEqual(site_types[0], 2, "First site should be sphere (type 2)")
         self.assertEqual(site_types[1], 6, "Second site should be box (type 6)")
 
-    def test_export_include_sites_parameter(self):
-        """Test that sites are exported by default."""
+    def test_include_sites_parameter(self):
+        """Test that the include_sites parameter controls site export."""
         builder = newton.ModelBuilder()
         body = builder.add_body(mass=1.0, I_m=wp.mat33(np.eye(3)))
 
@@ -142,10 +142,20 @@ class TestMuJoCoSiteExport(unittest.TestCase):
 
         model = builder.finalize()
 
-        # Create solver - sites should be exported by default
-        solver = SolverMuJoCo(model)
-        mjw_model = solver.mjw_model
-        self.assertEqual(mjw_model.nsite, 1, "Should have 1 site exported by default")
+        # Test 1: Sites should be exported by default (include_sites=True)
+        solver_with_sites = SolverMuJoCo(model, include_sites=True)
+        mjw_model_with = solver_with_sites.mjw_model
+        self.assertEqual(mjw_model_with.nsite, 1, "Should have 1 site when include_sites=True")
+
+        # Test 2: Sites should NOT be exported when include_sites=False
+        solver_without_sites = SolverMuJoCo(model, include_sites=False)
+        mjw_model_without = solver_without_sites.mjw_model
+        self.assertEqual(mjw_model_without.nsite, 0, "Should have 0 sites when include_sites=False")
+
+        # Test 3: Default behavior (no parameter) should include sites
+        solver_default = SolverMuJoCo(model)
+        mjw_model_default = solver_default.mjw_model
+        self.assertEqual(mjw_model_default.nsite, 1, "Should have 1 site by default")
 
     def test_mjcf_roundtrip(self):
         """Test MJCF → Newton → MuJoCo round-trip preserves sites."""
