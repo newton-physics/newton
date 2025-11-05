@@ -189,27 +189,50 @@ class SchemaResolverPhysx(SchemaResolver):
     }
 
 
+def solref_to_stiffness_damping(solref):
+    """Convert MuJoCo solref (timeconst, dampratio) to internal stiffness and damping.
+
+    Returns a tuple (stiffness, damping).
+
+    Standard mode (timeconst > 0):
+        k = 1 / (timeconst^2)
+        b = 2 * dampratio / timeconst
+    Direct mode (both negative):
+        solref encodes (-stiffness, -damping) directly
+        k = -timeconst
+        b = -dampratio
+    """
+    try:
+        timeconst = float(solref[0])
+        dampratio = float(solref[1])
+    except (TypeError, ValueError, IndexError):
+        return None, None
+
+    # Direct mode: both negative → solref encodes (-stiffness, -damping)
+    if timeconst < 0.0 and dampratio < 0.0:
+        return -timeconst, -dampratio
+
+    # Standard mode: compute stiffness and damping
+    if timeconst <= 0.0:
+        return None, None
+
+    stiffness = 1.0 / (timeconst * timeconst)
+
+    if dampratio <= 0.0:
+        return stiffness, None
+
+    damping = (2.0 * dampratio) / timeconst
+    return stiffness, damping
+
+
 def solref_to_stiffness(solref):
     """Convert MuJoCo solref (timeconst, dampratio) to internal stiffness.
 
     Standard mode (timeconst > 0): k = 1 / (timeconst^2)
     Direct mode (both negative): k = -timeconst (encodes -stiffness directly)
     """
-    try:
-        timeconst = float(solref[0])
-        dampratio = float(solref[1])
-    except (TypeError, ValueError, IndexError):
-        return None
-
-    # Direct mode: both negative → solref encodes (-stiffness, -damping)
-    if timeconst < 0.0 and dampratio < 0.0:
-        return -timeconst
-
-    # Standard mode: k = 1 / (timeconst^2)
-    if timeconst <= 0.0:
-        return None
-
-    return 1.0 / (timeconst * timeconst)
+    stiffness, _ = solref_to_stiffness_damping(solref)
+    return stiffness
 
 
 def solref_to_damping(solref):
@@ -218,21 +241,8 @@ def solref_to_damping(solref):
     Standard mode (both positive): b = 2 * dampratio / timeconst
     Direct mode (both negative): b = -dampratio (encodes -damping directly)
     """
-    try:
-        timeconst = float(solref[0])
-        dampratio = float(solref[1])
-    except (TypeError, ValueError, IndexError):
-        return None
-
-    # Direct mode: both negative → solref encodes (-stiffness, -damping)
-    if timeconst < 0.0 and dampratio < 0.0:
-        return -dampratio
-
-    # Standard mode: b = 2 * dampratio / timeconst
-    if timeconst <= 0.0 or dampratio <= 0.0:
-        return None
-
-    return (2.0 * dampratio) / timeconst
+    _, damping = solref_to_stiffness_damping(solref)
+    return damping
 
 
 class SchemaResolverMjc(SchemaResolver):

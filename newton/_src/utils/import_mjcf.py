@@ -29,7 +29,7 @@ from ..core.types import Axis, AxisType, Sequence, Transform
 from ..geometry import MESH_MAXHULLVERT, Mesh
 from ..sim import JointType, ModelBuilder
 from ..sim.model import ModelAttributeFrequency
-from ..usd.schemas import solref_to_damping, solref_to_stiffness
+from ..usd.schemas import solref_to_stiffness_damping
 from .import_utils import parse_custom_attributes, sanitize_xml_content
 
 
@@ -533,8 +533,7 @@ def parse_mjcf(
 
                 # Parse solreflimit for joint limit stiffness and damping
                 solreflimit = parse_vec(joint_attrib, "solreflimit", (0.02, 1.0))
-                limit_ke = solref_to_stiffness(solreflimit)
-                limit_kd = solref_to_damping(solreflimit)
+                limit_ke, limit_kd = solref_to_stiffness_damping(solreflimit)
                 # Handle None return values (invalid solref)
                 if limit_ke is None:
                     limit_ke = 2500.0  # From MuJoCo's default solref (0.02, 1.0)
