@@ -2121,7 +2121,9 @@ class SolverMuJoCo(SolverBase):
                 stype = shape_type[shape]
                 name = f"{model.shape_key[shape]}_{shape}"
 
-                if include_sites and is_site:
+                if is_site:
+                    if not include_sites:
+                        continue
                     tf = wp.transform(*shape_transform[shape])
                     site_params = {
                         "type": geom_type_mapping[stype],
