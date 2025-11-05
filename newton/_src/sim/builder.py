@@ -275,36 +275,46 @@ class ModelBuilder:
         Custom attributes must be declared before use via the :meth:`newton.ModelBuilder.add_custom_attribute` method.
 
         See :ref:`custom_attributes` for more information.
-
-        Attributes:
-            name: Variable name to expose on the Model. Must be a valid Python identifier.
-            dtype: Warp dtype (e.g., wp.float32, wp.int32, wp.bool, wp.vec3) that is compatible with Warp arrays.
-            frequency: Frequency category (see :class:`ModelAttributeFrequency`) that determines how the attribute is indexed in the Model.
-            assignment: Assignment category (see :class:`ModelAttributeAssignment`), defaults to :attr:`ModelAttributeAssignment.MODEL`
-            namespace: Namespace for the attribute. If None, the attribute is added directly to the assigned object without a namespace.
-            default: Default value for the attribute. If None, the default value is determined based on the dtype.
-            values: Dictionary mapping indices to specific values (overrides). If None, the attribute is not initialized with any values. Values can be assigned in subsequent ``ModelBuilder.add_*(..., custom_attributes={...})`` method calls for specific entities after the CustomAttribute has been added through the :meth:`ModelBuilder.add_custom_attribute` method.
-            usd_attribute_name: Name of the corresponding USD attribute. If None, the USD attribute name ``"newton:<namespace>:<name>"`` is used.
-            mjcf_attribute_name: Name of the attribute in the MJCF definition. If None, the attribute name is used.
-            urdf_attribute_name: Name of the attribute in the URDF definition. If None, the attribute name is used.
-            usd_value_transformer: Transformer function that converts a USD attribute value to a valid Warp dtype. If undefined, the generic converter from :func:`newton.usd.convert_warp_value` is used.
-            mjcf_value_transformer: Transformer function that converts a MJCF attribute value string to a valid Warp dtype. If undefined, the generic converter from :func:`newton.utils.parse_warp_value_from_string` is used.
-            urdf_value_transformer: Transformer function that converts a URDF attribute value string to a valid Warp dtype. If undefined, the generic converter from :func:`newton.utils.parse_warp_value_from_string` is used.
         """
 
         name: str
+        """Variable name to expose on the Model. Must be a valid Python identifier."""
+
         dtype: type
+        """Warp dtype (e.g., wp.float32, wp.int32, wp.bool, wp.vec3) that is compatible with Warp arrays."""
+
         frequency: ModelAttributeFrequency
+        """Frequency category (see :class:`ModelAttributeFrequency`) that determines how the attribute is indexed in the Model."""
+
         assignment: ModelAttributeAssignment = ModelAttributeAssignment.MODEL
+        """Assignment category (see :class:`ModelAttributeAssignment`), defaults to :attr:`ModelAttributeAssignment.MODEL`"""
+
         namespace: str | None = None
+        """Namespace for the attribute. If None, the attribute is added directly to the assigned object without a namespace."""
+
         default: Any = None
+        """Default value for the attribute. If None, the default value is determined based on the dtype."""
+
         values: dict[int, Any] | None = None
+        """Dictionary mapping indices to specific values (overrides). If None, the attribute is not initialized with any values. Values can be assigned in subsequent ``ModelBuilder.add_*(..., custom_attributes={...})`` method calls for specific entities after the CustomAttribute has been added through the :meth:`ModelBuilder.add_custom_attribute` method."""
+
         usd_attribute_name: str | None = None
+        """Name of the corresponding USD attribute. If None, the USD attribute name ``"newton:<namespace>:<name>"`` is used."""
+
         mjcf_attribute_name: str | None = None
+        """Name of the attribute in the MJCF definition. If None, the attribute name is used."""
+
         urdf_attribute_name: str | None = None
+        """Name of the attribute in the URDF definition. If None, the attribute name is used."""
+
         usd_value_transformer: Callable[[Any], Any] | None = None
+        """Transformer function that converts a USD attribute value to a valid Warp dtype. If undefined, the generic converter from :func:`newton.usd.convert_warp_value` is used."""
+
         mjcf_value_transformer: Callable[[str], Any] | None = None
+        """Transformer function that converts a MJCF attribute value string to a valid Warp dtype. If undefined, the generic converter from :func:`newton.utils.parse_warp_value_from_string` is used."""
+
         urdf_value_transformer: Callable[[str], Any] | None = None
+        """Transformer function that converts a URDF attribute value string to a valid Warp dtype. If undefined, the generic converter from :func:`newton.utils.parse_warp_value_from_string` is used."""
 
         def __post_init__(self):
             """Initialize default values and ensure values dict exists."""
