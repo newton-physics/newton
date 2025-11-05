@@ -33,6 +33,7 @@ import newton
 import newton.examples
 import newton.utils
 from newton import State
+from newton.geometry import generate_terrain_grid
 
 lab_to_mujoco = [0, 6, 3, 9, 1, 7, 4, 10, 2, 8, 5, 11]
 mujoco_to_lab = [0, 4, 8, 2, 6, 10, 1, 5, 9, 3, 7, 11]
@@ -75,10 +76,11 @@ def compute_obs(actions, state: State, joint_pos_initial, device, indices, gravi
 
 
 class Example:
-    def __init__(self, viewer):
+    def __init__(self, viewer, args=None):
         self.viewer = viewer
         self.device = wp.get_device()
         self.torch_device = device_to_torch(self.device)
+        self.is_test = args is not None and args.test
 
         builder = newton.ModelBuilder()
         builder.default_joint_cfg = newton.ModelBuilder.JointDofConfig(
@@ -102,6 +104,22 @@ class Example:
             ignore_inertial_definitions=False,
         )
 
+        # Generate procedural terrain for visual demonstration (but not during unit tests)
+        if not self.is_test:
+            vertices, indices = generate_terrain_grid(
+                grid_size=(8, 3),  # 3x8 grid for forward walking
+                block_size=(3.0, 3.0),
+                terrain_types=["random_grid", "flat", "wave", "gap", "pyramid_stairs"],
+                terrain_params={
+                    "pyramid_stairs": {"step_width": 0.3, "step_height": 0.02, "platform_width": 0.6},
+                    "random_grid": {"grid_width": 0.3, "grid_height_range": (0, 0.02)},
+                    "wave": {"wave_amplitude": 0.15, "wave_frequency": 2.0},
+                },
+                seed=42,
+            )
+            terrain_mesh = newton.Mesh(vertices, indices)
+            terrain_offset = wp.transform(p=wp.vec3(-5, -2.0, 0.01), q=wp.quat_identity())
+            builder.add_shape_mesh(body=-1, mesh=terrain_mesh, xform=terrain_offset)
         builder.add_ground_plane()
 
         self.sim_time = 0.0
@@ -140,7 +158,21 @@ class Example:
                 builder.joint_target_kd[i] = 5
 
         self.model = builder.finalize()
-        self.solver = newton.solvers.SolverMuJoCo(self.model, ls_parallel=True, njmax=50)
+
+        # Create collision pipeline for terrain mesh collisions
+        self.collision_pipeline = newton.CollisionPipelineUnified.from_model(
+            self.model,
+            rigid_contact_max_per_pair=10,
+            rigid_contact_margin=0.01,
+            broad_phase_mode=newton.BroadPhaseMode.EXPLICIT,
+        )
+
+        self.solver = newton.solvers.SolverMuJoCo(
+            self.model,
+            use_mujoco_contacts=False,  # Use Newton contacts from collision pipeline
+            ls_parallel=True,
+            njmax=50,
+        )
 
         self.viewer.set_model(self.model)
 
@@ -158,6 +190,12 @@ class Example:
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.control = self.model.control()
+
+        # Evaluate forward kinematics to update body poses based on initial joint configuration
+        newton.eval_fk(self.model, self.state_0.joint_q, self.state_0.joint_qd, self.state_0)
+
+        # Initialize contacts using collision pipeline
+        self.contacts = self.model.collide(self.state_0, collision_pipeline=self.collision_pipeline)
 
         # Download the policy from the newton-assets repository
         policy_asset_path = newton.utils.download_asset("anybotics_anymal_c")
@@ -197,7 +235,10 @@ class Example:
             # apply forces to the model
             self.viewer.apply_forces(self.state_0)
 
-            self.solver.step(self.state_0, self.state_1, self.control, None, self.sim_dt)
+            # Compute contacts using collision pipeline for terrain mesh
+            self.contacts = self.model.collide(self.state_0, collision_pipeline=self.collision_pipeline)
+
+            self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
 
             # swap states
             self.state_0, self.state_1 = self.state_1, self.state_0
@@ -299,6 +340,6 @@ if __name__ == "__main__":
     # Parse arguments and initialize viewer
     viewer, args = newton.examples.init()
 
-    example = Example(viewer)
+    example = Example(viewer, args)
 
     newton.examples.run(example, args)

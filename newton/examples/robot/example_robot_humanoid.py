@@ -66,7 +66,7 @@ class Example:
         builder.add_ground_plane()
 
         self.model = builder.finalize()
-        self.solver = newton.solvers.SolverMuJoCo(self.model, njmax=100)
+        self.solver = newton.solvers.SolverMuJoCo(self.model, njmax=100, nconmax=50)
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()

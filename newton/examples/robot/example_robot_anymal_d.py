@@ -84,7 +84,7 @@ class Example:
             impratio=100,
             iterations=100,
             ls_iterations=50,
-            ncon_per_world=20,
+            nconmax=20,
         )
 
         self.state_0 = self.model.state()

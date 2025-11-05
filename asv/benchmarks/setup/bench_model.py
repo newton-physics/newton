@@ -15,6 +15,7 @@
 
 import gc
 import os
+import sys
 
 # Force headless mode for CI environments before any pyglet imports
 os.environ["PYGLET_HEADLESS"] = "1"
@@ -26,7 +27,11 @@ wp.config.quiet = True
 
 from asv_runner.benchmarks.mark import skip_benchmark_if
 
-from newton.examples.example_mujoco import Example
+parent_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+sys.path.append(parent_dir)
+
+from benchmark_mujoco import Example
+
 from newton.viewer import ViewerGL
 
 
