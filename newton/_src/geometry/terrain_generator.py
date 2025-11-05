@@ -412,8 +412,8 @@ def _gap_terrain(
 def _heightfield_terrain(
     size: tuple[float, float],
     heightfield: np.ndarray | None = None,
-    center_x: float = 0.0,
-    center_y: float = 0.0,
+    center_x: float | None = None,
+    center_y: float | None = None,
     ground_z: float = 0.0,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Generate terrain from a custom heightfield array.
@@ -423,8 +423,8 @@ def _heightfield_terrain(
     Args:
         size: (width, height) size of the terrain block in meters
         heightfield: (grid_size, grid_size) array of Z heights. If None, creates flat terrain.
-        center_x: Center X coordinate (default: 0.0)
-        center_y: Center Y coordinate (default: 0.0)
+        center_x: Center X coordinate. If None, defaults to size[0]/2 to align with other terrain types.
+        center_y: Center Y coordinate. If None, defaults to size[1]/2 to align with other terrain types.
         ground_z: Z coordinate of bottom surface (default: 0.0)
 
     Returns:
@@ -434,6 +434,12 @@ def _heightfield_terrain(
     if heightfield is None:
         # Default to flat terrain if no heightfield provided
         return _flat_terrain(size)
+
+    # Default center to size/2 to align with other terrain types (which span [0, size])
+    if center_x is None:
+        center_x = size[0] / 2
+    if center_y is None:
+        center_y = size[1] / 2
 
     # Use heightfield_to_mesh to convert heightfield to mesh
     vertices, indices = heightfield_to_mesh(
