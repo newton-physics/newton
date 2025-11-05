@@ -235,7 +235,7 @@ def get_scale(prim: Usd.Prim) -> wp.vec3:
     return wp.vec3(*scale)
 
 
-def get_axis(prim: Usd.Prim, name: str = "axis", default: AxisType = "Z") -> Axis:
+def get_gprim_axis(prim: Usd.Prim, name: str = "axis", default: AxisType = "Z") -> Axis:
     """
     Get an axis attribute from a USD prim and convert it to an :class:`~newton.Axis` enum.
 

@@ -319,7 +319,7 @@ def parse_usd(
                     key=path_name,
                 )
             elif type_name == "plane":
-                axis = usd.get_axis(prim)
+                axis = usd.get_gprim_axis(prim)
                 plane_xform = xform
                 # Apply axis rotation to transform
                 xform = wp.transform(xform.p, xform.q * quat_between_axes(Axis.Z, axis))
@@ -334,7 +334,7 @@ def parse_usd(
                     key=path_name,
                 )
             elif type_name == "capsule":
-                axis = usd.get_axis(prim)
+                axis = usd.get_gprim_axis(prim)
                 radius = usd.get_float(prim, "radius", 0.5) * scale[0]
                 half_height = usd.get_float(prim, "height", 2.0) / 2 * scale[1]
                 assert not usd.has_attribute(prim, "extents"), "Capsule extents are not supported."
@@ -349,7 +349,7 @@ def parse_usd(
                     key=path_name,
                 )
             elif type_name == "cylinder":
-                axis = usd.get_axis(prim)
+                axis = usd.get_gprim_axis(prim)
                 radius = usd.get_float(prim, "radius", 0.5) * scale[0]
                 half_height = usd.get_float(prim, "height", 2.0) / 2 * scale[1]
                 assert not usd.has_attribute(prim, "extents"), "Cylinder extents are not supported."
@@ -364,7 +364,7 @@ def parse_usd(
                     key=path_name,
                 )
             elif type_name == "cone":
-                axis = usd.get_axis(prim)
+                axis = usd.get_gprim_axis(prim)
                 radius = usd.get_float(prim, "radius", 0.5) * scale[0]
                 half_height = usd.get_float(prim, "height", 2.0) / 2 * scale[1]
                 assert not usd.has_attribute(prim, "extents"), "Cone extents are not supported."
