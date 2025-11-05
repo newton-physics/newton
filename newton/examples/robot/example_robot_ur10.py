@@ -20,7 +20,7 @@
 # from a USD file using newton.ModelBuilder.add_usd() and
 # applies a sinusoidal trajectory to the joint targets.
 #
-# Command: python -m newton.examples robot_ur10 --num-envs 16
+# Command: python -m newton.examples robot_ur10 --num-worlds 16
 #
 ###########################################################################
 
@@ -41,25 +41,25 @@ def update_joint_target_trajectory_kernel(
     # output
     joint_target: wp.array2d(dtype=wp.float32),
 ):
-    env_idx = wp.tid()
-    t = time[env_idx]
+    world_idx = wp.tid()
+    t = time[world_idx]
     t = wp.mod(t + dt, float(joint_target_trajectory.shape[0] - 1))
     step = int(t)
-    time[env_idx] = t
+    time[world_idx] = t
 
     num_dofs = joint_target.shape[1]
     for dof in range(num_dofs):
-        # add env_idx here to make the sequence of dofs different for each env
-        di = (dof + env_idx) % num_dofs
-        joint_target[env_idx, dof] = wp.lerp(
-            joint_target_trajectory[step, env_idx, di],
-            joint_target_trajectory[step + 1, env_idx, di],
+        # add world_idx here to make the sequence of dofs different for each world
+        di = (dof + world_idx) % num_dofs
+        joint_target[world_idx, dof] = wp.lerp(
+            joint_target_trajectory[step, world_idx, di],
+            joint_target_trajectory[step + 1, world_idx, di],
             wp.frac(t),
         )
 
 
 class Example:
-    def __init__(self, viewer, num_envs=4):
+    def __init__(self, viewer, num_worlds=4):
         self.fps = 50
         self.frame_dt = 1.0 / self.fps
 
@@ -67,7 +67,7 @@ class Example:
         self.sim_substeps = 10
         self.sim_dt = self.frame_dt / self.sim_substeps
 
-        self.num_envs = num_envs
+        self.num_worlds = num_worlds
 
         self.viewer = viewer
 
@@ -95,7 +95,7 @@ class Example:
             ur10.joint_target_kd[i] = 50
 
         builder = newton.ModelBuilder()
-        builder.replicate(ur10, self.num_envs, spacing=(2, 2, 0))
+        builder.replicate(ur10, self.num_worlds, spacing=(2, 2, 0))
 
         # set random joint configurations
         rng = np.random.default_rng(42)
@@ -114,11 +114,11 @@ class Example:
         self.articulation_view = ArticulationView(
             self.model, "*ur10*", exclude_joint_types=[newton.JointType.FREE, newton.JointType.DISTANCE]
         )
-        assert self.articulation_view.count == self.num_envs, (
-            "Number of environments must match the number of articulations"
+        assert self.articulation_view.count == self.num_worlds, (
+            "Number of worlds must match the number of articulations"
         )
         dof_count = self.articulation_view.joint_dof_count
-        joint_target_trajectory = np.zeros((0, self.num_envs, dof_count), dtype=np.float32)
+        joint_target_trajectory = np.zeros((0, self.num_worlds, dof_count), dtype=np.float32)
 
         self.control_speed = 50.0
 
@@ -149,7 +149,7 @@ class Example:
             joint_target_trajectory = np.concatenate((joint_target_trajectory, target_trajectory), axis=0)
 
         self.joint_target_trajectory = wp.array(joint_target_trajectory, dtype=wp.float32, device=self.device)
-        self.time_step = wp.zeros(self.num_envs, dtype=wp.float32, device=self.device)
+        self.time_step = wp.zeros(self.num_worlds, dtype=wp.float32, device=self.device)
 
         self.ctrl = self.articulation_view.get_attribute("joint_target", self.control)
 
@@ -178,7 +178,7 @@ class Example:
 
             wp.launch(
                 update_joint_target_trajectory_kernel,
-                dim=self.num_envs,
+                dim=self.num_worlds,
                 inputs=[self.joint_target_trajectory, self.time_step, self.sim_dt * self.control_speed],
                 outputs=[self.ctrl],
                 device=self.device,
@@ -209,10 +209,10 @@ class Example:
 
 if __name__ == "__main__":
     parser = newton.examples.create_parser()
-    parser.add_argument("--num-envs", type=int, default=100, help="Total number of simulated environments.")
+    parser.add_argument("--num-worlds", type=int, default=100, help="Total number of simulated worlds.")
 
     viewer, args = newton.examples.init(parser)
 
-    example = Example(viewer, args.num_envs)
+    example = Example(viewer, args.num_worlds)
 
     newton.examples.run(example, args)

@@ -44,13 +44,13 @@ def compute_ee_delta(
     body_q: wp.array(dtype=wp.transform),
     offset: wp.transform,
     body_id: int,
-    bodies_per_env: int,
+    bodies_per_world: int,
     target: wp.transform,
     # outputs
     ee_delta: wp.array(dtype=wp.spatial_vector),
 ):
-    env_id = wp.tid()
-    tf = body_q[bodies_per_env * env_id + body_id] * offset
+    world_id = wp.tid()
+    tf = body_q[bodies_per_world * world_id + body_id] * offset
     pos = wp.transform_get_translation(tf)
     pos_des = wp.transform_get_translation(target)
     pos_diff = pos_des - pos
@@ -58,7 +58,7 @@ def compute_ee_delta(
     rot_des = wp.transform_get_rotation(target)
     ang_diff = rot_des * wp.quat_inverse(rot)
     # compute pose difference between end effector and target
-    ee_delta[env_id] = wp.spatial_vector(pos_diff[0], pos_diff[1], pos_diff[2], ang_diff[0], ang_diff[1], ang_diff[2])
+    ee_delta[world_id] = wp.spatial_vector(pos_diff[0], pos_diff[1], pos_diff[2], ang_diff[0], ang_diff[1], ang_diff[2])
 
 
 def compute_body_jacobian(
@@ -174,9 +174,9 @@ class Example:
             self.create_articulation(franka)
 
             self.scene.add_builder(franka)
-            self.bodies_per_env = franka.body_count
-            self.dof_q_per_env = franka.joint_coord_count
-            self.dof_qd_per_env = franka.joint_dof_count
+            self.bodies_per_world = franka.body_count
+            self.dof_q_per_world = franka.joint_coord_count
+            self.dof_qd_per_world = franka.joint_dof_count
 
         # add a table
         self.scene.add_shape_box(
@@ -439,7 +439,7 @@ class Example:
                 state_in.body_q,
                 self.endeffector_offset,
                 self.endeffector_id,
-                self.bodies_per_env,
+                self.bodies_per_world,
                 wp.transform(*self.target[:7]),
             ],
             outputs=[self.ee_delta],

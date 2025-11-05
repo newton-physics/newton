@@ -111,7 +111,11 @@ class ViewerGL(ViewerBase):
         # initialize viewer-local timer for per-frame integration
         self._last_time = time.perf_counter()
 
-        self.ui = UI(self.renderer.window)
+        # Only create UI in non-headless mode to avoid OpenGL context dependency
+        if not headless:
+            self.ui = UI(self.renderer.window)
+        else:
+            self.ui = None
 
         # Performance tracking
         self._fps_history = []
@@ -189,11 +193,23 @@ class ViewerGL(ViewerBase):
         """
         super().set_model(model)
 
-        self.picking = Picking(model, pick_stiffness=10000.0, pick_damping=1000.0)
+        self.picking = Picking(model, pick_stiffness=10000.0, pick_damping=1000.0, world_offsets=self.world_offsets)
         self.wind = Wind(model)
 
         fb_w, fb_h = self.renderer.window.get_framebuffer_size()
         self.camera = Camera(width=fb_w, height=fb_h, up_axis=model.up_axis if model else "Z")
+
+    @override
+    def set_world_offsets(self, spacing: tuple[float, float, float] | list[float] | wp.vec3):
+        """Set world offsets and update the picking system.
+
+        Args:
+            spacing: Spacing between worlds along each axis.
+        """
+        super().set_world_offsets(spacing)
+        # Update picking system with new world offsets
+        if hasattr(self, "picking") and self.picking is not None:
+            self.picking.world_offsets = self.world_offsets
 
     @override
     def set_camera(self, pos: wp.vec3, pitch: float, yaw: float):
@@ -395,14 +411,25 @@ class ViewerGL(ViewerBase):
             self.log_lines("picking_line", None, None, None)
             return
 
-        # Get the pick target and current picked point on geometry
+        # Get the pick target and current picked point on geometry (in physics space)
         pick_state = self.picking.pick_state.numpy()
-        pick_target = wp.vec3(pick_state[8], pick_state[9], pick_state[10])
-        picked_point = wp.vec3(pick_state[11], pick_state[12], pick_state[13])
+        pick_target = np.array([pick_state[8], pick_state[9], pick_state[10]], dtype=np.float32)
+        picked_point = np.array([pick_state[11], pick_state[12], pick_state[13]], dtype=np.float32)
+
+        # Apply world offset to convert from physics space to visual space
+        if self.world_offsets is not None and self.world_offsets.shape[0] > 0:
+            if self.model.body_world is not None:
+                body_world_idx = self.model.body_world.numpy()[pick_body_idx]
+                if body_world_idx >= 0 and body_world_idx < self.world_offsets.shape[0]:
+                    world_offset = self.world_offsets.numpy()[body_world_idx]
+                    pick_target = pick_target + world_offset
+                    picked_point = picked_point + world_offset
 
         # Create line data
-        starts = wp.array([picked_point], dtype=wp.vec3, device=self.device)
-        ends = wp.array([pick_target], dtype=wp.vec3, device=self.device)
+        starts = wp.array(
+            [wp.vec3(picked_point[0], picked_point[1], picked_point[2])], dtype=wp.vec3, device=self.device
+        )
+        ends = wp.array([wp.vec3(pick_target[0], pick_target[1], pick_target[2])], dtype=wp.vec3, device=self.device)
         colors = wp.array([wp.vec3(0.0, 1.0, 1.0)], dtype=wp.vec3, device=self.device)
 
         # Render the line
@@ -470,7 +497,7 @@ class ViewerGL(ViewerBase):
         # Always update FPS tracking, even if UI is hidden
         self._update_fps()
 
-        if self.ui.is_available and self.show_ui:
+        if self.ui and self.ui.is_available and self.show_ui:
             self.ui.begin_frame()
 
             # Render the UI
@@ -673,7 +700,7 @@ class ViewerGL(ViewerBase):
             x, y: Mouse position.
             scroll_x, scroll_y: Scroll deltas.
         """
-        if self.ui.is_capturing():
+        if self.ui and self.ui.is_capturing():
             return
 
         fov_delta = scroll_y * 2.0
@@ -689,7 +716,7 @@ class ViewerGL(ViewerBase):
             button: Mouse button pressed.
             modifiers: Modifier keys.
         """
-        if self.ui.is_capturing():
+        if self.ui and self.ui.is_capturing():
             return
 
         import pyglet  # noqa: PLC0415
@@ -721,7 +748,7 @@ class ViewerGL(ViewerBase):
             buttons: Mouse buttons pressed.
             modifiers: Modifier keys.
         """
-        if self.ui.is_capturing():
+        if self.ui and self.ui.is_capturing():
             return
 
         import pyglet  # noqa: PLC0415
@@ -756,7 +783,7 @@ class ViewerGL(ViewerBase):
             symbol: Key symbol.
             modifiers: Modifier keys.
         """
-        if self.ui.is_capturing():
+        if self.ui and self.ui.is_capturing():
             return
 
         try:
@@ -844,7 +871,7 @@ class ViewerGL(ViewerBase):
         Args:
             dt (float): Time delta since last update.
         """
-        if self.ui.is_capturing():
+        if self.ui and self.ui.is_capturing():
             return
 
         # camera-relative basis
@@ -899,7 +926,8 @@ class ViewerGL(ViewerBase):
         fb_w, fb_h = self.renderer.window.get_framebuffer_size()
         self.camera.update_screen_size(fb_w, fb_h)
 
-        self.ui.resize(width, height)
+        if self.ui:
+            self.ui.resize(width, height)
 
     def _update_fps(self):
         """
@@ -922,7 +950,7 @@ class ViewerGL(ViewerBase):
             self._frame_count = 0
 
     def _render_gizmos(self):
-        if not self._gizmo_log:
+        if not self._gizmo_log or not self.ui:
             return
 
         giz = self.ui.giz
@@ -966,7 +994,7 @@ class ViewerGL(ViewerBase):
         """
         Render the complete ImGui interface (left panel, stats overlay, and custom UI).
         """
-        if not self.ui.is_available:
+        if not self.ui or not self.ui.is_available:
             return
 
         # Render gizmos
@@ -1010,7 +1038,7 @@ class ViewerGL(ViewerBase):
                 imgui.set_next_item_open(True, imgui.Cond_.appearing)
                 if imgui.collapsing_header("Model Information", flags=header_flags):
                     imgui.separator()
-                    imgui.text(f"Environments: {self.model.num_envs}")
+                    imgui.text(f"Worlds: {self.model.num_worlds}")
                     axis_names = ["X", "Y", "Z"]
                     imgui.text(f"Up Axis: {axis_names[self.model.up_axis]}")
                     gravity = self.model.gravity.numpy()[0]
@@ -1410,7 +1438,7 @@ class ViewerGL(ViewerBase):
             if len(values.shape) == 2:
                 batch_size = values.shape[0]
                 imgui.spacing()
-                imgui.text("Batch/Environment Selection:")
+                imgui.text("Batch/World Selection:")
                 imgui.push_item_width(100)
 
                 # Ensure selected batch index is valid
@@ -1421,7 +1449,7 @@ class ViewerGL(ViewerBase):
                 )
                 imgui.pop_item_width()
                 imgui.same_line()
-                text = f"Environment {state['selected_batch_idx']} / {batch_size}"
+                text = f"World {state['selected_batch_idx']} / {batch_size}"
                 imgui.text(text)
 
             # Display values as sliders in a scrollable region
@@ -1457,7 +1485,7 @@ class ViewerGL(ViewerBase):
                 if len(values.shape) == 2:
                     batch_idx = state["selected_batch_idx"]
                     stats_data = values[batch_idx]
-                    imgui.text(f"Statistics for Environment {batch_idx}:")
+                    imgui.text(f"Statistics for World {batch_idx}:")
                 else:
                     stats_data = values
                     imgui.text("Statistics:")

@@ -17,7 +17,7 @@
 # Example Selection Materials
 #
 # Demonstrates runtime material property modification using ArticulationView.
-# This example spawns multiple ant robots across environments and dynamically
+# This example spawns multiple ant robots across worlds and dynamically
 # changes their friction coefficients during simulation. The ants alternate
 # between forward and backward movement with randomized material properties,
 # showcasing how to efficiently modify physics parameters for batches of
@@ -40,10 +40,10 @@ USE_TORCH = False
 COLLAPSE_FIXED_JOINTS = False
 VERBOSE = True
 
-# RANDOMIZE_PER_ENV determines how shape material values are randomized.
-# - If True, all shapes in the same environment get the same random value.
-# - If False, each shape in each environment gets its own random value.
-RANDOMIZE_PER_ENV = True
+# RANDOMIZE_PER_WORLD determines how shape material values are randomized.
+# - If True, all shapes in the same world get the same random value.
+# - If False, each shape in each world gets its own random value.
+RANDOMIZE_PER_WORLD = True
 
 
 @wp.kernel
@@ -60,7 +60,7 @@ def compute_middle_kernel(
 def reset_materials_kernel(mu: wp.array2d(dtype=float), seed: int, shape_count: int):
     i, j = wp.tid()
 
-    if RANDOMIZE_PER_ENV:
+    if RANDOMIZE_PER_WORLD:
         rng = wp.rand_init(seed, i)
     else:
         rng = wp.rand_init(seed, i * shape_count + j)
@@ -69,7 +69,7 @@ def reset_materials_kernel(mu: wp.array2d(dtype=float), seed: int, shape_count: 
 
 
 class Example:
-    def __init__(self, viewer, num_envs=16):
+    def __init__(self, viewer, num_worlds=16):
         self.fps = 60
         self.frame_dt = 1.0 / self.fps
 
@@ -77,10 +77,10 @@ class Example:
         self.sim_substeps = 10
         self.sim_dt = self.frame_dt / self.sim_substeps
 
-        self.num_envs = num_envs
+        self.num_worlds = num_worlds
 
-        env = newton.ModelBuilder()
-        env.add_mjcf(
+        world_template = newton.ModelBuilder()
+        world_template.add_mjcf(
             newton.examples.get_asset("nv_ant.xml"),
             ignore_names=["floor", "ground"],
             collapse_fixed_joints=COLLAPSE_FIXED_JOINTS,
@@ -89,12 +89,12 @@ class Example:
         scene = newton.ModelBuilder()
 
         scene.add_ground_plane()
-        scene.replicate(env, num_copies=self.num_envs, spacing=(4.0, 4.0, 0.0))
+        scene.replicate(world_template, num_worlds=self.num_worlds)
 
         # finalize model
         self.model = scene.finalize()
 
-        self.solver = newton.solvers.SolverMuJoCo(self.model, njmax=50)
+        self.solver = newton.solvers.SolverMuJoCo(self.model, njmax=50, nconmax=50)
 
         self.viewer = viewer
 
@@ -147,6 +147,7 @@ class Example:
             self.default_ant_dof_velocities = wp.clone(self.ants.get_dof_velocities(self.model))
 
         self.viewer.set_model(self.model)
+        self.viewer.set_world_offsets((4.0, 4.0, 0.0))
 
         # Ensure FK evaluation (for non-MuJoCo solvers):
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
@@ -206,7 +207,7 @@ class Example:
                 self.default_ant_root_velocities[:, 4] = -5.0
 
             # randomize materials
-            if RANDOMIZE_PER_ENV:
+            if RANDOMIZE_PER_WORLD:
                 material_mu = torch.rand(self.ants.count).unsqueeze(1).repeat(1, self.ants.shape_count)
             else:
                 material_mu = torch.rand((self.ants.count, self.ants.shape_count))
@@ -264,10 +265,10 @@ class Example:
 if __name__ == "__main__":
     parser = newton.examples.create_parser()
     parser.add_argument(
-        "--num-envs",
+        "--num-worlds",
         type=int,
         default=16,
-        help="Total number of simulated environments.",
+        help="Total number of simulated worlds.",
     )
 
     viewer, args = newton.examples.init(parser)
@@ -277,6 +278,6 @@ if __name__ == "__main__":
 
         torch.set_device(args.device)
 
-    example = Example(viewer, num_envs=args.num_envs)
+    example = Example(viewer, num_worlds=args.num_worlds)
 
     newton.examples.run(example, args)

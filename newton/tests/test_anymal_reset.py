@@ -31,15 +31,15 @@ from newton.tests.unittest_utils import add_function_test, get_test_devices
 class TestAnymalReset(unittest.TestCase):
     def setUp(self):
         self.device = wp.get_device()
-        self.num_envs = 1
+        self.num_worlds = 1
         self.headless = True
 
     def _setup_simulation(self, cone_type):
         builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
         builder.default_joint_cfg = newton.ModelBuilder.JointDofConfig(
             armature=0.06,
-            limit_ke=1.0e3,
-            limit_kd=1.0e1,
+            limit_ke=1.0e2,
+            limit_kd=1.0e0,
         )
         builder.default_shape_cfg.ke = 5.0e4
         builder.default_shape_cfg.kd = 5.0e2
@@ -101,7 +101,7 @@ class TestAnymalReset(unittest.TestCase):
             impratio = 100.0
 
         self.solver = newton.solvers.SolverMuJoCo(
-            self.model, solver=2, cone=cone_type, impratio=impratio, iterations=100, ls_iterations=50, njmax=200
+            self.model, solver=2, cone=cone_type, impratio=impratio, iterations=100, ls_iterations=50, njmax=300
         )
 
         if self.headless:
@@ -177,7 +177,7 @@ class TestAnymalReset(unittest.TestCase):
             "collision_pairid",
             "solver_nisland",
             "nefc",
-            "ncon",
+            "nacon",
             "cfrc_int",
             "collision_worldid",
             "epa_face",

@@ -16,9 +16,9 @@
 ###########################################################################
 # Example Robot Anymal D
 #
-# Shows how to simulate Anymal D with multiple environments using SolverMuJoCo.
+# Shows how to simulate Anymal D with multiple worlds using SolverMuJoCo.
 #
-# Command: python -m newton.examples robot_anymal_d --num-envs 16
+# Command: python -m newton.examples robot_anymal_d --num-worlds 16
 #
 ###########################################################################
 
@@ -31,14 +31,14 @@ import newton.utils
 
 
 class Example:
-    def __init__(self, viewer, num_envs=8):
+    def __init__(self, viewer, num_worlds=8):
         self.fps = 50
         self.frame_dt = 1.0 / self.fps
         self.sim_time = 0.0
         self.sim_substeps = 4
         self.sim_dt = self.frame_dt / self.sim_substeps
 
-        self.num_envs = num_envs
+        self.num_worlds = num_worlds
 
         self.viewer = viewer
 
@@ -72,13 +72,9 @@ class Example:
             articulation_builder.joint_target_ke[i] = 150
             articulation_builder.joint_target_kd[i] = 5
 
-        spacing = 3.0
-        sqn = int(wp.ceil(wp.sqrt(float(self.num_envs))))
-
         builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
-        for i in range(self.num_envs):
-            pos = wp.vec3((i % sqn) * spacing, (i // sqn) * spacing, 0)
-            builder.add_builder(articulation_builder, xform=wp.transform(pos, wp.quat_identity()))
+        for _ in range(self.num_worlds):
+            builder.add_builder(articulation_builder)
 
         builder.add_ground_plane()
 
@@ -89,7 +85,7 @@ class Example:
             impratio=100,
             iterations=100,
             ls_iterations=50,
-            ncon_per_env=20,
+            nconmax=20,
         )
 
         self.state_0 = self.model.state()
@@ -155,10 +151,10 @@ class Example:
 
 if __name__ == "__main__":
     parser = newton.examples.create_parser()
-    parser.add_argument("--num-envs", type=int, default=8, help="Total number of simulated environments.")
+    parser.add_argument("--num-worlds", type=int, default=8, help="Total number of simulated worlds.")
 
     viewer, args = newton.examples.init(parser)
 
-    example = Example(viewer, args.num_envs)
+    example = Example(viewer, args.num_worlds)
 
     newton.examples.run(example, args)

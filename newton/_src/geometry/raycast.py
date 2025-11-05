@@ -480,7 +480,7 @@ def ray_intersect_geom(
         h = size[1]
         t_hit = ray_intersect_cone(geom_to_world, ray_origin, ray_direction, r, h)
 
-    elif geomtype == GeoType.MESH:
+    elif geomtype == GeoType.MESH or geomtype == GeoType.CONVEX_MESH:
         t_hit = ray_intersect_mesh(geom_to_world, ray_origin, ray_direction, size, mesh_id)
 
     return t_hit
@@ -504,6 +504,9 @@ def raycast_kernel(
     min_dist: wp.array(dtype=float),
     min_index: wp.array(dtype=int),
     min_body_index: wp.array(dtype=int),
+    # Optional: world offsets for multi-world picking
+    shape_world: wp.array(dtype=int),
+    world_offsets: wp.array(dtype=wp.vec3),
 ):
     """
     Computes the intersection of a ray with all geometries in the scene.
@@ -521,6 +524,8 @@ def raycast_kernel(
         min_dist: A single-element array to store the minimum intersection distance. Expected to be initialized to a large value like 1e10.
         min_index: A single-element array to store the index of the closest geometry. Expected to be initialized to -1.
         min_body_index: A single-element array to store the body index of the closest geometry. Expected to be initialized to -1.
+        shape_world: Optional array mapping shape index to world index. Can be empty to disable world offsets.
+        world_offsets: Optional array of world offsets. Can be empty to disable world offsets.
     """
     shape_idx = wp.tid()
 
@@ -535,10 +540,17 @@ def raycast_kernel(
 
     geom_to_world = wp.mul(X_wb, X_bs)
 
+    # Apply world offset if available (for multi-world picking)
+    if shape_world.shape[0] > 0 and world_offsets.shape[0] > 0:
+        world_idx = shape_world[shape_idx]
+        if world_idx >= 0 and world_idx < world_offsets.shape[0]:
+            offset = world_offsets[world_idx]
+            geom_to_world = wp.transform(geom_to_world.p + offset, geom_to_world.q)
+
     geomtype = geom_type[shape_idx]
 
-    # Get mesh ID for mesh geometries
-    if geomtype == GeoType.MESH:
+    # Get mesh ID for mesh-like geometries
+    if geomtype == GeoType.MESH or geomtype == GeoType.CONVEX_MESH:
         mesh_id = shape_source_ptr[shape_idx]
     else:
         mesh_id = wp.uint64(0)
@@ -595,7 +607,7 @@ def ray_for_pixel(
     # Apply field of view and aspect ratio
     cam_x = ndc_x * fov_scale * camera_aspect_ratio
     cam_y = ndc_y * fov_scale
-    cam_z = -1.0  # Forward is negative Z in camera space
+    cam_z = 1.0  # Forward is negative Z in camera space (camera_direction already looks at -Z)
 
     ray_dir_camera = wp.vec3(cam_x, cam_y, cam_z)
 
@@ -681,8 +693,8 @@ def raycast_sensor_kernel(
 
     geomtype = geom_type[shape_idx]
 
-    # Get mesh ID for mesh geometries
-    if geomtype == GeoType.MESH:
+    # Get mesh ID for mesh-like geometries
+    if geomtype == GeoType.MESH or geomtype == GeoType.CONVEX_MESH:
         mesh_id = shape_source_ptr[shape_idx]
     else:
         mesh_id = wp.uint64(0)

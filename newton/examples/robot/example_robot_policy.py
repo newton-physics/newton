@@ -231,8 +231,8 @@ class Example:
         builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
         builder.default_joint_cfg = newton.ModelBuilder.JointDofConfig(
             armature=0.1,
-            limit_ke=1.0e3,
-            limit_kd=1.0e1,
+            limit_ke=1.0e2,
+            limit_kd=1.0e0,
         )
         builder.default_shape_cfg.ke = 5.0e4
         builder.default_shape_cfg.kd = 5.0e2
@@ -272,7 +272,7 @@ class Example:
             self.model,
             use_mujoco_cpu=self.use_mujoco,
             solver="newton",
-            ncon_per_env=30,
+            nconmax=30,
             njmax=100,
         )
 

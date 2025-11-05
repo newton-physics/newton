@@ -19,7 +19,7 @@
 # Shows how to set up a simulation of a humanoid articulation
 # from MJCF using newton.ModelBuilder.add_mjcf().
 #
-# Command: python -m newton.examples robot_humanoid --num-envs 16
+# Command: python -m newton.examples robot_humanoid --num-worlds 16
 #
 ###########################################################################
 
@@ -30,14 +30,14 @@ import newton.examples
 
 
 class Example:
-    def __init__(self, viewer, num_envs=4):
+    def __init__(self, viewer, num_worlds=4):
         self.fps = 60
         self.frame_dt = 1.0 / self.fps
         self.sim_time = 0.0
         self.sim_substeps = 10
         self.sim_dt = self.frame_dt / self.sim_substeps
 
-        self.num_envs = num_envs
+        self.num_worlds = num_worlds
 
         self.viewer = viewer
 
@@ -62,12 +62,12 @@ class Example:
             humanoid.joint_target_kd[i] = 5
 
         builder = newton.ModelBuilder()
-        builder.replicate(humanoid, self.num_envs, spacing=(3, 3, 0))
+        builder.replicate(humanoid, self.num_worlds)
 
         builder.add_ground_plane()
 
         self.model = builder.finalize()
-        self.solver = newton.solvers.SolverMuJoCo(self.model, njmax=100)
+        self.solver = newton.solvers.SolverMuJoCo(self.model, njmax=100, nconmax=50)
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
@@ -132,10 +132,10 @@ class Example:
 
 if __name__ == "__main__":
     parser = newton.examples.create_parser()
-    parser.add_argument("--num-envs", type=int, default=4, help="Total number of simulated environments.")
+    parser.add_argument("--num-worlds", type=int, default=4, help="Total number of simulated worlds.")
 
     viewer, args = newton.examples.init(parser)
 
-    example = Example(viewer, args.num_envs)
+    example = Example(viewer, args.num_worlds)
 
     newton.examples.run(example, args)

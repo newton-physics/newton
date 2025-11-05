@@ -25,7 +25,7 @@ class ViewerNull(ViewerBase):
     A no-operation (no-op) viewer implementation for Newton.
 
     This class provides a minimal, non-interactive viewer that does not perform any rendering
-    or visualization. It is intended for use in headless or automated environments where
+    or visualization. It is intended for use in headless or automated worlds where
     visualization is not required. The viewer runs for a fixed number of frames and provides
     stub implementations for all logging and frame management methods.
     """

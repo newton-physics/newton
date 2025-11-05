@@ -75,8 +75,8 @@ def sample_gaussian(
     seed: wp.array(dtype=int),
     rollout_trajectories: wp.array(dtype=float, ndim=3),
 ):
-    env_id, point_id, control_id = wp.tid()
-    unique_id = (env_id * num_control_points + point_id) * control_dim + control_id
+    world_id, point_id, control_id = wp.tid()
+    unique_id = (world_id * num_control_points + point_id) * control_dim + control_id
     r = wp.rand_init(seed[0], unique_id)
     mean = mean_trajectory[0, point_id, control_id]
     lo, hi = control_limits[control_id, 0], control_limits[control_id, 1]
@@ -86,22 +86,22 @@ def sample_gaussian(
             sample = mean + noise_scale * wp.randn(r)
         else:
             break
-    rollout_trajectories[env_id, point_id, control_id] = wp.clamp(sample, lo, hi)
+    rollout_trajectories[world_id, point_id, control_id] = wp.clamp(sample, lo, hi)
 
 
 @wp.kernel
 def replicate_states(
     body_q_in: wp.array(dtype=wp.transform),
     body_qd_in: wp.array(dtype=wp.spatial_vector),
-    bodies_per_env: int,
+    bodies_per_world: int,
     body_q_out: wp.array(dtype=wp.transform),
     body_qd_out: wp.array(dtype=wp.spatial_vector),
 ):
     tid = wp.tid()
-    env_offset = tid * bodies_per_env
-    for i in range(bodies_per_env):
-        body_q_out[env_offset + i] = body_q_in[i]
-        body_qd_out[env_offset + i] = body_qd_in[i]
+    world_offset = tid * bodies_per_world
+    for i in range(bodies_per_world):
+        body_q_out[world_offset + i] = body_q_in[i]
+        body_qd_out[world_offset + i] = body_qd_in[i]
 
 
 @wp.kernel
@@ -115,8 +115,8 @@ def drone_cost(
     weighting: float,
     cost: wp.array(dtype=wp.float32),
 ):
-    env_id = wp.tid()
-    tf = body_q[env_id]
+    world_id = wp.tid()
+    tf = body_q[world_id]
     target = targets[0]
 
     pos_drone = wp.transform_get_translation(tf)
@@ -126,16 +126,16 @@ def drone_cost(
     drone_up = wp.transform_vector(tf, upvector)
     upright_cost = 1.0 - wp.dot(drone_up, upvector)
 
-    vel_drone = body_qd[env_id]
+    vel_drone = body_qd[world_id]
 
     # Encourage zero velocity.
     vel_cost = wp.length_sq(vel_drone)
 
     control = wp.vec4(
-        prop_control[env_id * 4 + 0],
-        prop_control[env_id * 4 + 1],
-        prop_control[env_id * 4 + 2],
-        prop_control[env_id * 4 + 3],
+        prop_control[world_id * 4 + 0],
+        prop_control[world_id * 4 + 1],
+        prop_control[world_id * 4 + 2],
+        prop_control[world_id * 4 + 3],
     )
     control_cost = wp.dot(control, control)
 
@@ -150,7 +150,7 @@ def drone_cost(
 
     wp.atomic_add(
         cost,
-        env_id,
+        world_id,
         (
             pos_cost * pos_weight
             + altitude_cost * altitude_weight
@@ -176,10 +176,10 @@ def collision_cost(
     weighting: float,
     cost: wp.array(dtype=wp.float32),
 ):
-    env_id, obs_id = wp.tid()
-    shape_index = obstacle_ids[env_id, obs_id]
+    world_id, obs_id = wp.tid()
+    shape_index = obstacle_ids[world_id, obs_id]
 
-    px = wp.transform_get_translation(body_q[env_id])
+    px = wp.transform_get_translation(body_q[world_id])
 
     X_bs = shape_X_bs[shape_index]
 
@@ -220,7 +220,7 @@ def collision_cost(
     d = wp.max(d, 0.0)
     if d < margin:
         c = margin - d
-        wp.atomic_add(cost, env_id, weighting * c)
+        wp.atomic_add(cost, world_id, weighting * c)
 
 
 @wp.kernel
@@ -228,9 +228,9 @@ def enforce_control_limits(
     control_limits: wp.array(dtype=float, ndim=2),
     control_points: wp.array(dtype=float, ndim=3),
 ):
-    env_id, t_id, control_id = wp.tid()
+    world_id, t_id, control_id = wp.tid()
     lo, hi = control_limits[control_id, 0], control_limits[control_id, 1]
-    control_points[env_id, t_id, control_id] = wp.clamp(control_points[env_id, t_id, control_id], lo, hi)
+    control_points[world_id, t_id, control_id] = wp.clamp(control_points[world_id, t_id, control_id], lo, hi)
 
 
 @wp.kernel
@@ -252,12 +252,12 @@ def interpolate_control_linear(
     torque_dim: int,
     torques: wp.array(dtype=float),
 ):
-    env_id, control_id = wp.tid()
+    world_id, control_id = wp.tid()
     t_id = int(t)
     frac = t - wp.floor(t)
-    control_left = control_points[env_id, t_id, control_id]
-    control_right = control_points[env_id, t_id + 1, control_id]
-    torque_id = env_id * torque_dim + control_dofs[control_id]
+    control_left = control_points[world_id, t_id, control_id]
+    control_right = control_points[world_id, t_id + 1, control_id]
+    torque_id = world_id * torque_dim + control_dofs[control_id]
     action = control_left * (1.0 - frac) + control_right * frac
     torques[torque_id] = action * control_gains[control_id]
 

@@ -13,9 +13,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import numpy as np
 import warp as wp
 
-from .broad_phase_common import check_aabb_overlap, test_environment_and_group_pair, write_pair
+from .broad_phase_common import check_aabb_overlap, precompute_world_map, test_world_and_group_pair, write_pair
 
 
 @wp.kernel
@@ -53,11 +54,11 @@ def _nxn_broadphase_precomputed_pairs(
 
 
 @wp.func
-def _get_lower_triangular_indices(index: int, matrix_size: int) -> wp.vec2i:
+def _get_lower_triangular_indices(index: int, matrix_size: int) -> tuple[int, int]:
     total = (matrix_size * (matrix_size - 1)) >> 1
     if index >= total:
         # In Warp, we can't throw, so return an invalid pair
-        return wp.vec2i(-1, -1)
+        return -1, -1
 
     low = int(0)
     high = matrix_size - 1
@@ -71,7 +72,45 @@ def _get_lower_triangular_indices(index: int, matrix_size: int) -> wp.vec2i:
     r = low - 1
     f = (r * (2 * matrix_size - r - 1)) >> 1
     c = (index - f) + r + 1
-    return wp.vec2i(r, c)
+    return r, c
+
+
+@wp.func
+def _find_world_and_local_id(
+    tid: int,
+    world_cumsum_lower_tri: wp.array(dtype=int, ndim=1),
+):
+    """Binary search to find world ID and local ID from thread ID.
+
+    Args:
+        tid: Global thread ID
+        world_cumsum_lower_tri: Cumulative sum of lower triangular elements per world
+
+    Returns:
+        tuple: (world_id, local_id) - World ID and local index within that world
+    """
+    num_worlds = world_cumsum_lower_tri.shape[0]
+
+    # Find world_id using binary search
+    # Declare as dynamic variables for loop mutation
+    low = int(0)
+    high = int(num_worlds - 1)
+    world_id = int(0)
+
+    while low <= high:
+        mid = (low + high) >> 1
+        if tid < world_cumsum_lower_tri[mid]:
+            high = mid - 1
+            world_id = mid
+        else:
+            low = mid + 1
+
+    # Calculate local index within this world
+    local_id = tid
+    if world_id > 0:
+        local_id = tid - world_cumsum_lower_tri[world_id - 1]
+
+    return world_id, local_id
 
 
 @wp.kernel
@@ -79,34 +118,61 @@ def _nxn_broadphase_kernel(
     # Input arrays
     geom_bounding_box_lower: wp.array(dtype=wp.vec3, ndim=1),
     geom_bounding_box_upper: wp.array(dtype=wp.vec3, ndim=1),
-    num_boxes: int,
     geom_cutoff: wp.array(dtype=float, ndim=1),  # per-geom (take the max)
     collision_group: wp.array(dtype=int, ndim=1),  # per-geom
-    shape_group: wp.array(dtype=int, ndim=1),  # per-geom environment groups
+    shape_world: wp.array(dtype=int, ndim=1),  # per-geom world indices
+    world_cumsum_lower_tri: wp.array(dtype=int, ndim=1),  # Cumulative sum of lower tri elements per world
+    world_slice_ends: wp.array(dtype=int, ndim=1),  # End indices of each world slice
+    world_index_map: wp.array(dtype=int, ndim=1),  # Index map into source geometry
+    num_regular_worlds: int,  # Number of regular world segments (excluding dedicated -1 segment)
     # Output arrays
     candidate_pair: wp.array(dtype=wp.vec2i, ndim=1),
     num_candidate_pair: wp.array(dtype=int, ndim=1),  # Size one array
     max_candidate_pair: int,
 ):
-    elementid = wp.tid()
+    tid = wp.tid()
 
-    pair = _get_lower_triangular_indices(elementid, num_boxes)
+    # Find which world this thread belongs to and the local index within that world
+    world_id, local_id = _find_world_and_local_id(tid, world_cumsum_lower_tri)
 
-    geom1 = pair[0]
-    geom2 = pair[1]
+    # Get the slice boundaries for this world in the index map
+    world_slice_start = 0
+    if world_id > 0:
+        world_slice_start = world_slice_ends[world_id - 1]
+    world_slice_end = world_slice_ends[world_id]
 
-    # Get environment and collision groups
-    env_group1 = shape_group[geom1]
-    env_group2 = shape_group[geom2]
+    # Number of geometries in this world
+    num_geoms_in_world = world_slice_end - world_slice_start
+
+    # Convert local_id to pair indices within the world
+    local_geom1, local_geom2 = _get_lower_triangular_indices(local_id, num_geoms_in_world)
+
+    # Map to actual geometry indices using the world_index_map
+    geom1_tmp = world_index_map[world_slice_start + local_geom1]
+    geom2_tmp = world_index_map[world_slice_start + local_geom2]
+
+    # Ensure canonical ordering (smaller index first)
+    # After mapping, the indices might not preserve local_geom1 < local_geom2 ordering
+    geom1 = wp.min(geom1_tmp, geom2_tmp)
+    geom2 = wp.max(geom1_tmp, geom2_tmp)
+
+    # Get world and collision groups
+    world1 = shape_world[geom1]
+    world2 = shape_world[geom2]
     collision_group1 = collision_group[geom1]
     collision_group2 = collision_group[geom2]
 
-    # Check both environment and collision groups
-    if not test_environment_and_group_pair(env_group1, env_group2, collision_group1, collision_group2):
+    # Skip pairs where both geometries are global (world -1), unless we're in the dedicated -1 segment
+    # The dedicated -1 segment is the last segment (world_id >= num_regular_worlds)
+    is_dedicated_minus_one_segment = world_id >= num_regular_worlds
+    if world1 == -1 and world2 == -1 and not is_dedicated_minus_one_segment:
         return
 
-    # wp.printf("geom1=%d, geom2=%d\n", geom1, geom2)
+    # Check both world and collision groups
+    if not test_world_and_group_pair(world1, world2, collision_group1, collision_group2):
+        return
 
+    # Check AABB overlap
     if check_aabb_overlap(
         geom_bounding_box_lower[geom1],
         geom_bounding_box_upper[geom1],
@@ -116,7 +182,7 @@ def _nxn_broadphase_kernel(
         geom_cutoff[geom2],
     ):
         write_pair(
-            pair,
+            wp.vec2i(geom1, geom2),
             candidate_pair,
             num_candidate_pair,
             max_candidate_pair,
@@ -139,8 +205,72 @@ class BroadPhaseAllPairs:
     checking.
     """
 
-    def __init__(self):
-        pass
+    def __init__(self, geom_world, geom_flags=None, device=None):
+        """Initialize the broad phase with world ID information.
+
+        Args:
+            geom_world: Array of world IDs (numpy or warp array).
+                Positive/zero values represent distinct worlds, negative values represent
+                shared entities that belong to all worlds.
+            geom_flags: Optional array of shape flags (numpy or warp array). If provided,
+                only shapes with the COLLIDE_SHAPES flag will be included in collision checks.
+                This efficiently filters out visual-only shapes.
+            device: Device to store the precomputed arrays on. If None, uses CPU for numpy
+                arrays or the device of the input warp array.
+        """
+        # Convert to numpy if it's a warp array
+        if isinstance(geom_world, wp.array):
+            geom_world_np = geom_world.numpy()
+            if device is None:
+                device = geom_world.device
+        else:
+            geom_world_np = geom_world
+            if device is None:
+                device = "cpu"
+
+        # Convert geom_flags to numpy if provided
+        geom_flags_np = None
+        if geom_flags is not None:
+            if isinstance(geom_flags, wp.array):
+                geom_flags_np = geom_flags.numpy()
+            else:
+                geom_flags_np = geom_flags
+
+        # Precompute the world map (filters out non-colliding shapes if flags provided)
+        index_map_np, slice_ends_np = precompute_world_map(geom_world_np, geom_flags_np)
+
+        # Calculate number of regular worlds (excluding dedicated -1 segment at end)
+        # Must be derived from filtered slices since precompute_world_map applies flags
+        # slice_ends_np has length (num_filtered_worlds + 1), where +1 is the dedicated -1 segment
+        num_regular_worlds = max(0, len(slice_ends_np) - 1)
+
+        # Calculate cumulative sum of lower triangular elements per world
+        # For each world, compute n*(n-1)/2 where n is the number of geometries in that world
+        num_worlds = len(slice_ends_np)
+        world_cumsum_lower_tri_np = np.zeros(num_worlds, dtype=np.int32)
+
+        start_idx = 0
+        cumsum = 0
+        for world_idx in range(num_worlds):
+            end_idx = slice_ends_np[world_idx]
+            # Number of geometries in this world (including shared geometries)
+            num_geoms_in_world = end_idx - start_idx
+            # Number of lower triangular elements for this world
+            num_lower_tri = (num_geoms_in_world * (num_geoms_in_world - 1)) // 2
+            cumsum += num_lower_tri
+            world_cumsum_lower_tri_np[world_idx] = cumsum
+            start_idx = end_idx
+
+        # Store as warp arrays
+        self.world_index_map = wp.array(index_map_np, dtype=wp.int32, device=device)
+        self.world_slice_ends = wp.array(slice_ends_np, dtype=wp.int32, device=device)
+        self.world_cumsum_lower_tri = wp.array(world_cumsum_lower_tri_np, dtype=wp.int32, device=device)
+
+        # Store total number of kernel threads needed (last element of cumsum)
+        self.num_kernel_threads = int(world_cumsum_lower_tri_np[-1]) if num_worlds > 0 else 0
+
+        # Store number of regular worlds (for distinguishing dedicated -1 segment)
+        self.num_regular_worlds = int(num_regular_worlds)
 
     def launch(
         self,
@@ -148,11 +278,12 @@ class BroadPhaseAllPairs:
         geom_upper: wp.array(dtype=wp.vec3, ndim=1),  # Upper bounds of geometry bounding boxes
         geom_cutoffs: wp.array(dtype=float, ndim=1),  # Cutoff distance per geometry box
         geom_collision_group: wp.array(dtype=int, ndim=1),  # Collision group ID per box
-        geom_shape_group: wp.array(dtype=int, ndim=1),  # Environment group ID per box
+        geom_shape_world: wp.array(dtype=int, ndim=1),  # World index per box
         geom_count: int,  # Number of active bounding boxes
         # Outputs
         candidate_pair: wp.array(dtype=wp.vec2i, ndim=1),  # Array to store overlapping geometry pairs
         num_candidate_pair: wp.array(dtype=int, ndim=1),
+        device=None,  # Device to launch on
     ):
         """Launch the N x N broad phase collision detection.
 
@@ -167,37 +298,42 @@ class BroadPhaseAllPairs:
             geom_collision_group: Array of collision group IDs for each geometry. Positive values indicate
                 groups that only collide with themselves (and with negative groups). Negative values indicate
                 groups that collide with everything except their negative counterpart. Zero indicates no collisions.
-            geom_shape_group: Array of environment group IDs for each geometry. Group -1 indicates global entities
-                that collide with all environments. Groups 0, 1, 2, ... indicate environment-specific entities.
+            geom_shape_world: Array of world indices for each geometry. Index -1 indicates global entities
+                that collide with all worlds. Indices 0, 1, 2, ... indicate world-specific entities.
             geom_count: Number of active bounding boxes to check
             candidate_pair: Output array to store overlapping geometry pairs
             num_candidate_pair: Output array to store number of overlapping pairs found
+            device: Device to launch on. If None, uses the device of the input arrays.
 
         The method will populate candidate_pair with the indices of geometry pairs (i,j) where i < j whose AABBs overlap
-        when expanded by their cutoff distances, whose collision groups allow interaction, and whose environment groups
-        are compatible (same environment or at least one is global). The number of pairs found will be written to
+        when expanded by their cutoff distances, whose collision groups allow interaction, and whose world indices
+        are compatible (same world or at least one is global). The number of pairs found will be written to
         num_candidate_pair[0].
         """
-        # The number of elements in the lower triangular part of an n x n matrix (excluding the diagonal)
-        # is given by n * (n - 1) // 2
-        num_lower_tri_elements = geom_count * (geom_count - 1) // 2
-
         max_candidate_pair = candidate_pair.shape[0]
 
         num_candidate_pair.zero_()
 
+        if device is None:
+            device = geom_lower.device
+
+        # Launch with the precomputed number of kernel threads
         wp.launch(
             _nxn_broadphase_kernel,
-            dim=num_lower_tri_elements,
+            dim=self.num_kernel_threads,
             inputs=[
                 geom_lower,
                 geom_upper,
-                geom_count,
                 geom_cutoffs,
                 geom_collision_group,
-                geom_shape_group,
+                geom_shape_world,
+                self.world_cumsum_lower_tri,
+                self.world_slice_ends,
+                self.world_index_map,
+                self.num_regular_worlds,
             ],
             outputs=[candidate_pair, num_candidate_pair, max_candidate_pair],
+            device=device,
         )
 
 
@@ -225,6 +361,7 @@ class BroadPhaseExplicit:
         # Outputs
         candidate_pair: wp.array(dtype=wp.vec2i, ndim=1),  # Array to store overlapping geometry pairs
         num_candidate_pair: wp.array(dtype=int, ndim=1),
+        device=None,  # Device to launch on
     ):
         """Launch the explicit pairs broad phase collision detection.
 
@@ -240,6 +377,7 @@ class BroadPhaseExplicit:
             geom_pair_count: Number of geometry pairs to check
             candidate_pair: Output array to store overlapping geometry pairs
             num_candidate_pair: Output array to store number of overlapping pairs found
+            device: Device to launch on. If None, uses the device of the input arrays.
 
         The method will populate candidate_pair with the indices of geometry pairs whose AABBs overlap
         when expanded by their cutoff distances, but only checking the explicitly provided pairs.
@@ -248,6 +386,9 @@ class BroadPhaseExplicit:
         max_candidate_pair = candidate_pair.shape[0]
 
         num_candidate_pair.zero_()
+
+        if device is None:
+            device = geom_lower.device
 
         wp.launch(
             kernel=_nxn_broadphase_precomputed_pairs,
@@ -261,4 +402,5 @@ class BroadPhaseExplicit:
                 num_candidate_pair,
                 max_candidate_pair,
             ],
+            device=device,
         )
