@@ -1,17 +1,17 @@
-# Copyright 2025 The Newton Developers
+# SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
 #
-#     http://www.apache.org/licenses/LICENSE-2.0
+# http://www.apache.org/licenses/LICENSE-2.0
 #
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-# ==============================================================================
 
 import unittest
 
@@ -273,6 +273,34 @@ def test_box_box_kernel(
         box2_positions[tid],
         box2_rotations[tid],
         box2_sizes[tid],
+    )
+    distances[tid] = dist
+    contact_positions[tid] = pos
+    contact_normals[tid] = normals
+
+
+@wp.kernel
+def test_box_box_with_margin_kernel(
+    box1_positions: wp.array(dtype=wp.vec3),
+    box1_rotations: wp.array(dtype=wp.mat33),
+    box1_sizes: wp.array(dtype=wp.vec3),
+    box2_positions: wp.array(dtype=wp.vec3),
+    box2_rotations: wp.array(dtype=wp.mat33),
+    box2_sizes: wp.array(dtype=wp.vec3),
+    margins: wp.array(dtype=float),
+    distances: wp.array(dtype=wp.types.vector(8, wp.float32)),
+    contact_positions: wp.array(dtype=wp.types.matrix((8, 3), wp.float32)),
+    contact_normals: wp.array(dtype=wp.types.matrix((8, 3), wp.float32)),
+):
+    tid = wp.tid()
+    dist, pos, normals = geometry.collide_box_box(
+        box1_positions[tid],
+        box1_rotations[tid],
+        box1_sizes[tid],
+        box2_positions[tid],
+        box2_rotations[tid],
+        box2_sizes[tid],
+        margins[tid],
     )
     distances[tid] = dist
     contact_positions[tid] = pos
@@ -816,6 +844,123 @@ class TestCollisionPrimitives(unittest.TestCase):
                 self.assertEqual(valid_contacts, 0, msg="Separated boxes should have no contacts")
             elif i == 1:  # Overlapping boxes
                 self.assertGreater(valid_contacts, 0, msg="Overlapping boxes should have contacts")
+
+    def test_box_box_margin(self):
+        """Test box-box collision with margin parameter.
+
+        This test verifies that the margin parameter works correctly:
+        - Two boxes stacked vertically with a gap of 0.2
+        - With margin=0.0, no contacts should be found (boxes separated)
+        - With margin=0.3, contacts should be found (margin > gap)
+        - With margin=0.1, no contacts should be found (margin < gap)
+        """
+        # Identity rotation matrix
+        identity = wp.mat33(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0)
+
+        # Box sizes (half-extents)
+        box_size = [0.5, 0.5, 0.5]
+
+        # Box positions: stacked vertically with gap of 0.2
+        # Box 1 at z=0, top face at z=0.5
+        # Box 2 at z=1.2, bottom face at z=0.7
+        # Gap = 0.7 - 0.5 = 0.2
+        test_cases = [
+            # box1_pos, box1_rot, box1_size, box2_pos, box2_rot, box2_size, margin, expect_contacts
+            (
+                [0.0, 0.0, 0.0],
+                identity,
+                box_size,
+                [0.0, 0.0, 1.2],
+                identity,
+                box_size,
+                0.0,
+                False,
+            ),  # No margin, no contact
+            (
+                [0.0, 0.0, 0.0],
+                identity,
+                box_size,
+                [0.0, 0.0, 1.2],
+                identity,
+                box_size,
+                0.3,
+                True,
+            ),  # Margin > gap, contact
+            (
+                [0.0, 0.0, 0.0],
+                identity,
+                box_size,
+                [0.0, 0.0, 1.2],
+                identity,
+                box_size,
+                0.1,
+                False,
+            ),  # Margin < gap, no contact
+            (
+                [0.0, 0.0, 0.0],
+                identity,
+                box_size,
+                [0.0, 0.0, 1.2],
+                identity,
+                box_size,
+                0.201,
+                True,
+            ),  # Margin = gap, contact
+        ]
+
+        box1_positions = wp.array([wp.vec3(tc[0][0], tc[0][1], tc[0][2]) for tc in test_cases], dtype=wp.vec3)
+        box1_rotations = wp.array([tc[1] for tc in test_cases], dtype=wp.mat33)
+        box1_sizes = wp.array([wp.vec3(tc[2][0], tc[2][1], tc[2][2]) for tc in test_cases], dtype=wp.vec3)
+        box2_positions = wp.array([wp.vec3(tc[3][0], tc[3][1], tc[3][2]) for tc in test_cases], dtype=wp.vec3)
+        box2_rotations = wp.array([tc[4] for tc in test_cases], dtype=wp.mat33)
+        box2_sizes = wp.array([wp.vec3(tc[5][0], tc[5][1], tc[5][2]) for tc in test_cases], dtype=wp.vec3)
+        margins = wp.array([tc[6] for tc in test_cases], dtype=float)
+        distances = wp.array([wp.types.vector(8, wp.float32)()] * len(test_cases), dtype=wp.types.vector(8, wp.float32))
+        contact_positions = wp.array(
+            [wp.types.matrix((8, 3), wp.float32)()] * len(test_cases), dtype=wp.types.matrix((8, 3), wp.float32)
+        )
+        contact_normals = wp.array(
+            [wp.types.matrix((8, 3), wp.float32)()] * len(test_cases), dtype=wp.types.matrix((8, 3), wp.float32)
+        )
+
+        wp.launch(
+            test_box_box_with_margin_kernel,
+            dim=len(test_cases),
+            inputs=[
+                box1_positions,
+                box1_rotations,
+                box1_sizes,
+                box2_positions,
+                box2_rotations,
+                box2_sizes,
+                margins,
+                distances,
+                contact_positions,
+                contact_normals,
+            ],
+        )
+        wp.synchronize()
+
+        distances_np = distances.numpy()
+
+        # Verify expected contact behavior for each test case
+        for i in range(len(test_cases)):
+            valid_contacts = sum(1 for j in range(8) if distances_np[i][j] != float("inf"))
+            expect_contacts = test_cases[i][7]
+            margin = test_cases[i][6]
+
+            if expect_contacts:
+                self.assertGreater(
+                    valid_contacts,
+                    0,
+                    msg=f"Test case {i}: Expected contacts with margin={margin}, but found {valid_contacts}",
+                )
+            else:
+                self.assertEqual(
+                    valid_contacts,
+                    0,
+                    msg=f"Test case {i}: Expected no contacts with margin={margin}, but found {valid_contacts}",
+                )
 
     def test_capsule_box(self):
         """Test capsule-box collision."""

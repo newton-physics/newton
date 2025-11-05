@@ -34,7 +34,6 @@ import newton
 import newton.examples
 import newton.ik as ik
 import newton.utils
-from newton._src.solvers.style3d import Collision
 
 
 class Example:
@@ -185,15 +184,12 @@ class Example:
         # ------------------------------------------------------------------
         # Cloth solver
         # ------------------------------------------------------------------
-        collision_handler = Collision(self.model)
-        collision_handler.radius = 3.5e-3
-
         self.cloth_solver = newton.solvers.SolverStyle3D(
             model=self.model,
             iterations=self.iterations,
-            collision_handler=collision_handler,
         )
         self.cloth_solver.precompute(h1)
+        self.cloth_solver.collision.radius = 3.5e-3
         self.control = self.model.control()
         self.contacts = self.model.collide(self.state)
         self.shape_flags = self.model.shape_flags.numpy()

@@ -30,7 +30,7 @@ from .model import Model
 from .state import State
 
 
-def count_rigid_contact_points(model: Model) -> int:
+def count_rigid_contact_points(model: Model, rigid_contact_max_per_pair: int | None = None) -> int:
     """
     Counts the maximum number of rigid contact points that need to be allocated for a given model.
 
@@ -39,10 +39,13 @@ def count_rigid_contact_points(model: Model) -> int:
 
     Args:
         model (Model): The simulation model containing shape and geometry information.
-
+        rigid_contact_max_per_pair (int | None, optional): Maximum number of contact points per shape pair.
+            If None or <= 0, no limit is applied.
     Returns:
         int: The potential number of rigid contact points that may need to be allocated.
     """
+    if rigid_contact_max_per_pair is None or rigid_contact_max_per_pair <= 0:
+        rigid_contact_max_per_pair = 0
     # calculate the potential number of shape pair contact points
     contact_count = wp.zeros(1, dtype=wp.int32, device=model.device)
     wp.launch(
@@ -53,6 +56,7 @@ def count_rigid_contact_points(model: Model) -> int:
             model.shape_type,
             model.shape_scale,
             model.shape_source_ptr,
+            rigid_contact_max_per_pair,
         ],
         outputs=[contact_count],
         device=model.device,
@@ -77,12 +81,11 @@ class CollisionPipeline:
         particle_count: int,
         shape_pairs_filtered: wp.array(dtype=wp.vec2i),
         rigid_contact_max: int | None = None,
-        rigid_contact_max_per_pair: int = 10,
+        rigid_contact_max_per_pair: int | None = None,
         rigid_contact_margin: float = 0.01,
         soft_contact_max: int | None = None,
         soft_contact_margin: float = 0.01,
         edge_sdf_iter: int = 10,
-        iterate_mesh_vertices: bool = True,
         requires_grad: bool = False,
         device: Devicelike = None,
     ):
@@ -95,13 +98,13 @@ class CollisionPipeline:
             shape_pairs_filtered (wp.array): Array of filtered shape pairs to consider for collision.
             rigid_contact_max (int | None, optional): Maximum number of rigid contacts to allocate.
                 If None, computed as shape_pairs_max * rigid_contact_max_per_pair.
-            rigid_contact_max_per_pair (int, optional): Maximum number of contact points per shape pair. Defaults to 10.
+            rigid_contact_max_per_pair (int | None, optional): Maximum number of contact points per shape pair.
+                If None or <= 0, no limit is applied.
             rigid_contact_margin (float, optional): Margin for rigid contact generation. Defaults to 0.01.
             soft_contact_max (int | None, optional): Maximum number of soft contacts to allocate.
                 If None, computed as shape_count * particle_count.
             soft_contact_margin (float, optional): Margin for soft contact generation. Defaults to 0.01.
             edge_sdf_iter (int, optional): Number of iterations for edge SDF collision. Defaults to 10.
-            iterate_mesh_vertices (bool, optional): Whether to iterate mesh vertices for collision. Defaults to True.
             requires_grad (bool, optional): Whether to enable gradient computation. Defaults to False.
             device (Devicelike, optional): The device on which to allocate arrays and perform computation.
         """
@@ -113,7 +116,10 @@ class CollisionPipeline:
         self.shape_pairs_max = len(self.shape_pairs_filtered)
 
         self.rigid_contact_margin = rigid_contact_margin
-        if rigid_contact_max is not None:
+        if rigid_contact_max_per_pair is None or rigid_contact_max_per_pair <= 0:
+            rigid_contact_max_per_pair = 0
+        self.rigid_contact_max_per_pair = rigid_contact_max_per_pair
+        if rigid_contact_max is not None or rigid_contact_max_per_pair == 0:
             self.rigid_contact_max = rigid_contact_max
         else:
             self.rigid_contact_max = self.shape_pairs_max * rigid_contact_max_per_pair
@@ -131,7 +137,6 @@ class CollisionPipeline:
         self.soft_contact_margin = soft_contact_margin
         self.soft_contact_max = soft_contact_max
 
-        self.iterate_mesh_vertices = iterate_mesh_vertices
         self.requires_grad = requires_grad
         self.edge_sdf_iter = edge_sdf_iter
 
@@ -146,7 +151,6 @@ class CollisionPipeline:
         soft_contact_max: int | None = None,
         soft_contact_margin: float = 0.01,
         edge_sdf_iter: int = 10,
-        iterate_mesh_vertices: bool = True,
         requires_grad: bool | None = None,
     ) -> CollisionPipeline:
         """
@@ -155,12 +159,11 @@ class CollisionPipeline:
         Args:
             model (Model): The simulation model.
             rigid_contact_max_per_pair (int | None, optional): Maximum number of contact points per shape pair.
-                If None, uses model.rigid_contact_max and sets per-pair to 0.
+                If None, uses :attr:`newton.Model.rigid_contact_max` and sets per-pair to 0 (which indicates no limit).
             rigid_contact_margin (float, optional): Margin for rigid contact generation. Defaults to 0.01.
             soft_contact_max (int | None, optional): Maximum number of soft contacts to allocate.
             soft_contact_margin (float, optional): Margin for soft contact generation. Defaults to 0.01.
             edge_sdf_iter (int, optional): Number of iterations for edge SDF collision. Defaults to 10.
-            iterate_mesh_vertices (bool, optional): Whether to iterate mesh vertices for collision. Defaults to True.
             requires_grad (bool | None, optional): Whether to enable gradient computation. If None, uses model.requires_grad.
 
         Returns:
@@ -182,7 +185,6 @@ class CollisionPipeline:
             soft_contact_max,
             soft_contact_margin,
             edge_sdf_iter,
-            iterate_mesh_vertices,
             requires_grad,
             model.device,
         )
@@ -272,8 +274,7 @@ class CollisionPipeline:
                     shape_count,
                     self.rigid_contact_max,
                     self.rigid_contact_margin,
-                    self.rigid_contact_max,
-                    self.iterate_mesh_vertices,
+                    self.rigid_contact_max_per_pair,
                 ],
                 outputs=[
                     contacts.rigid_contact_count,

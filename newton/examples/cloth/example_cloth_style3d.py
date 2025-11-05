@@ -21,7 +21,6 @@ import newton
 import newton.examples
 import newton.utils
 from newton import Mesh, ParticleFlags
-from newton._src.solvers.style3d import Collision
 
 
 class Example:
@@ -129,8 +128,6 @@ class Example:
         self.solver = newton.solvers.SolverStyle3D(
             model=self.model,
             iterations=self.iterations,
-            collision_handler=Collision(self.model),
-            # collision_handler = CollisionHandler(self.model),
         )
         self.solver.precompute(
             builder,

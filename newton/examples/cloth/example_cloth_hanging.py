@@ -186,7 +186,6 @@ class Example:
 
     def test(self):
         if self.solver_type != "style3d":
-            # TODO(Style3D): handle ground collisions
             newton.examples.test_particle_state(
                 self.state_0,
                 "particles are above the ground",

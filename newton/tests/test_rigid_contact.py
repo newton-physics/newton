@@ -107,6 +107,7 @@ def test_shapes_on_plane(test: TestRigidContact, device, solver_fn):
     for i, scale in enumerate([0.5, 1.0]):
         y_pos = i * 1.5
 
+        builder.add_articulation()
         b = builder.add_body(xform=wp.transform(wp.vec3(0.0, y_pos, 1.0), wp.quat_identity()))
         builder.add_joint_free(b)
         builder.add_shape_sphere(
@@ -115,6 +116,7 @@ def test_shapes_on_plane(test: TestRigidContact, device, solver_fn):
         )
         expected_end_positions.append(wp.vec3(0.0, y_pos, 0.1 * scale))
 
+        builder.add_articulation()
         b = builder.add_body(xform=wp.transform(wp.vec3(2.0, y_pos, 1.0), wp.quat_identity()))
         builder.add_joint_free(b)
         # Apply Y-axis rotation to capsule
@@ -127,6 +129,7 @@ def test_shapes_on_plane(test: TestRigidContact, device, solver_fn):
         )
         expected_end_positions.append(wp.vec3(2.0, y_pos, 0.1 * scale))
 
+        builder.add_articulation()
         b = builder.add_body(xform=wp.transform(wp.vec3(4.0, y_pos, 1.0), wp.quat_identity()))
         builder.add_joint_free(b)
         builder.add_shape_box(
@@ -137,6 +140,7 @@ def test_shapes_on_plane(test: TestRigidContact, device, solver_fn):
         )
         expected_end_positions.append(wp.vec3(4.0, y_pos, 0.3 * scale))
 
+        builder.add_articulation()
         b = builder.add_body(xform=wp.transform(wp.vec3(5.0, y_pos, 1.0), wp.quat_identity()))
         builder.add_joint_free(b)
         builder.add_shape_cylinder(
@@ -146,6 +150,7 @@ def test_shapes_on_plane(test: TestRigidContact, device, solver_fn):
         )
         expected_end_positions.append(wp.vec3(5.0, y_pos, 0.3 * scale))
 
+        builder.add_articulation()
         b = builder.add_body(xform=wp.transform(wp.vec3(7.0, y_pos, 1.0), wp.quat_identity()))
         builder.add_joint_free(b)
         builder.add_shape_mesh(
@@ -205,6 +210,7 @@ def test_shapes_on_plane_with_up_axis(test: TestRigidContact, device, solver_fn,
     else:  # Z-axis (default)
         initial_pos = wp.vec3(0.0, 0.0, 1.0)  # Position above ground in Z direction
 
+    builder.add_articulation()
     b = builder.add_body(xform=wp.transform(initial_pos, wp.quat_identity()))
     builder.add_joint_free(b)
     builder.add_shape_sphere(
@@ -265,7 +271,7 @@ def test_shapes_on_plane_with_up_axis(test: TestRigidContact, device, solver_fn,
         graph = capture.graph
 
     # Simulate for a few steps to make sure physics is stable
-    for _ in range(50):
+    for _ in range(250):
         if use_cuda_graph:
             wp.capture_launch(graph)
         else:
@@ -338,4 +344,4 @@ for device in devices:
 
 if __name__ == "__main__":
     # wp.clear_kernel_cache()
-    unittest.main(verbosity=2)
+    unittest.main(verbosity=2, failfast=True)

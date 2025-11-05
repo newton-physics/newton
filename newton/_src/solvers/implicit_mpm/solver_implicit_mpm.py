@@ -22,11 +22,11 @@ import numpy as np
 import warp as wp
 import warp.fem as fem
 import warp.sparse as sp
-from typing_extensions import override
 from warp.context import assert_conditional_graph_support
 
 import newton
 
+from ...core.types import override
 from ..solver import SolverBase
 from .rasterized_collisions import (
     Collider,

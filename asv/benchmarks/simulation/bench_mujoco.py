@@ -127,23 +127,6 @@ class _KpiBenchmark:
     track_simulate.unit = "ms/env-step"
 
 
-class FastAnt(_FastBenchmark):
-    num_frames = 50
-    robot = "ant"
-    repeat = 8
-    num_envs = 256
-    random_init = True
-
-
-class KpiAnt(_KpiBenchmark):
-    params = [4096, 8192, 16384]
-    num_frames = 100
-    robot = "ant"
-    samples = 4
-    ls_iteration = 10
-    random_init = True
-
-
 class FastCartpole(_FastBenchmark):
     num_frames = 50
     robot = "cartpole"
@@ -153,7 +136,7 @@ class FastCartpole(_FastBenchmark):
 
 
 class KpiCartpole(_KpiBenchmark):
-    params = [4096, 8192]
+    params = [8192]
     num_frames = 50
     robot = "cartpole"
     samples = 4
@@ -170,27 +153,9 @@ class FastG1(_FastBenchmark):
 
 
 class KpiG1(_KpiBenchmark):
-    params = [4096, 8192]
+    params = [8192]
     num_frames = 50
     robot = "g1"
-    timeout = 900
-    samples = 2
-    ls_iteration = 10
-    random_init = True
-
-
-class FastH1(_FastBenchmark):
-    num_frames = 25
-    robot = "h1"
-    repeat = 2
-    num_envs = 256
-    random_init = True
-
-
-class KpiH1(_KpiBenchmark):
-    params = [4096, 8192]
-    num_frames = 50
-    robot = "h1"
     timeout = 900
     samples = 2
     ls_iteration = 10
@@ -206,7 +171,7 @@ class FastHumanoid(_FastBenchmark):
 
 
 class KpiHumanoid(_KpiBenchmark):
-    params = [4096, 8192]
+    params = [8192]
     num_frames = 100
     robot = "humanoid"
     samples = 4
@@ -223,7 +188,7 @@ class FastAllegro(_FastBenchmark):
 
 
 class KpiAllegro(_KpiBenchmark):
-    params = [4096, 8192]
+    params = [8192]
     num_frames = 300
     robot = "allegro"
     samples = 2
@@ -237,16 +202,12 @@ if __name__ == "__main__":
     from newton.utils import run_benchmark
 
     benchmark_list = {
-        "FastAnt": FastAnt,
         "FastCartpole": FastCartpole,
         "FastG1": FastG1,
-        "FastH1": FastH1,
         "FastHumanoid": FastHumanoid,
         "FastAllegro": FastAllegro,
-        "KpiAnt": KpiAnt,
         "KpiCartpole": KpiCartpole,
         "KpiG1": KpiG1,
-        "KpiH1": KpiH1,
         "KpiHumanoid": KpiHumanoid,
         "KpiAllegro": KpiAllegro,
     }

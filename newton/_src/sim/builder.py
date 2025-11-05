@@ -4444,9 +4444,8 @@ class ModelBuilder:
             - Sets `model.shape_contact_pairs` to a wp.array of shape pairs (wp.vec2i).
             - Sets `model.shape_contact_pair_count` to the number of contact pairs found.
         """
-        # Copy the set of filtered-out shape pairs to avoid modifying the original
-        filters = model.shape_collision_filter_pairs
-        contact_pairs = []
+        filters: set[tuple[int, int]] = model.shape_collision_filter_pairs
+        contact_pairs: list[tuple[int, int]] = []
 
         # Sort shapes by env group in case they are not sorted, keep only colliding shapes
         colliding_indices = [i for i, flag in enumerate(self.shape_flags) if flag & ShapeFlags.COLLIDE_SHAPES]
