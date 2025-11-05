@@ -15,8 +15,6 @@
 
 from enum import IntEnum
 
-import warp as wp
-
 
 # Types of joints linking rigid bodies
 class JointType(IntEnum):
@@ -117,7 +115,7 @@ class EqType(IntEnum):
 
 
 # Sentinel value for unlimited joint limits
-JOINT_LIMIT_UNLIMITED = wp.constant(1e10)
+JOINT_LIMIT_UNLIMITED = 1e10
 """
 Sentinel value indicating an unlimited joint limit.
 

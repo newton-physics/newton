@@ -2260,7 +2260,7 @@ class SolverMuJoCo(SolverBase):
                     # Set friction
                     joint_params["frictionloss"] = joint_friction[ai]
                     lower, upper = joint_limit_lower[ai], joint_limit_upper[ai]
-                    if lower == upper or (lower <= -JOINT_LIMIT_UNLIMITED and upper >= JOINT_LIMIT_UNLIMITED):
+                    if lower <= -JOINT_LIMIT_UNLIMITED and upper >= JOINT_LIMIT_UNLIMITED:
                         joint_params["limited"] = False
                     else:
                         joint_params["limited"] = True
@@ -2326,7 +2326,7 @@ class SolverMuJoCo(SolverBase):
                     # Set friction
                     joint_params["frictionloss"] = joint_friction[ai]
                     lower, upper = joint_limit_lower[ai], joint_limit_upper[ai]
-                    if lower == upper or (lower <= -JOINT_LIMIT_UNLIMITED and upper >= JOINT_LIMIT_UNLIMITED):
+                    if lower <= -JOINT_LIMIT_UNLIMITED and upper >= JOINT_LIMIT_UNLIMITED:
                         joint_params["limited"] = False
                     else:
                         joint_params["limited"] = True
