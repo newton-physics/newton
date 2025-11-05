@@ -1698,10 +1698,10 @@ def solve_body_joints(
             err = 0.0
             compliance = linear_compliance
             damping = 0.0
-            
+
             target_vel = axis_target_vel[dim]
             derr_rel = derr - target_vel
-            
+
             # consider joint limits irrespective of axis mode
             lower = axis_limits_lower[dim]
             upper = axis_limits_upper[dim]
@@ -1906,7 +1906,7 @@ def solve_body_joints(
             err = 0.0
             compliance = angular_compliance
             damping = 0.0
-            
+
             target_vel = axis_target_vel[dim]
             derr_rel = derr - target_vel
 

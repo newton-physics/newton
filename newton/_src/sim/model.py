@@ -534,8 +534,8 @@ class Model:
         self.attribute_frequency["joint_qd"] = ModelAttributeFrequency.JOINT_DOF
         self.attribute_frequency["joint_f"] = ModelAttributeFrequency.JOINT_DOF
         self.attribute_frequency["joint_armature"] = ModelAttributeFrequency.JOINT_DOF
-        self.attribute_frequency["joint_target_pos"] =  ModelAttributeFrequency.JOINT_DOF
-        self.attribute_frequency["joint_target_vel"] =  ModelAttributeFrequency.JOINT_DOF
+        self.attribute_frequency["joint_target_pos"] = ModelAttributeFrequency.JOINT_DOF
+        self.attribute_frequency["joint_target_vel"] = ModelAttributeFrequency.JOINT_DOF
         self.attribute_frequency["joint_axis"] = ModelAttributeFrequency.JOINT_DOF
         self.attribute_frequency["joint_target_ke"] = ModelAttributeFrequency.JOINT_DOF
         self.attribute_frequency["joint_target_kd"] = ModelAttributeFrequency.JOINT_DOF

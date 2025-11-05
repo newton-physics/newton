@@ -287,7 +287,7 @@ def eval_body_joints(
                 - joint_force(
                     q1,
                     qd1,
-                    joint_target_pos[qd_start +1],
+                    joint_target_pos[qd_start + 1],
                     joint_target_vel[qd_start + 1],
                     joint_target_ke[qd_start + 1],
                     joint_target_kd[qd_start + 1],
@@ -423,7 +423,7 @@ def eval_body_joints(
                     joint_limit_lower[i_1],
                     joint_limit_upper[i_1],
                     joint_limit_ke[i_1],
-                    joint_limit_kd[i_1]
+                    joint_limit_kd[i_1],
                 )
             )
 
@@ -438,7 +438,7 @@ def eval_body_joints(
                 0.0,
                 0.0,
                 0.0,
-                0.0
+                0.0,
             )
 
         if ang_axis_count == 3:
@@ -476,7 +476,7 @@ def eval_body_joints(
                     joint_limit_lower[i_0],
                     joint_limit_upper[i_0],
                     joint_limit_ke[i_0],
-                    joint_limit_kd[i_0]
+                    joint_limit_kd[i_0],
                 )
             )
             t_total += axis_1 * (
@@ -491,7 +491,7 @@ def eval_body_joints(
                     joint_limit_lower[i_1],
                     joint_limit_upper[i_1],
                     joint_limit_ke[i_1],
-                    joint_limit_kd[i_1]
+                    joint_limit_kd[i_1],
                 )
             )
             t_total += axis_2 * (
@@ -506,7 +506,7 @@ def eval_body_joints(
                     joint_limit_lower[i_2],
                     joint_limit_upper[i_2],
                     joint_limit_ke[i_2],
-                    joint_limit_kd[i_2]
+                    joint_limit_kd[i_2],
                 )
             )
 
