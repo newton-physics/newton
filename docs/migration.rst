@@ -95,6 +95,7 @@ The signatures of the :func:`newton.eval_fk` and :func:`newton.eval_ik` function
 The :class:`newton.Control` class now has a :attr:`newton.Control.joint_f` attribute which encodes the generalized force (torque) input to the joints.
 In order to match the MuJoCo convention, :attr:`~newton.Control.joint_f` now includes the dofs of the free joints as well, so its dimension is :attr:`newton.Model.joint_dof_count`.
 The control mode ``JOINT_MODE_FORCE`` has been removed, since it is now realized by setting :attr:`Control.joint_f` instead of ``joint_act``.
+``JointMode`` has been removed and it is now possible to set both joint target position and velocity simultaneously using the :attr:`newton.Control.joint_target_pos` and :attr:`newton.Control.joint_target_vel` attributes.
 
 The :class:`newton.Control` class now has a :attr:`newton.Control.joint_target` attribute (in place of the previous ``joint_act`` attribute) that encodes either the position or the velocity target for the control,
 depending on the control mode selected for the joint dof.
