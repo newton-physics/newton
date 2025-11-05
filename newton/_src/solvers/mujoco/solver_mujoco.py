@@ -1256,6 +1256,7 @@ class SolverMuJoCo(SolverBase):
         joint_solimp_limit: tuple[float, float, float, float, float] | None = None,
         tolerance: float = 1e-6,
         ls_tolerance: float = 0.01,
+        include_sites: bool = True,
     ):
         """
         Args:
@@ -1284,6 +1285,7 @@ class SolverMuJoCo(SolverBase):
             joint_solimp_limit (tuple[float, float, float, float, float] | None): Global solver impedance parameters for all joint limits. If provided, applies these solimp values to all joints created. Defaults to None (uses MuJoCo defaults).
             tolerance (float | None): Solver tolerance for early termination of the iterative solver. Defaults to 1e-6 and will be increased to 1e-6 by the MuJoCo solver if a smaller value is provided.
             ls_tolerance (float | None): Solver tolerance for early termination of the line search. Defaults to 0.01.
+            include_sites (bool): If ``True`` (default), Newton shapes marked with ``ShapeFlags.SITE`` are exported as MuJoCo sites. Sites are non-colliding reference points used for sensor attachment, debugging, or as frames of reference. If ``False``, sites are skipped during export. Defaults to ``True``.
         """
         super().__init__(model)
         # Import and cache MuJoCo modules (only happens once per class)
@@ -1346,6 +1348,7 @@ class SolverMuJoCo(SolverBase):
                     ls_parallel=ls_parallel,
                     tolerance=tolerance,
                     ls_tolerance=ls_tolerance,
+                    include_sites=include_sites,
                 )
         self.update_data_interval = update_data_interval
         self._step = 0
