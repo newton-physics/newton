@@ -1255,10 +1255,10 @@ class SolverMuJoCo(SolverBase):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="solimplimit",
-                frequency=ModelAttributeFrequency.JOINT,
+                frequency=ModelAttributeFrequency.JOINT_DOF,
                 assignment=ModelAttributeAssignment.MODEL,
                 dtype=wp.types.vector(length=5, dtype=wp.float32),
-                default=wp.types.vector((0.9, 0.95, 0.001, 0.5, 2.0), dtype=wp.float32),
+                default=[0.9, 0.95, 0.001, 0.5, 2.0],
                 namespace="mujoco",
                 usd_attribute_name="mjc:solimplimit",
             )
