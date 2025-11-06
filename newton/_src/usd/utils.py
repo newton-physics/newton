@@ -219,19 +219,18 @@ def get_vector(prim: Usd.Prim, name: str, default: nparray | None = None) -> npa
 
 def get_scale(prim: Usd.Prim) -> wp.vec3:
     """
-    Extract the scale component from a USD prim's transform operations.
+    Extract the scale component from a USD prim's local transformation.
 
     Args:
         prim: The USD prim to query for scale information.
 
     Returns:
-        The scale as a Warp vec3. Returns (1, 1, 1) if no scale operation is found.
+        The scale as a Warp vec3.
     """
-    xform = UsdGeom.Xform(prim)
-    scale = np.ones(3, dtype=np.float32)
-    for op in xform.GetOrderedXformOps():
-        if op.GetOpType() == UsdGeom.XformOp.TypeScale:
-            scale *= np.array(op.Get(), dtype=np.float32)
+    # first get local transform matrix
+    local_mat = np.array(UsdGeom.Xform(prim).GetLocalTransformation(), dtype=np.float32)
+    # then get scale from the matrix
+    scale = np.sqrt(np.sum(local_mat[:3, :3] ** 2, axis=0))
     return wp.vec3(*scale)
 
 
