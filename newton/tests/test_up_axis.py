@@ -83,6 +83,14 @@ for device in devices:
             solver_fn=solver_fn,
             up_axis=newton.Axis.Z,
         )
+        add_function_test(
+            TestControlForce,
+            f"test_gravity_x_up_{solver_name}",
+            test_gravity,
+            devices=[device],
+            solver_fn=solver_fn,
+            up_axis=newton.Axis.X,
+        )
 
 if __name__ == "__main__":
     wp.clear_kernel_cache()

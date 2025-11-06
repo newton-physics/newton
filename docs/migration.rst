@@ -149,6 +149,18 @@ The :meth:`newton.ModelBuilder.add_joint_free()` method now initializes the posi
 The universal and compound joints have been removed in favor of the more general D6 joint.
 
 
+Up-Axis Support
+---------------
+
+Newton now supports multiple up-axis conventions including X-up, Y-up, and Z-up. When using different up-axis conventions:
+
+- For X-up to Z-up conversion: position coordinates are transformed as ``(x, y, z) -> (-z, y, x)`` with a 90-degree rotation around the Y-axis
+- For Y-up to Z-up conversion: position coordinates are transformed as ``(x, y, z) -> (x, -z, y)`` with a 90-degree rotation around the X-axis  
+- For Z-up: no conversion is needed as it's the default convention
+
+This up-axis conversion is automatically applied when loading assets via importers and during simulation with the MuJoCo solver.
+
+
 Renderers
 ---------
 
