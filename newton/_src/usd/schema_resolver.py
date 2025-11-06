@@ -193,7 +193,9 @@ class SchemaResolverManager:
             return
         self._schema_attrs[resolver.name][prim_path] = resolver.collect_prim_attrs(prim)
 
-    def get_value(self, prim: Usd.Prim, prim_type: PrimType, key: str, default: Any = None) -> Any:
+    def get_value(
+        self, prim: Usd.Prim, prim_type: PrimType, key: str, default: Any = None, verbose: bool = False
+    ) -> Any:
         """
         Resolve value using schema priority, with layered fallbacks:
 
@@ -237,10 +239,11 @@ class SchemaResolverManager:
             prim_path = str(prim.GetPath()) if prim is not None else "<None>"
         except (AttributeError, RuntimeError):
             prim_path = "<invalid>"
-        print(
-            f"Error: Cannot resolve value for '{prim_type.name.lower()}:{key}' on prim '{prim_path}'; "
-            f"no authored value, no explicit default, and no solver mapping default."
-        )
+        if verbose:
+            print(
+                f"Error: Cannot resolve value for '{prim_type.name.lower()}:{key}' on prim '{prim_path}'; "
+                f"no authored value, no explicit default, and no solver mapping default."
+            )
         return None
 
     def collect_prim_attrs(self, prim: Usd.Prim) -> None:

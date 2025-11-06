@@ -198,7 +198,7 @@ def parse_mjcf(
         return attrib
 
     axis_xform = wp.transform(wp.vec3(0.0), quat_between_axes(up_axis, builder.up_axis))
-    xform = wp.transform(*xform) * axis_xform
+    xform = xform * axis_xform
 
     def parse_float(attrib, key, default) -> float:
         if key in attrib:

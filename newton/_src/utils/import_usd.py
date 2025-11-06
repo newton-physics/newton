@@ -500,10 +500,10 @@ def parse_usd(
             parent_tf = wp.mul(incoming_xform, parent_tf)
 
         joint_armature = R.get_value(
-            joint_prim, prim_type=PrimType.JOINT, key="armature", default=default_joint_armature
+            joint_prim, prim_type=PrimType.JOINT, key="armature", default=default_joint_armature, verbose=verbose
         )
         joint_friction = R.get_value(
-            joint_prim, prim_type=PrimType.JOINT, key="friction", default=default_joint_friction
+            joint_prim, prim_type=PrimType.JOINT, key="friction", default=default_joint_friction, verbose=verbose
         )
 
         # Extract custom attributes for this joint
@@ -530,12 +530,14 @@ def parse_usd(
                 prim_type=PrimType.JOINT,
                 key="limit_angular_ke" if key == UsdPhysics.ObjectType.RevoluteJoint else "limit_linear_ke",
                 default=default_joint_limit_ke,
+                verbose=verbose,
             )
             current_joint_limit_kd = R.get_value(
                 joint_prim,
                 prim_type=PrimType.JOINT,
                 key="limit_angular_kd" if key == UsdPhysics.ObjectType.RevoluteJoint else "limit_linear_kd",
                 default=default_joint_limit_kd,
+                verbose=verbose,
             )
             joint_params["axis"] = usd_axis_to_axis[joint_desc.axis]
             joint_params["limit_lower"] = joint_desc.limit.lower
@@ -564,11 +566,19 @@ def parse_usd(
 
             # Resolve initial joint state from schema resolver
             if dof_type == "angular":
-                initial_position = R.get_value(joint_prim, PrimType.JOINT, "angular_position", default=None)
-                initial_velocity = R.get_value(joint_prim, PrimType.JOINT, "angular_velocity", default=None)
+                initial_position = R.get_value(
+                    joint_prim, PrimType.JOINT, "angular_position", default=None, verbose=verbose
+                )
+                initial_velocity = R.get_value(
+                    joint_prim, PrimType.JOINT, "angular_velocity", default=None, verbose=verbose
+                )
             else:  # linear
-                initial_position = R.get_value(joint_prim, PrimType.JOINT, "linear_position", default=None)
-                initial_velocity = R.get_value(joint_prim, PrimType.JOINT, "linear_velocity", default=None)
+                initial_position = R.get_value(
+                    joint_prim, PrimType.JOINT, "linear_position", default=None, verbose=verbose
+                )
+                initial_velocity = R.get_value(
+                    joint_prim, PrimType.JOINT, "linear_velocity", default=None, verbose=verbose
+                )
 
             joint_prim.CreateAttribute(f"physics:tensor:{dof_type}:dofOffset", Sdf.ValueTypeNames.UInt).Set(0)
             # joint_prim.CreateAttribute(f"state:{dof_type}:physics:position", Sdf.ValueTypeNames.Float).Set(0)
@@ -668,22 +678,32 @@ def parse_usd(
                     }[dof]
                     # Store initial state for this axis
                     d6_initial_positions[trans_name] = R.get_value(
-                        joint_prim, PrimType.JOINT, f"{trans_name}_position", default=None
+                        joint_prim,
+                        PrimType.JOINT,
+                        f"{trans_name}_position",
+                        default=None,
+                        verbose=verbose,
                     )
                     d6_initial_velocities[trans_name] = R.get_value(
-                        joint_prim, PrimType.JOINT, f"{trans_name}_velocity", default=None
+                        joint_prim,
+                        PrimType.JOINT,
+                        f"{trans_name}_velocity",
+                        default=None,
+                        verbose=verbose,
                     )
                     current_joint_limit_ke = R.get_value(
                         joint_prim,
                         prim_type=PrimType.JOINT,
                         key=f"limit_{trans_name}_ke",
                         default=default_joint_limit_ke,
+                        verbose=verbose,
                     )
                     current_joint_limit_kd = R.get_value(
                         joint_prim,
                         prim_type=PrimType.JOINT,
                         key=f"limit_{trans_name}_kd",
                         default=default_joint_limit_kd,
+                        verbose=verbose,
                     )
                     linear_axes.append(
                         ModelBuilder.JointDofConfig(
@@ -708,22 +728,32 @@ def parse_usd(
                     rot_name = _rot_names[dof]
                     # Store initial state for this axis
                     d6_initial_positions[rot_name] = R.get_value(
-                        joint_prim, PrimType.JOINT, f"{rot_name}_position", default=None
+                        joint_prim,
+                        PrimType.JOINT,
+                        f"{rot_name}_position",
+                        default=None,
+                        verbose=verbose,
                     )
                     d6_initial_velocities[rot_name] = R.get_value(
-                        joint_prim, PrimType.JOINT, f"{rot_name}_velocity", default=None
+                        joint_prim,
+                        PrimType.JOINT,
+                        f"{rot_name}_velocity",
+                        default=None,
+                        verbose=verbose,
                     )
                     current_joint_limit_ke = R.get_value(
                         joint_prim,
                         prim_type=PrimType.JOINT,
                         key=f"limit_{rot_name}_ke",
                         default=default_joint_limit_ke,
+                        verbose=verbose,
                     )
                     current_joint_limit_kd = R.get_value(
                         joint_prim,
                         prim_type=PrimType.JOINT,
                         key=f"limit_{rot_name}_kd",
                         default=default_joint_limit_kd,
+                        verbose=verbose,
                     )
                     angular_axes.append(
                         ModelBuilder.JointDofConfig(
@@ -858,17 +888,21 @@ def parse_usd(
             physics_scene_prim, "newton:joint_drive_gains_scaling", joint_drive_gains_scaling
         )
         # Resolve scene time step, gravity settings, and contact margin
-        physics_dt = R.get_value(physics_scene_prim, prim_type=PrimType.SCENE, key="time_step", default=None)
-        gravity_enabled = R.get_value(physics_scene_prim, prim_type=PrimType.SCENE, key="enable_gravity", default=True)
+        physics_dt = R.get_value(
+            physics_scene_prim, prim_type=PrimType.SCENE, key="time_step", default=None, verbose=verbose
+        )
+        gravity_enabled = R.get_value(
+            physics_scene_prim, prim_type=PrimType.SCENE, key="enable_gravity", default=True, verbose=verbose
+        )
         if not gravity_enabled:
             builder.gravity = 0.0
         contact_margin = R.get_value(
-            physics_scene_prim, prim_type=PrimType.SCENE, key="rigid_contact_margin", default=None
+            physics_scene_prim, prim_type=PrimType.SCENE, key="rigid_contact_margin", default=None, verbose=verbose
         )
         if contact_margin is not None:
             builder.rigid_contact_margin = contact_margin
         max_solver_iters = R.get_value(
-            physics_scene_prim, prim_type=PrimType.SCENE, key="max_solver_iterations", default=None
+            physics_scene_prim, prim_type=PrimType.SCENE, key="max_solver_iterations", default=None, verbose=verbose
         )
 
     stage_up_axis = Axis.from_string(str(UsdGeom.GetStageUpAxis(stage)))
@@ -1386,7 +1420,11 @@ def parse_usd(
                         face_id += count
                     # Resolve mesh hull vertex limit from schema with fallback to parameter
                     resolved_maxhullvert = R.get_value(
-                        prim, prim_type=PrimType.SHAPE, key="mesh_hull_vertex_limit", default=mesh_maxhullvert
+                        prim,
+                        prim_type=PrimType.SHAPE,
+                        key="mesh_hull_vertex_limit",
+                        default=mesh_maxhullvert,
+                        verbose=verbose,
                     )
                     m = Mesh(points, np.array(faces, dtype=np.int32).flatten(), maxhullvert=resolved_maxhullvert)
                     shape_id = builder.add_shape_mesh(
