@@ -102,7 +102,7 @@ When ``as_site=True``, the shape is automatically configured with all site invar
 Importing Sites
 ---------------
 
-Sites are automatically imported from MJCF and USD files.
+Sites are automatically imported from MJCF and USD files, with optional control over what gets loaded.
 
 MJCF Import
 ~~~~~~~~~~~
@@ -122,6 +122,18 @@ MuJoCo sites are directly mapped to Newton sites, preserving type, position, ori
        </worldbody>
    </mujoco>
 
+By default, sites are loaded along with collision and visual shapes. You can control this behavior with the ``parse_sites`` and ``parse_visuals`` parameters:
+
+.. code-block:: python
+
+   builder = newton.ModelBuilder()
+   
+   # Load only collision shapes and sites (no visual shapes)
+   builder.add_mjcf("robot.xml", parse_sites=True, parse_visuals=False)
+   
+   # Load only collision shapes (no sites or visual shapes)
+   builder.add_mjcf("robot.xml", parse_sites=False, parse_visuals=False)
+
 USD Import
 ~~~~~~~~~~
 
@@ -140,6 +152,20 @@ Sites in USD are identified by the ``MjcSiteAPI`` schema applied to geometric pr
            uniform token[] xformOpOrder = ["xformOp:translate"]
        }
    }
+
+Similar to MJCF import, you can control whether sites and visual shapes are loaded using the ``load_sites`` and ``load_visual_shapes`` parameters:
+
+.. code-block:: python
+
+   builder = newton.ModelBuilder()
+   
+   # Load only collision shapes and sites (no visual shapes)
+   builder.add_usd("robot.usda", load_sites=True, load_visual_shapes=False)
+   
+   # Load only collision shapes (no sites or visual shapes)
+   builder.add_usd("robot.usda", load_sites=False, load_visual_shapes=False)
+
+For backward compatibility, if ``load_sites`` and ``load_visual_shapes`` are not explicitly set, they default to the value of ``load_non_physics_prims``.
 
 Using Sites with Sensors
 ------------------------
