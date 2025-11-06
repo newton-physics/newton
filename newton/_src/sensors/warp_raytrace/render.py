@@ -1,3 +1,18 @@
+# SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
@@ -187,37 +202,38 @@ def render_megakernel(rc: RenderContext):
 
             if wp.static(rc.use_textures):
                 mat_id = geom_materials[geom_id]
-                tex_id = mat_texid[mat_id]
+                if mat_id > -1:
+                    tex_id = mat_texid[mat_id]
+                    if tex_id > -1:
+                        tex_color = textures.sample_texture(
+                            world_id,
+                            geom_id,
+                            geom_types,
+                            mat_id,
+                            tex_id,
+                            mat_texrepeat[mat_id],
+                            tex_adr[tex_id],
+                            tex_data,
+                            tex_height[tex_id],
+                            tex_width[tex_id],
+                            geom_positions[geom_id],
+                            geom_orientations[geom_id],
+                            mesh_face_offsets,
+                            mesh_face_vertices,
+                            mesh_texcoord,
+                            mesh_texcoord_offsets,
+                            hit_point,
+                            u,
+                            v,
+                            f,
+                            mesh_id,
+                        )
 
-                tex_color = textures.sample_texture(
-                    world_id,
-                    geom_id,
-                    geom_types,
-                    mat_id,
-                    tex_id,
-                    mat_texrepeat[mat_id],
-                    tex_adr[tex_id],
-                    tex_data,
-                    tex_height[tex_id],
-                    tex_width[tex_id],
-                    geom_positions[geom_id],
-                    geom_orientations[geom_id],
-                    mesh_face_offsets,
-                    mesh_face_vertices,
-                    mesh_texcoord,
-                    mesh_texcoord_offsets,
-                    hit_point,
-                    u,
-                    v,
-                    f,
-                    mesh_id,
-                )
-
-                base_color = wp.vec3(
-                    base_color[0] * tex_color[0],
-                    base_color[1] * tex_color[1],
-                    base_color[2] * tex_color[2],
-                )
+                        base_color = wp.vec3(
+                            base_color[0] * tex_color[0],
+                            base_color[1] * tex_color[1],
+                            base_color[2] * tex_color[2],
+                        )
 
             up = wp.vec3(0.0, 0.0, 1.0)
             len_n = wp.length(normal)
@@ -267,7 +283,7 @@ def render_megakernel(rc: RenderContext):
                     hit_color[0] * 255.0,
                     hit_color[1] * 255.0,
                     hit_color[2] * 255.0,
-                    1.0,
+                    255.0,
                 )
 
     wp.launch(

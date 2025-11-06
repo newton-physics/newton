@@ -51,8 +51,8 @@ def convert_newton_transform(
 def compute_mesh_bounds(in_meshes: wp.array(dtype=wp.uint64), out_bounds: wp.array2d(dtype=wp.vec3f)):
     tid = wp.tid()
 
-    min_point = wp.vec3f()
-    max_point = wp.vec3f()
+    min_point = wp.vec3(wp.inf)
+    max_point = wp.vec3(-wp.inf)
 
     if in_meshes[tid] != 0:
         mesh = wp.mesh_get(in_meshes[tid])
@@ -219,7 +219,7 @@ class TiledCameraSensor:
 
     def save_color_image(self, filename: str) -> bool:
         try:
-            from PIL import Image  # noqa: PLC0415
+            from PIL import Image
         except ImportError:
             print("Failed to import PIL.Image, not saving image.")
             return False
@@ -251,7 +251,7 @@ class TiledCameraSensor:
 
     def save_depth_image(self, filename: str) -> bool:
         try:
-            from PIL import Image  # noqa: PLC0415
+            from PIL import Image
         except ImportError:
             print("Failed to import PIL.Image, not saving image.")
             return False
@@ -260,7 +260,7 @@ class TiledCameraSensor:
         rows = math.ceil(math.sqrt(num_worlds_and_cameras))
         cols = math.ceil(num_worlds_and_cameras / rows)
 
-        tile_data = self.color_image.numpy().astype(np.float32)
+        tile_data = self.depth_image.numpy().astype(np.float32)
         tile_data = tile_data.reshape(num_worlds_and_cameras, self.render_context.width * self.render_context.height)
 
         tile_data[tile_data < 0] = 0
