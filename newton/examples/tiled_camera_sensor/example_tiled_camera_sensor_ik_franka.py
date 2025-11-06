@@ -164,13 +164,6 @@ class Example:
         pass
 
     def render(self):
-        if self.viewer.is_key_down("enter"):
-            if not self.render_key_is_pressed:
-                self.render_sensors()
-            self.render_key_is_pressed = True
-        else:
-            self.render_key_is_pressed = False
-
         self.viewer.begin_frame(self.sim_time)
 
         # Register gizmo (viewer will draw & mutate transform in-place)
@@ -181,6 +174,14 @@ class Example:
         self.viewer.log_state(self.state)
 
         self.viewer.end_frame()
+
+        if self.viewer.is_key_down("enter"):
+            if not self.render_key_is_pressed:
+                self.render_sensors()
+            self.render_key_is_pressed = True
+        else:
+            self.render_key_is_pressed = False
+
         wp.synchronize()
 
     def render_sensors(self):

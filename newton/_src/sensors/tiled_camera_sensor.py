@@ -119,7 +119,7 @@ def compute_pinhole_camera_rays(
     u = (float(px) + 0.5) / float(width) - 0.5
     v = (float(py) + 0.5) / float(height) - 0.5
     h = wp.tan(camera_fovs[camera_index] / 2.0)
-    ray_direction_camera_space = wp.vec3f(u * 2.0 * h, -v * 2.0 * h / aspect_ratio, -1.0)
+    ray_direction_camera_space = wp.vec3f(u * 2.0 * h * aspect_ratio, -v * 2.0 * h, -1.0)
     out_rays[camera_index, py, px, 0] = wp.vec3f(0.0)
     out_rays[camera_index, py, px, 1] = wp.normalize(ray_direction_camera_space)
 
