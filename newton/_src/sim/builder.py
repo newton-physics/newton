@@ -218,7 +218,11 @@ class ModelBuilder:
                 self.mark_as_site()
                 # Collision flags will be cleared by mark_as_site()
             else:
+                # SITE flag is being cleared - restore non-site defaults
+                defaults = self.__class__()
                 self.is_site = False
+                self.density = defaults.density
+                self.collision_group = defaults.collision_group
                 self.has_shape_collision = bool(value & ShapeFlags.COLLIDE_SHAPES)
                 self.has_particle_collision = bool(value & ShapeFlags.COLLIDE_PARTICLES)
 
