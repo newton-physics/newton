@@ -45,6 +45,7 @@ class Example:
         self.device = wp.get_device()
 
         articulation_builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        newton.solvers.SolverMuJoCo.register_custom_attributes(articulation_builder)
         articulation_builder.default_joint_cfg = newton.ModelBuilder.JointDofConfig(
             limit_ke=1.0e3, limit_kd=1.0e1, friction=1e-5
         )
