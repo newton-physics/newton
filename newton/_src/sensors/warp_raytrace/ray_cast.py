@@ -62,6 +62,14 @@ def closest_hit(
             gi_bvh_local = gi_global - (world_id * num_geom_in_bvh)
             gi = geom_enabled[gi_bvh_local]
 
+            h = bool(False)
+            d = wp.float32(wp.inf)
+            n = wp.vec3(0.0)
+            u = wp.float32(0.0)
+            v = wp.float32(0.0)
+            f = wp.int32(-1)
+            geom_mesh_id = wp.int32(-1)
+
             if geom_types[gi] == GeomType.PLANE:
                 h, d, n = ray.ray_plane_with_normal(
                     geom_positions[gi],

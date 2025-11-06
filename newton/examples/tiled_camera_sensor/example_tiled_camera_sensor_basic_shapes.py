@@ -148,7 +148,7 @@ class Example:
             self.model,
             self.state_0,
             "sphere at rest pose",
-            lambda q, qd: newton.utils.vec_allclose(q, sphere_q, atol=1e-4),
+            lambda q, _qd: newton.utils.vec_allclose(q, sphere_q, atol=1e-4),
             [0],
         )
         self.capsule_pos[2] = 1.0
@@ -157,7 +157,7 @@ class Example:
             self.model,
             self.state_0,
             "capsule at rest pose",
-            lambda q, qd: newton.utils.vec_allclose(q, capsule_q, atol=1e-4),
+            lambda q, _qd: newton.utils.vec_allclose(q, capsule_q, atol=1e-4),
             [1],
         )
         self.cylinder_pos[2] = 0.6
@@ -166,7 +166,7 @@ class Example:
             self.model,
             self.state_0,
             "cylinder at rest pose",
-            lambda q, qd: newton.utils.vec_allclose(q, cylinder_q, atol=1e-4),
+            lambda q, _qd: newton.utils.vec_allclose(q, cylinder_q, atol=1e-4),
             [2],
         )
         self.box_pos[2] = 0.25
@@ -175,7 +175,7 @@ class Example:
             self.model,
             self.state_0,
             "box at rest pose",
-            lambda q, qd: newton.utils.vec_allclose(q, box_q, atol=0.1),
+            lambda q, _qd: newton.utils.vec_allclose(q, box_q, atol=0.1),
             [3],
         )
         # we only test that the bunny didn't fall through the ground and didn't slide too far
@@ -183,7 +183,7 @@ class Example:
             self.model,
             self.state_0,
             "bunny at rest pose",
-            lambda q, qd: q[2] > 0.01 and abs(q[0]) < 0.1 and abs(q[1] - 4.0) < 0.1,
+            lambda q, _qd: q[2] > 0.01 and abs(q[0]) < 0.1 and abs(q[1] - 4.0) < 0.1,
             [4],
         )
 
