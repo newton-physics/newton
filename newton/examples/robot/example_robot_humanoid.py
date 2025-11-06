@@ -42,6 +42,7 @@ class Example:
         self.viewer = viewer
 
         humanoid = newton.ModelBuilder()
+        newton.solvers.SolverMuJoCo.register_custom_attributes(humanoid)
         humanoid.default_joint_cfg = newton.ModelBuilder.JointDofConfig(limit_ke=1.0e3, limit_kd=1.0e1, friction=1e-5)
         humanoid.default_shape_cfg.ke = 5.0e4
         humanoid.default_shape_cfg.kd = 5.0e2

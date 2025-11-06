@@ -114,6 +114,7 @@ class Example:
             allegro_hand.joint_target[i] = 0.0
 
         builder = newton.ModelBuilder()
+        newton.solvers.SolverMuJoCo.register_custom_attributes(builder)
         builder.replicate(allegro_hand, self.num_worlds)
 
         builder.add_ground_plane()
