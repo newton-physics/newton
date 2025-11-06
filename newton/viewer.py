@@ -14,12 +14,6 @@
 # limitations under the License.
 
 # Import all viewer classes (they handle missing dependencies at instantiation time)
-from ._src.viewer import ViewerFile, ViewerGL, ViewerNull, ViewerRerun, ViewerUSD
+from ._src.viewer import Camera, ViewerFile, ViewerGL, ViewerNull, ViewerRerun, ViewerUSD
 
-__all__ = [
-    "ViewerFile",
-    "ViewerGL",
-    "ViewerNull",
-    "ViewerRerun",
-    "ViewerUSD",
-]
+__all__ = ["Camera", "ViewerFile", "ViewerGL", "ViewerNull", "ViewerRerun", "ViewerUSD"]
