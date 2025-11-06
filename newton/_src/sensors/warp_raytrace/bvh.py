@@ -1,3 +1,18 @@
+# SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 import warp as wp
 
 from .types import GeomType
@@ -91,15 +106,8 @@ def compute_capsule_bounds(pos: wp.vec3, rot: wp.mat33, size: wp.vec3) -> tuple[
 def compute_cylinder_bounds(pos: wp.vec3, rot: wp.mat33, size: wp.vec3) -> tuple[wp.vec3, wp.vec3]:
     radius = size[0]
     half_length = size[1]
-    local_end1 = wp.vec3(0.0, 0.0, -half_length)
-    local_end2 = wp.vec3(0.0, 0.0, half_length)
-    world_end1 = pos + rot @ local_end1
-    world_end2 = pos + rot @ local_end2
-
-    inflate = wp.vec3(0.0, radius, radius)
-    seg_min = wp.min(world_end1, world_end2) - inflate
-    seg_max = wp.max(world_end1, world_end2) + inflate
-    return seg_min, seg_max
+    extent = wp.vec3(radius, radius, half_length)
+    return compute_box_bounds(pos, rot, extent)
 
 
 @wp.func
@@ -144,8 +152,8 @@ def compute_plane_bounds(pos: wp.vec3, rot: wp.mat33, size: wp.vec3) -> tuple[wp
 
 @wp.func
 def compute_ellipsoid_bounds(pos: wp.vec3, rot: wp.mat33, size: wp.vec3) -> tuple[wp.vec3, wp.vec3]:
-    size_scale = 1.0
-    return pos - wp.vec3(size_scale, size_scale, size_scale), pos + wp.vec3(size_scale, size_scale, size_scale)
+    extent = wp.vec3(wp.abs(size[0]), wp.abs(size[1]), wp.abs(size[2]))
+    return compute_box_bounds(pos, rot, extent)
 
 
 @wp.kernel
