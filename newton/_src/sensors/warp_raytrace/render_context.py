@@ -56,8 +56,9 @@ class RenderContext:
         self.tex_width: wp.array(dtype=wp.int32) = None
 
         self.num_cameras = 0
-        self.camera_ray_origins: wp.array(dtype=wp.vec3f, ndim=3) = None
-        self.camera_ray_directions: wp.array(dtype=wp.vec3f, ndim=3) = None
+        self.camera_rays: wp.array(dtype=wp.vec3f, ndim=4) = None
+        self.camera_positions: wp.array(dtype=wp.vec3f) = None
+        self.camera_orientations: wp.array(dtype=wp.mat33f) = None
 
         self.material_texture_ids: wp.array(dtype=wp.int32) = None
         self.material_texture_repeat: wp.array(dtype=wp.vec2f) = None
@@ -71,13 +72,14 @@ class RenderContext:
         self.lights_orientation: wp.array(dtype=wp.vec3f) = None
 
     def init_outputs(self):
-        self.camera_ray_origins = wp.empty((self.num_cameras, self.height, self.width), dtype=wp.vec3f)
-        self.camera_ray_directions = wp.empty((self.num_cameras, self.height, self.width), dtype=wp.vec3f)
         self.bvh_lowers = wp.zeros((self.num_worlds_total * self.num_geom_in_bvh), dtype=wp.vec3f)
         self.bvh_uppers = wp.zeros((self.num_worlds_total * self.num_geom_in_bvh), dtype=wp.vec3f)
         self.bvh_groups = wp.zeros((self.num_worlds_total * self.num_geom_in_bvh), dtype=wp.int32)
         self.bvh_group_roots = wp.zeros((self.num_worlds_total), dtype=wp.int32)
         self.output = RenderContext.Output(self.num_worlds, self.num_cameras, self.width, self.height)
+
+    def init_camera_rays(self):
+        self.camera_rays = wp.empty((self.num_cameras, self.height, self.width, 2), dtype=wp.vec3f)
 
     @property
     def num_worlds_total(self) -> int:

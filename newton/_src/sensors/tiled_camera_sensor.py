@@ -112,22 +112,16 @@ def compute_pinhole_camera_rays(
     width: int,
     height: int,
     camera_fovs: wp.array(dtype=wp.float32),
-    camera_positions: wp.array(dtype=wp.vec3f),
-    camera_orientations: wp.array(dtype=wp.mat33f),
-    out_ray_origins: wp.array(dtype=wp.vec3f, ndim=3),
-    out_ray_directions: wp.array(dtype=wp.vec3f, ndim=3),
+    out_rays: wp.array(dtype=wp.vec3f, ndim=4),
 ):
     camera_index, py, px = wp.tid()
-
     aspect_ratio = float(width) / float(height)
     u = (float(px) + 0.5) / float(width) - 0.5
     v = (float(py) + 0.5) / float(height) - 0.5
     h = wp.tan(camera_fovs[camera_index] / 2.0)
     ray_direction_camera_space = wp.vec3f(u * 2.0 * h, -v * 2.0 * h / aspect_ratio, -1.0)
-    out_ray_origins[camera_index, py, px] = camera_positions[camera_index]
-    out_ray_directions[camera_index, py, px] = camera_orientations[camera_index] @ wp.normalize(
-        ray_direction_camera_space
-    )
+    out_rays[camera_index, py, px, 0] = wp.vec3f(0.0)
+    out_rays[camera_index, py, px, 1] = wp.normalize(ray_direction_camera_space)
 
 
 class TiledCameraSensor:
@@ -199,28 +193,29 @@ class TiledCameraSensor:
     def depth_image(self) -> wp.array:
         return self.render_context.output.depth_image
 
-    def update_cameras(self, cameras: list[Camera]):
+    def update_cameras(self, cameras: list[Camera], recompute_rays: bool = False):
         assert len(cameras) == self.render_context.num_cameras, "Number of cameras does not match initial setup."
 
-        camera_fovs = wp.array([math.radians(camera.fov) for camera in cameras], dtype=wp.float32)
-        camera_positions = wp.array([camera.pos for camera in cameras], dtype=wp.vec3f)
-        camera_orientations = wp.array(
+        self.render_context.camera_positions = wp.array([camera.pos for camera in cameras], dtype=wp.vec3f)
+        self.render_context.camera_orientations = wp.array(
             [np.delete(camera.get_view_matrix(), np.arange(3, 16, 4))[:9] for camera in cameras], dtype=wp.mat33f
         )
 
-        wp.launch(
-            kernel=compute_pinhole_camera_rays,
-            dim=(self.render_context.num_cameras, self.render_context.height, self.render_context.width),
-            inputs=[
-                self.render_context.width,
-                self.render_context.height,
-                camera_fovs,
-                camera_positions,
-                camera_orientations,
-                self.render_context.camera_ray_origins,
-                self.render_context.camera_ray_directions,
-            ],
-        )
+        if recompute_rays or self.render_context.camera_rays is None:
+            if self.render_context.camera_rays is None:
+                self.render_context.init_camera_rays()
+
+            camera_fovs = wp.array([math.radians(camera.fov) for camera in cameras], dtype=wp.float32)
+            wp.launch(
+                kernel=compute_pinhole_camera_rays,
+                dim=(self.render_context.num_cameras, self.render_context.height, self.render_context.width),
+                inputs=[
+                    self.render_context.width,
+                    self.render_context.height,
+                    camera_fovs,
+                    self.render_context.camera_rays,
+                ],
+            )
 
     def save_color_image(self, filename: str) -> bool:
         try:
