@@ -83,6 +83,7 @@ class Example:
         self.is_test = args is not None and args.test
 
         builder = newton.ModelBuilder()
+        newton.solvers.SolverMuJoCo.register_custom_attributes(builder)
         builder.default_joint_cfg = newton.ModelBuilder.JointDofConfig(
             armature=0.06,
             limit_ke=1.0e3,

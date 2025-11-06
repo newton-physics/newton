@@ -37,17 +37,16 @@ from ..sim.state import State
 
 
 class BroadPhaseMode(IntEnum):
-    """Broad phase collision detection mode.
-
-    Attributes:
-        NXN: All-pairs broad phase with AABB checks (simple, O(N²) but good for small scenes)
-        SAP: Sweep and Prune broad phase with AABB sorting (faster for larger scenes, O(N log N))
-        EXPLICIT: Use precomputed shape pairs (most efficient when pairs are known ahead of time)
-    """
+    """Broad phase collision detection mode."""
 
     NXN = 0
+    """All-pairs broad phase with AABB checks (simple, O(N²) but good for small scenes)"""
+
     SAP = 1
+    """Sweep and Prune broad phase with AABB sorting (faster for larger scenes, O(N log N))"""
+
     EXPLICIT = 2
+    """Use precomputed shape pairs (most efficient when pairs are known ahead of time)"""
 
 
 @wp.func

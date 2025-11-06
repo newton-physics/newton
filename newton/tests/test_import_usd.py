@@ -380,7 +380,6 @@ class TestImportUsd(unittest.TestCase):
         import_results = builder.add_usd(
             os.path.join(os.path.dirname(__file__), "assets", "cube_cylinder.usda"),
             collapse_fixed_joints=True,
-            invert_rotations=True,
         )
         self.assertEqual(builder.body_count, 1)
         self.assertEqual(builder.shape_count, 2)

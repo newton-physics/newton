@@ -20,7 +20,6 @@ import itertools
 import os
 import re
 import warnings
-from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -33,7 +32,8 @@ from ..geometry import MESH_MAXHULLVERT, Mesh, ShapeFlags, compute_sphere_inerti
 from ..sim.builder import ModelBuilder
 from ..sim.joints import JointMode
 from ..sim.model import ModelAttributeFrequency
-from .schema_resolver import PrimType, SchemaResolver, SchemaResolverNewton, _ResolverManager
+from ..usd import utils as usd
+from ..usd.schema_resolver import PrimType, SchemaResolver, SchemaResolverManager
 
 
 def parse_usd(
@@ -43,7 +43,6 @@ def parse_usd(
     only_load_enabled_rigid_bodies: bool = False,
     only_load_enabled_joints: bool = True,
     joint_drive_gains_scaling: float = 1.0,
-    invert_rotations: bool = True,
     verbose: bool = False,
     ignore_paths: list[str] | None = None,
     cloned_world: str | None = None,
@@ -58,12 +57,13 @@ def parse_usd(
     hide_collision_shapes: bool = False,
     mesh_maxhullvert: int = MESH_MAXHULLVERT,
     schema_resolvers: list[SchemaResolver] | None = None,
-    collect_solver_specific_attrs: bool = True,
 ) -> dict[str, Any]:
     """
     Parses a Universal Scene Description (USD) stage containing UsdPhysics schema definitions for rigid-body articulations and adds the bodies, shapes and joints to the given ModelBuilder.
 
     The USD description has to be either a path (file name or URL), or an existing USD stage instance that implements the `Stage <https://openusd.org/dev/api/class_usd_stage.html>`_ interface.
+
+    See :ref:`usd_parsing` for more information.
 
     Args:
         builder (ModelBuilder): The :class:`ModelBuilder` to add the bodies and joints to.
@@ -72,7 +72,6 @@ def parse_usd(
         only_load_enabled_rigid_bodies (bool): If True, only rigid bodies which do not have `physics:rigidBodyEnabled` set to False are loaded.
         only_load_enabled_joints (bool): If True, only joints which do not have `physics:jointEnabled` set to False are loaded.
         joint_drive_gains_scaling (float): The default scaling of the PD control gains (stiffness and damping), if not set in the PhysicsScene with as "newton:joint_drive_gains_scaling".
-        invert_rotations (bool): If True, inverts any rotations defined in the shape transforms.
         verbose (bool): If True, print additional information about the parsed USD file. Default is False.
         ignore_paths (List[str]): A list of regular expressions matching prim paths to ignore.
         cloned_world (str): The prim path of a world which is cloned within this USD file. Siblings of this world prim will not be parsed but instead be replicated via `ModelBuilder.add_builder(builder, xform)` to speed up the loading of many instantiated worlds.
@@ -86,17 +85,16 @@ def parse_usd(
         load_non_physics_prims (bool): If True, prims that are children of a rigid body that do not have a UsdPhysics schema applied are loaded as visual shapes in a separate pass (may slow down the loading process). Otherwise, non-physics prims are ignored. Default is True.
         hide_collision_shapes (bool): If True, collision shapes are hidden. Default is False.
         mesh_maxhullvert (int): Maximum vertices for convex hull approximation of meshes.
-        schema_resolvers (list[SchemaResolver]): Resolver instances in priority order. Default is
-            [SchemaResolverNewton()].
-        collect_solver_specific_attrs (bool): If True, collect per-prim "solver-specific" attributes for the
-            configured schema resolvers. These include namespaced attributes such as ``newton:*``, ``physx*``
+        schema_resolvers (list[SchemaResolver]): Resolver instances in priority order. Default is no schema resolution.
+            Schema resolvers collect per-prim "solver-specific" attributes, see :ref:`schema_resolvers` for more information.
+            These include namespaced attributes such as ``newton:*``, ``physx*``
             (e.g., ``physxScene:*``, ``physxRigidBody:*``, ``physxSDFMeshCollision:*``), and ``mjc:*`` that
             are authored in the USD but not strictly required to build the simulation. This is useful for
             inspection, experimentation, or custom pipelines that read these values via
-            :meth:`_ResolverManager.get_solver_specific_attrs`. If set to ``False``, the parser skips scanning these
-            namespaces to avoid unnecessary overhead. For example, if an asset authors PhysX SDF mesh
-            properties (``physxSDFMeshCollision:*``) that Newton does not currently use, disabling this flag
-            prevents parsing them. Default is ``True``.
+            :attr:`newton.usd.SchemaResolverManager.schema_attrs`.
+
+            .. note::
+                Using the ``schema_resolvers`` argument is an experimental feature that may be removed or changed significantly in the future.
 
     Returns:
         dict: Dictionary with the following entries:
@@ -126,8 +124,8 @@ def parse_usd(
               - Dictionary returned by :meth:`newton.ModelBuilder.collapse_fixed_joints` if `collapse_fixed_joints` is True, otherwise None.
             * - "physics_dt"
               - The resolved physics scene time step (float or None)
-            * - "solver_specific_attrs"
-              - Dictionary of collected per-prim solver-specific attributes (dict or empty dict if `collect_solver_specific_attrs` is False)
+            * - "schema_attrs"
+              - Dictionary of collected per-prim schema attributes (dict)
             * - "max_solver_iterations"
               - The resolved maximum solver iterations (int or None)
             * - "path_body_relative_transform"
@@ -135,9 +133,9 @@ def parse_usd(
             * - "path_original_body_map"
               - Mapping from prim path to original body index before `collapse_fixed_joints`
     """
-    # default schema resolvers (avoid mutable default argument)
     if schema_resolvers is None:
-        schema_resolvers = [SchemaResolverNewton()]
+        schema_resolvers = []
+    collect_schema_attrs = len(schema_resolvers) > 0
 
     try:
         from pxr import Sdf, Usd, UsdGeom, UsdPhysics  # noqa: PLC0415
@@ -172,75 +170,6 @@ def parse_usd(
     }
     # mapping from remeshing method to a list of shape indices
     remeshing_queue = {}
-
-    def get_attribute(prim, name):
-        return prim.GetAttribute(name)
-
-    def has_attribute(prim, name):
-        attr = get_attribute(prim, name)
-        return attr.IsValid() and attr.HasAuthoredValue()
-
-    def parse_float(prim, name, default=None):
-        attr = get_attribute(prim, name)
-        if not attr or not attr.HasAuthoredValue():
-            return default
-        val = attr.Get()
-        if np.isfinite(val):
-            return val
-        return default
-
-    def parse_float_with_fallback(prims: Iterable[Usd.Prim], name: str, default: float = 0.0) -> float:
-        ret = default
-        for prim in prims:
-            if not prim:
-                continue
-            attr = get_attribute(prim, name)
-            if not attr or not attr.HasAuthoredValue():
-                continue
-            val = attr.Get()
-            if np.isfinite(val):
-                ret = val
-                break
-        return ret
-
-    def from_gfquat(gfquat):
-        return wp.normalize(wp.quat(*gfquat.imaginary, gfquat.real))
-
-    def parse_quat(prim, name, default=None):
-        attr = get_attribute(prim, name)
-        if not attr or not attr.HasAuthoredValue():
-            return default
-        val = attr.Get()
-        quat = from_gfquat(val)
-        l = wp.length(quat)
-        if np.isfinite(l) and l > 0.0:
-            return quat
-        return default
-
-    def parse_vec(prim, name, default=None):
-        attr = get_attribute(prim, name)
-        if not attr or not attr.HasAuthoredValue():
-            return default
-        val = attr.Get()
-        if np.isfinite(val).all():
-            return np.array(val, dtype=np.float32)
-        return default
-
-    def parse_generic(prim, name, default=None):
-        attr = get_attribute(prim, name)
-        if not attr or not attr.HasAuthoredValue():
-            return default
-        return attr.Get()
-
-    def parse_xform(prim):
-        xform = UsdGeom.Xform(prim)
-        mat = np.array(xform.GetLocalTransformation(), dtype=np.float32)
-        if invert_rotations:
-            rot = wp.quat_from_matrix(wp.mat33(mat[:3, :3].T.flatten()))
-        else:
-            rot = wp.quat_from_matrix(wp.mat33(mat[:3, :3].flatten()))
-        pos = mat[3, :3]
-        return wp.transform(pos, rot)
 
     if ignore_paths is None:
         ignore_paths = []
@@ -286,9 +215,9 @@ def parse_usd(
         # worlds at their respective Xform transforms
         worlds_prim = cloned_world_prim.GetParent()
         for sibling in worlds_prim.GetChildren():
-            # print(sibling.GetPath(), parse_xform(sibling))
+            # print(sibling.GetPath(), usd.get_transform(sibling))
             p = str(sibling.GetPath())
-            cloned_world_xforms.append(parse_xform(sibling))
+            cloned_world_xforms.append(usd.get_transform(sibling))
             cloned_world_paths.append(p)
             if sibling != cloned_world_prim:
                 ignore_paths.append(p)
@@ -307,21 +236,7 @@ def parse_usd(
     ret_dict = UsdPhysics.LoadUsdPhysicsFromRange(stage, [root_path], excludePaths=non_regex_ignore_paths)
 
     # Initialize schema resolver according to precedence
-    R = _ResolverManager(schema_resolvers, collect_solver_attrs=collect_solver_specific_attrs)
-
-    # for key, value in ret_dict.items():
-    #     print(f"Object type: {key}")
-    #     prims, scene_descs = value
-    #     for prim, desc in zip(prims, scene_descs):
-    #         print(prim)
-    #         print(desc)
-    #     if key == UsdPhysics.ObjectType.CapsuleShape:
-    #         for prim, desc in zip(prims, scene_descs):
-    #             print(desc.halfHeight)
-    #     if key == UsdPhysics.ObjectType.RigidBody:
-    #         for prim, desc in zip(prims, scene_descs):
-    #             print(desc.simulationOwners)
-    # print("***************************************************************************")
+    R = SchemaResolverManager(schema_resolvers)
 
     # mapping from prim path to body ID in Warp sim
     path_body_map = {}
@@ -339,7 +254,7 @@ def parse_usd(
         has_particle_collision=False,
     )
 
-    def load_visual_shapes(parent_body_id, prim, incoming_xform):
+    def load_visual_shapes(parent_body_id, prim, incoming_xform: wp.transform):
         if (
             prim.HasAPI(UsdPhysics.RigidBodyAPI)
             or prim.HasAPI(UsdPhysics.MassAPI)
@@ -350,7 +265,7 @@ def parse_usd(
         path_name = str(prim.GetPath())
         if any(re.match(path, path_name) for path in ignore_paths):
             return
-        xform = incoming_xform * parse_xform(prim)
+        xform = incoming_xform * usd.get_transform(prim)
         if prim.IsInstance():
             proto = prim.GetPrototype()
             for child in proto.GetChildren():
@@ -362,13 +277,13 @@ def parse_usd(
         type_name = str(prim.GetTypeName()).lower()
         if type_name.endswith("joint"):
             return
-        scale = parse_scale(prim)
+        scale: wp.vec3 = usd.get_scale(prim)
         shape_id = -1
         if path_name not in path_shape_map:
             if type_name == "cube":
-                size = parse_float(prim, "size", 2.0)
-                if has_attribute(prim, "extents"):
-                    extents = parse_vec(prim, "extents") * scale
+                size = usd.get_float(prim, "size", 2.0)
+                if usd.has_attribute(prim, "extents"):
+                    extents = usd.get_vector(prim, "extents") * scale
                     # TODO position geom at extents center?
                     # geo_pos = 0.5 * (extents[0] + extents[1])
                     extents = extents[1] - extents[0]
@@ -386,8 +301,8 @@ def parse_usd(
             elif type_name == "sphere":
                 if not (scale[0] == scale[1] == scale[2]):
                     print("Warning: Non-uniform scaling of spheres is not supported.")
-                if has_attribute(prim, "extents"):
-                    extents = parse_vec(prim, "extents") * scale
+                if usd.has_attribute(prim, "extents"):
+                    extents = usd.get_vector(prim, "extents") * scale
                     # TODO position geom at extents center?
                     # geo_pos = 0.5 * (extents[0] + extents[1])
                     extents = extents[1] - extents[0]
@@ -395,7 +310,7 @@ def parse_usd(
                         print("Warning: Non-uniform extents of spheres are not supported.")
                     radius = extents[0]
                 else:
-                    radius = parse_float(prim, "radius", 1.0) * max(scale)
+                    radius = usd.get_float(prim, "radius", 1.0) * max(scale)
                 shape_id = builder.add_shape_sphere(
                     parent_body_id,
                     xform,
@@ -404,13 +319,12 @@ def parse_usd(
                     key=path_name,
                 )
             elif type_name == "plane":
-                axis_str = parse_generic(prim, "axis", "Z").upper()
+                axis = usd.get_gprim_axis(prim)
                 plane_xform = xform
-                if axis_str != "Z":
-                    axis_q = quat_between_axes(Axis.Z, axis_str)
-                    plane_xform = wp.transform(xform.p, xform.q * axis_q)
-                width = parse_float(prim, "width", 0.0) * scale[0]
-                length = parse_float(prim, "length", 0.0) * scale[1]
+                # Apply axis rotation to transform
+                xform = wp.transform(xform.p, xform.q * quat_between_axes(Axis.Z, axis))
+                width = usd.get_float(prim, "width", 0.0) * scale[0]
+                length = usd.get_float(prim, "length", 0.0) * scale[1]
                 shape_id = builder.add_shape_plane(
                     body=parent_body_id,
                     xform=plane_xform,
@@ -420,13 +334,12 @@ def parse_usd(
                     key=path_name,
                 )
             elif type_name == "capsule":
-                axis_str = parse_generic(prim, "axis", "Z").upper()
-                radius = parse_float(prim, "radius", 0.5) * scale[0]
-                half_height = parse_float(prim, "height", 2.0) / 2 * scale[1]
-                assert not has_attribute(prim, "extents"), "Capsule extents are not supported."
+                axis = usd.get_gprim_axis(prim)
+                radius = usd.get_float(prim, "radius", 0.5) * scale[0]
+                half_height = usd.get_float(prim, "height", 2.0) / 2 * scale[1]
+                assert not usd.has_attribute(prim, "extents"), "Capsule extents are not supported."
                 # Apply axis rotation to transform
-                axis_idx = "XYZ".index(axis_str)
-                xform = wp.transform(xform.p, xform.q * quat_between_axes(Axis.Z, axis_idx))
+                xform = wp.transform(xform.p, xform.q * quat_between_axes(Axis.Z, axis))
                 shape_id = builder.add_shape_capsule(
                     parent_body_id,
                     xform,
@@ -436,13 +349,12 @@ def parse_usd(
                     key=path_name,
                 )
             elif type_name == "cylinder":
-                axis_str = parse_generic(prim, "axis", "Z").upper()
-                radius = parse_float(prim, "radius", 0.5) * scale[0]
-                half_height = parse_float(prim, "height", 2.0) / 2 * scale[1]
-                assert not has_attribute(prim, "extents"), "Cylinder extents are not supported."
+                axis = usd.get_gprim_axis(prim)
+                radius = usd.get_float(prim, "radius", 0.5) * scale[0]
+                half_height = usd.get_float(prim, "height", 2.0) / 2 * scale[1]
+                assert not usd.has_attribute(prim, "extents"), "Cylinder extents are not supported."
                 # Apply axis rotation to transform
-                axis_idx = "XYZ".index(axis_str)
-                xform = wp.transform(xform.p, xform.q * quat_between_axes(Axis.Z, axis_idx))
+                xform = wp.transform(xform.p, xform.q * quat_between_axes(Axis.Z, axis))
                 shape_id = builder.add_shape_cylinder(
                     parent_body_id,
                     xform,
@@ -452,13 +364,12 @@ def parse_usd(
                     key=path_name,
                 )
             elif type_name == "cone":
-                axis_str = parse_generic(prim, "axis", "Z").upper()
-                radius = parse_float(prim, "radius", 0.5) * scale[0]
-                half_height = parse_float(prim, "height", 2.0) / 2 * scale[1]
-                assert not has_attribute(prim, "extents"), "Cone extents are not supported."
+                axis = usd.get_gprim_axis(prim)
+                radius = usd.get_float(prim, "radius", 0.5) * scale[0]
+                half_height = usd.get_float(prim, "height", 2.0) / 2 * scale[1]
+                assert not usd.has_attribute(prim, "extents"), "Cone extents are not supported."
                 # Apply axis rotation to transform
-                axis_idx = "XYZ".index(axis_str)
-                xform = wp.transform(xform.p, xform.q * quat_between_axes(Axis.Z, axis_idx))
+                xform = wp.transform(xform.p, xform.q * quat_between_axes(Axis.Z, axis))
                 shape_id = builder.add_shape_cone(
                     parent_body_id,
                     xform,
@@ -506,7 +417,7 @@ def parse_usd(
 
     def add_body(prim, xform, key, armature):
         # Extract custom attributes for this body
-        body_custom_attrs = R.get_custom_attributes_for_prim(prim, ModelAttributeFrequency.BODY)
+        body_custom_attrs = usd.get_custom_attribute_values(prim, builder_custom_attr_body)
 
         b = builder.add_body(
             xform=xform,
@@ -528,12 +439,12 @@ def parse_usd(
             return -1
 
         rot = rigid_body_desc.rotation
-        origin = wp.transform(rigid_body_desc.position, from_gfquat(rot))
+        origin = wp.transform(rigid_body_desc.position, usd.from_gfquat(rot))
         if incoming_xform is not None:
             origin = wp.mul(incoming_xform, origin)
         path = str(prim.GetPath())
 
-        body_armature = parse_float_with_fallback(
+        body_armature = usd.get_float_with_fallback(
             (prim, physics_scene_prim), "newton:armature", builder.default_body_armature
         )
 
@@ -547,18 +458,10 @@ def parse_usd(
                 "armature": body_armature,
             }
 
-    def parse_scale(prim):
-        xform = UsdGeom.Xform(prim)
-        scale = np.ones(3, dtype=np.float32)
-        for op in xform.GetOrderedXformOps():
-            if op.GetOpType() == UsdGeom.XformOp.TypeScale:
-                scale = np.array(op.Get(), dtype=np.float32)
-        return scale
-
     def resolve_joint_parent_child(joint_desc, body_index_map: dict[str, int], get_transforms: bool = True):
         if get_transforms:
-            parent_tf = wp.transform(joint_desc.localPose0Position, from_gfquat(joint_desc.localPose0Orientation))
-            child_tf = wp.transform(joint_desc.localPose1Position, from_gfquat(joint_desc.localPose1Orientation))
+            parent_tf = wp.transform(joint_desc.localPose0Position, usd.from_gfquat(joint_desc.localPose0Orientation))
+            child_tf = wp.transform(joint_desc.localPose1Position, usd.from_gfquat(joint_desc.localPose1Orientation))
         else:
             parent_tf = None
             child_tf = None
@@ -588,8 +491,8 @@ def parse_usd(
         key = joint_desc.type
         joint_prim = stage.GetPrimAtPath(joint_desc.primPath)
         # collect engine-specific attributes on the joint prim if requested
-        if collect_solver_specific_attrs:
-            R.collect_prim_solver_attrs(joint_prim)
+        if collect_schema_attrs:
+            R.collect_prim_attrs(joint_prim)
         parent_id, child_id, parent_tf, child_tf = resolve_joint_parent_child(
             joint_desc, path_body_map, get_transforms=True
         )
@@ -597,15 +500,14 @@ def parse_usd(
             parent_tf = wp.mul(incoming_xform, parent_tf)
 
         joint_armature = R.get_value(
-            joint_prim, prim_type=PrimType.JOINT, key="armature", default=default_joint_armature
+            joint_prim, prim_type=PrimType.JOINT, key="armature", default=default_joint_armature, verbose=verbose
         )
         joint_friction = R.get_value(
-            joint_prim, prim_type=PrimType.JOINT, key="friction", default=default_joint_friction
+            joint_prim, prim_type=PrimType.JOINT, key="friction", default=default_joint_friction, verbose=verbose
         )
 
         # Extract custom attributes for this joint
-        joint_custom_attrs = R.get_custom_attributes_for_prim(joint_prim, ModelAttributeFrequency.JOINT)
-
+        joint_custom_attrs = usd.get_custom_attribute_values(joint_prim, builder_custom_attr_joint)
         joint_params = {
             "parent": parent_id,
             "child": child_id,
@@ -628,12 +530,14 @@ def parse_usd(
                 prim_type=PrimType.JOINT,
                 key="limit_angular_ke" if key == UsdPhysics.ObjectType.RevoluteJoint else "limit_linear_ke",
                 default=default_joint_limit_ke,
+                verbose=verbose,
             )
             current_joint_limit_kd = R.get_value(
                 joint_prim,
                 prim_type=PrimType.JOINT,
                 key="limit_angular_kd" if key == UsdPhysics.ObjectType.RevoluteJoint else "limit_linear_kd",
                 default=default_joint_limit_kd,
+                verbose=verbose,
             )
             joint_params["axis"] = usd_axis_to_axis[joint_desc.axis]
             joint_params["limit_lower"] = joint_desc.limit.lower
@@ -662,11 +566,19 @@ def parse_usd(
 
             # Resolve initial joint state from schema resolver
             if dof_type == "angular":
-                initial_position = R.get_value(joint_prim, PrimType.JOINT, "angular_position", default=None)
-                initial_velocity = R.get_value(joint_prim, PrimType.JOINT, "angular_velocity", default=None)
+                initial_position = R.get_value(
+                    joint_prim, PrimType.JOINT, "angular_position", default=None, verbose=verbose
+                )
+                initial_velocity = R.get_value(
+                    joint_prim, PrimType.JOINT, "angular_velocity", default=None, verbose=verbose
+                )
             else:  # linear
-                initial_position = R.get_value(joint_prim, PrimType.JOINT, "linear_position", default=None)
-                initial_velocity = R.get_value(joint_prim, PrimType.JOINT, "linear_velocity", default=None)
+                initial_position = R.get_value(
+                    joint_prim, PrimType.JOINT, "linear_position", default=None, verbose=verbose
+                )
+                initial_velocity = R.get_value(
+                    joint_prim, PrimType.JOINT, "linear_velocity", default=None, verbose=verbose
+                )
 
             joint_prim.CreateAttribute(f"physics:tensor:{dof_type}:dofOffset", Sdf.ValueTypeNames.UInt).Set(0)
             # joint_prim.CreateAttribute(f"state:{dof_type}:physics:position", Sdf.ValueTypeNames.Float).Set(0)
@@ -766,22 +678,32 @@ def parse_usd(
                     }[dof]
                     # Store initial state for this axis
                     d6_initial_positions[trans_name] = R.get_value(
-                        joint_prim, PrimType.JOINT, f"{trans_name}_position", default=None
+                        joint_prim,
+                        PrimType.JOINT,
+                        f"{trans_name}_position",
+                        default=None,
+                        verbose=verbose,
                     )
                     d6_initial_velocities[trans_name] = R.get_value(
-                        joint_prim, PrimType.JOINT, f"{trans_name}_velocity", default=None
+                        joint_prim,
+                        PrimType.JOINT,
+                        f"{trans_name}_velocity",
+                        default=None,
+                        verbose=verbose,
                     )
                     current_joint_limit_ke = R.get_value(
                         joint_prim,
                         prim_type=PrimType.JOINT,
                         key=f"limit_{trans_name}_ke",
                         default=default_joint_limit_ke,
+                        verbose=verbose,
                     )
                     current_joint_limit_kd = R.get_value(
                         joint_prim,
                         prim_type=PrimType.JOINT,
                         key=f"limit_{trans_name}_kd",
                         default=default_joint_limit_kd,
+                        verbose=verbose,
                     )
                     linear_axes.append(
                         ModelBuilder.JointDofConfig(
@@ -806,22 +728,32 @@ def parse_usd(
                     rot_name = _rot_names[dof]
                     # Store initial state for this axis
                     d6_initial_positions[rot_name] = R.get_value(
-                        joint_prim, PrimType.JOINT, f"{rot_name}_position", default=None
+                        joint_prim,
+                        PrimType.JOINT,
+                        f"{rot_name}_position",
+                        default=None,
+                        verbose=verbose,
                     )
                     d6_initial_velocities[rot_name] = R.get_value(
-                        joint_prim, PrimType.JOINT, f"{rot_name}_velocity", default=None
+                        joint_prim,
+                        PrimType.JOINT,
+                        f"{rot_name}_velocity",
+                        default=None,
+                        verbose=verbose,
                     )
                     current_joint_limit_ke = R.get_value(
                         joint_prim,
                         prim_type=PrimType.JOINT,
                         key=f"limit_{rot_name}_ke",
                         default=default_joint_limit_ke,
+                        verbose=verbose,
                     )
                     current_joint_limit_kd = R.get_value(
                         joint_prim,
                         prim_type=PrimType.JOINT,
                         key=f"limit_{rot_name}_kd",
                         default=default_joint_limit_kd,
+                        verbose=verbose,
                     )
                     angular_axes.append(
                         ModelBuilder.JointDofConfig(
@@ -928,6 +860,7 @@ def parse_usd(
 
     # Looking for and parsing the attributes on PhysicsScene prims
     scene_attributes = {}
+    physics_scene_prim = None
     if UsdPhysics.ObjectType.Scene in ret_dict:
         paths, scene_descs = ret_dict[UsdPhysics.ObjectType.Scene]
         if len(paths) > 1 and verbose:
@@ -938,7 +871,6 @@ def parse_usd(
             print("Gravity direction:", scene_desc.gravityDirection)
             print("Gravity magnitude:", scene_desc.gravityMagnitude)
         builder.gravity = -scene_desc.gravityMagnitude * linear_unit
-        axis = Axis.from_any(int(np.argmax(np.abs(scene_desc.gravityDirection))))
 
         # Storing Physics Scene attributes
         physics_scene_prim = stage.GetPrimAtPath(path)
@@ -947,50 +879,43 @@ def parse_usd(
 
         # Parse custom attribute declarations from PhysicsScene prim
         # This must happen before processing any other prims
-        R.parse_custom_attribute_declarations(physics_scene_prim)
-
-        # Declare all custom attributes in the builder
-        declarations = R.get_custom_attribute_declarations()
-        for _full_key, attr in declarations.items():
-            builder.add_custom_attribute(
-                name=attr.name,
-                frequency=attr.frequency,
-                dtype=attr.dtype,
-                default=attr.default,
-                assignment=attr.assignment,
-                namespace=attr.namespace,
-            )
+        declarations = usd.get_custom_attribute_declarations(physics_scene_prim)
+        for attr in declarations.values():
+            builder.add_custom_attribute(attr)
 
         # Updating joint_drive_gains_scaling if set of the PhysicsScene
-        joint_drive_gains_scaling = parse_float(
+        joint_drive_gains_scaling = usd.get_float(
             physics_scene_prim, "newton:joint_drive_gains_scaling", joint_drive_gains_scaling
         )
         # Resolve scene time step, gravity settings, and contact margin
-        physics_dt = R.get_value(physics_scene_prim, prim_type=PrimType.SCENE, key="time_step", default=None)
-        gravity_enabled = R.get_value(physics_scene_prim, prim_type=PrimType.SCENE, key="enable_gravity", default=True)
+        physics_dt = R.get_value(
+            physics_scene_prim, prim_type=PrimType.SCENE, key="time_step", default=None, verbose=verbose
+        )
+        gravity_enabled = R.get_value(
+            physics_scene_prim, prim_type=PrimType.SCENE, key="enable_gravity", default=True, verbose=verbose
+        )
         if not gravity_enabled:
             builder.gravity = 0.0
         contact_margin = R.get_value(
-            physics_scene_prim, prim_type=PrimType.SCENE, key="rigid_contact_margin", default=None
+            physics_scene_prim, prim_type=PrimType.SCENE, key="rigid_contact_margin", default=None, verbose=verbose
         )
         if contact_margin is not None:
             builder.rigid_contact_margin = contact_margin
         max_solver_iters = R.get_value(
-            physics_scene_prim, prim_type=PrimType.SCENE, key="max_solver_iterations", default=None
+            physics_scene_prim, prim_type=PrimType.SCENE, key="max_solver_iterations", default=None, verbose=verbose
         )
-    else:
-        # builder.up_vector, builder.up_axis = get_up_vector_and_axis(stage)
-        axis = Axis.from_string(str(UsdGeom.GetStageUpAxis(stage)))
+
+    stage_up_axis = Axis.from_string(str(UsdGeom.GetStageUpAxis(stage)))
 
     if apply_up_axis_from_stage:
-        builder.up_axis = axis
+        builder.up_axis = stage_up_axis
         axis_xform = wp.transform_identity()
         if verbose:
-            print(f"Using stage up axis {axis} as builder up axis")
+            print(f"Using stage up axis {stage_up_axis} as builder up axis")
     else:
-        axis_xform = wp.transform(wp.vec3(0.0), quat_between_axes(axis, builder.up_axis))
+        axis_xform = wp.transform(wp.vec3(0.0), quat_between_axes(stage_up_axis, builder.up_axis))
         if verbose:
-            print(f"Rotating stage to align its up axis {axis} with builder up axis {builder.up_axis}")
+            print(f"Rotating stage to align its up axis {stage_up_axis} with builder up axis {builder.up_axis}")
     if xform is None:
         incoming_world_xform = axis_xform
     else:
@@ -1000,6 +925,30 @@ def parse_usd(
         print(
             f"Scaling PD gains by (joint_drive_gains_scaling / DegreesToRadian) = {joint_drive_gains_scaling / DegreesToRadian}, default scale for joint_drive_gains_scaling=1 is 1.0/DegreesToRadian = {1.0 / DegreesToRadian}"
         )
+
+    # Process custom attributes defined for different kinds of prim.
+    # Note that at this time we may have more custom attributes than before since they may have been
+    # declared on the PhysicsScene prim.
+    builder_custom_attr_shape: list[ModelBuilder.CustomAttribute] = builder.get_custom_attributes_by_frequency(
+        [ModelAttributeFrequency.SHAPE]
+    )
+    builder_custom_attr_body: list[ModelBuilder.CustomAttribute] = builder.get_custom_attributes_by_frequency(
+        [ModelAttributeFrequency.BODY]
+    )
+    builder_custom_attr_joint: list[ModelBuilder.CustomAttribute] = builder.get_custom_attributes_by_frequency(
+        [ModelAttributeFrequency.JOINT, ModelAttributeFrequency.JOINT_DOF, ModelAttributeFrequency.JOINT_COORD]
+    )
+    builder_custom_attr_articulation: list[ModelBuilder.CustomAttribute] = builder.get_custom_attributes_by_frequency(
+        [ModelAttributeFrequency.ARTICULATION]
+    )
+
+    if physics_scene_prim is not None:
+        # Extract custom attributes for model (ONCE) frequency from the PhysicsScene prim
+        builder_custom_attr_model: list[ModelBuilder.CustomAttribute] = [
+            attr for attr in builder.custom_attributes.values() if attr.frequency == ModelAttributeFrequency.ONCE
+        ]
+        scene_custom_attrs = usd.get_custom_attribute_values(physics_scene_prim, builder_custom_attr_model)
+        scene_attributes.update(scene_custom_attrs)
 
     joint_descriptions = {}
     # maps from joint prim path to joint index in builder
@@ -1070,8 +1019,8 @@ def parse_usd(
                         body_density[body_path] = material.density
 
             if prim.HasAPI(UsdPhysics.MassAPI):
-                if has_attribute(prim, "physics:density"):
-                    d = parse_float(prim, "physics:density")
+                if usd.has_attribute(prim, "physics:density"):
+                    d = usd.get_float(prim, "physics:density")
                     density = d * mass_unit  # / (linear_unit**3)
                     body_density[body_path] = density
             # <--- Marking for deprecation
@@ -1096,6 +1045,7 @@ def parse_usd(
         paths, articulation_descs = ret_dict[UsdPhysics.ObjectType.Articulation]
 
         articulation_id = builder.articulation_count
+        parent_prim = None
         body_data = {}
         for path, desc in zip(paths, articulation_descs, strict=False):
             if warn_invalid_desc(path, desc):
@@ -1105,15 +1055,15 @@ def parse_usd(
                 continue
             articulation_prim = stage.GetPrimAtPath(path)
             # Collect engine-specific attributes for the articulation root on first encounter
-            if collect_solver_specific_attrs:
-                R.collect_prim_solver_attrs(articulation_prim)
+            if collect_schema_attrs:
+                R.collect_prim_attrs(articulation_prim)
                 # Also collect on the parent prim (e.g. Xform with PhysxArticulationAPI)
                 try:
                     parent_prim = articulation_prim.GetParent()
                 except Exception:
                     parent_prim = None
                 if parent_prim is not None and parent_prim.IsValid():
-                    R.collect_prim_solver_attrs(parent_prim)
+                    R.collect_prim_attrs(parent_prim)
 
             # Extract custom attributes for articulation frequency from the articulation root prim
             # (the one with PhysicsArticulationRootAPI, typically the articulation_prim itself or its parent)
@@ -1122,8 +1072,8 @@ def parse_usd(
             if articulation_prim.HasAPI(UsdPhysics.ArticulationRootAPI):
                 if verbose:
                     print(f"Extracting articulation custom attributes from {articulation_prim.GetPath()}")
-                articulation_custom_attrs = R.get_custom_attributes_for_prim(
-                    articulation_prim, ModelAttributeFrequency.ARTICULATION
+                articulation_custom_attrs = usd.get_custom_attribute_values(
+                    articulation_prim, builder_custom_attr_articulation
                 )
             # If not, check the parent prim
             elif (
@@ -1131,8 +1081,8 @@ def parse_usd(
             ):
                 if verbose:
                     print(f"Extracting articulation custom attributes from parent {parent_prim.GetPath()}")
-                articulation_custom_attrs = R.get_custom_attributes_for_prim(
-                    parent_prim, ModelAttributeFrequency.ARTICULATION
+                articulation_custom_attrs = usd.get_custom_attribute_values(
+                    parent_prim, builder_custom_attr_articulation
                 )
             if verbose and articulation_custom_attrs:
                 print(f"Extracted articulation custom attributes: {articulation_custom_attrs}")
@@ -1153,9 +1103,9 @@ def parse_usd(
                     continue
                 else:
                     usd_prim = stage.GetPrimAtPath(p)
-                    if collect_solver_specific_attrs:
+                    if collect_schema_attrs:
                         # Collect on each articulated body prim encountered
-                        R.collect_prim_solver_attrs(usd_prim)
+                        R.collect_prim_attrs(usd_prim)
                     if "TensorPhysicsArticulationRootAPI" in usd_prim.GetPrimTypeInfo().GetAppliedAPISchemas():
                         usd_prim.CreateAttribute(
                             "physics:newton:articulation_index", Sdf.ValueTypeNames.UInt, True
@@ -1209,7 +1159,7 @@ def parse_usd(
                 parent_id, child_id = resolve_joint_parent_child(joint_desc, body_ids, get_transforms=False)
                 joint_edges.append((parent_id, child_id))
 
-            articulation_xform = wp.mul(incoming_world_xform, parse_xform(articulation_prim))
+            articulation_xform = wp.mul(incoming_world_xform, usd.get_transform(articulation_prim))
 
             if len(joint_edges) == 0:
                 # We have an articulation without joints, i.e. only free rigid bodies
@@ -1294,7 +1244,7 @@ def parse_usd(
 
             articulation_bodies[articulation_id] = art_bodies
             # determine if self-collisions are enabled
-            articulation_has_self_collision[articulation_id] = parse_generic(
+            articulation_has_self_collision[articulation_id] = usd.get_attribute(
                 articulation_prim,
                 "physxArticulation:enabledSelfCollisions",
                 default=enable_self_collisions,
@@ -1346,7 +1296,7 @@ def parse_usd(
                 # print("shape ", prim, "body =" , body_path)
                 body_id = path_body_map.get(body_path, -1)
                 # scale = np.array(shape_spec.localScale)
-                scale = parse_scale(prim)
+                scale = usd.get_scale(prim)
                 collision_group = 1  # See test_world_and_group_pair for full filtering logic
                 if len(shape_spec.collisionGroups) > 0:
                     cgroup_name = str(shape_spec.collisionGroups[0])
@@ -1366,23 +1316,31 @@ def parse_usd(
                 elif verbose:
                     print(f"No material found for shape at '{path}'.")
                 prim_and_scene = (prim, physics_scene_prim)
-                local_xform = wp.transform(shape_spec.localPos, from_gfquat(shape_spec.localRot))
+                local_xform = wp.transform(shape_spec.localPos, usd.from_gfquat(shape_spec.localRot))
                 if body_id == -1:
                     shape_xform = incoming_world_xform * local_xform
                 else:
                     shape_xform = local_xform
                 # Extract custom attributes for this shape
-                shape_custom_attrs = R.get_custom_attributes_for_prim(prim, ModelAttributeFrequency.SHAPE)
+                shape_custom_attrs = usd.get_custom_attribute_values(prim, builder_custom_attr_shape)
 
                 shape_params = {
                     "body": body_id,
                     "xform": shape_xform,
                     "cfg": ModelBuilder.ShapeConfig(
-                        ke=parse_float_with_fallback(prim_and_scene, "newton:contact_ke", builder.default_shape_cfg.ke),
-                        kd=parse_float_with_fallback(prim_and_scene, "newton:contact_kd", builder.default_shape_cfg.kd),
-                        kf=parse_float_with_fallback(prim_and_scene, "newton:contact_kf", builder.default_shape_cfg.kf),
-                        ka=parse_float_with_fallback(prim_and_scene, "newton:contact_ka", builder.default_shape_cfg.ka),
-                        thickness=parse_float_with_fallback(
+                        ke=usd.get_float_with_fallback(
+                            prim_and_scene, "newton:contact_ke", builder.default_shape_cfg.ke
+                        ),
+                        kd=usd.get_float_with_fallback(
+                            prim_and_scene, "newton:contact_kd", builder.default_shape_cfg.kd
+                        ),
+                        kf=usd.get_float_with_fallback(
+                            prim_and_scene, "newton:contact_kf", builder.default_shape_cfg.kf
+                        ),
+                        ka=usd.get_float_with_fallback(
+                            prim_and_scene, "newton:contact_ka", builder.default_shape_cfg.ka
+                        ),
+                        thickness=usd.get_float_with_fallback(
                             prim_and_scene, "newton:contact_thickness", builder.default_shape_cfg.thickness
                         ),
                         mu=material.dynamicFriction,
@@ -1462,7 +1420,11 @@ def parse_usd(
                         face_id += count
                     # Resolve mesh hull vertex limit from schema with fallback to parameter
                     resolved_maxhullvert = R.get_value(
-                        prim, prim_type=PrimType.SHAPE, key="mesh_hull_vertex_limit", default=mesh_maxhullvert
+                        prim,
+                        prim_type=PrimType.SHAPE,
+                        key="mesh_hull_vertex_limit",
+                        default=mesh_maxhullvert,
+                        verbose=verbose,
                     )
                     m = Mesh(points, np.array(faces, dtype=np.int32).flatten(), maxhullvert=resolved_maxhullvert)
                     shape_id = builder.add_shape_mesh(
@@ -1471,7 +1433,7 @@ def parse_usd(
                         **shape_params,
                     )
                     if not skip_mesh_approximation:
-                        approximation = parse_generic(prim, "physics:approximation", None)
+                        approximation = usd.get_attribute(prim, "physics:approximation", None)
                         if approximation is not None:
                             remeshing_method = approximation_to_remeshing_method.get(approximation.lower(), None)
                             if remeshing_method is None:
@@ -1506,7 +1468,7 @@ def parse_usd(
                     for other_path in other_paths:
                         path_collision_filters.add((path, str(other_path)))
 
-                if not prim.HasAPI(UsdPhysics.CollisionAPI) or not parse_generic(
+                if not prim.HasAPI(UsdPhysics.CollisionAPI) or not usd.get_attribute(
                     prim, "physics:collisionEnabled", True
                 ):
                     no_collision_shapes.add(shape_id)
@@ -1547,15 +1509,15 @@ def parse_usd(
             body_id = path_body_map.get(body_path, -1)
             if body_id == -1:
                 continue
-            mass = parse_float(prim, "physics:mass")
+            mass = usd.get_float(prim, "physics:mass")
             if mass is not None:
                 builder.body_mass[body_id] = mass
                 builder.body_inv_mass[body_id] = 1.0 / mass
-            com = parse_vec(prim, "physics:centerOfMass")
+            com = usd.get_vector(prim, "physics:centerOfMass")
             if com is not None:
                 builder.body_com[body_id] = com
-            i_diag = parse_vec(prim, "physics:diagonalInertia", np.zeros(3, dtype=np.float32))
-            i_rot = parse_quat(prim, "physics:principalAxes", wp.quat_identity())
+            i_diag = usd.get_vector(prim, "physics:diagonalInertia", np.zeros(3, dtype=np.float32))
+            i_rot = usd.get_quat(prim, "physics:principalAxes", wp.quat_identity())
             if np.linalg.norm(i_diag) > 0.0:
                 rot = np.array(wp.quat_to_matrix(i_rot), dtype=np.float32).reshape(3, 3)
                 inertia = rot @ np.diag(i_diag) @ rot.T
@@ -1690,11 +1652,10 @@ def parse_usd(
 
             builder = multi_world_builder
 
-    solver_specific_attrs = R.get_solver_specific_attrs() if collect_solver_specific_attrs else {}
     return {
         "fps": stage.GetFramesPerSecond(),
         "duration": stage.GetEndTimeCode() - stage.GetStartTimeCode(),
-        "up_axis": Axis.from_string(UsdGeom.GetStageUpAxis(stage)),
+        "up_axis": stage_up_axis,
         "path_shape_map": path_shape_map,
         "path_body_map": path_body_map,
         "path_shape_scale": path_shape_scale,
@@ -1703,7 +1664,7 @@ def parse_usd(
         "scene_attributes": scene_attributes,
         "physics_dt": physics_dt,
         "collapse_results": collapse_results,
-        "solver_specific_attrs": solver_specific_attrs,
+        "schema_attrs": R.schema_attrs,
         # "articulation_roots": articulation_roots,
         # "articulation_bodies": articulation_bodies,
         "path_body_relative_transform": path_body_relative_transform,
