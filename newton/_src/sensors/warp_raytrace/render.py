@@ -76,8 +76,9 @@ def render_megakernel(rc: RenderContext):
         img_height: int,
         use_shadows: bool,
         # Camera
-        camera_ray_origins: wp.array(dtype=wp.vec3f, ndim=3),
-        camera_ray_directions: wp.array(dtype=wp.vec3f, ndim=3),
+        camera_rays: wp.array(dtype=wp.vec3f, ndim=4),
+        camera_positions: wp.array(dtype=wp.vec3f),
+        camera_orientations: wp.array(dtype=wp.mat33f),
         # BVH
         bvh_id: wp.uint64,
         group_roots: wp.array(dtype=wp.int32),
@@ -144,8 +145,8 @@ def render_megakernel(rc: RenderContext):
             world_id = view // num_cameras
             cam_idx = view % num_cameras
 
-            ray_origin_world = camera_ray_origins[cam_idx, py, px]
-            ray_dir_world = camera_ray_directions[cam_idx, py, px]
+            ray_origin_world = camera_positions[cam_idx] + camera_rays[cam_idx, py, px, 0]
+            ray_dir_world = camera_orientations[cam_idx] @ camera_rays[cam_idx, py, px, 1]
 
             geom_id, dist, normal, u, v, f, mesh_id = ray_cast.closest_hit(
                 bvh_id,
@@ -281,8 +282,9 @@ def render_megakernel(rc: RenderContext):
             rc.height,
             rc.use_shadows,
             # Camera
-            rc.camera_ray_origins,
-            rc.camera_ray_directions,
+            rc.camera_rays,
+            rc.camera_positions,
+            rc.camera_orientations,
             # BVH
             rc.bvh.id,
             rc.bvh_group_roots,
