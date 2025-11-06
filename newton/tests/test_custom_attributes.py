@@ -801,6 +801,15 @@ class TestCustomAttributes(unittest.TestCase):
         # Create main builder and add sub-builder multiple times
         main_builder = ModelBuilder()
 
+        # Add some entities to the main builder, so the custom attribute
+        # values added through the sub builder will need to be merged
+        # and their indices need to be adjusted.
+        body3 = main_builder.add_body(mass=1.0)
+        body4 = main_builder.add_body(mass=1.0)
+        main_builder.add_shape_sphere(body3, radius=0.1)
+        main_builder.add_shape_sphere(body4, radius=0.1)
+        main_builder.add_joint_revolute(parent=body3, child=body4, axis=[0, 0, 1])
+
         # Add first instance
         main_builder.add_builder(sub_builder, world=0)
         # Add second instance
@@ -828,37 +837,24 @@ class TestCustomAttributes(unittest.TestCase):
         robot_ids = model.robot_id.numpy()
         temperatures = state.temperature.numpy()
 
-        # First instance (bodies 0, 1)
-        self.assertEqual(robot_ids[0], 100)
-        self.assertEqual(robot_ids[1], 200)
-        self.assertAlmostEqual(temperatures[0], 37.5, places=5)
-        self.assertAlmostEqual(temperatures[1], 38.0, places=5)
+        # Verify BODY attributes
+        np.testing.assert_array_almost_equal(robot_ids, [0, 0, 100, 200, 100, 200], decimal=5)
+        np.testing.assert_array_almost_equal(temperatures, [0.0, 0.0, 37.5, 38.0, 37.5, 38.0], decimal=5)
 
-        # Second instance (bodies 2, 3)
-        self.assertEqual(robot_ids[2], 100)
-        self.assertEqual(robot_ids[3], 200)
-        self.assertAlmostEqual(temperatures[2], 37.5, places=5)
-        self.assertAlmostEqual(temperatures[3], 38.0, places=5)
-
-        # Verify SHAPE attributes (2 shapes per instance, 2 instances = 4 shapes total)
+        # Verify SHAPE attributes
         shape_colors = model.shape_color.numpy()
 
-        # First instance (shapes 0, 1)
-        np.testing.assert_array_almost_equal(shape_colors[0], [1.0, 0.0, 0.0], decimal=5)
-        np.testing.assert_array_almost_equal(shape_colors[1], [0.0, 1.0, 0.0], decimal=5)
-
-        # Second instance (shapes 2, 3)
+        np.testing.assert_array_almost_equal(shape_colors[0], [0.0, 0.0, 0.0], decimal=5)
+        np.testing.assert_array_almost_equal(shape_colors[0], [0.0, 0.0, 0.0], decimal=5)
         np.testing.assert_array_almost_equal(shape_colors[2], [1.0, 0.0, 0.0], decimal=5)
         np.testing.assert_array_almost_equal(shape_colors[3], [0.0, 1.0, 0.0], decimal=5)
+        np.testing.assert_array_almost_equal(shape_colors[4], [1.0, 0.0, 0.0], decimal=5)
+        np.testing.assert_array_almost_equal(shape_colors[5], [0.0, 1.0, 0.0], decimal=5)
 
-        # Verify JOINT_DOF attributes (1 DOF per instance, 2 instances = 2 DOFs total)
+        # Verify JOINT_DOF attributes
         dof_gains = control.gain_dof.numpy()
 
-        # First instance (DOF 0)
-        self.assertAlmostEqual(dof_gains[0], 1.5, places=5)
-
-        # Second instance (DOF 1)
-        self.assertAlmostEqual(dof_gains[1], 1.5, places=5)
+        np.testing.assert_array_almost_equal(dof_gains, [0.0, 1.5, 1.5], decimal=5)
 
     def test_namespaced_attributes(self):
         """Test namespaced custom attributes with hierarchical organization."""

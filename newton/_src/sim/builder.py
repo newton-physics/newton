@@ -22,7 +22,7 @@ import ctypes
 import math
 import warnings
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Literal
 
 import numpy as np
@@ -1063,7 +1063,7 @@ class ModelBuilder:
                 (e.g., ``physxScene:*``, ``physxRigidBody:*``, ``physxSDFMeshCollision:*``), and ``mjc:*`` that
                 are authored in the USD but not strictly required to build the simulation. This is useful for
                 inspection, experimentation, or custom pipelines that read these values via
-                :meth:`ResolverManager.get_schema_attrs`.
+                :attr:`newton.usd.SchemaResolverManager.schema_attrs`.
 
                 .. note::
                     Using the ``schema_resolvers`` argument is an experimental feature that may be removed or changed significantly in the future.
@@ -1493,11 +1493,33 @@ class ModelBuilder:
 
         # Merge custom attributes from the sub-builder
         for full_key, attr in builder.custom_attributes.items():
+            # Determine the offset based on frequency
+            if attr.frequency == ModelAttributeFrequency.ONCE:
+                offset = 0
+            elif attr.frequency == ModelAttributeFrequency.BODY:
+                offset = start_body_idx
+            elif attr.frequency == ModelAttributeFrequency.SHAPE:
+                offset = start_shape_idx
+            elif attr.frequency == ModelAttributeFrequency.JOINT:
+                offset = start_joint_idx
+            elif attr.frequency == ModelAttributeFrequency.JOINT_DOF:
+                offset = start_joint_dof_idx
+            elif attr.frequency == ModelAttributeFrequency.JOINT_COORD:
+                offset = start_joint_coord_idx
+            elif attr.frequency == ModelAttributeFrequency.ARTICULATION:
+                offset = start_articulation_idx
+            else:
+                continue
+
             # Declare the attribute if it doesn't exist in the main builder
             merged = self.custom_attributes.get(full_key)
             if merged is None:
-                self.custom_attributes[full_key] = attr
+                self.custom_attributes[full_key] = replace(
+                    attr,
+                    values={offset + idx: value for idx, value in attr.values.items()} if attr.values else None,
+                )
                 continue
+
             # Prevent silent divergence if defaults differ
             # Handle array/vector types by converting to comparable format
             try:
@@ -1515,24 +1537,6 @@ class ModelBuilder:
                     f"existing={merged.default}, incoming={attr.default}"
                 )
             if not attr.values:
-                continue
-
-            # Determine the offset based on frequency
-            if attr.frequency == ModelAttributeFrequency.ONCE:
-                offset = 0
-            elif attr.frequency == ModelAttributeFrequency.BODY:
-                offset = start_body_idx
-            elif attr.frequency == ModelAttributeFrequency.SHAPE:
-                offset = start_shape_idx
-            elif attr.frequency == ModelAttributeFrequency.JOINT:
-                offset = start_joint_idx
-            elif attr.frequency == ModelAttributeFrequency.JOINT_DOF:
-                offset = start_joint_dof_idx
-            elif attr.frequency == ModelAttributeFrequency.JOINT_COORD:
-                offset = start_joint_coord_idx
-            elif attr.frequency == ModelAttributeFrequency.ARTICULATION:
-                offset = start_articulation_idx
-            else:
                 continue
 
             # Remap indices and copy values
@@ -1647,7 +1651,7 @@ class ModelBuilder:
         Generic method to add any type of joint to this ModelBuilder.
 
         Args:
-            joint_type (JointType): The type of joint to add (see :ref:'joint-types').
+            joint_type (JointType): The type of joint to add (see :ref:`joint-types`).
             parent (int): The index of the parent body (-1 is the world).
             child (int): The index of the child body.
             linear_axes (list(:class:`JointDofConfig`)): The linear axes (see :class:`JointDofConfig`) of the joint.
