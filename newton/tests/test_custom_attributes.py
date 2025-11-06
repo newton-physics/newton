@@ -845,7 +845,7 @@ class TestCustomAttributes(unittest.TestCase):
         shape_colors = model.shape_color.numpy()
 
         np.testing.assert_array_almost_equal(shape_colors[0], [0.0, 0.0, 0.0], decimal=5)
-        np.testing.assert_array_almost_equal(shape_colors[0], [0.0, 0.0, 0.0], decimal=5)
+        np.testing.assert_array_almost_equal(shape_colors[1], [0.0, 0.0, 0.0], decimal=5)
         np.testing.assert_array_almost_equal(shape_colors[2], [1.0, 0.0, 0.0], decimal=5)
         np.testing.assert_array_almost_equal(shape_colors[3], [0.0, 1.0, 0.0], decimal=5)
         np.testing.assert_array_almost_equal(shape_colors[4], [1.0, 0.0, 0.0], decimal=5)
