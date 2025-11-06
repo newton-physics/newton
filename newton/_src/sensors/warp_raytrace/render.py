@@ -43,29 +43,6 @@ def tile_coords(tid: int, W: int, H: int):
 
 
 @wp.func
-def compute_camera_ray(
-    width: int, height: int, fov_rad: float, px: int, py: int, cam_position: wp.vec3, cam_xmat: wp.mat33
-):
-    aspect_ratio = float(width) / float(height)
-    u = (float(px) + 0.5) / float(width) - 0.5
-    v = (float(py) + 0.5) / float(height) - 0.5
-    h = wp.tan(fov_rad / 2.0)
-    ray_dir_cam_space_x = u * 2.0 * h
-    ray_dir_cam_space_y = -v * 2.0 * h / aspect_ratio
-    ray_dir_cam_space_z = -1.0
-    ray_dir_local_cam = wp.normalize(
-        wp.vec3(
-            ray_dir_cam_space_x,
-            ray_dir_cam_space_y,
-            ray_dir_cam_space_z,
-        )
-    )
-    ray_dir_world = cam_xmat @ ray_dir_local_cam
-    ray_origin = cam_position
-    return ray_dir_world, ray_origin
-
-
-@wp.func
 def pack_rgba_to_uint32(r: wp.float32, g: wp.float32, b: wp.float32, a: wp.float32) -> wp.uint32:
     """Pack RGBA values into a single uint32 for efficient memory access."""
     return (
@@ -99,9 +76,8 @@ def render_megakernel(rc: RenderContext):
         img_height: int,
         use_shadows: bool,
         # Camera
-        cam_fovs: wp.array(dtype=wp.float32),
-        cam_positions: wp.array(dtype=wp.vec3),
-        cam_xmat: wp.array(dtype=wp.mat33),
+        camera_ray_origins: wp.array(dtype=wp.vec3f, ndim=3),
+        camera_ray_directions: wp.array(dtype=wp.vec3f, ndim=3),
         # BVH
         bvh_id: wp.uint64,
         group_roots: wp.array(dtype=wp.int32),
@@ -168,15 +144,8 @@ def render_megakernel(rc: RenderContext):
             world_id = view // num_cameras
             cam_idx = view % num_cameras
 
-            ray_dir_world, ray_origin_world = compute_camera_ray(
-                img_width,
-                img_height,
-                cam_fovs[cam_idx],
-                px,
-                py,
-                cam_positions[cam_idx],
-                cam_xmat[cam_idx],
-            )
+            ray_origin_world = camera_ray_origins[cam_idx, py, px]
+            ray_dir_world = camera_ray_directions[cam_idx, py, px]
 
             geom_id, dist, normal, u, v, f, mesh_id = ray_cast.closest_hit(
                 bvh_id,
@@ -312,9 +281,8 @@ def render_megakernel(rc: RenderContext):
             rc.height,
             rc.use_shadows,
             # Camera
-            rc.camera_fovs,
-            rc.camera_positions,
-            rc.camera_orientations,
+            rc.camera_ray_origins,
+            rc.camera_ray_directions,
             # BVH
             rc.bvh.id,
             rc.bvh_group_roots,
