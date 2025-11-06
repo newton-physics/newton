@@ -104,6 +104,7 @@ def _setup_humanoid(articulation_builder):
         newton.examples.get_asset("nv_humanoid.xml"),
         ignore_names=["floor", "ground"],
         up_axis="Z",
+        parse_sites=False,  # AD: remove once asset is fixed
     )
 
     # Setting root pose
