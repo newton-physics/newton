@@ -23,6 +23,7 @@ import warp as wp
 import newton
 import newton.examples
 from newton._src.geometry.types import GeoType
+from newton.solvers import SolverMuJoCo
 
 
 class TestImportMjcf(unittest.TestCase):
@@ -699,6 +700,109 @@ class TestImportMjcf(unittest.TestCase):
             expected_kd_3 = 2.0 * 1.0 / 0.02
             self.assertAlmostEqual(joint_limit_ke[2], expected_ke_3, places=2)
             self.assertAlmostEqual(joint_limit_kd[2], expected_kd_3, places=2)
+
+    def test_solimplimit_parsing(self):
+        """Test that solimplimit attribute is parsed correctly from MJCF."""
+        mjcf = """<?xml version="1.0" ?>
+<mujoco>
+    <worldbody>
+        <body name="body1">
+            <joint name="joint1" type="hinge" axis="0 1 0" solimplimit="0.89 0.9 0.01 2.1 1.8" range="-45 45" />
+            <joint name="joint2" type="hinge" axis="1 0 0" range="-30 30" />
+            <geom type="box" size="0.1 0.1 0.1" />
+        </body>
+        <body name="body2">
+            <joint name="joint3" type="hinge" axis="0 0 1" solimplimit="0.8 0.85 0.002 0.6 1.5" range="-90 90" />
+            <geom type="sphere" size="0.05" />
+        </body>
+    </worldbody>
+</mujoco>
+"""
+
+        builder = newton.ModelBuilder()
+
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_mjcf(mjcf)
+        model = builder.finalize()
+
+        # Check if solimplimit custom attribute exists
+        self.assertTrue(hasattr(model, "mujoco"), "Model should have mujoco namespace for custom attributes")
+        self.assertTrue(hasattr(model.mujoco, "solimplimit"), "Model should have solimplimit attribute")
+
+        solimplimit = model.mujoco.solimplimit.numpy()
+
+        # Newton model has only 2 joints because it combines the ones under the same body into a single joint
+        self.assertEqual(model.joint_count, 2, "Should have 2 joints")
+
+        # Find joints by name
+        joint_names = model.joint_key
+        joint1_idx = joint_names.index("joint1_joint2")
+        joint2_idx = joint_names.index("joint3")
+
+        # For the merged joint (joint1_idx), both joint1 and joint2 should be present in the qd array.
+        # We don't know the order, but both expected values should be present at joint1_idx and joint1_idx + 1.
+        joint1_qd_start = model.joint_qd_start.numpy()[joint1_idx]
+        # The joint should have 2 DoFs (since joint1 and joint2 are merged)
+        self.assertEqual(model.joint_dof_dim.numpy()[joint1_idx, 1], 2)
+        expected_joint1 = [0.89, 0.9, 0.01, 2.1, 1.8]  # from joint1
+        expected_joint2 = [0.9, 0.95, 0.001, 0.5, 2.0]  # from joint2 (default values)
+        val_qd_0 = solimplimit[joint1_qd_start, :]
+        val_qd_1 = solimplimit[joint1_qd_start + 1, :]
+
+        # Helper to check if two arrays match within tolerance
+        def arrays_match(arr, expected, tol=1e-4):
+            return all(abs(arr[i] - expected[i]) < tol for i in range(len(expected)))
+
+        # The two DoFs should be exactly one joint1 and one default, in _some_ order
+        if arrays_match(val_qd_0, expected_joint1):
+            self.assertTrue(
+                arrays_match(val_qd_1, expected_joint2), "Second DoF should have default solimplimit values"
+            )
+        elif arrays_match(val_qd_0, expected_joint2):
+            self.assertTrue(
+                arrays_match(val_qd_1, expected_joint1), "Second DoF should have joint1's solimplimit values"
+            )
+        else:
+            self.fail(f"First DoF solimplimit {val_qd_0.tolist()} doesn't match either expected value")
+
+        # Test joint3: explicit solimplimit with different values
+        joint3_qd_start = model.joint_qd_start.numpy()[joint2_idx]
+        expected_joint3 = [0.8, 0.85, 0.002, 0.6, 1.5]
+        for i, expected in enumerate(expected_joint3):
+            self.assertAlmostEqual(
+                solimplimit[joint3_qd_start, i], expected, places=4, msg=f"joint3 solimplimit[{i}] should be {expected}"
+            )
+
+        # Test with MuJoCo solver - verify jnt_solimp values match using the mapping
+        solver = SolverMuJoCo(model, separate_worlds=False)
+
+        # MuJoCo's jnt_solimp should match our solimplimit values
+        jnt_solimp = solver.mjw_model.jnt_solimp.numpy()
+        joint_mjc_dof_start = solver.joint_mjc_dof_start.numpy()
+
+        # For each Newton joint, verify its DOFs map correctly to MuJoCo
+        for newton_joint_idx in range(model.joint_count):
+            mjc_dof_start = joint_mjc_dof_start[newton_joint_idx]
+            newton_dof_start = model.joint_qd_start.numpy()[newton_joint_idx]
+            dof_count = model.joint_dof_dim.numpy()[newton_joint_idx].sum()
+
+            # Check each DOF in this joint
+            for dof_offset in range(dof_count):
+                newton_dof_idx = newton_dof_start + dof_offset
+                mjc_dof_idx = mjc_dof_start + dof_offset
+
+                # Get expected solimplimit from Newton model
+                expected_solimp = solimplimit[newton_dof_idx, :].tolist()
+
+                # Get actual jnt_solimp from MuJoCo
+                actual_solimp = jnt_solimp[0, mjc_dof_idx, :].tolist()
+                # Verify they match
+                self.assertTrue(
+                    arrays_match(actual_solimp, expected_solimp),
+                    f"MuJoCo jnt_solimp[{mjc_dof_idx}] = {actual_solimp} doesn't match "
+                    f"Newton solimplimit[{newton_dof_idx}] = {expected_solimp} "
+                    f"for joint {newton_joint_idx} DOF {dof_offset}",
+                )
 
 
 if __name__ == "__main__":
