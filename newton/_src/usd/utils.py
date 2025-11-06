@@ -231,7 +231,7 @@ def get_scale(prim: Usd.Prim) -> wp.vec3:
     scale = np.ones(3, dtype=np.float32)
     for op in xform.GetOrderedXformOps():
         if op.GetOpType() == UsdGeom.XformOp.TypeScale:
-            scale = np.array(op.Get(), dtype=np.float32)
+            scale *= np.array(op.Get(), dtype=np.float32)
     return wp.vec3(*scale)
 
 
