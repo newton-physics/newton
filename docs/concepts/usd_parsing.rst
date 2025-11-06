@@ -1,3 +1,5 @@
+.. _usd_parsing:
+
 USD Parsing and Schema Resolver System
 ========================================
 
@@ -24,7 +26,7 @@ Newton's schema resolver system automatically handles these differences, allowin
 Newton's USD Import System
 --------------------------
 
-Newton's ``parse_usd()`` function provides a USD import pipeline that:
+Newton's :meth:`newton.ModelBuilder.add_usd` method provides a USD import pipeline that:
 
 * Parses standard UsdPhysics schema for basic rigid body simulation setup
 * Resolves common solver attributes that are conceptually similar between different solvers through configurable schema resolvers
@@ -32,8 +34,14 @@ Newton's ``parse_usd()`` function provides a USD import pipeline that:
 * Collects solver-specific attributes preserving solver-native attributes for potential use in the solver
 * Supports parsing of custom Newton model/state/control attributes for specialized simulation requirements
 
+.. _schema_resolvers:
+
 1. Solver Attribute Remapping
 -----------------------------
+
+.. note::
+
+  Using the ``schema_resolvers`` argument in :meth:`newton.ModelBuilder.add_usd` to collect solver-specific attributes is an experimental feature that may be removed or changed significantly in the future.
 
 When working with USD assets authored for other physics solvers like PhysX or MuJoCo, Newton's schema resolver system can automatically remap various solver attributes to Newton's internal representation. This enables Newton to use physics properties from assets originally designed for other simulators without manual conversion.
 
@@ -142,7 +150,7 @@ By changing the order of resolvers in the ``schema_resolvers`` list, different a
    :skipif: True
 
    from newton import ModelBuilder
-   from newton.utils.schema_resolver import SchemaResolverNewton, SchemaResolverPhysx, SchemaResolverMjc
+   from newton._src.usd.schemas import SchemaResolverNewton, SchemaResolverPhysx, SchemaResolverMjc
    
    builder = ModelBuilder()
    
@@ -203,25 +211,22 @@ Each solver has its own namespace prefixes for solver-specific attributes. The t
 
 **Accessing Collected Solver-Specific Attributes:**
 
-To enable collection of solver-specific attributes, set ``collect_solver_specific_attrs=True`` when calling ``parse_usd()``. The collected attributes are returned in the result dictionary and can be accessed by solver namespace:
+The collected attributes are returned in the result dictionary and can be accessed by solver namespace:
 
 .. testcode::
    :skipif: True
 
    from newton import ModelBuilder
-   from newton._src.utils.import_usd import parse_usd
-   from newton._src.utils.schema_resolver import SchemaResolverPhysx, SchemaResolverNewton
+   from newton._src.usd.schemas import SchemaResolverPhysx, SchemaResolverNewton
    
    builder = ModelBuilder()
-   result = parse_usd(
-       builder=builder,
+   result = builder.add_usd(
        source="physx_humanoid.usda", 
        schema_resolvers=[SchemaResolverPhysx(), SchemaResolverNewton()],
-       collect_solver_specific_attrs=True  # Enable collection
    )
    
    # Access collected solver-specific attributes
-   solver_attrs = result.get("solver_specific_attrs", {})
+   solver_attrs = result.get("schema_attrs", {})
    
    if "physx" in solver_attrs:
        physx_attrs = solver_attrs["physx"]
@@ -229,33 +234,12 @@ To enable collection of solver-specific attributes, set ``collect_solver_specifi
            if "physxJoint:armature" in attrs:
                armature_value = attrs["physxJoint:armature"]
                print(f"PhysX joint {prim_path} has armature: {armature_value}")
-   
-   # Disable collection for performance when not needed
-   result_fast = parse_usd(
-       builder=builder,
-       source="asset.usda",
-       collect_solver_specific_attrs=False  # Skip collection
-   )
-
-**When to Enable/Disable Collection:**
-
-Enable ``collect_solver_specific_attrs=True`` when:
-
-* Developing and debugging USD import pipelines
-* Need to inspect solver-native properties for validation
-* Building custom workflows that process solver-specific data
-* Preparing for sim-to-sim asset conversion
-
-Disable ``collect_solver_specific_attrs=False`` for:
-
-* Production imports where solver-specific data is not needed
-* Large USD files where scanning performance matters
-* Final deployments after import pipeline is validated
 
 4. Custom Attribute Framework
 -----------------------------
 
-USD assets can define custom attributes that become part of the model/state/control attributes. Newton's schema resolver system supports these custom attributes using a declaration-first pattern with optional namespace support.
+USD assets can define custom attributes that become part of the model/state/control attributes, see :ref:`custom_attributes` for more information.
+Besides the programmatic way of defining custom attributes through the :meth:`newton.ModelBuilder.add_custom_attribute` method, Newton's USD importer also supports declaring custom attributes from within a USD stage.
 
 **Overview:**
 
@@ -450,17 +434,12 @@ After importing the USD file with the custom attributes shown above, they become
 .. code-block:: python
 
    from newton import ModelBuilder
-   from newton._src.utils.import_usd import parse_usd
-   from newton._src.utils.schema_resolver import SchemaResolverNewton
 
    builder = ModelBuilder()
    
    # Import the USD file with custom attributes (from example above)
-   result = parse_usd(
-       builder=builder,
+   result = builder.add_usd(
        source="robot_with_custom_attrs.usda",
-       schema_resolvers=[SchemaResolverNewton()],
-       collect_solver_specific_attrs=True
    )
    
    model = builder.finalize()
