@@ -44,6 +44,7 @@ def parse_mjcf(
     hide_visuals: bool = False,
     parse_visuals_as_colliders: bool = False,
     parse_meshes: bool = True,
+    parse_sites: bool = True,
     up_axis: AxisType = Axis.Z,
     ignore_names: Sequence[str] = (),
     ignore_classes: Sequence[str] = (),
@@ -74,6 +75,7 @@ def parse_mjcf(
         hide_visuals (bool): If True, hide visual shapes.
         parse_visuals_as_colliders (bool): If True, the geometry defined under the `visual_classes` tags is used for collision handling instead of the `collider_classes` geometries.
         parse_meshes (bool): Whether geometries of type `"mesh"` should be parsed. If False, geometries of type `"mesh"` are ignored.
+        parse_sites (bool): Whether sites (non-colliding reference points) should be parsed. If False, sites are ignored.
         up_axis (AxisType): The up axis of the MuJoCo scene. The default is Z up.
         ignore_names (Sequence[str]): A list of regular expressions. Bodies and joints with a name matching one of the regular expressions will be ignored.
         ignore_classes (Sequence[str]): A list of regular expressions. Bodies and joints with a class matching one of the regular expressions will be ignored.
@@ -446,7 +448,7 @@ def parse_mjcf(
 
         return shapes
 
-    def parse_sites(defaults, body_name, link, sites, incoming_xform=None):
+    def _parse_sites_impl(defaults, body_name, link, sites, incoming_xform=None):
         """Parse site elements from MJCF."""
         from ..geometry import GeoType  # noqa: PLC0415
 
@@ -813,14 +815,15 @@ def parse_mjcf(
         )
 
         # Parse sites (non-colliding reference points)
-        sites = body.findall("site")
-        if sites:
-            parse_sites(
-                defaults,
-                body_name,
-                link,
-                sites=sites,
-            )
+        if parse_sites:
+            sites = body.findall("site")
+            if sites:
+                _parse_sites_impl(
+                    defaults,
+                    body_name,
+                    link,
+                    sites=sites,
+                )
 
         m = builder.body_mass[link]
         if not ignore_inertial_definitions and body.find("inertial") is not None:
@@ -1025,13 +1028,14 @@ def parse_mjcf(
         incoming_xform=xform,
     )
 
-    parse_sites(
-        defaults=world_defaults,
-        body_name="world",
-        link=-1,
-        sites=world.findall("site"),
-        incoming_xform=xform,
-    )
+    if parse_sites:
+        _parse_sites_impl(
+            defaults=world_defaults,
+            body_name="world",
+            link=-1,
+            sites=world.findall("site"),
+            incoming_xform=xform,
+        )
 
     # -----------------
     # add equality constraints

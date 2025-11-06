@@ -106,6 +106,7 @@ class Example:
             ignore_names=["floor", "ground"],
             xform=wp.transform((0.0, 0.0, 3.5), wp.quat_identity()),
             collapse_fixed_joints=COLLAPSE_FIXED_JOINTS,
+            parse_sites=False,  # AD: remove once asset is fixed
         )
 
         scene = newton.ModelBuilder()

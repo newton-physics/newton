@@ -1189,6 +1189,7 @@ class ModelBuilder:
         hide_visuals: bool = False,
         parse_visuals_as_colliders: bool = False,
         parse_meshes: bool = True,
+        parse_sites: bool = True,
         up_axis: AxisType = Axis.Z,
         ignore_names: Sequence[str] = (),
         ignore_classes: Sequence[str] = (),
@@ -1218,6 +1219,7 @@ class ModelBuilder:
             hide_visuals (bool): If True, hide visual shapes.
             parse_visuals_as_colliders (bool): If True, the geometry defined under the `visual_classes` tags is used for collision handling instead of the `collider_classes` geometries.
             parse_meshes (bool): Whether geometries of type `"mesh"` should be parsed. If False, geometries of type `"mesh"` are ignored.
+            parse_sites (bool): Whether sites (non-colliding reference points) should be parsed. If False, sites are ignored.
             up_axis (AxisType): The up axis of the MuJoCo scene. The default is Z up.
             ignore_names (Sequence[str]): A list of regular expressions. Bodies and joints with a name matching one of the regular expressions will be ignored.
             ignore_classes (Sequence[str]): A list of regular expressions. Bodies and joints with a class matching one of the regular expressions will be ignored.
@@ -1247,6 +1249,7 @@ class ModelBuilder:
             hide_visuals,
             parse_visuals_as_colliders,
             parse_meshes,
+            parse_sites,
             up_axis,
             ignore_names,
             ignore_classes,
