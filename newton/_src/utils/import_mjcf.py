@@ -45,6 +45,7 @@ def parse_mjcf(
     parse_visuals_as_colliders: bool = False,
     parse_meshes: bool = True,
     parse_sites: bool = True,
+    parse_visuals: bool = True,
     up_axis: AxisType = Axis.Z,
     ignore_names: Sequence[str] = (),
     ignore_classes: Sequence[str] = (),
@@ -72,10 +73,11 @@ def parse_mjcf(
         base_joint (Union[str, dict]): The joint by which the root body is connected to the world. This can be either a string defining the joint axes of a D6 joint with comma-separated positional and angular axis names (e.g. "px,py,rz" for a D6 joint with linear axes in x, y and an angular axis in z) or a dict with joint parameters (see :meth:`ModelBuilder.add_joint`).
         armature_scale (float): Scaling factor to apply to the MJCF-defined joint armature values.
         scale (float): The scaling factor to apply to the imported mechanism.
-        hide_visuals (bool): If True, hide visual shapes.
+        hide_visuals (bool): If True, hide visual shapes after loading them (affects visibility, not loading).
         parse_visuals_as_colliders (bool): If True, the geometry defined under the `visual_classes` tags is used for collision handling instead of the `collider_classes` geometries.
         parse_meshes (bool): Whether geometries of type `"mesh"` should be parsed. If False, geometries of type `"mesh"` are ignored.
         parse_sites (bool): Whether sites (non-colliding reference points) should be parsed. If False, sites are ignored.
+        parse_visuals (bool): Whether visual geometries (non-collision shapes) should be loaded. If False, visual shapes are not loaded (different from `hide_visuals` which loads but hides them). Default is True.
         up_axis (AxisType): The up axis of the MuJoCo scene. The default is Z up.
         ignore_names (Sequence[str]): A list of regular expressions. Bodies and joints with a name matching one of the regular expressions will be ignored.
         ignore_classes (Sequence[str]): A list of regular expressions. Bodies and joints with a class matching one of the regular expressions will be ignored.
@@ -786,7 +788,7 @@ def parse_mjcf(
 
         if parse_visuals_as_colliders:
             colliders = visuals
-        else:
+        elif parse_visuals:
             s = parse_shapes(
                 defaults,
                 body_name,
@@ -801,8 +803,8 @@ def parse_mjcf(
         show_colliders = force_show_colliders
         if parse_visuals_as_colliders:
             show_colliders = True
-        elif len(visuals) == 0:
-            # we need to show the collision shapes since there are no visual shapes
+        elif len(visuals) == 0 or not parse_visuals:
+            # we need to show the collision shapes since there are no visual shapes (or we're not loading them)
             show_colliders = True
 
         parse_shapes(

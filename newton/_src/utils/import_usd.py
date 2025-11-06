@@ -54,6 +54,8 @@ def parse_usd(
     bodies_follow_joint_ordering: bool = True,
     skip_mesh_approximation: bool = False,
     load_non_physics_prims: bool = True,
+    load_sites: bool | None = None,
+    load_visual_shapes: bool | None = None,
     hide_collision_shapes: bool = False,
     mesh_maxhullvert: int = MESH_MAXHULLVERT,
     schema_resolvers: list[SchemaResolver] | None = None,
@@ -81,7 +83,9 @@ def parse_usd(
         joint_ordering (str): The ordering of the joints in the simulation. Can be either "bfs" or "dfs" for breadth-first or depth-first search, or ``None`` to keep joints in the order in which they appear in the USD. Default is "dfs".
         bodies_follow_joint_ordering (bool): If True, the bodies are added to the builder in the same order as the joints (parent then child body). Otherwise, bodies are added in the order they appear in the USD. Default is True.
         skip_mesh_approximation (bool): If True, mesh approximation is skipped. Otherwise, meshes are approximated according to the ``physics:approximation`` attribute defined on the UsdPhysicsMeshCollisionAPI (if it is defined). Default is False.
-        load_non_physics_prims (bool): If True, prims that are children of a rigid body that do not have a UsdPhysics schema applied are loaded as visual shapes in a separate pass (may slow down the loading process). Otherwise, non-physics prims are ignored. Default is True.
+        load_non_physics_prims (bool): If True, prims that are children of a rigid body that do not have a UsdPhysics schema applied are loaded as visual shapes in a separate pass (may slow down the loading process). Otherwise, non-physics prims are ignored. Default is True. This parameter is superseded by `load_sites` and `load_visual_shapes` when those are explicitly set.
+        load_sites (bool | None): If True, sites (prims with MjcSiteAPI) are loaded as non-colliding reference points. If False, sites are ignored. If None (default), follows the value of `load_non_physics_prims` for backward compatibility.
+        load_visual_shapes (bool | None): If True, non-physics visual geometry is loaded. If False, visual-only shapes are ignored (sites are still controlled by `load_sites`). If None (default), follows the value of `load_non_physics_prims` for backward compatibility.
         hide_collision_shapes (bool): If True, collision shapes are hidden. Default is False.
         mesh_maxhullvert (int): Maximum vertices for convex hull approximation of meshes.
         schema_resolvers (list[SchemaResolver]): Resolver instances in priority order. Default is no schema resolution.
@@ -135,6 +139,12 @@ def parse_usd(
     if schema_resolvers is None:
         schema_resolvers = []
     collect_schema_attrs = len(schema_resolvers) > 0
+
+    # Backward compatibility: if new granular flags are None, use load_non_physics_prims
+    if load_sites is None:
+        load_sites = load_non_physics_prims
+    if load_visual_shapes is None:
+        load_visual_shapes = load_non_physics_prims
 
     try:
         from pxr import Sdf, Usd, UsdGeom, UsdPhysics  # noqa: PLC0415
@@ -253,7 +263,7 @@ def parse_usd(
         has_particle_collision=False,
     )
 
-    def load_visual_shapes(parent_body_id, prim, incoming_xform: wp.transform):
+    def _load_visual_shapes_impl(parent_body_id, prim, incoming_xform: wp.transform):
         if (
             prim.HasAPI(UsdPhysics.RigidBodyAPI)
             or prim.HasAPI(UsdPhysics.MassAPI)
@@ -271,7 +281,7 @@ def parse_usd(
                 # remap prototype child path to this instance's path (instance proxy)
                 inst_path = child.GetPath().ReplacePrefix(proto.GetPath(), prim.GetPath())
                 inst_child = stage.GetPrimAtPath(inst_path)
-                load_visual_shapes(parent_body_id, inst_child, xform)
+                _load_visual_shapes_impl(parent_body_id, inst_child, xform)
             return
         type_name = str(prim.GetTypeName()).lower()
         if type_name.endswith("joint"):
@@ -292,6 +302,12 @@ def parse_usd(
                     + list(schemas_listop.explicitItems)
                 )
                 is_site = "MjcSiteAPI" in all_schemas
+
+        # Skip based on granular loading flags
+        if is_site and not load_sites:
+            return
+        if not is_site and not load_visual_shapes:
+            return
 
         if path_name not in path_shape_map:
             if type_name == "cube":
@@ -432,7 +448,7 @@ def parse_usd(
                     print(f"Added visual shape {path_name} ({type_name}) with id {shape_id}.")
 
         for child in prim.GetChildren():
-            load_visual_shapes(parent_body_id, child, xform)
+            _load_visual_shapes_impl(parent_body_id, child, xform)
 
     def add_body(prim, xform, key, armature):
         # Extract custom attributes for this body
@@ -445,9 +461,9 @@ def parse_usd(
             custom_attributes=body_custom_attrs,
         )
         path_body_map[key] = b
-        if load_non_physics_prims:
+        if load_sites or load_visual_shapes:
             for child in prim.GetChildren():
-                load_visual_shapes(b, child, wp.transform_identity())
+                _load_visual_shapes_impl(b, child, wp.transform_identity())
         return b
 
     def parse_body(rigid_body_desc, prim, incoming_xform=None, add_body_to_builder=True):

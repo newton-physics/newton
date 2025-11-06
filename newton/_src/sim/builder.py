@@ -1075,6 +1075,8 @@ class ModelBuilder:
         bodies_follow_joint_ordering: bool = True,
         skip_mesh_approximation: bool = False,
         load_non_physics_prims: bool = True,
+        load_sites: bool | None = None,
+        load_visual_shapes: bool | None = None,
         hide_collision_shapes: bool = False,
         mesh_maxhullvert: int = MESH_MAXHULLVERT,
         schema_resolvers: list[SchemaResolver] | None = None,
@@ -1102,7 +1104,9 @@ class ModelBuilder:
             joint_ordering (str): The ordering of the joints in the simulation. Can be either "bfs" or "dfs" for breadth-first or depth-first search, or ``None`` to keep joints in the order in which they appear in the USD. Default is "dfs".
             bodies_follow_joint_ordering (bool): If True, the bodies are added to the builder in the same order as the joints (parent then child body). Otherwise, bodies are added in the order they appear in the USD. Default is True.
             skip_mesh_approximation (bool): If True, mesh approximation is skipped. Otherwise, meshes are approximated according to the ``physics:approximation`` attribute defined on the UsdPhysicsMeshCollisionAPI (if it is defined). Default is False.
-            load_non_physics_prims (bool): If True, prims that are children of a rigid body that do not have a UsdPhysics schema applied are loaded as visual shapes in a separate pass (may slow down the loading process). Otherwise, non-physics prims are ignored. Default is True.
+            load_non_physics_prims (bool): If True, prims that are children of a rigid body that do not have a UsdPhysics schema applied are loaded as visual shapes in a separate pass (may slow down the loading process). Otherwise, non-physics prims are ignored. Default is True. This parameter is superseded by `load_sites` and `load_visual_shapes` when those are explicitly set.
+            load_sites (bool | None): If True, sites (prims with MjcSiteAPI) are loaded as non-colliding reference points. If False, sites are ignored. If None (default), follows the value of `load_non_physics_prims` for backward compatibility.
+            load_visual_shapes (bool | None): If True, non-physics visual geometry is loaded. If False, visual-only shapes are ignored (sites are still controlled by `load_sites`). If None (default), follows the value of `load_non_physics_prims` for backward compatibility.
             hide_collision_shapes (bool): If True, collision shapes are hidden. Default is False.
             mesh_maxhullvert (int): Maximum vertices for convex hull approximation of meshes.
             schema_resolvers (list[SchemaResolver]): Resolver instances in priority order. Default is no schema resolution.
@@ -1173,6 +1177,8 @@ class ModelBuilder:
             bodies_follow_joint_ordering,
             skip_mesh_approximation,
             load_non_physics_prims,
+            load_sites,
+            load_visual_shapes,
             hide_collision_shapes,
             mesh_maxhullvert,
             schema_resolvers,
@@ -1190,6 +1196,7 @@ class ModelBuilder:
         parse_visuals_as_colliders: bool = False,
         parse_meshes: bool = True,
         parse_sites: bool = True,
+        parse_visuals: bool = True,
         up_axis: AxisType = Axis.Z,
         ignore_names: Sequence[str] = (),
         ignore_classes: Sequence[str] = (),
@@ -1216,10 +1223,11 @@ class ModelBuilder:
             base_joint (Union[str, dict]): The joint by which the root body is connected to the world. This can be either a string defining the joint axes of a D6 joint with comma-separated positional and angular axis names (e.g. "px,py,rz" for a D6 joint with linear axes in x, y and an angular axis in z) or a dict with joint parameters (see :meth:`ModelBuilder.add_joint`).
             armature_scale (float): Scaling factor to apply to the MJCF-defined joint armature values.
             scale (float): The scaling factor to apply to the imported mechanism.
-            hide_visuals (bool): If True, hide visual shapes.
+            hide_visuals (bool): If True, hide visual shapes after loading them (affects visibility, not loading).
             parse_visuals_as_colliders (bool): If True, the geometry defined under the `visual_classes` tags is used for collision handling instead of the `collider_classes` geometries.
             parse_meshes (bool): Whether geometries of type `"mesh"` should be parsed. If False, geometries of type `"mesh"` are ignored.
             parse_sites (bool): Whether sites (non-colliding reference points) should be parsed. If False, sites are ignored.
+            parse_visuals (bool): Whether visual geometries (non-collision shapes) should be loaded. If False, visual shapes are not loaded (different from `hide_visuals` which loads but hides them). Default is True.
             up_axis (AxisType): The up axis of the MuJoCo scene. The default is Z up.
             ignore_names (Sequence[str]): A list of regular expressions. Bodies and joints with a name matching one of the regular expressions will be ignored.
             ignore_classes (Sequence[str]): A list of regular expressions. Bodies and joints with a class matching one of the regular expressions will be ignored.
@@ -1250,6 +1258,7 @@ class ModelBuilder:
             parse_visuals_as_colliders,
             parse_meshes,
             parse_sites,
+            parse_visuals,
             up_axis,
             ignore_names,
             ignore_classes,
