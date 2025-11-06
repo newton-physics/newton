@@ -1252,6 +1252,17 @@ class SolverMuJoCo(SolverBase):
                 usd_attribute_name="mjc:condim",
             )
         )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="solimplimit",
+                frequency=ModelAttributeFrequency.JOINT,
+                assignment=ModelAttributeAssignment.MODEL,
+                dtype=wp.types.vector(length=5, dtype=wp.float32),
+                default=wp.types.vector((0.9, 0.95, 0.001, 0.5, 2.0), dtype=wp.float32),
+                namespace="mujoco",
+                usd_attribute_name="mjc:solimplimit",
+            )
+        )
 
     def __init__(
         self,
@@ -1277,7 +1288,6 @@ class SolverMuJoCo(SolverBase):
         contact_stiffness_time_const: float = 0.02,
         ls_parallel: bool = False,
         use_mujoco_contacts: bool = True,
-        joint_solimp_limit: tuple[float, float, float, float, float] | None = None,
         tolerance: float = 1e-6,
         ls_tolerance: float = 0.01,
     ):
@@ -1305,7 +1315,6 @@ class SolverMuJoCo(SolverBase):
             contact_stiffness_time_const (float): Time constant for contact stiffness in MuJoCo's solver reference model. Defaults to 0.02 (20ms). Can be set to match the simulation timestep for tighter coupling.
             ls_parallel (bool): If True, enable parallel line search in MuJoCo. Defaults to False.
             use_mujoco_contacts (bool): If True, use the MuJoCo contact solver. If False, use the Newton contact solver (newton contacts must be passed in through the step function in that case).
-            joint_solimp_limit (tuple[float, float, float, float, float] | None): Global solver impedance parameters for all joint limits. If provided, applies these solimp values to all joints created. Defaults to None (uses MuJoCo defaults).
             tolerance (float | None): Solver tolerance for early termination of the iterative solver. Defaults to 1e-6 and will be increased to 1e-6 by the MuJoCo solver if a smaller value is provided.
             ls_tolerance (float | None): Solver tolerance for early termination of the line search. Defaults to 0.01.
         """
@@ -1313,7 +1322,6 @@ class SolverMuJoCo(SolverBase):
         # Import and cache MuJoCo modules (only happens once per class)
         mujoco, _ = self.import_mujoco()
         self.contact_stiffness_time_const = contact_stiffness_time_const
-        self.joint_solimp_limit = joint_solimp_limit
 
         if use_mujoco_cpu and not use_mujoco_contacts:
             print("Setting use_mujoco_contacts to False has no effect when use_mujoco_cpu is True")
@@ -2031,6 +2039,7 @@ class SolverMuJoCo(SolverBase):
             return attr.numpy()
 
         shape_condim = get_custom_attribute("condim")
+        joint_solimp_limit = get_custom_attribute("solimplimit")
 
         eq_constraint_type = model.equality_constraint_type.numpy()
         eq_constraint_body1 = model.equality_constraint_body1.numpy()
@@ -2306,8 +2315,8 @@ class SolverMuJoCo(SolverBase):
                         # Use negative convention for solref_limit: (-stiffness, -damping)
                         if joint_limit_ke[ai] > 0:
                             joint_params["solref_limit"] = (-joint_limit_ke[ai], -joint_limit_kd[ai])
-                        if self.joint_solimp_limit is not None:
-                            joint_params["solimp_limit"] = self.joint_solimp_limit
+                        if joint_solimp_limit is not None:
+                            joint_params["solimp_limit"] = joint_solimp_limit[ai]
                     axname = name
                     if lin_axis_count > 1 or ang_axis_count > 1:
                         axname += "_lin"
@@ -2372,8 +2381,8 @@ class SolverMuJoCo(SolverBase):
                         # Use negative convention for solref_limit: (-stiffness, -damping)
                         if joint_limit_ke[ai] > 0:
                             joint_params["solref_limit"] = (-joint_limit_ke[ai], -joint_limit_kd[ai])
-                        if self.joint_solimp_limit is not None:
-                            joint_params["solimp_limit"] = self.joint_solimp_limit
+                        if joint_solimp_limit is not None:
+                            joint_params["solimp_limit"] = joint_solimp_limit[ai]
                     axname = name
                     if lin_axis_count > 1 or ang_axis_count > 1:
                         axname += "_ang"
