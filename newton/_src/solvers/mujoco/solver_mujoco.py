@@ -25,6 +25,7 @@ import warp as wp
 from ...core.types import nparray, override
 from ...geometry import MESH_MAXHULLVERT, GeoType, ShapeFlags
 from ...sim import (
+    JOINT_LIMIT_UNLIMITED,
     Contacts,
     Control,
     EqType,
@@ -1826,8 +1827,6 @@ class SolverMuJoCo(SolverBase):
         tolerance: float = 1e-6,
         ls_tolerance: float = 0.01,
         cone: int | str = "pyramidal",
-        # maximum absolute joint limit value after which the joint is considered not limited
-        joint_limit_threshold: float = 1e3,
         geom_solref: tuple[float, float] | None = None,
         geom_solimp: tuple[float, float, float, float, float] = (0.9, 0.95, 0.001, 0.5, 2.0),
         geom_friction: tuple[float, float, float] | None = None,
@@ -2299,7 +2298,7 @@ class SolverMuJoCo(SolverBase):
                     # Set friction
                     joint_params["frictionloss"] = joint_friction[ai]
                     lower, upper = joint_limit_lower[ai], joint_limit_upper[ai]
-                    if lower == upper or (abs(lower) > joint_limit_threshold and abs(upper) > joint_limit_threshold):
+                    if lower <= -JOINT_LIMIT_UNLIMITED and upper >= JOINT_LIMIT_UNLIMITED:
                         joint_params["limited"] = False
                     else:
                         joint_params["limited"] = True
@@ -2365,7 +2364,7 @@ class SolverMuJoCo(SolverBase):
                     # Set friction
                     joint_params["frictionloss"] = joint_friction[ai]
                     lower, upper = joint_limit_lower[ai], joint_limit_upper[ai]
-                    if lower == upper or (abs(lower) > joint_limit_threshold and abs(upper) > joint_limit_threshold):
+                    if lower <= -JOINT_LIMIT_UNLIMITED and upper >= JOINT_LIMIT_UNLIMITED:
                         joint_params["limited"] = False
                     else:
                         joint_params["limited"] = True

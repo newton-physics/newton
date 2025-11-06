@@ -59,6 +59,7 @@ from ..usd.schema_resolver import SchemaResolver
 from ..utils import compute_world_offsets
 from .graph_coloring import ColoringAlgorithm, color_trimesh, combine_independent_particle_coloring
 from .joints import (
+    JOINT_LIMIT_UNLIMITED,
     EqType,
     JointMode,
     JointType,
@@ -203,8 +204,8 @@ class ModelBuilder:
         def __init__(
             self,
             axis: AxisType | Vec3 = Axis.X,
-            limit_lower: float = -1e6,
-            limit_upper: float = 1e6,
+            limit_lower: float = -JOINT_LIMIT_UNLIMITED,
+            limit_upper: float = JOINT_LIMIT_UNLIMITED,
             limit_ke: float = 1e4,
             limit_kd: float = 1e1,
             target: float = 0.0,
@@ -219,9 +220,9 @@ class ModelBuilder:
             self.axis = wp.normalize(axis_to_vec3(axis))
             """The 3D axis that this JointDofConfig object describes."""
             self.limit_lower = limit_lower
-            """The lower position limit of the joint axis. Defaults to -1e6."""
+            """The lower position limit of the joint axis. Defaults to -JOINT_LIMIT_UNLIMITED (unlimited)."""
             self.limit_upper = limit_upper
-            """The upper position limit of the joint axis. Defaults to 1e6."""
+            """The upper position limit of the joint axis. Defaults to JOINT_LIMIT_UNLIMITED (unlimited)."""
             self.limit_ke = limit_ke
             """The elastic stiffness of the joint axis limits. Defaults to 1e4."""
             self.limit_kd = limit_kd
@@ -255,8 +256,8 @@ class ModelBuilder:
             """Creates a JointDofConfig with no limits."""
             return ModelBuilder.JointDofConfig(
                 axis=axis,
-                limit_lower=-1e6,
-                limit_upper=1e6,
+                limit_lower=-JOINT_LIMIT_UNLIMITED,
+                limit_upper=JOINT_LIMIT_UNLIMITED,
                 target=0.0,
                 target_ke=0.0,
                 target_kd=0.0,
@@ -1712,11 +1713,11 @@ class ModelBuilder:
             if np.isfinite(dim.limit_lower):
                 self.joint_limit_lower.append(dim.limit_lower)
             else:
-                self.joint_limit_lower.append(-1e6)
+                self.joint_limit_lower.append(-JOINT_LIMIT_UNLIMITED)
             if np.isfinite(dim.limit_upper):
                 self.joint_limit_upper.append(dim.limit_upper)
             else:
-                self.joint_limit_upper.append(1e6)
+                self.joint_limit_upper.append(JOINT_LIMIT_UNLIMITED)
 
         for dim in linear_axes:
             add_axis_dim(dim)

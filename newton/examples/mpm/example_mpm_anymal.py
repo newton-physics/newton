@@ -299,10 +299,11 @@ class Example:
             lambda q, qd: newton.utils.vec_inside_limits(qd, forward_vel_min, forward_vel_max),
             indices=[0],
         )
+        voxel_size = self.mpm_solver.mpm_model.voxel_size
         newton.examples.test_particle_state(
             self.state_0,
             "all particles are above the ground",
-            lambda q, qd: q[2] > -0.03,
+            lambda q, qd: q[2] > -voxel_size,
         )
 
     def render(self):
