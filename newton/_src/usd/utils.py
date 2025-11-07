@@ -647,6 +647,9 @@ def get_mesh(
     indices = np.array(mesh.GetFaceVertexIndicesAttr().Get(), dtype=np.int32)
     counts = mesh.GetFaceVertexCountsAttr().Get()
     normals = mesh.GetNormalsAttr().Get() if load_normals else None
+
+    uvs = mesh.GetPrimvarsAttr("st").Get() if load_uvs else None
+
     if normals is not None:
         normals = np.array(normals, dtype=np.float64)
         if mesh.GetNormalsInterpolation() == "faceVarying":
@@ -688,6 +691,7 @@ def get_mesh(
                 new_points = []
                 new_norm_sums = []  # accumulate directions per new vertex id
                 new_indices = np.empty_like(indices)
+                new_uvs = []
 
                 # Helper to create a new vertex clone from original v
                 def _new_vertex_from(v, n_dir):
@@ -695,6 +699,8 @@ def get_mesh(
                     new_points.append(points[v])
                     new_norm_sums.append(n_dir.copy())
                     clusters_per_v[v].append([n_dir.copy(), 1, new_vid])
+                    if uvs:
+                        new_uvs.append(uvs[v])
                     return new_vid
 
                 # Assign each corner to a cluster (new vertex) based on angular proximity
@@ -733,6 +739,7 @@ def get_mesh(
                 points = new_points
                 indices = new_indices
                 normals = new_vertex_normals
+                uvs = new_uvs
             elif face_varying_normal_conversion == "vertex_averaging":
                 # basic averaging
                 for c, v in enumerate(indices):
@@ -777,15 +784,14 @@ def get_mesh(
 
     faces = np.array(faces, dtype=np.int32)
 
-    uvs = mesh.GetPrimvarsAttr("st").Get() if load_uvs else None
-    if uvs:
-        uvs = np.array(uvs, dtype=np.float32)
-
     flip_winding = False
     handedness = mesh.GetOrientationAttr().Get()
     if handedness.lower() == "lefthanded":
         flip_winding = True
     if flip_winding:
         faces = faces[:, ::-1]
+
+    if uvs:
+        uvs = np.array(uvs, dtype=np.float32)
 
     return Mesh(points, faces.flatten(), normals=normals, uvs=uvs, maxhullvert=maxhullvert)
