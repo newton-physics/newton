@@ -1730,7 +1730,6 @@ class SolverMuJoCo(SolverBase):
             inputs=[
                 self.model.joint_qd_start,
                 self.model.joint_dof_dim,
-                self.model.joint_type,
                 self.joint_mjc_dof_start,
                 self.template_dof_to_mjc_joint,
                 self.model.joint_armature,

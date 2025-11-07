@@ -915,7 +915,6 @@ def update_axis_properties_kernel(
 def update_joint_dof_properties_kernel(
     joint_qd_start: wp.array(dtype=wp.int32),
     joint_dof_dim: wp.array2d(dtype=wp.int32),
-    joint_type: wp.array(dtype=wp.int32),
     joint_mjc_dof_start: wp.array(dtype=wp.int32),
     template_dof_to_mjc_joint: wp.array(dtype=wp.int32),
     joint_armature: wp.array(dtype=float),
@@ -939,11 +938,6 @@ def update_joint_dof_properties_kernel(
     tid = wp.tid()
     worldid = tid // joints_per_world
     joint_in_world = tid % joints_per_world
-
-    jtype = joint_type[tid]
-    if jtype == JointType.FREE:
-        # free joints don't have these properties
-        return
 
     lin_axis_count = joint_dof_dim[tid, 0]
     ang_axis_count = joint_dof_dim[tid, 1]
