@@ -950,20 +950,23 @@ def update_joint_dof_properties_kernel(
     joint_dof_dim: wp.array2d(dtype=wp.int32),
     joint_type: wp.array(dtype=wp.int32),
     joint_mjc_dof_start: wp.array(dtype=wp.int32),
-    dof_mjc_joint_index: wp.array(dtype=wp.int32),
+    template_dof_to_mjc_joint: wp.array(dtype=wp.int32),
     joint_armature: wp.array(dtype=float),
     joint_friction: wp.array(dtype=float),
+    joint_limit_ke: wp.array(dtype=float),
+    joint_limit_kd: wp.array(dtype=float),
     solimplimit: wp.array(dtype=wp.types.vector(length=5, dtype=wp.float32)),
     joints_per_world: int,
     # outputs
     dof_armature: wp.array2d(dtype=float),
     dof_frictionloss: wp.array2d(dtype=float),
     jnt_solimp: wp.array2d(dtype=wp.types.vector(length=5, dtype=wp.float32)),
+    jnt_solref: wp.array2d(dtype=wp.vec2),
 ):
-    """Update joint DOF properties including armature, friction loss, and joint impedance limits.
+    """Update joint DOF properties including armature, friction loss, joint impedance limits, and solref.
 
     This kernel properly maps Newton DOFs to MuJoCo DOFs using joint_mjc_dof_start.
-    For solimplimit, we use dof_mjc_joint_index since jnt_solimp is per-joint in MuJoCo.
+    For solimplimit and solref, we use template_dof_to_mjc_joint since jnt_solimp/jnt_solref are per-joint in MuJoCo.
     If solimplimit is None, jnt_solimp won't be updated (MuJoCo defaults will be preserved).
     """
     tid = wp.tid()
@@ -983,35 +986,52 @@ def update_joint_dof_properties_kernel(
     if mjc_dof_start == -1:
         return
 
+    # Get the DOF start for the template joint (world 0)
+    # template_dof_to_mjc_joint is only populated for template DOFs (first world)
+    template_joint_idx = joint_in_world
+    template_dof_start = joint_qd_start[template_joint_idx]
+
     # update linear dofs
     for i in range(lin_axis_count):
         newton_dof_index = newton_dof_start + i
+        template_dof_index = template_dof_start + i
         mjc_dof_index = mjc_dof_start + i
+        mjc_joint_index = template_dof_to_mjc_joint[template_dof_index]
 
         # Update armature and friction (per DOF)
         dof_armature[worldid, mjc_dof_index] = joint_armature[newton_dof_index]
         dof_frictionloss[worldid, mjc_dof_index] = joint_friction[newton_dof_index]
 
-        # Update solimplimit (per joint) - map Newton DOF to MuJoCo joint index
-        if solimplimit:
-            mjc_joint_index = dof_mjc_joint_index[newton_dof_index]
-            if mjc_joint_index != -1:
-                jnt_solimp[worldid, mjc_joint_index] = solimplimit[newton_dof_index]
+        # Update joint limit solref using negative convention (per joint)
+        if joint_limit_ke[newton_dof_index] > 0.0 and mjc_joint_index != -1:
+            jnt_solref[worldid, mjc_joint_index] = wp.vec2(
+                -joint_limit_ke[newton_dof_index], -joint_limit_kd[newton_dof_index]
+            )
+
+        # Update solimplimit (per joint)
+        if solimplimit and mjc_joint_index != -1:
+            jnt_solimp[worldid, mjc_joint_index] = solimplimit[newton_dof_index]
 
     # update angular dofs
     for i in range(ang_axis_count):
         newton_dof_index = newton_dof_start + lin_axis_count + i
+        template_dof_index = template_dof_start + lin_axis_count + i
         mjc_dof_index = mjc_dof_start + lin_axis_count + i
+        mjc_joint_index = template_dof_to_mjc_joint[template_dof_index]
 
         # Update armature and friction (per DOF)
         dof_armature[worldid, mjc_dof_index] = joint_armature[newton_dof_index]
         dof_frictionloss[worldid, mjc_dof_index] = joint_friction[newton_dof_index]
 
-        # Update solimplimit (per joint) - map Newton DOF to MuJoCo joint index
-        if solimplimit:
-            mjc_joint_index = dof_mjc_joint_index[newton_dof_index]
-            if mjc_joint_index != -1:
-                jnt_solimp[worldid, mjc_joint_index] = solimplimit[newton_dof_index]
+        # Update joint limit solref using negative convention (per joint)
+        if joint_limit_ke[newton_dof_index] > 0.0 and mjc_joint_index != -1:
+            jnt_solref[worldid, mjc_joint_index] = wp.vec2(
+                -joint_limit_ke[newton_dof_index], -joint_limit_kd[newton_dof_index]
+            )
+
+        # Update solimplimit (per joint)
+        if solimplimit and mjc_joint_index != -1:
+            jnt_solimp[worldid, mjc_joint_index] = solimplimit[newton_dof_index]
 
 
 @wp.kernel
@@ -1023,15 +1043,12 @@ def update_joint_transforms_kernel(
     joint_original_axis: wp.array(dtype=wp.vec3),
     joint_child: wp.array(dtype=wp.int32),
     joint_type: wp.array(dtype=wp.int32),
-    joint_limit_ke: wp.array(dtype=float),
-    joint_limit_kd: wp.array(dtype=float),
     joint_mjc_dof_start: wp.array(dtype=wp.int32),
     body_mapping: wp.array(dtype=wp.int32),
     joints_per_world: int,
     # outputs
     joint_pos: wp.array2d(dtype=wp.vec3),
     joint_axis: wp.array2d(dtype=wp.vec3),
-    joint_solref: wp.array2d(dtype=wp.vec2),
     body_pos: wp.array2d(dtype=wp.vec3),
     body_quat: wp.array2d(dtype=wp.quat),
 ):
@@ -1062,9 +1079,6 @@ def update_joint_transforms_kernel(
         ai = mjc_dof_start + i
         joint_axis[worldid, ai] = wp.quat_rotate(child_xform.q, axis)
         joint_pos[worldid, ai] = child_xform.p
-        # update joint limit solref using negative convention
-        if joint_limit_ke[newton_dof_index] > 0:
-            joint_solref[worldid, ai] = wp.vec2(-joint_limit_ke[newton_dof_index], -joint_limit_kd[newton_dof_index])
 
     # update angular dofs
     for i in range(ang_axis_count):
@@ -1073,9 +1087,6 @@ def update_joint_transforms_kernel(
         ai = mjc_dof_start + lin_axis_count + i
         joint_axis[worldid, ai] = wp.quat_rotate(child_xform.q, axis)
         joint_pos[worldid, ai] = child_xform.p
-        # update joint limit solref using negative convention
-        if joint_limit_ke[newton_dof_index] > 0:
-            joint_solref[worldid, ai] = wp.vec2(-joint_limit_ke[newton_dof_index], -joint_limit_kd[newton_dof_index])
 
     # update body pos and quat from parent joint transform
     child = joint_child[joint_in_world]  # Newton body id
@@ -2276,12 +2287,15 @@ class SolverMuJoCo(SolverBase):
         # add static geoms attached to the worldbody
         add_geoms(-1)
 
-        # maps from Newton joint index to the start index of its joint axes in MuJoCo
-        # (only defined for the joints of the first world)
-        joint_mjc_dof_start = np.full(model.joint_count, -1, dtype=np.int32)
-        # maps from Newton DOF index to MuJoCo joint index
-        # (needed because jnt_solimp is per-joint, not per-DOF in MuJoCo)
-        dof_mjc_joint_index = np.full(model.joint_dof_count, -1, dtype=np.int32)
+        # Maps from Newton joint index (per-world/template) to MuJoCo DOF start index (per-world/template)
+        # Only populated for template joints; in kernels, use joint_in_world to index
+        joint_mjc_dof_start = np.full(len(selected_joints), -1, dtype=np.int32)
+
+        # Maps from Newton DOF index (per-world/template) to MuJoCo joint index (per-world/template)
+        # Only populated for template DOFs; in kernels, use template_dof_index to look up
+        # Needed because jnt_solimp/jnt_solref are per-joint (not per-DOF) in MuJoCo
+        template_dof_to_mjc_joint = np.full(model.joint_dof_count // model.num_worlds, -1, dtype=np.int32)
+
         # need to keep track of current dof and joint counts to make the indexing above correct
         num_dofs = 0
         num_mjc_joints = 0
@@ -2349,7 +2363,7 @@ class SolverMuJoCo(SolverBase):
                 )
                 # For free joints, all 6 DOFs map to the same MuJoCo joint
                 for i in range(6):
-                    dof_mjc_joint_index[qd_start + i] = num_mjc_joints
+                    template_dof_to_mjc_joint[qd_start + i] = num_mjc_joints
                 num_dofs += 6
                 num_mjc_joints += 1
             elif j_type in supported_joint_types:
@@ -2393,7 +2407,7 @@ class SolverMuJoCo(SolverBase):
                         **joint_params,
                     )
                     # Map this DOF to the current MuJoCo joint index
-                    dof_mjc_joint_index[ai] = num_mjc_joints
+                    template_dof_to_mjc_joint[ai] = num_mjc_joints
                     num_mjc_joints += 1
 
                     if actuated_axes is None or ai in actuated_axes:
@@ -2466,7 +2480,7 @@ class SolverMuJoCo(SolverBase):
                         **joint_params,
                     )
                     # Map this DOF to the current MuJoCo joint index
-                    dof_mjc_joint_index[ai] = num_mjc_joints
+                    template_dof_to_mjc_joint[ai] = num_mjc_joints
                     num_mjc_joints += 1
 
                     if actuated_axes is None or ai in actuated_axes:
@@ -2612,7 +2626,7 @@ class SolverMuJoCo(SolverBase):
             # mapping from Newton joint index to the start index of its joint axes in MuJoCo
             self.joint_mjc_dof_start = wp.array(joint_mjc_dof_start, dtype=wp.int32)
             # mapping from Newton DOF index to MuJoCo joint index (jnt_solimp is per-joint)
-            self.dof_mjc_joint_index = wp.array(dof_mjc_joint_index, dtype=wp.int32, device=model.device)
+            self.template_dof_to_mjc_joint = wp.array(template_dof_to_mjc_joint, dtype=wp.int32, device=model.device)
 
             if self.mjw_model.geom_pos.size:
                 wp.launch(
@@ -2864,9 +2878,11 @@ class SolverMuJoCo(SolverBase):
                 self.model.joint_dof_dim,
                 self.model.joint_type,
                 self.joint_mjc_dof_start,
-                self.dof_mjc_joint_index,
+                self.template_dof_to_mjc_joint,
                 self.model.joint_armature,
                 self.model.joint_friction,
+                self.model.joint_limit_ke,
+                self.model.joint_limit_kd,
                 solimplimit,
                 joints_per_world,
             ],
@@ -2874,18 +2890,19 @@ class SolverMuJoCo(SolverBase):
                 self.mjw_model.dof_armature,
                 self.mjw_model.dof_frictionloss,
                 self.mjw_model.jnt_solimp,
+                self.mjw_model.jnt_solref,
             ],
             device=self.model.device,
         )
 
     def update_joint_properties(self):
-        """Update joint properties including joint positions, joint axes, and relative body transforms in the MuJoCo model."""
+        """Update joint properties including joint positions, joint axes, relative body transforms, and DOF properties in the MuJoCo model."""
         if self.model.joint_count == 0:
             return
 
         joints_per_world = self.model.joint_count // self.model.num_worlds
 
-        # Update joint positions, joint axes, relative body transforms, and joint limit solref
+        # Update joint positions, joint axes, and relative body transforms
         wp.launch(
             update_joint_transforms_kernel,
             dim=self.model.joint_count,
@@ -2897,8 +2914,6 @@ class SolverMuJoCo(SolverBase):
                 self.model.joint_axis,
                 self.model.joint_child,
                 self.model.joint_type,
-                self.model.joint_limit_ke,
-                self.model.joint_limit_kd,
                 self.joint_mjc_dof_start,
                 self.to_mjc_body_index,
                 joints_per_world,
@@ -2906,7 +2921,6 @@ class SolverMuJoCo(SolverBase):
             outputs=[
                 self.mjw_model.jnt_pos,
                 self.mjw_model.jnt_axis,
-                self.mjw_model.jnt_solref,
                 self.mjw_model.body_pos,
                 self.mjw_model.body_quat,
             ],

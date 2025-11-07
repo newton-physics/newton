@@ -856,7 +856,8 @@ class TestMuJoCoSolverJointProperties(TestMuJoCoSolverPropertiesBase):
         self.assertEqual(jnt_solimp.shape[0], model.num_worlds, "jnt_solimp should have one entry per world")
 
         # Step 5: Verify initial values were converted correctly using DOF-to-joint mapping
-        dof_mjc_joint_mapping = solver.dof_mjc_joint_index.numpy()
+        # template_dof_to_mjc_joint maps template-relative DOF indices to MuJoCo joint indices
+        template_dof_to_mjc_joint_mapping = solver.template_dof_to_mjc_joint.numpy()
 
         for world_idx in range(model.num_worlds):
             world_joint_offset = world_idx * joints_per_world
@@ -864,23 +865,26 @@ class TestMuJoCoSolverJointProperties(TestMuJoCoSolverPropertiesBase):
             # Iterate through joints in the first world (template)
             for joint_idx in range(joints_per_world):
                 global_joint_idx = world_joint_offset + joint_idx
+                template_joint_idx = joint_idx  # Joint index within the template/world
 
                 # Skip free joints (they don't have solimplimit)
                 if joint_type[global_joint_idx] == JointType.FREE:
                     continue
 
                 newton_dof_start = joint_qd_start[global_joint_idx]
+                template_dof_start = joint_qd_start[template_joint_idx]  # DOF start in template
                 dof_count = joint_dof_dim[global_joint_idx].sum()
 
                 for dof_offset in range(dof_count):
                     newton_dof_idx = newton_dof_start + dof_offset
+                    template_dof_idx = template_dof_start + dof_offset
 
-                    # Get the MuJoCo joint index for this Newton DOF
-                    mjc_joint_idx = dof_mjc_joint_mapping[newton_dof_idx]
+                    # Get the MuJoCo joint index for this template DOF
+                    mjc_joint_idx = template_dof_to_mjc_joint_mapping[template_dof_idx]
                     if mjc_joint_idx == -1:
                         continue  # Skip DOFs without MuJoCo joint mapping
 
-                    # Get expected solimplimit from Newton model
+                    # Get expected solimplimit from Newton model (use global DOF index)
                     expected_solimp = model.mujoco.solimplimit.numpy()[newton_dof_idx, :]
 
                     # Get actual jnt_solimp from MuJoCo (indexed by joint, not DOF!)
@@ -940,23 +944,26 @@ class TestMuJoCoSolverJointProperties(TestMuJoCoSolverPropertiesBase):
             # Iterate through joints in the first world (template)
             for joint_idx in range(joints_per_world):
                 global_joint_idx = world_joint_offset + joint_idx
+                template_joint_idx = joint_idx  # Joint index within the template/world
 
                 # Skip free joints (they don't have solimplimit)
                 if joint_type[global_joint_idx] == JointType.FREE:
                     continue
 
                 newton_dof_start = joint_qd_start[global_joint_idx]
+                template_dof_start = joint_qd_start[template_joint_idx]  # DOF start in template
                 dof_count = joint_dof_dim[global_joint_idx].sum()
 
                 for dof_offset in range(dof_count):
                     newton_dof_idx = newton_dof_start + dof_offset
+                    template_dof_idx = template_dof_start + dof_offset
 
-                    # Get the MuJoCo joint index for this Newton DOF
-                    mjc_joint_idx = dof_mjc_joint_mapping[newton_dof_idx]
+                    # Get the MuJoCo joint index for this template DOF
+                    mjc_joint_idx = template_dof_to_mjc_joint_mapping[template_dof_idx]
                     if mjc_joint_idx == -1:
                         continue  # Skip DOFs without MuJoCo joint mapping
 
-                    # Get expected solimplimit from updated Newton model
+                    # Get expected solimplimit from updated Newton model (use global DOF index)
                     expected_solimp = model.mujoco.solimplimit.numpy()[newton_dof_idx, :]
 
                     # Get actual jnt_solimp from MuJoCo (indexed by joint, not DOF!)
@@ -1041,8 +1048,8 @@ class TestMuJoCoSolverJointProperties(TestMuJoCoSolverPropertiesBase):
         self.model.joint_limit_ke.assign(updated_limit_ke)
         self.model.joint_limit_kd.assign(updated_limit_kd)
 
-        # Notify solver of changes - jnt_solref is updated via JOINT_PROPERTIES
-        solver.notify_model_changed(SolverNotifyFlags.JOINT_PROPERTIES)
+        # Notify solver of changes - jnt_solref is updated via JOINT_DOF_PROPERTIES
+        solver.notify_model_changed(SolverNotifyFlags.JOINT_DOF_PROPERTIES)
 
         # Verify runtime updates to jnt_solref
         for world_idx in range(self.model.num_worlds):
