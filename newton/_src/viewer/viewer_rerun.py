@@ -86,6 +86,7 @@ class ViewerRerun(ViewerBase):
                 ),
             ),
             rrb.TimePanel(timeline="time", state="collapsed"),
+            collapse_panels=True,
         )
         rr.init(self.app_id, default_blueprint=blueprint)
 
@@ -100,7 +101,7 @@ class ViewerRerun(ViewerBase):
                 rr.serve_web_viewer(connect_to=server_uri)
 
         if self.is_jupyter_notebook:
-            rr.notebook_show(width=1280, height=720)
+            rr.notebook_show(width=1280, height=480, blueprint=blueprint)
 
         # Store mesh data for instances
         self._meshes = {}
