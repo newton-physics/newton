@@ -202,20 +202,22 @@ class TiledCameraSensor:
         )
 
         if recompute_rays or self.render_context.camera_rays is None:
-            if self.render_context.camera_rays is None:
-                self.render_context.init_camera_rays()
+            self.compute_camera_rays(wp.array([math.radians(camera.fov) for camera in cameras], dtype=wp.float32))
 
-            camera_fovs = wp.array([math.radians(camera.fov) for camera in cameras], dtype=wp.float32)
-            wp.launch(
-                kernel=compute_pinhole_camera_rays,
-                dim=(self.render_context.num_cameras, self.render_context.height, self.render_context.width),
-                inputs=[
-                    self.render_context.width,
-                    self.render_context.height,
-                    camera_fovs,
-                    self.render_context.camera_rays,
-                ],
-            )
+    def compute_camera_rays(self, camera_fovs: wp.array(dtype=wp.float32)):
+        if self.render_context.camera_rays is None:
+            self.render_context.init_camera_rays()
+
+        wp.launch(
+            kernel=compute_pinhole_camera_rays,
+            dim=(self.render_context.num_cameras, self.render_context.height, self.render_context.width),
+            inputs=[
+                self.render_context.width,
+                self.render_context.height,
+                camera_fovs,
+                self.render_context.camera_rays,
+            ],
+        )
 
     def save_color_image(self, filename: str) -> bool:
         try:
