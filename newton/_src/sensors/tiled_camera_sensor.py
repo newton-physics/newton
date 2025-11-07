@@ -128,7 +128,7 @@ class TiledCameraSensor:
     def __init__(self, model: Model, num_cameras: int, width: int, height: int):
         self.model = model
 
-        self.render_context = RenderContext(width, height, True, True, False, False, self.model.num_worlds, True)
+        self.render_context = RenderContext(width, height, True, True, False, False, True, self.model.num_worlds, True)
         self.render_context.num_cameras = num_cameras
         self.render_context.mesh_ids = model.shape_source_ptr
         self.render_context.geom_mesh_indices = wp.empty(self.model.shape_count, dtype=wp.int32)
