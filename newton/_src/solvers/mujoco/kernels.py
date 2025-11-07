@@ -944,9 +944,6 @@ def update_joint_dof_properties_kernel(
     newton_dof_start = joint_qd_start[tid]
     mjc_dof_start = joint_mjc_dof_start[joint_in_world]
 
-    if mjc_dof_start == -1:
-        return
-
     # Get the DOF start for the template joint (world 0)
     # template_dof_to_mjc_joint is only populated for template DOFs (first world)
     template_joint_idx = joint_in_world
@@ -964,13 +961,13 @@ def update_joint_dof_properties_kernel(
         dof_frictionloss[worldid, mjc_dof_index] = joint_friction[newton_dof_index]
 
         # Update joint limit solref using negative convention (per joint)
-        if joint_limit_ke[newton_dof_index] > 0.0 and mjc_joint_index != -1:
+        if joint_limit_ke[newton_dof_index] > 0.0:
             jnt_solref[worldid, mjc_joint_index] = wp.vec2(
                 -joint_limit_ke[newton_dof_index], -joint_limit_kd[newton_dof_index]
             )
 
         # Update solimplimit (per joint)
-        if solimplimit and mjc_joint_index != -1:
+        if solimplimit:
             jnt_solimp[worldid, mjc_joint_index] = solimplimit[newton_dof_index]
 
     # update angular dofs
@@ -985,13 +982,13 @@ def update_joint_dof_properties_kernel(
         dof_frictionloss[worldid, mjc_dof_index] = joint_friction[newton_dof_index]
 
         # Update joint limit solref using negative convention (per joint)
-        if joint_limit_ke[newton_dof_index] > 0.0 and mjc_joint_index != -1:
+        if joint_limit_ke[newton_dof_index] > 0.0:
             jnt_solref[worldid, mjc_joint_index] = wp.vec2(
                 -joint_limit_ke[newton_dof_index], -joint_limit_kd[newton_dof_index]
             )
 
         # Update solimplimit (per joint)
-        if solimplimit and mjc_joint_index != -1:
+        if solimplimit:
             jnt_solimp[worldid, mjc_joint_index] = solimplimit[newton_dof_index]
 
 
