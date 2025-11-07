@@ -626,11 +626,29 @@ def heightfield_to_mesh(
     Returns:
         tuple of (vertices, indices) where vertices is (N, 3) float32 array
         and indices is (M,) int32 array of triangle indices (flattened)
+
+    Raises:
+        ValueError: If heightfield is not a 2D array
+        ValueError: If heightfield dimensions are smaller than 2x2
+        ValueError: If extent_x or extent_y are not positive
     """
+    # Validate heightfield dimensions
     if heightfield.ndim != 2:
         raise ValueError(f"heightfield must be 2D array, got shape {heightfield.shape}")
 
     grid_size_x, grid_size_y = heightfield.shape
+
+    # Validate minimum grid size
+    if grid_size_x < 2 or grid_size_y < 2:
+        raise ValueError(
+            f"heightfield must be at least 2x2, got shape ({grid_size_x}, {grid_size_y})"
+        )
+
+    # Validate extent values
+    if extent_x <= 0:
+        raise ValueError(f"extent_x must be positive, got {extent_x}")
+    if extent_y <= 0:
+        raise ValueError(f"extent_y must be positive, got {extent_y}")
 
     # Create grid coordinates
     x = np.linspace(-extent_x / 2, extent_x / 2, grid_size_x) + center_x
