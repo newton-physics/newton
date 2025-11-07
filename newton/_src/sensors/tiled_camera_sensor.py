@@ -24,7 +24,7 @@ from ..viewer.camera import Camera
 from .warp_raytrace import GeomType, LightType, RenderContext
 
 
-@wp.kernel
+@wp.kernel(enable_backward=False)
 def convert_newton_transform(
     in_body_transforms: wp.array(dtype=wp.transform),
     in_shape_body: wp.array(dtype=wp.int32),
@@ -47,7 +47,7 @@ def convert_newton_transform(
     out_sizes[tid] = in_scale[tid]
 
 
-@wp.kernel
+@wp.kernel(enable_backward=False)
 def compute_mesh_bounds(in_meshes: wp.array(dtype=wp.uint64), out_bounds: wp.array2d(dtype=wp.vec3f)):
     tid = wp.tid()
 
@@ -85,7 +85,7 @@ def is_supported_shape_type(shape_type: wp.int32) -> wp.bool:
     return False
 
 
-@wp.kernel
+@wp.kernel(enable_backward=False)
 def compute_enabled_shapes(
     shape_type: wp.array(dtype=wp.int32),
     shape_flags: wp.array(dtype=wp.int32),
@@ -107,7 +107,7 @@ def compute_enabled_shapes(
     out_geom_enabled[index] = tid
 
 
-@wp.kernel
+@wp.kernel(enable_backward=False)
 def compute_pinhole_camera_rays(
     width: int,
     height: int,
