@@ -1971,9 +1971,6 @@ class SolverImplicitMPM(SolverBase):
         has_compliant_colliders = mpm_model.min_collider_mass < _INFINITY
         has_hardening = mpm_model.max_hardening > 0.0
 
-        prev_impulse_field = state_in.impulse_field
-        prev_stress_field = state_in.stress_field
-
         # Bin particles to grid cells
         with wp.ScopedTimer(
             "Bin particles",
@@ -2340,7 +2337,7 @@ class SolverImplicitMPM(SolverBase):
             use_nvtx=self._timers_use_nvtx,
             synchronize=not self._timers_use_nvtx,
         ):
-            self._warmstart_fields(prev_impulse_field, prev_stress_field)
+            self._warmstart_fields(state_in.ws_impulse_field, state_in.ws_stress_field)
 
         with wp.ScopedTimer(
             "Strain solve",
