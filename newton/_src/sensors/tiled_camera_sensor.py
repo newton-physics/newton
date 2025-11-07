@@ -198,7 +198,7 @@ class TiledCameraSensor:
 
         self.render_context.camera_positions = wp.array([camera.pos for camera in cameras], dtype=wp.vec3f)
         self.render_context.camera_orientations = wp.array(
-            [np.delete(camera.get_view_matrix(), np.arange(3, 16, 4))[:9] for camera in cameras], dtype=wp.mat33f
+            [camera.get_view_matrix().reshape(4, 4)[:3, :3].flatten() for camera in cameras], dtype=wp.mat33f
         )
 
         if recompute_rays or self.render_context.camera_rays is None:
