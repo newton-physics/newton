@@ -25,12 +25,16 @@ import warp as wp
 from ...core.types import nparray, override
 from ...geometry import MESH_MAXHULLVERT, GeoType, ShapeFlags
 from ...sim import (
+    JOINT_LIMIT_UNLIMITED,
     Contacts,
     Control,
     EqType,
     JointMode,
     JointType,
     Model,
+    ModelAttributeAssignment,
+    ModelAttributeFrequency,
+    ModelBuilder,
     State,
     color_graph,
     plot_graph,
@@ -1229,6 +1233,26 @@ class SolverMuJoCo(SolverBase):
                 ) from e
         return cls._mujoco, cls._mujoco_warp
 
+    @override
+    @classmethod
+    def register_custom_attributes(cls, builder: ModelBuilder) -> None:
+        """
+        Declare custom attributes to be allocated on the Model object within the ``mujoco`` namespace.
+        Note that we declare all custom attributes with the :attr:`newton.ModelBuilder.CustomAttribute.usd_attribute_name` set to ``"mjc"`` here to leverage the MuJoCo USD schema
+        where attributes are named ``"mjc:attr"`` rather than ``"newton:mujoco:attr"``.
+        """
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="condim",
+                frequency=ModelAttributeFrequency.SHAPE,
+                assignment=ModelAttributeAssignment.MODEL,
+                dtype=wp.int32,
+                default=3,
+                namespace="mujoco",
+                usd_attribute_name="mjc:condim",
+            )
+        )
+
     def __init__(
         self,
         model: Model,
@@ -1803,8 +1827,6 @@ class SolverMuJoCo(SolverBase):
         tolerance: float = 1e-6,
         ls_tolerance: float = 0.01,
         cone: int | str = "pyramidal",
-        # maximum absolute joint limit value after which the joint is considered not limited
-        joint_limit_threshold: float = 1e3,
         geom_solref: tuple[float, float] | None = None,
         geom_solimp: tuple[float, float, float, float, float] = (0.9, 0.95, 0.001, 0.5, 2.0),
         geom_friction: tuple[float, float, float] | None = None,
@@ -1997,6 +2019,19 @@ class SolverMuJoCo(SolverBase):
         shape_world = model.shape_world.numpy()
         shape_mu = model.shape_material_mu.numpy()
 
+        # retrieve MuJoCo-specific attributes
+        mujoco_attrs = getattr(model, "mujoco", None)
+
+        def get_custom_attribute(name: str) -> nparray | None:
+            if mujoco_attrs is None:
+                return None
+            attr = getattr(mujoco_attrs, name, None)
+            if attr is None:
+                return None
+            return attr.numpy()
+
+        shape_condim = get_custom_attribute("condim")
+
         eq_constraint_type = model.equality_constraint_type.numpy()
         eq_constraint_body1 = model.equality_constraint_body1.numpy()
         eq_constraint_body2 = model.equality_constraint_body2.numpy()
@@ -2173,6 +2208,8 @@ class SolverMuJoCo(SolverBase):
                     model.rigid_contact_torsional_friction * mu,
                     model.rigid_contact_rolling_friction * mu,
                 ]
+                if shape_condim is not None:
+                    geom_params["condim"] = shape_condim[shape]
 
                 body.add_geom(**geom_params)
                 # store the geom name instead of assuming index
@@ -2261,7 +2298,7 @@ class SolverMuJoCo(SolverBase):
                     # Set friction
                     joint_params["frictionloss"] = joint_friction[ai]
                     lower, upper = joint_limit_lower[ai], joint_limit_upper[ai]
-                    if lower == upper or (abs(lower) > joint_limit_threshold and abs(upper) > joint_limit_threshold):
+                    if lower <= -JOINT_LIMIT_UNLIMITED and upper >= JOINT_LIMIT_UNLIMITED:
                         joint_params["limited"] = False
                     else:
                         joint_params["limited"] = True
@@ -2327,7 +2364,7 @@ class SolverMuJoCo(SolverBase):
                     # Set friction
                     joint_params["frictionloss"] = joint_friction[ai]
                     lower, upper = joint_limit_lower[ai], joint_limit_upper[ai]
-                    if lower == upper or (abs(lower) > joint_limit_threshold and abs(upper) > joint_limit_threshold):
+                    if lower <= -JOINT_LIMIT_UNLIMITED and upper >= JOINT_LIMIT_UNLIMITED:
                         joint_params["limited"] = False
                     else:
                         joint_params["limited"] = True

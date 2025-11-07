@@ -143,3 +143,13 @@ __all__ += [
     "event_scope",
     "run_benchmark",
 ]
+
+# ==================================================================================
+# import utils
+# ==================================================================================
+
+from ._src.utils.import_utils import parse_warp_value_from_string  # noqa: E402
+
+__all__ += [
+    "parse_warp_value_from_string",
+]
