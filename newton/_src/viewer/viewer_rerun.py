@@ -18,11 +18,15 @@ import subprocess
 import numpy as np
 import warp as wp
 
+import newton
+from newton.utils import create_plane_mesh
+
 from ..core.types import override
 from .viewer import ViewerBase
 
 try:
     import rerun as rr
+    import rerun.blueprint as rrb
 except ImportError:
     rr = None
 
@@ -42,15 +46,24 @@ class ViewerRerun(ViewerBase):
         address: str = "127.0.0.1:9876",
         launch_viewer: bool = True,
         app_id: str | None = None,
+        keep_historical_data_in_viewer: bool = False,
     ):
         """
-        Initialize the ViewerRerun backend for Newton using the rerun visualization library.
+        Initialize the ViewerRerun backend for Newton using the Rerun.io visualization library.
+
+        This viewer detects whether it is created inside a Jupyter notebook environment and automatically generates
+        an output widget for the viewer. If it is not created inside a Jupyter notebook environment, it will start a
+        local rerun server serving over gRPC that can be connected to from a web browser.
 
         Args:
-            server (bool): If True, start rerun in server mode (TCP/gRPC).
-            address (str): Address and port for rerun server mode.
+            server (bool): If True, start rerun in server mode (gRPC).
+            address (str): Address and port for rerun server mode (only used if server is True).
             launch_viewer (bool): If True, launch a local rerun viewer client.
             app_id (Optional[str]): Application ID for rerun (defaults to 'newton-viewer').
+            keep_historical_data_in_viewer (bool): If True, keep historical data in the timeline of the web viewer.
+                If False, the web viewer will only show the current frame to keep the memory usage constant when sending transform updates via :meth:`ViewerRerun.log_state`.
+                This is useful for visualizing long and complex simulations that would quickly fill up the web viewer's memory if the historical data was kept.
+                If True, the historical simulation data is kept in the viewer to be able to scrub through the simulation timeline. Defaults to False.
         """
         if rr is None:
             raise ImportError("rerun package is required for ViewerRerun. Install with: pip install rerun-sdk")
@@ -63,17 +76,31 @@ class ViewerRerun(ViewerBase):
         self.app_id = app_id or "newton-viewer"
         self._running = True
         self._viewer_process = None
+        self.keep_historical_data_in_viewer = keep_historical_data_in_viewer
 
-        # Initialize rerun
-        rr.init(self.app_id)
-
-        # Set up connection based on mode
-        if self.server:
-            server_uri = rr.serve_grpc()
+        # Initialize rerun using a blueprint that only shows the 3D view and a collapsed time panel
+        blueprint = rrb.Blueprint(
+            rrb.Horizontal(
+                rrb.Vertical(
+                    rrb.Spatial3DView(),
+                ),
+            ),
+            rrb.TimePanel(timeline="time", state="collapsed"),
+        )
+        rr.init(self.app_id, default_blueprint=blueprint)
 
         # Optionally launch viewer client
-        if self.launch_viewer:
-            rr.serve_web_viewer(connect_to=server_uri)
+        self.is_jupyter_notebook = _is_jupyter_notebook()
+        if not self.is_jupyter_notebook:
+            # Set up connection based on mode
+            if self.server:
+                server_uri = rr.serve_grpc(default_blueprint=blueprint)
+
+            if self.launch_viewer:
+                rr.serve_web_viewer(connect_to=server_uri)
+
+        if self.is_jupyter_notebook:
+            rr.notebook_show(width=1280, height=720)
 
         # Store mesh data for instances
         self._meshes = {}
@@ -130,7 +157,9 @@ class ViewerRerun(ViewerBase):
             vertex_normals=self._meshes[name]["normals"],
         )
 
-        rr.log(name, mesh_3d, static=True)
+        rr.log(name, mesh_3d)
+        # hide the reference mesh
+        rr.log(name, rr.Clear(recursive=False))
 
     @override
     def log_instances(self, name, mesh, xforms, scales, colors, materials, hidden=False):
@@ -204,7 +233,7 @@ class ViewerRerun(ViewerBase):
             )
 
             # Log the instance poses
-            rr.log(name, instance_poses)
+            rr.log(name, instance_poses, static=not self.keep_historical_data_in_viewer)
 
     @override
     def begin_frame(self, time):
@@ -318,3 +347,61 @@ class ViewerRerun(ViewerBase):
             value: The scalar value.
         """
         pass
+
+    @override
+    def log_geo(
+        self,
+        name,
+        geo_type: int,
+        geo_scale: tuple[float, ...],
+        geo_thickness: float,
+        geo_is_solid: bool,
+        geo_src=None,
+        hidden=False,
+    ):
+        # Generate vertices/indices for supported primitive types
+        if geo_type == newton.GeoType.PLANE:
+            # Handle "infinite" planes encoded with non-positive scales
+            if geo_scale[0] == 0.0 or geo_scale[1] == 0.0:
+                extents = self.get_world_extents()
+                if extents is None:
+                    width, length = 10.0, 10.0
+                else:
+                    max_extent = max(extents) * 1.5
+                    width = max_extent
+                    length = max_extent
+            else:
+                width = geo_scale[0]
+                length = geo_scale[1] if len(geo_scale) > 1 else 10.0
+            vertices, indices = create_plane_mesh(width, length)
+            points = wp.array(vertices[:, 0:3], dtype=wp.vec3, device=self.device)
+            normals = wp.array(vertices[:, 3:6], dtype=wp.vec3, device=self.device)
+            uvs = wp.array(vertices[:, 6:8], dtype=wp.vec2, device=self.device)
+            indices = wp.array(indices, dtype=wp.uint32, device=self.device)
+            self.log_mesh(name, points, indices, normals, uvs)
+        else:
+            super().log_geo(name, geo_type, geo_scale, geo_thickness, geo_is_solid, geo_src, hidden)
+
+    def _ipython_display_(self):
+        """
+        Display the viewer in an IPython notebook when the viewer is at the end of a cell.
+        """
+        rr.notebook_show()
+
+
+def _is_jupyter_notebook():
+    try:
+        # Check if get_ipython is defined (available in IPython environments)
+        shell = get_ipython().__class__.__name__
+        if shell == "ZMQInteractiveShell":
+            # This indicates a Jupyter Notebook or JupyterLab environment
+            return True
+        elif shell == "TerminalInteractiveShell":
+            # This indicates a standard IPython terminal
+            return False
+        else:
+            # Other IPython-like environments
+            return False
+    except NameError:
+        # get_ipython is not defined, so it's likely a standard Python script
+        return False
