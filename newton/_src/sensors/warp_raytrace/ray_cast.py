@@ -68,7 +68,7 @@ def closest_hit(
             u = wp.float32(0.0)
             v = wp.float32(0.0)
             f = wp.int32(-1)
-            geom_mesh_id = wp.int32(-1)
+            mesh_id = wp.int32(-1)
 
             if geom_types[gi] == GeomType.PLANE:
                 h, d, n = ray.ray_plane_with_normal(
@@ -118,7 +118,7 @@ def closest_hit(
                     ray_dir_world,
                 )
             if geom_types[gi] == GeomType.MESH:
-                h, d, n, u, v, f, geom_mesh_id = ray.ray_mesh_with_bvh(
+                h, d, n, u, v, f, mesh_id = ray.ray_mesh_with_bvh(
                     mesh_ids,
                     geom_mesh_indices[gi],
                     geom_positions[gi],
@@ -135,6 +135,7 @@ def closest_hit(
                 bary_u = u
                 bary_v = v
                 face_idx = f
+                geom_mesh_id = mesh_id
 
     return geom_id, dist, normal, bary_u, bary_v, face_idx, geom_mesh_id
 
