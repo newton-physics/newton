@@ -106,6 +106,7 @@ class Example:
         self.tiled_camera_sensor = TiledCameraSensor(model=self.model, num_cameras=1, width=1280, height=720)
         self.tiled_camera_sensor.create_default_light()
         self.tiled_camera_sensor.assign_debug_colors_per_shape()
+        self.tiled_camera_sensor.assign_default_checkerboard_material()
 
         # not required for MuJoCo, but required for maximal-coordinate solvers like XPBD
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)

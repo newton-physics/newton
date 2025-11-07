@@ -312,3 +312,23 @@ class TiledCameraSensor:
         self.render_context.lights_orientation = wp.array(
             [wp.vec3f(-0.57735026, 0.57735026, -0.57735026)], dtype=wp.vec3f
         )
+
+    def assign_default_checkerboard_material(self, resolution: int = 64, checker_size: int = 32):
+        checkerboard = (
+            (np.arange(resolution) // checker_size)[:, None] + (np.arange(resolution) // checker_size)
+        ) % 2 == 0
+        pixels = np.where(checkerboard, 0xFF808080, 0xFFBFBFBF).astype(np.uint32).flatten()
+
+        self.render_context.use_textures = True
+        self.render_context.texture_data = wp.array(pixels, dtype=wp.uint32)
+        self.render_context.texture_offsets = wp.array([0], dtype=wp.int32)
+        self.render_context.texture_width = wp.array([resolution], dtype=wp.int32)
+        self.render_context.texture_height = wp.array([resolution], dtype=wp.int32)
+
+        self.render_context.material_texture_ids = wp.array([0], dtype=wp.int32)
+        self.render_context.material_texture_repeat = wp.array([wp.vec2f(1.0)], dtype=wp.vec2f)
+        self.render_context.material_rgba = wp.array([wp.vec4f(1.0)], dtype=wp.vec4f)
+
+        self.render_context.geom_materials = wp.array(
+            np.full(self.model.shape_count, fill_value=0, dtype=np.int32), dtype=wp.int32
+        )

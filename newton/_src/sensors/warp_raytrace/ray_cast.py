@@ -32,20 +32,20 @@ def get_group_roots(
 def closest_hit(
     bvh_id: wp.uint64,
     group_roots: wp.array(dtype=wp.int32),
-    world_id: int,
-    num_geom_in_bvh: int,
-    geom_enabled: wp.array(dtype=int),
-    geom_types: wp.array(dtype=int),
-    geom_mesh_indices: wp.array(dtype=int),
-    geom_sizes: wp.array(dtype=wp.vec3),
+    world_id: wp.int32,
+    num_geom_in_bvh: wp.int32,
+    geom_enabled: wp.array(dtype=wp.int32),
+    geom_types: wp.array(dtype=wp.int32),
+    geom_mesh_indices: wp.array(dtype=wp.int32),
+    geom_sizes: wp.array(dtype=wp.vec3f),
     mesh_ids: wp.array(dtype=wp.uint64),
-    geom_positions: wp.array(dtype=wp.vec3),
-    geom_orientations: wp.array(dtype=wp.mat33),
-    ray_origin_world: wp.vec3,
-    ray_dir_world: wp.vec3,
-) -> tuple[wp.int32, wp.float32, wp.vec3, wp.float32, wp.float32, wp.int32, wp.int32]:
+    geom_positions: wp.array(dtype=wp.vec3f),
+    geom_orientations: wp.array(dtype=wp.mat33f),
+    ray_origin_world: wp.vec3f,
+    ray_dir_world: wp.vec3f,
+) -> tuple[wp.int32, wp.float32, wp.vec3f, wp.float32, wp.float32, wp.int32, wp.int32]:
     max_dist = wp.float32(wp.inf)
-    normal = wp.vec3(0.0, 0.0, 0.0)
+    normal = wp.vec3f(0.0, 0.0, 0.0)
     geom_id = wp.int32(-1)
     bary_u = wp.float32(0.0)
     bary_v = wp.float32(0.0)
@@ -62,9 +62,9 @@ def closest_hit(
             gi_bvh_local = gi_global - (world_id * num_geom_in_bvh)
             gi = geom_enabled[gi_bvh_local]
 
-            hit = bool(False)
+            hit = wp.bool(False)
             hit_dist = wp.float32(wp.inf)
-            hit_normal = wp.vec3(0.0)
+            hit_normal = wp.vec3f(0.0)
             hit_u = wp.float32(0.0)
             hit_v = wp.float32(0.0)
             hit_face_id = wp.int32(-1)
@@ -144,19 +144,19 @@ def closest_hit(
 def first_hit(
     bvh_id: wp.uint64,
     group_roots: wp.array(dtype=wp.int32),
-    world_id: int,
-    num_geom_in_bvh: int,
-    geom_enabled: wp.array(dtype=int),
-    geom_types: wp.array(dtype=int),
-    geom_mesh_indices: wp.array(dtype=int),
-    geom_sizes: wp.array(dtype=wp.vec3),
+    world_id: wp.int32,
+    num_geom_in_bvh: wp.int32,
+    geom_enabled: wp.array(dtype=wp.int32),
+    geom_types: wp.array(dtype=wp.int32),
+    geom_mesh_indices: wp.array(dtype=wp.int32),
+    geom_sizes: wp.array(dtype=wp.vec3f),
     mesh_ids: wp.array(dtype=wp.uint64),
-    geom_positions: wp.array(dtype=wp.vec3),
-    geom_orientations: wp.array(dtype=wp.mat33),
-    ray_origin_world: wp.vec3,
-    ray_dir_world: wp.vec3,
+    geom_positions: wp.array(dtype=wp.vec3f),
+    geom_orientations: wp.array(dtype=wp.mat33f),
+    ray_origin_world: wp.vec3f,
+    ray_dir_world: wp.vec3f,
     max_dist: wp.float32,
-) -> bool:
+) -> wp.bool:
     """A simpler version of cast_ray_first_hit that only checks for the first hit."""
 
     for i in range(2):
