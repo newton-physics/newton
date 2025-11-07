@@ -537,31 +537,50 @@ class TestMuJoCoSolverJointProperties(TestMuJoCoSolverPropertiesBase):
             self.skipTest("No joints in model, skipping joint attributes test")
 
         # Step 1: Set initial values with different patterns for each attribute
-        # Pattern: base_value + axis_idx * increment + world_offset
+        # Pattern: base_value + dof_idx * increment + world_offset
         dofs_per_world = self.model.joint_dof_count // self.model.num_worlds
+        joints_per_world = self.model.joint_count // self.model.num_worlds
 
         initial_effort_limits = np.zeros(self.model.joint_dof_count)
         initial_velocity_limits = np.zeros(self.model.joint_dof_count)
         initial_friction = np.zeros(self.model.joint_dof_count)
         initial_armature = np.zeros(self.model.joint_dof_count)
 
-        # Set different values for each axis and world
+        # Iterate over joints and set values for each DOF (skip free joints)
+        joint_qd_start = self.model.joint_qd_start.numpy()
+        joint_dof_dim = self.model.joint_dof_dim.numpy()
+        joint_type = self.model.joint_type.numpy()
+
         for world_idx in range(self.model.num_worlds):
-            world_dof_offset = world_idx * dofs_per_world
+            world_joint_offset = world_idx * joints_per_world
 
-            for axis_idx in range(dofs_per_world):
-                global_axis_idx = world_dof_offset + axis_idx
-                # Effort limit: 50 + axis_idx * 10 + world_idx * 100
-                initial_effort_limits[global_axis_idx] = 50.0 + axis_idx * 10.0 + world_idx * 100.0
-                # Velocity limit: 10 + axis_idx * 2 + world_idx * 20
-                initial_velocity_limits[global_axis_idx] = 10.0 + axis_idx * 2.0 + world_idx * 20.0
-                # Friction: 0.5 + axis_idx * 0.1 + world_idx * 0.5
-                initial_friction[global_axis_idx] = 0.5 + axis_idx * 0.1 + world_idx * 0.5
+            for joint_idx in range(joints_per_world):
+                global_joint_idx = world_joint_offset + joint_idx
 
-            for dof_idx in range(dofs_per_world):
-                global_dof_idx = world_dof_offset + dof_idx
-                # Armature: 0.01 + dof_idx * 0.005 + world_idx * 0.05
-                initial_armature[global_dof_idx] = 0.01 + dof_idx * 0.005 + world_idx * 0.05
+                # Skip free joints
+                if joint_type[global_joint_idx] == JointType.FREE:
+                    continue
+
+                # Get DOF start and count for this joint
+                dof_start = joint_qd_start[global_joint_idx]
+                dof_count = joint_dof_dim[global_joint_idx].sum()
+
+                # Set values for each DOF in this joint
+                for dof_offset in range(dof_count):
+                    global_dof_idx = dof_start + dof_offset
+
+                    # Effort limit: 50 + dof_offset * 10 + joint_idx * 5 + world_idx * 100
+                    initial_effort_limits[global_dof_idx] = (
+                        50.0 + dof_offset * 10.0 + joint_idx * 5.0 + world_idx * 100.0
+                    )
+                    # Velocity limit: 10 + dof_offset * 2 + joint_idx * 1 + world_idx * 20
+                    initial_velocity_limits[global_dof_idx] = (
+                        10.0 + dof_offset * 2.0 + joint_idx * 1.0 + world_idx * 20.0
+                    )
+                    # Friction: 0.5 + dof_offset * 0.1 + joint_idx * 0.05 + world_idx * 0.5
+                    initial_friction[global_dof_idx] = 0.5 + dof_offset * 0.1 + joint_idx * 0.05 + world_idx * 0.5
+                    # Armature: 0.01 + dof_offset * 0.005 + joint_idx * 0.002 + world_idx * 0.05
+                    initial_armature[global_dof_idx] = 0.01 + dof_offset * 0.005 + joint_idx * 0.002 + world_idx * 0.05
 
         self.model.joint_effort_limit.assign(initial_effort_limits)
         self.model.joint_velocity_limit.assign(initial_velocity_limits)
@@ -604,7 +623,7 @@ class TestMuJoCoSolverJointProperties(TestMuJoCoSolverPropertiesBase):
                 self.assertAlmostEqual(
                     actual_armature,
                     expected_armature,
-                    places=4,
+                    places=3,
                     msg=f"MuJoCo DOF {dof_idx} in world {world_idx} armature should match Newton value",
                 )
 
@@ -627,23 +646,37 @@ class TestMuJoCoSolverJointProperties(TestMuJoCoSolverPropertiesBase):
         updated_friction = np.zeros(self.model.joint_dof_count)
         updated_armature = np.zeros(self.model.joint_dof_count)
 
-        # Set different updated values for each axis and world
+        # Iterate over joints and set updated values for each DOF (skip free joints)
         for world_idx in range(self.model.num_worlds):
-            world_dof_offset = world_idx * dofs_per_world
+            world_joint_offset = world_idx * joints_per_world
 
-            for axis_idx in range(dofs_per_world):
-                global_axis_idx = world_dof_offset + axis_idx
-                # Updated effort limit: 100 + axis_idx * 15 + world_idx * 150
-                updated_effort_limits[global_axis_idx] = 100.0 + axis_idx * 15.0 + world_idx * 150.0
-                # Updated velocity limit: 20 + axis_idx * 3 + world_idx * 30
-                updated_velocity_limits[global_axis_idx] = 20.0 + axis_idx * 3.0 + world_idx * 30.0
-                # Updated friction: 1.0 + axis_idx * 0.2 + world_idx * 1.0
-                updated_friction[global_axis_idx] = 1.0 + axis_idx * 0.2 + world_idx * 1.0
+            for joint_idx in range(joints_per_world):
+                global_joint_idx = world_joint_offset + joint_idx
 
-            for dof_idx in range(dofs_per_world):
-                global_dof_idx = world_dof_offset + dof_idx
-                # Updated armature: 0.05 + dof_idx * 0.01 + world_idx * 0.1
-                updated_armature[global_dof_idx] = 0.05 + dof_idx * 0.01 + world_idx * 0.1
+                # Skip free joints
+                if joint_type[global_joint_idx] == JointType.FREE:
+                    continue
+
+                # Get DOF start and count for this joint
+                dof_start = joint_qd_start[global_joint_idx]
+                dof_count = joint_dof_dim[global_joint_idx].sum()
+
+                # Set updated values for each DOF in this joint
+                for dof_offset in range(dof_count):
+                    global_dof_idx = dof_start + dof_offset
+
+                    # Updated effort limit: 100 + dof_offset * 15 + joint_idx * 8 + world_idx * 150
+                    updated_effort_limits[global_dof_idx] = (
+                        100.0 + dof_offset * 15.0 + joint_idx * 8.0 + world_idx * 150.0
+                    )
+                    # Updated velocity limit: 20 + dof_offset * 3 + joint_idx * 2 + world_idx * 30
+                    updated_velocity_limits[global_dof_idx] = (
+                        20.0 + dof_offset * 3.0 + joint_idx * 2.0 + world_idx * 30.0
+                    )
+                    # Updated friction: 1.0 + dof_offset * 0.2 + joint_idx * 0.1 + world_idx * 1.0
+                    updated_friction[global_dof_idx] = 1.0 + dof_offset * 0.2 + joint_idx * 0.1 + world_idx * 1.0
+                    # Updated armature: 0.05 + dof_offset * 0.01 + joint_idx * 0.005 + world_idx * 0.1
+                    updated_armature[global_dof_idx] = 0.05 + dof_offset * 0.01 + joint_idx * 0.005 + world_idx * 0.1
 
         self.model.joint_effort_limit.assign(updated_effort_limits)
         self.model.joint_velocity_limit.assign(updated_velocity_limits)

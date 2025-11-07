@@ -952,7 +952,7 @@ def update_joint_dof_properties_kernel(
     joint_mjc_dof_start: wp.array(dtype=wp.int32),
     joint_armature: wp.array(dtype=float),
     joint_friction: wp.array(dtype=float),
-    solimplimit: wp.array2d(dtype=wp.types.vector(length=5, dtype=wp.float32)),
+    solimplimit: wp.array(dtype=wp.types.vector(length=5, dtype=wp.float32)),
     joints_per_world: int,
     # outputs
     dof_armature: wp.array2d(dtype=float),
@@ -981,9 +981,6 @@ def update_joint_dof_properties_kernel(
     if mjc_dof_start == -1:
         return
 
-    # Check if solimplimit exists (non-None)
-    has_solimplimit = solimplimit is not None
-
     # update linear dofs
     for i in range(lin_axis_count):
         newton_dof_index = newton_dof_start + i
@@ -994,7 +991,7 @@ def update_joint_dof_properties_kernel(
         dof_frictionloss[worldid, mjc_dof_index] = joint_friction[newton_dof_index]
 
         # Update solimplimit only if it exists
-        if has_solimplimit:
+        if solimplimit:
             jnt_solimp[worldid, mjc_dof_index] = solimplimit[newton_dof_index]
 
     # update angular dofs
@@ -1007,7 +1004,7 @@ def update_joint_dof_properties_kernel(
         dof_frictionloss[worldid, mjc_dof_index] = joint_friction[newton_dof_index]
 
         # Update solimplimit only if it exists
-        if has_solimplimit:
+        if solimplimit:
             jnt_solimp[worldid, mjc_dof_index] = solimplimit[newton_dof_index]
 
 
@@ -2276,6 +2273,8 @@ class SolverMuJoCo(SolverBase):
         # maps from Newton joint index to the start index of its joint axes in MuJoCo
         # (only defined for the joints of the first world)
         joint_mjc_dof_start = np.full(model.joint_count, -1, dtype=np.int32)
+        # need to keep track of current dof count to make the indexing above correct
+        num_dofs = 0
 
         # add joints, bodies and geoms
         for ji in joint_order:
@@ -2329,7 +2328,7 @@ class SolverMuJoCo(SolverBase):
                     joint_names[name] += 1
                     name = f"{name}_{joint_names[name]}"
 
-            joint_mjc_dof_start[ji] = len(spec.joints)
+            joint_mjc_dof_start[ji] = num_dofs
 
             if j_type == JointType.FREE:
                 body.add_joint(
@@ -2338,8 +2337,11 @@ class SolverMuJoCo(SolverBase):
                     damping=0.0,
                     limited=False,
                 )
+                num_dofs += 6
             elif j_type in supported_joint_types:
                 lin_axis_count, ang_axis_count = joint_dof_dim[j]
+                num_dofs += lin_axis_count + ang_axis_count
+
                 # linear dofs
                 for i in range(lin_axis_count):
                     ai = qd_start + i
