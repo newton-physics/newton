@@ -322,7 +322,7 @@ def ray_cylinder(
             if x * x + y * y <= radius * radius:
                 if t_top <= min_t:
                     min_t = t_top
-                    side = -1
+                    side = 1
 
         # Bottom cap
         t_bot = (-height - ray_origin_local[2]) * inv_d_z
@@ -332,7 +332,7 @@ def ray_cylinder(
             if x * x + y * y <= radius * radius:
                 if t_bot <= min_t:
                     min_t = t_bot
-                    side = 1
+                    side = -1
 
     if min_t < 1.0e9:
         t_hit = min_t
