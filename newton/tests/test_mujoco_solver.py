@@ -805,7 +805,7 @@ class TestMuJoCoSolverJointProperties(TestMuJoCoSolverPropertiesBase):
         num_worlds = 2
         builder = newton.ModelBuilder()
         builder.replicate(template_builder, num_worlds)
-        model = builder.finalize(device="cuda:0")
+        model = builder.finalize()
 
         # Step 2: Set initial solimplimit values
         joints_per_world = model.joint_count // model.num_worlds
