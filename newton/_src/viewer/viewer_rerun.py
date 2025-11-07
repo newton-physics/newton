@@ -90,18 +90,21 @@ class ViewerRerun(ViewerBase):
         )
         rr.init(self.app_id, default_blueprint=blueprint)
 
-        # Optionally launch viewer client
+        # Launch viewer client
         self.is_jupyter_notebook = _is_jupyter_notebook()
-        if not self.is_jupyter_notebook:
+        if self.is_jupyter_notebook:
+            rr.notebook_show(width=1000, height=400, blueprint=blueprint)
+        else:
             # Set up connection based on mode
+            server_uri = None
             if self.server:
                 server_uri = rr.serve_grpc(default_blueprint=blueprint)
 
             if self.launch_viewer:
-                rr.serve_web_viewer(connect_to=server_uri)
-
-        if self.is_jupyter_notebook:
-            rr.notebook_show(width=1280, height=480, blueprint=blueprint)
+                if server_uri is not None:
+                    rr.serve_web_viewer(connect_to=server_uri)
+                else:
+                    rr.serve_web_viewer()
 
         # Store mesh data for instances
         self._meshes = {}
