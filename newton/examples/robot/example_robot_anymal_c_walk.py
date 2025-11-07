@@ -145,15 +145,16 @@ class Example:
             "LF_HFE": 0.4,
             "LF_KFE": -0.8,
         }
+        # Set initial joint positions (skip first 6 DOFs which are the free joint)
         for key, value in initial_q.items():
             builder.joint_q[builder.joint_key.index(key) + 6] = value
 
         for i in range(len(builder.joint_target_ke)):
-            if i < 6:
+            if i < 6:  # Free joint DOFs - no control
                 builder.joint_target_ke[i] = 0
                 builder.joint_target_kd[i] = 0
 
-            else:
+            else:  # Articulated joint DOFs - set PD gains
                 builder.joint_target_ke[i] = 150
                 builder.joint_target_kd[i] = 5
 
@@ -260,7 +261,7 @@ class Example:
             a_with_zeros = torch.cat([torch.zeros(6, device=self.torch_device, dtype=torch.float32), a.squeeze(0)])
             a_wp = wp.from_torch(a_with_zeros, dtype=wp.float32, requires_grad=False)
             wp.copy(
-                self.control.joint_target, a_wp
+                self.control.joint_target_pos, a_wp
             )  # this can actually be optimized by doing  wp.copy(self.solver.mjw_data.ctrl[0], a_wp) and not launching  apply_mjc_control_kernel each step. Typically we update position and velocity targets at the rate of the outer control loop.
         if self.graph:
             wp.capture_launch(self.graph)

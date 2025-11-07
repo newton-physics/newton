@@ -50,17 +50,15 @@ def joint_force(
 
     target_f = target_ke * (joint_target_pos - q) + target_kd * (joint_target_vel - qd)
 
-    # compute limit forces, damping only active when limit is violated
+    # When limit violated: apply limit restoration forces and disable target control
     if q < limit_lower:
         limit_f = limit_ke * (limit_lower - q)
         damping_f = -limit_kd * qd
-        if target_ke == 0.0:
-            target_f = 0.0
+        target_f = 0.0
     elif q > limit_upper:
         limit_f = limit_ke * (limit_upper - q)
         damping_f = -limit_kd * qd
-        if target_ke == 0.0:
-            target_f = 0.0  # override target force when limit is violated
+        target_f = 0.0
 
     return limit_f + damping_f + target_f
 

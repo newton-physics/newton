@@ -1008,26 +1008,15 @@ def update_joint_axis_limits(axis: wp.vec3, limit_lower: float, limit_upper: flo
 
 
 @wp.func
-def update_joint_axis_weighted_target(axis: wp.vec3, target: float, weight: float, input_target_weight: wp.mat33):
-    axis_targets = input_target_weight[0]
-    axis_weights = input_target_weight[1]
-    axis_unused = input_target_weight[2]
+def update_joint_axis_weighted_target(axis: wp.vec3, target: float, weight: float, input_target_weight: wp.spatial_vector):
+    axis_targets = wp.spatial_top(input_target_weight)
+    axis_weights = wp.spatial_bottom(input_target_weight)
 
     weighted_axis = axis * weight
     axis_targets += weighted_axis * target  # weighted target (to be normalized later by sum of weights)
     axis_weights += vec_abs(weighted_axis)
 
-    return wp.mat33(
-        axis_targets[0],
-        axis_targets[1],
-        axis_targets[2],
-        axis_weights[0],
-        axis_weights[1],
-        axis_weights[2],
-        axis_unused[0],
-        axis_unused[1],
-        axis_unused[2],
-    )
+    return wp.spatial_vector(axis_targets, axis_weights)
 
 
 @wp.func
@@ -1611,8 +1600,8 @@ def solve_body_joints(
         kd_sum = float(0.0)
         axis_limits = wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
 
-        axis_target_pos_ke = wp.mat33(0.0)
-        axis_target_vel_kd = wp.mat33(0.0)
+        axis_target_pos_ke = wp.spatial_vector()
+        axis_target_vel_kd = wp.spatial_vector()
         # avoid a for loop here since local variables would need to be modified which is not yet differentiable
         if lin_axis_count > 0:
             axis = joint_axis[axis_start]
@@ -1662,10 +1651,10 @@ def solve_body_joints(
                 axis_target_vel_kd = update_joint_axis_weighted_target(axis, target_vel, kd, axis_target_vel_kd)
                 kd_sum += kd
 
-        axis_target_pos = axis_target_pos_ke[0]
-        axis_stiffness = axis_target_pos_ke[1]
-        axis_target_vel = axis_target_vel_kd[0]
-        axis_damping = axis_target_vel_kd[1]
+        axis_target_pos = wp.spatial_top(axis_target_pos_ke)
+        axis_stiffness = wp.spatial_bottom(axis_target_pos_ke)
+        axis_target_vel = wp.spatial_top(axis_target_vel_kd)
+        axis_damping = wp.spatial_bottom(axis_target_vel_kd)
         for i in range(3):
             if axis_stiffness[i] > 0.0:
                 axis_target_pos[i] /= axis_stiffness[i]
@@ -1821,8 +1810,8 @@ def solve_body_joints(
         kd_sum = float(0.0)
         axis_limits = wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
 
-        axis_target_pos_ke = wp.mat33(0.0)  # [weighted_target_pos, ke_weights, unused]
-        axis_target_vel_kd = wp.mat33(0.0)  # [weighted_target_vel, kd_weights, unused]
+        axis_target_pos_ke = wp.spatial_vector()  # [weighted_target_pos, ke_weights]
+        axis_target_vel_kd = wp.spatial_vector()  # [weighted_target_vel, kd_weights]
         # avoid a for loop here since local variables would need to be modified which is not yet differentiable
         if ang_axis_count > 0:
             axis_idx = axis_start + lin_axis_count
@@ -1873,10 +1862,10 @@ def solve_body_joints(
                 axis_target_vel_kd = update_joint_axis_weighted_target(axis, target_vel, kd, axis_target_vel_kd)
                 kd_sum += kd
 
-        axis_target_pos = axis_target_pos_ke[0]
-        axis_stiffness = axis_target_pos_ke[1]
-        axis_target_vel = axis_target_vel_kd[0]
-        axis_damping = axis_target_vel_kd[1]
+        axis_target_pos = wp.spatial_top(axis_target_pos_ke)
+        axis_stiffness = wp.spatial_bottom(axis_target_pos_ke)
+        axis_target_vel = wp.spatial_top(axis_target_vel_kd)
+        axis_damping = wp.spatial_bottom(axis_target_vel_kd)
         for i in range(3):
             if axis_stiffness[i] > 0.0:
                 axis_target_pos[i] /= axis_stiffness[i]

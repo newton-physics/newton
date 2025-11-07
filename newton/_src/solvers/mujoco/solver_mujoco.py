@@ -2284,7 +2284,7 @@ class SolverMuJoCo(SolverBase):
                             args["gear"] = [gear, 0.0, 0.0, 0.0, 0.0, 0.0]
                         else:
                             args = actuator_args
-                        # forcerange is defined per actuator, meaning that P and D terms wi be clamped separately in PD control and not their sum
+                        # forcerange is defined per actuator, meaning that P and D terms will be clamped separately in PD control and not their sum
                         # is there a similar attribute per joint dof?
                         args["forcerange"] = [-effort_limit, effort_limit]
                         args["gainprm"] = [kp, 0, 0, 0, 0, 0, 0, 0, 0, 0]
