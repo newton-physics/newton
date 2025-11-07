@@ -153,7 +153,7 @@ def ray_capsule(
 
     # bounding sphere test
     ssz = size[0] + size[1]
-    if ray_sphere(pos, ssz * ssz, ray_origin_world, ray_direction_world) < 0.0:
+    if ray_sphere(pos, ssz * ssz, ray_origin_world, ray_direction_world) == wp.inf:
         return wp.inf
 
     # map to local frame
@@ -280,7 +280,7 @@ def ray_cylinder(
     """Returns the distance at which a ray intersects with a cylinder."""
     # bounding sphere test
     ssz = size[0] * size[0] + size[1] * size[1]
-    if ray_sphere(pos, ssz, ray_origin_world, ray_direction_world) < 0.0:
+    if ray_sphere(pos, ssz, ray_origin_world, ray_direction_world) == wp.inf:
         return wp.inf, 0
 
     # map to local frame
@@ -346,7 +346,7 @@ def ray_cylinder(
 def ray_cylinder_with_normal(
     pos: wp.vec3, mat: wp.mat33, size: wp.vec3, ray_origin_world: wp.vec3, ray_direction_world: wp.vec3
 ) -> tuple[bool, wp.float32, wp.vec3]:
-    """Returns distance and normal at which a ray intersects with a capsule."""
+    """Returns distance and normal at which a ray intersects with a cylinder."""
     t_hit, hit_side = ray_cylinder(pos, mat, size, ray_origin_world, ray_direction_world)
     if t_hit == wp.inf:
         return False, wp.inf, wp.vec3(0.0, 0.0, 0.0)
@@ -369,10 +369,10 @@ def ray_cylinder_with_normal(
 def ray_cone(
     pos: wp.vec3, mat: wp.mat33, size: wp.vec3, ray_origin_world: wp.vec3, ray_direction_world: wp.vec3
 ) -> float:
-    """Returns the distance at which a ray intersects with a cylinder."""
+    """Returns the distance at which a ray intersects with a cone."""
     # bounding sphere test
     ssz = size[0] * size[0] + size[1] * size[1]
-    if ray_sphere(pos, ssz, ray_origin_world, ray_direction_world) < 0.0:
+    if ray_sphere(pos, ssz, ray_origin_world, ray_direction_world) == wp.inf:
         return wp.inf
 
     # map to local frame
@@ -464,7 +464,7 @@ def ray_box(
 
     # bounding sphere test
     ssz = wp.dot(size, size)
-    if ray_sphere(pos, ssz, ray_origin_world, ray_direction_world) < 0.0:
+    if ray_sphere(pos, ssz, ray_origin_world, ray_direction_world) == wp.inf:
         return wp.inf, all
 
     # map to local frame
