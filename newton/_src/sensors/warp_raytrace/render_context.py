@@ -67,10 +67,10 @@ class RenderContext:
         self.geom_colors: wp.array(dtype=wp.vec4f) = None
         self.geom_world_index: wp.array(dtype=wp.int32) = None
 
-        self.tex_adr: wp.array(dtype=wp.int32) = None
-        self.tex_data: wp.array(dtype=wp.uint32) = None
-        self.tex_height: wp.array(dtype=wp.int32) = None
-        self.tex_width: wp.array(dtype=wp.int32) = None
+        self.texture_offsets: wp.array(dtype=wp.int32) = None
+        self.texture_data: wp.array(dtype=wp.uint32) = None
+        self.texture_width: wp.array(dtype=wp.int32) = None
+        self.texture_height: wp.array(dtype=wp.int32) = None
 
         self.num_cameras = 0
         self.camera_rays: wp.array(dtype=wp.vec3f, ndim=4) = None

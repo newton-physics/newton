@@ -109,14 +109,15 @@ def render_megakernel(rc: RenderContext):
         mesh_face_vertices: wp.array(dtype=wp.vec3i),
         mesh_texcoord: wp.array(dtype=wp.vec2f),
         mesh_texcoord_offsets: wp.array(dtype=wp.int32),
+        # Materials
+        material_texture_ids: wp.array(dtype=wp.int32),
+        material_texture_repeat: wp.array(dtype=wp.vec2f),
+        material_rgba: wp.array(dtype=wp.vec4f),
         # Textures
-        mat_texid: wp.array(dtype=wp.int32),
-        mat_texrepeat: wp.array(dtype=wp.vec2f),
-        mat_rgba: wp.array(dtype=wp.vec4f),
-        tex_adr: wp.array(dtype=wp.int32),
-        tex_data: wp.array(dtype=wp.uint32),
-        tex_height: wp.array(dtype=wp.int32),
-        tex_width: wp.array(dtype=wp.int32),
+        texture_offsets: wp.array(dtype=wp.int32),
+        texture_data: wp.array(dtype=wp.uint32),
+        texture_height: wp.array(dtype=wp.int32),
+        texture_width: wp.array(dtype=wp.int32),
         # Lights
         light_active: wp.array(dtype=wp.bool),
         light_type: wp.array(dtype=wp.int32),
@@ -192,18 +193,17 @@ def render_megakernel(rc: RenderContext):
             # Shade the pixel
             hit_point = ray_origin_world + ray_dir_world * dist
 
-            if geom_materials[geom_id] == -1:
-                color = geom_colors[geom_id]
-            else:
-                color = mat_rgba[geom_materials[geom_id]]
+            color = geom_colors[geom_id]
+            if geom_materials[geom_id] > -1:
+                color = wp.cw_mul(color, material_rgba[geom_materials[geom_id]])
 
             base_color = wp.vec3f(color[0], color[1], color[2])
-            out_color = wp.vec3f()
+            out_color = wp.vec3f(0.0)
 
             if wp.static(rc.use_textures):
                 mat_id = geom_materials[geom_id]
                 if mat_id > -1:
-                    tex_id = mat_texid[mat_id]
+                    tex_id = material_texture_ids[mat_id]
                     if tex_id > -1:
                         tex_color = textures.sample_texture(
                             world_id,
@@ -211,11 +211,11 @@ def render_megakernel(rc: RenderContext):
                             geom_types,
                             mat_id,
                             tex_id,
-                            mat_texrepeat[mat_id],
-                            tex_adr[tex_id],
-                            tex_data,
-                            tex_height[tex_id],
-                            tex_width[tex_id],
+                            material_texture_repeat[mat_id],
+                            texture_offsets[tex_id],
+                            texture_data,
+                            texture_height[tex_id],
+                            texture_width[tex_id],
                             geom_positions[geom_id],
                             geom_orientations[geom_id],
                             mesh_face_offsets,
@@ -320,10 +320,10 @@ def render_megakernel(rc: RenderContext):
             rc.material_texture_ids,
             rc.material_texture_repeat,
             rc.material_rgba,
-            rc.tex_adr,
-            rc.tex_data,
-            rc.tex_height,
-            rc.tex_width,
+            rc.texture_offsets,
+            rc.texture_data,
+            rc.texture_height,
+            rc.texture_width,
             # Lights
             rc.lights_active,
             rc.lights_type,

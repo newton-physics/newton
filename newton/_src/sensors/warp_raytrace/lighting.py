@@ -20,32 +20,32 @@ from . import ray_cast
 
 @wp.func
 def compute_lighting(
-    use_shadows: bool,
+    use_shadows: wp.bool,
     bvh_id: wp.uint64,
     group_roots: wp.array(dtype=wp.int32),
-    num_geom_in_bvh: int,
-    geom_enabled: wp.array(dtype=int),
-    world_id: int,
-    light_active: bool,
-    light_type: int,
-    light_cast_shadow: bool,
-    light_position: wp.vec3,
-    light_orientation: wp.vec3,
-    normal: wp.vec3,
-    geom_types: wp.array(dtype=int),
-    geom_mesh_indices: wp.array(dtype=int),
-    geom_sizes: wp.array(dtype=wp.vec3),
+    num_geom_in_bvh: wp.int32,
+    geom_enabled: wp.array(dtype=wp.int32),
+    world_id: wp.int32,
+    light_active: wp.bool,
+    light_type: wp.int32,
+    light_cast_shadow: wp.bool,
+    light_position: wp.vec3f,
+    light_orientation: wp.vec3f,
+    normal: wp.vec3f,
+    geom_types: wp.array(dtype=wp.int32),
+    geom_mesh_indices: wp.array(dtype=wp.int32),
+    geom_sizes: wp.array(dtype=wp.vec3f),
     mesh_ids: wp.array(dtype=wp.uint64),
-    geom_positions: wp.array(dtype=wp.vec3),
-    geom_orientations: wp.array(dtype=wp.mat33),
-    hit_point: wp.vec3,
+    geom_positions: wp.array(dtype=wp.vec3f),
+    geom_orientations: wp.array(dtype=wp.mat33f),
+    hit_point: wp.vec3f,
 ) -> wp.float32:
     light_contribution = wp.float32(0.0)
 
     if not light_active:
         return light_contribution
 
-    L = wp.vec3(0.0, 0.0, 0.0)
+    L = wp.vec3f(0.0, 0.0, 0.0)
     dist_to_light = wp.float32(wp.inf)
     attenuation = wp.float32(1.0)
 
