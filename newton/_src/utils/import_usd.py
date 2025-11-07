@@ -388,26 +388,31 @@ def parse_usd(
                 points = np.array(mesh.GetPointsAttr().Get(), dtype=np.float32)
                 indices = np.array(mesh.GetFaceVertexIndicesAttr().Get(), dtype=np.float32)
                 counts = mesh.GetFaceVertexCountsAttr().Get()
-                faces = []
-                face_id = 0
-                for count in counts:
-                    if count == 3:
-                        faces.append(indices[face_id : face_id + 3])
-                    elif count == 4:
-                        faces.append(indices[face_id : face_id + 3])
-                        faces.append(indices[[face_id, face_id + 2, face_id + 3]])
-                    else:
-                        continue
-                    face_id += count
-                m = Mesh(points, np.array(faces, dtype=np.int32).flatten())
-                shape_id = builder.add_shape_mesh(
-                    parent_body_id,
-                    xform,
-                    scale=scale,
-                    mesh=m,
-                    cfg=visual_shape_cfg,
-                    key=path_name,
-                )
+
+                if counts is None:
+                    if verbose:
+                        print(f"Warning: Mesh at {path_name} does not specify any face.")
+                else:
+                    faces = []
+                    face_id = 0
+                    for count in counts:
+                        if count == 3:
+                            faces.append(indices[face_id : face_id + 3])
+                        elif count == 4:
+                            faces.append(indices[face_id : face_id + 3])
+                            faces.append(indices[[face_id, face_id + 2, face_id + 3]])
+                        else:
+                            continue
+                        face_id += count
+                    m = Mesh(points, np.array(faces, dtype=np.int32).flatten())
+                    shape_id = builder.add_shape_mesh(
+                        parent_body_id,
+                        xform,
+                        scale=scale,
+                        mesh=m,
+                        cfg=visual_shape_cfg,
+                        key=path_name,
+                    )
             elif len(type_name) > 0 and type_name != "xform" and verbose:
                 print(f"Warning: Unsupported geometry type {type_name} at {path_name} while loading visual shapes.")
 
