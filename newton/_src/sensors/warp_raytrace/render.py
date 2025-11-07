@@ -41,14 +41,14 @@ def ceil_div(a: int, b: int):
 
 # Map linear thread id (per image) -> (px, py) using TILE_W x TILE_H tiles
 @wp.func
-def tile_coords(tid: int, W: int, H: int):
+def tile_coords(tid: int, width: int):
     tile_id = tid // THREADS_PER_TILE
     local = tid - tile_id * THREADS_PER_TILE
 
     u = local % TILE_W
     v = local // TILE_W
 
-    tiles_x = ceil_div(W, TILE_W)
+    tiles_x = ceil_div(width, TILE_W)
     tile_x = (tile_id % tiles_x) * TILE_W
     tile_y = (tile_id // tiles_x) * TILE_H
 
@@ -145,7 +145,7 @@ def render_megakernel(rc: RenderContext):
         if group_idx >= num_view_groups:
             return
 
-        px, py = tile_coords(pixel_idx, img_width, img_height)
+        px, py = tile_coords(pixel_idx, img_width)
         if px >= img_width or py >= img_height:
             return
         mapped_idx = py * img_width + px
@@ -251,7 +251,7 @@ def render_megakernel(rc: RenderContext):
             )
 
             # Apply lighting and shadows
-            for l in range(wp.static(rc.num_lights)):
+            for light_idx in range(wp.static(rc.num_lights)):
                 light_contribution = lighting.compute_lighting(
                     use_shadows,
                     bvh_id,
@@ -259,11 +259,11 @@ def render_megakernel(rc: RenderContext):
                     num_geom_in_bvh,
                     geom_enabled,
                     world_id,
-                    light_active[l],
-                    light_type[l],
-                    light_cast_shadow[l],
-                    light_positions[l],
-                    light_orientations[l],
+                    light_active[light_idx],
+                    light_type[light_idx],
+                    light_cast_shadow[light_idx],
+                    light_positions[light_idx],
+                    light_orientations[light_idx],
                     normal,
                     geom_types,
                     geom_mesh_indices,

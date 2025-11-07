@@ -261,13 +261,13 @@ class TiledCameraSensor:
         cols = math.ceil(num_worlds_and_cameras / rows)
 
         tile_data = self.depth_image.numpy().astype(np.float32)
-        tile_data = tile_data.reshape(num_worlds_and_cameras, self.render_context.width * self.render_context.height)
+        tile_data = tile_data.reshape(num_worlds_and_cameras, self.render_context.height * self.render_context.width)
 
         tile_data[tile_data < 0] = 0
 
         if rows * cols > num_worlds_and_cameras:
             extended_data = np.zeros(
-                (rows * cols, self.render_context.width * self.render_context.height), dtype=np.float32
+                (rows * cols, self.render_context.height * self.render_context.width), dtype=np.float32
             )
             extended_data[: tile_data.shape[0]] = tile_data
             tile_data = extended_data
@@ -284,9 +284,9 @@ class TiledCameraSensor:
             tile_data[pos_mask] = 255 - ((pos_vals - min_depth) / denom) * 205
 
         tile_data = np.clip(tile_data, 0, 255).astype(np.uint8)
-        tile_data = tile_data.reshape(rows, cols, self.render_context.width, self.render_context.height)
+        tile_data = tile_data.reshape(rows, cols, self.render_context.height, self.render_context.width)
         tile_data = tile_data.transpose(0, 2, 1, 3)
-        tile_data = tile_data.reshape(rows * self.render_context.width, cols * self.render_context.height)
+        tile_data = tile_data.reshape(rows * self.render_context.height, cols * self.render_context.width)
         Image.fromarray(tile_data).save(filename)
         return True
 
