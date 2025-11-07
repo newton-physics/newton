@@ -436,17 +436,31 @@ def ray_cone(
 def ray_cone_with_normal(
     pos: wp.vec3f, mat: wp.mat33f, size: wp.vec3f, ray_origin_world: wp.vec3f, ray_direction_world: wp.vec3f
 ) -> tuple[wp.bool, wp.float32, wp.vec3f]:
-    """Returns distance and normal at which a ray intersects with a capsule."""
+    """Returns distance and normal at which a ray intersects with a cone."""
     t_hit = ray_cone(pos, mat, size, ray_origin_world, ray_direction_world)
     if t_hit == wp.inf:
         return False, wp.inf, wp.vec3f(0.0, 0.0, 0.0)
 
-    # Compute continuous normal: vector from closest point on axis segment to the hit point
     ray_origin_local, ray_direction_local = map_ray_to_local(pos, mat, ray_origin_world, ray_direction_world)
     hit_local = ray_origin_local + t_hit * ray_direction_local
-    z_clamped = wp.min(size[1], wp.max(-size[1], hit_local[2]))
-    axis_point = wp.vec3f(0.0, 0.0, z_clamped)
-    normal_local = wp.normalize(hit_local - axis_point)
+    half_height = size[1]
+    radius = size[0]
+
+    if wp.abs(hit_local[2] - half_height) <= EPSILON:
+        normal_local = wp.vec3(0.0, 0.0, 1.0)
+    elif wp.abs(hit_local[2] + half_height) <= EPSILON:
+        normal_local = wp.vec3(0.0, 0.0, -1.0)
+    else:
+        radial_sq = hit_local[0] * hit_local[0] + hit_local[1] * hit_local[1]
+        radial = wp.sqrt(radial_sq)
+        if radial <= EPSILON:
+            normal_local = wp.vec3(0.0, 0.0, 1.0)
+        else:
+            denom = wp.max(2.0 * wp.abs(half_height), EPSILON)
+            slope = radius / denom
+            normal_local = wp.vec3(hit_local[0], hit_local[1], slope * radial)
+            normal_local = wp.normalize(normal_local)
+
     normal_world = mat @ normal_local
     normal_world = wp.normalize(normal_world)
     return True, t_hit, normal_world
