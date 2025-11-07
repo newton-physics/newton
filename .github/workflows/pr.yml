@@ -35,4 +35,4 @@ jobs:
         run: uv run --extra docs sphinx-build -W -b html docs docs/_build/html
 
       - name: Run Sphinx doctests
-        run: uv run --extra docs --extra importers sphinx-build -W -b doctest docs docs/_build/doctest
+        run: uv run --extra docs sphinx-build -W -b doctest docs docs/_build/doctest

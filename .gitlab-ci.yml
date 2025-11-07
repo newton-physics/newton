@@ -195,7 +195,7 @@ doctest:
   extends:
     - .ipp_lnx_x86_64_gpu
   script:
-    - uv run --extra docs --extra importers sphinx-build -W -b doctest docs docs/_build/doctest
+    - uv run --extra docs sphinx-build -W -b doctest docs docs/_build/doctest
 
 # Build documentation and publish on gitlab-master
 # This only runs in the default branch pipeline. The "pages" name is special for GitLab.
