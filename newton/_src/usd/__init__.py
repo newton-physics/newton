@@ -22,11 +22,11 @@ from .utils import (
     get_custom_attribute_values,
     get_float,
     get_gprim_axis,
+    get_mesh,
     get_quat,
     get_scale,
     get_transform,
     has_attribute,
-    load_mesh,
 )
 
 __all__ = [
@@ -38,9 +38,9 @@ __all__ = [
     "get_custom_attribute_values",
     "get_float",
     "get_gprim_axis",
+    "get_mesh",
     "get_quat",
     "get_scale",
     "get_transform",
     "has_attribute",
-    "load_mesh",
 ]

@@ -23,12 +23,12 @@
 #
 ###########################################################################
 
-import numpy as np
 import warp as wp
-from pxr import Usd, UsdGeom
+from pxr import Usd
 
 import newton
 import newton.examples
+import newton.usd
 
 
 class Example:
@@ -77,12 +77,7 @@ class Example:
 
         # MESH (bunny)
         usd_stage = Usd.Stage.Open(newton.examples.get_asset("bunny.usd"))
-        usd_geom = UsdGeom.Mesh(usd_stage.GetPrimAtPath("/root/bunny"))
-
-        mesh_vertices = np.array(usd_geom.GetPointsAttr().Get())
-        mesh_indices = np.array(usd_geom.GetFaceVertexIndicesAttr().Get())
-
-        demo_mesh = newton.Mesh(mesh_vertices, mesh_indices)
+        demo_mesh = newton.usd.get_mesh(usd_stage.GetPrimAtPath("/root/bunny"))
 
         self.mesh_pos = wp.vec3(0.0, 4.0, drop_z - 0.5)
         body_mesh = builder.add_body(xform=wp.transform(p=self.mesh_pos, q=wp.quat(0.5, 0.5, 0.5, 0.5)), key="mesh")

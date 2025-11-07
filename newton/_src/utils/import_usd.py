@@ -379,7 +379,7 @@ def parse_usd(
                     key=path_name,
                 )
             elif type_name == "mesh":
-                mesh = usd.load_mesh(prim)
+                mesh = usd.get_mesh(prim)
                 shape_id = builder.add_shape_mesh(
                     parent_body_id,
                     xform,
@@ -1393,7 +1393,7 @@ def parse_usd(
                         default=mesh_maxhullvert,
                         verbose=verbose,
                     )
-                    mesh = usd.load_mesh(prim)
+                    mesh = usd.get_mesh(prim)
                     mesh.maxhullvert = resolved_maxhullvert
                     shape_id = builder.add_shape_mesh(
                         scale=scale,

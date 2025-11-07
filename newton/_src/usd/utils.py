@@ -577,44 +577,65 @@ def corner_angles(face_pos: np.ndarray) -> np.ndarray:
     return angles
 
 
-def load_mesh(
+def get_mesh(
     prim: Usd.Prim,
-    verbose: bool = False,
+    load_normals: bool = True,
+    load_uvs: bool = False,
     maxhullvert: int = MESH_MAXHULLVERT,
     face_varying_normal_conversion: Literal[
         "vertex_averaging", "angle_weighted", "vertex_splitting"
     ] = "vertex_averaging",
     vertex_splitting_angle_threshold_deg: float = 25.0,
+    verbose: bool = False,
 ) -> Mesh:
     """
     Load a triangle mesh from a USD prim that has the ``UsdGeom.Mesh`` schema.
 
-    **Example:**
+    Example:
 
-    .. testcode::
+        .. testcode::
 
-        from pxr import Usd
-        import newton.examples
-        import newton.usd
+            from pxr import Usd
+            import newton.examples
+            import newton.usd
 
-        usd_stage = Usd.Stage.Open(newton.examples.get_asset("bunny.usd"))
-        demo_mesh = newton.usd.load_mesh(usd_stage.GetPrimAtPath("/root/bunny"))
+            usd_stage = Usd.Stage.Open(newton.examples.get_asset("bunny.usd"))
+            demo_mesh = newton.usd.load_mesh(usd_stage.GetPrimAtPath("/root/bunny"))
 
-        builder = newton.ModelBuilder()
-        body_mesh = builder.add_body()
-        builder.add_shape_mesh(body_mesh, mesh=demo_mesh)
+            builder = newton.ModelBuilder()
+            body_mesh = builder.add_body()
+            builder.add_shape_mesh(body_mesh, mesh=demo_mesh)
 
-        assert len(demo_mesh.vertices) == 6102
-        assert len(demo_mesh.indices) == 36600
-        assert len(demo_mesh.normals) == 6102
+            assert len(demo_mesh.vertices) == 6102
+            assert len(demo_mesh.indices) == 36600
+            assert len(demo_mesh.normals) == 6102
 
     Args:
         prim (Usd.Prim): The USD prim to load the mesh from.
-        verbose (bool): Whether to print verbose output.
+        load_normals (bool): Whether to load the normals.
+        load_uvs (bool): Whether to load the UVs.
         maxhullvert (int): The maximum number of vertices for the convex hull approximation.
-            face_varying_normal_conversion (Literal["vertex_averaging", "angle_weighted", "vertex_splitting"]): The method to convert faceVarying normals to vertex normals.
-            vertex_splitting_angle_threshold_deg (float): The threshold angle in degrees for splitting vertices based on the face normals in case of faceVarying normals and ``face_varying_normal_conversion`` is "vertex_splitting". Corners whose normals differ by more than angle_deg will be split
+        face_varying_normal_conversion (Literal["vertex_averaging", "angle_weighted", "vertex_splitting"]):
+            This argument specifies how to convert "faceVarying" normals
+            (normals defined per-corner rather than per-vertex) into per-vertex normals for the mesh.
+            The options are summarized below:
+
+            .. list-table::
+                :widths: 20 80
+                :header-rows: 1
+
+                * - Method
+                  - Description
+                * - ``"vertex_averaging"``
+                  - For each vertex, averages all the normals of the corners that share that vertex. This produces smooth shading except at explicit vertex splits. This method is the most efficient.
+                * - ``"angle_weighted"``
+                  - For each vertex, computes a weighted average of the normals of the corners it belongs to, using the corner angle as a weight (i.e., larger face angles contribute more), for more visually-accurate smoothing at sharp edges.
+                * - ``"vertex_splitting"``
+                  - Splits a vertex into multiple vertices if the difference between the corner normals exceeds a threshold angle (see ``vertex_splitting_angle_threshold_deg``). This preserves sharp features by assigning separate (duplicated) vertices to corners with widely different normals.
+
+        vertex_splitting_angle_threshold_deg (float): The threshold angle in degrees for splitting vertices based on the face normals in case of faceVarying normals and ``face_varying_normal_conversion`` is "vertex_splitting". Corners whose normals differ by more than angle_deg will be split
             into different vertex clusters. Lower = more splits (sharper), higher = fewer splits (smoother).
+        verbose (bool): Whether to print verbose output for debugging.
 
     Returns:
         newton.Mesh: The loaded mesh.
@@ -625,7 +646,7 @@ def load_mesh(
     points = np.array(mesh.GetPointsAttr().Get(), dtype=np.float64)
     indices = np.array(mesh.GetFaceVertexIndicesAttr().Get(), dtype=np.int32)
     counts = mesh.GetFaceVertexCountsAttr().Get()
-    normals = mesh.GetNormalsAttr().Get()
+    normals = mesh.GetNormalsAttr().Get() if load_normals else None
     if normals is not None:
         normals = np.array(normals, dtype=np.float64)
         if mesh.GetNormalsInterpolation() == "faceVarying":
@@ -637,7 +658,10 @@ def load_mesh(
                 normals_fv = normals[normal_indices]  # (C,3) expanded
             else:
                 # If faceVarying, values length must match number of corners
-                assert len(normals) == len(indices)
+                if len(normals) != len(indices):
+                    raise ValueError(
+                        f"Length of normals ({len(normals)}) does not match length of indices ({len(indices)}) for mesh {prim.GetPath()}"
+                    )
                 normals_fv = normals  # (C,3)
 
             V = len(points)
@@ -645,7 +669,10 @@ def load_mesh(
             if face_varying_normal_conversion == "vertex_splitting":
                 C = len(indices)
                 Nfv = np.asarray(normals_fv, dtype=np.float64)
-                assert indices.shape[0] == Nfv.shape[0], "indices and faceVarying normals must have same length"
+                if indices.shape[0] != Nfv.shape[0]:
+                    raise ValueError(
+                        f"Length of indices ({indices.shape[0]}) does not match length of faceVarying normals ({Nfv.shape[0]}) for mesh {prim.GetPath()}"
+                    )
 
                 # Normalize corner normals (direction only)
                 nlen = np.linalg.norm(Nfv, axis=1, keepdims=True)
@@ -750,6 +777,10 @@ def load_mesh(
 
     faces = np.array(faces, dtype=np.int32)
 
+    uvs = mesh.GetPrimvarsAttr("st").Get() if load_uvs else None
+    if uvs:
+        uvs = np.array(uvs, dtype=np.float32)
+
     flip_winding = False
     handedness = mesh.GetOrientationAttr().Get()
     if handedness.lower() == "lefthanded":
@@ -757,4 +788,4 @@ def load_mesh(
     if flip_winding:
         faces = faces[:, ::-1]
 
-    return Mesh(points, faces.flatten(), normals=normals, maxhullvert=maxhullvert)
+    return Mesh(points, faces.flatten(), normals=normals, uvs=uvs, maxhullvert=maxhullvert)
