@@ -756,10 +756,9 @@ class ModelBuilder:
                             f"or a single Warp vector/matrix value for single-DOF joints"
                         )
 
-                if len(value_sanitized) != dof_count:
-                    raise ValueError(
-                        f"JOINT_DOF attribute '{attr_key}' has {len(value_sanitized)} values but joint has {dof_count} DOFs"
-                    )
+                actual = len(value_sanitized)
+                if actual != dof_count:
+                    raise ValueError(f"JOINT_DOF '{attr_key}': got {actual}, expected {dof_count}")
 
                 # Apply each value to its corresponding DOF
                 for i, dof_value in enumerate(value_sanitized):
