@@ -703,6 +703,138 @@ class TestMuJoCoSolverJointProperties(TestMuJoCoSolverPropertiesBase):
                     msg=f"Updated MuJoCo DOF {dof_idx} in world {world_idx} friction should match Newton value",
                 )
 
+    def test_jnt_solimp_conversion_and_updates(self):
+        """
+        Verify that custom solimplimit attribute:
+        1. Is properly registered in Newton Model
+        2. Is properly converted to MuJoCo jnt_solimp
+        3. Can be changed during simulation via notify_model_changed()
+        4. Is properly expanded for multi-world models
+
+        Uses different values for each joint DOF and world to catch indexing bugs.
+        """
+        # Skip if no joints
+        if self.model.joint_dof_count == 0:
+            self.skipTest("No joints in model, skipping jnt_solimp test")
+
+        # Step 1: Register custom attributes and set initial values
+        SolverMuJoCo.register_custom_attributes(self.builder)
+
+        dofs_per_world = self.model.joint_dof_count // self.model.num_worlds
+        vec5 = wp.types.vector(length=5, dtype=wp.float32)
+
+        # Create initial solimplimit values with different patterns per world and DOF
+        initial_solimplimit = []
+        for world_idx in range(self.model.num_worlds):
+            world_dof_offset = world_idx * dofs_per_world
+            for dof_idx in range(dofs_per_world):
+                # Pattern: base values + dof_idx * 0.01 + world_idx * 0.1
+                # This creates unique values for each DOF in each world
+                val0 = 0.89 + dof_idx * 0.01 + world_idx * 0.1
+                val1 = 0.90 + dof_idx * 0.01 + world_idx * 0.1
+                val2 = 0.01 + dof_idx * 0.001 + world_idx * 0.01
+                val3 = 2.0 + dof_idx * 0.1 + world_idx * 0.5
+                val4 = 1.8 + dof_idx * 0.1 + world_idx * 0.5
+                initial_solimplimit.append(vec5(val0, val1, val2, val3, val4))
+
+        # Assign to model
+        self.model.mujoco.solimplimit.assign(wp.array(initial_solimplimit, dtype=vec5, device=self.model.device))
+
+        # Step 2: Create solver (this should convert solimplimit to jnt_solimp)
+        solver = SolverMuJoCo(self.model, iterations=1, disable_contacts=True)
+
+        # Step 3: Verify jnt_solimp is properly expanded for multi-world
+        jnt_solimp = solver.mjw_model.jnt_solimp.numpy()
+        self.assertEqual(jnt_solimp.shape[0], self.model.num_worlds, "jnt_solimp should have one entry per world")
+
+        # Step 4: Verify initial values were converted correctly using DOF mapping
+        joint_mjc_dof_start = solver.joint_mjc_dof_start.numpy()
+
+        for world_idx in range(self.model.num_worlds):
+            world_dof_offset = world_idx * dofs_per_world
+
+            # Iterate through joints
+            for newton_joint_idx in range(self.model.joint_count // self.model.num_worlds):
+                mjc_dof_start = joint_mjc_dof_start[newton_joint_idx]
+                if mjc_dof_start == -1:
+                    continue  # Skip joints without MuJoCo DOFs
+
+                newton_dof_start = self.model.joint_qd_start.numpy()[newton_joint_idx]
+                dof_count = self.model.joint_dof_dim.numpy()[newton_joint_idx].sum()
+
+                for dof_offset in range(dof_count):
+                    newton_dof_idx = world_dof_offset + newton_dof_start + dof_offset
+                    mjc_dof_idx = mjc_dof_start + dof_offset
+
+                    # Get expected solimplimit from Newton model
+                    expected_solimp = self.model.mujoco.solimplimit.numpy()[newton_dof_idx, :]
+
+                    # Get actual jnt_solimp from MuJoCo
+                    actual_solimp = jnt_solimp[world_idx, mjc_dof_idx, :]
+
+                    # Verify they match
+                    np.testing.assert_allclose(
+                        actual_solimp,
+                        expected_solimp,
+                        rtol=1e-5,
+                        atol=1e-6,
+                        err_msg=f"Initial jnt_solimp[{world_idx}, {mjc_dof_idx}] doesn't match "
+                        f"Newton solimplimit[{newton_dof_idx}] for joint {newton_joint_idx} DOF {dof_offset}",
+                    )
+
+        # Step 5: Update solimplimit values with different patterns
+        updated_solimplimit = []
+        for world_idx in range(self.model.num_worlds):
+            world_dof_offset = world_idx * dofs_per_world
+            for dof_idx in range(dofs_per_world):
+                # Updated pattern: different from initial
+                val0 = 0.85 + dof_idx * 0.02 + world_idx * 0.15
+                val1 = 0.88 + dof_idx * 0.02 + world_idx * 0.15
+                val2 = 0.005 + dof_idx * 0.0005 + world_idx * 0.005
+                val3 = 1.5 + dof_idx * 0.15 + world_idx * 0.6
+                val4 = 2.2 + dof_idx * 0.15 + world_idx * 0.6
+                updated_solimplimit.append(vec5(val0, val1, val2, val3, val4))
+
+        self.model.mujoco.solimplimit.assign(wp.array(updated_solimplimit, dtype=vec5, device=self.model.device))
+
+        # Step 6: Notify solver of changes
+        solver.notify_model_changed(SolverNotifyFlags.JOINT_DOF_PROPERTIES)
+
+        # Step 7: Verify updated values were converted correctly
+        updated_jnt_solimp = solver.mjw_model.jnt_solimp.numpy()
+
+        for world_idx in range(self.model.num_worlds):
+            world_dof_offset = world_idx * dofs_per_world
+
+            # Iterate through joints
+            for newton_joint_idx in range(self.model.joint_count // self.model.num_worlds):
+                mjc_dof_start = joint_mjc_dof_start[newton_joint_idx]
+                if mjc_dof_start == -1:
+                    continue  # Skip joints without MuJoCo DOFs
+
+                newton_dof_start = self.model.joint_qd_start.numpy()[newton_joint_idx]
+                dof_count = self.model.joint_dof_dim.numpy()[newton_joint_idx].sum()
+
+                for dof_offset in range(dof_count):
+                    newton_dof_idx = world_dof_offset + newton_dof_start + dof_offset
+                    mjc_dof_idx = mjc_dof_start + dof_offset
+
+                    # Get expected solimplimit from updated Newton model
+                    expected_solimp = self.model.mujoco.solimplimit.numpy()[newton_dof_idx, :]
+
+                    # Get actual jnt_solimp from MuJoCo
+                    actual_solimp = updated_jnt_solimp[world_idx, mjc_dof_idx, :]
+
+                    # Verify they match
+                    np.testing.assert_allclose(
+                        actual_solimp,
+                        expected_solimp,
+                        rtol=1e-5,
+                        atol=1e-6,
+                        err_msg=f"Updated jnt_solimp[{world_idx}, {mjc_dof_idx}] doesn't match "
+                        f"Newton solimplimit[{newton_dof_idx}] for joint {newton_joint_idx} DOF {dof_offset}",
+                    )
+
     def test_joint_limit_solref_conversion(self):
         """
         Verify that joint_limit_ke and joint_limit_kd are properly converted to MuJoCo's solref_limit

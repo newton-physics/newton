@@ -945,24 +945,70 @@ def update_axis_properties_kernel(
 
 
 @wp.kernel
-def update_dof_properties_kernel(
+def update_joint_dof_properties_kernel(
+    joint_qd_start: wp.array(dtype=wp.int32),
+    joint_dof_dim: wp.array2d(dtype=wp.int32),
+    joint_type: wp.array(dtype=wp.int32),
+    joint_mjc_dof_start: wp.array(dtype=wp.int32),
     joint_armature: wp.array(dtype=float),
     joint_friction: wp.array(dtype=float),
-    dofs_per_world: int,
+    solimplimit: wp.array2d(dtype=wp.types.vector(length=5, dtype=wp.float32)),
+    joints_per_world: int,
     # outputs
     dof_armature: wp.array2d(dtype=float),
     dof_frictionloss: wp.array2d(dtype=float),
+    jnt_solimp: wp.array2d(dtype=wp.types.vector(length=5, dtype=wp.float32)),
 ):
-    """Update DOF armature and friction loss values."""
+    """Update joint DOF properties including armature, friction loss, and joint impedance limits.
+
+    This kernel properly maps Newton DOFs to MuJoCo DOFs using joint_mjc_dof_start.
+    If solimplimit is None, jnt_solimp won't be updated (MuJoCo defaults will be preserved).
+    """
     tid = wp.tid()
-    worldid = tid // dofs_per_world
-    dof_in_world = tid % dofs_per_world
+    worldid = tid // joints_per_world
+    joint_in_world = tid % joints_per_world
 
-    # update armature
-    dof_armature[worldid, dof_in_world] = joint_armature[tid]
+    jtype = joint_type[tid]
+    if jtype == JointType.FREE:
+        # free joints don't have these properties
+        return
 
-    # update friction loss
-    dof_frictionloss[worldid, dof_in_world] = joint_friction[tid]
+    lin_axis_count = joint_dof_dim[tid, 0]
+    ang_axis_count = joint_dof_dim[tid, 1]
+    newton_dof_start = joint_qd_start[tid]
+    mjc_dof_start = joint_mjc_dof_start[joint_in_world]
+
+    if mjc_dof_start == -1:
+        return
+
+    # Check if solimplimit exists (non-None)
+    has_solimplimit = solimplimit is not None
+
+    # update linear dofs
+    for i in range(lin_axis_count):
+        newton_dof_index = newton_dof_start + i
+        mjc_dof_index = mjc_dof_start + i
+
+        # Update armature and friction
+        dof_armature[worldid, mjc_dof_index] = joint_armature[newton_dof_index]
+        dof_frictionloss[worldid, mjc_dof_index] = joint_friction[newton_dof_index]
+
+        # Update solimplimit only if it exists
+        if has_solimplimit:
+            jnt_solimp[worldid, mjc_dof_index] = solimplimit[newton_dof_index]
+
+    # update angular dofs
+    for i in range(ang_axis_count):
+        newton_dof_index = newton_dof_start + lin_axis_count + i
+        mjc_dof_index = mjc_dof_start + lin_axis_count + i
+
+        # Update armature and friction
+        dof_armature[worldid, mjc_dof_index] = joint_armature[newton_dof_index]
+        dof_frictionloss[worldid, mjc_dof_index] = joint_friction[newton_dof_index]
+
+        # Update solimplimit only if it exists
+        if has_solimplimit:
+            jnt_solimp[worldid, mjc_dof_index] = solimplimit[newton_dof_index]
 
 
 @wp.kernel
@@ -2626,7 +2672,7 @@ class SolverMuJoCo(SolverBase):
             # "body_invweight0",
             # "body_gravcomp",
             "jnt_solref",
-            # "jnt_solimp",
+            "jnt_solimp",
             "jnt_pos",
             "jnt_axis",
             # "jnt_stiffness",
@@ -2747,10 +2793,11 @@ class SolverMuJoCo(SolverBase):
         )
 
     def update_joint_dof_properties(self):
-        """Update all joint dof properties including effort limits, velocity limits, friction, and armature in the MuJoCo model."""
+        """Update all joint dof properties including effort limits, velocity limits, friction, armature, and solimplimit in the MuJoCo model."""
         if self.model.joint_dof_count == 0:
             return
 
+        joints_per_world = self.model.joint_count // self.model.num_worlds
         dofs_per_world = self.model.joint_dof_count // self.model.num_worlds
 
         # Update actuator force ranges (effort limits) if actuators exist
@@ -2774,16 +2821,28 @@ class SolverMuJoCo(SolverBase):
                 device=self.model.device,
             )
 
-        # Update DOF properties (armature and friction)
+        # Update DOF properties (armature, friction, and solimplimit) with proper DOF mapping
+        mujoco_attrs = getattr(self.model, "mujoco", None)
+        solimplimit = getattr(mujoco_attrs, "solimplimit", None) if mujoco_attrs is not None else None
+
         wp.launch(
-            update_dof_properties_kernel,
-            dim=self.model.joint_dof_count,
+            update_joint_dof_properties_kernel,
+            dim=self.model.joint_count,
             inputs=[
+                self.model.joint_qd_start,
+                self.model.joint_dof_dim,
+                self.model.joint_type,
+                self.joint_mjc_dof_start,
                 self.model.joint_armature,
                 self.model.joint_friction,
-                dofs_per_world,
+                solimplimit,
+                joints_per_world,
             ],
-            outputs=[self.mjw_model.dof_armature, self.mjw_model.dof_frictionloss],
+            outputs=[
+                self.mjw_model.dof_armature,
+                self.mjw_model.dof_frictionloss,
+                self.mjw_model.jnt_solimp,
+            ],
             device=self.model.device,
         )
 
