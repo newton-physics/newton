@@ -575,19 +575,36 @@ def load_mesh(
     maxhullvert: int = MESH_MAXHULLVERT,
     face_varying_normal_conversion: Literal[
         "vertex_averaging", "angle_weighted", "vertex_splitting"
-    ] = "vertex_splitting",
+    ] = "vertex_averaging",
     vertex_splitting_angle_threshold_deg: float = 25.0,
 ) -> Mesh:
     """
-    Load a triangle mesh from a USD prim that has the UsdGeom.Mesh schema.
+    Load a triangle mesh from a USD prim that has the ``UsdGeom.Mesh`` schema.
+
+    **Example:**
+
+    .. testcode::
+
+        from pxr import Usd
+        import newton.examples
+
+        usd_stage = Usd.Stage.Open(newton.examples.get_asset("bunny.usd"))
+        demo_mesh = newton.usd.load_mesh(usd_stage.GetPrimAtPath("/root/bunny"))
+
+        body_mesh = builder.add_body()
+        builder.add_shape_mesh(body_mesh, mesh=demo_mesh)
+
+        assert len(demo_mesh.vertices) == 6102
+        assert len(demo_mesh.indices) == 36600
+        assert len(demo_mesh.normals) == 6102
 
     Args:
         prim (Usd.Prim): The USD prim to load the mesh from.
         verbose (bool): Whether to print verbose output.
         maxhullvert (int): The maximum number of vertices for the convex hull approximation.
-        face_varying_normal_conversion (Literal["vertex_averaging", "angle_weighted", "vertex_splitting"]): The method to convert faceVarying normals to vertex normals.
-        vertex_splitting_angle_threshold_deg (float): The threshold angle in degrees for splitting vertices based on the face normals in case of faceVarying normals and ``face_varying_normal_conversion`` is "vertex_splitting". Corners whose normals differ by more than angle_deg will be split
-        into different vertex clusters. Lower = more splits (sharper), higher = fewer splits (smoother).
+            face_varying_normal_conversion (Literal["vertex_averaging", "angle_weighted", "vertex_splitting"]): The method to convert faceVarying normals to vertex normals.
+            vertex_splitting_angle_threshold_deg (float): The threshold angle in degrees for splitting vertices based on the face normals in case of faceVarying normals and ``face_varying_normal_conversion`` is "vertex_splitting". Corners whose normals differ by more than angle_deg will be split
+            into different vertex clusters. Lower = more splits (sharper), higher = fewer splits (smoother).
 
     Returns:
         newton.Mesh: The loaded mesh.

@@ -23,3 +23,4 @@ Utilities for working with the Universal Scene Description (USD) format.
    get_scale
    get_transform
    has_attribute
+   load_mesh

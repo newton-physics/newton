@@ -233,6 +233,14 @@ class Mesh:
         self._indices = np.array(value, dtype=np.int32).flatten()
         self._cached_hash = None
 
+    @property
+    def normals(self):
+        return self._normals
+
+    @property
+    def uvs(self):
+        return self._uvs
+
     # construct simulation ready buffers from points
     def finalize(self, device: Devicelike = None, requires_grad: bool = False) -> wp.uint64:
         """
