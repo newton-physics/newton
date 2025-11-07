@@ -2896,7 +2896,7 @@ class SolverMuJoCo(SolverBase):
         )
 
     def update_joint_properties(self):
-        """Update joint properties including joint positions, joint axes, relative body transforms, and DOF properties in the MuJoCo model."""
+        """Update joint properties including joint positions, joint axes, and relative body transforms in the MuJoCo model."""
         if self.model.joint_count == 0:
             return
 
