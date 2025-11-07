@@ -15,20 +15,18 @@
 
 import enum
 
+from .... import GeoType
 
 class GeomType(enum.IntEnum):
-    PLANE = 0
-    # HFIELD = 1
-    SPHERE = 2
-    CAPSULE = 3
-    ELLIPSOID = 4
-    CYLINDER = 5
-    BOX = 6
-    MESH = 7
-    # SDF = 8
-    CONE = 9
-    # CONVEX_MESH = 10
-    NONE = 11
+    PLANE = GeoType.PLANE
+    SPHERE = GeoType.SPHERE
+    CAPSULE = GeoType.CAPSULE
+    ELLIPSOID = GeoType.ELLIPSOID
+    CYLINDER = GeoType.CYLINDER
+    BOX = GeoType.BOX
+    MESH = GeoType.MESH
+    CONE = GeoType.CONE
+    NONE = GeoType.NONE
 
 
 class LightType(enum.IntEnum):
