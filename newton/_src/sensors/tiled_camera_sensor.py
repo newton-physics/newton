@@ -219,7 +219,7 @@ class TiledCameraSensor:
 
     def save_color_image(self, filename: str) -> bool:
         try:
-            from PIL import Image
+            from PIL import Image  # noqa: PLC0415
         except ImportError:
             print("Failed to import PIL.Image, not saving image.")
             return False
@@ -251,7 +251,7 @@ class TiledCameraSensor:
 
     def save_depth_image(self, filename: str) -> bool:
         try:
-            from PIL import Image
+            from PIL import Image  # noqa: PLC0415
         except ImportError:
             print("Failed to import PIL.Image, not saving image.")
             return False
