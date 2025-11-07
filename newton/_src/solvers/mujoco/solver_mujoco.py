@@ -2373,12 +2373,14 @@ class SolverMuJoCo(SolverBase):
                         joint_params["limited"] = False
                     else:
                         joint_params["limited"] = True
-                        joint_params["range"] = (lower, upper)
-                        # Use negative convention for solref_limit: (-stiffness, -damping)
-                        if joint_limit_ke[ai] > 0:
-                            joint_params["solref_limit"] = (-joint_limit_ke[ai], -joint_limit_kd[ai])
-                        if joint_solimp_limit is not None:
-                            joint_params["solimp_limit"] = joint_solimp_limit[ai]
+
+                    # we're piping these through unconditionally even though they are only active with limited joints
+                    joint_params["range"] = (lower, upper)
+                    # Use negative convention for solref_limit: (-stiffness, -damping)
+                    if joint_limit_ke[ai] > 0:
+                        joint_params["solref_limit"] = (-joint_limit_ke[ai], -joint_limit_kd[ai])
+                    if joint_solimp_limit is not None:
+                        joint_params["solimp_limit"] = joint_solimp_limit[ai]
                     axname = name
                     if lin_axis_count > 1 or ang_axis_count > 1:
                         axname += "_lin"
@@ -2443,12 +2445,15 @@ class SolverMuJoCo(SolverBase):
                         joint_params["limited"] = False
                     else:
                         joint_params["limited"] = True
-                        joint_params["range"] = (np.rad2deg(lower), np.rad2deg(upper))
-                        # Use negative convention for solref_limit: (-stiffness, -damping)
-                        if joint_limit_ke[ai] > 0:
-                            joint_params["solref_limit"] = (-joint_limit_ke[ai], -joint_limit_kd[ai])
-                        if joint_solimp_limit is not None:
-                            joint_params["solimp_limit"] = joint_solimp_limit[ai]
+
+                    # we're piping these through unconditionally even though they are only active with limited joints
+                    joint_params["range"] = (np.rad2deg(lower), np.rad2deg(upper))
+                    # Use negative convention for solref_limit: (-stiffness, -damping)
+                    if joint_limit_ke[ai] > 0:
+                        joint_params["solref_limit"] = (-joint_limit_ke[ai], -joint_limit_kd[ai])
+                    if joint_solimp_limit is not None:
+                        joint_params["solimp_limit"] = joint_solimp_limit[ai]
+
                     axname = name
                     if lin_axis_count > 1 or ang_axis_count > 1:
                         axname += "_ang"
