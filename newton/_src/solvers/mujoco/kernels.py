@@ -23,14 +23,9 @@ import warp as wp
 
 from ...sim import JointMode, JointType
 
-
-# Custom vector type definitions
-class vec10f(wp.types.vector(length=10, dtype=float)):
-    pass
-
-
-# Define vec5 as a 5-element vector of float32, matching MuJoCo's convention
+# Custom vector types
 vec5 = wp.types.vector(length=5, dtype=wp.float32)
+vec10 = wp.types.vector(length=10, dtype=wp.float32)
 
 
 # Constants
@@ -878,8 +873,8 @@ def update_axis_properties_kernel(
     axis_to_actuator: wp.array(dtype=wp.int32),
     axes_per_world: int,
     # outputs
-    actuator_bias: wp.array2d(dtype=vec10f),
-    actuator_gain: wp.array2d(dtype=vec10f),
+    actuator_bias: wp.array2d(dtype=vec10),
+    actuator_gain: wp.array2d(dtype=vec10),
     actuator_forcerange: wp.array2d(dtype=wp.vec2f),
 ):
     """Update actuator force ranges based on joint effort limits."""
@@ -894,14 +889,14 @@ def update_axis_properties_kernel(
         mode = joint_dof_mode[tid]
 
         if mode == JointMode.TARGET_POSITION:
-            # bias = vec10f(0.0, -kp, -kv, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
-            # gain = vec10f(kp, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+            # bias = vec10(0.0, -kp, -kv, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+            # gain = vec10(kp, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
             actuator_bias[worldid, actuator_idx][1] = -kp
             actuator_bias[worldid, actuator_idx][2] = -kv
             actuator_gain[worldid, actuator_idx][0] = kp
         elif mode == JointMode.TARGET_VELOCITY:
-            # bias = vec10f(0.0, 0.0, -kv, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
-            # gain = vec10f(kv, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+            # bias = vec10(0.0, 0.0, -kv, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+            # gain = vec10(kv, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
             actuator_bias[worldid, actuator_idx][1] = 0.0
             actuator_bias[worldid, actuator_idx][2] = -kv
             actuator_gain[worldid, actuator_idx][0] = kv
