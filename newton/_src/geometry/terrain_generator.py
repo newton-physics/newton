@@ -640,9 +640,7 @@ def heightfield_to_mesh(
 
     # Validate minimum grid size
     if grid_size_x < 2 or grid_size_y < 2:
-        raise ValueError(
-            f"heightfield must be at least 2x2, got shape ({grid_size_x}, {grid_size_y})"
-        )
+        raise ValueError(f"heightfield must be at least 2x2, got shape ({grid_size_x}, {grid_size_y})")
 
     # Validate extent values
     if extent_x <= 0:
