@@ -587,10 +587,12 @@ def load_mesh(
 
         from pxr import Usd
         import newton.examples
+        import newton.usd
 
         usd_stage = Usd.Stage.Open(newton.examples.get_asset("bunny.usd"))
         demo_mesh = newton.usd.load_mesh(usd_stage.GetPrimAtPath("/root/bunny"))
 
+        builder = newton.ModelBuilder()
         body_mesh = builder.add_body()
         builder.add_shape_mesh(body_mesh, mesh=demo_mesh)
 

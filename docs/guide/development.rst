@@ -239,7 +239,7 @@ The doctests can be run with:
 
         .. code-block:: console
 
-            uv run --extra docs sphinx-build -W -b doctest docs docs/_build/doctest
+            uv run --extra docs --extra importers sphinx-build -W -b doctest docs docs/_build/doctest
 
     .. tab-item:: venv
         :sync: venv
