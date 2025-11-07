@@ -22,7 +22,7 @@ class vec6f(wp.types.vector(length=6, dtype=float)):
     pass
 
 
-EPSILON = 1e-15
+EPSILON = 1e-6
 
 wp.set_module_options({"enable_backward": False})
 

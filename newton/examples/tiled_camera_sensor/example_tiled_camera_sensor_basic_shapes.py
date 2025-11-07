@@ -103,7 +103,7 @@ class Example:
 
         self.viewer.set_model(self.model)
 
-        self.tiled_camera_sensor = TiledCameraSensor(model=self.model, num_cameras=1, width=1024, height=1024)
+        self.tiled_camera_sensor = TiledCameraSensor(model=self.model, num_cameras=1, width=1280, height=720)
         self.tiled_camera_sensor.create_default_light()
         self.tiled_camera_sensor.assign_debug_colors_per_shape()
 
