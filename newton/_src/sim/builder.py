@@ -748,9 +748,7 @@ class ModelBuilder:
                 value_sanitized = value
                 if not isinstance(value_sanitized, (list, tuple)):
                     # Check if it's a Warp vector/matrix type
-                    if hasattr(value_sanitized, "_type_") and (
-                        wp.types.type_is_vector(type(value_sanitized)) or wp.types.type_is_matrix(type(value_sanitized))
-                    ):
+                    if wp.types.type_is_vector(type(value_sanitized)) or wp.types.type_is_matrix(type(value_sanitized)):
                         value_sanitized = [value_sanitized]
                     else:
                         raise TypeError(
