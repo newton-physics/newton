@@ -36,6 +36,14 @@ except ImportError:
     UsdGeom = None
 
 
+@overload
+def get_attribute(prim: Usd.Prim, name: str, default: None = None) -> Any | None: ...
+
+
+@overload
+def get_attribute(prim: Usd.Prim, name: str, default: Any) -> Any: ...
+
+
 def get_attribute(prim: Usd.Prim, name: str, default: Any | None = None) -> Any | None:
     """
     Get an attribute value from a USD prim, returning a default if not found.
