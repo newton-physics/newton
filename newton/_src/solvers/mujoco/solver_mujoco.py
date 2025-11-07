@@ -2162,15 +2162,22 @@ class SolverMuJoCo(SolverBase):
                 if is_site:
                     if not include_sites:
                         continue
+
+                    # Map unsupported site types to SPHERE
+                    # MuJoCo sites only support: SPHERE, CAPSULE, CYLINDER, BOX
+                    supported_site_types = {GeoType.SPHERE, GeoType.CAPSULE, GeoType.CYLINDER, GeoType.BOX}
+                    site_geom_type = stype if stype in supported_site_types else GeoType.SPHERE
+
                     tf = wp.transform(*shape_transform[shape])
                     site_params = {
-                        "type": geom_type_mapping[stype],
+                        "type": geom_type_mapping[site_geom_type],
                         "name": name,
                         "pos": tf.p,
                         "quat": quat_to_mjc(tf.q),
                     }
 
                     size = shape_size[shape]
+                    # Ensure size is valid for the site type
                     if np.any(size > 0.0):
                         nonzero = size[size > 0.0][0]
                         size[size == 0.0] = nonzero
