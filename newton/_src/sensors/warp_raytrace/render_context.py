@@ -33,6 +33,7 @@ class RenderContext:
         render_depth: bool = True,
         use_textures: bool = True,
         use_shadows: bool = True,
+        use_ambient_lighting: bool = True,
         num_worlds: int = 1,
         has_global_world: bool = False,
     ):
@@ -42,6 +43,7 @@ class RenderContext:
         self.render_depth = render_depth
         self.use_textures = use_textures
         self.use_shadows = use_shadows
+        self.use_ambient_lighting = use_ambient_lighting
         self.num_worlds = num_worlds
         self.has_global_world = has_global_world
 

@@ -29,19 +29,19 @@ MAX_NUM_VIEWS_PER_THREAD = 8
 
 BACKGROUND_COLOR = 255 << 24 | int(0.4 * 255.0) << 16 | int(0.4 * 255.0) << 8 | int(0.4 * 255.0)
 
-TILE_W: int = 32
-TILE_H: int = 8
-THREADS_PER_TILE: int = TILE_W * TILE_H
+TILE_W: wp.int32 = 32
+TILE_H: wp.int32 = 8
+THREADS_PER_TILE: wp.int32 = TILE_W * TILE_H
 
 
 @wp.func
-def ceil_div(a: int, b: int):
+def ceil_div(a: wp.int32, b: wp.int32):
     return (a + b - 1) // b
 
 
 # Map linear thread id (per image) -> (px, py) using TILE_W x TILE_H tiles
 @wp.func
-def tile_coords(tid: int, width: int):
+def tile_coords(tid: wp.int32, width: wp.int32):
     tile_id = tid // THREADS_PER_TILE
     local = tid - tile_id * THREADS_PER_TILE
 
@@ -84,12 +84,12 @@ def render_megakernel(rc: RenderContext):
     @wp.kernel(enable_backward=False)
     def _render_megakernel(
         # Model and Options
-        num_worlds: int,
-        num_cameras: int,
-        num_geom_in_bvh: int,
-        img_width: int,
-        img_height: int,
-        use_shadows: bool,
+        num_worlds: wp.int32,
+        num_cameras: wp.int32,
+        num_geom_in_bvh: wp.int32,
+        img_width: wp.int32,
+        img_height: wp.int32,
+        use_shadows: wp.bool,
         # Camera
         camera_rays: wp.array(dtype=wp.vec3f, ndim=4),
         camera_positions: wp.array(dtype=wp.vec3f),
@@ -98,33 +98,33 @@ def render_megakernel(rc: RenderContext):
         bvh_id: wp.uint64,
         group_roots: wp.array(dtype=wp.int32),
         # Geometry
-        geom_enabled: wp.array(dtype=int),
-        geom_types: wp.array(dtype=int),
-        geom_mesh_indices: wp.array(dtype=int),
-        geom_materials: wp.array(dtype=int),
-        geom_sizes: wp.array(dtype=wp.vec3),
-        geom_colors: wp.array(dtype=wp.vec4),
+        geom_enabled: wp.array(dtype=wp.int32),
+        geom_types: wp.array(dtype=wp.int32),
+        geom_mesh_indices: wp.array(dtype=wp.int32),
+        geom_materials: wp.array(dtype=wp.int32),
+        geom_sizes: wp.array(dtype=wp.vec3f),
+        geom_colors: wp.array(dtype=wp.vec4f),
         mesh_ids: wp.array(dtype=wp.uint64),
-        mesh_face_offsets: wp.array(dtype=int),
+        mesh_face_offsets: wp.array(dtype=wp.int32),
         mesh_face_vertices: wp.array(dtype=wp.vec3i),
-        mesh_texcoord: wp.array(dtype=wp.vec2),
-        mesh_texcoord_offsets: wp.array(dtype=int),
+        mesh_texcoord: wp.array(dtype=wp.vec2f),
+        mesh_texcoord_offsets: wp.array(dtype=wp.int32),
         # Textures
-        mat_texid: wp.array(dtype=int),
-        mat_texrepeat: wp.array(dtype=wp.vec2),
-        mat_rgba: wp.array(dtype=wp.vec4),
-        tex_adr: wp.array(dtype=int),
+        mat_texid: wp.array(dtype=wp.int32),
+        mat_texrepeat: wp.array(dtype=wp.vec2f),
+        mat_rgba: wp.array(dtype=wp.vec4f),
+        tex_adr: wp.array(dtype=wp.int32),
         tex_data: wp.array(dtype=wp.uint32),
-        tex_height: wp.array(dtype=int),
-        tex_width: wp.array(dtype=int),
+        tex_height: wp.array(dtype=wp.int32),
+        tex_width: wp.array(dtype=wp.int32),
         # Lights
-        light_active: wp.array(dtype=bool),
-        light_type: wp.array(dtype=int),
-        light_cast_shadow: wp.array(dtype=bool),
-        light_positions: wp.array(dtype=wp.vec3),
-        light_orientations: wp.array(dtype=wp.vec3),
+        light_active: wp.array(dtype=wp.bool),
+        light_type: wp.array(dtype=wp.int32),
+        light_cast_shadow: wp.array(dtype=wp.bool),
+        light_positions: wp.array(dtype=wp.vec3f),
+        light_orientations: wp.array(dtype=wp.vec3f),
         # Data
-        geom_positions: wp.array(dtype=wp.vec3),
+        geom_positions: wp.array(dtype=wp.vec3f),
         geom_orientations: wp.array(dtype=wp.mat33),
         # Output
         out_pixels: wp.array3d(dtype=wp.uint32),
@@ -197,8 +197,8 @@ def render_megakernel(rc: RenderContext):
             else:
                 color = mat_rgba[geom_materials[geom_id]]
 
-            base_color = wp.vec3(color[0], color[1], color[2])
-            hit_color = base_color
+            base_color = wp.vec3f(color[0], color[1], color[2])
+            out_color = wp.vec3f()
 
             if wp.static(rc.use_textures):
                 mat_id = geom_materials[geom_id]
@@ -229,26 +229,27 @@ def render_megakernel(rc: RenderContext):
                             mesh_id,
                         )
 
-                        base_color = wp.vec3(
+                        base_color = wp.vec3f(
                             base_color[0] * tex_color[0],
                             base_color[1] * tex_color[1],
                             base_color[2] * tex_color[2],
                         )
 
-            up = wp.vec3(0.0, 0.0, 1.0)
-            len_n = wp.length(normal)
-            n = normal if len_n > 0.0 else up
-            n = wp.normalize(n)
-            hemispheric = 0.5 * (wp.dot(n, up) + 1.0)
-            sky = wp.vec3(0.4, 0.4, 0.45)
-            ground = wp.vec3(0.1, 0.1, 0.12)
-            ambient_color = sky * hemispheric + ground * (1.0 - hemispheric)
-            ambient_intensity = 0.5
-            result = wp.vec3(
-                base_color[0] * (ambient_color[0] * ambient_intensity),
-                base_color[1] * (ambient_color[1] * ambient_intensity),
-                base_color[2] * (ambient_color[2] * ambient_intensity),
-            )
+            if wp.static(rc.use_ambient_lighting):
+                up = wp.vec3f(0.0, 0.0, 1.0)
+                len_n = wp.length(normal)
+                n = normal if len_n > 0.0 else up
+                n = wp.normalize(n)
+                hemispheric = 0.5 * (wp.dot(n, up) + 1.0)
+                sky = wp.vec3f(0.4, 0.4, 0.45)
+                ground = wp.vec3f(0.1, 0.1, 0.12)
+                ambient_color = sky * hemispheric + ground * (1.0 - hemispheric)
+                ambient_intensity = 0.5
+                out_color = wp.vec3f(
+                    base_color[0] * (ambient_color[0] * ambient_intensity),
+                    base_color[1] * (ambient_color[1] * ambient_intensity),
+                    base_color[2] * (ambient_color[2] * ambient_intensity),
+                )
 
             # Apply lighting and shadows
             for light_idx in range(wp.static(rc.num_lights)):
@@ -273,16 +274,15 @@ def render_megakernel(rc: RenderContext):
                     geom_orientations,
                     hit_point,
                 )
-                result = result + base_color * light_contribution
+                out_color = out_color + base_color * light_contribution
 
-            hit_color = wp.min(result, wp.vec3(1.0, 1.0, 1.0))
-            hit_color = wp.max(hit_color, wp.vec3(0.0, 0.0, 0.0))
+            out_color = wp.min(wp.max(out_color, wp.vec3f(0.0)), wp.vec3f(1.0))
 
             if wp.static(rc.render_rgb):
                 out_pixels[world_id, cam_idx, mapped_idx] = pack_rgba_to_uint32(
-                    hit_color[0] * 255.0,
-                    hit_color[1] * 255.0,
-                    hit_color[2] * 255.0,
+                    out_color[0] * 255.0,
+                    out_color[1] * 255.0,
+                    out_color[2] * 255.0,
                     255.0,
                 )
 
