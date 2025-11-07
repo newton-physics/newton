@@ -244,29 +244,28 @@ class Example:
             self.state_0, self.state_1 = self.state_1, self.state_0
 
     def step(self):
-        with wp.ScopedTimer("step"):
-            obs = compute_obs(
-                self.act,
-                self.state_0,
-                self.joint_pos_initial,
-                self.torch_device,
-                self.lab_to_mujoco_indices,
-                self.gravity_vec,
-                self.command,
-            )
-            with torch.no_grad():
-                self.act = self.policy(obs)
-                self.rearranged_act = torch.gather(self.act, 1, self.mujoco_to_lab_indices.unsqueeze(0))
-                a = self.joint_pos_initial + 0.5 * self.rearranged_act
-                a_with_zeros = torch.cat([torch.zeros(6, device=self.torch_device, dtype=torch.float32), a.squeeze(0)])
-                a_wp = wp.from_torch(a_with_zeros, dtype=wp.float32, requires_grad=False)
-                wp.copy(
-                    self.control.joint_target_pos, a_wp
-                )  # this can actually be optimized by doing  wp.copy(self.solver.mjw_data.ctrl[0], a_wp) and not launching  apply_mjc_control_kernel each step. Typically we update position and velocity targets at the rate of the outer control loop.
-            if self.graph:
-                wp.capture_launch(self.graph)
-            else:
-                self.simulate()
+        obs = compute_obs(
+            self.act,
+            self.state_0,
+            self.joint_pos_initial,
+            self.torch_device,
+            self.lab_to_mujoco_indices,
+            self.gravity_vec,
+            self.command,
+        )
+        with torch.no_grad():
+            self.act = self.policy(obs)
+            self.rearranged_act = torch.gather(self.act, 1, self.mujoco_to_lab_indices.unsqueeze(0))
+            a = self.joint_pos_initial + 0.5 * self.rearranged_act
+            a_with_zeros = torch.cat([torch.zeros(6, device=self.torch_device, dtype=torch.float32), a.squeeze(0)])
+            a_wp = wp.from_torch(a_with_zeros, dtype=wp.float32, requires_grad=False)
+            wp.copy(
+                self.control.joint_target, a_wp
+            )  # this can actually be optimized by doing  wp.copy(self.solver.mjw_data.ctrl[0], a_wp) and not launching  apply_mjc_control_kernel each step. Typically we update position and velocity targets at the rate of the outer control loop.
+        if self.graph:
+            wp.capture_launch(self.graph)
+        else:
+            self.simulate()
         self.sim_time += self.frame_dt
 
     def render(self):
