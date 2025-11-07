@@ -28,7 +28,7 @@ import warp as wp
 
 from ..core import quat_between_axes
 from ..core.types import Axis, Transform
-from ..geometry import MESH_MAXHULLVERT, Mesh, ShapeFlags, compute_sphere_inertia
+from ..geometry import MESH_MAXHULLVERT, ShapeFlags, compute_sphere_inertia
 from ..sim.builder import ModelBuilder
 from ..sim.joints import JointMode
 from ..sim.model import ModelAttributeFrequency
@@ -379,27 +379,12 @@ def parse_usd(
                     key=path_name,
                 )
             elif type_name == "mesh":
-                mesh = UsdGeom.Mesh(prim)
-                points = np.array(mesh.GetPointsAttr().Get(), dtype=np.float32)
-                indices = np.array(mesh.GetFaceVertexIndicesAttr().Get(), dtype=np.float32)
-                counts = mesh.GetFaceVertexCountsAttr().Get()
-                faces = []
-                face_id = 0
-                for count in counts:
-                    if count == 3:
-                        faces.append(indices[face_id : face_id + 3])
-                    elif count == 4:
-                        faces.append(indices[face_id : face_id + 3])
-                        faces.append(indices[[face_id, face_id + 2, face_id + 3]])
-                    else:
-                        continue
-                    face_id += count
-                m = Mesh(points, np.array(faces, dtype=np.int32).flatten())
+                mesh = usd.load_mesh(prim)
                 shape_id = builder.add_shape_mesh(
                     parent_body_id,
                     xform,
                     scale=scale,
-                    mesh=m,
+                    mesh=mesh,
                     cfg=visual_shape_cfg,
                     key=path_name,
                 )
@@ -1400,24 +1385,6 @@ def parse_usd(
                         half_height=shape_spec.halfHeight,
                     )
                 elif key == UsdPhysics.ObjectType.MeshShape:
-                    mesh = UsdGeom.Mesh(prim)
-                    points = np.array(mesh.GetPointsAttr().Get(), dtype=np.float32)
-                    indices = np.array(mesh.GetFaceVertexIndicesAttr().Get(), dtype=np.float32)
-                    counts = mesh.GetFaceVertexCountsAttr().Get()
-                    faces = []
-                    face_id = 0
-                    for count in counts:
-                        if count == 3:
-                            faces.append(indices[face_id : face_id + 3])
-                        elif count == 4:
-                            faces.append(indices[face_id : face_id + 3])
-                            faces.append(indices[[face_id, face_id + 2, face_id + 3]])
-                        elif verbose:
-                            print(
-                                f"Error while parsing USD mesh {path}: encountered polygon with {count} vertices, but only triangles and quads are supported."
-                            )
-                            continue
-                        face_id += count
                     # Resolve mesh hull vertex limit from schema with fallback to parameter
                     resolved_maxhullvert = R.get_value(
                         prim,
@@ -1426,10 +1393,11 @@ def parse_usd(
                         default=mesh_maxhullvert,
                         verbose=verbose,
                     )
-                    m = Mesh(points, np.array(faces, dtype=np.int32).flatten(), maxhullvert=resolved_maxhullvert)
+                    mesh = usd.load_mesh(prim)
+                    mesh.maxhullvert = resolved_maxhullvert
                     shape_id = builder.add_shape_mesh(
                         scale=scale,
-                        mesh=m,
+                        mesh=mesh,
                         **shape_params,
                     )
                     if not skip_mesh_approximation:

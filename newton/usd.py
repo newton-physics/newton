@@ -33,10 +33,10 @@ from ._src.usd.utils import (
     get_scale,
     get_transform,
     has_attribute,
+    load_mesh,
 )
 
 __all__ = [
-    "convert_warp_type",
     "convert_warp_type",
     "convert_warp_value",
     "get_attribute",
@@ -49,6 +49,7 @@ __all__ = [
     "get_scale",
     "get_transform",
     "has_attribute",
+    "load_mesh",
 ]
 
 

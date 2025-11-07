@@ -16,12 +16,13 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Sequence
-from typing import TYPE_CHECKING, Any, overload
+from typing import TYPE_CHECKING, Any, Literal, overload
 
 import numpy as np
 import warp as wp
 
 from ..core.types import Axis, AxisType, nparray
+from ..geometry import MESH_MAXHULLVERT, Mesh
 from ..sim.model import ModelAttributeAssignment, ModelAttributeFrequency
 
 if TYPE_CHECKING:
@@ -464,3 +465,269 @@ def get_custom_attribute_values(
             else:
                 out[attr.key] = convert_warp_value(usd_attr.Get(), attr.dtype)
     return out
+
+
+def _newell_normal(P: np.ndarray) -> np.ndarray:
+    """Newell's method for polygon normal (not normalized)."""
+    x = y = z = 0.0
+    n = len(P)
+    for i in range(n):
+        p0 = P[i]
+        p1 = P[(i + 1) % n]
+        x += (p0[1] - p1[1]) * (p0[2] + p1[2])
+        y += (p0[2] - p1[2]) * (p0[0] + p1[0])
+        z += (p0[0] - p1[0]) * (p0[1] + p1[1])
+    return np.array([x, y, z], dtype=np.float64)
+
+
+def _orthonormal_basis_from_normal(n: np.ndarray):
+    """Given a unit normal n, return orthonormal (tangent u, bitangent v, normal n)."""
+    # Pick the largest non-collinear axis for stability
+    if abs(n[2]) < 0.9:
+        a = np.array([0.0, 0.0, 1.0])
+    else:
+        a = np.array([1.0, 0.0, 0.0])
+    u = np.cross(a, n)
+    nu = np.linalg.norm(u)
+    if nu < 1e-20:
+        # fallback (degenerate normal); pick arbitrary
+        u = np.array([1.0, 0.0, 0.0])
+    else:
+        u /= nu
+    v = np.cross(n, u)
+    return u, v, n
+
+
+def corner_angles(face_pos: np.ndarray) -> np.ndarray:
+    """
+    Compute interior corner angles (radians) for a single polygon face.
+
+    Args:
+        face_pos: (N, 3) float array
+            Vertex positions of the face in winding order (CW or CCW).
+
+    Returns:
+        angles: (N,) float array
+            Interior angle at each vertex in [0, pi] (radians). For degenerate
+            corners/edges, the angle is set to 0.
+    """
+    P = np.asarray(face_pos, dtype=np.float64)
+    N = len(P)
+    if N < 3:
+        return np.zeros((N,), dtype=np.float64)
+
+    # Face plane via Newell
+    n = _newell_normal(P)
+    n_norm = np.linalg.norm(n)
+    if n_norm < 1e-20:
+        # Degenerate polygon (nearly collinear); fallback: use 3D formula via atan2 on cross/dot
+        # after constructing tangents from edges. But simplest is to return zeros.
+        return np.zeros((N,), dtype=np.float64)
+    n /= n_norm
+
+    # Local 2D frame on the plane
+    u, v, _ = _orthonormal_basis_from_normal(n)
+
+    # Project to 2D (u,v)
+    # (subtract centroid for numerical stability)
+    c = P.mean(axis=0)
+    Q = P - c
+    x = Q @ u  # (N,)
+    y = Q @ v  # (N,)
+
+    # Roll arrays to get prev/next for each vertex
+    x_prev = np.roll(x, 1)
+    y_prev = np.roll(y, 1)
+    x_next = np.roll(x, -1)
+    y_next = np.roll(y, -1)
+
+    # Edge vectors at each corner (pointing into the corner from prev/next to current)
+    # a: current->prev, b: current->next (sign doesn't matter for angle magnitude)
+    ax = x_prev - x
+    ay = y_prev - y
+    bx = x_next - x
+    by = y_next - y
+
+    # Normalize edge vectors to improve numerical stability on very different scales
+    a_len = np.hypot(ax, ay)
+    b_len = np.hypot(bx, by)
+    valid = (a_len > 1e-30) & (b_len > 1e-30)
+    ax[valid] /= a_len[valid]
+    ay[valid] /= a_len[valid]
+    bx[valid] /= b_len[valid]
+    by[valid] /= b_len[valid]
+
+    # Angle via atan2(||a x b||, a·b) in 2D; ||a x b|| = |ax*by - ay*bx|
+    cross = ax * by - ay * bx
+    dot = ax * bx + ay * by
+    # Clamp dot to [-1,1] only where needed; atan2 handles it well, but clamp helps with noise
+    dot = np.clip(dot, -1.0, 1.0)
+
+    angles = np.zeros((N,), dtype=np.float64)
+    angles[valid] = np.arctan2(np.abs(cross[valid]), dot[valid])  # [0, pi]
+
+    return angles
+
+
+def load_mesh(
+    prim: Usd.Prim,
+    verbose: bool = False,
+    maxhullvert: int = MESH_MAXHULLVERT,
+    face_varying_normal_conversion: Literal[
+        "vertex_averaging", "angle_weighted", "vertex_splitting"
+    ] = "vertex_splitting",
+    vertex_splitting_angle_threshold_deg: float = 25.0,
+) -> Mesh:
+    """
+    Load a triangle mesh from a USD prim that has the UsdGeom.Mesh schema.
+
+    Args:
+        prim (Usd.Prim): The USD prim to load the mesh from.
+        verbose (bool): Whether to print verbose output.
+        maxhullvert (int): The maximum number of vertices for the convex hull approximation.
+        face_varying_normal_conversion (Literal["vertex_averaging", "angle_weighted", "vertex_splitting"]): The method to convert faceVarying normals to vertex normals.
+        vertex_splitting_angle_threshold_deg (float): The threshold angle in degrees for splitting vertices based on the face normals in case of faceVarying normals and ``face_varying_normal_conversion`` is "vertex_splitting". Corners whose normals differ by more than angle_deg will be split
+        into different vertex clusters. Lower = more splits (sharper), higher = fewer splits (smoother).
+
+    Returns:
+        newton.Mesh: The loaded mesh.
+    """
+
+    mesh = UsdGeom.Mesh(prim)
+
+    points = np.array(mesh.GetPointsAttr().Get(), dtype=np.float64)
+    indices = np.array(mesh.GetFaceVertexIndicesAttr().Get(), dtype=np.int32)
+    counts = mesh.GetFaceVertexCountsAttr().Get()
+    normals = mesh.GetNormalsAttr().Get()
+    if normals is not None:
+        normals = np.array(normals, dtype=np.float64)
+        if mesh.GetNormalsInterpolation() == "faceVarying":
+            # compute vertex normals
+            # try to read primvars:normals:indices (the primvar indexer)
+            normals_index_attr = prim.GetAttribute("primvars:normals:indices")
+            if normals_index_attr and normals_index_attr.HasValue():
+                normal_indices = np.array(normals_index_attr.Get(), dtype=np.int64)
+                normals_fv = normals[normal_indices]  # (C,3) expanded
+            else:
+                # If faceVarying, values length must match number of corners
+                assert len(normals) == len(indices)
+                normals_fv = normals  # (C,3)
+
+            V = len(points)
+            accum = np.zeros((V, 3), dtype=np.float64)
+            if face_varying_normal_conversion == "vertex_splitting":
+                C = len(indices)
+                Nfv = np.asarray(normals_fv, dtype=np.float64)
+                assert indices.shape[0] == Nfv.shape[0], "indices and faceVarying normals must have same length"
+
+                # Normalize corner normals (direction only)
+                nlen = np.linalg.norm(Nfv, axis=1, keepdims=True)
+                nlen = np.clip(nlen, 1e-30, None)
+                Ndir = Nfv / nlen
+
+                cos_thresh = np.cos(np.deg2rad(vertex_splitting_angle_threshold_deg))
+
+                # For each original vertex v, we'll keep a list of clusters:
+                # each cluster stores (sum_dir, count, new_vid)
+                clusters_per_v = [[] for _ in range(V)]
+
+                new_points = []
+                new_norm_sums = []  # accumulate directions per new vertex id
+                new_indices = np.empty_like(indices)
+
+                # Helper to create a new vertex clone from original v
+                def _new_vertex_from(v, n_dir):
+                    new_vid = len(new_points)
+                    new_points.append(points[v])
+                    new_norm_sums.append(n_dir.copy())
+                    clusters_per_v[v].append([n_dir.copy(), 1, new_vid])
+                    return new_vid
+
+                # Assign each corner to a cluster (new vertex) based on angular proximity
+                for c in range(C):
+                    v = int(indices[c])
+                    n_dir = Ndir[c]
+
+                    clusters = clusters_per_v[v]
+                    assigned = False
+                    # try to match an existing cluster
+                    for cl in clusters:
+                        sum_dir, cnt, new_vid = cl
+                        # compare with current mean direction (sum_dir normalized)
+                        mean_dir = sum_dir / max(np.linalg.norm(sum_dir), 1e-30)
+                        if float(np.dot(mean_dir, n_dir)) >= cos_thresh:
+                            # assign to this cluster
+                            cl[0] = sum_dir + n_dir
+                            cl[1] = cnt + 1
+                            new_norm_sums[new_vid] += n_dir
+                            new_indices[c] = new_vid
+                            assigned = True
+                            break
+
+                    if not assigned:
+                        new_vid = _new_vertex_from(v, n_dir)
+                        new_indices[c] = new_vid
+
+                new_points = np.asarray(new_points, dtype=np.float64)
+
+                # Produce per-vertex normalized normals for the new vertices
+                new_norm_sums = np.asarray(new_norm_sums, dtype=np.float64)
+                nn = np.linalg.norm(new_norm_sums, axis=1, keepdims=True)
+                nn = np.clip(nn, 1e-30, None)
+                new_vertex_normals = (new_norm_sums / nn).astype(np.float32)
+
+                points = new_points
+                indices = new_indices
+                normals = new_vertex_normals
+            elif face_varying_normal_conversion == "vertex_averaging":
+                # basic averaging
+                for c, v in enumerate(indices):
+                    accum[v] += normals_fv[c]
+                # normalize
+                lengths = np.linalg.norm(accum, axis=1, keepdims=True)
+                lengths[lengths < 1e-20] = 1.0
+                # vertex normals
+                normals = (accum / lengths).astype(np.float32)
+            elif face_varying_normal_conversion == "angle_weighted":
+                # area- or corner-angle weighting
+                offset = 0
+                for nverts in counts:
+                    face_idx = indices[offset : offset + nverts]
+                    face_pos = points[face_idx]  # (n,3)
+                    # compute per-corner angles at each vertex in the face (omitted here for brevity)
+                    weights = corner_angles(face_pos)  # (n,)
+                    for i in range(nverts):
+                        v = face_idx[i]
+                        accum[v] += normals_fv[offset + i] * weights[i]
+                    offset += nverts
+
+                vertex_normals = accum / np.clip(np.linalg.norm(accum, axis=1, keepdims=True), 1e-20, None)
+                normals = vertex_normals.astype(np.float32)
+            else:
+                raise ValueError(f"Invalid face_varying_normal_conversion: {face_varying_normal_conversion}")
+
+    faces = []
+    face_id = 0
+    for count in counts:
+        if count == 3:
+            faces.append(indices[face_id : face_id + 3])
+        elif count == 4:
+            faces.append(indices[face_id : face_id + 3])
+            faces.append(indices[[face_id, face_id + 2, face_id + 3]])
+        elif verbose:
+            print(
+                f"Error while parsing USD mesh {prim.GetPath()}: encountered polygon with {count} vertices, but only triangles and quads are supported."
+            )
+            continue
+        face_id += count
+
+    faces = np.array(faces, dtype=np.int32)
+
+    flip_winding = False
+    handedness = mesh.GetOrientationAttr().Get()
+    if handedness.lower() == "lefthanded":
+        flip_winding = True
+    if flip_winding:
+        faces = faces[:, ::-1]
+
+    return Mesh(points, faces.flatten(), normals=normals, maxhullvert=maxhullvert)

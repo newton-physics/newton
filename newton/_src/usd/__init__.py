@@ -26,6 +26,7 @@ from .utils import (
     get_scale,
     get_transform,
     has_attribute,
+    load_mesh,
 )
 
 __all__ = [
@@ -41,4 +42,5 @@ __all__ = [
     "get_scale",
     "get_transform",
     "has_attribute",
+    "load_mesh",
 ]
