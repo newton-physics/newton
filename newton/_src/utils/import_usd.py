@@ -254,7 +254,7 @@ def parse_usd(
         has_particle_collision=False,
     )
 
-    def load_visual_shapes(parent_body_id, prim, incoming_xform, incoming_scale=wp.vec3(1.0)):
+    def load_visual_shapes(parent_body_id: int, prim: Usd.Prim, incoming_xform: wp.transform, incoming_scale: wp.vec3):
         if (
             prim.HasAPI(UsdPhysics.RigidBodyAPI)
             or prim.HasAPI(UsdPhysics.MassAPI)
@@ -445,7 +445,7 @@ def parse_usd(
         path_body_map[key] = b
         if load_non_physics_prims:
             for child in prim.GetChildren():
-                load_visual_shapes(b, child, wp.transform_identity())
+                load_visual_shapes(b, child, wp.transform_identity(), wp.vec3(1.0))
         return b
 
     def parse_body(rigid_body_desc, prim, incoming_xform=None, add_body_to_builder=True):
