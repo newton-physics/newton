@@ -81,7 +81,7 @@ def render_megakernel(rc: RenderContext):
     if rc.render_depth:
         rc.output.depth_image.fill_(wp.float32(0.0))
 
-    @wp.kernel
+    @wp.kernel(enable_backward=False)
     def _render_megakernel(
         # Model and Options
         num_worlds: int,

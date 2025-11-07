@@ -156,7 +156,7 @@ def compute_ellipsoid_bounds(pos: wp.vec3, rot: wp.mat33, size: wp.vec3) -> tupl
     return compute_box_bounds(pos, rot, extent)
 
 
-@wp.kernel
+@wp.kernel(enable_backward="False")
 def compute_bvh_bounds(
     num_geom_in_bvh: int,
     num_worlds: int,
@@ -215,7 +215,7 @@ def compute_bvh_bounds(
     groups[world_id * num_geom_in_bvh + bvh_geom_local] = world_id
 
 
-@wp.kernel
+@wp.kernel(enable_backward="False")
 def compute_bvh_group_roots(bvh_id: wp.uint64, group_roots: wp.array(dtype=wp.int32)):
     tid = wp.tid()
     root = wp.bvh_get_group_root(bvh_id, tid)
