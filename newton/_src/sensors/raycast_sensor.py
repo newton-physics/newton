@@ -18,7 +18,7 @@ import math
 import numpy as np
 import warp as wp
 
-from ..geometry.raycast import raycast_sensor_kernel
+from ..geometry.raycast import raycast_sensor_kernel, raycast_sensor_particles_kernel
 from ..sim import Model, State
 
 
@@ -113,6 +113,9 @@ class RaycastSensor:
         # Compute camera basis vectors and warp vectors
         self._compute_camera_basis(camera_dir, camera_up)
 
+        # Lazily constructed structure for particle queries
+        self._particle_grid: wp.HashGrid | None = None
+
     def _compute_camera_basis(self, direction: np.ndarray, up: np.ndarray):
         """Compute orthonormal camera basis vectors and update warp vectors.
 
@@ -141,27 +144,41 @@ class RaycastSensor:
         self.camera_up = np.cross(self.camera_right, self.camera_direction)
         self.camera_up = self.camera_up / np.linalg.norm(self.camera_up)
 
-    def eval(self, state: State):
+    def eval(
+        self,
+        state: State,
+        include_particles: bool = False,
+        particle_march_step: float | None = None,
+    ):
         """Evaluate the raycast sensor to generate a depth image.
 
         Casts rays from the camera through each pixel and records the distance to the closest
-        intersection with the scene geometry.
+        intersection with the scene geometry. When ``include_particles`` is enabled (not enabled by default),
+        particles stored in the simulation state are also considered.
 
         Args:
             state: The current state of the simulation containing body poses
+            include_particles: Whether to test ray intersections against particles present in ``state``
+            particle_march_step: Optional stride used when marching along each ray during particle queries.
+                Defaults to half of the maximum particle radius when particles are available.
         """
+
+        if include_particles and particle_march_step is not None and particle_march_step <= 0.0:
+            raise ValueError("particle_march_step must be positive when provided.")
+
         # Reset depth buffer to maximum distance
         self._depth_buffer.fill_(self.max_distance)
-
-        # Launch raycast kernel for each pixel-shape combination
-        # We use 3D launch with dimensions (width, height, num_shapes)
         num_shapes = len(self.model.shape_body)
-        if num_shapes > 0:
-            # Create warp vectors just before kernel launch
+
+        if (include_particles and self._does_state_have_particles(state)) or num_shapes != 0:
             camera_position = wp.vec3(*self.camera_position)
             camera_direction = wp.vec3(*self.camera_direction)
             camera_up = wp.vec3(*self.camera_up)
             camera_right = wp.vec3(*self.camera_right)
+
+        # Launch raycast kernel for each pixel-shape combination
+        # We use 3D launch with dimensions (width, height, num_shapes)
+        if num_shapes > 0:
             wp.launch(
                 kernel=raycast_sensor_kernel,
                 dim=(self.width, self.height, num_shapes),
@@ -186,8 +203,82 @@ class RaycastSensor:
                 device=self.device,
             )
 
+        if include_particles and self._does_state_have_particles(state):
+            self._raycast_particles(
+                state=state,
+                camera_position=camera_position,
+                camera_direction=camera_direction,
+                camera_up=camera_up,
+                camera_right=camera_right,
+                march_step=particle_march_step,
+            )
+
         # Set pixels that still have max_distance to -1.0 to indicate no hit
         self._clamp_no_hits()
+
+    def _get_particle_grid(self) -> wp.HashGrid:
+        """Return a hash grid for particle queries, constructing it lazily."""
+        if self._particle_grid is None:
+            with wp.ScopedDevice(self.device):
+                self._particle_grid = wp.HashGrid(128, 128, 128)
+        return self._particle_grid
+
+    def _raycast_particles(
+        self,
+        state: State,
+        camera_position: wp.vec3,
+        camera_direction: wp.vec3,
+        camera_up: wp.vec3,
+        camera_right: wp.vec3,
+        march_step: float | None,
+    ) -> None:
+        """Intersect rays with particles using a spatial hash grid."""
+
+        particle_positions = state.particle_q
+        particle_count = state.particle_count
+        particle_radius = self.model.particle_radius
+        max_radius = float(self.model.particle_max_radius)
+
+        search_radius = max_radius + 1.0e-6
+        step = march_step if march_step is not None else 0.5 * search_radius
+
+        grid = self._get_particle_grid()
+        with wp.ScopedDevice(self.device):
+            grid.reserve(particle_count)
+            grid.build(particle_positions, radius=search_radius)
+
+        wp.launch(
+            kernel=raycast_sensor_particles_kernel,
+            dim=(self.width, self.height),
+            inputs=[
+                grid.id,
+                particle_positions,
+                particle_radius,
+                float(search_radius),
+                float(step),
+                camera_position,
+                camera_direction,
+                camera_up,
+                camera_right,
+                float(self.fov_scale),
+                float(self.aspect_ratio),
+                self._resolution,
+                float(self.max_distance),
+            ],
+            outputs=[self._depth_buffer],
+            device=self.device,
+        )
+
+    def _does_state_have_particles(self, state: State) -> bool:
+        """Check if the given state has particles available for raycasting."""
+        particle_positions = state.particle_q
+        if particle_positions is None or state.particle_count == 0:
+            return False
+
+        if self.model.particle_radius is None or self.model.particle_max_radius <= 0.0:
+            raise ValueError("Model must have valid particle radius to raycast when particles are present.")
+
+        return True
 
     def _clamp_no_hits(self):
         """Replace max_distance values with -1.0 to indicate no intersection."""
