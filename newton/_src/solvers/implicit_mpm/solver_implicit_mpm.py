@@ -2030,6 +2030,7 @@ class SolverImplicitMPM(SolverBase):
                 "particle_flags": particle_flags,
                 "active_cells": active_cells,
             },
+            temporary_store=self.temporary_store,
         )
 
         partition = fem.ExplicitGeometryPartition(
@@ -2115,6 +2116,7 @@ class SolverImplicitMPM(SolverBase):
                 domain=domain,
                 positions=positions,
                 measures=self.mpm_model.particle_volume,
+                temporary_store=self.temporary_store,
             )
 
             if self.grid_type == "fixed":
@@ -2212,6 +2214,7 @@ class SolverImplicitMPM(SolverBase):
                     "inv_cell_volume": inv_cell_volume,
                 },
                 output_dtype=wp.vec3,
+                temporary_store=self.temporary_store,
             )
 
             if self.apic:
@@ -2227,6 +2230,7 @@ class SolverImplicitMPM(SolverBase):
                     },
                     output=velocity_int,
                     add=True,
+                    temporary_store=self.temporary_store,
                 )
 
             node_particle_mass = fem.integrate(
@@ -2239,6 +2243,7 @@ class SolverImplicitMPM(SolverBase):
                     "particle_flags": model.particle_flags,
                 },
                 output_dtype=float,
+                temporary_store=self.temporary_store,
             )
 
             drag = mpm_model.air_drag * dt
@@ -2277,6 +2282,7 @@ class SolverImplicitMPM(SolverBase):
                 values={"inv_cell_volume": inv_cell_volume},
                 assembly="nodal",
                 output=scratch.collider_node_volume,
+                temporary_store=self.temporary_store,
             )
 
             # rasterize sdf and properties to grid
@@ -2319,6 +2325,7 @@ class SolverImplicitMPM(SolverBase):
                     at=scratch.collider_fraction_test.space_restriction,
                     reduction="first",
                     fields={"trial": scratch.fraction_trial, "normal": scratch.collider_normal_field},
+                    temporary_store=self.temporary_store,
                 )
 
     def _build_collider_rigidity_operator(
@@ -2383,6 +2390,7 @@ class SolverImplicitMPM(SolverBase):
                 fields={"phi": scratch.fraction_test},
                 values={"inv_cell_volume": inv_cell_volume},
                 output_dtype=float,
+                temporary_store=self.temporary_store,
             )
 
             elastic_parameters_int = fem.integrate(
@@ -2395,6 +2403,7 @@ class SolverImplicitMPM(SolverBase):
                     "inv_cell_volume": inv_cell_volume,
                 },
                 output_dtype=wp.vec3,
+                temporary_store=self.temporary_store,
             )
 
             wp.launch(
@@ -2420,6 +2429,7 @@ class SolverImplicitMPM(SolverBase):
                     "dt": dt,
                 },
                 output=scratch.int_symmetric_strain,
+                temporary_store=self.temporary_store,
             )
 
             fem.integrate(
@@ -2436,6 +2446,7 @@ class SolverImplicitMPM(SolverBase):
                     "dt": dt,
                 },
                 output=scratch.compliance_matrix,
+                temporary_store=self.temporary_store,
             )
 
     def _build_plasticity_system(
@@ -2455,6 +2466,7 @@ class SolverImplicitMPM(SolverBase):
                 fields={"phi": scratch.divergence_test},
                 values={"inv_cell_volume": inv_cell_volume},
                 output=scratch.strain_node_particle_volume,
+                temporary_store=self.temporary_store,
             )
 
         with self._timer("Interpolated yield parameters"):
@@ -2470,6 +2482,7 @@ class SolverImplicitMPM(SolverBase):
                     "inv_cell_volume": inv_cell_volume,
                 },
                 output_dtype=YieldParamVec,
+                temporary_store=self.temporary_store,
             )
 
             wp.launch(
@@ -2490,6 +2503,7 @@ class SolverImplicitMPM(SolverBase):
                     fields={"phi": scratch.divergence_test},
                     values={"inv_cell_volume": inv_cell_volume},
                     output=scratch.strain_node_volume,
+                    temporary_store=self.temporary_store,
                 )
 
                 if isinstance(scratch.collider_distance_field.space.basis, fem.PointBasisSpace):
@@ -2504,6 +2518,7 @@ class SolverImplicitMPM(SolverBase):
                             "inv_cell_volume": inv_cell_volume,
                         },
                         output=scratch.strain_node_collider_volume,
+                        temporary_store=self.temporary_store,
                     )
                 else:
                     fem.integrate(
@@ -2516,6 +2531,7 @@ class SolverImplicitMPM(SolverBase):
                             "inv_cell_volume": inv_cell_volume,
                         },
                         output=scratch.strain_node_collider_volume,
+                        temporary_store=self.temporary_store,
                     )
 
                 wp.launch(
@@ -2547,6 +2563,7 @@ class SolverImplicitMPM(SolverBase):
                 },
                 output_dtype=float,
                 output=scratch.strain_matrix,
+                temporary_store=self.temporary_store,
             )
 
     def _solve_rheology(
@@ -2646,6 +2663,7 @@ class SolverImplicitMPM(SolverBase):
                         "plastic_strain_delta": scratch.plastic_strain_delta_field,
                         "elastic_strain_delta": scratch.elastic_strain_delta_field,
                     },
+                    temporary_store=self.temporary_store,
                 )
 
         # (A)PIC advection
@@ -2665,6 +2683,7 @@ class SolverImplicitMPM(SolverBase):
                 fields={
                     "grid_vel": state_out.velocity_field,
                 },
+                temporary_store=self.temporary_store,
             )
 
     @staticmethod
@@ -2709,8 +2728,7 @@ class SolverImplicitMPM(SolverBase):
         if state_out.ws_stress_field is None or state_out.ws_stress_field.geometry != sym_strain_space.geometry:
             state_out.ws_stress_field = sym_strain_space.make_field()
 
-    @staticmethod
-    def _warmstart_fields(prev_impulse_field: fem.Field, prev_stress_field: fem.Field, scratch: _ImplicitMPMScratchpad):
+    def _warmstart_fields(self, prev_impulse_field: fem.Field, prev_stress_field: fem.Field, scratch: _ImplicitMPMScratchpad):
         """Interpolate previous grid fields into the current grid layout.
 
         Transfers impulse and stress fields from the previous grid to the new
@@ -2732,6 +2750,7 @@ class SolverImplicitMPM(SolverBase):
                 dest=scratch.impulse_field,
                 at=scratch.collider_fraction_test.space_restriction,
                 reduction="first",
+                temporary_store=self.temporary_store,
             )
 
         # Interpolate previous stress
@@ -2743,6 +2762,7 @@ class SolverImplicitMPM(SolverBase):
             dest=scratch.stress_field,
             at=scratch.sym_strain_test.space_restriction,
             reduction="first",
+            temporary_store=self.temporary_store,
         )
 
     @staticmethod
