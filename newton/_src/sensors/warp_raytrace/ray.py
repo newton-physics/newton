@@ -447,18 +447,18 @@ def ray_cone_with_normal(
     radius = size[0]
 
     if wp.abs(hit_local[2] - half_height) <= EPSILON:
-        normal_local = wp.vec3(0.0, 0.0, 1.0)
+        normal_local = wp.vec3f(0.0, 0.0, 1.0)
     elif wp.abs(hit_local[2] + half_height) <= EPSILON:
-        normal_local = wp.vec3(0.0, 0.0, -1.0)
+        normal_local = wp.vec3f(0.0, 0.0, -1.0)
     else:
         radial_sq = hit_local[0] * hit_local[0] + hit_local[1] * hit_local[1]
         radial = wp.sqrt(radial_sq)
         if radial <= EPSILON:
-            normal_local = wp.vec3(0.0, 0.0, 1.0)
+            normal_local = wp.vec3f(0.0, 0.0, 1.0)
         else:
             denom = wp.max(2.0 * wp.abs(half_height), EPSILON)
             slope = radius / denom
-            normal_local = wp.vec3(hit_local[0], hit_local[1], slope * radial)
+            normal_local = wp.vec3f(hit_local[0], hit_local[1], slope * radial)
             normal_local = wp.normalize(normal_local)
 
     normal_world = mat @ normal_local
@@ -526,12 +526,11 @@ def ray_box_with_normal(
 
     # Select the face by matching the closest intersection time among the 6 faces
     normal_local = wp.vec3f(0.0, 0.0, 0.0)
-    eps = wp.float32(1.0e-6)
     found = wp.bool(False)
     for i in range(3):
         for k in range(2):  # k=0 => -side, k=1 => +side
             t = all[2 * i + k]
-            if t >= 0.0 and wp.abs(t - t_hit) < eps:
+            if t >= 0.0 and wp.abs(t - t_hit) < EPSILON:
                 normal_local[i] = -1.0 if k == 0 else 1.0
                 found = True
                 break
