@@ -328,6 +328,31 @@ def test_raycast_sensor_mixed_hits_prefers_closest_particle(test: unittest.TestC
     test.assertAlmostEqual(depth[0, 0], 2.5, delta=1e-3)
 
 
+def test_raycast_sensor_particle_step_truncation_warns(test: unittest.TestCase, device: str):
+    """Extremely small march steps should trigger a warning when step count exceeds int32 limits."""
+    builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+    builder.add_particle(pos=(0.0, 0.0, 2.0), vel=(0.0, 0.0, 0.0), mass=0.0, radius=0.1)
+
+    with wp.ScopedDevice(device):
+        model = builder.finalize()
+
+    state = model.state()
+
+    sensor = RaycastSensor(
+        model=model,
+        camera_position=(0.0, 0.0, 0.0),
+        camera_direction=(0.0, 0.0, 1.0),
+        camera_up=(0.0, 1.0, 0.0),
+        fov_radians=0.1,
+        width=1,
+        height=1,
+        max_distance=1.0e12,
+    )
+
+    with test.assertWarns(RuntimeWarning):
+        sensor.eval(state, include_particles=True, particle_march_step=1.0e-9)
+
+
 def test_raycast_sensor_single_pixel_hit(test: unittest.TestCase, device):
     """Test that an asymmetric scene that should produce only a single hit for an intended pixel."""
 
@@ -415,6 +440,12 @@ add_function_test(
     TestRaycastSensor,
     "test_raycast_sensor_mixed_hits_prefers_closest_particle",
     test_raycast_sensor_mixed_hits_prefers_closest_particle,
+    devices=devices,
+)
+add_function_test(
+    TestRaycastSensor,
+    "test_raycast_sensor_particle_step_truncation_warns",
+    test_raycast_sensor_particle_step_truncation_warns,
     devices=devices,
 )
 add_function_test(

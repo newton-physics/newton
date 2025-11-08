@@ -14,6 +14,7 @@
 # limitations under the License.
 
 import math
+import warnings
 
 import numpy as np
 import warp as wp
@@ -28,6 +29,9 @@ def clamp_no_hits_kernel(depth_image: wp.array(dtype=float), max_dist: float):
     tid = wp.tid()
     if depth_image[tid] >= max_dist:
         depth_image[tid] = -1.0
+
+
+INT32_MAX = (1 << 31) - 1
 
 
 class RaycastSensor:
@@ -115,6 +119,7 @@ class RaycastSensor:
 
         # Lazily constructed structure for particle queries
         self._particle_grid: wp.HashGrid | None = None
+        self._particle_step_warning_emitted = False
 
     def _compute_camera_basis(self, direction: np.ndarray, up: np.ndarray):
         """Compute orthonormal camera basis vectors and update warp vectors.
@@ -241,6 +246,17 @@ class RaycastSensor:
 
         search_radius = max_radius + 1.0e-6
         step = march_step if march_step is not None else 0.5 * search_radius
+        max_steps, truncated, requested_steps = self._compute_particle_march_steps(step)
+
+        if truncated and not self._particle_step_warning_emitted:
+            requested_msg = "infinite" if not math.isfinite(requested_steps) else f"{requested_steps:,}"
+            warnings.warn(
+                f"Particle ray marching limited to {INT32_MAX:,} steps (requested {requested_msg}). "
+                "Increase particle_march_step or reduce max_distance for full coverage.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+            self._particle_step_warning_emitted = True
 
         grid = self._get_particle_grid()
         with wp.ScopedDevice(self.device):
@@ -256,6 +272,7 @@ class RaycastSensor:
                 particle_radius,
                 float(search_radius),
                 float(step),
+                int(max_steps),
                 camera_position,
                 camera_direction,
                 camera_up,
@@ -279,6 +296,25 @@ class RaycastSensor:
             raise ValueError("Model must have valid particle radius to raycast when particles are present.")
 
         return True
+
+    def _compute_particle_march_steps(self, step: float) -> tuple[int, bool, float]:
+        """Return (steps, truncated, requested_steps) safeguarding 32-bit loop counters."""
+
+        if step <= 0.0:
+            raise ValueError("particle march step must be positive.")
+
+        ratio = float(self.max_distance) / float(step)
+        if ratio <= 0.0:
+            return 1, False, 1.0
+
+        if not math.isfinite(ratio):
+            return INT32_MAX, True, math.inf
+
+        requested_steps = math.floor(ratio) + 1
+        if requested_steps > INT32_MAX:
+            return INT32_MAX, True, requested_steps
+
+        return int(requested_steps), False, int(requested_steps)
 
     def _clamp_no_hits(self):
         """Replace max_distance values with -1.0 to indicate no intersection."""

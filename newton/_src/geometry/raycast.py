@@ -745,6 +745,7 @@ def raycast_sensor_particles_kernel(
     particle_radius: wp.array(dtype=float),
     search_radius: float,
     march_step: float,
+    max_steps: wp.int32,
     camera_position: wp.vec3,
     camera_direction: wp.vec3,
     camera_up: wp.vec3,
@@ -763,6 +764,7 @@ def raycast_sensor_particles_kernel(
         particle_radius: Array of particle radii.
         search_radius: The radius around each sample point to search for nearby particles.
         march_step: The step size for ray marching.
+        max_steps: Maximum number of ray-march iterations allowed for a pixel.
         camera_position: Camera position in world space.
         camera_direction: Camera forward direction (normalized); rays travel along this vector.
         camera_up: Camera up direction (normalized).
@@ -796,7 +798,6 @@ def raycast_sensor_particles_kernel(
 
     search_radius_local = search_radius
     step = march_step
-    max_steps = wp.int32(max_distance / step) + 1
 
     s = wp.int32(0)
     t = float(0.0)
