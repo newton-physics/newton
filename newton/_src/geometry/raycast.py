@@ -793,7 +793,7 @@ def raycast_sensor_particles_kernel(
     )
 
     best = hit_distances[pixel_y, pixel_x]
-    if best <= 0.0:
+    if best < 0.0:
         best = max_distance
 
     search_radius_local = search_radius

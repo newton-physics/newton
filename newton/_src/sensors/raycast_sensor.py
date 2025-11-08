@@ -32,6 +32,8 @@ def clamp_no_hits_kernel(depth_image: wp.array(dtype=float), max_dist: float):
 
 
 INT32_MAX = (1 << 31) - 1
+# Upper bound on work per pixel when ray-marching particles
+MAX_PARTICLE_RAY_MARCH_STEPS = 1 << 20
 
 
 class RaycastSensor:
@@ -250,8 +252,9 @@ class RaycastSensor:
 
         if truncated and not self._particle_step_warning_emitted:
             requested_msg = "infinite" if not math.isfinite(requested_steps) else f"{requested_steps:,}"
+            max_allowed = min(INT32_MAX, MAX_PARTICLE_RAY_MARCH_STEPS)
             warnings.warn(
-                f"Particle ray marching limited to {INT32_MAX:,} steps (requested {requested_msg}). "
+                f"Particle ray marching limited to {max_allowed:,} steps (requested {requested_msg}). "
                 "Increase particle_march_step or reduce max_distance for full coverage.",
                 RuntimeWarning,
                 stacklevel=2,
@@ -298,7 +301,7 @@ class RaycastSensor:
         return True
 
     def _compute_particle_march_steps(self, step: float) -> tuple[int, bool, float]:
-        """Return (steps, truncated, requested_steps) safeguarding 32-bit loop counters."""
+        """Return (steps, truncated, requested_steps) safeguarding loop counters and runtime."""
 
         if step <= 0.0:
             raise ValueError("particle march step must be positive.")
@@ -307,12 +310,14 @@ class RaycastSensor:
         if ratio <= 0.0:
             return 1, False, 1.0
 
+        max_allowed_steps = min(INT32_MAX, MAX_PARTICLE_RAY_MARCH_STEPS)
+
         if not math.isfinite(ratio):
-            return INT32_MAX, True, math.inf
+            return max_allowed_steps, True, math.inf
 
         requested_steps = math.floor(ratio) + 1
-        if requested_steps > INT32_MAX:
-            return INT32_MAX, True, requested_steps
+        if requested_steps > max_allowed_steps:
+            return max_allowed_steps, True, requested_steps
 
         return int(requested_steps), False, int(requested_steps)
 
