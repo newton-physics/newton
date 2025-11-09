@@ -358,7 +358,7 @@ def jcalc_tau(
     ang_axis_count: int,
     body_f_s: wp.spatial_vector,
     # outputs
-    tau: wp.array(dtype=float),
+    joint_tau: wp.array(dtype=float),
 ):
     if type == JointType.BALL:
         # target_ke = joint_target_ke[dof_start]
@@ -370,15 +370,17 @@ def jcalc_tau(
             # w = joint_qd[dof_start + i]
             # r = joint_q[coord_start + i]
 
-            tau[dof_start + i] = -wp.dot(S_s, body_f_s) + joint_f[dof_start + i]
-            # tau -= w * target_kd - r * target_ke
+            t = -wp.dot(S_s, body_f_s) + joint_f[dof_start + i]
+            # t -= w * target_kd - r * target_ke
+            joint_tau[dof_start + i] = t
 
         return
 
     if type == JointType.FREE or type == JointType.DISTANCE:
         for i in range(6):
             S_s = joint_S_s[dof_start + i]
-            tau[dof_start + i] = -wp.dot(S_s, body_f_s) + joint_f[dof_start + i]
+            t = -wp.dot(S_s, body_f_s) + joint_f[dof_start + i]
+            joint_tau[dof_start + i] = t
 
         return
 
@@ -406,7 +408,7 @@ def jcalc_tau(
             # total torque / force on the joint
             t = -wp.dot(S_s, body_f_s) + drive_f + joint_f[j]
 
-            tau[j] = t
+            joint_tau[j] = t
 
         return
 
@@ -826,7 +828,7 @@ def eval_rigid_tau(
     body_f_ext: wp.array(dtype=wp.spatial_vector),
     # outputs
     body_ft_s: wp.array(dtype=wp.spatial_vector),
-    tau: wp.array(dtype=float),
+    joint_tau: wp.array(dtype=float),
 ):
     # one thread per-articulation
     index = wp.tid()
@@ -874,7 +876,7 @@ def eval_rigid_tau(
             lin_axis_count,
             ang_axis_count,
             f_s,
-            tau,
+            joint_tau,
         )
 
         # update parent forces, todo: check that this is valid for the backwards pass
