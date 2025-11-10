@@ -90,6 +90,7 @@ class Example:
         self.device = wp.get_device()
 
         allegro_hand = newton.ModelBuilder()
+        newton.solvers.SolverMuJoCo.register_custom_attributes(allegro_hand)
 
         asset_path = newton.utils.download_asset("wonik_allegro")
         asset_file = str(asset_path / "usd" / "allegro_left_hand_with_cube.usda")
@@ -114,7 +115,6 @@ class Example:
             allegro_hand.joint_target[i] = 0.0
 
         builder = newton.ModelBuilder()
-        newton.solvers.SolverMuJoCo.register_custom_attributes(builder)
         builder.replicate(allegro_hand, self.num_worlds)
 
         builder.add_ground_plane()
