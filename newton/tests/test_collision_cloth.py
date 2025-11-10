@@ -808,5 +808,4 @@ add_function_test(TestCollision, "test_particle_collision", test_particle_collis
 add_function_test(TestCollision, "test_mesh_ground_collision_index", test_mesh_ground_collision_index, devices=devices)
 
 if __name__ == "__main__":
-    wp.clear_kernel_cache()
     unittest.main(verbosity=2, failfast=True)
