@@ -42,8 +42,6 @@ from newton.tests.unittest_utils import (
     sanitize_identifier,
 )
 
-wp.init()
-
 
 def _build_command_line_options(test_options: dict[str, Any]) -> list:
     """Helper function to build command-line options from the test options dictionary."""

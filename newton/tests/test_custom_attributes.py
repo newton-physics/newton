@@ -34,7 +34,6 @@ class TestCustomAttributes(unittest.TestCase):
 
     def setUp(self):
         """Set up test fixtures."""
-        wp.init()
         self.device = wp.get_device()
 
     def _add_test_robot(self, builder: ModelBuilder) -> dict[str, int]:
