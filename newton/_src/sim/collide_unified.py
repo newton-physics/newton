@@ -388,6 +388,7 @@ class CollisionPipelineUnified:
         shape_world: wp.array(dtype=int) | None = None,
         shape_flags: wp.array(dtype=int) | None = None,
         sap_sort_type=None,
+        enable_contact_matching: bool = False,
     ):
         """
         Initialize the CollisionPipelineUnified.
@@ -423,11 +424,15 @@ class CollisionPipelineUnified:
             sap_sort_type (SAPSortType | None, optional): Sorting algorithm for SAP broad phase.
                 Only used when broad_phase_mode is BroadPhaseMode.SAP. Options: SEGMENTED or TILE.
                 If None, uses default (SEGMENTED).
+            enable_contact_matching (bool, optional): Whether to enable contact matching data generation.
+                If True, allocates buffers for contact_pair_key and contact_key arrays that can be used
+                with ContactMatcher for warm-starting physics solvers. Defaults to False.
         """
         self.contacts = None
         self.shape_count = shape_count
         self.broad_phase_mode = broad_phase_mode
         self.device = device
+        self.enable_contact_matching = enable_contact_matching
 
         self.shape_pairs_max = (shape_count * (shape_count - 1)) // 2
         self.rigid_contact_margin = rigid_contact_margin
@@ -497,6 +502,14 @@ class CollisionPipelineUnified:
             self.narrow_contact_penetration = wp.zeros(self.rigid_contact_max, dtype=wp.float32, device=device)
             self.narrow_contact_count = wp.zeros(1, dtype=wp.int32, device=device)
 
+            # Contact matching arrays (optional)
+            if enable_contact_matching:
+                self.narrow_contact_pair_key = wp.zeros(self.rigid_contact_max, dtype=wp.uint64, device=device)
+                self.narrow_contact_key = wp.zeros(self.rigid_contact_max, dtype=wp.uint32, device=device)
+            else:
+                self.narrow_contact_pair_key = None
+                self.narrow_contact_key = None
+
         if soft_contact_max is None:
             soft_contact_max = shape_count * particle_count
         self.soft_contact_margin = soft_contact_margin
@@ -518,6 +531,7 @@ class CollisionPipelineUnified:
         broad_phase_mode: BroadPhaseMode = BroadPhaseMode.NXN,
         shape_pairs_filtered: wp.array(dtype=wp.vec2i) | None = None,
         sap_sort_type=None,
+        enable_contact_matching: bool = False,
     ) -> CollisionPipelineUnified:
         """
         Create a CollisionPipelineUnified instance from a Model.
@@ -537,6 +551,8 @@ class CollisionPipelineUnified:
                 Required when broad_phase_mode is BroadPhaseMode.EXPLICIT. For NXN/SAP modes, can use model.shape_contact_pairs if available.
             sap_sort_type (SAPSortType | None, optional): Sorting algorithm for SAP broad phase.
                 Only used when broad_phase_mode is BroadPhaseMode.SAP. If None, uses default (SEGMENTED).
+            enable_contact_matching (bool, optional): Whether to enable contact matching data generation.
+                If True, allocates and populates contact_pair_key and contact_key arrays. Defaults to False.
 
         Returns:
             CollisionPipeline: The constructed collision pipeline.
@@ -576,6 +592,7 @@ class CollisionPipelineUnified:
             shape_world=model.shape_world if hasattr(model, "shape_world") else None,
             shape_flags=model.shape_flags if hasattr(model, "shape_flags") else None,
             sap_sort_type=sap_sort_type,
+            enable_contact_matching=enable_contact_matching,
         )
 
     def collide(self, model: Model, state: State) -> Contacts:
@@ -699,6 +716,8 @@ class CollisionPipelineUnified:
             contact_normal=self.narrow_contact_normal,
             contact_penetration=self.narrow_contact_penetration,
             contact_tangent=None,
+            contact_pair_key=self.narrow_contact_pair_key,
+            contact_key=self.narrow_contact_key,
             contact_count=self.narrow_contact_count,
             device=self.device,
         )
