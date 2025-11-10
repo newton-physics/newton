@@ -626,7 +626,7 @@ def parse_usd(
 
                 free_axis = limit_lower < limit_upper
 
-                def define_joint_mode(dof, joint_desc):
+                def define_joint_targets(dof, joint_desc):
                     target_pos = 0.0  # TODO: parse target from state:*:physics:appliedForce usd attribute when no drive is present
                     target_vel = 0.0
                     target_ke = 0.0
@@ -643,7 +643,7 @@ def parse_usd(
                             effort_limit = drive.second.forceLimit
                     return target_pos, target_vel, target_ke, target_kd, effort_limit
 
-                target_pos, target_vel, target_ke, target_kd, effort_limit = define_joint_mode(dof, joint_desc)
+                target_pos, target_vel, target_ke, target_kd, effort_limit = define_joint_targets(dof, joint_desc)
 
                 _trans_axes = {
                     UsdPhysics.JointDOF.TransX: (1.0, 0.0, 0.0),

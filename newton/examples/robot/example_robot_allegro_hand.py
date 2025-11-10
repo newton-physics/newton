@@ -48,7 +48,7 @@ def move_hand(
     sim_time: wp.array(dtype=wp.float32),
     sim_dt: float,
     # outputs
-    joint_target: wp.array(dtype=wp.float32),
+    joint_target_pos: wp.array(dtype=wp.float32),
     joint_parent_xform: wp.array(dtype=wp.transform),
 ):
     world_id = wp.tid()
@@ -61,7 +61,7 @@ def move_hand(
     for i in range(20):
         di = root_dof_start + i
         target = wp.sin(t + float(i * 6) * 0.1) * 0.15 + 0.3
-        joint_target[di] = wp.clamp(target, joint_limit_lower[di], joint_limit_upper[di])
+        joint_target_pos[di] = wp.clamp(target, joint_limit_lower[di], joint_limit_upper[di])
 
     # animate the root joint transform
     q = wp.quat_identity()

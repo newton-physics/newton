@@ -228,7 +228,7 @@ class ModelBuilder:
             """The damping stiffness of the joint axis limits. Defaults to 1e1."""
             self.target_pos = target_pos
             """The target position of the joint axis.
-            If the initial `target` is outside the limits,
+            If the initial `target_pos` is outside the limits,
             it defaults to the midpoint of `limit_lower` and `limit_upper`. Otherwise, defaults to 0.0."""
             self.target_vel = target_vel
             """The target velocity of the joint axis."""
