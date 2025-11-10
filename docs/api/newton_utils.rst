@@ -9,6 +9,7 @@ newton.utils
    :toctree: _generated
    :nosignatures:
 
+   EventTracer
    RecorderBasic
    RecorderModelAndState
 
@@ -20,6 +21,7 @@ newton.utils
 
    boltzmann
    color_graph
+   compute_world_offsets
    create_box_mesh
    create_capsule_mesh
    create_cone_mesh
@@ -27,8 +29,10 @@ newton.utils
    create_plane_mesh
    create_sphere_mesh
    download_asset
+   event_scope
    leaky_max
    leaky_min
+   parse_warp_value_from_string
    plot_graph
    quat_between_axes
    quat_decompose

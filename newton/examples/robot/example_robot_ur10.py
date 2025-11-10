@@ -74,6 +74,7 @@ class Example:
         self.device = wp.get_device()
 
         ur10 = newton.ModelBuilder()
+        newton.solvers.SolverMuJoCo.register_custom_attributes(ur10)
 
         asset_path = newton.utils.download_asset("universal_robots_ur10")
         asset_file = str(asset_path / "usd" / "ur10_instanceable.usda")

@@ -53,6 +53,7 @@ __all__ += [
 # sim
 # ==================================================================================
 from ._src.sim import (  # noqa: E402
+    JOINT_LIMIT_UNLIMITED,
     BroadPhaseMode,
     CollisionPipeline,
     CollisionPipelineUnified,
@@ -61,6 +62,8 @@ from ._src.sim import (  # noqa: E402
     EqType,
     JointType,
     Model,
+    ModelAttributeAssignment,
+    ModelAttributeFrequency,
     ModelBuilder,
     State,
     count_rigid_contact_points,
@@ -68,12 +71,9 @@ from ._src.sim import (  # noqa: E402
     eval_ik,
     get_joint_dof_count,
 )
-from ._src.sim.model import (  # noqa: E402
-    ModelAttributeAssignment,
-    ModelAttributeFrequency,
-)
 
 __all__ += [
+    "JOINT_LIMIT_UNLIMITED",
     "BroadPhaseMode",
     "CollisionPipeline",
     "CollisionPipelineUnified",

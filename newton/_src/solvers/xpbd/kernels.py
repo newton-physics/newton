@@ -834,6 +834,9 @@ def apply_body_deltas(
     tf = q_in[tid]
     delta = deltas[tid]
 
+    v0 = wp.spatial_top(qd_in[tid])
+    w0 = wp.spatial_bottom(qd_in[tid])
+
     p0 = wp.transform_get_translation(tf)
     q0 = wp.transform_get_rotation(tf)
 
@@ -845,10 +848,15 @@ def apply_body_deltas(
 
     dp = wp.spatial_top(delta) * (inv_m * weight)
     dq = wp.spatial_bottom(delta) * weight
-    dq = wp.quat_rotate(q0, inv_I * wp.quat_rotate_inv(q0, dq))
+
+    wb = wp.quat_rotate_inv(q0, w0)
+    dwb = inv_I * wp.quat_rotate_inv(q0, dq)
+    # coriolis forces delta from dwb = (wb + dwb) I (wb + dwb) - wb I wb
+    tb = wp.cross(dwb, body_I[tid] * (wb + dwb)) + wp.cross(wb, body_I[tid] * dwb)
+    dw1 = wp.quat_rotate(q0, dwb - dt * inv_I * tb)
 
     # update orientation
-    q1 = q0 + 0.5 * wp.quat(dq * dt, 0.0) * q0
+    q1 = q0 + 0.5 * wp.quat(dw1 * dt, 0.0) * q0
     q1 = wp.normalize(q1)
 
     # update position
@@ -859,15 +867,9 @@ def apply_body_deltas(
 
     q_out[tid] = wp.transform(p1, q1)
 
-    v0 = wp.spatial_top(qd_in[tid])
-    w0 = wp.spatial_bottom(qd_in[tid])
-
     # update linear and angular velocity
     v1 = v0 + dp
-    # angular part (compute in body frame)
-    wb = wp.quat_rotate_inv(q0, w0 + dq)
-    tb = -wp.cross(wb, body_I[tid] * wb)  # coriolis forces
-    w1 = wp.quat_rotate(q0, wb + inv_I * tb * dt)
+    w1 = w0 + dw1
 
     # XXX this improves gradient stability
     if wp.length(v1) < 1e-4:

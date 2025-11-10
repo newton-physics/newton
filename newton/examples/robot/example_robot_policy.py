@@ -229,6 +229,7 @@ class Example:
 
         # Build the model
         builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        newton.solvers.SolverMuJoCo.register_custom_attributes(builder)
         builder.default_joint_cfg = newton.ModelBuilder.JointDofConfig(
             armature=0.1,
             limit_ke=1.0e2,

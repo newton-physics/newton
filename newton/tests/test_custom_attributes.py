@@ -26,7 +26,7 @@ import numpy as np
 import warp as wp
 
 import newton
-from newton._src.sim.model import ModelAttributeAssignment
+from newton import ModelAttributeAssignment, ModelBuilder
 
 
 class TestCustomAttributes(unittest.TestCase):
@@ -37,7 +37,7 @@ class TestCustomAttributes(unittest.TestCase):
         wp.init()
         self.device = wp.get_device()
 
-    def _add_test_robot(self, builder: newton.ModelBuilder) -> dict[str, int]:
+    def _add_test_robot(self, builder: ModelBuilder) -> dict[str, int]:
         """Build a simple 2-bar linkage robot without custom attributes."""
         base = builder.add_body(xform=wp.transform([0.0, 0.0, 0.0], wp.quat_identity()), mass=1.0)
         builder.add_shape_box(base, hx=0.1, hy=0.1, hz=0.1)
@@ -68,45 +68,84 @@ class TestCustomAttributes(unittest.TestCase):
 
     def test_body_custom_attributes(self):
         """Test BODY frequency custom attributes with multiple data types and assignments."""
-        builder = newton.ModelBuilder()
+        builder = ModelBuilder()
 
         # Declare MODEL assignment attributes
         builder.add_custom_attribute(
-            "custom_float",
-            newton.ModelAttributeFrequency.BODY,
-            dtype=wp.float32,
-            assignment=ModelAttributeAssignment.MODEL,
+            ModelBuilder.CustomAttribute(
+                "custom_float",
+                wp.float32,
+                newton.ModelAttributeFrequency.BODY,
+                ModelAttributeAssignment.MODEL,
+            )
         )
         builder.add_custom_attribute(
-            "custom_int", newton.ModelAttributeFrequency.BODY, dtype=wp.int32, assignment=ModelAttributeAssignment.MODEL
+            ModelBuilder.CustomAttribute(
+                name="custom_int",
+                frequency=newton.ModelAttributeFrequency.BODY,
+                dtype=wp.int32,
+                assignment=ModelAttributeAssignment.MODEL,
+            )
         )
         builder.add_custom_attribute(
-            "custom_bool", newton.ModelAttributeFrequency.BODY, dtype=wp.bool, assignment=ModelAttributeAssignment.MODEL
+            ModelBuilder.CustomAttribute(
+                "custom_bool",
+                frequency=newton.ModelAttributeFrequency.BODY,
+                dtype=wp.bool,
+                assignment=ModelAttributeAssignment.MODEL,
+            )
         )
         builder.add_custom_attribute(
-            "custom_vec3", newton.ModelAttributeFrequency.BODY, dtype=wp.vec3, assignment=ModelAttributeAssignment.MODEL
+            ModelBuilder.CustomAttribute(
+                "custom_vec3",
+                frequency=newton.ModelAttributeFrequency.BODY,
+                dtype=wp.vec3,
+                assignment=ModelAttributeAssignment.MODEL,
+            )
         )
 
         # Declare STATE assignment attributes
         builder.add_custom_attribute(
-            "velocity_limit",
-            newton.ModelAttributeFrequency.BODY,
-            dtype=wp.vec3,
-            assignment=ModelAttributeAssignment.STATE,
+            ModelBuilder.CustomAttribute(
+                name="velocity_limit",
+                frequency=newton.ModelAttributeFrequency.BODY,
+                dtype=wp.vec3,
+                assignment=ModelAttributeAssignment.STATE,
+            )
         )
         builder.add_custom_attribute(
-            "is_active", newton.ModelAttributeFrequency.BODY, dtype=wp.bool, assignment=ModelAttributeAssignment.STATE
+            ModelBuilder.CustomAttribute(
+                name="is_active",
+                frequency=newton.ModelAttributeFrequency.BODY,
+                dtype=wp.bool,
+                assignment=ModelAttributeAssignment.STATE,
+            )
         )
         builder.add_custom_attribute(
-            "energy", newton.ModelAttributeFrequency.BODY, dtype=wp.float32, assignment=ModelAttributeAssignment.STATE
+            ModelBuilder.CustomAttribute(
+                name="energy",
+                frequency=newton.ModelAttributeFrequency.BODY,
+                dtype=wp.float32,
+                assignment=ModelAttributeAssignment.STATE,
+            )
         )
 
         # Declare CONTROL assignment attributes
         builder.add_custom_attribute(
-            "gain", newton.ModelAttributeFrequency.BODY, dtype=wp.float32, assignment=ModelAttributeAssignment.CONTROL
+            ModelBuilder.CustomAttribute(
+                name="gain",
+                frequency=newton.ModelAttributeFrequency.BODY,
+                dtype=wp.float32,
+                assignment=ModelAttributeAssignment.CONTROL,
+            )
         )
         builder.add_custom_attribute(
-            "mode", newton.ModelAttributeFrequency.BODY, dtype=wp.int32, assignment=ModelAttributeAssignment.CONTROL
+            ModelBuilder.CustomAttribute(
+                name="mode",
+                frequency=newton.ModelAttributeFrequency.BODY,
+                dtype=wp.int32,
+                assignment=ModelAttributeAssignment.CONTROL,
+            )
         )
 
         robot_entities = self._add_test_robot(builder)
@@ -196,13 +235,37 @@ class TestCustomAttributes(unittest.TestCase):
 
     def test_shape_custom_attributes(self):
         """Test SHAPE frequency custom attributes with multiple data types."""
-        builder = newton.ModelBuilder()
+        builder = ModelBuilder()
 
         # Declare custom attributes before use
-        builder.add_custom_attribute("custom_float", newton.ModelAttributeFrequency.SHAPE, dtype=wp.float32)
-        builder.add_custom_attribute("custom_int", newton.ModelAttributeFrequency.SHAPE, dtype=wp.int32)
-        builder.add_custom_attribute("custom_bool", newton.ModelAttributeFrequency.SHAPE, dtype=wp.bool)
-        builder.add_custom_attribute("custom_vec2", newton.ModelAttributeFrequency.SHAPE, dtype=wp.vec2)
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="custom_float",
+                frequency=newton.ModelAttributeFrequency.SHAPE,
+                dtype=wp.float32,
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="custom_int",
+                frequency=newton.ModelAttributeFrequency.SHAPE,
+                dtype=wp.int32,
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="custom_bool",
+                frequency=newton.ModelAttributeFrequency.SHAPE,
+                dtype=wp.bool,
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="custom_vec2",
+                frequency=newton.ModelAttributeFrequency.SHAPE,
+                dtype=wp.vec2,
+            )
+        )
 
         robot_entities = self._add_test_robot(builder)
 
@@ -247,13 +310,37 @@ class TestCustomAttributes(unittest.TestCase):
 
     def test_joint_dof_coord_attributes(self):
         """Test JOINT_DOF and JOINT_COORD frequency attributes with list requirements."""
-        builder = newton.ModelBuilder()
+        builder = ModelBuilder()
 
         # Declare custom attributes before use
-        builder.add_custom_attribute("custom_float_dof", newton.ModelAttributeFrequency.JOINT_DOF, dtype=wp.float32)
-        builder.add_custom_attribute("custom_int_dof", newton.ModelAttributeFrequency.JOINT_DOF, dtype=wp.int32)
-        builder.add_custom_attribute("custom_float_coord", newton.ModelAttributeFrequency.JOINT_COORD, dtype=wp.float32)
-        builder.add_custom_attribute("custom_int_coord", newton.ModelAttributeFrequency.JOINT_COORD, dtype=wp.int32)
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="custom_float_dof",
+                frequency=newton.ModelAttributeFrequency.JOINT_DOF,
+                dtype=wp.float32,
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="custom_int_dof",
+                frequency=newton.ModelAttributeFrequency.JOINT_DOF,
+                dtype=wp.int32,
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="custom_float_coord",
+                frequency=newton.ModelAttributeFrequency.JOINT_COORD,
+                dtype=wp.float32,
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="custom_int_coord",
+                frequency=newton.ModelAttributeFrequency.JOINT_COORD,
+                dtype=wp.int32,
+            )
+        )
 
         robot_entities = self._add_test_robot(builder)
 
@@ -292,14 +379,26 @@ class TestCustomAttributes(unittest.TestCase):
 
     def test_multi_dof_joint_individual_values(self):
         """Test D6 joint with individual values per DOF and coordinate."""
-        builder = newton.ModelBuilder()
+        builder = ModelBuilder()
 
         # Declare custom attributes before use
-        builder.add_custom_attribute("custom_float_dof", newton.ModelAttributeFrequency.JOINT_DOF, dtype=wp.float32)
-        builder.add_custom_attribute("custom_int_coord", newton.ModelAttributeFrequency.JOINT_COORD, dtype=wp.int32)
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="custom_float_dof",
+                frequency=newton.ModelAttributeFrequency.JOINT_DOF,
+                dtype=wp.float32,
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="custom_int_coord",
+                frequency=newton.ModelAttributeFrequency.JOINT_COORD,
+                dtype=wp.int32,
+            )
+        )
 
         robot_entities = self._add_test_robot(builder)
-        cfg = newton.ModelBuilder.JointDofConfig
+        cfg = ModelBuilder.JointDofConfig
 
         body = builder.add_body(mass=1.0)
         builder.add_joint_d6(
@@ -331,14 +430,26 @@ class TestCustomAttributes(unittest.TestCase):
 
     def test_multi_dof_joint_vector_attributes(self):
         """Test D6 joint with vector attributes (list of lists)."""
-        builder = newton.ModelBuilder()
+        builder = ModelBuilder()
 
         # Declare custom attributes before use
-        builder.add_custom_attribute("custom_vec2_dof", newton.ModelAttributeFrequency.JOINT_DOF, dtype=wp.vec2)
-        builder.add_custom_attribute("custom_vec3_coord", newton.ModelAttributeFrequency.JOINT_COORD, dtype=wp.vec3)
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="custom_vec2_dof",
+                frequency=newton.ModelAttributeFrequency.JOINT_DOF,
+                dtype=wp.vec2,
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="custom_vec3_coord",
+                frequency=newton.ModelAttributeFrequency.JOINT_COORD,
+                dtype=wp.vec3,
+            )
+        )
 
         robot_entities = self._add_test_robot(builder)
-        cfg = newton.ModelBuilder.JointDofConfig
+        cfg = ModelBuilder.JointDofConfig
 
         body = builder.add_body(mass=1.0)
         builder.add_joint_d6(
@@ -370,14 +481,26 @@ class TestCustomAttributes(unittest.TestCase):
 
     def test_dof_coord_list_requirements(self):
         """Test that DOF and coordinate attributes must be lists with correct lengths."""
-        builder = newton.ModelBuilder()
+        builder = ModelBuilder()
 
         # Declare custom attributes before use
-        builder.add_custom_attribute("custom_float_dof", newton.ModelAttributeFrequency.JOINT_DOF, dtype=wp.float32)
-        builder.add_custom_attribute("custom_float_coord", newton.ModelAttributeFrequency.JOINT_COORD, dtype=wp.float32)
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="custom_float_dof",
+                frequency=newton.ModelAttributeFrequency.JOINT_DOF,
+                dtype=wp.float32,
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="custom_float_coord",
+                frequency=newton.ModelAttributeFrequency.JOINT_COORD,
+                dtype=wp.float32,
+            )
+        )
 
         robot_entities = self._add_test_robot(builder)
-        cfg = newton.ModelBuilder.JointDofConfig
+        cfg = ModelBuilder.JointDofConfig
 
         # Test DOF attribute must be a list (type error)
         body1 = builder.add_body(mass=1.0)
@@ -412,12 +535,30 @@ class TestCustomAttributes(unittest.TestCase):
 
     def test_vector_type_inference(self):
         """Test automatic dtype inference for vector types."""
-        builder = newton.ModelBuilder()
+        builder = ModelBuilder()
 
         # Declare custom attributes before use
-        builder.add_custom_attribute("custom_vec2", newton.ModelAttributeFrequency.BODY, dtype=wp.vec2)
-        builder.add_custom_attribute("custom_vec3", newton.ModelAttributeFrequency.BODY, dtype=wp.vec3)
-        builder.add_custom_attribute("custom_vec4", newton.ModelAttributeFrequency.BODY, dtype=wp.vec4)
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="custom_vec2",
+                frequency=newton.ModelAttributeFrequency.BODY,
+                dtype=wp.vec2,
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="custom_vec3",
+                frequency=newton.ModelAttributeFrequency.BODY,
+                dtype=wp.vec3,
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="custom_vec4",
+                frequency=newton.ModelAttributeFrequency.BODY,
+                dtype=wp.vec4,
+            )
+        )
 
         body = builder.add_body(
             mass=1.0,
@@ -443,11 +584,17 @@ class TestCustomAttributes(unittest.TestCase):
 
     def test_string_attributes_handling(self):
         """Test that undeclared attributes and incorrect frequency/assignment are rejected."""
-        builder = newton.ModelBuilder()
+        builder = ModelBuilder()
         robot_entities = self._add_test_robot(builder)
 
         # Test 1: Undeclared string attribute should raise AttributeError
-        builder.add_custom_attribute("custom_float", newton.ModelAttributeFrequency.BODY, dtype=wp.float32)
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="custom_float",
+                frequency=newton.ModelAttributeFrequency.BODY,
+                dtype=wp.float32,
+            )
+        )
 
         with self.assertRaises(AttributeError):
             builder.add_body(
@@ -463,7 +610,13 @@ class TestCustomAttributes(unittest.TestCase):
         self.assertNotIn("custom_string", custom_attrs)
 
         # Test 2: Attribute with wrong frequency should raise ValueError
-        builder.add_custom_attribute("body_only_attr", newton.ModelAttributeFrequency.BODY, dtype=wp.float32)
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="body_only_attr",
+                frequency=newton.ModelAttributeFrequency.BODY,
+                dtype=wp.float32,
+            )
+        )
 
         # Trying to use BODY frequency attribute on a shape should fail
         with self.assertRaises(ValueError) as context:
@@ -477,7 +630,13 @@ class TestCustomAttributes(unittest.TestCase):
         self.assertIn("frequency", str(context.exception).lower())
 
         # Test 3: Using SHAPE frequency attribute on a body should fail
-        builder.add_custom_attribute("shape_only_attr", newton.ModelAttributeFrequency.SHAPE, dtype=wp.float32)
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="shape_only_attr",
+                frequency=newton.ModelAttributeFrequency.SHAPE,
+                dtype=wp.float32,
+            )
+        )
 
         with self.assertRaises(ValueError) as context:
             builder.add_body(mass=1.0, custom_attributes={"shape_only_attr": 2.0})
@@ -503,10 +662,16 @@ class TestCustomAttributes(unittest.TestCase):
 
     def test_assignment_types(self):
         """Test custom attribute assignment to MODEL objects."""
-        builder = newton.ModelBuilder()
+        builder = ModelBuilder()
 
         # Declare custom attribute before use
-        builder.add_custom_attribute("custom_float", newton.ModelAttributeFrequency.BODY, dtype=wp.float32)
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="custom_float",
+                frequency=newton.ModelAttributeFrequency.BODY,
+                dtype=wp.float32,
+            )
+        )
 
         builder.add_body(mass=1.0, custom_attributes={"custom_float": 25.0})
 
@@ -523,12 +688,30 @@ class TestCustomAttributes(unittest.TestCase):
 
     def test_value_dtype_compatibility(self):
         """Test that values work correctly with declared dtypes."""
-        builder = newton.ModelBuilder()
+        builder = ModelBuilder()
 
         # Declare attributes with different dtypes
-        builder.add_custom_attribute("scalar_attr", newton.ModelAttributeFrequency.BODY, dtype=wp.float32)
-        builder.add_custom_attribute("vec3_attr", newton.ModelAttributeFrequency.BODY, dtype=wp.vec3)
-        builder.add_custom_attribute("int_attr", newton.ModelAttributeFrequency.BODY, dtype=wp.int32)
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="scalar_attr",
+                frequency=newton.ModelAttributeFrequency.BODY,
+                dtype=wp.float32,
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="vec3_attr",
+                frequency=newton.ModelAttributeFrequency.BODY,
+                dtype=wp.vec3,
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="int_attr",
+                frequency=newton.ModelAttributeFrequency.BODY,
+                dtype=wp.int32,
+            )
+        )
 
         # Create bodies with appropriate values
         body = builder.add_body(
@@ -553,29 +736,40 @@ class TestCustomAttributes(unittest.TestCase):
     def test_custom_attributes_with_multi_builders(self):
         """Test that custom attributes are preserved when using add_builder()."""
         # Create a sub-builder with custom attributes
-        sub_builder = newton.ModelBuilder()
+        sub_builder = ModelBuilder()
 
         # Declare attributes with different frequencies and assignments
         sub_builder.add_custom_attribute(
-            "robot_id", newton.ModelAttributeFrequency.BODY, dtype=wp.int32, assignment=ModelAttributeAssignment.MODEL
+            ModelBuilder.CustomAttribute(
+                name="robot_id",
+                frequency=newton.ModelAttributeFrequency.BODY,
+                dtype=wp.int32,
+                assignment=ModelAttributeAssignment.MODEL,
+            )
         )
         sub_builder.add_custom_attribute(
-            "temperature",
-            newton.ModelAttributeFrequency.BODY,
-            dtype=wp.float32,
-            assignment=ModelAttributeAssignment.STATE,
+            ModelBuilder.CustomAttribute(
+                name="temperature",
+                frequency=newton.ModelAttributeFrequency.BODY,
+                dtype=wp.float32,
+                assignment=ModelAttributeAssignment.STATE,
+            )
         )
         sub_builder.add_custom_attribute(
-            "shape_color",
-            newton.ModelAttributeFrequency.SHAPE,
-            dtype=wp.vec3,
-            assignment=ModelAttributeAssignment.MODEL,
+            ModelBuilder.CustomAttribute(
+                name="shape_color",
+                frequency=newton.ModelAttributeFrequency.SHAPE,
+                dtype=wp.vec3,
+                assignment=ModelAttributeAssignment.MODEL,
+            )
         )
         sub_builder.add_custom_attribute(
-            "gain_dof",
-            newton.ModelAttributeFrequency.JOINT_DOF,
-            dtype=wp.float32,
-            assignment=ModelAttributeAssignment.CONTROL,
+            ModelBuilder.CustomAttribute(
+                name="gain_dof",
+                frequency=newton.ModelAttributeFrequency.JOINT_DOF,
+                dtype=wp.float32,
+                assignment=ModelAttributeAssignment.CONTROL,
+            )
         )
 
         # Create a simple robot in sub-builder
@@ -605,7 +799,16 @@ class TestCustomAttributes(unittest.TestCase):
         )
 
         # Create main builder and add sub-builder multiple times
-        main_builder = newton.ModelBuilder()
+        main_builder = ModelBuilder()
+
+        # Add some entities to the main builder, so the custom attribute
+        # values added through the sub builder will need to be merged
+        # and their indices need to be adjusted.
+        body3 = main_builder.add_body(mass=1.0)
+        body4 = main_builder.add_body(mass=1.0)
+        main_builder.add_shape_sphere(body3, radius=0.1)
+        main_builder.add_shape_sphere(body4, radius=0.1)
+        main_builder.add_joint_revolute(parent=body3, child=body4, axis=[0, 0, 1])
 
         # Add first instance
         main_builder.add_builder(sub_builder, world=0)
@@ -634,70 +837,64 @@ class TestCustomAttributes(unittest.TestCase):
         robot_ids = model.robot_id.numpy()
         temperatures = state.temperature.numpy()
 
-        # First instance (bodies 0, 1)
-        self.assertEqual(robot_ids[0], 100)
-        self.assertEqual(robot_ids[1], 200)
-        self.assertAlmostEqual(temperatures[0], 37.5, places=5)
-        self.assertAlmostEqual(temperatures[1], 38.0, places=5)
+        # Verify BODY attributes
+        np.testing.assert_array_almost_equal(robot_ids, [0, 0, 100, 200, 100, 200], decimal=5)
+        np.testing.assert_array_almost_equal(temperatures, [0.0, 0.0, 37.5, 38.0, 37.5, 38.0], decimal=5)
 
-        # Second instance (bodies 2, 3)
-        self.assertEqual(robot_ids[2], 100)
-        self.assertEqual(robot_ids[3], 200)
-        self.assertAlmostEqual(temperatures[2], 37.5, places=5)
-        self.assertAlmostEqual(temperatures[3], 38.0, places=5)
-
-        # Verify SHAPE attributes (2 shapes per instance, 2 instances = 4 shapes total)
+        # Verify SHAPE attributes
         shape_colors = model.shape_color.numpy()
 
-        # First instance (shapes 0, 1)
-        np.testing.assert_array_almost_equal(shape_colors[0], [1.0, 0.0, 0.0], decimal=5)
-        np.testing.assert_array_almost_equal(shape_colors[1], [0.0, 1.0, 0.0], decimal=5)
-
-        # Second instance (shapes 2, 3)
+        np.testing.assert_array_almost_equal(shape_colors[0], [0.0, 0.0, 0.0], decimal=5)
+        np.testing.assert_array_almost_equal(shape_colors[1], [0.0, 0.0, 0.0], decimal=5)
         np.testing.assert_array_almost_equal(shape_colors[2], [1.0, 0.0, 0.0], decimal=5)
         np.testing.assert_array_almost_equal(shape_colors[3], [0.0, 1.0, 0.0], decimal=5)
+        np.testing.assert_array_almost_equal(shape_colors[4], [1.0, 0.0, 0.0], decimal=5)
+        np.testing.assert_array_almost_equal(shape_colors[5], [0.0, 1.0, 0.0], decimal=5)
 
-        # Verify JOINT_DOF attributes (1 DOF per instance, 2 instances = 2 DOFs total)
+        # Verify JOINT_DOF attributes
         dof_gains = control.gain_dof.numpy()
 
-        # First instance (DOF 0)
-        self.assertAlmostEqual(dof_gains[0], 1.5, places=5)
-
-        # Second instance (DOF 1)
-        self.assertAlmostEqual(dof_gains[1], 1.5, places=5)
+        np.testing.assert_array_almost_equal(dof_gains, [0.0, 1.5, 1.5], decimal=5)
 
     def test_namespaced_attributes(self):
         """Test namespaced custom attributes with hierarchical organization."""
-        builder = newton.ModelBuilder()
+        builder = ModelBuilder()
 
         # Declare attributes in different namespaces
         builder.add_custom_attribute(
-            "damping",
-            newton.ModelAttributeFrequency.BODY,
-            dtype=wp.float32,
-            assignment=ModelAttributeAssignment.MODEL,
-            namespace="mujoco",
+            ModelBuilder.CustomAttribute(
+                name="damping",
+                frequency=newton.ModelAttributeFrequency.BODY,
+                dtype=wp.float32,
+                assignment=ModelAttributeAssignment.MODEL,
+                namespace="mujoco",
+            )
         )
         builder.add_custom_attribute(
-            "enable_ccd",
-            newton.ModelAttributeFrequency.BODY,
-            dtype=wp.bool,
-            assignment=ModelAttributeAssignment.STATE,
-            namespace="physx",
+            ModelBuilder.CustomAttribute(
+                name="enable_ccd",
+                frequency=newton.ModelAttributeFrequency.BODY,
+                dtype=wp.bool,
+                assignment=ModelAttributeAssignment.STATE,
+                namespace="physx",
+            )
         )
         builder.add_custom_attribute(
-            "custom_id",
-            newton.ModelAttributeFrequency.SHAPE,
-            dtype=wp.int32,
-            assignment=ModelAttributeAssignment.MODEL,
-            namespace="mujoco",
+            ModelBuilder.CustomAttribute(
+                name="custom_id",
+                frequency=newton.ModelAttributeFrequency.SHAPE,
+                dtype=wp.int32,
+                assignment=ModelAttributeAssignment.MODEL,
+                namespace="mujoco",
+            )
         )
-        # Declare a default namespace attribute (no namespace)
         builder.add_custom_attribute(
-            "temperature",
-            newton.ModelAttributeFrequency.BODY,
-            dtype=wp.float32,
-            assignment=ModelAttributeAssignment.MODEL,
+            ModelBuilder.CustomAttribute(
+                name="temperature",
+                frequency=newton.ModelAttributeFrequency.BODY,
+                dtype=wp.float32,
+                assignment=ModelAttributeAssignment.MODEL,
+            )
         )
 
         robot_entities = self._add_test_robot(builder)
@@ -770,19 +967,23 @@ class TestCustomAttributes(unittest.TestCase):
 
         # Test 1: Same name in different namespaces with different assignments - SHOULD WORK
         # Key "float_attr" vs "namespace_a:float_attr" are different
-        builder1 = newton.ModelBuilder()
+        builder1 = ModelBuilder()
         builder1.add_custom_attribute(
-            "float_attr",
-            newton.ModelAttributeFrequency.BODY,
-            dtype=wp.float32,
-            assignment=ModelAttributeAssignment.MODEL,
+            ModelBuilder.CustomAttribute(
+                name="float_attr",
+                frequency=newton.ModelAttributeFrequency.BODY,
+                dtype=wp.float32,
+                assignment=ModelAttributeAssignment.MODEL,
+            )
         )
         builder1.add_custom_attribute(
-            "float_attr",
-            newton.ModelAttributeFrequency.BODY,
-            dtype=wp.float32,
-            assignment=ModelAttributeAssignment.STATE,
-            namespace="namespace_a",
+            ModelBuilder.CustomAttribute(
+                name="float_attr",
+                frequency=newton.ModelAttributeFrequency.BODY,
+                dtype=wp.float32,
+                assignment=ModelAttributeAssignment.STATE,
+                namespace="namespace_a",
+            )
         )
         # Should work - different full keys
         body = builder1.add_body(
@@ -800,59 +1001,71 @@ class TestCustomAttributes(unittest.TestCase):
 
         # Test 2: Same name (no namespace) with different assignments - SHOULD FAIL
         # Both use key "float_attr"
-        builder2 = newton.ModelBuilder()
+        builder2 = ModelBuilder()
         builder2.add_custom_attribute(
-            "float_attr",
-            newton.ModelAttributeFrequency.BODY,
-            dtype=wp.float32,
-            assignment=ModelAttributeAssignment.MODEL,
+            ModelBuilder.CustomAttribute(
+                name="float_attr",
+                frequency=newton.ModelAttributeFrequency.BODY,
+                dtype=wp.float32,
+                assignment=ModelAttributeAssignment.MODEL,
+            )
         )
         with self.assertRaises(ValueError) as context:
             builder2.add_custom_attribute(
-                "float_attr",
-                newton.ModelAttributeFrequency.BODY,
-                dtype=wp.float32,
-                assignment=ModelAttributeAssignment.STATE,  # Different assignment, same key
+                ModelBuilder.CustomAttribute(
+                    name="float_attr",
+                    frequency=newton.ModelAttributeFrequency.BODY,
+                    dtype=wp.float32,
+                    assignment=ModelAttributeAssignment.STATE,
+                )
             )
         self.assertIn("already exists", str(context.exception))
         self.assertIn("incompatible spec", str(context.exception))
 
         # Test 3: Same namespace:name with different assignments - SHOULD FAIL
         # Both use key "namespace_a:float_attr"
-        builder3 = newton.ModelBuilder()
+        builder3 = ModelBuilder()
         builder3.add_custom_attribute(
-            "float_attr",
-            newton.ModelAttributeFrequency.BODY,
-            dtype=wp.float32,
-            assignment=ModelAttributeAssignment.MODEL,
-            namespace="namespace_a",
+            ModelBuilder.CustomAttribute(
+                name="float_attr",
+                frequency=newton.ModelAttributeFrequency.BODY,
+                dtype=wp.float32,
+                assignment=ModelAttributeAssignment.MODEL,
+                namespace="namespace_a",
+            )
         )
         with self.assertRaises(ValueError) as context:
             builder3.add_custom_attribute(
-                "float_attr",
-                newton.ModelAttributeFrequency.BODY,
-                dtype=wp.float32,
-                assignment=ModelAttributeAssignment.STATE,  # Different assignment, same namespace:name
-                namespace="namespace_a",
+                ModelBuilder.CustomAttribute(
+                    name="float_attr",
+                    frequency=newton.ModelAttributeFrequency.BODY,
+                    dtype=wp.float32,
+                    assignment=ModelAttributeAssignment.STATE,
+                    namespace="namespace_a",
+                )
             )
         self.assertIn("already exists", str(context.exception))
 
         # Test 4: Same name in different namespaces with same assignment - SHOULD WORK
         # Keys "namespace_a:float_attr" and "namespace_b:float_attr" are different
-        builder4 = newton.ModelBuilder()
+        builder4 = ModelBuilder()
         builder4.add_custom_attribute(
-            "float_attr",
-            newton.ModelAttributeFrequency.BODY,
-            dtype=wp.float32,
-            assignment=ModelAttributeAssignment.MODEL,
-            namespace="namespace_a",
+            ModelBuilder.CustomAttribute(
+                "float_attr",
+                frequency=newton.ModelAttributeFrequency.BODY,
+                dtype=wp.float32,
+                assignment=ModelAttributeAssignment.MODEL,
+                namespace="namespace_a",
+            )
         )
         builder4.add_custom_attribute(
-            "float_attr",
-            newton.ModelAttributeFrequency.BODY,
-            dtype=wp.float32,
-            assignment=ModelAttributeAssignment.MODEL,
-            namespace="namespace_b",
+            ModelBuilder.CustomAttribute(
+                "float_attr",
+                frequency=newton.ModelAttributeFrequency.BODY,
+                dtype=wp.float32,
+                assignment=ModelAttributeAssignment.MODEL,
+                namespace="namespace_b",
+            )
         )
         # Should work - different namespaces create different keys
         body = builder4.add_body(
@@ -868,66 +1081,80 @@ class TestCustomAttributes(unittest.TestCase):
         self.assertAlmostEqual(model4.namespace_b.float_attr.numpy()[body], 20.0, places=5)
 
         # Test 5: Idempotent declaration - declaring same attribute twice with identical params - SHOULD WORK
-        builder5 = newton.ModelBuilder()
+        builder5 = ModelBuilder()
         builder5.add_custom_attribute(
-            "float_attr",
-            newton.ModelAttributeFrequency.BODY,
-            dtype=wp.float32,
-            assignment=ModelAttributeAssignment.MODEL,
+            ModelBuilder.CustomAttribute(
+                name="float_attr",
+                frequency=newton.ModelAttributeFrequency.BODY,
+                dtype=wp.float32,
+                assignment=ModelAttributeAssignment.MODEL,
+            )
         )
         # Declaring again with same parameters should be allowed
         builder5.add_custom_attribute(
-            "float_attr",
-            newton.ModelAttributeFrequency.BODY,
-            dtype=wp.float32,
-            assignment=ModelAttributeAssignment.MODEL,
+            ModelBuilder.CustomAttribute(
+                name="float_attr",
+                frequency=newton.ModelAttributeFrequency.BODY,
+                dtype=wp.float32,
+                assignment=ModelAttributeAssignment.MODEL,
+            )
         )
         # Should still work
         self.assertEqual(len(builder5.custom_attributes), 1)
 
         # Test 6: Same key with different frequency - SHOULD FAIL
-        builder6 = newton.ModelBuilder()
+        builder6 = ModelBuilder()
         builder6.add_custom_attribute(
-            "float_attr",
-            newton.ModelAttributeFrequency.BODY,
-            dtype=wp.float32,
-            assignment=ModelAttributeAssignment.MODEL,
+            ModelBuilder.CustomAttribute(
+                name="float_attr",
+                frequency=newton.ModelAttributeFrequency.BODY,
+                dtype=wp.float32,
+                assignment=ModelAttributeAssignment.MODEL,
+            )
         )
         with self.assertRaises(ValueError) as context:
             builder6.add_custom_attribute(
-                "float_attr",
-                newton.ModelAttributeFrequency.SHAPE,  # Different frequency
-                dtype=wp.float32,
-                assignment=ModelAttributeAssignment.MODEL,
+                ModelBuilder.CustomAttribute(
+                    name="float_attr",
+                    frequency=newton.ModelAttributeFrequency.SHAPE,
+                    dtype=wp.float32,
+                    assignment=ModelAttributeAssignment.MODEL,
+                )
             )
         self.assertIn("already exists", str(context.exception))
         self.assertIn("incompatible spec", str(context.exception))
 
     def test_mixed_free_and_articulated_bodies(self):
         """Test BODY and ARTICULATION frequency custom attributes with mixed free and articulated bodies."""
-        builder = newton.ModelBuilder()
+        builder = ModelBuilder()
 
         # Declare custom attributes
         builder.add_custom_attribute(
-            "temperature",
-            newton.ModelAttributeFrequency.BODY,
-            dtype=wp.float32,
-            assignment=ModelAttributeAssignment.MODEL,
-            default=20.0,
+            ModelBuilder.CustomAttribute(
+                name="temperature",
+                frequency=newton.ModelAttributeFrequency.BODY,
+                dtype=wp.float32,
+                assignment=ModelAttributeAssignment.MODEL,
+                default=20.0,
+            )
         )
         builder.add_custom_attribute(
-            "density",
-            newton.ModelAttributeFrequency.BODY,
-            dtype=wp.float32,
-            assignment=ModelAttributeAssignment.STATE,
-            default=1.0,
+            ModelBuilder.CustomAttribute(
+                name="density",
+                frequency=newton.ModelAttributeFrequency.BODY,
+                dtype=wp.float32,
+                assignment=ModelAttributeAssignment.STATE,
+                default=1.0,
+            )
         )
         builder.add_custom_attribute(
-            "articulation_stiffness",
-            newton.ModelAttributeFrequency.ARTICULATION,
-            dtype=wp.float32,
-            assignment=ModelAttributeAssignment.MODEL,
-            default=100.0,
+            ModelBuilder.CustomAttribute(
+                name="articulation_stiffness",
+                frequency=newton.ModelAttributeFrequency.ARTICULATION,
+                dtype=wp.float32,
+                assignment=ModelAttributeAssignment.MODEL,
+                default=100.0,
+            )
         )
 
         # Create free bodies (no articulation)

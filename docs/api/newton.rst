@@ -20,7 +20,9 @@ newton
    :nosignatures:
 
    Axis
+   BroadPhaseMode
    CollisionPipeline
+   CollisionPipelineUnified
    Contacts
    Control
    EqType
@@ -28,8 +30,11 @@ newton
    JointType
    Mesh
    Model
+   ModelAttributeAssignment
+   ModelAttributeFrequency
    ModelBuilder
    ParticleFlags
+   SAPSortType
    SDF
    ShapeFlags
    State

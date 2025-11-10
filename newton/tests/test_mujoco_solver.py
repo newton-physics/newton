@@ -22,6 +22,7 @@ import warp as wp
 import newton
 from newton import JointType, Mesh
 from newton.solvers import SolverMuJoCo, SolverNotifyFlags
+from newton.tests.unittest_utils import USD_AVAILABLE
 
 
 class TestMuJoCoSolver(unittest.TestCase):
@@ -1926,6 +1927,138 @@ class TestMuJoCoConversion(unittest.TestCase):
         self.assertAlmostEqual(
             world1_mesh_x, 2.5, places=3, msg="World 1 mesh should have local x=2.5 (local offset + mesh_pos)"
         )
+
+
+class TestMuJoCoAttributes(unittest.TestCase):
+    def test_custom_attributes_from_code(self):
+        builder = newton.ModelBuilder()
+        newton.solvers.SolverMuJoCo.register_custom_attributes(builder)
+        b0 = builder.add_body()
+        builder.add_joint_revolute(-1, b0, axis=(0.0, 0.0, 1.0))
+        builder.add_shape_box(body=b0, hx=0.1, hy=0.1, hz=0.1, custom_attributes={"mujoco:condim": 6})
+        b1 = builder.add_body()
+        builder.add_joint_revolute(b0, b1, axis=(0.0, 0.0, 1.0))
+        builder.add_shape_box(body=b1, hx=0.1, hy=0.1, hz=0.1, custom_attributes={"mujoco:condim": 4})
+        b2 = builder.add_body()
+        builder.add_joint_revolute(b1, b2, axis=(0.0, 0.0, 1.0))
+        builder.add_shape_box(body=b2, hx=0.1, hy=0.1, hz=0.1)
+        model = builder.finalize()
+
+        # Should work fine with single world
+        solver = SolverMuJoCo(model, separate_worlds=False)
+
+        assert hasattr(model, "mujoco")
+        assert hasattr(model.mujoco, "condim")
+        assert np.allclose(model.mujoco.condim.numpy(), [6, 4, 3])
+        assert np.allclose(solver.mjw_model.geom_condim.numpy(), [6, 4, 3])
+
+    def test_custom_attributes_from_mjcf(self):
+        mjcf = """
+        <mujoco>
+            <worldbody>
+                <body>
+                    <joint type="revolute" axis="0 0 1" />
+                    <geom type="box" size="0.1 0.1 0.1" condim="6" />
+                </body>
+                <body>
+                    <joint type="revolute" axis="0 0 1" />
+                    <geom type="box" size="0.1 0.1 0.1" condim="4" />
+                </body>
+                <body>
+                    <joint type="revolute" axis="0 0 1" />
+                    <geom type="box" size="0.1 0.1 0.1" />
+                </body>
+            </worldbody>
+        </mujoco>
+        """
+        builder = newton.ModelBuilder()
+        newton.solvers.SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_mjcf(mjcf)
+        model = builder.finalize()
+        solver = SolverMuJoCo(model, separate_worlds=False)
+        assert hasattr(model, "mujoco")
+        assert hasattr(model.mujoco, "condim")
+        assert np.allclose(model.mujoco.condim.numpy(), [6, 4, 3])
+        assert np.allclose(solver.mjw_model.geom_condim.numpy(), [6, 4, 3])
+
+    def test_custom_attributes_from_urdf(self):
+        urdf = """
+        <robot name="test_robot">
+            <link name="body1">
+                <joint type="revolute" axis="0 0 1" />
+                <collision>
+                    <geometry condim="6">
+                        <box size="0.1 0.1 0.1" />
+                    </geometry>
+                </collision>
+            </link>
+            <link name="body2">
+                <joint type="revolute" axis="0 0 1" />
+                <collision>
+                    <geometry condim="4">
+                        <box size="0.1 0.1 0.1" />
+                    </geometry>
+                </collision>
+            </link>
+            <link name="body3">
+                <joint type="revolute" axis="0 0 1" />
+                <collision>
+                    <geometry>
+                        <box size="0.1 0.1 0.1" />
+                    </geometry>
+                </collision>
+            </link>
+            <joint name="joint1" type="revolute">
+                <parent link="body1" />
+                <child link="body2" />
+            </joint>
+            <joint name="joint2" type="revolute">
+                <parent link="body2" />
+                <child link="body3" />
+            </joint>
+        </robot>
+        """
+        builder = newton.ModelBuilder()
+        newton.solvers.SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_urdf(urdf)
+        model = builder.finalize()
+        solver = SolverMuJoCo(model, separate_worlds=False)
+        assert hasattr(model, "mujoco")
+        assert hasattr(model.mujoco, "condim")
+        assert np.allclose(model.mujoco.condim.numpy(), [6, 4, 3])
+        assert np.allclose(solver.mjw_model.geom_condim.numpy(), [6, 4, 3])
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_custom_attributes_from_usd(self):
+        from pxr import Sdf, Usd, UsdGeom, UsdPhysics  # noqa: PLC0415
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+        self.assertTrue(stage)
+
+        body_path = "/body"
+        shape = UsdGeom.Cube.Define(stage, body_path)
+        prim = shape.GetPrim()
+        UsdPhysics.RigidBodyAPI.Apply(prim)
+        UsdPhysics.ArticulationRootAPI.Apply(prim)
+        UsdPhysics.CollisionAPI.Apply(prim)
+        prim.CreateAttribute("mjc:condim", Sdf.ValueTypeNames.Int, True).Set(6)
+
+        joint_path = "/joint"
+        joint = UsdPhysics.RevoluteJoint.Define(stage, joint_path)
+        joint.CreateAxisAttr().Set("Z")
+        joint.CreateBody0Rel().SetTargets([body_path])
+
+        builder = newton.ModelBuilder()
+        newton.solvers.SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_usd(stage)
+        model = builder.finalize()
+        solver = SolverMuJoCo(model, separate_worlds=False)
+        assert hasattr(model, "mujoco")
+        assert hasattr(model.mujoco, "condim")
+        assert np.allclose(model.mujoco.condim.numpy(), [6])
+        assert np.allclose(solver.mjw_model.geom_condim.numpy(), [6])
 
 
 if __name__ == "__main__":
