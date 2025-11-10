@@ -1692,7 +1692,7 @@ class SolverMuJoCo(SolverBase):
         )
 
     def update_joint_dof_properties(self):
-        """Update all joint dof properties including effort limits, velocity limits, friction, armature, and solimplimit in the MuJoCo model."""
+        """Update all joint dof properties including effort limits, friction, armature, and solimplimit in the MuJoCo model."""
         if self.model.joint_dof_count == 0:
             return
 
