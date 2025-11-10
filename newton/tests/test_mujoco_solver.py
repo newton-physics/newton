@@ -750,7 +750,7 @@ class TestMuJoCoSolverJointProperties(TestMuJoCoSolverPropertiesBase):
         if self.model.joint_dof_count == 0:
             self.skipTest("No joints in model, skipping jnt_solimp test")
 
-        # Step 1: Create a template builder (don't register custom attributes yet)
+        # Step 1: Create a template builder and register SolverMuJoCo custom attributes
         template_builder = newton.ModelBuilder()
         SolverMuJoCo.register_custom_attributes(template_builder)
         shape_cfg = newton.ModelBuilder.ShapeConfig(density=1000.0)
