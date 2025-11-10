@@ -260,7 +260,7 @@ def compute_gjk_mpr_contacts(
         rigid_contact_margin: Contact margin for rigid bodies
 
     Returns:
-        Tuple of (count, normal, signed_distances, points, radius_eff_a, radius_eff_b)
+        Tuple of (count, normal, signed_distances, points, radius_eff_a, radius_eff_b, features)
     """
     data_provider = SupportMapDataProvider()
 
@@ -283,7 +283,7 @@ def compute_gjk_mpr_contacts(
         geom_b.scale[0] = small_radius
 
     if wp.static(ENABLE_MULTI_CONTACT):
-        count, normal, signed_distances, points, _features = wp.static(solve_convex_multi_contact)(
+        count, normal, signed_distances, points, features = wp.static(solve_convex_multi_contact)(
             geom_a,
             geom_b,
             rot_a,
@@ -296,7 +296,7 @@ def compute_gjk_mpr_contacts(
             type_a == int(GeoType.SPHERE) or type_b == int(GeoType.SPHERE),
         )
     else:
-        count, normal, signed_distances, points, _features = wp.static(solve_convex_single_contact)(
+        count, normal, signed_distances, points, features = wp.static(solve_convex_single_contact)(
             geom_a,
             geom_b,
             rot_a,
@@ -360,7 +360,7 @@ def compute_gjk_mpr_contacts(
                 is_cone_a,
             )
 
-    return count, normal, signed_distances, points, radius_eff_a, radius_eff_b
+    return count, normal, signed_distances, points, radius_eff_a, radius_eff_b, features
 
 
 @wp.func
@@ -590,7 +590,7 @@ def find_contacts(
         rigid_contact_margin: Contact margin for rigid bodies
 
     Returns:
-        Tuple of (count, normal, signed_distances, points, radius_eff_a, radius_eff_b)
+        Tuple of (count, normal, signed_distances, points, radius_eff_a, radius_eff_b, features)
     """
     # Convert infinite planes to cube proxies for GJK/MPR compatibility
     # Use the OTHER object's radius to properly size the cube
@@ -612,7 +612,7 @@ def find_contacts(
         )
 
     # Compute contacts using GJK/MPR
-    count, normal, signed_distances, points, radius_eff_a, radius_eff_b = compute_gjk_mpr_contacts(
+    count, normal, signed_distances, points, radius_eff_a, radius_eff_b, features = compute_gjk_mpr_contacts(
         shape_data_a,
         shape_data_b,
         quat_a,
@@ -622,7 +622,7 @@ def find_contacts(
         rigid_contact_margin,
     )
 
-    return count, normal, signed_distances, points, radius_eff_a, radius_eff_b
+    return count, normal, signed_distances, points, radius_eff_a, radius_eff_b, features
 
 
 @wp.func

@@ -256,6 +256,8 @@ class ViewerBase:
                 inputs=[
                     state.body_q,
                     self.model.shape_body,
+                    self.model.shape_world,
+                    self.world_offsets,
                     contacts.rigid_contact_count,
                     contacts.rigid_contact_shape0,
                     contacts.rigid_contact_shape1,
@@ -782,6 +784,8 @@ class ViewerBase:
                 self.model.joint_child,
                 self.model.joint_X_p,
                 state.body_q,
+                self.model.body_world,
+                self.world_offsets,
                 self.model.shape_collision_radius,
                 self.model.shape_body,
                 0.1,  # line scale factor
