@@ -101,11 +101,11 @@ def test_revolute_controller(
 
 devices = get_test_devices()
 solvers = {
-    # "featherstone": lambda model: newton.solvers.SolverFeatherstone(model, angular_damping=0.0),
+    "featherstone": lambda model: newton.solvers.SolverFeatherstone(model, angular_damping=0.0),
     "mujoco_cpu": lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=True, disable_contacts=True),
     "mujoco_warp": lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=False, disable_contacts=True),
     "xpbd": lambda model: newton.solvers.SolverXPBD(model, angular_damping=0.0, iterations=5),
-    # "semi_implicit": lambda model: newton.solvers.SolverSemiImplicit(model, angular_damping=0.0),
+    #"semi_implicit": lambda model: newton.solvers.SolverSemiImplicit(model, angular_damping=0.0),
 }
 for device in devices:
     for solver_name, solver_fn in solvers.items():
@@ -126,7 +126,7 @@ for device in devices:
             target_kd=500.0,
         )
         # TODO: XPBD velocity control is not working correctly
-        if solver_name == "mujoco_warp" or solver_name == "mujoco_cpu":
+        if solver_name != "xpbd":
             add_function_test(
                 TestJointController,
                 f"test_revolute_joint_controller_velocity_target_{solver_name}",

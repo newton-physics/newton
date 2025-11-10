@@ -107,7 +107,7 @@ class Example:
                 allegro_hand.shape_flags[i] &= ~newton.ShapeFlags.VISIBLE
 
         # set joint targets and joint drive gains
-        for i in range(len(allegro_hand.joint_target_ke)):
+        for i in range(allegro_hand.joint_dof_count):
             allegro_hand.joint_target_ke[i] = 150
             allegro_hand.joint_target_kd[i] = 5
             allegro_hand.joint_target_pos[i] = 0.0
