@@ -1767,7 +1767,7 @@ class SolverMuJoCo(SolverBase):
                 self.model.joint_axis,
                 self.model.joint_child,
                 self.model.joint_type,
-                self.joint_mjc_dof_start,
+                self.template_dof_to_mjc_joint,
                 self.to_mjc_body_index,
                 joints_per_world,
             ],

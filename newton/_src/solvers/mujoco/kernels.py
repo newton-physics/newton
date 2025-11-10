@@ -941,6 +941,10 @@ def update_joint_dof_properties_kernel(
 
     lin_axis_count = joint_dof_dim[tid, 0]
     ang_axis_count = joint_dof_dim[tid, 1]
+
+    if lin_axis_count + ang_axis_count == 0:
+        return
+
     newton_dof_start = joint_qd_start[tid]
     mjc_dof_start = joint_mjc_dof_start[joint_in_world]
 
@@ -1001,7 +1005,7 @@ def update_joint_transforms_kernel(
     joint_original_axis: wp.array(dtype=wp.vec3),
     joint_child: wp.array(dtype=wp.int32),
     joint_type: wp.array(dtype=wp.int32),
-    joint_mjc_dof_start: wp.array(dtype=wp.int32),
+    template_dof_to_mjc_joint: wp.array(dtype=wp.int32),
     body_mapping: wp.array(dtype=wp.int32),
     joints_per_world: int,
     # outputs
@@ -1023,18 +1027,18 @@ def update_joint_transforms_kernel(
     parent_xform = joint_X_p[tid]
     lin_axis_count = joint_dof_dim[tid, 0]
     ang_axis_count = joint_dof_dim[tid, 1]
-    newton_dof_start = joint_dof_start[tid]
-    mjc_dof_start = joint_mjc_dof_start[joint_in_world]
-    if mjc_dof_start == -1:
-        # this should not happen
-        wp.printf("Joint %i has no MuJoCo DOF start index\n", joint_in_world)
+
+    if lin_axis_count + ang_axis_count == 0:
         return
+
+    newton_dof_start = joint_dof_start[tid]
+    mjc_joint_index = template_dof_to_mjc_joint[newton_dof_start]
 
     # update linear dofs
     for i in range(lin_axis_count):
         newton_dof_index = newton_dof_start + i
         axis = joint_original_axis[newton_dof_index]
-        ai = mjc_dof_start + i
+        ai = mjc_joint_index + i
         joint_axis[worldid, ai] = wp.quat_rotate(child_xform.q, axis)
         joint_pos[worldid, ai] = child_xform.p
 
@@ -1042,7 +1046,7 @@ def update_joint_transforms_kernel(
     for i in range(ang_axis_count):
         newton_dof_index = newton_dof_start + lin_axis_count + i
         axis = joint_original_axis[newton_dof_index]
-        ai = mjc_dof_start + lin_axis_count + i
+        ai = mjc_joint_index + lin_axis_count + i
         joint_axis[worldid, ai] = wp.quat_rotate(child_xform.q, axis)
         joint_pos[worldid, ai] = child_xform.p
 
