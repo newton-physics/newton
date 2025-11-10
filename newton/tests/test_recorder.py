@@ -27,8 +27,6 @@ import newton.utils
 from newton._src.utils.recorder import RingBuffer
 from newton.tests.unittest_utils import add_function_test, get_test_devices
 
-wp.config.quiet = True
-
 
 class TestRecorder(unittest.TestCase):
     pass

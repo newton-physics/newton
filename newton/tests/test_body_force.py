@@ -21,8 +21,6 @@ import warp as wp
 import newton
 from newton.tests.unittest_utils import add_function_test, get_test_devices
 
-wp.config.quiet = True
-
 
 class TestBodyForce(unittest.TestCase):
     pass

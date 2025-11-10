@@ -23,8 +23,6 @@ from newton._src.core import quat_between_axes
 from newton._src.geometry.utils import create_box_mesh
 from newton.tests.unittest_utils import add_function_test, assert_np_equal, get_test_devices
 
-wp.config.quiet = True
-
 
 class TestRigidContact(unittest.TestCase):
     pass

@@ -31,8 +31,6 @@ from newton._src.geometry.raycast import (
 )
 from newton.tests.unittest_utils import add_function_test, get_test_devices
 
-wp.config.quiet = True
-
 
 class TestRaycast(unittest.TestCase):
     pass

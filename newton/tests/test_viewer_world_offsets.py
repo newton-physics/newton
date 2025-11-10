@@ -22,8 +22,6 @@ import newton
 from newton.tests.unittest_utils import add_function_test, assert_np_equal, get_test_devices
 from newton.viewer import ViewerNull
 
-wp.config.quiet = True
-
 
 class TestViewerWorldOffsets(unittest.TestCase):
     def test_compute_world_offsets_function(self):
