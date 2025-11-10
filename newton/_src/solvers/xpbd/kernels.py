@@ -1596,8 +1596,6 @@ def solve_body_joints(
 
     else:
         # compute joint target, stiffness, damping
-        ke_sum = float(0.0)
-        kd_sum = float(0.0)
         axis_limits = wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
 
         axis_target_pos_ke = wp.spatial_vector()
@@ -1614,10 +1612,8 @@ def solve_body_joints(
             target_vel = joint_target_vel[axis_start]
             if ke > 0.0:  # has position control
                 axis_target_pos_ke = update_joint_axis_weighted_target(axis, target_pos, ke, axis_target_pos_ke)
-                ke_sum += ke
             if kd > 0.0:  # has velocity control
                 axis_target_vel_kd = update_joint_axis_weighted_target(axis, target_vel, kd, axis_target_vel_kd)
-                kd_sum += kd
         if lin_axis_count > 1:
             axis_idx = axis_start + 1
             axis = joint_axis[axis_idx]
@@ -1630,10 +1626,8 @@ def solve_body_joints(
             target_vel = joint_target_vel[axis_idx]
             if ke > 0.0:  # has position control
                 axis_target_pos_ke = update_joint_axis_weighted_target(axis, target_pos, ke, axis_target_pos_ke)
-                ke_sum += ke
             if kd > 0.0:  # has velocity control
                 axis_target_vel_kd = update_joint_axis_weighted_target(axis, target_vel, kd, axis_target_vel_kd)
-                kd_sum += kd
         if lin_axis_count > 2:
             axis_idx = axis_start + 2
             axis = joint_axis[axis_idx]
@@ -1646,10 +1640,8 @@ def solve_body_joints(
             target_vel = joint_target_vel[axis_idx]
             if ke > 0.0:  # has position control
                 axis_target_pos_ke = update_joint_axis_weighted_target(axis, target_pos, ke, axis_target_pos_ke)
-                ke_sum += ke
             if kd > 0.0:  # has velocity control
                 axis_target_vel_kd = update_joint_axis_weighted_target(axis, target_vel, kd, axis_target_vel_kd)
-                kd_sum += kd
 
         axis_target_pos = wp.spatial_top(axis_target_pos_ke)
         axis_stiffness = wp.spatial_bottom(axis_target_pos_ke)
@@ -1806,8 +1798,6 @@ def solve_body_joints(
         grad_w = wp.vec3(grad_0[3], grad_1[3], grad_2[3])
 
         # compute joint target, stiffness, damping
-        ke_sum = float(0.0)
-        kd_sum = float(0.0)
         axis_limits = wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
 
         axis_target_pos_ke = wp.spatial_vector()  # [weighted_target_pos, ke_weights]
@@ -1825,10 +1815,8 @@ def solve_body_joints(
             target_vel = joint_target_vel[axis_idx]
             if ke > 0.0:  # has position control
                 axis_target_pos_ke = update_joint_axis_weighted_target(axis, target_pos, ke, axis_target_pos_ke)
-                ke_sum += ke
             if kd > 0.0:  # has velocity control
                 axis_target_vel_kd = update_joint_axis_weighted_target(axis, target_vel, kd, axis_target_vel_kd)
-                kd_sum += kd
         if ang_axis_count > 1:
             axis_idx = axis_start + lin_axis_count + 1
             axis = joint_axis[axis_idx]
@@ -1841,10 +1829,8 @@ def solve_body_joints(
             target_vel = joint_target_vel[axis_idx]
             if ke > 0.0:  # has position control
                 axis_target_pos_ke = update_joint_axis_weighted_target(axis, target_pos, ke, axis_target_pos_ke)
-                ke_sum += ke
             if kd > 0.0:  # has velocity control
                 axis_target_vel_kd = update_joint_axis_weighted_target(axis, target_vel, kd, axis_target_vel_kd)
-                kd_sum += kd
         if ang_axis_count > 2:
             axis_idx = axis_start + lin_axis_count + 2
             axis = joint_axis[axis_idx]
@@ -1857,10 +1843,8 @@ def solve_body_joints(
             target_vel = joint_target_vel[axis_idx]
             if ke > 0.0:  # has position control
                 axis_target_pos_ke = update_joint_axis_weighted_target(axis, target_pos, ke, axis_target_pos_ke)
-                ke_sum += ke
             if kd > 0.0:  # has velocity control
                 axis_target_vel_kd = update_joint_axis_weighted_target(axis, target_vel, kd, axis_target_vel_kd)
-                kd_sum += kd
 
         axis_target_pos = wp.spatial_top(axis_target_pos_ke)
         axis_stiffness = wp.spatial_bottom(axis_target_pos_ke)
