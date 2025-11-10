@@ -530,13 +530,7 @@ def test_visual_separation(test: TestViewerWorldOffsets, device):
 
 # Add device-specific tests
 devices = get_test_devices()
-for device in devices:
-    add_function_test(
-        TestViewerWorldOffsets,
-        f"test_visual_separation_{device.alias}",
-        test_visual_separation,
-        devices=[device],
-    )
+add_function_test(TestViewerWorldOffsets, "test_visual_separation", test_visual_separation, devices=devices)
 
 
 if __name__ == "__main__":

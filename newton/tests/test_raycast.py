@@ -482,25 +482,17 @@ def test_convex_hull_ray_intersect_via_geom(test: TestRaycast, device: str):
 
 
 devices = get_test_devices()
-for device in devices:
-    add_function_test(TestRaycast, f"test_ray_intersect_sphere_{device}", test_ray_intersect_sphere, devices=[device])
-    add_function_test(TestRaycast, f"test_ray_intersect_box_{device}", test_ray_intersect_box, devices=[device])
-    add_function_test(TestRaycast, f"test_ray_intersect_capsule_{device}", test_ray_intersect_capsule, devices=[device])
-    add_function_test(
-        TestRaycast, f"test_ray_intersect_cylinder_{device}", test_ray_intersect_cylinder, devices=[device]
-    )
-    add_function_test(TestRaycast, f"test_ray_intersect_cone_{device}", test_ray_intersect_cone, devices=[device])
-    add_function_test(TestRaycast, f"test_geom_ray_intersect_{device}", test_geom_ray_intersect, devices=[device])
-    add_function_test(TestRaycast, f"test_ray_intersect_mesh_{device}", test_ray_intersect_mesh, devices=[device])
-    add_function_test(
-        TestRaycast, f"test_mesh_ray_intersect_via_geom_{device}", test_mesh_ray_intersect_via_geom, devices=[device]
-    )
-    add_function_test(
-        TestRaycast,
-        f"test_convex_hull_ray_intersect_via_geom_{device}",
-        test_convex_hull_ray_intersect_via_geom,
-        devices=[device],
-    )
+add_function_test(TestRaycast, "test_ray_intersect_sphere", test_ray_intersect_sphere, devices=devices)
+add_function_test(TestRaycast, "test_ray_intersect_box", test_ray_intersect_box, devices=devices)
+add_function_test(TestRaycast, "test_ray_intersect_capsule", test_ray_intersect_capsule, devices=devices)
+add_function_test(TestRaycast, "test_ray_intersect_cylinder", test_ray_intersect_cylinder, devices=devices)
+add_function_test(TestRaycast, "test_ray_intersect_cone", test_ray_intersect_cone, devices=devices)
+add_function_test(TestRaycast, "test_geom_ray_intersect", test_geom_ray_intersect, devices=devices)
+add_function_test(TestRaycast, "test_ray_intersect_mesh", test_ray_intersect_mesh, devices=devices)
+add_function_test(TestRaycast, "test_mesh_ray_intersect_via_geom", test_mesh_ray_intersect_via_geom, devices=devices)
+add_function_test(
+    TestRaycast, "test_convex_hull_ray_intersect_via_geom", test_convex_hull_ray_intersect_via_geom, devices=devices
+)
 
 
 if __name__ == "__main__":

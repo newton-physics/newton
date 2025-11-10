@@ -1246,28 +1246,5 @@ class TestCustomAttributes(unittest.TestCase):
         self.assertAlmostEqual(arctic_stiff[1], 150.0, places=5)
 
 
-def run_tests():
-    """Run all custom attributes tests."""
-    loader = unittest.TestLoader()
-    suite = unittest.TestSuite()
-
-    suite.addTests(loader.loadTestsFromTestCase(TestCustomAttributes))
-
-    runner = unittest.TextTestRunner(verbosity=2)
-    result = runner.run(suite)
-
-    return result.wasSuccessful()
-
-
 if __name__ == "__main__":
-    print("Running Custom Attributes Tests")
-    print("=" * 60)
-    print("Testing ModelBuilder kwargs functionality for custom attributes")
-    print("=" * 60)
-
-    success = run_tests()
-
-    if success:
-        print("\nAll custom attributes tests passed!")
-    else:
-        print("\nSome custom attributes tests failed!")
+    unittest.main(verbosity=2)

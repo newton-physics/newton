@@ -18,7 +18,6 @@ import tempfile
 import unittest
 
 import numpy as np
-import warp as wp
 
 import newton
 from newton._src.sim.joints import JOINT_LIMIT_UNLIMITED

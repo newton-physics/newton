@@ -323,34 +323,19 @@ def test_contact_matcher_max_capacity(test: TestContactMatcher, device):
 
 # Register tests for all devices
 devices = get_test_devices()
-for device in devices:
-    add_function_test(
-        TestContactMatcher, f"test_contact_matcher_basic_{device.alias}", test_contact_matcher_basic, devices=[device]
-    )
-    add_function_test(
-        TestContactMatcher,
-        f"test_contact_matcher_duplicate_keys_{device.alias}",
-        test_contact_matcher_duplicate_keys,
-        devices=[device],
-    )
-    add_function_test(
-        TestContactMatcher,
-        f"test_contact_matcher_stacked_cubes_{device.alias}",
-        test_contact_matcher_stacked_cubes,
-        devices=[device],
-    )
-    add_function_test(
-        TestContactMatcher,
-        f"test_contact_matcher_empty_contacts_{device.alias}",
-        test_contact_matcher_empty_contacts,
-        devices=[device],
-    )
-    add_function_test(
-        TestContactMatcher,
-        f"test_contact_matcher_max_capacity_{device.alias}",
-        test_contact_matcher_max_capacity,
-        devices=[device],
-    )
+add_function_test(TestContactMatcher, "test_contact_matcher_basic", test_contact_matcher_basic, devices=devices)
+add_function_test(
+    TestContactMatcher, "test_contact_matcher_duplicate_keys", test_contact_matcher_duplicate_keys, devices=devices
+)
+add_function_test(
+    TestContactMatcher, "test_contact_matcher_stacked_cubes", test_contact_matcher_stacked_cubes, devices=devices
+)
+add_function_test(
+    TestContactMatcher, "test_contact_matcher_empty_contacts", test_contact_matcher_empty_contacts, devices=devices
+)
+add_function_test(
+    TestContactMatcher, "test_contact_matcher_max_capacity", test_contact_matcher_max_capacity, devices=devices
+)
 
 
 if __name__ == "__main__":

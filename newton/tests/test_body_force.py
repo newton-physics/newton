@@ -32,17 +32,13 @@ def test_floating_body(test: TestBodyForce, device, solver_fn, test_angular=True
     # easy case: identity transform, zero center of mass
     pos = wp.vec3(1.0, 2.0, 3.0)
     rot = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), wp.pi * 0.0)
-    # rot = wp.quat_identity()
 
     b = builder.add_body(xform=wp.transform(pos, rot))
-    builder.add_shape_box(
-        b, xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()), hx=0.25, hy=0.5, hz=1.0
-    )  # density = 1000.0, mass = 1000.0. Ixx = 1000/6 *
+    builder.add_shape_box(b, hx=0.25, hy=0.5, hz=1.0)
     builder.add_joint_free(b)
     builder.joint_q = [*pos, *rot]
 
     model = builder.finalize(device=device)
-    # print("model.body_inv_inertia\n", model.body_inv_inertia)
 
     solver = solver_fn(model)
 
@@ -50,10 +46,8 @@ def test_floating_body(test: TestBodyForce, device, solver_fn, test_angular=True
 
     newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
 
-    # print("inertia: ", model.body_inertia)
-    # print("inverse inertia: ", model.body_inv_inertia)
-    # print("body_mass: ", model.body_mass)
     input = np.zeros(model.body_count * 6, dtype=np.float32)
+
     if test_angular:
         test_index = 5
         test_value = 0.96
@@ -66,20 +60,11 @@ def test_floating_body(test: TestBodyForce, device, solver_fn, test_angular=True
     state_1.body_f.assign(input)
 
     sim_dt = 1.0 / 10.0
-    # I = 1000 * diag(416, 354, 104)
-    # I_inv = diag(0.0024, 0.0028, 0.0096)
-    # alpha_33 = I_inv * 1000 * [0, 0, 1] = [0, 0, 0.96]
-    # alpha_22 = I_inv * 1000 * [0, 1, 0] = [0, 0.28, 0]
-    # alpha_11 = I_inv * 1000 * [1, 0, 0] = [0.24, 0, 0]
-    # alpha * dt = 0.4 * [0.24, 0.28, 0.96] = [0.096, 0.112, 0.384]
-    # F = m * a, a = 1.0, dt = 0.4 -> V = 0.4
-    # T = I * alpha, alpha_ii = 6.0, dt = 0.4 -> W = 2.4
     for _ in range(1):
         solver.step(state_0, state_1, None, None, sim_dt)
         state_0, state_1 = state_1, state_0
 
     body_qd = state_0.body_qd.numpy()[0]
-    # print("body_qd" , body_qd)
     test.assertAlmostEqual(body_qd[test_index], test_value, delta=1e-2)
     for i in range(1):
         if i == test_index:
@@ -94,11 +79,7 @@ def test_3d_articulation(test: TestBodyForce, device, solver_fn, test_angular, u
     builder.default_shape_cfg.density = 1000.0
 
     b = builder.add_body()
-    builder.add_shape_box(
-        b, xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()), hx=0.25, hy=0.5, hz=1.0
-    )  # density = 1000.0, mass = 1000.0. Ixx = 1000/6 *
-    # ke = 10000.0
-    # kd = 1000.0
+    builder.add_shape_box(b, xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()), hx=0.25, hy=0.5, hz=1.0)
     builder.add_joint_d6(
         -1,
         b,
@@ -112,20 +93,9 @@ def test_3d_articulation(test: TestBodyForce, device, solver_fn, test_angular, u
             newton.ModelBuilder.JointDofConfig(axis=newton.Axis.Y),
             newton.ModelBuilder.JointDofConfig(axis=newton.Axis.Z),
         ],
-        # linear_axes=[
-        #     newton.ModelBuilder.JointDofConfig(axis=newton.Axis.X, target_ke=ke, target_kd=kd),
-        #     newton.ModelBuilder.JointDofConfig(axis=newton.Axis.Y, target_ke=ke, target_kd=kd),
-        #     newton.ModelBuilder.JointDofConfig(axis=newton.Axis.Z, target_ke=ke, target_kd=kd),
-        # ],
-        # angular_axes=[
-        #     newton.ModelBuilder.JointDofConfig(axis=newton.Axis.X, target_ke=ke, target_kd=kd),
-        #     newton.ModelBuilder.JointDofConfig(axis=newton.Axis.Y, target_ke=ke, target_kd=kd),
-        #     newton.ModelBuilder.JointDofConfig(axis=newton.Axis.Z, target_ke=ke, target_kd=kd),
-        # ],
     )
 
     model = builder.finalize(device=device)
-    # print("model.body_inertia_inv\n", model.body_inv_inertia)
     test.assertEqual(model.joint_dof_count, 6)
 
     angular_values = [0.24, 0.282353, 0.96]
@@ -146,7 +116,6 @@ def test_3d_articulation(test: TestBodyForce, device, solver_fn, test_angular, u
         state_1.body_f.assign(input)
 
         sim_dt = 1.0 / 10.0
-        # sim_time = 0.0
 
         for _ in range(1):
             solver.step(state_0, state_1, None, None, sim_dt)
@@ -157,8 +126,7 @@ def test_3d_articulation(test: TestBodyForce, device, solver_fn, test_angular, u
             newton.eval_ik(model, state_0, state_0.joint_q, state_0.joint_qd)
 
         body_qd = state_0.body_qd.numpy()[0]
-        # print("body_q", body_q)
-        # print("body_qd", body_qd)
+
         test.assertAlmostEqual(body_qd[control_idx], test_value, delta=1e-4)
         for i in range(6):
             if i == control_idx:
