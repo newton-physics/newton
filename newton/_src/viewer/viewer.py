@@ -132,7 +132,7 @@ class ViewerBase:
         # Convert to warp array
         self.world_offsets = wp.array(world_offsets, dtype=wp.vec3, device=self.device)
 
-    def get_world_extents(self) -> tuple[float, float, float] | None:
+    def _get_world_extents(self) -> tuple[float, float, float] | None:
         """Get the maximum extents of all worlds in the model."""
         if self.model is None:
             return None
@@ -188,7 +188,7 @@ class ViewerBase:
         if self.model.num_worlds <= 1:
             return
 
-        max_extents = self.get_world_extents()
+        max_extents = self._get_world_extents()
         if max_extents is None:
             return
 

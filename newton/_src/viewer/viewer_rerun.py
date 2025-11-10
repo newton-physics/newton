@@ -110,6 +110,9 @@ class ViewerRerun(ViewerBase):
         self._meshes = {}
         self._instances = {}
 
+        # Make sure the timeline is set up
+        rr.set_time("time", timestamp=0.0)
+
     @override
     def log_mesh(
         self,
@@ -162,8 +165,6 @@ class ViewerRerun(ViewerBase):
         )
 
         rr.log(name, mesh_3d)
-        # hide the reference mesh
-        rr.log(name, rr.Clear(recursive=False))
 
     @override
     def log_instances(self, name, mesh, xforms, scales, colors, materials, hidden=False):
@@ -208,6 +209,9 @@ class ViewerRerun(ViewerBase):
 
             # save reference
             self._instances[name] = mesh_3d
+
+            # hide the reference mesh
+            rr.log(mesh, rr.Clear(recursive=False))
 
         # Convert transforms and properties to numpy
         if xforms is not None:
@@ -367,7 +371,7 @@ class ViewerRerun(ViewerBase):
         if geo_type == newton.GeoType.PLANE:
             # Handle "infinite" planes encoded with non-positive scales
             if geo_scale[0] == 0.0 or geo_scale[1] == 0.0:
-                extents = self.get_world_extents()
+                extents = self._get_world_extents()
                 if extents is None:
                     width, length = 10.0, 10.0
                 else:
