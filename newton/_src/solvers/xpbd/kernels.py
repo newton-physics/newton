@@ -1697,16 +1697,14 @@ def solve_body_joints(
                 target_pos = wp.clamp(target_pos, lower, upper)
 
                 if axis_stiffness[dim] > 0.0:
-                    pos_err = e - target_pos
-                    err = pos_err + derr_rel * dt
+                    err = e - target_pos
                     compliance = 1.0 / axis_stiffness[dim]
                     damping = axis_damping[dim]
                 elif axis_damping[dim] > 0.0:
-                    err = derr_rel * dt
-                    compliance = 0.0
+                    compliance = 1.0 / axis_damping[dim]
                     damping = axis_damping[dim]
 
-            if wp.abs(err) > 1e-9:
+            if wp.abs(err) > 1e-9 or wp.abs(derr_rel) > 1e-9:
                 lambda_in = 0.0
                 d_lambda = compute_positional_correction(
                     err,
@@ -1899,14 +1897,12 @@ def solve_body_joints(
                 target_pos = wp.clamp(target_pos, lower, upper)
 
                 if axis_stiffness[dim] > 0.0:
-                    pos_err = e - target_pos
-                    err = pos_err + derr_rel * dt
+                    err = e - target_pos
                     compliance = 1.0 / axis_stiffness[dim]
                     damping = axis_damping[dim]
                 elif axis_damping[dim] > 0.0:
-                    err = derr_rel * dt
-                    compliance = 0.0
                     damping = axis_damping[dim]
+                    compliance = 1.0 / axis_damping[dim]
 
             d_lambda = (
                 compute_angular_correction(
