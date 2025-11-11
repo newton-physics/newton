@@ -253,7 +253,7 @@ def parse_usd(
         has_particle_collision=False,
     )
 
-    def load_visual_shapes(parent_body_id, prim, incoming_xform: wp.transform):
+    def load_visual_shapes(parent_body_id: int, prim: Usd.Prim, incoming_xform: wp.transform, incoming_scale: wp.vec3):
         if (
             prim.HasAPI(UsdPhysics.RigidBodyAPI)
             or prim.HasAPI(UsdPhysics.MassAPI)
@@ -264,19 +264,24 @@ def parse_usd(
         path_name = str(prim.GetPath())
         if any(re.match(path, path_name) for path in ignore_paths):
             return
-        xform = incoming_xform * usd.get_transform(prim)
+
+        incoming_xform_mat = wp.transform_compose(incoming_xform.p, incoming_xform.q, incoming_scale)
+        xform_mat = incoming_xform_mat @ usd.get_transform_matrix(prim)
+        xform_pos, xform_rot, scale = wp.transform_decompose(xform_mat)
+        xform = wp.transform(xform_pos, xform_rot)
+
         if prim.IsInstance():
             proto = prim.GetPrototype()
             for child in proto.GetChildren():
                 # remap prototype child path to this instance's path (instance proxy)
                 inst_path = child.GetPath().ReplacePrefix(proto.GetPath(), prim.GetPath())
                 inst_child = stage.GetPrimAtPath(inst_path)
-                load_visual_shapes(parent_body_id, inst_child, xform)
+                load_visual_shapes(parent_body_id, inst_child, xform, scale)
             return
         type_name = str(prim.GetTypeName()).lower()
         if type_name.endswith("joint"):
             return
-        scale: wp.vec3 = usd.get_scale(prim)
+
         shape_id = -1
         if path_name not in path_shape_map:
             if type_name == "cube":
@@ -382,26 +387,38 @@ def parse_usd(
                 points = np.array(mesh.GetPointsAttr().Get(), dtype=np.float32)
                 indices = np.array(mesh.GetFaceVertexIndicesAttr().Get(), dtype=np.float32)
                 counts = mesh.GetFaceVertexCountsAttr().Get()
-                faces = []
-                face_id = 0
-                for count in counts:
-                    if count == 3:
-                        faces.append(indices[face_id : face_id + 3])
-                    elif count == 4:
-                        faces.append(indices[face_id : face_id + 3])
-                        faces.append(indices[[face_id, face_id + 2, face_id + 3]])
-                    else:
-                        continue
-                    face_id += count
-                m = Mesh(points, np.array(faces, dtype=np.int32).flatten())
-                shape_id = builder.add_shape_mesh(
-                    parent_body_id,
-                    xform,
-                    scale=scale,
-                    mesh=m,
-                    cfg=visual_shape_cfg,
-                    key=path_name,
-                )
+
+                if counts is None:
+                    if verbose:
+                        print(f"Warning: Mesh at {path_name} does not specify any face.")
+                else:
+                    faces = []
+                    face_id = 0
+                    for count in counts:
+                        if count == 3:
+                            faces.append(indices[face_id : face_id + 3])
+                        elif count == 4:
+                            faces.append(indices[face_id : face_id + 3])
+                            faces.append(indices[[face_id, face_id + 2, face_id + 3]])
+                        else:
+                            continue
+                        face_id += count
+
+                    faces = np.array(faces, dtype=np.int32)
+                    handedness = mesh.GetOrientationAttr().Get()
+                    flip_winding = handedness.lower() == "lefthanded"
+                    if flip_winding:
+                        faces = faces[:, ::-1]
+
+                    m = Mesh(points, faces.flatten())
+                    shape_id = builder.add_shape_mesh(
+                        parent_body_id,
+                        xform,
+                        scale=scale,
+                        mesh=m,
+                        cfg=visual_shape_cfg,
+                        key=path_name,
+                    )
             elif len(type_name) > 0 and type_name != "xform" and verbose:
                 print(f"Warning: Unsupported geometry type {type_name} at {path_name} while loading visual shapes.")
 
@@ -412,7 +429,7 @@ def parse_usd(
                     print(f"Added visual shape {path_name} ({type_name}) with id {shape_id}.")
 
         for child in prim.GetChildren():
-            load_visual_shapes(parent_body_id, child, xform)
+            load_visual_shapes(parent_body_id, child, xform, scale)
 
     def add_body(prim, xform, key, armature):
         # Extract custom attributes for this body
@@ -427,7 +444,7 @@ def parse_usd(
         path_body_map[key] = b
         if load_non_physics_prims:
             for child in prim.GetChildren():
-                load_visual_shapes(b, child, wp.transform_identity())
+                load_visual_shapes(b, child, wp.transform_identity(), wp.vec3(1.0))
         return b
 
     def parse_body(rigid_body_desc, prim, incoming_xform=None, add_body_to_builder=True):
@@ -1150,7 +1167,7 @@ def parse_usd(
                 parent_id, child_id = resolve_joint_parent_child(joint_desc, body_ids, get_transforms=False)
                 joint_edges.append((parent_id, child_id))
 
-            articulation_xform = wp.mul(incoming_world_xform, usd.get_transform(articulation_prim))
+            articulation_xform = wp.mul(incoming_world_xform, usd.get_transform(articulation_prim, local=False))
 
             if len(joint_edges) == 0:
                 # We have an articulation without joints, i.e. only free rigid bodies
@@ -1286,9 +1303,9 @@ def parse_usd(
                 body_path = str(shape_spec.rigidBody)
                 # print("shape ", prim, "body =" , body_path)
                 body_id = path_body_map.get(body_path, -1)
-                # scale = np.array(shape_spec.localScale)
-                scale = usd.get_scale(prim)
-                collision_group = 1  # See test_world_and_group_pair for full filtering logic
+                scale = wp.vec3(shape_spec.localScale)
+                collision_group = builder.default_shape_cfg.collision_group
+
                 if len(shape_spec.collisionGroups) > 0:
                     cgroup_name = str(shape_spec.collisionGroups[0])
                     if cgroup_name not in collision_group_ids:
@@ -1409,6 +1426,13 @@ def parse_usd(
                             )
                             continue
                         face_id += count
+
+                    faces = np.array(faces, dtype=np.int32)
+                    handedness = mesh.GetOrientationAttr().Get()
+                    flip_winding = handedness.lower() == "lefthanded"
+                    if flip_winding:
+                        faces = faces[:, ::-1]
+
                     # Resolve mesh hull vertex limit from schema with fallback to parameter
                     resolved_maxhullvert = R.get_value(
                         prim,
@@ -1417,7 +1441,7 @@ def parse_usd(
                         default=mesh_maxhullvert,
                         verbose=verbose,
                     )
-                    m = Mesh(points, np.array(faces, dtype=np.int32).flatten(), maxhullvert=resolved_maxhullvert)
+                    m = Mesh(points, faces.flatten(), maxhullvert=resolved_maxhullvert)
                     shape_id = builder.add_shape_mesh(
                         scale=scale,
                         mesh=m,
