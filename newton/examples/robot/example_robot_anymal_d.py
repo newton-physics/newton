@@ -68,8 +68,7 @@ class Example:
         if len(articulation_builder.joint_q) > 6:
             articulation_builder.joint_q[3:7] = [0.0, 0.0, 0.0, 1.0]
 
-        for i in range(len(articulation_builder.joint_dof_mode)):
-            articulation_builder.joint_dof_mode[i] = newton.JointMode.TARGET_POSITION
+        for i in range(articulation_builder.joint_dof_count):
             articulation_builder.joint_target_ke[i] = 150
             articulation_builder.joint_target_kd[i] = 5
 
@@ -124,9 +123,7 @@ class Example:
 
             # apply forces to the model for picking, wind, etc
             self.viewer.apply_forces(self.state_0)
-
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
-
             # swap states
             self.state_0, self.state_1 = self.state_1, self.state_0
 

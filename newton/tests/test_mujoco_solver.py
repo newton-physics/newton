@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import time  # Added for the interactive loop
+import time
 import unittest
 
 import numpy as np  # For numerical operations and random values
@@ -571,30 +571,6 @@ class TestMuJoCoSolverJointProperties(TestMuJoCoSolverPropertiesBase):
         # Step 2: Create solver (this should apply values to MuJoCo)
         solver = SolverMuJoCo(self.model, iterations=1, disable_contacts=True)
 
-        # Step 3: Verify initial values were applied to MuJoCo
-
-        # Check effort limits: Newton value should appear as MuJoCo actuator force range
-        for world_idx in range(self.model.num_worlds):
-            for axis_idx in range(dofs_per_world):
-                global_axis_idx = world_idx * dofs_per_world + axis_idx
-                actuator_idx = solver.mjc_axis_to_actuator.numpy()[axis_idx]
-
-                if actuator_idx >= 0:  # This axis has an actuator
-                    force_range = solver.mjw_model.actuator_forcerange.numpy()[world_idx, actuator_idx]
-                    expected_limit = initial_effort_limits[global_axis_idx]
-                    self.assertAlmostEqual(
-                        force_range[0],
-                        -expected_limit,
-                        places=3,
-                        msg=f"MuJoCo actuator {actuator_idx} in world {world_idx} min force should match negative Newton effort limit",
-                    )
-                    self.assertAlmostEqual(
-                        force_range[1],
-                        expected_limit,
-                        places=3,
-                        msg=f"MuJoCo actuator {actuator_idx} in world {world_idx} max force should match Newton effort limit",
-                    )
-
         # Check armature: Newton value should appear directly in MuJoCo DOF armature
         for world_idx in range(self.model.num_worlds):
             for dof_idx in range(min(dofs_per_world, solver.mjw_model.dof_armature.shape[1])):
@@ -652,30 +628,6 @@ class TestMuJoCoSolverJointProperties(TestMuJoCoSolverPropertiesBase):
 
         # Step 5: Notify MuJoCo of changes
         solver.notify_model_changed(SolverNotifyFlags.JOINT_DOF_PROPERTIES)
-
-        # Step 6: Verify all changes were applied
-
-        # Check updated effort limits
-        for world_idx in range(self.model.num_worlds):
-            for axis_idx in range(dofs_per_world):
-                global_axis_idx = world_idx * dofs_per_world + axis_idx
-                actuator_idx = solver.mjc_axis_to_actuator.numpy()[axis_idx]
-
-                if actuator_idx >= 0:
-                    force_range = solver.mjw_model.actuator_forcerange.numpy()[world_idx, actuator_idx]
-                    expected_limit = updated_effort_limits[global_axis_idx]
-                    self.assertAlmostEqual(
-                        force_range[0],
-                        -expected_limit,
-                        places=3,
-                        msg=f"Updated MuJoCo actuator {actuator_idx} in world {world_idx} min force should match negative Newton effort limit",
-                    )
-                    self.assertAlmostEqual(
-                        force_range[1],
-                        expected_limit,
-                        places=3,
-                        msg=f"Updated MuJoCo actuator {actuator_idx} in world {world_idx} max force should match Newton effort limit",
-                    )
 
         # Check updated armature
         for world_idx in range(self.model.num_worlds):

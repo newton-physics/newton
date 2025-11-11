@@ -66,8 +66,7 @@ class Example:
         # approximate meshes for faster collision detection
         h1.approximate_meshes("bounding_box")
 
-        for i in range(len(h1.joint_dof_mode)):
-            h1.joint_dof_mode[i] = newton.JointMode.TARGET_POSITION
+        for i in range(len(h1.joint_target_ke)):
             h1.joint_target_ke[i] = 150
             h1.joint_target_kd[i] = 5
 

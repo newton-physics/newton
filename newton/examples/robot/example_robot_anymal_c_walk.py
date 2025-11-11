@@ -146,11 +146,11 @@ class Example:
             "LF_HFE": 0.4,
             "LF_KFE": -0.8,
         }
+        # Set initial joint positions (skip first 7 position coordinates which are the free joint), e.g. for "LF_HAA" value will be written at index 1+6 = 7.
         for key, value in initial_q.items():
             builder.joint_q[builder.joint_key.index(key) + 6] = value
 
-        for i in range(builder.joint_dof_count):
-            builder.joint_dof_mode[i] = newton.JointMode.TARGET_POSITION
+        for i in range(len(builder.joint_target_ke)):
             builder.joint_target_ke[i] = 150
             builder.joint_target_kd[i] = 5
 
@@ -215,7 +215,7 @@ class Example:
     def capture(self):
         if self.device.is_cuda:
             torch_tensor = torch.zeros(18, device=self.torch_device, dtype=torch.float32)
-            self.control.joint_target = wp.from_torch(torch_tensor, dtype=wp.float32, requires_grad=False)
+            self.control.joint_target_pos = wp.from_torch(torch_tensor, dtype=wp.float32, requires_grad=False)
             with wp.ScopedCapture() as capture:
                 self.simulate()
             self.graph = capture.graph
@@ -254,13 +254,12 @@ class Example:
             a_with_zeros = torch.cat([torch.zeros(6, device=self.torch_device, dtype=torch.float32), a.squeeze(0)])
             a_wp = wp.from_torch(a_with_zeros, dtype=wp.float32, requires_grad=False)
             wp.copy(
-                self.control.joint_target, a_wp
+                self.control.joint_target_pos, a_wp
             )  # this can actually be optimized by doing  wp.copy(self.solver.mjw_data.ctrl[0], a_wp) and not launching  apply_mjc_control_kernel each step. Typically we update position and velocity targets at the rate of the outer control loop.
         if self.graph:
             wp.capture_launch(self.graph)
         else:
             self.simulate()
-
         self.sim_time += self.frame_dt
 
     def render(self):
