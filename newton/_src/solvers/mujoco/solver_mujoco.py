@@ -743,7 +743,6 @@ class SolverMuJoCo(SolverBase):
         geom_solref: tuple[float, float] | None = None,
         geom_solimp: tuple[float, float, float, float, float] = (0.9, 0.95, 0.001, 0.5, 2.0),
         geom_friction: tuple[float, float, float] | None = None,
-        geom_condim: int = 3,
         target_filename: str | None = None,
         default_actuator_args: dict | None = None,
         default_actuator_gear: float | None = None,
@@ -857,7 +856,6 @@ class SolverMuJoCo(SolverBase):
         defaults = spec.default
         if callable(defaults):
             defaults = defaults()
-        defaults.geom.condim = geom_condim
         # Use provided or default contact stiffness time constant
         if geom_solref is None:
             geom_solref = (self.contact_stiffness_time_const, 1.0)

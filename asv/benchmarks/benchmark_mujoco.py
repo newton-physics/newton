@@ -379,6 +379,7 @@ class Example:
         rng = np.random.default_rng(seed)
 
         articulation_builder = newton.ModelBuilder()
+        newton.solvers.SolverMuJoCo.register_custom_attributes(articulation_builder)
         if robot == "humanoid":
             root_dofs = _setup_humanoid(articulation_builder)
         elif robot == "g1":
