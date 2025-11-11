@@ -1010,7 +1010,9 @@ def update_joint_axis_limits(axis: wp.vec3, limit_lower: float, limit_upper: flo
 
 
 @wp.func
-def update_joint_axis_weighted_target(axis: wp.vec3, target: float, weight: float, input_target_weight: wp.spatial_vector):
+def update_joint_axis_weighted_target(
+    axis: wp.vec3, target: float, weight: float, input_target_weight: wp.spatial_vector
+):
     axis_targets = wp.spatial_top(input_target_weight)
     axis_weights = wp.spatial_bottom(input_target_weight)
 

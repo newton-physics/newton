@@ -217,7 +217,7 @@ class TestJointLimits(unittest.TestCase):
         self.assertEqual(config.limit_ke, 0.0)
         self.assertEqual(config.limit_kd, 0.0)
         self.assertEqual(config.armature, 0.0)
-        
+
     def test_robustness_of_limit_comparisons(self):
         """Test that limit comparisons work robustly with >= and <= operators."""
         builder = newton.ModelBuilder()

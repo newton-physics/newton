@@ -151,8 +151,8 @@ class Example:
             builder.joint_q[builder.joint_key.index(key) + 6] = value
 
         for i in range(len(builder.joint_target_ke)):
-                builder.joint_target_ke[i] = 150
-                builder.joint_target_kd[i] = 5
+            builder.joint_target_ke[i] = 150
+            builder.joint_target_kd[i] = 5
 
         self.model = builder.finalize()
 
