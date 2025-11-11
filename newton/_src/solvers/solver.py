@@ -16,7 +16,7 @@
 import warp as wp
 
 from ..geometry import ParticleFlags
-from ..sim import Contacts, Control, Model, State
+from ..sim import Contacts, Control, Model, ModelBuilder, State
 from .solver_data import CustomDataField, SolverData
 
 
@@ -295,6 +295,26 @@ class SolverBase:
         """
         pass
 
+    def update_contacts(self, contacts: Contacts) -> None:
+        """
+        Update a Contacts object with forces from the solver state. Where the solver state contains
+        other contact data, convert that data to the Contacts format.
+
+        Args:
+            contacts (Contacts): The object to update from the solver state.
+        """
+        raise NotImplementedError()
+
+    @classmethod
+    def register_custom_attributes(cls, builder: ModelBuilder) -> None:
+        """
+        Register custom attributes for the solver.
+
+        Args:
+            builder (ModelBuilder): The model builder to register the custom attributes to.
+        """
+        pass
+
     def get_generic_data_fields(self) -> dict[str, int]:
         """Return the data fields that can be requested from the solver, along with their size.
         Returns:
@@ -346,11 +366,3 @@ class SolverBase:
         if self.data is None:
             raise RuntimeError("No data fields required; nothing to allocate on State.")
         self.data.allocate_data(state)
-
-    def update_contacts(self, contacts: Contacts) -> None:
-        """Update a Contacts object with forces from the solver state. Where the solver state contains
-        other contact data, convert that data to the Contacts format.
-        Args:
-            contacts (Contacts): The object to update from the solver state.
-        """
-        raise NotImplementedError()

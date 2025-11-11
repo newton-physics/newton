@@ -278,10 +278,11 @@ class Example:
             "all bodies are above the sand",
             lambda q, qd: q[2] > 0.45,
         )
+        voxel_size = self.mpm_solver.mpm_model.voxel_size
         newton.examples.test_particle_state(
             self.sand_state_0,
             "all particles are above the ground",
-            lambda q, qd: q[2] > -0.05,
+            lambda q, qd: q[2] > -voxel_size,
         )
 
     def render(self):

@@ -819,6 +819,17 @@ class ArraySquaredNorm:
 
         return data[:1]
 
+    def release(self):
+        """Return borrowed temporaries to their pool."""
+        for attr in ("partial_sums_a", "partial_sums_b"):
+            temporary = getattr(self, attr, None)
+            if temporary is not None:
+                temporary.release()
+                setattr(self, attr, None)
+
+    def __del__(self):
+        self.release()
+
 
 @wp.kernel
 def update_condition(
@@ -957,11 +968,17 @@ def solve_rheology(
         A captured execution graph handle when ``use_graph`` is True and the
         device supports it; otherwise ``None``.
     """
-    delta_stress = fem.borrow_temporary_like(stress, temporary_store)
+    borrowed_temporaries: list[Any] = []
 
-    delassus_rotation = fem.borrow_temporary(temporary_store, shape=stress.shape, dtype=mat66)
-    delassus_diagonal = fem.borrow_temporary(temporary_store, shape=stress.shape, dtype=vec6)
-    delassus_normal = fem.borrow_temporary(temporary_store, shape=stress.shape, dtype=vec6)
+    def _register_temp(temp):
+        borrowed_temporaries.append(temp)
+        return temp
+
+    delta_stress = _register_temp(fem.borrow_temporary_like(stress, temporary_store))
+
+    delassus_rotation = _register_temp(fem.borrow_temporary(temporary_store, shape=stress.shape, dtype=mat66))
+    delassus_diagonal = _register_temp(fem.borrow_temporary(temporary_store, shape=stress.shape, dtype=vec6))
+    delassus_normal = _register_temp(fem.borrow_temporary(temporary_store, shape=stress.shape, dtype=vec6))
 
     # If coloring is provided, use Gauss-Seidel, otherwise Jacobi with mass splitting
     color_count = 0 if color_offsets is None else len(color_offsets) - 1
@@ -978,13 +995,15 @@ def solve_rheology(
         compliance_mat_values = None
         compliance_mat_columns = None
         # make a zero-stride array for compliance_mat_offsets
-        compliance_mat_offsets_tmp = fem.borrow_temporary(temporary_store, shape=1, dtype=int)
+        compliance_mat_offsets_tmp = _register_temp(fem.borrow_temporary(temporary_store, shape=1, dtype=int))
         compliance_mat_offsets_tmp.array.zero_()
         compliance_mat_offsets = wp.array(
             ptr=compliance_mat_offsets_tmp.array.ptr, shape=stress.shape[0] + 1, strides=(0,), dtype=int
         )
     else:
-        compliance_mat_diagonal_temp = fem.borrow_temporary(temporary_store, shape=stress.shape, dtype=mat66)
+        compliance_mat_diagonal_temp = _register_temp(
+            fem.borrow_temporary(temporary_store, shape=stress.shape, dtype=mat66)
+        )
         compliance_mat_diagonal = compliance_mat_diagonal_temp.array
         sp.bsr_get_diag(compliance_mat, out=compliance_mat_diagonal)
         compliance_mat_values = compliance_mat.values
@@ -1162,10 +1181,10 @@ def solve_rheology(
     # Collider contacts
 
     if rigidity_mat is not None:
-        prev_collider_velocity = fem.borrow_temporary_like(collider_velocities, temporary_store)
+        prev_collider_velocity = _register_temp(fem.borrow_temporary_like(collider_velocities, temporary_store))
         wp.copy(dest=prev_collider_velocity, src=collider_velocities)
         _D, J, _IJtm = rigidity_mat
-        delta_body_qd = fem.borrow_temporary(temporary_store, shape=J.shape[1], dtype=float)
+        delta_body_qd = _register_temp(fem.borrow_temporary(temporary_store, shape=J.shape[1], dtype=float))
 
     # Apply initial impulse guess
     wp.launch(
@@ -1236,7 +1255,7 @@ def solve_rheology(
     solve_graph = None
     if use_graph:
         min_iterations = 5
-        iteration_and_condition = fem.borrow_temporary(temporary_store, shape=(2,), dtype=int)
+        iteration_and_condition = _register_temp(fem.borrow_temporary(temporary_store, shape=(2,), dtype=int))
         iteration_and_condition.fill_(1)
 
         iteration = iteration_and_condition[:1]
@@ -1321,5 +1340,10 @@ def solve_rheology(
             plastic_strain_delta,
         ],
     )
+
+    residual_squared_norm_computer.release()
+
+    for temp in reversed(borrowed_temporaries):
+        temp.release()
 
     return solve_graph

@@ -21,12 +21,6 @@ from warp.context import assert_conditional_graph_support
 
 from ..core.types import Axis
 from .download_assets import clear_git_cache, download_asset
-from .schema_resolver import (
-    SchemaResolver,
-    SchemaResolverMjc,
-    SchemaResolverNewton,
-    SchemaResolverPhysx,
-)
 from .topology import topological_sort
 
 
@@ -310,10 +304,6 @@ def compute_world_offsets(num_worlds: int, spacing: tuple[float, float, float], 
 
 
 __all__ = [
-    "SchemaResolver",
-    "SchemaResolverMjc",
-    "SchemaResolverNewton",
-    "SchemaResolverPhysx",
     "boltzmann",
     "check_conditional_graph_support",
     "clear_git_cache",

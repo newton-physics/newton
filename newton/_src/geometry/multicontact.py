@@ -617,7 +617,7 @@ def approx_max_quadrilateral_area_with_calipers(hull: wp.array(dtype=wp.vec3), h
     # Relative epsilon for tie-breaking: only update if new value is at least (1 + epsilon) times better
     # This is scale-invariant and avoids catastrophic cancellation in floating-point comparisons
     # Important for objects with circular geometry to ensure consistent point selection
-    tie_epsilon_rel = 1.0e-4
+    tie_epsilon_rel = 1.0e-3
 
     # Start with point j opposite point i=0
     j = int(1)
@@ -1184,7 +1184,7 @@ def create_build_manifold(support_func: Any):
 
     Mat53f = wp.types.matrix(shape=(5, 3), dtype=wp.float32)
     vec5 = wp.types.vector(5, wp.float32)
-    vec5i = wp.types.vector(5, wp.int32)
+    vec5u = wp.types.vector(5, wp.uint32)
 
     @wp.func
     def build_manifold(
@@ -1204,7 +1204,7 @@ def create_build_manifold(support_func: Any):
         int,
         vec5,
         Mat53f,
-        vec5i,
+        vec5u,
     ]:
         """
         Build a contact manifold between two convex shapes using perturbed support mapping and polygon clipping.
@@ -1238,7 +1238,7 @@ def create_build_manifold(support_func: Any):
             - vec5: Signed distances for each contact point (negative when shapes overlap).
             - Mat53f: Contact points at the center of the manifold contact
               (midpoint between points on shape A and shape B) in world space.
-            - vec5i: Feature IDs for each contact point, enabling contact tracking across
+            - vec5u: Feature IDs for each contact point, enabling contact tracking across
               multiple frames for warm starting and contact persistence.
 
         Note:
@@ -1272,7 +1272,7 @@ def create_build_manifold(support_func: Any):
 
         # Extract results into fixed-size matrices
         contact_points = Mat53f()
-        feature_ids = vec5i(0, 0, 0, 0, 0)
+        feature_ids = vec5u(wp.uint32(0), wp.uint32(0), wp.uint32(0), wp.uint32(0), wp.uint32(0))
         signed_distances = vec5(0.0, 0.0, 0.0, 0.0, 0.0)
 
         # Copy contact points and extract feature IDs
@@ -1283,7 +1283,7 @@ def create_build_manifold(support_func: Any):
 
             contact_points[i] = 0.5 * (contact_point_a + contact_point_b)
 
-            feature_ids[i] = int(result_features[i])
+            feature_ids[i] = result_features[i]
             signed_distances[i] = wp.dot(contact_point_b - contact_point_a, normal)
 
         # Check if we should include the deepest contact point
@@ -1294,7 +1294,7 @@ def create_build_manifold(support_func: Any):
                 deepest_contact_center = 0.5 * (p_a + p_b)
                 contact_points[count_out] = deepest_contact_center
                 signed_distances[count_out] = wp.dot(p_b - p_a, normal)
-                feature_ids[count_out] = 0  # Use 0 for the deepest contact feature ID
+                feature_ids[count_out] = wp.uint32(0)  # Use 0 for the deepest contact feature ID
                 count_out += 1
 
         return count_out, signed_distances, contact_points, feature_ids
