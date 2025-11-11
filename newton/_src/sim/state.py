@@ -16,6 +16,11 @@
 from __future__ import annotations
 
 import warp as wp
+from warp.types import matrix
+
+
+class mat32(matrix(shape=(3, 2), dtype=wp.float32)):
+    pass
 
 
 class State:
@@ -60,6 +65,8 @@ class State:
 
         self.joint_qd: wp.array | None = None
         """Generalized joint velocity coordinates, shape (joint_dof_count,), dtype float."""
+
+        self.data: Data | None = None
 
     def clear_forces(self) -> None:
         """
@@ -110,3 +117,26 @@ class State:
         if self.joint_qd is None:
             return 0
         return len(self.joint_qd)
+
+
+class Data:
+    """Registry for read-only time-varying simulation data requested from the solver."""
+
+    body_acceleration: wp.array(dtype=wp.spatial_vector)
+    """Linear and angular acceleration of the body (COM-referenced) in world frame."""
+
+    body_parent_joint_force: wp.array(dtype=wp.spatial_vector)
+    """Parent joint force and torque."""
+
+    contact_force_scalar: wp.array(dtype=float)
+    """Magnitude of contact force."""
+    contact_force_vector_c: wp.array(dtype=wp.vec3f)
+    """Contact force vector in contact frame."""
+    contact_torque_vector_c: wp.array(dtype=wp.vec3f)
+    """Contact torque vector in contact frame."""
+    contact_frame_w: wp.array(dtype=mat32)
+    """Unit vectors z and x defining the contact frame in world frame, where z and x define the
+    normal and first tangent directions, respectively. The second tangent is cross(z, x)."""
+
+    def __init__(self, device=None):
+        self.device = device

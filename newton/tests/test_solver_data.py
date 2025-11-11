@@ -38,7 +38,9 @@ class TestSolverData(unittest.TestCase):
 
     def test_require_generic_field_allocates_and_reads(self):
         self.sd._require_fields({"body_acceleration": True})
-        arr = self.sd.body_acceleration
+        state = newton.State()
+        self.sd.allocate_data(state)
+        arr = state.data.body_acceleration
         self.assertIsInstance(arr, wp.array)
         self.assertEqual(len(arr), self.model.body_count)
         self.assertEqual(arr.dtype, wp.spatial_vector)
@@ -46,7 +48,9 @@ class TestSolverData(unittest.TestCase):
     def test_dynamic_contact_frequency_and_allocation(self):
         self.sd._require_fields({"contact_force_scalar": True})
         self.assertEqual(self.sd.frequency_sizes["contact"], 5)
-        self.assertEqual(len(self.sd.contact_force_scalar), 5)
+        state = newton.State()
+        self.sd.allocate_data(state)
+        self.assertEqual(len(state.data.contact_force_scalar), 5)
 
     def test_require_nonexistent_field_raises(self):
         with self.assertRaises(TypeError):
@@ -72,7 +76,9 @@ class TestSolverData(unittest.TestCase):
             verbose=False,
         )
         sd2._require_fields({"body_custom": True})
-        arr = sd2.body_custom
+        state2 = newton.State()
+        sd2.allocate_data(state2)
+        arr = state2.data.body_custom
         self.assertIsInstance(arr, wp.array)
         self.assertEqual(len(arr), self.model.body_count)
         self.assertEqual(arr.dtype, wp.float32)
@@ -131,13 +137,14 @@ class TestSolverDataIntegration(unittest.TestCase):
             ],
         )
         solver.require_data("body_acceleration", "body_custom")
-        sd = solver.data
-        self.assertIsInstance(sd.body_acceleration, wp.array)
-        self.assertEqual(len(sd.body_acceleration), self.model.body_count)
-        self.assertEqual(sd.body_acceleration.dtype, wp.spatial_vector)
-        self.assertIsInstance(sd.body_custom, wp.array)
-        self.assertEqual(len(sd.body_custom), self.model.body_count)
-        self.assertEqual(sd.body_custom.dtype, wp.float32)
+        state = newton.State()
+        solver.allocate_data(state)
+        self.assertIsInstance(state.data.body_acceleration, wp.array)
+        self.assertEqual(len(state.data.body_acceleration), self.model.body_count)
+        self.assertEqual(state.data.body_acceleration.dtype, wp.spatial_vector)
+        self.assertIsInstance(state.data.body_custom, wp.array)
+        self.assertEqual(len(state.data.body_custom), self.model.body_count)
+        self.assertEqual(state.data.body_custom.dtype, wp.float32)
 
     def test_activation_toggle(self):
         self.solver.require_data("body_acceleration")
@@ -165,8 +172,10 @@ class TestSolverDataIntegration(unittest.TestCase):
 
         solver = self.CustomSolver(self.model, generic_fields_fn=generic, custom_fields_fn=custom)
         solver.require_data("body_acceleration", "body_custom")
-        self.assertTrue(hasattr(solver.data, "body_custom"))
-        self.assertEqual(len(solver.data.body_custom), self.model.body_count)
+        state = newton.State()
+        solver.allocate_data(state)
+        self.assertTrue(hasattr(state.data, "body_custom"))
+        self.assertEqual(len(state.data.body_custom), self.model.body_count)
 
 
 if __name__ == "__main__":

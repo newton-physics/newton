@@ -6,10 +6,11 @@ Solver Data Fields
 Overview
 --------
 
-While Newton's state object completely defines the time-varying state of the simulation, solvers may compute additional time-varying quantities
-that are of interest for sensors, learning frameworks, or debugging. The ``SolverData`` class serves as a solver-agnostic interface and registry
-for solvers to provide such simulation data, which may include accelerations, contact forces, constraint forces. Fields are organized by frequency
+While Newton's ``State`` object completely defines the time-varying state of the simulation, solvers may compute additional time-varying quantities
+that are of interest for sensors, learning frameworks, or debugging. The ``SolverData`` class serves as a solver-agnostic interface for solvers to provide such simulation data, which may include accelerations, contact forces, constraint forces. These are stored on ``State.data``. Fields are organized by frequency
 (``body_``, ``shape_``, ``joint_``, ``contact_``, etc.).
+
+The logic for tracking and allocating fields lives in ``SolverData``, whereas the ``Data`` class contains the fields definitions and allocations.
 
 SolverData defines *generic* fields, which are specified in the ``SolverData`` class, and also supports *solver-specific* custom fields. Solvers
 surface supported fields via two methods on ``SolverBase``:
@@ -17,15 +18,17 @@ surface supported fields via two methods on ``SolverBase``:
 - ``get_generic_data_fields() -> dict[str, int]``: Declares the generic fields supported by the solver and their sizes.
 - ``get_custom_data_fields() -> list[CustomDataField]``: Declares solver-defined fields that are not part of the generic API.
 
-Use the ``SolverBase.data_fields`` property to enumerate all supported field names. These fields can be requested via ``require_data()``, triggering
-their allocation. After the solver step, the data can be read from the attributes on ``Solver.data``.
+Use the ``SolverBase.data_fields`` property to enumerate all supported field names. These fields can be requested via ``require_data()``.
+
+The required fields must be allocated on each `State` object using ``Solver.allocate_data()``. Once written during the solver step, the
+data can be read from the attributes on ``State.data``.
 For generic fields, all coordinate frames and transformations follow the :ref:`Twist conventions in Newton <Twist conventions>`, where applicable.
 
 
 Frequency System
 ~~~~~~~~~~~~~~~~
 
-Fields in SolverData are organized by frequency (like in the Selection API), indicating what simulation entity they are associated with:
+Fields in Data are organized by frequency (like in the Selection API), indicating what simulation entity they are associated with:
 
 - **articulation**: Per articulation data
 - **body**: Per rigid body data
@@ -39,6 +42,38 @@ Field names have a prefix indicating their frequency followed by an underscore (
 
 API Reference
 -------------
+
+Usage
+~~~~~
+
+To access a data field, e.g. ``Data.body_acceleration``:
+
+1. Require the field from the solver: ``solver.require_data("body_acceleration")``.
+2. Register the field on the state: ``solver.allocate_data(state_0)``.
+3. Access the data field: ``state_0.body_acceleration``.
+
+
+Example Usage
+
+.. testcode:: python
+
+    import warp as wp
+    import newton
+
+    # create model and instantiate solver
+    builder = newton.ModelBuilder()
+    sphere = builder.add_body()
+    builder.add_shape_sphere(sphere, radius=0.2)
+    builder.add_joint_free(sphere)
+
+    model = builder.finalize()
+    solver = newton.solvers.SolverMuJoCo(model)
+
+    solver.require_data("body_acceleration")  # require field from solver
+
+    state = model.state()
+    solver.allocate_data(state)  # allocate field on state
+
 
 Methods
 ~~~~~~~
@@ -68,9 +103,9 @@ Solver Requirements
 
 Solvers supporting the SolverData interface must:
 
-1. Implement ``get_generic_data_fields()`` to return supported generic fields and their sizes
-2. Implement ``get_custom_data_fields()`` to return supported custom fields as ``CustomDataField`` entries
-3. Populate required and activated fields (as provided in ``data.required_fields``) during ``step()``
+1. Implement ``get_generic_data_fields()`` to return supported generic fields and their sizes.
+2. Implement ``get_custom_data_fields()`` to return supported custom fields as ``CustomDataField`` entries.
+3. Populate required and activated fields on `State.data` (as provided in ``data.required_fields``) during ``step()``.
 
 Example Solver Integration
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -106,8 +141,8 @@ Example Solver Integration
             # ...
 
             # Populate required fields
-            if self.data and self.data.required_fields.get("body_acceleration", False):
-                compute_accelerations(self.data.body_acceleration)
+            if state_out.data and self.data.required_fields.get("body_acceleration", False):
+                compute_accelerations(state_out.data.body_acceleration)
 
 Field Reference
 ---------------

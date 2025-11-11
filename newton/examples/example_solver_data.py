@@ -56,6 +56,8 @@ class Example:
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
+        for state in (self.state_0, self.state_1):
+            self.solver.allocate_data(state)
         self.control = self.model.control()
 
         if viewer is not None:
@@ -92,7 +94,7 @@ class Example:
         else:
             self.simulate()
 
-        pendulum_acc = self.solver.data.body_acceleration.numpy()[0]
+        pendulum_acc = self.state_0.data.body_acceleration.numpy()[0]
         self.add_plot_point(pendulum_acc[2])
         print(f"Pendulum acceleration: {pendulum_acc}")
 

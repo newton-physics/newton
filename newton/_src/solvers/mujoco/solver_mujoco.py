@@ -1409,7 +1409,7 @@ class SolverMuJoCo(SolverBase):
                     self.mujoco_warp_step()
 
             self.update_newton_state(self.model, state_out, self.mjw_data)
-            self.update_data()
+            self.update_data(state_out)
         self._step += 1
         return state_out
 
@@ -2896,9 +2896,9 @@ class SolverMuJoCo(SolverBase):
             m.sensor_rne_postconstraint = True
         # TODO: deactivate sensor_rne_postconstraint if it was set before and is not needed now
 
-    def update_data(self):
-        """Update `self.data` with the data previously marked as required."""
-        if self.data is None:
+    def update_data(self, state: State):
+        """Update `state.data` with the data previously marked as required."""
+        if state.data is None:
             return
         fields = {f for f, k in self.data.required_fields.items() if k}
         rigid_force_fields = ["body_acceleration", "body_parent_joint_force"]
@@ -2915,7 +2915,7 @@ class SolverMuJoCo(SolverBase):
                     self.mjw_data.cacc,
                     self.mjw_data.cfrc_int,
                 ],
-                outputs=[getattr(self.data, field) if field in fields else None for field in rigid_force_fields],
+                outputs=[getattr(state.data, field) if field in fields else None for field in rigid_force_fields],
             )
 
     def render_mujoco_viewer(

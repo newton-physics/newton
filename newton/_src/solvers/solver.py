@@ -341,6 +341,12 @@ class SolverBase:
             )
         self.data._require_fields(dict.fromkeys(fields, True))
 
+    def allocate_data(self, state: State):
+        """Allocate ``Data`` object with required fields on ``state``."""
+        if self.data is None:
+            raise RuntimeError("No data fields required; nothing to allocate on State.")
+        self.data.allocate_data(state)
+
     def update_contacts(self, contacts: Contacts) -> None:
         """Update a Contacts object with forces from the solver state. Where the solver state contains
         other contact data, convert that data to the Contacts format.

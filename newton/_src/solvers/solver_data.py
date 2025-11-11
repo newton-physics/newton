@@ -17,13 +17,9 @@ import typing
 from dataclasses import dataclass
 
 import warp as wp
-from warp.types import matrix
 
 from ..sim import Model
-
-
-class mat32(matrix(shape=(3, 2), dtype=wp.float32)):
-    pass
+from ..sim.state import Data, State
 
 
 @dataclass
@@ -37,7 +33,7 @@ class CustomDataField:
 
 class SolverData:
     """
-    Registry for time-varying simulation data that is not part of the State.
+    Interface for time-varying simulation data, which is stored in `State.data`.
 
     Provides a solver-agnostic interface for accessing quantities computed during
     forward dynamics such as accelerations, contact forces, and constraint forces.
@@ -57,22 +53,8 @@ class SolverData:
     required_fields: dict[str, bool]
     """Fields that have been marked as required, mapping each field name to a bool
     indicating whether it is active."""
-
-    body_acceleration: wp.array(dtype=wp.spatial_vector)
-    """Linear and angular acceleration of the body (COM-referenced) in world frame."""
-
-    body_parent_joint_force: wp.array(dtype=wp.spatial_vector)
-    """Parent joint force and torque."""
-
-    contact_force_scalar: wp.array(dtype=float)
-    """Magnitude of contact force."""
-    contact_force_vector_c: wp.array(dtype=wp.vec3f)
-    """Contact force vector in contact frame."""
-    contact_torque_vector_c: wp.array(dtype=wp.vec3f)
-    """Contact torque vector in contact frame."""
-    contact_frame_w: wp.array(dtype=mat32)
-    """Unit vectors z and x defining the contact frame in world frame, where z and x define the
-    normal and first tangent directions, respectively. The second tangent is cross(z, x)."""
+    field_allocations: dict[str, tuple[type, int]]
+    """Fields to allocate on `State.data`."""
 
     def __init__(
         self,
@@ -87,6 +69,7 @@ class SolverData:
         self.generic_fields = generic_fields
         self.custom_fields = {f.name: f for f in custom_fields}
         self.required_fields = {}
+        self.field_allocations = {}
         # Initialize frequency sizes with known model-based frequencies
         self.frequency_sizes = {
             "body": model.body_count,
@@ -99,7 +82,7 @@ class SolverData:
         }
 
         for field_name in generic_fields:
-            if typing.get_type_hints(self).get(field_name) is None:
+            if typing.get_type_hints(Data).get(field_name) is None:
                 raise TypeError(
                     f'Unknown generic SolverData field "{field_name}" defined by {self.__class__.__name__}.'
                 )
@@ -143,7 +126,7 @@ class SolverData:
             )
 
         for field in fields:
-            if hasattr(self, field):
+            if field in self.field_allocations:
                 continue
             field_size = self.frequency_sizes[self.find_attribute_frequency(field)]
             if self.verbose:
@@ -152,16 +135,36 @@ class SolverData:
             if field in self.custom_fields:
                 field_type = self.custom_fields[field].field_type
             else:
-                field_type = typing.get_type_hints(self).get(field)
+                field_type = typing.get_type_hints(Data).get(field)
                 if field_type is None:
                     raise TypeError(f"Generic SolverData field {field} is not defined.")
 
             if isinstance(field_type, wp.array):
-                setattr(self, field, wp.zeros(field_size, dtype=field_type.dtype, device=self.device))
+                self.field_allocations[field] = (field_type.dtype, field_size)
+                # setattr(self, field, wp.zeros(field_size, dtype=field_type.dtype, device=self.device))
             else:
-                raise NotImplementedError(f"Field {field} has unimplemented type {field_type}")
+                raise NotImplementedError(f"Field {field} was declared with unsupported type {field_type}")
 
         self.required_fields.update(fields)
+
+    def allocate_data(self, state: State):
+        """Allocate ``Data`` object with required fields on ``state``."""
+        if state.data is None:
+            if state.body_q is not None:
+                state_device = state.body_q.device
+            elif state.particle_q is not None:
+                state_device = state.particle_q.device
+            else:
+                state_device = None
+            state.data = Data(state_device)
+
+        for field, (dtype, size) in self.field_allocations.items():
+            if hasattr(state.data, field):
+                array = getattr(state.data, field)
+                if array.dtype != dtype or array.size != size:
+                    raise RuntimeError(f"Field {field} already defined on state with different size or type.")
+                continue
+            setattr(state.data, field, wp.zeros(size, dtype=dtype, device=state.data.device))
 
     def set_field_active(self, *fields, active=True):
         """Activate or deactivate fields. Deactivated fields remain allocated but are not computed."""
