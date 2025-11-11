@@ -30,7 +30,7 @@ import newton.examples
 
 
 class Example:
-    def __init__(self, viewer, num_worlds=4):
+    def __init__(self, viewer, num_worlds=4, args=None):
         self.fps = 60
         self.frame_dt = 1.0 / self.fps
         self.sim_time = 0.0
@@ -68,12 +68,25 @@ class Example:
         builder.add_ground_plane()
 
         self.model = builder.finalize()
-        self.solver = newton.solvers.SolverMuJoCo(self.model, njmax=100, nconmax=50)
+        use_mujoco_contacts = args.use_mujoco_contacts if args is not None else False
+        self.solver = newton.solvers.SolverMuJoCo(
+            self.model,
+            njmax=100,
+            nconmax=50,
+            contact_stiffness_time_const=self.sim_dt,
+            use_mujoco_contacts=use_mujoco_contacts,
+        )
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.control = self.model.control()
-        self.contacts = self.model.collide(self.state_0)
+
+        # Evaluate forward kinematics for collision detection
+        newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
+
+        # Create collision pipeline from command-line args (default: CollisionPipelineUnified with EXPLICIT)
+        self.collision_pipeline = newton.examples.create_collision_pipeline(self.model, args)
+        self.contacts = self.model.collide(self.state_0, collision_pipeline=self.collision_pipeline)
 
         self.viewer.set_model(self.model)
 
@@ -87,7 +100,7 @@ class Example:
             self.graph = capture.graph
 
     def simulate(self):
-        self.contacts = self.model.collide(self.state_0)
+        self.contacts = self.model.collide(self.state_0, collision_pipeline=self.collision_pipeline)
         for _ in range(self.sim_substeps):
             self.state_0.clear_forces()
 
@@ -137,6 +150,6 @@ if __name__ == "__main__":
 
     viewer, args = newton.examples.init(parser)
 
-    example = Example(viewer, args.num_worlds)
+    example = Example(viewer, args.num_worlds, args)
 
     newton.examples.run(example, args)

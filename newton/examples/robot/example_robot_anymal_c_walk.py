@@ -156,19 +156,16 @@ class Example:
 
         self.model = builder.finalize()
 
-        # Create collision pipeline for terrain mesh collisions
-        self.collision_pipeline = newton.CollisionPipelineUnified.from_model(
-            self.model,
-            rigid_contact_max_per_pair=10,
-            rigid_contact_margin=0.01,
-            broad_phase_mode=newton.BroadPhaseMode.EXPLICIT,
-        )
+        # Create collision pipeline from command-line args (default: CollisionPipelineUnified with EXPLICIT)
+        # Can override with: --collision-pipeline unified --broad-phase-mode nxn|sap|explicit
+        self.collision_pipeline = newton.examples.create_collision_pipeline(self.model, args)
 
         self.solver = newton.solvers.SolverMuJoCo(
             self.model,
-            use_mujoco_contacts=False,  # Use Newton contacts from collision pipeline
+            use_mujoco_contacts=args.use_mujoco_contacts if args else False,
             ls_parallel=True,
             njmax=50,
+            contact_stiffness_time_const=self.sim_dt,
         )
 
         self.viewer.set_model(self.model)
