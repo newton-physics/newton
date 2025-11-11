@@ -419,7 +419,7 @@ class ViewerBase:
 
             # prepare warp arrays; synthesize normals/uvs
             points = wp.array(points, dtype=wp.vec3, device=self.device)
-            indices = wp.array(indices, dtype=wp.uint32, device=self.device)
+            indices = wp.array(indices, dtype=wp.int32, device=self.device)
             normals = None
             uvs = None
 

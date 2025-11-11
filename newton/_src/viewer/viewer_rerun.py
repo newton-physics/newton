@@ -40,6 +40,15 @@ class ViewerRerun(ViewerBase):
     The class manages mesh assets, instanced geometry, and frame/timeline synchronization with rerun.
     """
 
+    @staticmethod
+    def _to_numpy(x) -> np.ndarray | None:
+        """Convert warp arrays or other array-like objects to numpy arrays."""
+        if x is None:
+            return None
+        if hasattr(x, "numpy"):
+            return x.numpy()
+        return np.asarray(x)
+
     def __init__(
         self,
         server: bool = True,
@@ -47,6 +56,7 @@ class ViewerRerun(ViewerBase):
         launch_viewer: bool = True,
         app_id: str | None = None,
         keep_historical_data_in_viewer: bool = False,
+        keep_scalar_history_in_viewer: bool = True,
     ):
         """
         Initialize the ViewerRerun backend for Newton using the Rerun.io visualization library.
@@ -64,6 +74,7 @@ class ViewerRerun(ViewerBase):
                 If False, the web viewer will only show the current frame to keep the memory usage constant when sending transform updates via :meth:`ViewerRerun.log_state`.
                 This is useful for visualizing long and complex simulations that would quickly fill up the web viewer's memory if the historical data was kept.
                 If True, the historical simulation data is kept in the viewer to be able to scrub through the simulation timeline. Defaults to False.
+            keep_scalar_history_in_viewer (bool): If True, historical scala data logged via :meth:`ViewerRerun.log_scalar` is kept in the viewer.
         """
         if rr is None:
             raise ImportError("rerun package is required for ViewerRerun. Install with: pip install rerun-sdk")
@@ -77,17 +88,17 @@ class ViewerRerun(ViewerBase):
         self._running = True
         self._viewer_process = None
         self.keep_historical_data_in_viewer = keep_historical_data_in_viewer
+        self.keep_scalar_history_in_viewer = keep_scalar_history_in_viewer
+
+        # Store mesh data for instances
+        self._meshes = {}
+        self._instances = {}
+
+        # Store scalar data for logging
+        self._scalars = {}
 
         # Initialize rerun using a blueprint that only shows the 3D view and a collapsed time panel
-        blueprint = rrb.Blueprint(
-            rrb.Horizontal(
-                rrb.Vertical(
-                    rrb.Spatial3DView(),
-                ),
-            ),
-            rrb.TimePanel(timeline="time", state="collapsed"),
-            collapse_panels=True,
-        )
+        blueprint = self._get_blueprint()
         rr.init(self.app_id, default_blueprint=blueprint)
 
         # Launch viewer client
@@ -106,12 +117,21 @@ class ViewerRerun(ViewerBase):
                 else:
                     rr.serve_web_viewer()
 
-        # Store mesh data for instances
-        self._meshes = {}
-        self._instances = {}
-
         # Make sure the timeline is set up
         rr.set_time("time", timestamp=0.0)
+
+    def _get_blueprint(self):
+        scalar_panel = None
+        if len(self._scalars) > 0:
+            scalar_panel = rrb.TimeSeriesView()
+
+        return rrb.Blueprint(
+            rrb.Horizontal(
+                *[rrb.Spatial3DView(), scalar_panel] if scalar_panel is not None else [rrb.Spatial3DView()],
+            ),
+            rrb.TimePanel(timeline="time", state="collapsed"),
+            collapse_panels=True,
+        )
 
     @override
     def log_mesh(
@@ -142,19 +162,31 @@ class ViewerRerun(ViewerBase):
         assert uvs is None or isinstance(uvs, wp.array)
 
         # Convert to numpy arrays
-        points_np = points.numpy().astype(np.float32)
-        indices_np = indices.numpy().astype(np.uint32)
+        points_np = self._to_numpy(points).astype(np.float32)
+        indices_np = self._to_numpy(indices).astype(np.uint32)
 
         # Rerun expects indices as (N, 3) for triangles
         if indices_np.ndim == 1:
             indices_np = indices_np.reshape(-1, 3)
 
+        if normals is None:
+            normals = wp.zeros_like(points)
+            wp.launch(_compute_normals, dim=len(indices_np), inputs=[points, indices, normals], device=self.device)
+            # normalize the normals
+            wp.map(wp.normalize, normals, out=normals)
+            normals_np = normals.numpy()
+        else:
+            normals_np = self._to_numpy(normals)
+
+        # make sure deformable mesh updates are not kept in the viewer if desired
+        static = name in self._meshes and not self.keep_historical_data_in_viewer
+
         # Store mesh data for instancing
         self._meshes[name] = {
             "points": points_np,
             "indices": indices_np,
-            "normals": (normals.numpy().astype(np.float32) if normals is not None else None),
-            "uvs": uvs.numpy().astype(np.float32) if uvs is not None else None,
+            "normals": normals_np,
+            "uvs": self._to_numpy(uvs).astype(np.float32) if uvs is not None else None,
         }
 
         # Log the mesh as a static asset
@@ -164,7 +196,7 @@ class ViewerRerun(ViewerBase):
             vertex_normals=self._meshes[name]["normals"],
         )
 
-        rr.log(name, mesh_3d)
+        rr.log(name, mesh_3d, static=static)
 
     @override
     def log_instances(self, name, mesh, xforms, scales, colors, materials, hidden=False):
@@ -191,7 +223,7 @@ class ViewerRerun(ViewerBase):
             # Handle colors - ReRun doesn't support per-instance colors
             # so we just use the first instance's color for all instances
             if colors is not None:
-                colors_np = colors.numpy().astype(np.float32)
+                colors_np = self._to_numpy(colors).astype(np.float32)
                 # Take the first instance's color and apply to all vertices
                 first_color = colors_np[0]
                 color_rgb = np.array(first_color * 255, dtype=np.uint8)
@@ -216,7 +248,7 @@ class ViewerRerun(ViewerBase):
         # Convert transforms and properties to numpy
         if xforms is not None:
             # Convert warp arrays to numpy first
-            xforms_np = xforms.numpy()
+            xforms_np = self._to_numpy(xforms)
 
             # Extract positions and quaternions using vectorized operations
             # Warp transform format: [x, y, z, qx, qy, qz, qw]
@@ -228,7 +260,7 @@ class ViewerRerun(ViewerBase):
 
             scales_np = None
             if scales is not None:
-                scales_np = scales.numpy().astype(np.float32)
+                scales_np = self._to_numpy(scales).astype(np.float32)
 
             # Colors are already handled in the mesh
             # (first instance color applied to all)
@@ -309,52 +341,95 @@ class ViewerRerun(ViewerBase):
     @override
     def log_lines(self, name, starts, ends, colors, width: float = 0.01, hidden=False):
         """
-        Placeholder for logging lines to rerun.
+        Log lines for visualization.
 
         Args:
             name (str): Name of the line batch.
             starts: Line start points.
             ends: Line end points.
             colors: Line colors.
+            width (float): Line width.
             hidden (bool): Whether the lines are hidden.
         """
-        pass
+        # Implementation for logging lines to rerun
 
-    @override
-    def log_points(self, name, points, radii, colors, hidden=False):
-        """
-        Placeholder for logging points to rerun.
+        if hidden:
+            return  # Do not log hidden lines
 
-        Args:
-            name (str): Name of the point batch.
-            points: Point positions.
-            radius: Point radii.
-            colors: Point colors.
-            hidden (bool): Whether the points are hidden.
-        """
-        pass
+        if starts is None or ends is None:
+            return  # Nothing to log
+
+        # Convert inputs to numpy for rerun API compatibility
+        # Expecting starts/ends as wp arrays or numpy arrays
+        starts_np = self._to_numpy(starts)
+        ends_np = self._to_numpy(ends)
+        colors_np = self._to_numpy(colors) if colors is not None else None
+
+        # Both starts and ends should be (N, 3)
+        if starts_np is None or ends_np is None or len(starts_np) == 0:
+            return
+
+        # LineStrips3D expects a list of line strips, where each strip is a sequence of points
+        # For disconnected line segments, each segment becomes its own strip of 2 points
+        line_strips = []
+        for start, end in zip(starts_np, ends_np, strict=False):
+            line_strips.append([start, end])
+
+        # Prepare line color argument
+        rr_kwargs = {}
+        if colors_np is not None:
+            # If single color for all lines (shape (3,))
+            if colors_np.ndim == 1 and colors_np.shape[0] == 3:
+                rr_kwargs["colors"] = colors_np
+            # If (N,3), per-line colors
+            elif colors_np.ndim == 2 and colors_np.shape[1] == 3:
+                rr_kwargs["colors"] = colors_np
+        if width is not None:
+            rr_kwargs["radii"] = width
+
+        # Log to rerun
+        rr.log(name, rr.LineStrips3D(line_strips, **rr_kwargs), static=not self.keep_historical_data_in_viewer)
 
     @override
     def log_array(self, name, array):
         """
-        Placeholder for logging a generic array to rerun.
+        Log a generic array for visualization.
 
         Args:
             name (str): Name of the array.
-            array: The array data.
+            array: The array data (can be a wp.array or a numpy array).
         """
-        pass
+        if array is None:
+            return
+        array_np = self._to_numpy(array)
+        rr.log(name, rr.Scalars(array_np), static=not self.keep_historical_data_in_viewer)
 
     @override
     def log_scalar(self, name, value):
         """
-        Placeholder for logging a scalar value to rerun.
+        Log a scalar value for visualization.
 
         Args:
             name (str): Name of the scalar.
             value: The scalar value.
         """
-        pass
+        # Basic scalar logging for rerun: log as a 'Scalar' component (if present)
+        if name is None:
+            return
+
+        # Only support standard Python/numpy scalars, not generic objects for now
+        if hasattr(value, "item"):
+            val = value.item()
+        else:
+            val = value
+        rr.log(name, rr.Scalars(val), static=not self.keep_scalar_history_in_viewer)
+
+        if len(self._scalars) == 0:
+            self._scalars[name] = val
+            blueprint = self._get_blueprint()
+            rr.send_blueprint(blueprint)
+        else:
+            self._scalars[name] = val
 
     @override
     def log_geo(
@@ -385,10 +460,67 @@ class ViewerRerun(ViewerBase):
             points = wp.array(vertices[:, 0:3], dtype=wp.vec3, device=self.device)
             normals = wp.array(vertices[:, 3:6], dtype=wp.vec3, device=self.device)
             uvs = wp.array(vertices[:, 6:8], dtype=wp.vec2, device=self.device)
-            indices = wp.array(indices, dtype=wp.uint32, device=self.device)
+            indices = wp.array(indices, dtype=wp.int32, device=self.device)
             self.log_mesh(name, points, indices, normals, uvs)
         else:
             super().log_geo(name, geo_type, geo_scale, geo_thickness, geo_is_solid, geo_src, hidden)
+
+    @override
+    def log_points(self, name, points, radii=None, colors=None, hidden=False):
+        """
+        Log points for visualization.
+
+        Args:
+            name (str): Name of the point batch.
+            points: Point positions (can be a wp.array or a numpy array).
+            radii: Point radii (can be a wp.array or a numpy array).
+            colors: Point colors (can be a wp.array or a numpy array).
+            hidden (bool): Whether the points are hidden.
+        """
+        if hidden:
+            # Optionally, skip logging hidden points
+            return
+
+        if points is None:
+            return
+
+        pts = self._to_numpy(points)
+        n_points = pts.shape[0]
+
+        # Handle radii (point size)
+        if radii is not None:
+            size = self._to_numpy(radii)
+            if size.ndim == 0 or size.shape == ():
+                sizes = np.full((n_points,), float(size))
+            elif size.shape == (n_points,):
+                sizes = size
+            else:
+                sizes = np.full((n_points,), 0.1)
+        else:
+            sizes = np.full((n_points,), 0.1)
+
+        # Handle colors
+        if colors is not None:
+            cols = self._to_numpy(colors)
+            if cols.shape == (n_points, 3):
+                colors_val = cols
+            elif cols.shape == (3,):
+                colors_val = np.tile(cols, (n_points, 1))
+            else:
+                colors_val = np.full((n_points, 3), 1.0)
+        else:
+            colors_val = np.full((n_points, 3), 1.0)
+
+        # Log as points to rerun
+        rr.log(
+            name,
+            rr.Points3D(
+                positions=pts,
+                radii=sizes,
+                colors=colors_val,
+            ),
+            static=not self.keep_historical_data_in_viewer,
+        )
 
     def _ipython_display_(self):
         """
@@ -413,3 +545,23 @@ def _is_jupyter_notebook():
     except NameError:
         # get_ipython is not defined, so it's likely a standard Python script
         return False
+
+
+@wp.kernel
+def _compute_normals(
+    points: wp.array(dtype=wp.vec3),
+    indices: wp.array(dtype=wp.int32),
+    # output
+    normals: wp.array(dtype=wp.vec3),
+):
+    face = wp.tid()
+    i0 = indices[face * 3]
+    i1 = indices[face * 3 + 1]
+    i2 = indices[face * 3 + 2]
+    v0 = points[i0]
+    v1 = points[i1]
+    v2 = points[i2]
+    normal = wp.normalize(wp.cross(v1 - v0, v2 - v0))
+    wp.atomic_add(normals, i0, normal)
+    wp.atomic_add(normals, i1, normal)
+    wp.atomic_add(normals, i2, normal)
