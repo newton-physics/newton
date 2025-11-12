@@ -29,6 +29,7 @@
 
 import warp as wp
 
+import math
 import newton
 import newton.examples
 from newton.sensors import TiledCameraSensor
@@ -91,6 +92,9 @@ class Example:
         self.tiled_camera_sensor = TiledCameraSensor(model=self.model, num_cameras=2, width=64, height=64)
         self.tiled_camera_sensor.assign_debug_colors_per_world()
         self.tiled_camera_sensor.create_default_light()
+        self.tiled_camera_sensor.compute_camera_rays(wp.array([math.radians(camera.fov) for camera in [self.viewer.camera, self.fixed_camera]], dtype=wp.float32))
+        self.tiled_camera_sensor_color_image = self.tiled_camera_sensor.create_color_image_output()
+        self.tiled_camera_sensor_depth_image = self.tiled_camera_sensor.create_depth_image_output()
 
         self.solver = newton.solvers.SolverXPBD(self.model)
 
@@ -170,10 +174,10 @@ class Example:
     def render_sensors(self):
         print("Rendering Tiled Sensor")
 
-        self.tiled_camera_sensor.update_cameras([self.viewer.camera, self.fixed_camera])
-        self.tiled_camera_sensor.render(self.state_0)
-        self.tiled_camera_sensor.save_color_image("test_color.png")
-        self.tiled_camera_sensor.save_depth_image("test_depth.png")
+        self.tiled_camera_sensor.update_cameras(*self.tiled_camera_sensor.convert_camera_to_warp_arrays([self.viewer.camera, self.fixed_camera]))
+        self.tiled_camera_sensor.render(self.state_0, self.tiled_camera_sensor_color_image, self.tiled_camera_sensor_depth_image)
+        self.tiled_camera_sensor.save_color_image(self.tiled_camera_sensor_color_image, "test_color.png")
+        self.tiled_camera_sensor.save_depth_image(self.tiled_camera_sensor_depth_image, "test_depth.png")
 
 
 if __name__ == "__main__":

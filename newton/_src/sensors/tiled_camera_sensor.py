@@ -17,6 +17,7 @@ import math
 
 import numpy as np
 import warp as wp
+from typing import Union
 
 from ..geometry import ShapeFlags
 from ..sim import Model, State
@@ -128,7 +129,7 @@ class TiledCameraSensor:
     def __init__(self, model: Model, num_cameras: int, width: int, height: int):
         self.model = model
 
-        self.render_context = RenderContext(width, height, True, True, False, False, True, self.model.num_worlds, True)
+        self.render_context = RenderContext(width, height, False, False, True, self.model.num_worlds, True)
         self.render_context.num_cameras = num_cameras
         self.render_context.mesh_ids = model.shape_source_ptr
         self.render_context.geom_mesh_indices = wp.empty(self.model.shape_count, dtype=wp.int32)
@@ -168,7 +169,7 @@ class TiledCameraSensor:
             inputs=[self.render_context.mesh_ids, self.render_context.mesh_bounds],
         )
 
-    def render(self, state: State):
+    def render(self, state: State, color_image: Union[wp.array(dtype=wp.uint32, ndim=4), None] = None, depth_image: Union[wp.array(dtype=wp.float32, ndim=4), None] = None):
         if self.model.shape_count:
             wp.launch(
                 kernel=convert_newton_transform,
@@ -183,26 +184,11 @@ class TiledCameraSensor:
                     self.render_context.geom_sizes,
                 ],
             )
-            self.render_context.render()
+            self.render_context.render(color_image, depth_image)
 
-    @property
-    def color_image(self) -> wp.array:
-        return self.render_context.output.color_image
-
-    @property
-    def depth_image(self) -> wp.array:
-        return self.render_context.output.depth_image
-
-    def update_cameras(self, cameras: list[Camera], recompute_rays: bool = False):
-        assert len(cameras) == self.render_context.num_cameras, "Number of cameras does not match initial setup."
-
-        self.render_context.camera_positions = wp.array([camera.pos for camera in cameras], dtype=wp.vec3f)
-        self.render_context.camera_orientations = wp.array(
-            [camera.get_view_matrix().reshape(4, 4)[:3, :3].flatten() for camera in cameras], dtype=wp.mat33f
-        )
-
-        if recompute_rays or self.render_context.camera_rays is None:
-            self.compute_camera_rays(wp.array([math.radians(camera.fov) for camera in cameras], dtype=wp.float32))
+    def update_cameras(self, positions: wp.array(dtype=wp.vec3f), orientations: wp.array(dtype=wp.mat33f)):
+        self.render_context.camera_positions = positions
+        self.render_context.camera_orientations = orientations
 
     def compute_camera_rays(self, camera_fovs: wp.array(dtype=wp.float32)):
         if self.render_context.camera_rays is None:
@@ -219,7 +205,10 @@ class TiledCameraSensor:
             ],
         )
 
-    def save_color_image(self, filename: str) -> bool:
+    def save_color_image(self, color_image: wp.array(dtype=wp.uint32, ndim=4), filename: str) -> bool:
+        if color_image is None:
+            return False
+
         try:
             from PIL import Image  # noqa: PLC0415
         except ImportError:
@@ -230,7 +219,7 @@ class TiledCameraSensor:
         rows = math.ceil(math.sqrt(num_worlds_and_cameras))
         cols = math.ceil(num_worlds_and_cameras / rows)
 
-        tile_data = self.color_image.numpy().astype(np.uint32)
+        tile_data = color_image.numpy().astype(np.uint32)
         tile_data = tile_data.reshape(num_worlds_and_cameras, self.render_context.width * self.render_context.height)
 
         if rows * cols > num_worlds_and_cameras:
@@ -251,7 +240,10 @@ class TiledCameraSensor:
         Image.fromarray(tile_data).save(filename)
         return True
 
-    def save_depth_image(self, filename: str) -> bool:
+    def save_depth_image(self, depth_image: wp.array(dtype=wp.float32, ndim=4), filename: str) -> bool:
+        if depth_image is None:
+            return False
+
         try:
             from PIL import Image  # noqa: PLC0415
         except ImportError:
@@ -262,7 +254,7 @@ class TiledCameraSensor:
         rows = math.ceil(math.sqrt(num_worlds_and_cameras))
         cols = math.ceil(num_worlds_and_cameras / rows)
 
-        tile_data = self.depth_image.numpy().astype(np.float32)
+        tile_data = depth_image.numpy().astype(np.float32)
         tile_data = tile_data.reshape(num_worlds_and_cameras, self.render_context.width * self.render_context.height)
 
         tile_data[tile_data < 0] = 0
@@ -332,3 +324,14 @@ class TiledCameraSensor:
         self.render_context.geom_materials = wp.array(
             np.full(self.model.shape_count, fill_value=0, dtype=np.int32), dtype=wp.int32
         )
+
+    def create_color_image_output(self):
+        return self.render_context.create_color_image_output()
+
+    def create_depth_image_output(self):
+        return self.render_context.create_depth_image_output()
+
+    def convert_camera_to_warp_arrays(self, cameras: list[Camera]):
+        camera_positions = wp.array([camera.pos for camera in cameras], dtype=wp.vec3f)
+        camera_orientations = wp.array([camera.get_view_matrix().reshape(4, 4)[:3, :3].flatten() for camera in cameras], dtype=wp.mat33f)
+        return camera_positions, camera_orientations

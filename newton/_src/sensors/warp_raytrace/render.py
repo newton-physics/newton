@@ -15,7 +15,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Union
 
 import warp as wp
 
@@ -68,18 +68,18 @@ def pack_rgba_to_uint32(r: wp.float32, g: wp.float32, b: wp.float32, a: wp.float
     )
 
 
-def render_megakernel(rc: RenderContext):
+def render_megakernel(rc: RenderContext, color_image: Union[wp.array(dtype=wp.uint32, ndim=4), None] = None, depth_image: Union[wp.array(dtype=wp.float32, ndim=4), None] = None):
     total_views = rc.num_worlds * rc.num_cameras
     total_pixels = rc.width * rc.height
     num_view_groups = (total_views + MAX_NUM_VIEWS_PER_THREAD - 1) // MAX_NUM_VIEWS_PER_THREAD
     if num_view_groups == 0:
         return
 
-    if rc.render_rgb:
-        rc.output.color_image.fill_(wp.uint32(BACKGROUND_COLOR))
+    if color_image is not None:
+        color_image.fill_(wp.uint32(BACKGROUND_COLOR))
 
-    if rc.render_depth:
-        rc.output.depth_image.fill_(wp.float32(0.0))
+    if depth_image is not None:
+        depth_image.fill_(wp.float32(0.0))
 
     @wp.kernel(enable_backward=False)
     def _render_megakernel(
@@ -184,10 +184,10 @@ def render_megakernel(rc: RenderContext):
             if geom_id == -1:
                 continue
 
-            if wp.static(rc.render_depth):
+            if wp.static(depth_image is not None):
                 out_depth[world_id, cam_idx, mapped_idx] = dist
 
-            if not wp.static(rc.render_rgb):
+            if wp.static(color_image is None):
                 continue
 
             # Shade the pixel
@@ -278,13 +278,12 @@ def render_megakernel(rc: RenderContext):
 
             out_color = wp.min(wp.max(out_color, wp.vec3f(0.0)), wp.vec3f(1.0))
 
-            if wp.static(rc.render_rgb):
-                out_pixels[world_id, cam_idx, mapped_idx] = pack_rgba_to_uint32(
-                    out_color[0] * 255.0,
-                    out_color[1] * 255.0,
-                    out_color[2] * 255.0,
-                    255.0,
-                )
+            out_pixels[world_id, cam_idx, mapped_idx] = pack_rgba_to_uint32(
+                out_color[0] * 255.0,
+                out_color[1] * 255.0,
+                out_color[2] * 255.0,
+                255.0,
+            )
 
     wp.launch(
         kernel=_render_megakernel,
@@ -335,8 +334,8 @@ def render_megakernel(rc: RenderContext):
             rc.geom_orientations,
         ],
         outputs=[
-            rc.output.color_image,
-            rc.output.depth_image,
+            color_image,
+            depth_image,
         ],
         block_dim=THREADS_PER_TILE,
     )

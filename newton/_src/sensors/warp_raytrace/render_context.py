@@ -15,22 +15,16 @@
 
 import warp as wp
 
+from typing import Union
 from .bvh import compute_bvh_bounds, compute_bvh_group_roots
 from .render import render_megakernel
 
 
 class RenderContext:
-    class Output:
-        def __init__(self, num_worlds: int, num_cameras: int, width: int, height: int):
-            self.color_image = wp.zeros((num_worlds, num_cameras, width * height), dtype=wp.uint32)
-            self.depth_image = wp.zeros((num_worlds, num_cameras, width * height), dtype=wp.float32)
-
     def __init__(
         self,
         width: int = 512,
         height: int = 512,
-        render_rgb: bool = True,
-        render_depth: bool = True,
         use_textures: bool = True,
         use_shadows: bool = True,
         use_ambient_lighting: bool = True,
@@ -39,8 +33,6 @@ class RenderContext:
     ):
         self.width = width
         self.height = height
-        self.render_rgb = render_rgb
-        self.render_depth = render_depth
         self.use_textures = use_textures
         self.use_shadows = use_shadows
         self.use_ambient_lighting = use_ambient_lighting
@@ -93,10 +85,15 @@ class RenderContext:
         self.bvh_uppers = wp.zeros((self.num_worlds_total * self.num_geom_in_bvh), dtype=wp.vec3f)
         self.bvh_groups = wp.zeros((self.num_worlds_total * self.num_geom_in_bvh), dtype=wp.int32)
         self.bvh_group_roots = wp.zeros((self.num_worlds_total), dtype=wp.int32)
-        self.output = RenderContext.Output(self.num_worlds, self.num_cameras, self.width, self.height)
 
     def init_camera_rays(self):
         self.camera_rays = wp.empty((self.num_cameras, self.height, self.width, 2), dtype=wp.vec3f)
+
+    def create_color_image_output(self):
+        return wp.zeros((self.num_worlds, self.num_cameras, self.width * self.height), dtype=wp.uint32)
+
+    def create_depth_image_output(self):
+        return wp.zeros((self.num_worlds, self.num_cameras, self.width * self.height), dtype=wp.float32)
 
     @property
     def num_worlds_total(self) -> int:
@@ -116,9 +113,9 @@ class RenderContext:
         self.__compute_bvh_bounds()
         self.bvh.refit()
 
-    def render(self):
+    def render(self, color_image: Union[wp.array(dtype=wp.uint32, ndim=4), None] = None, depth_image: Union[wp.array(dtype=wp.float32, ndim=4), None] = None):
         self.refit_bvh()
-        render_megakernel(self)
+        render_megakernel(self, color_image, depth_image)
 
     def __compute_bvh_bounds(self):
         wp.launch(
