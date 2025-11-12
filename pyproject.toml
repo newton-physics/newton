@@ -25,7 +25,10 @@ classifiers = [
 description = "A GPU-accelerated physics engine for robotics simulation"
 readme = "README.md"
 requires-python = ">=3.10"
-dependencies = ["warp-lang>=1.7.0.dev20250823"]
+dependencies = [
+    "gitpython>=3.1.45",
+    "warp-lang>=1.7.0.dev20250823",
+]
 
 [project.optional-dependencies]
 # Core simulation dependencies
@@ -85,6 +88,15 @@ docs = [
     "sphinx-copybutton>=0.5.0",
     "sphinx-design<=0.6.1",
     "sphinx-tabs>=3.3.0",
+]
+
+# Dependencies for Jupyter notebook compatibility
+notebook = [
+    "newton[examples]",
+    "rerun-sdk[notebook]>=0.26.2",
+    "tqdm>=4.67.1",
+    "jupyterlab>=4.0.0",
+    "ipykernel>=6.29.0",
 ]
 
 [tool.hatch.version]
