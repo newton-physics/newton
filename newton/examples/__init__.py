@@ -76,7 +76,8 @@ def test_body_state(
     ):
         world_id = wp.tid()
         index = indices[world_id]
-        failures[world_id] = not warp_test_fn(body_q[index], body_qd[index])
+        result = warp_test_fn(body_q[index], body_qd[index])
+        failures[world_id] = not wp.bool(result)
 
     body_q = state.body_q
     body_qd = state.body_qd
@@ -147,7 +148,8 @@ def test_particle_state(
     ):
         world_id = wp.tid()
         index = indices[world_id]
-        failures[world_id] = not warp_test_fn(particle_q[index], particle_qd[index])
+        result = warp_test_fn(particle_q[index], particle_qd[index])
+        failures[world_id] = not wp.bool(result)
 
     particle_q = state.particle_q
     particle_qd = state.particle_qd
@@ -302,6 +304,26 @@ def create_parser():
         default=False,
         help="Whether to run the example in test mode.",
     )
+    parser.add_argument(
+        "--collision-pipeline",
+        type=str,
+        default="unified",
+        choices=["unified", "standard"],
+        help="Collision pipeline to use. 'unified' uses CollisionPipelineUnified (default), 'standard' uses CollisionPipeline.",
+    )
+    parser.add_argument(
+        "--broad-phase-mode",
+        type=str,
+        default="explicit",
+        choices=["nxn", "sap", "explicit"],
+        help="Broad phase mode for CollisionPipelineUnified. Only used when --collision-pipeline=unified.",
+    )
+    parser.add_argument(
+        "--use-mujoco-contacts",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Use MuJoCo's native contact solver instead of Newton contacts (default: use Newton contacts).",
+    )
 
     return parser
 
@@ -352,6 +374,95 @@ def init(parser=None):
     return viewer, args
 
 
+def create_collision_pipeline(
+    model,
+    args=None,
+    collision_pipeline_type=None,
+    broad_phase_mode=None,
+    rigid_contact_max_per_pair=None,
+    rigid_contact_margin=None,
+):
+    """Create a collision pipeline based on command-line arguments or explicit parameters.
+
+    This helper function creates either a CollisionPipelineUnified or returns None for the
+    standard CollisionPipeline (which is created implicitly by model.collide()).
+
+    Args:
+        model: The Newton model to create the pipeline for
+        args: Parsed arguments from create_parser() (optional if explicit parameters provided)
+        collision_pipeline_type: Explicit pipeline type ("unified" or "standard"), overrides args
+        broad_phase_mode: Explicit broad phase mode ("nxn", "sap", "explicit"), overrides args
+        rigid_contact_max_per_pair: Maximum number of contact points per shape pair (default: 10)
+        rigid_contact_margin: Margin for rigid contact generation (default: 0.01)
+
+    Returns:
+        CollisionPipelineUnified instance if unified pipeline is selected, None for standard pipeline
+
+    Examples:
+        # Using command-line args
+        viewer, args = newton.examples.init()
+        model = builder.finalize()
+        pipeline = newton.examples.create_collision_pipeline(model, args)
+        contacts = model.collide(state, collision_pipeline=pipeline)
+
+        # Using explicit parameters
+        pipeline = newton.examples.create_collision_pipeline(
+            model,
+            collision_pipeline_type="unified",
+            broad_phase_mode="nxn"
+        )
+
+        # Override contact parameters for complex meshes
+        pipeline = newton.examples.create_collision_pipeline(
+            model,
+            args,
+            rigid_contact_max_per_pair=100,
+            rigid_contact_margin=0.05
+        )
+    """
+    import newton  # noqa: PLC0415
+
+    # Determine collision pipeline type
+    if collision_pipeline_type is None:
+        if args is not None and hasattr(args, "collision_pipeline"):
+            collision_pipeline_type = args.collision_pipeline
+        else:
+            collision_pipeline_type = "unified"  # Default
+
+    # If standard pipeline requested, return None (model.collide will create it implicitly)
+    if collision_pipeline_type == "standard":
+        return None
+
+    # Determine broad phase mode for unified pipeline
+    if broad_phase_mode is None:
+        if args is not None and hasattr(args, "broad_phase_mode"):
+            broad_phase_mode = args.broad_phase_mode
+        else:
+            broad_phase_mode = "explicit"  # Default
+
+    # Map string to BroadPhaseMode enum
+    broad_phase_map = {
+        "nxn": newton.BroadPhaseMode.NXN,
+        "sap": newton.BroadPhaseMode.SAP,
+        "explicit": newton.BroadPhaseMode.EXPLICIT,
+    }
+    broad_phase_enum = broad_phase_map.get(broad_phase_mode.lower(), newton.BroadPhaseMode.NXN)
+
+    # Use provided values or defaults
+    if rigid_contact_max_per_pair is None:
+        rigid_contact_max_per_pair = 10
+    if rigid_contact_margin is None:
+        rigid_contact_margin = 0.01
+
+    # Create and return CollisionPipelineUnified
+    return newton.CollisionPipelineUnified.from_model(
+        model,
+        rigid_contact_max_per_pair=rigid_contact_max_per_pair,
+        rigid_contact_margin=rigid_contact_margin,
+        broad_phase_mode=broad_phase_enum,
+    )
+
+
 def main():
     """Main entry point for running examples via 'python -m newton.examples <example_name>'."""
     import runpy  # noqa: PLC0415
@@ -395,4 +506,4 @@ if __name__ == "__main__":
     main()
 
 
-__all__ = ["create_parser", "init", "run", "test_body_state", "test_particle_state"]
+__all__ = ["create_collision_pipeline", "create_parser", "init", "run", "test_body_state", "test_particle_state"]

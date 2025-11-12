@@ -80,7 +80,7 @@ class _FastBenchmark:
                     apply_random_control,
                     dim=(self.example.model.joint_dof_count,),
                     inputs=[state],
-                    outputs=[self.example.control.joint_target],
+                    outputs=[self.example.control.joint_target_pos],
                 )
                 self.example.simulate()
             self.graph = capture.graph
