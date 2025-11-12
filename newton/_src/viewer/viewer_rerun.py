@@ -55,8 +55,9 @@ class ViewerRerun(ViewerBase):
         address: str = "127.0.0.1:9876",
         launch_viewer: bool = True,
         app_id: str | None = None,
-        keep_historical_data_in_viewer: bool = False,
-        keep_scalar_history_in_viewer: bool = True,
+        keep_historical_data: bool = False,
+        keep_scalar_history: bool = True,
+        record_to_rrd: str | None = None,
     ):
         """
         Initialize the ViewerRerun backend for Newton using the Rerun.io visualization library.
@@ -70,11 +71,12 @@ class ViewerRerun(ViewerBase):
             address (str): Address and port for rerun server mode (only used if server is True).
             launch_viewer (bool): If True, launch a local rerun viewer client.
             app_id (Optional[str]): Application ID for rerun (defaults to 'newton-viewer').
-            keep_historical_data_in_viewer (bool): If True, keep historical data in the timeline of the web viewer.
+            keep_historical_data (bool): If True, keep historical data in the timeline of the web viewer.
                 If False, the web viewer will only show the current frame to keep the memory usage constant when sending transform updates via :meth:`ViewerRerun.log_state`.
                 This is useful for visualizing long and complex simulations that would quickly fill up the web viewer's memory if the historical data was kept.
                 If True, the historical simulation data is kept in the viewer to be able to scrub through the simulation timeline. Defaults to False.
-            keep_scalar_history_in_viewer (bool): If True, historical scala data logged via :meth:`ViewerRerun.log_scalar` is kept in the viewer.
+            keep_scalar_history (bool): If True, historical scala data logged via :meth:`ViewerRerun.log_scalar` is kept in the viewer.
+            record_to_rrd (str): Path to record the viewer to a *.rrd recording file (e.g. "my_recording.rrd"). If None, the viewer will not record to a file.
         """
         if rr is None:
             raise ImportError("rerun package is required for ViewerRerun. Install with: pip install rerun-sdk")
@@ -87,8 +89,8 @@ class ViewerRerun(ViewerBase):
         self.app_id = app_id or "newton-viewer"
         self._running = True
         self._viewer_process = None
-        self.keep_historical_data_in_viewer = keep_historical_data_in_viewer
-        self.keep_scalar_history_in_viewer = keep_scalar_history_in_viewer
+        self.keep_historical_data = keep_historical_data
+        self.keep_scalar_history = keep_scalar_history
 
         # Store mesh data for instances
         self._meshes = {}
@@ -101,11 +103,12 @@ class ViewerRerun(ViewerBase):
         blueprint = self._get_blueprint()
         rr.init(self.app_id, default_blueprint=blueprint)
 
+        if record_to_rrd is not None:
+            rr.save(record_to_rrd, default_blueprint=blueprint)
+
         # Launch viewer client
         self.is_jupyter_notebook = _is_jupyter_notebook()
-        if self.is_jupyter_notebook:
-            rr.notebook_show(width=1000, height=400, blueprint=blueprint)
-        else:
+        if not self.is_jupyter_notebook:
             # Set up connection based on mode
             server_uri = None
             if self.server:
@@ -179,7 +182,7 @@ class ViewerRerun(ViewerBase):
             normals_np = self._to_numpy(normals)
 
         # make sure deformable mesh updates are not kept in the viewer if desired
-        static = name in self._meshes and not self.keep_historical_data_in_viewer
+        static = name in self._meshes and not self.keep_historical_data
 
         # Store mesh data for instancing
         self._meshes[name] = {
@@ -273,7 +276,7 @@ class ViewerRerun(ViewerBase):
             )
 
             # Log the instance poses
-            rr.log(name, instance_poses, static=not self.keep_historical_data_in_viewer)
+            rr.log(name, instance_poses, static=not self.keep_historical_data)
 
     @override
     def begin_frame(self, time):
@@ -388,7 +391,7 @@ class ViewerRerun(ViewerBase):
             rr_kwargs["radii"] = width
 
         # Log to rerun
-        rr.log(name, rr.LineStrips3D(line_strips, **rr_kwargs), static=not self.keep_historical_data_in_viewer)
+        rr.log(name, rr.LineStrips3D(line_strips, **rr_kwargs), static=not self.keep_historical_data)
 
     @override
     def log_array(self, name, array):
@@ -402,7 +405,7 @@ class ViewerRerun(ViewerBase):
         if array is None:
             return
         array_np = self._to_numpy(array)
-        rr.log(name, rr.Scalars(array_np), static=not self.keep_historical_data_in_viewer)
+        rr.log(name, rr.Scalars(array_np), static=not self.keep_historical_data)
 
     @override
     def log_scalar(self, name, value):
@@ -422,7 +425,7 @@ class ViewerRerun(ViewerBase):
             val = value.item()
         else:
             val = value
-        rr.log(name, rr.Scalars(val), static=not self.keep_scalar_history_in_viewer)
+        rr.log(name, rr.Scalars(val), static=not self.keep_scalar_history)
 
         if len(self._scalars) == 0:
             self._scalars[name] = val
@@ -519,14 +522,17 @@ class ViewerRerun(ViewerBase):
                 radii=sizes,
                 colors=colors_val,
             ),
-            static=not self.keep_historical_data_in_viewer,
+            static=not self.keep_historical_data,
         )
+
+    def show_notebook(self, width: int = 1000, height: int = 400):
+        rr.notebook_show(width=width, height=height, blueprint=self._get_blueprint())
 
     def _ipython_display_(self):
         """
         Display the viewer in an IPython notebook when the viewer is at the end of a cell.
         """
-        rr.notebook_show()
+        self.show_notebook()
 
 
 def _is_jupyter_notebook():
