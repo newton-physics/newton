@@ -13,6 +13,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import annotations
+
 import math
 
 import numpy as np
@@ -125,6 +127,19 @@ def compute_pinhole_camera_rays(
 
 
 class TiledCameraSensor:
+    """
+    A Warp-based tiled camera sensor for raytraced rendering across multiple worlds.
+
+    Renders color and depth images for multiple cameras and worlds, organizing the
+    output as tiles in a grid layout.
+
+    Args:
+        model: The Newton Model containing shapes to render.
+        num_cameras: Number of cameras per world.
+        width: Image width in pixels for each camera.
+        height: Image height in pixels for each camera.
+    """
+
     def __init__(self, model: Model, num_cameras: int, width: int, height: int):
         self.model = model
 
@@ -174,6 +189,16 @@ class TiledCameraSensor:
         color_image: wp.array(dtype=wp.uint32, ndim=4) | None = None,
         depth_image: wp.array(dtype=wp.float32, ndim=4) | None = None,
     ):
+        """
+        Render color and depth images for all worlds and cameras.
+
+        Args:
+            state: The current simulation state containing body transforms.
+            color_image: Optional output array for color data (num_worlds, num_cameras, width*height).
+                        If None, no color rendering is performed.
+            depth_image: Optional output array for depth data (num_worlds, num_cameras, width*height).
+                        If None, no depth rendering is performed.
+        """
         if self.model.shape_count:
             wp.launch(
                 kernel=convert_newton_transform,
@@ -191,10 +216,26 @@ class TiledCameraSensor:
             self.render_context.render(color_image, depth_image)
 
     def update_cameras(self, positions: wp.array(dtype=wp.vec3f), orientations: wp.array(dtype=wp.mat33f)):
+        """
+        Update camera positions and orientations.
+
+        Args:
+            positions: Array of camera positions in world space, shape (num_cameras,).
+            orientations: Array of camera-to-world rotation matrices (as flattened 3x3), shape (num_cameras,).
+        """
         self.render_context.camera_positions = positions
         self.render_context.camera_orientations = orientations
 
     def compute_camera_rays(self, camera_fovs: wp.array(dtype=wp.float32)):
+        """
+        Compute camera-space ray directions for pinhole cameras.
+
+        Generates rays in camera space (origin at [0,0,0], direction normalized) for each
+        pixel in each camera based on the specified field-of-view angles.
+
+        Args:
+            camera_fovs: Array of vertical FOV angles in radians, shape (num_cameras,).
+        """
         if self.render_context.camera_rays is None:
             self.render_context.init_camera_rays()
 
@@ -210,6 +251,20 @@ class TiledCameraSensor:
         )
 
     def save_color_image(self, color_image: wp.array(dtype=wp.uint32, ndim=4), filename: str) -> bool:
+        """
+        Save rendered color image as a tiled file.
+
+        Arranges (num_worlds x num_cameras) tiles in a grid layout. Each tile
+        shows one camera's view of one world. Requires PIL.
+
+        Args:
+            color_image: Color output array from render(), shape (num_worlds, num_cameras, width*height).
+            filename: Output file path (e.g., "output.png").
+
+        Returns:
+            True if saved successfully, False if PIL unavailable or color_image is None.
+        """
+
         if color_image is None:
             return False
 
@@ -245,6 +300,21 @@ class TiledCameraSensor:
         return True
 
     def save_depth_image(self, depth_image: wp.array(dtype=wp.float32, ndim=4), filename: str) -> bool:
+        """
+        Save rendered depth image as a tiled grayscale file.
+
+        Arranges (num_worlds x num_cameras) tiles in a grid. Depth values are
+        inverted (closer = brighter) and normalized to [50, 255] range. Background (depth < 0
+        or no hit) remains black. Requires PIL.
+
+        Args:
+            depth_image: Depth output array from render(), shape (num_worlds, num_cameras, width*height).
+            filename: Output file path (e.g., "output.png").
+
+        Returns:
+            True if saved successfully, False if PIL unavailable or depth_image is None.
+        """
+
         if depth_image is None:
             return False
 
@@ -289,16 +359,36 @@ class TiledCameraSensor:
         return True
 
     def assign_debug_colors_per_world(self, seed: int = 100):
+        """
+        Assign a random color to all shapes, per world.
+
+        Args:
+            seed: The seed to use for the randomizer.
+        """
+
         colors = np.random.default_rng(seed).random((self.model.shape_count, 4)) * 0.5 + 0.5
         colors[:, -1] = 1.0
         self.render_context.geom_colors = wp.array(colors[self.model.shape_world.numpy() % len(colors)], dtype=wp.vec4f)
 
     def assign_debug_colors_per_shape(self, seed: int = 100):
+        """
+        Assign a random color to all shapes.
+
+        Args:
+            seed: The seed to use for the randomizer.
+        """
+
         colors = np.random.default_rng(seed).random((self.model.shape_count, 4)) * 0.5 + 0.5
         colors[:, -1] = 1.0
         self.render_context.geom_colors = wp.array(colors, dtype=wp.vec4f)
 
     def create_default_light(self):
+        """
+        Create a default directional light for the scene.
+
+        Sets up a single directional light oriented at (-1, 1, -1) with shadow casting enabled.
+        """
+
         self.render_context.num_lights = 1
         self.render_context.use_shadows = True
         self.render_context.lights_active = wp.array([True], dtype=wp.bool)
@@ -310,6 +400,17 @@ class TiledCameraSensor:
         )
 
     def assign_default_checkerboard_material(self, resolution: int = 64, checker_size: int = 32):
+        """
+        Assign a checkerboard texture material to all shapes.
+
+        Creates a gray checkerboard pattern texture and applies it to all geometry
+        in the scene.
+
+        Args:
+            resolution: Texture resolution in pixels (square texture).
+            checker_size: Size of each checkerboard square in pixels.
+        """
+
         checkerboard = (
             (np.arange(resolution) // checker_size)[:, None] + (np.arange(resolution) // checker_size)
         ) % 2 == 0
@@ -330,12 +431,34 @@ class TiledCameraSensor:
         )
 
     def create_color_image_output(self):
+        """
+        Create a Warp array for color image output.
+
+        Returns:
+            wp.array of shape (num_worlds, num_cameras, width*height) with dtype uint32.
+        """
         return self.render_context.create_color_image_output()
 
     def create_depth_image_output(self):
+        """
+        Create a Warp array for depth image output.
+
+        Returns:
+            wp.array of shape (num_worlds, num_cameras, width*height) with dtype float32.
+        """
         return self.render_context.create_depth_image_output()
 
     def convert_camera_to_warp_arrays(self, cameras: list[Camera]):
+        """
+        Convert Camera objects to Warp arrays for positions and orientations.
+
+        Args:
+            cameras: List of Camera instances.
+
+        Returns:
+            Tuple of (positions, orientations) as Warp arrays.
+        """
+
         camera_positions = wp.array([camera.pos for camera in cameras], dtype=wp.vec3f)
         camera_orientations = wp.array(
             [camera.get_view_matrix().reshape(4, 4)[:3, :3].flatten() for camera in cameras], dtype=wp.mat33f
