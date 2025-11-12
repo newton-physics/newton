@@ -17,6 +17,7 @@ import enum
 
 from .... import GeoType
 
+
 class GeomType(enum.IntEnum):
     PLANE = GeoType.PLANE
     SPHERE = GeoType.SPHERE

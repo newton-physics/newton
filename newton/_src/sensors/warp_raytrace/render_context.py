@@ -13,9 +13,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+
 import warp as wp
 
-from typing import Union
 from .bvh import compute_bvh_bounds, compute_bvh_group_roots
 from .render import render_megakernel
 
@@ -113,7 +113,11 @@ class RenderContext:
         self.__compute_bvh_bounds()
         self.bvh.refit()
 
-    def render(self, color_image: Union[wp.array(dtype=wp.uint32, ndim=4), None] = None, depth_image: Union[wp.array(dtype=wp.float32, ndim=4), None] = None):
+    def render(
+        self,
+        color_image: wp.array(dtype=wp.uint32, ndim=4) | None = None,
+        depth_image: wp.array(dtype=wp.float32, ndim=4) | None = None,
+    ):
         self.refit_bvh()
         render_megakernel(self, color_image, depth_image)
 
