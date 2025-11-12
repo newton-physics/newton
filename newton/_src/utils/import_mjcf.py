@@ -563,7 +563,7 @@ def parse_mjcf(
                     dof_custom_attributes[key].append(value)
 
         body_custom_attributes = parse_custom_attributes(body_attrib, builder_custom_attr_body, parsing_mode="mjcf")
-        link = builder.add_body(
+        link = builder.add_link(
             xform=world_xform,  # Use the composed world transform
             key=body_name,
             custom_attributes=body_custom_attributes,

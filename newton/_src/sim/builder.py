@@ -1558,7 +1558,7 @@ class ModelBuilder:
         # Restore the previous world
         self.current_world = prev_world
 
-    def add_body(
+    def add_link(
         self,
         xform: Transform | None = None,
         armature: float | None = None,
@@ -1568,7 +1568,13 @@ class ModelBuilder:
         key: str | None = None,
         custom_attributes: dict[str, Any] | None = None,
     ) -> int:
-        """Adds a rigid body to the model.
+        """Adds a link (rigid body) to the model within an articulation.
+
+        This method creates a link without automatically adding a joint. To connect this link
+        to the articulation structure, you must explicitly call one of the joint methods
+        (e.g., :meth:`add_joint_revolute`, :meth:`add_joint_fixed`, etc.) after creating the link.
+
+        Before calling this method, ensure that an articulation has been created using :meth:`add_articulation`.
 
         Args:
             xform: The location of the body in the world frame.
@@ -1629,6 +1635,67 @@ class ModelBuilder:
                 custom_attrs=custom_attributes,
                 expected_frequency=ModelAttributeFrequency.BODY,
             )
+
+        return body_id
+
+    def add_body(
+        self,
+        xform: Transform | None = None,
+        armature: float | None = None,
+        com: Vec3 | None = None,
+        I_m: Mat33 | None = None,
+        mass: float = 0.0,
+        key: str | None = None,
+        custom_attributes: dict[str, Any] | None = None,
+    ) -> int:
+        """Adds a stand-alone free-floating rigid body to the model.
+
+        This is a convenience method that creates a single-body articulation with a free joint,
+        allowing the body to move freely in 6 degrees of freedom. Internally, this method calls:
+
+        1. :meth:`add_articulation` to create a new articulation
+        2. :meth:`add_link` to create the body
+        3. :meth:`add_joint_free` to add a free joint connecting the body to the world
+
+        For creating articulations with multiple linked bodies, use :meth:`add_articulation`,
+        :meth:`add_link`, and the appropriate joint methods directly.
+
+        Args:
+            xform: The location of the body in the world frame.
+            armature: Artificial inertia added to the body. If None, the default value from :attr:`default_body_armature` is used.
+            com: The center of mass of the body w.r.t its origin. If None, the center of mass is assumed to be at the origin.
+            I_m: The 3x3 inertia tensor of the body (specified relative to the center of mass). If None, the inertia tensor is assumed to be zero.
+            mass: Mass of the body.
+            key: Key of the body (optional).
+            custom_attributes: Dictionary of custom attribute names to values.
+
+        Returns:
+            The index of the body in the model.
+
+        Note:
+            If the mass is zero then the body is treated as kinematic with no dynamics.
+
+        """
+        # Create an articulation for this free-floating body
+        articulation_key = f"articulation_{key}" if key else None
+        self.add_articulation(key=articulation_key)
+
+        # Create the link
+        body_id = self.add_link(
+            xform=xform,
+            armature=armature,
+            com=com,
+            I_m=I_m,
+            mass=mass,
+            key=key,
+            custom_attributes=custom_attributes,
+        )
+
+        # Add a free joint to make it float
+        self.add_joint_free(
+            child=body_id,
+            key=f"free_joint_{key}" if key else None,
+        )
 
         return body_id
 

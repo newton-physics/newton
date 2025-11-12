@@ -32,8 +32,9 @@ class TestJointLimits(unittest.TestCase):
         """Test that joints have unlimited limits by default."""
         builder = newton.ModelBuilder()
 
+        builder.add_articulation()
         # Add a body
-        body = builder.add_body()
+        body = builder.add_link()
 
         # Add a revolute joint with default limits
         builder.add_joint_revolute(parent=-1, child=body)
@@ -51,8 +52,9 @@ class TestJointLimits(unittest.TestCase):
         """Test that limited joints work correctly."""
         builder = newton.ModelBuilder()
 
+        builder.add_articulation()
         # Add a body
-        body = builder.add_body()
+        body = builder.add_link()
 
         # Add a revolute joint with specific limits
         builder.add_joint_revolute(parent=-1, child=body, limit_lower=-1.0, limit_upper=1.0)
@@ -70,8 +72,9 @@ class TestJointLimits(unittest.TestCase):
         """Test joints with only one limit being unlimited."""
         builder = newton.ModelBuilder()
 
+        builder.add_articulation()
         # Add a body
-        body = builder.add_body()
+        body = builder.add_link()
 
         # Add a revolute joint with only upper limit
         builder.add_joint_revolute(parent=-1, child=body, limit_lower=-JOINT_LIMIT_UNLIMITED, limit_upper=2.0)
@@ -87,7 +90,8 @@ class TestJointLimits(unittest.TestCase):
 
         # Test the other way - only lower limit
         builder2 = newton.ModelBuilder()
-        body2 = builder2.add_body()
+        builder2.add_articulation()
+        body2 = builder2.add_link()
         builder2.add_joint_revolute(parent=-1, child=body2, limit_lower=-1.5, limit_upper=JOINT_LIMIT_UNLIMITED)
         model2 = builder2.finalize()
 

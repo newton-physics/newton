@@ -419,7 +419,7 @@ def parse_usd(
         # Extract custom attributes for this body
         body_custom_attrs = usd.get_custom_attribute_values(prim, builder_custom_attr_body)
 
-        b = builder.add_body(
+        b = builder.add_link(
             xform=xform,
             key=key,
             armature=armature,

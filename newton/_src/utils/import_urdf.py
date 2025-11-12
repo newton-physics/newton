@@ -355,7 +355,7 @@ def parse_urdf(
         name = urdf_link.get("name")
         if name is None:
             raise ValueError("Link has no name")
-        link = builder.add_body(
+        link = builder.add_link(
             key=name,
             custom_attributes=parse_custom_attributes(urdf_link.attrib, builder_custom_attr_body, parsing_mode="urdf"),
         )
