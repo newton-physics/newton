@@ -1215,24 +1215,5 @@ class TestSchemaResolver(unittest.TestCase):
         self.assertAlmostEqual(pd_gains[0][1], 0.2, places=5)
 
 
-def run_tests():
-    """Run all tests."""
-    loader = unittest.TestLoader()
-    suite = unittest.TestSuite()
-
-    suite.addTests(loader.loadTestsFromTestCase(TestSchemaResolver))
-
-    runner = unittest.TextTestRunner(verbosity=2)
-    result = runner.run(suite)
-
-    return result.wasSuccessful()
-
-
 if __name__ == "__main__":
-    print("Running USD Schema SchemaResolverManager Tests")
-    print("=" * 60)
-    print("Testing with actual ant.usda file and USD import functionality")
-    print("Priority: ['newton', 'physx']")
-    print("=" * 60)
-
-    success = run_tests()
+    unittest.main(verbosity=2)

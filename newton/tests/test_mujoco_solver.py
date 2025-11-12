@@ -26,10 +26,6 @@ from newton.tests.unittest_utils import USD_AVAILABLE
 
 
 class TestMuJoCoSolver(unittest.TestCase):
-    def setUp(self):
-        "Hook method for setting up the test fixture before exercising it."
-        pass
-
     def _run_substeps_for_frame(self, sim_dt, sim_substeps):
         """Helper method to run simulation substeps for one rendered frame."""
         for _ in range(sim_substeps):
@@ -2062,4 +2058,4 @@ class TestMuJoCoAttributes(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    unittest.main()
+    unittest.main(verbosity=2)

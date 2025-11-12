@@ -63,28 +63,8 @@ class TestAnymalReset(unittest.TestCase):
         self.sim_dt = self.frame_dt / self.sim_substeps
 
         builder.joint_q[:3] = [0.0, 0.0, 0.92]
-
-        builder.joint_q[3:7] = [
-            0.0,
-            0.0,
-            0.7071,
-            0.7071,
-        ]
-
-        builder.joint_q[7:] = [
-            0.0,
-            -0.4,
-            0.8,
-            0.0,
-            -0.4,
-            0.8,
-            0.0,
-            0.4,
-            -0.8,
-            0.0,
-            0.4,
-            -0.8,
-        ]
+        builder.joint_q[3:7] = [0.0, 0.0, 0.7071, 0.7071]
+        builder.joint_q[7:] = [0.0, -0.4, 0.8, 0.0, -0.4, 0.8, 0.0, 0.4, -0.8, 0.0, 0.4, -0.8]
 
         for i in range(len(builder.joint_target_ke)):
             builder.joint_target_ke[i] = 0
@@ -332,6 +312,7 @@ def test_reset_functionality(test: TestAnymalReset, device, cone_type):
 
 
 devices = get_test_devices()
+
 add_function_test(
     TestAnymalReset,
     "test_reset_functionality_elliptic",
@@ -351,4 +332,4 @@ add_function_test(
 
 
 if __name__ == "__main__":
-    unittest.main()
+    unittest.main(verbosity=2)

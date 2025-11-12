@@ -18,7 +18,6 @@ import tempfile
 import unittest
 
 import numpy as np
-import warp as wp
 
 import newton
 from newton._src.sim.joints import JOINT_LIMIT_UNLIMITED
@@ -239,5 +238,4 @@ class TestJointLimits(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    wp.clear_kernel_cache()
     unittest.main(verbosity=2, failfast=True)

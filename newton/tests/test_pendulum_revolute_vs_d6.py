@@ -122,3 +122,7 @@ class TestPendulumRevoluteVsD6(unittest.TestCase):
 
         # Do not clean up to allow re-use across runs
         # os.unlink(usd_path)
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)
