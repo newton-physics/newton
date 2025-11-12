@@ -1,5 +1,10 @@
 name: Push Events - AWS GPU Tests
 
+# ⚠️ DEPRECATED: This workflow will be removed in a future update.
+# Please use the new workflow structure instead:
+#   - push_aws_gpu.yml (for push event triggers)
+#   - aws_gpu_tests.yml (reusable workflow with machulav/ec2-github-runner)
+
 # Workflow configuration variables
 env:
   AWS_REGION: us-east-2
