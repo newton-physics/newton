@@ -1,0 +1,23 @@
+name: Push - AWS GPU
+
+# This workflow triggers GPU tests for pushes to main/release branches.
+# It replaces the old push_aws_gpu_tests.yml workflow.
+# Uses reusable workflows:
+#   - aws_gpu_tests.yml
+
+on:
+  push:
+#    branches:
+#      - main
+#      - 'release-*'
+#      - '*' # TODO: Remove this before merging
+#    tags:
+#      - '*'
+#    paths-ignore:
+#      - "docs/**"
+#      - "**.md"
+
+jobs:
+  run-tests:
+    uses: ./.github/workflows/aws_gpu_tests.yml
+    secrets: inherit
