@@ -23,6 +23,7 @@
 #
 ###########################################################################
 
+import math
 import numpy as np
 import warp as wp
 from pxr import Usd, UsdGeom
@@ -107,6 +108,9 @@ class Example:
         self.tiled_camera_sensor.create_default_light()
         self.tiled_camera_sensor.assign_debug_colors_per_shape()
         self.tiled_camera_sensor.assign_default_checkerboard_material()
+        self.tiled_camera_sensor.compute_camera_rays(wp.array([math.radians(self.viewer.camera.fov)], dtype=wp.float32))
+        self.tiled_camera_sensor_color_image = self.tiled_camera_sensor.create_color_image_output()
+        self.tiled_camera_sensor_depth_image = self.tiled_camera_sensor.create_depth_image_output()
 
         # not required for MuJoCo, but required for maximal-coordinate solvers like XPBD
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
@@ -204,10 +208,10 @@ class Example:
     def render_sensors(self):
         print("Rendering Tiled Sensor")
 
-        self.tiled_camera_sensor.update_cameras([self.viewer.camera])
-        self.tiled_camera_sensor.render(self.state_0)
-        self.tiled_camera_sensor.save_color_image("test_color.png")
-        self.tiled_camera_sensor.save_depth_image("test_depth.png")
+        self.tiled_camera_sensor.update_cameras(*self.tiled_camera_sensor.convert_camera_to_warp_arrays([self.viewer.camera]))
+        self.tiled_camera_sensor.render(self.state_0, self.tiled_camera_sensor_color_image, self.tiled_camera_sensor_depth_image)
+        self.tiled_camera_sensor.save_color_image(self.tiled_camera_sensor_color_image, "test_color.png")
+        self.tiled_camera_sensor.save_depth_image(self.tiled_camera_sensor_depth_image, "test_depth.png")
 
 
 if __name__ == "__main__":
