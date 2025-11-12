@@ -17,7 +17,6 @@ import math
 
 import numpy as np
 import warp as wp
-from typing import Union
 
 from ..geometry import ShapeFlags
 from ..sim import Model, State
@@ -169,7 +168,12 @@ class TiledCameraSensor:
             inputs=[self.render_context.mesh_ids, self.render_context.mesh_bounds],
         )
 
-    def render(self, state: State, color_image: Union[wp.array(dtype=wp.uint32, ndim=4), None] = None, depth_image: Union[wp.array(dtype=wp.float32, ndim=4), None] = None):
+    def render(
+        self,
+        state: State,
+        color_image: wp.array(dtype=wp.uint32, ndim=4) | None = None,
+        depth_image: wp.array(dtype=wp.float32, ndim=4) | None = None,
+    ):
         if self.model.shape_count:
             wp.launch(
                 kernel=convert_newton_transform,
@@ -333,5 +337,7 @@ class TiledCameraSensor:
 
     def convert_camera_to_warp_arrays(self, cameras: list[Camera]):
         camera_positions = wp.array([camera.pos for camera in cameras], dtype=wp.vec3f)
-        camera_orientations = wp.array([camera.get_view_matrix().reshape(4, 4)[:3, :3].flatten() for camera in cameras], dtype=wp.mat33f)
+        camera_orientations = wp.array(
+            [camera.get_view_matrix().reshape(4, 4)[:3, :3].flatten() for camera in cameras], dtype=wp.mat33f
+        )
         return camera_positions, camera_orientations

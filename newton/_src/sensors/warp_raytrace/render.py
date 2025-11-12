@@ -15,7 +15,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Union
+from typing import TYPE_CHECKING
 
 import warp as wp
 
@@ -68,7 +68,11 @@ def pack_rgba_to_uint32(r: wp.float32, g: wp.float32, b: wp.float32, a: wp.float
     )
 
 
-def render_megakernel(rc: RenderContext, color_image: Union[wp.array(dtype=wp.uint32, ndim=4), None] = None, depth_image: Union[wp.array(dtype=wp.float32, ndim=4), None] = None):
+def render_megakernel(
+    rc: RenderContext,
+    color_image: wp.array(dtype=wp.uint32, ndim=4) | None = None,
+    depth_image: wp.array(dtype=wp.float32, ndim=4) | None = None,
+):
     total_views = rc.num_worlds * rc.num_cameras
     total_pixels = rc.width * rc.height
     num_view_groups = (total_views + MAX_NUM_VIEWS_PER_THREAD - 1) // MAX_NUM_VIEWS_PER_THREAD
