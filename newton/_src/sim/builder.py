@@ -3247,6 +3247,7 @@ class ModelBuilder:
         radius: float = 1.0,
         half_height: float = 0.5,
         cfg: ShapeConfig | None = None,
+        as_site: bool = False,
         key: str | None = None,
         custom_attributes: dict[str, Any] | None = None,
     ) -> int:
@@ -3261,20 +3262,24 @@ class ModelBuilder:
             radius (float): The radius of the cone's base. Defaults to `1.0`.
             half_height (float): The half-height of the cone (distance from the geometric center to either the base or apex). The total height is 2*half_height. Defaults to `0.5`.
             cfg (ShapeConfig | None): The configuration for the shape's physical and collision properties. If `None`, :attr:`default_shape_cfg` is used. Defaults to `None`.
+            as_site (bool): If `True`, creates a site (non-colliding reference point) instead of a collision shape. Defaults to `False`.
             key (str | None): An optional unique key for identifying the shape. If `None`, a default key is automatically generated. Defaults to `None`.
             custom_attributes: Dictionary of custom attribute values for SHAPE frequency attributes.
 
         Returns:
             int: The index of the newly added shape.
         """
+        if cfg is None:
+            cfg = self.default_site_cfg if as_site else self.default_shape_cfg
+        elif as_site:
+            cfg = cfg.copy()
+            cfg.mark_as_site()
 
         if xform is None:
             xform = wp.transform()
         else:
             xform = wp.transform(*xform)
 
-        if cfg is None:
-            cfg = self.default_shape_cfg
         scale = wp.vec3(radius, half_height, 0.0)
         return self.add_shape(
             body=body,
