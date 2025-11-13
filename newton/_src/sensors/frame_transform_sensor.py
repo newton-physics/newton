@@ -24,7 +24,7 @@ from ..sim.state import State
 
 @wp.kernel
 def compute_shape_transforms_kernel(
-    shape_indices: wp.array(dtype=int),
+    shapes: wp.array(dtype=int),
     shape_body: wp.array(dtype=int),
     shape_transform: wp.array(dtype=wp.transform),
     body_q: wp.array(dtype=wp.transform),
@@ -41,7 +41,7 @@ def compute_shape_transforms_kernel(
         world_transforms: Output array for computed world transforms
     """
     tid = wp.tid()
-    shape_idx = shape_indices[tid]
+    shape_idx = shapes[tid]
 
     body_idx = shape_body[shape_idx]
     if body_idx >= 0:
@@ -57,8 +57,8 @@ def compute_shape_transforms_kernel(
 @wp.kernel
 def compute_relative_transforms_kernel(
     all_shape_transforms: wp.array(dtype=wp.transform),
-    shape_indices: wp.array(dtype=int),
-    reference_indices: wp.array(dtype=int),
+    shapes: wp.array(dtype=int),
+    reference_sites: wp.array(dtype=int),
     # output
     relative_transforms: wp.array(dtype=wp.transform),
 ):
@@ -76,8 +76,8 @@ def compute_relative_transforms_kernel(
     - X_ro is the transform from object to reference (expresses object pose in reference frame)
     """
     tid = wp.tid()
-    shape_idx = shape_indices[tid]
-    ref_idx = reference_indices[tid]
+    shape_idx = shapes[tid]
+    ref_idx = reference_sites[tid]
 
     X_wo = all_shape_transforms[shape_idx]
     X_wr = all_shape_transforms[ref_idx]
@@ -94,8 +94,6 @@ class FrameTransformSensor:
     (which can be regular shapes or sites).
 
     Attributes:
-        shape_indices: Indices of shapes to measure
-        reference_site_indices: Indices of reference sites (one per shape or one shared)
         transforms: Output array of relative transforms (updated after each call to update())
 
     Example:
@@ -121,16 +119,16 @@ class FrameTransformSensor:
     def __init__(
         self,
         model: Model,
-        shape_indices: list[int],
-        reference_site_indices: list[int],
+        shapes: list[int],
+        reference_sites: list[int],
         verbose: bool | None = None,
     ):
         """Initialize the FrameTransformSensor.
 
         Args:
             model: The model to measure.
-            shape_indices: List of shape indices to measure.
-            reference_site_indices: List of reference site indices (shapes with SITE flag).
+            shapes: List of shape indices to measure.
+            reference_sites: List of reference site indices (shapes with SITE flag).
                 Must match 1:1 with shape_indices, or be a single site for all shapes.
             verbose: If True, print details. If None, uses ``wp.config.verbose``.
 
@@ -141,39 +139,37 @@ class FrameTransformSensor:
         self.verbose = verbose if verbose is not None else wp.config.verbose
 
         # Validate shape indices
-        if not shape_indices:
+        if not shapes:
             raise ValueError("shape_indices must not be empty")
-        if any(idx < 0 or idx >= model.shape_count for idx in shape_indices):
+        if any(idx < 0 or idx >= model.shape_count for idx in shapes):
             raise ValueError(f"Invalid shape indices. Must be in range [0, {model.shape_count})")
 
-        self.shape_indices = list(shape_indices)
-
         # Validate reference site indices
-        if not reference_site_indices:
+        if not reference_sites:
             raise ValueError("reference_site_indices must not be empty")
-        if any(idx < 0 or idx >= model.shape_count for idx in reference_site_indices):
+        if any(idx < 0 or idx >= model.shape_count for idx in reference_sites):
             raise ValueError(f"Invalid reference site indices. Must be in range [0, {model.shape_count})")
 
         # Verify that reference indices are actually sites
         shape_flags = model.shape_flags.numpy()
-        for idx in reference_site_indices:
+        for idx in reference_sites:
             if not (shape_flags[idx] & ShapeFlags.SITE):
                 raise ValueError(f"Reference index {idx} (key: {model.shape_key[idx]}) is not a site")
 
         # Handle reference site matching
-        if len(reference_site_indices) == 1:
+        if len(reference_sites) == 1:
             # Single reference site for all shapes
-            self.reference_site_indices = reference_site_indices * len(self.shape_indices)
-        elif len(reference_site_indices) == len(self.shape_indices):
-            self.reference_site_indices = list(reference_site_indices)
+            reference_sites_matched = reference_sites * len(shapes)
+        elif len(reference_sites) == len(shapes):
+            reference_sites_matched = list(reference_sites)
         else:
             raise ValueError(
-                f"Number of reference sites ({len(reference_site_indices)}) must match "
-                f"number of shapes ({len(self.shape_indices)}) or be 1"
+                f"Number of reference sites ({len(reference_sites)}) must match "
+                f"number of shapes ({len(shapes)}) or be 1"
             )
 
         # Build list of unique shape indices that need transforms computed
-        all_indices = set(self.shape_indices) | set(self.reference_site_indices)
+        all_indices = set(shapes) | set(reference_sites_matched)
         self._unique_shape_indices = sorted(all_indices)
 
         # Allocate transform array for all shapes (indexed by shape index)
@@ -186,22 +182,22 @@ class FrameTransformSensor:
 
         # Allocate output array
         self.transforms = wp.zeros(
-            len(self.shape_indices),
+            len(shapes),
             dtype=wp.transform,
             device=model.device,
         )
 
         # Convert indices to warp arrays (done once at init)
         self._unique_indices_arr = wp.array(self._unique_shape_indices, dtype=int, device=model.device)
-        self._shape_indices_arr = wp.array(self.shape_indices, dtype=int, device=model.device)
-        self._reference_indices_arr = wp.array(self.reference_site_indices, dtype=int, device=model.device)
+        self._shape_indices_arr = wp.array(shapes, dtype=int, device=model.device)
+        self._reference_indices_arr = wp.array(reference_sites_matched, dtype=int, device=model.device)
 
         if self.verbose:
             print("FrameTransformSensor initialized:")
-            print(f"  Shapes: {len(self.shape_indices)}")
-            print(f"  Reference sites: {len(set(self.reference_site_indices))} unique")
+            print(f"  Shapes: {len(shapes)}")
+            print(f"  Reference sites: {len(set(reference_sites_matched))} unique")
             print(
-                f"  Unique shapes to compute: {len(self._unique_shape_indices)} (optimized from {len(self.shape_indices) + len(self.reference_site_indices)})"
+                f"  Unique shapes to compute: {len(self._unique_shape_indices)} (optimized from {len(shapes) + len(reference_sites_matched)})"
             )
 
     def update(self, model: Model, state: State):
@@ -225,7 +221,7 @@ class FrameTransformSensor:
         # Compute relative transforms by indexing directly into all_shape_transforms
         wp.launch(
             compute_relative_transforms_kernel,
-            dim=len(self.shape_indices),
+            dim=len(self._shape_indices_arr),
             inputs=[self._all_shape_transforms, self._shape_indices_arr, self._reference_indices_arr],
             outputs=[self.transforms],
             device=model.device,
