@@ -20,6 +20,7 @@ from .... import GeoType
 
 class GeomType(enum.IntEnum):
     """Geometry types supported by the Warp raytracer (subset of newton.GeoType)."""
+
     PLANE = GeoType.PLANE
     SPHERE = GeoType.SPHERE
     CAPSULE = GeoType.CAPSULE
@@ -33,5 +34,6 @@ class GeomType(enum.IntEnum):
 
 class LightType(enum.IntEnum):
     """Light types supported by the Warp raytracer."""
+
     SPOTLIGHT = 0
     DIRECTIONAL = 1
