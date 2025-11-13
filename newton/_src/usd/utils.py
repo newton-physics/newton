@@ -579,7 +579,7 @@ def corner_angles(face_pos: np.ndarray) -> np.ndarray:
 
 def get_mesh(
     prim: Usd.Prim,
-    load_normals: bool = True,
+    load_normals: bool = False,
     load_uvs: bool = False,
     maxhullvert: int = MESH_MAXHULLVERT,
     face_varying_normal_conversion: Literal[
@@ -618,6 +618,7 @@ def get_mesh(
         face_varying_normal_conversion (Literal["vertex_averaging", "angle_weighted", "vertex_splitting"]):
             This argument specifies how to convert "faceVarying" normals
             (normals defined per-corner rather than per-vertex) into per-vertex normals for the mesh.
+            If ``load_normals`` is False, this argument is ignored.
             The options are summarized below:
 
             .. list-table::
