@@ -403,6 +403,7 @@ def parse_usd(
                     radius,
                     half_height,
                     cfg=visual_shape_cfg,
+                    as_site=is_site,
                     key=path_name,
                 )
             elif type_name == "mesh":
