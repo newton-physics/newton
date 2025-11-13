@@ -1223,5 +1223,4 @@ for solver, tests in tests_to_run.items():
 
 
 if __name__ == "__main__":
-    wp.clear_kernel_cache()
     unittest.main(verbosity=2, failfast=True)

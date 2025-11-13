@@ -1,5 +1,10 @@
 name: GPU Unit Tests on AWS EC2
 
+# ⚠️ DEPRECATED: This workflow will be removed in a future update.
+# Please use the new workflow structure instead:
+#   - pr_target_aws_gpu.yml (for pull request triggers)
+#   - aws_gpu_tests.yml (reusable workflow with machulav/ec2-github-runner)
+
 # Workflow configuration variables
 env:
   AWS_REGION: us-east-2

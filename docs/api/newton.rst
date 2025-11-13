@@ -27,7 +27,6 @@ newton
    Control
    EqType
    GeoType
-   JointMode
    JointType
    Mesh
    Model
