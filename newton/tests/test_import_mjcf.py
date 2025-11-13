@@ -858,7 +858,6 @@ class TestImportMjcf(unittest.TestCase):
             if True:
                 solver = SolverMuJoCo(model, separate_worlds=False)
                 mj_model = solver.mj_model
-                mjw_model = solver.mjw_model
                 joint_mjc_dof_start = solver.joint_mjc_dof_start.numpy()
                 mjc_axis_to_actuator = solver.mjc_axis_to_actuator.numpy()
 
@@ -909,7 +908,6 @@ class TestImportMjcf(unittest.TestCase):
                     vel_gainprm3 = mj_model.actuator_gainprm[vel_actuator_idx3]
                     self.assertAlmostEqual(vel_gainprm3[0], 0.0, places=4)
 
-
     def test_passive_stiffness_damping_runtime_update(self):
         mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
 <mujoco model="stiffness_damping_update_test">
@@ -937,7 +935,6 @@ class TestImportMjcf(unittest.TestCase):
             joint1_idx = joint_names.index("joint1")
             joint1_dof_idx = model.joint_qd_start.numpy()[joint1_idx]
 
-            mj_model = solver.mj_model
             mjw_model = solver.mjw_model
             joint_mjc_dof_start = solver.joint_mjc_dof_start.numpy()
             mjc_joint_idx = joint_mjc_dof_start[joint1_idx]
@@ -950,7 +947,6 @@ class TestImportMjcf(unittest.TestCase):
                 self.assertAlmostEqual(mjw_model.jnt_stiffness.numpy()[0, mjc_joint_idx], 0.05, places=4)
                 self.assertAlmostEqual(mjw_model.jnt_damping.numpy()[0, mjc_joint_idx], 0.5, places=4)
 
-            import warp as wp
             new_stiffness_np = model.mujoco.stiffness.numpy().copy()
             new_damping_np = model.mujoco.damping.numpy().copy()
 

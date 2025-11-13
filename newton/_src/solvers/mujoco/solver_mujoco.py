@@ -1737,9 +1737,7 @@ class SolverMuJoCo(SolverBase):
                 self.joint_mjc_dof_start,
                 joints_per_world,
             ],
-            outputs=[
-                self.mjw_model.jnt_stiffness
-            ],
+            outputs=[self.mjw_model.jnt_stiffness],
             device=self.model.device,
         )
 
