@@ -530,7 +530,7 @@ if __name__ == "__main__":
 
     if args.use_mujoco_cpu:
         args.use_mujoco_cpu = False
-        print("The option ``use-mujoco-cpu`` is not yet supported. Disabling it.")
+        print("The option ``use-mujoco-cpu`` is not yet supported. Disabling it!")
 
     trace = {}
     with EventTracer(enabled=args.event_trace) as tracer:
