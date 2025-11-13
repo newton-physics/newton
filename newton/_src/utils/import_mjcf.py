@@ -515,7 +515,7 @@ def parse_mjcf(
                 # Two values (e.g., capsule/cylinder: radius, half-height)
                 radius = site_size[0]
                 half_height = site_size[1]
-                site_size = wp.vec3(radius, radius, half_height)
+                site_size = wp.vec3(radius, half_height, 0.0)
 
             # Add site using builder.add_site()
             s = builder.add_site(
