@@ -166,8 +166,7 @@ def _setup_h1(articulation_builder):
     # approximate meshes for faster collision detection
     articulation_builder.approximate_meshes("bounding_box")
 
-    for i in range(len(articulation_builder.joint_dof_mode)):
-        articulation_builder.joint_dof_mode[i] = newton.JointMode.TARGET_POSITION
+    for i in range(articulation_builder.joint_dof_count):
         articulation_builder.joint_target_ke[i] = 150
         articulation_builder.joint_target_kd[i] = 5
 
@@ -239,11 +238,10 @@ def _setup_allegro(articulation_builder):
     )
 
     # set joint targets and joint drive gains
-    for i in range(len(articulation_builder.joint_dof_mode)):
-        articulation_builder.joint_dof_mode[i] = newton.JointMode.TARGET_POSITION
+    for i in range(articulation_builder.joint_dof_count):
         articulation_builder.joint_target_ke[i] = 150
         articulation_builder.joint_target_kd[i] = 5
-        articulation_builder.joint_target[i] = 0.0
+        articulation_builder.joint_target_pos[i] = 0.0
     root_dofs = 1
 
     return root_dofs
@@ -353,8 +351,8 @@ class Example:
 
     def step(self):
         if self.actuation == "random":
-            joint_target = wp.array(self.rng.uniform(-1.0, 1.0, size=self.model.joint_dof_count), dtype=float)
-            wp.copy(self.control.joint_target, joint_target)
+            joint_target = wp.array(self.rng.uniform(-1.0, 1.0, size=self.model.joint_dof_count), dtype=wp.float32)
+            wp.copy(self.control.joint_target_pos, joint_target)
 
         wp.synchronize_device()
         start_time = time.time()
@@ -381,6 +379,7 @@ class Example:
         rng = np.random.default_rng(seed)
 
         articulation_builder = newton.ModelBuilder()
+        newton.solvers.SolverMuJoCo.register_custom_attributes(articulation_builder)
         if robot == "humanoid":
             root_dofs = _setup_humanoid(articulation_builder)
         elif robot == "g1":

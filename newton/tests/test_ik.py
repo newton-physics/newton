@@ -466,5 +466,4 @@ add_function_test(TestIKModes, "test_d6_jacobian_compare", test_d6_jacobian_comp
 
 
 if __name__ == "__main__":
-    wp.clear_kernel_cache()
     unittest.main(verbosity=2, failfast=True)

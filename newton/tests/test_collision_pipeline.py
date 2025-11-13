@@ -376,5 +376,4 @@ for shape_type_a, shape_type_b, test_level_a, test_level_b in unified_contact_te
     )
 
 if __name__ == "__main__":
-    # wp.clear_kernel_cache()
     unittest.main(verbosity=2, failfast=False)

@@ -274,14 +274,15 @@ def average_yield_parameters(
     yield_parameters_avg[i] = wp.max(YieldParamVec(0.0), yield_parameters_int[i] / wp.max(pvol, _EPSILON))
 
 
-@fem.integrand
-def averaged_elastic_parameters(
-    s: fem.Sample,
+@wp.kernel
+def average_elastic_parameters(
     elastic_parameters_int: wp.array(dtype=wp.vec3),
     particle_volume: wp.array(dtype=float),
+    elastic_parameters_avg: wp.array(dtype=wp.vec3),
 ):
-    pvol = particle_volume[s.qp_index]
-    return elastic_parameters_int[s.qp_index] / wp.max(pvol, _EPSILON)
+    i = wp.tid()
+    pvol = particle_volume[i]
+    elastic_parameters_avg[i] = elastic_parameters_int[i] / wp.max(pvol, _EPSILON)
 
 
 @wp.kernel
@@ -597,6 +598,8 @@ class _ImplicitMPMScratchpad:
         self.strain_matrix = sp.bsr_zeros(0, 0, mat63)
         self.transposed_strain_matrix = sp.bsr_zeros(0, 0, mat36)
 
+        self.compliance_matrix = sp.bsr_zeros(0, 0, mat66)
+
         self.color_offsets = None
         self.color_indices = None
         self.color_nodes_per_element = 1
@@ -834,6 +837,7 @@ class _ImplicitMPMScratchpad:
         self.int_symmetric_strain = fem.borrow_temporary(temporary_store, shape=strain_node_count, dtype=vec6)
 
         sp.bsr_set_zero(self.strain_matrix, rows_of_blocks=strain_node_count, cols_of_blocks=vel_node_count)
+        sp.bsr_set_zero(self.compliance_matrix, rows_of_blocks=strain_node_count, cols_of_blocks=strain_node_count)
 
         if has_critical_fraction:
             self.strain_node_volume = fem.borrow_temporary(temporary_store, shape=strain_node_count, dtype=float)
@@ -1971,9 +1975,6 @@ class SolverImplicitMPM(SolverBase):
         has_compliant_colliders = mpm_model.min_collider_mass < _INFINITY
         has_hardening = mpm_model.max_hardening > 0.0
 
-        prev_impulse_field = state_in.impulse_field
-        prev_stress_field = state_in.stress_field
-
         # Bin particles to grid cells
         with wp.ScopedTimer(
             "Bin particles",
@@ -2187,12 +2188,14 @@ class SolverImplicitMPM(SolverBase):
                     output_dtype=wp.vec3,
                 )
 
-                fem.interpolate(
-                    averaged_elastic_parameters,
-                    dest=fem.make_restriction(
-                        scratch.elastic_parameters_field, space_restriction=scratch.velocity_test.space_restriction
-                    ),
-                    values={"elastic_parameters_int": elastic_parameters_int, "particle_volume": node_particle_volume},
+                wp.launch(
+                    average_elastic_parameters,
+                    dim=scratch.elastic_parameters_field.space_partition.node_count(),
+                    inputs=[
+                        elastic_parameters_int,
+                        node_particle_volume,
+                        scratch.elastic_parameters_field.dof_values,
+                    ],
                 )
 
                 fem.integrate(
@@ -2210,7 +2213,7 @@ class SolverImplicitMPM(SolverBase):
                     output=scratch.int_symmetric_strain,
                 )
 
-                C = fem.integrate(
+                fem.integrate(
                     compliance_form,
                     quadrature=pic,
                     fields={
@@ -2223,7 +2226,7 @@ class SolverImplicitMPM(SolverBase):
                         "inv_cell_volume": inv_cell_volume,
                         "dt": dt,
                     },
-                    output_dtype=float,
+                    output=scratch.compliance_matrix,
                 )
         else:
             scratch.int_symmetric_strain.zero_()
@@ -2340,7 +2343,7 @@ class SolverImplicitMPM(SolverBase):
             use_nvtx=self._timers_use_nvtx,
             synchronize=not self._timers_use_nvtx,
         ):
-            self._warmstart_fields(prev_impulse_field, prev_stress_field)
+            self._warmstart_fields(state_in.ws_impulse_field, state_in.ws_stress_field)
 
         with wp.ScopedTimer(
             "Strain solve",
@@ -2354,7 +2357,7 @@ class SolverImplicitMPM(SolverBase):
                 self.tolerance,
                 scratch.strain_matrix,
                 scratch.transposed_strain_matrix,
-                C if has_compliant_particles else None,
+                scratch.compliance_matrix,
                 scratch.inv_mass_matrix,
                 scratch.strain_node_particle_volume,
                 scratch.strain_yield_parameters_field.dof_values,
@@ -2386,12 +2389,11 @@ class SolverImplicitMPM(SolverBase):
             self._save_for_next_warmstart(state_out)
 
         if has_compliant_particles:
-            delta_strain = scratch.int_symmetric_strain.array
             wp.launch(
                 average_elastic_strain_delta,
                 dim=strain_node_count,
                 inputs=[
-                    delta_strain,
+                    scratch.int_symmetric_strain,
                     scratch.strain_node_particle_volume,
                     scratch.elastic_strain_delta_field.dof_values,
                 ],

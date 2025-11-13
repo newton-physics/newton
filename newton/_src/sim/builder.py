@@ -61,7 +61,6 @@ from .graph_coloring import ColoringAlgorithm, color_trimesh, combine_independen
 from .joints import (
     JOINT_LIMIT_UNLIMITED,
     EqType,
-    JointMode,
     JointType,
     get_joint_dof_count,
 )
@@ -208,10 +207,10 @@ class ModelBuilder:
             limit_upper: float = JOINT_LIMIT_UNLIMITED,
             limit_ke: float = 1e4,
             limit_kd: float = 1e1,
-            target: float = 0.0,
+            target_pos: float = 0.0,
+            target_vel: float = 0.0,
             target_ke: float = 0.0,
             target_kd: float = 0.0,
-            mode: int = JointMode.TARGET_POSITION,
             armature: float = 1e-2,
             effort_limit: float = 1e6,
             velocity_limit: float = 1e6,
@@ -227,16 +226,16 @@ class ModelBuilder:
             """The elastic stiffness of the joint axis limits. Defaults to 1e4."""
             self.limit_kd = limit_kd
             """The damping stiffness of the joint axis limits. Defaults to 1e1."""
-            self.target = target
-            """The target position or velocity (depending on the mode) of the joint axis.
-            If `mode` is `JointMode.TARGET_POSITION` and the initial `target` is outside the limits,
+            self.target_pos = target_pos
+            """The target position of the joint axis.
+            If the initial `target_pos` is outside the limits,
             it defaults to the midpoint of `limit_lower` and `limit_upper`. Otherwise, defaults to 0.0."""
+            self.target_vel = target_vel
+            """The target velocity of the joint axis."""
             self.target_ke = target_ke
             """The proportional gain of the target drive PD controller. Defaults to 0.0."""
             self.target_kd = target_kd
             """The derivative gain of the target drive PD controller. Defaults to 0.0."""
-            self.mode = mode
-            """The mode of the joint axis (e.g., `JointMode.TARGET_POSITION` or `JointMode.TARGET_VELOCITY`). Defaults to `JointMode.TARGET_POSITION`."""
             self.armature = armature
             """Artificial inertia added around the joint axis. Defaults to 1e-2."""
             self.effort_limit = effort_limit
@@ -246,10 +245,8 @@ class ModelBuilder:
             self.friction = friction
             """Friction coefficient for the joint axis. Defaults to 0.0."""
 
-            if self.mode == JointMode.TARGET_POSITION and (
-                self.target > self.limit_upper or self.target < self.limit_lower
-            ):
-                self.target = 0.5 * (self.limit_lower + self.limit_upper)
+            if self.target_pos > self.limit_upper or self.target_pos < self.limit_lower:
+                self.target_pos = 0.5 * (self.limit_lower + self.limit_upper)
 
         @classmethod
         def create_unlimited(cls, axis: AxisType | Vec3) -> ModelBuilder.JointDofConfig:
@@ -258,13 +255,13 @@ class ModelBuilder:
                 axis=axis,
                 limit_lower=-JOINT_LIMIT_UNLIMITED,
                 limit_upper=JOINT_LIMIT_UNLIMITED,
-                target=0.0,
+                target_pos=0.0,
+                target_vel=0.0,
                 target_ke=0.0,
                 target_kd=0.0,
                 armature=0.0,
                 limit_ke=0.0,
                 limit_kd=0.0,
-                mode=JointMode.NONE,
             )
 
     @dataclass
@@ -521,12 +518,12 @@ class ModelBuilder:
         self.joint_armature = []
         self.joint_target_ke = []
         self.joint_target_kd = []
-        self.joint_dof_mode = []
         self.joint_limit_lower = []
         self.joint_limit_upper = []
         self.joint_limit_ke = []
         self.joint_limit_kd = []
-        self.joint_target = []
+        self.joint_target_pos = []
+        self.joint_target_vel = []
         self.joint_effort_limit = []
         self.joint_velocity_limit = []
         self.joint_friction = []
@@ -1427,11 +1424,11 @@ class ModelBuilder:
             "joint_armature",
             "joint_axis",
             "joint_dof_dim",
-            "joint_dof_mode",
             "joint_key",
             "joint_qd",
             "joint_f",
-            "joint_target",
+            "joint_target_pos",
+            "joint_target_vel",
             "joint_limit_lower",
             "joint_limit_upper",
             "joint_limit_ke",
@@ -1700,8 +1697,8 @@ class ModelBuilder:
 
         def add_axis_dim(dim: ModelBuilder.JointDofConfig):
             self.joint_axis.append(dim.axis)
-            self.joint_dof_mode.append(dim.mode)
-            self.joint_target.append(dim.target)
+            self.joint_target_pos.append(dim.target_pos)
+            self.joint_target_vel.append(dim.target_vel)
             self.joint_target_ke.append(dim.target_ke)
             self.joint_target_kd.append(dim.target_kd)
             self.joint_limit_ke.append(dim.limit_ke)
@@ -1773,10 +1770,10 @@ class ModelBuilder:
         parent_xform: Transform | None = None,
         child_xform: Transform | None = None,
         axis: AxisType | Vec3 | JointDofConfig | None = None,
-        target: float | None = None,
+        target_pos: float | None = None,
+        target_vel: float | None = None,
         target_ke: float | None = None,
         target_kd: float | None = None,
-        mode: int | None = None,
         limit_lower: float | None = None,
         limit_upper: float | None = None,
         limit_ke: float | None = None,
@@ -1799,10 +1796,10 @@ class ModelBuilder:
             parent_xform (Transform): The transform of the joint in the parent body's local frame.
             child_xform (Transform): The transform of the joint in the child body's local frame.
             axis (AxisType | Vec3 | JointDofConfig): The axis of rotation in the parent body's local frame, can be a :class:`JointDofConfig` object whose settings will be used instead of the other arguments.
-            target: The target angle (in radians) or target velocity of the joint.
+            target_pos: The target position of the joint.
+            target_vel: The target velocity of the joint.
             target_ke: The stiffness of the joint target.
             target_kd: The damping of the joint target.
-            mode: The control mode of the joint. If None, the default value from :attr:`default_joint_control_mode` is used.
             limit_lower: The lower limit of the joint. If None, the default value from :attr:`default_joint_limit_lower` is used.
             limit_upper: The upper limit of the joint. If None, the default value from :attr:`default_joint_limit_upper` is used.
             limit_ke: The stiffness of the joint limit. If None, the default value from :attr:`default_joint_limit_ke` is used.
@@ -1830,10 +1827,10 @@ class ModelBuilder:
                 axis=axis,
                 limit_lower=limit_lower if limit_lower is not None else self.default_joint_cfg.limit_lower,
                 limit_upper=limit_upper if limit_upper is not None else self.default_joint_cfg.limit_upper,
-                target=target if target is not None else self.default_joint_cfg.target,
+                target_pos=target_pos if target_pos is not None else self.default_joint_cfg.target_pos,
+                target_vel=target_vel if target_vel is not None else self.default_joint_cfg.target_vel,
                 target_ke=target_ke if target_ke is not None else self.default_joint_cfg.target_ke,
                 target_kd=target_kd if target_kd is not None else self.default_joint_cfg.target_kd,
-                mode=mode if mode is not None else self.default_joint_cfg.mode,
                 limit_ke=limit_ke if limit_ke is not None else self.default_joint_cfg.limit_ke,
                 limit_kd=limit_kd if limit_kd is not None else self.default_joint_cfg.limit_kd,
                 armature=armature if armature is not None else self.default_joint_cfg.armature,
@@ -1862,10 +1859,10 @@ class ModelBuilder:
         parent_xform: Transform | None = None,
         child_xform: Transform | None = None,
         axis: AxisType | Vec3 | JointDofConfig = Axis.X,
-        target: float | None = None,
+        target_pos: float | None = None,
+        target_vel: float | None = None,
         target_ke: float | None = None,
         target_kd: float | None = None,
-        mode: int | None = None,
         limit_lower: float | None = None,
         limit_upper: float | None = None,
         limit_ke: float | None = None,
@@ -1887,10 +1884,10 @@ class ModelBuilder:
             parent_xform (Transform): The transform of the joint in the parent body's local frame.
             child_xform (Transform): The transform of the joint in the child body's local frame.
             axis (AxisType | Vec3 | JointDofConfig): The axis of rotation in the parent body's local frame, can be a :class:`JointDofConfig` object whose settings will be used instead of the other arguments.
-            target: The target angle (in radians) or target velocity of the joint.
+            target_pos: The target position of the joint.
+            target_vel: The target velocity of the joint.
             target_ke: The stiffness of the joint target.
             target_kd: The damping of the joint target.
-            mode: The control mode of the joint. If None, the default value from :attr:`default_joint_control_mode` is used.
             limit_lower: The lower limit of the joint. If None, the default value from :attr:`default_joint_limit_lower` is used.
             limit_upper: The upper limit of the joint. If None, the default value from :attr:`default_joint_limit_upper` is used.
             limit_ke: The stiffness of the joint limit. If None, the default value from :attr:`default_joint_limit_ke` is used.
@@ -1918,10 +1915,10 @@ class ModelBuilder:
                 axis=axis,
                 limit_lower=limit_lower if limit_lower is not None else self.default_joint_cfg.limit_lower,
                 limit_upper=limit_upper if limit_upper is not None else self.default_joint_cfg.limit_upper,
-                target=target if target is not None else self.default_joint_cfg.target,
+                target_pos=target_pos if target_pos is not None else self.default_joint_cfg.target_pos,
+                target_vel=target_vel if target_vel is not None else self.default_joint_cfg.target_vel,
                 target_ke=target_ke if target_ke is not None else self.default_joint_cfg.target_ke,
                 target_kd=target_kd if target_kd is not None else self.default_joint_cfg.target_kd,
-                mode=mode if mode is not None else self.default_joint_cfg.mode,
                 limit_ke=limit_ke if limit_ke is not None else self.default_joint_cfg.limit_ke,
                 limit_kd=limit_kd if limit_kd is not None else self.default_joint_cfg.limit_kd,
                 armature=armature if armature is not None else self.default_joint_cfg.armature,
@@ -2537,14 +2534,14 @@ class ModelBuilder:
                 data["axes"].append(
                     {
                         "axis": self.joint_axis[j],
-                        "axis_mode": self.joint_dof_mode[j],
                         "target_ke": self.joint_target_ke[j],
                         "target_kd": self.joint_target_kd[j],
                         "limit_ke": self.joint_limit_ke[j],
                         "limit_kd": self.joint_limit_kd[j],
                         "limit_lower": self.joint_limit_lower[j],
                         "limit_upper": self.joint_limit_upper[j],
-                        "act": self.joint_target[j],
+                        "target_pos": self.joint_target_pos[j],
+                        "target_vel": self.joint_target_vel[j],
                         "effort_limit": self.joint_effort_limit[j],
                     }
                 )
@@ -2719,7 +2716,6 @@ class ModelBuilder:
         self.joint_X_p.clear()
         self.joint_X_c.clear()
         self.joint_axis.clear()
-        self.joint_dof_mode.clear()
         self.joint_target_ke.clear()
         self.joint_target_kd.clear()
         self.joint_limit_lower.clear()
@@ -2728,8 +2724,9 @@ class ModelBuilder:
         self.joint_effort_limit.clear()
         self.joint_limit_kd.clear()
         self.joint_dof_dim.clear()
-        self.joint_target.clear()
-        self.joint_world.clear()  # Clear joint groups
+        self.joint_target_pos.clear()
+        self.joint_target_vel.clear()
+        self.joint_world.clear()
         for joint in retained_joints:
             self.joint_key.append(joint["key"])
             self.joint_type.append(joint["type"])
@@ -2752,14 +2749,14 @@ class ModelBuilder:
                 self.joint_world.append(-1)
             for axis in joint["axes"]:
                 self.joint_axis.append(axis["axis"])
-                self.joint_dof_mode.append(axis["axis_mode"])
                 self.joint_target_ke.append(axis["target_ke"])
                 self.joint_target_kd.append(axis["target_kd"])
                 self.joint_limit_lower.append(axis["limit_lower"])
                 self.joint_limit_upper.append(axis["limit_upper"])
                 self.joint_limit_ke.append(axis["limit_ke"])
                 self.joint_limit_kd.append(axis["limit_kd"])
-                self.joint_target.append(axis["act"])
+                self.joint_target_pos.append(axis["target_pos"])
+                self.joint_target_vel.append(axis["target_vel"])
                 self.joint_effort_limit.append(axis["effort_limit"])
 
         return {
@@ -3288,6 +3285,7 @@ class ModelBuilder:
         method: Literal["coacd", "vhacd", "bounding_sphere", "bounding_box"] | RemeshingMethod = "convex_hull",
         shape_indices: list[int] | None = None,
         raise_on_failure: bool = False,
+        keep_visual_shapes: bool = False,
         **remeshing_kwargs: dict[str, Any],
     ) -> set[int]:
         """Approximates the mesh shapes of the model.
@@ -3342,6 +3340,37 @@ class ModelBuilder:
                 for i, stype in enumerate(self.shape_type)
                 if stype == GeoType.MESH and self.shape_flags[i] & ShapeFlags.COLLIDE_SHAPES
             ]
+
+        if keep_visual_shapes:
+            # if keeping visual shapes, first copy input shapes, mark the copies as visual-only,
+            # and mark the originals as non-visible.
+            # in the rare event that approximation fails, we end up with two identical shapes,
+            # one collision-only, one visual-only, but this simplifies the logic below.
+            for shape in shape_indices:
+                if not (self.shape_flags[shape] & ShapeFlags.VISIBLE):
+                    continue
+
+                body = self.shape_body[shape]
+                xform = self.shape_transform[shape]
+                cfg = ModelBuilder.ShapeConfig(
+                    density=0.0,  # do not add extra mass / inertia
+                    thickness=self.shape_thickness[shape],
+                    is_solid=self.shape_is_solid[shape],
+                    has_shape_collision=False,
+                    has_particle_collision=False,
+                    is_visible=True,
+                )
+                self.add_shape_mesh(
+                    body=body,
+                    xform=xform,
+                    cfg=cfg,
+                    mesh=self.shape_source[shape],
+                    key=f"{self.shape_key[shape]}_visual",
+                    scale=self.shape_scale[shape],
+                )
+
+                # disable visibility of the original shape
+                self.shape_flags[shape] &= ~ShapeFlags.VISIBLE
 
         # keep track of remeshed shapes to handle fallbacks
         remeshed_shapes = set()
@@ -4851,8 +4880,8 @@ class ModelBuilder:
             m.joint_armature = wp.array(self.joint_armature, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_target_ke = wp.array(self.joint_target_ke, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_target_kd = wp.array(self.joint_target_kd, dtype=wp.float32, requires_grad=requires_grad)
-            m.joint_dof_mode = wp.array(self.joint_dof_mode, dtype=wp.int32)
-            m.joint_target = wp.array(self.joint_target, dtype=wp.float32, requires_grad=requires_grad)
+            m.joint_target_pos = wp.array(self.joint_target_pos, dtype=wp.float32, requires_grad=requires_grad)
+            m.joint_target_vel = wp.array(self.joint_target_vel, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_f = wp.array(self.joint_f, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_effort_limit = wp.array(self.joint_effort_limit, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_velocity_limit = wp.array(self.joint_velocity_limit, dtype=wp.float32, requires_grad=requires_grad)

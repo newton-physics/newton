@@ -25,8 +25,6 @@ import warp as wp
 import newton
 from newton.tests.unittest_utils import add_function_test, get_test_devices
 
-wp.config.quiet = True
-
 
 class TestControlForce(unittest.TestCase):
     pass
@@ -158,5 +156,4 @@ for device in devices:
         )
 
 if __name__ == "__main__":
-    wp.clear_kernel_cache()
     unittest.main(verbosity=2)
