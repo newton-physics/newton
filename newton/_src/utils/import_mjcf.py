@@ -546,8 +546,8 @@ def parse_mjcf(
                     limit_upper=limit_upper,
                     limit_ke=limit_ke,
                     limit_kd=limit_kd,
-                    target_ke=parse_float(joint_attrib, "stiffness", default_joint_stiffness),
-                    target_kd=parse_float(joint_attrib, "damping", default_joint_damping),
+                    target_ke=default_joint_stiffness,
+                    target_kd=default_joint_damping,
                     armature=joint_armature[-1],
                 )
                 if is_angular:
@@ -943,6 +943,63 @@ def parse_mjcf(
     equality = root.find("equality")
     if equality is not None and not skip_equality_constraints:
         parse_equality_constraints(equality)
+
+    # -----------------
+    # parse actuators
+
+    def parse_actuators(actuator_section):
+        """Parse actuators and set target_ke/target_kd for joints."""
+        for position_actuator in actuator_section.findall("position"):
+            joint_name = position_actuator.attrib.get("joint")
+            if not joint_name:
+                continue
+
+            if joint_name not in builder.joint_key:
+                if verbose:
+                    print(f"Warning: Actuator references unknown joint '{joint_name}'")
+                continue
+
+            joint_idx = builder.joint_key.index(joint_name)
+            qd_start = builder.joint_qd_start[joint_idx]
+            lin_dofs, ang_dofs = builder.joint_dof_dim[joint_idx]
+            total_dofs = lin_dofs + ang_dofs
+
+            kp = parse_float(position_actuator.attrib, "kp", 0.0)
+            kv = parse_float(position_actuator.attrib, "kv", 0.0)
+
+            for i in range(total_dofs):
+                dof_idx = qd_start + i
+                builder.joint_target_ke[dof_idx] = kp
+                builder.joint_target_kd[dof_idx] = kv
+
+            if verbose:
+                print(f"Position actuator on joint '{joint_name}': kp={kp}, kv={kv}")
+
+        for velocity_actuator in actuator_section.findall("velocity"):
+            joint_name = velocity_actuator.attrib.get("joint")
+            if not joint_name:
+                continue
+
+            if joint_name not in builder.joint_key:
+                if verbose:
+                    print(f"Warning: Actuator references unknown joint '{joint_name}'")
+                continue
+
+            joint_idx = builder.joint_key.index(joint_name)
+            qd_start = builder.joint_qd_start[joint_idx]
+            lin_dofs, ang_dofs = builder.joint_dof_dim[joint_idx]
+            total_dofs = lin_dofs + ang_dofs
+            kv = parse_float(velocity_actuator.attrib, "kv", 0.0)
+            for i in range(total_dofs):
+                dof_idx = qd_start + i
+                builder.joint_target_kd[dof_idx] = kv
+
+            if verbose:
+                print(f"Velocity actuator on joint '{joint_name}': kv={kv}")
+
+    actuator_section = root.find("actuator")
+    if actuator_section is not None:
+        parse_actuators(actuator_section)
 
     # -----------------
 

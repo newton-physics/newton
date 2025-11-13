@@ -906,12 +906,14 @@ def update_axis_properties_kernel(
 def update_dof_properties_kernel(
     joint_armature: wp.array(dtype=float),
     joint_friction: wp.array(dtype=float),
+    joint_damping: wp.array(dtype=float),
     dofs_per_world: int,
     # outputs
     dof_armature: wp.array2d(dtype=float),
     dof_frictionloss: wp.array2d(dtype=float),
+    dof_damping: wp.array2d(dtype=float),
 ):
-    """Update DOF armature and friction loss values."""
+    """Update DOF armature, friction loss, and passive damping values."""
     tid = wp.tid()
     worldid = tid // dofs_per_world
     dof_in_world = tid % dofs_per_world
@@ -921,6 +923,26 @@ def update_dof_properties_kernel(
 
     # update friction loss
     dof_frictionloss[worldid, dof_in_world] = joint_friction[tid]
+
+    # update passive damping
+    dof_damping[worldid, dof_in_world] = joint_damping[tid]
+
+
+@wp.kernel
+def update_joint_passive_properties_kernel(
+    joint_stiffness: wp.array(dtype=float),
+    joint_qd_start: wp.array(dtype=int),
+    joint_mjc_dof_start: wp.array(dtype=wp.int32),
+    joints_per_world: int,
+    jnt_stiffness: wp.array2d(dtype=float),
+):
+    tid = wp.tid()
+    worldid = tid // joints_per_world
+    joint_in_world = tid % joints_per_world
+    mjc_joint_idx = joint_mjc_dof_start[joint_in_world]
+    if mjc_joint_idx >= 0:
+        first_dof_idx = joint_qd_start[tid]
+        jnt_stiffness[worldid, mjc_joint_idx] = joint_stiffness[first_dof_idx]
 
 
 @wp.kernel

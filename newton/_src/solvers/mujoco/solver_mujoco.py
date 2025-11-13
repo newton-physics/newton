@@ -58,6 +58,7 @@ from .kernels import (
     update_body_mass_ipos_kernel,
     update_dof_properties_kernel,
     update_geom_properties_kernel,
+    update_joint_passive_properties_kernel,
     update_joint_transforms_kernel,
     update_model_properties_kernel,
     update_shape_mappings_kernel,
@@ -163,6 +164,30 @@ class SolverMuJoCo(SolverBase):
                 default=3,
                 namespace="mujoco",
                 usd_attribute_name="mjc:condim",
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="stiffness",
+                frequency=ModelAttributeFrequency.JOINT_DOF,
+                assignment=ModelAttributeAssignment.MODEL,
+                dtype=wp.float32,
+                default=0.0,
+                namespace="mujoco",
+                usd_attribute_name="mjc:stiffness",
+                mjcf_attribute_name="stiffness",
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="damping",
+                frequency=ModelAttributeFrequency.JOINT_DOF,
+                assignment=ModelAttributeAssignment.MODEL,
+                dtype=wp.float32,
+                default=0.0,
+                namespace="mujoco",
+                usd_attribute_name="mjc:damping",
+                mjcf_attribute_name="damping",
             )
         )
 
@@ -941,6 +966,8 @@ class SolverMuJoCo(SolverBase):
             return attr.numpy()
 
         shape_condim = get_custom_attribute("condim")
+        joint_stiffness = get_custom_attribute("stiffness")
+        joint_damping = get_custom_attribute("damping")
 
         eq_constraint_type = model.equality_constraint_type.numpy()
         eq_constraint_body1 = model.equality_constraint_body1.numpy()
@@ -1209,6 +1236,10 @@ class SolverMuJoCo(SolverBase):
                     }
                     # Set friction
                     joint_params["frictionloss"] = joint_friction[ai]
+                    if joint_stiffness is not None:
+                        joint_params["stiffness"] = joint_stiffness[ai]
+                    if joint_damping is not None:
+                        joint_params["damping"] = joint_damping[ai]
                     lower, upper = joint_limit_lower[ai], joint_limit_upper[ai]
                     if lower <= -JOINT_LIMIT_UNLIMITED and upper >= JOINT_LIMIT_UNLIMITED:
                         joint_params["limited"] = False
@@ -1269,6 +1300,10 @@ class SolverMuJoCo(SolverBase):
                     }
                     # Set friction
                     joint_params["frictionloss"] = joint_friction[ai]
+                    if joint_stiffness is not None:
+                        joint_params["stiffness"] = joint_stiffness[ai]
+                    if joint_damping is not None:
+                        joint_params["damping"] = joint_damping[ai]
                     lower, upper = joint_limit_lower[ai], joint_limit_upper[ai]
                     if lower <= -JOINT_LIMIT_UNLIMITED and upper >= JOINT_LIMIT_UNLIMITED:
                         joint_params["limited"] = False
@@ -1520,12 +1555,12 @@ class SolverMuJoCo(SolverBase):
             # "jnt_solimp",
             "jnt_pos",
             "jnt_axis",
-            # "jnt_stiffness",
+            "jnt_stiffness",
             # "jnt_range",
             # "jnt_actfrcrange",
             # "jnt_margin",
             "dof_armature",
-            # "dof_damping",
+            "dof_damping",
             # "dof_invweight0",
             "dof_frictionloss",
             # "dof_solimp",
@@ -1638,7 +1673,7 @@ class SolverMuJoCo(SolverBase):
         )
 
     def update_joint_dof_properties(self):
-        """Update all joint dof properties including effort limits, velocity limits, friction, and armature in the MuJoCo model."""
+        """Update all joint dof properties including effort limits, velocity limits, friction, armature, passive stiffness, and passive damping in the MuJoCo model."""
         if self.model.joint_dof_count == 0:
             return
 
@@ -1664,16 +1699,47 @@ class SolverMuJoCo(SolverBase):
                 device=self.model.device,
             )
 
-        # Update DOF properties (armature and friction)
+        mujoco_attrs = getattr(self.model, "mujoco", None)
+        if mujoco_attrs is not None and hasattr(mujoco_attrs, "damping"):
+            joint_damping = mujoco_attrs.damping
+        else:
+            joint_damping = wp.zeros(self.model.joint_dof_count, dtype=wp.float32, device=self.model.device)
+
+        if mujoco_attrs is not None and hasattr(mujoco_attrs, "stiffness"):
+            joint_stiffness = mujoco_attrs.stiffness
+        else:
+            joint_stiffness = wp.zeros(self.model.joint_dof_count, dtype=wp.float32, device=self.model.device)
+
         wp.launch(
             update_dof_properties_kernel,
             dim=self.model.joint_dof_count,
             inputs=[
                 self.model.joint_armature,
                 self.model.joint_friction,
+                joint_damping,
                 dofs_per_world,
             ],
-            outputs=[self.mjw_model.dof_armature, self.mjw_model.dof_frictionloss],
+            outputs=[
+                self.mjw_model.dof_armature,
+                self.mjw_model.dof_frictionloss,
+                self.mjw_model.dof_damping,
+            ],
+            device=self.model.device,
+        )
+
+        joints_per_world = self.model.joint_count // self.model.num_worlds
+        wp.launch(
+            update_joint_passive_properties_kernel,
+            dim=self.model.joint_count,
+            inputs=[
+                joint_stiffness,
+                self.model.joint_qd_start,
+                self.joint_mjc_dof_start,
+                joints_per_world,
+            ],
+            outputs=[
+                self.mjw_model.jnt_stiffness
+            ],
             device=self.model.device,
         )
 
