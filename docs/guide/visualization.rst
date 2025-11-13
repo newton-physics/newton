@@ -183,7 +183,7 @@ enabling real-time or offline visualization with advanced features like time scr
 
 By default, the viewer will run without keeping historical state data in the viewer to keep the memory usage constant when sending transform updates via :meth:`ViewerRerun.log_state`.
 This is useful for visualizing long and complex simulations that would quickly fill up the web viewer's memory if the historical data was kept.
-If you want to keep the historical state data in the viewer, you can set the ``keep_historical_data_in_viewer`` flag to ``True``.
+If you want to keep the historical state data in the viewer, you can set the ``keep_historical_data`` flag to ``True``.
 
 The rerun viewer provides a web-based interface with features like:
 
@@ -209,7 +209,7 @@ Then, you can use the rerun SDK in a Jupyter notebook by importing the :mod:`rer
 
 .. code-block:: python
 
-  viewer = newton.viewer.ViewerRerun(keep_historical_data_in_viewer=True)
+  viewer = newton.viewer.ViewerRerun(keep_historical_data=True)
   viewer.set_model(model)
 
   for frame in trange(500):

@@ -76,7 +76,7 @@ class ViewerRerun(ViewerBase):
                 This is useful for visualizing long and complex simulations that would quickly fill up the web viewer's memory if the historical data was kept.
                 If True, the historical simulation data is kept in the viewer to be able to scrub through the simulation timeline. Defaults to False.
             keep_scalar_history (bool): If True, historical scala data logged via :meth:`ViewerRerun.log_scalar` is kept in the viewer.
-            record_to_rrd (str): Path to record the viewer to a *.rrd recording file (e.g. "my_recording.rrd"). If None, the viewer will not record to a file.
+            record_to_rrd (str): Path to record the viewer to a ``*.rrd`` recording file (e.g. "my_recording.rrd"). If None, the viewer will not record to a file.
         """
         if rr is None:
             raise ImportError("rerun package is required for ViewerRerun. Install with: pip install rerun-sdk")
@@ -340,7 +340,6 @@ class ViewerRerun(ViewerBase):
         except Exception:
             pass
 
-    # Not implemented yet - placeholder methods from ViewerBase
     @override
     def log_lines(self, name, starts, ends, colors, width: float = 0.01, hidden=False):
         """
@@ -354,7 +353,6 @@ class ViewerRerun(ViewerBase):
             width (float): Line width.
             hidden (bool): Whether the lines are hidden.
         """
-        # Implementation for logging lines to rerun
 
         if hidden:
             return  # Do not log hidden lines
@@ -525,8 +523,19 @@ class ViewerRerun(ViewerBase):
             static=not self.keep_historical_data,
         )
 
-    def show_notebook(self, width: int = 1000, height: int = 400):
-        rr.notebook_show(width=width, height=height, blueprint=self._get_blueprint())
+    def show_notebook(self, width: int = 1000, height: int = 400, legacy_notebook_show: bool = False):
+        """
+        Show the viewer in a Jupyter notebook.
+
+        Args:
+            width (int): Width of the viewer in pixels.
+            height (int): Height of the viewer in pixels.
+            legacy_notebook_show (bool): Whether to use ``rr.legacy_notebook_show`` instead of ``rr.notebook_show`` for displaying the viewer as static HTML with embedded recording data.
+        """
+        if legacy_notebook_show:
+            rr.legacy_notebook_show(width=width, height=height, blueprint=self._get_blueprint())
+        else:
+            rr.notebook_show(width=width, height=height, blueprint=self._get_blueprint())
 
     def _ipython_display_(self):
         """
