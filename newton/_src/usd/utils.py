@@ -600,7 +600,7 @@ def get_mesh(
             import newton.usd
 
             usd_stage = Usd.Stage.Open(newton.examples.get_asset("bunny.usd"))
-            demo_mesh = newton.usd.get_mesh(usd_stage.GetPrimAtPath("/root/bunny"))
+            demo_mesh = newton.usd.get_mesh(usd_stage.GetPrimAtPath("/root/bunny"), load_normals=True)
 
             builder = newton.ModelBuilder()
             body_mesh = builder.add_body()
