@@ -110,8 +110,8 @@ def parse_mjcf(
     # load joint defaults
     default_joint_limit_lower = builder.default_joint_cfg.limit_lower
     default_joint_limit_upper = builder.default_joint_cfg.limit_upper
-    default_joint_stiffness = builder.default_joint_cfg.target_ke
-    default_joint_damping = builder.default_joint_cfg.target_kd
+    default_joint_target_ke = builder.default_joint_cfg.target_ke
+    default_joint_target_kd = builder.default_joint_cfg.target_kd
     default_joint_armature = builder.default_joint_cfg.armature
 
     # load shape defaults
@@ -546,8 +546,8 @@ def parse_mjcf(
                     limit_upper=limit_upper,
                     limit_ke=limit_ke,
                     limit_kd=limit_kd,
-                    target_ke=default_joint_stiffness,
-                    target_kd=default_joint_damping,
+                    target_ke=default_joint_target_ke,
+                    target_kd=default_joint_target_kd,
                     armature=joint_armature[-1],
                 )
                 if is_angular:

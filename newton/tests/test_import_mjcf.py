@@ -717,10 +717,17 @@ class TestImportMjcf(unittest.TestCase):
             <joint name="joint3" type="hinge" axis="1 0 0" stiffness="0.1" damping="0.8" range="-60 60"/>
             <geom type="box" size="0.1 0.1 0.1"/>
         </body>
+        <body name="body4" pos="3 0 1">
+            <joint name="joint4" type="hinge" axis="0 1 0" stiffness="0.02" damping="0.3" range="-90 90"/>
+            <geom type="box" size="0.1 0.1 0.1"/>
+        </body>
     </worldbody>
     <actuator>
         <position joint="joint1" kp="10000.0" kv="2000.0"/>
+        <velocity joint="joint1" kv="500.0"/>
         <position joint="joint2" kp="5000.0" kv="1000.0"/>
+        <velocity joint="joint2" kv="300.0"/>
+        <velocity joint="joint4" kv="3000.0"/>
     </actuator>
 </mujoco>
 """
@@ -746,9 +753,10 @@ class TestImportMjcf(unittest.TestCase):
             joint_target_kd = model.joint_target_kd.numpy()
 
             expected_values = {
-                "joint1": {"stiffness": 0.05, "damping": 0.5, "target_ke": 10000.0, "target_kd": 2000.0},
-                "joint2": {"stiffness": 0.0, "damping": 0.0, "target_ke": 5000.0, "target_kd": 1000.0},
+                "joint1": {"stiffness": 0.05, "damping": 0.5, "target_ke": 10000.0, "target_kd": 500.0},
+                "joint2": {"stiffness": 0.0, "damping": 0.0, "target_ke": 5000.0, "target_kd": 300.0},
                 "joint3": {"stiffness": 0.1, "damping": 0.8, "target_ke": 0.0, "target_kd": 0.0},
+                "joint4": {"stiffness": 0.02, "damping": 0.3, "target_ke": 0.0, "target_kd": 3000.0},
             }
 
             for joint_name, expected in expected_values.items():
@@ -772,17 +780,28 @@ class TestImportMjcf(unittest.TestCase):
                     "has_actuator": True,
                     "pos_gain": 10000.0,
                     "pos_bias": 10000.0,
-                    "vel_gain": 2000.0,
-                    "vel_bias": 2000.0,
+                    "vel_gain": 500.0,
+                    "vel_bias": 500.0,
                 },
                 "joint2": {
                     "dof_damping": 0.0,
                     "jnt_stiffness": 0.0,
                     "has_actuator": True,
                     "pos_gain": 5000.0,
-                    "vel_gain": 1000.0,
+                    "pos_bias": 5000.0,
+                    "vel_gain": 300.0,
+                    "vel_bias": 300.0,
                 },
                 "joint3": {"dof_damping": 0.8, "jnt_stiffness": 0.1, "has_actuator": False},
+                "joint4": {
+                    "dof_damping": 0.3,
+                    "jnt_stiffness": 0.02,
+                    "has_actuator": True,
+                    "pos_gain": 0.0,
+                    "vel_gain": 3000.0,
+                    "vel_bias": 3000.0,
+                    "velocity_only": True,
+                },
             }
 
             for joint_name, expected in mujoco_expected.items():
@@ -800,15 +819,20 @@ class TestImportMjcf(unittest.TestCase):
                 vel_actuator_idx = int(mjc_axis_to_actuator[dof_idx, 1])
 
                 if expected["has_actuator"]:
-                    self.assertNotEqual(pos_actuator_idx, -1)
                     self.assertNotEqual(vel_actuator_idx, -1)
 
-                    pos_gainprm = mj_model.actuator_gainprm[pos_actuator_idx]
-                    self.assertAlmostEqual(pos_gainprm[0], expected["pos_gain"], places=1)
+                    if expected.get("velocity_only", False):
+                        if pos_actuator_idx != -1:
+                            pos_gainprm = mj_model.actuator_gainprm[pos_actuator_idx]
+                            self.assertAlmostEqual(pos_gainprm[0], expected["pos_gain"], places=1)
+                    else:
+                        self.assertNotEqual(pos_actuator_idx, -1)
+                        pos_gainprm = mj_model.actuator_gainprm[pos_actuator_idx]
+                        self.assertAlmostEqual(pos_gainprm[0], expected["pos_gain"], places=1)
 
-                    if "pos_bias" in expected:
-                        pos_biasprm = mj_model.actuator_biasprm[pos_actuator_idx]
-                        self.assertAlmostEqual(-pos_biasprm[1], expected["pos_bias"], places=1)
+                        if "pos_bias" in expected:
+                            pos_biasprm = mj_model.actuator_biasprm[pos_actuator_idx]
+                            self.assertAlmostEqual(-pos_biasprm[1], expected["pos_bias"], places=1)
 
                     vel_gainprm = mj_model.actuator_gainprm[vel_actuator_idx]
                     self.assertAlmostEqual(vel_gainprm[0], expected["vel_gain"], places=1)
