@@ -58,7 +58,7 @@ from .kernels import (
     update_body_mass_ipos_kernel,
     update_dof_properties_kernel,
     update_geom_properties_kernel,
-    update_joint_passive_properties_kernel,
+    update_joint_stiffness_kernel,
     update_joint_transforms_kernel,
     update_model_properties_kernel,
     update_shape_mappings_kernel,
@@ -136,8 +136,8 @@ class SolverMuJoCo(SolverBase):
         """Import the MuJoCo Warp dependencies and cache them as class variables."""
         if cls._mujoco is None or cls._mujoco_warp is None:
             try:
-                import mujoco  # noqa: PLC0415
-                import mujoco_warp  # noqa: PLC0415
+                import mujoco
+                import mujoco_warp
 
                 cls._mujoco = mujoco
                 cls._mujoco_warp = mujoco_warp
@@ -1729,7 +1729,7 @@ class SolverMuJoCo(SolverBase):
 
         joints_per_world = self.model.joint_count // self.model.num_worlds
         wp.launch(
-            update_joint_passive_properties_kernel,
+            update_joint_stiffness_kernel,
             dim=self.model.joint_count,
             inputs=[
                 joint_stiffness,
@@ -1862,8 +1862,8 @@ class SolverMuJoCo(SolverBase):
             show_transparent_geoms: Whether to show transparent geoms.
         """
         if self._viewer is None:
-            import mujoco  # noqa: PLC0415
-            import mujoco.viewer  # noqa: PLC0415
+            import mujoco
+            import mujoco.viewer
 
             # make the headlights brighter to improve visibility
             # in the MuJoCo viewer

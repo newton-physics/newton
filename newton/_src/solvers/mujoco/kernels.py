@@ -929,7 +929,7 @@ def update_dof_properties_kernel(
 
 
 @wp.kernel
-def update_joint_passive_properties_kernel(
+def update_joint_stiffness_kernel(
     joint_stiffness: wp.array(dtype=float),
     joint_qd_start: wp.array(dtype=int),
     joint_mjc_dof_start: wp.array(dtype=wp.int32),
