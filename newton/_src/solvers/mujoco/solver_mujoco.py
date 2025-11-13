@@ -176,6 +176,7 @@ class SolverMuJoCo(SolverBase):
                 namespace="mujoco",
                 usd_attribute_name="mjc:stiffness",
                 mjcf_attribute_name="stiffness",
+                usd_value_transformer=lambda x: list(x) if hasattr(x, "__iter__") else [x],
             )
         )
         builder.add_custom_attribute(
@@ -188,6 +189,7 @@ class SolverMuJoCo(SolverBase):
                 namespace="mujoco",
                 usd_attribute_name="mjc:damping",
                 mjcf_attribute_name="damping",
+                usd_value_transformer=lambda x: list(x) if hasattr(x, "__iter__") else [x],
             )
         )
 
