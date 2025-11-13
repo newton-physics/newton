@@ -21,7 +21,7 @@ from typing import Any
 
 import warp as wp
 
-from ...sim import JointMode, JointType
+from ...sim import JointType
 
 # Custom vector types
 vec5 = wp.types.vector(length=5, dtype=wp.float32)
@@ -498,20 +498,22 @@ def convert_mjw_contact_to_warp_kernel(
 
 @wp.kernel
 def apply_mjc_control_kernel(
-    joint_target: wp.array(dtype=wp.float32),
-    axis_mode: wp.array(dtype=wp.int32),
-    axis_to_actuator: wp.array(dtype=wp.int32),
+    joint_target_pos: wp.array(dtype=wp.float32),
+    joint_target_vel: wp.array(dtype=wp.float32),
+    axis_to_actuator: wp.array2d(dtype=wp.int32),
     axes_per_world: int,
     # outputs
     mj_act: wp.array2d(dtype=wp.float32),
 ):
     worldid, axisid = wp.tid()
-    actuator_id = axis_to_actuator[axisid]
+    # Position actuator
+    actuator_id = axis_to_actuator[axisid, 0]
     if actuator_id != -1:
-        if axis_mode[axisid] != JointMode.NONE:
-            mj_act[worldid, actuator_id] = joint_target[worldid * axes_per_world + axisid]
-        else:
-            mj_act[worldid, actuator_id] = 0.0
+        mj_act[worldid, actuator_id] = joint_target_pos[worldid * axes_per_world + axisid]
+    # Velocity actuator
+    actuator_id = axis_to_actuator[axisid, 1]
+    if actuator_id != -1:
+        mj_act[worldid, actuator_id] = joint_target_vel[worldid * axes_per_world + axisid]
 
 
 @wp.kernel
@@ -866,11 +868,10 @@ def repeat_array_kernel(
 
 @wp.kernel
 def update_axis_properties_kernel(
-    joint_dof_mode: wp.array(dtype=int),
     joint_target_kp: wp.array(dtype=float),
     joint_target_kv: wp.array(dtype=float),
     joint_effort_limit: wp.array(dtype=float),
-    axis_to_actuator: wp.array(dtype=wp.int32),
+    axis_to_actuator: wp.array2d(dtype=wp.int32),
     axes_per_world: int,
     # outputs
     actuator_bias: wp.array2d(dtype=vec10),
@@ -882,33 +883,23 @@ def update_axis_properties_kernel(
     worldid = tid // axes_per_world
     axis_in_world = tid % axes_per_world
 
-    actuator_idx = axis_to_actuator[axis_in_world]
-    if actuator_idx >= 0:  # Valid actuator
-        kp = joint_target_kp[tid]
-        kv = joint_target_kv[tid]
-        mode = joint_dof_mode[tid]
+    kp = joint_target_kp[tid]
+    kv = joint_target_kv[tid]
+    effort_limit = joint_effort_limit[tid]
 
-        if mode == JointMode.TARGET_POSITION:
-            # bias = vec10(0.0, -kp, -kv, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
-            # gain = vec10(kp, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
-            actuator_bias[worldid, actuator_idx][1] = -kp
-            actuator_bias[worldid, actuator_idx][2] = -kv
-            actuator_gain[worldid, actuator_idx][0] = kp
-        elif mode == JointMode.TARGET_VELOCITY:
-            # bias = vec10(0.0, 0.0, -kv, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
-            # gain = vec10(kv, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
-            actuator_bias[worldid, actuator_idx][1] = 0.0
-            actuator_bias[worldid, actuator_idx][2] = -kv
-            actuator_gain[worldid, actuator_idx][0] = kv
-        else:
-            # bias = [0.0, 0.0, 0.0, 0, 0, 0, 0, 0, 0, 0]
-            # gain = [1.0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
-            actuator_bias[worldid, actuator_idx][1] = 0.0
-            actuator_bias[worldid, actuator_idx][2] = 0.0
-            actuator_gain[worldid, actuator_idx][0] = 1.0
+    # Update position actuator (index 0)
+    pos_actuator_idx = axis_to_actuator[axis_in_world, 0]
+    if pos_actuator_idx >= 0:  # Valid actuator
+        actuator_bias[worldid, pos_actuator_idx][1] = -kp
+        actuator_gain[worldid, pos_actuator_idx][0] = kp
+        actuator_forcerange[worldid, pos_actuator_idx] = wp.vec2f(-effort_limit, effort_limit)
 
-        effort_limit = joint_effort_limit[tid]
-        actuator_forcerange[worldid, actuator_idx] = wp.vec2f(-effort_limit, effort_limit)
+    # Update velocity actuator (index 1)
+    vel_actuator_idx = axis_to_actuator[axis_in_world, 1]
+    if vel_actuator_idx >= 0:  # Valid actuator
+        actuator_bias[worldid, vel_actuator_idx][2] = -kv
+        actuator_gain[worldid, vel_actuator_idx][0] = kv
+        actuator_forcerange[worldid, vel_actuator_idx] = wp.vec2f(-effort_limit, effort_limit)
 
 
 @wp.kernel

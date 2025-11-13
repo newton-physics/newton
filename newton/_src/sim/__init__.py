@@ -24,7 +24,6 @@ from .graph_coloring import color_graph, plot_graph
 from .joints import (
     JOINT_LIMIT_UNLIMITED,
     EqType,
-    JointMode,
     JointType,
     get_joint_dof_count,
 )
@@ -40,7 +39,6 @@ __all__ = [
     "Contacts",
     "Control",
     "EqType",
-    "JointMode",
     "JointType",
     "Model",
     "ModelAttributeAssignment",
