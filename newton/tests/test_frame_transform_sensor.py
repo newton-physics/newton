@@ -31,7 +31,7 @@ class TestFrameTransformSensor(unittest.TestCase):
     def test_sensor_creation(self):
         """Test basic sensor creation."""
         builder = newton.ModelBuilder()
-        body = builder.add_body()
+        body = builder.add_body(mass=1.0, I_m=wp.mat33(np.eye(3)))
 
         site1 = builder.add_site(body, key="site1")
         site2 = builder.add_site(body, key="site2")
@@ -39,10 +39,7 @@ class TestFrameTransformSensor(unittest.TestCase):
         model = builder.finalize()
 
         # Create sensor
-        sensor = FrameTransformSensor(model, shape_indices=[site1], reference_site_indices=[site2])
-
-        self.assertEqual(len(sensor.shape_indices), 1)
-        self.assertEqual(len(sensor.reference_site_indices), 1)
+        sensor = FrameTransformSensor(model, shapes=[site1], reference_sites=[site2])
 
         # Both sites are at the same location (identity transform), verify they remain so
         state = model.state()
@@ -59,7 +56,7 @@ class TestFrameTransformSensor(unittest.TestCase):
     def test_sensor_single_reference_for_multiple_shapes(self):
         """Test single reference site for multiple shapes."""
         builder = newton.ModelBuilder()
-        body = builder.add_body()
+        body = builder.add_body(mass=1.0, I_m=wp.mat33(np.eye(3)))
 
         site1 = builder.add_site(body, key="site1")
         site2 = builder.add_site(body, key="site2")
@@ -71,77 +68,76 @@ class TestFrameTransformSensor(unittest.TestCase):
         # Create sensor with one reference for multiple shapes
         sensor = FrameTransformSensor(
             model,
-            shape_indices=[site1, site2, site3],
-            reference_site_indices=[ref_site],  # Single reference
+            shapes=[site1, site2, site3],
+            reference_sites=[ref_site],  # Single reference
         )
 
-        # Should expand to match all shapes
-        self.assertEqual(len(sensor.reference_site_indices), 3)
-        self.assertEqual(sensor.reference_site_indices, [ref_site, ref_site, ref_site])
+        # Verify it creates successfully (reference is broadcasted internally)
+        self.assertEqual(len(sensor.transforms), 3)
 
     def test_sensor_validation_empty_shapes(self):
-        """Test error when shape_indices is empty."""
+        """Test error when shapes is empty."""
         builder = newton.ModelBuilder()
-        body = builder.add_body()
+        body = builder.add_body(mass=1.0, I_m=wp.mat33(np.eye(3)))
         site = builder.add_site(body)
         model = builder.finalize()
 
         with self.assertRaises(ValueError):
-            FrameTransformSensor(model, shape_indices=[], reference_site_indices=[site])
+            FrameTransformSensor(model, shapes=[], reference_sites=[site])
 
     def test_sensor_validation_empty_references(self):
-        """Test error when reference_site_indices is empty."""
+        """Test error when reference_sites is empty."""
         builder = newton.ModelBuilder()
-        body = builder.add_body()
+        body = builder.add_body(mass=1.0, I_m=wp.mat33(np.eye(3)))
         site = builder.add_site(body)
         model = builder.finalize()
 
         with self.assertRaises(ValueError):
-            FrameTransformSensor(model, shape_indices=[site], reference_site_indices=[])
+            FrameTransformSensor(model, shapes=[site], reference_sites=[])
 
     def test_sensor_validation_invalid_shape_index(self):
         """Test error when shape index is out of bounds."""
         builder = newton.ModelBuilder()
-        body = builder.add_body()
+        body = builder.add_body(mass=1.0, I_m=wp.mat33(np.eye(3)))
         site = builder.add_site(body)
         model = builder.finalize()
 
         with self.assertRaises(ValueError):
-            FrameTransformSensor(model, shape_indices=[9999], reference_site_indices=[site])
+            FrameTransformSensor(model, shapes=[9999], reference_sites=[site])
 
     def test_sensor_validation_invalid_reference_index(self):
         """Test error when reference index is out of bounds."""
         builder = newton.ModelBuilder()
-        body = builder.add_body()
+        body = builder.add_body(mass=1.0, I_m=wp.mat33(np.eye(3)))
         site = builder.add_site(body)
         model = builder.finalize()
 
         with self.assertRaises(ValueError):
-            FrameTransformSensor(model, shape_indices=[site], reference_site_indices=[9999])
+            FrameTransformSensor(model, shapes=[site], reference_sites=[9999])
 
     def test_sensor_validation_reference_not_site(self):
         """Test error when reference index is not a site."""
         builder = newton.ModelBuilder()
-        body = builder.add_body()
+        body = builder.add_body(mass=1.0, I_m=wp.mat33(np.eye(3)))
         site = builder.add_site(body)
         shape = builder.add_shape_sphere(body, radius=0.1)  # Regular shape, not a site
         model = builder.finalize()
 
         with self.assertRaises(ValueError):
-            FrameTransformSensor(model, shape_indices=[site], reference_site_indices=[shape])
+            FrameTransformSensor(model, shapes=[site], reference_sites=[shape])
 
     def test_sensor_validation_mismatched_lengths(self):
         """Test error when reference indices don't match shape indices."""
         builder = newton.ModelBuilder()
-        body = builder.add_body()
+        body = builder.add_body(mass=1.0, I_m=wp.mat33(np.eye(3)))
         site1 = builder.add_site(body)
         site2 = builder.add_site(body)
         site3 = builder.add_site(body)
         model = builder.finalize()
 
-        # 2 shapes but 2 references (not 1 or 2)
+        # 2 shapes but 3 references (not 1 or 2)
         with self.assertRaises(ValueError):
-            FrameTransformSensor(model, shape_indices=[site1, site2], reference_site_indices=[site3, site3, site3])
+            FrameTransformSensor(model, shapes=[site1, site2], reference_sites=[site3, site3, site3])
 
     def test_sensor_site_to_site_same_body(self):
         """Test measuring site relative to another site on same body."""
@@ -149,7 +145,9 @@ class TestFrameTransformSensor(unittest.TestCase):
 
         # Body rotated 45° around Z
         body = builder.add_body(
-            xform=wp.transform(wp.vec3(5, 0, 0), wp.quat_from_axis_angle(wp.vec3(0, 0, 1), np.pi / 4))
+            mass=1.0,
+            I_m=wp.mat33(np.eye(3)),
+            xform=wp.transform(wp.vec3(5, 0, 0), wp.quat_from_axis_angle(wp.vec3(0, 0, 1), np.pi / 4)),
         )
 
         # Reference site at body origin, rotated 30° around Y
@@ -170,7 +168,7 @@ class TestFrameTransformSensor(unittest.TestCase):
 
         eval_fk(model, state.joint_q, state.joint_qd, state)
 
-        sensor = FrameTransformSensor(model, shape_indices=[target_site], reference_site_indices=[ref_site])
+        sensor = FrameTransformSensor(model, shapes=[target_site], reference_sites=[ref_site])
 
         sensor.update(model, state)
         transforms = sensor.transforms.numpy()
@@ -198,7 +196,9 @@ class TestFrameTransformSensor(unittest.TestCase):
 
         # Reference body at origin, rotated 45° around Z
         body1 = builder.add_body(
-            xform=wp.transform(wp.vec3(0, 0, 0), wp.quat_from_axis_angle(wp.vec3(0, 0, 1), np.pi / 4))
+            mass=1.0,
+            I_m=wp.mat33(np.eye(3)),
+            xform=wp.transform(wp.vec3(0, 0, 0), wp.quat_from_axis_angle(wp.vec3(0, 0, 1), np.pi / 4)),
         )
         # Reference site offset by (0.2, 0.1, 0), rotated 30° around X
         ref_site = builder.add_site(
@@ -210,7 +210,9 @@ class TestFrameTransformSensor(unittest.TestCase):
 
         # Target body at (1, 2, 3), rotated 60° around Y
         body2 = builder.add_body(
-            xform=wp.transform(wp.vec3(1, 2, 3), wp.quat_from_axis_angle(wp.vec3(0, 1, 0), np.pi / 3))
+            mass=1.0,
+            I_m=wp.mat33(np.eye(3)),
+            xform=wp.transform(wp.vec3(1, 2, 3), wp.quat_from_axis_angle(wp.vec3(0, 1, 0), np.pi / 3)),
         )
         # Target site offset by (0.3, 0, 0.2), rotated 90° around Z
         target_site = builder.add_site(
@@ -225,7 +227,7 @@ class TestFrameTransformSensor(unittest.TestCase):
 
         eval_fk(model, state.joint_q, state.joint_qd, state)
 
-        sensor = FrameTransformSensor(model, shape_indices=[target_site], reference_site_indices=[ref_site])
+        sensor = FrameTransformSensor(model, shapes=[target_site], reference_sites=[ref_site])
 
         sensor.update(model, state)
         transforms = sensor.transforms.numpy()
@@ -266,11 +268,15 @@ class TestFrameTransformSensor(unittest.TestCase):
         """Test measuring regular shape relative to site."""
         builder = newton.ModelBuilder()
 
-        body1 = builder.add_body(xform=wp.transform(wp.vec3(0, 0, 0), wp.quat_identity()))
+        body1 = builder.add_body(
+            mass=1.0, I_m=wp.mat33(np.eye(3)), xform=wp.transform(wp.vec3(0, 0, 0), wp.quat_identity())
+        )
         ref_site = builder.add_site(body1, key="ref")
         builder.add_joint_free(body1)
 
-        body2 = builder.add_body(xform=wp.transform(wp.vec3(1, 0, 0), wp.quat_identity()))
+        body2 = builder.add_body(
+            mass=1.0, I_m=wp.mat33(np.eye(3)), xform=wp.transform(wp.vec3(1, 0, 0), wp.quat_identity())
+        )
         geom = builder.add_shape_sphere(body2, radius=0.1, xform=wp.transform(wp.vec3(0.5, 0, 0), wp.quat_identity()))
         builder.add_joint_free(body2)
 
@@ -279,7 +285,7 @@ class TestFrameTransformSensor(unittest.TestCase):
 
         eval_fk(model, state.joint_q, state.joint_qd, state)
 
-        sensor = FrameTransformSensor(model, shape_indices=[geom], reference_site_indices=[ref_site])
+        sensor = FrameTransformSensor(model, shapes=[geom], reference_sites=[ref_site])
 
         sensor.update(model, state)
         transforms = sensor.transforms.numpy()
@@ -291,7 +297,9 @@ class TestFrameTransformSensor(unittest.TestCase):
         """Test multiple shapes measured relative to single reference."""
         builder = newton.ModelBuilder()
 
-        body = builder.add_body(xform=wp.transform(wp.vec3(2, 0, 0), wp.quat_identity()))
+        body = builder.add_body(
+            mass=1.0, I_m=wp.mat33(np.eye(3)), xform=wp.transform(wp.vec3(2, 0, 0), wp.quat_identity())
+        )
         ref_site = builder.add_site(body, xform=wp.transform(wp.vec3(0, 0, 0), wp.quat_identity()), key="ref")
 
         site_a = builder.add_site(body, xform=wp.transform(wp.vec3(0, 0, 0), wp.quat_identity()), key="site_a")
@@ -306,8 +314,8 @@ class TestFrameTransformSensor(unittest.TestCase):
 
         sensor = FrameTransformSensor(
             model,
-            shape_indices=[site_a, site_b, site_c],
-            reference_site_indices=[ref_site],  # Single reference for all
+            shapes=[site_a, site_b, site_c],
+            reference_sites=[ref_site],  # Single reference for all
         )
 
         sensor.update(model, state)
@@ -332,7 +340,9 @@ class TestFrameTransformSensor(unittest.TestCase):
         world_site = builder.add_site(-1, xform=wp.transform(wp.vec3(5, 6, 7), wp.quat_identity()), key="world")
 
         # Moving site
-        body = builder.add_body(xform=wp.transform(wp.vec3(1, 2, 3), wp.quat_identity()))
+        body = builder.add_body(
+            mass=1.0, I_m=wp.mat33(np.eye(3)), xform=wp.transform(wp.vec3(1, 2, 3), wp.quat_identity())
+        )
         moving_site = builder.add_site(body, xform=wp.transform(wp.vec3(0, 0, 0), wp.quat_identity()), key="moving")
         builder.add_joint_free(body)
 
@@ -341,7 +351,7 @@ class TestFrameTransformSensor(unittest.TestCase):
 
         eval_fk(model, state.joint_q, state.joint_qd, state)
 
-        sensor = FrameTransformSensor(model, shape_indices=[moving_site], reference_site_indices=[world_site])
+        sensor = FrameTransformSensor(model, shapes=[moving_site], reference_sites=[world_site])
 
         sensor.update(model, state)
         transforms = sensor.transforms.numpy()
@@ -356,13 +366,17 @@ class TestFrameTransformSensor(unittest.TestCase):
 
         # Reference frame rotated 90 degrees around Z
         body1 = builder.add_body(
-            xform=wp.transform(wp.vec3(0, 0, 0), wp.quat_from_axis_angle(wp.vec3(0, 0, 1), np.pi / 2))
+            mass=1.0,
+            I_m=wp.mat33(np.eye(3)),
+            xform=wp.transform(wp.vec3(0, 0, 0), wp.quat_from_axis_angle(wp.vec3(0, 0, 1), np.pi / 2)),
         )
         ref_site = builder.add_site(body1, xform=wp.transform(wp.vec3(0, 0, 0), wp.quat_identity()), key="ref")
         builder.add_joint_free(body1)
 
         # Target at (1, 0, 0) in world frame
-        body2 = builder.add_body(xform=wp.transform(wp.vec3(1, 0, 0), wp.quat_identity()))
+        body2 = builder.add_body(
+            mass=1.0, I_m=wp.mat33(np.eye(3)), xform=wp.transform(wp.vec3(1, 0, 0), wp.quat_identity())
+        )
         target_site = builder.add_site(body2, xform=wp.transform(wp.vec3(0, 0, 0), wp.quat_identity()), key="target")
         builder.add_joint_free(body2)
 
@@ -371,7 +385,7 @@ class TestFrameTransformSensor(unittest.TestCase):
 
         eval_fk(model, state.joint_q, state.joint_qd, state)
 
-        sensor = FrameTransformSensor(model, shape_indices=[target_site], reference_site_indices=[ref_site])
+        sensor = FrameTransformSensor(model, shapes=[target_site], reference_sites=[ref_site])
 
         sensor.update(model, state)
         transforms = sensor.transforms.numpy()
@@ -384,7 +398,7 @@ class TestFrameTransformSensor(unittest.TestCase):
         """Test sensor with sites that have non-identity rotations."""
         builder = newton.ModelBuilder()
 
-        body = builder.add_body()
+        body = builder.add_body(mass=1.0, I_m=wp.mat33(np.eye(3)))
 
         # Reference site rotated 45° around Z
         ref_site = builder.add_site(
@@ -402,7 +416,7 @@ class TestFrameTransformSensor(unittest.TestCase):
         state = model.state()
         eval_fk(model, state.joint_q, state.joint_qd, state)
 
-        sensor = FrameTransformSensor(model, shape_indices=[target_site], reference_site_indices=[ref_site])
+        sensor = FrameTransformSensor(model, shapes=[target_site], reference_sites=[ref_site])
         sensor.update(model, state)
         transforms = sensor.transforms.numpy()
 
@@ -422,11 +436,11 @@ class TestFrameTransformSensor(unittest.TestCase):
         builder = newton.ModelBuilder()
 
         # Root body at origin
-        root = builder.add_body()
+        root = builder.add_body(mass=1.0, I_m=wp.mat33(np.eye(3)))
         ref_site = builder.add_site(root, key="ref")
 
         # Link 1: connected by revolute joint, extends 1m in +X from joint
-        link1 = builder.add_body()
+        link1 = builder.add_body(mass=1.0, I_m=wp.mat33(np.eye(3)))
         site1 = builder.add_site(link1, key="site1")
         builder.add_joint_revolute(
             parent=root,
@@ -436,7 +450,7 @@ class TestFrameTransformSensor(unittest.TestCase):
         )
 
         # Link 2: connected to link1, extends another 1m in +X
-        link2 = builder.add_body()
+        link2 = builder.add_body(mass=1.0, I_m=wp.mat33(np.eye(3)))
         site2 = builder.add_site(link2, key="site2")
         builder.add_joint_revolute(
             parent=link1,
@@ -452,7 +466,7 @@ class TestFrameTransformSensor(unittest.TestCase):
         # Test with joints at zero position
         eval_fk(model, state.joint_q, state.joint_qd, state)
 
-        sensor = FrameTransformSensor(model, shape_indices=[site1, site2], reference_site_indices=[ref_site])
+        sensor = FrameTransformSensor(model, shapes=[site1, site2], reference_sites=[ref_site])
         sensor.update(model, state)
         transforms = sensor.transforms.numpy()
 
@@ -485,14 +499,16 @@ class TestFrameTransformSensor(unittest.TestCase):
         builder = newton.ModelBuilder()
 
         # Create reference site
-        base = builder.add_body()
+        base = builder.add_body(mass=1.0, I_m=wp.mat33(np.eye(3)))
         ref_site = builder.add_site(base, key="ref")
 
         # Create multiple bodies with multiple sites to get many shapes
         all_sites = []
 
         # Body 1 with 3 sites at different positions
-        body1 = builder.add_body(xform=wp.transform(wp.vec3(1, 0, 0), wp.quat_identity()))
+        body1 = builder.add_body(
+            mass=1.0, I_m=wp.mat33(np.eye(3)), xform=wp.transform(wp.vec3(1, 0, 0), wp.quat_identity())
+        )
         all_sites.append(builder.add_site(body1, xform=wp.transform(wp.vec3(0, 0, 0), wp.quat_identity()), key="b1_s0"))
         all_sites.append(
             builder.add_site(body1, xform=wp.transform(wp.vec3(0.1, 0, 0), wp.quat_identity()), key="b1_s1")
@@ -503,7 +519,9 @@ class TestFrameTransformSensor(unittest.TestCase):
         builder.add_joint_free(body1)
 
         # Body 2 with 3 sites at different positions
-        body2 = builder.add_body(xform=wp.transform(wp.vec3(2, 0, 0), wp.quat_identity()))
+        body2 = builder.add_body(
+            mass=1.0, I_m=wp.mat33(np.eye(3)), xform=wp.transform(wp.vec3(2, 0, 0), wp.quat_identity())
+        )
         all_sites.append(builder.add_site(body2, xform=wp.transform(wp.vec3(0, 0, 0), wp.quat_identity()), key="b2_s0"))
         all_sites.append(
             builder.add_site(body2, xform=wp.transform(wp.vec3(0.1, 0, 0), wp.quat_identity()), key="b2_s1")
@@ -514,7 +532,9 @@ class TestFrameTransformSensor(unittest.TestCase):
         builder.add_joint_free(body2)
 
         # Body 3 with 3 sites at different positions
-        body3 = builder.add_body(xform=wp.transform(wp.vec3(3, 0, 0), wp.quat_identity()))
+        body3 = builder.add_body(
+            mass=1.0, I_m=wp.mat33(np.eye(3)), xform=wp.transform(wp.vec3(3, 0, 0), wp.quat_identity())
+        )
         all_sites.append(builder.add_site(body3, xform=wp.transform(wp.vec3(0, 0, 0), wp.quat_identity()), key="b3_s0"))
         all_sites.append(
             builder.add_site(body3, xform=wp.transform(wp.vec3(0.1, 0, 0), wp.quat_identity()), key="b3_s1")
@@ -552,7 +572,7 @@ class TestFrameTransformSensor(unittest.TestCase):
             (2.2, 0, 0),  # index 6: b2_s2
         ]
 
-        sensor = FrameTransformSensor(model, shape_indices=sparse_indices, reference_site_indices=[ref_site])
+        sensor = FrameTransformSensor(model, shapes=sparse_indices, reference_sites=[ref_site])
 
         sensor.update(model, state)
         transforms = sensor.transforms.numpy()
