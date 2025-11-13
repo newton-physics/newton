@@ -136,8 +136,8 @@ class SolverMuJoCo(SolverBase):
         """Import the MuJoCo Warp dependencies and cache them as class variables."""
         if cls._mujoco is None or cls._mujoco_warp is None:
             try:
-                import mujoco
-                import mujoco_warp
+                import mujoco  # noqa: PLC0415
+                import mujoco_warp  # noqa: PLC0415
 
                 cls._mujoco = mujoco
                 cls._mujoco_warp = mujoco_warp
@@ -1862,8 +1862,8 @@ class SolverMuJoCo(SolverBase):
             show_transparent_geoms: Whether to show transparent geoms.
         """
         if self._viewer is None:
-            import mujoco
-            import mujoco.viewer
+            import mujoco  # noqa: PLC0415
+            import mujoco.viewer  # noqa: PLC0415
 
             # make the headlights brighter to improve visibility
             # in the MuJoCo viewer
