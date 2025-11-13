@@ -195,8 +195,8 @@ def solref_to_stiffness_damping(solref):
     Returns a tuple (stiffness, damping).
 
     Standard mode (timeconst > 0):
-        k = 1 / (timeconst^2)
-        b = 2 * dampratio / timeconst
+        k = 1 / (timeconst^2 * dampratio^2)
+        b = 2 / timeconst
     Direct mode (both negative):
         solref encodes (-stiffness, -damping) directly
         k = -timeconst
@@ -216,12 +216,12 @@ def solref_to_stiffness_damping(solref):
     if timeconst <= 0.0:
         return None, None
 
-    stiffness = 1.0 / (timeconst * timeconst)
+    stiffness = 1.0 / (timeconst * timeconst * dampratio * dampratio)
 
     if dampratio <= 0.0:
         return stiffness, None
 
-    damping = (2.0 * dampratio) / timeconst
+    damping = 2.0 / timeconst
     return stiffness, damping
 
 

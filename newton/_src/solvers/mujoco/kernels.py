@@ -1067,7 +1067,6 @@ def update_geom_properties_kernel(
     mesh_quat: wp.array(dtype=wp.quat),
     torsional_friction: float,
     rolling_friction: float,
-    contact_stiffness_time_const: float,
     # outputs
     geom_rbound: wp.array2d(dtype=float),
     geom_friction: wp.array2d(dtype=wp.vec3f),
@@ -1090,22 +1089,18 @@ def update_geom_properties_kernel(
     mu = shape_mu[shape_idx]
     geom_friction[worldid, geom_idx] = wp.vec3f(mu, torsional_friction * mu, rolling_friction * mu)
 
-    # update solref (stiffness, damping as time constants)
-    # MuJoCo uses time constants, Newton uses direct stiffness/damping
-    # convert using heuristic: time_const = sqrt(mass/stiffness)
-    ke = shape_ke[shape_idx]
-    kd = shape_kd[shape_idx]
-    if ke > 0.0:
-        # use provided time constant for stiffness
-        time_const_stiff = contact_stiffness_time_const
-        if kd > 0.0:
-            time_const_damp = kd / (2.0 * wp.sqrt(ke))
-        else:
-            time_const_damp = 1.0
+    # update geom_solref (timeconst, dampratio) using stiffness and damping
+    # we don't use negative convention for geom_solref because MJWarp's code
+    # combining geoms' negative solrefs looks suspicious
+    ke, kd = shape_ke[shape_idx], shape_kd[shape_idx]
+    if ke > 0.0 and kd > 0.0:
+        # kd = 2 / timeconst -> timeconst = 2 / kd
+        # ke = 1 / (timeconst^2 * dampratio^2) -> dampratio = sqrt(1 / timeconst^2 * ke)
+        timeconst = 2.0 / kd
+        dampratio = wp.sqrt(1.0 / (timeconst * timeconst * ke))
+        geom_solref[worldid, geom_idx] = wp.vec2f(timeconst, dampratio)
     else:
-        time_const_stiff = contact_stiffness_time_const
-        time_const_damp = 1.0
-    geom_solref[worldid, geom_idx] = wp.vec2f(time_const_stiff, time_const_damp)
+        geom_solref[worldid, geom_idx] = wp.vec2f(0.02, 1.0)
 
     # update size
     geom_size[worldid, geom_idx] = shape_size[shape_idx]
