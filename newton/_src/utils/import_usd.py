@@ -53,9 +53,8 @@ def parse_usd(
     joint_ordering: Literal["bfs", "dfs"] | None = "dfs",
     bodies_follow_joint_ordering: bool = True,
     skip_mesh_approximation: bool = False,
-    load_non_physics_prims: bool = True,
-    load_sites: bool | None = None,
-    load_visual_shapes: bool | None = None,
+    load_sites: bool = True,
+    load_visual_shapes: bool = True,
     hide_collision_shapes: bool = False,
     mesh_maxhullvert: int = MESH_MAXHULLVERT,
     schema_resolvers: list[SchemaResolver] | None = None,
@@ -83,9 +82,8 @@ def parse_usd(
         joint_ordering (str): The ordering of the joints in the simulation. Can be either "bfs" or "dfs" for breadth-first or depth-first search, or ``None`` to keep joints in the order in which they appear in the USD. Default is "dfs".
         bodies_follow_joint_ordering (bool): If True, the bodies are added to the builder in the same order as the joints (parent then child body). Otherwise, bodies are added in the order they appear in the USD. Default is True.
         skip_mesh_approximation (bool): If True, mesh approximation is skipped. Otherwise, meshes are approximated according to the ``physics:approximation`` attribute defined on the UsdPhysicsMeshCollisionAPI (if it is defined). Default is False.
-        load_non_physics_prims (bool): If True, prims that are children of a rigid body that do not have a UsdPhysics schema applied are loaded as visual shapes in a separate pass (may slow down the loading process). Otherwise, non-physics prims are ignored. Default is True. This parameter is superseded by `load_sites` and `load_visual_shapes` when those are explicitly set.
-        load_sites (bool | None): If True, sites (prims with MjcSiteAPI) are loaded as non-colliding reference points. If False, sites are ignored. If None (default), follows the value of ``load_non_physics_prims`` for backward compatibility.
-        load_visual_shapes (bool | None): If True, non-physics visual geometry is loaded. If False, visual-only shapes are ignored (sites are still controlled by `load_sites`). If None (default), follows the value of ``load_non_physics_prims`` for backward compatibility.
+        load_sites (bool): If True, sites (prims with MjcSiteAPI) are loaded as non-colliding reference points. If False, sites are ignored. Default is True.
+        load_visual_shapes (bool): If True, non-physics visual geometry is loaded. If False, visual-only shapes are ignored (sites are still controlled by ``load_sites``). Default is True.
         hide_collision_shapes (bool): If True, collision shapes are hidden. Default is False.
         mesh_maxhullvert (int): Maximum vertices for convex hull approximation of meshes.
         schema_resolvers (list[SchemaResolver]): Resolver instances in priority order. Default is no schema resolution.
@@ -139,12 +137,6 @@ def parse_usd(
     if schema_resolvers is None:
         schema_resolvers = []
     collect_schema_attrs = len(schema_resolvers) > 0
-
-    # Backward compatibility: if new granular flags are None, use load_non_physics_prims
-    if load_sites is None:
-        load_sites = load_non_physics_prims
-    if load_visual_shapes is None:
-        load_visual_shapes = load_non_physics_prims
 
     try:
         from pxr import Sdf, Usd, UsdGeom, UsdPhysics  # noqa: PLC0415

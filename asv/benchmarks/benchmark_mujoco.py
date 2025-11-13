@@ -161,7 +161,6 @@ def _setup_h1(articulation_builder):
         ignore_paths=["/GroundPlane"],
         collapse_fixed_joints=False,
         enable_self_collisions=False,
-        load_non_physics_prims=True,
         hide_collision_shapes=True,
     )
     # approximate meshes for faster collision detection
@@ -236,7 +235,6 @@ def _setup_allegro(articulation_builder):
         xform=wp.transform(wp.vec3(0, 0, 0.5)),
         enable_self_collisions=True,
         ignore_paths=[".*Dummy", ".*CollisionPlane", ".*goal", ".*DexCube/visuals"],
-        load_non_physics_prims=True,
     )
 
     # set joint targets and joint drive gains

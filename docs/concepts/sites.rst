@@ -165,7 +165,7 @@ Similar to MJCF import, you can control whether sites and visual shapes are load
    # Load only collision shapes (no sites or visual shapes)
    builder.add_usd("robot.usda", load_sites=False, load_visual_shapes=False)
 
-For backward compatibility, if ``load_sites`` and ``load_visual_shapes`` are not explicitly set, they default to the value of ``load_non_physics_prims``.
+By default, both ``load_sites`` and ``load_visual_shapes`` are set to ``True``.
 
 Using Sites with Sensors
 ------------------------

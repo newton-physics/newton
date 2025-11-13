@@ -60,7 +60,6 @@ class Example:
             asset_file,
             collapse_fixed_joints=False,
             enable_self_collisions=False,
-            load_non_physics_prims=True,
             hide_collision_shapes=True,
         )
 

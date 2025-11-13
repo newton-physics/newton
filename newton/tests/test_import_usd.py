@@ -64,7 +64,8 @@ class TestImportUsd(unittest.TestCase):
         results = builder.add_usd(
             os.path.join(os.path.dirname(__file__), "assets", "ant.usda"),
             collapse_fixed_joints=True,
-            load_non_physics_prims=False,
+            load_sites=False,
+            load_visual_shapes=False,
         )
         self.assertEqual(builder.body_count, 9)
         self.assertEqual(builder.shape_count, 13)
@@ -1010,7 +1011,8 @@ class TestImportSampleAssets(unittest.TestCase):
             asset_path,
             collapse_fixed_joints=False,
             enable_self_collisions=False,
-            load_non_physics_prims=False,
+            load_sites=False,
+            load_visual_shapes=False,
         )
         model = builder.finalize()
         self.verify_usdphysics_parser(asset_path, model, compare_min_max_coords=True, floating=True)
@@ -1031,7 +1033,8 @@ class TestImportSampleAssets(unittest.TestCase):
             stage_path,
             collapse_fixed_joints=False,
             enable_self_collisions=False,
-            load_non_physics_prims=False,
+            load_sites=False,
+            load_visual_shapes=False,
         )
         model = builder.finalize()
         self.verify_usdphysics_parser(stage_path, model, True, floating=True)
@@ -1045,7 +1048,8 @@ class TestImportSampleAssets(unittest.TestCase):
             asset_path,
             collapse_fixed_joints=False,
             enable_self_collisions=False,
-            load_non_physics_prims=False,
+            load_sites=False,
+            load_visual_shapes=False,
         )
         model = builder.finalize()
         self.verify_usdphysics_parser(asset_path, model, compare_min_max_coords=True, floating=False)
@@ -1059,7 +1063,8 @@ class TestImportSampleAssets(unittest.TestCase):
             asset_path,
             collapse_fixed_joints=False,
             enable_self_collisions=False,
-            load_non_physics_prims=False,
+            load_sites=False,
+            load_visual_shapes=False,
         )
         model = builder.finalize()
         self.verify_usdphysics_parser(asset_path, model, compare_min_max_coords=False, floating=True)
@@ -1073,7 +1078,8 @@ class TestImportSampleAssets(unittest.TestCase):
             asset_path,
             collapse_fixed_joints=False,
             enable_self_collisions=False,
-            load_non_physics_prims=False,
+            load_sites=False,
+            load_visual_shapes=False,
         )
         model = builder.finalize()
         self.verify_usdphysics_parser(asset_path, model, compare_min_max_coords=True, floating=True)
@@ -1159,19 +1165,6 @@ def Xform "TestBody" (
         builder_physics_only.add_usd(stage, load_sites=False, load_visual_shapes=False)
         count_physics_only = builder_physics_only.shape_count
         self.assertEqual(count_physics_only, 1, "Should load collision only: 1 collision = 1")
-
-        # Test 5: Backward compatibility - load_non_physics_prims=False should work
-        builder_legacy_false = newton.ModelBuilder()
-        builder_legacy_false.add_usd(stage, load_non_physics_prims=False)
-        count_legacy_false = builder_legacy_false.shape_count
-        self.assertEqual(count_legacy_false, 1, "Backward compat: load_non_physics_prims=False should give 1 collision")
-
-        # Verify backward compatibility
-        self.assertEqual(
-            count_physics_only,
-            count_legacy_false,
-            "load_sites=False, load_visual_shapes=False should match load_non_physics_prims=False",
-        )
 
         # Verify that each filter actually reduces the count
         self.assertLess(count_sites_only, count_all, "Excluding visuals should reduce shape count")
