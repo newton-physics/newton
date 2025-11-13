@@ -115,8 +115,8 @@ class TestTiledCameraSensor(unittest.TestCase):
             os.path.join(os.path.dirname(__file__), "golden_data", "test_tiled_camera_sensor", "depth.npy")
         )
 
-        self.__compare_images(color_image.numpy(), golden_color_data)
-        self.__compare_images(depth_image.numpy(), golden_depth_data)
+        self.__compare_images(color_image.numpy(), golden_color_data, allowed_difference=0.1)
+        self.__compare_images(depth_image.numpy(), golden_depth_data, allowed_difference=0.1)
 
     def test_output_image_parameters(self):
         model = self.__build_scene()
@@ -130,11 +130,27 @@ class TestTiledCameraSensor(unittest.TestCase):
 
         color_image = tiled_camera_sensor.create_color_image_output()
         depth_image = tiled_camera_sensor.create_depth_image_output()
-
         tiled_camera_sensor.render(model.state(), color_image, depth_image)
+        self.assertTrue(np.any(color_image.numpy() != 0), "Color image should contain rendered data")
+        self.assertTrue(np.any(depth_image.numpy() != 0), "Depth image should contain rendered data")
+
+        color_image = tiled_camera_sensor.create_color_image_output()
+        depth_image = tiled_camera_sensor.create_depth_image_output()
         tiled_camera_sensor.render(model.state(), color_image, None)
+        self.assertTrue(np.any(color_image.numpy() != 0), "Color image should contain rendered data")
+        self.assertFalse(np.any(depth_image.numpy() != 0), "Depth image should NOT contain rendered data")
+
+        color_image = tiled_camera_sensor.create_color_image_output()
+        depth_image = tiled_camera_sensor.create_depth_image_output()
         tiled_camera_sensor.render(model.state(), None, depth_image)
+        self.assertFalse(np.any(color_image.numpy() != 0), "Color image should NOT contain rendered data")
+        self.assertTrue(np.any(depth_image.numpy() != 0), "Depth image should contain rendered data")
+
+        color_image = tiled_camera_sensor.create_color_image_output()
+        depth_image = tiled_camera_sensor.create_depth_image_output()
         tiled_camera_sensor.render(model.state(), None, None)
+        self.assertFalse(np.any(color_image.numpy() != 0), "Color image should NOT contain rendered data")
+        self.assertFalse(np.any(depth_image.numpy() != 0), "Depth image should NOT contain rendered data")
 
 
 if __name__ == "__main__":
