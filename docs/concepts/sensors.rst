@@ -38,7 +38,7 @@ Basic Usage
 
 The sensor takes shape indices (which can include sites or regular shapes) and computes their transforms relative to reference site frames:
 
-.. code-block:: python
+.. testcode:: sensors-basic
 
    from newton.sensors import FrameTransformSensor
    import newton
@@ -46,13 +46,21 @@ The sensor takes shape indices (which can include sites or regular shapes) and c
    # Create model with sites
    builder = newton.ModelBuilder()
    
-   base = builder.add_body()
+   base = builder.add_body(mass=1.0, I_m=wp.mat33(np.eye(3)))
    ref_site = builder.add_site(base, key="reference")
+   builder.add_joint_free(base)
    
-   end_effector = builder.add_body()
+   end_effector = builder.add_body(mass=1.0, I_m=wp.mat33(np.eye(3)))
    ee_site = builder.add_site(end_effector, key="end_effector")
    
-   # Add joints to connect bodies (omitted for brevity)
+   # Add a revolute joint to connect bodies
+   builder.add_joint_revolute(
+       parent=base,
+       child=end_effector,
+       axis=newton.Axis.X,
+       parent_xform=wp.transform(wp.vec3(0, 0, 0.5), wp.quat_identity()),
+       child_xform=wp.transform(wp.vec3(0, 0, 0), wp.quat_identity()),
+   )
    
    model = builder.finalize()
    state = model.state()
@@ -60,11 +68,12 @@ The sensor takes shape indices (which can include sites or regular shapes) and c
    # Create sensor
    sensor = FrameTransformSensor(
        model,
-       shape_indices=[ee_site],           # What to measure
-       reference_site_indices=[ref_site]  # Reference frame(s)
+       shapes=[ee_site],              # What to measure
+       reference_sites=[ref_site]     # Reference frame(s)
    )
    
-   # In simulation loop
+   # In simulation loop (after eval_fk)
+   newton.eval_fk(model, state.joint_q, state.joint_qd, state)
    sensor.update(model, state)
    transforms = sensor.transforms.numpy()  # Array of relative transforms
 
@@ -85,24 +94,51 @@ Multiple Objects and References
 
 The sensor supports measuring multiple objects, optionally with different reference frames:
 
-.. code-block:: python
+.. testcode:: sensors-multiple
 
+   from newton.sensors import FrameTransformSensor
+   
+   # Setup model with multiple sites
+   builder = newton.ModelBuilder()
+   body1 = builder.add_body(mass=1.0, I_m=wp.mat33(np.eye(3)))
+   site1 = builder.add_site(body1, key="site1")
+   body2 = builder.add_body(mass=1.0, I_m=wp.mat33(np.eye(3)))
+   site2 = builder.add_site(body2, key="site2")
+   body3 = builder.add_body(mass=1.0, I_m=wp.mat33(np.eye(3)))
+   site3 = builder.add_site(body3, key="site3")
+   ref_body = builder.add_body(mass=1.0, I_m=wp.mat33(np.eye(3)))
+   ref_site = builder.add_site(ref_body, key="ref_site")
+   
+   # Add joints
+   builder.add_joint_free(body1)
+   builder.add_joint_free(body2)
+   builder.add_joint_free(body3)
+   builder.add_joint_free(ref_body)
+
+   # Multiple objects, multiple references (must match in count) for sensor 2
+   ref1 = builder.add_site(body1, key="ref1")
+   ref2 = builder.add_site(body2, key="ref2")
+   ref3 = builder.add_site(body3, key="ref3")
+   
+   model = builder.finalize()
+   state = model.state()
+   
    # Multiple objects, single reference
-   sensor = FrameTransformSensor(
+   sensor1 = FrameTransformSensor(
        model,
-       shape_indices=[site1, site2, site3],
-       reference_site_indices=[ref_site]  # Broadcasts to all objects
+       shapes=[site1, site2, site3],
+       reference_sites=[ref_site]  # Broadcasts to all objects
    )
    
-   # Multiple objects, multiple references (must match in count)
-   sensor = FrameTransformSensor(
+   sensor2 = FrameTransformSensor(
        model,
-       shape_indices=[site1, site2, site3],
-       reference_site_indices=[ref1, ref2, ref3]  # One per object
+       shapes=[site1, site2, site3],
+       reference_sites=[ref1, ref2, ref3]  # One per object
    )
    
-   sensor.update(model, state)
-   transforms = sensor.transforms.numpy()  # Shape: (num_objects, 7)
+   newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+   sensor2.update(model, state)
+   transforms = sensor2.transforms.numpy()  # Shape: (num_objects, 7)
    
    # Extract position and rotation for first object
    import warp as wp
@@ -113,8 +149,8 @@ The sensor supports measuring multiple objects, optionally with different refere
 Objects vs Reference Frames
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-- **Objects** (``shape_indices``): Can be any shape index, including both regular shapes and sites
-- **Reference frames** (``reference_site_indices``): Must be site indices (validated at initialization)
+- **Objects** (``shapes``): Can be any shape index, including both regular shapes and sites
+- **Reference frames** (``reference_sites``): Must be site indices (validated at initialization)
 
 This design reflects the common use case where reference frames are explicitly defined coordinate systems (sites), while measurements can be taken of any geometric entity.
 

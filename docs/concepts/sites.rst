@@ -24,7 +24,7 @@ Creating Sites
 
 Sites are created using the ``add_site()`` method on ModelBuilder:
 
-.. testcode::
+.. testcode:: sites-basic
 
    builder = newton.ModelBuilder()
    
@@ -52,7 +52,7 @@ Sites are created using the ``add_site()`` method on ModelBuilder:
 
 Sites can also be attached to the world frame (body=-1) to create fixed reference points:
 
-.. testcode::
+.. testcode:: sites-world
 
    builder = newton.ModelBuilder()
    
@@ -68,7 +68,7 @@ Alternative: Using Shape Methods with ``as_site=True``
 
 Sites can also be created using shape creation methods (``add_shape_sphere``, ``add_shape_box``, ``add_shape_capsule``, ``add_shape_cylinder``) by passing ``as_site=True``. This is particularly useful when programmatically generating shapes or conditionally creating sites:
 
-.. testcode::
+.. testcode:: sites-shape-methods
 
    builder = newton.ModelBuilder()
    body = builder.add_body(mass=1.0)
@@ -179,7 +179,7 @@ MuJoCo Interoperability
 
 When using ``SolverMuJoCo``, Newton sites are automatically exported to MuJoCo's native site representation:
 
-.. testcode::
+.. testcode:: sites-mujoco
 
    from newton.solvers import SolverMuJoCo
    
