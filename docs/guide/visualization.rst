@@ -212,18 +212,27 @@ Then, you can use the rerun SDK in a Jupyter notebook by importing the :mod:`rer
   viewer = newton.viewer.ViewerRerun(keep_historical_data=True)
   viewer.set_model(model)
 
-  for frame in trange(500):
-      wp.capture_launch(graph)
+  frame_dt = 1 / 60.0
+  sim_time = 0.0
 
+  for frame in range(500):
+      # simulate, step the solver, etc.
+      solver.step(...)
+
+      # visualize
       viewer.begin_frame(sim_time)
       viewer.log_state(state)
-      viewer.log_contacts(contacts, state)
       viewer.end_frame()
 
       sim_time += frame_dt
+
+  viewer.show_notebook()  # or simply `viewer` to display the viewer in the notebook
   
-  # The history of states will be available in the viewer to scrub through
-  # the simulation timeline.
+.. image:: /images/rerun_notebook_example.png
+   :width: 1000
+   :align: left
+
+The history of states will be available in the viewer to scrub through the simulation timeline.
 
 Utility Viewers
 ---------------
