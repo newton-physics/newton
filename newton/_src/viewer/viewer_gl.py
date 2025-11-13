@@ -170,7 +170,7 @@ class ViewerGL(ViewerBase):
         points = wp.array(vertices[:, 0:3], dtype=wp.vec3, device=self.device)
         normals = wp.array(vertices[:, 3:6], dtype=wp.vec3, device=self.device)
         uvs = wp.array(vertices[:, 6:8], dtype=wp.vec2, device=self.device)
-        indices = wp.array(indices, dtype=wp.uint32, device=self.device)
+        indices = wp.array(indices, dtype=wp.int32, device=self.device)
 
         self._point_mesh.update(points, indices, normals, uvs)
 
