@@ -30,7 +30,7 @@ import newton.examples
 
 
 class Example:
-    def __init__(self, viewer):
+    def __init__(self, viewer, args=None):
         # setup simulation parameters first
         self.fps = 100
         self.frame_dt = 1.0 / self.fps
@@ -39,6 +39,7 @@ class Example:
         self.sim_dt = self.frame_dt / self.sim_substeps
 
         self.viewer = viewer
+        self.args = args
 
         builder = newton.ModelBuilder()
 
@@ -158,12 +159,15 @@ class Example:
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.control = self.model.control()
-        self.contacts = self.model.collide(self.state_0)
-
-        self.viewer.set_model(self.model)
 
         # not required for MuJoCo, but required for other solvers
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
+
+        # Create collision pipeline from command-line args (default: CollisionPipelineUnified with EXPLICIT)
+        self.collision_pipeline = newton.examples.create_collision_pipeline(self.model, self.args)
+        self.contacts = self.model.collide(self.state_0, collision_pipeline=self.collision_pipeline)
+
+        self.viewer.set_model(self.model)
 
         self.capture()
 
@@ -182,7 +186,7 @@ class Example:
             # apply forces to the model
             self.viewer.apply_forces(self.state_0)
 
-            self.contacts = self.model.collide(self.state_0)
+            self.contacts = self.model.collide(self.state_0, collision_pipeline=self.collision_pipeline)
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
 
             # swap states
@@ -238,6 +242,6 @@ if __name__ == "__main__":
     viewer, args = newton.examples.init()
 
     # Create viewer and run
-    example = Example(viewer)
+    example = Example(viewer, args)
 
     newton.examples.run(example, args)

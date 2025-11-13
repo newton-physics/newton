@@ -98,6 +98,7 @@ class Example:
         up_axis = newton.Axis.Z
 
         world_builder = newton.ModelBuilder(up_axis=up_axis)
+        newton.solvers.SolverMuJoCo.register_custom_attributes(world_builder)
         world_builder.add_mjcf(
             newton.examples.get_asset("nv_ant.xml"),
             ignore_names=["floor", "ground"],
