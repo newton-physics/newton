@@ -512,6 +512,23 @@ def compliance_form(
     )
 
 
+def make_basis_space(grid: fem.Geometry, basis_str: str):
+    assert len(basis_str) >= 2
+
+    degree = int(basis_str[1])
+
+    if basis_str[0] == "Q":
+        element_basis = fem.ElementBasis.LAGRANGE
+    elif basis_str[0] == "S":
+        element_basis = fem.ElementBasis.SERENDIPITY
+    elif basis_str[0] == "P" and (degree == 0 or basis_str[-1] == "d"):
+        element_basis = fem.ElementBasis.NONCONFORMING_POLYNOMIAL
+    else:
+        raise ValueError(f"Unsupported basis: {basis_str}")
+
+    return fem.make_polynomial_basis_space(grid, degree=degree, element_basis=element_basis)
+
+
 @dataclass
 class ImplicitMPMOptions:
     """Implicit MPM solver options."""
@@ -632,26 +649,8 @@ class _ImplicitMPMScratchpad:
         # zero or first order for pressure
         self._velocity_basis = fem.make_polynomial_basis_space(grid, degree=1)
 
-        if collider_basis_str == "S2":
-            self._collision_basis = fem.make_polynomial_basis_space(
-                grid, degree=2, element_basis=fem.ElementBasis.SERENDIPITY
-            )
-        else:
-            self._collision_basis = self._velocity_basis
-
-        if strain_basis_str not in ("P0", "Q1"):
-            raise ValueError(f"Unsupported strain basis: {strain_basis_str}")
-
-        strain_degree = 0 if strain_basis_str == "P0" else 1
-        discontinuous = strain_basis_str != "Q1"
-
-        strain_basis = fem.make_polynomial_basis_space(
-            grid,
-            degree=strain_degree,
-            discontinuous=discontinuous,
-        )
-
-        self._strain_basis = strain_basis
+        self._collision_basis = make_basis_space(grid, collider_basis_str)
+        self._strain_basis = make_basis_space(grid, strain_basis_str)
 
     def create_function_spaces(
         self,
@@ -2078,7 +2077,8 @@ class SolverImplicitMPM(SolverBase):
                     scratch.collider_normal_field,
                 )
 
-            if scratch.fraction_trial.space.basis is not scratch.collider_fraction_test.space.basis:
+            # Subgrid collisions
+            if scratch.fraction_trial.space.name != scratch.collider_fraction_test.space.name:
                 #  Map from collider nodes to velocity nodes
                 sp.bsr_set_zero(
                     scratch.collider_matrix, rows_of_blocks=collider_node_count, cols_of_blocks=vel_node_count
@@ -2523,9 +2523,9 @@ class SolverImplicitMPM(SolverBase):
         state_out.collider_position_field = scratch.collider_position_field
 
         # Impulse warmstarting, defined at space level
-        velocity_space = scratch.velocity_test.space
-        if state_out.ws_impulse_field is None or state_out.ws_impulse_field.geometry != velocity_space.geometry:
-            state_out.ws_impulse_field = velocity_space.make_field()
+        collision_space = scratch.impulse_field.space
+        if state_out.ws_impulse_field is None or state_out.ws_impulse_field.geometry != collision_space.geometry:
+            state_out.ws_impulse_field = collision_space.make_field()
 
     def _require_strain_space_fields(self, state_out: newton.State):
         """Ensure strain-space fields exist and match current spaces."""
