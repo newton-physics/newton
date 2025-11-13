@@ -14,8 +14,8 @@
 # limitations under the License.
 
 import math
-import unittest
 import os
+import unittest
 
 import numpy as np
 import warp as wp
@@ -23,7 +23,6 @@ from pxr import Usd, UsdGeom
 
 import newton
 from newton.sensors import TiledCameraSensor
-from newton.tests.unittest_utils import assert_np_equal
 
 
 class TestTiledCameraSensor(unittest.TestCase):
@@ -67,7 +66,7 @@ class TestTiledCameraSensor(unittest.TestCase):
         builder.add_shape_mesh(body_mesh, mesh=demo_mesh)
 
         return builder.finalize()
-        
+
     def __compare_images(self, test_image: np.ndarray, gold_image: np.ndarray, allowed_difference: float = 0.0):
         self.assertEqual(test_image.dtype, gold_image.dtype, "Images have different data types")
         self.assertEqual(test_image.shape, gold_image.shape, "Images have different data shapes")
@@ -76,7 +75,7 @@ class TestTiledCameraSensor(unittest.TestCase):
             if x > y:
                 return x - y
             return y - x
-        
+
         absdiff = np.vectorize(_absdiff)
 
         diff = absdiff(test_image, gold_image)
@@ -84,13 +83,17 @@ class TestTiledCameraSensor(unittest.TestCase):
         divider = 1.0
         if np.issubdtype(test_image.dtype, np.integer):
             divider = np.iinfo(test_image.dtype).max
-        
+
         percentage_diff = np.average(diff) / divider * 100.0
-        self.assertLessEqual(percentage_diff, allowed_difference, f"Images differ more than {allowed_difference:.2f}%, total difference is {percentage_diff:.2f}%")
+        self.assertLessEqual(
+            percentage_diff,
+            allowed_difference,
+            f"Images differ more than {allowed_difference:.2f}%, total difference is {percentage_diff:.2f}%",
+        )
 
     def test_golden_image(self):
         model = self.__build_scene()
-        
+
         camera_positions = wp.array([wp.vec3f(10.0, 0.0, 2.0)], dtype=wp.vec3f)
         camera_orientations = wp.array([wp.mat33f(0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0)], dtype=wp.mat33f)
 
@@ -105,22 +108,26 @@ class TestTiledCameraSensor(unittest.TestCase):
 
         tiled_camera_sensor.render(model.state(), color_image, depth_image)
 
-        golden_color_data = np.load(os.path.join(os.path.dirname(__file__), "golden_data", "test_tiled_camera_sensor", "color.npy"))
-        golden_depth_data = np.load(os.path.join(os.path.dirname(__file__), "golden_data", "test_tiled_camera_sensor", "depth.npy"))
+        golden_color_data = np.load(
+            os.path.join(os.path.dirname(__file__), "golden_data", "test_tiled_camera_sensor", "color.npy")
+        )
+        golden_depth_data = np.load(
+            os.path.join(os.path.dirname(__file__), "golden_data", "test_tiled_camera_sensor", "depth.npy")
+        )
 
         self.__compare_images(color_image.numpy(), golden_color_data)
         self.__compare_images(depth_image.numpy(), golden_depth_data)
 
     def test_output_image_parameters(self):
         model = self.__build_scene()
-        
+
         camera_positions = wp.array([wp.vec3f(10.0, 0.0, 2.0)], dtype=wp.vec3f)
         camera_orientations = wp.array([wp.mat33f(0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0)], dtype=wp.mat33f)
 
         tiled_camera_sensor = TiledCameraSensor(model=model, num_cameras=1, width=640, height=460)
         tiled_camera_sensor.update_cameras(camera_positions, camera_orientations)
         tiled_camera_sensor.compute_camera_rays(wp.array([math.radians(45.0)], dtype=wp.float32))
-        
+
         color_image = tiled_camera_sensor.create_color_image_output()
         depth_image = tiled_camera_sensor.create_depth_image_output()
 
@@ -128,6 +135,7 @@ class TestTiledCameraSensor(unittest.TestCase):
         tiled_camera_sensor.render(model.state(), color_image, None)
         tiled_camera_sensor.render(model.state(), None, depth_image)
         tiled_camera_sensor.render(model.state(), None, None)
+
 
 if __name__ == "__main__":
     unittest.main()
