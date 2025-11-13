@@ -807,12 +807,11 @@ class TestImportMjcf(unittest.TestCase):
             for joint_name, expected in mujoco_expected.items():
                 joint_idx = joint_names.index(joint_name)
                 dof_idx = joint_qd_start[joint_idx]
-                mjc_joint_idx = joint_mjc_dof_start[joint_idx]
-                mjc_dof_idx = mjc_joint_idx
+                mjc_dof_idx = joint_mjc_dof_start[joint_idx]
 
                 self.assertAlmostEqual(mj_model.dof_damping[mjc_dof_idx], expected["dof_damping"], places=4)
                 self.assertAlmostEqual(
-                    mjw_model.jnt_stiffness.numpy()[0, mjc_joint_idx], expected["jnt_stiffness"], places=4
+                    mjw_model.jnt_stiffness.numpy()[0, joint_idx], expected["jnt_stiffness"], places=4
                 )
 
                 pos_actuator_idx = int(mjc_axis_to_actuator[dof_idx, 0])
@@ -861,12 +860,11 @@ class TestImportMjcf(unittest.TestCase):
             model.mujoco.damping.assign(new_damping_np)
             solver.notify_model_changed(newton.solvers.SolverNotifyFlags.JOINT_DOF_PROPERTIES)
 
-            mjc_joint_idx = joint_mjc_dof_start[joint1_idx]
-            mjc_dof_idx = mjc_joint_idx
+            mjc_dof_idx = joint_mjc_dof_start[joint1_idx]
 
             updated_dof_damping = mjw_model.dof_damping.numpy()[0, mjc_dof_idx]
             self.assertAlmostEqual(updated_dof_damping, 1.5, places=4)
-            self.assertAlmostEqual(mjw_model.jnt_stiffness.numpy()[0, mjc_joint_idx], 0.15, places=4)
+            self.assertAlmostEqual(mjw_model.jnt_stiffness.numpy()[0, joint1_idx], 0.15, places=4)
 
 
 if __name__ == "__main__":
