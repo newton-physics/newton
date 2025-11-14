@@ -89,32 +89,21 @@ def compute_sphere_bounds(pos: wp.vec3f, radius: wp.float32) -> tuple[wp.vec3f, 
 def compute_capsule_bounds(pos: wp.vec3f, rot: wp.mat33f, size: wp.vec3f) -> tuple[wp.vec3f, wp.vec3f]:
     radius = size[0]
     half_length = size[1]
-    local_end1 = wp.vec3f(-radius, -radius, -half_length - radius)
-    local_end2 = wp.vec3f(radius, radius, half_length + radius)
-    world_end1 = pos + rot @ local_end1
-    world_end2 = pos + rot @ local_end2
-    bounds_min = wp.min(world_end1, world_end2)
-    bounds_max = wp.max(world_end1, world_end2)
-    return bounds_min, bounds_max
-
+    extent = wp.vec3f(radius, radius, half_length + radius)
+    return compute_box_bounds(pos, rot, extent)
 
 @wp.func
 def compute_cylinder_bounds(pos: wp.vec3f, rot: wp.mat33f, size: wp.vec3f) -> tuple[wp.vec3f, wp.vec3f]:
     radius = size[0]
     half_length = size[1]
-    local_end1 = wp.vec3f(-radius, -radius, -half_length)
-    local_end2 = wp.vec3f(radius, radius, half_length)
-    world_end1 = pos + rot @ local_end1
-    world_end2 = pos + rot @ local_end2
-    bounds_min = wp.min(world_end1, world_end2)
-    bounds_max = wp.max(world_end1, world_end2)
-    return bounds_min, bounds_max
+    extent = wp.vec3f(radius, radius, half_length)
+    return compute_box_bounds(pos, rot, extent)
 
 
 @wp.func
 def compute_cone_bounds(pos: wp.vec3f, rot: wp.mat33f, size: wp.vec3f) -> tuple[wp.vec3f, wp.vec3f]:
-    return compute_cylinder_bounds(pos, rot, size)
-
+   extent = wp.vec3f(size[0], size[0], size[1])
+   return compute_box_bounds(pos, rot, extent)
 
 @wp.func
 def compute_plane_bounds(pos: wp.vec3f, rot: wp.mat33f, size: wp.vec3f) -> tuple[wp.vec3f, wp.vec3f]:

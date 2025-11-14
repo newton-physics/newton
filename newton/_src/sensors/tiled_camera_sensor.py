@@ -149,11 +149,11 @@ class TiledCameraSensor:
         self.render_context.geom_mesh_indices = wp.empty(self.model.shape_count, dtype=wp.int32)
         self.render_context.mesh_bounds = wp.empty((self.model.shape_count, 2), dtype=wp.vec3f, ndim=2)
 
-        if model.particle_q.shape[0]:
+        if model.particle_q is not None and model.particle_q.shape[0]:
             self.render_context.particles_position = model.particle_q
             self.render_context.particles_radius = model.particle_radius
             self.render_context.particles_world_index = model.particle_world
-            if model.tri_indices.shape[0]:
+            if model.tri_indices is not None and model.tri_indices.shape[0]:
                 self.render_context.triangle_points = model.particle_q
                 self.render_context.triangle_indices = model.tri_indices.flatten()
 
