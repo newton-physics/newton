@@ -740,18 +740,25 @@ class ModelBuilder:
 
                 dof_count = dof_end - dof_start
 
-                if not isinstance(value, (list, tuple)):
-                    raise TypeError(
-                        f"JOINT_DOF attribute '{attr_key}' must be a list with length equal to joint DOF count ({dof_count})"
-                    )
+                # If the value is a Warp vector/matrix type (not wrapped in a list),
+                # wrap it in a list for uniform processing
+                value_sanitized = value
+                if not isinstance(value_sanitized, (list, tuple)):
+                    # Check if it's a Warp vector/matrix type
+                    if wp.types.type_is_vector(type(value_sanitized)) or wp.types.type_is_matrix(type(value_sanitized)):
+                        value_sanitized = [value_sanitized]
+                    else:
+                        raise TypeError(
+                            f"JOINT_DOF attribute '{attr_key}' must be a list with length equal to joint DOF count ({dof_count}), "
+                            f"or a single Warp vector/matrix value for single-DOF joints"
+                        )
 
-                if len(value) != dof_count:
-                    raise ValueError(
-                        f"JOINT_DOF attribute '{attr_key}' has {len(value)} values but joint has {dof_count} DOFs"
-                    )
+                actual = len(value_sanitized)
+                if actual != dof_count:
+                    raise ValueError(f"JOINT_DOF '{attr_key}': got {actual}, expected {dof_count}")
 
                 # Apply each value to its corresponding DOF
-                for i, dof_value in enumerate(value):
+                for i, dof_value in enumerate(value_sanitized):
                     single_attr = {attr_key: dof_value}
                     self._process_custom_attributes(
                         entity_index=dof_start + i,
