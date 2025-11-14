@@ -584,9 +584,7 @@ def ray_mesh_with_bvh(
     Requires wp.Mesh be constructed and their ids to be passed"""
 
     ray_origin_local, ray_direction_local = map_ray_to_local(pos, mat, ray_origin_world, ray_direction_world)
-    query = wp.mesh_query_ray(
-        mesh_bvh_ids[mesh_geom_id], ray_origin_local, ray_direction_local, max_t
-    )
+    query = wp.mesh_query_ray(mesh_bvh_ids[mesh_geom_id], ray_origin_local, ray_direction_local, max_t)
 
     if query.result and wp.dot(ray_direction_local, query.normal) < 0.0:  # Backface culling in local space
         normal = mat @ query.normal
