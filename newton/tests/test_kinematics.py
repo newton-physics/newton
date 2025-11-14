@@ -75,8 +75,8 @@ def test_fk_with_indices(test, device):
     # Create 3 simple pendulums (articulations)
     for i in range(3):
         builder.add_articulation(key=f"pendulum_{i}")
-        b1 = builder.add_body(xform=wp.transform(wp.vec3(i * 2.0, 0.0, 0.0), wp.quat_identity()))
-        b2 = builder.add_body(xform=wp.transform(wp.vec3(i * 2.0 + 1.0, 0.0, 0.0), wp.quat_identity()))
+        b1 = builder.add_link(xform=wp.transform(wp.vec3(i * 2.0, 0.0, 0.0), wp.quat_identity()))
+        b2 = builder.add_link(xform=wp.transform(wp.vec3(i * 2.0 + 1.0, 0.0, 0.0), wp.quat_identity()))
         builder.add_joint_revolute(
             parent=-1,
             child=b1,

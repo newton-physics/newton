@@ -50,10 +50,10 @@ class Example:
         hz = 0.1
 
         # create first link
-        link_0 = builder.add_body()
+        link_0 = builder.add_link()
         builder.add_shape_box(link_0, hx=hx, hy=hy, hz=hz)
 
-        link_1 = builder.add_body()
+        link_1 = builder.add_link()
         builder.add_shape_box(link_1, hx=hx, hy=hy, hz=hz)
 
         # add joints

@@ -61,8 +61,9 @@ class Example:
         # -----------------------------
         y = rows[0]
 
-        a_rev = builder.add_body(xform=wp.transform(p=wp.vec3(0.0, y, drop_z + upper_hz), q=wp.quat_identity()))
-        b_rev = builder.add_body(
+        builder.add_articulation(key="revolute_articulation")
+        a_rev = builder.add_link(xform=wp.transform(p=wp.vec3(0.0, y, drop_z + upper_hz), q=wp.quat_identity()))
+        b_rev = builder.add_link(
             xform=wp.transform(
                 p=wp.vec3(0.0, y, drop_z - cuboid_hz), q=wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), 0.15)
             )
@@ -92,8 +93,9 @@ class Example:
         # PRISMATIC (slider) joint demo
         # -----------------------------
         y = rows[1]
-        a_pri = builder.add_body(xform=wp.transform(p=wp.vec3(0.0, y, drop_z + upper_hz), q=wp.quat_identity()))
-        b_pri = builder.add_body(
+        builder.add_articulation(key="prismatic_articulation")
+        a_pri = builder.add_link(xform=wp.transform(p=wp.vec3(0.0, y, drop_z + upper_hz), q=wp.quat_identity()))
+        b_pri = builder.add_link(
             xform=wp.transform(
                 p=wp.vec3(0.0, y, drop_z - cuboid_hz), q=wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), 0.12)
             )
@@ -126,11 +128,12 @@ class Example:
         radius = 0.3
         z_offset = -1.0  # Shift down by 2 units
 
+        builder.add_articulation(key="ball_articulation")
         # kinematic (massless) sphere as the parent anchor
-        a_ball = builder.add_body(
+        a_ball = builder.add_link(
             xform=wp.transform(p=wp.vec3(0.0, y, drop_z + radius + cuboid_hz + z_offset), q=wp.quat_identity())
         )
-        b_ball = builder.add_body(
+        b_ball = builder.add_link(
             xform=wp.transform(
                 p=wp.vec3(0.0, y, drop_z + radius + z_offset), q=wp.quat_from_axis_angle(wp.vec3(1.0, 1.0, 0.0), 0.1)
             )
