@@ -64,7 +64,8 @@ class TestImportUsd(unittest.TestCase):
         results = builder.add_usd(
             os.path.join(os.path.dirname(__file__), "assets", "ant.usda"),
             collapse_fixed_joints=True,
-            load_non_physics_prims=False,
+            load_sites=False,
+            load_visual_shapes=False,
         )
         self.assertEqual(builder.body_count, 9)
         self.assertEqual(builder.shape_count, 13)
@@ -1010,7 +1011,8 @@ class TestImportSampleAssets(unittest.TestCase):
             asset_path,
             collapse_fixed_joints=False,
             enable_self_collisions=False,
-            load_non_physics_prims=False,
+            load_sites=False,
+            load_visual_shapes=False,
         )
         model = builder.finalize()
         self.verify_usdphysics_parser(asset_path, model, compare_min_max_coords=True, floating=True)
@@ -1031,7 +1033,8 @@ class TestImportSampleAssets(unittest.TestCase):
             stage_path,
             collapse_fixed_joints=False,
             enable_self_collisions=False,
-            load_non_physics_prims=False,
+            load_sites=False,
+            load_visual_shapes=False,
         )
         model = builder.finalize()
         self.verify_usdphysics_parser(stage_path, model, True, floating=True)
@@ -1045,7 +1048,8 @@ class TestImportSampleAssets(unittest.TestCase):
             asset_path,
             collapse_fixed_joints=False,
             enable_self_collisions=False,
-            load_non_physics_prims=False,
+            load_sites=False,
+            load_visual_shapes=False,
         )
         model = builder.finalize()
         self.verify_usdphysics_parser(asset_path, model, compare_min_max_coords=True, floating=False)
@@ -1059,7 +1063,8 @@ class TestImportSampleAssets(unittest.TestCase):
             asset_path,
             collapse_fixed_joints=False,
             enable_self_collisions=False,
-            load_non_physics_prims=False,
+            load_sites=False,
+            load_visual_shapes=False,
         )
         model = builder.finalize()
         self.verify_usdphysics_parser(asset_path, model, compare_min_max_coords=False, floating=True)
@@ -1073,10 +1078,197 @@ class TestImportSampleAssets(unittest.TestCase):
             asset_path,
             collapse_fixed_joints=False,
             enable_self_collisions=False,
-            load_non_physics_prims=False,
+            load_sites=False,
+            load_visual_shapes=False,
         )
         model = builder.finalize()
         self.verify_usdphysics_parser(asset_path, model, compare_min_max_coords=True, floating=True)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_granular_loading_flags(self):
+        """Test the granular control over sites and visual shapes loading."""
+        from pxr import Usd  # noqa: PLC0415
+
+        # Create USD stage in memory with sites, collision, and visual shapes
+        usd_content = """#usda 1.0
+(
+    upAxis = "Z"
+)
+
+def PhysicsScene "physicsScene"
+{
+}
+
+def Xform "TestBody" (
+    prepend apiSchemas = ["PhysicsRigidBodyAPI"]
+)
+{
+    double3 xformOp:translate = (0, 0, 1)
+    uniform token[] xformOpOrder = ["xformOp:translate"]
+
+    def Cube "CollisionBox" (
+        prepend apiSchemas = ["PhysicsCollisionAPI"]
+    )
+    {
+        double size = 1.0
+    }
+
+    def Sphere "VisualSphere"
+    {
+        double radius = 0.3
+        double3 xformOp:translate = (1, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+
+    def Sphere "Site1" (
+        prepend apiSchemas = ["MjcSiteAPI"]
+    )
+    {
+        double radius = 0.1
+        double3 xformOp:translate = (0, 1, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+
+    def Cube "Site2" (
+        prepend apiSchemas = ["MjcSiteAPI"]
+    )
+    {
+        double size = 0.2
+        double3 xformOp:translate = (0, -1, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+}
+"""
+        stage = Usd.Stage.CreateInMemory()
+        stage.GetRootLayer().ImportFromString(usd_content)
+
+        # Test 1: Load all (default behavior)
+        builder_all = newton.ModelBuilder()
+        builder_all.add_usd(stage)
+        count_all = builder_all.shape_count
+        self.assertEqual(count_all, 4, "Should load all shapes: 1 collision + 2 sites + 1 visual = 4")
+
+        # Test 2: Load sites only, no visual shapes
+        builder_sites_only = newton.ModelBuilder()
+        builder_sites_only.add_usd(stage, load_sites=True, load_visual_shapes=False)
+        count_sites_only = builder_sites_only.shape_count
+        self.assertEqual(count_sites_only, 3, "Should load collision + sites: 1 collision + 2 sites = 3")
+
+        # Test 3: Load visual shapes only, no sites
+        builder_visuals_only = newton.ModelBuilder()
+        builder_visuals_only.add_usd(stage, load_sites=False, load_visual_shapes=True)
+        count_visuals_only = builder_visuals_only.shape_count
+        self.assertEqual(count_visuals_only, 2, "Should load collision + visuals: 1 collision + 1 visual = 2")
+
+        # Test 4: Load neither (physics collision shapes only)
+        builder_physics_only = newton.ModelBuilder()
+        builder_physics_only.add_usd(stage, load_sites=False, load_visual_shapes=False)
+        count_physics_only = builder_physics_only.shape_count
+        self.assertEqual(count_physics_only, 1, "Should load collision only: 1 collision = 1")
+
+        # Verify that each filter actually reduces the count
+        self.assertLess(count_sites_only, count_all, "Excluding visuals should reduce shape count")
+        self.assertLess(count_visuals_only, count_all, "Excluding sites should reduce shape count")
+        self.assertLess(count_physics_only, count_all, "Excluding both should reduce shape count most")
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_granular_loading_with_sites(self):
+        """Test loading control specifically for files with sites."""
+        from pxr import Usd  # noqa: PLC0415
+
+        # Create USD stage in memory with sites (MjcSiteAPI)
+        usd_content = """#usda 1.0
+(
+    upAxis = "Z"
+)
+
+def PhysicsScene "physicsScene"
+{
+}
+
+def Xform "TestBody" (
+    prepend apiSchemas = ["PhysicsRigidBodyAPI"]
+)
+{
+    double3 xformOp:translate = (0, 0, 1)
+    uniform token[] xformOpOrder = ["xformOp:translate"]
+
+    def Cube "CollisionBox" (
+        prepend apiSchemas = ["PhysicsCollisionAPI"]
+    )
+    {
+        double size = 1.0
+    }
+
+    def Sphere "VisualSphere"
+    {
+        double radius = 0.3
+        double3 xformOp:translate = (1, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+
+    def Sphere "Site1" (
+        prepend apiSchemas = ["MjcSiteAPI"]
+    )
+    {
+        double radius = 0.1
+        double3 xformOp:translate = (0, 1, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+
+    def Cube "Site2" (
+        prepend apiSchemas = ["MjcSiteAPI"]
+    )
+    {
+        double size = 0.2
+        double3 xformOp:translate = (0, -1, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+}
+"""
+        stage = Usd.Stage.CreateInMemory()
+        stage.GetRootLayer().ImportFromString(usd_content)
+
+        # Load everything and count shape types
+        builder_all = newton.ModelBuilder()
+        builder_all.add_usd(stage)
+
+        collision_count = sum(
+            1
+            for i in range(builder_all.shape_count)
+            if builder_all.shape_flags[i] & int(newton.ShapeFlags.COLLIDE_SHAPES)
+        )
+        site_count = sum(
+            1 for i in range(builder_all.shape_count) if builder_all.shape_flags[i] & int(newton.ShapeFlags.SITE)
+        )
+        visual_count = builder_all.shape_count - collision_count - site_count
+
+        # Verify the test asset has all three types
+        self.assertGreater(collision_count, 0, "Test asset should have collision shapes")
+        self.assertGreater(site_count, 0, "Test asset should have sites")
+        self.assertGreater(visual_count, 0, "Test asset should have visual-only shapes")
+
+        # Test sites-only loading
+        builder_sites = newton.ModelBuilder()
+        builder_sites.add_usd(stage, load_sites=True, load_visual_shapes=False)
+        sites_in_result = sum(
+            1 for i in range(builder_sites.shape_count) if builder_sites.shape_flags[i] & int(newton.ShapeFlags.SITE)
+        )
+        self.assertEqual(sites_in_result, site_count, "load_sites=True should load all sites")
+        self.assertEqual(builder_sites.shape_count, collision_count + site_count, "Should have collision + sites only")
+
+        # Test visuals-only loading (no sites)
+        builder_visuals = newton.ModelBuilder()
+        builder_visuals.add_usd(stage, load_sites=False, load_visual_shapes=True)
+        sites_in_visuals = sum(
+            1
+            for i in range(builder_visuals.shape_count)
+            if builder_visuals.shape_flags[i] & int(newton.ShapeFlags.SITE)
+        )
+        self.assertEqual(sites_in_visuals, 0, "load_sites=False should not load any sites")
+        self.assertEqual(
+            builder_visuals.shape_count, collision_count + visual_count, "Should have collision + visuals only"
+        )
 
 
 if __name__ == "__main__":

@@ -1,0 +1,22 @@
+name: Merge Queue - AWS GPU
+
+on:
+  merge_group:
+
+jobs:
+  run-tests:
+    name: Run GPU Tests
+    if: github.repository == 'newton-physics/newton'
+    uses: ./.github/workflows/aws_gpu_tests.yml
+    with:
+      ref: ${{ github.sha }}
+    secrets: inherit
+
+  run-benchmarks:
+    name: Run GPU Benchmarks
+    if: github.repository == 'newton-physics/newton'
+    uses: ./.github/workflows/aws_gpu_benchmarks.yml
+    with:
+      ref: ${{ github.sha }}
+      base_ref: ${{ github.event.merge_group.base_sha }}
+    secrets: inherit

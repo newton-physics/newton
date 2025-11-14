@@ -262,6 +262,17 @@ class TestModel(unittest.TestCase):
         self.assertEqual(builder.shape_type[s2], newton.GeoType.SPHERE)
         self.assertAlmostEqual(builder.shape_scale[s2][0], wp.length(scale))
         assert_np_equal(np.array(builder.shape_transform[s2]), np.array(tf), tol=1.0e-4)
+
+        # test keep_visual_shapes
+        s3 = builder.add_shape_mesh(body=-1, mesh=mesh)
+        builder.approximate_meshes(method="convex_hull", shape_indices=[s3], keep_visual_shapes=True)
+        # approximation is created, but not visible
+        self.assertEqual(len(builder.shape_source[s3].vertices), 5)
+        self.assertEqual(builder.shape_flags[s3] & newton.ShapeFlags.VISIBLE, 0)
+        # a new visual shape is created
+        self.assertIs(builder.shape_source[s3 + 1], mesh)
+        self.assertEqual(builder.shape_flags[s3 + 1] & newton.ShapeFlags.VISIBLE, newton.ShapeFlags.VISIBLE)
+
         # make sure the original mesh is not modified
         self.assertEqual(len(mesh.vertices), 8)
         self.assertEqual(len(mesh.indices), 36)

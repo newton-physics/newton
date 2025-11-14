@@ -29,6 +29,7 @@ from ._src.usd.utils import (
     get_custom_attribute_values,
     get_float,
     get_gprim_axis,
+    get_mesh,
     get_quat,
     get_scale,
     get_transform,
@@ -37,7 +38,6 @@ from ._src.usd.utils import (
 
 __all__ = [
     "convert_warp_type",
-    "convert_warp_type",
     "convert_warp_value",
     "get_attribute",
     "get_attributes_in_namespace",
@@ -45,6 +45,7 @@ __all__ = [
     "get_custom_attribute_values",
     "get_float",
     "get_gprim_axis",
+    "get_mesh",
     "get_quat",
     "get_scale",
     "get_transform",
