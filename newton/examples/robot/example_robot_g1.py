@@ -87,7 +87,6 @@ class Example:
             impratio=100,
             iterations=100,
             ls_iterations=50,
-            contact_stiffness_time_const=self.sim_dt,
             use_mujoco_contacts=args.use_mujoco_contacts if args else False,
         )
 

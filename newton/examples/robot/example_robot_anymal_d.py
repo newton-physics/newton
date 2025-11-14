@@ -89,7 +89,6 @@ class Example:
             ls_iterations=50,
             nconmax=20,
             njmax=100,
-            contact_stiffness_time_const=self.sim_dt,
             use_mujoco_contacts=args.use_mujoco_contacts if args else False,
         )
 

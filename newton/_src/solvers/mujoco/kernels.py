@@ -1086,7 +1086,7 @@ def update_geom_properties_kernel(
     ke, kd = shape_ke[shape_idx], shape_kd[shape_idx]
     if ke > 0.0 and kd > 0.0:
         # kd = 2 / timeconst -> timeconst = 2 / kd
-        # ke = 1 / (timeconst^2 * dampratio^2) -> dampratio = sqrt(1 / timeconst^2 * ke)
+        # ke = 1 / (timeconst^2 * dampratio^2) -> dampratio = sqrt(1 / (timeconst^2 * ke))
         timeconst = 2.0 / kd
         dampratio = wp.sqrt(1.0 / (timeconst * timeconst * ke))
         geom_solref[worldid, geom_idx] = wp.vec2f(timeconst, dampratio)
