@@ -187,12 +187,12 @@ class SolverMuJoCo(SolverBase):
         actuator_gears: dict[str, float] | None = None,
         update_data_interval: int = 1,
         save_to_mjcf: str | None = None,
-        contact_stiffness_time_const: float = 0.02,
         ls_parallel: bool = False,
         use_mujoco_contacts: bool = True,
         joint_solimp_limit: tuple[float, float, float, float, float] | None = None,
         tolerance: float = 1e-6,
         ls_tolerance: float = 0.01,
+        include_sites: bool = True,
     ):
         """
         Args:
@@ -215,17 +215,16 @@ class SolverMuJoCo(SolverBase):
             actuator_gears (dict[str, float] | None): Dictionary mapping joint names to specific gear ratios, overriding the `default_actuator_gear`.
             update_data_interval (int): Frequency (in simulation steps) at which to update the MuJoCo Data object from the Newton state. If 0, Data is never updated after initialization.
             save_to_mjcf (str | None): Optional path to save the generated MJCF model file.
-            contact_stiffness_time_const (float): Time constant for contact stiffness in MuJoCo's solver reference model. Defaults to 0.02 (20ms). Can be set to match the simulation timestep for tighter coupling.
             ls_parallel (bool): If True, enable parallel line search in MuJoCo. Defaults to False.
             use_mujoco_contacts (bool): If True, use the MuJoCo contact solver. If False, use the Newton contact solver (newton contacts must be passed in through the step function in that case).
             joint_solimp_limit (tuple[float, float, float, float, float] | None): Global solver impedance parameters for all joint limits. If provided, applies these solimp values to all joints created. Defaults to None (uses MuJoCo defaults).
             tolerance (float | None): Solver tolerance for early termination of the iterative solver. Defaults to 1e-6 and will be increased to 1e-6 by the MuJoCo solver if a smaller value is provided.
             ls_tolerance (float | None): Solver tolerance for early termination of the line search. Defaults to 0.01.
+            include_sites (bool): If ``True`` (default), Newton shapes marked with ``ShapeFlags.SITE`` are exported as MuJoCo sites. Sites are non-colliding reference points used for sensor attachment, debugging, or as frames of reference. If ``False``, sites are skipped during export. Defaults to ``True``.
         """
         super().__init__(model)
         # Import and cache MuJoCo modules (only happens once per class)
         mujoco, _ = self.import_mujoco()
-        self.contact_stiffness_time_const = contact_stiffness_time_const
         self.joint_solimp_limit = joint_solimp_limit
 
         if use_mujoco_cpu and not use_mujoco_contacts:
@@ -283,6 +282,7 @@ class SolverMuJoCo(SolverBase):
                     ls_parallel=ls_parallel,
                     tolerance=tolerance,
                     ls_tolerance=ls_tolerance,
+                    include_sites=include_sites,
                 )
         self.update_data_interval = update_data_interval
         self._step = 0
@@ -740,7 +740,6 @@ class SolverMuJoCo(SolverBase):
         tolerance: float = 1e-6,
         ls_tolerance: float = 0.01,
         cone: int | str = "pyramidal",
-        geom_solref: tuple[float, float] | None = None,
         geom_solimp: tuple[float, float, float, float, float] = (0.9, 0.95, 0.001, 0.5, 2.0),
         geom_friction: tuple[float, float, float] | None = None,
         target_filename: str | None = None,
@@ -749,6 +748,7 @@ class SolverMuJoCo(SolverBase):
         actuator_gears: dict[str, float] | None = None,
         actuated_axes: list[int] | None = None,
         skip_visual_only_geoms: bool = True,
+        include_sites: bool = True,
         add_axes: bool = False,
         mesh_maxhullvert: int = MESH_MAXHULLVERT,
         ls_parallel: bool = False,
@@ -856,10 +856,7 @@ class SolverMuJoCo(SolverBase):
         defaults = spec.default
         if callable(defaults):
             defaults = defaults()
-        # Use provided or default contact stiffness time constant
-        if geom_solref is None:
-            geom_solref = (self.contact_stiffness_time_const, 1.0)
-        defaults.geom.solref = geom_solref
+        defaults.geom.solref = (0.02, 1.0)
         defaults.geom.solimp = geom_solimp
         # Use model's friction parameters if geom_friction is not provided
         if geom_friction is None:
@@ -1060,10 +1057,47 @@ class SolverMuJoCo(SolverBase):
                 if shape not in selected_shapes_set:
                     # skip shapes that are not selected for this world
                     continue
-                if skip_visual_only_geoms and not (shape_flags[shape] & ShapeFlags.COLLIDE_SHAPES):
+                # Skip visual-only geoms, but don't skip sites
+                is_site = shape_flags[shape] & ShapeFlags.SITE
+                if skip_visual_only_geoms and not is_site and not (shape_flags[shape] & ShapeFlags.COLLIDE_SHAPES):
                     continue
                 stype = shape_type[shape]
                 name = f"{model.shape_key[shape]}_{shape}"
+
+                if is_site:
+                    if not include_sites:
+                        continue
+
+                    # Map unsupported site types to SPHERE
+                    # MuJoCo sites only support: SPHERE, CAPSULE, CYLINDER, BOX
+                    supported_site_types = {GeoType.SPHERE, GeoType.CAPSULE, GeoType.CYLINDER, GeoType.BOX}
+                    site_geom_type = stype if stype in supported_site_types else GeoType.SPHERE
+
+                    tf = wp.transform(*shape_transform[shape])
+                    site_params = {
+                        "type": geom_type_mapping[site_geom_type],
+                        "name": name,
+                        "pos": tf.p,
+                        "quat": quat_to_mjc(tf.q),
+                    }
+
+                    size = shape_size[shape]
+                    # Ensure size is valid for the site type
+                    if np.any(size > 0.0):
+                        nonzero = size[size > 0.0][0]
+                        size[size == 0.0] = nonzero
+                        site_params["size"] = size
+                    else:
+                        site_params["size"] = [0.01, 0.01, 0.01]
+
+                    if shape_flags[shape] & ShapeFlags.VISIBLE:
+                        site_params["rgba"] = [0.0, 1.0, 0.0, 0.5]
+                    else:
+                        site_params["rgba"] = [0.0, 1.0, 0.0, 0.0]
+
+                    body.add_site(**site_params)
+                    continue
+
                 if stype == GeoType.PLANE and newton_body_id != -1:
                     raise ValueError("Planes can only be attached to static bodies")
                 geom_params = {
@@ -1740,7 +1774,6 @@ class SolverMuJoCo(SolverBase):
                 self.mjw_model.mesh_quat,
                 self.model.rigid_contact_torsional_friction,
                 self.model.rigid_contact_rolling_friction,
-                self.contact_stiffness_time_const,
             ],
             outputs=[
                 self.mjw_model.geom_rbound,
