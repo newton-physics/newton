@@ -685,9 +685,9 @@ class TestImportMjcf(unittest.TestCase):
             joint_limit_kd = model.joint_limit_kd.numpy()
 
             # Test joint1: standard mode solreflimit="0.03 0.9"
-            # Expected: ke = 1/(0.03^2) = 1111.11..., kd = 2*0.9/0.03 = 60.0
-            expected_ke_1 = 1.0 / (0.03 * 0.03)
-            expected_kd_1 = 2.0 * 0.9 / 0.03
+            # Expected: ke = 1/(0.03^2 * 0.9^2) = 1371.7421..., kd = 2.0/0.03 = 66.(6)
+            expected_ke_1 = 1.0 / (0.03 * 0.03 * 0.9 * 0.9)
+            expected_kd_1 = 2.0 / 0.03
             self.assertAlmostEqual(joint_limit_ke[0], expected_ke_1, places=2)
             self.assertAlmostEqual(joint_limit_kd[0], expected_kd_1, places=2)
 
@@ -697,9 +697,9 @@ class TestImportMjcf(unittest.TestCase):
             self.assertAlmostEqual(joint_limit_kd[1], 1.0, places=2)
 
             # Test joint3: no solreflimit (should use default 0.02, 1.0)
-            # Expected: ke = 1/(0.02^2) = 2500.0, kd = 2*1.0/0.02 = 100.0
-            expected_ke_3 = 1.0 / (0.02 * 0.02)
-            expected_kd_3 = 2.0 * 1.0 / 0.02
+            # Expected: ke = 1/(0.02^2 * 1.0^2) = 2500.0, kd = 2.0/0.02 = 100.0
+            expected_ke_3 = 1.0 / (0.02 * 0.02 * 1.0 * 1.0)
+            expected_kd_3 = 2.0 / 0.02
             self.assertAlmostEqual(joint_limit_ke[2], expected_ke_3, places=2)
             self.assertAlmostEqual(joint_limit_kd[2], expected_kd_3, places=2)
 

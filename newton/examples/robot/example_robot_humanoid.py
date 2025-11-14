@@ -73,7 +73,6 @@ class Example:
             self.model,
             njmax=100,
             nconmax=50,
-            contact_stiffness_time_const=self.sim_dt,
             use_mujoco_contacts=use_mujoco_contacts,
         )
 

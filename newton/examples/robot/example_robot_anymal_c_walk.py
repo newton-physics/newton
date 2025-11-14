@@ -165,7 +165,6 @@ class Example:
             use_mujoco_contacts=args.use_mujoco_contacts if args else False,
             ls_parallel=True,
             njmax=50,
-            contact_stiffness_time_const=self.sim_dt,
         )
 
         self.viewer.set_model(self.model)
