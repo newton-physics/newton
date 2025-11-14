@@ -10,6 +10,7 @@ newton.sensors
    :nosignatures:
 
    ContactSensor
+   FrameTransformSensor
    MatchKind
    RaycastSensor
 

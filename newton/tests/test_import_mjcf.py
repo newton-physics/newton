@@ -23,6 +23,7 @@ import warp as wp
 import newton
 import newton.examples
 from newton._src.geometry.types import GeoType
+from newton._src.sim.builder import ShapeFlags
 
 
 class TestImportMjcf(unittest.TestCase):
@@ -38,9 +39,11 @@ class TestImportMjcf(unittest.TestCase):
             ignore_names=["floor", "ground"],
             up_axis="Z",
         )
-        self.assertTrue(all(np.array(builder.shape_material_ke) == 123.0))
-        self.assertTrue(all(np.array(builder.shape_material_kd) == 456.0))
-        self.assertTrue(all(np.array(builder.shape_material_mu) == 789.0))
+        # Filter out sites when checking shape material properties (sites don't have these attributes)
+        non_site_indices = [i for i, flags in enumerate(builder.shape_flags) if not (flags & ShapeFlags.SITE)]
+        self.assertTrue(all(np.array(builder.shape_material_ke)[non_site_indices] == 123.0))
+        self.assertTrue(all(np.array(builder.shape_material_kd)[non_site_indices] == 456.0))
+        self.assertTrue(all(np.array(builder.shape_material_mu)[non_site_indices] == 789.0))
         self.assertTrue(all(np.array(builder.joint_armature[:6]) == 0.0))
         self.assertEqual(
             builder.joint_armature[6:],
@@ -699,6 +702,105 @@ class TestImportMjcf(unittest.TestCase):
             expected_kd_3 = 2.0 * 1.0 / 0.02
             self.assertAlmostEqual(joint_limit_ke[2], expected_ke_3, places=2)
             self.assertAlmostEqual(joint_limit_kd[2], expected_kd_3, places=2)
+
+    def test_granular_loading_flags(self):
+        """Test granular control over sites and visual shapes loading."""
+        mjcf_filename = newton.examples.get_asset("nv_humanoid.xml")
+
+        # Test 1: Load all (default behavior)
+        builder_all = newton.ModelBuilder()
+        builder_all.add_mjcf(mjcf_filename, ignore_names=["floor", "ground"], up_axis="Z")
+        count_all = builder_all.shape_count
+
+        # Test 2: Load sites only, no visual shapes
+        builder_sites_only = newton.ModelBuilder()
+        builder_sites_only.add_mjcf(
+            mjcf_filename, parse_sites=True, parse_visuals=False, ignore_names=["floor", "ground"], up_axis="Z"
+        )
+        count_sites_only = builder_sites_only.shape_count
+
+        # Test 3: Load visual shapes only, no sites
+        builder_visuals_only = newton.ModelBuilder()
+        builder_visuals_only.add_mjcf(
+            mjcf_filename, parse_sites=False, parse_visuals=True, ignore_names=["floor", "ground"], up_axis="Z"
+        )
+        count_visuals_only = builder_visuals_only.shape_count
+
+        # Test 4: Load neither (physics collision shapes only)
+        builder_physics_only = newton.ModelBuilder()
+        builder_physics_only.add_mjcf(
+            mjcf_filename, parse_sites=False, parse_visuals=False, ignore_names=["floor", "ground"], up_axis="Z"
+        )
+        count_physics_only = builder_physics_only.shape_count
+
+        # Verify behavior
+        # When loading all, should have most shapes
+        self.assertEqual(count_all, 41, "Loading all should give 41 shapes (sites + visuals + collision)")
+
+        # Sites only should have sites + collision shapes
+        self.assertEqual(count_sites_only, 41, "Sites only should give 41 shapes (22 sites + 19 collision)")
+
+        # Visuals only should have collision shapes only (no sites)
+        self.assertEqual(count_visuals_only, 19, "Visuals only should give 19 shapes (collision only, no sites)")
+
+        # Physics only should have collision shapes only
+        self.assertEqual(count_physics_only, 19, "Physics only should give 19 shapes (collision only)")
+
+        # Verify that sites are actually filtered
+        self.assertLess(count_visuals_only, count_all, "Excluding sites should reduce shape count")
+        self.assertLess(count_physics_only, count_all, "Excluding sites and visuals should reduce shape count")
+
+    def test_parse_sites_backward_compatibility(self):
+        """Test that parse_sites parameter works and maintains backward compatibility."""
+        mjcf_filename = newton.examples.get_asset("nv_humanoid.xml")
+
+        # Default (should parse sites)
+        builder1 = newton.ModelBuilder()
+        builder1.add_mjcf(mjcf_filename, ignore_names=["floor", "ground"], up_axis="Z")
+
+        # Explicitly enable sites
+        builder2 = newton.ModelBuilder()
+        builder2.add_mjcf(mjcf_filename, parse_sites=True, ignore_names=["floor", "ground"], up_axis="Z")
+
+        # Should have same count
+        self.assertEqual(builder1.shape_count, builder2.shape_count, "Default should parse sites")
+
+        # Explicitly disable sites
+        builder3 = newton.ModelBuilder()
+        builder3.add_mjcf(mjcf_filename, parse_sites=False, ignore_names=["floor", "ground"], up_axis="Z")
+
+        # Should have fewer shapes
+        self.assertLess(builder3.shape_count, builder1.shape_count, "Disabling sites should reduce shape count")
+
+    def test_parse_visuals_vs_hide_visuals(self):
+        """Test the distinction between parse_visuals (loading) and hide_visuals (visibility)."""
+        mjcf_filename = newton.examples.get_asset("nv_humanoid.xml")
+
+        # Test 1: parse_visuals=False (don't load)
+        builder_no_load = newton.ModelBuilder()
+        builder_no_load.add_mjcf(
+            mjcf_filename, parse_visuals=False, parse_sites=False, ignore_names=["floor", "ground"], up_axis="Z"
+        )
+
+        # Test 2: hide_visuals=True (load but hide)
+        builder_hidden = newton.ModelBuilder()
+        builder_hidden.add_mjcf(
+            mjcf_filename, hide_visuals=True, parse_sites=False, ignore_names=["floor", "ground"], up_axis="Z"
+        )
+
+        # Note: nv_humanoid.xml doesn't have separate visual-only geometries
+        # so both will have the same count (collision shapes only)
+        # The important thing is that neither crashes and the API works correctly
+        self.assertEqual(
+            builder_no_load.shape_count,
+            builder_hidden.shape_count,
+            "For nv_humanoid.xml, both should have same count (no separate visuals)",
+        )
+
+        # Verify parse_visuals=False doesn't crash
+        self.assertGreater(builder_no_load.shape_count, 0, "Should still load collision shapes")
+        # Verify hide_visuals=True doesn't crash
+        self.assertGreater(builder_hidden.shape_count, 0, "Should still load collision shapes")
 
 
 if __name__ == "__main__":
