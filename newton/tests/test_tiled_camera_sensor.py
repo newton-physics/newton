@@ -53,7 +53,9 @@ class TestTiledCameraSensor(unittest.TestCase):
         builder.add_shape_box(body_box, hx=0.5, hy=0.35, hz=0.5)
 
         # MESH (bunny)
-        usd_stage = Usd.Stage.Open(os.path.join(os.path.dirname(__file__), "assets", "bunny.usd"))
+        bunny_filename = os.path.join(os.path.dirname(__file__), "..", "examples", "assets", "bunny.usd")
+        self.assertTrue(os.path.exists(bunny_filename), f"File not found: {bunny_filename}")
+        usd_stage = Usd.Stage.Open(bunny_filename)
         usd_geom = UsdGeom.Mesh(usd_stage.GetPrimAtPath("/root/bunny"))
 
         mesh_vertices = np.array(usd_geom.GetPointsAttr().Get())
@@ -97,7 +99,7 @@ class TestTiledCameraSensor(unittest.TestCase):
         camera_positions = wp.array([wp.vec3f(10.0, 0.0, 2.0)], dtype=wp.vec3f)
         camera_orientations = wp.array([wp.mat33f(0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0)], dtype=wp.mat33f)
 
-        tiled_camera_sensor = TiledCameraSensor(model=model, num_cameras=1, width=640, height=460)
+        tiled_camera_sensor = TiledCameraSensor(model=model, num_cameras=1, width=320, height=240)
         tiled_camera_sensor.create_default_light()
         tiled_camera_sensor.assign_debug_colors_per_shape()
         tiled_camera_sensor.assign_default_checkerboard_material()
