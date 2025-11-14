@@ -7,7 +7,7 @@ echo "Installing uv"
 curl -LsSf https://astral.sh/uv/install.sh | sh
 
 cd /home/ubuntu/newton
-VIRTUAL_ENV=/home/ubuntu/.venv /home/ubuntu/.local/bin/uv sync --extra notebook --active
+VIRTUAL_ENV=/home/ubuntu/.venv /home/ubuntu/.local/bin/uv sync --extra notebook --extra torch-cu12 --active
 
 echo "Running robot_policy example"
 /home/ubuntu/.local/bin/uv run --extra torch-cu12 -m newton.examples robot_policy --viewer null
