@@ -121,7 +121,6 @@ def render_megakernel(
         # Particles
         particles_position: wp.array(dtype=wp.vec3f),
         particles_radius: wp.array(dtype=wp.float32),
-        particles_world_index: wp.array(dtype=wp.int32),
         # Triangle Mesh:
         triangle_mesh_id: wp.uint64,
         # Materials
@@ -141,7 +140,7 @@ def render_megakernel(
         light_orientations: wp.array(dtype=wp.vec3f),
         # Data
         geom_positions: wp.array(dtype=wp.vec3f),
-        geom_orientations: wp.array(dtype=wp.mat33),
+        geom_orientations: wp.array(dtype=wp.mat33f),
         # Output
         out_pixels: wp.array3d(dtype=wp.uint32),
         out_depth: wp.array3d(dtype=wp.float32),
@@ -353,7 +352,6 @@ def render_megakernel(
             # Particles
             rc.particles_position,
             rc.particles_radius,
-            rc.particles_world_index,
             # Triangle Mesh
             rc.triangle_mesh.id if rc.triangle_mesh is not None else 0,
             # Textures

@@ -283,7 +283,9 @@ class RenderContext:
 
     @property
     def num_lights(self) -> int:
-        return self.__lights_active.shape[0]
+        if self.__lights_active is not None:
+            return self.__lights_active.shape[0]
+        return 0
 
     @property
     def mesh_bounds(self) -> wp.array2d(dtype=wp.vec3f):
