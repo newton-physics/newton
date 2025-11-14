@@ -379,6 +379,8 @@ class Example:
         rng = np.random.default_rng(seed)
 
         articulation_builder = newton.ModelBuilder()
+        articulation_builder.default_shape_cfg.ke = 1.0e3
+        articulation_builder.default_shape_cfg.kd = 1.0e2
         newton.solvers.SolverMuJoCo.register_custom_attributes(articulation_builder)
         if robot == "humanoid":
             root_dofs = _setup_humanoid(articulation_builder)
@@ -410,6 +412,8 @@ class Example:
                 builder.joint_q[istart + root_dofs : istart + njoint] = rng.uniform(
                     -1.0, 1.0, size=(njoint - root_dofs)
                 ).tolist()
+        builder.default_shape_cfg.ke = 1.0e3
+        builder.default_shape_cfg.kd = 1.0e2
         builder.add_ground_plane()
         return builder
 
