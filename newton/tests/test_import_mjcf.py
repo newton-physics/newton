@@ -23,6 +23,7 @@ import warp as wp
 import newton
 import newton.examples
 from newton._src.geometry.types import GeoType
+from newton.solvers import SolverMuJoCo
 
 
 class TestImportMjcf(unittest.TestCase):
@@ -699,6 +700,171 @@ class TestImportMjcf(unittest.TestCase):
             expected_kd_3 = 2.0 * 1.0 / 0.02
             self.assertAlmostEqual(joint_limit_ke[2], expected_ke_3, places=2)
             self.assertAlmostEqual(joint_limit_kd[2], expected_kd_3, places=2)
+
+    def test_joint_stiffness_damping(self):
+        mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="stiffness_damping_comprehensive_test">
+    <worldbody>
+        <body name="body1" pos="0 0 1">
+            <joint name="joint1" type="hinge" axis="0 0 1" stiffness="0.05" damping="0.5" range="-45 45"/>
+            <geom type="box" size="0.1 0.1 0.1"/>
+        </body>
+        <body name="body2" pos="1 0 1">
+            <joint name="joint2" type="hinge" axis="0 1 0" range="-30 30"/>
+            <geom type="box" size="0.1 0.1 0.1"/>
+        </body>
+        <body name="body3" pos="2 0 1">
+            <joint name="joint3" type="hinge" axis="1 0 0" stiffness="0.1" damping="0.8" range="-60 60"/>
+            <geom type="box" size="0.1 0.1 0.1"/>
+        </body>
+        <body name="body4" pos="3 0 1">
+            <joint name="joint4" type="hinge" axis="0 1 0" stiffness="0.02" damping="0.3" range="-90 90"/>
+            <geom type="box" size="0.1 0.1 0.1"/>
+        </body>
+    </worldbody>
+    <actuator>
+        <position joint="joint1" kp="10000.0" kv="2000.0"/>
+        <velocity joint="joint1" kv="500.0"/>
+        <position joint="joint2" kp="5000.0" kv="1000.0"/>
+        <velocity joint="joint2" kv="300.0"/>
+        <velocity joint="joint4" kv="3000.0"/>
+    </actuator>
+</mujoco>
+"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mjcf_path = os.path.join(tmpdir, "passive_and_active_test.xml")
+            with open(mjcf_path, "w") as f:
+                f.write(mjcf_content)
+
+            builder = newton.ModelBuilder()
+            SolverMuJoCo.register_custom_attributes(builder)
+            builder.add_mjcf(mjcf_path)
+            model = builder.finalize()
+
+            self.assertTrue(hasattr(model, "mujoco"))
+            self.assertTrue(hasattr(model.mujoco, "stiffness"))
+            self.assertTrue(hasattr(model.mujoco, "damping"))
+
+            joint_names = model.joint_key
+            joint_qd_start = model.joint_qd_start.numpy()
+            joint_stiffness = model.mujoco.stiffness.numpy()
+            joint_damping = model.mujoco.damping.numpy()
+            joint_target_ke = model.joint_target_ke.numpy()
+            joint_target_kd = model.joint_target_kd.numpy()
+
+            expected_values = {
+                "joint1": {"stiffness": 0.05, "damping": 0.5, "target_ke": 10000.0, "target_kd": 500.0},
+                "joint2": {"stiffness": 0.0, "damping": 0.0, "target_ke": 5000.0, "target_kd": 300.0},
+                "joint3": {"stiffness": 0.1, "damping": 0.8, "target_ke": 0.0, "target_kd": 0.0},
+                "joint4": {"stiffness": 0.02, "damping": 0.3, "target_ke": 0.0, "target_kd": 3000.0},
+            }
+
+            for joint_name, expected in expected_values.items():
+                joint_idx = joint_names.index(joint_name)
+                dof_idx = joint_qd_start[joint_idx]
+                self.assertAlmostEqual(joint_stiffness[dof_idx], expected["stiffness"], places=4)
+                self.assertAlmostEqual(joint_damping[dof_idx], expected["damping"], places=4)
+                self.assertAlmostEqual(joint_target_ke[dof_idx], expected["target_ke"], places=1)
+                self.assertAlmostEqual(joint_target_kd[dof_idx], expected["target_kd"], places=1)
+
+            solver = SolverMuJoCo(model, separate_worlds=False)
+            mj_model = solver.mj_model
+            mjw_model = solver.mjw_model
+            joint_mjc_dof_start = solver.joint_mjc_dof_start.numpy()
+            mjc_axis_to_actuator = solver.mjc_axis_to_actuator.numpy()
+
+            mujoco_expected = {
+                "joint1": {
+                    "dof_damping": 0.5,
+                    "jnt_stiffness": 0.05,
+                    "has_actuator": True,
+                    "pos_gain": 10000.0,
+                    "pos_bias": 10000.0,
+                    "vel_gain": 500.0,
+                    "vel_bias": 500.0,
+                },
+                "joint2": {
+                    "dof_damping": 0.0,
+                    "jnt_stiffness": 0.0,
+                    "has_actuator": True,
+                    "pos_gain": 5000.0,
+                    "pos_bias": 5000.0,
+                    "vel_gain": 300.0,
+                    "vel_bias": 300.0,
+                },
+                "joint3": {"dof_damping": 0.8, "jnt_stiffness": 0.1, "has_actuator": False},
+                "joint4": {
+                    "dof_damping": 0.3,
+                    "jnt_stiffness": 0.02,
+                    "has_actuator": True,
+                    "pos_gain": 0.0,
+                    "vel_gain": 3000.0,
+                    "vel_bias": 3000.0,
+                    "velocity_only": True,
+                },
+            }
+
+            for joint_name, expected in mujoco_expected.items():
+                joint_idx = joint_names.index(joint_name)
+                dof_idx = joint_qd_start[joint_idx]
+                mjc_dof_idx = joint_mjc_dof_start[joint_idx]
+
+                self.assertAlmostEqual(mj_model.dof_damping[mjc_dof_idx], expected["dof_damping"], places=4)
+                self.assertAlmostEqual(
+                    mjw_model.jnt_stiffness.numpy()[0, joint_idx], expected["jnt_stiffness"], places=4
+                )
+
+                pos_actuator_idx = int(mjc_axis_to_actuator[dof_idx, 0])
+                vel_actuator_idx = int(mjc_axis_to_actuator[dof_idx, 1])
+
+                if expected["has_actuator"]:
+                    self.assertNotEqual(vel_actuator_idx, -1)
+
+                    if expected.get("velocity_only", False):
+                        if pos_actuator_idx != -1:
+                            pos_gainprm = mj_model.actuator_gainprm[pos_actuator_idx]
+                            self.assertAlmostEqual(pos_gainprm[0], expected["pos_gain"], places=1)
+                    else:
+                        self.assertNotEqual(pos_actuator_idx, -1)
+                        pos_gainprm = mj_model.actuator_gainprm[pos_actuator_idx]
+                        self.assertAlmostEqual(pos_gainprm[0], expected["pos_gain"], places=1)
+
+                        if "pos_bias" in expected:
+                            pos_biasprm = mj_model.actuator_biasprm[pos_actuator_idx]
+                            self.assertAlmostEqual(-pos_biasprm[1], expected["pos_bias"], places=1)
+
+                    vel_gainprm = mj_model.actuator_gainprm[vel_actuator_idx]
+                    self.assertAlmostEqual(vel_gainprm[0], expected["vel_gain"], places=1)
+
+                    if "vel_bias" in expected:
+                        vel_biasprm = mj_model.actuator_biasprm[vel_actuator_idx]
+                        self.assertAlmostEqual(-vel_biasprm[2], expected["vel_bias"], places=1)
+                else:
+                    if pos_actuator_idx != -1:
+                        pos_gainprm = mj_model.actuator_gainprm[pos_actuator_idx]
+                        self.assertAlmostEqual(pos_gainprm[0], 0.0, places=4)
+                    if vel_actuator_idx != -1:
+                        vel_gainprm = mj_model.actuator_gainprm[vel_actuator_idx]
+                        self.assertAlmostEqual(vel_gainprm[0], 0.0, places=4)
+
+            new_stiffness_np = model.mujoco.stiffness.numpy().copy()
+            new_damping_np = model.mujoco.damping.numpy().copy()
+
+            joint1_idx = joint_names.index("joint1")
+            joint1_dof_idx = joint_qd_start[joint1_idx]
+
+            new_stiffness_np[joint1_dof_idx] = 0.15
+            new_damping_np[joint1_dof_idx] = 1.5
+
+            model.mujoco.stiffness.assign(new_stiffness_np)
+            model.mujoco.damping.assign(new_damping_np)
+            solver.notify_model_changed(newton.solvers.SolverNotifyFlags.JOINT_DOF_PROPERTIES)
+
+            mjc_dof_idx = joint_mjc_dof_start[joint1_idx]
+
+            updated_dof_damping = mjw_model.dof_damping.numpy()[0, mjc_dof_idx]
+            self.assertAlmostEqual(updated_dof_damping, 1.5, places=4)
+            self.assertAlmostEqual(mjw_model.jnt_stiffness.numpy()[0, joint1_idx], 0.15, places=4)
 
 
 if __name__ == "__main__":
