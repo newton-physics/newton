@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import warp as wp
 
-from .bvh import compute_geom_bvh_bounds, compute_particle_bvh_bounds, compute_bvh_group_roots
+from .bvh import compute_bvh_group_roots, compute_geom_bvh_bounds, compute_particle_bvh_bounds
 from .render import render_megakernel
 
 
@@ -127,15 +127,25 @@ class RenderContext:
             self.__compute_bvh_geom_bounds()
             if self.bvh_geom is None:
                 self.__bvh_geom = wp.Bvh(self.bvh_geom_lowers, self.bvh_geom_uppers, groups=self.bvh_geom_groups)
-                wp.launch(kernel=compute_bvh_group_roots, dim=self.num_worlds_total, inputs=[self.bvh_geom.id, self.bvh_geom_group_roots])
+                wp.launch(
+                    kernel=compute_bvh_group_roots,
+                    dim=self.num_worlds_total,
+                    inputs=[self.bvh_geom.id, self.bvh_geom_group_roots],
+                )
             else:
                 self.bvh_geom.refit()
 
         if self.num_particle_in_bvh_total:
             self.__compute_bvh_particle_bounds()
             if self.bvh_particles is None:
-                self.__bvh_particles = wp.Bvh(self.bvh_particles_lowers, self.bvh_particles_uppers, groups=self.bvh_particles_groups)
-                wp.launch(kernel=compute_bvh_group_roots, dim=self.num_worlds_total, inputs=[self.bvh_particles.id, self.bvh_particles_group_roots])
+                self.__bvh_particles = wp.Bvh(
+                    self.bvh_particles_lowers, self.bvh_particles_uppers, groups=self.bvh_particles_groups
+                )
+                wp.launch(
+                    kernel=compute_bvh_group_roots,
+                    dim=self.num_worlds_total,
+                    inputs=[self.bvh_particles.id, self.bvh_particles_group_roots],
+                )
             else:
                 self.bvh_particles.refit()
 
@@ -196,7 +206,7 @@ class RenderContext:
         if self.has_global_world:
             return self.num_worlds + 1
         return self.num_worlds
-    
+
     @property
     def num_geom_in_bvh(self) -> int:
         return self.__num_geom_in_bvh
@@ -242,7 +252,7 @@ class RenderContext:
     @property
     def enable_shadows(self) -> bool:
         return self.__enable_shadows
-    
+
     @enable_shadows.setter
     def enable_shadows(self, enable_shadows: bool):
         self.__enable_shadows = enable_shadows

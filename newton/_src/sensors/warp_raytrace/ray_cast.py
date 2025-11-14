@@ -196,7 +196,9 @@ def closest_hit_triangle_mesh(
     ray_dir_world: wp.vec3f,
 ) -> ClosestHit:
     if triangle_mesh_id:
-        hit, max_distance, normal, bary_u, bary_v, face_idx = ray.ray_mesh(triangle_mesh_id, ray_origin_world, ray_dir_world, closest_hit.distance, True)
+        hit, max_distance, normal, bary_u, bary_v, face_idx = ray.ray_mesh(
+            triangle_mesh_id, ray_origin_world, ray_dir_world, closest_hit.distance, True
+        )
         if hit:
             closest_hit.distance = max_distance
             closest_hit.normal = normal
@@ -232,7 +234,6 @@ def closest_hit(
     ray_origin_world: wp.vec3f,
     ray_dir_world: wp.vec3f,
 ) -> ClosestHit:
-    
     closest_hit = ClosestHit()
     closest_hit.distance = max_distance
     closest_hit.normal = wp.vec3f(0.0, 0.0, 0.0)
@@ -242,12 +243,7 @@ def closest_hit(
     closest_hit.face_idx = wp.int32(-1)
     closest_hit.geom_mesh_id = wp.int32(-1)
 
-    closest_hit = closest_hit_triangle_mesh(
-        closest_hit,
-        triangle_mesh_id,
-        ray_origin_world,
-        ray_dir_world
-    )
+    closest_hit = closest_hit_triangle_mesh(closest_hit, triangle_mesh_id, ray_origin_world, ray_dir_world)
 
     closest_hit = closest_hit_geom(
         closest_hit,
@@ -266,7 +262,7 @@ def closest_hit(
         ray_dir_world,
     )
 
-    if not triangle_mesh_id: # TODO For now disable particles if there is a triangle mesh, need to properly check if a particle is part of a triangle mesh ..
+    if not triangle_mesh_id:  # TODO For now disable particles if there is a triangle mesh, need to properly check if a particle is part of a triangle mesh ..
         closest_hit = closest_hit_particles(
             closest_hit,
             bvh_particles_size,
@@ -280,37 +276,6 @@ def closest_hit(
         )
 
     return closest_hit
-    
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 @wp.func
@@ -330,7 +295,6 @@ def first_hit_geom(
     ray_dir_world: wp.vec3f,
     max_dist: wp.float32,
 ) -> wp.bool:
-
     if bvh_geom_size:
         for i in range(2):
             world_id, group_root = get_group_roots(bvh_geom_group_roots, world_id, i)
@@ -409,7 +373,6 @@ def first_hit_geom(
     return False
 
 
-
 @wp.func
 def first_hit_particles(
     bvh_particles_size: wp.int32,
@@ -420,7 +383,7 @@ def first_hit_particles(
     particles_radius: wp.array(dtype=wp.float32),
     ray_origin_world: wp.vec3f,
     ray_dir_world: wp.vec3f,
-    max_dist: wp.float32
+    max_dist: wp.float32,
 ) -> wp.bool:
     if bvh_particles_size:
         for i in range(2):
@@ -446,7 +409,6 @@ def first_hit_particles(
     return False
 
 
-
 @wp.func
 def first_hit_triangle_mesh(
     triangle_mesh_id: wp.uint64,
@@ -455,7 +417,9 @@ def first_hit_triangle_mesh(
     max_dist: wp.float32,
 ) -> wp.bool:
     if triangle_mesh_id:
-        hit, _max_distance, _normal, _bary_u, _bary_v, _face_idx = ray.ray_mesh(triangle_mesh_id, ray_origin_world, ray_dir_world, max_dist, True)
+        hit, _max_distance, _normal, _bary_u, _bary_v, _face_idx = ray.ray_mesh(
+            triangle_mesh_id, ray_origin_world, ray_dir_world, max_dist, True
+        )
         return hit
     return False
 
@@ -483,15 +447,39 @@ def first_hit(
     ray_dir_world: wp.vec3f,
     max_dist: wp.float32,
 ) -> wp.bool:
-
     if first_hit_triangle_mesh(triangle_mesh_id, ray_origin_world, ray_dir_world, max_dist):
         return True
 
-    if first_hit_geom(bvh_geom_size, bvh_geom_id, bvh_geom_group_roots, world_id, geom_enabled, geom_types, geom_mesh_indices, geom_sizes, mesh_ids, geom_positions, geom_orientations, ray_origin_world, ray_dir_world, max_dist):
+    if first_hit_geom(
+        bvh_geom_size,
+        bvh_geom_id,
+        bvh_geom_group_roots,
+        world_id,
+        geom_enabled,
+        geom_types,
+        geom_mesh_indices,
+        geom_sizes,
+        mesh_ids,
+        geom_positions,
+        geom_orientations,
+        ray_origin_world,
+        ray_dir_world,
+        max_dist,
+    ):
         return True
 
-    if not triangle_mesh_id: # TODO For now disable particles if there is a triangle mesh, need to properly check if a particle is part of a triangle mesh ..
-        if first_hit_particles(bvh_particles_size, bvh_particles_id, bvh_particles_group_roots, world_id, particles_position, particles_radius, ray_origin_world, ray_dir_world, max_dist):
+    if not triangle_mesh_id:  # TODO For now disable particles if there is a triangle mesh, need to properly check if a particle is part of a triangle mesh ..
+        if first_hit_particles(
+            bvh_particles_size,
+            bvh_particles_id,
+            bvh_particles_group_roots,
+            world_id,
+            particles_position,
+            particles_radius,
+            ray_origin_world,
+            ray_dir_world,
+            max_dist,
+        ):
             return True
 
     return False
