@@ -98,7 +98,6 @@ class Example:
             xform=wp.transform(wp.vec3(0, 0, 0.5)),
             enable_self_collisions=True,
             ignore_paths=[".*Dummy", ".*CollisionPlane", ".*goal", ".*DexCube/visuals"],
-            load_non_physics_prims=True,
         )
 
         # hide collision shapes for the hand links

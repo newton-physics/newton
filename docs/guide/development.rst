@@ -212,7 +212,7 @@ To build the documentation locally, ensure you have the documentation dependenci
         .. code-block:: console
 
             rm -rf docs/_build
-            uv run --extra docs sphinx-build -W -b html docs docs/_build/html
+            uv run --extra docs --extra sim sphinx-build -W -b html docs docs/_build/html
 
     .. tab-item:: venv
         :sync: venv
@@ -239,7 +239,7 @@ The doctests can be run with:
 
         .. code-block:: console
 
-            uv run --extra docs sphinx-build -W -b doctest docs docs/_build/doctest
+            uv run --extra docs --extra sim sphinx-build -W -b doctest docs docs/_build/doctest
 
     .. tab-item:: venv
         :sync: venv
