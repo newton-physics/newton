@@ -403,7 +403,7 @@ class TiledCameraSensor:
         Sets up a single directional light oriented at (-1, 1, -1) with shadow casting enabled.
         """
 
-        self.render_context.use_shadows = True
+        self.render_context.enable_shadows = True
         self.render_context.lights_active = wp.array([True], dtype=wp.bool)
         self.render_context.lights_type = wp.array([LightType.DIRECTIONAL], dtype=wp.int32)
         self.render_context.lights_cast_shadow = wp.array([True], dtype=wp.bool)
@@ -429,7 +429,7 @@ class TiledCameraSensor:
         ) % 2 == 0
         pixels = np.where(checkerboard, 0xFF808080, 0xFFBFBFBF).astype(np.uint32).flatten()
 
-        self.render_context.use_textures = True
+        self.render_context.enable_textures = True
         self.render_context.texture_data = wp.array(pixels, dtype=wp.uint32)
         self.render_context.texture_offsets = wp.array([0], dtype=wp.int32)
         self.render_context.texture_width = wp.array([resolution], dtype=wp.int32)
