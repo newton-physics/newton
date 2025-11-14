@@ -100,7 +100,7 @@ jobs:
         run: uv python install
 
       - name: Run Tests
-        run: uv run --extra dev -m newton.tests --junit-report-xml rspec.xml --coverage --coverage-xml coverage.xml
+        run: uv run --extra dev --extra torch-cu12 -m newton.tests --junit-report-xml rspec.xml --coverage --coverage-xml coverage.xml
 
       - name: Test Summary
         if: ${{ !cancelled() }}
