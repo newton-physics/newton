@@ -1023,7 +1023,8 @@ def update_joint_transforms_kernel(
         return
 
     newton_dof_start = joint_dof_start[tid]
-    mjc_joint_index = template_dof_to_mjc_joint[newton_dof_start]
+    template_dof_start = joint_dof_start[joint_in_world]
+    mjc_joint_index = template_dof_to_mjc_joint[template_dof_start]
 
     # update linear dofs
     for i in range(lin_axis_count):
