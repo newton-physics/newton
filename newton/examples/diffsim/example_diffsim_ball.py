@@ -28,7 +28,7 @@
 ###########################################################################
 import numpy as np
 import warp as wp
-import warp.render
+from warp.render import bourke_color_map
 
 import newton
 import newton.examples
@@ -185,6 +185,7 @@ class Example:
             traj_verts.append(state.particle_q.numpy()[0].tolist())
 
             self.viewer.begin_frame(self.frame * self.frame_dt)
+            self.viewer.log_scalar("/loss", self.loss.numpy()[0])
             self.viewer.log_state(state)
             self.viewer.log_contacts(self.contacts, state)
             self.viewer.log_shapes(
@@ -198,7 +199,7 @@ class Example:
                 f"/traj_{self.train_iter - 1}",
                 wp.array(traj_verts[0:-1], dtype=wp.vec3),
                 wp.array(traj_verts[1:], dtype=wp.vec3),
-                wp.render.bourke_color_map(0.0, 7.0, self.loss.numpy()[0]),
+                bourke_color_map(0.0, 7.0, self.loss.numpy()[0]),
             )
             self.viewer.end_frame()
 
