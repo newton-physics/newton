@@ -10,7 +10,7 @@ cd /home/ubuntu/newton
 VIRTUAL_ENV=/home/ubuntu/.venv /home/ubuntu/.local/bin/uv sync --extra notebook --extra torch-cu12 --active
 
 echo "Running robot_policy example"
-/home/ubuntu/.local/bin/uv run --extra torch-cu12 -m newton.examples robot_policy --viewer null
+VIRTUAL_ENV=/home/ubuntu/.venv /home/ubuntu/.local/bin/uv run --extra torch-cu12 -m newton.examples robot_policy --viewer null
 
 # fix messed up Jupyter Lab installation
 VIRTUAL_ENV=/home/ubuntu/.venv /home/ubuntu/.local/bin/uv pip install --upgrade --force-reinstall --no-cache-dir jupyter
