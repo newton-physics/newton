@@ -180,7 +180,7 @@ uv sync --extra examples
   </tr>
   <tr>
     <td align="center">
-      <code>uv run -m newton.examples robot_policy</code>
+      <code>uv run --extra torch-cu12 -m newton.examples robot_policy</code>
     </td>
     <td align="center">
       <code>uv run -m newton.examples robot_ur10</code>
