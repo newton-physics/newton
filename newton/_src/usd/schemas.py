@@ -213,15 +213,12 @@ def solref_to_stiffness_damping(solref):
         return -timeconst, -dampratio
 
     # Standard mode: compute stiffness and damping
-    if timeconst <= 0.0:
+    if timeconst <= 0.0 or dampratio <= 0.0:
         return None, None
 
     stiffness = 1.0 / (timeconst * timeconst * dampratio * dampratio)
-
-    if dampratio <= 0.0:
-        return stiffness, None
-
     damping = 2.0 / timeconst
+
     return stiffness, damping
 
 
