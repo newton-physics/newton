@@ -49,8 +49,8 @@ class Example:
         articulation_builder.default_joint_cfg = newton.ModelBuilder.JointDofConfig(
             limit_ke=1.0e3, limit_kd=1.0e1, friction=1e-5
         )
-        articulation_builder.default_shape_cfg.ke = 5.0e4
-        articulation_builder.default_shape_cfg.kd = 5.0e2
+        articulation_builder.default_shape_cfg.ke = 2.0e3
+        articulation_builder.default_shape_cfg.kd = 1.0e2
         articulation_builder.default_shape_cfg.kf = 1.0e3
         articulation_builder.default_shape_cfg.mu = 0.75
 
@@ -60,7 +60,6 @@ class Example:
             asset_file,
             collapse_fixed_joints=False,
             enable_self_collisions=False,
-            load_non_physics_prims=True,
             hide_collision_shapes=True,
         )
 
@@ -68,8 +67,7 @@ class Example:
         if len(articulation_builder.joint_q) > 6:
             articulation_builder.joint_q[3:7] = [0.0, 0.0, 0.0, 1.0]
 
-        for i in range(len(articulation_builder.joint_dof_mode)):
-            articulation_builder.joint_dof_mode[i] = newton.JointMode.TARGET_POSITION
+        for i in range(articulation_builder.joint_dof_count):
             articulation_builder.joint_target_ke[i] = 150
             articulation_builder.joint_target_kd[i] = 5
 
@@ -77,6 +75,8 @@ class Example:
         for _ in range(self.num_worlds):
             builder.add_builder(articulation_builder)
 
+        builder.default_shape_cfg.ke = 1.0e3
+        builder.default_shape_cfg.kd = 1.0e2
         builder.add_ground_plane()
 
         self.model = builder.finalize()
@@ -88,7 +88,6 @@ class Example:
             ls_iterations=50,
             nconmax=20,
             njmax=100,
-            contact_stiffness_time_const=self.sim_dt,
             use_mujoco_contacts=args.use_mujoco_contacts if args else False,
         )
 
@@ -124,9 +123,7 @@ class Example:
 
             # apply forces to the model for picking, wind, etc
             self.viewer.apply_forces(self.state_0)
-
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
-
             # swap states
             self.state_0, self.state_1 = self.state_1, self.state_0
 

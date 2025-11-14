@@ -44,6 +44,8 @@ def parse_mjcf(
     hide_visuals: bool = False,
     parse_visuals_as_colliders: bool = False,
     parse_meshes: bool = True,
+    parse_sites: bool = True,
+    parse_visuals: bool = True,
     up_axis: AxisType = Axis.Z,
     ignore_names: Sequence[str] = (),
     ignore_classes: Sequence[str] = (),
@@ -71,9 +73,11 @@ def parse_mjcf(
         base_joint (Union[str, dict]): The joint by which the root body is connected to the world. This can be either a string defining the joint axes of a D6 joint with comma-separated positional and angular axis names (e.g. "px,py,rz" for a D6 joint with linear axes in x, y and an angular axis in z) or a dict with joint parameters (see :meth:`ModelBuilder.add_joint`).
         armature_scale (float): Scaling factor to apply to the MJCF-defined joint armature values.
         scale (float): The scaling factor to apply to the imported mechanism.
-        hide_visuals (bool): If True, hide visual shapes.
+        hide_visuals (bool): If True, hide visual shapes after loading them (affects visibility, not loading).
         parse_visuals_as_colliders (bool): If True, the geometry defined under the `visual_classes` tags is used for collision handling instead of the `collider_classes` geometries.
         parse_meshes (bool): Whether geometries of type `"mesh"` should be parsed. If False, geometries of type `"mesh"` are ignored.
+        parse_sites (bool): Whether sites (non-colliding reference points) should be parsed. If False, sites are ignored.
+        parse_visuals (bool): Whether visual geometries (non-collision shapes) should be loaded. If False, visual shapes are not loaded (different from `hide_visuals` which loads but hides them). Default is True.
         up_axis (AxisType): The up axis of the MuJoCo scene. The default is Z up.
         ignore_names (Sequence[str]): A list of regular expressions. Bodies and joints with a name matching one of the regular expressions will be ignored.
         ignore_classes (Sequence[str]): A list of regular expressions. Bodies and joints with a class matching one of the regular expressions will be ignored.
@@ -446,6 +450,86 @@ def parse_mjcf(
 
         return shapes
 
+    def _parse_sites_impl(defaults, body_name, link, sites, incoming_xform=None):
+        """Parse site elements from MJCF."""
+        from ..geometry import GeoType  # noqa: PLC0415
+
+        site_shapes = []
+        for site_count, site in enumerate(sites):
+            site_defaults = defaults
+            if "class" in site.attrib:
+                site_class = site.attrib["class"]
+                ignore_site = False
+                for pattern in ignore_classes:
+                    if re.match(pattern, site_class):
+                        ignore_site = True
+                        break
+                if ignore_site:
+                    continue
+                if site_class in class_defaults:
+                    site_defaults = merge_attrib(defaults, class_defaults[site_class])
+
+            if "site" in site_defaults:
+                site_attrib = merge_attrib(site_defaults["site"], site.attrib)
+            else:
+                site_attrib = site.attrib
+
+            site_name = site_attrib.get("name", f"{body_name}_site_{site_count}")
+
+            # Check if site should be ignored by name
+            ignore_site = False
+            for pattern in ignore_names:
+                if re.match(pattern, site_name):
+                    ignore_site = True
+                    break
+            if ignore_site:
+                continue
+
+            # Parse site transform
+            site_pos = parse_vec(site_attrib, "pos", (0.0, 0.0, 0.0)) * scale
+            site_rot = parse_orientation(site_attrib)
+            site_xform = wp.transform(site_pos, site_rot)
+
+            if incoming_xform is not None:
+                site_xform = incoming_xform * site_xform
+
+            # Parse site type (defaults to sphere if not specified)
+            site_type = site_attrib.get("type", "sphere")
+            site_size = parse_vec(site_attrib, "size", [0.01, 0.01, 0.01]) * scale
+
+            # Map MuJoCo site types to Newton GeoType
+            type_map = {
+                "sphere": GeoType.SPHERE,
+                "box": GeoType.BOX,
+                "capsule": GeoType.CAPSULE,
+                "cylinder": GeoType.CYLINDER,
+                "ellipsoid": GeoType.ELLIPSOID,
+            }
+            geo_type = type_map.get(site_type, GeoType.SPHERE)
+
+            # Sites are typically hidden by default
+            visible = False
+
+            # Expand to 3-element vector
+            if len(site_size) == 2:
+                # Two values (e.g., capsule/cylinder: radius, half-height)
+                radius = site_size[0]
+                half_height = site_size[1]
+                site_size = wp.vec3(radius, half_height, 0.0)
+
+            # Add site using builder.add_site()
+            s = builder.add_site(
+                body=link,
+                xform=site_xform,
+                type=geo_type,
+                scale=site_size,
+                key=site_name,
+                visible=visible,
+            )
+            site_shapes.append(s)
+
+        return site_shapes
+
     def parse_body(
         body,
         parent,
@@ -706,7 +790,7 @@ def parse_mjcf(
 
         if parse_visuals_as_colliders:
             colliders = visuals
-        else:
+        elif parse_visuals:
             s = parse_shapes(
                 defaults,
                 body_name,
@@ -721,8 +805,8 @@ def parse_mjcf(
         show_colliders = force_show_colliders
         if parse_visuals_as_colliders:
             show_colliders = True
-        elif len(visuals) == 0:
-            # we need to show the collision shapes since there are no visual shapes
+        elif len(visuals) == 0 or not parse_visuals:
+            # we need to show the collision shapes since there are no visual shapes (or we're not loading them)
             show_colliders = True
 
         parse_shapes(
@@ -733,6 +817,17 @@ def parse_mjcf(
             density=default_shape_density,
             visible=show_colliders,
         )
+
+        # Parse sites (non-colliding reference points)
+        if parse_sites:
+            sites = body.findall("site")
+            if sites:
+                _parse_sites_impl(
+                    defaults,
+                    body_name,
+                    link,
+                    sites=sites,
+                )
 
         m = builder.body_mass[link]
         if not ignore_inertial_definitions and body.find("inertial") is not None:
@@ -936,6 +1031,15 @@ def parse_mjcf(
         density=default_shape_density,
         incoming_xform=xform,
     )
+
+    if parse_sites:
+        _parse_sites_impl(
+            defaults=world_defaults,
+            body_name="world",
+            link=-1,
+            sites=world.findall("site"),
+            incoming_xform=xform,
+        )
 
     # -----------------
     # add equality constraints

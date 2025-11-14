@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import time  # Added for the interactive loop
+import time
 import unittest
 
 import numpy as np  # For numerical operations and random values
@@ -26,10 +26,6 @@ from newton.tests.unittest_utils import USD_AVAILABLE
 
 
 class TestMuJoCoSolver(unittest.TestCase):
-    def setUp(self):
-        "Hook method for setting up the test fixture before exercising it."
-        pass
-
     def _run_substeps_for_frame(self, sim_dt, sim_substeps):
         """Helper method to run simulation substeps for one rendered frame."""
         for _ in range(sim_substeps):
@@ -571,30 +567,6 @@ class TestMuJoCoSolverJointProperties(TestMuJoCoSolverPropertiesBase):
         # Step 2: Create solver (this should apply values to MuJoCo)
         solver = SolverMuJoCo(self.model, iterations=1, disable_contacts=True)
 
-        # Step 3: Verify initial values were applied to MuJoCo
-
-        # Check effort limits: Newton value should appear as MuJoCo actuator force range
-        for world_idx in range(self.model.num_worlds):
-            for axis_idx in range(dofs_per_world):
-                global_axis_idx = world_idx * dofs_per_world + axis_idx
-                actuator_idx = solver.mjc_axis_to_actuator.numpy()[axis_idx]
-
-                if actuator_idx >= 0:  # This axis has an actuator
-                    force_range = solver.mjw_model.actuator_forcerange.numpy()[world_idx, actuator_idx]
-                    expected_limit = initial_effort_limits[global_axis_idx]
-                    self.assertAlmostEqual(
-                        force_range[0],
-                        -expected_limit,
-                        places=3,
-                        msg=f"MuJoCo actuator {actuator_idx} in world {world_idx} min force should match negative Newton effort limit",
-                    )
-                    self.assertAlmostEqual(
-                        force_range[1],
-                        expected_limit,
-                        places=3,
-                        msg=f"MuJoCo actuator {actuator_idx} in world {world_idx} max force should match Newton effort limit",
-                    )
-
         # Check armature: Newton value should appear directly in MuJoCo DOF armature
         for world_idx in range(self.model.num_worlds):
             for dof_idx in range(min(dofs_per_world, solver.mjw_model.dof_armature.shape[1])):
@@ -652,30 +624,6 @@ class TestMuJoCoSolverJointProperties(TestMuJoCoSolverPropertiesBase):
 
         # Step 5: Notify MuJoCo of changes
         solver.notify_model_changed(SolverNotifyFlags.JOINT_DOF_PROPERTIES)
-
-        # Step 6: Verify all changes were applied
-
-        # Check updated effort limits
-        for world_idx in range(self.model.num_worlds):
-            for axis_idx in range(dofs_per_world):
-                global_axis_idx = world_idx * dofs_per_world + axis_idx
-                actuator_idx = solver.mjc_axis_to_actuator.numpy()[axis_idx]
-
-                if actuator_idx >= 0:
-                    force_range = solver.mjw_model.actuator_forcerange.numpy()[world_idx, actuator_idx]
-                    expected_limit = updated_effort_limits[global_axis_idx]
-                    self.assertAlmostEqual(
-                        force_range[0],
-                        -expected_limit,
-                        places=3,
-                        msg=f"Updated MuJoCo actuator {actuator_idx} in world {world_idx} min force should match negative Newton effort limit",
-                    )
-                    self.assertAlmostEqual(
-                        force_range[1],
-                        expected_limit,
-                        places=3,
-                        msg=f"Updated MuJoCo actuator {actuator_idx} in world {world_idx} max force should match Newton effort limit",
-                    )
 
         # Check updated armature
         for world_idx in range(self.model.num_worlds):
@@ -881,29 +829,25 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
                 ke = shape_ke[shape_idx]
                 kd = shape_kd[shape_idx]
 
-                # Get contact stiffness time constant from solver (defaults to 0.02)
-                if hasattr(solver, "contact_stiffness_time_const") and solver.contact_stiffness_time_const is not None:
-                    expected_time_const_stiff = solver.contact_stiffness_time_const
-                else:
-                    expected_time_const_stiff = 0.02
-
                 if ke > 0.0 and kd > 0.0:
-                    expected_time_const_damp = kd / (2.0 * np.sqrt(ke))
+                    timeconst = 2.0 / kd
+                    dampratio = np.sqrt(1.0 / (timeconst * timeconst * ke))
+                    expected_solref = (timeconst, dampratio)
                 else:
-                    expected_time_const_damp = 1.0
+                    expected_solref = (0.02, 1.0)
 
                 self.assertAlmostEqual(
                     float(actual_solref[0]),
-                    expected_time_const_stiff,
+                    expected_solref[0],
                     places=5,
-                    msg=f"Stiffness time constant mismatch for shape {shape_idx} in world {world_idx}, geom {geom_idx}",
+                    msg=f"Solref[0] mismatch for shape {shape_idx} in world {world_idx}, geom {geom_idx}",
                 )
 
                 self.assertAlmostEqual(
                     float(actual_solref[1]),
-                    expected_time_const_damp,
+                    expected_solref[1],
                     places=5,
-                    msg=f"Damping time constant mismatch for shape {shape_idx} in world {world_idx}, geom {geom_idx}",
+                    msg=f"Solref[1] mismatch for shape {shape_idx} in world {world_idx}, geom {geom_idx}",
                 )
 
                 # Test 3: Size
@@ -1062,28 +1006,29 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
                 )
 
                 # Verify 2: Contact parameters updated (solref)
-                # Compute expected values based on new ke/kd
-                # Get contact stiffness time constant from solver (defaults to 0.02)
-                if hasattr(solver, "contact_stiffness_time_const") and solver.contact_stiffness_time_const is not None:
-                    expected_time_const_stiff = solver.contact_stiffness_time_const
-                else:
-                    expected_time_const_stiff = 0.02
+                # Compute expected values based on new ke/kd using timeconst/dampratio conversion
+                ke = new_ke[shape_idx]
+                kd = new_kd[shape_idx]
 
-                # With new_ke=1000.0 and new_kd=10.0:
-                expected_time_const_damp = 10.0 / (2.0 * np.sqrt(1000.0))  # = 10.0 / (2.0 * 31.62...) ≈ 0.158
+                if ke > 0.0 and kd > 0.0:
+                    timeconst = 2.0 / kd
+                    dampratio = np.sqrt(1.0 / (timeconst * timeconst * ke))
+                    expected_solref = (timeconst, dampratio)
+                else:
+                    expected_solref = (0.02, 1.0)
 
                 self.assertAlmostEqual(
                     float(updated_solref[world_idx, geom_idx][0]),
-                    expected_time_const_stiff,
+                    expected_solref[0],
                     places=5,
-                    msg=f"Updated stiffness time constant should match expected for shape {shape_idx}",
+                    msg=f"Updated solref[0] should match expected for shape {shape_idx}",
                 )
 
                 self.assertAlmostEqual(
                     float(updated_solref[world_idx, geom_idx][1]),
-                    expected_time_const_damp,
-                    places=3,  # Less precision due to floating point
-                    msg=f"Updated damping time constant should match expected for shape {shape_idx}",
+                    expected_solref[1],
+                    places=5,
+                    msg=f"Updated solref[1] should match expected for shape {shape_idx}",
                 )
 
                 # Also verify it changed from initial
@@ -2110,4 +2055,4 @@ class TestMuJoCoAttributes(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    unittest.main()
+    unittest.main(verbosity=2)

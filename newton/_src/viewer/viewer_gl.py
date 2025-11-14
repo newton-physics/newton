@@ -170,7 +170,7 @@ class ViewerGL(ViewerBase):
         points = wp.array(vertices[:, 0:3], dtype=wp.vec3, device=self.device)
         normals = wp.array(vertices[:, 3:6], dtype=wp.vec3, device=self.device)
         uvs = wp.array(vertices[:, 6:8], dtype=wp.vec2, device=self.device)
-        indices = wp.array(indices, dtype=wp.uint32, device=self.device)
+        indices = wp.array(indices, dtype=wp.int32, device=self.device)
 
         self._point_mesh.update(points, indices, normals, uvs)
 
@@ -1084,6 +1084,10 @@ class ViewerGL(ViewerBase):
                     # Visual geometry toggle
                     show_visual = self.show_visual
                     changed, self.show_visual = imgui.checkbox("Show Visual", show_visual)
+
+                    # Inertia boxes toggle
+                    show_inertia_boxes = self.show_inertia_boxes
+                    changed, self.show_inertia_boxes = imgui.checkbox("Show Inertia Boxes", show_inertia_boxes)
 
             imgui.set_next_item_open(True, imgui.Cond_.appearing)
             if imgui.collapsing_header("Example Options"):

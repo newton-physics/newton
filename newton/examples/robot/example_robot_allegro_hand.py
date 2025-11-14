@@ -48,7 +48,7 @@ def move_hand(
     sim_time: wp.array(dtype=wp.float32),
     sim_dt: float,
     # outputs
-    joint_target: wp.array(dtype=wp.float32),
+    joint_target_pos: wp.array(dtype=wp.float32),
     joint_parent_xform: wp.array(dtype=wp.transform),
 ):
     world_id = wp.tid()
@@ -61,7 +61,7 @@ def move_hand(
     for i in range(20):
         di = root_dof_start + i
         target = wp.sin(t + float(i * 6) * 0.1) * 0.15 + 0.3
-        joint_target[di] = wp.clamp(target, joint_limit_lower[di], joint_limit_upper[di])
+        joint_target_pos[di] = wp.clamp(target, joint_limit_lower[di], joint_limit_upper[di])
 
     # animate the root joint transform
     q = wp.quat_identity()
@@ -90,6 +90,8 @@ class Example:
         self.device = wp.get_device()
 
         allegro_hand = newton.ModelBuilder()
+        allegro_hand.default_shape_cfg.ke = 1.0e3
+        allegro_hand.default_shape_cfg.kd = 1.0e2
 
         asset_path = newton.utils.download_asset("wonik_allegro")
         asset_file = str(asset_path / "usd" / "allegro_left_hand_with_cube.usda")
@@ -98,7 +100,6 @@ class Example:
             xform=wp.transform(wp.vec3(0, 0, 0.5)),
             enable_self_collisions=True,
             ignore_paths=[".*Dummy", ".*CollisionPlane", ".*goal", ".*DexCube/visuals"],
-            load_non_physics_prims=True,
         )
 
         # hide collision shapes for the hand links
@@ -107,16 +108,17 @@ class Example:
                 allegro_hand.shape_flags[i] &= ~newton.ShapeFlags.VISIBLE
 
         # set joint targets and joint drive gains
-        for i in range(len(allegro_hand.joint_dof_mode)):
-            allegro_hand.joint_dof_mode[i] = newton.JointMode.TARGET_POSITION
+        for i in range(allegro_hand.joint_dof_count):
             allegro_hand.joint_target_ke[i] = 150
             allegro_hand.joint_target_kd[i] = 5
-            allegro_hand.joint_target[i] = 0.0
+            allegro_hand.joint_target_pos[i] = 0.0
 
         builder = newton.ModelBuilder()
         newton.solvers.SolverMuJoCo.register_custom_attributes(builder)
         builder.replicate(allegro_hand, self.num_worlds)
 
+        builder.default_shape_cfg.ke = 1.0e3
+        builder.default_shape_cfg.kd = 1.0e2
         builder.add_ground_plane()
 
         self.model = builder.finalize()
@@ -173,7 +175,7 @@ class Example:
                     self.world_time,
                     self.sim_dt,
                 ],
-                outputs=[self.control.joint_target, self.model.joint_X_p],
+                outputs=[self.control.joint_target_pos, self.model.joint_X_p],
             )
 
             # # update the solver since we have updated the joint parent transforms

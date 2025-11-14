@@ -28,9 +28,8 @@ import warp as wp
 
 from ..core import quat_between_axes
 from ..core.types import Axis, Transform
-from ..geometry import MESH_MAXHULLVERT, Mesh, ShapeFlags, compute_sphere_inertia
+from ..geometry import MESH_MAXHULLVERT, ShapeFlags, compute_sphere_inertia
 from ..sim.builder import ModelBuilder
-from ..sim.joints import JointMode
 from ..sim.model import ModelAttributeFrequency
 from ..usd import utils as usd
 from ..usd.schema_resolver import PrimType, SchemaResolver, SchemaResolverManager
@@ -53,13 +52,13 @@ def parse_usd(
     joint_ordering: Literal["bfs", "dfs"] | None = "dfs",
     bodies_follow_joint_ordering: bool = True,
     skip_mesh_approximation: bool = False,
-    load_non_physics_prims: bool = True,
+    load_sites: bool = True,
+    load_visual_shapes: bool = True,
     hide_collision_shapes: bool = False,
     mesh_maxhullvert: int = MESH_MAXHULLVERT,
     schema_resolvers: list[SchemaResolver] | None = None,
 ) -> dict[str, Any]:
-    """
-    Parses a Universal Scene Description (USD) stage containing UsdPhysics schema definitions for rigid-body articulations and adds the bodies, shapes and joints to the given ModelBuilder.
+    """Parses a Universal Scene Description (USD) stage containing UsdPhysics schema definitions for rigid-body articulations and adds the bodies, shapes and joints to the given ModelBuilder.
 
     The USD description has to be either a path (file name or URL), or an existing USD stage instance that implements the `Stage <https://openusd.org/dev/api/class_usd_stage.html>`_ interface.
 
@@ -82,7 +81,8 @@ def parse_usd(
         joint_ordering (str): The ordering of the joints in the simulation. Can be either "bfs" or "dfs" for breadth-first or depth-first search, or ``None`` to keep joints in the order in which they appear in the USD. Default is "dfs".
         bodies_follow_joint_ordering (bool): If True, the bodies are added to the builder in the same order as the joints (parent then child body). Otherwise, bodies are added in the order they appear in the USD. Default is True.
         skip_mesh_approximation (bool): If True, mesh approximation is skipped. Otherwise, meshes are approximated according to the ``physics:approximation`` attribute defined on the UsdPhysicsMeshCollisionAPI (if it is defined). Default is False.
-        load_non_physics_prims (bool): If True, prims that are children of a rigid body that do not have a UsdPhysics schema applied are loaded as visual shapes in a separate pass (may slow down the loading process). Otherwise, non-physics prims are ignored. Default is True.
+        load_sites (bool): If True, sites (prims with MjcSiteAPI) are loaded as non-colliding reference points. If False, sites are ignored. Default is True.
+        load_visual_shapes (bool): If True, non-physics visual geometry is loaded. If False, visual-only shapes are ignored (sites are still controlled by ``load_sites``). Default is True.
         hide_collision_shapes (bool): If True, collision shapes are hidden. Default is False.
         mesh_maxhullvert (int): Maximum vertices for convex hull approximation of meshes.
         schema_resolvers (list[SchemaResolver]): Resolver instances in priority order. Default is no schema resolution.
@@ -254,7 +254,7 @@ def parse_usd(
         has_particle_collision=False,
     )
 
-    def load_visual_shapes(parent_body_id, prim, incoming_xform: wp.transform):
+    def _load_visual_shapes_impl(parent_body_id, prim, incoming_xform: wp.transform):
         if (
             prim.HasAPI(UsdPhysics.RigidBodyAPI)
             or prim.HasAPI(UsdPhysics.MassAPI)
@@ -272,13 +272,34 @@ def parse_usd(
                 # remap prototype child path to this instance's path (instance proxy)
                 inst_path = child.GetPath().ReplacePrefix(proto.GetPath(), prim.GetPath())
                 inst_child = stage.GetPrimAtPath(inst_path)
-                load_visual_shapes(parent_body_id, inst_child, xform)
+                _load_visual_shapes_impl(parent_body_id, inst_child, xform)
             return
         type_name = str(prim.GetTypeName()).lower()
         if type_name.endswith("joint"):
             return
         scale: wp.vec3 = usd.get_scale(prim)
         shape_id = -1
+
+        # Check if this prim is a site (has MjcSiteAPI applied)
+        # First check if the API is formally applied (schema is registered)
+        is_site = prim.HasAPI("MjcSiteAPI")
+        # If not, check the apiSchemas metadata directly (for unregistered schemas)
+        if not is_site:
+            schemas_listop = prim.GetMetadata("apiSchemas")
+            if schemas_listop:
+                all_schemas = (
+                    list(schemas_listop.prependedItems)
+                    + list(schemas_listop.appendedItems)
+                    + list(schemas_listop.explicitItems)
+                )
+                is_site = "MjcSiteAPI" in all_schemas
+
+        # Skip based on granular loading flags
+        if is_site and not load_sites:
+            return
+        if not is_site and not load_visual_shapes:
+            return
+
         if path_name not in path_shape_map:
             if type_name == "cube":
                 size = usd.get_float(prim, "size", 2.0)
@@ -289,6 +310,7 @@ def parse_usd(
                     extents = extents[1] - extents[0]
                 else:
                     extents = scale * size
+
                 shape_id = builder.add_shape_box(
                     parent_body_id,
                     xform,
@@ -296,6 +318,7 @@ def parse_usd(
                     hy=extents[1] / 2,
                     hz=extents[2] / 2,
                     cfg=visual_shape_cfg,
+                    as_site=is_site,
                     key=path_name,
                 )
             elif type_name == "sphere":
@@ -316,6 +339,7 @@ def parse_usd(
                     xform,
                     radius,
                     cfg=visual_shape_cfg,
+                    as_site=is_site,
                     key=path_name,
                 )
             elif type_name == "plane":
@@ -346,6 +370,7 @@ def parse_usd(
                     radius,
                     half_height,
                     cfg=visual_shape_cfg,
+                    as_site=is_site,
                     key=path_name,
                 )
             elif type_name == "cylinder":
@@ -361,6 +386,7 @@ def parse_usd(
                     radius,
                     half_height,
                     cfg=visual_shape_cfg,
+                    as_site=is_site,
                     key=path_name,
                 )
             elif type_name == "cone":
@@ -376,30 +402,16 @@ def parse_usd(
                     radius,
                     half_height,
                     cfg=visual_shape_cfg,
+                    as_site=is_site,
                     key=path_name,
                 )
             elif type_name == "mesh":
-                mesh = UsdGeom.Mesh(prim)
-                points = np.array(mesh.GetPointsAttr().Get(), dtype=np.float32)
-                indices = np.array(mesh.GetFaceVertexIndicesAttr().Get(), dtype=np.float32)
-                counts = mesh.GetFaceVertexCountsAttr().Get()
-                faces = []
-                face_id = 0
-                for count in counts:
-                    if count == 3:
-                        faces.append(indices[face_id : face_id + 3])
-                    elif count == 4:
-                        faces.append(indices[face_id : face_id + 3])
-                        faces.append(indices[[face_id, face_id + 2, face_id + 3]])
-                    else:
-                        continue
-                    face_id += count
-                m = Mesh(points, np.array(faces, dtype=np.int32).flatten())
+                mesh = usd.get_mesh(prim)
                 shape_id = builder.add_shape_mesh(
                     parent_body_id,
                     xform,
                     scale=scale,
-                    mesh=m,
+                    mesh=mesh,
                     cfg=visual_shape_cfg,
                     key=path_name,
                 )
@@ -413,7 +425,7 @@ def parse_usd(
                     print(f"Added visual shape {path_name} ({type_name}) with id {shape_id}.")
 
         for child in prim.GetChildren():
-            load_visual_shapes(parent_body_id, child, xform)
+            _load_visual_shapes_impl(parent_body_id, child, xform)
 
     def add_body(prim, xform, key, armature):
         # Extract custom attributes for this body
@@ -426,9 +438,9 @@ def parse_usd(
             custom_attributes=body_custom_attrs,
         )
         path_body_map[key] = b
-        if load_non_physics_prims:
+        if load_sites or load_visual_shapes:
             for child in prim.GetChildren():
-                load_visual_shapes(b, child, wp.transform_identity())
+                _load_visual_shapes_impl(b, child, wp.transform_identity())
         return b
 
     def parse_body(rigid_body_desc, prim, incoming_xform=None, add_body_to_builder=True):
@@ -547,13 +559,8 @@ def parse_usd(
             joint_params["armature"] = joint_armature
             joint_params["friction"] = joint_friction
             if joint_desc.drive.enabled:
-                # XXX take the target which is nonzero to decide between position vs. velocity target...
-                if joint_desc.drive.targetVelocity:
-                    joint_params["target"] = joint_desc.drive.targetVelocity
-                    joint_params["mode"] = JointMode.TARGET_VELOCITY
-                else:
-                    joint_params["target"] = joint_desc.drive.targetPosition
-                    joint_params["mode"] = JointMode.TARGET_POSITION
+                joint_params["target_vel"] = joint_desc.drive.targetVelocity
+                joint_params["target_pos"] = joint_desc.drive.targetPosition
 
                 joint_params["target_ke"] = joint_desc.drive.stiffness
                 joint_params["target_kd"] = joint_desc.drive.damping
@@ -588,7 +595,8 @@ def parse_usd(
                 builder.add_joint_prismatic(**joint_params)
             else:
                 if joint_desc.drive.enabled:
-                    joint_params["target"] *= DegreesToRadian
+                    joint_params["target_pos"] *= DegreesToRadian
+                    joint_params["target_vel"] *= DegreesToRadian
                     joint_params["target_kd"] /= DegreesToRadian / joint_drive_gains_scaling
                     joint_params["target_ke"] /= DegreesToRadian / joint_drive_gains_scaling
 
@@ -631,9 +639,9 @@ def parse_usd(
 
                 free_axis = limit_lower < limit_upper
 
-                def define_joint_mode(dof, joint_desc):
-                    target = 0.0  # TODO: parse target from state:*:physics:appliedForce usd attribute when no drive is present
-                    mode = JointMode.NONE
+                def define_joint_targets(dof, joint_desc):
+                    target_pos = 0.0  # TODO: parse target from state:*:physics:appliedForce usd attribute when no drive is present
+                    target_vel = 0.0
                     target_ke = 0.0
                     target_kd = 0.0
                     effort_limit = np.inf
@@ -641,18 +649,14 @@ def parse_usd(
                         if drive.first != dof:
                             continue
                         if drive.second.enabled:
-                            if drive.second.targetVelocity != 0.0:
-                                target = drive.second.targetVelocity
-                                mode = JointMode.TARGET_VELOCITY
-                            else:
-                                target = drive.second.targetPosition
-                                mode = JointMode.TARGET_POSITION
+                            target_vel = drive.second.targetVelocity
+                            target_pos = drive.second.targetPosition
                             target_ke = drive.second.stiffness
                             target_kd = drive.second.damping
                             effort_limit = drive.second.forceLimit
-                    return target, mode, target_ke, target_kd, effort_limit
+                    return target_pos, target_vel, target_ke, target_kd, effort_limit
 
-                target, mode, target_ke, target_kd, effort_limit = define_joint_mode(dof, joint_desc)
+                target_pos, target_vel, target_ke, target_kd, effort_limit = define_joint_targets(dof, joint_desc)
 
                 _trans_axes = {
                     UsdPhysics.JointDOF.TransX: (1.0, 0.0, 0.0),
@@ -712,8 +716,8 @@ def parse_usd(
                             limit_upper=limit_upper,
                             limit_ke=current_joint_limit_ke,
                             limit_kd=current_joint_limit_kd,
-                            target=target,
-                            mode=mode,
+                            target_pos=target_pos,
+                            target_vel=target_vel,
                             target_ke=target_ke,
                             target_kd=target_kd,
                             armature=joint_armature,
@@ -762,8 +766,8 @@ def parse_usd(
                             limit_upper=limit_upper * DegreesToRadian,
                             limit_ke=current_joint_limit_ke / DegreesToRadian / joint_drive_gains_scaling,
                             limit_kd=current_joint_limit_kd / DegreesToRadian / joint_drive_gains_scaling,
-                            target=target * DegreesToRadian,
-                            mode=mode,
+                            target_pos=target_pos * DegreesToRadian,
+                            target_vel=target_vel * DegreesToRadian,
                             target_ke=target_ke / DegreesToRadian / joint_drive_gains_scaling,
                             target_kd=target_kd / DegreesToRadian / joint_drive_gains_scaling,
                             armature=joint_armature,
@@ -1400,24 +1404,6 @@ def parse_usd(
                         half_height=shape_spec.halfHeight,
                     )
                 elif key == UsdPhysics.ObjectType.MeshShape:
-                    mesh = UsdGeom.Mesh(prim)
-                    points = np.array(mesh.GetPointsAttr().Get(), dtype=np.float32)
-                    indices = np.array(mesh.GetFaceVertexIndicesAttr().Get(), dtype=np.float32)
-                    counts = mesh.GetFaceVertexCountsAttr().Get()
-                    faces = []
-                    face_id = 0
-                    for count in counts:
-                        if count == 3:
-                            faces.append(indices[face_id : face_id + 3])
-                        elif count == 4:
-                            faces.append(indices[face_id : face_id + 3])
-                            faces.append(indices[[face_id, face_id + 2, face_id + 3]])
-                        elif verbose:
-                            print(
-                                f"Error while parsing USD mesh {path}: encountered polygon with {count} vertices, but only triangles and quads are supported."
-                            )
-                            continue
-                        face_id += count
                     # Resolve mesh hull vertex limit from schema with fallback to parameter
                     resolved_maxhullvert = R.get_value(
                         prim,
@@ -1426,10 +1412,11 @@ def parse_usd(
                         default=mesh_maxhullvert,
                         verbose=verbose,
                     )
-                    m = Mesh(points, np.array(faces, dtype=np.int32).flatten(), maxhullvert=resolved_maxhullvert)
+                    mesh = usd.get_mesh(prim)
+                    mesh.maxhullvert = resolved_maxhullvert
                     shape_id = builder.add_shape_mesh(
                         scale=scale,
-                        mesh=m,
+                        mesh=mesh,
                         **shape_params,
                     )
                     if not skip_mesh_approximation:

@@ -885,12 +885,26 @@ def apply_rigidity_matrix(rigidity_mat, prev_collider_velocity, collider_velocit
     wp.copy(dest=prev_collider_velocity, src=collider_velocity)
 
 
+class _ScopedDisableGC:
+    """Context manager to disable automatic garbage collection during graph capture.
+    Avoids capturing deallocations of arrays exterior to the capture scope.
+    """
+
+    def __enter__(self):
+        self.was_enabled = gc.isenabled()
+        gc.disable()
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        if self.was_enabled:
+            gc.enable()
+
+
 def solve_rheology(
     max_iterations: int,
     tolerance: float,
     strain_mat: sp.BsrMatrix,
     transposed_strain_mat: sp.BsrMatrix,
-    compliance_mat: sp.BsrMatrix | None,
+    compliance_mat: sp.BsrMatrix,
     inv_volume,
     node_volume,
     yield_params,
@@ -936,7 +950,7 @@ def solve_rheology(
         tolerance: Solver tolerance for the stress residual (L2 norm).
         strain_mat: Strain-to-velocity block-sparse matrix (B).
         transposed_strain_mat: BSR matrix container for assembling B^T. Used for Jacobi only.
-        compliance_mat: Optional compliance matrix for elastic materials.
+        compliance_mat: Compliance matrix for elastic materials.
         inv_volume: Per-velocity-node inverse mass (or volume scaling) used in
             the solver updates.
         node_volume: Per-strain-node particle volume measure.
@@ -990,25 +1004,11 @@ def solve_rheology(
     if not gs:
         sp.bsr_set_transpose(dest=transposed_strain_mat, src=strain_mat)
 
-    if compliance_mat is None:
+    if compliance_mat.nnz == 0:
         compliance_mat_diagonal = None
-        compliance_mat_values = None
-        compliance_mat_columns = None
-        # make a zero-stride array for compliance_mat_offsets
-        compliance_mat_offsets_tmp = _register_temp(fem.borrow_temporary(temporary_store, shape=1, dtype=int))
-        compliance_mat_offsets_tmp.array.zero_()
-        compliance_mat_offsets = wp.array(
-            ptr=compliance_mat_offsets_tmp.array.ptr, shape=stress.shape[0] + 1, strides=(0,), dtype=int
-        )
     else:
-        compliance_mat_diagonal_temp = _register_temp(
-            fem.borrow_temporary(temporary_store, shape=stress.shape, dtype=mat66)
-        )
-        compliance_mat_diagonal = compliance_mat_diagonal_temp.array
+        compliance_mat_diagonal = _register_temp(fem.borrow_temporary(temporary_store, shape=stress.shape, dtype=mat66))
         sp.bsr_get_diag(compliance_mat, out=compliance_mat_diagonal)
-        compliance_mat_values = compliance_mat.values
-        compliance_mat_offsets = compliance_mat.offsets
-        compliance_mat_columns = compliance_mat.columns
 
     # Project initial stress on yield surface
     wp.launch(
@@ -1023,7 +1023,7 @@ def solve_rheology(
     # Compute and factorize diagonal blacks, rotate strain matrix to diagonal basis
     # NOTE: we reuse the same memory for local versions of the variables
     local_strain_mat_values = strain_mat.values
-    local_compliance_mat_values = compliance_mat_values
+    local_compliance_mat_values = compliance_mat.values
     local_strain_rhs = strain_rhs
     local_stress = stress
 
@@ -1056,9 +1056,9 @@ def solve_rheology(
             kernel=rotate_and_scale_compliance_mat,
             dim=stress.shape[0],
             inputs=[
-                compliance_mat_offsets,
-                compliance_mat_columns,
-                compliance_mat_values,
+                compliance_mat.offsets,
+                compliance_mat.columns,
+                compliance_mat.values,
                 delassus_rotation,
                 delassus_diagonal,
             ],
@@ -1113,8 +1113,8 @@ def solve_rheology(
                 color_offsets,
                 color_indices,
                 yield_params,
-                compliance_mat_offsets,
-                compliance_mat_columns,
+                compliance_mat.offsets,
+                compliance_mat.columns,
                 local_compliance_mat_values,
                 strain_mat.offsets,
                 strain_mat.columns,
@@ -1159,8 +1159,8 @@ def solve_rheology(
             dim=stress.shape[0],
             inputs=[
                 yield_params,
-                compliance_mat_offsets,
-                compliance_mat_columns,
+                compliance_mat.offsets,
+                compliance_mat.columns,
                 local_compliance_mat_values,
                 strain_mat.offsets,
                 strain_mat.columns,
@@ -1279,15 +1279,13 @@ def solve_rheology(
 
         device = delta_stress.device
         if device.is_capturing:
-            gc.disable()
-            wp.capture_while(condition, do_iteration_with_condition)
-            gc.enable()
-        else:
-            gc.disable()
-            with wp.ScopedCapture(force_module_load=False) as capture:
+            with _ScopedDisableGC():
                 wp.capture_while(condition, do_iteration_with_condition)
+        else:
+            with _ScopedDisableGC():
+                with wp.ScopedCapture(force_module_load=False) as capture:
+                    wp.capture_while(condition, do_iteration_with_condition)
             solve_graph = capture.graph
-            gc.enable()
             wp.capture_launch(solve_graph)
 
             if verbose:
@@ -1324,8 +1322,8 @@ def solve_rheology(
         inputs=[
             delassus_rotation,
             delassus_diagonal,
-            compliance_mat_offsets,
-            compliance_mat_columns,
+            compliance_mat.offsets,
+            compliance_mat.columns,
             local_compliance_mat_values,
             strain_mat.offsets,
             strain_mat.columns,
@@ -1343,7 +1341,7 @@ def solve_rheology(
 
     residual_squared_norm_computer.release()
 
-    for temp in reversed(borrowed_temporaries):
+    for temp in borrowed_temporaries:
         temp.release()
 
     return solve_graph

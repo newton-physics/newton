@@ -40,15 +40,11 @@ class Control:
         components of the torque vector (angular). Both linear forces and angular torques applied to free joints are
         applied in world frame (same as :attr:`newton.State.body_f`).
         """
+        self.joint_target_pos: wp.array | None = None
+        """Per-DOF position targets, shape ``(joint_dof_count,)``, type ``float`` (optional)."""
 
-        self.joint_target: wp.array | None = None
-        """
-        Array of joint targets with shape ``(joint_dof_count,)`` and type ``float``.
-        Joint targets define the target position or target velocity for each actuation-driven degree of freedom,
-        depending on the corresponding joint control mode, see :attr:`newton.Model.joint_dof_mode`.
-
-        The joint targets are defined for any joint type, except for free joints.
-        """
+        self.joint_target_vel: wp.array | None = None
+        """Per-DOF velocity targets, shape ``(joint_dof_count,)``, type ``float`` (optional)."""
 
         self.tri_activations: wp.array | None = None
         """Array of triangle element activations with shape ``(tri_count,)`` and type ``float``."""
@@ -75,3 +71,7 @@ class Control:
             self.tet_activations.zero_()
         if self.muscle_activations is not None:
             self.muscle_activations.zero_()
+        if self.joint_target_pos is not None:
+            self.joint_target_pos.zero_()
+        if self.joint_target_vel is not None:
+            self.joint_target_vel.zero_()
