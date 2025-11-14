@@ -151,7 +151,7 @@ class Mesh:
         Construct a Mesh object from a triangle mesh.
 
         The mesh's center of mass and inertia tensor are automatically calculated
-        using a density of 1.0 if `compute_inertia` is True. This computation is only valid
+        using a density of 1.0 if ``compute_inertia`` is True. This computation is only valid
         if the mesh is closed (two-manifold).
 
         Args:
@@ -166,10 +166,10 @@ class Mesh:
         """
         from .inertia import compute_mesh_inertia  # noqa: PLC0415
 
-        self._vertices = np.array(vertices).reshape(-1, 3)
+        self._vertices = np.array(vertices, dtype=np.float32).reshape(-1, 3)
         self._indices = np.array(indices, dtype=np.int32).flatten()
-        self._normals = np.array(normals).reshape(-1, 3) if normals is not None else None
-        self._uvs = np.array(uvs).reshape(-1, 2) if uvs is not None else None
+        self._normals = np.array(normals, dtype=np.float32).reshape(-1, 3) if normals is not None else None
+        self._uvs = np.array(uvs, dtype=np.float32).reshape(-1, 2) if uvs is not None else None
         self._color = color
         self.is_solid = is_solid
         self.has_inertia = compute_inertia
@@ -202,11 +202,17 @@ class Mesh:
             Mesh: A new Mesh object with the specified properties.
         """
         if vertices is None:
-            vertices = self.vertices
+            vertices = self.vertices.copy()
         if indices is None:
-            indices = self.indices
+            indices = self.indices.copy()
         m = Mesh(
-            vertices, indices, compute_inertia=recompute_inertia, is_solid=self.is_solid, maxhullvert=self.maxhullvert
+            vertices,
+            indices,
+            compute_inertia=recompute_inertia,
+            is_solid=self.is_solid,
+            maxhullvert=self.maxhullvert,
+            normals=self.normals.copy() if self.normals is not None else None,
+            uvs=self.uvs.copy() if self.uvs is not None else None,
         )
         if not recompute_inertia:
             m.I = self.I
@@ -232,6 +238,14 @@ class Mesh:
     def indices(self, value):
         self._indices = np.array(value, dtype=np.int32).flatten()
         self._cached_hash = None
+
+    @property
+    def normals(self):
+        return self._normals
+
+    @property
+    def uvs(self):
+        return self._uvs
 
     # construct simulation ready buffers from points
     def finalize(self, device: Devicelike = None, requires_grad: bool = False) -> wp.uint64:

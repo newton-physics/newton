@@ -19,6 +19,7 @@ Utilities for working with the Universal Scene Description (USD) format.
    get_custom_attribute_values
    get_float
    get_gprim_axis
+   get_mesh
    get_quat
    get_scale
    get_transform

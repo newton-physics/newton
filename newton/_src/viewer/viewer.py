@@ -136,17 +136,16 @@ class ViewerBase:
         # Convert to warp array
         self.world_offsets = wp.array(world_offsets, dtype=wp.vec3, device=self.device)
 
-    def _auto_compute_world_offsets(self):
-        """Automatically compute world offsets based on model extents."""
-        # If only one world or no worlds, no offsets needed
-        if self.model.num_worlds <= 1:
-            return
+    def _get_world_extents(self) -> tuple[float, float, float] | None:
+        """Get the maximum extents of all worlds in the model."""
+        if self.model is None:
+            return None
 
         num_worlds = self.model.num_worlds
 
         # Initialize bounds arrays for all worlds
-        world_bounds_min = wp.full((num_worlds, 3), float("inf"), dtype=float, device=self.device)
-        world_bounds_max = wp.full((num_worlds, 3), float("-inf"), dtype=float, device=self.device)
+        world_bounds_min = wp.full((num_worlds, 3), wp.inf, dtype=wp.float32, device=self.device)
+        world_bounds_max = wp.full((num_worlds, 3), -wp.inf, dtype=wp.float32, device=self.device)
 
         # Get initial state for body transforms
         state = self.model.state()
@@ -176,14 +175,26 @@ class ViewerBase:
         valid_mask = ~np.isinf(bounds_min_np[:, 0])
 
         if not valid_mask.any():
-            # No valid worlds found, no offsets needed
-            return
+            # No valid worlds found
+            return None
 
         # Compute extents for valid worlds and take maximum
         valid_min = bounds_min_np[valid_mask]
         valid_max = bounds_max_np[valid_mask]
         world_extents = valid_max - valid_min
         max_extents = np.max(world_extents, axis=0)
+
+        return tuple(max_extents)
+
+    def _auto_compute_world_offsets(self):
+        """Automatically compute world offsets based on model extents."""
+        # If only one world or no worlds, no offsets needed
+        if self.model.num_worlds <= 1:
+            return
+
+        max_extents = self._get_world_extents()
+        if max_extents is None:
+            return
 
         # Add margin
         margin = 1.5  # 50% margin between worlds
@@ -430,7 +441,7 @@ class ViewerBase:
 
             # prepare warp arrays; synthesize normals/uvs
             points = wp.array(points, dtype=wp.vec3, device=self.device)
-            indices = wp.array(indices, dtype=wp.uint32, device=self.device)
+            indices = wp.array(indices, dtype=wp.int32, device=self.device)
             normals = None
             uvs = None
 
@@ -479,7 +490,7 @@ class ViewerBase:
         points = wp.array(vertices[:, 0:3], dtype=wp.vec3, device=self.device)
         normals = wp.array(vertices[:, 3:6], dtype=wp.vec3, device=self.device)
         uvs = wp.array(vertices[:, 6:8], dtype=wp.vec2, device=self.device)
-        indices = wp.array(indices, dtype=wp.uint32, device=self.device)
+        indices = wp.array(indices, dtype=wp.int32, device=self.device)
 
         self.log_mesh(name, points, indices, normals, uvs, hidden=hidden)
 
