@@ -228,7 +228,7 @@ def solref_to_stiffness_damping(solref):
 def solref_to_stiffness(solref):
     """Convert MuJoCo solref (timeconst, dampratio) to internal stiffness.
 
-    Standard mode (timeconst > 0): k = 1 / (timeconst^2)
+    Standard mode (timeconst > 0): k = 1 / (timeconst^2 * dampratio^2)
     Direct mode (both negative): k = -timeconst (encodes -stiffness directly)
     """
     stiffness, _ = solref_to_stiffness_damping(solref)
@@ -238,7 +238,7 @@ def solref_to_stiffness(solref):
 def solref_to_damping(solref):
     """Convert MuJoCo solref (timeconst, dampratio) to internal damping.
 
-    Standard mode (both positive): b = 2 * dampratio / timeconst
+    Standard mode (both positive): b = 2 / timeconst
     Direct mode (both negative): b = -dampratio (encodes -damping directly)
     """
     _, damping = solref_to_stiffness_damping(solref)

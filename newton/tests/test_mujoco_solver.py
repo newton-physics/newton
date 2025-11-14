@@ -831,7 +831,7 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
 
                 if ke > 0.0 and kd > 0.0:
                     timeconst = 2.0 / kd
-                    dampratio = wp.sqrt(1.0 / (timeconst * timeconst * ke))
+                    dampratio = np.sqrt(1.0 / (timeconst * timeconst * ke))
                     expected_solref = (timeconst, dampratio)
                 else:
                     expected_solref = (0.02, 1.0)
