@@ -81,8 +81,7 @@ def compute_box_bounds(pos: wp.vec3f, rot: wp.mat33f, size: wp.vec3f) -> tuple[w
 
 
 @wp.func
-def compute_sphere_bounds(pos: wp.vec3f, rot: wp.mat33f, size: wp.vec3f) -> tuple[wp.vec3f, wp.vec3f]:
-    radius = size[0]
+def compute_sphere_bounds(pos: wp.vec3f, radius: wp.float32) -> tuple[wp.vec3f, wp.vec3f]:
     return pos - wp.vec3f(radius), pos + wp.vec3f(radius)
 
 
@@ -149,7 +148,7 @@ def compute_ellipsoid_bounds(pos: wp.vec3f, rot: wp.mat33f, size: wp.vec3f) -> t
 
 
 @wp.kernel(enable_backward=False)
-def compute_bvh_bounds(
+def compute_geom_bvh_bounds(
     num_geom_in_bvh: wp.int32,
     num_worlds: wp.int32,
     geom_world_index: wp.array(dtype=wp.int32),
@@ -187,7 +186,7 @@ def compute_bvh_bounds(
     upper = wp.vec3f()
 
     if type == GeomType.SPHERE:
-        lower, upper = compute_sphere_bounds(pos, rot, size)
+        lower, upper = compute_sphere_bounds(pos, size[0])
     elif type == GeomType.CAPSULE:
         lower, upper = compute_capsule_bounds(pos, rot, size)
     elif type == GeomType.CYLINDER:
@@ -208,6 +207,38 @@ def compute_bvh_bounds(
     out_bvh_lowers[world_id * num_geom_in_bvh + bvh_geom_local] = lower
     out_bvh_uppers[world_id * num_geom_in_bvh + bvh_geom_local] = upper
     out_bvh_groups[world_id * num_geom_in_bvh + bvh_geom_local] = world_id
+
+
+@wp.kernel(enable_backward=False)
+def compute_particle_bvh_bounds(
+    num_particle_in_bvh: wp.int32,
+    num_worlds: wp.int32,
+    particle_world_index: wp.array(dtype=wp.int32),
+    particle_position: wp.array(dtype=wp.vec3f),
+    particle_radius: wp.array(dtype=wp.float32),
+    out_bvh_lowers: wp.array(dtype=wp.vec3f),
+    out_bvh_uppers: wp.array(dtype=wp.vec3f),
+    out_bvh_groups: wp.array(dtype=wp.int32),
+):
+    tid = wp.tid()
+    bvh_geom_local = tid % num_particle_in_bvh
+    if bvh_geom_local >= num_particle_in_bvh:
+        return
+
+    geom_id = bvh_geom_local # geom_enabled[bvh_geom_local]
+
+    world_id = particle_world_index[geom_id]
+    if world_id < 0:
+        world_id = num_worlds + world_id
+
+    if world_id >= num_worlds:
+        return
+
+    lower, upper = compute_sphere_bounds(particle_position[geom_id], particle_radius[geom_id])
+
+    out_bvh_lowers[world_id * num_particle_in_bvh + bvh_geom_local] = lower
+    out_bvh_uppers[world_id * num_particle_in_bvh + bvh_geom_local] = upper
+    out_bvh_groups[world_id * num_particle_in_bvh + bvh_geom_local] = world_id
 
 
 @wp.kernel(enable_backward=False)

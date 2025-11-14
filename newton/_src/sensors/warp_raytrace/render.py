@@ -90,17 +90,18 @@ def render_megakernel(
         # Model and Options
         num_worlds: wp.int32,
         num_cameras: wp.int32,
-        num_geom_in_bvh: wp.int32,
         img_width: wp.int32,
         img_height: wp.int32,
-        use_shadows: wp.bool,
+        enable_shadows: wp.bool,
+        max_distance: wp.float32,
         # Camera
         camera_rays: wp.array(dtype=wp.vec3f, ndim=4),
         camera_positions: wp.array(dtype=wp.vec3f),
         camera_orientations: wp.array(dtype=wp.mat33f),
-        # BVH
-        bvh_id: wp.uint64,
-        group_roots: wp.array(dtype=wp.int32),
+        # Geometry BVH
+        bvh_geom_size: wp.int32,
+        bvh_geom_id: wp.uint64,
+        bvh_geom_group_roots: wp.array(dtype=wp.int32),
         # Geometry
         geom_enabled: wp.array(dtype=wp.int32),
         geom_types: wp.array(dtype=wp.int32),
@@ -113,6 +114,16 @@ def render_megakernel(
         mesh_face_vertices: wp.array(dtype=wp.vec3i),
         mesh_texcoord: wp.array(dtype=wp.vec2f),
         mesh_texcoord_offsets: wp.array(dtype=wp.int32),
+        # Geometry BVH
+        bvh_particles_size: wp.int32,
+        bvh_particles_id: wp.uint64,
+        bvh_particles_group_roots: wp.array(dtype=wp.int32),
+        # Particles
+        particles_position: wp.array(dtype=wp.vec3f),
+        particles_radius: wp.array(dtype=wp.float32),
+        particles_world_index: wp.array(dtype=wp.int32),
+        # Triangle Mesh:
+        triangle_mesh_id: wp.uint64,
         # Materials
         material_texture_ids: wp.array(dtype=wp.int32),
         material_texture_repeat: wp.array(dtype=wp.vec2f),
@@ -168,11 +179,15 @@ def render_megakernel(
             ray_origin_world = camera_positions[cam_idx] + camera_rays[cam_idx, py, px, 0]
             ray_dir_world = camera_orientations[cam_idx] @ camera_rays[cam_idx, py, px, 1]
 
-            geom_id, dist, normal, u, v, f, mesh_id = ray_cast.closest_hit(
-                bvh_id,
-                group_roots,
+            closest_hit = ray_cast.closest_hit(
+                bvh_geom_size,
+                bvh_geom_id,
+                bvh_geom_group_roots,
+                bvh_particles_size,
+                bvh_particles_id,
+                bvh_particles_group_roots,
                 world_id,
-                num_geom_in_bvh,
+                max_distance,
                 geom_enabled,
                 geom_types,
                 geom_mesh_indices,
@@ -180,38 +195,43 @@ def render_megakernel(
                 mesh_ids,
                 geom_positions,
                 geom_orientations,
+                particles_position,
+                particles_radius,
+                triangle_mesh_id,
                 ray_origin_world,
                 ray_dir_world,
             )
 
             # Early Out
-            if geom_id == -1:
+            if closest_hit.geom_id == -1:
                 continue
 
             if wp.static(depth_image is not None):
-                out_depth[world_id, cam_idx, mapped_idx] = dist
+                out_depth[world_id, cam_idx, mapped_idx] = closest_hit.distance
 
             if wp.static(color_image is None):
                 continue
 
             # Shade the pixel
-            hit_point = ray_origin_world + ray_dir_world * dist
+            hit_point = ray_origin_world + ray_dir_world * closest_hit.distance
 
-            color = geom_colors[geom_id]
-            if geom_materials[geom_id] > -1:
-                color = wp.cw_mul(color, material_rgba[geom_materials[geom_id]])
+            color = wp.vec4f(1.0)
+            if closest_hit.geom_id > -1:
+                color = geom_colors[closest_hit.geom_id]
+                if geom_materials[closest_hit.geom_id] > -1:
+                    color = wp.cw_mul(color, material_rgba[geom_materials[closest_hit.geom_id]])
 
             base_color = wp.vec3f(color[0], color[1], color[2])
             out_color = wp.vec3f(0.0)
 
-            if wp.static(rc.use_textures):
-                mat_id = geom_materials[geom_id]
+            if wp.static(rc.enable_textures) and closest_hit.geom_id > -1:
+                mat_id = geom_materials[closest_hit.geom_id]
                 if mat_id > -1:
                     tex_id = material_texture_ids[mat_id]
                     if tex_id > -1:
                         tex_color = textures.sample_texture(
                             world_id,
-                            geom_id,
+                            closest_hit.geom_id,
                             geom_types,
                             mat_id,
                             tex_id,
@@ -220,17 +240,17 @@ def render_megakernel(
                             texture_data,
                             texture_height[tex_id],
                             texture_width[tex_id],
-                            geom_positions[geom_id],
-                            geom_orientations[geom_id],
+                            geom_positions[closest_hit.geom_id],
+                            geom_orientations[closest_hit.geom_id],
                             mesh_face_offsets,
                             mesh_face_vertices,
                             mesh_texcoord,
                             mesh_texcoord_offsets,
                             hit_point,
-                            u,
-                            v,
-                            f,
-                            mesh_id,
+                            closest_hit.bary_u,
+                            closest_hit.bary_v,
+                            closest_hit.face_idx,
+                            closest_hit.geom_mesh_id,
                         )
 
                         base_color = wp.vec3f(
@@ -239,10 +259,10 @@ def render_megakernel(
                             base_color[2] * tex_color[2],
                         )
 
-            if wp.static(rc.use_ambient_lighting):
+            if wp.static(rc.enable_ambient_lighting):
                 up = wp.vec3f(0.0, 0.0, 1.0)
-                len_n = wp.length(normal)
-                n = normal if len_n > 0.0 else up
+                len_n = wp.length(closest_hit.normal)
+                n = closest_hit.normal if len_n > 0.0 else up
                 n = wp.normalize(n)
                 hemispheric = 0.5 * (wp.dot(n, up) + 1.0)
                 sky = wp.vec3f(0.4, 0.4, 0.45)
@@ -258,10 +278,13 @@ def render_megakernel(
             # Apply lighting and shadows
             for light_idx in range(wp.static(rc.num_lights)):
                 light_contribution = lighting.compute_lighting(
-                    use_shadows,
-                    bvh_id,
-                    group_roots,
-                    num_geom_in_bvh,
+                    enable_shadows,
+                    bvh_geom_size,
+                    bvh_geom_id,
+                    bvh_geom_group_roots,
+                    bvh_particles_size,
+                    bvh_particles_id,
+                    bvh_particles_group_roots,
                     geom_enabled,
                     world_id,
                     light_active[light_idx],
@@ -269,13 +292,16 @@ def render_megakernel(
                     light_cast_shadow[light_idx],
                     light_positions[light_idx],
                     light_orientations[light_idx],
-                    normal,
+                    closest_hit.normal,
                     geom_types,
                     geom_mesh_indices,
                     geom_sizes,
                     mesh_ids,
                     geom_positions,
                     geom_orientations,
+                    particles_position,
+                    particles_radius,
+                    triangle_mesh_id,
                     hit_point,
                 )
                 out_color = out_color + base_color * light_contribution
@@ -296,17 +322,18 @@ def render_megakernel(
             # Model and Options
             rc.num_worlds,
             rc.num_cameras,
-            rc.num_geom_in_bvh,
             rc.width,
             rc.height,
-            rc.use_shadows,
+            rc.enable_shadows,
+            rc.max_distance,
             # Camera
             rc.camera_rays,
             rc.camera_positions,
             rc.camera_orientations,
-            # BVH
-            rc.bvh.id,
-            rc.bvh_group_roots,
+            # Geometry BVH
+            rc.num_geom_in_bvh,
+            rc.bvh_geom.id if rc.bvh_geom else 0,
+            rc.bvh_geom_group_roots,
             # Geometry
             rc.geom_enabled,
             rc.geom_types,
@@ -319,6 +346,16 @@ def render_megakernel(
             rc.mesh_face_vertices,
             rc.mesh_texcoord,
             rc.mesh_texcoord_offsets,
+            # Particle BVH
+            rc.particles_position.shape[0] if rc.particles_position else 0,
+            rc.bvh_particles.id if rc.bvh_particles else 0,
+            rc.bvh_particles_group_roots,
+            # Particles
+            rc.particles_position,
+            rc.particles_radius,
+            rc.particles_world_index,
+            # Triangle Mesh
+            rc.triangle_mesh.id if rc.triangle_mesh is not None else 0,
             # Textures
             rc.material_texture_ids,
             rc.material_texture_repeat,

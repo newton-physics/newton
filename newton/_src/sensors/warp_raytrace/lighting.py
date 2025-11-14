@@ -21,9 +21,12 @@ from . import ray_cast
 @wp.func
 def compute_lighting(
     use_shadows: wp.bool,
-    bvh_id: wp.uint64,
-    group_roots: wp.array(dtype=wp.int32),
-    num_geom_in_bvh: wp.int32,
+    bvh_geom_size: wp.int32,
+    bvh_geom_id: wp.uint64,
+    bvh_geom_group_roots: wp.array(dtype=wp.int32),
+    bvh_particles_size: wp.int32,
+    bvh_particles_id: wp.uint64,
+    bvh_particles_group_roots: wp.array(dtype=wp.int32),
     geom_enabled: wp.array(dtype=wp.int32),
     world_id: wp.int32,
     light_active: wp.bool,
@@ -38,6 +41,9 @@ def compute_lighting(
     mesh_ids: wp.array(dtype=wp.uint64),
     geom_positions: wp.array(dtype=wp.vec3f),
     geom_orientations: wp.array(dtype=wp.mat33f),
+    particles_position: wp.array(dtype=wp.vec3f),
+    particles_radius: wp.array(dtype=wp.float32),
+    triangle_mesh_id: wp.uint64,
     hit_point: wp.vec3f,
 ) -> wp.float32:
     light_contribution = wp.float32(0.0)
@@ -83,10 +89,13 @@ def compute_lighting(
             max_t = wp.float32(1.0e8)
 
         shadow_hit = ray_cast.first_hit(
-            bvh_id,
-            group_roots,
+            bvh_geom_size,
+            bvh_geom_id,
+            bvh_geom_group_roots,
+            bvh_particles_size,
+            bvh_particles_id,
+            bvh_particles_group_roots,
             world_id,
-            num_geom_in_bvh,
             geom_enabled,
             geom_types,
             geom_mesh_indices,
@@ -94,6 +103,9 @@ def compute_lighting(
             mesh_ids,
             geom_positions,
             geom_orientations,
+            particles_position,
+            particles_radius,
+            triangle_mesh_id,
             shadow_origin,
             L,
             max_t,
