@@ -39,6 +39,12 @@ _INFINITY = wp.constant(1.0e12)
 _CLOSEST_POINT_NORMAL_EPSILON = wp.constant(1.0e-3)
 """Epsilon for closest point normal calculation"""
 
+_SDF_SIGN_FROM_AVERAGE_NORMAL = True
+"""If true, determine the sign of the sdf from the average normal of the faces around the closest point.
+Otherwise, use Warp's default sign determination strategy (raycasts).
+"""
+
+
 _NULL_COLLIDER_ID = -2
 _GROUND_COLLIDER_ID = -1
 _GROUND_COLLIDER_MATERIAL_INDEX = 0
@@ -117,24 +123,42 @@ def collision_sdf(
             x_local = x
 
         max_dist = collider.query_max_dist + thickness
-        query = wp.mesh_query_point_sign_normal(mesh, x_local, max_dist)
+
+        if wp.static(_SDF_SIGN_FROM_AVERAGE_NORMAL):
+            query = wp.mesh_query_point_no_sign(mesh, x_local, max_dist)
+        else:
+            query = wp.mesh_query_point(mesh, x_local, max_dist)
 
         if query.result:
             cp = wp.mesh_eval_position(mesh, query.face, query.u, query.v)
-            mesh_material_id = collider.face_material_index[global_face_id + query.face]
 
+            if wp.static(_SDF_SIGN_FROM_AVERAGE_NORMAL):
+                face_normal = wp.vec3(0.0)
+                epsilon = wp.vec3(_CLOSEST_POINT_NORMAL_EPSILON)
+                aabb_query = wp.mesh_query_aabb(mesh, cp - epsilon, cp + epsilon)
+                face_index = wp.int32(0)
+                while wp.mesh_query_aabb_next(aabb_query, face_index):
+                    face_normal += wp.mesh_eval_face_normal(mesh, face_index)
+
+                face_normal = wp.normalize(face_normal)
+                sign = wp.where(wp.dot(face_normal, x_local - cp) > 0.0, 1.0, -1.0)
+            else:
+                face_normal = wp.mesh_eval_face_normal(mesh, query.face)
+                sign = query.sign
+
+            mesh_material_id = collider.face_material_index[global_face_id + query.face]
             thickness = collider.material_thickness[mesh_material_id]
 
             offset = x_local - cp
-            d = wp.length(offset) * query.sign
+            d = wp.length(offset) * sign
             sdf = d - thickness
 
             if sdf < min_sdf:
                 min_sdf = sdf
                 if wp.abs(d) < _CLOSEST_POINT_NORMAL_EPSILON:
-                    sdf_grad = wp.mesh_eval_face_normal(mesh, query.face)
+                    sdf_grad = face_normal
                 else:
-                    sdf_grad = wp.normalize(offset) * query.sign
+                    sdf_grad = wp.normalize(offset) * sign
 
                 sdf_vel = wp.mesh_eval_velocity(mesh, query.face, query.u, query.v)
                 closest_point = cp
