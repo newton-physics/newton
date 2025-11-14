@@ -84,6 +84,7 @@ def is_supported_shape_type(shape_type: wp.int32) -> wp.bool:
         return True
     if shape_type == GeomType.MESH:
         return True
+    wp.printf("Unsupported shape type: %d\n", shape_type)
     return False
 
 
@@ -143,11 +144,18 @@ class TiledCameraSensor:
     def __init__(self, model: Model, num_cameras: int, width: int, height: int):
         self.model = model
 
-        self.render_context = RenderContext(width, height, False, False, True, self.model.num_worlds, True)
-        self.render_context.num_cameras = num_cameras
+        self.render_context = RenderContext(width, height, False, False, True, self.model.num_worlds, num_cameras, True)
         self.render_context.mesh_ids = model.shape_source_ptr
         self.render_context.geom_mesh_indices = wp.empty(self.model.shape_count, dtype=wp.int32)
         self.render_context.mesh_bounds = wp.empty((self.model.shape_count, 2), dtype=wp.vec3f, ndim=2)
+
+        if model.particle_q.shape[0]:
+            self.render_context.particles_position = model.particle_q
+            self.render_context.particles_radius = model.particle_radius
+            self.render_context.particles_world_index = model.particle_world
+            if model.tri_indices.shape[0]:
+                self.render_context.triangle_points = model.particle_q
+                self.render_context.triangle_indices = model.tri_indices.flatten()
 
         self.render_context.geom_enabled = wp.empty(self.model.shape_count, dtype=wp.int32)
         self.render_context.geom_types = model.shape_type
@@ -174,8 +182,7 @@ class TiledCameraSensor:
                 num_enabled_geoms,
             ],
         )
-        self.render_context.num_geom_in_bvh = int(num_enabled_geoms.numpy()[0])
-        self.render_context.init_outputs()
+        self.render_context.init_outputs(int(num_enabled_geoms.numpy()[0]))
 
         wp.launch(
             kernel=compute_mesh_bounds,
@@ -199,7 +206,7 @@ class TiledCameraSensor:
             depth_image: Optional output array for depth data (num_worlds, num_cameras, width*height).
                         If None, no depth rendering is performed.
         """
-        if self.model.shape_count:
+        if self.render_context.has_geometries:
             wp.launch(
                 kernel=convert_newton_transform,
                 dim=self.model.shape_count,
@@ -213,7 +220,14 @@ class TiledCameraSensor:
                     self.render_context.geom_sizes,
                 ],
             )
-            self.render_context.render(color_image, depth_image)
+
+        if self.render_context.has_triangle_mesh:
+            self.render_context.triangle_points = state.particle_q
+
+        if self.render_context.has_particles:
+            self.render_context.particles_position = state.particle_q
+
+        self.render_context.render(color_image, depth_image)
 
     def update_cameras(self, positions: wp.array(dtype=wp.vec3f), orientations: wp.array(dtype=wp.mat33f)):
         """
@@ -389,7 +403,6 @@ class TiledCameraSensor:
         Sets up a single directional light oriented at (-1, 1, -1) with shadow casting enabled.
         """
 
-        self.render_context.num_lights = 1
         self.render_context.use_shadows = True
         self.render_context.lights_active = wp.array([True], dtype=wp.bool)
         self.render_context.lights_type = wp.array([LightType.DIRECTIONAL], dtype=wp.int32)

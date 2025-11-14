@@ -543,6 +543,33 @@ def ray_box_with_normal(
 
 
 @wp.func
+def ray_mesh(
+    mesh_id: wp.uint64,
+    ray_origin_world: wp.vec3f,
+    ray_direction_world: wp.vec3f,
+    max_t: wp.float32,
+    double_sided: wp.bool,
+) -> tuple[wp.bool, wp.float32, wp.vec3f, wp.float32, wp.float32, wp.int32]:
+    """Returns intersection information at which a ray intersects with a mesh.
+
+    Requires wp.Mesh be constructed and their ids to be passed"""
+
+    query = wp.mesh_query_ray(mesh_id, ray_origin_world, ray_direction_world, max_t)
+    if query.result:
+        return True, query.t, wp.normalize(query.normal), query.u, query.v, query.face
+
+    if double_sided:
+        if max_t == wp.inf:
+            max_t = 1000.0
+
+        query = wp.mesh_query_ray(mesh_id, ray_origin_world + ray_direction_world * max_t, -ray_direction_world, max_t)
+        if query.result:
+            return True, max_t - query.t, wp.normalize(query.normal), query.u, query.v, query.face
+
+    return False, wp.inf, wp.vec3f(0.0, 0.0, 0.0), 0.0, 0.0, -1
+
+
+@wp.func
 def ray_mesh_with_bvh(
     mesh_bvh_ids: wp.array(dtype=wp.uint64),
     mesh_geom_id: wp.int32,
@@ -555,21 +582,15 @@ def ray_mesh_with_bvh(
     """Returns intersection information at which a ray intersects with a mesh.
 
     Requires wp.Mesh be constructed and their ids to be passed"""
-    t = wp.float32(wp.inf)
-    u = wp.float32(0.0)
-    v = wp.float32(0.0)
-    sign = wp.float32(0.0)
-    n = wp.vec3f()
-    f = wp.int32(-1)
 
     ray_origin_local, ray_direction_local = map_ray_to_local(pos, mat, ray_origin_world, ray_direction_world)
-    hit = wp.mesh_query_ray(
-        mesh_bvh_ids[mesh_geom_id], ray_origin_local, ray_direction_local, max_t, t, u, v, sign, n, f
+    query = wp.mesh_query_ray(
+        mesh_bvh_ids[mesh_geom_id], ray_origin_local, ray_direction_local, max_t
     )
 
-    if hit and wp.dot(ray_direction_local, n) < 0.0:  # Backface culling in local space
-        normal = mat @ n
+    if query.result and wp.dot(ray_direction_local, query.normal) < 0.0:  # Backface culling in local space
+        normal = mat @ query.normal
         normal = wp.normalize(normal)
-        return True, t, normal, u, v, f, mesh_geom_id
+        return True, query.t, normal, query.u, query.v, query.face, mesh_geom_id
 
     return False, wp.inf, wp.vec3f(0.0, 0.0, 0.0), 0.0, 0.0, -1, -1
