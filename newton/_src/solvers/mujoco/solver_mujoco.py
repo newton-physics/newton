@@ -737,7 +737,6 @@ class SolverMuJoCo(SolverBase):
         tolerance: float = 1e-6,
         ls_tolerance: float = 0.01,
         cone: int | str = "pyramidal",
-        geom_solref: tuple[float, float] = (0.02, 1.0),
         geom_solimp: tuple[float, float, float, float, float] = (0.9, 0.95, 0.001, 0.5, 2.0),
         geom_friction: tuple[float, float, float] | None = None,
         target_filename: str | None = None,
@@ -853,7 +852,6 @@ class SolverMuJoCo(SolverBase):
         defaults = spec.default
         if callable(defaults):
             defaults = defaults()
-        defaults.geom.solref = geom_solref
         defaults.geom.solimp = geom_solimp
         # Use model's friction parameters if geom_friction is not provided
         if geom_friction is None:
