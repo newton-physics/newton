@@ -277,6 +277,7 @@ class Example:
         if self.verbose:
             print(f"Iteration {self.train_iter}: {loss}")
         self.loss_history.append(loss[0])
+        self.viewer.log_scalar("/loss", loss[0])
 
         # reset sim
         self.sim_time = 0.0

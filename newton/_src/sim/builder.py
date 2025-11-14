@@ -3292,6 +3292,7 @@ class ModelBuilder:
         method: Literal["coacd", "vhacd", "bounding_sphere", "bounding_box"] | RemeshingMethod = "convex_hull",
         shape_indices: list[int] | None = None,
         raise_on_failure: bool = False,
+        keep_visual_shapes: bool = False,
         **remeshing_kwargs: dict[str, Any],
     ) -> set[int]:
         """Approximates the mesh shapes of the model.
@@ -3346,6 +3347,37 @@ class ModelBuilder:
                 for i, stype in enumerate(self.shape_type)
                 if stype == GeoType.MESH and self.shape_flags[i] & ShapeFlags.COLLIDE_SHAPES
             ]
+
+        if keep_visual_shapes:
+            # if keeping visual shapes, first copy input shapes, mark the copies as visual-only,
+            # and mark the originals as non-visible.
+            # in the rare event that approximation fails, we end up with two identical shapes,
+            # one collision-only, one visual-only, but this simplifies the logic below.
+            for shape in shape_indices:
+                if not (self.shape_flags[shape] & ShapeFlags.VISIBLE):
+                    continue
+
+                body = self.shape_body[shape]
+                xform = self.shape_transform[shape]
+                cfg = ModelBuilder.ShapeConfig(
+                    density=0.0,  # do not add extra mass / inertia
+                    thickness=self.shape_thickness[shape],
+                    is_solid=self.shape_is_solid[shape],
+                    has_shape_collision=False,
+                    has_particle_collision=False,
+                    is_visible=True,
+                )
+                self.add_shape_mesh(
+                    body=body,
+                    xform=xform,
+                    cfg=cfg,
+                    mesh=self.shape_source[shape],
+                    key=f"{self.shape_key[shape]}_visual",
+                    scale=self.shape_scale[shape],
+                )
+
+                # disable visibility of the original shape
+                self.shape_flags[shape] &= ~ShapeFlags.VISIBLE
 
         # keep track of remeshed shapes to handle fallbacks
         remeshed_shapes = set()
