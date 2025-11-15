@@ -289,6 +289,12 @@ def create_parser():
         help="Viewer to use (gl, usd, rerun, or null).",
     )
     parser.add_argument(
+        "--rerun-address",
+        type=str,
+        default=None,
+        help="Connect to an external Rerun server. (e.g., 'rerun+http://127.0.0.1:9876/proxy').",
+    )
+    parser.add_argument(
         "--output-path", type=str, default="output.usd", help="Path to the output USD file (required for usd viewer)."
     )
     parser.add_argument("--num-frames", type=int, default=100, help="Total number of frames.")
@@ -365,7 +371,7 @@ def init(parser=None):
             raise ValueError("--output-path is required when using usd viewer")
         viewer = newton.viewer.ViewerUSD(output_path=args.output_path, num_frames=args.num_frames)
     elif args.viewer == "rerun":
-        viewer = newton.viewer.ViewerRerun()
+        viewer = newton.viewer.ViewerRerun(address=args.rerun_address)
     elif args.viewer == "null":
         viewer = newton.viewer.ViewerNull(num_frames=args.num_frames)
     else:

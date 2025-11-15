@@ -167,11 +167,15 @@ enabling real-time or offline visualization with advanced features like time scr
 
 .. code-block:: python
 
+    # Default usage: spawns a local viewer
     viewer = newton.viewer.ViewerRerun(
-        server=True,                   # Start in server mode
-        address="127.0.0.1:9876",      # Server address
-        launch_viewer=True,            # Auto-launch web viewer
-        app_id="newton-simulation"     # Application identifier
+        app_id="newton-simulation"
+    )
+
+    # Or specify a custom server address for remote viewing
+    viewer = newton.viewer.ViewerRerun(
+        address="rerun+http://127.0.0.1:9876/proxy",
+        app_id="newton-simulation"
     )
 
     viewer.set_model(model)
