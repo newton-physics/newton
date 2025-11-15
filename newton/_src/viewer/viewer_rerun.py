@@ -30,6 +30,7 @@ try:
     import rerun.blueprint as rrb
 except ImportError:
     rr = None
+    rrb = None
 
 
 class ViewerRerun(ViewerBase):
