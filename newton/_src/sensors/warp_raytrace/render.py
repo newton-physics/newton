@@ -302,11 +302,12 @@ def _render_megakernel(
             255.0,
         )
 
+
 def render_megakernel(
     rc: RenderContext,
     color_image: wp.array(dtype=wp.uint32, ndim=3) | None = None,
     depth_image: wp.array(dtype=wp.float32, ndim=3) | None = None,
-    clear_images: bool = True
+    clear_images: bool = True,
 ):
     total_views = rc.num_worlds * rc.num_cameras
     total_pixels = rc.width * rc.height

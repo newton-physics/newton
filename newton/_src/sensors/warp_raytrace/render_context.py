@@ -160,7 +160,7 @@ class RenderContext:
         color_image: wp.array(dtype=wp.uint32, ndim=3) | None = None,
         depth_image: wp.array(dtype=wp.float32, ndim=3) | None = None,
         refit_bvh: bool = True,
-        clear_images: bool = True
+        clear_images: bool = True,
     ):
         if self.has_geometries or self.has_particles or self.has_triangle_mesh:
             if refit_bvh:
