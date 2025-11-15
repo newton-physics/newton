@@ -218,8 +218,8 @@ def create_solve_mpr(support_func: Any):
         extend: float,
         data_provider: Any,
         MAX_ITER: int = 30,
-        NUMERIC_EPSILON: float = 1e-16,
-    ) -> tuple[bool, wp.vec3, wp.vec3, wp.vec3, float, int, int]:
+        COLLIDE_EPSILON: float = 1e-5,
+    ) -> tuple[bool, wp.vec3, wp.vec3, wp.vec3, float]:
         """
         Core MPR algorithm implementation.
 
@@ -246,12 +246,10 @@ def create_solve_mpr(support_func: Any):
             The XenoCollide implementation below is altered and not identical to the
             original. The license is kept untouched.
         """
-        COLLIDE_EPSILON = 1e-5
+        NUMERIC_EPSILON = 1e-16
 
         # Initialize variables
         penetration = float(0.0)
-        feature_a_id = int(0)
-        feature_b_id = int(0)
         point_a = wp.vec3(0.0, 0.0, 0.0)
         point_b = wp.vec3(0.0, 0.0, 0.0)
         normal = wp.vec3(0.0, 0.0, 0.0)
@@ -271,7 +269,7 @@ def create_solve_mpr(support_func: Any):
         normal = -vert_v(v0)
 
         # First support point
-        v1, feature_a_id, feature_b_id = minkowski_support(
+        v1, _feature_a_id, _feature_b_id = minkowski_support(
             geom_a, geom_b, normal, orientation_b, position_b, extend, data_provider
         )
 
@@ -279,7 +277,7 @@ def create_solve_mpr(support_func: Any):
         point_b = v1.B
 
         if wp.dot(vert_v(v1), normal) <= 0.0:
-            return False, point_a, point_b, normal, penetration, feature_a_id, feature_b_id
+            return False, point_a, point_b, normal, penetration
 
         normal = wp.cross(vert_v(v1), vert_v(v0))
 
@@ -290,15 +288,15 @@ def create_solve_mpr(support_func: Any):
             temp1 = v1.A - v1.B
             penetration = wp.dot(temp1, normal)
 
-            return True, point_a, point_b, normal, penetration, feature_a_id, feature_b_id
+            return True, point_a, point_b, normal, penetration
 
         # Second support point
-        v2, feature_a_id, feature_b_id = minkowski_support(
+        v2, _feature_a_id, _feature_b_id = minkowski_support(
             geom_a, geom_b, normal, orientation_b, position_b, extend, data_provider
         )
 
         if wp.dot(vert_v(v2), normal) <= 0.0:
-            return False, point_a, point_b, normal, penetration, feature_a_id, feature_b_id
+            return False, point_a, point_b, normal, penetration
 
         # Determine whether origin is on + or - side of plane
         temp1 = vert_v(v1) - vert_v(v0)
@@ -326,16 +324,16 @@ def create_solve_mpr(support_func: Any):
         v3 = Vert()
         while True:
             if phase1 > MAX_ITER:
-                return False, point_a, point_b, normal, penetration, feature_a_id, feature_b_id
+                return False, point_a, point_b, normal, penetration
 
             phase1 += 1
 
-            v3, feature_a_id, feature_b_id = minkowski_support(
+            v3, _feature_a_id, _feature_b_id = minkowski_support(
                 geom_a, geom_b, normal, orientation_b, position_b, extend, data_provider
             )
 
             if wp.dot(vert_v(v3), normal) <= 0.0:
-                return False, point_a, point_b, normal, penetration, feature_a_id, feature_b_id
+                return False, point_a, point_b, normal, penetration
 
             # If origin is outside (v1.V(),v0.V(),v3.V()), then eliminate v2.V() and loop
             temp1 = wp.cross(vert_v(v1), vert_v(v3))
@@ -371,7 +369,7 @@ def create_solve_mpr(support_func: Any):
 
             # Can this happen??? Can it be handled more cleanly?
             if normal_sq < NUMERIC_EPSILON * NUMERIC_EPSILON:
-                return False, point_a, point_b, normal, penetration, feature_a_id, feature_b_id
+                return False, point_a, point_b, normal, penetration
 
             if not hit:
                 # Compute distance from origin to wedge face
@@ -379,7 +377,7 @@ def create_solve_mpr(support_func: Any):
                 # If the origin is inside the wedge, we have a hit
                 hit = d >= 0.0
 
-            v4, feature_a_id, feature_b_id = minkowski_support(
+            v4, _feature_a_id, _feature_b_id = minkowski_support(
                 geom_a, geom_b, normal, orientation_b, position_b, extend, data_provider
             )
 
@@ -408,7 +406,7 @@ def create_solve_mpr(support_func: Any):
                     point_a = alpha * v1.A + beta * v2.A + gamma * v3.A
                     point_b = alpha * v1.B + beta * v2.B + gamma * v3.B
 
-                return hit, point_a, point_b, normal, penetration, feature_a_id, feature_b_id
+                return hit, point_a, point_b, normal, penetration
 
             # Determine what region of the wedge the origin is in
             temp1 = wp.cross(vert_v(v4), vert_v(v0))
@@ -440,8 +438,8 @@ def create_solve_mpr(support_func: Any):
         sum_of_contact_offsets: float,
         data_provider: Any,
         MAX_ITER: int = 30,
-        NUMERIC_EPSILON: float = 1e-16,
-    ) -> tuple[bool, float, wp.vec3, wp.vec3, int, int]:
+        COLLIDE_EPSILON: float = 1e-5,
+    ) -> tuple[bool, float, wp.vec3, wp.vec3]:
         """
         Solve MPR (Minkowski Portal Refinement) for collision detection.
 
@@ -463,8 +461,6 @@ def create_solve_mpr(support_func: Any):
                 signed_distance (float): Signed distance (negative indicates overlap)
                 contact point center (wp.vec3): Midpoint between witness points in world space
                 normal (wp.vec3): Contact normal from A to B in world space
-                feature A ID (int): Feature ID for shape A at contact point
-                feature B ID (int): Feature ID for shape B at contact point
         """
         # Transform shape B to local space of shape A
         relative_orientation_b = wp.quat_inverse(orientation_a) * orientation_b
@@ -479,10 +475,10 @@ def create_solve_mpr(support_func: Any):
             sum_of_contact_offsets,
             data_provider,
             MAX_ITER,
-            NUMERIC_EPSILON,
+            COLLIDE_EPSILON,
         )
 
-        collision, point_a, point_b, normal, penetration, feature_a_id, feature_b_id = result
+        collision, point_a, point_b, normal, penetration = result
 
         point = 0.5 * (point_a + point_b)
 
@@ -493,6 +489,6 @@ def create_solve_mpr(support_func: Any):
         # Convert to Newton signed distance convention (negative = overlap, positive = separation)
         signed_distance = -penetration
 
-        return collision, signed_distance, point, normal, feature_a_id, feature_b_id
+        return collision, signed_distance, point, normal
 
     return solve_mpr
