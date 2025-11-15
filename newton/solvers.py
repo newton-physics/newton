@@ -112,6 +112,7 @@ Supported Features
 
 # solver types
 from ._src.solvers import (
+    CustomDataField,
     SolverBase,
     SolverFeatherstone,
     SolverImplicitMPM,
@@ -123,6 +124,7 @@ from ._src.solvers import (
 )
 
 __all__ = [
+    "CustomDataField",
     "SolverBase",
     "SolverFeatherstone",
     "SolverImplicitMPM",

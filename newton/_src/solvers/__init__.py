@@ -19,11 +19,13 @@ from .implicit_mpm import SolverImplicitMPM
 from .mujoco import SolverMuJoCo
 from .semi_implicit import SolverSemiImplicit
 from .solver import SolverBase
+from .solver_data import CustomDataField
 from .style3d import SolverStyle3D
 from .vbd import SolverVBD
 from .xpbd import SolverXPBD
 
 __all__ = [
+    "CustomDataField",
     "SolverBase",
     "SolverFeatherstone",
     "SolverImplicitMPM",

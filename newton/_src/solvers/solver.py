@@ -17,6 +17,7 @@ import warp as wp
 
 from ..geometry import ParticleFlags
 from ..sim import Contacts, Control, Model, ModelBuilder, State
+from .solver_data import CustomDataField, SolverData
 
 
 @wp.kernel
@@ -164,6 +165,7 @@ class SolverBase:
 
     def __init__(self, model: Model):
         self.model = model
+        self.data = None  # Created lazily when require_data is first called
 
     @property
     def device(self) -> wp.context.Device:
@@ -312,3 +314,55 @@ class SolverBase:
             builder (ModelBuilder): The model builder to register the custom attributes to.
         """
         pass
+
+    def get_generic_data_fields(self) -> dict[str, int]:
+        """Return the data fields that can be requested from the solver, along with their size.
+        Returns:
+            The data fields supported by the solver, with their sizes.
+
+        In solvers that do not support the SolverData interface, `get_generic_data_fields()` raises NotImplementedError()
+        """
+        raise NotImplementedError()
+
+    def get_custom_data_fields(self) -> list[CustomDataField]:
+        """Return the list of custom data fields defined by the solver.
+
+        Returns:
+            The custom data fields supported by the solver.
+
+        In solvers that do not support the SolverData interface, `get_custom_data_fields()` raises NotImplementedError()
+        """
+        raise NotImplementedError()
+
+    @property
+    def data_fields(self):
+        """Get the names of all supported data fields, or None if not supported."""
+        try:
+            return [*self.get_generic_data_fields(), *self.get_custom_data_fields()]
+        except NotImplementedError:
+            return None
+
+    def require_data(self, *fields: str) -> None:
+        """Require the solver to provide data fields `fields` (which must be listed in `data_fields`).
+
+        Triggers allocation of the required buffers and ensures that the field data is made available during `step()`.
+
+        Args:
+            *fields: The names of the fields requested
+        Raises:
+            TypeError: If a requested field is not supported by the solver.
+            NotImplementedError: If the solver does not support the SolverData interface.
+
+        """
+        if self.data is None:  # Created on first require_data()
+            # TODO: non verbose
+            self.data = SolverData(
+                self.model, self.get_generic_data_fields(), self.get_custom_data_fields(), verbose=True
+            )
+        self.data._require_fields(dict.fromkeys(fields, True))
+
+    def allocate_data(self, state: State):
+        """Allocate ``Data`` object with required fields on ``state``."""
+        if self.data is None:
+            raise RuntimeError("No data fields required; nothing to allocate on State.")
+        self.data.allocate_data(state)

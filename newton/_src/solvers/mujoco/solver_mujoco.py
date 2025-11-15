@@ -74,6 +74,33 @@ else:
     MjWarpData = object
 
 
+@wp.kernel
+def data_rigid_force_kernel(
+    to_mjc_body_index: wp.array(dtype=int),
+    bodies_per_world: int,
+    # mjw sources
+    mjw_xmat: wp.array2d(dtype=wp.mat33),
+    mjw_cacc: wp.array2d(dtype=wp.spatial_vector),
+    mjw_cfrc_int: wp.array2d(dtype=wp.spatial_vector),
+    # outputs
+    body_acceleration: wp.array(dtype=wp.spatial_vector),
+    body_force_parent: wp.array(dtype=wp.spatial_vector),
+):
+    worldid, bodyid = wp.tid()
+    wbi, mbi = bodies_per_world * worldid + bodyid, to_mjc_body_index[bodyid]
+    if mbi < 0:
+        return
+
+    R = mjw_xmat[worldid, mbi]
+
+    if body_acceleration:
+        cacc = mjw_cacc[worldid, mbi]
+        body_acceleration[wbi] = wp.spatial_vector(R @ wp.spatial_bottom(cacc), R @ wp.spatial_top(cacc))
+    if body_force_parent:
+        cfrc_int = mjw_cfrc_int[worldid, mbi]
+        body_force_parent[wbi] = wp.spatial_vector(R @ wp.spatial_bottom(cfrc_int), R @ wp.spatial_top(cfrc_int))
+
+
 class SolverMuJoCo(SolverBase):
     """
     This solver provides an interface to simulate physics using the `MuJoCo <https://github.com/google-deepmind/mujoco>`_ physics engine,
@@ -306,6 +333,7 @@ class SolverMuJoCo(SolverBase):
             self._mujoco.mj_step(self.mj_model, self.mj_data)
             self.update_newton_state(self.model, state_out, self.mj_data)
         else:
+            self.data_prepare_for_step()
             self.apply_mjc_control(self.model, state_in, control, self.mjw_data)
             if self.update_data_interval > 0 and self._step % self.update_data_interval == 0:
                 self.update_mjc_data(self.mjw_data, self.model, state_in)
@@ -318,6 +346,7 @@ class SolverMuJoCo(SolverBase):
                     self.mujoco_warp_step()
 
             self.update_newton_state(self.model, state_out, self.mjw_data)
+            self.update_data(state_out)
         self._step += 1
         return state_out
 
@@ -1803,6 +1832,60 @@ class SolverMuJoCo(SolverBase):
                     ],
                     device=self.model.device,
                 )
+
+    @override
+    def get_generic_data_fields(self):
+        if self.use_mujoco_cpu:
+            # Currently not supported
+            return {}
+        return {
+            "body_acceleration": self.model.body_count,
+            "body_parent_joint_force": self.model.body_count,
+        }
+
+    @override
+    def get_custom_data_fields(self):
+        if self.use_mujoco_cpu:
+            # Currently not supported
+            return []
+        return []
+
+    def data_prepare_for_step(self):
+        """Preparations for required data fields to be computed on step()."""
+        if self.data is None:
+            return
+        active_fields = {field for field, active in self.data.required_fields.items() if active}
+        rne_postconstraint_fields = [
+            "body_acceleration",
+        ]
+        m = self.mjw_model
+        if active_fields.intersection(rne_postconstraint_fields) and not m.sensor_rne_postconstraint:
+            if wp.config.verbose:
+                print("Setting model.sensor_rne_postconstraint True")
+            m.sensor_rne_postconstraint = True
+        # TODO: deactivate sensor_rne_postconstraint if it was set before and is not needed now
+
+    def update_data(self, state: State):
+        """Update `state.data` with the data previously marked as required."""
+        if state.data is None:
+            return
+        fields = {f for f, k in self.data.required_fields.items() if k}
+        rigid_force_fields = ["body_acceleration", "body_parent_joint_force"]
+
+        bodies_per_world = self.model.body_count // self.model.num_worlds
+        if fields.intersection(rigid_force_fields):
+            wp.launch(
+                data_rigid_force_kernel,
+                (self.mjw_data.nworld, bodies_per_world),
+                inputs=[
+                    self.to_mjc_body_index,
+                    bodies_per_world,
+                    self.mjw_data.xmat,
+                    self.mjw_data.cacc,
+                    self.mjw_data.cfrc_int,
+                ],
+                outputs=[getattr(state.data, field) if field in fields else None for field in rigid_force_fields],
+            )
 
     def render_mujoco_viewer(
         self,
