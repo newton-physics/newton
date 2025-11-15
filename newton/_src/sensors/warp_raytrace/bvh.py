@@ -193,9 +193,9 @@ def compute_geom_bvh_bounds(
     elif type == GeomType.BOX:
         lower, upper = compute_box_bounds(pos, rot, size)
 
-    out_bvh_lowers[world_id * num_geom_in_bvh + bvh_geom_local] = lower
-    out_bvh_uppers[world_id * num_geom_in_bvh + bvh_geom_local] = upper
-    out_bvh_groups[world_id * num_geom_in_bvh + bvh_geom_local] = world_id
+    out_bvh_lowers[bvh_geom_local] = lower
+    out_bvh_uppers[bvh_geom_local] = upper
+    out_bvh_groups[bvh_geom_local] = world_id
 
 
 @wp.kernel(enable_backward=False)
@@ -214,7 +214,7 @@ def compute_particle_bvh_bounds(
     if bvh_geom_local >= num_particle_in_bvh:
         return
 
-    geom_id = bvh_geom_local  # geom_enabled[bvh_geom_local]
+    geom_id = bvh_geom_local
 
     world_id = particle_world_index[geom_id]
     if world_id < 0:
@@ -225,9 +225,9 @@ def compute_particle_bvh_bounds(
 
     lower, upper = compute_sphere_bounds(particle_position[geom_id], particle_radius[geom_id])
 
-    out_bvh_lowers[world_id * num_particle_in_bvh + bvh_geom_local] = lower
-    out_bvh_uppers[world_id * num_particle_in_bvh + bvh_geom_local] = upper
-    out_bvh_groups[world_id * num_particle_in_bvh + bvh_geom_local] = world_id
+    out_bvh_lowers[bvh_geom_local] = lower
+    out_bvh_uppers[bvh_geom_local] = upper
+    out_bvh_groups[bvh_geom_local] = world_id
 
 
 @wp.kernel(enable_backward=False)

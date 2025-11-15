@@ -45,7 +45,7 @@ def convert_newton_transform(
 
     transform = wp.mul(body_transform, in_transform[tid])
     out_position[tid] = wp.transform_get_translation(transform)
-    out_matrix[tid] = wp.quat_to_matrix(wp.transform_get_rotation(transform))
+    out_matrix[tid] = wp.quat_to_matrix(wp.normalize(wp.transform_get_rotation(transform)))
     out_sizes[tid] = in_scale[tid]
 
 
@@ -190,21 +190,12 @@ class TiledCameraSensor:
             inputs=[self.render_context.mesh_ids, self.render_context.mesh_bounds],
         )
 
-    def render(
-        self,
-        state: State,
-        color_image: wp.array(dtype=wp.uint32, ndim=4) | None = None,
-        depth_image: wp.array(dtype=wp.float32, ndim=4) | None = None,
-    ):
+    def update_from_state(self, state: State):
         """
-        Render color and depth images for all worlds and cameras.
+        Update data from Newton State.
 
         Args:
             state: The current simulation state containing body transforms.
-            color_image: Optional output array for color data (num_worlds, num_cameras, width*height).
-                        If None, no color rendering is performed.
-            depth_image: Optional output array for depth data (num_worlds, num_cameras, width*height).
-                        If None, no depth rendering is performed.
         """
         if self.render_context.has_geometries:
             wp.launch(
@@ -227,7 +218,25 @@ class TiledCameraSensor:
         if self.render_context.has_particles:
             self.render_context.particles_position = state.particle_q
 
-        self.render_context.render(color_image, depth_image)
+    def render(
+        self,
+        color_image: wp.array(dtype=wp.uint32, ndim=3) | None = None,
+        depth_image: wp.array(dtype=wp.float32, ndim=3) | None = None,
+        refit_bvh: bool = True,
+        clear_images: bool = True
+    ):
+        """
+        Render color and depth images for all worlds and cameras.
+
+        Args:
+            color_image: Optional output array for color data (num_worlds, num_cameras, width*height).
+                        If None, no color rendering is performed.
+            depth_image: Optional output array for depth data (num_worlds, num_cameras, width*height).
+                        If None, no depth rendering is performed.
+            refit_bvh: Wether to rebuild the BVH or not.
+            clear_images: Wether to clear the images before rendering or not.
+        """
+        self.render_context.render(color_image, depth_image, refit_bvh=refit_bvh, clear_images=clear_images)
 
     def update_cameras(self, positions: wp.array(dtype=wp.vec3f), orientations: wp.array(dtype=wp.mat33f)):
         """
@@ -264,7 +273,7 @@ class TiledCameraSensor:
             ],
         )
 
-    def save_color_image(self, color_image: wp.array(dtype=wp.uint32, ndim=4), filename: str) -> bool:
+    def save_color_image(self, color_image: wp.array(dtype=wp.uint32, ndim=3), filename: str) -> bool:
         """
         Save rendered color image as a tiled file.
 
@@ -313,7 +322,7 @@ class TiledCameraSensor:
         Image.fromarray(tile_data).save(filename)
         return True
 
-    def save_depth_image(self, depth_image: wp.array(dtype=wp.float32, ndim=4), filename: str) -> bool:
+    def save_depth_image(self, depth_image: wp.array(dtype=wp.float32, ndim=3), filename: str) -> bool:
         """
         Save rendered depth image as a tiled grayscale file.
 
