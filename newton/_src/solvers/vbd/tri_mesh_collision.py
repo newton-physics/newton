@@ -23,7 +23,6 @@ from ...geometry.kernels import (
     init_triangle_collision_data_kernel,
     triangle_triangle_collision_detection_kernel,
     vertex_triangle_collision_detection_kernel,
-    vertex_triangle_collision_detection_no_triangle_buffers_kernel,
 )
 from ...sim import Model
 
@@ -108,10 +107,14 @@ class TriMeshCollisionDetector:
         vertex_positions=None,
         vertex_collision_buffer_pre_alloc=8,
         vertex_collision_buffer_max_alloc=256,
+        vertex_triangle_filtering_list=None,
+        vertex_triangle_filtering_list_offsets=None,
         triangle_collision_buffer_pre_alloc=16,
         triangle_collision_buffer_max_alloc=256,
         edge_collision_buffer_pre_alloc=8,
         edge_collision_buffer_max_alloc=256,
+        edge_filtering_list=None,
+        edge_filtering_list_offsets=None,
         triangle_triangle_collision_buffer_pre_alloc=8,
         triangle_triangle_collision_buffer_max_alloc=256,
         edge_edge_parallel_epsilon=1e-5,
@@ -129,6 +132,12 @@ class TriMeshCollisionDetector:
         self.edge_collision_buffer_max_alloc = edge_collision_buffer_max_alloc
         self.triangle_triangle_collision_buffer_pre_alloc = triangle_triangle_collision_buffer_pre_alloc
         self.triangle_triangle_collision_buffer_max_alloc = triangle_triangle_collision_buffer_max_alloc
+
+        self.vertex_triangle_filtering_list = vertex_triangle_filtering_list
+        self.vertex_triangle_filtering_list_offsets = vertex_triangle_filtering_list_offsets
+
+        self.edge_filtering_list = edge_filtering_list
+        self.edge_filtering_list_offsets = edge_filtering_list_offsets
 
         self.edge_edge_parallel_epsilon = edge_edge_parallel_epsilon
 
@@ -236,6 +245,17 @@ class TriMeshCollisionDetector:
         self.triangle_intersecting_triangles = None
         self.triangle_intersecting_triangles_count = None
         self.triangle_intersecting_triangles_offsets = None
+    def set_collision_filter_list(self,
+                                  vertex_triangle_filtering_list,
+                                  vertex_triangle_filtering_list_offsets,
+                                  edge_filtering_list,
+                                  edge_filtering_list_offsets
+                                  ):
+        self.vertex_triangle_filtering_list = vertex_triangle_filtering_list
+        self.vertex_triangle_filtering_list_offsets = vertex_triangle_filtering_list_offsets
+
+        self.edge_filtering_list = edge_filtering_list
+        self.edge_filtering_list_offsets = edge_filtering_list_offsets
 
     def get_collision_data(self):
         collision_info = TriMeshCollisionInfo()
@@ -322,14 +342,14 @@ class TriMeshCollisionDetector:
         )
         self.bvh_edges.refit()
 
-    def vertex_triangle_collision_detection(self, query_radius):
+    def vertex_triangle_collision_detection(self, max_query_radius, min_query_radius=0., min_distance_filtering_ref_pos=None):
         self.vertex_colliding_triangles.fill_(-1)
 
         if self.record_triangle_contacting_vertices:
             wp.launch(
                 kernel=init_triangle_collision_data_kernel,
                 inputs=[
-                    query_radius,
+                    max_query_radius,
                 ],
                 outputs=[
                     self.triangle_colliding_vertices_count,
@@ -340,67 +360,55 @@ class TriMeshCollisionDetector:
                 device=self.model.device,
             )
 
-            wp.launch(
-                kernel=vertex_triangle_collision_detection_kernel,
-                inputs=[
-                    query_radius,
-                    self.bvh_tris.id,
-                    self.vertex_positions,
-                    self.model.tri_indices,
-                    self.vertex_colliding_triangles_offsets,
-                    self.vertex_colliding_triangles_buffer_sizes,
-                    self.triangle_colliding_vertices_offsets,
-                    self.triangle_colliding_vertices_buffer_sizes,
-                ],
-                outputs=[
-                    self.vertex_colliding_triangles,
-                    self.vertex_colliding_triangles_count,
-                    self.vertex_colliding_triangles_min_dist,
-                    self.triangle_colliding_vertices,
-                    self.triangle_colliding_vertices_count,
-                    self.triangle_colliding_vertices_min_dist,
-                    self.resize_flags,
-                ],
-                dim=self.model.particle_count,
-                device=self.model.device,
-                block_dim=self.collision_detection_block_size,
-            )
-        else:
-            self.triangle_colliding_vertices_min_dist.fill_(query_radius)
-            wp.launch(
-                kernel=vertex_triangle_collision_detection_no_triangle_buffers_kernel,
-                inputs=[
-                    query_radius,
-                    self.bvh_tris.id,
-                    self.vertex_positions,
-                    self.model.tri_indices,
-                    self.vertex_colliding_triangles_offsets,
-                    self.vertex_colliding_triangles_buffer_sizes,
-                ],
-                outputs=[
-                    self.vertex_colliding_triangles,
-                    self.vertex_colliding_triangles_count,
-                    self.vertex_colliding_triangles_min_dist,
-                    self.triangle_colliding_vertices_min_dist,
-                    self.resize_flags,
-                ],
-                dim=self.model.particle_count,
-                device=self.model.device,
-                block_dim=self.collision_detection_block_size,
-            )
+            self.triangle_colliding_vertices_min_dist.fill_(max_query_radius)
 
-    def edge_edge_collision_detection(self, query_radius):
+        wp.launch(
+            kernel=vertex_triangle_collision_detection_kernel,
+            inputs=[
+                max_query_radius,
+                min_query_radius,
+                self.bvh_tris.id,
+                self.vertex_positions,
+                self.model.tri_indices,
+                self.vertex_colliding_triangles_offsets,
+                self.vertex_colliding_triangles_buffer_sizes,
+                self.triangle_colliding_vertices_offsets,
+                self.triangle_colliding_vertices_buffer_sizes,
+                self.vertex_triangle_filtering_list,
+                self.vertex_triangle_filtering_list_offsets,
+                min_distance_filtering_ref_pos if min_distance_filtering_ref_pos is not None else self.vertex_positions,
+            ],
+            outputs=[
+                self.vertex_colliding_triangles,
+                self.vertex_colliding_triangles_count,
+                self.vertex_colliding_triangles_min_dist,
+                self.triangle_colliding_vertices,
+                self.triangle_colliding_vertices_count,
+                self.triangle_colliding_vertices_min_dist,
+                self.resize_flags,
+            ],
+            dim=self.model.particle_count,
+            device=self.model.device,
+            block_dim=self.collision_detection_block_size,
+        )
+       
+
+    def edge_edge_collision_detection(self, max_query_radius, min_query_radius=0., min_distance_filtering_ref_pos=None):
         self.edge_colliding_edges.fill_(-1)
         wp.launch(
             kernel=edge_colliding_edges_detection_kernel,
             inputs=[
-                query_radius,
+                max_query_radius,
+                min_query_radius,
                 self.bvh_edges.id,
                 self.vertex_positions,
                 self.model.edge_indices,
                 self.edge_colliding_edges_offsets,
                 self.edge_colliding_edges_buffer_sizes,
                 self.edge_edge_parallel_epsilon,
+                self.edge_filtering_list,
+                self.edge_filtering_list_offsets,
+                min_distance_filtering_ref_pos if min_distance_filtering_ref_pos is not None else self.vertex_positions,
             ],
             outputs=[
                 self.edge_colliding_edges,
