@@ -239,7 +239,7 @@ def closest_hit(
     closest_hit.bary_u = wp.float32(0.0)
     closest_hit.bary_v = wp.float32(0.0)
     closest_hit.face_idx = wp.int32(-1)
-    closest_hit.geom_mesh_id = wp.int32(-1)    
+    closest_hit.geom_mesh_id = wp.int32(-1)
 
     closest_hit = closest_hit_triangle_mesh(closest_hit, triangle_mesh_id, ray_origin_world, ray_dir_world)
 

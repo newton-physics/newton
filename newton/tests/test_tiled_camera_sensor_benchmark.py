@@ -21,6 +21,7 @@ import warp as wp
 import newton
 from newton.sensors import TiledCameraSensor
 
+
 class TestTiledCameraSensorBenchmark(unittest.TestCase):
     def test_benchmark(self):
         franka = newton.ModelBuilder()
@@ -56,12 +57,13 @@ class TestTiledCameraSensorBenchmark(unittest.TestCase):
         with wp.ScopedTimer("Refit BVH", synchronize=True):
             tiled_camera_sensor.render_context.refit_bvh()
 
-        for i in range(10):
+        for _ in range(10):
             with wp.ScopedTimer("Rendering", synchronize=True):
                 tiled_camera_sensor.render(color_image, depth_image, refit_bvh=False, clear_images=False)
 
         tiled_camera_sensor.save_color_image(color_image, "example_color.png")
         tiled_camera_sensor.save_depth_image(depth_image, "example_depth.png")
+
 
 if __name__ == "__main__":
     unittest.main()

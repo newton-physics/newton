@@ -92,6 +92,7 @@ def compute_capsule_bounds(pos: wp.vec3f, rot: wp.mat33f, size: wp.vec3f) -> tup
     extent = wp.vec3f(radius, radius, half_length + radius)
     return compute_box_bounds(pos, rot, extent)
 
+
 @wp.func
 def compute_cylinder_bounds(pos: wp.vec3f, rot: wp.mat33f, size: wp.vec3f) -> tuple[wp.vec3f, wp.vec3f]:
     radius = size[0]
@@ -102,8 +103,9 @@ def compute_cylinder_bounds(pos: wp.vec3f, rot: wp.mat33f, size: wp.vec3f) -> tu
 
 @wp.func
 def compute_cone_bounds(pos: wp.vec3f, rot: wp.mat33f, size: wp.vec3f) -> tuple[wp.vec3f, wp.vec3f]:
-   extent = wp.vec3f(size[0], size[0], size[1])
-   return compute_box_bounds(pos, rot, extent)
+    extent = wp.vec3f(size[0], size[0], size[1])
+    return compute_box_bounds(pos, rot, extent)
+
 
 @wp.func
 def compute_plane_bounds(pos: wp.vec3f, rot: wp.mat33f, size: wp.vec3f) -> tuple[wp.vec3f, wp.vec3f]:
