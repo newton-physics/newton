@@ -1,0 +1,81 @@
+#usda 1.0
+(
+    doc = """Authored manually for testing purposes."""
+    defaultPrim = "test_joint_spherical"
+    timeCodesPerSecond = 1000
+    kilogramsPerUnit = 1
+    metersPerUnit = 1
+    upAxis = "Z"
+)
+
+def PhysicsScene "World"
+{
+    float physics:gravityMagnitude = 9.8067
+    vector3f physics:gravityDirection = (0, 0, -1)
+}
+
+def Xform "test_joint_spherical"
+{
+    def Scope "RigidBodies"
+    {
+        def Xform "body_0" (
+            prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI"]
+        )
+        {
+            # Body Frame
+            quatf xformOp:orient = (1, 0, 0, 0)
+            double3 xformOp:translate = (-0.0469994, -0.00580511, -0.000663223)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient"]
+
+            # Body Velocities
+            vector3f physics:linearVelocity = (0, 0, 0)
+            vector3f physics:angularVelocity = (0, 0, 0)
+
+            # Mass Properties
+            float physics:mass = 0.192959
+            float3 physics:diagonalInertia = (1.25101e-05, 7.28088e-05, 7.28088e-05)
+            point3f physics:centerOfMass = (0, 0, 0)
+            quatf physics:principalAxes = (-0.0545067, 0.957285, 0.283504, 0.0161424)
+        }
+
+        def Xform "body_1" (
+            prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI"]
+        )
+        {
+            # Body Frame
+            quatf xformOp:orient = (1, 0, 0, 0)
+            double3 xformOp:translate = (0.0221895, 0.0480183, -0.0262788)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient"]
+
+            # Body Velocities
+            vector3f physics:linearVelocity = (0, 0, 0)
+            vector3f physics:angularVelocity = (0, 0, 0)
+
+            # Mass Properties
+            float physics:mass = 0.193009
+            float3 physics:diagonalInertia = (1.25415e-05, 7.25474e-05, 7.25474e-05)
+            point3f physics:centerOfMass = (0, 0, 0)
+            quatf physics:principalAxes = (-0.421016, 0.17955, 0.348782, 0.817837)
+        }
+    }
+
+    def Scope "Joints"
+    {
+        def PhysicsSphericalJoint "passive_spherical_joint"
+        {
+            bool physics:jointEnabled = 1
+
+            rel physics:body0 = </test_joint_spherical/RigidBodies/body_0>
+            rel physics:body1 = </test_joint_spherical/RigidBodies/body_1>
+
+            uniform token physics:axis = "X"
+
+            point3f physics:localPos0 = (0.0408711, 0.0263642, 0.00301206)
+            point3f physics:localPos1 = (-0.0283177, -0.0274592, 0.0286276)
+            quatf physics:localRot0 = (1, 0, 0, 0)
+            quatf physics:localRot1 = (1, 0, 0, 0)
+
+            bool physics:collisionEnabled = 0
+        }
+    }
+}
