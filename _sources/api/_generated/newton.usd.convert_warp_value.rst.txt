@@ -1,0 +1,6 @@
+﻿newton.usd.convert\_warp\_value
+===============================
+
+.. currentmodule:: newton.usd
+
+.. autofunction:: convert_warp_value
