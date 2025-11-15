@@ -64,12 +64,10 @@ def closest_hit_geom(
         for i in range(2):
             world_id, group_root = get_group_roots(bvh_geom_group_roots, world_id, i)
             query = wp.bvh_query_ray(bvh_geom_id, ray_origin_world, ray_dir_world, group_root)
-            bounds_nr = wp.int32(0)
+            geom_index = wp.int32(0)
 
-            while wp.bvh_query_next(query, bounds_nr, closest_hit.distance):
-                gi_global = bounds_nr
-                gi_bvh_local = gi_global - (world_id * bvh_geom_size)
-                gi = geom_enabled[gi_bvh_local]
+            while wp.bvh_query_next(query, geom_index, closest_hit.distance):
+                gi = geom_enabled[geom_index]
 
                 hit = wp.bool(False)
                 hit_dist = wp.float32(wp.inf)
@@ -79,53 +77,6 @@ def closest_hit_geom(
                 hit_face_id = wp.int32(-1)
                 hit_mesh_id = wp.int32(-1)
 
-                if geom_types[gi] == GeomType.PLANE:
-                    hit, hit_dist, hit_normal = ray.ray_plane_with_normal(
-                        geom_positions[gi],
-                        geom_orientations[gi],
-                        geom_sizes[gi],
-                        ray_origin_world,
-                        ray_dir_world,
-                    )
-                if geom_types[gi] == GeomType.SPHERE:
-                    hit, hit_dist, hit_normal = ray.ray_sphere_with_normal(
-                        geom_positions[gi],
-                        geom_sizes[gi][0] * geom_sizes[gi][0],
-                        ray_origin_world,
-                        ray_dir_world,
-                    )
-                if geom_types[gi] == GeomType.CAPSULE:
-                    hit, hit_dist, hit_normal = ray.ray_capsule_with_normal(
-                        geom_positions[gi],
-                        geom_orientations[gi],
-                        geom_sizes[gi],
-                        ray_origin_world,
-                        ray_dir_world,
-                    )
-                if geom_types[gi] == GeomType.CYLINDER:
-                    hit, hit_dist, hit_normal = ray.ray_cylinder_with_normal(
-                        geom_positions[gi],
-                        geom_orientations[gi],
-                        geom_sizes[gi],
-                        ray_origin_world,
-                        ray_dir_world,
-                    )
-                if geom_types[gi] == GeomType.CONE:
-                    hit, hit_dist, hit_normal = ray.ray_cone_with_normal(
-                        geom_positions[gi],
-                        geom_orientations[gi],
-                        geom_sizes[gi],
-                        ray_origin_world,
-                        ray_dir_world,
-                    )
-                if geom_types[gi] == GeomType.BOX:
-                    hit, hit_dist, hit_normal = ray.ray_box_with_normal(
-                        geom_positions[gi],
-                        geom_orientations[gi],
-                        geom_sizes[gi],
-                        ray_origin_world,
-                        ray_dir_world,
-                    )
                 if geom_types[gi] == GeomType.MESH:
                     hit, hit_dist, hit_normal, hit_u, hit_v, hit_face_id, hit_mesh_id = ray.ray_mesh_with_bvh(
                         mesh_ids,
@@ -135,6 +86,53 @@ def closest_hit_geom(
                         ray_origin_world,
                         ray_dir_world,
                         closest_hit.distance,
+                    )
+                elif geom_types[gi] == GeomType.PLANE:
+                    hit, hit_dist, hit_normal = ray.ray_plane_with_normal(
+                        geom_positions[gi],
+                        geom_orientations[gi],
+                        geom_sizes[gi],
+                        ray_origin_world,
+                        ray_dir_world,
+                    )
+                elif geom_types[gi] == GeomType.SPHERE:
+                    hit, hit_dist, hit_normal = ray.ray_sphere_with_normal(
+                        geom_positions[gi],
+                        geom_sizes[gi][0] * geom_sizes[gi][0],
+                        ray_origin_world,
+                        ray_dir_world,
+                    )
+                elif geom_types[gi] == GeomType.CAPSULE:
+                    hit, hit_dist, hit_normal = ray.ray_capsule_with_normal(
+                        geom_positions[gi],
+                        geom_orientations[gi],
+                        geom_sizes[gi],
+                        ray_origin_world,
+                        ray_dir_world,
+                    )
+                elif geom_types[gi] == GeomType.CYLINDER:
+                    hit, hit_dist, hit_normal = ray.ray_cylinder_with_normal(
+                        geom_positions[gi],
+                        geom_orientations[gi],
+                        geom_sizes[gi],
+                        ray_origin_world,
+                        ray_dir_world,
+                    )
+                elif geom_types[gi] == GeomType.CONE:
+                    hit, hit_dist, hit_normal = ray.ray_cone_with_normal(
+                        geom_positions[gi],
+                        geom_orientations[gi],
+                        geom_sizes[gi],
+                        ray_origin_world,
+                        ray_dir_world,
+                    )
+                elif geom_types[gi] == GeomType.BOX:
+                    hit, hit_dist, hit_normal = ray.ray_box_with_normal(
+                        geom_positions[gi],
+                        geom_orientations[gi],
+                        geom_sizes[gi],
+                        ray_origin_world,
+                        ray_dir_world,
                     )
 
                 if hit and hit_dist < closest_hit.distance:
@@ -236,12 +234,12 @@ def closest_hit(
 ) -> ClosestHit:
     closest_hit = ClosestHit()
     closest_hit.distance = max_distance
-    closest_hit.normal = wp.vec3f(0.0, 0.0, 0.0)
+    closest_hit.normal = wp.vec3f(0.0)
     closest_hit.geom_id = wp.int32(-1)
     closest_hit.bary_u = wp.float32(0.0)
     closest_hit.bary_v = wp.float32(0.0)
     closest_hit.face_idx = wp.int32(-1)
-    closest_hit.geom_mesh_id = wp.int32(-1)
+    closest_hit.geom_mesh_id = wp.int32(-1)    
 
     closest_hit = closest_hit_triangle_mesh(closest_hit, triangle_mesh_id, ray_origin_world, ray_dir_world)
 
@@ -300,62 +298,13 @@ def first_hit_geom(
             world_id, group_root = get_group_roots(bvh_geom_group_roots, world_id, i)
 
             query = wp.bvh_query_ray(bvh_geom_id, ray_origin_world, ray_dir_world, group_root)
-            bounds_nr = wp.int32(0)
+            geom_index = wp.int32(0)
 
-            while wp.bvh_query_next(query, bounds_nr, max_dist):
-                gi_global = bounds_nr
-                gi_bvh_local = gi_global - (world_id * bvh_geom_size)
-                gi = geom_enabled[gi_bvh_local]
+            while wp.bvh_query_next(query, geom_index, max_dist):
+                gi = geom_enabled[geom_index]
 
                 dist = wp.float32(wp.inf)
 
-                if geom_types[gi] == GeomType.PLANE:
-                    dist = ray.ray_plane(
-                        geom_positions[gi],
-                        geom_orientations[gi],
-                        geom_sizes[gi],
-                        ray_origin_world,
-                        ray_dir_world,
-                    )
-                if geom_types[gi] == GeomType.SPHERE:
-                    dist = ray.ray_sphere(
-                        geom_positions[gi],
-                        geom_sizes[gi][0] * geom_sizes[gi][0],
-                        ray_origin_world,
-                        ray_dir_world,
-                    )
-                if geom_types[gi] == GeomType.CAPSULE:
-                    dist = ray.ray_capsule(
-                        geom_positions[gi],
-                        geom_orientations[gi],
-                        geom_sizes[gi],
-                        ray_origin_world,
-                        ray_dir_world,
-                    )
-                if geom_types[gi] == GeomType.CYLINDER:
-                    dist, _ = ray.ray_cylinder(
-                        geom_positions[gi],
-                        geom_orientations[gi],
-                        geom_sizes[gi],
-                        ray_origin_world,
-                        ray_dir_world,
-                    )
-                if geom_types[gi] == GeomType.CONE:
-                    dist = ray.ray_cone(
-                        geom_positions[gi],
-                        geom_orientations[gi],
-                        geom_sizes[gi],
-                        ray_origin_world,
-                        ray_dir_world,
-                    )
-                if geom_types[gi] == GeomType.BOX:
-                    dist, _all = ray.ray_box(
-                        geom_positions[gi],
-                        geom_orientations[gi],
-                        geom_sizes[gi],
-                        ray_origin_world,
-                        ray_dir_world,
-                    )
                 if geom_types[gi] == GeomType.MESH:
                     _h, dist, _n, _u, _v, _f, _mesh_id = ray.ray_mesh_with_bvh(
                         mesh_ids,
@@ -365,6 +314,53 @@ def first_hit_geom(
                         ray_origin_world,
                         ray_dir_world,
                         max_dist,
+                    )
+                elif geom_types[gi] == GeomType.PLANE:
+                    dist = ray.ray_plane(
+                        geom_positions[gi],
+                        geom_orientations[gi],
+                        geom_sizes[gi],
+                        ray_origin_world,
+                        ray_dir_world,
+                    )
+                elif geom_types[gi] == GeomType.SPHERE:
+                    dist = ray.ray_sphere(
+                        geom_positions[gi],
+                        geom_sizes[gi][0] * geom_sizes[gi][0],
+                        ray_origin_world,
+                        ray_dir_world,
+                    )
+                elif geom_types[gi] == GeomType.CAPSULE:
+                    dist = ray.ray_capsule(
+                        geom_positions[gi],
+                        geom_orientations[gi],
+                        geom_sizes[gi],
+                        ray_origin_world,
+                        ray_dir_world,
+                    )
+                elif geom_types[gi] == GeomType.CYLINDER:
+                    dist, _ = ray.ray_cylinder(
+                        geom_positions[gi],
+                        geom_orientations[gi],
+                        geom_sizes[gi],
+                        ray_origin_world,
+                        ray_dir_world,
+                    )
+                elif geom_types[gi] == GeomType.CONE:
+                    dist = ray.ray_cone(
+                        geom_positions[gi],
+                        geom_orientations[gi],
+                        geom_sizes[gi],
+                        ray_origin_world,
+                        ray_dir_world,
+                    )
+                elif geom_types[gi] == GeomType.BOX:
+                    dist, _all = ray.ray_box(
+                        geom_positions[gi],
+                        geom_orientations[gi],
+                        geom_sizes[gi],
+                        ray_origin_world,
+                        ray_dir_world,
                     )
 
                 if dist < max_dist:

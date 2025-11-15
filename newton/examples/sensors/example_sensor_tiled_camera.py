@@ -114,8 +114,9 @@ class Example:
         self.tiled_camera_sensor.update_cameras(
             *self.tiled_camera_sensor.convert_camera_to_warp_arrays([self.viewer.camera])
         )
+        self.tiled_camera_sensor.update_from_state(self.state)
         self.tiled_camera_sensor.render(
-            self.state, self.tiled_camera_sensor_color_image, self.tiled_camera_sensor_depth_image
+            self.tiled_camera_sensor_color_image, self.tiled_camera_sensor_depth_image
         )
         self.tiled_camera_sensor.save_color_image(self.tiled_camera_sensor_color_image, "example_color.png")
         self.tiled_camera_sensor.save_depth_image(self.tiled_camera_sensor_depth_image, "example_depth.png")
