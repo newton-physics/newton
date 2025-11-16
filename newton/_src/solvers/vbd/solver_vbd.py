@@ -1859,36 +1859,34 @@ def evaluate_spring_force_and_hessian(
     # Elastic force and hessian
     ke = spring_stiffness[spring_idx]
     spring_force = force_sign * ke * c * n
-    spring_hessian = ke * (
-        wp.identity(3, float) - (l0 / l) * (wp.identity(3, float) - wp.outer(n, n))
-    )
+    spring_hessian = ke * (wp.identity(3, float) - (l0 / l) * (wp.identity(3, float) - wp.outer(n, n)))
 
     # Apply damping consistent with VBD damping formulation
     if spring_damping[spring_idx] > 0.0:
         inv_dt = 1.0 / dt
-        
+
         # Compute displacement vectors
         dx0 = pos[v0] - pos_prev[v0]
         dx1 = pos[v1] - pos_prev[v1]
-        
+
         # Compute constraint gradient
         # For constraint c = |x0 - x1| - l0, grad_c_x0 = n, grad_c_x1 = -n
         grad_c = n if particle_idx == v0 else -n
-        
+
         # Compute velocity along constraint direction
         # dc_dt = dot(grad_c_x0, dx0/dt) + dot(grad_c_x1, dx1/dt)
         # = dot(n, dx0/dt) + dot(-n, dx1/dt) = dot(n, (dx0 - dx1)/dt)
         dc_dt = inv_dt * wp.dot(n, dx0 - dx1)
-        
+
         # Damping coefficient following VBD convention: damping * stiffness
         damping_coeff = spring_damping[spring_idx] * ke
-        
+
         # Damping force proportional to velocity
         damping_force = -damping_coeff * dc_dt * grad_c
-        
+
         # Damping hessian term
         damping_hessian = damping_coeff * inv_dt * wp.outer(grad_c, grad_c)
-        
+
         spring_force = spring_force + damping_force
         spring_hessian = spring_hessian + damping_hessian
 
