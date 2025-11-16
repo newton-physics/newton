@@ -60,7 +60,7 @@ def test_spring_damping():
     
     # Run simulation for a few steps
     velocities = []
-    for step in range(50):
+    for _step in range(50):
         solver.step(state, state_next, control, contacts, dt)
         state, state_next = state_next, state
         
@@ -146,7 +146,7 @@ def test_edge_bending_damping():
     
     # Run simulation
     positions = []
-    for step in range(50):
+    for _step in range(50):
         solver.step(state, state_next, control, contacts, dt)
         state, state_next = state_next, state
         
@@ -236,7 +236,7 @@ def test_cable_with_both_damping():
     
     # Run simulation
     energies = []
-    for step in range(100):
+    for _step in range(100):
         solver.step(state, state_next, control, contacts, dt)
         state, state_next = state_next, state
         
