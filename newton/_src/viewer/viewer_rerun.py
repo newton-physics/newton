@@ -14,7 +14,6 @@
 # limitations under the License.
 
 import subprocess
-import warnings
 
 import numpy as np
 import warp as wp
@@ -54,10 +53,8 @@ class ViewerRerun(ViewerBase):
 
     def __init__(
         self,
-        server: bool | None = None,
-        address: str | None = None,
-        launch_viewer: bool | None = None,
         app_id: str | None = None,
+        address: str | None = None,
         keep_historical_data: bool = False,
         keep_scalar_history: bool = True,
         record_to_rrd: str | None = None,
@@ -70,44 +67,23 @@ class ViewerRerun(ViewerBase):
         a local viewer only if not running in a Jupyter notebook (notebooks use show_notebook() instead).
 
         Args:
+            app_id (str | None): Application ID for rerun (defaults to 'newton-viewer').
+                                 Use different IDs to differentiate between parallel simulations.
             address (str | None): Optional server address to connect to a remote rerun server.
                                   See rerun.io documentation for supported address formats.
                                   If provided, connects to the specified server regardless of environment.
                                   If None, spawns a local viewer (only outside Jupyter notebooks).
-            app_id (str | None): Application ID for rerun (defaults to 'newton-viewer').
-                                 Use different IDs to differentiate between parallel simulations.
             keep_historical_data (bool): If True, keep historical data in the timeline of the web viewer.
                 If False, the web viewer will only show the current frame to keep the memory usage constant when sending transform updates via :meth:`ViewerRerun.log_state`.
                 This is useful for visualizing long and complex simulations that would quickly fill up the web viewer's memory if the historical data was kept.
                 If True, the historical simulation data is kept in the viewer to be able to scrub through the simulation timeline. Defaults to False.
             keep_scalar_history (bool): If True, historical scala data logged via :meth:`ViewerRerun.log_scalar` is kept in the viewer.
             record_to_rrd (str): Path to record the viewer to a ``*.rrd`` recording file (e.g. "my_recording.rrd"). If None, the viewer will not record to a file.
-            server (bool | None): **Deprecated**. This parameter is no longer used.
-                                  The viewer now automatically handles connection setup.
-            launch_viewer (bool | None): **Deprecated**. Use `address=None` to spawn a viewer (default),
-                                         or provide an address to connect to an existing server.
         """
         if rr is None:
             raise ImportError("rerun package is required for ViewerRerun. Install with: pip install rerun-sdk")
 
         super().__init__()
-
-        # Handle deprecated parameters
-        if server is not None:
-            warnings.warn(
-                "The 'server' parameter is deprecated and will be removed in a future version. "
-                "It is no longer necessary as the viewer automatically handles connection setup.",
-                DeprecationWarning,
-                stacklevel=2,
-            )
-
-        if launch_viewer is not None:
-            warnings.warn(
-                "The 'launch_viewer' parameter is deprecated and will be removed in a future version. "
-                "Use address=None to spawn a viewer (default), or provide an address to connect to an existing server.",
-                DeprecationWarning,
-                stacklevel=2,
-            )
 
         self.app_id = app_id or "newton-viewer"
         self._running = True

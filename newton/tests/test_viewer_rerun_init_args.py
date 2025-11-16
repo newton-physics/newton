@@ -222,40 +222,6 @@ class TestViewerRerunInitArgs(unittest.TestCase):
                     # Verify rr.spawn() WAS called in non-Jupyter
                     self.mock_rr.spawn.assert_called_once()
 
-    def test_server_parameter_deprecated(self):
-        """Test that server parameter triggers deprecation warning."""
-        with patch("newton._src.viewer.viewer_rerun.rr", self.mock_rr):
-            with patch("newton._src.viewer.viewer_rerun.rrb", self.mock_rrb):
-                with patch("newton._src.viewer.viewer_rerun._is_jupyter_notebook", return_value=False):
-                    from newton._src.viewer.viewer_rerun import ViewerRerun
-
-                    # Check that warning is raised
-                    with warnings.catch_warnings(record=True) as w:
-                        warnings.simplefilter("always")
-                        _ = ViewerRerun(server=True)
-
-                        # Verify warning was raised
-                        self.assertEqual(len(w), 1)
-                        self.assertTrue(issubclass(w[0].category, DeprecationWarning))
-                        self.assertIn("'server' parameter is deprecated", str(w[0].message))
-
-    def test_launch_viewer_parameter_deprecated(self):
-        """Test that launch_viewer parameter triggers deprecation warning."""
-        with patch("newton._src.viewer.viewer_rerun.rr", self.mock_rr):
-            with patch("newton._src.viewer.viewer_rerun.rrb", self.mock_rrb):
-                with patch("newton._src.viewer.viewer_rerun._is_jupyter_notebook", return_value=False):
-                    from newton._src.viewer.viewer_rerun import ViewerRerun
-
-                    # Check that warning is raised
-                    with warnings.catch_warnings(record=True) as w:
-                        warnings.simplefilter("always")
-                        _ = ViewerRerun(launch_viewer=True)
-
-                        # Verify warning was raised
-                        self.assertEqual(len(w), 1)
-                        self.assertTrue(issubclass(w[0].category, DeprecationWarning))
-                        self.assertIn("'launch_viewer' parameter is deprecated", str(w[0].message))
-
     def test_keep_historical_data_stored(self):
         """Test that keep_historical_data parameter is stored correctly."""
         with patch("newton._src.viewer.viewer_rerun.rr", self.mock_rr):

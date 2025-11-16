@@ -169,12 +169,12 @@ enabling real-time or offline visualization with advanced features like time scr
 
     # Default usage: spawns a local viewer
     viewer = newton.viewer.ViewerRerun(
-        app_id="newton-simulation"
+        app_id="newton-simulation" # Optional application identifier to differentiate multiple parallel instances.
     )
 
     # Or specify a custom server address for remote viewing
     viewer = newton.viewer.ViewerRerun(
-        address="rerun+http://127.0.0.1:9876/proxy",
+        address="rerun+http://127.0.0.1:9876/proxy", # Optional server address to connect to a remote rerun server.
         app_id="newton-simulation"
     )
 
