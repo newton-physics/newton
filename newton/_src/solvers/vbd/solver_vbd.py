@@ -1848,20 +1848,49 @@ def evaluate_spring_force_and_hessian(
     l = wp.length(diff)
     l0 = spring_rest_length[spring_idx]
 
+    if l == 0.0:
+        return wp.vec3(0.0), wp.mat33(0.0)
+
+    n = diff / l
+    c = l - l0
+
     force_sign = 1.0 if particle_idx == v0 else -1.0
 
-    spring_force = force_sign * spring_stiffness[spring_idx] * (l0 - l) / l * diff
-    spring_hessian = spring_stiffness[spring_idx] * (
-        wp.identity(3, float) - (l0 / l) * (wp.identity(3, float) - wp.outer(diff, diff) / (l * l))
+    # Elastic force and hessian
+    ke = spring_stiffness[spring_idx]
+    spring_force = force_sign * ke * c * n
+    spring_hessian = ke * (
+        wp.identity(3, float) - (l0 / l) * (wp.identity(3, float) - wp.outer(n, n))
     )
 
-    # compute damping
-    h_d = spring_hessian * (spring_damping[spring_idx] / dt)
-
-    f_d = h_d * (pos_prev[particle_idx] - pos[particle_idx])
-
-    spring_force = spring_force + f_d
-    spring_hessian = spring_hessian + h_d
+    # Apply damping consistent with VBD damping formulation
+    if spring_damping[spring_idx] > 0.0:
+        inv_dt = 1.0 / dt
+        
+        # Compute displacement vectors
+        dx0 = pos[v0] - pos_prev[v0]
+        dx1 = pos[v1] - pos_prev[v1]
+        
+        # Compute constraint gradient
+        # For constraint c = |x0 - x1| - l0, grad_c_x0 = n, grad_c_x1 = -n
+        grad_c = n if particle_idx == v0 else -n
+        
+        # Compute velocity along constraint direction
+        # dc_dt = dot(grad_c_x0, dx0/dt) + dot(grad_c_x1, dx1/dt)
+        # = dot(n, dx0/dt) + dot(-n, dx1/dt) = dot(n, (dx0 - dx1)/dt)
+        dc_dt = inv_dt * wp.dot(n, dx0 - dx1)
+        
+        # Damping coefficient following VBD convention: damping * stiffness
+        damping_coeff = spring_damping[spring_idx] * ke
+        
+        # Damping force proportional to velocity
+        damping_force = -damping_coeff * dc_dt * grad_c
+        
+        # Damping hessian term
+        damping_hessian = damping_coeff * inv_dt * wp.outer(grad_c, grad_c)
+        
+        spring_force = spring_force + damping_force
+        spring_hessian = spring_hessian + damping_hessian
 
     return spring_force, spring_hessian
 
