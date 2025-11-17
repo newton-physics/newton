@@ -13,6 +13,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import annotations
+
 from abc import abstractmethod
 
 import numpy as np
@@ -29,6 +31,7 @@ from newton.utils import (
     create_sphere_mesh,
 )
 
+from ..core.types import nparray
 from .kernels import estimate_world_extents
 
 
@@ -74,9 +77,12 @@ class ViewerBase:
         self.show_static = False  # force static shapes to be visible
         self.show_inertia_boxes = False
 
-        self.model_shape_color = None
-        self._shape_to_slot = None  # color offset of each shape
-        self._shape_to_batch = None
+        self.model_shape_color: wp.array(dtype=wp.vec3) = None
+        """Color of shapes created from ``self.model``, shape (model.shape_count,)"""
+        # map from shape index to the slot in the contiguous shape color array ``self.model_shape_color``
+        self._shape_to_slot: nparray | None = None
+        # map from shape index -> Instances
+        self._shape_to_batch: list[ViewerBase.ShapeInstances | None] | None = None
 
     def is_running(self) -> bool:
         return True
@@ -565,13 +571,16 @@ class ViewerBase:
             self.xforms = []
             self.scales = []
             self.colors = []
+            """Color (vec3f) per instance."""
             self.materials = []
             self.worlds = []  # World index for each shape
 
             self.model_shapes = []
 
             self.world_xforms = None
-            self.colors_changed = False
+            self.colors_changed: bool = False
+            """Indicates that the (finalized) ``self.colors`` has changed and it should be included
+            in ``Viewer.log_instances()``."""
 
         def add(self, parent, xform, scale, color, material, shape_index, world=-1):
             # add an instance of the geometry to the batch
@@ -583,14 +592,14 @@ class ViewerBase:
             self.worlds.append(world)
             self.model_shapes.append(shape_index)
 
-        def finalize(self, colors_array=None):
+        def finalize(self, shape_colors: wp.array(dtype=wp.vec3) | None = None):
             # convert to warp arrays
             self.parents = wp.array(self.parents, dtype=int, device=self.device)
             self.xforms = wp.array(self.xforms, dtype=wp.transform, device=self.device)
             self.scales = wp.array(self.scales, dtype=wp.vec3, device=self.device)
-            if colors_array is not None:
-                assert len(colors_array) == len(self.scales), "colors_array length mismatch"
-                self.colors = colors_array
+            if shape_colors is not None:
+                assert len(shape_colors) == len(self.scales), "shape_colors length mismatch"
+                self.colors = shape_colors
             else:
                 self.colors = wp.array(self.colors, dtype=wp.vec3, device=self.device)
             self.materials = wp.array(self.materials, dtype=wp.vec4, device=self.device)
@@ -789,6 +798,7 @@ class ViewerBase:
             # add render instance
             batch.add(parent, xform, scale, color, material, s, shape_world[s])
 
+        # each shape instance object (batch) is associated with one slice
         batches = list(self._shape_instances.values())
         offsets = np.cumsum(np.array([0, *[len(b.scales) for b in batches]], dtype=np.int32)).tolist()
         total_instances = int(offsets[-1])
@@ -801,7 +811,7 @@ class ViewerBase:
             if total_instances:
                 color_array = self.model_shape_color[offsets[b_idx] : offsets[b_idx + 1]]
                 color_array.assign(wp.array(batch.colors, dtype=wp.vec3, device=self.device))
-                batch.finalize(colors_array=color_array)
+                batch.finalize(shape_colors=color_array)
             else:
                 batch.finalize()
 
