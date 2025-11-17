@@ -1712,13 +1712,20 @@ class SolverMuJoCo(SolverBase):
         )
 
     def update_joint_properties(self):
-        """Update joint properties including joint positions, joint axes, and relative body transforms in the MuJoCo model."""
+        """Update joint properties including joint positions, joint axes, relative body transforms, joint limit solref, and joint limit range in the MuJoCo model.
+
+        .. note::
+            The ``jnt_limited`` flag cannot be changed at runtime in MuJoCo. This means that joints
+            that were initialized as unlimited (no limits) cannot be changed to limited joints at runtime,
+            and vice versa. Only the limit range values (``jnt_range``) can be updated for joints that
+            are already marked as limited (``jnt_limited=True``).
+        """
         if self.model.joint_count == 0:
             return
 
         joints_per_world = self.model.joint_count // self.model.num_worlds
 
-        # Update joint positions, joint axes, relative body transforms, and joint limit solref
+        # Update joint positions, joint axes, relative body transforms, joint limit solref, and joint limit range
         wp.launch(
             update_joint_transforms_kernel,
             dim=self.model.joint_count,
@@ -1732,6 +1739,8 @@ class SolverMuJoCo(SolverBase):
                 self.model.joint_type,
                 self.model.joint_limit_ke,
                 self.model.joint_limit_kd,
+                self.model.joint_limit_lower,
+                self.model.joint_limit_upper,
                 self.joint_mjc_dof_start,
                 self.to_mjc_body_index,
                 joints_per_world,
@@ -1740,6 +1749,7 @@ class SolverMuJoCo(SolverBase):
                 self.mjw_model.jnt_pos,
                 self.mjw_model.jnt_axis,
                 self.mjw_model.jnt_solref,
+                self.mjw_model.jnt_range,
                 self.mjw_model.body_pos,
                 self.mjw_model.body_quat,
             ],

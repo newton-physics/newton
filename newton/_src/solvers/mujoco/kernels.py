@@ -934,6 +934,8 @@ def update_joint_transforms_kernel(
     joint_type: wp.array(dtype=wp.int32),
     joint_limit_ke: wp.array(dtype=float),
     joint_limit_kd: wp.array(dtype=float),
+    joint_limit_lower: wp.array(dtype=float),
+    joint_limit_upper: wp.array(dtype=float),
     joint_mjc_dof_start: wp.array(dtype=wp.int32),
     body_mapping: wp.array(dtype=wp.int32),
     joints_per_world: int,
@@ -941,6 +943,7 @@ def update_joint_transforms_kernel(
     joint_pos: wp.array2d(dtype=wp.vec3),
     joint_axis: wp.array2d(dtype=wp.vec3),
     joint_solref: wp.array2d(dtype=wp.vec2),
+    joint_range: wp.array2d(dtype=wp.vec2),
     body_pos: wp.array2d(dtype=wp.vec3),
     body_quat: wp.array2d(dtype=wp.quat),
 ):
@@ -974,6 +977,8 @@ def update_joint_transforms_kernel(
         # update joint limit solref using negative convention
         if joint_limit_ke[newton_dof_index] > 0:
             joint_solref[worldid, ai] = wp.vec2(-joint_limit_ke[newton_dof_index], -joint_limit_kd[newton_dof_index])
+        # update joint limit range
+        joint_range[worldid, ai] = wp.vec2(joint_limit_lower[newton_dof_index], joint_limit_upper[newton_dof_index])
 
     # update angular dofs
     for i in range(ang_axis_count):
@@ -985,6 +990,8 @@ def update_joint_transforms_kernel(
         # update joint limit solref using negative convention
         if joint_limit_ke[newton_dof_index] > 0:
             joint_solref[worldid, ai] = wp.vec2(-joint_limit_ke[newton_dof_index], -joint_limit_kd[newton_dof_index])
+        # update joint limit range
+        joint_range[worldid, ai] = wp.vec2(joint_limit_lower[newton_dof_index], joint_limit_upper[newton_dof_index])
 
     # update body pos and quat from parent joint transform
     child = joint_child[joint_in_world]  # Newton body id
