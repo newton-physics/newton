@@ -28,9 +28,11 @@ from newton._src.geometry.kernels import (
     triangle_closest_point_barycentric,
     vertex_adjacent_to_triangle,
 )
+from newton._src.solvers.vbd.solver_vbd import leq_n_ring_vertices
 from newton._src.solvers.vbd.tri_mesh_collision import TriMeshCollisionDetector
-from newton.tests.unittest_utils import USD_AVAILABLE, add_function_test, assert_np_equal, get_test_devices
 from newton.solvers import SolverVBD
+from newton.tests.unittest_utils import USD_AVAILABLE, add_function_test, assert_np_equal, get_test_devices
+
 
 @wp.kernel
 def eval_triangles_contact(
@@ -304,13 +306,9 @@ def edge_edge_collision_detection_brute_force(
         e1_v0_pos = pos[e1_v0]
         e1_v1_pos = pos[e1_v1]
 
-        st = wp.closest_point_edge_edge(e0_v0_pos, e0_v1_pos, e1_v0_pos, e1_v1_pos, edge_edge_parallel_epsilon)
-        s = st[0]
-        t = st[1]
-        c1 = e0_v0_pos + (e0_v1_pos - e0_v0_pos) * s
-        c2 = e1_v0_pos + (e1_v1_pos - e1_v0_pos) * t
+        std = wp.closest_point_edge_edge(e0_v0_pos, e0_v1_pos, e1_v0_pos, e1_v1_pos, edge_edge_parallel_epsilon)
+        dist = std[2]
 
-        dist = wp.length(c1 - c2)
         if dist < query_radius:
             edge_buffer_offset = edge_colliding_edges_offsets[e_index]
             edge_buffer_size = edge_colliding_edges_offsets[e_index + 1] - edge_buffer_offset
@@ -803,6 +801,7 @@ def test_mesh_ground_collision_index(test, device):
     )
     assert_np_equal(contacts.rigid_contact_normal.numpy()[:3], np.tile([0.0, -1.0, 0.0], (3, 1)), tol=1e-6)
 
+
 @wp.kernel
 def validate_vertex_collisions_distance_filter(
     max_query_radius: float,
@@ -852,6 +851,7 @@ def validate_vertex_collisions_distance_filter(
             wp.expect_eq(vertex_index == -1, True)
             wp.expect_eq(tri_index == -1, True)
 
+
 @wp.kernel
 def validate_edge_collisions_distance_filter(
     max_query_radius: float,
@@ -877,7 +877,6 @@ def validate_edge_collisions_distance_filter(
 
     num_cols = edge_colliding_edges_count[e0_index]
     offset = edge_colliding_edges_offsets[e0_index]
-    min_dist = edge_colliding_edges_min_dist[e0_index]
     for col in range(edge_colliding_edges_buffer_sizes[e0_index]):
         e1_index = edge_colliding_edges[2 * (offset + col) + 1]
 
@@ -900,12 +899,15 @@ def validate_edge_collisions_distance_filter(
             dist = wp.length(c2 - c1)
             wp.expect_eq(dist <= max_query_radius, True)
 
-            e0_v0_pos_ref, e0_v1_pos_ref, e1_v0_pos_ref, e1_v1_pos_ref = (ref_pos[e0_v0],
-                                                                          ref_pos[e0_v1],
-                                                                          ref_pos[e1_v0],
-                                                                          ref_pos[e1_v1])
-            std_ref = wp.closest_point_edge_edge(e0_v0_pos_ref, e0_v1_pos_ref, e1_v0_pos_ref, e1_v1_pos_ref,
-                                                 edge_edge_parallel_epsilon)
+            e0_v0_pos_ref, e0_v1_pos_ref, e1_v0_pos_ref, e1_v1_pos_ref = (
+                ref_pos[e0_v0],
+                ref_pos[e0_v1],
+                ref_pos[e1_v0],
+                ref_pos[e1_v1],
+            )
+            std_ref = wp.closest_point_edge_edge(
+                e0_v0_pos_ref, e0_v1_pos_ref, e1_v0_pos_ref, e1_v1_pos_ref, edge_edge_parallel_epsilon
+            )
 
             dist_ref = std_ref[2]
 
@@ -915,12 +917,12 @@ def validate_edge_collisions_distance_filter(
             wp.expect_eq(e1_index == -1, True)
             wp.expect_eq(edge_colliding_edges[2 * (offset + col)] == -1, True)
 
+
 @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
 def test_collision_filtering(test, device):
-    from newton._src.solvers.vbd.solver_vbd import leq_n_ring_vertices
     vertices, faces = get_data()
 
-    model, collision_detector = init_model(vertices, faces, device, False, True)
+    model, _collision_detector = init_model(vertices, faces, device, False, True)
     rng = np.random.default_rng(123)
 
     faces = faces.reshape(-1, 3)
@@ -937,18 +939,17 @@ def test_collision_filtering(test, device):
             e_e_collision_filtering_map[e_idx] = set(rng.choice(np.arange(0, model.edge_count), size=10, replace=False))
             e_e_collision_filtering_map[e_idx].discard(e_idx)
 
-        vbd = SolverVBD(model,
-                        handle_self_contact=True,
-                        topological_contact_filter_threshold=ring,
-                        rest_shape_contact_exclusion_radius=0.,
-                        external_vertex_contact_filtering_map=v_t_collision_filtering_map,
-                        external_edge_contact_filtering_map=e_e_collision_filtering_map
-                        )
+        vbd = SolverVBD(
+            model,
+            handle_self_contact=True,
+            topological_contact_filter_threshold=ring,
+            rest_shape_contact_exclusion_radius=0.0,
+            external_vertex_contact_filtering_map=v_t_collision_filtering_map,
+            external_edge_contact_filtering_map=e_e_collision_filtering_map,
+        )
 
         v_adj_edges = vbd.adjacency.v_adj_edges.numpy()
         v_adj_edges_offsets = vbd.adjacency.v_adj_edges_offsets.numpy()
-        v_adj_faces = vbd.adjacency.v_adj_faces.numpy()
-        v_adj_faces_offsets = vbd.adjacency.v_adj_faces_offsets.numpy()
 
         vertex_triangle_filtering_list = vbd.vertex_triangle_contact_filtering_list.numpy()
         vertex_triangle_filtering_list_offsets = vbd.vertex_triangle_contact_filtering_list_offsets.numpy()
@@ -958,8 +959,9 @@ def test_collision_filtering(test, device):
 
         for v_idx in range(0, model.particle_count):
             # must be sorted so it can be quickly checked
-            filter_array = vertex_triangle_filtering_list[vertex_triangle_filtering_list_offsets[v_idx]:
-                                           vertex_triangle_filtering_list_offsets[v_idx + 1]]
+            filter_array = vertex_triangle_filtering_list[
+                vertex_triangle_filtering_list_offsets[v_idx] : vertex_triangle_filtering_list_offsets[v_idx + 1]
+            ]
             test.assertTrue(is_sorted(filter_array))
 
             filter_set = set(filter_array)
@@ -979,15 +981,12 @@ def test_collision_filtering(test, device):
                     test.assertTrue(tv in v_n_ring)
 
         edge_edge_filtering_list = vbd.edge_edge_contact_filtering_list.numpy()
-        edge_edge_filtering_list_offsets = (
-            vbd.edge_edge_contact_filtering_list_offsets.numpy()
-        )
+        edge_edge_filtering_list_offsets = vbd.edge_edge_contact_filtering_list_offsets.numpy()
         for e_idx in range(0, model.edge_count):
             # slice this edge's filter list
             filter_array = edge_edge_filtering_list[
-                           edge_edge_filtering_list_offsets[e_idx]:
-                           edge_edge_filtering_list_offsets[e_idx + 1]
-                           ]
+                edge_edge_filtering_list_offsets[e_idx] : edge_edge_filtering_list_offsets[e_idx + 1]
+            ]
 
             # must be sorted so it can be quickly checked
             test.assertTrue(is_sorted(filter_array))
@@ -1006,37 +1005,31 @@ def test_collision_filtering(test, device):
             # lies within the < ring vertex neighborhood of one of e_idx's endpoints
             v0, v1 = edges[e_idx, 2:]
 
-            v0_n_ring = set(
-                leq_n_ring_vertices(v0, edges, ring-1, v_adj_edges, v_adj_edges_offsets)
-            )
-            v1_n_ring = set(
-                leq_n_ring_vertices(v1, edges, ring-1, v_adj_edges, v_adj_edges_offsets)
-            )
+            v0_n_ring = set(leq_n_ring_vertices(v0, edges, ring - 1, v_adj_edges, v_adj_edges_offsets))
+            v1_n_ring = set(leq_n_ring_vertices(v1, edges, ring - 1, v_adj_edges, v_adj_edges_offsets))
 
             for e2 in filter_set:
                 u, v = edges[e2, 2:]
-                test.assertTrue(
-                    (u in v0_n_ring)
-                    or (u in v1_n_ring)
-                    or (v in v0_n_ring)
-                    or (v in v1_n_ring)
-                )
+                test.assertTrue((u in v0_n_ring) or (u in v1_n_ring) or (v in v0_n_ring) or (v in v1_n_ring))
 
-    vbd = SolverVBD(model,
-                    handle_self_contact=True,
-                    topological_contact_filter_threshold=1,
-                    rest_shape_contact_exclusion_radius=0.05,
-                    external_vertex_contact_filtering_map=None,
-                    external_edge_contact_filtering_map=None,
-                    vertex_collision_buffer_pre_alloc=512,
-                    edge_collision_buffer_pre_alloc=512
-                    )
+    vbd = SolverVBD(
+        model,
+        handle_self_contact=True,
+        topological_contact_filter_threshold=1,
+        rest_shape_contact_exclusion_radius=0.05,
+        external_vertex_contact_filtering_map=None,
+        external_edge_contact_filtering_map=None,
+        vertex_collision_buffer_pre_alloc=512,
+        edge_collision_buffer_pre_alloc=512,
+    )
     max_query_radius = 0.15
     min_query_radius = 0.05
 
     particle_q_new = wp.array(model.particle_q.numpy() * 1.5, dtype=wp.vec3, device=device)
     vbd.trimesh_collision_detector.refit(particle_q_new)
-    vbd.trimesh_collision_detector.vertex_triangle_collision_detection(max_query_radius, min_query_radius, vbd.rest_shape)
+    vbd.trimesh_collision_detector.vertex_triangle_collision_detection(
+        max_query_radius, min_query_radius, vbd.rest_shape
+    )
 
     wp.launch(
         kernel=validate_vertex_collisions_distance_filter,
@@ -1052,7 +1045,7 @@ def test_collision_filtering(test, device):
             vbd.trimesh_collision_detector.collision_info.vertex_colliding_triangles_offsets,
             vbd.trimesh_collision_detector.collision_info.vertex_colliding_triangles_buffer_sizes,
         ],
-        device=device
+        device=device,
     )
 
     vbd.trimesh_collision_detector.edge_edge_collision_detection(max_query_radius, min_query_radius, vbd.rest_shape)
@@ -1071,9 +1064,8 @@ def test_collision_filtering(test, device):
             vbd.trimesh_collision_detector.collision_info.edge_colliding_edges,
             vbd.trimesh_collision_detector.collision_info.edge_colliding_edges_count,
             vbd.trimesh_collision_detector.collision_info.edge_colliding_edges_min_dist,
-
         ],
-        device=device
+        device=device,
     )
 
 
@@ -1082,6 +1074,7 @@ devices = get_test_devices(mode="basic")
 
 class TestCollision(unittest.TestCase):
     pass
+
 
 add_function_test(TestCollision, "test_vertex_triangle_collision", test_vertex_triangle_collision, devices=devices)
 add_function_test(TestCollision, "test_edge_edge_collision", test_edge_edge_collision, devices=devices)

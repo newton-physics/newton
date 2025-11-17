@@ -2246,113 +2246,8 @@ def init_triangle_collision_data_kernel(
             resize_flags[i] = 0
 
 
-@wp.kernel
-def vertex_triangle_collision_detection_kernel(
-    query_radius: float,
-    bvh_id: wp.uint64,
-    pos: wp.array(dtype=wp.vec3),
-    tri_indices: wp.array(dtype=wp.int32, ndim=2),
-    vertex_colliding_triangles_offsets: wp.array(dtype=wp.int32),
-    vertex_colliding_triangles_buffer_sizes: wp.array(dtype=wp.int32),
-    triangle_colliding_vertices_offsets: wp.array(dtype=wp.int32),
-    triangle_colliding_vertices_buffer_sizes: wp.array(dtype=wp.int32),
-    # outputs
-    vertex_colliding_triangles: wp.array(dtype=wp.int32),
-    vertex_colliding_triangles_count: wp.array(dtype=wp.int32),
-    vertex_colliding_triangles_min_dist: wp.array(dtype=float),
-    triangle_colliding_vertices: wp.array(dtype=wp.int32),
-    triangle_colliding_vertices_count: wp.array(dtype=wp.int32),
-    triangle_colliding_vertices_min_dist: wp.array(dtype=float),
-    resize_flags: wp.array(dtype=wp.int32),
-):
-    """
-    This function applies discrete collision detection between vertices and triangles. It uses pre-allocated spaces to
-    record the collision data. This collision detector works both ways, i.e., it records vertices' colliding triangles to
-    `vertex_colliding_triangles`, and records each triangles colliding vertices to `triangle_colliding_vertices`.
-
-    This function assumes that all the vertices are on triangles, and can be indexed from the pos argument.
-
-    Note:
-
-        The collision data buffer is pre-allocated and cannot be changed during collision detection, therefore, the space
-        may not be enough. If the space is not enough to record all the collision information, the function will set a
-        certain element in resized_flag to be true. The user can reallocate the buffer based on vertex_colliding_triangles_count
-        and vertex_colliding_triangles_count.
-
-    Attributes:
-        bvh_id (int): the bvh id you want to collide with
-        query_radius (float): the contact radius. vertex-triangle pairs whose distance are less than this will get detected
-        pos (array): positions of all the vertices that make up triangles
-        vertex_colliding_triangles (array): flattened buffer of vertices' collision triangles
-        vertex_colliding_triangles_count (array): number of triangles each vertex collides
-        vertex_colliding_triangles_offsets (array): where each vertex' collision buffer starts
-        vertex_colliding_triangles_buffer_sizes (array): size of each vertex' collision buffer, will be modified if resizing is needed
-        vertex_colliding_triangles_min_dist (array): each vertex' min distance to all (non-neighbor) triangles
-        triangle_colliding_vertices (array): positions of all the triangles' collision vertices, every two elements
-            records the vertex index and a triangle index it collides to
-        triangle_colliding_vertices_count (array): number of triangles each vertex collides
-        triangle_colliding_vertices_offsets (array): where each triangle's collision buffer starts
-        triangle_colliding_vertices_buffer_sizes (array): size of each triangle's collision buffer, will be modified if resizing is needed
-        triangle_colliding_vertices_min_dist (array): each triangle's min distance to all (non-self) vertices
-        resized_flag (array): size == 3, (vertex_buffer_resize_required, triangle_buffer_resize_required, edge_buffer_resize_required)
-    """
-
-    v_index = wp.tid()
-    v = pos[v_index]
-    vertex_buffer_offset = vertex_colliding_triangles_offsets[v_index]
-    vertex_buffer_size = vertex_colliding_triangles_offsets[v_index + 1] - vertex_buffer_offset
-
-    lower = wp.vec3(v[0] - query_radius, v[1] - query_radius, v[2] - query_radius)
-    upper = wp.vec3(v[0] + query_radius, v[1] + query_radius, v[2] + query_radius)
-
-    query = wp.bvh_query_aabb(bvh_id, lower, upper)
-
-    tri_index = wp.int32(0)
-    vertex_num_collisions = wp.int32(0)
-    min_dis_to_tris = query_radius
-    while wp.bvh_query_next(query, tri_index):
-        t1 = tri_indices[tri_index, 0]
-        t2 = tri_indices[tri_index, 1]
-        t3 = tri_indices[tri_index, 2]
-        if vertex_adjacent_to_triangle(v_index, t1, t2, t3):
-            continue
-
-        u1 = pos[t1]
-        u2 = pos[t2]
-        u3 = pos[t3]
-
-        closest_p, _bary, _feature_type = triangle_closest_point(u1, u2, u3, v)
-
-        dist = wp.length(closest_p - v)
-
-        if dist < query_radius:
-            # record v-f collision to vertex
-            min_dis_to_tris = wp.min(min_dis_to_tris, dist)
-            if vertex_num_collisions < vertex_buffer_size:
-                vertex_colliding_triangles[2 * (vertex_buffer_offset + vertex_num_collisions)] = v_index
-                vertex_colliding_triangles[2 * (vertex_buffer_offset + vertex_num_collisions) + 1] = tri_index
-            else:
-                resize_flags[VERTEX_COLLISION_BUFFER_OVERFLOW_INDEX] = 1
-
-            vertex_num_collisions = vertex_num_collisions + 1
-
-            wp.atomic_min(triangle_colliding_vertices_min_dist, tri_index, dist)
-            tri_buffer_size = triangle_colliding_vertices_buffer_sizes[tri_index]
-            tri_num_collisions = wp.atomic_add(triangle_colliding_vertices_count, tri_index, 1)
-
-            if tri_num_collisions < tri_buffer_size:
-                tri_buffer_offset = triangle_colliding_vertices_offsets[tri_index]
-                # record v-f collision to triangle
-                triangle_colliding_vertices[tri_buffer_offset + tri_num_collisions] = v_index
-            else:
-                resize_flags[TRI_COLLISION_BUFFER_OVERFLOW_INDEX] = 1
-
-    vertex_colliding_triangles_count[v_index] = vertex_num_collisions
-    vertex_colliding_triangles_min_dist[v_index] = min_dis_to_tris
-
 @wp.func
-def _binary_search_contains_int32(sorted_arr: wp.array(dtype=wp.int32),
-                                  start: int, end: int, key: int) -> bool:
+def _binary_search_contains_int32(sorted_arr: wp.array(dtype=wp.int32), start: int, end: int, key: int) -> bool:
     # Search [start, end) — end is exclusive
     lo = wp.int32(start)
     hi = wp.int32(end)
@@ -2464,11 +2359,13 @@ def vertex_triangle_collision_detection_kernel(
 
         dist = wp.length(closest_p - v)
 
-        if min_distance_filtering_ref_pos and min_query_radius > 0.:
-            closest_p_ref, _, __ = triangle_closest_point(min_distance_filtering_ref_pos[t1],
-                                min_distance_filtering_ref_pos[t2],
-                                min_distance_filtering_ref_pos[t3],
-                                min_distance_filtering_ref_pos[v_index])
+        if min_distance_filtering_ref_pos and min_query_radius > 0.0:
+            closest_p_ref, _, __ = triangle_closest_point(
+                min_distance_filtering_ref_pos[t1],
+                min_distance_filtering_ref_pos[t2],
+                min_distance_filtering_ref_pos[t3],
+                min_distance_filtering_ref_pos[v_index],
+            )
             dist_ref = wp.length(closest_p_ref - min_distance_filtering_ref_pos[v_index])
 
             if dist_ref < min_query_radius:
@@ -2560,12 +2457,12 @@ def edge_colliding_edges_detection_kernel(
 
         if edge_filtering_list:
             fl_start = edge_filtering_list_offsets[e_index]
-            fl_end   = edge_filtering_list_offsets[e_index + 1]  # start of next vertex slice (end exclusive)
+            fl_end = edge_filtering_list_offsets[e_index + 1]  # start of next vertex slice (end exclusive)
 
             if fl_end > fl_start:
                 # Optional fast-fail using first/last elements (remember end is exclusive)
                 first_val = edge_filtering_list[fl_start]
-                last_val  = edge_filtering_list[fl_end - 1]
+                last_val = edge_filtering_list[fl_end - 1]
                 if (colliding_edge_index >= first_val) and (colliding_edge_index <= last_val):
                     if _binary_search_contains_int32(edge_filtering_list, fl_start, fl_end, colliding_edge_index):
                         continue
@@ -2577,12 +2474,16 @@ def edge_colliding_edges_detection_kernel(
         std = wp.closest_point_edge_edge(e0_v0_pos, e0_v1_pos, e1_v0_pos, e1_v1_pos, edge_edge_parallel_epsilon)
         dist = std[2]
 
-        if min_distance_filtering_ref_pos and min_query_radius > 0.:
-            e0_v0_pos_ref, e0_v1_pos_ref, e1_v0_pos_ref, e1_v1_pos_ref = (min_distance_filtering_ref_pos[e0_v0],
-                                                                          min_distance_filtering_ref_pos[e0_v1],
-                                                                          min_distance_filtering_ref_pos[e1_v0],
-                                                                          min_distance_filtering_ref_pos[e1_v1])
-            std_ref = wp.closest_point_edge_edge(e0_v0_pos_ref, e0_v1_pos_ref, e1_v0_pos_ref, e1_v1_pos_ref, edge_edge_parallel_epsilon)
+        if min_distance_filtering_ref_pos and min_query_radius > 0.0:
+            e0_v0_pos_ref, e0_v1_pos_ref, e1_v0_pos_ref, e1_v1_pos_ref = (
+                min_distance_filtering_ref_pos[e0_v0],
+                min_distance_filtering_ref_pos[e0_v1],
+                min_distance_filtering_ref_pos[e1_v0],
+                min_distance_filtering_ref_pos[e1_v1],
+            )
+            std_ref = wp.closest_point_edge_edge(
+                e0_v0_pos_ref, e0_v1_pos_ref, e1_v0_pos_ref, e1_v1_pos_ref, edge_edge_parallel_epsilon
+            )
 
             dist_ref = std_ref[2]
             if dist_ref < min_query_radius:
@@ -2604,7 +2505,6 @@ def edge_colliding_edges_detection_kernel(
 
     edge_colliding_edges_count[e_index] = edge_num_collisions
     edge_colliding_edges_min_dist[e_index] = min_dis_to_edges
-
 
 
 @wp.kernel
