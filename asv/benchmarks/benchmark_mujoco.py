@@ -98,8 +98,8 @@ ROBOT_CONFIGS = {
     },
     "tabletop": {
         "setup_builder": lambda x: _setup_tabletop(x),
-        "njmax": 3800,
-        "nconmax": 900,
+        "njmax": 100,
+        "nconmax": 20,
     },
 }
 
