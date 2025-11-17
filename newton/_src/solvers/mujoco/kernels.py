@@ -924,6 +924,34 @@ def update_dof_properties_kernel(
 
 
 @wp.kernel
+def update_joint_margin_kernel(
+    joint_dof_margin: wp.array(dtype=float),
+    joint_qd_start: wp.array(dtype=wp.int32),
+    dofs_per_world: int,
+    joints_per_world: int,
+    # outputs
+    jnt_margin: wp.array2d(dtype=float),
+):
+    """Update joint margin values from per-DOF margins in Newton to per-joint margins in MuJoCo.
+
+    In Newton, margin is stored per-DOF, but in MuJoCo it's stored per-joint.
+    We use the first DOF's margin value for each joint.
+    """
+    tid = wp.tid()
+    worldid = tid // dofs_per_world
+    dof_in_world = tid % dofs_per_world
+
+    # Find which joint this DOF belongs to
+    # We need to find the joint index where qd_start <= dof_in_world < qd_start + dof_count
+    for joint_idx in range(joints_per_world):
+        qd_start = joint_qd_start[joint_idx]
+        if qd_start == dof_in_world:
+            # This is the first DOF of this joint, update the joint's margin
+            jnt_margin[worldid, joint_idx] = joint_dof_margin[tid]
+            break
+
+
+@wp.kernel
 def update_joint_transforms_kernel(
     joint_X_p: wp.array(dtype=wp.transform),
     joint_X_c: wp.array(dtype=wp.transform),
