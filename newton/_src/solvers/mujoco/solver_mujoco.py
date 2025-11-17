@@ -198,7 +198,6 @@ class SolverMuJoCo(SolverBase):
         actuator_gears: dict[str, float] | None = None,
         update_data_interval: int = 1,
         save_to_mjcf: str | None = None,
-        contact_stiffness_time_const: float = 0.02,
         ls_parallel: bool = False,
         use_mujoco_contacts: bool = True,
         tolerance: float = 1e-6,
@@ -226,7 +225,6 @@ class SolverMuJoCo(SolverBase):
             actuator_gears (dict[str, float] | None): Dictionary mapping joint names to specific gear ratios, overriding the `default_actuator_gear`.
             update_data_interval (int): Frequency (in simulation steps) at which to update the MuJoCo Data object from the Newton state. If 0, Data is never updated after initialization.
             save_to_mjcf (str | None): Optional path to save the generated MJCF model file.
-            contact_stiffness_time_const (float): Time constant for contact stiffness in MuJoCo's solver reference model. Defaults to 0.02 (20ms). Can be set to match the simulation timestep for tighter coupling.
             ls_parallel (bool): If True, enable parallel line search in MuJoCo. Defaults to False.
             use_mujoco_contacts (bool): If True, use the MuJoCo contact solver. If False, use the Newton contact solver (newton contacts must be passed in through the step function in that case).
             tolerance (float | None): Solver tolerance for early termination of the iterative solver. Defaults to 1e-6 and will be increased to 1e-6 by the MuJoCo solver if a smaller value is provided.
@@ -236,7 +234,7 @@ class SolverMuJoCo(SolverBase):
         super().__init__(model)
         # Import and cache MuJoCo modules (only happens once per class)
         mujoco, _ = self.import_mujoco()
-        self.contact_stiffness_time_const = contact_stiffness_time_const
+        self.joint_solimp_limit = joint_solimp_limit
 
         if use_mujoco_cpu and not use_mujoco_contacts:
             print("Setting use_mujoco_contacts to False has no effect when use_mujoco_cpu is True")
@@ -751,7 +749,6 @@ class SolverMuJoCo(SolverBase):
         tolerance: float = 1e-6,
         ls_tolerance: float = 0.01,
         cone: int | str = "pyramidal",
-        geom_solref: tuple[float, float] | None = None,
         geom_solimp: tuple[float, float, float, float, float] = (0.9, 0.95, 0.001, 0.5, 2.0),
         geom_friction: tuple[float, float, float] | None = None,
         target_filename: str | None = None,
@@ -868,10 +865,7 @@ class SolverMuJoCo(SolverBase):
         defaults = spec.default
         if callable(defaults):
             defaults = defaults()
-        # Use provided or default contact stiffness time constant
-        if geom_solref is None:
-            geom_solref = (self.contact_stiffness_time_const, 1.0)
-        defaults.geom.solref = geom_solref
+        defaults.geom.solref = (0.02, 1.0)
         defaults.geom.solimp = geom_solimp
         # Use model's friction parameters if geom_friction is not provided
         if geom_friction is None:
@@ -1834,7 +1828,6 @@ class SolverMuJoCo(SolverBase):
                 self.mjw_model.mesh_quat,
                 self.model.rigid_contact_torsional_friction,
                 self.model.rigid_contact_rolling_friction,
-                self.contact_stiffness_time_const,
             ],
             outputs=[
                 self.mjw_model.geom_rbound,
