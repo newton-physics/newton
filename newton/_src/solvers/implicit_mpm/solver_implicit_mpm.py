@@ -68,12 +68,11 @@ _INFINITY = wp.constant(1.0e12)
 _EPSILON = wp.constant(1.0 / _INFINITY)
 """Value below which quantities are considered zero"""
 
-
-_DEFAULT_PROJECTION_THRESHOLD = wp.constant(0.5)
+_DEFAULT_PROJECTION_THRESHOLD = 0.01
 """Default threshold for projection outside of collider, as a fraction of the voxel size"""
 
 _DEFAULT_THICKNESS = 0.01
-"""Default thickness for colliders"""
+"""Default thickness for colliders, as a fraction of the voxel size"""
 _DEFAULT_FRICTION = 0.5
 """Default friction coefficient for colliders"""
 _DEFAULT_ADHESION = 0.0
@@ -512,6 +511,20 @@ def compliance_form(
     )
 
 
+@fem.integrand
+def collision_weight_field(
+    s: fem.Sample,
+    normal: fem.Field,
+    trial: fem.Field,
+):
+    n = normal(s)
+    if wp.length_sq(n) == 0.0:
+        # invalid normal, contact is disabled
+        return 0.0
+
+    return trial(s)
+
+
 def make_basis_space(grid: fem.Geometry, basis_str: str):
     assert len(basis_str) >= 2
 
@@ -582,8 +595,8 @@ class ImplicitMPMOptions:
     # experimental
     collider_normal_from_sdf_gradient: bool = False
     """Compute collider normals from sdf gradient rather than closest point"""
-    collider_basis: str = "P1"
-    """Collider basis functions. May be one of P1, S2"""
+    collider_basis: str = "Q1"
+    """Collider basis functions. May be one of Q1, Q2, S2"""
 
 
 class _ImplicitMPMScratchpad:
@@ -898,6 +911,7 @@ class _ImplicitMPMScratchpad:
         self.collider_friction = fem.borrow_temporary(temporary_store, shape=(collider_node_count,), dtype=float)
         self.collider_adhesion = fem.borrow_temporary(temporary_store, shape=(collider_node_count,), dtype=float)
         self.collider_inv_mass_matrix = fem.borrow_temporary(temporary_store, shape=(collider_node_count,), dtype=float)
+        self.collider_node_volume = fem.borrow_temporary(temporary_store, shape=collider_node_count, dtype=float)
 
         self.strain_node_particle_volume = fem.borrow_temporary(temporary_store, shape=strain_node_count, dtype=float)
         self.int_symmetric_strain = fem.borrow_temporary(temporary_store, shape=strain_node_count, dtype=vec6)
@@ -913,7 +927,6 @@ class _ImplicitMPMScratchpad:
 
         if has_compliant_bodies:
             self.collider_total_volumes = fem.borrow_temporary(temporary_store, shape=collider_count, dtype=float)
-            self.collider_node_volume = fem.borrow_temporary(temporary_store, shape=collider_node_count, dtype=float)
 
         if max_colors > 0:
             self.color_indices = fem.borrow_temporary(temporary_store, shape=strain_node_count * 2, dtype=int)
@@ -926,6 +939,7 @@ class _ImplicitMPMScratchpad:
         self.collider_friction.release()
         self.collider_adhesion.release()
         self.collider_inv_mass_matrix.release()
+        self.collider_node_volume.release()
         self.int_symmetric_strain.release()
         self.strain_node_particle_volume.release()
 
@@ -933,9 +947,8 @@ class _ImplicitMPMScratchpad:
             self.strain_node_volume.release()
             self.strain_node_collider_volume.release()
 
-        if self.collider_node_volume is not None:
+        if self.collider_total_volumes is not None:
             self.collider_total_volumes.release()
-            self.collider_node_volume.release()
 
         if self.color_indices is not None:
             self.color_indices.release()
@@ -2053,6 +2066,16 @@ class SolverImplicitMPM(SolverBase):
             use_nvtx=self._timers_use_nvtx,
             synchronize=not self._timers_use_nvtx,
         ):
+            # volume associated to each collider node
+            fem.integrate(
+                integrate_fraction,
+                fields={"phi": scratch.collider_fraction_test},
+                values={"inv_cell_volume": inv_cell_volume},
+                assembly="nodal",
+                output=scratch.collider_node_volume,
+            )
+
+            # rasterize sdf and properties to grid
             rasterize_collider(
                 self.mpm_model.collider,
                 state_in.body_q,
@@ -2060,6 +2083,7 @@ class SolverImplicitMPM(SolverBase):
                 self.mpm_model.voxel_size,
                 dt,
                 scratch.collider_fraction_test.space_restriction,
+                scratch.collider_node_volume,
                 state_out.collider_position_field,
                 scratch.collider_distance_field,
                 scratch.collider_normal_field,
@@ -2069,6 +2093,7 @@ class SolverImplicitMPM(SolverBase):
                 state_out.collider_ids,
             )
 
+            # normal interpolation
             if self.collider_normal_from_sdf_gradient:
                 interpolate_collider_normals(
                     self.mpm_model.voxel_size,
@@ -2084,11 +2109,12 @@ class SolverImplicitMPM(SolverBase):
                     scratch.collider_matrix, rows_of_blocks=collider_node_count, cols_of_blocks=vel_node_count
                 )
                 fem.interpolate(
-                    scratch.fraction_trial,
+                    collision_weight_field,
                     dest=scratch.collider_matrix,
                     dest_space=scratch.collider_fraction_test.space,
                     location=scratch.collider_fraction_test.space_restriction,
                     assume_continuous=True,
+                    fields={"trial": scratch.fraction_trial, "normal": scratch.collider_normal_field},
                 )
 
         # Velocity right-hand side and inverse mass matrix
@@ -2163,13 +2189,6 @@ class SolverImplicitMPM(SolverBase):
                 use_nvtx=self._timers_use_nvtx,
                 synchronize=not self._timers_use_nvtx,
             ):
-                fem.integrate(
-                    integrate_fraction,
-                    fields={"phi": scratch.collider_fraction_test},
-                    values={"inv_cell_volume": inv_cell_volume},
-                    assembly="nodal",
-                    output=scratch.collider_node_volume,
-                )
                 allot_collider_mass(
                     cell_volume=cell_volume,
                     node_volumes=scratch.collider_node_volume,

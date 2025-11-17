@@ -830,8 +830,9 @@ def solve_subgrid_friction(
 ):
     i = wp.tid()
 
+    w = collider_delassus_diagonal[i]
     friction_coeff = collider_friction[i]
-    if friction_coeff < 0.0:
+    if w <= 0.0 or friction_coeff < 0.0:
         return
 
     beg = collider_mat_offsets[i]
@@ -843,7 +844,6 @@ def solve_subgrid_friction(
         u0 += collider_mat_values[b] * velocity[u_i]
 
     n = collider_normals[i]
-    w = collider_delassus_diagonal[i]
 
     u = solve_coulomb_isotropic(friction_coeff, n, u0 - (impulse[i] + collider_adhesion[i] * n) * w)
 
@@ -1080,12 +1080,11 @@ def solve_rheology(
         velocity: Grid velocity degrees of freedom to be updated in place.
         collider_friction: Per-velocity-node collider friction coefficients; <0
             disables contact at that node.
-        collider_adhesion: Per-velocity-node adhesion coefficients scaled by
-            dt and voxel size.
+        collider_adhesion: Per-velocity-node adhesion coefficients, same unit as impulse (N.s / V0) .
         collider_normals: Per-velocity-node contact normals.
         collider_velocities: Per-velocity-node collider rigid velocities.
         collider_inv_mass: Per-velocity-node collider inverse masses.
-        collider_impulse: In/out stored collider impulses (warm start).
+        collider_impulse: In/out stored collider impulses (warm start, N.s/V0).
         color_offsets: Optional coloring offsets for Gauss-Seidel.
         color_indices: Optional coloring indices for Gauss-Seidel.
         color_nodes_per_element: Number of nodes per colored element.

@@ -30,11 +30,11 @@ __all__ = [
     "rasterize_collider",
 ]
 
-_COLLIDER_EXTRAPOLATION_DISTANCE = wp.constant(0.5)
-"""Distance to extrapolate collider sdf, as a fraction of the voxel size"""
+_COLLIDER_ACTIVATION_DISTANCE = wp.constant(0.5)
+"""Distance below which to activate the collider"""
 
 _INFINITY = wp.constant(1.0e12)
-"""Mass over which colliders are considered kinematic"""
+"""Threshold over which values are considered infinite"""
 
 _CLOSEST_POINT_NORMAL_EPSILON = wp.constant(1.0e-3)
 """Epsilon for closest point normal calculation"""
@@ -186,11 +186,6 @@ def collision_sdf(
     return min_sdf, sdf_grad, sdf_vel, collider_id, material_id
 
 
-@wp.func
-def collision_is_active(sdf: float, voxel_size: float):
-    return sdf < _COLLIDER_EXTRAPOLATION_DISTANCE * voxel_size
-
-
 @wp.kernel
 def collider_volumes_kernel(
     cell_volume: float,
@@ -302,8 +297,10 @@ def rasterize_collider_kernel(
     body_q: wp.array(dtype=wp.transform),
     body_qd: wp.array(dtype=wp.spatial_vector),
     voxel_size: float,
+    activation_distance: float,
     dt: float,
     node_positions: wp.array(dtype=wp.vec3),
+    node_volumes: wp.array(dtype=float),
     collider_sdf: wp.array(dtype=float),
     collider_velocity: wp.array(dtype=wp.vec3),
     collider_normals: wp.array(dtype=wp.vec3),
@@ -323,7 +320,7 @@ def rasterize_collider_kernel(
         collider: Collider description and geometry.
         body_q: Rigid body transforms.
         body_qd: Rigid body velocities.
-        voxel_size: Grid voxel edge length (sets query/extrapolation band).
+        activation_distance: Distance below which to activate the collider.
         dt: Timestep length (used to scale adhesion).
         node_positions: Grid node positions to sample at.
         collider_sdf: Output signed distance per node.
@@ -338,10 +335,10 @@ def rasterize_collider_kernel(
 
     if x[0] == fem.OUTSIDE:
         bc_active = False
-        sdf = fem.OUTSIDE
+        sdf = _INFINITY
     else:
         sdf, sdf_gradient, sdf_vel, collider_id, material_id = collision_sdf(x, collider, body_q, body_qd)
-        bc_active = collision_is_active(sdf, voxel_size)
+        bc_active = sdf < activation_distance * voxel_size
 
     collider_sdf[i] = sdf
 
@@ -357,7 +354,7 @@ def rasterize_collider_kernel(
     collider_normals[i] = sdf_gradient
 
     collider_friction[i] = collider.material_friction[material_id]
-    collider_adhesion[i] = collider.material_adhesion[material_id] * dt * voxel_size
+    collider_adhesion[i] = collider.material_adhesion[material_id] * dt * node_volumes[i] / voxel_size
 
     collider_velocity[i] = sdf_vel
 
@@ -449,29 +446,48 @@ def world_position(
 
 
 @fem.integrand
-def collider_gradient_field(s: fem.Sample, distance: fem.Field, voxel_size: float):
-    for k in range(8):
-        # if any node is outside of narrow band, ignore
-        if distance(fem.at_node(distance, s, k)) > 1.0e6:
-            return wp.vec3(0.0)
+def collider_gradient_field(s: fem.Sample, domain: fem.Domain, distance: fem.Field, normal: fem.Field):
+    min_sdf = float(_INFINITY)
+    min_pos = wp.vec3(0.0)
+    min_grad = wp.vec3(0.0)
 
-    g = fem.grad(distance, s)
+    # min sdf over all nodes in the element
+    elem_count = fem.node_count(distance, s)
+    for k in range(elem_count):
+        s_node = fem.at_node(distance, s, k)
+        sdf = distance(s_node, k)
+        if sdf < min_sdf:
+            min_sdf = sdf
+            min_pos = domain(s_node)
+            min_grad = normal(s_node, k)
 
-    # weight by exponential of negative distance
-    d = distance(s)
-    return g * wp.exp(-wp.abs(d) / voxel_size)
+    if min_sdf == _INFINITY:
+        return wp.vec3(0.0)
+
+    # compute gradient, filtering invalid values
+    sdf_gradient = wp.vec3(0.0)
+    for k in range(elem_count):
+        s_node = fem.at_node(distance, s, k)
+        sdf = distance(s_node, k)
+        pos = domain(s_node)
+
+        # id the sdf valid is no acceptable (large than min+sdf + distance between nodes),
+        # replace with linearized appozimation
+        if sdf >= min_sdf + wp.length(pos - min_pos):
+            sdf = wp.min(sdf, min_sdf + wp.dot(min_grad, pos - min_pos))
+
+        sdf_gradient += sdf * fem.node_inner_weight_gradient(distance, s, k)
+
+    return sdf_gradient
 
 
 @wp.kernel
-def normalize_gradient(gradient: wp.array(dtype=wp.vec3)):
+def normalize_gradient(
+    gradient: wp.array(dtype=wp.vec3),
+    normal: wp.array(dtype=wp.vec3),
+):
     i = wp.tid()
-    gradient[i] = wp.normalize(gradient[i])
-
-
-@wp.kernel
-def reset_collider_node_position(node_positions: wp.array(dtype=wp.vec3)):
-    i = wp.tid()
-    node_positions[i] = wp.vec3(fem.OUTSIDE)
+    normal[i] = wp.normalize(gradient[i])
 
 
 def rasterize_collider(
@@ -481,6 +497,7 @@ def rasterize_collider(
     voxel_size: float,
     dt: float,
     collider_space_restriction: fem.SpaceRestriction,
+    collider_node_volume: wp.array(dtype=float),
     collider_position_field: fem.DiscreteField,
     collider_distance_field: fem.DiscreteField,
     collider_normal_field: fem.DiscreteField,
@@ -491,18 +508,10 @@ def rasterize_collider(
 ):
     collision_node_count = collider_position_field.dof_values.shape[0]
 
-    wp.launch(
-        reset_collider_node_position,
-        dim=collision_node_count,
-        inputs=[
-            collider_position_field.dof_values,
-        ],
-    )
+    collider_position_field.dof_values.fill_(wp.vec3(fem.OUTSIDE))
+    fem.interpolate(world_position, dest=collider_position_field, location=collider_space_restriction)
 
-    fem.interpolate(
-        world_position,
-        dest=fem.make_restriction(collider_position_field, space_restriction=collider_space_restriction),
-    )
+    activation_distance = _COLLIDER_ACTIVATION_DISTANCE / collider_position_field.degree
 
     wp.launch(
         rasterize_collider_kernel,
@@ -512,8 +521,10 @@ def rasterize_collider(
             body_q,
             body_qd,
             voxel_size,
+            activation_distance,
             dt,
             collider_position_field.dof_values,
+            collider_node_volume,
             collider_distance_field.dof_values,
             collider_velocity,
             collider_normal_field.dof_values,
@@ -530,17 +541,20 @@ def interpolate_collider_normals(
     collider_distance_field: fem.DiscreteField,
     collider_normal_field: fem.DiscreteField,
 ):
+    # collider_distance_field.dof_values = corrected_distance
+    corrected_normal = wp.empty_like(collider_normal_field.dof_values)
     fem.interpolate(
         collider_gradient_field,
-        dest=fem.make_restriction(collider_normal_field, space_restriction=collider_space_restriction),
-        fields={"distance": collider_distance_field},
-        values={"voxel_size": voxel_size},
+        dest=corrected_normal,
+        dest_space=collider_normal_field.space,
+        location=collider_space_restriction,
+        fields={"distance": collider_distance_field, "normal": collider_normal_field},
     )
 
     wp.launch(
         normalize_gradient,
         dim=collider_normal_field.dof_values.shape,
-        inputs=[collider_normal_field.dof_values],
+        inputs=[corrected_normal, collider_normal_field.dof_values],
     )
 
 
