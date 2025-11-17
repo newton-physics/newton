@@ -323,6 +323,35 @@ uv sync --extra examples
   </tr>
 </table>
 
+### Sensor Examples
+
+<table>
+  <tr>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/sensors/example_sensor_contact.py">
+        <img src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_sensor_contact.jpg" alt="Sensor Contact">
+      </a>
+    </td>
+    <td align="center" width="33%">
+      <!-- Future Sensor example -->
+    </td>
+    <td align="center" width="33%">
+      <!-- Future Sensor example -->
+    </td>
+  </tr>
+  <tr>
+    <td align="center">
+      <code>uv run -m newton.examples sensor_contact</code>
+    </td>
+    <td align="center">
+      <!-- Future Sensor example -->
+    </td>
+    <td align="center">
+      <!-- Future Sensor example -->
+    </td>
+  </tr>
+</table>
+
 ### Selection Examples
 
 <table>
