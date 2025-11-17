@@ -240,7 +240,7 @@ class SolverMuJoCo(SolverBase):
 
         self.joint_mjc_dof_start: wp.array(dtype=wp.int32) | None = None
         """Mapping from Newton joint index to the start index of its joint axes in MuJoCo. Only defined for the joint indices of the first world in Newton, defaults to -1 otherwise. Shape [joint_count], dtype int32."""
-        self.template_dof_to_mjc_joint: wp.array(dtype=wp.int32) | None = None
+        self.dof_to_mjc_joint: wp.array(dtype=wp.int32) | None = None
         """Mapping from Newton DOF index to MuJoCo joint index. Only defined for the first world in Newton. Shape [joint_dof_count // num_worlds], dtype int32."""
         self.mjc_axis_to_actuator: wp.array(dtype=int) | None = None
         """Mapping from Newton joint axis index to MJC actuator index. Shape [dof_count], dtype int32."""
@@ -1179,10 +1179,9 @@ class SolverMuJoCo(SolverBase):
         # Only populated for template joints; in kernels, use joint_in_world to index
         joint_mjc_dof_start = np.full(len(selected_joints), -1, dtype=np.int32)
 
-        # Maps from Newton DOF index (per-world/template) to MuJoCo joint index (per-world/template)
-        # Only populated for template DOFs; in kernels, use template_dof_index to look up
+        # Maps from Newton DOF index to MuJoCo joint index (first world only)
         # Needed because jnt_solimp/jnt_solref are per-joint (not per-DOF) in MuJoCo
-        template_dof_to_mjc_joint = np.full(model.joint_dof_count // model.num_worlds, -1, dtype=np.int32)
+        dof_to_mjc_joint = np.full(model.joint_dof_count // model.num_worlds, -1, dtype=np.int32)
 
         # need to keep track of current dof and joint counts to make the indexing above correct
         num_dofs = 0
@@ -1251,7 +1250,7 @@ class SolverMuJoCo(SolverBase):
                 )
                 # For free joints, all 6 DOFs map to the same MuJoCo joint
                 for i in range(6):
-                    template_dof_to_mjc_joint[qd_start + i] = num_mjc_joints
+                    dof_to_mjc_joint[qd_start + i] = num_mjc_joints
                 num_dofs += 6
                 num_mjc_joints += 1
             elif j_type in supported_joint_types:
@@ -1295,7 +1294,7 @@ class SolverMuJoCo(SolverBase):
                         **joint_params,
                     )
                     # Map this DOF to the current MuJoCo joint index
-                    template_dof_to_mjc_joint[ai] = num_mjc_joints
+                    dof_to_mjc_joint[ai] = num_mjc_joints
                     num_mjc_joints += 1
 
                     if actuated_axes is None or ai in actuated_axes:
@@ -1362,7 +1361,7 @@ class SolverMuJoCo(SolverBase):
                         **joint_params,
                     )
                     # Map this DOF to the current MuJoCo joint index
-                    template_dof_to_mjc_joint[ai] = num_mjc_joints
+                    dof_to_mjc_joint[ai] = num_mjc_joints
                     num_mjc_joints += 1
 
                     if actuated_axes is None or ai in actuated_axes:
@@ -1499,8 +1498,8 @@ class SolverMuJoCo(SolverBase):
 
             # mapping from Newton joint index to the start index of its joint axes in MuJoCo
             self.joint_mjc_dof_start = wp.array(joint_mjc_dof_start, dtype=wp.int32)
-            # mapping from Newton DOF index to MuJoCo joint index (jnt_solimp is per-joint)
-            self.template_dof_to_mjc_joint = wp.array(template_dof_to_mjc_joint, dtype=wp.int32, device=model.device)
+            # mapping from Newton DOF index to MuJoCo joint index
+            self.dof_to_mjc_joint = wp.array(dof_to_mjc_joint, dtype=wp.int32, device=model.device)
 
             if self.mjw_model.geom_pos.size:
                 wp.launch(
@@ -1752,7 +1751,7 @@ class SolverMuJoCo(SolverBase):
                 self.model.joint_qd_start,
                 self.model.joint_dof_dim,
                 self.joint_mjc_dof_start,
-                self.template_dof_to_mjc_joint,
+                self.dof_to_mjc_joint,
                 self.model.joint_armature,
                 self.model.joint_friction,
                 self.model.joint_limit_ke,
@@ -1788,7 +1787,7 @@ class SolverMuJoCo(SolverBase):
                 self.model.joint_axis,
                 self.model.joint_child,
                 self.model.joint_type,
-                self.template_dof_to_mjc_joint,
+                self.dof_to_mjc_joint,
                 self.to_mjc_body_index,
                 joints_per_world,
             ],

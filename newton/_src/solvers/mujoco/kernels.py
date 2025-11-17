@@ -907,7 +907,7 @@ def update_joint_dof_properties_kernel(
     joint_qd_start: wp.array(dtype=wp.int32),
     joint_dof_dim: wp.array2d(dtype=wp.int32),
     joint_mjc_dof_start: wp.array(dtype=wp.int32),
-    template_dof_to_mjc_joint: wp.array(dtype=wp.int32),
+    dof_to_mjc_joint: wp.array(dtype=wp.int32),
     joint_armature: wp.array(dtype=float),
     joint_friction: wp.array(dtype=float),
     joint_limit_ke: wp.array(dtype=float),
@@ -923,7 +923,7 @@ def update_joint_dof_properties_kernel(
     """Update joint DOF properties including armature, friction loss, joint impedance limits, and solref.
 
     This kernel properly maps Newton DOFs to MuJoCo DOFs using joint_mjc_dof_start.
-    For solimplimit and solref, we use template_dof_to_mjc_joint since jnt_solimp/jnt_solref are per-joint in MuJoCo.
+    For solimplimit and solref, we use dof_to_mjc_joint since jnt_solimp/jnt_solref are per-joint in MuJoCo.
     If solimplimit is None, jnt_solimp won't be updated (MuJoCo defaults will be preserved).
     """
     tid = wp.tid()
@@ -940,7 +940,7 @@ def update_joint_dof_properties_kernel(
     mjc_dof_start = joint_mjc_dof_start[joint_in_world]
 
     # Get the DOF start for the template joint (world 0)
-    # template_dof_to_mjc_joint is only populated for template DOFs (first world)
+    # dof_to_mjc_joint is only populated for template DOFs (first world)
     template_joint_idx = joint_in_world
     template_dof_start = joint_qd_start[template_joint_idx]
 
@@ -949,7 +949,7 @@ def update_joint_dof_properties_kernel(
         newton_dof_index = newton_dof_start + i
         template_dof_index = template_dof_start + i
         mjc_dof_index = mjc_dof_start + i
-        mjc_joint_index = template_dof_to_mjc_joint[template_dof_index]
+        mjc_joint_index = dof_to_mjc_joint[template_dof_index]
 
         # Update armature and friction (per DOF)
         dof_armature[worldid, mjc_dof_index] = joint_armature[newton_dof_index]
@@ -970,7 +970,7 @@ def update_joint_dof_properties_kernel(
         newton_dof_index = newton_dof_start + lin_axis_count + i
         template_dof_index = template_dof_start + lin_axis_count + i
         mjc_dof_index = mjc_dof_start + lin_axis_count + i
-        mjc_joint_index = template_dof_to_mjc_joint[template_dof_index]
+        mjc_joint_index = dof_to_mjc_joint[template_dof_index]
 
         # Update armature and friction (per DOF)
         dof_armature[worldid, mjc_dof_index] = joint_armature[newton_dof_index]
@@ -996,7 +996,7 @@ def update_joint_transforms_kernel(
     joint_original_axis: wp.array(dtype=wp.vec3),
     joint_child: wp.array(dtype=wp.int32),
     joint_type: wp.array(dtype=wp.int32),
-    template_dof_to_mjc_joint: wp.array(dtype=wp.int32),
+    dof_to_mjc_joint: wp.array(dtype=wp.int32),
     body_mapping: wp.array(dtype=wp.int32),
     joints_per_world: int,
     # outputs
@@ -1024,7 +1024,7 @@ def update_joint_transforms_kernel(
 
     newton_dof_start = joint_dof_start[tid]
     template_dof_start = joint_dof_start[joint_in_world]
-    mjc_joint_index = template_dof_to_mjc_joint[template_dof_start]
+    mjc_joint_index = dof_to_mjc_joint[template_dof_start]
 
     # update linear dofs
     for i in range(lin_axis_count):
