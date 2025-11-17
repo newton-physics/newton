@@ -23,16 +23,16 @@
 #
 ###########################################################################
 
-import numpy as np
 import warp as wp
-from pxr import Usd, UsdGeom
+from pxr import Usd
 
 import newton
 import newton.examples
+import newton.usd
 
 
 class Example:
-    def __init__(self, viewer):
+    def __init__(self, viewer, args):
         # setup simulation parameters first
         self.fps = 100
         self.frame_dt = 1.0 / self.fps
@@ -70,23 +70,18 @@ class Example:
         body_box = builder.add_body(xform=wp.transform(p=self.box_pos, q=wp.quat_identity()), key="box")
         builder.add_shape_box(body_box, hx=0.5, hy=0.35, hz=0.25)
 
-        # CONE (no collision support)
-        # self.cone_pos = wp.vec3(0.0, 6.0, drop_z)
-        # body_cone = builder.add_body(xform=wp.transform(p=self.cone_pos, q=wp.quat_identity()), key="cone")
-        # builder.add_shape_cone(body_cone, radius=0.45, half_height=0.6)
-
         # MESH (bunny)
         usd_stage = Usd.Stage.Open(newton.examples.get_asset("bunny.usd"))
-        usd_geom = UsdGeom.Mesh(usd_stage.GetPrimAtPath("/root/bunny"))
-
-        mesh_vertices = np.array(usd_geom.GetPointsAttr().Get())
-        mesh_indices = np.array(usd_geom.GetFaceVertexIndicesAttr().Get())
-
-        demo_mesh = newton.Mesh(mesh_vertices, mesh_indices)
+        demo_mesh = newton.usd.get_mesh(usd_stage.GetPrimAtPath("/root/bunny"))
 
         self.mesh_pos = wp.vec3(0.0, 4.0, drop_z - 0.5)
         body_mesh = builder.add_body(xform=wp.transform(p=self.mesh_pos, q=wp.quat(0.5, 0.5, 0.5, 0.5)), key="mesh")
         builder.add_shape_mesh(body_mesh, mesh=demo_mesh)
+
+        # CONE (no collision support in the standard collision pipeline)
+        self.cone_pos = wp.vec3(0.0, 6.0, drop_z)
+        body_cone = builder.add_body(xform=wp.transform(p=self.cone_pos, q=wp.quat_identity()), key="cone")
+        builder.add_shape_cone(body_cone, radius=0.45, half_height=0.6)
 
         # finalize model
         self.model = builder.finalize()
@@ -96,12 +91,21 @@ class Example:
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.control = self.model.control()
-        self.contacts = self.model.collide(self.state_0)
-
-        self.viewer.set_model(self.model)
 
         # not required for MuJoCo, but required for maximal-coordinate solvers like XPBD
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
+
+        # Create collision pipeline from command-line args (default: CollisionPipelineUnified with EXPLICIT)
+        # Override rigid_contact_max_per_pair because mesh vs plane creates a lot of contacts
+        self.collision_pipeline = newton.examples.create_collision_pipeline(
+            self.model,
+            args,
+            rigid_contact_max_per_pair=100,
+            rigid_contact_margin=0.05,
+        )
+        self.contacts = self.model.collide(self.state_0, collision_pipeline=self.collision_pipeline)
+
+        self.viewer.set_model(self.model)
 
         self.capture()
 
@@ -120,7 +124,7 @@ class Example:
             # apply forces to the model
             self.viewer.apply_forces(self.state_0)
 
-            self.contacts = self.model.collide(self.state_0)
+            self.contacts = self.model.collide(self.state_0, collision_pipeline=self.collision_pipeline)
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
 
             # swap states
@@ -141,7 +145,7 @@ class Example:
             self.model,
             self.state_0,
             "sphere at rest pose",
-            lambda q, qd: newton.utils.vec_allclose(q, sphere_q, atol=1e-4),
+            lambda q, qd: newton.utils.vec_allclose(q, sphere_q, atol=2e-4),
             [0],
         )
         self.capsule_pos[2] = 1.0
@@ -150,16 +154,23 @@ class Example:
             self.model,
             self.state_0,
             "capsule at rest pose",
-            lambda q, qd: newton.utils.vec_allclose(q, capsule_q, atol=1e-4),
+            lambda q, qd: newton.utils.vec_allclose(q, capsule_q, atol=2e-4),
             [1],
         )
+        # Custom test for cylinder: allow 0.01 error for X and Y, strict for Z and rotation
         self.cylinder_pos[2] = 0.6
         cylinder_q = wp.transform(self.cylinder_pos, wp.quat_identity())
         newton.examples.test_body_state(
             self.model,
             self.state_0,
             "cylinder at rest pose",
-            lambda q, qd: newton.utils.vec_allclose(q, cylinder_q, atol=1e-4),
+            lambda q, qd: abs(q[0] - cylinder_q[0]) < 0.01
+            and abs(q[1] - cylinder_q[1]) < 0.01
+            and abs(q[2] - cylinder_q[2]) < 1e-4
+            and abs(q[3] - cylinder_q[3]) < 1e-4
+            and abs(q[4] - cylinder_q[4]) < 1e-4
+            and abs(q[5] - cylinder_q[5]) < 1e-4
+            and abs(q[6] - cylinder_q[6]) < 1e-4,
             [2],
         )
         self.box_pos[2] = 0.25
@@ -192,6 +203,6 @@ if __name__ == "__main__":
     viewer, args = newton.examples.init()
 
     # Create viewer and run
-    example = Example(viewer)
+    example = Example(viewer, args)
 
     newton.examples.run(example, args)

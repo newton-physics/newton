@@ -83,11 +83,13 @@ def test_sand_cube_on_plane(test, device):
     assert np.all(bb_max < 2 * N * voxel_size)
 
     # Checks that contact impulses are consistent
-    impulses, grid_points = solver.collect_collider_impulses(state_0)
+    impulses, impulse_positions, _collider_ids = solver.collect_collider_impulses(state_0)
 
     impulses = impulses.numpy()
+    impulse_positions = impulse_positions.numpy()
+
     active_contacts = np.flatnonzero(np.linalg.norm(impulses, axis=1) > 0.01)
-    contact_points = grid_points.numpy()[active_contacts]
+    contact_points = impulse_positions[active_contacts]
     contact_impulses = impulses[active_contacts]
 
     assert np.all(contact_points[:, model.up_axis] == 0.0)
@@ -107,5 +109,4 @@ add_function_test(
 
 
 if __name__ == "__main__":
-    wp.clear_kernel_cache()
     unittest.main(verbosity=2, failfast=True)

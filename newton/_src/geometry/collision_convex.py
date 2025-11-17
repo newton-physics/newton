@@ -36,6 +36,7 @@ from typing import Any
 
 import warp as wp
 
+from .contact_data import ContactData
 from .mpr import create_solve_mpr
 from .multicontact import create_build_manifold
 from .simplex_solver import create_solve_closest_distance
@@ -43,10 +44,15 @@ from .simplex_solver import create_solve_closest_distance
 _mat43f = wp.types.matrix((4, 3), wp.float32)
 _mat53f = wp.types.matrix((5, 3), wp.float32)
 _vec5 = wp.types.vector(5, wp.float32)
-_vec5i = wp.types.vector(5, wp.int32)
+_vec5u = wp.types.vector(5, wp.uint32)
+
+# Single-contact types (saves registers)
+_mat13f = wp.types.matrix((1, 3), wp.float32)
+_vec1 = wp.types.vector(1, wp.float32)
+_vec1u = wp.types.vector(1, wp.uint32)
 
 
-def create_solve_convex_multi_contact(support_func: Any):
+def create_solve_convex_multi_contact(support_func: Any, writer_func: Any, post_process_contact: Any):
     """
     Factory function to create a multi-contact collision solver for convex shapes.
 
@@ -59,6 +65,8 @@ def create_solve_convex_multi_contact(support_func: Any):
     Args:
         support_func: Support mapping function for shapes that takes
                      (geometry, direction, data_provider) and returns (point, feature_id)
+        writer_func: Function to write contact data (signature: (ContactData, writer_data) -> None)
+        post_process_contact: Function to post-process contact data
 
     Returns:
         solve_convex_multi_contact function that computes up to 5 contact points.
@@ -74,22 +82,19 @@ def create_solve_convex_multi_contact(support_func: Any):
         position_b: wp.vec3,
         sum_of_contact_offsets: float,
         data_provider: Any,
-        contact_threshold: float = 0.0,
-        skip_multi_contact: bool = False,
-    ) -> tuple[
-        int,
-        wp.vec3,
-        _vec5,
-        _mat53f,
-        _vec5i,
-    ]:
+        contact_threshold: float,
+        skip_multi_contact: bool,
+        writer_data: Any,
+        contact_template: ContactData,
+    ) -> int:
         """
-        Compute up to 5 contact points between two convex shapes.
+        Compute up to 5 contact points between two convex shapes and write them directly.
 
         This function generates a multi-contact manifold for stable contact resolution:
         1. Runs MPR first (fast for overlapping shapes, which is the common case)
         2. Falls back to GJK if MPR detects no collision
         3. Generates multi-contact manifold via perturbed support mapping + polygon clipping
+        4. Post-processes and writes each contact
 
         Args:
             geom_a: Shape A geometry data
@@ -100,20 +105,140 @@ def create_solve_convex_multi_contact(support_func: Any):
             position_b: World position of shape B
             sum_of_contact_offsets: Sum of contact offsets for both shapes
             data_provider: Support mapping data provider
-            contact_threshold: Signed distance threshold; skip manifold if signed_distance > threshold (default: 0.0)
-            skip_multi_contact: If True, return only single contact point (default: False)
+            contact_threshold: Signed distance threshold; skip manifold if signed_distance > threshold
+            skip_multi_contact: If True, write only single contact point
+            writer_data: Data structure for contact writer
+            contact_template: Pre-packed ContactData with static fields
+
         Returns:
-            Tuple of:
-                count (int): Number of valid contact points (0-5)
-                normal (wp.vec3): Contact normal from A to B (same for all contacts)
-                signed_distances (_vec5): Signed distances for each contact (negative when overlapping)
-                points (_mat53f): Contact points in world space (midpoint between shapes)
-                features (_vec5i): Feature IDs for contact tracking
+            Number of valid contact points written (0-5)
         """
         # Enlarge a little bit to avoid contact flickering when the signed distance is close to 0
         enlarge = 1e-4
         # Try MPR first (optimized for overlapping shapes, which is the common case)
-        collision, signed_distance, point, normal, feature_a_id, feature_b_id = wp.static(
+        collision, signed_distance, point, normal = wp.static(create_solve_mpr(support_func))(
+            geom_a,
+            geom_b,
+            orientation_a,
+            orientation_b,
+            position_a,
+            position_b,
+            sum_of_contact_offsets + enlarge,
+            data_provider,
+        )
+        signed_distance += enlarge
+
+        if not collision:
+            # MPR reported no collision, fall back to GJK for separated shapes
+            collision, signed_distance, point, normal = wp.static(create_solve_closest_distance(support_func))(
+                geom_a,
+                geom_b,
+                orientation_a,
+                orientation_b,
+                position_a,
+                position_b,
+                sum_of_contact_offsets,
+                data_provider,
+            )
+
+        # Skip multi-contact manifold generation if requested or signed distance exceeds threshold
+        if skip_multi_contact or signed_distance > contact_threshold:
+            # Write single contact directly using template
+            contact_data = contact_template
+            contact_data.contact_point_center = point
+            contact_data.contact_normal_a_to_b = normal
+            contact_data.contact_distance = signed_distance
+            contact_data.feature = wp.uint32(0)
+
+            contact_data = post_process_contact(
+                contact_data, geom_a, position_a, orientation_a, geom_b, position_b, orientation_b
+            )
+            writer_func(contact_data, writer_data)
+
+            return 1
+
+        # Generate multi-contact manifold using perturbed support mapping and polygon clipping
+        count = wp.static(create_build_manifold(support_func, writer_func, post_process_contact))(
+            geom_a,
+            geom_b,
+            orientation_a,
+            orientation_b,
+            position_a,
+            position_b,
+            point - normal * (signed_distance * 0.5),  # Anchor point on shape A
+            point + normal * (signed_distance * 0.5),  # Anchor point on shape B
+            normal,
+            data_provider,
+            writer_data,
+            contact_template,
+        )
+
+        return count
+
+    return solve_convex_multi_contact
+
+
+def create_solve_convex_single_contact(support_func: Any, writer_func: Any, post_process_contact: Any):
+    """
+    Factory function to create a single-contact collision solver for convex shapes.
+
+    This function creates a collision detector that generates 1 contact point.
+    It combines GJK and MPR but skips manifold generation:
+    1. MPR for initial collision detection and signed distance (fast for overlapping shapes)
+    2. GJK as fallback for separated shapes
+
+    Args:
+        support_func: Support mapping function for shapes that takes
+                     (geometry, direction, data_provider) and returns (point, feature_id)
+        writer_func: Function to write contact data (signature: (ContactData, writer_data) -> None)
+        post_process_contact: Function to post-process contact data
+
+    Returns:
+        solve_convex_single_contact function that computes a single contact point.
+    """
+
+    @wp.func
+    def solve_convex_single_contact(
+        geom_a: Any,
+        geom_b: Any,
+        orientation_a: wp.quat,
+        orientation_b: wp.quat,
+        position_a: wp.vec3,
+        position_b: wp.vec3,
+        sum_of_contact_offsets: float,
+        data_provider: Any,
+        contact_threshold: float,
+        writer_data: Any,
+        contact_template: ContactData,
+    ) -> int:
+        """
+        Compute a single contact point between two convex shapes and write it directly.
+
+        This function skips multi-contact manifold generation for faster performance:
+        1. Runs MPR first (fast for overlapping shapes, which is the common case)
+        2. Falls back to GJK if MPR detects no collision
+        3. Post-processes and writes the contact
+
+        Args:
+            geom_a: Shape A geometry data
+            geom_b: Shape B geometry data
+            orientation_a: Orientation quaternion of shape A
+            orientation_b: Orientation quaternion of shape B
+            position_a: World position of shape A
+            position_b: World position of shape B
+            sum_of_contact_offsets: Sum of contact offsets for both shapes
+            data_provider: Support mapping data provider
+            contact_threshold: Signed distance threshold; skip manifold if signed_distance > threshold
+            writer_data: Data structure for contact writer
+            contact_template: Pre-packed ContactData with static fields
+
+        Returns:
+            Number of valid contact points written (0 or 1)
+        """
+        # Enlarge a little bit to avoid contact flickering when the signed distance is close to 0
+        enlarge = 1e-4
+        # Try MPR first (optimized for overlapping shapes, which is the common case)
+        collision, signed_distance, point, normal, _feature_a_id, _feature_b_id = wp.static(
             create_solve_mpr(support_func)
         )(
             geom_a,
@@ -129,7 +254,7 @@ def create_solve_convex_multi_contact(support_func: Any):
 
         if not collision:
             # MPR reported no collision, fall back to GJK for separated shapes
-            collision, signed_distance, point, normal, feature_a_id, feature_b_id = wp.static(
+            collision, signed_distance, point, normal, _feature_a_id, _feature_b_id = wp.static(
                 create_solve_closest_distance(support_func)
             )(
                 geom_a,
@@ -142,31 +267,18 @@ def create_solve_convex_multi_contact(support_func: Any):
                 data_provider,
             )
 
-        # Skip multi-contact manifold generation if requested or signed distance exceeds threshold
-        if skip_multi_contact or signed_distance > contact_threshold:
-            count = 1
-            signed_distances = _vec5(signed_distance, 0.0, 0.0, 0.0, 0.0)
-            points = _mat53f()
-            points[0] = point
-            features = _vec5i(0, 0, 0, 0, 0)
-            return count, normal, signed_distances, points, features
+        # Write single contact
+        contact_data = contact_template
+        contact_data.contact_point_center = point
+        contact_data.contact_normal_a_to_b = normal
+        contact_data.contact_distance = signed_distance
+        contact_data.feature = wp.uint32(0)
 
-        # Generate multi-contact manifold using perturbed support mapping and polygon clipping
-        count, signed_distances, points, features = wp.static(create_build_manifold(support_func))(
-            geom_a,
-            geom_b,
-            orientation_a,
-            orientation_b,
-            position_a,
-            position_b,
-            point - normal * (signed_distance * 0.5),  # Anchor point on shape A
-            point + normal * (signed_distance * 0.5),  # Anchor point on shape B
-            normal,
-            feature_a_id,
-            feature_b_id,
-            data_provider,
+        contact_data = post_process_contact(
+            contact_data, geom_a, position_a, orientation_a, geom_b, position_b, orientation_b
         )
+        writer_func(contact_data, writer_data)
 
-        return count, normal, signed_distances, points, features
+        return 1
 
-    return solve_convex_multi_contact
+    return solve_convex_single_contact

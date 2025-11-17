@@ -180,6 +180,231 @@ def test_raycast_sensor_cubemap(test: unittest.TestCase, device, export_images: 
             save_depth_image_as_grayscale(depth_image, f"cubemap_{view_name}")
 
 
+def test_raycast_sensor_particles_hit(test: unittest.TestCase, device: str):
+    """Ensure particle raycasts contribute depth hits when requested."""
+    builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+    builder.add_particle(pos=(0.0, 0.0, 2.0), vel=(0.0, 0.0, 0.0), mass=0.0, radius=0.5)
+
+    with wp.ScopedDevice(device):
+        model = builder.finalize()
+
+    state = model.state()
+
+    sensor = RaycastSensor(
+        model=model,
+        camera_position=(0.0, 0.0, 0.0),
+        camera_direction=(0.0, 0.0, 1.0),  # Camera looks toward +Z where the particle sits
+        camera_up=(0.0, 1.0, 0.0),
+        fov_radians=0.1,
+        width=1,
+        height=1,
+        max_distance=10.0,
+    )
+
+    sensor.eval(state, include_particles=True)
+    depth = sensor.get_depth_image_numpy()
+
+    test.assertEqual(depth.shape, (1, 1))
+    test.assertGreater(depth[0, 0], 0.0)
+    test.assertAlmostEqual(depth[0, 0], 1.5, delta=1e-3)
+
+
+def test_raycast_sensor_particles_requires_positive_step(test: unittest.TestCase, device: str):
+    """Providing a non-positive march step should raise a validation error."""
+    builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+    builder.add_particle(pos=(0.0, 0.0, 2.0), vel=(0.0, 0.0, 0.0), mass=0.0, radius=0.5)
+
+    with wp.ScopedDevice(device):
+        model = builder.finalize()
+
+    state = model.state()
+
+    sensor = RaycastSensor(
+        model=model,
+        camera_position=(0.0, 0.0, 0.0),
+        camera_direction=(0.0, 0.0, 1.0),
+        camera_up=(0.0, 1.0, 0.0),
+        fov_radians=0.1,
+        width=1,
+        height=1,
+        max_distance=10.0,
+    )
+
+    with test.assertRaises(ValueError):
+        sensor.eval(state, include_particles=True, particle_march_step=0.0)
+
+
+def test_raycast_sensor_include_particles_without_particles(test: unittest.TestCase, device: str):
+    """Including particles when none exist should leave the depth image empty."""
+    builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+
+    with wp.ScopedDevice(device):
+        model = builder.finalize()
+
+    state = model.state()
+
+    sensor = RaycastSensor(
+        model=model,
+        camera_position=(0.0, 0.0, 0.0),
+        camera_direction=(0.0, 0.0, 1.0),
+        camera_up=(0.0, 1.0, 0.0),
+        fov_radians=0.1,
+        width=1,
+        height=1,
+        max_distance=5.0,
+    )
+
+    sensor.eval(state, include_particles=True)
+    depth = sensor.get_depth_image_numpy()
+
+    test.assertEqual(depth.shape, (1, 1))
+    test.assertEqual(depth[0, 0], -1.0)  # -1 indicates no hit
+
+
+def test_raycast_sensor_mixed_hits_prefers_closest_shape(test: unittest.TestCase, device: str):
+    """When both a shape and a particle are along the view ray, the closest surface should win."""
+    builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+    body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 3.0), wp.quat_identity()))
+    builder.add_shape_sphere(body=body, radius=0.5)
+    builder.add_particle(pos=(0.0, 0.0, 6.0), vel=(0.0, 0.0, 0.0), mass=0.0, radius=0.25)
+
+    with wp.ScopedDevice(device):
+        model = builder.finalize()
+
+    state = model.state()
+    # Update body transforms (important for raycast operations)
+    newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+
+    sensor = RaycastSensor(
+        model=model,
+        camera_position=(0.0, 0.0, 0.0),
+        camera_direction=(0.0, 0.0, 1.0),
+        camera_up=(0.0, 1.0, 0.0),
+        fov_radians=0.1,
+        width=1,
+        height=1,
+        max_distance=10.0,
+    )
+
+    sensor.eval(state, include_particles=True)
+    depth = sensor.get_depth_image_numpy()
+
+    test.assertEqual(depth.shape, (1, 1))
+    test.assertAlmostEqual(depth[0, 0], 2.5, delta=1e-3)
+
+
+def test_raycast_sensor_mixed_hits_prefers_closest_particle(test: unittest.TestCase, device: str):
+    """Particles that are closer than shapes along the same ray should override the depth."""
+    builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+    body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 6.0), wp.quat_identity()))
+    builder.add_shape_sphere(body=body, radius=0.5)
+    builder.add_particle(pos=(0.0, 0.0, 3.0), vel=(0.0, 0.0, 0.0), mass=0.0, radius=0.5)
+
+    with wp.ScopedDevice(device):
+        model = builder.finalize()
+
+    state = model.state()
+    # Update body transforms (important for raycast operations)
+    newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+
+    sensor = RaycastSensor(
+        model=model,
+        camera_position=(0.0, 0.0, 0.0),
+        camera_direction=(0.0, 0.0, 1.0),
+        camera_up=(0.0, 1.0, 0.0),
+        fov_radians=0.1,
+        width=1,
+        height=1,
+        max_distance=10.0,
+    )
+
+    sensor.eval(state, include_particles=False)
+    shape_only_depth = sensor.get_depth_image_numpy()[0, 0]
+    test.assertAlmostEqual(shape_only_depth, 5.5, delta=1e-3)
+
+    sensor.eval(state, include_particles=True)
+    depth = sensor.get_depth_image_numpy()
+    test.assertEqual(depth.shape, (1, 1))
+    test.assertAlmostEqual(depth[0, 0], 2.5, delta=1e-3)
+
+
+def test_raycast_sensor_particle_step_truncation_warns(test: unittest.TestCase, device: str):
+    """Extremely small march steps should trigger a warning when step count exceeds int32 limits."""
+    builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+    builder.add_particle(pos=(0.0, 0.0, 2.0), vel=(0.0, 0.0, 0.0), mass=0.0, radius=0.1)
+
+    with wp.ScopedDevice(device):
+        model = builder.finalize()
+
+    state = model.state()
+
+    sensor = RaycastSensor(
+        model=model,
+        camera_position=(0.0, 0.0, 0.0),
+        camera_direction=(0.0, 0.0, 1.0),
+        camera_up=(0.0, 1.0, 0.0),
+        fov_radians=0.1,
+        width=1,
+        height=1,
+        max_distance=1.0e12,
+    )
+
+    with test.assertWarns(RuntimeWarning):
+        sensor.eval(state, include_particles=True, particle_march_step=1.0e-9)
+
+
+def test_raycast_sensor_single_pixel_hit(test: unittest.TestCase, device):
+    """Test that an asymmetric scene that should produce only a single hit for an intended pixel."""
+
+    camera_position = (0.0, 0.0, 0.0)
+    camera_direction = (1.0, 0.0, 0.0)  # Later changed with point_camera_at
+    camera_up = (0.0, 0.0, 1.0)
+    fov_radians = 1.6
+    width, height = 3, 3
+    target_pixel = (height // 2, width // 2)  # Center pixel
+    sphere_radius = 0.2
+    sphere_center = np.array([5.0, 1.0, 0.5], dtype=np.float32)
+
+    builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+    body = builder.add_body(xform=wp.transform(wp.vec3(*sphere_center.astype(np.float32)), wp.quat_identity()))
+    builder.add_shape_sphere(body=body, radius=sphere_radius)
+
+    with wp.ScopedDevice(device):
+        model = builder.finalize()
+
+    state = model.state()
+    newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+
+    sensor = RaycastSensor(
+        model=model,
+        camera_position=camera_position,
+        camera_direction=camera_direction,
+        camera_up=camera_up,
+        fov_radians=fov_radians,
+        width=width,
+        height=height,
+        max_distance=20.0,
+    )
+
+    sensor.point_camera_at(target=sphere_center, position=camera_position, up=camera_up)
+
+    sensor.eval(state)
+    depth_image = sensor.get_depth_image_numpy()
+
+    hits = np.argwhere(depth_image > 0.0)
+    test.assertEqual(hits.shape[0], 1, "Only one pixel should register a hit in this setup.")
+
+    hit_y, hit_x = hits[0].tolist()
+    test.assertEqual((int(hit_y), int(hit_x)), target_pixel)
+
+    expected_distance = float(np.linalg.norm(sphere_center) - sphere_radius)  # Camera positioned at origin
+    test.assertAlmostEqual(float(depth_image[hit_y, hit_x]), expected_distance, places=3)
+
+    no_hit_mask = np.ones(depth_image.shape, dtype=bool)
+    no_hit_mask[hit_y, hit_x] = False
+    test.assertTrue(np.all(depth_image[no_hit_mask] < 0.0), "Non-target pixels should report no hit (-1).")
+
+
 class TestRaycastSensor(unittest.TestCase):
     pass
 
@@ -187,7 +412,49 @@ class TestRaycastSensor(unittest.TestCase):
 # Register test for all available devices
 devices = get_test_devices()
 add_function_test(TestRaycastSensor, "test_raycast_sensor_cubemap", test_raycast_sensor_cubemap, devices=devices)
+add_function_test(
+    TestRaycastSensor,
+    "test_raycast_sensor_particles_hit",
+    test_raycast_sensor_particles_hit,
+    devices=devices,
+)
+add_function_test(
+    TestRaycastSensor,
+    "test_raycast_sensor_particles_requires_positive_step",
+    test_raycast_sensor_particles_requires_positive_step,
+    devices=devices,
+)
+add_function_test(
+    TestRaycastSensor,
+    "test_raycast_sensor_include_particles_without_particles",
+    test_raycast_sensor_include_particles_without_particles,
+    devices=devices,
+)
+add_function_test(
+    TestRaycastSensor,
+    "test_raycast_sensor_mixed_hits_prefers_closest_shape",
+    test_raycast_sensor_mixed_hits_prefers_closest_shape,
+    devices=devices,
+)
+add_function_test(
+    TestRaycastSensor,
+    "test_raycast_sensor_mixed_hits_prefers_closest_particle",
+    test_raycast_sensor_mixed_hits_prefers_closest_particle,
+    devices=devices,
+)
+add_function_test(
+    TestRaycastSensor,
+    "test_raycast_sensor_particle_step_truncation_warns",
+    test_raycast_sensor_particle_step_truncation_warns,
+    devices=devices,
+)
+add_function_test(
+    TestRaycastSensor,
+    "test_raycast_sensor_single_pixel_hit",
+    test_raycast_sensor_single_pixel_hit,
+    devices=devices,
+)
 
 
 if __name__ == "__main__":
-    unittest.main()
+    unittest.main(verbosity=2)

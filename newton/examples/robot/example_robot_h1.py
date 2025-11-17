@@ -31,7 +31,7 @@ import newton.utils
 
 
 class Example:
-    def __init__(self, viewer, num_worlds=4):
+    def __init__(self, viewer, num_worlds=4, args=None):
         self.fps = 50
         self.frame_dt = 1.0 / self.fps
 
@@ -46,9 +46,10 @@ class Example:
         self.device = wp.get_device()
 
         h1 = newton.ModelBuilder()
+        newton.solvers.SolverMuJoCo.register_custom_attributes(h1)
         h1.default_joint_cfg = newton.ModelBuilder.JointDofConfig(limit_ke=1.0e3, limit_kd=1.0e1, friction=1e-5)
-        h1.default_shape_cfg.ke = 5.0e4
-        h1.default_shape_cfg.kd = 5.0e2
+        h1.default_shape_cfg.ke = 2.0e3
+        h1.default_shape_cfg.kd = 1.0e2
         h1.default_shape_cfg.kf = 1.0e3
         h1.default_shape_cfg.mu = 0.75
 
@@ -59,31 +60,42 @@ class Example:
             ignore_paths=["/GroundPlane"],
             collapse_fixed_joints=False,
             enable_self_collisions=False,
-            load_non_physics_prims=True,
             hide_collision_shapes=True,
         )
         # approximate meshes for faster collision detection
         h1.approximate_meshes("bounding_box")
 
-        for i in range(len(h1.joint_dof_mode)):
-            h1.joint_dof_mode[i] = newton.JointMode.TARGET_POSITION
+        for i in range(len(h1.joint_target_ke)):
             h1.joint_target_ke[i] = 150
             h1.joint_target_kd[i] = 5
 
         builder = newton.ModelBuilder()
         builder.replicate(h1, self.num_worlds)
 
+        builder.default_shape_cfg.ke = 1.0e3
+        builder.default_shape_cfg.kd = 1.0e2
         builder.add_ground_plane()
 
         self.model = builder.finalize()
         self.solver = newton.solvers.SolverMuJoCo(
-            self.model, iterations=100, ls_iterations=50, njmax=100, ncon_per_world=50
+            self.model,
+            iterations=100,
+            ls_iterations=50,
+            njmax=100,
+            nconmax=50,
+            use_mujoco_contacts=args.use_mujoco_contacts if args else False,
         )
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.control = self.model.control()
-        self.contacts = self.model.collide(self.state_0)
+
+        # Evaluate forward kinematics for collision detection
+        newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
+
+        # Create collision pipeline from command-line args (default: CollisionPipelineUnified with EXPLICIT)
+        self.collision_pipeline = newton.examples.create_collision_pipeline(self.model, args)
+        self.contacts = self.model.collide(self.state_0, collision_pipeline=self.collision_pipeline)
 
         self.viewer.set_model(self.model)
         self.viewer.set_world_offsets((3.0, 3.0, 0.0))
@@ -98,7 +110,7 @@ class Example:
             self.graph = capture.graph
 
     def simulate(self):
-        self.contacts = self.model.collide(self.state_0)
+        self.contacts = self.model.collide(self.state_0, collision_pipeline=self.collision_pipeline)
         for _ in range(self.sim_substeps):
             self.state_0.clear_forces()
 
@@ -145,6 +157,6 @@ if __name__ == "__main__":
 
     viewer, args = newton.examples.init(parser)
 
-    example = Example(viewer, args.num_worlds)
+    example = Example(viewer, args.num_worlds, args)
 
     newton.examples.run(example, args)

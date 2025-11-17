@@ -42,8 +42,6 @@ from newton.tests.unittest_utils import (
     sanitize_identifier,
 )
 
-wp.init()
-
 
 def _build_command_line_options(test_options: dict[str, Any]) -> list:
     """Helper function to build command-line options from the test options dictionary."""
@@ -590,7 +588,13 @@ add_example_test(
     use_viewer=True,
 )
 
+add_example_test(
+    TestMPMExamples,
+    name="mpm.example_mpm_twoway_coupling",
+    devices=cuda_test_devices,
+    test_options={"viewer": "null", "num-frames": 80},
+    use_viewer=True,
+)
+
 if __name__ == "__main__":
-    # force rebuild of all kernels
-    # wp.clear_kernel_cache()
     unittest.main(verbosity=2)

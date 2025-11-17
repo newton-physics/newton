@@ -60,6 +60,7 @@ class CollisionSetup:
         solver_fn,
         sim_substeps,
         use_unified_pipeline=False,
+        broad_phase_mode=newton.BroadPhaseMode.EXPLICIT,
     ):
         self.sim_substeps = sim_substeps
         self.frame_dt = 1 / 60
@@ -93,9 +94,9 @@ class CollisionSetup:
         if use_unified_pipeline:
             self.collision_pipeline = newton.CollisionPipelineUnified.from_model(
                 self.model,
-                rigid_contact_max_per_pair=10,
+                rigid_contact_max_per_pair=20,
                 rigid_contact_margin=0.01,
-                broad_phase_mode=newton.BroadPhaseMode.EXPLICIT,
+                broad_phase_mode=broad_phase_mode,
             )
             self.contacts = self.model.collide(self.state_0, collision_pipeline=self.collision_pipeline)
         else:
@@ -123,7 +124,11 @@ class CollisionSetup:
         elif shape_type == GeoType.CYLINDER:
             self.builder.add_shape_cylinder(body, radius=0.25, half_height=0.4, key=type_to_str(shape_type))
         elif shape_type == GeoType.MESH:
-            vertices, indices = newton.utils.create_sphere_mesh(radius=0.5)
+            # Use box mesh for unified pipeline (works correctly), sphere mesh for legacy pipeline (box mesh has issues)
+            if self.use_unified_pipeline:
+                vertices, indices = newton.utils.create_box_mesh(extents=(0.5, 0.5, 0.5))
+            else:
+                vertices, indices = newton.utils.create_sphere_mesh(radius=0.5)
             self.builder.add_shape_mesh(body, mesh=newton.Mesh(vertices[:, :3], indices), key=type_to_str(shape_type))
         elif shape_type == GeoType.CONVEX_MESH:
             # Use a sphere mesh as it's already convex
@@ -263,23 +268,34 @@ class TestUnifiedCollisionPipeline(unittest.TestCase):
     pass
 
 
-# Unified collision pipeline tests - replace MESH with CONVEX_MESH
-# MESH is not supported yet in the unified pipeline
+# Unified collision pipeline tests - now supports both MESH and CONVEX_MESH
+# Note: MESH vs MESH is not yet supported
 unified_contact_tests = [
     (GeoType.SPHERE, GeoType.SPHERE, TestLevel.VELOCITY_YZ, TestLevel.STRICT),
     (GeoType.SPHERE, GeoType.BOX, TestLevel.VELOCITY_YZ, TestLevel.STRICT),
     (GeoType.SPHERE, GeoType.CAPSULE, TestLevel.VELOCITY_YZ, TestLevel.STRICT),
-    (GeoType.SPHERE, GeoType.CONVEX_MESH, TestLevel.VELOCITY_YZ, TestLevel.STRICT),  # MESH -> CONVEX_MESH
+    (GeoType.SPHERE, GeoType.MESH, TestLevel.VELOCITY_YZ, TestLevel.STRICT),
+    (GeoType.SPHERE, GeoType.CONVEX_MESH, TestLevel.VELOCITY_YZ, TestLevel.STRICT),
     (GeoType.BOX, GeoType.BOX, TestLevel.VELOCITY_YZ, TestLevel.VELOCITY_LINEAR),
-    (GeoType.BOX, GeoType.CONVEX_MESH, TestLevel.VELOCITY_YZ, TestLevel.STRICT),  # MESH -> CONVEX_MESH
+    (GeoType.BOX, GeoType.MESH, TestLevel.VELOCITY_YZ, TestLevel.STRICT),
+    (GeoType.BOX, GeoType.CONVEX_MESH, TestLevel.VELOCITY_YZ, TestLevel.STRICT),
     (GeoType.CAPSULE, GeoType.CAPSULE, TestLevel.VELOCITY_YZ, TestLevel.VELOCITY_LINEAR),
-    (GeoType.CAPSULE, GeoType.CONVEX_MESH, TestLevel.VELOCITY_YZ, TestLevel.STRICT),  # MESH -> CONVEX_MESH
-    (GeoType.CONVEX_MESH, GeoType.CONVEX_MESH, TestLevel.VELOCITY_YZ, TestLevel.STRICT),  # MESH -> CONVEX_MESH
+    (GeoType.CAPSULE, GeoType.MESH, TestLevel.VELOCITY_YZ, TestLevel.STRICT),
+    (GeoType.CAPSULE, GeoType.CONVEX_MESH, TestLevel.VELOCITY_YZ, TestLevel.STRICT),
+    # (GeoType.MESH, GeoType.MESH, TestLevel.VELOCITY_YZ, TestLevel.STRICT),  # Not yet supported
+    (GeoType.MESH, GeoType.CONVEX_MESH, TestLevel.VELOCITY_YZ, TestLevel.STRICT),
+    (GeoType.CONVEX_MESH, GeoType.CONVEX_MESH, TestLevel.VELOCITY_YZ, TestLevel.STRICT),
 ]
 
 
 def test_unified_collision_pipeline(
-    _test, device, shape_type_a: GeoType, shape_type_b: GeoType, test_level_a: TestLevel, test_level_b: TestLevel
+    _test,
+    device,
+    shape_type_a: GeoType,
+    shape_type_b: GeoType,
+    test_level_a: TestLevel,
+    test_level_b: TestLevel,
+    broad_phase_mode: newton.BroadPhaseMode,
 ):
     viewer = newton.viewer.ViewerNull()
     setup = CollisionSetup(
@@ -290,6 +306,7 @@ def test_unified_collision_pipeline(
         shape_type_a=shape_type_a,
         shape_type_b=shape_type_b,
         use_unified_pipeline=True,
+        broad_phase_mode=broad_phase_mode,
     )
     for _ in range(200):
         setup.step()
@@ -298,11 +315,59 @@ def test_unified_collision_pipeline(
     setup.test(test_level_b, 1)
 
 
+# Wrapper functions for each broad phase mode
+def test_unified_collision_pipeline_explicit(
+    _test, device, shape_type_a: GeoType, shape_type_b: GeoType, test_level_a: TestLevel, test_level_b: TestLevel
+):
+    test_unified_collision_pipeline(
+        _test, device, shape_type_a, shape_type_b, test_level_a, test_level_b, newton.BroadPhaseMode.EXPLICIT
+    )
+
+
+def test_unified_collision_pipeline_nxn(
+    _test, device, shape_type_a: GeoType, shape_type_b: GeoType, test_level_a: TestLevel, test_level_b: TestLevel
+):
+    test_unified_collision_pipeline(
+        _test, device, shape_type_a, shape_type_b, test_level_a, test_level_b, newton.BroadPhaseMode.NXN
+    )
+
+
+def test_unified_collision_pipeline_sap(
+    _test, device, shape_type_a: GeoType, shape_type_b: GeoType, test_level_a: TestLevel, test_level_b: TestLevel
+):
+    test_unified_collision_pipeline(
+        _test, device, shape_type_a, shape_type_b, test_level_a, test_level_b, newton.BroadPhaseMode.SAP
+    )
+
+
 for shape_type_a, shape_type_b, test_level_a, test_level_b in unified_contact_tests:
+    # EXPLICIT broad phase tests
     add_function_test(
         TestUnifiedCollisionPipeline,
-        f"test_{type_to_str(shape_type_a)}_{type_to_str(shape_type_b)}",
-        test_unified_collision_pipeline,
+        f"test_{type_to_str(shape_type_a)}_{type_to_str(shape_type_b)}_explicit",
+        test_unified_collision_pipeline_explicit,
+        devices=devices,
+        shape_type_a=shape_type_a,
+        shape_type_b=shape_type_b,
+        test_level_a=test_level_a,
+        test_level_b=test_level_b,
+    )
+    # NXN broad phase tests
+    add_function_test(
+        TestUnifiedCollisionPipeline,
+        f"test_{type_to_str(shape_type_a)}_{type_to_str(shape_type_b)}_nxn",
+        test_unified_collision_pipeline_nxn,
+        devices=devices,
+        shape_type_a=shape_type_a,
+        shape_type_b=shape_type_b,
+        test_level_a=test_level_a,
+        test_level_b=test_level_b,
+    )
+    # SAP broad phase tests
+    add_function_test(
+        TestUnifiedCollisionPipeline,
+        f"test_{type_to_str(shape_type_a)}_{type_to_str(shape_type_b)}_sap",
+        test_unified_collision_pipeline_sap,
         devices=devices,
         shape_type_a=shape_type_a,
         shape_type_b=shape_type_b,
@@ -311,5 +376,4 @@ for shape_type_a, shape_type_b, test_level_a, test_level_b in unified_contact_te
     )
 
 if __name__ == "__main__":
-    # wp.clear_kernel_cache()
     unittest.main(verbosity=2, failfast=False)

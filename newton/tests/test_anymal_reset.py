@@ -38,8 +38,8 @@ class TestAnymalReset(unittest.TestCase):
         builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
         builder.default_joint_cfg = newton.ModelBuilder.JointDofConfig(
             armature=0.06,
-            limit_ke=1.0e3,
-            limit_kd=1.0e1,
+            limit_ke=1.0e2,
+            limit_kd=1.0e0,
         )
         builder.default_shape_cfg.ke = 5.0e4
         builder.default_shape_cfg.kd = 5.0e2
@@ -63,31 +63,8 @@ class TestAnymalReset(unittest.TestCase):
         self.sim_dt = self.frame_dt / self.sim_substeps
 
         builder.joint_q[:3] = [0.0, 0.0, 0.92]
-
-        builder.joint_q[3:7] = [
-            0.0,
-            0.0,
-            0.7071,
-            0.7071,
-        ]
-
-        builder.joint_q[7:] = [
-            0.0,
-            -0.4,
-            0.8,
-            0.0,
-            -0.4,
-            0.8,
-            0.0,
-            0.4,
-            -0.8,
-            0.0,
-            0.4,
-            -0.8,
-        ]
-
-        for i in range(len(builder.joint_dof_mode)):
-            builder.joint_dof_mode[i] = newton.JointMode.TARGET_POSITION
+        builder.joint_q[3:7] = [0.0, 0.0, 0.7071, 0.7071]
+        builder.joint_q[7:] = [0.0, -0.4, 0.8, 0.0, -0.4, 0.8, 0.0, 0.4, -0.8, 0.0, 0.4, -0.8]
 
         for i in range(len(builder.joint_target_ke)):
             builder.joint_target_ke[i] = 0
@@ -101,7 +78,7 @@ class TestAnymalReset(unittest.TestCase):
             impratio = 100.0
 
         self.solver = newton.solvers.SolverMuJoCo(
-            self.model, solver=2, cone=cone_type, impratio=impratio, iterations=100, ls_iterations=50, njmax=200
+            self.model, solver=2, cone=cone_type, impratio=impratio, iterations=100, ls_iterations=50, njmax=300
         )
 
         if self.headless:
@@ -335,6 +312,7 @@ def test_reset_functionality(test: TestAnymalReset, device, cone_type):
 
 
 devices = get_test_devices()
+
 add_function_test(
     TestAnymalReset,
     "test_reset_functionality_elliptic",
@@ -354,4 +332,4 @@ add_function_test(
 
 
 if __name__ == "__main__":
-    unittest.main()
+    unittest.main(verbosity=2)

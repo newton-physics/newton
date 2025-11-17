@@ -57,7 +57,7 @@ def _gjk_kernel(
     data_provider = SupportMapDataProvider()
 
     # Call GJK solver
-    collision, distance, point, normal, _feature_a, _feature_b = wp.static(create_solve_closest_distance(support_map))(
+    collision, distance, point, normal = wp.static(create_solve_closest_distance(support_map))(
         shape_a,
         shape_b,
         quat_a,
@@ -198,5 +198,4 @@ class TestGJK(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    wp.clear_kernel_cache()
     unittest.main(verbosity=2, failfast=True)

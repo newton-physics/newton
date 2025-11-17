@@ -181,17 +181,24 @@ def apply_picking_force_kernel(
 def update_pick_target_kernel(
     p: wp.vec3,
     d: wp.vec3,
+    world_offset: wp.vec3,
     # read-write
     pick_state: wp.array(dtype=float),
 ):
-    # get original mouse cursor target
+    # get original mouse cursor target (in physics space)
     original_target = wp.vec3(pick_state[8], pick_state[9], pick_state[10])
 
-    # compute distance from ray origin to original target (to maintain depth)
-    dist = wp.length(original_target - p)
+    # Add world offset to convert to offset space for distance calculation
+    original_target_offset = original_target + world_offset
 
-    # Project new mouse cursor target at the same depth
-    new_mouse_target = p + d * dist
+    # compute distance from ray origin to original target (to maintain depth)
+    dist = wp.length(original_target_offset - p)
+
+    # Project new mouse cursor target at the same depth (in offset space)
+    new_mouse_target_offset = p + d * dist
+
+    # Convert back to physics space by subtracting world offset
+    new_mouse_target = new_mouse_target_offset - world_offset
 
     # Update the original mouse cursor target (no smoothing here)
     pick_state[8] = new_mouse_target[0]
@@ -289,6 +296,8 @@ def estimate_world_extents(
 def compute_contact_lines(
     body_q: wp.array(dtype=wp.transform),
     shape_body: wp.array(dtype=int),
+    shape_world: wp.array(dtype=int),
+    world_offsets: wp.array(dtype=wp.vec3),
     contact_count: wp.array(dtype=int),
     contact_shape0: wp.array(dtype=int),
     contact_shape1: wp.array(dtype=int),
@@ -330,6 +339,11 @@ def compute_contact_lines(
     # Use the midpoint of the contact as the line start
     contact_center = (world_pos0 + world_pos1) * 0.5
 
+    # Apply world offset
+    world_a, world_b = shape_world[shape_a], shape_world[shape_b]
+    if world_a >= 0 or world_b >= 0:
+        contact_center += world_offsets[world_a if world_a >= 0 else world_b]
+
     # Create line along normal direction
     # Normal points from shape0 to shape1, draw from center in normal direction
     normal = contact_normal[tid]
@@ -346,6 +360,8 @@ def compute_joint_basis_lines(
     joint_child: wp.array(dtype=int),
     joint_transform: wp.array(dtype=wp.transform),
     body_q: wp.array(dtype=wp.transform),
+    body_world: wp.array(dtype=int),
+    world_offsets: wp.array(dtype=wp.vec3),
     shape_collision_radius: wp.array(dtype=float),
     shape_body: wp.array(dtype=int),
     line_scale: float,
@@ -391,6 +407,10 @@ def compute_joint_basis_lines(
         # Transform joint to world space
         world_pos = wp.transform_point(parent_tf, joint_pos)
         world_rot = wp.mul(wp.transform_get_rotation(parent_tf), joint_rot)
+        # Apply world offset
+        parent_body_world = body_world[parent_body]
+        if parent_body_world >= 0:
+            world_pos += world_offsets[parent_body_world]
     else:
         world_pos = joint_pos
         world_rot = joint_rot

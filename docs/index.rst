@@ -24,10 +24,13 @@ Newton Physics
    :caption: Concepts
    
    Articulations <concepts/articulations>
+   Sites <concepts/sites>
+   Sensors <concepts/sensors>
    Conventions <concepts/conventions>
    USD Parsing <concepts/usd_parsing>
    Custom Attributes <concepts/custom_attributes>
-
+   Collisions and Contacts <concepts/collisions>
+   
 .. toctree::
    :maxdepth: 1
    :hidden:
@@ -39,6 +42,7 @@ Newton Physics
    api/newton_selection
    api/newton_sensors
    api/newton_solvers
+   api/newton_usd
    api/newton_utils
    api/newton_viewer
 

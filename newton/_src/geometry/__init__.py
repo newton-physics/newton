@@ -13,8 +13,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from .broad_phase_common import test_group_pair, test_world_and_group_pair
 from .broad_phase_nxn import BroadPhaseAllPairs, BroadPhaseExplicit
-from .broad_phase_sap import BroadPhaseSAP
+from .broad_phase_sap import BroadPhaseSAP, SAPSortType
 from .collision_primitive import (
     collide_box_box,
     collide_capsule_box,
@@ -31,6 +32,7 @@ from .collision_primitive import (
 )
 from .flags import ParticleFlags, ShapeFlags
 from .inertia import compute_shape_inertia, compute_sphere_inertia, transform_inertia
+from .terrain_generator import generate_terrain_grid, heightfield_to_mesh
 from .types import (
     MESH_MAXHULLVERT,
     SDF,
@@ -48,6 +50,7 @@ __all__ = [
     "GeoType",
     "Mesh",
     "ParticleFlags",
+    "SAPSortType",
     "ShapeFlags",
     "collide_box_box",
     "collide_capsule_box",
@@ -64,5 +67,9 @@ __all__ = [
     "compute_shape_inertia",
     "compute_shape_radius",
     "compute_sphere_inertia",
+    "generate_terrain_grid",
+    "heightfield_to_mesh",
+    "test_group_pair",
+    "test_world_and_group_pair",
     "transform_inertia",
 ]

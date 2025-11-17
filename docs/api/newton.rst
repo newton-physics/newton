@@ -20,17 +20,21 @@ newton
    :nosignatures:
 
    Axis
+   BroadPhaseMode
    CollisionPipeline
+   CollisionPipelineUnified
    Contacts
    Control
    EqType
    GeoType
-   JointMode
    JointType
    Mesh
    Model
+   ModelAttributeAssignment
+   ModelAttributeFrequency
    ModelBuilder
    ParticleFlags
+   SAPSortType
    SDF
    ShapeFlags
    State
@@ -56,5 +60,7 @@ newton
 
    * - Name
      - Value
+   * - JOINT_LIMIT_UNLIMITED
+     - 10000000000.0
    * - __version__
      - 0.1.3

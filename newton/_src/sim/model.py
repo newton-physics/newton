@@ -17,9 +17,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from enum import IntEnum
-from typing import Any
 
 import numpy as np
 import warp as wp
@@ -35,7 +33,7 @@ class ModelAttributeAssignment(IntEnum):
 
     Defines which component of the simulation system owns and manages specific attributes.
     This categorization determines where custom attributes are attached during simulation
-    object creation (State, Control, or Contacts).
+    object creation (Model, State, Control, or Contacts).
     """
 
     MODEL = 0
@@ -56,17 +54,19 @@ class ModelAttributeFrequency(IntEnum):
     should be indexed in relation to the model's entities such as joints, bodies, shapes, etc.
     """
 
-    JOINT = 0
+    ONCE = 0
+    """Attribute frequency is a single value."""
+    JOINT = 1
     """Attribute frequency follows the number of joints (see :attr:`~newton.Model.joint_count`)."""
-    JOINT_DOF = 1
+    JOINT_DOF = 2
     """Attribute frequency follows the number of joint degrees of freedom (see :attr:`~newton.Model.joint_dof_count`)."""
-    JOINT_COORD = 2
+    JOINT_COORD = 3
     """Attribute frequency follows the number of joint positional coordinates (see :attr:`~newton.Model.joint_coord_count`)."""
-    BODY = 3
+    BODY = 4
     """Attribute frequency follows the number of bodies (see :attr:`~newton.Model.body_count`)."""
-    SHAPE = 4
+    SHAPE = 5
     """Attribute frequency follows the number of shapes (see :attr:`~newton.Model.shape_count`)."""
-    ARTICULATION = 5
+    ARTICULATION = 6
     """Attribute frequency follows the number of articulations (see :attr:`~newton.Model.articulation_count`)."""
 
 
@@ -78,75 +78,19 @@ class AttributeNamespace:
     allowing hierarchical organization of related properties.
     """
 
-    def __init__(self, namespace_name: str):
+    def __init__(self, name: str):
         """Initialize the namespace container.
 
         Args:
-            namespace_name: The name of the namespace
+            name: The name of the namespace
         """
-        self._namespace_name = namespace_name
+        self._name = name
 
     def __repr__(self):
         """Return a string representation showing the namespace and its attributes."""
         # List all public attributes (not starting with _)
         attrs = [k for k in self.__dict__ if not k.startswith("_")]
-        return f"AttributeNamespace('{self._namespace_name}', attributes={attrs})"
-
-
-@dataclass
-class CustomAttribute:
-    """
-    Represents a custom attribute definition for the ModelBuilder.
-
-    Attributes:
-        assignment: Assignment category (see ModelAttributeAssignment enum)
-        frequency: Frequency category (see ModelAttributeFrequency enum)
-        name: Variable name to expose on the Model
-        dtype: Warp dtype (e.g., wp.float32, wp.int32, wp.bool, wp.vec3)
-        namespace: Namespace for the attribute
-        default: Default value for the attribute
-        values: Dictionary mapping indices to specific values (overrides)
-    """
-
-    assignment: ModelAttributeAssignment
-    frequency: ModelAttributeFrequency
-    name: str
-    dtype: object
-    namespace: str | None = None
-    default: Any = None
-    values: dict[int, Any] | None = None
-
-    def __post_init__(self):
-        """Initialize default values and ensure values dict exists."""
-        # Set dtype-specific default value if none was provided
-        if self.default is None:
-            self.default = self._default_for_dtype(self.dtype)
-
-        if self.values is None:
-            self.values = {}
-
-    @staticmethod
-    def _default_for_dtype(d: object) -> Any:
-        """Get default value for dtype when not specified."""
-        # quaternions get identity quaternion
-        if d is wp.quat:
-            return wp.quat_identity()
-        # vectors default to zeros of their length
-        if wp.types.type_is_vector(d):
-            length = getattr(d, "_shape_", (1,))[0] or 1
-            return np.zeros(
-                length,
-                dtype=wp.types.warp_type_to_np_dtype.get(getattr(d, "_wp_scalar_type_", wp.float32), np.float32),
-            )
-        # scalars
-        if d is wp.bool:
-            return False
-        return 0
-
-    def build_array(self, count: int, device: Devicelike | None = None, requires_grad: bool = False) -> wp.array:
-        """Build wp.array from count, dtype, default and overrides."""
-        arr = [self.values.get(i, self.default) for i in range(count)]
-        return wp.array(arr, dtype=self.dtype, requires_grad=requires_grad, device=device)
+        return f"AttributeNamespace('{self._name}', attributes={attrs})"
 
 
 class Model:
@@ -258,8 +202,8 @@ class Model:
         self.shape_filter = None
         """Shape filter group, shape [shape_count], int."""
 
-        self.shape_collision_group = []
-        """Collision group of each shape, shape [shape_count], int."""
+        self.shape_collision_group = None
+        """Collision group of each shape, shape [shape_count], int. Array populated during finalization."""
         self.shape_collision_filter_pairs: set[tuple[int, int]] = set()
         """Pairs of shape indices that should not collide."""
         self.shape_collision_radius = None
@@ -351,8 +295,10 @@ class Model:
         """Generalized joint velocities for state initialization, shape [joint_dof_count], float."""
         self.joint_f = None
         """Generalized joint forces for state initialization, shape [joint_dof_count], float."""
-        self.joint_target = None
-        """Generalized joint target inputs, shape [joint_dof_count], float."""
+        self.joint_target_pos = None
+        """Generalized joint position targets, shape [joint_dof_count], float."""
+        self.joint_target_vel = None
+        """Generalized joint velocity targets, shape [joint_dof_count], float."""
         self.joint_type = None
         """Joint type, shape [joint_count], int."""
         self.joint_parent = None
@@ -381,8 +327,6 @@ class Model:
         """Joint friction coefficient, shape [joint_dof_count], float."""
         self.joint_dof_dim = None
         """Number of linear and angular dofs per joint, shape [joint_count, 2], int."""
-        self.joint_dof_mode = None
-        """Control mode for each joint dof, shape [joint_dof_count], int."""
         self.joint_enabled = None
         """Controls which joint is simulated (bodies become disconnected if False), shape [joint_count], int."""
         self.joint_limit_lower = None
@@ -534,11 +478,11 @@ class Model:
         self.attribute_frequency["joint_qd"] = ModelAttributeFrequency.JOINT_DOF
         self.attribute_frequency["joint_f"] = ModelAttributeFrequency.JOINT_DOF
         self.attribute_frequency["joint_armature"] = ModelAttributeFrequency.JOINT_DOF
-        self.attribute_frequency["joint_target"] = ModelAttributeFrequency.JOINT_DOF
+        self.attribute_frequency["joint_target_pos"] = ModelAttributeFrequency.JOINT_DOF
+        self.attribute_frequency["joint_target_vel"] = ModelAttributeFrequency.JOINT_DOF
         self.attribute_frequency["joint_axis"] = ModelAttributeFrequency.JOINT_DOF
         self.attribute_frequency["joint_target_ke"] = ModelAttributeFrequency.JOINT_DOF
         self.attribute_frequency["joint_target_kd"] = ModelAttributeFrequency.JOINT_DOF
-        self.attribute_frequency["joint_dof_mode"] = ModelAttributeFrequency.JOINT_DOF
         self.attribute_frequency["joint_limit_lower"] = ModelAttributeFrequency.JOINT_DOF
         self.attribute_frequency["joint_limit_upper"] = ModelAttributeFrequency.JOINT_DOF
         self.attribute_frequency["joint_limit_ke"] = ModelAttributeFrequency.JOINT_DOF
@@ -622,7 +566,8 @@ class Model:
             requires_grad = self.requires_grad
         if clone_variables:
             if self.joint_count:
-                c.joint_target = wp.clone(self.joint_target, requires_grad=requires_grad)
+                c.joint_target_pos = wp.clone(self.joint_target_pos, requires_grad=requires_grad)
+                c.joint_target_vel = wp.clone(self.joint_target_vel, requires_grad=requires_grad)
                 c.joint_f = wp.clone(self.joint_f, requires_grad=requires_grad)
             if self.tri_count:
                 c.tri_activations = wp.clone(self.tri_activations, requires_grad=requires_grad)
@@ -631,7 +576,8 @@ class Model:
             if self.muscle_count:
                 c.muscle_activations = wp.clone(self.muscle_activations, requires_grad=requires_grad)
         else:
-            c.joint_target = self.joint_target
+            c.joint_target_pos = self.joint_target_pos
+            c.joint_target_vel = self.joint_target_vel
             c.joint_f = self.joint_f
             c.tri_activations = self.tri_activations
             c.tet_activations = self.tet_activations
@@ -833,7 +779,7 @@ class Model:
         if assignment is not None:
             self.attribute_assignment[full_name] = assignment
 
-    def get_attribute_frequency(self, name):
+    def get_attribute_frequency(self, name: str) -> ModelAttributeFrequency:
         """
         Get the frequency of an attribute.
 

@@ -21,13 +21,12 @@ import warp as wp
 import newton
 from newton._src.core import quat_between_axes
 from newton._src.geometry.utils import create_box_mesh
-from newton.tests.unittest_utils import add_function_test, assert_np_equal, get_test_devices
-
-wp.config.quiet = True
-
-
-class TestRigidContact(unittest.TestCase):
-    pass
+from newton.tests.unittest_utils import (
+    add_function_test,
+    assert_np_equal,
+    get_selected_cuda_test_devices,
+    get_test_devices,
+)
 
 
 def simulate(solver, model, state_0, state_1, control, sim_dt, substeps):
@@ -41,7 +40,7 @@ def simulate(solver, model, state_0, state_1, control, sim_dt, substeps):
         state_0, state_1 = state_1, state_0
 
 
-def test_shapes_on_plane(test: TestRigidContact, device, solver_fn):
+def test_shapes_on_plane(test, device, solver_fn):
     builder = newton.ModelBuilder()
     builder.default_shape_cfg.ke = 1e4
     builder.default_shape_cfg.kd = 500.0
@@ -193,7 +192,7 @@ def test_shapes_on_plane(test: TestRigidContact, device, solver_fn):
     assert_np_equal(body_q[:, 3:], expected_quats, tol=1e-1)
 
 
-def test_shape_collisions_gjk_mpr_multicontact(test: TestRigidContact, device, verbose=False):
+def test_shape_collisions_gjk_mpr_multicontact(test, device, verbose=False):
     """Test that objects on a ramp with end wall remain stable (don't move or rotate significantly)"""
 
     # Scene Configuration (from example_basic_shapes2.py)
@@ -485,39 +484,99 @@ def test_shape_collisions_gjk_mpr_multicontact(test: TestRigidContact, device, v
         )
 
 
-devices = get_test_devices()
-solvers = {
-    "featherstone": lambda model: newton.solvers.SolverFeatherstone(model),
-    "mujoco_cpu": lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=True),
-    "mujoco_warp": lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=False, njmax=150),
-    "xpbd": lambda model: newton.solvers.SolverXPBD(model, iterations=2),
-    "semi_implicit": lambda model: newton.solvers.SolverSemiImplicit(model),
-}
-for device in devices:
-    for solver_name, solver_fn in solvers.items():
-        if device.is_cpu and solver_name == "mujoco_warp":
-            continue
-        if device.is_cuda and solver_name == "mujoco_cpu":
-            continue
-        add_function_test(
-            TestRigidContact,
-            f"test_shapes_on_plane_{solver_name}",
-            test_shapes_on_plane,
-            devices=[device],
-            solver_fn=solver_fn,
-        )
+def test_mesh_box_on_ground(test, device):
+    """Test that a mesh box (created with create_box_mesh) rests stably on a ground plane.
 
-# Add test for ramp scene stability with XPBD solver
-for device in devices:
-    add_function_test(
-        TestRigidContact,
-        "test_shape_collisions_gjk_mpr_multicontact",
-        test_shape_collisions_gjk_mpr_multicontact,
-        devices=[device],
+    This test verifies that mesh collision works correctly by ensuring a box mesh
+    placed on a ground plane remains at rest with zero velocities.
+    """
+    builder = newton.ModelBuilder()
+    builder.default_shape_cfg.ke = 1.0e5
+    builder.default_shape_cfg.kd = 1.0e3
+    builder.default_shape_cfg.mu = 0.5
+
+    # Add ground plane
+    builder.add_ground_plane()
+
+    # Create a box mesh (half extents = 0.5)
+    box_half = 0.5
+    vertices, indices = create_box_mesh((box_half, box_half, box_half))
+    box_mesh = newton.Mesh(vertices, indices)
+
+    # Add mesh box body, positioned so bottom face is at z=0 (center at z=box_half)
+    body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, box_half), wp.quat_identity()))
+    builder.add_joint_free(body)
+    builder.add_shape_mesh(body=body, mesh=box_mesh)
+
+    # Finalize model
+    model = builder.finalize(device=device)
+
+    # Create collision pipeline (unified)
+    collision_pipeline = newton.CollisionPipelineUnified.from_model(
+        model,
+        rigid_contact_max_per_pair=20,
+        rigid_contact_margin=0.01,
+        broad_phase_mode=newton.BroadPhaseMode.EXPLICIT,
     )
 
+    # Create solver and states
+    solver = newton.solvers.SolverXPBD(model, iterations=2)
+    state_0 = model.state()
+    state_1 = model.state()
+    control = model.control()
 
-def test_mujoco_warp_newton_contacts(test: TestRigidContact, device):
+    # Initialize kinematics
+    newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
+
+    # Simulate for 1 second to let it settle
+    sim_dt = 1.0 / 60.0
+    substeps = 10
+    max_frames = 60
+
+    for _ in range(max_frames):
+        for _ in range(substeps):
+            state_0.clear_forces()
+            contacts = model.collide(state_0, collision_pipeline=collision_pipeline)
+            solver.step(state_0, state_1, control, contacts, sim_dt / substeps)
+            state_0, state_1 = state_1, state_0
+
+    # Get final state
+    final_body_q = state_0.body_q.numpy()
+    final_body_qd = state_0.body_qd.numpy()
+
+    # Check position - should remain at approximately z=box_half
+    final_z = final_body_q[body, 2]
+    test.assertGreater(
+        final_z,
+        box_half * 0.9,
+        f"Mesh box fell through ground (z={final_z:.6f}, expected ~{box_half:.6f})",
+    )
+    test.assertLess(
+        final_z,
+        box_half * 1.1,
+        f"Mesh box jumped up unexpectedly (z={final_z:.6f}, expected ~{box_half:.6f})",
+    )
+
+    # Check all velocities are near zero (at rest)
+    linear_vel = final_body_qd[body, :3]
+    angular_vel = final_body_qd[body, 3:]
+
+    for i, vel in enumerate(linear_vel):
+        test.assertLess(
+            abs(vel),
+            0.01,
+            f"Mesh box has non-zero linear velocity[{i}] = {vel:.6f}, should be at rest",
+        )
+
+    for i, vel in enumerate(angular_vel):
+        test.assertLess(
+            abs(vel),
+            0.01,
+            f"Mesh box has non-zero angular velocity[{i}] = {vel:.6f}, should be at rest",
+        )
+
+
+def test_mujoco_warp_newton_contacts(test, device):
     """Test that MuJoCo Warp solver correctly handles contact transfer from Newton's unified collision pipeline.
 
     This test creates 4 environments, each with a single cube on the ground, and verifies that the cubes
@@ -563,7 +622,7 @@ def test_mujoco_warp_newton_contacts(test: TestRigidContact, device):
         solver="newton",
         integrator="euler",
         njmax=100,
-        ncon_per_world=50,
+        nconmax=50,
         cone="elliptic",
         impratio=100,
         iterations=100,
@@ -623,18 +682,7 @@ def test_mujoco_warp_newton_contacts(test: TestRigidContact, device):
         )
 
 
-# Add test for MuJoCo Warp with Newton contacts (only for CUDA devices)
-for device in devices:
-    if device.is_cuda:
-        add_function_test(
-            TestRigidContact,
-            "test_mujoco_warp_newton_contacts",
-            test_mujoco_warp_newton_contacts,
-            devices=[device],
-        )
-
-
-def test_mujoco_convex_on_convex(test: TestRigidContact, device, solver_fn):
+def test_mujoco_convex_on_convex(test, device, solver_fn):
     """Test that MuJoCo can handle CONVEX_MESH geometry type by simulating a simple drop."""
     builder = newton.ModelBuilder()
     builder.default_shape_cfg.ke = 1.0e5
@@ -700,6 +748,62 @@ def test_mujoco_convex_on_convex(test: TestRigidContact, device, solver_fn):
     test.assertLess(abs(final_vel_z), 0.5)
 
 
+devices = get_test_devices()
+cuda_devices = get_selected_cuda_test_devices()
+
+solvers = {
+    "featherstone": lambda model: newton.solvers.SolverFeatherstone(model),
+    "mujoco_cpu": lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=True),
+    "mujoco_warp": lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=False, njmax=150),
+    "xpbd": lambda model: newton.solvers.SolverXPBD(model, iterations=2),
+    "semi_implicit": lambda model: newton.solvers.SolverSemiImplicit(model),
+}
+
+
+class TestRigidContact(unittest.TestCase):
+    pass
+
+
+for device in devices:
+    for solver_name, solver_fn in solvers.items():
+        if device.is_cpu and solver_name == "mujoco_warp":
+            continue
+        if device.is_cuda and solver_name == "mujoco_cpu":
+            continue
+        add_function_test(
+            TestRigidContact,
+            f"test_shapes_on_plane_{solver_name}",
+            test_shapes_on_plane,
+            devices=[device],
+            solver_fn=solver_fn,
+        )
+
+# Add test for ramp scene stability with XPBD solver
+add_function_test(
+    TestRigidContact,
+    "test_shape_collisions_gjk_mpr_multicontact",
+    test_shape_collisions_gjk_mpr_multicontact,
+    devices=devices,
+)
+
+# Add test for mesh box on ground with unified pipeline
+add_function_test(
+    TestRigidContact,
+    "test_mesh_box_on_ground",
+    test_mesh_box_on_ground,
+    devices=devices,
+)
+
+
+# Add test for MuJoCo Warp with Newton contacts (only for CUDA devices)
+add_function_test(
+    TestRigidContact,
+    "test_mujoco_warp_newton_contacts",
+    test_mujoco_warp_newton_contacts,
+    devices=cuda_devices,
+)
+
+
 # Register MuJoCo convex<>convex tests for appropriate backends
 for device in devices:
     for solver_name, solver_fn in solvers.items():
@@ -718,5 +822,4 @@ for device in devices:
         )
 
 if __name__ == "__main__":
-    # wp.clear_kernel_cache()
     unittest.main(verbosity=2, failfast=True)
