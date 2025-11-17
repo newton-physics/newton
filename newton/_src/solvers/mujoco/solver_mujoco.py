@@ -1555,7 +1555,7 @@ class SolverMuJoCo(SolverBase):
             "jnt_pos",
             "jnt_axis",
             # "jnt_stiffness",
-            # "jnt_range",
+            "jnt_range",
             # "jnt_actfrcrange",
             # "jnt_margin",
             "dof_armature",
