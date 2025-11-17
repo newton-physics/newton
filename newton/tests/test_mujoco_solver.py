@@ -804,8 +804,8 @@ class TestMuJoCoSolverJointProperties(TestMuJoCoSolverPropertiesBase):
         self.assertEqual(jnt_solimp.shape[0], model.num_worlds, "jnt_solimp should have one entry per world")
 
         # Step 5: Verify initial values were converted correctly using DOF-to-joint mapping
-        # template_dof_to_mjc_joint maps template-relative DOF indices to MuJoCo joint indices
-        template_dof_to_mjc_joint_mapping = solver.template_dof_to_mjc_joint.numpy()
+        # dof_to_mjc_joint maps template-relative DOF indices to MuJoCo joint indices
+        dof_to_mjc_joint_mapping = solver.dof_to_mjc_joint.numpy()
 
         for world_idx in range(model.num_worlds):
             world_joint_offset = world_idx * joints_per_world
@@ -828,7 +828,7 @@ class TestMuJoCoSolverJointProperties(TestMuJoCoSolverPropertiesBase):
                     template_dof_idx = template_dof_start + dof_offset
 
                     # Get the MuJoCo joint index for this template DOF
-                    mjc_joint_idx = template_dof_to_mjc_joint_mapping[template_dof_idx]
+                    mjc_joint_idx = dof_to_mjc_joint_mapping[template_dof_idx]
                     if mjc_joint_idx == -1:
                         continue  # Skip DOFs without MuJoCo joint mapping
 
@@ -907,7 +907,7 @@ class TestMuJoCoSolverJointProperties(TestMuJoCoSolverPropertiesBase):
                     template_dof_idx = template_dof_start + dof_offset
 
                     # Get the MuJoCo joint index for this template DOF
-                    mjc_joint_idx = template_dof_to_mjc_joint_mapping[template_dof_idx]
+                    mjc_joint_idx = dof_to_mjc_joint_mapping[template_dof_idx]
                     if mjc_joint_idx == -1:
                         continue  # Skip DOFs without MuJoCo joint mapping
 
