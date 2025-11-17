@@ -41,12 +41,14 @@ class TestTiledCameraSensorBenchmark(unittest.TestCase):
         state = model.state()
         newton.eval_fk(model, model.joint_q, model.joint_qd, state)
 
-        camera_positions = wp.array([wp.vec3f(20.0, 0.0, 0.6)], dtype=wp.vec3f)
-        camera_orientations = wp.array([wp.mat33f(0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0)], dtype=wp.mat33f)
+        # camera_positions = wp.array([wp.vec3f(2.0, 0.0, 0.6)], dtype=wp.vec3f)
+        # camera_orientations = wp.array([wp.mat33f(0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0)], dtype=wp.mat33f)
+        camera_positions = wp.array([2.4, 0.0, 0.8], dtype=wp.vec3f)
+        camera_orientations = wp.array([-0.008726535, -0.29236057, 0.95626837, 0.9999619, -0.002551392, 0.008345228, 1.3010426e-18, 0.9563047, 0.2923717], dtype=wp.mat33f)
 
         tiled_camera_sensor = TiledCameraSensor(model=model, num_cameras=1, width=resolution, height=resolution)
         tiled_camera_sensor.assign_debug_colors_per_shape()
-        tiled_camera_sensor.create_default_light()
+        tiled_camera_sensor.create_default_light(False)
         tiled_camera_sensor.compute_camera_rays(wp.array([math.radians(45.0)], dtype=wp.float32))
         color_image = tiled_camera_sensor.create_color_image_output()
         depth_image = tiled_camera_sensor.create_depth_image_output()
@@ -57,8 +59,8 @@ class TestTiledCameraSensorBenchmark(unittest.TestCase):
         with wp.ScopedTimer("Refit BVH", synchronize=True):
             tiled_camera_sensor.render_context.refit_bvh()
 
-        for _ in range(10):
-            with wp.ScopedTimer("Rendering", synchronize=True):
+        for i in range(20):
+            with wp.ScopedTimer(f"Rendering {i:2d}", synchronize=True):
                 tiled_camera_sensor.render(color_image, depth_image, refit_bvh=False, clear_images=False)
 
         tiled_camera_sensor.save_color_image(color_image, "example_color.png")

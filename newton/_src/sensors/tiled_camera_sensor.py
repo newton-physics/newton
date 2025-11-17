@@ -405,14 +405,14 @@ class TiledCameraSensor:
         colors[:, -1] = 1.0
         self.render_context.geom_colors = wp.array(colors, dtype=wp.vec4f)
 
-    def create_default_light(self):
+    def create_default_light(self, enable_shadows: bool = True):
         """
         Create a default directional light for the scene.
 
         Sets up a single directional light oriented at (-1, 1, -1) with shadow casting enabled.
         """
 
-        self.render_context.enable_shadows = True
+        self.render_context.enable_shadows = enable_shadows
         self.render_context.lights_active = wp.array([True], dtype=wp.bool)
         self.render_context.lights_type = wp.array([LightType.DIRECTIONAL], dtype=wp.int32)
         self.render_context.lights_cast_shadow = wp.array([True], dtype=wp.bool)
