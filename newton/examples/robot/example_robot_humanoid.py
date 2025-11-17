@@ -55,6 +55,7 @@ class Example:
             mjcf_filename,
             ignore_names=["floor", "ground"],
             xform=wp.transform(wp.vec3(0, 0, 1.3)),
+            parse_sites=False,  # AD: remove once asset is fixed
         )
 
         for i in range(len(humanoid.joint_target_ke)):
