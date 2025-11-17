@@ -240,6 +240,8 @@ class SolverMuJoCo(SolverBase):
 
         self.joint_mjc_dof_start: wp.array(dtype=wp.int32) | None = None
         """Mapping from Newton joint index to the start index of its joint axes in MuJoCo. Only defined for the joint indices of the first world in Newton, defaults to -1 otherwise. Shape [joint_count], dtype int32."""
+        self.template_dof_to_mjc_joint: wp.array(dtype=wp.int32) | None = None
+        """Mapping from Newton DOF index to MuJoCo joint index. Only defined for the first world in Newton. Shape [joint_dof_count // num_worlds], dtype int32."""
         self.mjc_axis_to_actuator: wp.array(dtype=int) | None = None
         """Mapping from Newton joint axis index to MJC actuator index. Shape [dof_count], dtype int32."""
         self.to_mjc_body_index: wp.array(dtype=int) | None = None
