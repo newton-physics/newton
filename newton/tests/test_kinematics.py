@@ -153,8 +153,8 @@ def test_ik_with_indices(test, device):
     # Create 2 simple pendulums
     for i in range(2):
         builder.add_articulation(key=f"pendulum_{i}")
-        b1 = builder.add_body(xform=wp.transform(wp.vec3(i * 2.0, 0.0, 0.0), wp.quat_identity()))
-        b2 = builder.add_body(xform=wp.transform(wp.vec3(i * 2.0 + 1.0, 0.0, 0.0), wp.quat_identity()))
+        b1 = builder.add_link(xform=wp.transform(wp.vec3(i * 2.0, 0.0, 0.0), wp.quat_identity()))
+        b2 = builder.add_link(xform=wp.transform(wp.vec3(i * 2.0 + 1.0, 0.0, 0.0), wp.quat_identity()))
         builder.add_joint_revolute(
             parent=-1,
             child=b1,
@@ -206,7 +206,7 @@ def test_fk_error_mask_and_indices(test, device):
 
     # Create a simple model
     builder.add_articulation()
-    b1 = builder.add_body()
+    b1 = builder.add_link()
     builder.add_joint_revolute(parent=-1, child=b1, axis=wp.vec3(0.0, 0.0, 1.0))
 
     model = builder.finalize(device=device)
@@ -233,8 +233,8 @@ def test_isaac_lab_use_case(test, device):
     num_worlds = 8
     for i in range(num_worlds):
         builder.add_articulation(key=f"env_{i}")
-        b1 = builder.add_body(xform=wp.transform(wp.vec3(i * 3.0, 0.0, 0.0), wp.quat_identity()))
-        b2 = builder.add_body(xform=wp.transform(wp.vec3(i * 3.0 + 1.0, 0.0, 0.0), wp.quat_identity()))
+        b1 = builder.add_link(xform=wp.transform(wp.vec3(i * 3.0, 0.0, 0.0), wp.quat_identity()))
+        b2 = builder.add_link(xform=wp.transform(wp.vec3(i * 3.0 + 1.0, 0.0, 0.0), wp.quat_identity()))
         builder.add_joint_revolute(
             parent=-1,
             child=b1,
@@ -295,7 +295,7 @@ def test_bounds_checking(test, device):
     # Create 2 articulations
     for _ in range(2):
         builder.add_articulation()
-        b1 = builder.add_body()
+        b1 = builder.add_link()
         builder.add_joint_revolute(parent=-1, child=b1, axis=wp.vec3(0.0, 0.0, 1.0))
 
     model = builder.finalize(device=device)
@@ -321,8 +321,8 @@ def test_ik_with_mask(test, device):
     # Create 3 simple pendulums
     for i in range(3):
         builder.add_articulation()
-        b1 = builder.add_body(xform=wp.transform(wp.vec3(i * 2.0, 0.0, 0.0), wp.quat_identity()))
-        b2 = builder.add_body(xform=wp.transform(wp.vec3(i * 2.0 + 1.0, 0.0, 0.0), wp.quat_identity()))
+        b1 = builder.add_link(xform=wp.transform(wp.vec3(i * 2.0, 0.0, 0.0), wp.quat_identity()))
+        b2 = builder.add_link(xform=wp.transform(wp.vec3(i * 2.0 + 1.0, 0.0, 0.0), wp.quat_identity()))
         builder.add_joint_revolute(
             parent=-1,
             child=b1,
@@ -376,8 +376,8 @@ def test_ik_error_mask_and_indices(test, device):
     """Test that eval_ik raises error when both mask and indices are provided"""
     builder = newton.ModelBuilder()
     builder.add_articulation()
-    parent = builder.add_body(xform=wp.transform((0, 0, 0), wp.quat_identity()))
-    child = builder.add_body(xform=wp.transform((1, 0, 0), wp.quat_identity()))
+    parent = builder.add_link(xform=wp.transform((0, 0, 0), wp.quat_identity()))
+    child = builder.add_link(xform=wp.transform((1, 0, 0), wp.quat_identity()))
     builder.add_joint_revolute(
         parent=parent,
         child=child,

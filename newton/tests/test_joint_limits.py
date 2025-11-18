@@ -149,7 +149,7 @@ class TestJointLimits(unittest.TestCase):
         builder = newton.ModelBuilder()
 
         # Add a body
-        body = builder.add_body()
+        body = builder.add_link()
 
         # Create a D6 joint with:
         # - X translation: limited

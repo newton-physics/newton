@@ -35,7 +35,6 @@ def test_floating_body(test: TestBodyForce, device, solver_fn, test_angular=True
 
     b = builder.add_body(xform=wp.transform(pos, rot))
     builder.add_shape_box(b, hx=0.25, hy=0.5, hz=1.0)
-    builder.add_joint_free(b)
     builder.joint_q = [*pos, *rot]
 
     model = builder.finalize(device=device)
@@ -78,7 +77,7 @@ def test_3d_articulation(test: TestBodyForce, device, solver_fn, test_angular, u
     builder = newton.ModelBuilder(gravity=0.0, up_axis=up_axis)
     builder.default_shape_cfg.density = 1000.0
 
-    b = builder.add_body()
+    b = builder.add_link()
     builder.add_shape_box(b, xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()), hx=0.25, hy=0.5, hz=1.0)
     builder.add_joint_d6(
         -1,

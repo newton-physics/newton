@@ -118,13 +118,13 @@ class TestModel(unittest.TestCase):
 
         def add_three_cubes(builder: ModelBuilder, parent_body=-1):
             unit_cube = {"hx": 0.5, "hy": 0.5, "hz": 0.5, "cfg": shape_cfg}
-            b0 = builder.add_body()
+            b0 = builder.add_link()
             builder.add_shape_box(body=b0, **unit_cube)
             builder.add_joint_fixed(parent=parent_body, child=b0, parent_xform=wp.transform(wp.vec3(1.0, 0.0, 0.0)))
-            b1 = builder.add_body()
+            b1 = builder.add_link()
             builder.add_shape_box(body=b1, **unit_cube)
             builder.add_joint_fixed(parent=parent_body, child=b1, parent_xform=wp.transform(wp.vec3(0.0, 1.0, 0.0)))
-            b2 = builder.add_body()
+            b2 = builder.add_link()
             builder.add_shape_box(body=b2, **unit_cube)
             builder.add_joint_fixed(parent=parent_body, child=b2, parent_xform=wp.transform(wp.vec3(0.0, 0.0, 1.0)))
             return b2
@@ -142,7 +142,7 @@ class TestModel(unittest.TestCase):
         assert builder.joint_count == 6
         assert builder.body_count == 6
         assert builder.articulation_count == 2
-        b3 = builder.add_body()
+        b3 = builder.add_link()
         builder.add_shape_box(
             body=b3, hx=0.5, hy=0.5, hz=0.5, cfg=shape_cfg, xform=wp.transform(wp.vec3(1.0, 2.0, 3.0))
         )
@@ -151,7 +151,7 @@ class TestModel(unittest.TestCase):
         # a non-fixed joint followed by fixed joints
         builder.add_articulation()
         free_xform = wp.transform(wp.vec3(1.0, 2.0, 3.0), wp.quat_rpy(0.4, 0.5, 0.6))
-        b4 = builder.add_body(xform=free_xform)
+        b4 = builder.add_link(xform=free_xform)
         builder.add_shape_box(body=b4, hx=0.5, hy=0.5, hz=0.5, cfg=shape_cfg)
         builder.add_joint_free(parent=-1, child=b4, parent_xform=wp.transform(wp.vec3(0.0, -1.0, 0.0)))
         assert_np_equal(builder.body_q[b4], np.array(free_xform))
@@ -305,7 +305,7 @@ class TestModel(unittest.TestCase):
 
         # Create global entities (group -1)
         main_builder.current_world = -1
-        ground_body = main_builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, -1.0), wp.quat_identity()), mass=0.0)
+        ground_body = main_builder.add_link(xform=wp.transform(wp.vec3(0.0, 0.0, -1.0), wp.quat_identity()), mass=0.0)
         main_builder.add_shape_box(
             body=ground_body, xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()), hx=5.0, hy=5.0, hz=0.1
         )
@@ -321,8 +321,8 @@ class TestModel(unittest.TestCase):
 
             # Add articulated body
             world_builder.add_articulation()
-            b1 = world_builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()), mass=10.0)
-            b2 = world_builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.5), wp.quat_identity()), mass=5.0)
+            b1 = world_builder.add_link(xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()), mass=10.0)
+            b2 = world_builder.add_link(xform=wp.transform(wp.vec3(0.0, 0.0, 0.5), wp.quat_identity()), mass=5.0)
             world_builder.add_joint_revolute(parent=b1, child=b2, axis=(0, 1, 0))
             world_builder.add_shape_sphere(
                 body=b1, xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()), radius=0.1
@@ -450,9 +450,9 @@ class TestModel(unittest.TestCase):
 
         # World 0: Chain with fixed joints
         builder.current_world = 0
-        b0_0 = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()), mass=1.0)
-        b0_1 = builder.add_body(xform=wp.transform(wp.vec3(1.0, 0.0, 0.0), wp.quat_identity()), mass=1.0)
-        b0_2 = builder.add_body(xform=wp.transform(wp.vec3(2.0, 0.0, 0.0), wp.quat_identity()), mass=1.0)
+        b0_0 = builder.add_link(xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()), mass=1.0)
+        b0_1 = builder.add_link(xform=wp.transform(wp.vec3(1.0, 0.0, 0.0), wp.quat_identity()), mass=1.0)
+        b0_2 = builder.add_link(xform=wp.transform(wp.vec3(2.0, 0.0, 0.0), wp.quat_identity()), mass=1.0)
 
         # Connect to world so collapse_fixed_joints processes this chain
         builder.add_joint_revolute(
@@ -479,8 +479,8 @@ class TestModel(unittest.TestCase):
 
         # World 1: Another chain
         builder.current_world = 1
-        b1_0 = builder.add_body(xform=wp.transform(wp.vec3(0.0, 2.0, 0.0), wp.quat_identity()), mass=1.0)
-        b1_1 = builder.add_body(xform=wp.transform(wp.vec3(1.0, 2.0, 0.0), wp.quat_identity()), mass=1.0)
+        b1_0 = builder.add_link(xform=wp.transform(wp.vec3(0.0, 2.0, 0.0), wp.quat_identity()), mass=1.0)
+        b1_1 = builder.add_link(xform=wp.transform(wp.vec3(1.0, 2.0, 0.0), wp.quat_identity()), mass=1.0)
 
         # Connect to world
         builder.add_joint_revolute(
@@ -502,7 +502,8 @@ class TestModel(unittest.TestCase):
 
         # Global body (not connected to world via joints, will be ignored by collapse)
         builder.current_world = -1
-        builder.add_body(xform=wp.transform(wp.vec3(0.0, -5.0, 0.0), wp.quat_identity()), mass=0.0)
+        builder.add_articulation()
+        builder.add_link(xform=wp.transform(wp.vec3(0.0, -5.0, 0.0), wp.quat_identity()), mass=0.0)
 
         # Check groups before collapse
         self.assertEqual(builder.body_world, [0, 0, 0, 1, 1, -1])
@@ -547,12 +548,12 @@ class TestModel(unittest.TestCase):
         offset_xform = wp.transform(wp.vec3(4.0, 5.0, 6.0), wp.quat_rpy(-0.7, 0.8, -0.9))
 
         fixed_base = ModelBuilder()
-        fixed_base.add_body(xform=orig_xform)
+        fixed_base.add_link(xform=orig_xform)
         fixed_base.add_joint_revolute(parent=-1, child=0, parent_xform=orig_xform)
         fixed_base.add_shape_sphere(body=0, xform=orig_xform)
 
         floating_base = ModelBuilder()
-        floating_base.add_body(xform=orig_xform)
+        floating_base.add_link(xform=orig_xform)
         floating_base.add_joint_free(parent=-1, child=0)
         floating_base.add_shape_sphere(body=0, xform=orig_xform)
 

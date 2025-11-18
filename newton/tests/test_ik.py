@@ -40,7 +40,7 @@ def _build_two_link_planar(device) -> newton.Model:
     """Returns a singleton model with one 2-DOF planar arm."""
     builder = newton.ModelBuilder()
 
-    link1 = builder.add_body(
+    link1 = builder.add_link(
         xform=wp.transform([0.5, 0.0, 0.0], wp.quat_identity()),
         mass=1.0,
     )
@@ -52,7 +52,7 @@ def _build_two_link_planar(device) -> newton.Model:
         axis=[0.0, 0.0, 1.0],
     )
 
-    link2 = builder.add_body(
+    link2 = builder.add_link(
         xform=wp.transform([1.5, 0.0, 0.0], wp.quat_identity()),
         mass=1.0,
     )
@@ -80,7 +80,7 @@ def _build_free_plus_revolute(device) -> newton.Model:
     """
     builder = newton.ModelBuilder()
 
-    link1 = builder.add_body(
+    link1 = builder.add_link(
         xform=wp.transform([0.0, 0.0, 0.0], wp.quat_identity()),
         mass=1.0,
     )
@@ -91,7 +91,7 @@ def _build_free_plus_revolute(device) -> newton.Model:
         child_xform=wp.transform_identity(),
     )
 
-    link2 = builder.add_body(
+    link2 = builder.add_link(
         xform=wp.transform([1.0, 0.0, 0.0], wp.quat_identity()),
         mass=1.0,
     )
@@ -115,7 +115,7 @@ def _build_free_plus_revolute(device) -> newton.Model:
 def _build_single_d6(device) -> newton.Model:
     builder = newton.ModelBuilder()
     cfg = newton.ModelBuilder.JointDofConfig
-    link = builder.add_body(xform=wp.transform_identity(), mass=1.0)
+    link = builder.add_link(xform=wp.transform_identity(), mass=1.0)
     builder.add_joint_d6(
         parent=-1,
         child=link,

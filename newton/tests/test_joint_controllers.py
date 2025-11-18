@@ -44,7 +44,7 @@ def test_revolute_controller(
     box_mass = 1.0
     box_inertia = wp.mat33((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0))
     # easy case: identity transform, zero center of mass
-    b = builder.add_body(armature=0.0, I_m=box_inertia, mass=box_mass)
+    b = builder.add_link(armature=0.0, I_m=box_inertia, mass=box_mass)
     builder.add_shape_box(body=b, hx=0.2, hy=0.2, hz=0.2, cfg=newton.ModelBuilder.ShapeConfig(density=1))
 
     # Create a revolute joint

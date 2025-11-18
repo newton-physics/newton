@@ -78,7 +78,7 @@ def _add_single_joint(builder: newton.ModelBuilder, jt: int) -> None:
     child_xf = wp.transform((-0.05, 0.0, 0.0), wp.quat_from_axis_angle(wp.vec3(1, 0, 0), 0.5))
 
     # a 0.1-kg cube just so the body exists
-    child = builder.add_body(
+    child = builder.add_link(
         xform=wp.transform_identity(),
         mass=0.1,
         key=f"body_{jt}",

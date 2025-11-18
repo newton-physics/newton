@@ -38,10 +38,10 @@ class TestCustomAttributes(unittest.TestCase):
 
     def _add_test_robot(self, builder: ModelBuilder) -> dict[str, int]:
         """Build a simple 2-bar linkage robot without custom attributes."""
-        base = builder.add_body(xform=wp.transform([0.0, 0.0, 0.0], wp.quat_identity()), mass=1.0)
+        base = builder.add_link(xform=wp.transform([0.0, 0.0, 0.0], wp.quat_identity()), mass=1.0)
         builder.add_shape_box(base, hx=0.1, hy=0.1, hz=0.1)
 
-        link1 = builder.add_body(xform=wp.transform([0.0, 0.0, 0.5], wp.quat_identity()), mass=0.5)
+        link1 = builder.add_link(xform=wp.transform([0.0, 0.0, 0.5], wp.quat_identity()), mass=0.5)
         builder.add_shape_capsule(link1, radius=0.05, half_height=0.2)
 
         joint1 = builder.add_joint_revolute(
@@ -52,7 +52,7 @@ class TestCustomAttributes(unittest.TestCase):
             axis=[0.0, 1.0, 0.0],
         )
 
-        link2 = builder.add_body(xform=wp.transform([0.0, 0.0, 0.9], wp.quat_identity()), mass=0.3)
+        link2 = builder.add_link(xform=wp.transform([0.0, 0.0, 0.9], wp.quat_identity()), mass=0.3)
         builder.add_shape_capsule(link2, radius=0.03, half_height=0.15)
 
         joint2 = builder.add_joint_revolute(
@@ -343,7 +343,7 @@ class TestCustomAttributes(unittest.TestCase):
 
         robot_entities = self._add_test_robot(builder)
 
-        body = builder.add_body(mass=1.0)
+        body = builder.add_link(mass=1.0)
         builder.add_joint_revolute(
             parent=robot_entities["link2"],
             child=body,
@@ -399,7 +399,7 @@ class TestCustomAttributes(unittest.TestCase):
         robot_entities = self._add_test_robot(builder)
         cfg = ModelBuilder.JointDofConfig
 
-        body = builder.add_body(mass=1.0)
+        body = builder.add_link(mass=1.0)
         builder.add_joint_d6(
             parent=robot_entities["link2"],
             child=body,
@@ -450,7 +450,7 @@ class TestCustomAttributes(unittest.TestCase):
         robot_entities = self._add_test_robot(builder)
         cfg = ModelBuilder.JointDofConfig
 
-        body = builder.add_body(mass=1.0)
+        body = builder.add_link(mass=1.0)
         builder.add_joint_d6(
             parent=robot_entities["link2"],
             child=body,
@@ -772,13 +772,13 @@ class TestCustomAttributes(unittest.TestCase):
         )
 
         # Create a simple robot in sub-builder
-        body1 = sub_builder.add_body(
+        body1 = sub_builder.add_link(
             mass=1.0,
             custom_attributes={"robot_id": 100, "temperature": 37.5},
         )
         sub_builder.add_shape_sphere(body1, radius=0.1, custom_attributes={"shape_color": [1.0, 0.0, 0.0]})
 
-        body2 = sub_builder.add_body(
+        body2 = sub_builder.add_link(
             mass=0.5,
             custom_attributes={"robot_id": 200, "temperature": 38.0},
         )
@@ -803,8 +803,8 @@ class TestCustomAttributes(unittest.TestCase):
         # Add some entities to the main builder, so the custom attribute
         # values added through the sub builder will need to be merged
         # and their indices need to be adjusted.
-        body3 = main_builder.add_body(mass=1.0)
-        body4 = main_builder.add_body(mass=1.0)
+        body3 = main_builder.add_link(mass=1.0)
+        body4 = main_builder.add_link(mass=1.0)
         main_builder.add_shape_sphere(body3, radius=0.1)
         main_builder.add_shape_sphere(body4, radius=0.1)
         main_builder.add_joint_revolute(parent=body3, child=body4, axis=[0, 0, 1])
@@ -1184,14 +1184,14 @@ class TestCustomAttributes(unittest.TestCase):
             # Create 2-link articulation
             # Temperature NOT assigned to articulated bodies (use defaults)
             # Density assigned with different values than free bodies
-            base = builder.add_body(
+            base = builder.add_link(
                 xform=wp.transform([3.0 + float(i), 0.0, 0.0], wp.quat_identity()),
                 mass=1.0,
                 custom_attributes={"density": 2.0 + float(i) * 0.5},
             )
             builder.add_shape_box(base, hx=0.1, hy=0.1, hz=0.1)
 
-            link = builder.add_body(
+            link = builder.add_link(
                 xform=wp.transform([3.0 + float(i), 0.0, 0.5], wp.quat_identity()),
                 mass=0.5,
                 custom_attributes={"density": 3.0 + float(i) * 0.5},
@@ -1241,7 +1241,7 @@ class TestCustomAttributes(unittest.TestCase):
 
         # Check ARTICULATION attributes
         arctic_stiff = model.articulation_stiffness.numpy()
-        self.assertEqual(len(arctic_stiff), 2)
+        self.assertEqual(len(arctic_stiff), 5)
         self.assertAlmostEqual(arctic_stiff[0], 100.0, places=5)
         self.assertAlmostEqual(arctic_stiff[1], 150.0, places=5)
 
