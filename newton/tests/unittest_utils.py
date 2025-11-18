@@ -23,8 +23,8 @@ import sys
 import tempfile
 import time
 import unittest
-from typing import Any
 import xml.etree.ElementTree as ET
+from typing import Any
 
 import numpy as np
 import warp as wp

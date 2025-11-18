@@ -818,7 +818,7 @@ class TestImportMjcf(unittest.TestCase):
 """
 
         try:
-            from defusedxml.common import EntitiesForbidden # noqa: PLC0415
+            from defusedxml.common import EntitiesForbidden  # noqa: PLC0415
 
             defusedxml_available = True
         except ImportError:
