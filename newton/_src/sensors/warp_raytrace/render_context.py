@@ -29,6 +29,7 @@ class RenderContext:
         enable_textures: bool = True,
         enable_shadows: bool = True,
         enable_ambient_lighting: bool = True,
+        enable_particles: bool = True,
         num_worlds: int = 1,
         num_cameras: int = 1,
         has_global_world: bool = False,
@@ -40,6 +41,7 @@ class RenderContext:
         self.__enable_ambient_lighting = enable_ambient_lighting
         self.__num_worlds = num_worlds
         self.__has_global_world = has_global_world
+        self.__enable_particles = enable_particles
         self.__max_distance = 1000.0
 
         self.__bvh_geom: wp.Bvh = None
@@ -100,17 +102,24 @@ class RenderContext:
         self.__bvh_particles_groups: wp.array(dtype=wp.int32) = None
         self.__bvh_particles_group_roots: wp.array(dtype=wp.int32) = None
 
-    def init_outputs(self, num_geoms: int):
-        self.__num_geom_in_bvh = num_geoms
-        self.__bvh_geom_lowers = wp.zeros(self.num_geom_in_bvh_total, dtype=wp.vec3f)
-        self.__bvh_geom_uppers = wp.zeros(self.num_geom_in_bvh_total, dtype=wp.vec3f)
-        self.__bvh_geom_groups = wp.zeros(self.num_geom_in_bvh_total, dtype=wp.int32)
-        self.__bvh_geom_group_roots = wp.zeros((self.num_worlds_total), dtype=wp.int32)
+    def __init_geom_outputs(self):
+        if self.__bvh_geom_lowers is None:
+            self.__bvh_geom_lowers = wp.zeros(self.num_geom_in_bvh_total, dtype=wp.vec3f)
+        if self.__bvh_geom_uppers is None:
+            self.__bvh_geom_uppers = wp.zeros(self.num_geom_in_bvh_total, dtype=wp.vec3f)
+        if self.__bvh_geom_groups is None:
+            self.__bvh_geom_groups = wp.zeros(self.num_geom_in_bvh_total, dtype=wp.int32)
+        if self.__bvh_geom_group_roots is None:
+            self.__bvh_geom_group_roots = wp.zeros((self.num_worlds_total), dtype=wp.int32)
 
-        if self.num_particle_in_bvh_total:
+    def __init_particle_outputs(self):
+        if self.__bvh_particles_lowers is None:
             self.__bvh_particles_lowers = wp.zeros(self.num_particle_in_bvh_total, dtype=wp.vec3f)
+        if self.__bvh_particles_uppers is None:
             self.__bvh_particles_uppers = wp.zeros(self.num_particle_in_bvh_total, dtype=wp.vec3f)
+        if self.__bvh_particles_groups is None:
             self.__bvh_particles_groups = wp.zeros(self.num_particle_in_bvh_total, dtype=wp.int32)
+        if self.__bvh_particles_group_roots is None:
             self.__bvh_particles_group_roots = wp.zeros((self.num_worlds_total), dtype=wp.int32)
 
     def init_camera_rays(self):
@@ -124,6 +133,7 @@ class RenderContext:
 
     def refit_bvh(self):
         if self.num_geom_in_bvh_total:
+            self.__init_geom_outputs()
             self.__compute_bvh_geom_bounds()
             if self.bvh_geom is None:
                 self.__bvh_geom = wp.Bvh(self.bvh_geom_lowers, self.bvh_geom_uppers, groups=self.bvh_geom_groups)
@@ -136,6 +146,7 @@ class RenderContext:
                 self.bvh_geom.refit()
 
         if self.num_particle_in_bvh_total:
+            self.__init_particle_outputs()
             self.__compute_bvh_particle_bounds()
             if self.bvh_particles is None:
                 self.__bvh_particles = wp.Bvh(
@@ -214,6 +225,10 @@ class RenderContext:
     def num_geom_in_bvh(self) -> int:
         return self.__num_geom_in_bvh
 
+    @num_geom_in_bvh.setter
+    def num_geom_in_bvh(self, num_geom_in_bvh: int):
+        self.__num_geom_in_bvh = num_geom_in_bvh
+
     @property
     def num_geom_in_bvh_total(self) -> int:
         return self.num_geom_in_bvh
@@ -267,6 +282,14 @@ class RenderContext:
     @enable_ambient_lighting.setter
     def enable_ambient_lighting(self, enable_ambient_lighting: bool):
         self.__enable_ambient_lighting = enable_ambient_lighting
+
+    @property
+    def enable_particles(self) -> bool:
+        return self.__enable_particles
+
+    @enable_particles.setter
+    def enable_particles(self, enable_particles: bool):
+        self.__enable_particles = enable_particles
 
     @property
     def num_worlds(self) -> int:

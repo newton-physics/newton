@@ -32,6 +32,8 @@ class TestTiledCameraSensorBenchmark(unittest.TestCase):
 
         resolution = 64
         num_worlds = 4096
+        warmup = 20
+        iterations = 50
 
         scene = newton.ModelBuilder()
         scene.replicate(franka, num_worlds)
@@ -44,7 +46,20 @@ class TestTiledCameraSensorBenchmark(unittest.TestCase):
         # camera_positions = wp.array([wp.vec3f(2.0, 0.0, 0.6)], dtype=wp.vec3f)
         # camera_orientations = wp.array([wp.mat33f(0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0)], dtype=wp.mat33f)
         camera_positions = wp.array([2.4, 0.0, 0.8], dtype=wp.vec3f)
-        camera_orientations = wp.array([-0.008726535, -0.29236057, 0.95626837, 0.9999619, -0.002551392, 0.008345228, 1.3010426e-18, 0.9563047, 0.2923717], dtype=wp.mat33f)
+        camera_orientations = wp.array(
+            [
+                -0.008726535,
+                -0.29236057,
+                0.95626837,
+                0.9999619,
+                -0.002551392,
+                0.008345228,
+                1.3010426e-18,
+                0.9563047,
+                0.2923717,
+            ],
+            dtype=wp.mat33f,
+        )
 
         tiled_camera_sensor = TiledCameraSensor(model=model, num_cameras=1, width=resolution, height=resolution)
         tiled_camera_sensor.assign_debug_colors_per_shape()
@@ -59,9 +74,15 @@ class TestTiledCameraSensorBenchmark(unittest.TestCase):
         with wp.ScopedTimer("Refit BVH", synchronize=True):
             tiled_camera_sensor.render_context.refit_bvh()
 
-        for i in range(20):
-            with wp.ScopedTimer(f"Rendering {i:2d}", synchronize=True):
+        with wp.ScopedTimer("Warmup", synchronize=True):
+            for _ in range(warmup):
                 tiled_camera_sensor.render(color_image, depth_image, refit_bvh=False, clear_images=False)
+
+        with wp.ScopedTimer("Rendering", synchronize=True) as timer:
+            for _ in range(iterations):
+                tiled_camera_sensor.render(color_image, depth_image, refit_bvh=False, clear_images=False)
+
+        print(f"Average: {timer.elapsed / iterations:.2f} ms")
 
         tiled_camera_sensor.save_color_image(color_image, "example_color.png")
         tiled_camera_sensor.save_depth_image(depth_image, "example_depth.png")

@@ -50,6 +50,7 @@ def closest_hit_geom(
     bvh_geom_id: wp.uint64,
     bvh_geom_group_roots: wp.array(dtype=wp.int32),
     world_id: wp.int32,
+    has_global_world: wp.bool,
     geom_enabled: wp.array(dtype=wp.int32),
     geom_types: wp.array(dtype=wp.int32),
     geom_mesh_indices: wp.array(dtype=wp.int32),
@@ -61,8 +62,11 @@ def closest_hit_geom(
     ray_dir_world: wp.vec3f,
 ) -> ClosestHit:
     if bvh_geom_size:
-        for i in range(2):
+        for i in range(2 if has_global_world else 1):
             world_id, group_root = get_group_roots(bvh_geom_group_roots, world_id, i)
+            if group_root < 0:
+                continue
+
             query = wp.bvh_query_ray(bvh_geom_id, ray_origin_world, ray_dir_world, group_root)
             geom_index = wp.int32(0)
 
@@ -154,14 +158,18 @@ def closest_hit_particles(
     bvh_particles_id: wp.uint64,
     bvh_particles_group_roots: wp.array(dtype=wp.int32),
     world_id: wp.int32,
+    has_global_world: wp.bool,
     particles_position: wp.array(dtype=wp.vec3f),
     particles_radius: wp.array(dtype=wp.float32),
     ray_origin_world: wp.vec3f,
     ray_dir_world: wp.vec3f,
 ) -> ClosestHit:
     if bvh_particles_size:
-        for i in range(2):
+        for i in range(2 if has_global_world else 1):
             world_id, group_root = get_group_roots(bvh_particles_group_roots, world_id, i)
+            if group_root < 0:
+                continue
+
             query = wp.bvh_query_ray(bvh_particles_id, ray_origin_world, ray_dir_world, group_root)
             bounds_nr = wp.int32(0)
 
@@ -218,6 +226,8 @@ def closest_hit(
     bvh_particles_id: wp.uint64,
     bvh_particles_group_roots: wp.array(dtype=wp.int32),
     world_id: wp.int32,
+    has_global_world: wp.bool,
+    enable_particles: wp.bool,
     max_distance: wp.float32,
     geom_enabled: wp.array(dtype=wp.int32),
     geom_types: wp.array(dtype=wp.int32),
@@ -249,6 +259,7 @@ def closest_hit(
         bvh_geom_id,
         bvh_geom_group_roots,
         world_id,
+        has_global_world,
         geom_enabled,
         geom_types,
         geom_mesh_indices,
@@ -260,13 +271,14 @@ def closest_hit(
         ray_dir_world,
     )
 
-    if not triangle_mesh_id:  # TODO For now disable particles if there is a triangle mesh, need to properly check if a particle is part of a triangle mesh ..
+    if enable_particles:
         closest_hit = closest_hit_particles(
             closest_hit,
             bvh_particles_size,
             bvh_particles_id,
             bvh_particles_group_roots,
             world_id,
+            has_global_world,
             particles_position,
             particles_radius,
             ray_origin_world,
@@ -282,6 +294,7 @@ def first_hit_geom(
     bvh_geom_id: wp.uint64,
     bvh_geom_group_roots: wp.array(dtype=wp.int32),
     world_id: wp.int32,
+    has_global_world: wp.bool,
     geom_enabled: wp.array(dtype=wp.int32),
     geom_types: wp.array(dtype=wp.int32),
     geom_mesh_indices: wp.array(dtype=wp.int32),
@@ -294,8 +307,10 @@ def first_hit_geom(
     max_dist: wp.float32,
 ) -> wp.bool:
     if bvh_geom_size:
-        for i in range(2):
+        for i in range(2 if has_global_world else 1):
             world_id, group_root = get_group_roots(bvh_geom_group_roots, world_id, i)
+            if group_root < 0:
+                continue
 
             query = wp.bvh_query_ray(bvh_geom_id, ray_origin_world, ray_dir_world, group_root)
             geom_index = wp.int32(0)
@@ -375,6 +390,7 @@ def first_hit_particles(
     bvh_particles_id: wp.uint64,
     bvh_particles_group_roots: wp.array(dtype=wp.int32),
     world_id: wp.int32,
+    has_global_world: wp.bool,
     particles_position: wp.array(dtype=wp.vec3f),
     particles_radius: wp.array(dtype=wp.float32),
     ray_origin_world: wp.vec3f,
@@ -382,8 +398,11 @@ def first_hit_particles(
     max_dist: wp.float32,
 ) -> wp.bool:
     if bvh_particles_size:
-        for i in range(2):
+        for i in range(2 if has_global_world else 1):
             world_id, group_root = get_group_roots(bvh_particles_group_roots, world_id, i)
+            if group_root < 0:
+                continue
+
             query = wp.bvh_query_ray(bvh_particles_id, ray_origin_world, ray_dir_world, group_root)
             bounds_nr = wp.int32(0)
 
@@ -429,6 +448,8 @@ def first_hit(
     bvh_particles_id: wp.uint64,
     bvh_particles_group_roots: wp.array(dtype=wp.int32),
     world_id: wp.int32,
+    has_global_world: wp.bool,
+    enable_particles: wp.bool,
     geom_enabled: wp.array(dtype=wp.int32),
     geom_types: wp.array(dtype=wp.int32),
     geom_mesh_indices: wp.array(dtype=wp.int32),
@@ -451,6 +472,7 @@ def first_hit(
         bvh_geom_id,
         bvh_geom_group_roots,
         world_id,
+        has_global_world,
         geom_enabled,
         geom_types,
         geom_mesh_indices,
@@ -464,12 +486,13 @@ def first_hit(
     ):
         return True
 
-    if not triangle_mesh_id:  # TODO For now disable particles if there is a triangle mesh, need to properly check if a particle is part of a triangle mesh ..
+    if enable_particles:
         if first_hit_particles(
             bvh_particles_size,
             bvh_particles_id,
             bvh_particles_group_roots,
             world_id,
+            has_global_world,
             particles_position,
             particles_radius,
             ray_origin_world,

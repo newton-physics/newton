@@ -144,7 +144,9 @@ class TiledCameraSensor:
     def __init__(self, model: Model, num_cameras: int, width: int, height: int):
         self.model = model
 
-        self.render_context = RenderContext(width, height, False, False, True, self.model.num_worlds, num_cameras, True)
+        self.render_context = RenderContext(
+            width, height, False, False, True, True, self.model.num_worlds, num_cameras, True
+        )
         self.render_context.mesh_ids = model.shape_source_ptr
         self.render_context.geom_mesh_indices = wp.empty(self.model.shape_count, dtype=wp.int32)
         self.render_context.mesh_bounds = wp.empty((self.model.shape_count, 2), dtype=wp.vec3f, ndim=2)
@@ -156,6 +158,7 @@ class TiledCameraSensor:
             if model.tri_indices is not None and model.tri_indices.shape[0]:
                 self.render_context.triangle_points = model.particle_q
                 self.render_context.triangle_indices = model.tri_indices.flatten()
+                self.render_context.enable_particles = False
 
         self.render_context.geom_enabled = wp.empty(self.model.shape_count, dtype=wp.int32)
         self.render_context.geom_types = model.shape_type
@@ -182,7 +185,7 @@ class TiledCameraSensor:
                 num_enabled_geoms,
             ],
         )
-        self.render_context.init_outputs(int(num_enabled_geoms.numpy()[0]))
+        self.render_context.num_geom_in_bvh = int(num_enabled_geoms.numpy()[0])
 
         wp.launch(
             kernel=compute_mesh_bounds,

@@ -58,6 +58,14 @@ def tile_coords(tid: wp.int32, width: wp.int32):
 
 
 @wp.func
+def pixel_coords(index: wp.int32, width: wp.int32):
+    """Map linear pixel index [0, width*height) to (x, y) coordinates."""
+    x = index % width
+    y = index // width
+    return x, y
+
+
+@wp.func
 def pack_rgba_to_uint32(r: wp.float32, g: wp.float32, b: wp.float32, a: wp.float32) -> wp.uint32:
     """Pack RGBA values into a single uint32 for efficient memory access."""
     return (
@@ -79,6 +87,8 @@ def _render_megakernel(
     enable_shadows: wp.bool,
     enable_textures: wp.bool,
     enable_ambient_lighting: wp.bool,
+    enable_particles: wp.bool,
+    has_global_world: wp.bool,
     max_distance: wp.float32,
     # Camera
     camera_rays: wp.array(dtype=wp.vec3f, ndim=4),
@@ -174,6 +184,8 @@ def _render_megakernel(
             bvh_particles_id,
             bvh_particles_group_roots,
             world_id,
+            has_global_world,
+            enable_particles,
             max_distance,
             geom_enabled,
             geom_types,
@@ -274,6 +286,8 @@ def _render_megakernel(
                 bvh_particles_group_roots,
                 geom_enabled,
                 world_id,
+                has_global_world,
+                enable_particles,
                 light_active[light_idx],
                 light_type[light_idx],
                 light_cast_shadow[light_idx],
@@ -335,6 +349,8 @@ def render_megakernel(
             rc.enable_shadows,
             rc.enable_textures,
             rc.enable_ambient_lighting,
+            rc.enable_particles,
+            rc.has_global_world,
             rc.max_distance,
             # Camera
             rc.camera_rays,
