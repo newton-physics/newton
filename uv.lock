@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 2
 requires-python = ">=3.10"
 resolution-markers = [
     "python_full_version >= '3.14'",
@@ -1729,6 +1729,7 @@ dev = [
     { name = "cbor2" },
     { name = "coacd" },
     { name = "coverage", extra = ["toml"] },
+    { name = "defusedxml" },
     { name = "fast-simplification" },
     { name = "gitpython" },
     { name = "imgui-bundle" },
@@ -1747,6 +1748,7 @@ dev = [
 docs = [
     { name = "alphashape" },
     { name = "coacd" },
+    { name = "defusedxml" },
     { name = "fast-simplification" },
     { name = "myst-parser" },
     { name = "pycollada" },
@@ -1767,6 +1769,7 @@ examples = [
     { name = "alphashape" },
     { name = "cbor2" },
     { name = "coacd" },
+    { name = "defusedxml" },
     { name = "fast-simplification" },
     { name = "gitpython" },
     { name = "imgui-bundle" },
@@ -1784,6 +1787,7 @@ examples = [
 importers = [
     { name = "alphashape" },
     { name = "coacd" },
+    { name = "defusedxml" },
     { name = "fast-simplification" },
     { name = "pycollada" },
     { name = "scipy", version = "1.15.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
@@ -1796,6 +1800,7 @@ notebook = [
     { name = "alphashape" },
     { name = "cbor2" },
     { name = "coacd" },
+    { name = "defusedxml" },
     { name = "fast-simplification" },
     { name = "gitpython" },
     { name = "imgui-bundle" },
@@ -1822,6 +1827,7 @@ torch-cu12 = [
     { name = "alphashape" },
     { name = "cbor2" },
     { name = "coacd" },
+    { name = "defusedxml" },
     { name = "fast-simplification" },
     { name = "gitpython" },
     { name = "imgui-bundle" },
@@ -1863,6 +1869,12 @@ requires-dist = [
     { name = "coacd", marker = "extra == 'notebook'", specifier = ">=1.0.7" },
     { name = "coacd", marker = "extra == 'torch-cu12'", specifier = ">=1.0.7" },
     { name = "coverage", extras = ["toml"], marker = "extra == 'dev'", specifier = ">=7.8.0" },
+    { name = "defusedxml", marker = "extra == 'dev'", specifier = ">=0.7.1" },
+    { name = "defusedxml", marker = "extra == 'docs'", specifier = ">=0.7.1" },
+    { name = "defusedxml", marker = "extra == 'examples'", specifier = ">=0.7.1" },
+    { name = "defusedxml", marker = "extra == 'importers'", specifier = ">=0.7.1" },
+    { name = "defusedxml", marker = "extra == 'notebook'", specifier = ">=0.7.1" },
+    { name = "defusedxml", marker = "extra == 'torch-cu12'", specifier = ">=0.7.1" },
     { name = "fast-simplification", marker = "extra == 'dev'", specifier = ">=0.1.11" },
     { name = "fast-simplification", marker = "extra == 'docs'", specifier = ">=0.1.11" },
     { name = "fast-simplification", marker = "extra == 'examples'", specifier = ">=0.1.11" },

@@ -18,8 +18,12 @@ from __future__ import annotations
 import math
 import os
 import re
-import xml.etree.ElementTree as ET
 from typing import Any
+
+try:
+    import defusedxml.ElementTree as ET
+except ImportError:
+    import xml.etree.ElementTree as ET
 
 import numpy as np
 import warp as wp

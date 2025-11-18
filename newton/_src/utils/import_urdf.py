@@ -18,9 +18,13 @@ from __future__ import annotations
 import os
 import tempfile
 import warnings
-import xml.etree.ElementTree as ET
 from typing import Literal
 from urllib.parse import unquote, urlsplit
+
+try:
+    import defusedxml.ElementTree as ET
+except ImportError:
+    import xml.etree.ElementTree as ET
 
 import numpy as np
 import warp as wp
