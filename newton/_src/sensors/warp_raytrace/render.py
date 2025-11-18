@@ -29,7 +29,7 @@ MAX_NUM_VIEWS_PER_THREAD = 8
 
 BACKGROUND_COLOR = 255 << 24 | int(0.4 * 255.0) << 16 | int(0.4 * 255.0) << 8 | int(0.4 * 255.0)
 
-TILE_W: wp.int32 = 32
+TILE_W: wp.int32 = 8
 TILE_H: wp.int32 = 8
 THREADS_PER_TILE: wp.int32 = TILE_W * TILE_H
 
@@ -55,14 +55,6 @@ def tile_coords(tid: wp.int32, width: wp.int32):
     i = tile_x + u
     j = tile_y + v
     return i, j
-
-
-@wp.func
-def pixel_coords(index: wp.int32, width: wp.int32):
-    """Map linear pixel index [0, width*height) to (x, y) coordinates."""
-    x = index % width
-    y = index // width
-    return x, y
 
 
 @wp.func
@@ -171,10 +163,10 @@ def _render_megakernel(
             break
 
         world_id = view // num_cameras
-        cam_idx = view % num_cameras
+        camera_id = view % num_cameras
 
-        ray_origin_world = camera_positions[cam_idx] + camera_rays[cam_idx, py, px, 0]
-        ray_dir_world = camera_orientations[cam_idx] @ camera_rays[cam_idx, py, px, 1]
+        ray_origin_world = camera_positions[camera_id] + camera_rays[camera_id, py, px, 0]
+        ray_dir_world = camera_orientations[camera_id] @ camera_rays[camera_id, py, px, 1]
 
         closest_hit = ray_cast.closest_hit(
             bvh_geom_size,
@@ -206,7 +198,7 @@ def _render_megakernel(
             continue
 
         if render_depth:
-            out_depth[world_id, cam_idx, mapped_idx] = closest_hit.distance
+            out_depth[world_id, camera_id, mapped_idx] = closest_hit.distance
 
         if not render_color:
             continue
@@ -309,7 +301,7 @@ def _render_megakernel(
 
         out_color = wp.min(wp.max(out_color, wp.vec3f(0.0)), wp.vec3f(1.0))
 
-        out_pixels[world_id, cam_idx, mapped_idx] = pack_rgba_to_uint32(
+        out_pixels[world_id, camera_id, mapped_idx] = pack_rgba_to_uint32(
             out_color[0] * 255.0,
             out_color[1] * 255.0,
             out_color[2] * 255.0,
