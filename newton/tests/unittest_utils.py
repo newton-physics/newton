@@ -24,11 +24,7 @@ import tempfile
 import time
 import unittest
 from typing import Any
-
-try:
-    import defusedxml.ElementTree as ET
-except ImportError:
-    import xml.etree.ElementTree as ET
+import xml.etree.ElementTree as ET
 
 import numpy as np
 import warp as wp
