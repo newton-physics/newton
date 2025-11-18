@@ -363,7 +363,7 @@ class TriMeshCollisionDetector:
                 dim=self.model.tri_count,
                 device=self.model.device,
             )
-
+        else:
             self.triangle_colliding_vertices_min_dist.fill_(max_query_radius)
 
         wp.launch(
