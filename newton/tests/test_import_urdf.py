@@ -26,6 +26,13 @@ import newton.examples
 from newton._src.geometry.types import GeoType
 from newton.tests.unittest_utils import assert_np_equal
 
+try:
+    from defusedxml.common import EntitiesForbidden
+
+    DEFUSEDXML_AVAILABLE = True
+except ImportError:
+    DEFUSEDXML_AVAILABLE = False
+
 MESH_URDF = """
 <robot name="mesh_test">
     <link name="base_link">
@@ -463,6 +470,25 @@ class TestImportUrdf(unittest.TestCase):
             "grandchild_link_1b",
         ]
         assert builder.joint_key == ["fixed_base", "joint_2", "joint_1", "joint_2b", "joint_2a", "joint_1a", "joint_1b"]
+
+    @unittest.skipIf(not DEFUSEDXML_AVAILABLE, "defusedxml is not installed - XML security protection unavailable")
+    def test_xml_protection(self):
+        """Test that XML attacks are prevented by defusedxml.EntitiesForbidden"""
+        xml = """<?xml version="1.0"?>
+<!DOCTYPE root [
+  <!ENTITY entity1 "test">
+  <!ENTITY entity2 "&entity1;&entity1;&entity1;&entity1;&entity1;&entity1;&entity1;&entity1;&entity1;&entity1;">
+  <!ENTITY entity3 "&entity2;&entity2;&entity2;&entity2;&entity2;&entity2;&entity2;&entity2;&entity2;&entity2;">
+]>
+<robot name="test">
+  <link name="&entity3;"/>
+</robot>
+"""
+
+        builder = newton.ModelBuilder()
+
+        with self.assertRaises(EntitiesForbidden):
+            builder.add_urdf(xml)
 
 
 if __name__ == "__main__":
