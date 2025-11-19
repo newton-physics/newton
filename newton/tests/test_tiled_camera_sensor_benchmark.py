@@ -96,9 +96,10 @@ class TestTiledCameraSensorBenchmark(unittest.TestCase):
         tiled_camera_sensor.save_color_image(color_image, "example_color.png")
         tiled_camera_sensor.save_depth_image(depth_image, "example_depth.png")
 
-
     def print_timer(self, timer: wp.ScopedTimer, iterations: int, sensor: TiledCameraSensor):
-        print(f"{timer.name} average: {timer.elapsed / iterations:.2f} ms ({(1000.0 / (timer.elapsed / iterations) * (sensor.render_context.num_worlds * sensor.render_context.num_cameras)):,.2f} fps)")
+        print(
+            f"{timer.name} average: {timer.elapsed / iterations:.2f} ms ({(1000.0 / (timer.elapsed / iterations) * (sensor.render_context.num_worlds * sensor.render_context.num_cameras)):,.2f} fps)"
+        )
 
 
 if __name__ == "__main__":

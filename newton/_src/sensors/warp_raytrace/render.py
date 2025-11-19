@@ -321,7 +321,6 @@ def render_megakernel(
         if depth_image is not None:
             depth_image.fill_(wp.float32(0.0))
 
-
     wp.launch(
         kernel=_render_megakernel,
         dim=rc.num_worlds * rc.num_cameras * rc.width * rc.height,
@@ -391,5 +390,5 @@ def render_megakernel(
             depth_image is not None,
             color_image,
             depth_image,
-        ]
+        ],
     )
