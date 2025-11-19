@@ -237,7 +237,7 @@ if __name__ == "__main__":
     parser.add_argument("--transfer-scheme", "-ts", type=str, default="apic", choices=["apic", "pic"])
 
     parser.add_argument("--strain-basis", "-sb", type=str, default="P0", choices=["P0", "Q1"])
-    parser.add_argument("--collider-basis", "-cb", type=str, default="Q1", choices=["Q1", "Q2", "S2"])
+    parser.add_argument("--collider-basis", "-cb", type=str, default="Q1", choices=["Q1", "Q2", "Q3", "S2", "S3"])
 
     parser.add_argument("--max-iterations", "-it", type=int, default=250)
     parser.add_argument("--tolerance", "-tol", type=float, default=1.0e-6)

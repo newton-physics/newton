@@ -525,7 +525,7 @@ def collision_weight_field(
     return trial(s)
 
 
-def make_basis_space(grid: fem.Geometry, basis_str: str):
+def make_basis_space(grid: fem.Geometry, basis_str: str, family: fem.Polynomial | None = None):
     assert len(basis_str) >= 2
 
     degree = int(basis_str[1])
@@ -539,7 +539,7 @@ def make_basis_space(grid: fem.Geometry, basis_str: str):
     else:
         raise ValueError(f"Unsupported basis: {basis_str}")
 
-    return fem.make_polynomial_basis_space(grid, degree=degree, element_basis=element_basis)
+    return fem.make_polynomial_basis_space(grid, degree=degree, element_basis=element_basis, family=family)
 
 
 @dataclass
@@ -662,7 +662,7 @@ class _ImplicitMPMScratchpad:
         # zero or first order for pressure
         self._velocity_basis = fem.make_polynomial_basis_space(grid, degree=1)
 
-        self._collision_basis = make_basis_space(grid, collider_basis_str)
+        self._collision_basis = make_basis_space(grid, collider_basis_str, family=fem.Polynomial.EQUISPACED_CLOSED)
         self._strain_basis = make_basis_space(grid, strain_basis_str)
 
     def create_function_spaces(
@@ -1935,7 +1935,7 @@ class SolverImplicitMPM(SolverBase):
         fem.interpolate(
             mark_active_cells,
             dim=positions.shape[0],
-            domain=fem.Cells(grid),
+            at=fem.Cells(grid),
             values={
                 "positions": positions,
                 "particle_flags": particle_flags,
@@ -2112,8 +2112,8 @@ class SolverImplicitMPM(SolverBase):
                     collision_weight_field,
                     dest=scratch.collider_matrix,
                     dest_space=scratch.collider_fraction_test.space,
-                    location=scratch.collider_fraction_test.space_restriction,
-                    assume_continuous=True,
+                    at=scratch.collider_fraction_test.space_restriction,
+                    reduction="first",
                     fields={"trial": scratch.fraction_trial, "normal": scratch.collider_normal_field},
                 )
 
@@ -2467,7 +2467,7 @@ class SolverImplicitMPM(SolverBase):
                 # Update particle elastic strain from grid strain delta
                 fem.interpolate(
                     update_particle_strains,
-                    quadrature=pic,
+                    at=pic,
                     values={
                         "dt": dt,
                         "particle_flags": model.particle_flags,
@@ -2493,7 +2493,7 @@ class SolverImplicitMPM(SolverBase):
         ):
             fem.interpolate(
                 advect_particles,
-                quadrature=pic,
+                at=pic,
                 values={
                     "particle_flags": model.particle_flags,
                     "pos": state_out.particle_q,
@@ -2574,7 +2574,10 @@ class SolverImplicitMPM(SolverBase):
             domain, prev_impulse_field, background=scratch.background_impulse_field
         )
         fem.interpolate(
-            prev_impulse_field, dest=scratch.impulse_field, location=scratch.collider_fraction_test.space_restriction
+            prev_impulse_field,
+            dest=scratch.impulse_field,
+            at=scratch.collider_fraction_test.space_restriction,
+            reduction="first",
         )
 
         # Interpolate previous stress
@@ -2584,7 +2587,8 @@ class SolverImplicitMPM(SolverBase):
         fem.interpolate(
             prev_stress_field,
             dest=scratch.stress_field,
-            location=scratch.sym_strain_test.space_restriction,
+            at=scratch.sym_strain_test.space_restriction,
+            reduction="first",
         )
 
     def _save_for_next_warmstart(self, state_out: newton.State):
