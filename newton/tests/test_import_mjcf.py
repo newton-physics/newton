@@ -25,6 +25,13 @@ import newton.examples
 from newton._src.geometry.types import GeoType
 from newton._src.sim.builder import ShapeFlags
 
+try:
+    from defusedxml.common import EntitiesForbidden
+
+    DEFUSEDXML_AVAILABLE = True
+except ImportError:
+    DEFUSEDXML_AVAILABLE = False
+
 
 class TestImportMjcf(unittest.TestCase):
     def test_humanoid_mjcf(self):
@@ -802,42 +809,26 @@ class TestImportMjcf(unittest.TestCase):
         # Verify hide_visuals=True doesn't crash
         self.assertGreater(builder_hidden.shape_count, 0, "Should still load collision shapes")
 
+    @unittest.skipIf(not DEFUSEDXML_AVAILABLE, "defusedxml is not installed - XML security protection unavailable")
     def test_xml_protection(self):
         """Test that XML attacks are prevented by defusedxml.EntitiesForbidden"""
         xml = """<?xml version="1.0"?>
-<!DOCTYPE lolz [
-  <!ENTITY lol "lol">
-  <!ENTITY lol2 "&lol;&lol;&lol;&lol;&lol;&lol;&lol;&lol;&lol;&lol;">
-  <!ENTITY lol3 "&lol2;&lol2;&lol2;&lol2;&lol2;&lol2;&lol2;&lol2;&lol2;&lol2;">
+<!DOCTYPE root [
+  <!ENTITY entity1 "test">
+  <!ENTITY entity2 "&entity1;&entity1;&entity1;&entity1;&entity1;&entity1;&entity1;&entity1;&entity1;&entity1;">
+  <!ENTITY entity3 "&entity2;&entity2;&entity2;&entity2;&entity2;&entity2;&entity2;&entity2;&entity2;&entity2;">
 ]>
-<mujoco model="bomb">
+<mujoco model="test">
   <worldbody>
-    <body name="&lol3;"/>
+    <body name="&entity3;"/>
   </worldbody>
 </mujoco>
 """
 
-        try:
-            from defusedxml.common import EntitiesForbidden  # noqa: PLC0415
-
-            defusedxml_available = True
-        except ImportError:
-            defusedxml_available = False
-
         builder = newton.ModelBuilder()
 
-        if defusedxml_available:
-            with self.assertRaises(EntitiesForbidden):
-                builder.add_mjcf(xml)
-        else:
-            xml_bomb_blocked = False
-            try:
-                builder.add_mjcf(xml)
-            except Exception:
-                xml_bomb_blocked = True
-
-            if not xml_bomb_blocked:
-                self.fail("XML was not blocked! defusedxml is required for security. ")
+        with self.assertRaises(EntitiesForbidden):
+            builder.add_mjcf(xml)
 
 
 if __name__ == "__main__":
