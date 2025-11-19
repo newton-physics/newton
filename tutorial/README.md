@@ -32,7 +32,7 @@ You can run these tutorials in several ways:
 
 Command to run Jupyter lab from `uv`:
 ```sh
-uv run --extra notebook --with torch --with matplotlib jupyter lab
+uv run --extra notebook --extra torch-cu12 --with matplotlib jupyter lab
 ```
 
 ## Additional Resources
