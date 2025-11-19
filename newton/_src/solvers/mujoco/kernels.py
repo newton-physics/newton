@@ -1016,6 +1016,14 @@ def update_joint_transforms_kernel(
 
     child_xform = joint_X_c[tid]
     parent_xform = joint_X_p[tid]
+
+    # update body pos and quat from parent joint transform
+    child = joint_child[joint_in_world]  # Newton body id
+    body_id = body_mapping[child]  # MuJoCo body id
+    tf = parent_xform * wp.transform_inverse(child_xform)
+    body_pos[worldid, body_id] = tf.p
+    body_quat[worldid, body_id] = wp.quat(tf.q.w, tf.q.x, tf.q.y, tf.q.z)
+
     lin_axis_count = joint_dof_dim[tid, 0]
     ang_axis_count = joint_dof_dim[tid, 1]
 
@@ -1041,13 +1049,6 @@ def update_joint_transforms_kernel(
         ai = mjc_joint_index + lin_axis_count + i
         joint_axis[worldid, ai] = wp.quat_rotate(child_xform.q, axis)
         joint_pos[worldid, ai] = child_xform.p
-
-    # update body pos and quat from parent joint transform
-    child = joint_child[joint_in_world]  # Newton body id
-    body_id = body_mapping[child]  # MuJoCo body id
-    tf = parent_xform * wp.transform_inverse(child_xform)
-    body_pos[worldid, body_id] = tf.p
-    body_quat[worldid, body_id] = wp.quat(tf.q.w, tf.q.x, tf.q.y, tf.q.z)
 
 
 @wp.kernel(enable_backward=False)
