@@ -30,6 +30,11 @@ You can run these tutorials in several ways:
 2. **Local Jupyter**: Open the notebooks in Jupyter Lab or Jupyter Notebook
 3. **VS Code**: Use the Jupyter extension in Visual Studio Code
 
+Command to run Jupyter lab from `uv`:
+```sh
+uv run --extra notebook --with torch --with matplotlib jupyter lab
+```
+
 ## Additional Resources
 
 - [Newton GitHub Repository](https://github.com/NVIDIA/newton)
