@@ -25,36 +25,31 @@ if TYPE_CHECKING:
     from .render_context import RenderContext
 
 
-MAX_NUM_VIEWS_PER_THREAD = 8
-
 BACKGROUND_COLOR = 255 << 24 | int(0.4 * 255.0) << 16 | int(0.4 * 255.0) << 8 | int(0.4 * 255.0)
 
-TILE_W: wp.int32 = 8
-TILE_H: wp.int32 = 8
-THREADS_PER_TILE: wp.int32 = TILE_W * TILE_H
-
 
 @wp.func
-def ceil_div(a: wp.int32, b: wp.int32):
-    return (a + b - 1) // b
+def tid_to_tile_coord(tid: wp.int32, num_worlds: wp.int32, num_cameras: wp.int32, tile_size: wp.int32, width: wp.int32):
+    num_views_per_pixel = num_worlds * num_cameras
+    num_pixels_per_tile = tile_size * tile_size
+    num_tiles_per_row = width // tile_size
 
+    pixel_idx = tid // num_views_per_pixel
+    view_idx = tid % num_views_per_pixel
 
-# Map linear thread id (per image) -> (px, py) using TILE_W x TILE_H tiles
-@wp.func
-def tile_coords(tid: wp.int32, width: wp.int32):
-    tile_id = tid // THREADS_PER_TILE
-    local = tid - tile_id * THREADS_PER_TILE
+    world_id = view_idx % num_worlds
+    camera_id = view_idx // num_worlds
 
-    u = local % TILE_W
-    v = local // TILE_W
+    tile_local = pixel_idx % num_pixels_per_tile
+    tile_offset = pixel_idx // num_pixels_per_tile
 
-    tiles_x = ceil_div(width, TILE_W)
-    tile_x = (tile_id % tiles_x) * TILE_W
-    tile_y = (tile_id // tiles_x) * TILE_H
+    tile_offset_x = tile_offset % num_tiles_per_row
+    tile_offset_y = tile_offset // num_tiles_per_row
 
-    i = tile_x + u
-    j = tile_y + v
-    return i, j
+    py = tile_local % tile_size + tile_offset_y * tile_size
+    px = tile_local // tile_size + tile_offset_x * tile_size
+
+    return world_id, camera_id, py, px
 
 
 @wp.func
@@ -75,7 +70,7 @@ def _render_megakernel(
     num_cameras: wp.int32,
     num_lights: wp.int32,
     img_width: wp.int32,
-    img_height: wp.int32,
+    tile_size: wp.int32,
     enable_shadows: wp.bool,
     enable_textures: wp.bool,
     enable_ambient_lighting: wp.bool,
@@ -137,49 +132,130 @@ def _render_megakernel(
 ):
     tid = wp.tid()
 
-    if tid >= num_worlds * num_cameras * img_width * img_height:
+    world_id, camera_id, py, px = tid_to_tile_coord(tid, num_worlds, num_cameras, tile_size, img_width)
+    out_index = py * img_width + px
+
+    ray_origin_world = camera_positions[camera_id] + camera_rays[camera_id, py, px, 0]
+    ray_dir_world = camera_orientations[camera_id] @ camera_rays[camera_id, py, px, 1]
+
+    closest_hit = ray_cast.closest_hit(
+        bvh_geom_size,
+        bvh_geom_id,
+        bvh_geom_group_roots,
+        bvh_particles_size,
+        bvh_particles_id,
+        bvh_particles_group_roots,
+        world_id,
+        has_global_world,
+        enable_particles,
+        max_distance,
+        geom_enabled,
+        geom_types,
+        geom_mesh_indices,
+        geom_sizes,
+        mesh_ids,
+        geom_positions,
+        geom_orientations,
+        particles_position,
+        particles_radius,
+        triangle_mesh_id,
+        ray_origin_world,
+        ray_dir_world,
+    )
+
+    # Early Out
+    if closest_hit.geom_id == -1:
         return
 
-    total_views = num_worlds * num_cameras
-    pixels_per_image = img_width * img_height
-    num_view_groups = (total_views + MAX_NUM_VIEWS_PER_THREAD - 1) // MAX_NUM_VIEWS_PER_THREAD
+    if render_depth:
+        out_depth[world_id, camera_id, out_index] = closest_hit.distance
 
-    group_idx = tid // pixels_per_image
-    pixel_idx = tid % pixels_per_image
-
-    if group_idx >= num_view_groups:
+    if not render_color:
         return
 
-    px, py = tile_coords(pixel_idx, img_width)
-    if px >= img_width or py >= img_height:
-        return
-    mapped_idx = py * img_width + px
+    # Shade the pixel
+    hit_point = ray_origin_world + ray_dir_world * closest_hit.distance
 
-    base_view = group_idx * MAX_NUM_VIEWS_PER_THREAD
+    color = wp.vec4f(1.0)
+    if closest_hit.geom_id > -1:
+        color = geom_colors[closest_hit.geom_id]
+        if geom_materials[closest_hit.geom_id] > -1:
+            color = wp.cw_mul(color, material_rgba[geom_materials[closest_hit.geom_id]])
 
-    for i in range(MAX_NUM_VIEWS_PER_THREAD):
-        view = base_view + i
-        if view >= total_views:
-            break
+    base_color = wp.vec3f(color[0], color[1], color[2])
+    out_color = wp.vec3f(0.0)
 
-        world_id = view // num_cameras
-        camera_id = view % num_cameras
+    if enable_textures and closest_hit.geom_id > -1:
+        mat_id = geom_materials[closest_hit.geom_id]
+        if mat_id > -1:
+            tex_id = material_texture_ids[mat_id]
+            if tex_id > -1:
+                tex_color = textures.sample_texture(
+                    world_id,
+                    closest_hit.geom_id,
+                    geom_types,
+                    mat_id,
+                    tex_id,
+                    material_texture_repeat[mat_id],
+                    texture_offsets[tex_id],
+                    texture_data,
+                    texture_height[tex_id],
+                    texture_width[tex_id],
+                    geom_positions[closest_hit.geom_id],
+                    geom_orientations[closest_hit.geom_id],
+                    mesh_face_offsets,
+                    mesh_face_vertices,
+                    mesh_texcoord,
+                    mesh_texcoord_offsets,
+                    hit_point,
+                    closest_hit.bary_u,
+                    closest_hit.bary_v,
+                    closest_hit.face_idx,
+                    closest_hit.geom_mesh_id,
+                )
 
-        ray_origin_world = camera_positions[camera_id] + camera_rays[camera_id, py, px, 0]
-        ray_dir_world = camera_orientations[camera_id] @ camera_rays[camera_id, py, px, 1]
+                base_color = wp.vec3f(
+                    base_color[0] * tex_color[0],
+                    base_color[1] * tex_color[1],
+                    base_color[2] * tex_color[2],
+                )
 
-        closest_hit = ray_cast.closest_hit(
+    if enable_ambient_lighting:
+        up = wp.vec3f(0.0, 0.0, 1.0)
+        len_n = wp.length(closest_hit.normal)
+        n = closest_hit.normal if len_n > 0.0 else up
+        n = wp.normalize(n)
+        hemispheric = 0.5 * (wp.dot(n, up) + 1.0)
+        sky = wp.vec3f(0.4, 0.4, 0.45)
+        ground = wp.vec3f(0.1, 0.1, 0.12)
+        ambient_color = sky * hemispheric + ground * (1.0 - hemispheric)
+        ambient_intensity = 0.5
+        out_color = wp.vec3f(
+            base_color[0] * (ambient_color[0] * ambient_intensity),
+            base_color[1] * (ambient_color[1] * ambient_intensity),
+            base_color[2] * (ambient_color[2] * ambient_intensity),
+        )
+
+    # Apply lighting and shadows
+    for light_idx in range(num_lights):
+        light_contribution = lighting.compute_lighting(
+            enable_shadows,
             bvh_geom_size,
             bvh_geom_id,
             bvh_geom_group_roots,
             bvh_particles_size,
             bvh_particles_id,
             bvh_particles_group_roots,
+            geom_enabled,
             world_id,
             has_global_world,
             enable_particles,
-            max_distance,
-            geom_enabled,
+            light_active[light_idx],
+            light_type[light_idx],
+            light_cast_shadow[light_idx],
+            light_positions[light_idx],
+            light_orientations[light_idx],
+            closest_hit.normal,
             geom_types,
             geom_mesh_indices,
             geom_sizes,
@@ -189,124 +265,18 @@ def _render_megakernel(
             particles_position,
             particles_radius,
             triangle_mesh_id,
-            ray_origin_world,
-            ray_dir_world,
+            hit_point,
         )
+        out_color = out_color + base_color * light_contribution
 
-        # Early Out
-        if closest_hit.geom_id == -1:
-            continue
+    out_color = wp.min(wp.max(out_color, wp.vec3f(0.0)), wp.vec3f(1.0))
 
-        if render_depth:
-            out_depth[world_id, camera_id, mapped_idx] = closest_hit.distance
-
-        if not render_color:
-            continue
-
-        # Shade the pixel
-        hit_point = ray_origin_world + ray_dir_world * closest_hit.distance
-
-        color = wp.vec4f(1.0)
-        if closest_hit.geom_id > -1:
-            color = geom_colors[closest_hit.geom_id]
-            if geom_materials[closest_hit.geom_id] > -1:
-                color = wp.cw_mul(color, material_rgba[geom_materials[closest_hit.geom_id]])
-
-        base_color = wp.vec3f(color[0], color[1], color[2])
-        out_color = wp.vec3f(0.0)
-
-        if enable_textures and closest_hit.geom_id > -1:
-            mat_id = geom_materials[closest_hit.geom_id]
-            if mat_id > -1:
-                tex_id = material_texture_ids[mat_id]
-                if tex_id > -1:
-                    tex_color = textures.sample_texture(
-                        world_id,
-                        closest_hit.geom_id,
-                        geom_types,
-                        mat_id,
-                        tex_id,
-                        material_texture_repeat[mat_id],
-                        texture_offsets[tex_id],
-                        texture_data,
-                        texture_height[tex_id],
-                        texture_width[tex_id],
-                        geom_positions[closest_hit.geom_id],
-                        geom_orientations[closest_hit.geom_id],
-                        mesh_face_offsets,
-                        mesh_face_vertices,
-                        mesh_texcoord,
-                        mesh_texcoord_offsets,
-                        hit_point,
-                        closest_hit.bary_u,
-                        closest_hit.bary_v,
-                        closest_hit.face_idx,
-                        closest_hit.geom_mesh_id,
-                    )
-
-                    base_color = wp.vec3f(
-                        base_color[0] * tex_color[0],
-                        base_color[1] * tex_color[1],
-                        base_color[2] * tex_color[2],
-                    )
-
-        if enable_ambient_lighting:
-            up = wp.vec3f(0.0, 0.0, 1.0)
-            len_n = wp.length(closest_hit.normal)
-            n = closest_hit.normal if len_n > 0.0 else up
-            n = wp.normalize(n)
-            hemispheric = 0.5 * (wp.dot(n, up) + 1.0)
-            sky = wp.vec3f(0.4, 0.4, 0.45)
-            ground = wp.vec3f(0.1, 0.1, 0.12)
-            ambient_color = sky * hemispheric + ground * (1.0 - hemispheric)
-            ambient_intensity = 0.5
-            out_color = wp.vec3f(
-                base_color[0] * (ambient_color[0] * ambient_intensity),
-                base_color[1] * (ambient_color[1] * ambient_intensity),
-                base_color[2] * (ambient_color[2] * ambient_intensity),
-            )
-
-        # Apply lighting and shadows
-        for light_idx in range(num_lights):
-            light_contribution = lighting.compute_lighting(
-                enable_shadows,
-                bvh_geom_size,
-                bvh_geom_id,
-                bvh_geom_group_roots,
-                bvh_particles_size,
-                bvh_particles_id,
-                bvh_particles_group_roots,
-                geom_enabled,
-                world_id,
-                has_global_world,
-                enable_particles,
-                light_active[light_idx],
-                light_type[light_idx],
-                light_cast_shadow[light_idx],
-                light_positions[light_idx],
-                light_orientations[light_idx],
-                closest_hit.normal,
-                geom_types,
-                geom_mesh_indices,
-                geom_sizes,
-                mesh_ids,
-                geom_positions,
-                geom_orientations,
-                particles_position,
-                particles_radius,
-                triangle_mesh_id,
-                hit_point,
-            )
-            out_color = out_color + base_color * light_contribution
-
-        out_color = wp.min(wp.max(out_color, wp.vec3f(0.0)), wp.vec3f(1.0))
-
-        out_pixels[world_id, camera_id, mapped_idx] = pack_rgba_to_uint32(
-            out_color[0] * 255.0,
-            out_color[1] * 255.0,
-            out_color[2] * 255.0,
-            255.0,
-        )
+    out_pixels[world_id, camera_id, out_index] = pack_rgba_to_uint32(
+        out_color[0] * 255.0,
+        out_color[1] * 255.0,
+        out_color[2] * 255.0,
+        255.0,
+    )
 
 
 def render_megakernel(
@@ -315,12 +285,6 @@ def render_megakernel(
     depth_image: wp.array(dtype=wp.float32, ndim=3) | None = None,
     clear_images: bool = True,
 ):
-    total_views = rc.num_worlds * rc.num_cameras
-    total_pixels = rc.width * rc.height
-    num_view_groups = (total_views + MAX_NUM_VIEWS_PER_THREAD - 1) // MAX_NUM_VIEWS_PER_THREAD
-    if num_view_groups == 0:
-        return
-
     if clear_images:
         if color_image is not None:
             color_image.fill_(wp.uint32(BACKGROUND_COLOR))
@@ -330,14 +294,15 @@ def render_megakernel(
 
     wp.launch(
         kernel=_render_megakernel,
-        dim=(num_view_groups * total_pixels),
+        # dim=(num_view_groups * total_pixels),
+        dim=rc.num_worlds * rc.num_cameras * rc.width * rc.height,
         inputs=[
             # Model and Options
             rc.num_worlds,
             rc.num_cameras,
             rc.num_lights,
             rc.width,
-            rc.height,
+            rc.tile_size,
             rc.enable_shadows,
             rc.enable_textures,
             rc.enable_ambient_lighting,
@@ -396,5 +361,4 @@ def render_megakernel(
             color_image,
             depth_image,
         ],
-        block_dim=THREADS_PER_TILE,
     )
