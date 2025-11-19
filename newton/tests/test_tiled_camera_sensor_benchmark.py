@@ -32,8 +32,8 @@ class TestTiledCameraSensorBenchmark(unittest.TestCase):
 
         resolution = 64
         num_worlds = 4096
-        warmup = 20
-        iterations = 50
+        warmup_iterations = 20
+        render_iterations = 50
 
         scene = newton.ModelBuilder()
         scene.replicate(franka, num_worlds)
@@ -63,29 +63,42 @@ class TestTiledCameraSensorBenchmark(unittest.TestCase):
 
         tiled_camera_sensor = TiledCameraSensor(model=model, num_cameras=1, width=resolution, height=resolution)
         tiled_camera_sensor.assign_debug_colors_per_shape()
+        # tiled_camera_sensor.assign_default_checkerboard_material()
         tiled_camera_sensor.create_default_light(False)
         tiled_camera_sensor.compute_camera_rays(wp.array([math.radians(45.0)], dtype=wp.float32))
         color_image = tiled_camera_sensor.create_color_image_output()
         depth_image = tiled_camera_sensor.create_depth_image_output()
 
         tiled_camera_sensor.update_cameras(camera_positions, camera_orientations)
-
         tiled_camera_sensor.update_from_state(state)
+
         with wp.ScopedTimer("Refit BVH", synchronize=True):
             tiled_camera_sensor.render_context.refit_bvh()
 
-        with wp.ScopedTimer("Warmup", synchronize=True):
-            for _ in range(warmup):
+        with wp.ScopedTimer("Warmup", synchronize=True) as timer:
+            for _ in range(warmup_iterations):
                 tiled_camera_sensor.render(color_image, depth_image, refit_bvh=False, clear_images=False)
+        self.print_timer(timer, warmup_iterations, tiled_camera_sensor)
 
+        tiled_camera_sensor.render_context.tile_rendering = False
         with wp.ScopedTimer("Rendering", synchronize=True) as timer:
-            for _ in range(iterations):
+            for _ in range(render_iterations):
                 tiled_camera_sensor.render(color_image, depth_image, refit_bvh=False, clear_images=False)
+        self.print_timer(timer, render_iterations, tiled_camera_sensor)
 
-        print(f"Average: {timer.elapsed / iterations:.2f} ms")
+        tiled_camera_sensor.render_context.tile_rendering = True
+        tiled_camera_sensor.render_context.tile_size = 8
+        with wp.ScopedTimer("Tiled Rendering", synchronize=True) as timer:
+            for _ in range(render_iterations):
+                tiled_camera_sensor.render(color_image, depth_image, refit_bvh=False, clear_images=False)
+        self.print_timer(timer, render_iterations, tiled_camera_sensor)
 
         tiled_camera_sensor.save_color_image(color_image, "example_color.png")
         tiled_camera_sensor.save_depth_image(depth_image, "example_depth.png")
+
+
+    def print_timer(self, timer: wp.ScopedTimer, iterations: int, sensor: TiledCameraSensor):
+        print(f"{timer.name} average: {timer.elapsed / iterations:.2f} ms ({(1000.0 / (timer.elapsed / iterations) * (sensor.render_context.num_worlds * sensor.render_context.num_cameras)):,.2f} fps)")
 
 
 if __name__ == "__main__":

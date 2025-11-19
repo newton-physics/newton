@@ -33,10 +33,12 @@ class RenderContext:
         num_worlds: int = 1,
         num_cameras: int = 1,
         has_global_world: bool = False,
+        tile_rendering: bool = False,
         tile_size: int = 8,
     ):
         self.__width = width
         self.__height = height
+        self.__tile_rendering = tile_rendering
         self.__tile_size = tile_size
         self.__enable_textures = enable_textures
         self.__enable_shadows = enable_shadows
@@ -175,7 +177,6 @@ class RenderContext:
         refit_bvh: bool = True,
         clear_images: bool = True,
     ):
-        assert self.width % self.tile_size == 0, "render width must be a multiple of tile_size"
         if self.has_geometries or self.has_particles or self.has_triangle_mesh:
             if refit_bvh:
                 self.refit_bvh()
@@ -269,6 +270,14 @@ class RenderContext:
     @tile_size.setter
     def tile_size(self, tile_size: int) -> int:
         self.__tile_size = tile_size
+
+    @property
+    def tile_rendering(self) -> bool:
+        return self.__tile_rendering
+
+    @tile_rendering.setter
+    def tile_rendering(self, tile_rendering: bool) -> bool:
+        self.__tile_rendering = tile_rendering
 
     @property
     def enable_textures(self) -> bool:

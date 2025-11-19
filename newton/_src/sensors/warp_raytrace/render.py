@@ -53,6 +53,22 @@ def tid_to_tile_coord(tid: wp.int32, num_worlds: wp.int32, num_cameras: wp.int32
 
 
 @wp.func
+def tid_to_pixel_coord(tid: wp.int32, num_worlds: wp.int32, num_cameras: wp.int32, width: wp.int32):
+    num_views_per_pixel = num_worlds * num_cameras
+
+    pixel_idx = tid // num_views_per_pixel
+    view_idx = tid % num_views_per_pixel
+
+    world_id = view_idx % num_worlds
+    camera_id = view_idx // num_worlds
+
+    py = pixel_idx // width
+    px = pixel_idx % width
+
+    return world_id, camera_id, py, px
+
+
+@wp.func
 def pack_rgba_to_uint32(r: wp.float32, g: wp.float32, b: wp.float32, a: wp.float32) -> wp.uint32:
     """Pack RGBA values into a single uint32 for efficient memory access."""
     return (
@@ -70,7 +86,9 @@ def _render_megakernel(
     num_cameras: wp.int32,
     num_lights: wp.int32,
     img_width: wp.int32,
+    img_height: wp.int32,
     tile_size: wp.int32,
+    tile_rendering: wp.bool,
     enable_shadows: wp.bool,
     enable_textures: wp.bool,
     enable_ambient_lighting: wp.bool,
@@ -132,7 +150,14 @@ def _render_megakernel(
 ):
     tid = wp.tid()
 
-    world_id, camera_id, py, px = tid_to_tile_coord(tid, num_worlds, num_cameras, tile_size, img_width)
+    if tile_rendering:
+        world_id, camera_id, py, px = tid_to_tile_coord(tid, num_worlds, num_cameras, tile_size, img_width)
+    else:
+        world_id, camera_id, py, px = tid_to_pixel_coord(tid, num_worlds, num_cameras, img_width)
+
+    if px >= img_width or py >= img_height:
+        return
+
     out_index = py * img_width + px
 
     ray_origin_world = camera_positions[camera_id] + camera_rays[camera_id, py, px, 0]
@@ -285,6 +310,10 @@ def render_megakernel(
     depth_image: wp.array(dtype=wp.float32, ndim=3) | None = None,
     clear_images: bool = True,
 ):
+    if rc.tile_rendering:
+        assert rc.width % rc.tile_size == 0, "render width must be a multiple of tile_size"
+        assert rc.height % rc.tile_size == 0, "render height must be a multiple of tile_size"
+
     if clear_images:
         if color_image is not None:
             color_image.fill_(wp.uint32(BACKGROUND_COLOR))
@@ -292,9 +321,9 @@ def render_megakernel(
         if depth_image is not None:
             depth_image.fill_(wp.float32(0.0))
 
+
     wp.launch(
         kernel=_render_megakernel,
-        # dim=(num_view_groups * total_pixels),
         dim=rc.num_worlds * rc.num_cameras * rc.width * rc.height,
         inputs=[
             # Model and Options
@@ -302,7 +331,9 @@ def render_megakernel(
             rc.num_cameras,
             rc.num_lights,
             rc.width,
+            rc.height,
             rc.tile_size,
+            rc.tile_rendering,
             rc.enable_shadows,
             rc.enable_textures,
             rc.enable_ambient_lighting,
@@ -360,5 +391,5 @@ def render_megakernel(
             depth_image is not None,
             color_image,
             depth_image,
-        ],
+        ]
     )
