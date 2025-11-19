@@ -188,7 +188,7 @@ class TestMuJoCoSolverPropertiesBase(TestMuJoCoSolver):
         shape_cfg = newton.ModelBuilder.ShapeConfig(density=1000.0)  # Define ShapeConfig
 
         # --- Free-floating body (e.g., a box) ---
-        free_body_initial_pos = wp.transform((0.5, 0.5, 0.0), wp.quat_identity())
+        # free_body_initial_pos = wp.transform((0.5, 0.5, 0.0), wp.quat_identity())
         free_body_idx = template_builder.add_body(mass=0.2)
         template_builder.add_shape_box(
             body=free_body_idx,
@@ -202,8 +202,8 @@ class TestMuJoCoSolverPropertiesBase(TestMuJoCoSolver):
         # --- Articulated tree (3 bodies) ---
         link_radius = 0.05
         link_half_length = 0.15
-        tree_root_initial_pos_y = link_half_length * 2.0
-        tree_root_initial_transform = wp.transform((0.0, tree_root_initial_pos_y, 0.0), wp.quat_identity())
+        # tree_root_initial_pos_y = link_half_length * 2.0
+        # tree_root_initial_transform = wp.transform((0.0, tree_root_initial_pos_y, 0.0), wp.quat_identity())
 
         template_builder.add_articulation()
         body1_idx = template_builder.add_link(mass=0.1)
