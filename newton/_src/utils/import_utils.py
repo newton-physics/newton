@@ -117,7 +117,9 @@ def parse_custom_attributes(
         parsing_mode: The parsing mode to use. This can be "usd", "mjcf", or "urdf". It determines which attribute name and value transformer to use.
 
     Returns:
-        A dictionary of the parsed custom attributes. The keys are the custom attribute keys :attr:`ModelBuilder.CustomAttribute.key` and the values are the parsed values.
+        A dictionary of the parsed custom attributes. The keys are the custom attribute keys :attr:`ModelBuilder.CustomAttribute.key`
+        and the values are the parsed values. Only attributes that were explicitly specified in the source are included
+        in the output dict. Unspecified attributes are not included, allowing defaults to be filled in during model finalization.
     """
     out = {}
     for attr in custom_attributes:
@@ -144,8 +146,6 @@ def parse_custom_attributes(
         dict_value = dictlike.get(name)
         if dict_value is not None:
             out[attr.key] = transformer(dict_value)
-        else:
-            out[attr.key] = attr.default
     return out
 
 
