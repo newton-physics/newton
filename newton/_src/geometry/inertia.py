@@ -688,7 +688,7 @@ def verify_and_correct_inertia(
     return corrected_mass, wp.mat33(corrected_inertia), was_corrected
 
 
-@wp.kernel(enable_backward=False, module="unique")
+@wp.kernel(enable_backward=False)
 def validate_and_correct_inertia_kernel(
     body_mass: wp.array(dtype=wp.float32),
     body_inertia: wp.array(dtype=wp.mat33),

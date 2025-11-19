@@ -29,7 +29,7 @@ class TestSelection(unittest.TestCase):
     def test_empty_selection(self):
         builder = newton.ModelBuilder()
         builder.add_articulation("my_articulation")
-        body = builder.add_body()
+        body = builder.add_link()
         builder.add_joint_free(child=body)
         model = builder.finalize()
         control = model.control()

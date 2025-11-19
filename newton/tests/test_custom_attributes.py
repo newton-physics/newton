@@ -1159,7 +1159,7 @@ class TestCustomAttributes(unittest.TestCase):
         # Create free bodies (no articulation)
         free_body_ids = []
         for i in range(3):
-            body = builder.add_body(
+            body = builder.add_link(
                 xform=wp.transform([float(i), 0.0, 0.0], wp.quat_identity()),
                 mass=1.0,
                 custom_attributes={
@@ -1241,7 +1241,7 @@ class TestCustomAttributes(unittest.TestCase):
 
         # Check ARTICULATION attributes
         arctic_stiff = model.articulation_stiffness.numpy()
-        self.assertEqual(len(arctic_stiff), 5)
+        self.assertEqual(len(arctic_stiff), 2)
         self.assertAlmostEqual(arctic_stiff[0], 100.0, places=5)
         self.assertAlmostEqual(arctic_stiff[1], 150.0, places=5)
 
