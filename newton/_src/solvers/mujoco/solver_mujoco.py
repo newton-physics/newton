@@ -175,7 +175,6 @@ class SolverMuJoCo(SolverBase):
                 namespace="mujoco",
                 usd_attribute_name="mjc:margin",
                 mjcf_attribute_name="margin",
-                usd_value_transformer=lambda v: list(v) if hasattr(v, "__iter__") else [v],
             )
         )
         builder.add_custom_attribute(
