@@ -962,7 +962,7 @@ class SolverMuJoCo(SolverBase):
             return attr.numpy()
 
         shape_condim = get_custom_attribute("condim")
-        joint_dof_margin = get_custom_attribute("limit_margin")
+        joint_dof_limit_margin = get_custom_attribute("limit_margin")
         joint_solimp_limit = get_custom_attribute("solimplimit")
 
         eq_constraint_type = model.equality_constraint_type.numpy()
@@ -1285,8 +1285,8 @@ class SolverMuJoCo(SolverBase):
                     # Set friction
                     joint_params["frictionloss"] = joint_friction[ai]
                     # Set margin if available
-                    if joint_dof_margin is not None:
-                        joint_params["margin"] = joint_dof_margin[ai]
+                    if joint_dof_limit_margin is not None:
+                        joint_params["margin"] = joint_dof_limit_margin[ai]
                     lower, upper = joint_limit_lower[ai], joint_limit_upper[ai]
                     if lower <= -JOINT_LIMIT_UNLIMITED and upper >= JOINT_LIMIT_UNLIMITED:
                         joint_params["limited"] = False
@@ -1354,8 +1354,8 @@ class SolverMuJoCo(SolverBase):
                     # Set friction
                     joint_params["frictionloss"] = joint_friction[ai]
                     # Set margin if available
-                    if joint_dof_margin is not None:
-                        joint_params["margin"] = joint_dof_margin[ai]
+                    if joint_dof_limit_margin is not None:
+                        joint_params["margin"] = joint_dof_limit_margin[ai]
                     lower, upper = joint_limit_lower[ai], joint_limit_upper[ai]
                     if lower <= -JOINT_LIMIT_UNLIMITED and upper >= JOINT_LIMIT_UNLIMITED:
                         joint_params["limited"] = False
