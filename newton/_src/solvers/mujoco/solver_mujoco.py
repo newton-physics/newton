@@ -58,7 +58,6 @@ from .kernels import (
     update_body_mass_ipos_kernel,
     update_geom_properties_kernel,
     update_joint_dof_properties_kernel,
-    update_joint_margin_kernel,
     update_joint_transforms_kernel,
     update_model_properties_kernel,
     update_shape_mappings_kernel,
@@ -1764,6 +1763,7 @@ class SolverMuJoCo(SolverBase):
         # Update DOF properties (armature, friction, and solimplimit) with proper DOF mapping
         mujoco_attrs = getattr(self.model, "mujoco", None)
         solimplimit = getattr(mujoco_attrs, "solimplimit", None) if mujoco_attrs is not None else None
+        joint_dof_limit_margin = getattr(mujoco_attrs, "limit_margin", None) if mujoco_attrs is not None else None
 
         wp.launch(
             update_joint_dof_properties_kernel,
@@ -1778,6 +1778,7 @@ class SolverMuJoCo(SolverBase):
                 self.model.joint_limit_ke,
                 self.model.joint_limit_kd,
                 solimplimit,
+                joint_dof_limit_margin,
                 joints_per_world,
             ],
             outputs=[
@@ -1785,26 +1786,10 @@ class SolverMuJoCo(SolverBase):
                 self.mjw_model.dof_frictionloss,
                 self.mjw_model.jnt_solimp,
                 self.mjw_model.jnt_solref,
+                self.mjw_model.jnt_margin,
             ],
             device=self.model.device,
         )
-
-        # Update joint margin if available
-        mujoco_attrs = getattr(self.model, "mujoco", None)
-        if mujoco_attrs is not None and hasattr(mujoco_attrs, "limit_margin"):
-            joints_per_world = self.model.joint_count // self.model.num_worlds
-            wp.launch(
-                update_joint_margin_kernel,
-                dim=self.model.joint_dof_count,
-                inputs=[
-                    mujoco_attrs.limit_margin,
-                    self.model.joint_qd_start,
-                    dofs_per_world,
-                    joints_per_world,
-                ],
-                outputs=[self.mjw_model.jnt_margin],
-                device=self.model.device,
-            )
 
     def update_joint_properties(self):
         """Update joint properties including joint positions, joint axes, and relative body transforms in the MuJoCo model."""
