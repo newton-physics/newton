@@ -230,9 +230,8 @@ class Example:
                 self.model,
                 self.state_0,
                 f"cube from world {i} is within bounds and above ground",
-                lambda q, qd: (
-                    newton.utils.vec_inside_limits(q.p, cube_lower, cube_upper)  # noqa: B023
-                    and q.p[2] > 0.0  # Above ground plane
+                lambda q, qd, lower=cube_lower, upper=cube_upper: (
+                    newton.utils.vec_inside_limits(q.p, lower, upper) and q.p[2] > 0.0
                 ),
                 indices=np.array([cube_body_idx], dtype=np.int32),
             )
