@@ -799,8 +799,8 @@ class ViewerGL(ViewerBase):
         elif symbol == pyglet.window.key.F:
             # Frame camera around model bounds
             self._frame_camera_on_model()
-        elif symbol == pyglet.window.key.ESCAPE or symbol == pyglet.window.key.Q:
-            # Exit with Escape or Q key
+        elif symbol == pyglet.window.key.ESCAPE:
+            # Exit with Escape key
             self.renderer.close()
 
     def on_key_release(self, symbol, modifiers):
