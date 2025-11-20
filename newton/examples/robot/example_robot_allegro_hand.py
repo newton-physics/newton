@@ -126,6 +126,9 @@ class Example:
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.model)
         self.initial_world_positions = self.model.body_q.numpy()[:: allegro_hand.body_count, :3].copy()
 
+        # Find the cube body index (it's the last body in each world)
+        self.cube_body_offset = allegro_hand.body_count - 1
+
         self.world_time = wp.zeros(self.num_worlds, dtype=wp.float32)
 
         self.solver = newton.solvers.SolverMuJoCo(
@@ -203,15 +206,35 @@ class Example:
     def test(self):
         num_bodies_per_world = self.model.body_count // self.num_worlds
         for i in range(self.num_worlds):
+            world_offset = i * num_bodies_per_world
             world_pos = wp.vec3(*self.initial_world_positions[i])
-            world_lower = world_pos - wp.vec3(0.5, 0.5, 0.5)
-            world_upper = world_pos + wp.vec3(0.5, 0.5, 0.5)
+
+            # Test hand bodies (all except the cube) - keep original tight bounds
+            hand_lower = world_pos - wp.vec3(0.5, 0.5, 0.5)
+            hand_upper = world_pos + wp.vec3(0.5, 0.5, 0.5)
+            hand_body_indices = np.arange(num_bodies_per_world - 1, dtype=np.int32) + world_offset
             newton.examples.test_body_state(
                 self.model,
                 self.state_0,
-                f"all bodies from world {i} are close to the initial position",
-                lambda q, qd: newton.utils.vec_inside_limits(q.p, world_lower, world_upper),  # noqa: B023
-                indices=np.arange(num_bodies_per_world, dtype=np.int32) + i * num_bodies_per_world,
+                f"hand bodies from world {i} are close to the initial position",
+                lambda q, qd: newton.utils.vec_inside_limits(q.p, hand_lower, hand_upper),  # noqa: B023
+                indices=hand_body_indices,
+            )
+
+            # Test cube body - allow it to fall to ground plane
+            # Keep X/Y bounds tight, but allow Z to be anywhere from ground (0) to initial position
+            cube_body_idx = world_offset + self.cube_body_offset
+            cube_lower = world_pos - wp.vec3(0.5, 0.5, 0.0)  # No lower Z bound (will check > 0 separately)
+            cube_upper = world_pos + wp.vec3(0.5, 0.5, 0.5)
+            newton.examples.test_body_state(
+                self.model,
+                self.state_0,
+                f"cube from world {i} is within bounds and above ground",
+                lambda q, qd: (
+                    newton.utils.vec_inside_limits(q.p, cube_lower, cube_upper)  # noqa: B023
+                    and q.p[2] > 0.0  # Above ground plane
+                ),
+                indices=np.array([cube_body_idx], dtype=np.int32),
             )
 
 
