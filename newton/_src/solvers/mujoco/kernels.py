@@ -936,6 +936,7 @@ def update_joint_transforms_kernel(
     joint_limit_kd: wp.array(dtype=float),
     joint_mjc_dof_start: wp.array(dtype=wp.int32),
     body_mapping: wp.array(dtype=wp.int32),
+    newton_body_to_mocap_index: wp.array(dtype=wp.int32),
     joints_per_world: int,
     # outputs
     joint_pos: wp.array2d(dtype=wp.vec3),
@@ -943,6 +944,8 @@ def update_joint_transforms_kernel(
     joint_solref: wp.array2d(dtype=wp.vec2),
     body_pos: wp.array2d(dtype=wp.vec3),
     body_quat: wp.array2d(dtype=wp.quat),
+    mocap_pos: wp.array2d(dtype=wp.vec3),
+    mocap_quat: wp.array2d(dtype=wp.quat),
 ):
     tid = wp.tid()
     worldid = tid // joints_per_world
@@ -963,6 +966,23 @@ def update_joint_transforms_kernel(
         # this should not happen
         wp.printf("Joint %i has no MuJoCo DOF start index\n", joint_in_world)
         return
+
+    # update body pos and quat from parent joint transform
+    child = joint_child[joint_in_world]  # Newton body id
+    body_id = body_mapping[child]  # MuJoCo body id
+    tf = parent_xform * wp.transform_inverse(child_xform)
+
+    # Check if this is a mocap body (fixed-base articulation)
+    # For mocap bodies, we need to update mocap_pos/mocap_quat instead of body_pos/body_quat
+    # mocap_index is -1 if not a mocap body
+    mocap_index = newton_body_to_mocap_index[child]
+    rotation = wp.quat(tf.q.w, tf.q.x, tf.q.y, tf.q.z)
+    if mocap_index >= 0:
+        mocap_pos[worldid, mocap_index] = tf.p
+        mocap_quat[worldid, mocap_index] = rotation
+    else:
+        body_pos[worldid, body_id] = tf.p
+        body_quat[worldid, body_id] = rotation
 
     # update linear dofs
     for i in range(lin_axis_count):
@@ -985,13 +1005,6 @@ def update_joint_transforms_kernel(
         # update joint limit solref using negative convention
         if joint_limit_ke[newton_dof_index] > 0:
             joint_solref[worldid, ai] = wp.vec2(-joint_limit_ke[newton_dof_index], -joint_limit_kd[newton_dof_index])
-
-    # update body pos and quat from parent joint transform
-    child = joint_child[joint_in_world]  # Newton body id
-    body_id = body_mapping[child]  # MuJoCo body id
-    tf = parent_xform * wp.transform_inverse(child_xform)
-    body_pos[worldid, body_id] = tf.p
-    body_quat[worldid, body_id] = wp.quat(tf.q.w, tf.q.x, tf.q.y, tf.q.z)
 
 
 @wp.kernel(enable_backward=False)
