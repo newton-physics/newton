@@ -912,12 +912,12 @@ def update_joint_dof_properties_kernel(
     joint_friction: wp.array(dtype=float),
     joint_limit_ke: wp.array(dtype=float),
     joint_limit_kd: wp.array(dtype=float),
-    solimplimit: wp.array(dtype=wp.types.vector(length=5, dtype=wp.float32)),
+    solimplimit: wp.array(dtype=vec5),
     joints_per_world: int,
     # outputs
     dof_armature: wp.array2d(dtype=float),
     dof_frictionloss: wp.array2d(dtype=float),
-    jnt_solimp: wp.array2d(dtype=wp.types.vector(length=5, dtype=wp.float32)),
+    jnt_solimp: wp.array2d(dtype=vec5),
     jnt_solref: wp.array2d(dtype=wp.vec2),
 ):
     """Update joint DOF properties including armature, friction loss, joint impedance limits, and solref.
