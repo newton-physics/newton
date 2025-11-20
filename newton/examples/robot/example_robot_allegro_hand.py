@@ -90,6 +90,7 @@ class Example:
         self.device = wp.get_device()
 
         allegro_hand = newton.ModelBuilder()
+        newton.solvers.SolverMuJoCo.register_custom_attributes(allegro_hand)
         allegro_hand.default_shape_cfg.ke = 1.0e3
         allegro_hand.default_shape_cfg.kd = 1.0e2
 
@@ -114,7 +115,6 @@ class Example:
             allegro_hand.joint_target_pos[i] = 0.0
 
         builder = newton.ModelBuilder()
-        newton.solvers.SolverMuJoCo.register_custom_attributes(builder)
         builder.replicate(allegro_hand, self.num_worlds)
 
         builder.default_shape_cfg.ke = 1.0e3

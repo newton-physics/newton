@@ -569,7 +569,7 @@ def parse_mjcf(
         joint_name = []
         joint_pos = []
         joint_custom_attributes: dict[str, Any] = {}
-        dof_custom_attributes: dict[str, list[Any]] = {}
+        dof_custom_attributes: dict[str, dict[int, Any]] = {}
 
         linear_axes = []
         angular_axes = []
@@ -584,6 +584,8 @@ def parse_mjcf(
                 freejoint_tags[0].attrib, builder_custom_attr_joint, parsing_mode="mjcf"
             )
         else:
+            # DOF index relative to the joint being created (multiple MJCF joints in a body are combined into one Newton joint)
+            current_dof_index = 0
             joints = body.findall("joint")
             for i, joint in enumerate(joints):
                 joint_defaults = defaults
@@ -640,11 +642,14 @@ def parse_mjcf(
                     linear_axes.append(ax)
 
                 dof_attr = parse_custom_attributes(joint_attrib, builder_custom_attr_dof, parsing_mode="mjcf")
-                # assemble custom attributes for each DOF (list of values per custom attribute key)
+                # assemble custom attributes for each DOF (dict mapping DOF index to value)
+                # Only store values that were explicitly specified in the source
                 for key, value in dof_attr.items():
                     if key not in dof_custom_attributes:
-                        dof_custom_attributes[key] = []
-                    dof_custom_attributes[key].append(value)
+                        dof_custom_attributes[key] = {}
+                    dof_custom_attributes[key][current_dof_index] = value
+
+                current_dof_index += 1
 
         body_custom_attributes = parse_custom_attributes(body_attrib, builder_custom_attr_body, parsing_mode="mjcf")
         link = builder.add_body(
