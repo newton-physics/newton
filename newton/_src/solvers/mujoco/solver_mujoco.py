@@ -1556,8 +1556,6 @@ class SolverMuJoCo(SolverBase):
             # now complete the data from the Newton model
             self.notify_model_changed(SolverNotifyFlags.ALL)
 
-            print(self.mj_model.body_mocapid)
-
     def expand_model_fields(self, mj_model: MjWarpModel, nworld: int):
         if nworld == 1:
             return
