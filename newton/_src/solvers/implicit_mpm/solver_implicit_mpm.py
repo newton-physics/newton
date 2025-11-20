@@ -102,6 +102,30 @@ def integrate_collider_fraction(
 
 
 @fem.integrand
+def integrate_collider_fraction_apic(
+    s: fem.Sample,
+    domain: fem.Domain,
+    phi: fem.Field,
+    sdf: fem.Field,
+    sdf_gradient: fem.Field,
+    inv_cell_volume: float,
+):
+    # APIC collider fraction prediction
+    node_count = fem.node_count(sdf, s)
+    pos = domain(s)
+    min_sdf = float(_INFINITY)
+    for k in range(node_count):
+        s_node = fem.at_node(sdf, s, k)
+        sdf_value = sdf(s_node, k)
+        sdf_gradient_value = sdf_gradient(s_node, k)
+
+        node_offset = pos - domain(s_node)
+        min_sdf = wp.min(min_sdf, sdf_value + wp.dot(sdf_gradient_value, node_offset))
+
+    return phi(s) * wp.where(min_sdf <= 0.0, inv_cell_volume, 0.0)
+
+
+@fem.integrand
 def integrate_mass(
     s: fem.Sample,
     phi: fem.Field,
@@ -525,7 +549,7 @@ def collision_weight_field(
     return trial(s)
 
 
-def make_basis_space(grid: fem.Geometry, basis_str: str, family: fem.Polynomial | None = None):
+def _make_grid_basis_space(grid: fem.Geometry, basis_str: str, family: fem.Polynomial | None = None):
     assert len(basis_str) >= 2
 
     degree = int(basis_str[1])
@@ -540,6 +564,15 @@ def make_basis_space(grid: fem.Geometry, basis_str: str, family: fem.Polynomial 
         raise ValueError(f"Unsupported basis: {basis_str}")
 
     return fem.make_polynomial_basis_space(grid, degree=degree, element_basis=element_basis, family=family)
+
+
+def _make_pic_basis_space(pic: fem.PicQuadrature, basis_str: str):
+    try:
+        max_points_per_cell = int(basis_str[3:])
+    except ValueError:
+        max_points_per_cell = -1
+
+    return fem.PointBasisSpace(pic, max_nodes_per_element=max_points_per_cell)
 
 
 @dataclass
@@ -596,7 +629,7 @@ class ImplicitMPMOptions:
     collider_normal_from_sdf_gradient: bool = False
     """Compute collider normals from sdf gradient rather than closest point"""
     collider_basis: str = "Q1"
-    """Collider basis functions. May be one of Q1, Q2, S2"""
+    """Collider basis function string. Examples: P0 (piecewise constant), Q1 (trilinear), S2 (quadratic serendipity), pic8 (particle-based with max 8 points per cell)"""
 
 
 class _ImplicitMPMScratchpad:
@@ -664,6 +697,9 @@ class _ImplicitMPMScratchpad:
         """Define velocity and strain function spaces over the given geometry."""
 
         self.domain = pic.domain
+
+        use_pic_collider_basis = collider_basis_str[:3] == "pic"
+
         if self.domain.geometry is not self.grid:
             self.grid = self.domain.geometry
 
@@ -671,10 +707,16 @@ class _ImplicitMPMScratchpad:
             # zero or first order for pressure
             self._velocity_basis = fem.make_polynomial_basis_space(self.grid, degree=1)
 
-            self._collision_basis = make_basis_space(
-                self.grid, collider_basis_str, family=fem.Polynomial.EQUISPACED_CLOSED
-            )
-            self._strain_basis = make_basis_space(self.grid, strain_basis_str)
+            self._strain_basis = _make_grid_basis_space(self.grid, strain_basis_str)
+
+            if not use_pic_collider_basis:
+                self._collision_basis = _make_grid_basis_space(
+                    self.grid, collider_basis_str, family=fem.Polynomial.EQUISPACED_CLOSED
+                )
+
+        # Point-based basis space need to be rebuilt evemn when the geo does not change
+        if use_pic_collider_basis:
+            self._collision_basis = _make_pic_basis_space(pic, collider_basis_str)
 
         self._create_velocity_function_space(temporary_store, max_cell_count)
         self._create_collider_function_space(temporary_store, max_cell_count)
@@ -717,10 +759,13 @@ class _ImplicitMPMScratchpad:
 
         collision_space = fem.make_collocated_function_space(self._collision_basis, dtype=wp.vec3)
 
-        # overly conservative
-        max_collision_node_count = (
-            collision_space.topology.MAX_NODES_PER_ELEMENT * domain.element_count() if max_cell_count >= 0 else -1
-        )
+        if isinstance(collision_space.basis, fem.PointBasisSpace):
+            max_collision_node_count = collision_space.node_count()
+        else:
+            # overly conservative
+            max_collision_node_count = (
+                collision_space.topology.MAX_NODES_PER_ELEMENT * domain.element_count() if max_cell_count >= 0 else -1
+            )
 
         collision_space_partition = fem.make_space_partition(
             space_topology=collision_space.topology,
@@ -2419,17 +2464,31 @@ class SolverImplicitMPM(SolverBase):
                     output=scratch.strain_node_volume,
                 )
 
-                fem.integrate(
-                    integrate_collider_fraction,
-                    fields={
-                        "phi": scratch.divergence_test,
-                        "sdf": scratch.collider_distance_field,
-                    },
-                    values={
-                        "inv_cell_volume": inv_cell_volume,
-                    },
-                    output=scratch.strain_node_collider_volume,
-                )
+                if isinstance(scratch.collider_distance_field.space.basis, fem.PointBasisSpace):
+                    fem.integrate(
+                        integrate_collider_fraction_apic,
+                        fields={
+                            "phi": scratch.divergence_test,
+                            "sdf": scratch.collider_distance_field,
+                            "sdf_gradient": scratch.collider_normal_field,
+                        },
+                        values={
+                            "inv_cell_volume": inv_cell_volume,
+                        },
+                        output=scratch.strain_node_collider_volume,
+                    )
+                else:
+                    fem.integrate(
+                        integrate_collider_fraction,
+                        fields={
+                            "phi": scratch.divergence_test,
+                            "sdf": scratch.collider_distance_field,
+                        },
+                        values={
+                            "inv_cell_volume": inv_cell_volume,
+                        },
+                        output=scratch.strain_node_collider_volume,
+                    )
 
                 wp.launch(
                     compute_unilateral_strain_offset,
@@ -2589,26 +2648,16 @@ class SolverImplicitMPM(SolverBase):
         scratch.require_velocity_space_fields(has_compliant_particles)
         scratch.require_collision_space_fields()
 
-        # Necessary fields for two-way coupling and grains rendering
+        # Necessary fields for grains rendering
         # Re-generated at each step, defined on space partition
         state_out.velocity_field = scratch.velocity_field
-        state_out.impulse_field = scratch.impulse_field
-        state_out.collider_ids = scratch.collider_ids
-        state_out.collider_position_field = scratch.collider_position_field
-
-        # Impulse warmstarting, defined at space level
-        velocity_space = scratch.velocity_test.space
-        if state_out.ws_impulse_field is None or state_out.ws_impulse_field.geometry != velocity_space.geometry:
-            state_out.ws_impulse_field = velocity_space.make_field()
 
     @staticmethod
     def _require_collision_space_fields(state_out: newton.State, scratch: _ImplicitMPMScratchpad):
         """Ensure collision-space fields exist and match current spaces."""
         scratch.require_collision_space_fields()
 
-        # Necessary fields for two-way coupling and grains rendering
-        # Re-generated at each step, defined on space partition
-        state_out.velocity_field = scratch.velocity_field
+        # Necessary fields for two-way coupling
         state_out.impulse_field = scratch.impulse_field
         state_out.collider_ids = scratch.collider_ids
         state_out.collider_position_field = scratch.collider_position_field
@@ -2641,16 +2690,20 @@ class SolverImplicitMPM(SolverBase):
         """
         domain = scratch.velocity_test.domain
 
-        # Interpolate previous impulse
-        prev_impulse_field = fem.NonconformingField(
-            domain, prev_impulse_field, background=scratch.background_impulse_field
-        )
-        fem.interpolate(
-            prev_impulse_field,
-            dest=scratch.impulse_field,
-            at=scratch.collider_fraction_test.space_restriction,
-            reduction="first",
-        )
+        if isinstance(prev_impulse_field.space.basis, fem.PointBasisSpace):
+            # point-based collisions, simply copy the previous impulses
+            scratch.impulse_field.dof_values.assign(prev_impulse_field.dof_values)
+        else:
+            # Interpolate previous impulse
+            prev_impulse_field = fem.NonconformingField(
+                domain, prev_impulse_field, background=scratch.background_impulse_field
+            )
+            fem.interpolate(
+                prev_impulse_field,
+                dest=scratch.impulse_field,
+                at=scratch.collider_fraction_test.space_restriction,
+                reduction="first",
+            )
 
         # Interpolate previous stress
         prev_stress_field = fem.NonconformingField(
@@ -2665,16 +2718,21 @@ class SolverImplicitMPM(SolverBase):
 
     @staticmethod
     def _save_for_next_warmstart(state_out: newton.State):
-        state_out.ws_impulse_field.dof_values.zero_()
-        wp.launch(
-            scatter_field_dof_values,
-            dim=state_out.impulse_field.space_partition.node_count(),
-            inputs=[
-                state_out.impulse_field.space_partition.space_node_indices(),
-                state_out.impulse_field.dof_values,
-                state_out.ws_impulse_field.dof_values,
-            ],
-        )
+        if isinstance(state_out.ws_impulse_field.space.basis, fem.PointBasisSpace):
+            # point-based collisions, simply copy the previous impulses
+            state_out.ws_impulse_field.dof_values.assign(state_out.impulse_field.dof_values)
+        else:
+            state_out.ws_impulse_field.dof_values.zero_()
+            wp.launch(
+                scatter_field_dof_values,
+                dim=state_out.impulse_field.space_partition.node_count(),
+                inputs=[
+                    state_out.impulse_field.space_partition.space_node_indices(),
+                    state_out.impulse_field.dof_values,
+                    state_out.ws_impulse_field.dof_values,
+                ],
+            )
+
         state_out.ws_stress_field.dof_values.zero_()
         wp.launch(
             scatter_field_dof_values,
