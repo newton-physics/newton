@@ -46,7 +46,7 @@ class ViewerGL(ViewerBase):
 
     Key Features:
         - Real-time 3D rendering of Newton models and simulation states.
-        - Camera navigation with WASD and mouse controls.
+        - Camera navigation with WASD/QE and mouse controls.
         - Object picking and manipulation via mouse.
         - Visualization toggles for joints, contacts, particles, springs, etc.
         - Wind force controls and visualization.
@@ -901,6 +901,10 @@ class ViewerGL(ViewerBase):
             desired -= right  # strafe left
         if self.renderer.is_key_down(pyglet.window.key.D) or self.renderer.is_key_down(pyglet.window.key.RIGHT):
             desired += right  # strafe right
+        if self.renderer.is_key_down(pyglet.window.key.Q):
+            desired -= up  # pan down
+        if self.renderer.is_key_down(pyglet.window.key.E):
+            desired += up  # pan up
 
         dn = float(np.linalg.norm(desired))
         if dn > 1.0e-6:
@@ -1165,6 +1169,7 @@ class ViewerGL(ViewerBase):
                 imgui.text("Controls:")
                 imgui.pop_style_color()
                 imgui.text("WASD - Move camera")
+                imgui.text("QE - Pan up/down")
                 imgui.text("Left Click - Look around")
                 imgui.text("Right Click - Pick objects")
                 imgui.text("Scroll - Zoom")
