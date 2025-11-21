@@ -798,17 +798,8 @@ class ModelBuilder:
                 else:
                     # List format or single value for single-DOF joints
                     value_sanitized = value
-                    if not isinstance(value_sanitized, (list, tuple)):
-                        # Check if it's a Warp vector/matrix type
-                        if wp.types.type_is_vector(type(value_sanitized)) or wp.types.type_is_matrix(
-                            type(value_sanitized)
-                        ):
-                            value_sanitized = [value_sanitized]
-                        else:
-                            raise TypeError(
-                                f"JOINT_DOF attribute '{attr_key}' must be a list with length equal to joint DOF count ({dof_count}), "
-                                f"a dict mapping DOF indices to values, or a single Warp vector/matrix value for single-DOF joints"
-                            )
+                    if not isinstance(value_sanitized, (list, tuple)) and dof_count == 1:
+                        value_sanitized = [value_sanitized]
 
                     actual = len(value_sanitized)
                     if actual != dof_count:
@@ -852,20 +843,18 @@ class ModelBuilder:
                             expected_frequency=ModelAttributeFrequency.JOINT_COORD,
                         )
                 else:
-                    # List format
-                    if not isinstance(value, (list, tuple)):
-                        raise TypeError(
-                            f"JOINT_COORD attribute '{attr_key}' must be a list with length equal to joint coordinate count ({coord_count}) "
-                            f"or a dict mapping coordinate indices to values"
-                        )
+                    # List format or single value for single-coordinate joints
+                    value_sanitized = value
+                    if not isinstance(value_sanitized, (list, tuple)) and coord_count == 1:
+                        value_sanitized = [value_sanitized]
 
-                    if len(value) != coord_count:
+                    if len(value_sanitized) != coord_count:
                         raise ValueError(
-                            f"JOINT_COORD attribute '{attr_key}' has {len(value)} values but joint has {coord_count} coordinates"
+                            f"JOINT_COORD attribute '{attr_key}' has {len(value_sanitized)} values but joint has {coord_count} coordinates"
                         )
 
                     # Apply each value to its corresponding coordinate
-                    for i, coord_value in enumerate(value):
+                    for i, coord_value in enumerate(value_sanitized):
                         single_attr = {attr_key: coord_value}
                         self._process_custom_attributes(
                             entity_index=coord_start + i,

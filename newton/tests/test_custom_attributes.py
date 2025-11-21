@@ -501,16 +501,6 @@ class TestCustomAttributes(unittest.TestCase):
         robot_entities = self._add_test_robot(builder)
         cfg = ModelBuilder.JointDofConfig
 
-        # Test DOF attribute must be a list (type error)
-        body1 = builder.add_body(mass=1.0)
-        with self.assertRaises(TypeError):
-            builder.add_joint_revolute(
-                parent=robot_entities["link2"],
-                child=body1,
-                axis=[0, 0, 1],
-                custom_attributes={"custom_float_dof": 0.1},
-            )
-
         # Test wrong DOF list length (value error)
         body2 = builder.add_body(mass=1.0)
         with self.assertRaises(ValueError):
@@ -522,7 +512,7 @@ class TestCustomAttributes(unittest.TestCase):
                 custom_attributes={"custom_float_dof": [0.1, 0.2]},  # 2 values for 3-DOF joint
             )
 
-        # Test coordinate attribute must be a list (type error)
+        # Test wrong coordinate list length (value error)
         body3 = builder.add_body(mass=1.0)
         with self.assertRaises(TypeError):
             builder.add_joint_revolute(
