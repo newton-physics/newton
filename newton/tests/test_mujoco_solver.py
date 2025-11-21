@@ -705,8 +705,7 @@ class TestMuJoCoSolverJointProperties(TestMuJoCoSolverPropertiesBase):
 
         # Free-floating body
         free_body_initial_pos = wp.transform((0.5, 0.5, 0.0), wp.quat_identity())
-        free_body_idx = template_builder.add_body(mass=0.2)
-        template_builder.add_joint_free(child=free_body_idx, parent_xform=free_body_initial_pos)
+        free_body_idx = template_builder.add_body(mass=0.2, xform=free_body_initial_pos)
         template_builder.add_shape_box(body=free_body_idx, xform=wp.transform(), hx=0.1, hy=0.1, hz=0.1, cfg=shape_cfg)
 
         # Articulated tree
@@ -715,13 +714,13 @@ class TestMuJoCoSolverJointProperties(TestMuJoCoSolverPropertiesBase):
         tree_root_initial_pos_y = link_half_length * 2.0
         tree_root_initial_transform = wp.transform((0.0, tree_root_initial_pos_y, 0.0), wp.quat_identity())
 
-        body1_idx = template_builder.add_body(mass=0.1)
+        body1_idx = template_builder.add_link(mass=0.1)
         template_builder.add_joint_free(child=body1_idx, parent_xform=tree_root_initial_transform)
         template_builder.add_shape_capsule(
             body=body1_idx, xform=wp.transform(), radius=link_radius, half_height=link_half_length, cfg=shape_cfg
         )
 
-        body2_idx = template_builder.add_body(mass=0.1)
+        body2_idx = template_builder.add_link(mass=0.1)
         template_builder.add_shape_capsule(
             body=body2_idx, xform=wp.transform(), radius=link_radius, half_height=link_half_length, cfg=shape_cfg
         )
@@ -735,7 +734,7 @@ class TestMuJoCoSolverJointProperties(TestMuJoCoSolverPropertiesBase):
             limit_upper=np.pi / 2,
         )
 
-        body3_idx = template_builder.add_body(mass=0.1)
+        body3_idx = template_builder.add_link(mass=0.1)
         template_builder.add_shape_capsule(
             body=body3_idx, xform=wp.transform(), radius=link_radius, half_height=link_half_length, cfg=shape_cfg
         )
