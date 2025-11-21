@@ -1756,6 +1756,8 @@ class SolverMuJoCo(SolverBase):
                 self.model.joint_friction,
                 self.model.joint_limit_ke,
                 self.model.joint_limit_kd,
+                self.model.joint_limit_lower,
+                self.model.joint_limit_upper,
                 solimplimit,
                 joints_per_world,
             ],
@@ -1764,6 +1766,7 @@ class SolverMuJoCo(SolverBase):
                 self.mjw_model.dof_frictionloss,
                 self.mjw_model.jnt_solimp,
                 self.mjw_model.jnt_solref,
+                self.mjw_model.jnt_range,
             ],
             device=self.model.device,
         )
