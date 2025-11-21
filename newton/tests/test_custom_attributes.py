@@ -512,14 +512,15 @@ class TestCustomAttributes(unittest.TestCase):
                 custom_attributes={"custom_float_dof": [0.1, 0.2]},  # 2 values for 3-DOF joint
             )
 
-        # Test wrong coordinate list length (value error)
+        # Test wrong coordinate list length (value error) - scalar for multi-coord joint
         body3 = builder.add_body(mass=1.0)
         with self.assertRaises(TypeError):
-            builder.add_joint_revolute(
+            builder.add_joint_d6(
                 parent=robot_entities["link2"],
                 child=body3,
-                axis=[1, 0, 0],
-                custom_attributes={"custom_float_coord": 0.5},
+                linear_axes=[cfg(axis=newton.Axis.X), cfg(axis=newton.Axis.Y)],
+                angular_axes=[cfg(axis=[0, 0, 1])],
+                custom_attributes={"custom_float_coord": 0.5},  # Scalar for multi-coord joint
             )
 
     def test_vector_type_inference(self):
