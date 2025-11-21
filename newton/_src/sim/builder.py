@@ -1760,7 +1760,7 @@ class ModelBuilder:
             child_xform (Transform): The transform of the joint in the child body's local frame. If None, the identity transform is used.
             collision_filter_parent (bool): Whether to filter collisions between shapes of the parent and child bodies.
             enabled (bool): Whether the joint is enabled (not considered by :class:`SolverFeatherstone`).
-            custom_attributes: Dictionary of custom attribute keys (see :attr:`CustomAttribute.key`) to values. Note that custom attributes with frequency :attr:`ModelAttributeFrequency.JOINT_DOF` or :attr:`ModelAttributeFrequency.JOINT_COORD` require the respective values to be provided as lists with length equal to the joint's DOF or coordinate count. Custom attributes with frequency :attr:`ModelAttributeFrequency.JOINT` require a single value to be defined.
+            custom_attributes: Dictionary of custom attribute keys (see :attr:`CustomAttribute.key`) to values. Note that custom attributes with frequency :attr:`ModelAttributeFrequency.JOINT_DOF` or :attr:`ModelAttributeFrequency.JOINT_COORD` can be provided as: (1) lists with length equal to the joint's DOF or coordinate count, (2) dicts mapping DOF/coordinate indices to values, or (3) scalar values for single-DOF/single-coordinate joints (automatically expanded to lists). Custom attributes with frequency :attr:`ModelAttributeFrequency.JOINT` require a single value to be defined.
 
         Returns:
             The index of the added joint.
