@@ -1713,7 +1713,7 @@ class SolverMuJoCo(SolverBase):
         )
 
     def update_joint_dof_properties(self):
-        """Update all joint dof properties including effort limits, friction, armature, and solimplimit in the MuJoCo model."""
+        """Update all joint DOF properties including effort limits, friction, armature, solimplimit, solref, and joint limit ranges in the MuJoCo model."""
         if self.model.joint_dof_count == 0:
             return
 
@@ -1772,14 +1772,7 @@ class SolverMuJoCo(SolverBase):
         )
 
     def update_joint_properties(self):
-        """Update joint properties including joint positions, joint axes, relative body transforms, joint limit solref, and joint limit range in the MuJoCo model.
-
-        .. note::
-            The ``jnt_limited`` flag cannot be changed at runtime in MuJoCo. This means that joints
-            that were initialized as unlimited (no limits) cannot be changed to limited joints at runtime,
-            and vice versa. Only the limit range values (``jnt_range``) can be updated for joints that
-            are already marked as limited (``jnt_limited=True``).
-        """
+        """Update joint properties including joint positions, joint axes, and relative body transforms in the MuJoCo model."""
         if self.model.joint_count == 0:
             return
 
