@@ -439,6 +439,11 @@ class Model:
         self.particle_colors = None
         """Color assignment for every particle."""
 
+        self.body_color_groups = []
+        """Coloring of all rigid bodies for Gauss-Seidel iteration (see :class:`~newton.solvers.SolverVBD`). Each array contains indices of bodies sharing the same color."""
+        self.body_colors = None
+        """Color assignment for every rigid body."""
+
         self.device = wp.get_device(device)
         """Device on which the Model was allocated."""
 
