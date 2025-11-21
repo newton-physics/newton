@@ -58,7 +58,7 @@ class YieldParamVec(wp.vec4):
 @wp.func
 def normal_yield_bounds(yield_params: YieldParamVec):
     """Extract bounds for the normal stress from the yield surface definition."""
-    return -yield_params[1], yield_params[0]
+    return -wp.max(0.0, yield_params[1]), yield_params[0]
 
 
 @wp.func
@@ -66,8 +66,8 @@ def shear_yield_stress(yield_params: YieldParamVec, r_N: float):
     """Maximum deviatoric stress for a given value of the normal stress."""
     p_min, p_max = normal_yield_bounds(yield_params)
 
-    mu = wp.where(p_max > 0.0, yield_params[3] / p_max, 0.0)
-    s = yield_params[2]
+    mu = wp.where(p_max > 0.0, wp.max(0.0, yield_params[3] / p_max), 0.0)
+    s = wp.max(yield_params[2], 0.0)
     return s + wp.min(0.5 * yield_params[3], mu * wp.min(r_N - p_min, p_max - r_N))
 
 
@@ -178,8 +178,8 @@ def project_initial_stress(
     # (e.g. checkerboard patterns)
     # TODO find a more focused way to do this
     p_min, _p_max = normal_yield_bounds(yield_params)
-    if p_min < 0.0:
-        sig = vec6(0.0)
+    # if p_min < 0.0:
+    #     sig = vec6(0.0)
 
     nor = vec6(1.0, 0.0, 0.0, 0.0, 0.0, 0.0)
     stress[tau_i] = project_stress(sig, nor, yield_params)
@@ -249,7 +249,6 @@ def postprocess_stress_and_strain(
     strain_mat_offsets: wp.array(dtype=int),
     strain_mat_columns: wp.array(dtype=int),
     local_strain_mat_values: wp.array(dtype=mat63),
-    node_volume: wp.array(dtype=float),
     local_stress: wp.array(dtype=vec6),
     velocity: wp.array(dtype=wp.vec3),
     stress: wp.array(dtype=vec6),
@@ -281,10 +280,8 @@ def postprocess_stress_and_strain(
         loc_plastic_strain += local_strain_mat_values[b] * velocity[u_i]
 
     stress[tau_i] = rot * wp.cw_div(loc_stress, diag)
-    elastic_strain[tau_i] = -rot * loc_strain
-
-    # The 2 factor is due to the SymTensorMapping being othonormal with (tau:sig)/2
-    plastic_strain[tau_i] = (rot * loc_plastic_strain) / wp.max(1.0e-4, 2.0 * node_volume[tau_i])
+    elastic_strain[tau_i] = (-rot * loc_strain)
+    plastic_strain[tau_i] = (rot * loc_plastic_strain)
 
 
 @wp.func
@@ -1024,7 +1021,6 @@ def solve_rheology(
     transposed_strain_mat: sp.BsrMatrix,
     compliance_mat: sp.BsrMatrix,
     inv_volume,
-    node_volume,
     yield_params,
     unilateral_strain_offset,
     strain_rhs,
@@ -1045,7 +1041,7 @@ def solve_rheology(
     rigidity_operator: tuple[sp.BsrMatrix, sp.BsrMatrix, sp.BsrMatrix] | None = None,
     temporary_store: fem.TemporaryStore | None = None,
     use_graph=True,
-    verbose=wp.config.verbose,
+    verbose=True#wp.config.verbose,
 ):
     """Solve coupled plasticity and collider contact to compute grid velocities.
 
@@ -1073,7 +1069,6 @@ def solve_rheology(
         compliance_mat: Compliance matrix for elastic materials.
         inv_volume: Per-velocity-node inverse mass (or volume scaling) used in
             the solver updates.
-        node_volume: Per-strain-node particle volume measure.
         yield_params: Yield parameters per strain node.
         unilateral_strain_offset: Per-node offset enforcing unilateral
             incompressibility (void fraction/critical fraction).
@@ -1532,7 +1527,6 @@ def solve_rheology(
             strain_mat.offsets,
             strain_mat.columns,
             local_strain_mat_values,
-            node_volume,
             delta_stress,
             velocity,
         ],

@@ -150,6 +150,42 @@ class Example:
         # Set per-particle hardening via custom attributes
         self.model.mpm.hardening.fill_(0.0)
 
+        # multi-material setup
+        snow_particles = np.logical_and(
+            self.model.particle_q.numpy()[:, 1] > 0.5, self.model.particle_q.numpy()[:, 1] < 1.5
+        )
+        snow_particles = wp.array(np.flatnonzero(snow_particles), dtype=int, device=self.model.device)
+
+        mud_particles = self.model.particle_q.numpy()[:, 1] > 1.5
+        mud_particles = wp.array(np.flatnonzero(mud_particles), dtype=int, device=self.model.device)
+
+        particle_mass = self.model.particle_mass[:1].numpy()[0]
+
+        snow_density = 500.0
+        self.model.particle_mass[snow_particles].fill_(particle_mass * snow_density / density)
+        self.model.mpm.yield_pressure[snow_particles].fill_(2.0e4)
+        self.model.mpm.yield_stress[snow_particles].fill_(1.0e4)
+        self.model.mpm.tensile_yield_ratio[snow_particles].fill_(0.5)
+        self.model.mpm.friction[snow_particles].fill_(0.1)
+        self.model.mpm.hardening[snow_particles].fill_(10.0)
+
+        mud_density = 1500.0
+        self.model.particle_mass[mud_particles].fill_(particle_mass * mud_density / density)
+        self.model.mpm.yield_pressure[mud_particles].fill_(1.0e10)
+        self.model.mpm.yield_stress[mud_particles].fill_(3.0e2)
+        self.model.mpm.tensile_yield_ratio[mud_particles].fill_(1.0)
+        self.model.mpm.hardening[mud_particles].fill_(2.0)
+        self.model.mpm.friction[mud_particles].fill_(0.0)
+
+        # Select and merge meshes for robot/sand collisions
+
+        # Colors (for visualization purposes)
+        self.particle_colors = wp.full(
+            shape=self.model.particle_count, value=wp.vec3(0.7, 0.6, 0.4), device=self.device
+        )
+        self.particle_colors[snow_particles].fill_(wp.vec3(0.75, 0.75, 0.8))
+        self.particle_colors[mud_particles].fill_(wp.vec3(0.4, 0.25, 0.25))
+
         # setup solvers
         self.solver = newton.solvers.SolverMuJoCo(
             self.model,
@@ -198,7 +234,7 @@ class Example:
 
         # set model on viewer and setup capture
         self.viewer.set_model(self.model)
-        self.viewer.show_particles = True
+        # self.viewer.show_particles = True
         self.capture()
 
     def capture(self):
@@ -310,6 +346,13 @@ class Example:
     def render(self):
         self.viewer.begin_frame(self.sim_time)
         self.viewer.log_state(self.state_0)
+        self.viewer.log_points(
+            name="/model/particles",
+            points=self.state_0.particle_q,
+            radii=self.model.particle_radius,
+            colors=self.particle_colors,
+            hidden=False,
+        )
         self.viewer.end_frame()
 
     @staticmethod
