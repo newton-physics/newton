@@ -1,0 +1,92 @@
+<mujoco model="tabletop environment">
+  <worldbody>
+    <geom name="table" pos="0.8 0.0 0.75" type="box" size="0.5 1.0 0.01" quat="1.0 0.0 0.0 0.0"/>
+    <!-- Walls of the container box -->
+    <geom name="box back wall" pos="0.9 0.0 0.86" type="box" size="0.01 0.21 0.1"/>
+    <geom name="box front wall" pos="0.5 0.0 0.86" type="box" size="0.01 0.21 0.1"/>
+    <geom name="box left wall" pos="0.7 -0.2 0.86" type="box" size="0.21 0.01 0.1"/>
+    <geom name="box right wall" pos="0.7 0.2 0.86" type="box" size="0.21 0.01 0.1"/>
+
+	<!-- 4 spheres -->
+    <body name="sphere_1" pos="0.6 -0.1 1.06">
+        <freejoint name="sphere_1"/>
+        <geom name="geom_sphere_1" type="sphere" size="0.05" rgba="1 0 0 1"/>
+    </body>
+    <body name="sphere_2" pos="0.675 -0.025 1.06">
+        <freejoint name="sphere_2"/>
+        <geom name="geom_sphere_2" type="sphere" size="0.05" rgba="1 0 0 1"/>
+    </body>
+    <body name="sphere_3" pos="0.75 0.05 1.06">
+        <freejoint name="sphere_3"/>
+        <geom name="geom_sphere_3" type="sphere" size="0.05" rgba="1 0 0 1"/>
+    </body>
+    <body name="sphere_4" pos="0.825 0.125 1.06">
+        <freejoint name="sphere_4"/>
+        <geom name="geom_sphere_4" type="sphere" size="0.05" rgba="1 0 0 1"/>
+    </body>
+
+    <!-- 2 capsules -->
+    <body name="capsule_1" pos="0.6 -0.15 1.16" quat="1 0.5 0 0">
+        <freejoint name="capsule_1"/>
+        <geom name="geom_capsule_1" type="capsule" size="0.04 0.04" rgba="0 1 0 1"/>
+    </body>
+    <body name="capsule_2" pos="0.8 -0.15 1.16" quat="1 0.5 0 0">
+        <freejoint name="capsule_2"/>
+        <geom name="geom_capsule_2" type="capsule" size="0.04 0.04" rgba="0 1 0 1"/>
+    </body>
+
+	<!-- 4 ellipsoids -->
+    <body name="ellipsoid_1" pos="0.7 -0.15 1.41">
+        <freejoint name="ellipsoid_1"/>
+        <geom name="geom_ellipsoid_1" type="ellipsoid" size="0.05 0.04 0.03" rgba="0 0 1 1"/>
+    </body>
+    <body name="ellipsoid_2" pos="0.7 -0.05 1.41">
+        <freejoint name="ellipsoid_2"/>
+        <geom name="geom_ellipsoid_2" type="ellipsoid" size="0.05 0.04 0.03" rgba="0 0 1 1"/>
+    </body>
+    <body name="ellipsoid_3" pos="0.7 0.05 1.41">
+        <freejoint name="ellipsoid_3"/>
+        <geom name="geom_ellipsoid_3" type="ellipsoid" size="0.05 0.04 0.03" rgba="0 0 1 1"/>
+    </body>
+    <body name="ellipsoid_4" pos="0.7 0.15 1.41">
+        <freejoint name="ellipsoid_4"/>
+        <geom name="geom_ellipsoid_4" type="ellipsoid" size="0.05 0.04 0.03" rgba="0 0 1 1"/>
+    </body>
+
+    <!-- 2 cylinders -->
+    <body name="cylinder_1" pos="0.55 0 1.2" quat="0 0.5 0 1">
+        <freejoint name="cylinder_1"/>
+        <geom name="geom_cylinder_1" type="cylinder" size="0.04 0.04" rgba="1 1 0 1"/>
+    </body>
+    <body name="cylinder_2" pos="0.85 0 1.2" quat="0 0.5 0 1">
+        <freejoint name="cylinder_2"/>
+        <geom name="geom_cylinder_2" type="cylinder" size="0.04 0.04" rgba="1 1 0 1"/>
+    </body>
+
+    <!-- Two stacks of 3 boxes -->
+    <body name="box_1" pos="0.65 0 1.19">
+        <freejoint name="box_1"/>
+        <geom name="geom_box_1" type="box" size="0.03 0.03 0.03" rgba="0 1 1 1"/>
+    </body>
+    <body name="box_2" pos="0.65 0 1.25">
+        <freejoint name="box_2"/>
+        <geom name="geom_box_2" type="box" size="0.03 0.03 0.03" rgba="0 1 1 1"/>
+    </body>
+    <body name="box_3" pos="0.65 0 1.31">
+        <freejoint name="box_3"/>
+        <geom name="geom_box_3" type="box" size="0.03 0.03 0.03" rgba="0 1 1 1"/>
+    </body>
+    <body name="box_4" pos="0.75 0 1.19">
+        <freejoint name="box_4"/>
+        <geom name="geom_box_4" type="box" size="0.03 0.03 0.03" rgba="0 1 1 1"/>
+    </body>
+    <body name="box_5" pos="0.75 0 1.25">
+        <freejoint name="box_5"/>
+        <geom name="geom_box_5" type="box" size="0.03 0.03 0.03" rgba="0 1 1 1"/>
+    </body>
+    <body name="box_6" pos="0.75 0 1.31">
+        <freejoint name="box_6"/>
+        <geom name="geom_box_6" type="box" size="0.03 0.03 0.03" rgba="0 1 1 1"/>
+    </body>
+  </worldbody>
+</mujoco>
