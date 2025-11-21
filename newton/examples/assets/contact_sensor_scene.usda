@@ -34,7 +34,7 @@ def Xform "env" (
     {
         double3 xformOp:rotateXYZ = (0, 0, 0)
         double3 xformOp:scale = (1, 1, 1)
-        double3 xformOp:translate = (0, 0, 0)
+        double3 xformOp:translate = (0, 0, 0.01)
         uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:rotateXYZ", "xformOp:scale"]
 
         float3 physics:diagonalInertia = (10, 10, 10)
@@ -81,7 +81,7 @@ def Xform "env" (
         double3 xformOp:rotateXYZ = (0, 0, 0)
         double3 xformOp:scale = (0.1, 0.1, 0.1)
         #double3 xformOp:scale = (0.1, 0.1, 0.1)
-        double3 xformOp:translate = (-0.2, 0, 2.2)
+        double3 xformOp:translate = (-0.15, 0, 2.1)
         uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:rotateXYZ", "xformOp:scale"]
 
         float physics:density = 1
@@ -95,7 +95,7 @@ def Xform "env" (
         #double radius = 0.1
         double3 xformOp:rotateXYZ = (0, 0, 0)
         double3 xformOp:scale = (0.1, 0.1, 0.1)
-        double3 xformOp:translate = (0.2, 0, 2.2)
+        double3 xformOp:translate = (0.15, 0, 2.1)
         uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:rotateXYZ", "xformOp:scale"]
 
         float physics:density = 1
