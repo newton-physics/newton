@@ -222,17 +222,16 @@ class Example:
             )
 
             # Test cube body - allow it to fall to ground plane
-            # Keep X/Y bounds tight, but allow Z to be anywhere from ground (0) to initial position
+            # Keep X/Y bounds tight, but allow Z from ground (0.0) to initial position + 0.5
             cube_body_idx = world_offset + self.cube_body_offset
-            cube_lower = world_pos - wp.vec3(0.5, 0.5, 0.0)  # No lower Z bound (will check > 0 separately)
+            cube_lower = wp.vec3(world_pos.x - 0.5, world_pos.y - 0.5, 0.0)
             cube_upper = world_pos + wp.vec3(0.5, 0.5, 0.5)
             newton.examples.test_body_state(
                 self.model,
                 self.state_0,
                 f"cube from world {i} is within bounds and above ground",
-                lambda q, qd, lower=cube_lower, upper=cube_upper: (
-                    newton.utils.vec_inside_limits(q.p, lower, upper) and q.p[2] > 0.0
-                ),
+                lambda q, _qd, lower=cube_lower, upper=cube_upper: newton.utils.vec_inside_limits(q.p, lower, upper)
+                and q.p[2] > 0.0,
                 indices=np.array([cube_body_idx], dtype=np.int32),
             )
 
