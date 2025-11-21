@@ -113,8 +113,7 @@ class Example:
         self.initial_joint_q = wp.clone(self.state_0.joint_q)
         self.initial_joint_qd = wp.clone(self.state_0.joint_qd)
 
-        if wp.get_device().is_cuda:
-            self.capture()
+        self.capture()
 
     def capture(self):
         self.graph = None
