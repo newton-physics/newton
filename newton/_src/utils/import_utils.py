@@ -23,10 +23,13 @@ import warp as wp
 from ..sim.builder import ModelBuilder
 
 
-def parse_warp_value_from_string(value: str, warp_dtype: Any) -> Any:
+def parse_warp_value_from_string(value: str, warp_dtype: Any, default: Any = None) -> Any:
     """
     Parse a Warp value from a string. This is useful for parsing values from XML files.
     For example, "1.0 2.0 3.0" will be parsed as wp.vec3(1.0, 2.0, 3.0).
+
+    If fewer values are provided than expected for vector/matrix types, the remaining
+    values will be filled from the default value if provided.
 
     Raises:
         ValueError: If the dtype is invalid.
@@ -34,6 +37,7 @@ def parse_warp_value_from_string(value: str, warp_dtype: Any) -> Any:
     Args:
         value: The string value to parse.
         warp_dtype: The Warp dtype to parse the value as.
+        default: Optional default value to use for padding incomplete vectors/matrices.
 
     Returns:
         The parsed Warp value.
@@ -57,7 +61,16 @@ def parse_warp_value_from_string(value: str, warp_dtype: Any) -> Any:
             raise ValueError(f"Unable to parse boolean value: {tok}") from e
 
     if wp.types.type_is_quaternion(warp_dtype):
-        return warp_dtype(*get_vector(float))
+        parsed_values = get_vector(float)
+        # Pad with default values if necessary
+        expected_length = 4  # Quaternions always have 4 components
+        if len(parsed_values) < expected_length and default is not None:
+            if hasattr(default, "__len__"):
+                default_values = [default[i] for i in range(len(default))]
+            else:
+                default_values = [default] * expected_length
+            parsed_values.extend(default_values[len(parsed_values) : expected_length])
+        return warp_dtype(*parsed_values)
     if wp.types.type_is_int(warp_dtype):
         return warp_dtype(int(value))
     if wp.types.type_is_float(warp_dtype):
@@ -66,13 +79,27 @@ def parse_warp_value_from_string(value: str, warp_dtype: Any) -> Any:
         return warp_dtype(get_bool(value))
     if wp.types.type_is_vector(warp_dtype) or wp.types.type_is_matrix(warp_dtype):
         scalar_type = warp_dtype._wp_scalar_type_
+        parsed_values = None
         if wp.types.type_is_int(scalar_type):
-            return warp_dtype(*get_vector(int))
-        if wp.types.type_is_float(scalar_type):
-            return warp_dtype(*get_vector(float))
-        if scalar_type is wp.bool or scalar_type is bool:
-            return warp_dtype(*get_vector(bool))
-        raise ValueError(f"Unable to parse vector/matrix value: {value} as {warp_dtype}.")
+            parsed_values = get_vector(int)
+        elif wp.types.type_is_float(scalar_type):
+            parsed_values = get_vector(float)
+        elif scalar_type is wp.bool or scalar_type is bool:
+            parsed_values = get_vector(bool)
+        else:
+            raise ValueError(f"Unable to parse vector/matrix value: {value} as {warp_dtype}.")
+
+        # Pad with default values if necessary
+        expected_length = warp_dtype._length_
+        if len(parsed_values) < expected_length and default is not None:
+            # Extract default values and pad
+            if hasattr(default, "__len__"):
+                default_values = [default[i] for i in range(len(default))]
+            else:
+                default_values = [default] * expected_length
+            parsed_values.extend(default_values[len(parsed_values) : expected_length])
+
+        return warp_dtype(*parsed_values)
     raise ValueError(f"Invalid dtype: {warp_dtype}. Must be a valid Warp dtype.")
 
 
@@ -90,7 +117,9 @@ def parse_custom_attributes(
         parsing_mode: The parsing mode to use. This can be "usd", "mjcf", or "urdf". It determines which attribute name and value transformer to use.
 
     Returns:
-        A dictionary of the parsed custom attributes. The keys are the custom attribute keys :attr:`ModelBuilder.CustomAttribute.key` and the values are the parsed values.
+        A dictionary of the parsed custom attributes. The keys are the custom attribute keys :attr:`ModelBuilder.CustomAttribute.key`
+        and the values are the parsed values. Only attributes that were explicitly specified in the source are included
+        in the output dict. Unspecified attributes are not included, allowing defaults to be filled in during model finalization.
     """
     out = {}
     for attr in custom_attributes:
@@ -107,8 +136,8 @@ def parse_custom_attributes(
             transformer = attr.usd_value_transformer
         if transformer is None:
 
-            def transform(x: str, dtype: Any = attr.dtype) -> Any:
-                return parse_warp_value_from_string(x, dtype)
+            def transform(x: str, dtype: Any = attr.dtype, default: Any = attr.default) -> Any:
+                return parse_warp_value_from_string(x, dtype, default)
 
             transformer = transform
 

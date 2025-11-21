@@ -920,7 +920,13 @@ class RendererGL:
             pyglet.clock.tick()
 
             self.app.platform_event_loop.step(0.001)  # 1ms app polling latency
-            self.window.dispatch_events()
+            try:
+                self.window.dispatch_events()
+            except (ctypes.ArgumentError, TypeError):
+                # Handle known issue with pyglet xlib backend on some Linux configurations
+                # where window handle can have wrong type in XCheckWindowEvent
+                # This is a non-fatal error that can be safely ignored
+                pass
 
     def render(self, camera, objects, lines=None):
         gl = RendererGL.gl
