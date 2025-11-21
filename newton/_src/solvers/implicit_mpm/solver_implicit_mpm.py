@@ -33,7 +33,7 @@ from ..solver import SolverBase
 from .rasterized_collisions import (
     Collider,
     allot_collider_mass,
-    build_rigidity_matrix,
+    build_rigidity_operator,
     interpolate_collider_normals,
     project_outside_collider,
     rasterize_collider,
@@ -2140,7 +2140,7 @@ class SolverImplicitMPM(SolverBase):
         self._compute_unconstrained_velocity(state_in, state_out, dt, pic, scratch, inv_cell_volume)
 
         # Build collider rigidity matrix
-        rigidity_matrix = self._build_collider_rigidity_matrix(state_in, scratch, cell_volume)
+        rigidity_operator = self._build_collider_rigidity_operator(state_in, scratch, cell_volume)
 
         self._require_strain_space_fields(state_out, scratch)
 
@@ -2151,7 +2151,7 @@ class SolverImplicitMPM(SolverBase):
         self._build_plasticity_system(state_in, dt, pic, scratch, inv_cell_volume)
 
         # Solve implicit system
-        self._solve_rheology(state_in, state_out, scratch, rigidity_matrix)
+        self._solve_rheology(state_in, state_out, scratch, rigidity_operator)
 
         # Update and advect particles
         self._update_particles(state_in, state_out, dt, pic, scratch)
@@ -2272,7 +2272,6 @@ class SolverImplicitMPM(SolverBase):
             # normal interpolation
             if self.collider_normal_from_sdf_gradient:
                 interpolate_collider_normals(
-                    self.mpm_model.voxel_size,
                     scratch.collider_fraction_test.space_restriction,
                     scratch.collider_distance_field,
                     scratch.collider_normal_field,
@@ -2293,7 +2292,7 @@ class SolverImplicitMPM(SolverBase):
                     fields={"trial": scratch.fraction_trial, "normal": scratch.collider_normal_field},
                 )
 
-    def _build_collider_rigidity_matrix(
+    def _build_collider_rigidity_operator(
         self,
         state_in: newton.State,
         scratch: _ImplicitMPMScratchpad,
@@ -2316,7 +2315,7 @@ class SolverImplicitMPM(SolverBase):
                 collider_inv_mass_matrix=scratch.collider_inv_mass_matrix,
             )
 
-            rigidity_matrix = build_rigidity_matrix(
+            rigidity_operator = build_rigidity_operator(
                 cell_volume=cell_volume,
                 node_volumes=scratch.collider_node_volume,
                 node_positions=scratch.collider_position_field.dof_values,
@@ -2328,7 +2327,7 @@ class SolverImplicitMPM(SolverBase):
                 collider_total_volumes=scratch.collider_total_volumes,
             )
 
-        return rigidity_matrix
+        return rigidity_operator
 
     def _build_elasticity_system(
         self,

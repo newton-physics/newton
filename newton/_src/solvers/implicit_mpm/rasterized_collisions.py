@@ -24,7 +24,7 @@ from .solve_rheology import solve_coulomb_isotropic
 __all__ = [
     "Collider",
     "allot_collider_mass",
-    "build_rigidity_matrix",
+    "build_rigidity_operator",
     "interpolate_collider_normals",
     "project_outside_collider",
     "rasterize_collider",
@@ -538,7 +538,6 @@ def rasterize_collider(
 
 
 def interpolate_collider_normals(
-    voxel_size: float,
     collider_space_restriction: fem.SpaceRestriction,
     collider_distance_field: fem.DiscreteField,
     collider_normal_field: fem.DiscreteField,
@@ -619,7 +618,7 @@ def allot_collider_mass(
     )
 
 
-def build_rigidity_matrix(
+def build_rigidity_operator(
     cell_volume: float,
     node_volumes: wp.array(dtype=float),
     node_positions: wp.array(dtype=wp.vec3),
@@ -630,7 +629,7 @@ def build_rigidity_matrix(
     collider_ids: wp.array(dtype=int),
     collider_total_volumes: wp.array(dtype=float),
 ) -> tuple[wps.BsrMatrix, wps.BsrMatrix, wps.BsrMatrix]:
-    """Assemble the collider rigidity matrix that couples node motion to rigid DOFs.
+    """Build the collider rigidity operator that couples node motion to rigid DOFs.
 
     Builds a block-sparse matrix of size (3 N_vel_nodes) x (3 N_vel_nodes) that
     maps nodal velocity corrections to rigid-body displacements. Only nodes
@@ -656,7 +655,7 @@ def build_rigidity_matrix(
         collider_total_volumes: Per-collider integrated volumes used to derive densities.
 
     Returns:
-        A tuple of ``warp.sparse.BsrMatrix`` (D, J, IJtm) representing the rigidity coupling operator (D + J @ IJtm)
+        A tuple of ``warp.sparse.BsrMatrix`` (D, J, IJtm) representing the rigidity coupling operator ``D + J @ IJtm``
     """
 
     vel_node_count = node_volumes.shape[0]
