@@ -94,17 +94,21 @@ def quat_diff_to_omega(q_now: wp.quat, q_prev: wp.quat, dt: float) -> wp.vec3:
     # Normalize inputs
     q1 = wp.normalize(q_now)
     q0 = wp.normalize(q_prev)
+    
     # Enforce shortest-arc by aligning quaternion hemisphere
     dot_q = q1[0] * q0[0] + q1[1] * q0[1] + q1[2] * q0[2] + q1[3] * q0[3]
     if dot_q < 0.0:
         q0 = wp.quat(-q0[0], -q0[1], -q0[2], -q0[3])
+
     # dq = q1 * conj(q0)
     dq = wp.mul(q1, wp.quat_inverse(q0))
+
     # Normalize delta for numerical safety
     dq = wp.normalize(dq)
     v = wp.vec3(dq[0], dq[1], dq[2])
     w = dq[3]
     v_len = wp.length(v)
+    
     # angle = 2*atan2(|v|, w); with small-angle fallback consistent with other sites
     if v_len > _SMALL_ANGLE_EPS:
         angle = 2.0 * wp.atan2(v_len, w)
@@ -774,8 +778,8 @@ def evaluate_body_particle_contact(
     particle_pos: wp.vec3,
     particle_prev_pos: wp.vec3,
     contact_index: int,
-    soft_contact_ke: float,
-    soft_contact_kd: float,
+    body_particle_contact_ke: float,
+    body_particle_contact_kd: float,
     friction_mu: float,
     friction_epsilon: float,
     particle_radius: wp.array(dtype=float),
@@ -798,7 +802,7 @@ def evaluate_body_particle_contact(
     The function is agnostic to whether the rigid body is static, kinematic, or dynamic.
     
     Contact model:
-    - Normal: Linear spring-damper (stiffness: soft_contact_ke, damping: soft_contact_kd)
+    - Normal: Linear spring-damper (stiffness: body_particle_contact_ke, damping: body_particle_contact_kd)
     - Friction: 3D projector-based Coulomb friction with IPC regularization
     - Normal direction: Points from rigid surface towards particle (into particle)
     
@@ -806,9 +810,9 @@ def evaluate_body_particle_contact(
         particle_index: Index of the particle
         particle_pos: Current particle position (world frame)
         particle_prev_pos: Previous particle position (world frame)
-        contact_index: Index in the soft contact arrays
-        soft_contact_ke: Contact stiffness (model-level or AVBD adaptive)
-        soft_contact_kd: Contact damping (model-level or AVBD averaged)
+        contact_index: Index in the body–particle contact arrays
+        body_particle_contact_ke: Contact stiffness (model-level or AVBD adaptive)
+        body_particle_contact_kd: Contact damping (model-level or AVBD averaged)
         friction_mu: Friction coefficient (model-level or AVBD averaged)
         friction_epsilon: Friction regularization distance
         particle_radius: Array of particle radii
@@ -843,18 +847,18 @@ def evaluate_body_particle_contact(
 
     penetration_depth = -(wp.dot(n, particle_pos - bx) - particle_radius[particle_index])
     if penetration_depth > 0.0:
-        body_contact_force_norm = penetration_depth * soft_contact_ke
+        body_contact_force_norm = penetration_depth * body_particle_contact_ke
         body_contact_force = n * body_contact_force_norm
-        body_contact_hessian = soft_contact_ke * wp.outer(n, n)
+        body_contact_hessian = body_particle_contact_ke * wp.outer(n, n)
 
-        # Use the larger of soft_contact friction and shape material friction
+        # Use the larger of body–particle friction and shape material friction
         mu = wp.max(friction_mu, shape_material_mu[shape_index])
 
         dx = particle_pos - particle_prev_pos
 
         if wp.dot(n, dx) < 0.0:
             # Damping coefficient is scaled by contact stiffness (consistent with rigid-rigid)
-            damping_coeff = soft_contact_kd * soft_contact_ke
+            damping_coeff = body_particle_contact_kd * body_particle_contact_ke
             damping_hessian = (damping_coeff / dt) * wp.outer(n, n)
             body_contact_hessian = body_contact_hessian + damping_hessian
             body_contact_force = body_contact_force - damping_hessian * dx
@@ -1067,8 +1071,6 @@ def evaluate_joint_force_hessian(
 # -----------------------------
 # Utility kernels
 # -----------------------------
-
-
 @wp.kernel
 def count_num_adjacent_joints(
     joint_parent: wp.array(dtype=wp.int32),
@@ -1200,7 +1202,7 @@ def forward_step_rigid_bodies(
 
 
 @wp.kernel
-def build_body_rigid_contact_lists(
+def build_body_body_contact_lists(
     rigid_contact_count: wp.array(dtype=int),
     rigid_contact_shape0: wp.array(dtype=int),
     rigid_contact_shape1: wp.array(dtype=int),
@@ -1216,8 +1218,6 @@ def build_body_rigid_contact_lists(
     shape1's body), enabling efficient lookup of all contacts involving a given body
     during per-body solve iterations.
     
-    This kernel is only used when _USE_JACOBI_CONTACTS = False.
-
     Notes:
       - body_contact_counts[b] is reset to 0 on the host before launch and
         atomically incremented here; consumers must only read the first
@@ -1250,76 +1250,70 @@ def build_body_rigid_contact_lists(
 
 
 @wp.kernel
-def build_body_soft_contact_lists(
-    soft_contact_count: wp.array(dtype=int),
-    soft_contact_shape: wp.array(dtype=int),
+def build_body_particle_contact_lists(
+    body_particle_contact_count: wp.array(dtype=int),
+    body_particle_contact_shape: wp.array(dtype=int),
     shape_body: wp.array(dtype=wp.int32),
-    body_soft_contact_buffer_pre_alloc: int,
-    body_soft_contact_counts: wp.array(dtype=wp.int32),
-    body_soft_contact_indices: wp.array(dtype=wp.int32),
+    body_particle_contact_buffer_pre_alloc: int,
+    body_particle_contact_counts: wp.array(dtype=wp.int32),
+    body_particle_contact_indices: wp.array(dtype=wp.int32),
 ):
     """
-    Build per-body soft-contact lists for particle-rigid contacts.
+    Build per-body contact lists for body–particle (particle–rigid) contacts.
 
-    Each soft-contact index tid is appended to the list of the rigid body
-    associated with soft_contact_shape[tid] via shape_body. This enables
-    efficient per-body processing of particle-rigid contacts during the
-    rigid-body solve (e.g., Gauss-Seidel color sweeps).
+    Each body–particle contact index tid (from the external contacts.soft_contact_*
+    arrays) is appended to the list of the rigid body associated with
+    body_particle_contact_shape[tid] via shape_body. This enables efficient
+    per-body processing of particle–rigid contacts during the rigid-body solve
+    (e.g., Gauss–Seidel color sweeps).
 
     Notes:
-      - body_soft_contact_counts[b] must be zeroed on the host before launch.
-      - Only the first body_soft_contact_counts[b] entries in the flat
-        body_soft_contact_indices array are considered valid for body b.
-      - If a body has more than body_soft_contact_buffer_pre_alloc soft
+      - body_particle_contact_counts[b] must be zeroed on the host before launch.
+      - Only the first body_particle_contact_counts[b] entries in the flat
+        body_particle_contact_indices array are considered valid for body b.
+      - If a body has more than body_particle_contact_buffer_pre_alloc body–particle
         contacts, extra indices are dropped (overflow is ignored safely).
     """
     tid = wp.tid()
-    if tid >= soft_contact_count[0]:
+    if tid >= body_particle_contact_count[0]:
         return
 
-    shape = soft_contact_shape[tid]
+    shape = body_particle_contact_shape[tid]
     body = shape_body[shape] if shape >= 0 else -1
 
     if body < 0:
         return
 
-    idx = wp.atomic_add(body_soft_contact_counts, body, 1)
-    if idx < body_soft_contact_buffer_pre_alloc:
-        body_soft_contact_indices[body * body_soft_contact_buffer_pre_alloc + idx] = tid
+    idx = wp.atomic_add(body_particle_contact_counts, body, 1)
+    if idx < body_particle_contact_buffer_pre_alloc:
+        body_particle_contact_indices[body * body_particle_contact_buffer_pre_alloc + idx] = tid
 
 
 @wp.kernel
 def warmstart_joints(
     # Inputs
     joint_target_ke: wp.array(dtype=float),
+    joint_penalty_k_min: wp.array(dtype=float),
     gamma: float,
-    penalty_min: float,
-    penalty_max: float,
     # Input/output
     joint_penalty_k: wp.array(dtype=float),
 ):
     """
     Warm-start per-DOF penalty stiffness for joint constraints (runs once per step).
 
-    Algorithm:
+    Algorithm (per DOF):
       - Decay previous penalty: k <- gamma * k
-      - Clamp to [penalty_min, penalty_max]
-      - Cap by material stiffness: k <= joint_target_ke[i]
+      - Clamp to [joint_penalty_k_min[i], joint_target_ke[i]]
     """
     i = wp.tid()
 
-    # Decay penalty from previous timestep (k = gamma * k)
-    k_new = gamma * joint_penalty_k[i]
-
-    # Clamp to valid penalty range and cap by material stiffness
-    k_new = wp.clamp(k_new, penalty_min, wp.min(penalty_max, joint_target_ke[i]))
-
-    # Write back updated penalty
+    k_prev = joint_penalty_k[i]
+    k_new = wp.clamp(gamma * k_prev, joint_penalty_k_min[i], joint_target_ke[i])
     joint_penalty_k[i] = k_new
 
 
 @wp.kernel
-def warmstart_rigid_contacts(
+def warmstart_body_body_contacts(
     rigid_contact_count: wp.array(dtype=int),
     rigid_contact_shape0: wp.array(dtype=int),
     rigid_contact_shape1: wp.array(dtype=int),
@@ -1327,8 +1321,7 @@ def warmstart_rigid_contacts(
     shape_material_kd: wp.array(dtype=float),
     shape_material_mu: wp.array(dtype=float),
     gamma: float,
-    penalty_min: float,
-    penalty_max: float,
+    k_start_body_contact: float,
     # Outputs
     contact_penalty_k: wp.array(dtype=float),
     contact_material_ke: wp.array(dtype=float),
@@ -1339,6 +1332,7 @@ def warmstart_rigid_contacts(
     Warm-start contact penalties and cache material properties (once per step).
 
     Computes averaged material properties and decays penalty parameters.
+    Uses k_start_body_contact as an effective penalty minimum.
     """
     i = wp.tid()
     if i >= rigid_contact_count[0]:
@@ -1357,16 +1351,16 @@ def warmstart_rigid_contacts(
     contact_material_kd[i] = avg_kd
     contact_material_mu[i] = avg_mu
 
-    # Warm-start penalty: decay, clamp, and cap by material stiffness
-    k_new = wp.clamp(gamma * contact_penalty_k[i], penalty_min, penalty_max)
-    k_new = wp.min(k_new, avg_ke)
+    # Warm-start penalty: decay and clamp to [k_start_body_contact, avg_ke]
+    k_prev = contact_penalty_k[i]
+    k_new = wp.clamp(gamma * k_prev, k_start_body_contact, avg_ke)
     contact_penalty_k[i] = k_new
 
 
 @wp.kernel
-def warmstart_soft_contacts(
-    soft_contact_count: wp.array(dtype=int),
-    soft_contact_shape: wp.array(dtype=int),
+def warmstart_body_particle_contacts(
+    body_particle_contact_count: wp.array(dtype=int),
+    body_particle_contact_shape: wp.array(dtype=int),
     soft_contact_ke: float,
     soft_contact_kd: float,
     soft_contact_mu: float,
@@ -1374,40 +1368,44 @@ def warmstart_soft_contacts(
     shape_material_kd: wp.array(dtype=float),
     shape_material_mu: wp.array(dtype=float),
     gamma: float,
-    penalty_min: float,
-    penalty_max: float,
+    k_start_body_contact: float,
     # Outputs
-    soft_contact_penalty_k: wp.array(dtype=float),
-    soft_contact_material_ke: wp.array(dtype=float),
-    soft_contact_material_kd: wp.array(dtype=float),
-    soft_contact_material_mu: wp.array(dtype=float),
+    body_particle_contact_penalty_k: wp.array(dtype=float),
+    body_particle_contact_material_ke: wp.array(dtype=float),
+    body_particle_contact_material_kd: wp.array(dtype=float),
+    body_particle_contact_material_mu: wp.array(dtype=float),
 ):
     """
-    Warm-start soft contact penalties and cache material properties (once per step).
+    Warm-start body–particle (particle–rigid) contact penalties and cache material
+    properties (once per step).
 
-    Computes averaged material properties between particle and rigid body shape,
-    and decays penalty parameters using AVBD warmstart logic.
+    The scalar inputs soft_contact_ke/kd/mu are the particle-side soft-contact
+    material parameters (from model.soft_contact_*). For each body–particle
+    contact, this kernel averages those particle-side values with the rigid
+    shape's material parameters, and decays the AVBD penalty parameter using
+    standard warmstart logic.
+    Uses k_start_body_contact as an effective penalty minimum.
     """
     i = wp.tid()
-    if i >= soft_contact_count[0]:
+    if i >= body_particle_contact_count[0]:
         return
 
     # Read shape index for the rigid body side
-    shape_idx = soft_contact_shape[i]
+    shape_idx = body_particle_contact_shape[i]
 
     # Cache averaged material properties (arithmetic mean between particle and shape)
     avg_ke = 0.5 * (soft_contact_ke + shape_material_ke[shape_idx])
     avg_kd = 0.5 * (soft_contact_kd + shape_material_kd[shape_idx])
     avg_mu = 0.5 * (soft_contact_mu + shape_material_mu[shape_idx])
 
-    soft_contact_material_ke[i] = avg_ke
-    soft_contact_material_kd[i] = avg_kd
-    soft_contact_material_mu[i] = avg_mu
+    body_particle_contact_material_ke[i] = avg_ke
+    body_particle_contact_material_kd[i] = avg_kd
+    body_particle_contact_material_mu[i] = avg_mu
 
-    # Warm-start penalty: decay, clamp, and cap by material stiffness
-    k_new = wp.clamp(gamma * soft_contact_penalty_k[i], penalty_min, penalty_max)
-    k_new = wp.min(k_new, avg_ke)
-    soft_contact_penalty_k[i] = k_new
+    # Warm-start penalty: decay and clamp to [k_start_body_contact, avg_ke]
+    k_prev = body_particle_contact_penalty_k[i]
+    k_new = wp.clamp(gamma * k_prev, k_start_body_contact, avg_ke)
+    body_particle_contact_penalty_k[i] = k_new
 
 
 @wp.kernel
@@ -1554,7 +1552,7 @@ def compute_cable_dahl_parameters(
 # Iteration kernels (per color per iteration)
 # -----------------------------
 @wp.kernel
-def accumulate_rigid_contact_jacobi(
+def accumulate_body_body_contacts_jacobi(
     dt: float,
     body_q_prev: wp.array(dtype=wp.transform),
     body_q: wp.array(dtype=wp.transform),
@@ -1580,7 +1578,13 @@ def accumulate_rigid_contact_jacobi(
     body_hessian_aa: wp.array(dtype=wp.mat33),
 ):
     """
-    Jacobi-style contact accumulation: iterate over contacts once, apply to both bodies (symmetric).
+    Jacobi-style body–body contact accumulation: one thread per contact, applying
+    equal-and-opposite forces/torques and Hessians to the two incident bodies.
+
+    Uses the same contact model as accumulate_body_body_contacts_per_body but
+    evaluates each contact exactly once (no per-body loops). Static/kinematic
+    bodies (inv_mass <= 0) only serve as collision geometry and do not receive
+    force or Hessian contributions.
     """
     contact_idx = wp.tid()
     if contact_idx >= rigid_contact_count[0]:
@@ -1591,10 +1595,8 @@ def accumulate_rigid_contact_jacobi(
     b0 = shape_body[s0] if s0 >= 0 else -1
     b1 = shape_body[s1] if s1 >= 0 else -1
 
-    if b0 < 0 and b1 < 0:
-        return
-
-    if b0 >= 0 and body_inv_mass[b0] <= 0.0 and b1 >= 0 and body_inv_mass[b1] <= 0.0:
+    # Early-out if no dynamic body is involved (both are static or kinematic)
+    if (b0 < 0 or body_inv_mass[b0] <= 0.0) and (b1 < 0 or body_inv_mass[b1] <= 0.0):
         return
 
     cp0_local = rigid_contact_point0[contact_idx]
@@ -1656,7 +1658,7 @@ def accumulate_rigid_contact_jacobi(
 
 
 @wp.kernel
-def accumulate_rigid_contact_per_body(
+def accumulate_body_body_contacts_per_body(
     dt: float,
     color_group: wp.array(dtype=wp.int32),
     body_q_prev: wp.array(dtype=wp.transform),
@@ -1780,7 +1782,7 @@ def accumulate_rigid_contact_per_body(
 
 
 @wp.kernel
-def accumulate_rigid_soft_contact_per_body(
+def accumulate_body_particle_contacts_per_body(
     dt: float,
     color_group: wp.array(dtype=wp.int32),
     # Particle state
@@ -1793,25 +1795,25 @@ def accumulate_rigid_soft_contact_per_body(
     body_qd: wp.array(dtype=wp.spatial_vector),
     body_com: wp.array(dtype=wp.vec3),
     body_inv_mass: wp.array(dtype=float),
-    # AVBD soft contact penalties and material properties
+    # AVBD body–particle soft contact penalties and material properties
     friction_epsilon: float,
-    soft_contact_penalty_k: wp.array(dtype=float),
-    soft_contact_material_kd: wp.array(dtype=float),
-    soft_contact_material_mu: wp.array(dtype=float),
-    # Soft contact data
-    soft_contact_count: wp.array(dtype=int),
-    soft_contact_particle: wp.array(dtype=int),
-    soft_contact_shape: wp.array(dtype=int),
-    soft_contact_body_pos: wp.array(dtype=wp.vec3),
-    soft_contact_body_vel: wp.array(dtype=wp.vec3),
-    soft_contact_normal: wp.array(dtype=wp.vec3),
+    body_particle_contact_penalty_k: wp.array(dtype=float),
+    body_particle_contact_material_kd: wp.array(dtype=float),
+    body_particle_contact_material_mu: wp.array(dtype=float),
+    # Soft contact data (body–particle)
+    body_particle_contact_count: wp.array(dtype=int),
+    body_particle_contact_particle: wp.array(dtype=int),
+    body_particle_contact_shape: wp.array(dtype=int),
+    body_particle_contact_body_pos: wp.array(dtype=wp.vec3),
+    body_particle_contact_body_vel: wp.array(dtype=wp.vec3),
+    body_particle_contact_normal: wp.array(dtype=wp.vec3),
     # Shape/material data
     shape_material_mu: wp.array(dtype=float),
     shape_body: wp.array(dtype=wp.int32),
-    # Per-body soft-contact adjacency
-    body_soft_contact_buffer_pre_alloc: int,
-    body_soft_contact_counts: wp.array(dtype=wp.int32),
-    body_soft_contact_indices: wp.array(dtype=wp.int32),
+    # Per-body soft-contact adjacency (body-particle)
+    body_particle_contact_buffer_pre_alloc: int,
+    body_particle_contact_counts: wp.array(dtype=wp.int32),
+    body_particle_contact_indices: wp.array(dtype=wp.int32),
     # Outputs
     body_forces: wp.array(dtype=wp.vec3),
     body_torques: wp.array(dtype=wp.vec3),
@@ -1820,13 +1822,14 @@ def accumulate_rigid_soft_contact_per_body(
     body_hessian_aa: wp.array(dtype=wp.mat33),
 ):
     """
-    Per-body accumulation of particle-rigid soft contact forces and Hessians on rigid bodies.
+    Per-body accumulation of body–particle (particle–rigid) soft contact forces and
+    Hessians on rigid bodies.
 
-    This kernel mirrors the Gauss-Seidel per-body pattern used for rigid-rigid contacts,
-    but iterates over soft contacts associated with each body via the precomputed
-    body_soft_contact_* adjacency.
+    This kernel mirrors the Gauss–Seidel per-body pattern used for body–body contacts,
+    but iterates over body–particle contacts associated with each body via the
+    precomputed body_particle_contact_* adjacency.
 
-    For each soft contact, we:
+    For each body–particle contact, we:
       1. Reuse the particle-side contact model via evaluate_body_particle_contact to
          compute the force and Hessian on the particle using adaptive AVBD penalties.
       2. Apply the equal-and-opposite reaction force, torque, and Hessian contributions
@@ -1848,20 +1851,20 @@ def accumulate_rigid_soft_contact_per_body(
     if body_inv_mass[body_id] <= 0.0:
         return
 
-    num_contacts = body_soft_contact_counts[body_id]
-    if num_contacts > body_soft_contact_buffer_pre_alloc:
-        num_contacts = body_soft_contact_buffer_pre_alloc
+    num_contacts = body_particle_contact_counts[body_id]
+    if num_contacts > body_particle_contact_buffer_pre_alloc:
+        num_contacts = body_particle_contact_buffer_pre_alloc
 
     i = thread_id_within_body
-    max_contacts = soft_contact_count[0]
+    max_contacts = body_particle_contact_count[0]
 
     while i < num_contacts:
-        contact_idx = body_soft_contact_indices[body_id * body_soft_contact_buffer_pre_alloc + i]
+        contact_idx = body_particle_contact_indices[body_id * body_particle_contact_buffer_pre_alloc + i]
         if contact_idx >= max_contacts:
             i += _NUM_CONTACT_THREADS_PER_BODY
             continue
 
-        particle_idx = soft_contact_particle[contact_idx]
+        particle_idx = body_particle_contact_particle[contact_idx]
         if particle_idx < 0:
             i += _NUM_CONTACT_THREADS_PER_BODY
             continue
@@ -1869,9 +1872,9 @@ def accumulate_rigid_soft_contact_per_body(
         # Early penetration check to avoid unnecessary function call
         particle_pos = particle_q[particle_idx]
         X_wb = body_q[body_id]
-        cp_local = soft_contact_body_pos[contact_idx]
+        cp_local = body_particle_contact_body_pos[contact_idx]
         cp_world = wp.transform_point(X_wb, cp_local)
-        n = soft_contact_normal[contact_idx]
+        n = body_particle_contact_normal[contact_idx]
         radius = particle_radius[particle_idx]
         penetration_depth = -(wp.dot(n, particle_pos - cp_world) - radius)
         
@@ -1883,9 +1886,9 @@ def accumulate_rigid_soft_contact_per_body(
         particle_prev_pos = particle_q_prev[particle_idx]
 
         # Read per-contact AVBD penalty and material properties
-        contact_ke = soft_contact_penalty_k[contact_idx]
-        contact_kd = soft_contact_material_kd[contact_idx]
-        contact_mu = soft_contact_material_mu[contact_idx]
+        contact_ke = body_particle_contact_penalty_k[contact_idx]
+        contact_kd = body_particle_contact_material_kd[contact_idx]
+        contact_mu = body_particle_contact_material_mu[contact_idx]
 
         force_on_particle, hessian_particle = evaluate_body_particle_contact(
             particle_idx,
@@ -1903,10 +1906,10 @@ def accumulate_rigid_soft_contact_per_body(
             body_q_prev,
             body_qd,
             body_com,
-            soft_contact_shape,
-            soft_contact_body_pos,
-            soft_contact_body_vel,
-            soft_contact_normal,
+            body_particle_contact_shape,
+            body_particle_contact_body_pos,
+            body_particle_contact_body_vel,
+            body_particle_contact_normal,
             dt,
         )
 
@@ -1914,10 +1917,7 @@ def accumulate_rigid_soft_contact_per_body(
         f_body = -force_on_particle
 
         # Compute torque and Hessian contributions: tau = r x f, where r is from COM to contact point
-        X_wb = body_q[body_id]
         com_world = wp.transform_point(X_wb, body_com[body_id])
-        cp_local = soft_contact_body_pos[contact_idx]
-        cp_world = wp.transform_point(X_wb, cp_local)
         r = cp_world - com_world
         tau_body = wp.cross(r, f_body)
 
@@ -1927,7 +1927,7 @@ def accumulate_rigid_soft_contact_per_body(
         K_total = hessian_particle
         r_skew = wp.skew(r)
         r_skew_T_K = wp.transpose(r_skew) * K_total
-        
+
         h_ll_body = K_total  # Linear-linear block
         h_al_body = -r_skew_T_K  # Angular-linear block
         h_aa_body = r_skew_T_K * r_skew  # Angular-angular block
@@ -2221,15 +2221,14 @@ def update_duals_joint(
     body_q_rest: wp.array(dtype=wp.transform),
     body_com: wp.array(dtype=wp.vec3),
     beta: float,
-    penalty_max: float,
     joint_penalty_k: wp.array(dtype=float),  # input/output
 ):
     """
     Update AVBD penalty parameters for joint constraints (per-iteration).
 
     Increases per-DOF penalties based on current constraint violation magnitudes,
-    clamped by both the material target stiffness and a global maximum.
-
+    clamped by the per-DOF material target stiffness.
+    
     Args:
         joint_type: Joint types
         joint_parent: Parent body indices
@@ -2243,7 +2242,6 @@ def update_duals_joint(
         body_q_rest: Rest body transforms (world)
         body_com: Body COM offsets (local) used to infer segment length
         beta: Adaptation rate
-        penalty_max: Global cap for penalties
         joint_penalty_k: In/out per-DOF adaptive penalties
     """
     j = wp.tid()
@@ -2294,19 +2292,19 @@ def update_duals_joint(
         stretch_idx = dof_start
         stiffness_stretch = joint_target_ke[stretch_idx]
         k_stretch = joint_penalty_k[stretch_idx]
-        k_stretch_new = wp.min(k_stretch + beta * C_stretch, wp.min(penalty_max, stiffness_stretch))
+        k_stretch_new = wp.min(k_stretch + beta * C_stretch, stiffness_stretch)
         joint_penalty_k[stretch_idx] = k_stretch_new
 
         # Update bend penalty (DOF 1)
         bend_idx = dof_start + lin_axes
         stiffness_bend = joint_target_ke[bend_idx]
         k_bend = joint_penalty_k[bend_idx]
-        k_bend_new = wp.min(k_bend + beta * C_bend, wp.min(penalty_max, stiffness_bend))
+        k_bend_new = wp.min(k_bend + beta * C_bend, stiffness_bend)
         joint_penalty_k[bend_idx] = k_bend_new
 
 
 @wp.kernel
-def update_duals_rigid_contact(
+def update_duals_body_body_contacts(
     rigid_contact_count: wp.array(dtype=int),
     rigid_contact_shape0: wp.array(dtype=int),
     rigid_contact_shape1: wp.array(dtype=int),
@@ -2319,14 +2317,13 @@ def update_duals_rigid_contact(
     body_q: wp.array(dtype=wp.transform),
     contact_material_ke: wp.array(dtype=float),
     beta: float,
-    penalty_max: float,
     contact_penalty_k: wp.array(dtype=float),  # input/output
 ):
     """
     Update AVBD penalty parameters for contact constraints (per-iteration).
 
-    Increases each contact's penalty by beta * penetration and clamps to the smaller
-    of the material stiffness and a global maximum.
+    Increases each contact's penalty by beta * penetration and clamps to the
+    per-contact material stiffness.
 
     Args:
         rigid_contact_count: Number of active contacts
@@ -2338,7 +2335,6 @@ def update_duals_rigid_contact(
         body_q: Current body transforms
         contact_material_ke: Per-contact target stiffness
         beta: Adaptation rate
-        penalty_max: Global cap for penalties
         contact_penalty_k: In/out per-contact adaptive penalties
     """
     idx = wp.tid()
@@ -2377,89 +2373,81 @@ def update_duals_rigid_contact(
     thickness_total = rigid_contact_thickness0[idx] + rigid_contact_thickness1[idx]
     penetration = wp.max(0.0, thickness_total - dist)
 
-    # Update penalty: k_new = min(k + beta * |C|, min(penalty_max, stiffness))
+    # Update penalty: k_new = min(k + beta * |C|, stiffness)
     k = contact_penalty_k[idx]
-    k_new = wp.min(k + beta * penetration, wp.min(penalty_max, stiffness))
+    k_new = wp.min(k + beta * penetration, stiffness)
     contact_penalty_k[idx] = k_new
 
 
 @wp.kernel
-def update_duals_soft_contact(
-    soft_contact_count: wp.array(dtype=int),
-    soft_contact_particle: wp.array(dtype=int),
-    soft_contact_shape: wp.array(dtype=int),
-    soft_contact_body_pos: wp.array(dtype=wp.vec3),
-    soft_contact_normal: wp.array(dtype=wp.vec3),
+def update_duals_body_particle_contacts(
+    body_particle_contact_count: wp.array(dtype=int),
+    body_particle_contact_particle: wp.array(dtype=int),
+    body_particle_contact_shape: wp.array(dtype=int),
+    body_particle_contact_body_pos: wp.array(dtype=wp.vec3),
+    body_particle_contact_normal: wp.array(dtype=wp.vec3),
     particle_q: wp.array(dtype=wp.vec3),
     particle_radius: wp.array(dtype=float),
     shape_body: wp.array(dtype=int),
     body_q: wp.array(dtype=wp.transform),
-    body_inv_mass: wp.array(dtype=float),
-    soft_contact_material_ke: wp.array(dtype=float),
+    body_particle_contact_material_ke: wp.array(dtype=float),
     beta: float,
-    penalty_max: float,
-    soft_contact_penalty_k: wp.array(dtype=float),  # input/output
+    body_particle_contact_penalty_k: wp.array(dtype=float),  # input/output
 ):
     """
     Update AVBD penalty parameters for soft contact constraints (per-iteration).
 
-    Increases each soft contact's penalty by beta * penetration and clamps to the smaller
-    of the material stiffness and a global maximum.
+    Increases each soft contact's penalty by beta * penetration and clamps to the
+    per-contact material stiffness.
 
     Args:
-        soft_contact_count: Number of active soft contacts
-        soft_contact_particle: Particle index for each soft contact
-        soft_contact_shape: Shape index for each soft contact
-        soft_contact_body_pos: Contact points in local shape frames
-        soft_contact_normal: Contact normals (pointing from rigid to particle)
+        body_particle_contact_count: Number of active body–particle soft contacts
+        body_particle_contact_particle: Particle index for each body–particle soft contact
+        body_particle_contact_shape: Shape index for each body–particle soft contact
+        body_particle_contact_body_pos: Contact points in local shape frames
+        body_particle_contact_normal: Contact normals (pointing from rigid to particle)
         particle_q: Current particle positions
         particle_radius: Particle radii
         shape_body: Map from shape id to body id (-1 if kinematic/ground)
         body_q: Current body transforms
-        body_inv_mass: Inverse body masses (0 for kinematic)
-        soft_contact_material_ke: Per-contact target stiffness (averaged)
+        body_particle_contact_material_ke: Per-contact target stiffness (averaged)
         beta: Adaptation rate
-        penalty_max: Global cap for penalties
-        soft_contact_penalty_k: In/out per-contact adaptive penalties
+        body_particle_contact_penalty_k: In/out per-contact adaptive penalties
     """
     idx = wp.tid()
-    if idx >= soft_contact_count[0]:
+    if idx >= body_particle_contact_count[0]:
         return
 
     # Read contact data
-    particle_idx = soft_contact_particle[idx]
-    shape_idx = soft_contact_shape[idx]
+    particle_idx = body_particle_contact_particle[idx]
+    shape_idx = body_particle_contact_shape[idx]
     body_idx = shape_body[shape_idx] if shape_idx >= 0 else -1
 
-    # Skip invalid contacts (no body or kinematic body)
-    if body_idx < 0:
-        return
-
-    # Skip if body is kinematic
-    if body_inv_mass[body_idx] <= 0.0:
-        return
-
     # Read cached material stiffness
-    stiffness = soft_contact_material_ke[idx]
+    stiffness = body_particle_contact_material_ke[idx]
 
     # Transform contact point to world space
-    X_wb = body_q[body_idx]
-    cp_local = soft_contact_body_pos[idx]
+    # For rigid bodies (body_idx >= 0), transform from body-local to world space
+    X_wb = wp.transform_identity()
+    if body_idx >= 0:
+        X_wb = body_q[body_idx]
+
+    cp_local = body_particle_contact_body_pos[idx]
     cp_world = wp.transform_point(X_wb, cp_local)
 
     # Get particle data
     particle_pos = particle_q[particle_idx]
     radius = particle_radius[particle_idx]
-    n = soft_contact_normal[idx]
+    n = body_particle_contact_normal[idx]
 
     # Compute penetration depth (constraint violation)
     penetration = -(wp.dot(n, particle_pos - cp_world) - radius)
     penetration = wp.max(0.0, penetration)
 
-    # Update penalty: k_new = min(k + beta * |C|, min(penalty_max, stiffness))
-    k = soft_contact_penalty_k[idx]
-    k_new = wp.min(k + beta * penetration, wp.min(penalty_max, stiffness))
-    soft_contact_penalty_k[idx] = k_new
+    # Update penalty: k_new = min(k + beta * |C|, stiffness)
+    k = body_particle_contact_penalty_k[idx]
+    k_new = wp.min(k + beta * penetration, stiffness)
+    body_particle_contact_penalty_k[idx] = k_new
 
 
 # -----------------------------
@@ -2549,7 +2537,7 @@ def update_cable_dahl_state(
     joint_eps_max: wp.array(dtype=float),
     joint_tau: wp.array(dtype=float),
     dt: float,
-    # Dahl state (inputs - from previous timestep, outputs - to next timestep) - COMPONENT-WISE (vec3)
+    # Dahl state (inputs - from previous timestep, outputs - to next timestep) - component-wise (vec3)
     joint_sigma_prev: wp.array(dtype=wp.vec3),  # input/output
     joint_kappa_prev: wp.array(dtype=wp.vec3),  # input/output
     joint_dkappa_prev: wp.array(dtype=wp.vec3),  # input/output

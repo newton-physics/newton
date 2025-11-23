@@ -1707,9 +1707,13 @@ def accumulate_contact_force_and_hessian(
     edge_edge_parallel_epsilon: float,
     # body-particle contact
     particle_radius: wp.array(dtype=float),
-    soft_contact_particle: wp.array(dtype=int),
-    contact_count: wp.array(dtype=int),
-    contact_max: int,
+    body_particle_contact_particle: wp.array(dtype=int),
+    body_particle_contact_count: wp.array(dtype=int),
+    body_particle_contact_max: int,
+    # per-contact soft AVBD parameters for body–particle contacts (shared with rigid side)
+    body_particle_contact_penalty_k: wp.array(dtype=float),
+    body_particle_contact_material_kd: wp.array(dtype=float),
+    body_particle_contact_material_mu: wp.array(dtype=float),
     shape_material_mu: wp.array(dtype=float),
     shape_body: wp.array(dtype=int),
     body_q: wp.array(dtype=wp.transform),
@@ -1845,20 +1849,25 @@ def accumulate_contact_force_and_hessian(
                             wp.atomic_add(particle_hessians, tri_c, collision_hessian_2)
             collision_buffer_counter += NUM_THREADS_PER_COLLISION_PRIMITIVE
 
-    particle_body_contact_count = min(contact_max, contact_count[0])
+    particle_body_contact_count = min(body_particle_contact_max, body_particle_contact_count[0])
 
     if t_id < particle_body_contact_count:
-        particle_idx = soft_contact_particle[t_id]
+        particle_idx = body_particle_contact_particle[t_id]
 
         if particle_colors[particle_idx] == current_color:
+            # Read per-contact AVBD penalty and material properties shared with the rigid side
+            contact_ke = body_particle_contact_penalty_k[t_id]
+            contact_kd = body_particle_contact_material_kd[t_id]
+            contact_mu = body_particle_contact_material_mu[t_id]
+
             body_contact_force, body_contact_hessian = evaluate_body_particle_contact(
                 particle_idx,
                 pos[particle_idx],
                 pos_prev[particle_idx],
                 t_id,
-                soft_contact_ke,
-                soft_contact_kd,
-                friction_mu,
+                contact_ke,
+                contact_kd,
+                contact_mu,
                 friction_epsilon,
                 particle_radius,
                 shape_material_mu,
@@ -1964,14 +1973,15 @@ def accumulate_contact_force_and_hessian_no_self_contact(
     pos: wp.array(dtype=wp.vec3),
     particle_colors: wp.array(dtype=int),
     # body-particle contact
-    soft_contact_ke: float,
-    soft_contact_kd: float,
-    friction_mu: float,
     friction_epsilon: float,
     particle_radius: wp.array(dtype=float),
-    soft_contact_particle: wp.array(dtype=int),
-    contact_count: wp.array(dtype=int),
-    contact_max: int,
+    body_particle_contact_particle: wp.array(dtype=int),
+    body_particle_contact_count: wp.array(dtype=int),
+    body_particle_contact_max: int,
+    # per-contact soft AVBD parameters for body–particle contacts (shared with rigid side)
+    body_particle_contact_penalty_k: wp.array(dtype=float),
+    body_particle_contact_material_kd: wp.array(dtype=float),
+    body_particle_contact_material_mu: wp.array(dtype=float),
     shape_material_mu: wp.array(dtype=float),
     shape_body: wp.array(dtype=int),
     body_q: wp.array(dtype=wp.transform),
@@ -1988,20 +1998,25 @@ def accumulate_contact_force_and_hessian_no_self_contact(
 ):
     t_id = wp.tid()
 
-    particle_body_contact_count = min(contact_max, contact_count[0])
+    particle_body_contact_count = min(body_particle_contact_max, body_particle_contact_count[0])
 
     if t_id < particle_body_contact_count:
-        particle_idx = soft_contact_particle[t_id]
+        particle_idx = body_particle_contact_particle[t_id]
 
         if particle_colors[particle_idx] == current_color:
+            # Read per-contact AVBD penalty and material properties shared with the rigid side
+            contact_ke = body_particle_contact_penalty_k[t_id]
+            contact_kd = body_particle_contact_material_kd[t_id]
+            contact_mu = body_particle_contact_material_mu[t_id]
+
             body_contact_force, body_contact_hessian = evaluate_body_particle_contact(
                 particle_idx,
                 pos[particle_idx],
                 pos_prev[particle_idx],
                 t_id,
-                soft_contact_ke,
-                soft_contact_kd,
-                friction_mu,
+                contact_ke,
+                contact_kd,
+                contact_mu,
                 friction_epsilon,
                 particle_radius,
                 shape_material_mu,

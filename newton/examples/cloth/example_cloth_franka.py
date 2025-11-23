@@ -223,6 +223,20 @@ class Example:
         self.model.soft_contact_kd = self.soft_contact_kd
         self.model.soft_contact_mu = self.self_contact_friction
 
+        shape_ke = self.model.shape_material_ke.numpy()
+        shape_kd = self.model.shape_material_kd.numpy()
+
+        # Match particle-side ke/kd so avg_ke/avg_kd == soft_contact_ke/kd
+        shape_ke[...] = self.soft_contact_ke
+        shape_kd[...] = self.soft_contact_kd
+
+        self.model.shape_material_ke = wp.array(
+            shape_ke, dtype=self.model.shape_material_ke.dtype, device=self.model.shape_material_ke.device
+        )
+        self.model.shape_material_kd = wp.array(
+            shape_kd, dtype=self.model.shape_material_kd.dtype, device=self.model.shape_material_kd.device
+        )
+
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.target_joint_qd = wp.empty_like(self.state_0.joint_qd)
@@ -251,7 +265,8 @@ class Example:
                 vertex_collision_buffer_pre_alloc=32,
                 edge_collision_buffer_pre_alloc=64,
                 integrate_with_external_rigid_solver=True,
-                collision_detection_interval=-1,
+                particle_collision_detection_interval=-1,
+                k_start_body_contact=self.soft_contact_ke,
             )
 
         self.viewer.set_model(self.model)

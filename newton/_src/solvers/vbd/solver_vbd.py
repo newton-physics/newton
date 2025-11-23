@@ -27,8 +27,9 @@ from .particle_vbd import (
     ParticleForceElementAdjacencyInfo,
     NUM_THREADS_PER_COLLISION_PRIMITIVE,
     TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE,
-    # TODO: Remove re-export - external code should import directly from particle_vbd
-    evaluate_body_particle_contact,  # Re-exported for backward compatibility (style3d.collision.kernels)
+    # TODO: Remove this re-export once external callers stop importing via solver_vbd.
+    # Currently used by style3d.collision.kernels.
+    evaluate_body_particle_contact,
     # Adjacency building kernels
     count_num_adjacent_edges,
     fill_adjacent_edges,
@@ -36,7 +37,7 @@ from .particle_vbd import (
     fill_adjacent_faces,
     count_num_adjacent_springs,
     fill_adjacent_springs,
-    # Solver kernels
+    # Solver kernels (particle VBD)
     forward_step,
     forward_step_penetration_free,
     compute_particle_conservative_bound,
@@ -57,23 +58,23 @@ from .rigid_vbd import (
     # Adjacency building kernels
     count_num_adjacent_joints,
     fill_adjacent_joints,
-    # Pre-iteration kernels
+    # Pre-iteration kernels (rigid AVBD)
     forward_step_rigid_bodies,
-    build_body_rigid_contact_lists,  # Rigid-rigid contact adjacency
-    build_body_soft_contact_lists,  # Particle-rigid contact adjacency
-    warmstart_joints,  # Cable joints (stretch & bend)
-    warmstart_rigid_contacts,  # Rigid-rigid contacts
-    warmstart_soft_contacts,  # Particle-rigid contacts
-    compute_cable_dahl_parameters,  # Cable bending plasticity
+    build_body_body_contact_lists,            # Body–body (rigid–rigid) contact adjacency
+    build_body_particle_contact_lists,        # Body–particle (rigid–particle) soft-contact adjacency
+    warmstart_joints,                         # Cable joints (stretch & bend)
+    warmstart_body_body_contacts,             # Body–body (rigid–rigid) contacts (penalty warmstart)
+    warmstart_body_particle_contacts,         # Body–particle soft contacts (penalty warmstart)
+    compute_cable_dahl_parameters,            # Cable bending plasticity
     # Iteration kernels
-    accumulate_rigid_contact_jacobi,  # Rigid-rigid (Jacobi mode)
-    accumulate_rigid_contact_per_body,  # Rigid-rigid (Gauss-Seidel mode)
-    accumulate_rigid_soft_contact_per_body,  # Particle-rigid (two-way coupling)
+    accumulate_body_body_contacts_jacobi,     # Body–body (rigid–rigid) contacts (Jacobi mode)
+    accumulate_body_body_contacts_per_body,   # Body–body (rigid–rigid) contacts (Gauss–Seidel mode)
+    accumulate_body_particle_contacts_per_body,  # Body–particle soft contacts (two-way coupling)
     solve_rigid_body,
     copy_rigid_body_transforms_back,
-    update_duals_rigid_contact,  # Rigid-rigid contacts (AVBD penalty update)
-    update_duals_soft_contact,  # Particle-rigid contacts (AVBD penalty update)
-    update_duals_joint,  # Cable joints (AVBD penalty update)
+    update_duals_body_body_contacts,          # Body–body (rigid–rigid) contacts (AVBD penalty update)
+    update_duals_body_particle_contacts,      # Body–particle soft contacts (AVBD penalty update)
+    update_duals_joint,                       # Cable joints (AVBD penalty update)
     # Post-iteration kernels
     update_body_velocity,
     update_cable_dahl_state,
@@ -89,8 +90,8 @@ class SolverVBD(SolverBase):
 
     This unified solver supports:
         - Particle simulation (cloth, soft bodies) using the VBD algorithm
-        - Rigid body simulation (joints, contacts) using the AVBD algorithm (ongoing)
-        - Coupled particle-rigid body systems (ongoing)
+        - Rigid body simulation (joints, contacts) using the AVBD algorithm
+        - Coupled particle-rigid body systems
 
     For rigid bodies, the AVBD algorithm uses **soft constraints** with adaptive penalty parameters
     for joints and contacts. Hard constraints are not currently enforced.
@@ -142,23 +143,21 @@ class SolverVBD(SolverBase):
         handle_self_contact: bool = False,
         self_contact_radius: float = 0.2,
         self_contact_margin: float = 0.2,
-        external_rigid_body_integration: bool = False,
+        integrate_with_external_rigid_solver: bool = False,
         penetration_free_conservative_bound_relaxation: float = 0.42,
         vertex_collision_buffer_pre_alloc: int = 32,
         edge_collision_buffer_pre_alloc: int = 64,
-        particle_collision_interval: int = 0,
+        particle_collision_detection_interval: int = 0,
         edge_edge_parallel_epsilon: float = 1e-5,
         use_particle_tile_solve: bool = True,
-        # Rigid parameters
+        # Rigid body parameters
         avbd_beta: float = 1.0e5,
         avbd_gamma: float = 0.99,
-        penalty_min: float = 1.0e4,
-        penalty_max: float = 1.0e18,
-        k_start_rigid_contact: float | None = None,  # AVBD: initial stiffness for rigid contacts (rigid-rigid and particle-rigid)
-        k_start_cable_stretch: float | None = None,  # AVBD: initial stiffness for cable stretch
-        k_start_cable_bend: float | None = None,  # AVBD: initial stiffness for cable bend
-        body_contact_buffer_pre_alloc: int = 64,
-        body_soft_contact_buffer_pre_alloc: int = 64,
+        k_start_body_contact: float = 1.0e1,  # AVBD: initial stiffness for all body contacts (body-body + body-particle)
+        k_start_cable_stretch: float = 1.0e4,  # AVBD: initial stiffness for cable stretch
+        k_start_cable_bend: float = 1.0e1,  # AVBD: initial stiffness for cable bend
+        body_body_contact_buffer_pre_alloc: int = 64,
+        body_particle_contact_buffer_pre_alloc: int = 64,
         enable_dahl_friction: bool = False,  # Cable bending plasticity/hysteresis
         dahl_eps_max: float | wp.array = 0.5,  # Dahl: max persistent strain
         dahl_tau: float | wp.array = 1.0,  # Dahl: memory decay length
@@ -182,13 +181,13 @@ class SolverVBD(SolverBase):
             self_contact_margin: The margin used for self-contact detection. This is the distance at which vertex-triangle
                 pairs and edge-edge will be considered in contact generation. It should be larger than `self_contact_radius`
                 to avoid missing contacts.
-            external_rigid_body_integration: Whether rigid body integration is handled externally. When set to `True`,
+            integrate_with_external_rigid_solver: Indicator for coupled rigid body–cloth simulation. When set to `True`,
                 the solver assumes rigid bodies are integrated by an external solver (one-way coupling).
             penetration_free_conservative_bound_relaxation: Relaxation factor for conservative penetration-free projection.
             vertex_collision_buffer_pre_alloc: Preallocation size for each vertex's vertex-triangle collision buffer.
             edge_collision_buffer_pre_alloc: Preallocation size for edge's edge-edge collision buffer.
-            particle_collision_interval: Controls how frequently particle self-contact detection is applied during the simulation.
-                If set to a value < 0, collision detection is only performed once before the initialization step.
+            particle_collision_detection_interval: Controls how frequently particle self-contact detection is applied during the
+                simulation. If set to a value < 0, collision detection is only performed once before the initialization step.
                 If set to 0, collision detection is applied twice: once before and once immediately after initialization.
                 If set to a value `n` >= 1, collision detection is applied before every `n` VBD iterations.
             edge_edge_parallel_epsilon: Threshold to detect near-parallel edges in edge-edge collision handling.
@@ -198,13 +197,12 @@ class SolverVBD(SolverBase):
             
             avbd_beta: Penalty ramp rate for rigid body constraints (how fast k grows with constraint violation).
             avbd_gamma: Warmstart decay for penalty k (cross-step decay factor for rigid body constraints).
-            penalty_min: Lower clamp for penalty k (applied in warmstart for rigid body constraints).
-            penalty_max: Upper clamp for penalty k (applied in dual updates for rigid body constraints).
-            k_start_rigid_contact: Optional initial penalty stiffness for rigid body contact constraints, including both rigid-rigid and particle-rigid (soft) contacts (AVBD). If None, defaults to `penalty_min`.
-            k_start_cable_stretch: Optional initial penalty stiffness for cable stretch constraints (AVBD). If None, defaults to `penalty_min`.
-            k_start_cable_bend: Optional initial penalty stiffness for cable bend constraints (AVBD). If None, defaults to `penalty_min`.
-            body_contact_buffer_pre_alloc: Max rigid-rigid contacts per body for per-body contact lists (tune based on contact density).
-            body_soft_contact_buffer_pre_alloc: Max particle-rigid contacts per body for per-body soft contact lists (tune based on contact density).
+            k_start_body_contact: Initial penalty stiffness for all body contact constraints, including both body-body (rigid-rigid)
+                and body-particle (rigid-particle) contacts (AVBD).
+            k_start_cable_stretch: Initial penalty stiffness for cable stretch constraints (AVBD).
+            k_start_cable_bend: Initial penalty stiffness for cable bend constraints (AVBD).
+            body_body_contact_buffer_pre_alloc: Max body-body (rigid-rigid) contacts per rigid body for per-body contact lists (tune based on expected body-body contact density).
+            body_particle_contact_buffer_pre_alloc: Max body-particle (rigid-particle) contacts per rigid body for per-body soft-contact lists (tune based on expected body-particle contact density).
             enable_dahl_friction: Enable Dahl hysteresis friction model for cable bending (default: False).
             dahl_eps_max: Maximum persistent strain (curvature) [rad] for Dahl friction model. Can be:
                 - float: Same value for all joints
@@ -214,13 +212,14 @@ class SolverVBD(SolverBase):
                 - array: Per-joint values
         
         Note:
-            - The `external_rigid_body_integration` argument enables one-way coupling between rigid body and soft body solvers.
-              If set to True, the rigid states should be integrated externally, with `state_in` passed to `step` function
+            - The `integrate_with_external_rigid_solver` argument enables one-way coupling between rigid body and soft body
+              solvers. If set to True, the rigid states should be integrated externally, with `state_in` passed to `step`
               representing the previous rigid state and `state_out` representing the current one. Frictional forces are
               computed accordingly.
-            - `vertex_collision_buffer_pre_alloc`, `edge_collision_buffer_pre_alloc`, and `body_contact_buffer_pre_alloc`
-              are fixed and will not be dynamically resized during runtime.
-              Setting them too small may result in undetected collisions (particles) or contact overflow (rigid bodies).
+            - `vertex_collision_buffer_pre_alloc`, `edge_collision_buffer_pre_alloc`, `body_body_contact_buffer_pre_alloc`,
+              and `body_particle_contact_buffer_pre_alloc` are fixed and will not be dynamically resized during runtime.
+              Setting them too small may result in undetected collisions (particles) or contact overflow (rigid body
+              contacts).
               Setting them excessively large may increase memory usage and degrade performance.
 
         """
@@ -229,6 +228,11 @@ class SolverVBD(SolverBase):
         # Common parameters
         self.iterations = iterations
         self.friction_epsilon = friction_epsilon
+
+        # Rigid integration mode: when True, rigid bodies are integrated by an external
+        # solver (one-way coupling). SolverVBD will not move rigid bodies, but can still
+        # participate in particle–rigid interaction on the particle side.
+        self.integrate_with_external_rigid_solver = integrate_with_external_rigid_solver
         
         # Initialize particle system
         self._init_particle_system(
@@ -236,27 +240,24 @@ class SolverVBD(SolverBase):
             handle_self_contact,
             self_contact_radius,
             self_contact_margin,
-            external_rigid_body_integration,
             penetration_free_conservative_bound_relaxation,
             vertex_collision_buffer_pre_alloc,
             edge_collision_buffer_pre_alloc,
-            particle_collision_interval,
+            particle_collision_detection_interval,
             edge_edge_parallel_epsilon,
             use_particle_tile_solve,
         )
         
-        # Initialize rigid body system
+        # Initialize rigid body system and rigid–particle (body–particle) interaction state
         self._init_rigid_system(
             model,
             avbd_beta,
             avbd_gamma,
-            penalty_min,
-            penalty_max,
-            k_start_rigid_contact,
+            k_start_body_contact,
             k_start_cable_stretch,
             k_start_cable_bend,
-            body_contact_buffer_pre_alloc,
-            body_soft_contact_buffer_pre_alloc,
+            body_body_contact_buffer_pre_alloc,
+            body_particle_contact_buffer_pre_alloc,
             enable_dahl_friction,
             dahl_eps_max,
             dahl_tau,
@@ -268,11 +269,10 @@ class SolverVBD(SolverBase):
         handle_self_contact: bool,
         self_contact_radius: float,
         self_contact_margin: float,
-        external_rigid_body_integration: bool,
         penetration_free_conservative_bound_relaxation: float,
         vertex_collision_buffer_pre_alloc: int,
         edge_collision_buffer_pre_alloc: int,
-        particle_collision_interval: int,
+        particle_collision_detection_interval: int,
         edge_edge_parallel_epsilon: float,
         use_particle_tile_solve: bool,
     ):
@@ -281,8 +281,7 @@ class SolverVBD(SolverBase):
         if model.particle_count == 0:
             return
         
-        self.integrate_with_external_rigid_solver = external_rigid_body_integration
-        self.collision_detection_interval = particle_collision_interval
+        self.collision_detection_interval = particle_collision_detection_interval
 
         # Particle state storage
         self.particle_q_prev = wp.zeros_like(model.particle_q, device=self.device)
@@ -290,8 +289,6 @@ class SolverVBD(SolverBase):
 
         # Particle adjacency info
         self.particle_adjacency = self.compute_particle_force_element_adjacency(model).to(self.device)
-
-        self.body_particle_contact_count = wp.zeros((model.particle_count,), dtype=wp.int32, device=self.device)
 
         # Self-contact settings
         self.handle_self_contact = handle_self_contact
@@ -351,124 +348,125 @@ class SolverVBD(SolverBase):
         model: Model,
         avbd_beta: float,
         avbd_gamma: float,
-        penalty_min: float,
-        penalty_max: float,
-        k_start_rigid_contact: float | None,
-        k_start_cable_stretch: float | None,
-        k_start_cable_bend: float | None,
-        body_contact_buffer_pre_alloc: int,
-        body_soft_contact_buffer_pre_alloc: int,
+        k_start_body_contact: float,
+        k_start_cable_stretch: float,
+        k_start_cable_bend: float,
+        body_body_contact_buffer_pre_alloc: int,
+        body_particle_contact_buffer_pre_alloc: int,
         enable_dahl_friction: bool,
         dahl_eps_max: float | wp.array,
         dahl_tau: float | wp.array,
     ):
-        """Initialize rigid body-specific data structures and settings for the AVBD algorithm."""
-        # Early exit if no rigid bodies
-        if model.body_count == 0:
-            return
-        
-        # State storage
-        self.body_q_prev = wp.zeros_like(model.body_q, device=self.device)
-        self.body_inertia_q = wp.zeros_like(model.body_q, device=self.device)
+        """Initialize rigid body-specific AVBD data structures and settings.
 
-        # Adjacency and dimensions
-        self.rigid_adjacency = self.compute_rigid_force_element_adjacency(model).to(self.device)
-        
-        # Force accumulation arrays
-        self.body_torques = wp.zeros(self.model.body_count, dtype=wp.vec3, device=self.device)
-        self.body_forces = wp.zeros(self.model.body_count, dtype=wp.vec3, device=self.device)
-
-        # Hessian blocks (6x6 block structure: angular-angular, angular-linear, linear-linear)
-        self.body_hessian_aa = wp.zeros(self.model.body_count, dtype=wp.mat33, device=self.device)
-        self.body_hessian_al = wp.zeros(self.model.body_count, dtype=wp.mat33, device=self.device)
-        self.body_hessian_ll = wp.zeros(self.model.body_count, dtype=wp.mat33, device=self.device)
-
-        # Per-body contact lists (only needed for Gauss-Seidel mode, not Jacobi)
-        if not _USE_JACOBI_CONTACTS:
-            # Rigid-rigid contact adjacency (CSR-like: per-body counts and flat index array)
-            self.body_contact_buffer_pre_alloc = body_contact_buffer_pre_alloc
-            self.body_contact_counts = wp.zeros(self.model.body_count, dtype=wp.int32, device=self.device)
-            self.body_contact_indices = wp.zeros(
-                self.model.body_count * self.body_contact_buffer_pre_alloc, dtype=wp.int32, device=self.device
-            )
-
-            # Particle-rigid soft-contact adjacency (CSR-like: per-body counts and flat index array)
-            self.body_soft_contact_buffer_pre_alloc = body_soft_contact_buffer_pre_alloc
-            self.body_soft_contact_counts = wp.zeros(self.model.body_count, dtype=wp.int32, device=self.device)
-            self.body_soft_contact_indices = wp.zeros(
-                self.model.body_count * self.body_soft_contact_buffer_pre_alloc, dtype=wp.int32, device=self.device
-            )
-
+        This includes:
+          - Rigid-only AVBD state (joints, body-body contacts, Dahl friction)
+          - Shared interaction state for body-particle (rigid-particle) soft contacts
+        """
         # AVBD penalty parameters
         self.avbd_beta = avbd_beta
         self.avbd_gamma = avbd_gamma
-        self.penalty_min = penalty_min
-        self.penalty_max = penalty_max
 
-        # Validation for AVBD penalty bounds
-        if self.penalty_min <= 0.0:
-            raise ValueError("penalty_min must be > 0.0")
-        if self.penalty_max < self.penalty_min:
-            raise ValueError("penalty_max must be >= penalty_min")
+        # Common initial penalty seed / lower bound for body contacts (clamped to non-negative)
+        self.k_start_body_contact = max(0.0, k_start_body_contact)
 
-        # AVBD constraint penalties
-        # Joint penalties (per-DOF adaptive penalties for cable stretch and bend)
-        self.joint_penalty_k = self._init_joint_penalty_k(k_start_cable_stretch, k_start_cable_bend)
-
-        # Contact penalties (adaptive penalties for rigid-rigid contacts)
-        if not hasattr(model, "rigid_contact_max") or model.rigid_contact_max is None:
-            raise ValueError(
-                "Model.rigid_contact_max is not set. Ensure the model was created via ModelBuilder.finalize()."
-            )
-        max_contacts = model.rigid_contact_max
-        if k_start_rigid_contact is None:
-            contact_k0 = self.penalty_min
-        else:
-            # Clamp user-provided value to valid penalty range
-            contact_k0 = max(self.penalty_min, k_start_rigid_contact)
-        self.contact_penalty_k = wp.full((max_contacts,), contact_k0, dtype=float, device=self.device)
-
-        # Pre-computed averaged contact material properties (computed once per step in warmstart)
-        self.contact_material_ke = wp.zeros(max_contacts, dtype=float, device=self.device)
-        self.contact_material_kd = wp.zeros(max_contacts, dtype=float, device=self.device)
-        self.contact_material_mu = wp.zeros(max_contacts, dtype=float, device=self.device)
-
-        # Soft contact penalties (adaptive penalties for particle-rigid contacts)
-        # Use same initial penalty as rigid-rigid contacts
+        # -------------------------------------------------------------
+        # Rigid-only AVBD state (used when SolverVBD integrates bodies)
+        # -------------------------------------------------------------
+        if not self.integrate_with_external_rigid_solver and model.body_count > 0:
+            # State storage
+            self.body_q_prev = wp.zeros_like(model.body_q, device=self.device)
+            self.body_inertia_q = wp.zeros_like(model.body_q, device=self.device)
+            
+            # Adjacency and dimensions
+            self.rigid_adjacency = self.compute_rigid_force_element_adjacency(model).to(self.device)
+            
+            # Force accumulation arrays
+            self.body_torques = wp.zeros(self.model.body_count, dtype=wp.vec3, device=self.device)
+            self.body_forces = wp.zeros(self.model.body_count, dtype=wp.vec3, device=self.device)
+            
+            # Hessian blocks (6x6 block structure: angular-angular, angular-linear, linear-linear)
+            self.body_hessian_aa = wp.zeros(self.model.body_count, dtype=wp.mat33, device=self.device)
+            self.body_hessian_al = wp.zeros(self.model.body_count, dtype=wp.mat33, device=self.device)
+            self.body_hessian_ll = wp.zeros(self.model.body_count, dtype=wp.mat33, device=self.device)
+            
+            # Per-body contact lists (only needed for Gauss-Seidel mode, not Jacobi)
+            if not _USE_JACOBI_CONTACTS:
+                # Body-body (rigid-rigid) contact adjacency (CSR-like: per-body counts and flat index array)
+                self.body_body_contact_buffer_pre_alloc = body_body_contact_buffer_pre_alloc
+                self.body_contact_counts = wp.zeros(self.model.body_count, dtype=wp.int32, device=self.device)
+                self.body_contact_indices = wp.zeros(
+                    self.model.body_count * self.body_body_contact_buffer_pre_alloc, dtype=wp.int32, device=self.device
+                )
+                
+                # Body-particle (rigid-particle) contact adjacency (CSR-like: per-body counts and flat index array)
+                self.body_particle_contact_buffer_pre_alloc = body_particle_contact_buffer_pre_alloc
+                self.body_particle_contact_counts = wp.zeros(
+                    self.model.body_count, dtype=wp.int32, device=self.device
+                )
+                self.body_particle_contact_indices = wp.zeros(
+                    self.model.body_count * self.body_particle_contact_buffer_pre_alloc, dtype=wp.int32, device=self.device
+                )
+            
+            # AVBD constraint penalties
+            # Joint penalties (per-DOF adaptive penalties for cable stretch and bend)
+            self.joint_penalty_k = self._init_joint_penalty_k(k_start_cable_stretch, k_start_cable_bend)
+            
+            # Contact penalties (adaptive penalties for body-body contacts)
+            if model.shape_count > 0:
+                if not hasattr(model, "rigid_contact_max") or model.rigid_contact_max is None:
+                    raise ValueError(
+                        "Model.rigid_contact_max is not set. Ensure the model was created via ModelBuilder.finalize()."
+                    )
+                max_contacts = model.rigid_contact_max
+                # Per-contact AVBD penalty for body–body contacts
+                self.body_body_contact_penalty_k = wp.full(
+                    (max_contacts,), self.k_start_body_contact, dtype=float, device=self.device
+                )
+                
+                # Pre-computed averaged body–body contact material properties (computed once per step in warmstart)
+                self.body_body_contact_material_ke = wp.zeros(max_contacts, dtype=float, device=self.device)
+                self.body_body_contact_material_kd = wp.zeros(max_contacts, dtype=float, device=self.device)
+                self.body_body_contact_material_mu = wp.zeros(max_contacts, dtype=float, device=self.device)
+            
+            # Dahl friction model (cable bending plasticity)
+            # State variables for Dahl hysteresis (persistent across timesteps)
+            self.joint_sigma_prev = wp.zeros(model.joint_count, dtype=wp.vec3, device=self.device)
+            self.joint_kappa_prev = wp.zeros(model.joint_count, dtype=wp.vec3, device=self.device)
+            self.joint_dkappa_prev = wp.zeros(model.joint_count, dtype=wp.vec3, device=self.device)
+            
+            # Pre-computed Dahl parameters (frozen during iterations, updated per timestep)
+            self.joint_sigma_start = wp.zeros(model.joint_count, dtype=wp.vec3, device=self.device)
+            self.joint_C_fric = wp.zeros(model.joint_count, dtype=wp.vec3, device=self.device)
+            
+            # Dahl model configuration
+            self.enable_dahl_friction = enable_dahl_friction
+            self.joint_dahl_eps_max = wp.zeros(model.joint_count, dtype=float, device=self.device)
+            self.joint_dahl_tau = wp.zeros(model.joint_count, dtype=float, device=self.device)
+            
+            if enable_dahl_friction:
+                if model.joint_count == 0:
+                    self.enable_dahl_friction = False
+                else:
+                    self._init_dahl_params(dahl_eps_max, dahl_tau, model)
+        
+        # -------------------------------------------------------------
+        # Body–particle interaction - shared state
+        # -------------------------------------------------------------
+        # Soft contact penalties (adaptive penalties for body–particle contacts)
+        # Use same initial penalty as body–body contacts
         max_soft_contacts = model.shape_count * model.particle_count
-        if k_start_rigid_contact is None:
-            soft_contact_k0 = self.penalty_min
-        else:
-            # Clamp user-provided value to valid penalty range
-            soft_contact_k0 = max(self.penalty_min, k_start_rigid_contact)
-        self.soft_contact_penalty_k = wp.full((max_soft_contacts,), soft_contact_k0, dtype=float, device=self.device)
+        # Per-contact AVBD penalty for body–particle soft contacts (same initial seed as body–body)
+        self.body_particle_contact_penalty_k = wp.full(
+            (max_soft_contacts,), self.k_start_body_contact, dtype=float, device=self.device
+        )
 
-        # Pre-computed averaged soft contact material properties (computed once per step in warmstart)
-        # These are averaged between model.soft_contact_* and shape material properties
-        self.soft_contact_material_ke = wp.zeros(max_soft_contacts, dtype=float, device=self.device)
-        self.soft_contact_material_kd = wp.zeros(max_soft_contacts, dtype=float, device=self.device)
-        self.soft_contact_material_mu = wp.zeros(max_soft_contacts, dtype=float, device=self.device)
-
-        # Dahl friction model (cable bending plasticity)
-        # State variables for Dahl hysteresis (persistent across timesteps)
-        self.joint_sigma_prev = wp.zeros(model.joint_count, dtype=wp.vec3, device=self.device)
-        self.joint_kappa_prev = wp.zeros(model.joint_count, dtype=wp.vec3, device=self.device)
-        self.joint_dkappa_prev = wp.zeros(model.joint_count, dtype=wp.vec3, device=self.device)
-
-        # Pre-computed Dahl parameters (frozen during iterations, updated per timestep)
-        self.joint_sigma_start = wp.zeros(model.joint_count, dtype=wp.vec3, device=self.device)
-        self.joint_C_fric = wp.zeros(model.joint_count, dtype=wp.vec3, device=self.device)
-
-        # Dahl model configuration
-        self.enable_dahl_friction = enable_dahl_friction
-        self.joint_dahl_eps_max = wp.zeros(model.joint_count, dtype=float, device=self.device)
-        self.joint_dahl_tau = wp.zeros(model.joint_count, dtype=float, device=self.device)
-
-        if enable_dahl_friction:
-            if model.joint_count == 0:
-                self.enable_dahl_friction = False
-            else:
-                self._init_dahl_params(dahl_eps_max, dahl_tau, model)
+        # Pre-computed averaged body–particle soft contact material properties (computed once per step in warmstart)
+        # These correspond to body–particle soft contacts and are averaged between model.soft_contact_*
+        # and shape material properties.
+        self.body_particle_contact_material_ke = wp.zeros(max_soft_contacts, dtype=float, device=self.device)
+        self.body_particle_contact_material_kd = wp.zeros(max_soft_contacts, dtype=float, device=self.device)
+        self.body_particle_contact_material_mu = wp.zeros(max_soft_contacts, dtype=float, device=self.device)
 
         # Validation
         has_bodies = self.model.body_count > 0
@@ -484,30 +482,41 @@ class SolverVBD(SolverBase):
     # Initialization Helper Methods
     # =====================================================
 
-    def _init_joint_penalty_k(self, k_start_cable_stretch, k_start_cable_bend):
+    def _init_joint_penalty_k(self, k_start_cable_stretch: float, k_start_cable_bend: float):
         """
         Build initial per-DOF joint penalty array on CPU and upload to solver device.
-        - Default seed is penalty_min for all DOFs.
+        - Default seed is a global rigid-body penalty for all DOFs.
         - Optionally override cable stretch/bend DOFs per joint.
         """
         dof_count = self.model.joint_dof_count
         with wp.ScopedDevice("cpu"):
-            joint_k0_np = np.full((dof_count,), self.penalty_min, dtype=float)
+            # Seed all DOFs with the stretch stiffness and specialize cable bend DOFs below.
+            # This keeps a single k_start_* API as the authoritative source of joint stiffness.
+            base_k = max(0.0, k_start_cable_stretch)
+            joint_k_min_np = np.full((dof_count,), 0.0, dtype=float)
+            joint_k0_np = np.full((dof_count,), base_k, dtype=float)
 
-            if k_start_cable_stretch is not None or k_start_cable_bend is not None:
-                jt = self.model.joint_type.to("cpu")
-                jdofs = self.model.joint_qd_start.to("cpu")
-                n_j = self.model.joint_count
-                for j in range(n_j):
-                    if jt[j] == JointType.CABLE:
-                        dof0 = jdofs[j]
-                        if k_start_cable_stretch is not None:
-                            # Clamp to valid penalty range
-                            joint_k0_np[dof0] = max(self.penalty_min, k_start_cable_stretch)
-                        if k_start_cable_bend is not None:
-                            # Clamp to valid penalty range
-                            joint_k0_np[dof0 + 1] = max(self.penalty_min, k_start_cable_bend)
+            jt_cpu = self.model.joint_type.to("cpu")
+            jdofs_cpu = self.model.joint_qd_start.to("cpu")
 
+            jt = jt_cpu.numpy() if hasattr(jt_cpu, "numpy") else np.asarray(jt_cpu, dtype=int)
+            jdofs = jdofs_cpu.numpy() if hasattr(jdofs_cpu, "numpy") else np.asarray(jdofs_cpu, dtype=int)
+
+            n_j = self.model.joint_count
+            bend_k = max(0.0, k_start_cable_bend)
+            for j in range(n_j):
+                if jt[j] == JointType.CABLE:
+                    dof0 = jdofs[j]
+                    # DOF 0: cable stretch; DOF 1: cable bend
+                    joint_k0_np[dof0] = base_k
+                    joint_k0_np[dof0 + 1] = bend_k
+                    # Per-DOF lower bounds: use k_start_* for cable stretch/bend, 0 otherwise
+                    joint_k_min_np[dof0] = base_k
+                    joint_k_min_np[dof0 + 1] = bend_k
+
+            # Upload to device: initial penalties and per-DOF lower bounds
+            joint_penalty_k_min = wp.array(joint_k_min_np, dtype=float, device=self.device)
+            self.joint_penalty_k_min = joint_penalty_k_min
             return wp.array(joint_k0_np, dtype=float, device=self.device)
 
     def _init_dahl_params(self, eps_max_input, tau_input, model):
@@ -754,7 +763,7 @@ class SolverVBD(SolverBase):
             self.solve_particle_iteration(state_in, state_out, contacts, dt, iter_num)
             self.solve_rigid_body_iteration(state_in, state_out, contacts, dt)
         
-        self.finalize_particles(state_in, state_out, dt)
+        self.finalize_particles(state_out, dt)
         self.finalize_rigid_bodies(state_out, dt)
 
     def initialize_particles(self, state_in: State, dt: float):
@@ -811,119 +820,150 @@ class SolverVBD(SolverBase):
         Performs forward integration, builds contact lists, and warmstarts AVBD penalty parameters.
         """
         model = self.model
-        
-        # Early exit if no rigid bodies
-        if model.body_count == 0:
-            return
-        
-        # Forward integrate rigid bodies
-        wp.launch(
-            kernel=forward_step_rigid_bodies,
-            inputs=[
-                dt,
-                model.gravity,
-                state_in.body_f,
-                model.body_com,
-                model.body_inertia,
-                model.body_inv_mass,
-                model.body_inv_inertia,
-                state_in.body_q,  # input/output
-                state_in.body_qd,  # input/output
-            ],
-            outputs=[
-                self.body_q_prev,
-                self.body_inertia_q,
-            ],
-            dim=model.body_count,
-            device=self.device,
-        )
-        
-        # Use the Contacts buffer capacity as launch dimension
-        contact_launch_dim = contacts.rigid_contact_max
-        
-        # Build per-body contact lists once per step (only needed for Gauss-Seidel mode)
-        if not _USE_JACOBI_CONTACTS:
-            # Build rigid-rigid contact lists
-            self.body_contact_counts.zero_()
+
+        # ---------------------------
+        # Rigid-only initialization
+        # ---------------------------
+        if model.body_count > 0 and not self.integrate_with_external_rigid_solver:
+            # Forward integrate rigid bodies
             wp.launch(
-                kernel=build_body_rigid_contact_lists,
-                dim=contact_launch_dim,
+                kernel=forward_step_rigid_bodies,
+                inputs=[
+                    dt,
+                    model.gravity,
+                    state_in.body_f,
+                    model.body_com,
+                    model.body_inertia,
+                    model.body_inv_mass,
+                    model.body_inv_inertia,
+                    state_in.body_q,  # input/output
+                    state_in.body_qd,  # input/output
+                ],
+                outputs=[
+                    self.body_q_prev,
+                    self.body_inertia_q,
+                ],
+                dim=model.body_count,
+                device=self.device,
+            )
+
+            # Use the Contacts buffer capacity as launch dimension
+            contact_launch_dim = contacts.rigid_contact_max
+
+            # Build per-body contact lists once per step (only needed for Gauss-Seidel mode)
+            if not _USE_JACOBI_CONTACTS:
+                # Build body-body (rigid-rigid) contact lists
+                self.body_contact_counts.zero_()
+                wp.launch(
+                    kernel=build_body_body_contact_lists,
+                    dim=contact_launch_dim,
+                    inputs=[
+                        contacts.rigid_contact_count,
+                        contacts.rigid_contact_shape0,
+                        contacts.rigid_contact_shape1,
+                        model.shape_body,
+                        self.body_body_contact_buffer_pre_alloc,
+                    ],
+                    outputs=[
+                        self.body_contact_counts,
+                        self.body_contact_indices,
+                    ],
+                    device=self.device,
+                )
+
+                # Build body-particle (rigid-particle) contact lists
+                if model.particle_count > 0:
+                    self.body_particle_contact_counts.zero_()
+                    wp.launch(
+                        kernel=build_body_particle_contact_lists,
+                        dim=contacts.soft_contact_max,
+                        inputs=[
+                            contacts.soft_contact_count,
+                            contacts.soft_contact_shape,
+                            model.shape_body,
+                            self.body_particle_contact_buffer_pre_alloc,
+                        ],
+                        outputs=[
+                            self.body_particle_contact_counts,
+                            self.body_particle_contact_indices,
+                        ],
+                        device=self.device,
+                    )
+
+            # Warmstart AVBD penalty parameters for joints
+            wp.launch(
+                kernel=warmstart_joints,
+                inputs=[
+                    model.joint_target_ke,
+                    self.joint_penalty_k_min,
+                    self.avbd_gamma,
+                    self.joint_penalty_k,  # input/output
+                ],
+                dim=model.joint_dof_count,
+                device=self.device,
+            )
+
+            # Warmstart AVBD body–body contact penalties and pre-compute material properties
+            wp.launch(
+                kernel=warmstart_body_body_contacts,
                 inputs=[
                     contacts.rigid_contact_count,
                     contacts.rigid_contact_shape0,
                     contacts.rigid_contact_shape1,
-                    model.shape_body,
-                    self.body_contact_buffer_pre_alloc,
+                    model.shape_material_ke,
+                    model.shape_material_kd,
+                    model.shape_material_mu,
+                    self.avbd_gamma,
+                    self.k_start_body_contact,
                 ],
                 outputs=[
-                    self.body_contact_counts,
-                    self.body_contact_indices,
+                    self.body_body_contact_penalty_k,
+                    self.body_body_contact_material_ke,
+                    self.body_body_contact_material_kd,
+                    self.body_body_contact_material_mu,
                 ],
+                dim=contact_launch_dim,
                 device=self.device,
             )
 
-            # Build particle-rigid contact lists
-            if model.particle_count > 0:
-                self.body_soft_contact_counts.zero_()
+            # Compute Dahl hysteresis parameters for cable bending (once per timestep, frozen during iterations)
+            if self.enable_dahl_friction and model.joint_count > 0:
                 wp.launch(
-                    kernel=build_body_soft_contact_lists,
-                    dim=contacts.soft_contact_max,
+                    kernel=compute_cable_dahl_parameters,
                     inputs=[
-                        contacts.soft_contact_count,
-                        contacts.soft_contact_shape,
-                        model.shape_body,
-                        self.body_soft_contact_buffer_pre_alloc,
+                        model.joint_type,
+                        model.joint_parent,
+                        model.joint_child,
+                        model.joint_X_p,
+                        model.joint_X_c,
+                        model.joint_qd_start,
+                        model.joint_target_ke,
+                        state_in.body_q,
+                        state_in.body_qd,
+                        model.body_q,
+                        model.body_com,
+                        self.joint_sigma_prev,
+                        self.joint_kappa_prev,
+                        self.joint_dkappa_prev,
+                        self.joint_dahl_eps_max,
+                        self.joint_dahl_tau,
+                        dt,
                     ],
                     outputs=[
-                        self.body_soft_contact_counts,
-                        self.body_soft_contact_indices,
+                        self.joint_sigma_start,
+                        self.joint_C_fric,
                     ],
+                    dim=model.joint_count,
                     device=self.device,
                 )
-        
-        # Warmstart AVBD penalty parameters for joints
-        wp.launch(
-            kernel=warmstart_joints,
-            inputs=[
-                model.joint_target_ke,
-                self.avbd_gamma,
-                self.penalty_min,
-                self.penalty_max,
-                self.joint_penalty_k,  # input/output
-            ],
-            dim=model.joint_dof_count,
-            device=self.device,
-        )
-        
-        # Warmstart AVBD contact penalties and pre-compute material properties
-        wp.launch(
-            kernel=warmstart_rigid_contacts,
-            inputs=[
-                contacts.rigid_contact_count,
-                contacts.rigid_contact_shape0,
-                contacts.rigid_contact_shape1,
-                model.shape_material_ke,
-                model.shape_material_kd,
-                model.shape_material_mu,
-                self.avbd_gamma,
-                self.penalty_min,
-                self.penalty_max,
-            ],
-            outputs=[
-                self.contact_penalty_k,
-                self.contact_material_ke,
-                self.contact_material_kd,
-                self.contact_material_mu,
-            ],
-            dim=contact_launch_dim,
-            device=self.device,
-        )
-        
-        # Warmstart AVBD soft contact penalties (particle-rigid contacts)
+
+        # ---------------------------
+        # Body–particle interaction
+        # ---------------------------
         if model.particle_count > 0:
             soft_contact_launch_dim = contacts.soft_contact_max
             wp.launch(
-                kernel=warmstart_soft_contacts,
+                kernel=warmstart_body_particle_contacts,
                 inputs=[
                     contacts.soft_contact_count,
                     contacts.soft_contact_shape,
@@ -934,47 +974,15 @@ class SolverVBD(SolverBase):
                     model.shape_material_kd,
                     model.shape_material_mu,
                     self.avbd_gamma,
-                    self.penalty_min,
-                    self.penalty_max,
+                    self.k_start_body_contact,
                 ],
                 outputs=[
-                    self.soft_contact_penalty_k,
-                    self.soft_contact_material_ke,
-                    self.soft_contact_material_kd,
-                    self.soft_contact_material_mu,
+                    self.body_particle_contact_penalty_k,
+                    self.body_particle_contact_material_ke,
+                    self.body_particle_contact_material_kd,
+                    self.body_particle_contact_material_mu,
                 ],
                 dim=soft_contact_launch_dim,
-                device=self.device,
-            )
-        
-        # Compute Dahl hysteresis parameters for cable bending (once per timestep, frozen during iterations)
-        if self.enable_dahl_friction and model.joint_count > 0:
-            wp.launch(
-                kernel=compute_cable_dahl_parameters,
-                inputs=[
-                    model.joint_type,
-                    model.joint_parent,
-                    model.joint_child,
-                    model.joint_X_p,
-                    model.joint_X_c,
-                    model.joint_qd_start,
-                    model.joint_target_ke,
-                    state_in.body_q,
-                    state_in.body_qd,
-                    model.body_q,
-                    model.body_com,
-                    self.joint_sigma_prev,
-                    self.joint_kappa_prev,
-                    self.joint_dkappa_prev,
-                    self.joint_dahl_eps_max,
-                    self.joint_dahl_tau,
-                    dt,
-                ],
-                outputs=[
-                    self.joint_sigma_start,
-                    self.joint_C_fric,
-                ],
-                dim=model.joint_count,
                 device=self.device,
             )
 
@@ -989,6 +997,35 @@ class SolverVBD(SolverBase):
         # Early exit if no rigid bodies
         if model.body_count == 0:
             return
+
+        # If rigid bodies are integrated by an external solver, skip the AVBD rigid-body
+        # solve but still update body–particle soft-contact penalties so that adaptive
+        # AVBD stiffness is used for cloth–rigid interaction.
+        if self.integrate_with_external_rigid_solver:
+            if model.particle_count > 0:
+                soft_contact_launch_dim = contacts.soft_contact_max
+                wp.launch(
+                    kernel=update_duals_body_particle_contacts,
+                    dim=soft_contact_launch_dim,
+                    inputs=[
+                        contacts.soft_contact_count,
+                        contacts.soft_contact_particle,
+                        contacts.soft_contact_shape,
+                        contacts.soft_contact_body_pos,
+                        contacts.soft_contact_normal,
+                        state_in.particle_q,
+                        model.particle_radius,
+                        model.shape_body,
+                        # Rigid poses come from the external solver when
+                        # integrate_with_external_rigid_solver=True
+                        state_out.body_q,
+                        self.body_particle_contact_material_ke,
+                        self.avbd_beta,
+                        self.body_particle_contact_penalty_k,  # input/output
+                    ],
+                    device=self.device,
+                )
+            return
         
         # Zero out forces and hessians
         self.body_torques.zero_()
@@ -998,7 +1035,7 @@ class SolverVBD(SolverBase):
         self.body_hessian_ll.zero_()
         
         # AVBD stiffness arrays (adaptive penalties)
-        contact_stiffness_array = self.contact_penalty_k
+        contact_stiffness_array = self.body_body_contact_penalty_k
         joint_stiffness_array = self.joint_penalty_k
 
         # Use the Contacts buffer capacity as launch dimension
@@ -1009,7 +1046,7 @@ class SolverVBD(SolverBase):
         # This preserves Newton's 3rd law but uses old state for both bodies (slower convergence)
         if _USE_JACOBI_CONTACTS:
             wp.launch(
-                kernel=accumulate_rigid_contact_jacobi,
+                kernel=accumulate_body_body_contacts_jacobi,
                 dim=contact_launch_dim,
                 inputs=[
                     dt,
@@ -1019,8 +1056,8 @@ class SolverVBD(SolverBase):
                     model.body_inv_mass,
                     self.friction_epsilon,
                     contact_stiffness_array,
-                    self.contact_material_kd,
-                    self.contact_material_mu,
+                    self.body_body_contact_material_kd,
+                    self.body_body_contact_material_mu,
                     contacts.rigid_contact_count,
                     contacts.rigid_contact_shape0,
                     contacts.rigid_contact_shape1,
@@ -1047,10 +1084,10 @@ class SolverVBD(SolverBase):
             
             # Gauss-Seidel contact accumulation: evaluate contacts for bodies in this color
             if not _USE_JACOBI_CONTACTS:
-                # Accumulate particle-rigid soft-contact forces and Hessians on bodies (per-body, per-color)
+                # Accumulate body-particle forces and Hessians on bodies (per-body, per-color)
                 if model.particle_count > 0:
                     wp.launch(
-                        kernel=accumulate_rigid_soft_contact_per_body,
+                        kernel=accumulate_body_particle_contacts_per_body,
                         dim=color_group.size * _NUM_CONTACT_THREADS_PER_BODY,
                         inputs=[
                             dt,
@@ -1065,12 +1102,12 @@ class SolverVBD(SolverBase):
                             model.body_qd,
                             model.body_com,
                             model.body_inv_mass,
-                            # AVBD soft contact penalties and material properties
+                            # AVBD body–particle soft contact penalties and material properties
                             self.friction_epsilon,
-                            self.soft_contact_penalty_k,
-                            self.soft_contact_material_kd,
-                            self.soft_contact_material_mu,
-                            # soft contact data
+                            self.body_particle_contact_penalty_k,
+                            self.body_particle_contact_material_kd,
+                            self.body_particle_contact_material_mu,
+                            # soft contact data (body–particle contacts)
                             contacts.soft_contact_count,
                             contacts.soft_contact_particle,
                             contacts.soft_contact_shape,
@@ -1080,10 +1117,10 @@ class SolverVBD(SolverBase):
                             # shape/material data
                             model.shape_material_mu,
                             model.shape_body,
-                            # per-body adjacency
-                            self.body_soft_contact_buffer_pre_alloc,
-                            self.body_soft_contact_counts,
-                            self.body_soft_contact_indices,
+                            # per-body adjacency (body-particle contacts)
+                            self.body_particle_contact_buffer_pre_alloc,
+                            self.body_particle_contact_counts,
+                            self.body_particle_contact_indices,
                         ],
                         outputs=[
                             self.body_forces,
@@ -1095,9 +1132,9 @@ class SolverVBD(SolverBase):
                         device=self.device,
                     )
                 
-                # Accumulate rigid-rigid contact forces and Hessians on bodies (per-body, per-color)
+                # Accumulate body-body (rigid-rigid) contact forces and Hessians on bodies (per-body, per-color)
                 wp.launch(
-                    kernel=accumulate_rigid_contact_per_body,
+                    kernel=accumulate_body_body_contacts_per_body,
                     dim=color_group.size * _NUM_CONTACT_THREADS_PER_BODY,
                     inputs=[
                         dt,
@@ -1108,8 +1145,8 @@ class SolverVBD(SolverBase):
                         model.body_inv_mass,
                         self.friction_epsilon,
                         contact_stiffness_array,
-                        self.contact_material_kd,
-                        self.contact_material_mu,
+                        self.body_body_contact_material_kd,
+                        self.body_body_contact_material_mu,
                         contacts.rigid_contact_count,
                         contacts.rigid_contact_shape0,
                         contacts.rigid_contact_shape1,
@@ -1119,7 +1156,7 @@ class SolverVBD(SolverBase):
                         contacts.rigid_contact_thickness0,
                         contacts.rigid_contact_thickness1,
                         model.shape_body,
-                        self.body_contact_buffer_pre_alloc,
+                        self.body_body_contact_buffer_pre_alloc,
                         self.body_contact_counts,
                         self.body_contact_indices,
                     ],
@@ -1179,9 +1216,9 @@ class SolverVBD(SolverBase):
             )
         
         # AVBD dual update: update adaptive penalties based on constraint violation
-        # Update rigid-rigid contact penalties
+        # Update body-body (rigid-rigid) contact penalties
         wp.launch(
-            kernel=update_duals_rigid_contact,
+            kernel=update_duals_body_body_contacts,
             dim=contact_launch_dim,
             inputs=[
                 contacts.rigid_contact_count,
@@ -1194,19 +1231,18 @@ class SolverVBD(SolverBase):
                 contacts.rigid_contact_thickness1,
                 model.shape_body,
                 state_out.body_q,
-                self.contact_material_ke,
+                self.body_body_contact_material_ke,
                 self.avbd_beta,
-                self.penalty_max,
-                self.contact_penalty_k,  # input/output
+                self.body_body_contact_penalty_k,  # input/output
             ],
             device=self.device,
         )
         
-        # Update particle-rigid soft contact penalties
+        # Update body-particle contact penalties
         if model.particle_count > 0:
             soft_contact_launch_dim = contacts.soft_contact_max
             wp.launch(
-                kernel=update_duals_soft_contact,
+                kernel=update_duals_body_particle_contacts,
                 dim=soft_contact_launch_dim,
                 inputs=[
                     contacts.soft_contact_count,
@@ -1217,12 +1253,12 @@ class SolverVBD(SolverBase):
                     state_in.particle_q,
                     model.particle_radius,
                     model.shape_body,
-                    state_out.body_q,
-                    model.body_inv_mass,
-                    self.soft_contact_material_ke,
+                    # Rigid poses come from SolverVBD itself when
+                    # integrate_with_external_rigid_solver=False
+                    state_in.body_q,
+                    self.body_particle_contact_material_ke,
                     self.avbd_beta,
-                    self.penalty_max,
-                    self.soft_contact_penalty_k,  # input/output
+                    self.body_particle_contact_penalty_k,  # input/output
                 ],
                 device=self.device,
             )
@@ -1244,7 +1280,6 @@ class SolverVBD(SolverBase):
                 model.body_q,
                 model.body_com,
                 self.avbd_beta,
-                self.penalty_max,
                 self.joint_penalty_k,  # input/output
             ],
             device=self.device,
@@ -1255,7 +1290,15 @@ class SolverVBD(SolverBase):
     ):
         """Solve one VBD iteration for particles."""
         model = self.model
-        
+
+        # Select rigid-body poses for particle–rigid contact evaluation
+        if self.integrate_with_external_rigid_solver:
+            body_q_for_particles = state_out.body_q
+            body_q_prev_for_particles = state_in.body_q
+        else:
+            body_q_for_particles = state_in.body_q
+            body_q_prev_for_particles = None
+
         # Early exit if no particles
         if model.particle_count == 0:
             return
@@ -1300,6 +1343,9 @@ class SolverVBD(SolverBase):
                             contacts.soft_contact_particle,
                             contacts.soft_contact_count,
                             contacts.soft_contact_max,
+                            self.body_particle_contact_penalty_k,
+                            self.body_particle_contact_material_kd,
+                            self.body_particle_contact_material_mu,
                             model.shape_material_mu,
                             model.shape_body,
                             state_out.body_q if self.integrate_with_external_rigid_solver else state_in.body_q,
@@ -1326,18 +1372,18 @@ class SolverVBD(SolverBase):
                         state_in.particle_q,
                         model.particle_colors,
                         # body-particle contact
-                        model.soft_contact_ke,
-                        model.soft_contact_kd,
-                        model.soft_contact_mu,
                         self.friction_epsilon,
                         model.particle_radius,
                         contacts.soft_contact_particle,
                         contacts.soft_contact_count,
                         contacts.soft_contact_max,
+                        self.body_particle_contact_penalty_k,
+                        self.body_particle_contact_material_kd,
+                        self.body_particle_contact_material_mu,
                         model.shape_material_mu,
                         model.shape_body,
-                        state_out.body_q if self.integrate_with_external_rigid_solver else state_in.body_q,
-                        state_in.body_q if self.integrate_with_external_rigid_solver else None,
+                        body_q_for_particles,
+                        body_q_prev_for_particles,
                         model.body_qd,
                         model.body_com,
                         contacts.soft_contact_shape,
@@ -1500,7 +1546,7 @@ class SolverVBD(SolverBase):
                 device=self.device,
             )
 
-    def finalize_particles(self, state_in: State, state_out: State, dt: float):
+    def finalize_particles(self, state_out: State, dt: float):
         """Finalize particle velocities after VBD iterations."""
         # Early exit if no particles
         if self.model.particle_count == 0:
@@ -1520,8 +1566,8 @@ class SolverVBD(SolverBase):
         """
         model = self.model
         
-        # Early exit if no rigid bodies
-        if model.body_count == 0:
+        # Early exit if no rigid bodies or rigid bodies are driven by an external solver
+        if model.body_count == 0 or self.integrate_with_external_rigid_solver:
             return
         
         # Velocity update (BDF1) after all iterations
