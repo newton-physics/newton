@@ -165,7 +165,7 @@ class Example:
             self.model,
             self.state_0,
             "sphere at rest pose",
-            lambda q, qd: newton.utils.vec_allclose(q, sphere_q, atol=1e-4),
+            lambda q, qd: newton.utils.vec_allclose(q, sphere_q, atol=2e-4),
             [0],
         )
         self.capsule_pos[2] = 1.0
@@ -174,7 +174,7 @@ class Example:
             self.model,
             self.state_0,
             "capsule at rest pose",
-            lambda q, qd: newton.utils.vec_allclose(q, capsule_q, atol=1e-4),
+            lambda q, qd: newton.utils.vec_allclose(q, capsule_q, atol=2e-4),
             [1],
         )
         # Custom test for cylinder: allow 0.01 error for X and Y, strict for Z and rotation

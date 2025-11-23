@@ -90,6 +90,9 @@ class Example:
         self.device = wp.get_device()
 
         allegro_hand = newton.ModelBuilder()
+        newton.solvers.SolverMuJoCo.register_custom_attributes(allegro_hand)
+        allegro_hand.default_shape_cfg.ke = 1.0e3
+        allegro_hand.default_shape_cfg.kd = 1.0e2
 
         asset_path = newton.utils.download_asset("wonik_allegro")
         asset_file = str(asset_path / "usd" / "allegro_left_hand_with_cube.usda")
@@ -98,7 +101,6 @@ class Example:
             xform=wp.transform(wp.vec3(0, 0, 0.5)),
             enable_self_collisions=True,
             ignore_paths=[".*Dummy", ".*CollisionPlane", ".*goal", ".*DexCube/visuals"],
-            load_non_physics_prims=True,
         )
 
         # hide collision shapes for the hand links
@@ -113,9 +115,10 @@ class Example:
             allegro_hand.joint_target_pos[i] = 0.0
 
         builder = newton.ModelBuilder()
-        newton.solvers.SolverMuJoCo.register_custom_attributes(builder)
         builder.replicate(allegro_hand, self.num_worlds)
 
+        builder.default_shape_cfg.ke = 1.0e3
+        builder.default_shape_cfg.kd = 1.0e2
         builder.add_ground_plane()
 
         self.model = builder.finalize()

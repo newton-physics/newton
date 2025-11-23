@@ -45,8 +45,8 @@ class Example:
         g1 = newton.ModelBuilder()
         newton.solvers.SolverMuJoCo.register_custom_attributes(g1)
         g1.default_joint_cfg = newton.ModelBuilder.JointDofConfig(limit_ke=1.0e3, limit_kd=1.0e1, friction=1e-5)
-        g1.default_shape_cfg.ke = 5.0e4
-        g1.default_shape_cfg.kd = 5.0e2
+        g1.default_shape_cfg.ke = 2.0e3
+        g1.default_shape_cfg.kd = 1.0e2
         g1.default_shape_cfg.kf = 1.0e3
         g1.default_shape_cfg.mu = 0.75
 
@@ -71,6 +71,8 @@ class Example:
         builder = newton.ModelBuilder()
         builder.replicate(g1, self.num_worlds)
 
+        builder.default_shape_cfg.ke = 1.0e3
+        builder.default_shape_cfg.kd = 1.0e2
         builder.add_ground_plane()
 
         self.model = builder.finalize()
@@ -85,7 +87,6 @@ class Example:
             impratio=100,
             iterations=100,
             ls_iterations=50,
-            contact_stiffness_time_const=self.sim_dt,
             use_mujoco_contacts=args.use_mujoco_contacts if args else False,
         )
 

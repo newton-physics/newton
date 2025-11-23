@@ -56,8 +56,8 @@ from .kernels import (
     update_axis_properties_kernel,
     update_body_inertia_kernel,
     update_body_mass_ipos_kernel,
-    update_dof_properties_kernel,
     update_geom_properties_kernel,
+    update_joint_dof_properties_kernel,
     update_joint_transforms_kernel,
     update_model_properties_kernel,
     update_shape_mappings_kernel,
@@ -165,6 +165,17 @@ class SolverMuJoCo(SolverBase):
                 usd_attribute_name="mjc:condim",
             )
         )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="solimplimit",
+                frequency=ModelAttributeFrequency.JOINT_DOF,
+                assignment=ModelAttributeAssignment.MODEL,
+                dtype=wp.types.vector(length=5, dtype=wp.float32),
+                default=wp.types.vector(length=5, dtype=wp.float32)(0.9, 0.95, 0.001, 0.5, 2.0),
+                namespace="mujoco",
+                usd_attribute_name="mjc:solimplimit",
+            )
+        )
 
     def __init__(
         self,
@@ -187,12 +198,11 @@ class SolverMuJoCo(SolverBase):
         actuator_gears: dict[str, float] | None = None,
         update_data_interval: int = 1,
         save_to_mjcf: str | None = None,
-        contact_stiffness_time_const: float = 0.02,
         ls_parallel: bool = False,
         use_mujoco_contacts: bool = True,
-        joint_solimp_limit: tuple[float, float, float, float, float] | None = None,
         tolerance: float = 1e-6,
         ls_tolerance: float = 0.01,
+        include_sites: bool = True,
     ):
         """
         Args:
@@ -215,24 +225,23 @@ class SolverMuJoCo(SolverBase):
             actuator_gears (dict[str, float] | None): Dictionary mapping joint names to specific gear ratios, overriding the `default_actuator_gear`.
             update_data_interval (int): Frequency (in simulation steps) at which to update the MuJoCo Data object from the Newton state. If 0, Data is never updated after initialization.
             save_to_mjcf (str | None): Optional path to save the generated MJCF model file.
-            contact_stiffness_time_const (float): Time constant for contact stiffness in MuJoCo's solver reference model. Defaults to 0.02 (20ms). Can be set to match the simulation timestep for tighter coupling.
             ls_parallel (bool): If True, enable parallel line search in MuJoCo. Defaults to False.
             use_mujoco_contacts (bool): If True, use the MuJoCo contact solver. If False, use the Newton contact solver (newton contacts must be passed in through the step function in that case).
-            joint_solimp_limit (tuple[float, float, float, float, float] | None): Global solver impedance parameters for all joint limits. If provided, applies these solimp values to all joints created. Defaults to None (uses MuJoCo defaults).
             tolerance (float | None): Solver tolerance for early termination of the iterative solver. Defaults to 1e-6 and will be increased to 1e-6 by the MuJoCo solver if a smaller value is provided.
             ls_tolerance (float | None): Solver tolerance for early termination of the line search. Defaults to 0.01.
+            include_sites (bool): If ``True`` (default), Newton shapes marked with ``ShapeFlags.SITE`` are exported as MuJoCo sites. Sites are non-colliding reference points used for sensor attachment, debugging, or as frames of reference. If ``False``, sites are skipped during export. Defaults to ``True``.
         """
         super().__init__(model)
         # Import and cache MuJoCo modules (only happens once per class)
         mujoco, _ = self.import_mujoco()
-        self.contact_stiffness_time_const = contact_stiffness_time_const
-        self.joint_solimp_limit = joint_solimp_limit
 
         if use_mujoco_cpu and not use_mujoco_contacts:
             print("Setting use_mujoco_contacts to False has no effect when use_mujoco_cpu is True")
 
         self.joint_mjc_dof_start: wp.array(dtype=wp.int32) | None = None
         """Mapping from Newton joint index to the start index of its joint axes in MuJoCo. Only defined for the joint indices of the first world in Newton, defaults to -1 otherwise. Shape [joint_count], dtype int32."""
+        self.dof_to_mjc_joint: wp.array(dtype=wp.int32) | None = None
+        """Mapping from Newton DOF index to MuJoCo joint index. Only defined for the first world in Newton. Shape [joint_dof_count // num_worlds], dtype int32."""
         self.mjc_axis_to_actuator: wp.array(dtype=int) | None = None
         """Mapping from Newton joint axis index to MJC actuator index. Shape [dof_count], dtype int32."""
         self.to_mjc_body_index: wp.array(dtype=int) | None = None
@@ -283,6 +292,7 @@ class SolverMuJoCo(SolverBase):
                     ls_parallel=ls_parallel,
                     tolerance=tolerance,
                     ls_tolerance=ls_tolerance,
+                    include_sites=include_sites,
                 )
         self.update_data_interval = update_data_interval
         self._step = 0
@@ -740,7 +750,6 @@ class SolverMuJoCo(SolverBase):
         tolerance: float = 1e-6,
         ls_tolerance: float = 0.01,
         cone: int | str = "pyramidal",
-        geom_solref: tuple[float, float] | None = None,
         geom_solimp: tuple[float, float, float, float, float] = (0.9, 0.95, 0.001, 0.5, 2.0),
         geom_friction: tuple[float, float, float] | None = None,
         target_filename: str | None = None,
@@ -749,6 +758,7 @@ class SolverMuJoCo(SolverBase):
         actuator_gears: dict[str, float] | None = None,
         actuated_axes: list[int] | None = None,
         skip_visual_only_geoms: bool = True,
+        include_sites: bool = True,
         add_axes: bool = False,
         mesh_maxhullvert: int = MESH_MAXHULLVERT,
         ls_parallel: bool = False,
@@ -856,10 +866,7 @@ class SolverMuJoCo(SolverBase):
         defaults = spec.default
         if callable(defaults):
             defaults = defaults()
-        # Use provided or default contact stiffness time constant
-        if geom_solref is None:
-            geom_solref = (self.contact_stiffness_time_const, 1.0)
-        defaults.geom.solref = geom_solref
+        defaults.geom.solref = (0.02, 1.0)
         defaults.geom.solimp = geom_solimp
         # Use model's friction parameters if geom_friction is not provided
         if geom_friction is None:
@@ -941,6 +948,7 @@ class SolverMuJoCo(SolverBase):
             return attr.numpy()
 
         shape_condim = get_custom_attribute("condim")
+        joint_solimp_limit = get_custom_attribute("solimplimit")
 
         eq_constraint_type = model.equality_constraint_type.numpy()
         eq_constraint_body1 = model.equality_constraint_body1.numpy()
@@ -1060,10 +1068,47 @@ class SolverMuJoCo(SolverBase):
                 if shape not in selected_shapes_set:
                     # skip shapes that are not selected for this world
                     continue
-                if skip_visual_only_geoms and not (shape_flags[shape] & ShapeFlags.COLLIDE_SHAPES):
+                # Skip visual-only geoms, but don't skip sites
+                is_site = shape_flags[shape] & ShapeFlags.SITE
+                if skip_visual_only_geoms and not is_site and not (shape_flags[shape] & ShapeFlags.COLLIDE_SHAPES):
                     continue
                 stype = shape_type[shape]
                 name = f"{model.shape_key[shape]}_{shape}"
+
+                if is_site:
+                    if not include_sites:
+                        continue
+
+                    # Map unsupported site types to SPHERE
+                    # MuJoCo sites only support: SPHERE, CAPSULE, CYLINDER, BOX
+                    supported_site_types = {GeoType.SPHERE, GeoType.CAPSULE, GeoType.CYLINDER, GeoType.BOX}
+                    site_geom_type = stype if stype in supported_site_types else GeoType.SPHERE
+
+                    tf = wp.transform(*shape_transform[shape])
+                    site_params = {
+                        "type": geom_type_mapping[site_geom_type],
+                        "name": name,
+                        "pos": tf.p,
+                        "quat": quat_to_mjc(tf.q),
+                    }
+
+                    size = shape_size[shape]
+                    # Ensure size is valid for the site type
+                    if np.any(size > 0.0):
+                        nonzero = size[size > 0.0][0]
+                        size[size == 0.0] = nonzero
+                        site_params["size"] = size
+                    else:
+                        site_params["size"] = [0.01, 0.01, 0.01]
+
+                    if shape_flags[shape] & ShapeFlags.VISIBLE:
+                        site_params["rgba"] = [0.0, 1.0, 0.0, 0.5]
+                    else:
+                        site_params["rgba"] = [0.0, 1.0, 0.0, 0.0]
+
+                    body.add_site(**site_params)
+                    continue
+
                 if stype == GeoType.PLANE and newton_body_id != -1:
                     raise ValueError("Planes can only be attached to static bodies")
                 geom_params = {
@@ -1130,9 +1175,17 @@ class SolverMuJoCo(SolverBase):
         # add static geoms attached to the worldbody
         add_geoms(-1)
 
-        # maps from Newton joint index to the start index of its joint axes in MuJoCo
-        # (only defined for the joints of the first world)
-        joint_mjc_dof_start = np.full(model.joint_count, -1, dtype=np.int32)
+        # Maps from Newton joint index (per-world/template) to MuJoCo DOF start index (per-world/template)
+        # Only populated for template joints; in kernels, use joint_in_world to index
+        joint_mjc_dof_start = np.full(len(selected_joints), -1, dtype=np.int32)
+
+        # Maps from Newton DOF index to MuJoCo joint index (first world only)
+        # Needed because jnt_solimp/jnt_solref are per-joint (not per-DOF) in MuJoCo
+        dof_to_mjc_joint = np.full(model.joint_dof_count // model.num_worlds, -1, dtype=np.int32)
+
+        # need to keep track of current dof and joint counts to make the indexing above correct
+        num_dofs = 0
+        num_mjc_joints = 0
 
         # add joints, bodies and geoms
         for ji in joint_order:
@@ -1186,7 +1239,7 @@ class SolverMuJoCo(SolverBase):
                     joint_names[name] += 1
                     name = f"{name}_{joint_names[name]}"
 
-            joint_mjc_dof_start[ji] = len(spec.joints)
+            joint_mjc_dof_start[ji] = num_dofs
 
             if j_type == JointType.FREE:
                 body.add_joint(
@@ -1195,8 +1248,15 @@ class SolverMuJoCo(SolverBase):
                     damping=0.0,
                     limited=False,
                 )
+                # For free joints, all 6 DOFs map to the same MuJoCo joint
+                for i in range(6):
+                    dof_to_mjc_joint[qd_start + i] = num_mjc_joints
+                num_dofs += 6
+                num_mjc_joints += 1
             elif j_type in supported_joint_types:
                 lin_axis_count, ang_axis_count = joint_dof_dim[j]
+                num_dofs += lin_axis_count + ang_axis_count
+
                 # linear dofs
                 for i in range(lin_axis_count):
                     ai = qd_start + i
@@ -1214,12 +1274,14 @@ class SolverMuJoCo(SolverBase):
                         joint_params["limited"] = False
                     else:
                         joint_params["limited"] = True
-                        joint_params["range"] = (lower, upper)
-                        # Use negative convention for solref_limit: (-stiffness, -damping)
-                        if joint_limit_ke[ai] > 0:
-                            joint_params["solref_limit"] = (-joint_limit_ke[ai], -joint_limit_kd[ai])
-                        if self.joint_solimp_limit is not None:
-                            joint_params["solimp_limit"] = self.joint_solimp_limit
+
+                    # we're piping these through unconditionally even though they are only active with limited joints
+                    joint_params["range"] = (lower, upper)
+                    # Use negative convention for solref_limit: (-stiffness, -damping)
+                    if joint_limit_ke[ai] > 0:
+                        joint_params["solref_limit"] = (-joint_limit_ke[ai], -joint_limit_kd[ai])
+                    if joint_solimp_limit is not None:
+                        joint_params["solimp_limit"] = joint_solimp_limit[ai]
                     axname = name
                     if lin_axis_count > 1 or ang_axis_count > 1:
                         axname += "_lin"
@@ -1231,6 +1293,10 @@ class SolverMuJoCo(SolverBase):
                         axis=axis,
                         **joint_params,
                     )
+                    # Map this DOF to the current MuJoCo joint index
+                    dof_to_mjc_joint[ai] = num_mjc_joints
+                    num_mjc_joints += 1
+
                     if actuated_axes is None or ai in actuated_axes:
                         kp = joint_target_ke[ai]
                         kd = joint_target_kd[ai]
@@ -1274,12 +1340,15 @@ class SolverMuJoCo(SolverBase):
                         joint_params["limited"] = False
                     else:
                         joint_params["limited"] = True
-                        joint_params["range"] = (np.rad2deg(lower), np.rad2deg(upper))
-                        # Use negative convention for solref_limit: (-stiffness, -damping)
-                        if joint_limit_ke[ai] > 0:
-                            joint_params["solref_limit"] = (-joint_limit_ke[ai], -joint_limit_kd[ai])
-                        if self.joint_solimp_limit is not None:
-                            joint_params["solimp_limit"] = self.joint_solimp_limit
+
+                    # we're piping these through unconditionally even though they are only active with limited joints
+                    joint_params["range"] = (np.rad2deg(lower), np.rad2deg(upper))
+                    # Use negative convention for solref_limit: (-stiffness, -damping)
+                    if joint_limit_ke[ai] > 0:
+                        joint_params["solref_limit"] = (-joint_limit_ke[ai], -joint_limit_kd[ai])
+                    if joint_solimp_limit is not None:
+                        joint_params["solimp_limit"] = joint_solimp_limit[ai]
+
                     axname = name
                     if lin_axis_count > 1 or ang_axis_count > 1:
                         axname += "_ang"
@@ -1291,6 +1360,10 @@ class SolverMuJoCo(SolverBase):
                         axis=axis,
                         **joint_params,
                     )
+                    # Map this DOF to the current MuJoCo joint index
+                    dof_to_mjc_joint[ai] = num_mjc_joints
+                    num_mjc_joints += 1
+
                     if actuated_axes is None or ai in actuated_axes:
                         kp = joint_target_ke[ai]
                         kd = joint_target_kd[ai]
@@ -1425,6 +1498,8 @@ class SolverMuJoCo(SolverBase):
 
             # mapping from Newton joint index to the start index of its joint axes in MuJoCo
             self.joint_mjc_dof_start = wp.array(joint_mjc_dof_start, dtype=wp.int32)
+            # mapping from Newton DOF index to MuJoCo joint index
+            self.dof_to_mjc_joint = wp.array(dof_to_mjc_joint, dtype=wp.int32, device=model.device)
 
             if self.mjw_model.geom_pos.size:
                 wp.launch(
@@ -1517,11 +1592,11 @@ class SolverMuJoCo(SolverBase):
             # "body_invweight0",
             # "body_gravcomp",
             "jnt_solref",
-            # "jnt_solimp",
+            "jnt_solimp",
             "jnt_pos",
             "jnt_axis",
             # "jnt_stiffness",
-            # "jnt_range",
+            "jnt_range",
             # "jnt_actfrcrange",
             # "jnt_margin",
             "dof_armature",
@@ -1638,10 +1713,11 @@ class SolverMuJoCo(SolverBase):
         )
 
     def update_joint_dof_properties(self):
-        """Update all joint dof properties including effort limits, velocity limits, friction, and armature in the MuJoCo model."""
+        """Update all joint DOF properties including effort limits, friction, armature, solimplimit, solref, and joint limit ranges in the MuJoCo model."""
         if self.model.joint_dof_count == 0:
             return
 
+        joints_per_world = self.model.joint_count // self.model.num_worlds
         dofs_per_world = self.model.joint_dof_count // self.model.num_worlds
 
         # Update actuator force ranges (effort limits) if actuators exist
@@ -1664,16 +1740,34 @@ class SolverMuJoCo(SolverBase):
                 device=self.model.device,
             )
 
-        # Update DOF properties (armature and friction)
+        # Update DOF properties (armature, friction, and solimplimit) with proper DOF mapping
+        mujoco_attrs = getattr(self.model, "mujoco", None)
+        solimplimit = getattr(mujoco_attrs, "solimplimit", None) if mujoco_attrs is not None else None
+
         wp.launch(
-            update_dof_properties_kernel,
-            dim=self.model.joint_dof_count,
+            update_joint_dof_properties_kernel,
+            dim=self.model.joint_count,
             inputs=[
+                self.model.joint_qd_start,
+                self.model.joint_dof_dim,
+                self.joint_mjc_dof_start,
+                self.dof_to_mjc_joint,
                 self.model.joint_armature,
                 self.model.joint_friction,
-                dofs_per_world,
+                self.model.joint_limit_ke,
+                self.model.joint_limit_kd,
+                self.model.joint_limit_lower,
+                self.model.joint_limit_upper,
+                solimplimit,
+                joints_per_world,
             ],
-            outputs=[self.mjw_model.dof_armature, self.mjw_model.dof_frictionloss],
+            outputs=[
+                self.mjw_model.dof_armature,
+                self.mjw_model.dof_frictionloss,
+                self.mjw_model.jnt_solimp,
+                self.mjw_model.jnt_solref,
+                self.mjw_model.jnt_range,
+            ],
             device=self.model.device,
         )
 
@@ -1684,7 +1778,7 @@ class SolverMuJoCo(SolverBase):
 
         joints_per_world = self.model.joint_count // self.model.num_worlds
 
-        # Update joint positions, joint axes, relative body transforms, and joint limit solref
+        # Update joint positions, joint axes, and relative body transforms
         wp.launch(
             update_joint_transforms_kernel,
             dim=self.model.joint_count,
@@ -1696,16 +1790,13 @@ class SolverMuJoCo(SolverBase):
                 self.model.joint_axis,
                 self.model.joint_child,
                 self.model.joint_type,
-                self.model.joint_limit_ke,
-                self.model.joint_limit_kd,
-                self.joint_mjc_dof_start,
+                self.dof_to_mjc_joint,
                 self.to_mjc_body_index,
                 joints_per_world,
             ],
             outputs=[
                 self.mjw_model.jnt_pos,
                 self.mjw_model.jnt_axis,
-                self.mjw_model.jnt_solref,
                 self.mjw_model.body_pos,
                 self.mjw_model.body_quat,
             ],
@@ -1740,7 +1831,6 @@ class SolverMuJoCo(SolverBase):
                 self.mjw_model.mesh_quat,
                 self.model.rigid_contact_torsional_friction,
                 self.model.rigid_contact_rolling_friction,
-                self.contact_stiffness_time_const,
             ],
             outputs=[
                 self.mjw_model.geom_rbound,
