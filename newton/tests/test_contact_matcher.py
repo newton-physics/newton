@@ -173,7 +173,6 @@ def test_contact_matcher_stacked_cubes(test: TestContactMatcher, device):
     # Create collision pipeline with contact matching enabled
     collision_pipeline = CollisionPipelineUnified.from_model(
         model,
-        rigid_contact_margin=0.1,
         broad_phase_mode=BroadPhaseMode.NXN,
         enable_contact_matching=True,
     )

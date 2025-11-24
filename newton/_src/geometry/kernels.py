@@ -1039,7 +1039,7 @@ def broadphase_collision_pairs(
     shape_radius: wp.array(dtype=float),
     num_shapes: int,
     rigid_contact_max: int,
-    rigid_contact_margin: float,
+    shape_contact_margin: wp.array(dtype=float),
     max_per_pair: int,
     # outputs
     contact_count: wp.array(dtype=int),
@@ -1087,20 +1087,24 @@ def broadphase_collision_pairs(
     r_b = shape_radius[shape_b]
     if type_a == GeoType.PLANE and type_b == GeoType.PLANE:
         return
+
+    # Use per-shape contact margins
+    margin = wp.max(shape_contact_margin[shape_a], shape_contact_margin[shape_b])
+
     # bounding sphere check
     if type_a == GeoType.PLANE:
         query_b = wp.transform_point(wp.transform_inverse(X_ws_a), p_b)
         scale = shape_scale[shape_a]
         closest = closest_point_plane(scale[0], scale[1], query_b)
         d = wp.length(query_b - closest)
-        if d > r_b + rigid_contact_margin:
+        if d > r_b + margin:
             return
     else:
         p_a = wp.transform_get_translation(X_ws_a)
         d = wp.length(p_a - p_b)
         r_a = shape_radius[shape_a]
         r_b = shape_radius[shape_b]
-        if d > r_a + r_b + rigid_contact_margin:
+        if d > r_a + r_b + margin:
             return
 
     pair_index_ab = shape_a * num_shapes + shape_b
@@ -1941,7 +1945,7 @@ def generate_handle_contact_pairs_kernel(enable_backward: bool):
         shape_source_ptr: wp.array(dtype=wp.uint64),
         shape_thickness: wp.array(dtype=float),
         num_shapes: int,
-        rigid_contact_margin: float,
+        shape_contact_margin: wp.array(dtype=float),
         contact_broad_shape0: wp.array(dtype=int),
         contact_broad_shape1: wp.array(dtype=int),
         contact_point_id: wp.array(dtype=int),
@@ -1979,6 +1983,9 @@ def generate_handle_contact_pairs_kernel(enable_backward: bool):
         # Create geometry data structs for both shapes
         geo_a = create_geo_data(shape_a, body_q, shape_transform, shape_body, shape_type, shape_scale, shape_thickness)
         geo_b = create_geo_data(shape_b, body_q, shape_transform, shape_body, shape_type, shape_scale, shape_thickness)
+
+        # Calculate contact margin as max of per-shape margins
+        rigid_contact_margin = wp.max(shape_contact_margin[shape_a], shape_contact_margin[shape_b])
 
         distance = 1.0e6
         thickness = geo_a.thickness + geo_b.thickness
