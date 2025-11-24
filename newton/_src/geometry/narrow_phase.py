@@ -16,7 +16,6 @@
 
 from __future__ import annotations
 
-from functools import cache
 from typing import Any
 
 import warp as wp
@@ -123,63 +122,62 @@ def write_contact_simple(
 @wp.func
 def extract_shape_data(
     shape_idx: int,
-    geom_transform: wp.array(dtype=wp.transform),
-    geom_types: wp.array(dtype=int),
-    geom_data: wp.array(dtype=wp.vec4),  # scale (xyz), thickness (w) or other data
-    geom_source: wp.array(dtype=wp.uint64),
+    shape_transform: wp.array(dtype=wp.transform),
+    shape_types: wp.array(dtype=int),
+    shape_data: wp.array(dtype=wp.vec4),  # scale (xyz), thickness (w) or other data
+    shape_source: wp.array(dtype=wp.uint64),
 ):
     """
     Extract shape data from the narrow phase API arrays.
 
     Args:
         shape_idx: Index of the shape
-        geom_transform: World space transforms (already computed)
-        geom_types: Shape types
-        geom_data: Shape data (vec4 - scale xyz, thickness w)
-        geom_source: Source pointers (mesh IDs etc.)
+        shape_transform: World space transforms (already computed)
+        shape_types: Shape types
+        shape_data: Shape data (vec4 - scale xyz, thickness w)
+        shape_source: Source pointers (mesh IDs etc.)
 
     Returns:
         tuple: (position, orientation, shape_data, scale, thickness)
     """
     # Get shape's world transform (already in world space)
-    X_ws = geom_transform[shape_idx]
+    X_ws = shape_transform[shape_idx]
 
     position = wp.transform_get_translation(X_ws)
     orientation = wp.transform_get_rotation(X_ws)
 
-    # Extract scale and thickness from geom_data
-    # Assuming geom_data stores scale in xyz and thickness in w
-    data = geom_data[shape_idx]
+    # Extract scale and thickness from shape_data
+    # Assuming shape_data stores scale in xyz and thickness in w
+    data = shape_data[shape_idx]
     scale = wp.vec3(data[0], data[1], data[2])
     thickness = data[3]
 
     # Create generic shape data
     result = GenericShapeData()
-    result.shape_type = geom_types[shape_idx]
+    result.shape_type = shape_types[shape_idx]
     result.scale = scale
     result.auxiliary = wp.vec3(0.0, 0.0, 0.0)
 
     # For CONVEX_MESH, pack the mesh pointer into auxiliary
-    if geom_types[shape_idx] == int(GeoType.CONVEX_MESH):
-        result.auxiliary = pack_mesh_ptr(geom_source[shape_idx])
+    if shape_types[shape_idx] == int(GeoType.CONVEX_MESH):
+        result.auxiliary = pack_mesh_ptr(shape_source[shape_idx])
 
     return position, orientation, result, scale, thickness
 
 
-@cache
 def create_narrow_phase_kernel_gjk_mpr(external_aabb: bool, writer_func: Any):
     @wp.kernel(enable_backward=False)
     def narrow_phase_kernel_gjk_mpr(
         candidate_pair: wp.array(dtype=wp.vec2i),
         num_candidate_pair: wp.array(dtype=int),
-        geom_types: wp.array(dtype=int),
-        geom_data: wp.array(dtype=wp.vec4),
-        geom_transform: wp.array(dtype=wp.transform),
-        geom_source: wp.array(dtype=wp.uint64),
-        geom_cutoff: wp.array(dtype=float),
-        geom_collision_radius: wp.array(dtype=float),
-        geom_aabb_lower: wp.array(dtype=wp.vec3),
-        geom_aabb_upper: wp.array(dtype=wp.vec3),
+        shape_types: wp.array(dtype=int),
+        shape_data: wp.array(dtype=wp.vec4),
+        shape_transform: wp.array(dtype=wp.transform),
+        shape_source: wp.array(dtype=wp.uint64),
+        shape_contact_margin: wp.array(dtype=float),
+        shape_collision_radius: wp.array(dtype=float),
+        shape_aabb_lower: wp.array(dtype=wp.vec3),
+        shape_aabb_upper: wp.array(dtype=wp.vec3),
         writer_data: Any,
         total_num_threads: int,
         # mesh collision outputs (for mesh processing)
@@ -214,8 +212,8 @@ def create_narrow_phase_kernel_gjk_mpr(external_aabb: bool, writer_func: Any):
                 continue
 
             # Get shape types
-            type_a = geom_types[shape_a]
-            type_b = geom_types[shape_b]
+            type_a = shape_types[shape_a]
+            type_b = shape_types[shape_b]
 
             # Sort shapes by type to ensure consistent collision handling order
             if type_a > type_b:
@@ -226,32 +224,32 @@ def create_narrow_phase_kernel_gjk_mpr(external_aabb: bool, writer_func: Any):
             # Extract shape data for both shapes
             pos_a, quat_a, shape_data_a, scale_a, thickness_a = extract_shape_data(
                 shape_a,
-                geom_transform,
-                geom_types,
-                geom_data,
-                geom_source,
+                shape_transform,
+                shape_types,
+                shape_data,
+                shape_source,
             )
 
             pos_b, quat_b, shape_data_b, scale_b, thickness_b = extract_shape_data(
                 shape_b,
-                geom_transform,
-                geom_types,
-                geom_data,
-                geom_source,
+                shape_transform,
+                shape_types,
+                shape_data,
+                shape_source,
             )
 
             if wp.static(external_aabb):
-                aabb_a_lower = geom_aabb_lower[shape_a]
-                aabb_a_upper = geom_aabb_upper[shape_a]
-                aabb_b_lower = geom_aabb_lower[shape_b]
-                aabb_b_upper = geom_aabb_upper[shape_b]
+                aabb_a_lower = shape_aabb_lower[shape_a]
+                aabb_a_upper = shape_aabb_upper[shape_a]
+                aabb_b_lower = shape_aabb_lower[shape_b]
+                aabb_b_upper = shape_aabb_upper[shape_b]
             if wp.static(not external_aabb):
                 # Compute AABBs - use special handling for infinite planes and meshes
                 # This matches the approach in collide_unified.py compute_shape_aabbs
-                cutoff_a = geom_cutoff[shape_a]
-                cutoff_b = geom_cutoff[shape_b]
-                margin_vec_a = wp.vec3(cutoff_a, cutoff_a, cutoff_a)
-                margin_vec_b = wp.vec3(cutoff_b, cutoff_b, cutoff_b)
+                margin_a = shape_contact_margin[shape_a]
+                margin_b = shape_contact_margin[shape_b]
+                margin_vec_a = wp.vec3(margin_a, margin_a, margin_a)
+                margin_vec_b = wp.vec3(margin_b, margin_b, margin_b)
 
                 # Check if shape A is an infinite plane, mesh, or SDF
                 is_infinite_plane_a = (type_a == int(GeoType.PLANE)) and (scale_a[0] == 0.0 and scale_a[1] == 0.0)
@@ -260,7 +258,7 @@ def create_narrow_phase_kernel_gjk_mpr(external_aabb: bool, writer_func: Any):
 
                 if is_infinite_plane_a or is_mesh_a or is_sdf_a:
                     # Use conservative bounding sphere approach for infinite planes, meshes, and SDFs
-                    radius_a = geom_collision_radius[shape_a]
+                    radius_a = shape_collision_radius[shape_a]
                     half_extents_a = wp.vec3(radius_a, radius_a, radius_a)
                     aabb_a_lower = pos_a - half_extents_a - margin_vec_a
                     aabb_a_upper = pos_a + half_extents_a + margin_vec_a
@@ -280,7 +278,7 @@ def create_narrow_phase_kernel_gjk_mpr(external_aabb: bool, writer_func: Any):
 
                 if is_infinite_plane_b or is_mesh_b or is_sdf_b:
                     # Use conservative bounding sphere approach for infinite planes, meshes, and SDFs
-                    radius_b = geom_collision_radius[shape_b]
+                    radius_b = shape_collision_radius[shape_b]
                     half_extents_b = wp.vec3(radius_b, radius_b, radius_b)
                     aabb_b_lower = pos_b - half_extents_b - margin_vec_b
                     aabb_b_upper = pos_b + half_extents_b + margin_vec_b
@@ -309,8 +307,8 @@ def create_narrow_phase_kernel_gjk_mpr(external_aabb: bool, writer_func: Any):
                 aabb_b_lower,
                 aabb_b_upper,
                 pair,
-                geom_source[shape_a],
-                geom_source[shape_b],
+                shape_source[shape_a],
+                shape_source[shape_b],
                 shape_pairs_mesh,
                 shape_pairs_mesh_count,
                 shape_pairs_mesh_plane,
@@ -321,11 +319,11 @@ def create_narrow_phase_kernel_gjk_mpr(external_aabb: bool, writer_func: Any):
             if skip_pair:
                 continue
 
-            # Use per-geometry cutoff for contact detection
-            # find_contacts expects a scalar margin, so we use max of the two cutoffs
-            cutoff_a = geom_cutoff[shape_a]
-            cutoff_b = geom_cutoff[shape_b]
-            margin = wp.max(cutoff_a, cutoff_b)
+            # Use per-shape contact margin for contact detection
+            # find_contacts expects a scalar margin, so we use max of the two margins
+            margin_a = shape_contact_margin[shape_a]
+            margin_b = shape_contact_margin[shape_b]
+            margin = wp.max(margin_a, margin_b)
 
             # Find and write contacts using GJK/MPR
             wp.static(create_find_contacts(writer_func))(
@@ -352,11 +350,11 @@ def create_narrow_phase_kernel_gjk_mpr(external_aabb: bool, writer_func: Any):
 
 @wp.kernel(enable_backward=False)
 def narrow_phase_find_mesh_triangle_overlaps_kernel(
-    geom_types: wp.array(dtype=int),
-    geom_transform: wp.array(dtype=wp.transform),
-    geom_source: wp.array(dtype=wp.uint64),
-    geom_cutoff: wp.array(dtype=float),  # Per-geometry cutoff distances
-    geom_data: wp.array(dtype=wp.vec4),  # Geom data (scale xyz, thickness w)
+    shape_types: wp.array(dtype=int),
+    shape_transform: wp.array(dtype=wp.transform),
+    shape_source: wp.array(dtype=wp.uint64),
+    shape_contact_margin: wp.array(dtype=float),  # Per-shape contact margins
+    shape_data: wp.array(dtype=wp.vec4),  # Shape data (scale xyz, thickness w)
     shape_pairs_mesh: wp.array(dtype=wp.vec2i),
     shape_pairs_mesh_count: wp.array(dtype=int),
     total_num_threads: int,
@@ -380,8 +378,8 @@ def narrow_phase_find_mesh_triangle_overlaps_kernel(
         shape_b = pair[1]
 
         # Determine which shape is the mesh
-        type_a = geom_types[shape_a]
-        type_b = geom_types[shape_b]
+        type_a = shape_types[shape_a]
+        type_b = shape_types[shape_b]
 
         mesh_shape = -1
         non_mesh_shape = -1
@@ -397,47 +395,46 @@ def narrow_phase_find_mesh_triangle_overlaps_kernel(
             return
 
         # Get mesh BVH ID and mesh transform
-        mesh_id = geom_source[mesh_shape]
+        mesh_id = shape_source[mesh_shape]
         if mesh_id == wp.uint64(0):
             return
 
         # Get mesh world transform
-        X_mesh_ws = geom_transform[mesh_shape]
+        X_mesh_ws = shape_transform[mesh_shape]
 
         # Get non-mesh shape world transform
-        X_ws = geom_transform[non_mesh_shape]
+        X_ws = shape_transform[non_mesh_shape]
 
-        # Use per-geometry cutoff for the non-mesh shape
-        # Note: mesh_vs_convex_midphase expects a scalar margin, so we use max of the two cutoffs
-        cutoff_non_mesh = geom_cutoff[non_mesh_shape]
-        cutoff_mesh = geom_cutoff[mesh_shape]
-        margin = wp.max(cutoff_non_mesh, cutoff_mesh)
+        # Use per-shape contact margin for the non-mesh shape
+        # Note: mesh_vs_convex_midphase expects a scalar margin, so we use max of the two margins
+        margin_non_mesh = shape_contact_margin[non_mesh_shape]
+        margin_mesh = shape_contact_margin[mesh_shape]
+        margin = wp.max(margin_non_mesh, margin_mesh)
 
-        # Call mesh_vs_convex_midphase with the geom_data and cutoff
+        # Call mesh_vs_convex_midphase with the shape_data and margin
         mesh_vs_convex_midphase(
             mesh_shape,
             non_mesh_shape,
             X_mesh_ws,
             X_ws,
             mesh_id,
-            geom_types,
-            geom_data,
-            geom_source,
+            shape_types,
+            shape_data,
+            shape_source,
             margin,
             triangle_pairs,
             triangle_pairs_count,
         )
 
 
-@cache
 def create_narrow_phase_process_mesh_triangle_contacts_kernel(writer_func: Any):
     @wp.kernel(enable_backward=False)
     def narrow_phase_process_mesh_triangle_contacts_kernel(
-        geom_types: wp.array(dtype=int),
-        geom_data: wp.array(dtype=wp.vec4),
-        geom_transform: wp.array(dtype=wp.transform),
-        geom_source: wp.array(dtype=wp.uint64),
-        geom_cutoff: wp.array(dtype=float),  # Per-geometry cutoff distances
+        shape_types: wp.array(dtype=int),
+        shape_data: wp.array(dtype=wp.vec4),
+        shape_transform: wp.array(dtype=wp.transform),
+        shape_source: wp.array(dtype=wp.uint64),
+        shape_contact_margin: wp.array(dtype=float),  # Per-shape contact margins
         triangle_pairs: wp.array(dtype=wp.vec3i),
         triangle_pairs_count: wp.array(dtype=int),
         writer_data: Any,
@@ -460,15 +457,15 @@ def create_narrow_phase_process_mesh_triangle_contacts_kernel(writer_func: Any):
             tri_idx = triple[2]
 
             # Get mesh data for shape A
-            mesh_id_a = geom_source[shape_a]
+            mesh_id_a = shape_source[shape_a]
             if mesh_id_a == wp.uint64(0):
                 continue
 
-            scale_data_a = geom_data[shape_a]
+            scale_data_a = shape_data[shape_a]
             mesh_scale_a = wp.vec3(scale_data_a[0], scale_data_a[1], scale_data_a[2])
 
             # Get mesh world transform for shape A
-            X_mesh_ws_a = geom_transform[shape_a]
+            X_mesh_ws_a = shape_transform[shape_a]
 
             # Extract triangle shape data from mesh
             shape_data_a, v0_world = get_triangle_shape_from_mesh(mesh_id_a, mesh_scale_a, X_mesh_ws_a, tri_idx)
@@ -476,10 +473,10 @@ def create_narrow_phase_process_mesh_triangle_contacts_kernel(writer_func: Any):
             # Extract shape B data
             pos_b, quat_b, shape_data_b, _scale_b, thickness_b = extract_shape_data(
                 shape_b,
-                geom_transform,
-                geom_types,
-                geom_data,
-                geom_source,
+                shape_transform,
+                shape_types,
+                shape_data,
+                shape_source,
             )
 
             # Set pos_a to be vertex A (origin of triangle in local frame)
@@ -487,12 +484,12 @@ def create_narrow_phase_process_mesh_triangle_contacts_kernel(writer_func: Any):
             quat_a = wp.quat_identity()  # Triangle has no orientation, use identity
 
             # Extract thickness for shape A
-            thickness_a = geom_data[shape_a][3]
+            thickness_a = shape_data[shape_a][3]
 
-            # Use per-geometry cutoff for contact detection
-            cutoff_a = geom_cutoff[shape_a]
-            cutoff_b = geom_cutoff[shape_b]
-            margin = wp.max(cutoff_a, cutoff_b)
+            # Use per-shape contact margin for contact detection
+            margin_a = shape_contact_margin[shape_a]
+            margin_b = shape_contact_margin[shape_b]
+            margin = wp.max(margin_a, margin_b)
 
             # Build pair key including triangle index for unique contact tracking
             pair_key = build_pair_key3(wp.uint32(shape_a), wp.uint32(shape_b), wp.uint32(tri_idx))
@@ -517,15 +514,14 @@ def create_narrow_phase_process_mesh_triangle_contacts_kernel(writer_func: Any):
     return narrow_phase_process_mesh_triangle_contacts_kernel
 
 
-@cache
 def create_narrow_phase_process_mesh_plane_contacts_kernel(writer_func: Any):
     @wp.kernel(enable_backward=False)
     def narrow_phase_process_mesh_plane_contacts_kernel(
-        geom_types: wp.array(dtype=int),
-        geom_data: wp.array(dtype=wp.vec4),
-        geom_transform: wp.array(dtype=wp.transform),
-        geom_source: wp.array(dtype=wp.uint64),
-        geom_cutoff: wp.array(dtype=float),  # Per-geometry cutoff distances
+        shape_types: wp.array(dtype=int),
+        shape_data: wp.array(dtype=wp.vec4),
+        shape_transform: wp.array(dtype=wp.transform),
+        shape_source: wp.array(dtype=wp.uint64),
+        shape_contact_margin: wp.array(dtype=float),  # Per-shape contact margins
         shape_pairs_mesh_plane: wp.array(dtype=wp.vec2i),
         shape_pairs_mesh_plane_cumsum: wp.array(dtype=int),
         shape_pairs_mesh_plane_count: wp.array(dtype=int),
@@ -560,7 +556,7 @@ def create_narrow_phase_process_mesh_plane_contacts_kernel(writer_func: Any):
             plane_shape = pair[1]
 
             # Get mesh
-            mesh_id = geom_source[mesh_shape]
+            mesh_id = shape_source[mesh_shape]
             if mesh_id == wp.uint64(0):
                 continue
 
@@ -569,13 +565,13 @@ def create_narrow_phase_process_mesh_plane_contacts_kernel(writer_func: Any):
                 continue
 
             # Get mesh world transform
-            X_mesh_ws = geom_transform[mesh_shape]
+            X_mesh_ws = shape_transform[mesh_shape]
 
             # Get plane world transform
-            X_plane_ws = geom_transform[plane_shape]
+            X_plane_ws = shape_transform[plane_shape]
 
             # Get vertex position in mesh local space and transform to world space
-            scale_data = geom_data[mesh_shape]
+            scale_data = shape_data[mesh_shape]
             mesh_scale = wp.vec3(scale_data[0], scale_data[1], scale_data[2])
             vertex_local = wp.cw_mul(mesh_obj.points[vertex_idx], mesh_scale)
             vertex_world = wp.transform_point(X_mesh_ws, vertex_local)
@@ -594,14 +590,14 @@ def create_narrow_phase_process_mesh_plane_contacts_kernel(writer_func: Any):
             distance = wp.dot(diff, plane_normal)
 
             # Extract thickness values
-            thickness_mesh = geom_data[mesh_shape][3]
-            thickness_plane = geom_data[plane_shape][3]
+            thickness_mesh = shape_data[mesh_shape][3]
+            thickness_plane = shape_data[plane_shape][3]
             total_thickness = thickness_mesh + thickness_plane
 
-            # Use per-geometry cutoff for contact detection
-            cutoff_mesh = geom_cutoff[mesh_shape]
-            cutoff_plane = geom_cutoff[plane_shape]
-            margin = wp.max(cutoff_mesh, cutoff_plane)
+            # Use per-shape contact margin for contact detection
+            margin_mesh = shape_contact_margin[mesh_shape]
+            margin_plane = shape_contact_margin[plane_shape]
+            margin = wp.max(margin_mesh, margin_plane)
 
             # Treat plane as a half-space: generate contact for all vertices on or below the plane
             # (distance < margin means vertex is close to or penetrating the plane)
@@ -636,8 +632,8 @@ class NarrowPhase:
         max_candidate_pairs: int,
         max_triangle_pairs: int = 1000000,
         device=None,
-        geom_aabb_lower: wp.array(dtype=wp.vec3) | None = None,
-        geom_aabb_upper: wp.array(dtype=wp.vec3) | None = None,
+        shape_aabb_lower: wp.array(dtype=wp.vec3) | None = None,
+        shape_aabb_upper: wp.array(dtype=wp.vec3) | None = None,
         contact_writer_warp_func: Any | None = None,
     ):
         """
@@ -647,8 +643,8 @@ class NarrowPhase:
             max_candidate_pairs: Maximum number of candidate pairs from broad phase
             max_triangle_pairs: Maximum number of mesh triangle pairs (conservative estimate)
             device: Device to allocate buffers on
-            geom_aabb_lower: Optional external AABB lower bounds array (if provided, AABBs won't be computed internally)
-            geom_aabb_upper: Optional external AABB upper bounds array (if provided, AABBs won't be computed internally)
+            shape_aabb_lower: Optional external AABB lower bounds array (if provided, AABBs won't be computed internally)
+            shape_aabb_upper: Optional external AABB upper bounds array (if provided, AABBs won't be computed internally)
             contact_writer_warp_func: Optional custom contact writer function (first arg: ContactData, second arg: custom struct type)
         """
         self.max_candidate_pairs = max_candidate_pairs
@@ -656,17 +652,17 @@ class NarrowPhase:
         self.device = device
 
         # Determine if we're using external AABBs
-        self.external_aabb = geom_aabb_lower is not None and geom_aabb_upper is not None
+        self.external_aabb = shape_aabb_lower is not None and shape_aabb_upper is not None
 
         if self.external_aabb:
             # Use provided AABB arrays
-            self.geom_aabb_lower = geom_aabb_lower
-            self.geom_aabb_upper = geom_aabb_upper
+            self.shape_aabb_lower = shape_aabb_lower
+            self.shape_aabb_upper = shape_aabb_upper
         else:
             # Create empty AABB arrays (won't be used)
             with wp.ScopedDevice(device):
-                self.geom_aabb_lower = wp.zeros(0, dtype=wp.vec3, device=device)
-                self.geom_aabb_upper = wp.zeros(0, dtype=wp.vec3, device=device)
+                self.shape_aabb_lower = wp.zeros(0, dtype=wp.vec3, device=device)
+                self.shape_aabb_upper = wp.zeros(0, dtype=wp.vec3, device=device)
 
         # Determine the writer function
         if contact_writer_warp_func is None:
@@ -718,12 +714,12 @@ class NarrowPhase:
         self,
         candidate_pair: wp.array(dtype=wp.vec2i, ndim=1),  # Maybe colliding pairs
         num_candidate_pair: wp.array(dtype=wp.int32, ndim=1),  # Size one array
-        geom_types: wp.array(dtype=wp.int32, ndim=1),  # All geom types, pairs index into it
-        geom_data: wp.array(dtype=wp.vec4, ndim=1),  # Geom data (scale xyz, thickness w)
-        geom_transform: wp.array(dtype=wp.transform, ndim=1),  # In world space
-        geom_source: wp.array(dtype=wp.uint64, ndim=1),  # The index into the source array, type define by geom_types
-        geom_cutoff: wp.array(dtype=wp.float32, ndim=1),  # per-geom (take the max)
-        geom_collision_radius: wp.array(dtype=wp.float32, ndim=1),  # per-geom collision radius for AABB fallback
+        shape_types: wp.array(dtype=wp.int32, ndim=1),  # All shape types, pairs index into it
+        shape_data: wp.array(dtype=wp.vec4, ndim=1),  # Shape data (scale xyz, thickness w)
+        shape_transform: wp.array(dtype=wp.transform, ndim=1),  # In world space
+        shape_source: wp.array(dtype=wp.uint64, ndim=1),  # The index into the source array, type define by shape_types
+        shape_contact_margin: wp.array(dtype=wp.float32, ndim=1),  # per-shape contact margin
+        shape_collision_radius: wp.array(dtype=wp.float32, ndim=1),  # per-shape collision radius for AABB fallback
         writer_data: Any,
         device=None,  # Device to launch on
     ):
@@ -733,12 +729,12 @@ class NarrowPhase:
         Args:
             candidate_pair: Array of potentially colliding shape pairs from broad phase
             num_candidate_pair: Single-element array containing the number of candidate pairs
-            geom_types: Array of geometry types for all shapes
-            geom_data: Array of vec4 containing scale (xyz) and thickness (w) for each shape
-            geom_transform: Array of world-space transforms for each shape
-            geom_source: Array of source pointers (mesh IDs, etc.) for each shape
-            geom_cutoff: Array of cutoff distances for each shape
-            geom_collision_radius: Array of collision radii for each shape (for AABB fallback for planes/meshes)
+            shape_types: Array of geometry types for all shapes
+            shape_data: Array of vec4 containing scale (xyz) and thickness (w) for each shape
+            shape_transform: Array of world-space transforms for each shape
+            shape_source: Array of source pointers (mesh IDs, etc.) for each shape
+            shape_contact_margin: Array of contact margins for each shape
+            shape_collision_radius: Array of collision radii for each shape (for AABB fallback for planes/meshes)
             writer_data: Custom struct instance for contact writing (type must match the custom writer function)
             device: Device to launch on
         """
@@ -758,14 +754,14 @@ class NarrowPhase:
             inputs=[
                 candidate_pair,
                 num_candidate_pair,
-                geom_types,
-                geom_data,
-                geom_transform,
-                geom_source,
-                geom_cutoff,
-                geom_collision_radius,
-                self.geom_aabb_lower,
-                self.geom_aabb_upper,
+                shape_types,
+                shape_data,
+                shape_transform,
+                shape_source,
+                shape_contact_margin,
+                shape_collision_radius,
+                self.shape_aabb_lower,
+                self.shape_aabb_upper,
                 writer_data,
                 self.total_num_threads,
             ],
@@ -786,11 +782,11 @@ class NarrowPhase:
             kernel=self.mesh_plane_contacts_kernel,
             dim=self.total_num_threads,
             inputs=[
-                geom_types,
-                geom_data,
-                geom_transform,
-                geom_source,
-                geom_cutoff,
+                shape_types,
+                shape_data,
+                shape_transform,
+                shape_source,
+                shape_contact_margin,
                 self.shape_pairs_mesh_plane,
                 self.shape_pairs_mesh_plane_cumsum,
                 self.shape_pairs_mesh_plane_count,
@@ -808,11 +804,11 @@ class NarrowPhase:
             kernel=narrow_phase_find_mesh_triangle_overlaps_kernel,
             dim=[self.num_tile_blocks, second_dim],
             inputs=[
-                geom_types,
-                geom_transform,
-                geom_source,
-                geom_cutoff,
-                geom_data,
+                shape_types,
+                shape_transform,
+                shape_source,
+                shape_contact_margin,
+                shape_data,
                 self.shape_pairs_mesh,
                 self.shape_pairs_mesh_count,
                 self.num_tile_blocks,  # Use num_tile_blocks as total_num_threads for tiled kernel
@@ -830,11 +826,11 @@ class NarrowPhase:
             kernel=self.mesh_triangle_contacts_kernel,
             dim=self.total_num_threads,
             inputs=[
-                geom_types,
-                geom_data,
-                geom_transform,
-                geom_source,
-                geom_cutoff,
+                shape_types,
+                shape_data,
+                shape_transform,
+                shape_source,
+                shape_contact_margin,
                 self.triangle_pairs,
                 self.triangle_pairs_count,
                 writer_data,
@@ -848,12 +844,12 @@ class NarrowPhase:
         self,
         candidate_pair: wp.array(dtype=wp.vec2i, ndim=1),  # Maybe colliding pairs
         num_candidate_pair: wp.array(dtype=wp.int32, ndim=1),  # Size one array
-        geom_types: wp.array(dtype=wp.int32, ndim=1),  # All geom types, pairs index into it
-        geom_data: wp.array(dtype=wp.vec4, ndim=1),  # Geom data (scale xyz, thickness w)
-        geom_transform: wp.array(dtype=wp.transform, ndim=1),  # In world space
-        geom_source: wp.array(dtype=wp.uint64, ndim=1),  # The index into the source array, type define by geom_types
-        geom_cutoff: wp.array(dtype=wp.float32, ndim=1),  # per-geom (take the max)
-        geom_collision_radius: wp.array(dtype=wp.float32, ndim=1),  # per-geom collision radius for AABB fallback
+        shape_types: wp.array(dtype=wp.int32, ndim=1),  # All shape types, pairs index into it
+        shape_data: wp.array(dtype=wp.vec4, ndim=1),  # Shape data (scale xyz, thickness w)
+        shape_transform: wp.array(dtype=wp.transform, ndim=1),  # In world space
+        shape_source: wp.array(dtype=wp.uint64, ndim=1),  # The index into the source array, type define by shape_types
+        shape_contact_margin: wp.array(dtype=wp.float32, ndim=1),  # per-shape contact margin
+        shape_collision_radius: wp.array(dtype=wp.float32, ndim=1),  # per-shape collision radius for AABB fallback
         # Outputs
         contact_pair: wp.array(dtype=wp.vec2i),
         contact_position: wp.array(dtype=wp.vec3),
@@ -874,12 +870,12 @@ class NarrowPhase:
         Args:
             candidate_pair: Array of potentially colliding shape pairs from broad phase
             num_candidate_pair: Single-element array containing the number of candidate pairs
-            geom_types: Array of geometry types for all shapes
-            geom_data: Array of vec4 containing scale (xyz) and thickness (w) for each shape
-            geom_transform: Array of world-space transforms for each shape
-            geom_source: Array of source pointers (mesh IDs, etc.) for each shape
-            geom_cutoff: Array of cutoff distances for each shape
-            geom_collision_radius: Array of collision radii for each shape (for AABB fallback for planes/meshes)
+            shape_types: Array of geometry types for all shapes
+            shape_data: Array of vec4 containing scale (xyz) and thickness (w) for each shape
+            shape_transform: Array of world-space transforms for each shape
+            shape_source: Array of source pointers (mesh IDs, etc.) for each shape
+            shape_contact_margin: Array of contact margins for each shape
+            shape_collision_radius: Array of collision radii for each shape (for AABB fallback for planes/meshes)
             contact_pair: Output array for contact shape pairs
             contact_position: Output array for contact positions (center point)
             contact_normal: Output array for contact normals
@@ -929,12 +925,12 @@ class NarrowPhase:
         self.launch_custom_write(
             candidate_pair,
             num_candidate_pair,
-            geom_types,
-            geom_data,
-            geom_transform,
-            geom_source,
-            geom_cutoff,
-            geom_collision_radius,
+            shape_types,
+            shape_data,
+            shape_transform,
+            shape_source,
+            shape_contact_margin,
+            shape_collision_radius,
             writer_data,
             device,
         )

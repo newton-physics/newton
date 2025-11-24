@@ -915,12 +915,14 @@ def update_joint_dof_properties_kernel(
     joint_limit_lower: wp.array(dtype=float),
     joint_limit_upper: wp.array(dtype=float),
     solimplimit: wp.array(dtype=vec5),
+    limit_margin: wp.array(dtype=float),
     joints_per_world: int,
     # outputs
     dof_armature: wp.array2d(dtype=float),
     dof_frictionloss: wp.array2d(dtype=float),
     jnt_solimp: wp.array2d(dtype=vec5),
     jnt_solref: wp.array2d(dtype=wp.vec2),
+    jnt_margin: wp.array2d(dtype=float),
     jnt_range: wp.array2d(dtype=wp.vec2),
 ):
     """Update joint DOF properties including armature, friction loss, joint impedance limits, and solref.
@@ -968,6 +970,9 @@ def update_joint_dof_properties_kernel(
         if solimplimit:
             jnt_solimp[worldid, mjc_joint_index] = solimplimit[newton_dof_index]
 
+        if limit_margin:
+            jnt_margin[worldid, mjc_joint_index] = limit_margin[newton_dof_index]
+
         # update joint range (per joint)
         jnt_range[worldid, mjc_joint_index] = wp.vec2(
             joint_limit_lower[newton_dof_index], joint_limit_upper[newton_dof_index]
@@ -993,6 +998,9 @@ def update_joint_dof_properties_kernel(
         # Update solimplimit (per joint)
         if solimplimit:
             jnt_solimp[worldid, mjc_joint_index] = solimplimit[newton_dof_index]
+
+        if limit_margin:
+            jnt_margin[worldid, mjc_joint_index] = limit_margin[newton_dof_index]
 
         # update joint range (per joint)
         jnt_range[worldid, mjc_joint_index] = wp.vec2(

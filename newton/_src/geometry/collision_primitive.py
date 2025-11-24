@@ -1082,8 +1082,8 @@ def collide_sphere_box(
     clamped = wp.max(-box_size, wp.min(box_size, center))
     clamped_dir, dist = normalize_with_norm(clamped - center)
 
-    # sphere center inside box
-    if dist <= MINVAL:
+    # sphere center inside box (use robust epsilon for numerical stability across platforms)
+    if dist <= 1e-6:
         closest = 2.0 * (box_size[0] + box_size[1] + box_size[2])
         k = wp.int32(0)
         for i in range(6):

@@ -189,6 +189,8 @@ class Model:
         """Shape torsional friction coefficient (resistance to spinning at contact point), shape [shape_count], float."""
         self.shape_material_rolling_friction = None
         """Shape rolling friction coefficient (resistance to rolling motion), shape [shape_count], float."""
+        self.shape_contact_margin = None
+        """Shape contact margin for collision detection, shape [shape_count], float."""
 
         # Shape geometry properties
         self.shape_type = None
@@ -617,7 +619,6 @@ class Model:
         state: State,
         collision_pipeline: CollisionPipeline | None = None,
         rigid_contact_max_per_pair: int | None = None,
-        rigid_contact_margin: float = 0.01,
         soft_contact_max: int | None = None,
         soft_contact_margin: float = 0.01,
         edge_sdf_iter: int = 10,
@@ -635,7 +636,6 @@ class Model:
                 If not provided, a new one will be created if it hasn't been constructed before for this model.
             rigid_contact_max_per_pair (int, optional): Maximum number of rigid contacts per shape pair.
                 If None, a kernel is launched to count the number of possible contacts.
-            rigid_contact_margin (float, optional): Margin for rigid contact generation. Default is 0.01.
             soft_contact_max (int, optional): Maximum number of soft contacts.
                 If None, a kernel is launched to count the number of possible contacts.
             soft_contact_margin (float, optional): Margin for soft contact generation. Default is 0.01.
@@ -644,6 +644,12 @@ class Model:
 
         Returns:
             Contacts: The contact object containing collision information.
+
+        Note:
+            Rigid contact margins are controlled per-shape via :attr:`Model.shape_contact_margin`, which is populated
+            from ``ShapeConfig.contact_margin`` during model building. If a shape doesn't specify a contact margin,
+            it defaults to ``builder.rigid_contact_margin``. To adjust contact margins, set them before calling
+            :meth:`ModelBuilder.finalize`.
         """
         from .collide import CollisionPipeline  # noqa: PLC0415
 
@@ -656,7 +662,6 @@ class Model:
             self._collision_pipeline = CollisionPipeline.from_model(
                 model=self,
                 rigid_contact_max_per_pair=rigid_contact_max_per_pair,
-                rigid_contact_margin=rigid_contact_margin,
                 soft_contact_max=soft_contact_max,
                 soft_contact_margin=soft_contact_margin,
                 edge_sdf_iter=edge_sdf_iter,
@@ -664,7 +669,6 @@ class Model:
             )
 
         # update any additional parameters
-        self._collision_pipeline.rigid_contact_margin = rigid_contact_margin
         self._collision_pipeline.soft_contact_margin = soft_contact_margin
         self._collision_pipeline.edge_sdf_iter = edge_sdf_iter
 

@@ -82,7 +82,6 @@ class CollisionPipeline:
         shape_pairs_filtered: wp.array(dtype=wp.vec2i),
         rigid_contact_max: int | None = None,
         rigid_contact_max_per_pair: int | None = None,
-        rigid_contact_margin: float = 0.01,
         soft_contact_max: int | None = None,
         soft_contact_margin: float = 0.01,
         edge_sdf_iter: int = 10,
@@ -100,13 +99,15 @@ class CollisionPipeline:
                 If None, computed as shape_pairs_max * rigid_contact_max_per_pair.
             rigid_contact_max_per_pair (int | None, optional): Maximum number of contact points per shape pair.
                 If None or <= 0, no limit is applied.
-            rigid_contact_margin (float, optional): Margin for rigid contact generation. Defaults to 0.01.
             soft_contact_max (int | None, optional): Maximum number of soft contacts to allocate.
                 If None, computed as shape_count * particle_count.
             soft_contact_margin (float, optional): Margin for soft contact generation. Defaults to 0.01.
             edge_sdf_iter (int, optional): Number of iterations for edge SDF collision. Defaults to 10.
             requires_grad (bool, optional): Whether to enable gradient computation. Defaults to False.
             device (Devicelike, optional): The device on which to allocate arrays and perform computation.
+
+        Note:
+            Contact margins for rigid contacts are now controlled per-shape via ``model.shape_contact_margin``.
         """
         # will be allocated during collide
         self.contacts = None
@@ -115,7 +116,6 @@ class CollisionPipeline:
         self.shape_pairs_filtered = shape_pairs_filtered
         self.shape_pairs_max = len(self.shape_pairs_filtered)
 
-        self.rigid_contact_margin = rigid_contact_margin
         if rigid_contact_max_per_pair is None or rigid_contact_max_per_pair <= 0:
             rigid_contact_max_per_pair = 0
         self.rigid_contact_max_per_pair = rigid_contact_max_per_pair
@@ -147,7 +147,6 @@ class CollisionPipeline:
         cls,
         model: Model,
         rigid_contact_max_per_pair: int | None = None,
-        rigid_contact_margin: float = 0.01,
         soft_contact_max: int | None = None,
         soft_contact_margin: float = 0.01,
         edge_sdf_iter: int = 10,
@@ -160,7 +159,6 @@ class CollisionPipeline:
             model (Model): The simulation model.
             rigid_contact_max_per_pair (int | None, optional): Maximum number of contact points per shape pair.
                 If None, uses :attr:`newton.Model.rigid_contact_max` and sets per-pair to 0 (which indicates no limit).
-            rigid_contact_margin (float, optional): Margin for rigid contact generation. Defaults to 0.01.
             soft_contact_max (int | None, optional): Maximum number of soft contacts to allocate.
             soft_contact_margin (float, optional): Margin for soft contact generation. Defaults to 0.01.
             edge_sdf_iter (int, optional): Number of iterations for edge SDF collision. Defaults to 10.
@@ -168,6 +166,9 @@ class CollisionPipeline:
 
         Returns:
             CollisionPipeline: The constructed collision pipeline.
+
+        Note:
+            Contact margins for rigid contacts are read from ``model.shape_contact_margin`` array.
         """
         rigid_contact_max = None
         if rigid_contact_max_per_pair is None:
@@ -181,7 +182,6 @@ class CollisionPipeline:
             model.shape_contact_pairs,
             rigid_contact_max,
             rigid_contact_max_per_pair,
-            rigid_contact_margin,
             soft_contact_max,
             soft_contact_margin,
             edge_sdf_iter,
@@ -273,7 +273,7 @@ class CollisionPipeline:
                     model.shape_collision_radius,
                     shape_count,
                     self.rigid_contact_max,
-                    self.rigid_contact_margin,
+                    model.shape_contact_margin,
                     self.rigid_contact_max_per_pair,
                 ],
                 outputs=[
@@ -304,7 +304,7 @@ class CollisionPipeline:
                     model.shape_source_ptr,
                     model.shape_thickness,
                     shape_count,
-                    self.rigid_contact_margin,
+                    model.shape_contact_margin,
                     self.rigid_pair_shape0,
                     self.rigid_pair_shape1,
                     self.rigid_pair_point_id,

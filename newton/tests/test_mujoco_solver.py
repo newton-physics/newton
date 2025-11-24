@@ -2628,6 +2628,158 @@ class TestMuJoCoAttributes(unittest.TestCase):
         assert np.allclose(model.mujoco.condim.numpy(), [6])
         assert np.allclose(solver.mjw_model.geom_condim.numpy(), [6])
 
+    def test_limit_margin_from_code(self):
+        """Test setting limit_margin custom attribute from code."""
+        builder = newton.ModelBuilder()
+        newton.solvers.SolverMuJoCo.register_custom_attributes(builder)
+
+        # Create joints with different margin values per DOF
+        b0 = builder.add_body()
+        builder.add_joint_revolute(-1, b0, axis=(0.0, 0.0, 1.0), custom_attributes={"mujoco:limit_margin": [0.01]})
+        builder.add_shape_box(body=b0, hx=0.1, hy=0.1, hz=0.1)
+
+        b1 = builder.add_body()
+        builder.add_joint_revolute(b0, b1, axis=(0.0, 0.0, 1.0), custom_attributes={"mujoco:limit_margin": [0.02]})
+        builder.add_shape_box(body=b1, hx=0.1, hy=0.1, hz=0.1)
+
+        b2 = builder.add_body()
+        builder.add_joint_revolute(b1, b2, axis=(0.0, 0.0, 1.0))  # Default should be 0.0
+        builder.add_shape_box(body=b2, hx=0.1, hy=0.1, hz=0.1)
+
+        model = builder.finalize()
+        solver = SolverMuJoCo(model, separate_worlds=False)
+
+        assert hasattr(model, "mujoco")
+        assert hasattr(model.mujoco, "limit_margin")
+        assert np.allclose(model.mujoco.limit_margin.numpy(), [0.01, 0.02, 0.0])
+        assert np.allclose(solver.mjw_model.jnt_margin.numpy(), [0.01, 0.02, 0.0])
+
+    def test_limit_margin_from_mjcf(self):
+        """Test importing limit_margin from MJCF."""
+        mjcf = """
+        <mujoco>
+            <worldbody>
+                <body>
+                    <joint type="revolute" axis="0 0 1" margin="0.01" />
+                    <geom type="box" size="0.1 0.1 0.1" />
+                </body>
+                <body>
+                    <joint type="revolute" axis="0 0 1" margin="0.02" />
+                    <geom type="box" size="0.1 0.1 0.1" />
+                </body>
+                <body>
+                    <joint type="revolute" axis="0 0 1" />
+                    <geom type="box" size="0.1 0.1 0.1" />
+                </body>
+            </worldbody>
+        </mujoco>
+        """
+        builder = newton.ModelBuilder()
+        newton.solvers.SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_mjcf(mjcf)
+        model = builder.finalize()
+        solver = SolverMuJoCo(model, separate_worlds=False)
+
+        assert hasattr(model, "mujoco")
+        assert hasattr(model.mujoco, "limit_margin")
+        assert np.allclose(model.mujoco.limit_margin.numpy(), [0.01, 0.02, 0.0])
+        assert np.allclose(solver.mjw_model.jnt_margin.numpy(), [0.01, 0.02, 0.0])
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_limit_margin_from_usd(self):
+        """Test importing limit_margin from USD with mjc:margin on joint."""
+        from pxr import Sdf, Usd, UsdGeom, UsdPhysics  # noqa: PLC0415
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+
+        # Create first body with joint
+        body1_path = "/body1"
+        shape1 = UsdGeom.Cube.Define(stage, body1_path)
+        prim1 = shape1.GetPrim()
+        UsdPhysics.RigidBodyAPI.Apply(prim1)
+        UsdPhysics.ArticulationRootAPI.Apply(prim1)
+        UsdPhysics.CollisionAPI.Apply(prim1)
+
+        joint1_path = "/joint1"
+        joint1 = UsdPhysics.RevoluteJoint.Define(stage, joint1_path)
+        joint1.CreateAxisAttr().Set("Z")
+        joint1.CreateBody0Rel().SetTargets([body1_path])
+        joint1_prim = joint1.GetPrim()
+        joint1_prim.CreateAttribute("mjc:margin", Sdf.ValueTypeNames.FloatArray, True).Set([0.01])
+
+        # Create second body with joint
+        body2_path = "/body2"
+        shape2 = UsdGeom.Cube.Define(stage, body2_path)
+        prim2 = shape2.GetPrim()
+        UsdPhysics.RigidBodyAPI.Apply(prim2)
+        UsdPhysics.CollisionAPI.Apply(prim2)
+
+        joint2_path = "/joint2"
+        joint2 = UsdPhysics.RevoluteJoint.Define(stage, joint2_path)
+        joint2.CreateAxisAttr().Set("Z")
+        joint2.CreateBody0Rel().SetTargets([body1_path])
+        joint2.CreateBody1Rel().SetTargets([body2_path])
+        joint2_prim = joint2.GetPrim()
+        joint2_prim.CreateAttribute("mjc:margin", Sdf.ValueTypeNames.FloatArray, True).Set([0.02])
+
+        # Create third body with joint (no margin, should default to 0.0)
+        body3_path = "/body3"
+        shape3 = UsdGeom.Cube.Define(stage, body3_path)
+        prim3 = shape3.GetPrim()
+        UsdPhysics.RigidBodyAPI.Apply(prim3)
+        UsdPhysics.CollisionAPI.Apply(prim3)
+
+        joint3_path = "/joint3"
+        joint3 = UsdPhysics.RevoluteJoint.Define(stage, joint3_path)
+        joint3.CreateAxisAttr().Set("Z")
+        joint3.CreateBody0Rel().SetTargets([body2_path])
+        joint3.CreateBody1Rel().SetTargets([body3_path])
+
+        builder = newton.ModelBuilder()
+        newton.solvers.SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_usd(stage)
+        model = builder.finalize()
+        solver = SolverMuJoCo(model, separate_worlds=False)
+
+        assert hasattr(model, "mujoco")
+        assert hasattr(model.mujoco, "limit_margin")
+        assert np.allclose(model.mujoco.limit_margin.numpy(), [0.01, 0.02, 0.0])
+        assert np.allclose(solver.mjw_model.jnt_margin.numpy(), [0.01, 0.02, 0.0])
+
+    def test_limit_margin_runtime_update(self):
+        """Test runtime updates of limit_margin."""
+        builder = newton.ModelBuilder()
+        newton.solvers.SolverMuJoCo.register_custom_attributes(builder)
+
+        # Create joints
+        b0 = builder.add_body()
+        builder.add_joint_revolute(-1, b0, axis=(0.0, 0.0, 1.0), custom_attributes={"mujoco:limit_margin": [0.01]})
+        builder.add_shape_box(body=b0, hx=0.1, hy=0.1, hz=0.1)
+
+        b1 = builder.add_body()
+        builder.add_joint_revolute(b0, b1, axis=(0.0, 0.0, 1.0), custom_attributes={"mujoco:limit_margin": [0.02]})
+        builder.add_shape_box(body=b1, hx=0.1, hy=0.1, hz=0.1)
+
+        model = builder.finalize()
+        solver = SolverMuJoCo(model, separate_worlds=False, iterations=1, disable_contacts=True)
+
+        # Verify initial values
+        assert np.allclose(model.mujoco.limit_margin.numpy(), [0.01, 0.02])
+        assert np.allclose(solver.mjw_model.jnt_margin.numpy(), [0.01, 0.02])
+
+        # Update limit_margin values at runtime
+        new_margins = np.array([0.05, 0.10], dtype=np.float32)
+        model.mujoco.limit_margin.assign(new_margins)
+
+        # Notify solver of changes
+        solver.notify_model_changed(SolverNotifyFlags.JOINT_DOF_PROPERTIES)
+
+        # Verify updates propagated to MuJoCo
+        assert np.allclose(model.mujoco.limit_margin.numpy(), [0.05, 0.10])
+        assert np.allclose(solver.mjw_model.jnt_margin.numpy(), [0.05, 0.10])
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -167,6 +167,18 @@ class SolverMuJoCo(SolverBase):
         )
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
+                name="limit_margin",
+                frequency=ModelAttributeFrequency.JOINT_DOF,
+                assignment=ModelAttributeAssignment.MODEL,
+                dtype=wp.float32,
+                default=0.0,
+                namespace="mujoco",
+                usd_attribute_name="mjc:margin",
+                mjcf_attribute_name="margin",
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
                 name="solimplimit",
                 frequency=ModelAttributeFrequency.JOINT_DOF,
                 assignment=ModelAttributeAssignment.MODEL,
@@ -945,6 +957,7 @@ class SolverMuJoCo(SolverBase):
             return attr.numpy()
 
         shape_condim = get_custom_attribute("condim")
+        joint_dof_limit_margin = get_custom_attribute("limit_margin")
         joint_solimp_limit = get_custom_attribute("solimplimit")
 
         eq_constraint_type = model.equality_constraint_type.numpy()
@@ -1268,6 +1281,9 @@ class SolverMuJoCo(SolverBase):
                     }
                     # Set friction
                     joint_params["frictionloss"] = joint_friction[ai]
+                    # Set margin if available
+                    if joint_dof_limit_margin is not None:
+                        joint_params["margin"] = joint_dof_limit_margin[ai]
                     lower, upper = joint_limit_lower[ai], joint_limit_upper[ai]
                     if lower <= -JOINT_LIMIT_UNLIMITED and upper >= JOINT_LIMIT_UNLIMITED:
                         joint_params["limited"] = False
@@ -1334,6 +1350,9 @@ class SolverMuJoCo(SolverBase):
                     }
                     # Set friction
                     joint_params["frictionloss"] = joint_friction[ai]
+                    # Set margin if available
+                    if joint_dof_limit_margin is not None:
+                        joint_params["margin"] = joint_dof_limit_margin[ai]
                     lower, upper = joint_limit_lower[ai], joint_limit_upper[ai]
                     if lower <= -JOINT_LIMIT_UNLIMITED and upper >= JOINT_LIMIT_UNLIMITED:
                         joint_params["limited"] = False
@@ -1597,7 +1616,7 @@ class SolverMuJoCo(SolverBase):
             # "jnt_stiffness",
             "jnt_range",
             # "jnt_actfrcrange",
-            # "jnt_margin",
+            "jnt_margin",  # corresponds to newton custom attribute "limit_margin"
             "dof_armature",
             # "dof_damping",
             # "dof_invweight0",
@@ -1742,6 +1761,7 @@ class SolverMuJoCo(SolverBase):
         # Update DOF properties (armature, friction, and solimplimit) with proper DOF mapping
         mujoco_attrs = getattr(self.model, "mujoco", None)
         solimplimit = getattr(mujoco_attrs, "solimplimit", None) if mujoco_attrs is not None else None
+        joint_dof_limit_margin = getattr(mujoco_attrs, "limit_margin", None) if mujoco_attrs is not None else None
 
         wp.launch(
             update_joint_dof_properties_kernel,
@@ -1758,6 +1778,7 @@ class SolverMuJoCo(SolverBase):
                 self.model.joint_limit_lower,
                 self.model.joint_limit_upper,
                 solimplimit,
+                joint_dof_limit_margin,
                 joints_per_world,
             ],
             outputs=[
@@ -1765,6 +1786,7 @@ class SolverMuJoCo(SolverBase):
                 self.mjw_model.dof_frictionloss,
                 self.mjw_model.jnt_solimp,
                 self.mjw_model.jnt_solref,
+                self.mjw_model.jnt_margin,
                 self.mjw_model.jnt_range,
             ],
             device=self.model.device,
