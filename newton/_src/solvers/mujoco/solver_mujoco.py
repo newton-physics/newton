@@ -751,7 +751,6 @@ class SolverMuJoCo(SolverBase):
         ls_tolerance: float = 0.01,
         cone: int | str = "pyramidal",
         geom_solimp: tuple[float, float, float, float, float] = (0.9, 0.95, 0.001, 0.5, 2.0),
-        geom_friction: tuple[float, float, float] | None = None,
         target_filename: str | None = None,
         default_actuator_args: dict | None = None,
         default_actuator_gear: float | None = None,
@@ -868,10 +867,6 @@ class SolverMuJoCo(SolverBase):
             defaults = defaults()
         defaults.geom.solref = (0.02, 1.0)
         defaults.geom.solimp = geom_solimp
-        # Use default friction parameters if geom_friction is not provided
-        if geom_friction is None:
-            geom_friction = (1.0, 0.5, 0.001)  # (slide, torsion, roll) - matches ShapeConfig defaults
-        defaults.geom.friction = geom_friction
         # defaults.geom.contype = 0
         spec.compiler.inertiafromgeom = mujoco.mjtInertiaFromGeom.mjINERTIAFROMGEOM_AUTO
 
