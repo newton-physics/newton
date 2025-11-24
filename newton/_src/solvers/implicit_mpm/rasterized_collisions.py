@@ -92,6 +92,43 @@ class Collider:
 
 
 @wp.func
+def get_average_face_normal(
+    mesh_id: wp.uint64,
+    point: wp.vec3,
+):
+    """Computes the average face normal at a point on a mesh.
+    (average of face normals within an epsilon-distance of the point)
+
+    Args:
+        mesh_id: The mesh to query.
+        point: The point to query.
+
+    Returns:
+        The average face normal at the point.
+    """
+
+    face_normal = wp.vec3(0.0)
+
+    vidx = wp.mesh_get(mesh_id).indices
+    points = wp.mesh_get(mesh_id).points
+    eps_sq = _CLOSEST_POINT_NORMAL_EPSILON * _CLOSEST_POINT_NORMAL_EPSILON
+
+    epsilon = wp.vec3(_CLOSEST_POINT_NORMAL_EPSILON)
+    aabb_query = wp.mesh_query_aabb(mesh_id, point - epsilon, point + epsilon)
+    face_index = wp.int32(0)
+    while wp.mesh_query_aabb_next(aabb_query, face_index):
+        V0 = points[vidx[face_index * 3 + 0]]
+        V1 = points[vidx[face_index * 3 + 1]]
+        V2 = points[vidx[face_index * 3 + 2]]
+
+        sq_dist, _coords = fem.geometry.closest_point.project_on_tri_at_origin(point - V0, V1 - V0, V2 - V0)
+        if sq_dist < eps_sq:
+            face_normal += wp.mesh_eval_face_normal(mesh_id, face_index)
+
+    return wp.normalize(face_normal)
+
+
+@wp.func
 def collision_sdf(
     x: wp.vec3, collider: Collider, body_q: wp.array(dtype=wp.transform), body_qd: wp.array(dtype=wp.spatial_vector)
 ):
@@ -133,14 +170,7 @@ def collision_sdf(
             cp = wp.mesh_eval_position(mesh, query.face, query.u, query.v)
 
             if wp.static(_SDF_SIGN_FROM_AVERAGE_NORMAL):
-                face_normal = wp.vec3(0.0)
-                epsilon = wp.vec3(_CLOSEST_POINT_NORMAL_EPSILON)
-                aabb_query = wp.mesh_query_aabb(mesh, cp - epsilon, cp + epsilon)
-                face_index = wp.int32(0)
-                while wp.mesh_query_aabb_next(aabb_query, face_index):
-                    face_normal += wp.mesh_eval_face_normal(mesh, face_index)
-
-                face_normal = wp.normalize(face_normal)
+                face_normal = get_average_face_normal(mesh, cp)
                 sign = wp.where(wp.dot(face_normal, x_local - cp) > 0.0, 1.0, -1.0)
             else:
                 face_normal = wp.mesh_eval_face_normal(mesh, query.face)
