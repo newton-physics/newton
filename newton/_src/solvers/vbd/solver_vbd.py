@@ -394,8 +394,8 @@ class SolverVBD(SolverBase):
             if not _USE_JACOBI_CONTACTS:
                 # Body-body (rigid-rigid) contact adjacency (CSR-like: per-body counts and flat index array)
                 self.body_body_contact_buffer_pre_alloc = body_body_contact_buffer_pre_alloc
-                self.body_contact_counts = wp.zeros(self.model.body_count, dtype=wp.int32, device=self.device)
-                self.body_contact_indices = wp.zeros(
+                self.body_body_contact_counts = wp.zeros(self.model.body_count, dtype=wp.int32, device=self.device)
+                self.body_body_contact_indices = wp.zeros(
                     self.model.body_count * self.body_body_contact_buffer_pre_alloc, dtype=wp.int32, device=self.device
                 )
                 
@@ -490,11 +490,11 @@ class SolverVBD(SolverBase):
         """
         dof_count = self.model.joint_dof_count
         with wp.ScopedDevice("cpu"):
-            # Seed all DOFs with the stretch stiffness and specialize cable bend DOFs below.
+            # Seed all DOFs with the cable stretch stiffness and specialize cable bend DOFs below.
             # This keeps a single k_start_* API as the authoritative source of joint stiffness.
-            base_k = max(0.0, k_start_cable_stretch)
+            stretch_k = max(0.0, k_start_cable_stretch)
             joint_k_min_np = np.full((dof_count,), 0.0, dtype=float)
-            joint_k0_np = np.full((dof_count,), base_k, dtype=float)
+            joint_k0_np = np.full((dof_count,), stretch_k, dtype=float)
 
             jt_cpu = self.model.joint_type.to("cpu")
             jdofs_cpu = self.model.joint_qd_start.to("cpu")
@@ -508,10 +508,10 @@ class SolverVBD(SolverBase):
                 if jt[j] == JointType.CABLE:
                     dof0 = jdofs[j]
                     # DOF 0: cable stretch; DOF 1: cable bend
-                    joint_k0_np[dof0] = base_k
+                    joint_k0_np[dof0] = stretch_k
                     joint_k0_np[dof0 + 1] = bend_k
                     # Per-DOF lower bounds: use k_start_* for cable stretch/bend, 0 otherwise
-                    joint_k_min_np[dof0] = base_k
+                    joint_k_min_np[dof0] = stretch_k
                     joint_k_min_np[dof0 + 1] = bend_k
 
             # Upload to device: initial penalties and per-DOF lower bounds
@@ -853,7 +853,7 @@ class SolverVBD(SolverBase):
             # Build per-body contact lists once per step (only needed for Gauss-Seidel mode)
             if not _USE_JACOBI_CONTACTS:
                 # Build body-body (rigid-rigid) contact lists
-                self.body_contact_counts.zero_()
+                self.body_body_contact_counts.zero_()
                 wp.launch(
                     kernel=build_body_body_contact_lists,
                     dim=contact_launch_dim,
@@ -865,8 +865,8 @@ class SolverVBD(SolverBase):
                         self.body_body_contact_buffer_pre_alloc,
                     ],
                     outputs=[
-                        self.body_contact_counts,
-                        self.body_contact_indices,
+                        self.body_body_contact_counts,
+                        self.body_body_contact_indices,
                     ],
                     device=self.device,
                 )
@@ -1157,8 +1157,8 @@ class SolverVBD(SolverBase):
                         contacts.rigid_contact_thickness1,
                         model.shape_body,
                         self.body_body_contact_buffer_pre_alloc,
-                        self.body_contact_counts,
-                        self.body_contact_indices,
+                        self.body_body_contact_counts,
+                        self.body_body_contact_indices,
                     ],
                     outputs=[
                         self.body_forces,

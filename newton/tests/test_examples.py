@@ -240,11 +240,41 @@ class TestCableExamples(unittest.TestCase):
     pass
 
 
-add_example_test(TestCableExamples, name="cable.example_cable_bend", devices=test_devices, use_viewer=True)
-add_example_test(TestCableExamples, name="cable.example_cable_bend_damping", devices=test_devices, use_viewer=True)
-add_example_test(TestCableExamples, name="cable.example_cable_twist", devices=test_devices, use_viewer=True)
-add_example_test(TestCableExamples, name="cable.example_cable_helix", devices=test_devices, use_viewer=True)
-add_example_test(TestCableExamples, name="cable.example_cable_pile", devices=test_devices, use_viewer=True)
+add_example_test(
+    TestCableExamples,
+    name="cable.example_cable_bend",
+    devices=test_devices,
+    use_viewer=True,
+    test_options={"num-frames": 20},
+)
+add_example_test(
+    TestCableExamples,
+    name="cable.example_cable_bend_damping",
+    devices=test_devices,
+    use_viewer=True,
+    test_options={"num-frames": 20},
+)
+add_example_test(
+    TestCableExamples,
+    name="cable.example_cable_twist",
+    devices=test_devices,
+    use_viewer=True,
+    test_options={"num-frames": 20},
+)
+add_example_test(
+    TestCableExamples,
+    name="cable.example_cable_helix",
+    devices=test_devices,
+    use_viewer=True,
+    test_options={"num-frames": 20},
+)
+add_example_test(
+    TestCableExamples,
+    name="cable.example_cable_pile",
+    devices=test_devices,
+    use_viewer=True,
+    test_options={"num-frames": 20},
+)
 
 
 class TestClothExamples(unittest.TestCase):

@@ -325,7 +325,7 @@ def test_coloring_rigid_body_cable_chain(test, device):
     with wp.ScopedDevice(device):
         builder = ModelBuilder()
         
-        # Create a cable chain with 10 elements (11 bodies)
+        # Create a cable chain with 10 elements
         num_elements = 10
         cable_length = 2.0
         segment_length = cable_length / num_elements

@@ -329,7 +329,7 @@ def _cable_bend_stiffness_impl(test: unittest.TestCase, device):
 def _cable_sagging_and_stability_impl(test: unittest.TestCase, device):
     """Cable VBD: pinned chain should sag under gravity while remaining numerically stable."""
     segment_length = 0.2
-    model, state0, state1, control, rod_bodies = _build_cable_chain(
+    model, state0, state1, control, _rod_bodies = _build_cable_chain(
         device, num_links=6, segment_length=segment_length
     )
     solver = newton.solvers.SolverVBD(model, iterations=10)
@@ -421,11 +421,11 @@ def _cable_twist_response_impl(test: unittest.TestCase, device):
     # Disable gravity to isolate twist response
     model.set_gravity((0.0, 0.0, 0.0))
 
-    # Record initial orientation and position of the free (child) body
+    # Record initial orientation of the free (child) body
     child_body = rod_bodies[-1]
     q_initial = state0.body_q.numpy().copy()
-    q_child_initial = q_initial[child_body, 3:].copy()  # [qw, qx, qy, qz]
-    p_child_initial = q_initial[child_body, :3].copy()
+    # Quaternion components in the transform are stored as [qx, qy, qz, qw]
+    q_child_initial = q_initial[child_body, 3:].copy()
 
     # Apply a 180-degree twist about the local cable axis to the parent body by composing
     # the twist with the existing parent rotation.

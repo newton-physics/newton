@@ -534,6 +534,7 @@ class ModelBuilder:
         self.body_key = []
         self.body_shapes = {-1: []}  # mapping from body to shapes
         self.body_world = []  # world index for each body
+        self.body_color_groups: list[nparray] = []
 
         # rigid joints
         self.joint_parent = []  # index of the parent body                      (constant)
@@ -582,8 +583,6 @@ class ModelBuilder:
         # set to -1 to create global entities shared across all worlds.
         # note: this value is temporarily overridden when using add_builder().
         self.current_world = -1
-
-        self.body_color_groups: list[nparray] = []
 
         self.up_axis: Axis = Axis.from_any(up_axis)
         self.gravity: float = gravity
@@ -2313,10 +2312,10 @@ class ModelBuilder:
         child: int,
         parent_xform: Transform | None = None,
         child_xform: Transform | None = None,
-        bend_stiffness: float | None = None,
-        bend_damping: float | None = None,
         stretch_stiffness: float | None = None,
         stretch_damping: float | None = None,
+        bend_stiffness: float | None = None,
+        bend_damping: float | None = None,
         key: str | None = None,
         collision_filter_parent: bool = True,
         enabled: bool = True,
@@ -2334,10 +2333,10 @@ class ModelBuilder:
                 translation is the attachment point.
             child_xform (Transform): The transform of the joint in the child body's local frame; its
                 translation is the attachment point.
-            bend_stiffness: Angular bend/twist stiffness. If None, defaults to 0.0.
-            bend_damping: Angular bend/twist damping. If None, defaults to 0.0.
             stretch_stiffness: Linear stretch stiffness. If None, defaults to 1.0e9.
             stretch_damping: Linear stretch damping. If None, defaults to 0.0.
+            bend_stiffness: Angular bend/twist stiffness. If None, defaults to 0.0.
+            bend_damping: Angular bend/twist damping. If None, defaults to 0.0.
             key: The key of the joint.
             collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies.
             enabled: Whether the joint is enabled.
@@ -2346,15 +2345,15 @@ class ModelBuilder:
             The index of the added joint.
 
         """
-        # Angular DOF (bend/twist)
-        bend_ke = 0.0 if bend_stiffness is None else bend_stiffness
-        bend_kd = 0.0 if bend_damping is None else bend_damping
-        ax_ang = ModelBuilder.JointDofConfig(target_ke=bend_ke, target_kd=bend_kd)
-
         # Linear DOF (stretch)
         se_ke = 1.0e9 if stretch_stiffness is None else stretch_stiffness
         se_kd = 0.0 if stretch_damping is None else stretch_damping
         ax_lin = ModelBuilder.JointDofConfig(target_ke=se_ke, target_kd=se_kd)
+
+        # Angular DOF (bend/twist)
+        bend_ke = 0.0 if bend_stiffness is None else bend_stiffness
+        bend_kd = 0.0 if bend_damping is None else bend_damping
+        ax_ang = ModelBuilder.JointDofConfig(target_ke=bend_ke, target_kd=bend_kd)
 
         return self.add_joint(
             JointType.CABLE,
@@ -3814,10 +3813,10 @@ class ModelBuilder:
         quaternions: list[Quat],
         radius: float = 0.1,
         cfg: ShapeConfig | None = None,
-        bend_stiffness: float | None = None,
-        bend_damping: float | None = None,
         stretch_stiffness: float | None = None,
         stretch_damping: float | None = None,
+        bend_stiffness: float | None = None,
+        bend_damping: float | None = None,
         closed: bool = False,
         key: str | None = None,
     ) -> tuple[list[int], list[int]]:
@@ -3836,10 +3835,10 @@ class ModelBuilder:
                 align the capsule's local +Z with the segment direction ``positions[i+1] - positions[i]``.
             radius: Capsule radius.
             cfg: Shape configuration for the capsules. If None, :attr:`default_shape_cfg` is used.
-            bend_stiffness: Bend/twist stiffness for the cable joints. If None, defaults to 0.0.
-            bend_damping: Bend/twist damping for the cable joints. If None, defaults to 0.0.
             stretch_stiffness: Stretch stiffness for the cable joints. If None, defaults to 1.0e9.
             stretch_damping: Stretch damping for the cable joints. If None, defaults to 0.0.
+            bend_stiffness: Bend/twist stiffness for the cable joints. If None, defaults to 0.0.
+            bend_damping: Bend/twist damping for the cable joints. If None, defaults to 0.0.
             closed: If True, connects the last segment back to the first to form a closed loop. If False,
                 creates an open chain.
             key: Optional key prefix for bodies, shapes, and joints.
@@ -3853,7 +3852,7 @@ class ModelBuilder:
 
         Note:
             - Bend defaults are 0.0 (no bending resistance unless specified). Stretch defaults to a high
-              stiffness (1.0e9), which is suitable for AVBD.
+              stiffness (1.0e9), which keeps neighboring capsules closely coupled (approximately inextensible).
             - Each segment is implemented as a capsule primitive. The segment's body transform is
               placed at the start point ``positions[i]`` with a local center-of-mass offset of
               ``(0, 0, half_height)`` so that the COM lies at the segment midpoint. The capsule shape
@@ -3863,12 +3862,12 @@ class ModelBuilder:
         if cfg is None:
             cfg = self.default_shape_cfg
 
+        # Stretch defaults: high stiffness to keep neighboring capsules tightly coupled
+        stretch_stiffness = 1.0e9 if stretch_stiffness is None else stretch_stiffness
+        stretch_damping = 0.0 if stretch_damping is None else stretch_damping
         # Bend defaults: 0.0 (users must explicitly set for bending resistance)
         bend_stiffness = 0.0 if bend_stiffness is None else bend_stiffness
         bend_damping = 0.0 if bend_damping is None else bend_damping
-        # Stretch defaults: high stiffness for AVBD
-        stretch_stiffness = 1.0e9 if stretch_stiffness is None else stretch_stiffness
-        stretch_damping = 0.0 if stretch_damping is None else stretch_damping
 
         # Input validation
         num_segments = len(quaternions)
@@ -3890,6 +3889,22 @@ class ModelBuilder:
             # Calculate segment properties
             segment_length = wp.length(p1 - p0)
             half_height = 0.5 * segment_length
+
+            # Sanity check: ensure the capsule orientation aligns its local +Z axis with
+            # the segment direction between positions[i] and positions[i+1]. This enforces
+            # the contract that ``quaternions[i]`` is a world-space rotation taking local +Z
+            # into ``positions[i+1] - positions[i]``; otherwise the capsules will not form
+            # a proper rod.
+            seg_dir = wp.normalize(p1 - p0)
+            local_z_world = wp.quat_rotate(q, wp.vec3(0.0, 0.0, 1.0))
+            alignment = wp.dot(seg_dir, local_z_world)
+            if alignment < 0.999:
+                raise ValueError(
+                    "add_rod_mesh: quaternion at index "
+                    f"{i} does not align capsule +Z with segment (positions[i+1] - positions[i]); "
+                    "quaternions must be world-space and constructed so that local +Z maps to the "
+                    "segment direction positions[i+1] - positions[i]."
+                )
 
             # Position body at start point, with COM offset to segment center
             body_q = wp.transform(p0, q)

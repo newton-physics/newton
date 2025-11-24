@@ -226,7 +226,6 @@ class Example:
         shape_ke = self.model.shape_material_ke.numpy()
         shape_kd = self.model.shape_material_kd.numpy()
 
-        # Match particle-side ke/kd so avg_ke/avg_kd == soft_contact_ke/kd
         shape_ke[...] = self.soft_contact_ke
         shape_kd[...] = self.soft_contact_kd
 
