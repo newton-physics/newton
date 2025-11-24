@@ -3659,6 +3659,8 @@ class ModelBuilder:
                             ka=self.shape_material_ka[shape],
                             mu=self.shape_material_mu[shape],
                             restitution=self.shape_material_restitution[shape],
+                            torsional_friction=self.shape_material_torsional_friction[shape],
+                            rolling_friction=self.shape_material_rolling_friction[shape],
                             thickness=self.shape_thickness[shape],
                             is_solid=self.shape_is_solid[shape],
                             collision_group=self.shape_collision_group[shape],
