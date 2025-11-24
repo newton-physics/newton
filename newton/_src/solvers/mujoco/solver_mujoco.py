@@ -1615,7 +1615,7 @@ class SolverMuJoCo(SolverBase):
             "jnt_pos",
             "jnt_axis",
             # "jnt_stiffness",
-            # "jnt_range",
+            "jnt_range",
             # "jnt_actfrcrange",
             "jnt_margin",  # corresponds to newton custom attribute "limit_margin"
             "dof_armature",
@@ -1732,7 +1732,7 @@ class SolverMuJoCo(SolverBase):
         )
 
     def update_joint_dof_properties(self):
-        """Update all joint dof properties including effort limits, friction, armature, and solimplimit in the MuJoCo model."""
+        """Update all joint DOF properties including effort limits, friction, armature, solimplimit, solref, and joint limit ranges in the MuJoCo model."""
         if self.model.joint_dof_count == 0:
             return
 
@@ -1776,6 +1776,8 @@ class SolverMuJoCo(SolverBase):
                 self.model.joint_friction,
                 self.model.joint_limit_ke,
                 self.model.joint_limit_kd,
+                self.model.joint_limit_lower,
+                self.model.joint_limit_upper,
                 solimplimit,
                 joint_dof_limit_margin,
                 joints_per_world,
@@ -1786,6 +1788,7 @@ class SolverMuJoCo(SolverBase):
                 self.mjw_model.jnt_solimp,
                 self.mjw_model.jnt_solref,
                 self.mjw_model.jnt_margin,
+                self.mjw_model.jnt_range,
             ],
             device=self.model.device,
         )
