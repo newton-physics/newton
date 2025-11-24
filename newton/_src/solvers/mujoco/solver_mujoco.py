@@ -868,9 +868,9 @@ class SolverMuJoCo(SolverBase):
             defaults = defaults()
         defaults.geom.solref = (0.02, 1.0)
         defaults.geom.solimp = geom_solimp
-        # Use model's friction parameters if geom_friction is not provided
+        # Use default friction parameters if geom_friction is not provided
         if geom_friction is None:
-            geom_friction = (1.0, model.rigid_contact_torsional_friction, model.rigid_contact_rolling_friction)
+            geom_friction = (1.0, 0.5, 0.001)  # (slide, torsion, roll) - matches ShapeConfig defaults
         defaults.geom.friction = geom_friction
         # defaults.geom.contype = 0
         spec.compiler.inertiafromgeom = mujoco.mjtInertiaFromGeom.mjINERTIAFROMGEOM_AUTO
@@ -935,6 +935,8 @@ class SolverMuJoCo(SolverBase):
         shape_flags = model.shape_flags.numpy()
         shape_world = model.shape_world.numpy()
         shape_mu = model.shape_material_mu.numpy()
+        shape_torsional_friction = model.shape_material_torsional_friction.numpy()
+        shape_rolling_friction = model.shape_material_rolling_friction.numpy()
 
         # retrieve MuJoCo-specific attributes
         mujoco_attrs = getattr(model, "mujoco", None)
@@ -1158,12 +1160,14 @@ class SolverMuJoCo(SolverBase):
                         # collide with anything except shapes from the same color
                         geom_params["conaffinity"] = collision_mask_everything & ~contype
 
-                # set friction from Newton shape materials using model's friction parameters
+                # set friction from Newton shape materials
                 mu = shape_mu[shape]
+                torsional = shape_torsional_friction[shape]
+                rolling = shape_rolling_friction[shape]
                 geom_params["friction"] = [
                     mu,
-                    model.rigid_contact_torsional_friction * mu,
-                    model.rigid_contact_rolling_friction * mu,
+                    torsional * mu,
+                    rolling * mu,
                 ]
                 if shape_condim is not None:
                     geom_params["condim"] = shape_condim[shape]
@@ -1829,8 +1833,8 @@ class SolverMuJoCo(SolverBase):
                 self.mjw_model.geom_dataid,
                 self.mjw_model.mesh_pos,
                 self.mjw_model.mesh_quat,
-                self.model.rigid_contact_torsional_friction,
-                self.model.rigid_contact_rolling_friction,
+                self.model.shape_material_torsional_friction,
+                self.model.shape_material_rolling_friction,
             ],
             outputs=[
                 self.mjw_model.geom_rbound,
