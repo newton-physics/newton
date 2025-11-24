@@ -1023,6 +1023,140 @@ class TestMuJoCoSolverJointProperties(TestMuJoCoSolverPropertiesBase):
                     msg=f"Updated solref damping for MuJoCo joint {mjc_idx} (Newton DOF {newton_dof_idx}) in world {world_idx}",
                 )
 
+    def test_joint_limit_range_conversion(self):
+        """
+        Verify that joint_limit_lower and joint_limit_upper are properly converted to MuJoCo's jnt_range.
+        Test both initial conversion and runtime updates, with different values per world.
+
+        Note: The jnt_limited flag cannot be changed at runtime in MuJoCo.
+        """
+        # Skip if no joints
+        if self.model.joint_dof_count == 0:
+            self.skipTest("No joints in model, skipping joint limit range test")
+
+        # Set initial joint limit values
+        dofs_per_world = self.model.joint_dof_count // self.model.num_worlds
+
+        initial_limit_lower = np.zeros(self.model.joint_dof_count)
+        initial_limit_upper = np.zeros(self.model.joint_dof_count)
+
+        # Set different values for each DOF and world to catch indexing bugs
+        for world_idx in range(self.model.num_worlds):
+            world_dof_offset = world_idx * dofs_per_world
+
+            for dof_idx in range(dofs_per_world):
+                global_dof_idx = world_dof_offset + dof_idx
+                # Lower limit: -2.0 - dof_idx * 0.1 - world_idx * 0.5
+                initial_limit_lower[global_dof_idx] = -2.0 - dof_idx * 0.1 - world_idx * 0.5
+                # Upper limit: 2.0 + dof_idx * 0.1 + world_idx * 0.5
+                initial_limit_upper[global_dof_idx] = 2.0 + dof_idx * 0.1 + world_idx * 0.5
+
+        self.model.joint_limit_lower.assign(initial_limit_lower)
+        self.model.joint_limit_upper.assign(initial_limit_upper)
+
+        # Create solver (this should convert limits to jnt_range)
+        solver = SolverMuJoCo(self.model, iterations=1, disable_contacts=True)
+
+        # Verify initial conversion to jnt_range
+        # Only revolute joints have limits in this model
+        # In MuJoCo: joints 0,1 are FREE joints, joints 2,3 are revolute joints
+        # Newton DOF mapping: FREE joints use DOFs 0-11, revolute joints use DOFs 12-13
+        mjc_revolute_indices = [2, 3]  # MuJoCo joint indices for revolute joints
+        newton_revolute_dof_indices = [12, 13]  # Newton DOF indices for revolute joints
+
+        for world_idx in range(self.model.num_worlds):
+            for _i, (mjc_idx, newton_dof_idx) in enumerate(
+                zip(mjc_revolute_indices, newton_revolute_dof_indices, strict=False)
+            ):
+                global_dof_idx = world_idx * dofs_per_world + newton_dof_idx
+                expected_lower = initial_limit_lower[global_dof_idx]
+                expected_upper = initial_limit_upper[global_dof_idx]
+
+                # Get actual values from MuJoCo's jnt_range array
+                actual_range = solver.mjw_model.jnt_range.numpy()[world_idx, mjc_idx]
+                self.assertAlmostEqual(
+                    actual_range[0],
+                    expected_lower,
+                    places=5,
+                    msg=f"Initial range lower for MuJoCo joint {mjc_idx} (Newton DOF {newton_dof_idx}) in world {world_idx}",
+                )
+                self.assertAlmostEqual(
+                    actual_range[1],
+                    expected_upper,
+                    places=5,
+                    msg=f"Initial range upper for MuJoCo joint {mjc_idx} (Newton DOF {newton_dof_idx}) in world {world_idx}",
+                )
+
+        # Test runtime update capability - update joint limit values with different values per world
+        updated_limit_lower = np.zeros(self.model.joint_dof_count)
+        updated_limit_upper = np.zeros(self.model.joint_dof_count)
+
+        for world_idx in range(self.model.num_worlds):
+            world_dof_offset = world_idx * dofs_per_world
+
+            for dof_idx in range(dofs_per_world):
+                global_dof_idx = world_dof_offset + dof_idx
+                # Different values per world to verify per-world updates
+                # Lower limit: -1.5 - dof_idx * 0.2 - world_idx * 1.0
+                updated_limit_lower[global_dof_idx] = -1.5 - dof_idx * 0.2 - world_idx * 1.0
+                # Upper limit: 1.5 + dof_idx * 0.2 + world_idx * 1.0
+                updated_limit_upper[global_dof_idx] = 1.5 + dof_idx * 0.2 + world_idx * 1.0
+
+        self.model.joint_limit_lower.assign(updated_limit_lower)
+        self.model.joint_limit_upper.assign(updated_limit_upper)
+
+        # Notify solver of changes - jnt_range is updated via JOINT_PROPERTIES
+        solver.notify_model_changed(SolverNotifyFlags.JOINT_DOF_PROPERTIES)
+
+        # Verify runtime updates to jnt_range with different values per world
+        for world_idx in range(self.model.num_worlds):
+            for _i, (mjc_idx, newton_dof_idx) in enumerate(
+                zip(mjc_revolute_indices, newton_revolute_dof_indices, strict=False)
+            ):
+                global_dof_idx = world_idx * dofs_per_world + newton_dof_idx
+                expected_lower = updated_limit_lower[global_dof_idx]
+                expected_upper = updated_limit_upper[global_dof_idx]
+
+                # Get actual values from MuJoCo's jnt_range array
+                actual_range = solver.mjw_model.jnt_range.numpy()[world_idx, mjc_idx]
+                self.assertAlmostEqual(
+                    actual_range[0],
+                    expected_lower,
+                    places=5,
+                    msg=f"Updated range lower for MuJoCo joint {mjc_idx} (Newton DOF {newton_dof_idx}) in world {world_idx}",
+                )
+                self.assertAlmostEqual(
+                    actual_range[1],
+                    expected_upper,
+                    places=5,
+                    msg=f"Updated range upper for MuJoCo joint {mjc_idx} (Newton DOF {newton_dof_idx}) in world {world_idx}",
+                )
+
+        # Verify that the values changed from initial
+        for world_idx in range(self.model.num_worlds):
+            for _i, (_mjc_idx, newton_dof_idx) in enumerate(
+                zip(mjc_revolute_indices, newton_revolute_dof_indices, strict=False)
+            ):
+                global_dof_idx = world_idx * dofs_per_world + newton_dof_idx
+                initial_lower = initial_limit_lower[global_dof_idx]
+                initial_upper = initial_limit_upper[global_dof_idx]
+                updated_lower = updated_limit_lower[global_dof_idx]
+                updated_upper = updated_limit_upper[global_dof_idx]
+
+                # Verify values actually changed
+                self.assertNotAlmostEqual(
+                    initial_lower,
+                    updated_lower,
+                    places=5,
+                    msg=f"Range lower should have changed for Newton DOF {newton_dof_idx} in world {world_idx}",
+                )
+                self.assertNotAlmostEqual(
+                    initial_upper,
+                    updated_upper,
+                    places=5,
+                    msg=f"Range upper should have changed for Newton DOF {newton_dof_idx} in world {world_idx}",
+                )
+
 
 class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
     def test_geom_property_conversion(self):
