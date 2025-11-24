@@ -223,8 +223,14 @@ The following example creates bodies and shapes with custom attribute values:
 For joints, Newton provides three frequency types to store different granularities of data. The system determines how to process attribute values based on the declared frequency:
 
 * **JOINT frequency** → One value per joint
-* **JOINT_DOF frequency** → List of values with one per degree of freedom
-* **JOINT_COORD frequency** → List of values with one per position coordinate
+* **JOINT_DOF frequency** → Values per degree of freedom (list, dict, or scalar for single-DOF joints)
+* **JOINT_COORD frequency** → Values per position coordinate (list, dict, or scalar for single-coordinate joints)
+
+For ``JOINT_DOF`` and ``JOINT_COORD`` frequencies, values can be provided in three formats:
+
+1. **List format**: Explicit values for all DOFs/coordinates (e.g., ``[100.0, 200.0]`` for 2-DOF joint)
+2. **Dict format**: Sparse specification mapping indices to values (e.g., ``{0: 100.0, 2: 300.0}`` sets only DOF 0 and 2)
+3. **Scalar format**: Single value for single-DOF/single-coordinate joints, automatically expanded to a list
 
 The following example demonstrates declaring and authoring attributes for each joint frequency type:
 
@@ -267,6 +273,32 @@ The following example demonstrates declaring and authoring attributes for each j
            "int_attr": 5,                      # JOINT frequency: single value
            "float_attr_dof": [100.0, 200.0],   # JOINT_DOF frequency: list with 2 values (one per DOF)
            "float_attr_coord": [0.5, 0.7],     # JOINT_COORD frequency: list with 2 values (one per coordinate)
+       }
+   )
+   
+   # Scalar format for single-DOF joints (automatically expanded to list)
+   parent2 = builder.add_body(mass=1.0)
+   child2 = builder.add_body(mass=1.0)
+   revolute_joint = builder.add_joint_revolute(
+       parent=parent2,
+       child=child2,
+       axis=[0, 0, 1],
+       custom_attributes={
+           "float_attr_dof": 150.0,    # Scalar for 1-DOF joint (expanded to [150.0])
+           "float_attr_coord": 0.8,    # Scalar for 1-coord joint (expanded to [0.8])
+       }
+   )
+   
+   # Dict format for sparse specification (only set specific DOF/coord indices)
+   parent3 = builder.add_body(mass=1.0)
+   child3 = builder.add_body(mass=1.0)
+   d6_joint = builder.add_joint_d6(
+       parent=parent3,
+       child=child3,
+       linear_axes=[cfg(axis=[1, 0, 0]), cfg(axis=[0, 1, 0])],  # 2 linear DOFs
+       angular_axes=[cfg(axis=[0, 0, 1])],                      # 1 angular DOF
+       custom_attributes={
+           "float_attr_dof": {0: 100.0, 2: 300.0},  # Dict: only DOF 0 and 2 specified
        }
    )
 
