@@ -162,6 +162,9 @@ class ModelBuilder:
         """The coefficient of restitution."""
         thickness: float = 1e-5
         """The thickness of the shape."""
+        contact_margin: float | None = None
+        """The contact margin for collision detection. If None, uses builder.rigid_contact_margin as default.
+        Note: contact_margin should be >= thickness for proper collision detection."""
         is_solid: bool = True
         """Indicates whether the shape is solid or hollow. Defaults to True."""
         collision_group: int = 1
@@ -174,6 +177,24 @@ class ModelBuilder:
         """Whether the shape can collide with particles. Defaults to True."""
         is_visible: bool = True
         """Indicates whether the shape is visible in the simulation. Defaults to True."""
+        is_site: bool = False
+        """Indicates whether the shape is a site (non-colliding reference point). Directly setting this to True will NOT enforce site invariants. Use `mark_as_site()` or set via the `flags` property to ensure invariants. Defaults to False."""
+
+        def mark_as_site(self) -> None:
+            """Marks this shape as a site and enforces all site invariants.
+
+            Sets:
+            - is_site = True
+            - has_shape_collision = False
+            - has_particle_collision = False
+            - density = 0.0
+            - collision_group = 0
+            """
+            self.is_site = True
+            self.has_shape_collision = False
+            self.has_particle_collision = False
+            self.density = 0.0
+            self.collision_group = 0
 
         @property
         def flags(self) -> int:
@@ -182,6 +203,7 @@ class ModelBuilder:
             shape_flags = ShapeFlags.VISIBLE if self.is_visible else 0
             shape_flags |= ShapeFlags.COLLIDE_SHAPES if self.has_shape_collision else 0
             shape_flags |= ShapeFlags.COLLIDE_PARTICLES if self.has_particle_collision else 0
+            shape_flags |= ShapeFlags.SITE if self.is_site else 0
             return shape_flags
 
         @flags.setter
@@ -189,8 +211,22 @@ class ModelBuilder:
             """Sets the flags for the shape."""
 
             self.is_visible = bool(value & ShapeFlags.VISIBLE)
-            self.has_shape_collision = bool(value & ShapeFlags.COLLIDE_SHAPES)
-            self.has_particle_collision = bool(value & ShapeFlags.COLLIDE_PARTICLES)
+
+            # Check if SITE flag is being set
+            is_site_flag = bool(value & ShapeFlags.SITE)
+
+            if is_site_flag:
+                # Use mark_as_site() to enforce invariants
+                self.mark_as_site()
+                # Collision flags will be cleared by mark_as_site()
+            else:
+                # SITE flag is being cleared - restore non-site defaults
+                defaults = self.__class__()
+                self.is_site = False
+                self.density = defaults.density
+                self.collision_group = defaults.collision_group
+                self.has_shape_collision = bool(value & ShapeFlags.COLLIDE_SHAPES)
+                self.has_particle_collision = bool(value & ShapeFlags.COLLIDE_PARTICLES)
 
         def copy(self) -> ModelBuilder.ShapeConfig:
             return copy.copy(self)
@@ -447,6 +483,7 @@ class ModelBuilder:
         self.shape_material_ka = []
         self.shape_material_mu = []
         self.shape_material_restitution = []
+        self.shape_contact_margin = []
         # collision groups within collisions are handled
         self.shape_collision_group = []
         # radius to use for broadphase collision checking
@@ -702,11 +739,15 @@ class ModelBuilder:
 
         Joint attributes are processed based on their declared frequency:
         - JOINT frequency: Single value per joint
-        - JOINT_DOF frequency: List of values with length equal to joint DOF count
-        - JOINT_COORD frequency: List of values with length equal to joint coordinate count
+        - JOINT_DOF frequency: List or dict of values for each DOF
+        - JOINT_COORD frequency: List or dict of values for each coordinate
 
-        For DOF and COORD attributes, values must always be provided as lists with length
-        matching the joint's DOF or coordinate count.
+        For DOF and COORD attributes, values can be:
+        - A list with length matching the joint's DOF/coordinate count (all DOFs get values)
+        - A dict mapping DOF/coord indices to values (only specified indices get values, rest use defaults)
+        - For single-DOF joints with JOINT_DOF frequency: a single Warp vector/matrix value
+
+        When using dict format, unspecified indices will be filled with the attribute's default value during finalization.
 
         Args:
             joint_index: Index of the joint
@@ -731,7 +772,7 @@ class ModelBuilder:
                 )
 
             elif custom_attr.frequency == ModelAttributeFrequency.JOINT_DOF:
-                # List of values, one per DOF
+                # Values per DOF - can be list or dict
                 dof_start = self.joint_qd_start[joint_index]
                 if joint_index + 1 < len(self.joint_qd_start):
                     dof_end = self.joint_qd_start[joint_index + 1]
@@ -740,27 +781,45 @@ class ModelBuilder:
 
                 dof_count = dof_end - dof_start
 
-                if not isinstance(value, (list, tuple)):
-                    raise TypeError(
-                        f"JOINT_DOF attribute '{attr_key}' must be a list with length equal to joint DOF count ({dof_count})"
-                    )
+                # Check if value is a dict (mapping DOF index to value)
+                if isinstance(value, dict):
+                    # Dict format: only specified DOF indices have values, rest use defaults
+                    for dof_offset, dof_value in value.items():
+                        if not isinstance(dof_offset, int):
+                            raise TypeError(
+                                f"JOINT_DOF attribute '{attr_key}' dict keys must be integers (DOF indices), got {type(dof_offset)}"
+                            )
+                        if dof_offset < 0 or dof_offset >= dof_count:
+                            raise ValueError(
+                                f"JOINT_DOF attribute '{attr_key}' has invalid DOF index {dof_offset} (joint has {dof_count} DOFs)"
+                            )
+                        single_attr = {attr_key: dof_value}
+                        self._process_custom_attributes(
+                            entity_index=dof_start + dof_offset,
+                            custom_attrs=single_attr,
+                            expected_frequency=ModelAttributeFrequency.JOINT_DOF,
+                        )
+                else:
+                    # List format or single value for single-DOF joints
+                    value_sanitized = value
+                    if not isinstance(value_sanitized, (list, tuple)) and dof_count == 1:
+                        value_sanitized = [value_sanitized]
 
-                if len(value) != dof_count:
-                    raise ValueError(
-                        f"JOINT_DOF attribute '{attr_key}' has {len(value)} values but joint has {dof_count} DOFs"
-                    )
+                    actual = len(value_sanitized)
+                    if actual != dof_count:
+                        raise ValueError(f"JOINT_DOF '{attr_key}': got {actual}, expected {dof_count}")
 
-                # Apply each value to its corresponding DOF
-                for i, dof_value in enumerate(value):
-                    single_attr = {attr_key: dof_value}
-                    self._process_custom_attributes(
-                        entity_index=dof_start + i,
-                        custom_attrs=single_attr,
-                        expected_frequency=ModelAttributeFrequency.JOINT_DOF,
-                    )
+                    # Apply each value to its corresponding DOF
+                    for i, dof_value in enumerate(value_sanitized):
+                        single_attr = {attr_key: dof_value}
+                        self._process_custom_attributes(
+                            entity_index=dof_start + i,
+                            custom_attrs=single_attr,
+                            expected_frequency=ModelAttributeFrequency.JOINT_DOF,
+                        )
 
             elif custom_attr.frequency == ModelAttributeFrequency.JOINT_COORD:
-                # List of values, one per coordinate
+                # Values per coordinate - can be list or dict
                 coord_start = self.joint_q_start[joint_index]
                 if joint_index + 1 < len(self.joint_q_start):
                     coord_end = self.joint_q_start[joint_index + 1]
@@ -769,29 +828,66 @@ class ModelBuilder:
 
                 coord_count = coord_end - coord_start
 
-                if not isinstance(value, (list, tuple)):
-                    raise TypeError(
-                        f"JOINT_COORD attribute '{attr_key}' must be a list with length equal to joint coordinate count ({coord_count})"
-                    )
+                # Check if value is a dict (mapping coord index to value)
+                if isinstance(value, dict):
+                    # Dict format: only specified coord indices have values, rest use defaults
+                    for coord_offset, coord_value in value.items():
+                        if not isinstance(coord_offset, int):
+                            raise TypeError(
+                                f"JOINT_COORD attribute '{attr_key}' dict keys must be integers (coord indices), got {type(coord_offset)}"
+                            )
+                        if coord_offset < 0 or coord_offset >= coord_count:
+                            raise ValueError(
+                                f"JOINT_COORD attribute '{attr_key}' has invalid coord index {coord_offset} (joint has {coord_count} coordinates)"
+                            )
+                        single_attr = {attr_key: coord_value}
+                        self._process_custom_attributes(
+                            entity_index=coord_start + coord_offset,
+                            custom_attrs=single_attr,
+                            expected_frequency=ModelAttributeFrequency.JOINT_COORD,
+                        )
+                else:
+                    # List format or single value for single-coordinate joints
+                    value_sanitized = value
+                    if not isinstance(value_sanitized, (list, tuple)) and coord_count == 1:
+                        value_sanitized = [value_sanitized]
 
-                if len(value) != coord_count:
-                    raise ValueError(
-                        f"JOINT_COORD attribute '{attr_key}' has {len(value)} values but joint has {coord_count} coordinates"
-                    )
+                    if len(value_sanitized) != coord_count:
+                        raise ValueError(
+                            f"JOINT_COORD attribute '{attr_key}' has {len(value_sanitized)} values but joint has {coord_count} coordinates"
+                        )
 
-                # Apply each value to its corresponding coordinate
-                for i, coord_value in enumerate(value):
-                    single_attr = {attr_key: coord_value}
-                    self._process_custom_attributes(
-                        entity_index=coord_start + i,
-                        custom_attrs=single_attr,
-                        expected_frequency=ModelAttributeFrequency.JOINT_COORD,
-                    )
+                    # Apply each value to its corresponding coordinate
+                    for i, coord_value in enumerate(value_sanitized):
+                        single_attr = {attr_key: coord_value}
+                        self._process_custom_attributes(
+                            entity_index=coord_start + i,
+                            custom_attrs=single_attr,
+                            expected_frequency=ModelAttributeFrequency.JOINT_COORD,
+                        )
 
             else:
                 raise ValueError(
                     f"Custom attribute '{attr_key}' has unsupported frequency {custom_attr.frequency} for joints"
                 )
+
+    @property
+    def default_site_cfg(self) -> ShapeConfig:
+        """Returns a ShapeConfig configured for sites (non-colliding reference points).
+
+        This config has all site invariants enforced:
+        - is_site = True
+        - has_shape_collision = False
+        - has_particle_collision = False
+        - density = 0.0
+        - collision_group = 0
+
+        Returns:
+            ShapeConfig: A new configuration suitable for creating sites.
+        """
+        cfg = self.ShapeConfig()
+        cfg.mark_as_site()
+        return cfg
 
     @property
     def up_vector(self) -> Vec3:
@@ -1024,7 +1120,8 @@ class ModelBuilder:
         joint_ordering: Literal["bfs", "dfs"] | None = "dfs",
         bodies_follow_joint_ordering: bool = True,
         skip_mesh_approximation: bool = False,
-        load_non_physics_prims: bool = True,
+        load_sites: bool = True,
+        load_visual_shapes: bool = True,
         hide_collision_shapes: bool = False,
         mesh_maxhullvert: int = MESH_MAXHULLVERT,
         schema_resolvers: list[SchemaResolver] | None = None,
@@ -1052,7 +1149,8 @@ class ModelBuilder:
             joint_ordering (str): The ordering of the joints in the simulation. Can be either "bfs" or "dfs" for breadth-first or depth-first search, or ``None`` to keep joints in the order in which they appear in the USD. Default is "dfs".
             bodies_follow_joint_ordering (bool): If True, the bodies are added to the builder in the same order as the joints (parent then child body). Otherwise, bodies are added in the order they appear in the USD. Default is True.
             skip_mesh_approximation (bool): If True, mesh approximation is skipped. Otherwise, meshes are approximated according to the ``physics:approximation`` attribute defined on the UsdPhysicsMeshCollisionAPI (if it is defined). Default is False.
-            load_non_physics_prims (bool): If True, prims that are children of a rigid body that do not have a UsdPhysics schema applied are loaded as visual shapes in a separate pass (may slow down the loading process). Otherwise, non-physics prims are ignored. Default is True.
+            load_sites (bool): If True, sites (prims with MjcSiteAPI) are loaded as non-colliding reference points. If False, sites are ignored. Default is True.
+            load_visual_shapes (bool): If True, non-physics visual geometry is loaded. If False, visual-only shapes are ignored (sites are still controlled by ``load_sites``). Default is True.
             hide_collision_shapes (bool): If True, collision shapes are hidden. Default is False.
             mesh_maxhullvert (int): Maximum vertices for convex hull approximation of meshes.
             schema_resolvers (list[SchemaResolver]): Resolver instances in priority order. Default is no schema resolution.
@@ -1122,7 +1220,8 @@ class ModelBuilder:
             joint_ordering,
             bodies_follow_joint_ordering,
             skip_mesh_approximation,
-            load_non_physics_prims,
+            load_sites,
+            load_visual_shapes,
             hide_collision_shapes,
             mesh_maxhullvert,
             schema_resolvers,
@@ -1139,6 +1238,8 @@ class ModelBuilder:
         hide_visuals: bool = False,
         parse_visuals_as_colliders: bool = False,
         parse_meshes: bool = True,
+        parse_sites: bool = True,
+        parse_visuals: bool = True,
         up_axis: AxisType = Axis.Z,
         ignore_names: Sequence[str] = (),
         ignore_classes: Sequence[str] = (),
@@ -1165,9 +1266,11 @@ class ModelBuilder:
             base_joint (Union[str, dict]): The joint by which the root body is connected to the world. This can be either a string defining the joint axes of a D6 joint with comma-separated positional and angular axis names (e.g. "px,py,rz" for a D6 joint with linear axes in x, y and an angular axis in z) or a dict with joint parameters (see :meth:`ModelBuilder.add_joint`).
             armature_scale (float): Scaling factor to apply to the MJCF-defined joint armature values.
             scale (float): The scaling factor to apply to the imported mechanism.
-            hide_visuals (bool): If True, hide visual shapes.
+            hide_visuals (bool): If True, hide visual shapes after loading them (affects visibility, not loading).
             parse_visuals_as_colliders (bool): If True, the geometry defined under the `visual_classes` tags is used for collision handling instead of the `collider_classes` geometries.
             parse_meshes (bool): Whether geometries of type `"mesh"` should be parsed. If False, geometries of type `"mesh"` are ignored.
+            parse_sites (bool): Whether sites (non-colliding reference points) should be parsed. If False, sites are ignored.
+            parse_visuals (bool): Whether visual geometries (non-collision shapes) should be loaded. If False, visual shapes are not loaded (different from `hide_visuals` which loads but hides them). Default is True.
             up_axis (AxisType): The up axis of the MuJoCo scene. The default is Z up.
             ignore_names (Sequence[str]): A list of regular expressions. Bodies and joints with a name matching one of the regular expressions will be ignored.
             ignore_classes (Sequence[str]): A list of regular expressions. Bodies and joints with a class matching one of the regular expressions will be ignored.
@@ -1197,6 +1300,8 @@ class ModelBuilder:
             hide_visuals,
             parse_visuals_as_colliders,
             parse_meshes,
+            parse_sites,
+            parse_visuals,
             up_axis,
             ignore_names,
             ignore_classes,
@@ -1452,6 +1557,7 @@ class ModelBuilder:
             "shape_material_mu",
             "shape_material_restitution",
             "shape_collision_radius",
+            "shape_contact_margin",
             "particle_qd",
             "particle_mass",
             "particle_radius",
@@ -1659,7 +1765,7 @@ class ModelBuilder:
             child_xform (Transform): The transform of the joint in the child body's local frame. If None, the identity transform is used.
             collision_filter_parent (bool): Whether to filter collisions between shapes of the parent and child bodies.
             enabled (bool): Whether the joint is enabled (not considered by :class:`SolverFeatherstone`).
-            custom_attributes: Dictionary of custom attribute keys (see :attr:`CustomAttribute.key`) to values. Note that custom attributes with frequency :attr:`ModelAttributeFrequency.JOINT_DOF` or :attr:`ModelAttributeFrequency.JOINT_COORD` require the respective values to be provided as lists with length equal to the joint's DOF or coordinate count. Custom attributes with frequency :attr:`ModelAttributeFrequency.JOINT` require a single value to be defined.
+            custom_attributes: Dictionary of custom attribute keys (see :attr:`CustomAttribute.key`) to values. Note that custom attributes with frequency :attr:`ModelAttributeFrequency.JOINT_DOF` or :attr:`ModelAttributeFrequency.JOINT_COORD` can be provided as: (1) lists with length equal to the joint's DOF or coordinate count, (2) dicts mapping DOF/coordinate indices to values, or (3) scalar values for single-DOF/single-coordinate joints (automatically expanded to lists). Custom attributes with frequency :attr:`ModelAttributeFrequency.JOINT` require a single value to be defined.
 
         Returns:
             The index of the added joint.
@@ -2842,6 +2948,36 @@ class ModelBuilder:
             cfg = self.default_shape_cfg
         if scale is None:
             scale = (1.0, 1.0, 1.0)
+
+        # Validate site invariants
+        if cfg.is_site:
+            shape_key = key or f"shape_{self.shape_count}"
+
+            # Sites must not have collision enabled
+            if cfg.has_shape_collision or cfg.has_particle_collision:
+                raise ValueError(
+                    f"Site shape '{shape_key}' cannot have collision enabled. "
+                    f"Sites must be non-colliding reference points. "
+                    f"has_shape_collision={cfg.has_shape_collision}, "
+                    f"has_particle_collision={cfg.has_particle_collision}"
+                )
+
+            # Sites must have zero density (no mass contribution)
+            if cfg.density != 0.0:
+                raise ValueError(
+                    f"Site shape '{shape_key}' must have zero density. "
+                    f"Sites do not contribute to body mass. "
+                    f"Got density={cfg.density}"
+                )
+
+            # Sites must have collision group 0 (no collision filtering)
+            if cfg.collision_group != 0:
+                raise ValueError(
+                    f"Site shape '{shape_key}' must have collision_group=0. "
+                    f"Sites do not participate in collision detection. "
+                    f"Got collision_group={cfg.collision_group}"
+                )
+
         self.shape_body.append(body)
         shape = self.shape_count
         if cfg.has_shape_collision:
@@ -2863,6 +2999,9 @@ class ModelBuilder:
         self.shape_material_ka.append(cfg.ka)
         self.shape_material_mu.append(cfg.mu)
         self.shape_material_restitution.append(cfg.restitution)
+        self.shape_contact_margin.append(
+            cfg.contact_margin if cfg.contact_margin is not None else self.rigid_contact_margin
+        )
         self.shape_collision_group.append(cfg.collision_group)
         self.shape_collision_radius.append(compute_shape_radius(type, scale, src))
         self.shape_world.append(self.current_world)
@@ -2971,25 +3110,30 @@ class ModelBuilder:
         xform: Transform | None = None,
         radius: float = 1.0,
         cfg: ShapeConfig | None = None,
+        as_site: bool = False,
         key: str | None = None,
         custom_attributes: dict[str, Any] | None = None,
     ) -> int:
-        """Adds a sphere collision shape to a body.
+        """Adds a sphere collision shape or site to a body.
 
         Args:
             body (int): The index of the parent body this shape belongs to. Use -1 for shapes not attached to any specific body.
             xform (Transform | None): The transform of the sphere in the parent body's local frame. The sphere is centered at this transform's position. If `None`, the identity transform `wp.transform()` is used. Defaults to `None`.
             radius (float): The radius of the sphere. Defaults to `1.0`.
-            cfg (ShapeConfig | None): The configuration for the shape's physical and collision properties. If `None`, :attr:`default_shape_cfg` is used. Defaults to `None`.
+            cfg (ShapeConfig | None): The configuration for the shape's properties. If `None`, uses :attr:`default_shape_cfg` (or :attr:`default_site_cfg` when `as_site=True`). If `as_site=True` and `cfg` is provided, a copy is made and site invariants are enforced via `mark_as_site()`. Defaults to `None`.
+            as_site (bool): If `True`, creates a site (non-colliding reference point) instead of a collision shape. Defaults to `False`.
             key (str | None): An optional unique key for identifying the shape. If `None`, a default key is automatically generated. Defaults to `None`.
             custom_attributes: Dictionary of custom attribute names to values.
 
         Returns:
-            int: The index of the newly added shape.
+            int: The index of the newly added shape or site.
         """
-
         if cfg is None:
-            cfg = self.default_shape_cfg
+            cfg = self.default_site_cfg if as_site else self.default_shape_cfg
+        elif as_site:
+            cfg = cfg.copy()
+            cfg.mark_as_site()
+
         scale: Any = wp.vec3(radius, 0.0, 0.0)
         return self.add_shape(
             body=body,
@@ -3009,10 +3153,11 @@ class ModelBuilder:
         hy: float = 0.5,
         hz: float = 0.5,
         cfg: ShapeConfig | None = None,
+        as_site: bool = False,
         key: str | None = None,
         custom_attributes: dict[str, Any] | None = None,
     ) -> int:
-        """Adds a box collision shape to a body.
+        """Adds a box collision shape or site to a body.
 
         The box is centered at its local origin as defined by `xform`.
 
@@ -3022,16 +3167,20 @@ class ModelBuilder:
             hx (float): The half-extent of the box along its local X-axis. Defaults to `0.5`.
             hy (float): The half-extent of the box along its local Y-axis. Defaults to `0.5`.
             hz (float): The half-extent of the box along its local Z-axis. Defaults to `0.5`.
-            cfg (ShapeConfig | None): The configuration for the shape's physical and collision properties. If `None`, :attr:`default_shape_cfg` is used. Defaults to `None`.
+            cfg (ShapeConfig | None): The configuration for the shape's properties. If `None`, uses :attr:`default_shape_cfg` (or :attr:`default_site_cfg` when `as_site=True`). If `as_site=True` and `cfg` is provided, a copy is made and site invariants are enforced via `mark_as_site()`. Defaults to `None`.
+            as_site (bool): If `True`, creates a site (non-colliding reference point) instead of a collision shape. Defaults to `False`.
             key (str | None): An optional unique key for identifying the shape. If `None`, a default key is automatically generated. Defaults to `None`.
             custom_attributes: Dictionary of custom attribute names to values.
 
         Returns:
-            int: The index of the newly added shape.
+            int: The index of the newly added shape or site.
         """
-
         if cfg is None:
-            cfg = self.default_shape_cfg
+            cfg = self.default_site_cfg if as_site else self.default_shape_cfg
+        elif as_site:
+            cfg = cfg.copy()
+            cfg.mark_as_site()
+
         scale = wp.vec3(hx, hy, hz)
         return self.add_shape(
             body=body, type=GeoType.BOX, xform=xform, cfg=cfg, scale=scale, key=key, custom_attributes=custom_attributes
@@ -3044,10 +3193,11 @@ class ModelBuilder:
         radius: float = 1.0,
         half_height: float = 0.5,
         cfg: ShapeConfig | None = None,
+        as_site: bool = False,
         key: str | None = None,
         custom_attributes: dict[str, Any] | None = None,
     ) -> int:
-        """Adds a capsule collision shape to a body.
+        """Adds a capsule collision shape or site to a body.
 
         The capsule is centered at its local origin as defined by `xform`. Its length extends along the Z-axis.
 
@@ -3056,21 +3206,25 @@ class ModelBuilder:
             xform (Transform | None): The transform of the capsule in the parent body's local frame. If `None`, the identity transform `wp.transform()` is used. Defaults to `None`.
             radius (float): The radius of the capsule's hemispherical ends and its cylindrical segment. Defaults to `1.0`.
             half_height (float): The half-length of the capsule's central cylindrical segment (excluding the hemispherical ends). Defaults to `0.5`.
-            cfg (ShapeConfig | None): The configuration for the shape's physical and collision properties. If `None`, :attr:`default_shape_cfg` is used. Defaults to `None`.
+            cfg (ShapeConfig | None): The configuration for the shape's properties. If `None`, uses :attr:`default_shape_cfg` (or :attr:`default_site_cfg` when `as_site=True`). If `as_site=True` and `cfg` is provided, a copy is made and site invariants are enforced via `mark_as_site()`. Defaults to `None`.
+            as_site (bool): If `True`, creates a site (non-colliding reference point) instead of a collision shape. Defaults to `False`.
             key (str | None): An optional unique key for identifying the shape. If `None`, a default key is automatically generated. Defaults to `None`.
             custom_attributes: Dictionary of custom attribute names to values.
 
         Returns:
-            int: The index of the newly added shape.
+            int: The index of the newly added shape or site.
         """
+        if cfg is None:
+            cfg = self.default_site_cfg if as_site else self.default_shape_cfg
+        elif as_site:
+            cfg = cfg.copy()
+            cfg.mark_as_site()
 
         if xform is None:
             xform = wp.transform()
         else:
             xform = wp.transform(*xform)
 
-        if cfg is None:
-            cfg = self.default_shape_cfg
         scale = wp.vec3(radius, half_height, 0.0)
         return self.add_shape(
             body=body,
@@ -3089,10 +3243,11 @@ class ModelBuilder:
         radius: float = 1.0,
         half_height: float = 0.5,
         cfg: ShapeConfig | None = None,
+        as_site: bool = False,
         key: str | None = None,
         custom_attributes: dict[str, Any] | None = None,
     ) -> int:
-        """Adds a cylinder collision shape to a body.
+        """Adds a cylinder collision shape or site to a body.
 
         The cylinder is centered at its local origin as defined by `xform`. Its length extends along the Z-axis.
 
@@ -3101,21 +3256,25 @@ class ModelBuilder:
             xform (Transform | None): The transform of the cylinder in the parent body's local frame. If `None`, the identity transform `wp.transform()` is used. Defaults to `None`.
             radius (float): The radius of the cylinder. Defaults to `1.0`.
             half_height (float): The half-length of the cylinder along the Z-axis. Defaults to `0.5`.
-            cfg (ShapeConfig | None): The configuration for the shape's physical and collision properties. If `None`, :attr:`default_shape_cfg` is used. Defaults to `None`.
+            cfg (ShapeConfig | None): The configuration for the shape's properties. If `None`, uses :attr:`default_shape_cfg` (or :attr:`default_site_cfg` when `as_site=True`). If `as_site=True` and `cfg` is provided, a copy is made and site invariants are enforced via `mark_as_site()`. Defaults to `None`.
+            as_site (bool): If `True`, creates a site (non-colliding reference point) instead of a collision shape. Defaults to `False`.
             key (str | None): An optional unique key for identifying the shape. If `None`, a default key is automatically generated. Defaults to `None`.
             custom_attributes: Dictionary of custom attribute values for SHAPE frequency attributes.
 
         Returns:
-            int: The index of the newly added shape.
+            int: The index of the newly added shape or site.
         """
+        if cfg is None:
+            cfg = self.default_site_cfg if as_site else self.default_shape_cfg
+        elif as_site:
+            cfg = cfg.copy()
+            cfg.mark_as_site()
 
         if xform is None:
             xform = wp.transform()
         else:
             xform = wp.transform(*xform)
 
-        if cfg is None:
-            cfg = self.default_shape_cfg
         scale = wp.vec3(radius, half_height, 0.0)
         return self.add_shape(
             body=body,
@@ -3134,6 +3293,7 @@ class ModelBuilder:
         radius: float = 1.0,
         half_height: float = 0.5,
         cfg: ShapeConfig | None = None,
+        as_site: bool = False,
         key: str | None = None,
         custom_attributes: dict[str, Any] | None = None,
     ) -> int:
@@ -3148,20 +3308,24 @@ class ModelBuilder:
             radius (float): The radius of the cone's base. Defaults to `1.0`.
             half_height (float): The half-height of the cone (distance from the geometric center to either the base or apex). The total height is 2*half_height. Defaults to `0.5`.
             cfg (ShapeConfig | None): The configuration for the shape's physical and collision properties. If `None`, :attr:`default_shape_cfg` is used. Defaults to `None`.
+            as_site (bool): If `True`, creates a site (non-colliding reference point) instead of a collision shape. Defaults to `False`.
             key (str | None): An optional unique key for identifying the shape. If `None`, a default key is automatically generated. Defaults to `None`.
             custom_attributes: Dictionary of custom attribute values for SHAPE frequency attributes.
 
         Returns:
             int: The index of the newly added shape.
         """
+        if cfg is None:
+            cfg = self.default_site_cfg if as_site else self.default_shape_cfg
+        elif as_site:
+            cfg = cfg.copy()
+            cfg.mark_as_site()
 
         if xform is None:
             xform = wp.transform()
         else:
             xform = wp.transform(*xform)
 
-        if cfg is None:
-            cfg = self.default_shape_cfg
         scale = wp.vec3(radius, half_height, 0.0)
         return self.add_shape(
             body=body,
@@ -3278,6 +3442,62 @@ class ModelBuilder:
             scale=scale,
             src=mesh,
             key=key,
+        )
+
+    def add_site(
+        self,
+        body: int,
+        xform: Transform | None = None,
+        type: int = GeoType.SPHERE,
+        scale: Vec3 = (0.01, 0.01, 0.01),
+        key: str | None = None,
+        visible: bool = False,
+        custom_attributes: dict[str, Any] | None = None,
+    ) -> int:
+        """Adds a site (non-colliding reference point) to a body.
+
+        Sites are abstract markers that don't participate in physics simulation or collision detection.
+        They are useful for:
+        - Sensor attachment points (IMU, camera, etc.)
+        - Frame of reference definitions
+        - Debugging and visualization markers
+        - Spatial tendon attachment points (when exported to MuJoCo)
+
+        Args:
+            body (int): The index of the parent body this site belongs to. Use -1 for sites not attached to any specific body (for sites defined a at static world position).
+            xform (Transform | None): The transform of the site in the parent body's local frame. If `None`, the identity transform `wp.transform()` is used. Defaults to `None`.
+            type (int): The geometry type for visualization (e.g., `GeoType.SPHERE`, `GeoType.BOX`). Defaults to `GeoType.SPHERE`.
+            scale (Vec3): The scale/size of the site for visualization. Defaults to `(0.01, 0.01, 0.01)`.
+            key (str | None): An optional unique key for identifying the site. If `None`, a default key is automatically generated. Defaults to `None`.
+            visible (bool): If True, the site will be visible for debugging. If False (default), the site is hidden.
+            custom_attributes: Dictionary of custom attribute names to values.
+
+        Returns:
+            int: The index of the newly added site (which is stored as a shape internally).
+
+        Example:
+            Add an IMU sensor site to a robot torso::
+
+                body = builder.add_body()
+                imu_site = builder.add_site(
+                    body,
+                    xform=wp.transform((0.0, 0.0, 0.1), wp.quat_identity()),
+                    key="imu_sensor",
+                    visible=True,  # Show for debugging
+                )
+        """
+        # Create config for non-colliding site
+        cfg = self.default_site_cfg.copy()
+        cfg.is_visible = visible
+
+        return self.add_shape(
+            body=body,
+            type=type,
+            xform=xform,
+            cfg=cfg,
+            scale=scale,
+            key=key,
+            custom_attributes=custom_attributes,
         )
 
     def approximate_meshes(
@@ -4711,6 +4931,7 @@ class ModelBuilder:
             m.shape_material_restitution = wp.array(
                 self.shape_material_restitution, dtype=wp.float32, requires_grad=requires_grad
             )
+            m.shape_contact_margin = wp.array(self.shape_contact_margin, dtype=wp.float32, requires_grad=requires_grad)
 
             m.shape_collision_filter_pairs = set(self.shape_collision_filter_pairs)
             m.shape_collision_group = wp.array(self.shape_collision_group, dtype=wp.int32)

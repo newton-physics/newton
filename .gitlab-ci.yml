@@ -168,7 +168,7 @@ build_package:
     paths:
       - public
   script:
-    - uv run --extra docs sphinx-build -W -b html docs docs/_build/html
+    - uv run --extra docs --extra sim sphinx-build -W -b html docs docs/_build/html
     - mv docs/_build/html/ ./public/
 
 # Merge requests: Build documentation and save as an artifact
@@ -195,7 +195,7 @@ doctest:
   extends:
     - .ipp_lnx_x86_64_gpu
   script:
-    - uv run --extra docs sphinx-build -W -b doctest docs docs/_build/doctest
+    - uv run --extra docs --extra sim sphinx-build -W -b doctest docs docs/_build/doctest
 
 # Build documentation and publish on gitlab-master
 # This only runs in the default branch pipeline. The "pages" name is special for GitLab.

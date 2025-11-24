@@ -96,6 +96,11 @@ ROBOT_CONFIGS = {
         "njmax": 3800,
         "nconmax": 900,
     },
+    "tabletop": {
+        "setup_builder": lambda x: _setup_tabletop(x),
+        "njmax": 100,
+        "nconmax": 20,
+    },
 }
 
 
@@ -104,6 +109,7 @@ def _setup_humanoid(articulation_builder):
         newton.examples.get_asset("nv_humanoid.xml"),
         ignore_names=["floor", "ground"],
         up_axis="Z",
+        parse_sites=False,  # AD: remove once asset is fixed
     )
 
     # Setting root pose
@@ -160,7 +166,6 @@ def _setup_h1(articulation_builder):
         ignore_paths=["/GroundPlane"],
         collapse_fixed_joints=False,
         enable_self_collisions=False,
-        load_non_physics_prims=True,
         hide_collision_shapes=True,
     )
     # approximate meshes for faster collision detection
@@ -234,7 +239,6 @@ def _setup_allegro(articulation_builder):
         xform=wp.transform(wp.vec3(0, 0, 0.5)),
         enable_self_collisions=True,
         ignore_paths=[".*Dummy", ".*CollisionPlane", ".*goal", ".*DexCube/visuals"],
-        load_non_physics_prims=True,
     )
 
     # set joint targets and joint drive gains
@@ -257,6 +261,14 @@ def _setup_kitchen(articulation_builder):
 
     # Change pose of the robot to minimize overlap
     articulation_builder.joint_q[:2] = [1.5, -1.5]
+
+
+def _setup_tabletop(articulation_builder):
+    articulation_builder.add_mjcf(
+        newton.examples.get_asset("tabletop.xml"),
+        collapse_fixed_joints=True,
+        enable_self_collisions=True,
+    )
 
 
 class Example:
@@ -379,6 +391,8 @@ class Example:
         rng = np.random.default_rng(seed)
 
         articulation_builder = newton.ModelBuilder()
+        articulation_builder.default_shape_cfg.ke = 1.0e3
+        articulation_builder.default_shape_cfg.kd = 1.0e2
         newton.solvers.SolverMuJoCo.register_custom_attributes(articulation_builder)
         if robot == "humanoid":
             root_dofs = _setup_humanoid(articulation_builder)
@@ -410,6 +424,8 @@ class Example:
                 builder.joint_q[istart + root_dofs : istart + njoint] = rng.uniform(
                     -1.0, 1.0, size=(njoint - root_dofs)
                 ).tolist()
+        builder.default_shape_cfg.ke = 1.0e3
+        builder.default_shape_cfg.kd = 1.0e2
         builder.add_ground_plane()
         return builder
 

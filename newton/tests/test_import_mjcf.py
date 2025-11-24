@@ -23,6 +23,8 @@ import warp as wp
 import newton
 import newton.examples
 from newton._src.geometry.types import GeoType
+from newton._src.sim.builder import ShapeFlags
+from newton.solvers import SolverMuJoCo
 
 
 class TestImportMjcf(unittest.TestCase):
@@ -38,9 +40,11 @@ class TestImportMjcf(unittest.TestCase):
             ignore_names=["floor", "ground"],
             up_axis="Z",
         )
-        self.assertTrue(all(np.array(builder.shape_material_ke) == 123.0))
-        self.assertTrue(all(np.array(builder.shape_material_kd) == 456.0))
-        self.assertTrue(all(np.array(builder.shape_material_mu) == 789.0))
+        # Filter out sites when checking shape material properties (sites don't have these attributes)
+        non_site_indices = [i for i, flags in enumerate(builder.shape_flags) if not (flags & ShapeFlags.SITE)]
+        self.assertTrue(all(np.array(builder.shape_material_ke)[non_site_indices] == 123.0))
+        self.assertTrue(all(np.array(builder.shape_material_kd)[non_site_indices] == 456.0))
+        self.assertTrue(all(np.array(builder.shape_material_mu)[non_site_indices] == 789.0))
         self.assertTrue(all(np.array(builder.joint_armature[:6]) == 0.0))
         self.assertEqual(
             builder.joint_armature[6:],
@@ -682,9 +686,9 @@ class TestImportMjcf(unittest.TestCase):
             joint_limit_kd = model.joint_limit_kd.numpy()
 
             # Test joint1: standard mode solreflimit="0.03 0.9"
-            # Expected: ke = 1/(0.03^2) = 1111.11..., kd = 2*0.9/0.03 = 60.0
-            expected_ke_1 = 1.0 / (0.03 * 0.03)
-            expected_kd_1 = 2.0 * 0.9 / 0.03
+            # Expected: ke = 1/(0.03^2 * 0.9^2) = 1371.7421..., kd = 2.0/0.03 = 66.(6)
+            expected_ke_1 = 1.0 / (0.03 * 0.03 * 0.9 * 0.9)
+            expected_kd_1 = 2.0 / 0.03
             self.assertAlmostEqual(joint_limit_ke[0], expected_ke_1, places=2)
             self.assertAlmostEqual(joint_limit_kd[0], expected_kd_1, places=2)
 
@@ -694,11 +698,213 @@ class TestImportMjcf(unittest.TestCase):
             self.assertAlmostEqual(joint_limit_kd[1], 1.0, places=2)
 
             # Test joint3: no solreflimit (should use default 0.02, 1.0)
-            # Expected: ke = 1/(0.02^2) = 2500.0, kd = 2*1.0/0.02 = 100.0
-            expected_ke_3 = 1.0 / (0.02 * 0.02)
-            expected_kd_3 = 2.0 * 1.0 / 0.02
+            # Expected: ke = 1/(0.02^2 * 1.0^2) = 2500.0, kd = 2.0/0.02 = 100.0
+            expected_ke_3 = 1.0 / (0.02 * 0.02 * 1.0 * 1.0)
+            expected_kd_3 = 2.0 / 0.02
             self.assertAlmostEqual(joint_limit_ke[2], expected_ke_3, places=2)
             self.assertAlmostEqual(joint_limit_kd[2], expected_kd_3, places=2)
+
+    def test_solimplimit_parsing(self):
+        """Test that solimplimit attribute is parsed correctly from MJCF."""
+        mjcf = """<?xml version="1.0" ?>
+<mujoco>
+    <worldbody>
+        <body name="body1">
+            <joint name="joint1" type="hinge" axis="0 1 0" solimplimit="0.89 0.9 0.01 2.1 1.8" range="-45 45" />
+            <joint name="joint2" type="hinge" axis="1 0 0" range="-30 30" />
+            <geom type="box" size="0.1 0.1 0.1" />
+        </body>
+        <body name="body2">
+            <joint name="joint3" type="hinge" axis="0 0 1" solimplimit="0.8 0.85 0.002 0.6 1.5" range="-90 90" />
+            <geom type="sphere" size="0.05" />
+        </body>
+    </worldbody>
+</mujoco>
+"""
+
+        builder = newton.ModelBuilder()
+
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_mjcf(mjcf)
+        model = builder.finalize()
+
+        # Check if solimplimit custom attribute exists
+        self.assertTrue(hasattr(model, "mujoco"), "Model should have mujoco namespace for custom attributes")
+        self.assertTrue(hasattr(model.mujoco, "solimplimit"), "Model should have solimplimit attribute")
+
+        solimplimit = model.mujoco.solimplimit.numpy()
+
+        # Newton model has only 2 joints because it combines the ones under the same body into a single joint
+        self.assertEqual(model.joint_count, 2, "Should have 2 joints")
+
+        # Find joints by name
+        joint_names = model.joint_key
+        joint1_idx = joint_names.index("joint1_joint2")
+        joint2_idx = joint_names.index("joint3")
+
+        # For the merged joint (joint1_idx), both joint1 and joint2 should be present in the qd array.
+        # We don't know the order, but both expected values should be present at joint1_idx and joint1_idx + 1.
+        joint1_qd_start = model.joint_qd_start.numpy()[joint1_idx]
+        # The joint should have 2 DoFs (since joint1 and joint2 are merged)
+        self.assertEqual(model.joint_dof_dim.numpy()[joint1_idx, 1], 2)
+        expected_joint1 = [0.89, 0.9, 0.01, 2.1, 1.8]  # from joint1
+        expected_joint2 = [0.9, 0.95, 0.001, 0.5, 2.0]  # from joint2 (default values)
+        val_qd_0 = solimplimit[joint1_qd_start, :]
+        val_qd_1 = solimplimit[joint1_qd_start + 1, :]
+
+        # Helper to check if two arrays match within tolerance
+        def arrays_match(arr, expected, tol=1e-4):
+            return all(abs(arr[i] - expected[i]) < tol for i in range(len(expected)))
+
+        # The two DoFs should be exactly one joint1 and one default, in _some_ order
+        if arrays_match(val_qd_0, expected_joint1):
+            self.assertTrue(
+                arrays_match(val_qd_1, expected_joint2), "Second DoF should have default solimplimit values"
+            )
+        elif arrays_match(val_qd_0, expected_joint2):
+            self.assertTrue(
+                arrays_match(val_qd_1, expected_joint1), "Second DoF should have joint1's solimplimit values"
+            )
+        else:
+            self.fail(f"First DoF solimplimit {val_qd_0.tolist()} doesn't match either expected value")
+
+        # Test joint3: explicit solimplimit with different values
+        joint3_qd_start = model.joint_qd_start.numpy()[joint2_idx]
+        expected_joint3 = [0.8, 0.85, 0.002, 0.6, 1.5]
+        for i, expected in enumerate(expected_joint3):
+            self.assertAlmostEqual(
+                solimplimit[joint3_qd_start, i], expected, places=4, msg=f"joint3 solimplimit[{i}] should be {expected}"
+            )
+
+        # Test with MuJoCo solver - verify jnt_solimp values match using the mapping
+        solver = SolverMuJoCo(model, separate_worlds=False)
+
+        # MuJoCo's jnt_solimp should match our solimplimit values
+        jnt_solimp = solver.mjw_model.jnt_solimp.numpy()
+        joint_mjc_dof_start = solver.joint_mjc_dof_start.numpy()
+
+        # For each Newton joint, verify its DOFs map correctly to MuJoCo
+        for newton_joint_idx in range(model.joint_count):
+            mjc_dof_start = joint_mjc_dof_start[newton_joint_idx]
+            newton_dof_start = model.joint_qd_start.numpy()[newton_joint_idx]
+            dof_count = model.joint_dof_dim.numpy()[newton_joint_idx].sum()
+
+            # Check each DOF in this joint
+            for dof_offset in range(dof_count):
+                newton_dof_idx = newton_dof_start + dof_offset
+                mjc_dof_idx = mjc_dof_start + dof_offset
+
+                # Get expected solimplimit from Newton model
+                expected_solimp = solimplimit[newton_dof_idx, :].tolist()
+
+                # Get actual jnt_solimp from MuJoCo
+                actual_solimp = jnt_solimp[0, mjc_dof_idx, :].tolist()
+                # Verify they match
+                self.assertTrue(
+                    arrays_match(actual_solimp, expected_solimp),
+                    f"MuJoCo jnt_solimp[{mjc_dof_idx}] = {actual_solimp} doesn't match "
+                    f"Newton solimplimit[{newton_dof_idx}] = {expected_solimp} "
+                    f"for joint {newton_joint_idx} DOF {dof_offset}",
+                )
+
+    def test_granular_loading_flags(self):
+        """Test granular control over sites and visual shapes loading."""
+        mjcf_filename = newton.examples.get_asset("nv_humanoid.xml")
+
+        # Test 1: Load all (default behavior)
+        builder_all = newton.ModelBuilder()
+        builder_all.add_mjcf(mjcf_filename, ignore_names=["floor", "ground"], up_axis="Z")
+        count_all = builder_all.shape_count
+
+        # Test 2: Load sites only, no visual shapes
+        builder_sites_only = newton.ModelBuilder()
+        builder_sites_only.add_mjcf(
+            mjcf_filename, parse_sites=True, parse_visuals=False, ignore_names=["floor", "ground"], up_axis="Z"
+        )
+        count_sites_only = builder_sites_only.shape_count
+
+        # Test 3: Load visual shapes only, no sites
+        builder_visuals_only = newton.ModelBuilder()
+        builder_visuals_only.add_mjcf(
+            mjcf_filename, parse_sites=False, parse_visuals=True, ignore_names=["floor", "ground"], up_axis="Z"
+        )
+        count_visuals_only = builder_visuals_only.shape_count
+
+        # Test 4: Load neither (physics collision shapes only)
+        builder_physics_only = newton.ModelBuilder()
+        builder_physics_only.add_mjcf(
+            mjcf_filename, parse_sites=False, parse_visuals=False, ignore_names=["floor", "ground"], up_axis="Z"
+        )
+        count_physics_only = builder_physics_only.shape_count
+
+        # Verify behavior
+        # When loading all, should have most shapes
+        self.assertEqual(count_all, 41, "Loading all should give 41 shapes (sites + visuals + collision)")
+
+        # Sites only should have sites + collision shapes
+        self.assertEqual(count_sites_only, 41, "Sites only should give 41 shapes (22 sites + 19 collision)")
+
+        # Visuals only should have collision shapes only (no sites)
+        self.assertEqual(count_visuals_only, 19, "Visuals only should give 19 shapes (collision only, no sites)")
+
+        # Physics only should have collision shapes only
+        self.assertEqual(count_physics_only, 19, "Physics only should give 19 shapes (collision only)")
+
+        # Verify that sites are actually filtered
+        self.assertLess(count_visuals_only, count_all, "Excluding sites should reduce shape count")
+        self.assertLess(count_physics_only, count_all, "Excluding sites and visuals should reduce shape count")
+
+    def test_parse_sites_backward_compatibility(self):
+        """Test that parse_sites parameter works and maintains backward compatibility."""
+        mjcf_filename = newton.examples.get_asset("nv_humanoid.xml")
+
+        # Default (should parse sites)
+        builder1 = newton.ModelBuilder()
+        builder1.add_mjcf(mjcf_filename, ignore_names=["floor", "ground"], up_axis="Z")
+
+        # Explicitly enable sites
+        builder2 = newton.ModelBuilder()
+        builder2.add_mjcf(mjcf_filename, parse_sites=True, ignore_names=["floor", "ground"], up_axis="Z")
+
+        # Should have same count
+        self.assertEqual(builder1.shape_count, builder2.shape_count, "Default should parse sites")
+
+        # Explicitly disable sites
+        builder3 = newton.ModelBuilder()
+        builder3.add_mjcf(mjcf_filename, parse_sites=False, ignore_names=["floor", "ground"], up_axis="Z")
+
+        # Should have fewer shapes
+        self.assertLess(builder3.shape_count, builder1.shape_count, "Disabling sites should reduce shape count")
+
+    def test_parse_visuals_vs_hide_visuals(self):
+        """Test the distinction between parse_visuals (loading) and hide_visuals (visibility)."""
+        mjcf_filename = newton.examples.get_asset("nv_humanoid.xml")
+
+        # Test 1: parse_visuals=False (don't load)
+        builder_no_load = newton.ModelBuilder()
+        builder_no_load.add_mjcf(
+            mjcf_filename, parse_visuals=False, parse_sites=False, ignore_names=["floor", "ground"], up_axis="Z"
+        )
+
+        # Test 2: hide_visuals=True (load but hide)
+        builder_hidden = newton.ModelBuilder()
+        builder_hidden.add_mjcf(
+            mjcf_filename, hide_visuals=True, parse_sites=False, ignore_names=["floor", "ground"], up_axis="Z"
+        )
+
+        # Note: nv_humanoid.xml doesn't have separate visual-only geometries
+        # so both will have the same count (collision shapes only)
+        # The important thing is that neither crashes and the API works correctly
+        self.assertEqual(
+            builder_no_load.shape_count,
+            builder_hidden.shape_count,
+            "For nv_humanoid.xml, both should have same count (no separate visuals)",
+        )
+
+        # Verify parse_visuals=False doesn't crash
+        self.assertGreater(builder_no_load.shape_count, 0, "Should still load collision shapes")
+        # Verify hide_visuals=True doesn't crash
+        self.assertGreater(builder_hidden.shape_count, 0, "Should still load collision shapes")
 
 
 if __name__ == "__main__":

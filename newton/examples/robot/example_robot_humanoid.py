@@ -55,6 +55,7 @@ class Example:
             mjcf_filename,
             ignore_names=["floor", "ground"],
             xform=wp.transform(wp.vec3(0, 0, 1.3)),
+            parse_sites=False,  # AD: remove once asset is fixed
         )
 
         for i in range(len(humanoid.joint_target_ke)):
@@ -72,7 +73,6 @@ class Example:
             self.model,
             njmax=100,
             nconmax=50,
-            contact_stiffness_time_const=self.sim_dt,
             use_mujoco_contacts=use_mujoco_contacts,
         )
 

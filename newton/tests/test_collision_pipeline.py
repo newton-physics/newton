@@ -72,6 +72,8 @@ class CollisionSetup:
         self.use_unified_pipeline = use_unified_pipeline
 
         self.builder = newton.ModelBuilder(gravity=0.0)
+        # Set contact margin to match previous test expectations (was previously passed to collision pipeline)
+        self.builder.rigid_contact_margin = 0.01
         self.builder.add_articulation()
         body_a = self.builder.add_body(xform=wp.transform(wp.vec3(-1.0, 0.0, 0.0)))
         self.add_shape(shape_type_a, body_a)
@@ -95,7 +97,6 @@ class CollisionSetup:
             self.collision_pipeline = newton.CollisionPipelineUnified.from_model(
                 self.model,
                 rigid_contact_max_per_pair=20,
-                rigid_contact_margin=0.01,
                 broad_phase_mode=broad_phase_mode,
             )
             self.contacts = self.model.collide(self.state_0, collision_pipeline=self.collision_pipeline)
@@ -374,6 +375,7 @@ for shape_type_a, shape_type_b, test_level_a, test_level_b in unified_contact_te
         test_level_a=test_level_a,
         test_level_b=test_level_b,
     )
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2, failfast=False)
