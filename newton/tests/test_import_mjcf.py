@@ -33,6 +33,8 @@ class TestImportMjcf(unittest.TestCase):
         builder.default_shape_cfg.ke = 123.0
         builder.default_shape_cfg.kd = 456.0
         builder.default_shape_cfg.mu = 789.0
+        builder.default_shape_cfg.torsional_friction = 0.999
+        builder.default_shape_cfg.rolling_friction = 0.888
         builder.default_joint_cfg.armature = 42.0
         mjcf_filename = newton.examples.get_asset("nv_humanoid.xml")
         builder.add_mjcf(
@@ -44,7 +46,12 @@ class TestImportMjcf(unittest.TestCase):
         non_site_indices = [i for i, flags in enumerate(builder.shape_flags) if not (flags & ShapeFlags.SITE)]
         self.assertTrue(all(np.array(builder.shape_material_ke)[non_site_indices] == 123.0))
         self.assertTrue(all(np.array(builder.shape_material_kd)[non_site_indices] == 456.0))
-        self.assertTrue(all(np.array(builder.shape_material_mu)[non_site_indices] == 789.0))
+
+        # Check friction values from nv_humanoid.xml: friction="1.0 0.05 0.05"
+        # mu = 1.0, torsional_coef = 0.05/1.0 = 0.05, rolling_coef = 0.05/1.0 = 0.05
+        self.assertTrue(np.allclose(np.array(builder.shape_material_mu)[non_site_indices], 1.0))
+        self.assertTrue(np.allclose(np.array(builder.shape_material_torsional_friction)[non_site_indices], 0.05))
+        self.assertTrue(np.allclose(np.array(builder.shape_material_rolling_friction)[non_site_indices], 0.05))
         self.assertTrue(all(np.array(builder.joint_armature[:6]) == 0.0))
         self.assertEqual(
             builder.joint_armature[6:],
@@ -905,6 +912,60 @@ class TestImportMjcf(unittest.TestCase):
         self.assertGreater(builder_no_load.shape_count, 0, "Should still load collision shapes")
         # Verify hide_visuals=True doesn't crash
         self.assertGreater(builder_hidden.shape_count, 0, "Should still load collision shapes")
+
+    def test_mjcf_friction_parsing(self):
+        """Test MJCF friction parsing with 1, 2, and 3 element vectors."""
+        mjcf_content = """
+        <mujoco>
+            <worldbody>
+                <body name="test_body">
+                    <geom name="geom1" type="box" size="0.1 0.1 0.1" friction="0.5 0.1 0.01"/>
+                    <geom name="geom2" type="sphere" size="0.1" friction="0.8 0.2 0.05"/>
+                    <geom name="geom3" type="capsule" size="0.1 0.2" friction="0.0 0.0 0.0"/>
+                    <geom name="geom4" type="box" size="0.1 0.1 0.1" friction="1.0"/>
+                    <geom name="geom5" type="sphere" size="0.1" friction="0.6 0.15"/>
+                </body>
+            </worldbody>
+        </mujoco>
+        """
+
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".xml", delete=False) as f:
+            f.write(mjcf_content)
+            mjcf_file = f.name
+
+        try:
+            builder = newton.ModelBuilder()
+            builder.add_mjcf(mjcf_file, up_axis="Z")
+
+            self.assertEqual(builder.shape_count, 5)
+
+            # 3-element: friction="0.5 0.1 0.01" → coefficients: 0.1/0.5=0.2, 0.01/0.5=0.02
+            self.assertAlmostEqual(builder.shape_material_mu[0], 0.5, places=5)
+            self.assertAlmostEqual(builder.shape_material_torsional_friction[0], 0.2, places=5)
+            self.assertAlmostEqual(builder.shape_material_rolling_friction[0], 0.02, places=5)
+
+            # 3-element: friction="0.8 0.2 0.05" → coefficients: 0.2/0.8=0.25, 0.05/0.8=0.0625
+            self.assertAlmostEqual(builder.shape_material_mu[1], 0.8, places=5)
+            self.assertAlmostEqual(builder.shape_material_torsional_friction[1], 0.25, places=5)
+            self.assertAlmostEqual(builder.shape_material_rolling_friction[1], 0.0625, places=5)
+
+            # 3-element with zeros
+            self.assertAlmostEqual(builder.shape_material_mu[2], 0.0, places=5)
+            self.assertAlmostEqual(builder.shape_material_torsional_friction[2], 0.0, places=5)
+            self.assertAlmostEqual(builder.shape_material_rolling_friction[2], 0.0, places=5)
+
+            # 1-element: friction="1.0" → others use ShapeConfig defaults
+            self.assertAlmostEqual(builder.shape_material_mu[3], 1.0, places=5)
+            self.assertAlmostEqual(builder.shape_material_torsional_friction[3], 0.5, places=5)
+            self.assertAlmostEqual(builder.shape_material_rolling_friction[3], 0.001, places=5)
+
+            # 2-element: friction="0.6 0.15" → torsional: 0.15/0.6=0.25, rolling uses default
+            self.assertAlmostEqual(builder.shape_material_mu[4], 0.6, places=5)
+            self.assertAlmostEqual(builder.shape_material_torsional_friction[4], 0.25, places=5)
+            self.assertAlmostEqual(builder.shape_material_rolling_friction[4], 0.001, places=5)
+
+        finally:
+            os.unlink(mjcf_file)
 
 
 if __name__ == "__main__":

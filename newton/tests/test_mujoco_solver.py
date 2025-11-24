@@ -1345,11 +1345,17 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
         # Update ALL Newton shape properties with new values
         shape_count = self.model.shape_count
 
-        # 1. Update friction
+        # 1. Update friction (slide, torsional, and rolling)
         new_mu = np.zeros(shape_count)
+        new_torsional = np.zeros(shape_count)
+        new_rolling = np.zeros(shape_count)
         for i in range(shape_count):
             new_mu[i] = 1.0 + (i + 1) * 0.05  # Pattern: 1.05, 1.10, ...
+            new_torsional[i] = 0.6 + (i + 1) * 0.02  # Pattern: 0.62, 0.64, ...
+            new_rolling[i] = 0.002 + (i + 1) * 0.0001  # Pattern: 0.0021, 0.0022, ...
         self.model.shape_material_mu.assign(new_mu)
+        self.model.shape_material_torsional_friction.assign(new_torsional)
+        self.model.shape_material_rolling_friction.assign(new_rolling)
 
         # 2. Update contact stiffness/damping
         new_ke = np.ones(shape_count) * 1000.0  # High stiffness
@@ -1401,20 +1407,51 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
 
                 tested_count += 1
 
-                # Verify 1: Friction updated
+                # Verify 1: Friction updated (slide, torsional, and rolling)
                 expected_mu = new_mu[shape_idx]
+                expected_torsional = new_torsional[shape_idx] * expected_mu
+                expected_rolling = new_rolling[shape_idx] * expected_mu
+
+                # Verify slide friction
                 self.assertAlmostEqual(
                     float(updated_friction[world_idx, geom_idx][0]),
                     expected_mu,
                     places=5,
-                    msg=f"Updated friction should match new value for shape {shape_idx}",
+                    msg=f"Updated slide friction should match new value for shape {shape_idx}",
                 )
-                # Verify it changed from initial
+                # Verify torsional friction
+                self.assertAlmostEqual(
+                    float(updated_friction[world_idx, geom_idx][1]),
+                    expected_torsional,
+                    places=5,
+                    msg=f"Updated torsional friction should match new value for shape {shape_idx}",
+                )
+                # Verify rolling friction
+                self.assertAlmostEqual(
+                    float(updated_friction[world_idx, geom_idx][2]),
+                    expected_rolling,
+                    places=5,
+                    msg=f"Updated rolling friction should match new value for shape {shape_idx}",
+                )
+
+                # Verify all friction components changed from initial
                 self.assertNotAlmostEqual(
                     float(updated_friction[world_idx, geom_idx][0]),
                     float(initial_friction[world_idx, geom_idx][0]),
                     places=5,
-                    msg=f"Friction should have changed for shape {shape_idx}",
+                    msg=f"Slide friction should have changed for shape {shape_idx}",
+                )
+                self.assertNotAlmostEqual(
+                    float(updated_friction[world_idx, geom_idx][1]),
+                    float(initial_friction[world_idx, geom_idx][1]),
+                    places=5,
+                    msg=f"Torsional friction should have changed for shape {shape_idx}",
+                )
+                self.assertNotAlmostEqual(
+                    float(updated_friction[world_idx, geom_idx][2]),
+                    float(initial_friction[world_idx, geom_idx][2]),
+                    places=5,
+                    msg=f"Rolling friction should have changed for shape {shape_idx}",
                 )
 
                 # Verify 2: Contact parameters updated (solref)
@@ -1588,6 +1625,132 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
         # Verify that the meshes retained their maxhullvert values
         self.assertEqual(model.shape_source[0].maxhullvert, 32)
         self.assertEqual(model.shape_source[1].maxhullvert, 128)
+
+    def test_heterogeneous_per_shape_friction(self):
+        """Test per-shape friction conversion to MuJoCo and dynamic updates across multiple worlds."""
+        shape_count = self.model.shape_count
+        shapes_per_world = shape_count // self.model.num_worlds
+
+        # Set unique friction values per shape and world to catch indexing bugs
+        initial_mu = np.zeros(shape_count)
+        initial_torsional = np.zeros(shape_count)
+        initial_rolling = np.zeros(shape_count)
+
+        for world_idx in range(self.model.num_worlds):
+            world_shape_offset = world_idx * shapes_per_world
+
+            for shape_in_world in range(shapes_per_world):
+                global_shape_idx = world_shape_offset + shape_in_world
+                initial_mu[global_shape_idx] = 0.5 + shape_in_world * 0.1 + world_idx * 0.3
+                initial_torsional[global_shape_idx] = 0.3 + shape_in_world * 0.05 + world_idx * 0.2
+                initial_rolling[global_shape_idx] = 0.001 + shape_in_world * 0.0005 + world_idx * 0.002
+
+        self.model.shape_material_mu.assign(initial_mu)
+        self.model.shape_material_torsional_friction.assign(initial_torsional)
+        self.model.shape_material_rolling_friction.assign(initial_rolling)
+
+        solver = SolverMuJoCo(self.model, iterations=1, disable_contacts=True)
+        to_newton_shape_index = solver.to_newton_shape_index.numpy()
+        num_geoms = solver.mj_model.ngeom
+
+        # Verify initial conversion
+        geom_friction = solver.mjw_model.geom_friction.numpy()
+        tested_count = 0
+        for world_idx in range(self.model.num_worlds):
+            for geom_idx in range(num_geoms):
+                shape_idx = to_newton_shape_index[world_idx, geom_idx]
+                if shape_idx < 0:
+                    continue
+
+                tested_count += 1
+                expected_mu = initial_mu[shape_idx]
+                expected_torsional_coef = initial_torsional[shape_idx]
+                expected_rolling_coef = initial_rolling[shape_idx]
+
+                # MuJoCo stores: (mu, torsion_coef * mu, roll_coef * mu)
+                expected_torsional_abs = expected_torsional_coef * expected_mu
+                expected_rolling_abs = expected_rolling_coef * expected_mu
+
+                actual_friction = geom_friction[world_idx, geom_idx]
+
+                self.assertAlmostEqual(
+                    float(actual_friction[0]),
+                    expected_mu,
+                    places=5,
+                    msg=f"Initial slide friction mismatch for shape {shape_idx} in world {world_idx}, geom {geom_idx}",
+                )
+
+                self.assertAlmostEqual(
+                    float(actual_friction[1]),
+                    expected_torsional_abs,
+                    places=5,
+                    msg=f"Initial torsional friction mismatch for shape {shape_idx} in world {world_idx}, geom {geom_idx}",
+                )
+
+                self.assertAlmostEqual(
+                    float(actual_friction[2]),
+                    expected_rolling_abs,
+                    places=5,
+                    msg=f"Initial rolling friction mismatch for shape {shape_idx} in world {world_idx}, geom {geom_idx}",
+                )
+
+        self.assertGreater(tested_count, 0, "Should have tested at least one shape")
+
+        # Update with different values
+        updated_mu = np.zeros(shape_count)
+        updated_torsional = np.zeros(shape_count)
+        updated_rolling = np.zeros(shape_count)
+
+        for world_idx in range(self.model.num_worlds):
+            world_shape_offset = world_idx * shapes_per_world
+
+            for shape_in_world in range(shapes_per_world):
+                global_shape_idx = world_shape_offset + shape_in_world
+                updated_mu[global_shape_idx] = 1.0 + shape_in_world * 0.15 + world_idx * 0.4
+                updated_torsional[global_shape_idx] = 0.6 + shape_in_world * 0.08 + world_idx * 0.25
+                updated_rolling[global_shape_idx] = 0.005 + shape_in_world * 0.001 + world_idx * 0.003
+
+        self.model.shape_material_mu.assign(updated_mu)
+        self.model.shape_material_torsional_friction.assign(updated_torsional)
+        self.model.shape_material_rolling_friction.assign(updated_rolling)
+
+        solver.notify_model_changed(SolverNotifyFlags.SHAPE_PROPERTIES)
+
+        # Verify updates
+        updated_geom_friction = solver.mjw_model.geom_friction.numpy()
+
+        for world_idx in range(self.model.num_worlds):
+            for geom_idx in range(num_geoms):
+                shape_idx = to_newton_shape_index[world_idx, geom_idx]
+                if shape_idx < 0:
+                    continue
+
+                expected_mu = updated_mu[shape_idx]
+                expected_torsional_abs = updated_torsional[shape_idx] * expected_mu
+                expected_rolling_abs = updated_rolling[shape_idx] * expected_mu
+
+                actual_friction = updated_geom_friction[world_idx, geom_idx]
+
+                self.assertAlmostEqual(
+                    float(actual_friction[0]),
+                    expected_mu,
+                    places=5,
+                    msg=f"Updated slide friction mismatch for shape {shape_idx} in world {world_idx}",
+                )
+
+                self.assertAlmostEqual(
+                    float(actual_friction[1]),
+                    expected_torsional_abs,
+                    places=5,
+                    msg=f"Updated torsional friction mismatch for shape {shape_idx} in world {world_idx}",
+                )
+
+                self.assertAlmostEqual(
+                    float(actual_friction[2]),
+                    expected_rolling_abs,
+                    places=5,
+                    msg=f"Updated rolling friction mismatch for shape {shape_idx} in world {world_idx}",
+                )
 
 
 class TestMuJoCoSolverNewtonContacts(unittest.TestCase):
