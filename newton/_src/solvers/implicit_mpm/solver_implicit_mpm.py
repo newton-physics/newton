@@ -561,7 +561,9 @@ def _make_grid_basis_space(grid: fem.Geometry, basis_str: str, family: fem.Polyn
     elif basis_str[0] == "P" and (degree == 0 or basis_str[-1] == "d"):
         element_basis = fem.ElementBasis.NONCONFORMING_POLYNOMIAL
     else:
-        raise ValueError(f"Unsupported basis: {basis_str}")
+        raise ValueError(
+            f"Unsupported basis: {basis_str}. Expected format: Q<degree>[d], S<degree>, or P<degree>[d] for tri-polynomial, serendipity, or non-conforming polynomial respectively."
+        )
 
     return fem.make_polynomial_basis_space(grid, degree=degree, element_basis=element_basis, family=family)
 
@@ -714,7 +716,7 @@ class _ImplicitMPMScratchpad:
                     self.grid, collider_basis_str, family=fem.Polynomial.EQUISPACED_CLOSED
                 )
 
-        # Point-based basis space need to be rebuilt evemn when the geo does not change
+        # Point-based basis space needs to be rebuilt even when the geo does not change
         if use_pic_collider_basis:
             self._collision_basis = _make_pic_basis_space(pic, collider_basis_str)
 
@@ -2525,7 +2527,7 @@ class SolverImplicitMPM(SolverBase):
         state_in: newton.State,
         state_out: newton.State,
         scratch: _ImplicitMPMScratchpad,
-        rigidity_matrix: sp.BsrMatrix | None,
+        rigidity_operator: tuple[sp.BsrMatrix, sp.BsrMatrix, sp.BsrMatrix] | None,
     ):
         strain_node_count = scratch.strain_node_count
         has_compliant_particles = self.mpm_model.has_compliant_particles
@@ -2560,7 +2562,7 @@ class SolverImplicitMPM(SolverBase):
                 color_offsets=scratch.color_offsets,
                 color_indices=scratch.color_indices,
                 color_nodes_per_element=scratch.color_nodes_per_element,
-                rigidity_mat=rigidity_matrix,
+                rigidity_operator=rigidity_operator,
                 temporary_store=self.temporary_store,
                 use_graph=self._use_cuda_graph,
             )
@@ -2645,7 +2647,6 @@ class SolverImplicitMPM(SolverBase):
         """Ensure velocity-space fields exist and match current spaces."""
 
         scratch.require_velocity_space_fields(has_compliant_particles)
-        scratch.require_collision_space_fields()
 
         # Necessary fields for grains rendering
         # Re-generated at each step, defined on space partition
@@ -2660,6 +2661,8 @@ class SolverImplicitMPM(SolverBase):
         state_out.impulse_field = scratch.impulse_field
         state_out.collider_ids = scratch.collider_ids
         state_out.collider_position_field = scratch.collider_position_field
+        state_out.collider_distance_field = scratch.collider_distance_field
+        state_out.collider_normal_field = scratch.collider_normal_field
 
         # Impulse warmstarting, defined at space level
         collision_space = scratch.impulse_field.space

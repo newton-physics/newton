@@ -471,8 +471,8 @@ def collider_gradient_field(s: fem.Sample, domain: fem.Domain, distance: fem.Fie
         sdf = distance(s_node, k)
         pos = domain(s_node)
 
-        # id the sdf valid is no acceptable (large than min+sdf + distance between nodes),
-        # replace with linearized appozimation
+        # if the sdf value is not acceptable (larger than min_sdf + distance between nodes),
+        # replace with linearized approximation
         if sdf >= min_sdf + wp.length(pos - min_pos):
             sdf = wp.min(sdf, min_sdf + wp.dot(min_grad, pos - min_pos))
 
@@ -649,9 +649,10 @@ def build_rigidity_operator(
         node_volumes: Per-velocity-node volume fractions.
         node_positions: World-space node positions (3D).
         collider: Packed collider parameters and geometry handles.
+        body_q: Rigid body transforms.
+        body_mass: Rigid body masses.
+        body_inv_inertia: Rigid body inverse inertia tensors.
         collider_ids: Per-velocity-node collider id, or -2 when not active.
-        collider_coms: Per-collider centers of mass in world space.
-        collider_inv_inertia: Per-collider inverse inertia tensors in world space.
         collider_total_volumes: Per-collider integrated volumes used to derive densities.
 
     Returns:

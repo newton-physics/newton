@@ -141,7 +141,7 @@ class Example:
 
         if self.show_normals:
             _impulses, pos, _cid = self.solver.collect_collider_impulses(self.state_0)
-            normals = self.solver._scratchpad.collider_normal_field.dof_values
+            normals = self.state_0.collider_normal_field.dof_values
 
             normal_vecs = 0.25 * self.solver.mpm_model.voxel_size * normals
             root = pos

@@ -961,7 +961,7 @@ def update_condition(
     condition[0] = wp.where(stop, 0, 1)
 
 
-def apply_rigidity_matrix(rigidity_mat, prev_collider_velocity, collider_velocity, delta_body_qd):
+def apply_rigidity_operator(rigidity_operator, prev_collider_velocity, collider_velocity, delta_body_qd):
     """Apply collider rigidity feedback to the current collider velocities.
 
     Computes and applies a velocity correction induced by the rigid coupling
@@ -974,13 +974,13 @@ def apply_rigidity_matrix(rigidity_mat, prev_collider_velocity, collider_velocit
 
     Args:
         rigidity_mat: Block-sparse rigidity operator (D + J @ IJtm) returned by
-            ``build_rigidity_matrix``.
+            ``build_rigidity_operator``.
         prev_collider_velocity: Velocity vector from the previous iteration
             (updated in place at the end of the call).
         collider_velocity: Current collider velocity vector to be corrected in place.
     """
 
-    D, J, IJtm = rigidity_mat
+    D, J, IJtm = rigidity_operator
 
     # compute velocity delta, store in prev_collider_velocity
     fem.utils.array_axpy(
@@ -1038,7 +1038,7 @@ def solve_rheology(
     color_offsets,
     color_indices: wp.array | None = None,
     color_nodes_per_element: int = 1,
-    rigidity_mat: sp.BsrMatrix | None = None,
+    rigidity_operator: tuple[sp.BsrMatrix, sp.BsrMatrix, sp.BsrMatrix] | None = None,
     temporary_store: fem.TemporaryStore | None = None,
     use_graph=True,
     verbose=wp.config.verbose,
@@ -1088,7 +1088,7 @@ def solve_rheology(
         color_offsets: Optional coloring offsets for Gauss-Seidel.
         color_indices: Optional coloring indices for Gauss-Seidel.
         color_nodes_per_element: Number of nodes per colored element.
-        rigidity_mat: Optional rigidity matrix coupling nodes to collider DOFs.
+        rigidity_operator: Optional rigidity operator coupling nodes to collider DOFs.
         temporary_store: Temporary storage arena for intermediate arrays.
         use_graph: If True, uses conditional CUDA graphs for the iteration loop.
         verbose: If True, prints residuals/iteration counts.
@@ -1294,11 +1294,11 @@ def solve_rheology(
         )
 
     # Setup rigidity correction
-    if rigidity_mat is not None:
+    if rigidity_operator is not None:
         prev_collider_velocity = _register_temp(fem.borrow_temporary_like(collider_velocities, temporary_store))
         prev_collider_velocity.assign(collider_velocities)
 
-        _D, J, _IJtm = rigidity_mat
+        _D, J, _IJtm = rigidity_operator
         delta_body_qd = _register_temp(fem.borrow_temporary(temporary_store, shape=J.shape[1], dtype=float))
 
     # Collider contacts
@@ -1413,14 +1413,14 @@ def solve_rheology(
         )
 
     # Apply rigidity correction
-    if rigidity_mat is not None:
-        apply_rigidity_matrix(rigidity_mat, prev_collider_velocity, collider_velocities, delta_body_qd)
+    if rigidity_operator is not None:
+        apply_rigidity_operator(rigidity_operator, prev_collider_velocity, collider_velocities, delta_body_qd)
 
     def do_iteration():
         # solve contacts
         solve_collider()
-        if rigidity_mat is not None:
-            apply_rigidity_matrix(rigidity_mat, prev_collider_velocity, collider_velocities, delta_body_qd)
+        if rigidity_operator is not None:
+            apply_rigidity_operator(rigidity_operator, prev_collider_velocity, collider_velocities, delta_body_qd)
 
         # solve stress
         if gs:
