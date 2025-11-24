@@ -86,7 +86,7 @@ def compute_lighting(
         eps = 1.0e-4
         shadow_origin = hit_point + normal * eps
         # Distance-limited shadows: cap by dist_to_light (for non-directional)
-        max_t = wp.float32(dist_to_light - 1.0e-3)
+        max_t = wp.max(wp.float32(1.0e-4), wp.float32(dist_to_light - 1.0e-3))
         if light_type == 1:  # directional light
             max_t = wp.float32(1.0e8)
 

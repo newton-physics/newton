@@ -93,6 +93,7 @@ class TestTiledCameraSensor(unittest.TestCase):
             f"Images differ more than {allowed_difference:.2f}%, total difference is {percentage_diff:.2f}%",
         )
 
+    @unittest.skipUnless(wp.is_cuda_available(), "Requires CUDA")
     def test_golden_image(self):
         model = self.__build_scene()
 
@@ -124,6 +125,7 @@ class TestTiledCameraSensor(unittest.TestCase):
         self.__compare_images(color_image.numpy(), golden_color_data, allowed_difference=0.1)
         self.__compare_images(depth_image.numpy(), golden_depth_data, allowed_difference=0.1)
 
+    @unittest.skipUnless(wp.is_cuda_available(), "Requires CUDA")
     def test_output_image_parameters(self):
         model = self.__build_scene()
 

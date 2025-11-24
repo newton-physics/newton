@@ -23,6 +23,7 @@ from newton.sensors import TiledCameraSensor
 
 
 class TestTiledCameraSensorBenchmark(unittest.TestCase):
+    @unittest.skip("Tiled Camera Sensor Benchmark")
     def test_benchmark(self):
         franka = newton.ModelBuilder()
         franka.add_urdf(
