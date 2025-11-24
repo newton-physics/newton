@@ -386,7 +386,6 @@ def create_collision_pipeline(
     collision_pipeline_type=None,
     broad_phase_mode=None,
     rigid_contact_max_per_pair=None,
-    rigid_contact_margin=None,
 ):
     """Create a collision pipeline based on command-line arguments or explicit parameters.
 
@@ -399,10 +398,12 @@ def create_collision_pipeline(
         collision_pipeline_type: Explicit pipeline type ("unified" or "standard"), overrides args
         broad_phase_mode: Explicit broad phase mode ("nxn", "sap", "explicit"), overrides args
         rigid_contact_max_per_pair: Maximum number of contact points per shape pair (default: 10)
-        rigid_contact_margin: Margin for rigid contact generation (default: 0.01)
 
     Returns:
         CollisionPipelineUnified instance if unified pipeline is selected, None for standard pipeline
+
+    Note:
+        Contact margins for rigid contacts are read from ``model.shape_contact_margin`` array.
 
     Examples:
         # Using command-line args
@@ -422,8 +423,7 @@ def create_collision_pipeline(
         pipeline = newton.examples.create_collision_pipeline(
             model,
             args,
-            rigid_contact_max_per_pair=100,
-            rigid_contact_margin=0.05
+            rigid_contact_max_per_pair=100
         )
     """
     import newton  # noqa: PLC0415
@@ -457,14 +457,11 @@ def create_collision_pipeline(
     # Use provided values or defaults
     if rigid_contact_max_per_pair is None:
         rigid_contact_max_per_pair = 10
-    if rigid_contact_margin is None:
-        rigid_contact_margin = 0.01
 
     # Create and return CollisionPipelineUnified
     return newton.CollisionPipelineUnified.from_model(
         model,
         rigid_contact_max_per_pair=rigid_contact_max_per_pair,
-        rigid_contact_margin=rigid_contact_margin,
         broad_phase_mode=broad_phase_enum,
     )
 

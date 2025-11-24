@@ -560,7 +560,7 @@ class TestBroadPhase(unittest.TestCase):
         candidate_pair = wp.array(np.zeros((max_candidate_pair, 2), dtype=wp.int32), dtype=wp.vec2i)
 
         # Initialize BroadPhaseAllPairs with shape_world AND shape_flags
-        nxn_broadphase = BroadPhaseAllPairs(shape_world, geom_flags=shape_flags)
+        nxn_broadphase = BroadPhaseAllPairs(shape_world, shape_flags=shape_flags)
 
         if verbose:
             print("\nPrecomputed world map info (with flags):")
@@ -1166,7 +1166,7 @@ class TestBroadPhase(unittest.TestCase):
         candidate_pair = wp.array(np.zeros((num_lower_tri_elements, 2), dtype=wp.int32), dtype=wp.vec2i)
 
         # Initialize SAP broad phase with shape_flags
-        sap_broadphase = BroadPhaseSAP(shape_world, geom_flags=shape_flags, sort_type=sort_type)
+        sap_broadphase = BroadPhaseSAP(shape_world, shape_flags=shape_flags, sort_type=sort_type)
 
         # Verify num_regular_worlds is correct after filtering
         colliding_worlds = np.unique(np_shape_world[colliding_mask])
@@ -2051,6 +2051,103 @@ class TestBroadPhase(unittest.TestCase):
     def test_sap_edge_cases_tile(self):
         """Test SAP edge cases with tile sort."""
         self._test_sap_edge_cases_impl(SAPSortType.TILE)
+
+    def test_per_shape_contact_margin_broad_phase(self):
+        """
+        Test that all broad phase modes correctly handle per-shape contact margins
+        by applying them during AABB overlap checks (not pre-expanded).
+
+        Setup two spheres (A and B) at different separations from a ground plane:
+        - Sphere A: small margin, should NOT be detected by broad phase when far
+        - Sphere B: large margin, SHOULD be detected by broad phase when at same distance
+
+        This tests that the broad phase kernels correctly expand AABBs by the provided
+        margins during overlap testing, not requiring pre-expanded AABBs.
+        """
+        # Create UNEXPANDED AABBs for: ground plane + 2 spheres
+        # The margins will be passed separately to test that broad phase applies them correctly
+
+        # Ground plane AABB (infinite in XY, at z=0) WITHOUT margin
+        ground_aabb_lower = wp.vec3(-1000.0, -1000.0, 0.0)
+        ground_aabb_upper = wp.vec3(1000.0, 1000.0, 0.0)
+
+        # Sphere A (radius=0.2, center at z=0.24) WITHOUT margin
+        # AABB: z range = [0.24-0.2, 0.24+0.2] = [0.04, 0.44]
+        sphere_a_aabb_lower = wp.vec3(-0.2, -0.2, 0.04)
+        sphere_a_aabb_upper = wp.vec3(0.2, 0.2, 0.44)
+
+        # Sphere B (radius=0.2, center at z=0.24) WITHOUT margin
+        # AABB: z range = [0.04, 0.44]
+        sphere_b_aabb_lower = wp.vec3(10.0 - 0.2, -0.2, 0.04)
+        sphere_b_aabb_upper = wp.vec3(10.0 + 0.2, 0.2, 0.44)
+
+        aabb_lower = wp.array([ground_aabb_lower, sphere_a_aabb_lower, sphere_b_aabb_lower], dtype=wp.vec3)
+        aabb_upper = wp.array([ground_aabb_upper, sphere_a_aabb_upper, sphere_b_aabb_upper], dtype=wp.vec3)
+
+        # Pass per-shape margins to broad phase - it will apply them during overlap checks
+        # ground=0.01, sphereA=0.02, sphereB=0.06
+        # With margins applied:
+        # - Ground AABB becomes [-0.01, 0.01] in z
+        # - Sphere A AABB becomes [0.04-0.02, 0.44+0.02] = [0.02, 0.46] - does NOT overlap ground
+        # - Sphere B AABB becomes [0.04-0.06, 0.44+0.06] = [-0.02, 0.50] - DOES overlap ground
+        shape_contact_margin = wp.array([0.01, 0.02, 0.06], dtype=wp.float32)
+
+        # Use collision group 1 for all shapes (group -1 collides with everything, group 0 means no collision)
+        collision_group = wp.array([1, 1, 1], dtype=wp.int32)
+        shape_world = wp.array([0, 0, 0], dtype=wp.int32)
+
+        # Test NXN broad phase
+        nxn_bp = BroadPhaseAllPairs(shape_world)
+        pairs_nxn = wp.zeros(100, dtype=wp.vec2i)
+        pair_count_nxn = wp.zeros(1, dtype=wp.int32)
+
+        nxn_bp.launch(
+            aabb_lower,
+            aabb_upper,
+            shape_contact_margin,
+            collision_group,
+            shape_world,
+            3,
+            pairs_nxn,
+            pair_count_nxn,
+        )
+        wp.synchronize()
+
+        pairs_np = pairs_nxn.numpy()
+        count_nxn = pair_count_nxn.numpy()[0]
+
+        # Check that sphere B-ground pair is detected, but sphere A-ground is not
+        has_sphere_b_ground = any((p[0] == 0 and p[1] == 2) or (p[0] == 2 and p[1] == 0) for p in pairs_np[:count_nxn])
+        has_sphere_a_ground = any((p[0] == 0 and p[1] == 1) or (p[0] == 1 and p[1] == 0) for p in pairs_np[:count_nxn])
+
+        self.assertTrue(has_sphere_b_ground, "NXN: Sphere B (large margin) should overlap ground")
+        self.assertFalse(has_sphere_a_ground, "NXN: Sphere A (small margin) should NOT overlap ground")
+
+        # Test SAP broad phase
+        sap_bp = BroadPhaseSAP(shape_world)
+        pairs_sap = wp.zeros(100, dtype=wp.vec2i)
+        pair_count_sap = wp.zeros(1, dtype=wp.int32)
+
+        sap_bp.launch(
+            aabb_lower,
+            aabb_upper,
+            shape_contact_margin,
+            collision_group,
+            shape_world,
+            3,
+            pairs_sap,
+            pair_count_sap,
+        )
+        wp.synchronize()
+
+        pairs_np = pairs_sap.numpy()
+        count_sap = pair_count_sap.numpy()[0]
+
+        has_sphere_b_ground = any((p[0] == 0 and p[1] == 2) or (p[0] == 2 and p[1] == 0) for p in pairs_np[:count_sap])
+        has_sphere_a_ground = any((p[0] == 0 and p[1] == 1) or (p[0] == 1 and p[1] == 0) for p in pairs_np[:count_sap])
+
+        self.assertTrue(has_sphere_b_ground, "SAP: Sphere B (large margin) should overlap ground")
+        self.assertFalse(has_sphere_a_ground, "SAP: Sphere A (small margin) should NOT overlap ground")
 
 
 if __name__ == "__main__":
