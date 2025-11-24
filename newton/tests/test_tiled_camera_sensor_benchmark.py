@@ -43,23 +43,24 @@ class TestTiledCameraSensorBenchmark(unittest.TestCase):
         state = model.state()
         newton.eval_fk(model, model.joint_q, model.joint_qd, state)
 
-        # camera_positions = wp.array([wp.vec3f(2.0, 0.0, 0.6)], dtype=wp.vec3f)
-        # camera_orientations = wp.array([wp.mat33f(0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0)], dtype=wp.mat33f)
-        camera_positions = wp.array([2.4, 0.0, 0.8], dtype=wp.vec3f)
-        camera_orientations = wp.array(
-            [
-                -0.008726535,
-                -0.29236057,
-                0.95626837,
-                0.9999619,
-                -0.002551392,
-                0.008345228,
-                1.3010426e-18,
-                0.9563047,
-                0.2923717,
-            ],
-            dtype=wp.mat33f,
+        # camera_position = wp.vec3f(2.0, 0.0, 0.6)
+        # camera_orientation = wp.mat33f(0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0)
+
+        camera_position = wp.vec3f(2.4, 0.0, 0.8)
+        camera_orientation = wp.mat33f(
+            -0.008726535,
+            -0.29236057,
+            0.95626837,
+            0.9999619,
+            -0.002551392,
+            0.008345228,
+            1.3010426e-18,
+            0.9563047,
+            0.2923717,
         )
+
+        transform = wp.transformf(camera_position, wp.quat_from_matrix(camera_orientation))
+        camera_transforms = wp.array([transform], dtype=wp.transformf)
 
         tiled_camera_sensor = TiledCameraSensor(model=model, num_cameras=1, width=resolution, height=resolution)
         tiled_camera_sensor.assign_debug_colors_per_shape()
@@ -69,7 +70,7 @@ class TestTiledCameraSensorBenchmark(unittest.TestCase):
         color_image = tiled_camera_sensor.create_color_image_output()
         depth_image = tiled_camera_sensor.create_depth_image_output()
 
-        tiled_camera_sensor.update_cameras(camera_positions, camera_orientations)
+        tiled_camera_sensor.update_cameras(camera_transforms)
         tiled_camera_sensor.update_from_state(state)
 
         with wp.ScopedTimer("Refit BVH", synchronize=True):

@@ -236,21 +236,19 @@ class TiledCameraSensor:
                         If None, no color rendering is performed.
             depth_image: Optional output array for depth data (num_worlds, num_cameras, width*height).
                         If None, no depth rendering is performed.
-            refit_bvh: Whether to rebuild the BVH or not.
+            refit_bvh: Whether to refit the BVH or not.
             clear_images: Whether to clear the images before rendering or not.
         """
         self.render_context.render(color_image, depth_image, refit_bvh=refit_bvh, clear_images=clear_images)
 
-    def update_cameras(self, positions: wp.array(dtype=wp.vec3f), orientations: wp.array(dtype=wp.mat33f)):
+    def update_cameras(self, transforms: wp.array(dtype=wp.transformf)):
         """
-        Update camera positions and orientations.
+        Update camera transforms.
 
         Args:
-            positions: Array of camera positions in world space, shape (num_cameras,).
-            orientations: Array of camera-to-world rotation matrices (as flattened 3x3), shape (num_cameras,).
+            transforms: Array of camera transforms in world space, shape (num_cameras,).
         """
-        self.render_context.camera_positions = positions
-        self.render_context.camera_orientations = orientations
+        self.render_context.camera_transforms = transforms
 
     def compute_camera_rays(self, camera_fovs: wp.array(dtype=wp.float32)):
         """
@@ -473,7 +471,7 @@ class TiledCameraSensor:
         """
         return self.render_context.create_depth_image_output()
 
-    def convert_camera_to_warp_arrays(self, cameras: list[Camera]):
+    def convert_camera_to_warp_arrays(self, cameras: list[Camera]) -> wp.array(dtype=wp.transformf):
         """
         Convert Camera objects to Warp arrays for positions and orientations.
 
@@ -481,11 +479,15 @@ class TiledCameraSensor:
             cameras: List of Camera instances.
 
         Returns:
-            Tuple of (positions, orientations) as Warp arrays.
+            Warp array of wp.transformf.
         """
 
-        camera_positions = wp.array([camera.pos for camera in cameras], dtype=wp.vec3f)
-        camera_orientations = wp.array(
-            [camera.get_view_matrix().reshape(4, 4)[:3, :3].flatten() for camera in cameras], dtype=wp.mat33f
+        return wp.array(
+            [
+                wp.transformf(
+                    camera.pos, wp.quat_from_matrix(wp.mat33f(camera.get_view_matrix().reshape(4, 4)[:3, :3]))
+                )
+                for camera in cameras
+            ],
+            dtype=wp.transformf,
         )
-        return camera_positions, camera_orientations

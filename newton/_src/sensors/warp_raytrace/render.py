@@ -97,8 +97,7 @@ def _render_megakernel(
     max_distance: wp.float32,
     # Camera
     camera_rays: wp.array(dtype=wp.vec3f, ndim=4),
-    camera_positions: wp.array(dtype=wp.vec3f),
-    camera_orientations: wp.array(dtype=wp.mat33f),
+    camera_transforms: wp.array(dtype=wp.transformf),
     # Geometry BVH
     bvh_geom_size: wp.int32,
     bvh_geom_id: wp.uint64,
@@ -160,8 +159,8 @@ def _render_megakernel(
 
     out_index = py * img_width + px
 
-    ray_origin_world = camera_positions[camera_id] + camera_rays[camera_id, py, px, 0]
-    ray_dir_world = camera_orientations[camera_id] @ camera_rays[camera_id, py, px, 1]
+    ray_origin_world = wp.transform_point(camera_transforms[camera_id], camera_rays[camera_id, py, px, 0])
+    ray_dir_world = wp.transform_vector(camera_transforms[camera_id], camera_rays[camera_id, py, px, 1])
 
     closest_hit = ray_cast.closest_hit(
         bvh_geom_size,
@@ -341,8 +340,7 @@ def render_megakernel(
             rc.max_distance,
             # Camera
             rc.camera_rays,
-            rc.camera_positions,
-            rc.camera_orientations,
+            rc.camera_transforms,
             # Geometry BVH
             rc.num_geom_in_bvh,
             rc.bvh_geom.id if rc.bvh_geom else 0,

@@ -112,7 +112,7 @@ class Example:
     def render_sensors(self):
         print("Rendering Tiled Camera Sensor")
         self.tiled_camera_sensor.update_cameras(
-            *self.tiled_camera_sensor.convert_camera_to_warp_arrays([self.viewer.camera])
+            self.tiled_camera_sensor.convert_camera_to_warp_arrays([self.viewer.camera])
         )
         self.tiled_camera_sensor.update_from_state(self.state)
         self.tiled_camera_sensor.render(self.tiled_camera_sensor_color_image, self.tiled_camera_sensor_depth_image)

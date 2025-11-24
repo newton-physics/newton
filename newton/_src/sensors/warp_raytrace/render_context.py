@@ -84,8 +84,7 @@ class RenderContext:
 
         self.__num_cameras = num_cameras
         self.__camera_rays: wp.array(dtype=wp.vec3f, ndim=4) = None
-        self.__camera_positions: wp.array(dtype=wp.vec3f) = None
-        self.__camera_orientations: wp.array(dtype=wp.mat33f) = None
+        self.__camera_transforms: wp.array(dtype=wp.transformf) = None
 
         self.__material_texture_ids: wp.array(dtype=wp.int32) = None
         self.__material_texture_repeat: wp.array(dtype=wp.vec2f) = None
@@ -544,20 +543,12 @@ class RenderContext:
         self.__camera_rays = camera_rays
 
     @property
-    def camera_positions(self) -> wp.array(dtype=wp.vec3f):
-        return self.__camera_positions
+    def camera_transforms(self) -> wp.array(dtype=wp.transformf):
+        return self.__camera_transforms
 
-    @camera_positions.setter
-    def camera_positions(self, camera_positions: wp.array(dtype=wp.vec3f)):
-        self.__camera_positions = camera_positions
-
-    @property
-    def camera_orientations(self) -> wp.array(dtype=wp.mat33f):
-        return self.__camera_orientations
-
-    @camera_orientations.setter
-    def camera_orientations(self, camera_orientations: wp.array(dtype=wp.mat33f)):
-        self.__camera_orientations = camera_orientations
+    @camera_transforms.setter
+    def camera_transforms(self, camera_transforms: wp.array(dtype=wp.transformf)):
+        self.__camera_transforms = camera_transforms
 
     @property
     def material_texture_ids(self) -> wp.array(dtype=wp.int32):

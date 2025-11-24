@@ -96,14 +96,17 @@ class TestTiledCameraSensor(unittest.TestCase):
     def test_golden_image(self):
         model = self.__build_scene()
 
-        camera_positions = wp.array([wp.vec3f(10.0, 0.0, 2.0)], dtype=wp.vec3f)
-        camera_orientations = wp.array([wp.mat33f(0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0)], dtype=wp.mat33f)
+        camera_position = wp.vec3f(10.0, 0.0, 2.0)
+        camera_orientation = wp.mat33f(0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0)
+        camera_transform = wp.array(
+            wp.transformf(camera_position, wp.quat_from_matrix(camera_orientation)), dtype=wp.transformf
+        )
 
         tiled_camera_sensor = TiledCameraSensor(model=model, num_cameras=1, width=320, height=240)
         tiled_camera_sensor.create_default_light()
         tiled_camera_sensor.assign_debug_colors_per_shape()
         tiled_camera_sensor.assign_default_checkerboard_material()
-        tiled_camera_sensor.update_cameras(camera_positions, camera_orientations)
+        tiled_camera_sensor.update_cameras(camera_transform)
         tiled_camera_sensor.compute_camera_rays(wp.array([math.radians(45.0)], dtype=wp.float32))
         color_image = tiled_camera_sensor.create_color_image_output()
         depth_image = tiled_camera_sensor.create_depth_image_output()
@@ -124,11 +127,14 @@ class TestTiledCameraSensor(unittest.TestCase):
     def test_output_image_parameters(self):
         model = self.__build_scene()
 
-        camera_positions = wp.array([wp.vec3f(10.0, 0.0, 2.0)], dtype=wp.vec3f)
-        camera_orientations = wp.array([wp.mat33f(0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0)], dtype=wp.mat33f)
+        camera_position = wp.vec3f(10.0, 0.0, 2.0)
+        camera_orientation = wp.mat33f(0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0)
+        camera_transform = wp.array(
+            wp.transformf(camera_position, wp.quat_from_matrix(camera_orientation)), dtype=wp.transformf
+        )
 
         tiled_camera_sensor = TiledCameraSensor(model=model, num_cameras=1, width=640, height=460)
-        tiled_camera_sensor.update_cameras(camera_positions, camera_orientations)
+        tiled_camera_sensor.update_cameras(camera_transform)
         tiled_camera_sensor.compute_camera_rays(wp.array([math.radians(45.0)], dtype=wp.float32))
         tiled_camera_sensor.update_from_state(model.state())
 
