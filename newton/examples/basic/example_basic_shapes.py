@@ -121,7 +121,6 @@ class Example:
             self.model,
             args,
             rigid_contact_max_per_pair=100,
-            rigid_contact_margin=0.05,
         )
         self.contacts = self.model.collide(self.state_0, collision_pipeline=self.collision_pipeline)
 

@@ -169,10 +169,10 @@ class TestNarrowPhase(unittest.TestCase):
             - transform: (position, quaternion) tuple
             - data: scale/size as vec3, thickness as float
             - source: mesh pointer (default 0)
-            - cutoff: cutoff distance (default 0.0)
+            - cutoff: contact margin (default 0.0)
 
         Returns:
-            Tuple of (geom_types, geom_data, geom_transform, geom_source, geom_cutoff, geom_collision_radius)
+            Tuple of (geom_types, geom_data, geom_transform, geom_source, shape_contact_margin, geom_collision_radius)
         """
         n = len(geom_list)
 
@@ -180,7 +180,7 @@ class TestNarrowPhase(unittest.TestCase):
         geom_data = np.zeros(n, dtype=wp.vec4)
         geom_transforms = []
         geom_source = np.zeros(n, dtype=np.uint64)
-        geom_cutoff = np.zeros(n, dtype=np.float32)
+        shape_contact_margin = np.zeros(n, dtype=np.float32)
         geom_collision_radius = np.zeros(n, dtype=np.float32)
 
         for i, geom in enumerate(geom_list):
@@ -202,7 +202,7 @@ class TestNarrowPhase(unittest.TestCase):
             )
 
             geom_source[i] = geom.get("source", 0)
-            geom_cutoff[i] = geom.get("cutoff", 0.0)
+            shape_contact_margin[i] = geom.get("cutoff", 0.0)
 
             # Compute collision radius for AABB fallback (used for planes/meshes)
             geo_type = geom_types[i]
@@ -229,7 +229,7 @@ class TestNarrowPhase(unittest.TestCase):
             wp.array(geom_data, dtype=wp.vec4),
             wp.array(geom_transforms, dtype=wp.transform),
             wp.array(geom_source, dtype=wp.uint64),
-            wp.array(geom_cutoff, dtype=wp.float32),
+            wp.array(shape_contact_margin, dtype=wp.float32),
             wp.array(geom_collision_radius, dtype=wp.float32),
         )
 
@@ -243,7 +243,7 @@ class TestNarrowPhase(unittest.TestCase):
         Returns:
             Tuple of (contact_count, contact_pairs, positions, normals, penetrations, tangents)
         """
-        geom_types, geom_data, geom_transform, geom_source, geom_cutoff, geom_collision_radius = (
+        geom_types, geom_data, geom_transform, geom_source, shape_contact_margin, geom_collision_radius = (
             self._create_geometry_arrays(geom_list)
         )
 
@@ -264,12 +264,12 @@ class TestNarrowPhase(unittest.TestCase):
         self.narrow_phase.launch(
             candidate_pair=candidate_pair,
             num_candidate_pair=num_candidate_pair,
-            geom_types=geom_types,
-            geom_data=geom_data,
-            geom_transform=geom_transform,
-            geom_source=geom_source,
-            geom_cutoff=geom_cutoff,
-            geom_collision_radius=geom_collision_radius,
+            shape_types=geom_types,
+            shape_data=geom_data,
+            shape_transform=geom_transform,
+            shape_source=geom_source,
+            shape_contact_margin=shape_contact_margin,
+            shape_collision_radius=geom_collision_radius,
             contact_pair=contact_pair,
             contact_position=contact_position,
             contact_normal=contact_normal,
@@ -1214,6 +1214,132 @@ class TestNarrowPhase(unittest.TestCase):
                 places=2,
                 msg=f"Contact {i} tangent should be perpendicular to normal, dot product = {dot_product}",
             )
+
+    def test_per_shape_contact_margin(self):
+        """
+        Test that per-shape contact margins work correctly by testing two spheres
+        with different margins approaching a plane.
+        """
+        # Create geometries: plane + 2 spheres with different margins
+        geom_types = wp.array(
+            [int(GeoType.PLANE), int(GeoType.SPHERE), int(GeoType.SPHERE)],
+            dtype=wp.int32,
+        )
+        geom_data = wp.array(
+            [
+                wp.vec4(0.0, 0.0, 1.0, 0.0),  # Plane (infinite)
+                wp.vec4(0.2, 0.2, 0.2, 0.0),  # Sphere A radius=0.2
+                wp.vec4(0.2, 0.2, 0.2, 0.0),  # Sphere B radius=0.2
+            ],
+            dtype=wp.vec4,
+        )
+        geom_source = wp.zeros(3, dtype=wp.uint64)
+        geom_collision_radius = wp.array([1e6, 0.2, 0.2], dtype=wp.float32)
+
+        # Contact margins: plane=0.01, sphereA=0.02, sphereB=0.06
+        shape_contact_margin = wp.array([0.01, 0.02, 0.06], dtype=wp.float32)
+
+        # Allocate output arrays
+        max_contacts = 10
+        contact_pair = wp.zeros(max_contacts, dtype=wp.vec2i)
+        contact_position = wp.zeros(max_contacts, dtype=wp.vec3)
+        contact_normal = wp.zeros(max_contacts, dtype=wp.vec3)
+        contact_penetration = wp.zeros(max_contacts, dtype=float)
+        contact_tangent = wp.zeros(max_contacts, dtype=wp.vec3)
+        contact_count = wp.zeros(1, dtype=int)
+
+        # Test 1: Sphere A at z=0.25 (outside combined margin 0.03) - no contact
+        geom_transform = wp.array(
+            [
+                wp.transform((0.0, 0.0, 0.0), (0.0, 0.0, 0.0, 1.0)),
+                wp.transform((0.0, 0.0, 0.25), (0.0, 0.0, 0.0, 1.0)),
+                wp.transform((10.0, 0.0, 1.0), (0.0, 0.0, 0.0, 1.0)),
+            ],
+            dtype=wp.transform,
+        )
+        pairs = wp.array([wp.vec2i(0, 1)], dtype=wp.vec2i)
+        num_pairs = wp.array([1], dtype=wp.int32)
+
+        contact_count.zero_()
+        self.narrow_phase.launch(
+            pairs,
+            num_pairs,
+            geom_types,
+            geom_data,
+            geom_transform,
+            geom_source,
+            shape_contact_margin,
+            geom_collision_radius,
+            contact_pair,
+            contact_position,
+            contact_normal,
+            contact_penetration,
+            contact_count,  # contact_count comes BEFORE contact_tangent
+            contact_tangent,
+        )
+        wp.synchronize()
+        self.assertEqual(contact_count.numpy()[0], 0, "Sphere A outside margin should have no contact")
+
+        # Test 2: Sphere A at z=0.15 (inside margin) - contact!
+        geom_transform = wp.array(
+            [
+                wp.transform((0.0, 0.0, 0.0), (0.0, 0.0, 0.0, 1.0)),
+                wp.transform((0.0, 0.0, 0.15), (0.0, 0.0, 0.0, 1.0)),
+                wp.transform((10.0, 0.0, 1.0), (0.0, 0.0, 0.0, 1.0)),
+            ],
+            dtype=wp.transform,
+        )
+
+        contact_count.zero_()
+        self.narrow_phase.launch(
+            pairs,
+            num_pairs,
+            geom_types,
+            geom_data,
+            geom_transform,
+            geom_source,
+            shape_contact_margin,
+            geom_collision_radius,
+            contact_pair,
+            contact_position,
+            contact_normal,
+            contact_penetration,
+            contact_count,
+            contact_tangent,
+        )
+        wp.synchronize()
+        self.assertGreater(contact_count.numpy()[0], 0, "Sphere A inside margin should have contact")
+
+        # Test 3: Sphere B at z=0.23 (inside its larger margin 0.07) - contact!
+        geom_transform = wp.array(
+            [
+                wp.transform((0.0, 0.0, 0.0), (0.0, 0.0, 0.0, 1.0)),
+                wp.transform((10.0, 0.0, 1.0), (0.0, 0.0, 0.0, 1.0)),
+                wp.transform((0.0, 0.0, 0.23), (0.0, 0.0, 0.0, 1.0)),
+            ],
+            dtype=wp.transform,
+        )
+        pairs = wp.array([wp.vec2i(0, 2)], dtype=wp.vec2i)
+
+        contact_count.zero_()
+        self.narrow_phase.launch(
+            pairs,
+            num_pairs,
+            geom_types,
+            geom_data,
+            geom_transform,
+            geom_source,
+            shape_contact_margin,
+            geom_collision_radius,
+            contact_pair,
+            contact_position,
+            contact_normal,
+            contact_penetration,
+            contact_count,
+            contact_tangent,
+        )
+        wp.synchronize()
+        self.assertGreater(contact_count.numpy()[0], 0, "Sphere B with larger margin should have contact")
 
 
 if __name__ == "__main__":

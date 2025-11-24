@@ -38,7 +38,6 @@ To use a collision pipeline, create it from your model and pass it to :meth:`Mod
     collision_pipeline = newton.CollisionPipelineUnified.from_model(
         model,
         rigid_contact_max_per_pair=10,
-        rigid_contact_margin=0.01,
         broad_phase_mode=newton.BroadPhaseMode.NXN,
     )
     
@@ -303,7 +302,20 @@ Additional Topics
 
 **Contact margins**
 
-Both ``rigid_contact_margin`` and ``soft_contact_margin`` parameters expand AABBs during broad phase to detect contacts slightly before actual penetration. This improves stability for implicit integrators. Default: 0.01.
+Contact margins expand AABBs during broad phase to detect contacts slightly before actual penetration, improving stability for implicit integrators.
+
+Rigid contact margins are controlled per-shape via ``ShapeConfig.contact_margin``:
+
+.. code-block:: python
+
+    # Set margin for specific shape
+    cfg = builder.ShapeConfig(contact_margin=0.05)
+    builder.add_shape_box(body=body_id, hx=1.0, hy=1.0, hz=1.0, cfg=cfg)
+    
+    # Or set default margin for all shapes
+    builder.rigid_contact_margin = 0.05  # Must be set before finalize()
+
+Soft contact margins are specified via the ``soft_contact_margin`` parameter in :meth:`Model.collide`. Default: 0.01.
 
 **Soft-rigid contacts**
 

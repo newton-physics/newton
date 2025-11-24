@@ -162,6 +162,9 @@ class ModelBuilder:
         """The coefficient of restitution."""
         thickness: float = 1e-5
         """The thickness of the shape."""
+        contact_margin: float | None = None
+        """The contact margin for collision detection. If None, uses builder.rigid_contact_margin as default.
+        Note: contact_margin should be >= thickness for proper collision detection."""
         is_solid: bool = True
         """Indicates whether the shape is solid or hollow. Defaults to True."""
         collision_group: int = 1
@@ -480,6 +483,7 @@ class ModelBuilder:
         self.shape_material_ka = []
         self.shape_material_mu = []
         self.shape_material_restitution = []
+        self.shape_contact_margin = []
         # collision groups within collisions are handled
         self.shape_collision_group = []
         # radius to use for broadphase collision checking
@@ -799,17 +803,8 @@ class ModelBuilder:
                 else:
                     # List format or single value for single-DOF joints
                     value_sanitized = value
-                    if not isinstance(value_sanitized, (list, tuple)):
-                        # Check if it's a Warp vector/matrix type
-                        if wp.types.type_is_vector(type(value_sanitized)) or wp.types.type_is_matrix(
-                            type(value_sanitized)
-                        ):
-                            value_sanitized = [value_sanitized]
-                        else:
-                            raise TypeError(
-                                f"JOINT_DOF attribute '{attr_key}' must be a list with length equal to joint DOF count ({dof_count}), "
-                                f"a dict mapping DOF indices to values, or a single Warp vector/matrix value for single-DOF joints"
-                            )
+                    if not isinstance(value_sanitized, (list, tuple)) and dof_count == 1:
+                        value_sanitized = [value_sanitized]
 
                     actual = len(value_sanitized)
                     if actual != dof_count:
@@ -853,20 +848,18 @@ class ModelBuilder:
                             expected_frequency=ModelAttributeFrequency.JOINT_COORD,
                         )
                 else:
-                    # List format
-                    if not isinstance(value, (list, tuple)):
-                        raise TypeError(
-                            f"JOINT_COORD attribute '{attr_key}' must be a list with length equal to joint coordinate count ({coord_count}) "
-                            f"or a dict mapping coordinate indices to values"
-                        )
+                    # List format or single value for single-coordinate joints
+                    value_sanitized = value
+                    if not isinstance(value_sanitized, (list, tuple)) and coord_count == 1:
+                        value_sanitized = [value_sanitized]
 
-                    if len(value) != coord_count:
+                    if len(value_sanitized) != coord_count:
                         raise ValueError(
-                            f"JOINT_COORD attribute '{attr_key}' has {len(value)} values but joint has {coord_count} coordinates"
+                            f"JOINT_COORD attribute '{attr_key}' has {len(value_sanitized)} values but joint has {coord_count} coordinates"
                         )
 
                     # Apply each value to its corresponding coordinate
-                    for i, coord_value in enumerate(value):
+                    for i, coord_value in enumerate(value_sanitized):
                         single_attr = {attr_key: coord_value}
                         self._process_custom_attributes(
                             entity_index=coord_start + i,
@@ -1565,6 +1558,7 @@ class ModelBuilder:
             "shape_material_mu",
             "shape_material_restitution",
             "shape_collision_radius",
+            "shape_contact_margin",
             "particle_qd",
             "particle_mass",
             "particle_radius",
@@ -1772,7 +1766,7 @@ class ModelBuilder:
             child_xform (Transform): The transform of the joint in the child body's local frame. If None, the identity transform is used.
             collision_filter_parent (bool): Whether to filter collisions between shapes of the parent and child bodies.
             enabled (bool): Whether the joint is enabled (not considered by :class:`SolverFeatherstone`).
-            custom_attributes: Dictionary of custom attribute keys (see :attr:`CustomAttribute.key`) to values. Note that custom attributes with frequency :attr:`ModelAttributeFrequency.JOINT_DOF` or :attr:`ModelAttributeFrequency.JOINT_COORD` require the respective values to be provided as lists with length equal to the joint's DOF or coordinate count. Custom attributes with frequency :attr:`ModelAttributeFrequency.JOINT` require a single value to be defined.
+            custom_attributes: Dictionary of custom attribute keys (see :attr:`CustomAttribute.key`) to values. Note that custom attributes with frequency :attr:`ModelAttributeFrequency.JOINT_DOF` or :attr:`ModelAttributeFrequency.JOINT_COORD` can be provided as: (1) lists with length equal to the joint's DOF or coordinate count, (2) dicts mapping DOF/coordinate indices to values, or (3) scalar values for single-DOF/single-coordinate joints (automatically expanded to lists). Custom attributes with frequency :attr:`ModelAttributeFrequency.JOINT` require a single value to be defined.
 
         Returns:
             The index of the added joint.
@@ -3070,6 +3064,9 @@ class ModelBuilder:
         self.shape_material_ka.append(cfg.ka)
         self.shape_material_mu.append(cfg.mu)
         self.shape_material_restitution.append(cfg.restitution)
+        self.shape_contact_margin.append(
+            cfg.contact_margin if cfg.contact_margin is not None else self.rigid_contact_margin
+        )
         self.shape_collision_group.append(cfg.collision_group)
         self.shape_collision_radius.append(compute_shape_radius(type, scale, src))
         self.shape_world.append(self.current_world)
@@ -5176,6 +5173,7 @@ class ModelBuilder:
             m.shape_material_restitution = wp.array(
                 self.shape_material_restitution, dtype=wp.float32, requires_grad=requires_grad
             )
+            m.shape_contact_margin = wp.array(self.shape_contact_margin, dtype=wp.float32, requires_grad=requires_grad)
 
             m.shape_collision_filter_pairs = set(self.shape_collision_filter_pairs)
             m.shape_collision_group = wp.array(self.shape_collision_group, dtype=wp.int32)
