@@ -47,7 +47,7 @@ importers = [
     "pycollada>=0.9",              # for loading mesh data with trimesh
 
     # USD core libraries
-    "usd-core>=25.5 ; platform_machine != 'aarch64'",
+    "usd-core==25.5 ; platform_machine != 'aarch64'",
     "usd-exchange>=2.1.0a3 ; platform_machine == 'aarch64'",
 ]
 
@@ -64,7 +64,11 @@ examples = [
 # Extra dependency needed to run examples that inference an RL policy
 torch-cu12 = [
     "newton[examples]", # include example dependencies
-    "torch>=2.7.0",     # Cuda 12 PyTorch
+    
+    "torch==2.6.0+cu124; platform_system == 'Windows'",
+
+    # Linux gets the CUDA 12.9 build
+    "torch==2.9.0+cu129; platform_system != 'Windows'",
 ]
 
 # Development and Testing
@@ -113,7 +117,10 @@ explicit = true
 mujoco-warp = { git = "https://github.com/google-deepmind/mujoco_warp" }
 warp-lang = { index = "nvidia" }
 mujoco = { index = "mujoco" }
-torch = [{ index = "pytorch-cu129", extra = "torch-cu12" }]
+torch = [
+    { index = "pytorch-cu124", extra = "torch-cu12", marker = "platform_system == 'Windows'" },
+    { index = "pytorch-cu129", extra = "torch-cu12", marker = "platform_system != 'Windows'" },
+]
 
 [dependency-groups]
 dev = ["asv>=0.6.4"]
@@ -123,6 +130,11 @@ cache-dir = ".cache/ruff"
 line-length = 120
 indent-width = 4
 exclude = []
+
+[[tool.uv.index]]
+name = "pytorch-cu124"
+url = "https://download.pytorch.org/whl/cu124"
+explicit = true
 
 [[tool.uv.index]]
 name = "pytorch-cu129"
