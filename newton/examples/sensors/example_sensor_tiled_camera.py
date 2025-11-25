@@ -33,7 +33,9 @@ from pxr import Usd, UsdGeom
 import newton
 import newton.examples
 from newton.sensors import TiledCameraSensor
+
 from ...viewer import ViewerGL
+
 
 class Example:
     def __init__(self, viewer):
@@ -91,7 +93,9 @@ class Example:
         self.tiled_camera_sensor.assign_debug_colors_per_shape()
         self.tiled_camera_sensor.assign_default_checkerboard_material()
         if isinstance(self.viewer, ViewerGL):
-            self.tiled_camera_sensor.compute_camera_rays(wp.array([math.radians(self.viewer.camera.fov)], dtype=wp.float32))
+            self.tiled_camera_sensor.compute_camera_rays(
+                wp.array([math.radians(self.viewer.camera.fov)], dtype=wp.float32)
+            )
         else:
             self.tiled_camera_sensor.compute_camera_rays(wp.array([math.radians(45.0)], dtype=wp.float32))
         self.tiled_camera_sensor_color_image = self.tiled_camera_sensor.create_color_image_output()
@@ -122,9 +126,9 @@ class Example:
         else:
             camera_position = wp.vec3f(10.0, 0.0, 2.0)
             camera_orientation = wp.mat33f(0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0)
-            self.tiled_camera_sensor.update_cameras(wp.array(
-                wp.transformf(camera_position, wp.quat_from_matrix(camera_orientation)), dtype=wp.transformf
-            ))
+            self.tiled_camera_sensor.update_cameras(
+                wp.array(wp.transformf(camera_position, wp.quat_from_matrix(camera_orientation)), dtype=wp.transformf)
+            )
 
         self.tiled_camera_sensor.update_from_state(self.state)
         self.tiled_camera_sensor.render(self.tiled_camera_sensor_color_image, self.tiled_camera_sensor_depth_image)
@@ -140,6 +144,7 @@ class Example:
         depth_image = self.tiled_camera_sensor_depth_image.numpy()
         assert depth_image.shape == (1, 1, 1280 * 720)
         assert depth_image.min() < depth_image.max()
+
 
 if __name__ == "__main__":
     # Parse arguments and initialize viewer
