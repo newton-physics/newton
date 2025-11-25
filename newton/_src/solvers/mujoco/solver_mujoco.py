@@ -258,6 +258,8 @@ class SolverMuJoCo(SolverBase):
         """Mapping from Newton joint axis index to MJC actuator index. Shape [dof_count], dtype int32."""
         self.to_mjc_body_index: wp.array(dtype=int) | None = None
         """Mapping from MuJoCo body index to Newton body index (skip world body index -1). Shape [bodies_per_world], dtype int32."""
+        self.newton_body_to_mocap_index: wp.array(dtype=int) | None = None
+        """Mapping from Newton body index to MuJoCo mocap body index. -1 if body is not mocap. Shape [bodies_per_world], dtype int32."""
         self.to_newton_shape_index: wp.array(dtype=int, ndim=2) | None = None
         """Mapping from MuJoCo [worldid, geom index] to Newton shape index. This is used to map MuJoCo geoms to Newton shapes."""
         self.to_mjc_geom_index: wp.array(dtype=wp.vec2i) | None = None
@@ -1007,6 +1009,10 @@ class SolverMuJoCo(SolverBase):
         body_mapping = {-1: 0}
         # mapping from Newton shape id to MuJoCo geom name
         shape_mapping = {}
+        # track mocap index for each Newton body (dict: newton_body_id -> mocap_index)
+        newton_body_to_mocap_index = {}
+        # counter for assigning sequential mocap indices
+        next_mocap_index = 0
 
         # ensure unique names
         body_name_counts = {}
@@ -1212,6 +1218,11 @@ class SolverMuJoCo(SolverBase):
             # use the correct global joint index
             j = selected_joints[ji]
 
+            # check if fixed-base articulation
+            fixed_base = False
+            if parent == -1 and joint_type[j] == JointType.FIXED:
+                fixed_base = True
+
             # this assumes that the joint position is 0
             tf = wp.transform(*joint_parent_xform[j])
             tf = tf * wp.transform_inverse(wp.transform(*joint_child_xform[j]))
@@ -1238,8 +1249,12 @@ class SolverMuJoCo(SolverBase):
                 ipos=body_com[child, :],
                 fullinertia=[inertia[0, 0], inertia[1, 1], inertia[2, 2], inertia[0, 1], inertia[0, 2], inertia[1, 2]],
                 explicitinertial=True,
+                mocap=fixed_base,
             )
             mj_bodies.append(body)
+            if fixed_base:
+                newton_body_to_mocap_index[child] = next_mocap_index
+                next_mocap_index += 1
 
             # add joint
             j_type = joint_type[j]
@@ -1544,6 +1559,13 @@ class SolverMuJoCo(SolverBase):
             to_mjc_body_index = np.fromiter(body_mapping.keys(), dtype=int)[1:] + 1
             self.to_mjc_body_index = wp.array(to_mjc_body_index, dtype=wp.int32)
 
+            # create mapping from Newton body index to mocap index (-1 if not mocap)
+            newton_body_indices = np.fromiter(body_mapping.keys(), dtype=int)[1:]
+            body_to_mocap = np.array(
+                [newton_body_to_mocap_index.get(idx, -1) for idx in newton_body_indices], dtype=np.int32
+            )
+            self.newton_body_to_mocap_index = wp.array(body_to_mocap, dtype=wp.int32)
+
             # set mjwarp-only settings
             self.mjw_model.opt.ls_parallel = ls_parallel
 
@@ -1551,13 +1573,6 @@ class SolverMuJoCo(SolverBase):
                 nworld = model.num_worlds
             else:
                 nworld = 1
-
-            # expand model fields that can be expanded:
-            self.expand_model_fields(self.mjw_model, nworld)
-
-            # so far we have only defined the first world,
-            # now complete the data from the Newton model
-            self.notify_model_changed(SolverNotifyFlags.ALL)
 
             # TODO find better heuristics to determine nconmax and njmax
             if disable_contacts:
@@ -1593,6 +1608,13 @@ class SolverMuJoCo(SolverBase):
                 nconmax=nconmax,
                 njmax=njmax,
             )
+
+            # expand model fields that can be expanded:
+            self.expand_model_fields(self.mjw_model, nworld)
+
+            # so far we have only defined the first world,
+            # now complete the data from the Newton model
+            self.notify_model_changed(SolverNotifyFlags.ALL)
 
     def expand_model_fields(self, mj_model: MjWarpModel, nworld: int):
         if nworld == 1:
@@ -1814,6 +1836,7 @@ class SolverMuJoCo(SolverBase):
                 self.model.joint_type,
                 self.dof_to_mjc_joint,
                 self.to_mjc_body_index,
+                self.newton_body_to_mocap_index,
                 joints_per_world,
             ],
             outputs=[
@@ -1821,6 +1844,8 @@ class SolverMuJoCo(SolverBase):
                 self.mjw_model.jnt_axis,
                 self.mjw_model.body_pos,
                 self.mjw_model.body_quat,
+                self.mjw_data.mocap_pos,
+                self.mjw_data.mocap_quat,
             ],
             device=self.model.device,
         )
