@@ -36,4 +36,7 @@ class LightType(enum.IntEnum):
     """Light types supported by the Warp raytracer."""
 
     SPOTLIGHT = 0
+    """Spotlight."""
+
     DIRECTIONAL = 1
+    """Directional Light."""

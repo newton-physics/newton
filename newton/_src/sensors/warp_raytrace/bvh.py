@@ -140,7 +140,7 @@ def compute_ellipsoid_bounds(pos: wp.vec3f, rot: wp.mat33f, size: wp.vec3f) -> t
 
 @wp.kernel(enable_backward=False)
 def compute_geom_bvh_bounds(
-    num_geom_in_bvh: wp.int32,
+    num_geoms: wp.int32,
     num_worlds: wp.int32,
     geom_world_index: wp.array(dtype=wp.int32),
     geom_enabled: wp.array(dtype=wp.int32),
@@ -155,8 +155,8 @@ def compute_geom_bvh_bounds(
     out_bvh_groups: wp.array(dtype=wp.int32),
 ):
     tid = wp.tid()
-    bvh_geom_local = tid % num_geom_in_bvh
-    if bvh_geom_local >= num_geom_in_bvh:
+    bvh_geom_local = tid % num_geoms
+    if bvh_geom_local >= num_geoms:
         return
 
     geom_id = geom_enabled[bvh_geom_local]
@@ -202,7 +202,7 @@ def compute_geom_bvh_bounds(
 
 @wp.kernel(enable_backward=False)
 def compute_particle_bvh_bounds(
-    num_particle_in_bvh: wp.int32,
+    num_particles: wp.int32,
     num_worlds: wp.int32,
     particle_world_index: wp.array(dtype=wp.int32),
     particle_position: wp.array(dtype=wp.vec3f),
@@ -212,8 +212,8 @@ def compute_particle_bvh_bounds(
     out_bvh_groups: wp.array(dtype=wp.int32),
 ):
     tid = wp.tid()
-    bvh_geom_local = tid % num_particle_in_bvh
-    if bvh_geom_local >= num_particle_in_bvh:
+    bvh_geom_local = tid % num_particles
+    if bvh_geom_local >= num_particles:
         return
 
     geom_id = bvh_geom_local

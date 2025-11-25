@@ -342,7 +342,7 @@ def render_megakernel(
             rc.camera_rays,
             rc.camera_transforms,
             # Geometry BVH
-            rc.num_geom_in_bvh,
+            rc.num_geoms,
             rc.bvh_geom.id if rc.bvh_geom else 0,
             rc.bvh_geom_group_roots,
             # Geometry

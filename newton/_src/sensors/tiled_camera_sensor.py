@@ -185,7 +185,7 @@ class TiledCameraSensor:
                 num_enabled_geoms,
             ],
         )
-        self.render_context.num_geom_in_bvh = int(num_enabled_geoms.numpy()[0])
+        self.render_context.num_geoms = int(num_enabled_geoms.numpy()[0])
 
         wp.launch(
             kernel=compute_mesh_bounds,
