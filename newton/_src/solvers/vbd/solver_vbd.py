@@ -164,13 +164,13 @@ class SolverVBD(SolverBase):
             model: The `Model` object used to initialize the integrator. Must be identical to the `Model` object passed
                 to the `step` function.
 
-            **Common Parameters:**
+            Common parameters:
 
             iterations: Number of VBD iterations per step.
             friction_epsilon: Threshold to smooth small relative velocities in friction computation (used for both particle
                 and rigid body contacts).
 
-            **Particle Parameters:**
+            Particle parameters:
 
             handle_self_contact: Whether to enable self-contact detection for particles.
             self_contact_radius: The radius used for self-contact detection. This is the distance at which vertex-triangle
@@ -190,7 +190,7 @@ class SolverVBD(SolverBase):
             edge_edge_parallel_epsilon: Threshold to detect near-parallel edges in edge-edge collision handling.
             use_particle_tile_solve: Whether to accelerate the particle solver using tile API.
 
-            **Rigid Body Parameters:**
+            Rigid body parameters:
 
             avbd_beta: Penalty ramp rate for rigid body constraints (how fast k grows with constraint violation).
             avbd_gamma: Warmstart decay for penalty k (cross-step decay factor for rigid body constraints).

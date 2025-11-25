@@ -56,6 +56,13 @@ class Example:
         self.faces = mesh_indices.reshape(-1, 3)
 
         builder = newton.ModelBuilder()
+
+        contact_ke = 1.0e2
+        contact_kd = 1.0e0
+        contact_mu = 0.5
+        builder.default_shape_cfg.ke = contact_ke
+        builder.default_shape_cfg.kd = contact_kd
+        builder.default_shape_cfg.mu = contact_mu
         builder.add_cloth_mesh(
             pos=wp.vec3(0.0, 0.0, 10.0),
             rot=wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), wp.pi / 6.0),
@@ -75,9 +82,9 @@ class Example:
         builder.add_ground_plane()
 
         self.model = builder.finalize()
-        self.model.soft_contact_ke = 1.0e2
-        self.model.soft_contact_kd = 1.0e0
-        self.model.soft_contact_mu = 1.0
+        self.model.soft_contact_ke = contact_ke
+        self.model.soft_contact_kd = contact_kd
+        self.model.soft_contact_mu = contact_mu
 
         self.solver = newton.solvers.SolverVBD(
             self.model,
