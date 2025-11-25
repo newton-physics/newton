@@ -178,9 +178,9 @@ For example, to allow the MuJoCo solver to register its custom attributes, you c
    SolverMuJoCo.register_custom_attributes(builder_mujoco)
 
    # Build a scene with a body and a shape
-   builder_mujoco.add_articulation()
-   body = builder_mujoco.add_body()
-   builder_mujoco.add_joint_free(body)
+   body = builder_mujoco.add_link()
+   joint = builder_mujoco.add_joint_free(body)
+   builder_mujoco.add_articulation([joint])
    shape = builder_mujoco.add_shape_box(body=body, hx=0.1, hy=0.1, hz=0.1)
 
    # Finalize the model and allocate arrays for the custom attributes

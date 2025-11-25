@@ -91,6 +91,8 @@ def _add_single_joint(builder: newton.ModelBuilder, jt: int) -> None:
         hz=0.05,
     )
 
+    ji = builder.joint_count
+
     if jt == JointType.REVOLUTE:
         builder.add_joint_revolute(
             parent=-1,
@@ -145,6 +147,9 @@ def _add_single_joint(builder: newton.ModelBuilder, jt: int) -> None:
 
     else:
         raise ValueError(f"Unhandled joint type {jt}")
+
+    if ji == builder.joint_count - 1:
+        builder.add_articulation([ji])
 
 
 def _build_model_for_joint(jt: int, device):

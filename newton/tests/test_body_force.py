@@ -79,7 +79,7 @@ def test_3d_articulation(test: TestBodyForce, device, solver_fn, test_angular, u
 
     b = builder.add_link()
     builder.add_shape_box(b, xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()), hx=0.25, hy=0.5, hz=1.0)
-    builder.add_joint_d6(
+    j = builder.add_joint_d6(
         -1,
         b,
         linear_axes=[
@@ -93,6 +93,7 @@ def test_3d_articulation(test: TestBodyForce, device, solver_fn, test_angular, u
             newton.ModelBuilder.JointDofConfig(axis=newton.Axis.Z),
         ],
     )
+    builder.add_articulation([j])
 
     model = builder.finalize(device=device)
     test.assertEqual(model.joint_dof_count, 6)

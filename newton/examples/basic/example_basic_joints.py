@@ -61,7 +61,6 @@ class Example:
         # -----------------------------
         y = rows[0]
 
-        builder.add_articulation(key="revolute_articulation")
         a_rev = builder.add_link(xform=wp.transform(p=wp.vec3(0.0, y, drop_z + upper_hz), q=wp.quat_identity()))
         b_rev = builder.add_link(
             xform=wp.transform(
@@ -71,14 +70,14 @@ class Example:
         builder.add_shape_box(a_rev, hx=cuboid_hx, hy=cuboid_hy, hz=upper_hz)
         builder.add_shape_box(b_rev, hx=cuboid_hx, hy=cuboid_hy, hz=cuboid_hz)
 
-        builder.add_joint_fixed(
+        j_fixed_rev = builder.add_joint_fixed(
             parent=-1,
             child=a_rev,
             parent_xform=wp.transform(p=wp.vec3(0.0, y, drop_z + upper_hz), q=wp.quat_identity()),
             child_xform=wp.transform(p=wp.vec3(0.0, 0.0, 0.0), q=wp.quat_identity()),
             key="fixed_revolute_anchor",
         )
-        builder.add_joint_revolute(
+        j_revolute = builder.add_joint_revolute(
             parent=a_rev,
             child=b_rev,
             axis=wp.vec3(1.0, 0.0, 0.0),
@@ -86,6 +85,9 @@ class Example:
             child_xform=wp.transform(p=wp.vec3(0.0, 0.0, +cuboid_hz), q=wp.quat_identity()),
             key="revolute_a_b",
         )
+        # Create articulation from joints
+        builder.add_articulation([j_fixed_rev, j_revolute], key="revolute_articulation")
+        
         # set initial joint angle
         builder.joint_q[-1] = wp.pi * 0.5
 
@@ -93,7 +95,6 @@ class Example:
         # PRISMATIC (slider) joint demo
         # -----------------------------
         y = rows[1]
-        builder.add_articulation(key="prismatic_articulation")
         a_pri = builder.add_link(xform=wp.transform(p=wp.vec3(0.0, y, drop_z + upper_hz), q=wp.quat_identity()))
         b_pri = builder.add_link(
             xform=wp.transform(
@@ -103,14 +104,14 @@ class Example:
         builder.add_shape_box(a_pri, hx=cuboid_hx, hy=cuboid_hy, hz=upper_hz)
         builder.add_shape_box(b_pri, hx=cuboid_hx, hy=cuboid_hy, hz=cuboid_hz)
 
-        builder.add_joint_fixed(
+        j_fixed_pri = builder.add_joint_fixed(
             parent=-1,
             child=a_pri,
             parent_xform=wp.transform(p=wp.vec3(0.0, y, drop_z + upper_hz), q=wp.quat_identity()),
             child_xform=wp.transform(p=wp.vec3(0.0, 0.0, 0.0), q=wp.quat_identity()),
             key="fixed_prismatic_anchor",
         )
-        builder.add_joint_prismatic(
+        j_prismatic = builder.add_joint_prismatic(
             parent=a_pri,
             child=b_pri,
             axis=wp.vec3(0.0, 0.0, 1.0),  # slide along Z
@@ -120,6 +121,8 @@ class Example:
             limit_upper=0.3,
             key="prismatic_a_b",
         )
+        # Create articulation from joints
+        builder.add_articulation([j_fixed_pri, j_prismatic], key="prismatic_articulation")
 
         # -----------------------------
         # BALL joint demo (sphere + cuboid)
@@ -128,7 +131,6 @@ class Example:
         radius = 0.3
         z_offset = -1.0  # Shift down by 2 units
 
-        builder.add_articulation(key="ball_articulation")
         # kinematic (massless) sphere as the parent anchor
         a_ball = builder.add_link(
             xform=wp.transform(p=wp.vec3(0.0, y, drop_z + radius + cuboid_hz + z_offset), q=wp.quat_identity())
@@ -144,13 +146,25 @@ class Example:
         builder.add_shape_sphere(a_ball, radius=radius, cfg=rigid_cfg)
         builder.add_shape_box(b_ball, hx=cuboid_hx, hy=cuboid_hy, hz=cuboid_hz)
 
-        builder.add_joint_ball(
+        # Connect parent to world
+        j_fixed_ball = builder.add_joint_fixed(
+            parent=-1,
+            child=a_ball,
+            parent_xform=wp.transform(p=wp.vec3(0.0, y, drop_z + radius + cuboid_hz + z_offset), q=wp.quat_identity()),
+            child_xform=wp.transform(p=wp.vec3(0.0, 0.0, 0.0), q=wp.quat_identity()),
+            key="fixed_ball_anchor",
+        )
+        j_ball = builder.add_joint_ball(
             parent=a_ball,
             child=b_ball,
             parent_xform=wp.transform(p=wp.vec3(0.0, 0.0, 0.0), q=wp.quat_identity()),
             child_xform=wp.transform(p=wp.vec3(0.0, 0.0, +cuboid_hz), q=wp.quat_identity()),
             key="ball_a_b",
         )
+
+        # Create articulation from joints
+        builder.add_articulation([j_fixed_ball, j_ball], key="ball_articulation")
+
         # set initial joint angle
         builder.joint_q[-4:] = wp.quat_rpy(0.5, 0.6, 0.7)
 

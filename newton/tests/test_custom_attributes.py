@@ -1166,12 +1166,6 @@ class TestCustomAttributes(unittest.TestCase):
         # Create articulations with bodies and joints
         arctic_body_ids = []
         for i in range(2):
-            builder.add_articulation(
-                custom_attributes={
-                    "articulation_stiffness": 100.0 + float(i) * 50.0,
-                }
-            )
-
             # Create 2-link articulation
             # Temperature NOT assigned to articulated bodies (use defaults)
             # Density assigned with different values than free bodies
@@ -1189,12 +1183,22 @@ class TestCustomAttributes(unittest.TestCase):
             )
             builder.add_shape_capsule(link, radius=0.05, half_height=0.2)
 
-            builder.add_joint_revolute(
+            # Connect base to world with a free joint
+            j_base = builder.add_joint_free(child=base)
+            j_revolute = builder.add_joint_revolute(
                 parent=base,
                 child=link,
                 parent_xform=wp.transform([0.0, 0.0, 0.1], wp.quat_identity()),
                 child_xform=wp.transform([0.0, 0.0, -0.2], wp.quat_identity()),
                 axis=[0.0, 1.0, 0.0],
+            )
+            
+            # Create articulation from joints
+            builder.add_articulation(
+                [j_base, j_revolute],
+                custom_attributes={
+                    "articulation_stiffness": 100.0 + float(i) * 50.0,
+                }
             )
             arctic_body_ids.extend([base, link])
 

@@ -44,7 +44,7 @@ def _build_two_link_planar(device) -> newton.Model:
         xform=wp.transform([0.5, 0.0, 0.0], wp.quat_identity()),
         mass=1.0,
     )
-    builder.add_joint_revolute(
+    joint1 = builder.add_joint_revolute(
         parent=-1,
         child=link1,
         parent_xform=wp.transform([0.0, 0.0, 0.0], wp.quat_identity()),
@@ -56,13 +56,16 @@ def _build_two_link_planar(device) -> newton.Model:
         xform=wp.transform([1.5, 0.0, 0.0], wp.quat_identity()),
         mass=1.0,
     )
-    builder.add_joint_revolute(
+    joint2 = builder.add_joint_revolute(
         parent=link1,
         child=link2,
         parent_xform=wp.transform([0.5, 0.0, 0.0], wp.quat_identity()),
         child_xform=wp.transform([-0.5, 0.0, 0.0], wp.quat_identity()),
         axis=[0.0, 0.0, 1.0],
     )
+    
+    # Create articulation from joints
+    builder.add_articulation([joint1, joint2])
 
     model = builder.finalize(device=device, requires_grad=True)
     return model
@@ -84,7 +87,7 @@ def _build_free_plus_revolute(device) -> newton.Model:
         xform=wp.transform([0.0, 0.0, 0.0], wp.quat_identity()),
         mass=1.0,
     )
-    builder.add_joint_free(
+    joint1 = builder.add_joint_free(
         parent=-1,
         child=link1,
         parent_xform=wp.transform_identity(),
@@ -95,13 +98,16 @@ def _build_free_plus_revolute(device) -> newton.Model:
         xform=wp.transform([1.0, 0.0, 0.0], wp.quat_identity()),
         mass=1.0,
     )
-    builder.add_joint_revolute(
+    joint2 = builder.add_joint_revolute(
         parent=link1,
         child=link2,
         parent_xform=wp.transform([0.5, 0.0, 0.0], wp.quat_identity()),
         child_xform=wp.transform([-0.5, 0.0, 0.0], wp.quat_identity()),
         axis=[0.0, 0.0, 1.0],
     )
+    
+    # Create articulation from joints
+    builder.add_articulation([joint1, joint2])
 
     model = builder.finalize(device=device, requires_grad=True)
     return model
@@ -116,7 +122,7 @@ def _build_single_d6(device) -> newton.Model:
     builder = newton.ModelBuilder()
     cfg = newton.ModelBuilder.JointDofConfig
     link = builder.add_link(xform=wp.transform_identity(), mass=1.0)
-    builder.add_joint_d6(
+    joint = builder.add_joint_d6(
         parent=-1,
         child=link,
         linear_axes=[cfg(axis=newton.Axis.X), cfg(axis=newton.Axis.Y), cfg(axis=newton.Axis.Z)],
@@ -124,6 +130,8 @@ def _build_single_d6(device) -> newton.Model:
         parent_xform=wp.transform_identity(),
         child_xform=wp.transform_identity(),
     )
+    # Create articulation from the joint
+    builder.add_articulation([joint])
     return builder.finalize(device=device, requires_grad=True)
 
 

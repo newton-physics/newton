@@ -78,7 +78,7 @@ def test_3d_articulation(test: TestControlForce, device, solver_fn):
 
     b = builder.add_link()
     builder.add_shape_sphere(b)
-    builder.add_joint_d6(
+    j = builder.add_joint_d6(
         -1,
         b,
         linear_axes=[
@@ -87,6 +87,7 @@ def test_3d_articulation(test: TestControlForce, device, solver_fn):
             newton.ModelBuilder.JointDofConfig(axis=newton.Axis.Z, armature=0.0),
         ],
     )
+    builder.add_articulation([j])
 
     model = builder.finalize(device=device)
 

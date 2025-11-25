@@ -48,7 +48,7 @@ def test_revolute_controller(
     builder.add_shape_box(body=b, hx=0.2, hy=0.2, hz=0.2, cfg=newton.ModelBuilder.ShapeConfig(density=1))
 
     # Create a revolute joint
-    builder.add_joint_revolute(
+    j = builder.add_joint_revolute(
         parent=-1,
         child=b,
         parent_xform=wp.transform(wp.vec3(0.0, 2.0, 0.0), wp.quat_identity()),
@@ -64,6 +64,7 @@ def test_revolute_controller(
         target_ke=target_ke,
         target_kd=target_kd,
     )
+    builder.add_articulation([j])
 
     model = builder.finalize(device=device)
     model.ground = False

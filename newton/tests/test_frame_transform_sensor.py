@@ -433,7 +433,7 @@ class TestFrameTransformSensor(unittest.TestCase):
         # Link 1: connected by revolute joint, extends 1m in +X from joint
         link1 = builder.add_link(mass=1.0, I_m=wp.mat33(np.eye(3)))
         site1 = builder.add_site(link1, key="site1")
-        builder.add_joint_revolute(
+        joint1 = builder.add_joint_revolute(
             parent=root,
             child=link1,
             axis=wp.vec3(0, 0, 1),
@@ -443,13 +443,15 @@ class TestFrameTransformSensor(unittest.TestCase):
         # Link 2: connected to link1, extends another 1m in +X
         link2 = builder.add_link(mass=1.0, I_m=wp.mat33(np.eye(3)))
         site2 = builder.add_site(link2, key="site2")
-        builder.add_joint_revolute(
+        joint2 = builder.add_joint_revolute(
             parent=link1,
             child=link2,
             axis=wp.vec3(0, 0, 1),
             parent_xform=wp.transform(wp.vec3(1, 0, 0), wp.quat_identity()),  # Joint is 1m from link1 origin
             child_xform=wp.transform(wp.vec3(-1, 0, 0), wp.quat_identity()),  # Joint is 1m from link2 origin
         )
+
+        builder.add_articulation([joint1, joint2])
 
         model = builder.finalize()
         state = model.state()

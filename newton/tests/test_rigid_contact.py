@@ -110,18 +110,14 @@ def test_shapes_on_plane(test, device, solver_fn):
     for i, scale in enumerate([0.5, 1.0]):
         y_pos = i * 1.5
 
-        builder.add_articulation()
-        b = builder.add_link(xform=wp.transform(wp.vec3(0.0, y_pos, 1.0), wp.quat_identity()))
-        builder.add_joint_free(b)
+        b = builder.add_body(xform=wp.transform(wp.vec3(0.0, y_pos, 1.0), wp.quat_identity()))
         builder.add_shape_sphere(
             body=b,
             radius=0.1 * scale,
         )
         expected_end_positions.append(wp.vec3(0.0, y_pos, 0.1 * scale))
 
-        builder.add_articulation()
-        b = builder.add_link(xform=wp.transform(wp.vec3(2.0, y_pos, 1.0), wp.quat_identity()))
-        builder.add_joint_free(b)
+        b = builder.add_body(xform=wp.transform(wp.vec3(2.0, y_pos, 1.0), wp.quat_identity()))
         # Apply Y-axis rotation to capsule
         xform = wp.transform(wp.vec3(), quat_between_axes(newton.Axis.Z, newton.Axis.Y))
         builder.add_shape_capsule(
@@ -132,9 +128,7 @@ def test_shapes_on_plane(test, device, solver_fn):
         )
         expected_end_positions.append(wp.vec3(2.0, y_pos, 0.1 * scale))
 
-        builder.add_articulation()
-        b = builder.add_link(xform=wp.transform(wp.vec3(4.0, y_pos, 1.0), wp.quat_identity()))
-        builder.add_joint_free(b)
+        b = builder.add_body(xform=wp.transform(wp.vec3(4.0, y_pos, 1.0), wp.quat_identity()))
         builder.add_shape_box(
             body=b,
             hx=0.2 * scale,
@@ -143,9 +137,7 @@ def test_shapes_on_plane(test, device, solver_fn):
         )
         expected_end_positions.append(wp.vec3(4.0, y_pos, 0.3 * scale))
 
-        builder.add_articulation()
-        b = builder.add_link(xform=wp.transform(wp.vec3(5.0, y_pos, 1.0), wp.quat_identity()))
-        builder.add_joint_free(b)
+        b = builder.add_body(xform=wp.transform(wp.vec3(5.0, y_pos, 1.0), wp.quat_identity()))
         builder.add_shape_cylinder(
             body=b,
             radius=0.1 * scale,
@@ -153,9 +145,7 @@ def test_shapes_on_plane(test, device, solver_fn):
         )
         expected_end_positions.append(wp.vec3(5.0, y_pos, 0.3 * scale))
 
-        builder.add_articulation()
-        b = builder.add_link(xform=wp.transform(wp.vec3(7.0, y_pos, 1.0), wp.quat_identity()))
-        builder.add_joint_free(b)
+        b = builder.add_body(xform=wp.transform(wp.vec3(7.0, y_pos, 1.0), wp.quat_identity()))
         builder.add_shape_mesh(
             body=b,
             mesh=cube_mesh,

@@ -43,8 +43,6 @@ class Example:
 
         builder = newton.ModelBuilder()
 
-        builder.add_articulation(key="pendulum")
-
         hx = 1.0
         hy = 0.1
         hz = 0.1
@@ -58,7 +56,7 @@ class Example:
 
         # add joints
         rot = wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), -wp.pi * 0.5)
-        builder.add_joint_revolute(
+        j0 = builder.add_joint_revolute(
             parent=-1,
             child=link_0,
             axis=wp.vec3(0.0, 1.0, 0.0),
@@ -66,13 +64,16 @@ class Example:
             parent_xform=wp.transform(p=wp.vec3(0.0, 0.0, 5.0), q=rot),
             child_xform=wp.transform(p=wp.vec3(-hx, 0.0, 0.0), q=wp.quat_identity()),
         )
-        builder.add_joint_revolute(
+        j1 = builder.add_joint_revolute(
             parent=link_0,
             child=link_1,
             axis=wp.vec3(0.0, 1.0, 0.0),
             parent_xform=wp.transform(p=wp.vec3(hx, 0.0, 0.0), q=wp.quat_identity()),
             child_xform=wp.transform(p=wp.vec3(-hx, 0.0, 0.0), q=wp.quat_identity()),
         )
+        
+        # Create articulation from joints
+        builder.add_articulation([j0, j1], key="pendulum")
 
         # add ground plane
         builder.add_ground_plane()

@@ -36,11 +36,10 @@ its joint angle to 0.5 and joint velocity to 10.0:
 
   builder = newton.ModelBuilder()
   # create an articulation with a single revolute joint
-  # (articulations are closed automatically by ModelBuilder.finalize())
-  builder.add_articulation()
   body = builder.add_link()
   builder.add_shape_box(body)  # add a shape to the body to add some inertia
-  builder.add_joint_revolute(parent=-1, child=body, axis=wp.vec3(0.0, 0.0, 1.0))  # add a revolute joint to the body
+  joint = builder.add_joint_revolute(parent=-1, child=body, axis=wp.vec3(0.0, 0.0, 1.0))  # add a revolute joint to the body
+  builder.add_articulation([joint])  # create articulation from the joint
   builder.joint_q[-1] = 0.5
   builder.joint_qd[-1] = 10.0
 
@@ -88,11 +87,11 @@ Since :meth:`~newton.ModelBuilder.add_body` automatically adds a free joint, the
 .. testcode::
 
   builder = newton.ModelBuilder()
-  builder.add_articulation()
   tf = wp.transform(wp.vec3(1.0, 2.0, 3.0), wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), 0.5 * wp.pi))
   body = builder.add_link(xform=tf)
   builder.add_shape_box(body)  # add a shape to the body to add some inertia
-  builder.add_joint_free(body)  # add a free joint to connect the body to the world
+  joint = builder.add_joint_free(body)  # add a free joint to connect the body to the world
+  builder.add_articulation([joint])  # create articulation from the joint
   # The free joint's coordinates (joint_q) are initialized by its child body's pose,
   # so we do not need to specify them here
   # builder.joint_q[-7:] = *tf

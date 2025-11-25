@@ -205,7 +205,6 @@ class TestMuJoCoSolverPropertiesBase(TestMuJoCoSolver):
         # tree_root_initial_pos_y = link_half_length * 2.0
         # tree_root_initial_transform = wp.transform((0.0, tree_root_initial_pos_y, 0.0), wp.quat_identity())
 
-        template_builder.add_articulation()
         body1_idx = template_builder.add_link(mass=0.1)
         template_builder.add_shape_capsule(
             body=body1_idx,
@@ -214,7 +213,7 @@ class TestMuJoCoSolverPropertiesBase(TestMuJoCoSolver):
             half_height=link_half_length,
             cfg=shape_cfg,
         )
-        template_builder.add_joint_free(body1_idx)
+        joint1 = template_builder.add_joint_free(body1_idx)
 
         body2_idx = template_builder.add_link(mass=0.1)
         template_builder.add_shape_capsule(
@@ -224,7 +223,7 @@ class TestMuJoCoSolverPropertiesBase(TestMuJoCoSolver):
             half_height=link_half_length,
             cfg=shape_cfg,
         )
-        template_builder.add_joint_revolute(
+        joint2 = template_builder.add_joint_revolute(
             parent=body1_idx,
             child=body2_idx,
             parent_xform=wp.transform((0.0, link_half_length, 0.0), wp.quat_identity()),
@@ -240,13 +239,15 @@ class TestMuJoCoSolverPropertiesBase(TestMuJoCoSolver):
             half_height=link_half_length,
             cfg=shape_cfg,
         )
-        template_builder.add_joint_revolute(
+        joint3 = template_builder.add_joint_revolute(
             parent=body2_idx,
             child=body3_idx,
             parent_xform=wp.transform((0.0, link_half_length, 0.0), wp.quat_identity()),
             child_xform=wp.transform((0.0, -link_half_length, 0.0), wp.quat_identity()),
             axis=(1.0, 0.0, 0.0),
         )
+        
+        template_builder.add_articulation([joint1, joint2, joint3])
 
         self.builder = newton.ModelBuilder()
         self.builder.add_shape_plane()
@@ -2457,17 +2458,19 @@ class TestMuJoCoAttributes(unittest.TestCase):
         newton.solvers.SolverMuJoCo.register_custom_attributes(builder)
 
         # Create joints with different margin values per DOF
-        b0 = builder.add_body()
-        builder.add_joint_revolute(-1, b0, axis=(0.0, 0.0, 1.0), custom_attributes={"mujoco:limit_margin": [0.01]})
+        b0 = builder.add_link()
+        j0 = builder.add_joint_revolute(-1, b0, axis=(0.0, 0.0, 1.0), custom_attributes={"mujoco:limit_margin": [0.01]})
         builder.add_shape_box(body=b0, hx=0.1, hy=0.1, hz=0.1)
 
-        b1 = builder.add_body()
-        builder.add_joint_revolute(b0, b1, axis=(0.0, 0.0, 1.0), custom_attributes={"mujoco:limit_margin": [0.02]})
+        b1 = builder.add_link()
+        j1 = builder.add_joint_revolute(b0, b1, axis=(0.0, 0.0, 1.0), custom_attributes={"mujoco:limit_margin": [0.02]})
         builder.add_shape_box(body=b1, hx=0.1, hy=0.1, hz=0.1)
 
-        b2 = builder.add_body()
-        builder.add_joint_revolute(b1, b2, axis=(0.0, 0.0, 1.0))  # Default should be 0.0
+        b2 = builder.add_link()
+        j2 = builder.add_joint_revolute(b1, b2, axis=(0.0, 0.0, 1.0))  # Default should be 0.0
         builder.add_shape_box(body=b2, hx=0.1, hy=0.1, hz=0.1)
+        
+        builder.add_articulation([j0, j1, j2])
 
         model = builder.finalize()
         solver = SolverMuJoCo(model, separate_worlds=False)
@@ -2577,13 +2580,15 @@ class TestMuJoCoAttributes(unittest.TestCase):
         newton.solvers.SolverMuJoCo.register_custom_attributes(builder)
 
         # Create joints
-        b0 = builder.add_body()
-        builder.add_joint_revolute(-1, b0, axis=(0.0, 0.0, 1.0), custom_attributes={"mujoco:limit_margin": [0.01]})
+        b0 = builder.add_link()
+        j0 = builder.add_joint_revolute(-1, b0, axis=(0.0, 0.0, 1.0), custom_attributes={"mujoco:limit_margin": [0.01]})
         builder.add_shape_box(body=b0, hx=0.1, hy=0.1, hz=0.1)
 
-        b1 = builder.add_body()
-        builder.add_joint_revolute(b0, b1, axis=(0.0, 0.0, 1.0), custom_attributes={"mujoco:limit_margin": [0.02]})
+        b1 = builder.add_link()
+        j1 = builder.add_joint_revolute(b0, b1, axis=(0.0, 0.0, 1.0), custom_attributes={"mujoco:limit_margin": [0.02]})
         builder.add_shape_box(body=b1, hx=0.1, hy=0.1, hz=0.1)
+        
+        builder.add_articulation([j0, j1])
 
         model = builder.finalize()
         solver = SolverMuJoCo(model, separate_worlds=False, iterations=1, disable_contacts=True)
