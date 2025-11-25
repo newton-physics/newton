@@ -2057,6 +2057,8 @@ class ModelBuilder:
         child: int,
         parent_xform: Transform | None = None,
         child_xform: Transform | None = None,
+        armature: float | None = None,
+        friction: float | None = None,
         key: str | None = None,
         collision_filter_parent: bool = True,
         enabled: bool = True,
@@ -2069,6 +2071,8 @@ class ModelBuilder:
             child: The index of the child body.
             parent_xform (Transform): The transform of the joint in the parent body's local frame.
             child_xform (Transform): The transform of the joint in the child body's local frame.
+            armature: Artificial inertia added around the joint axes. If None, the default value from :attr:`default_joint_armature` is used.
+            friction: Friction coefficient for the joint axes. If None, the default value from :attr:`default_joint_cfg.friction` is used.
             key: The key of the joint.
             collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies.
             enabled: Whether the joint is enabled.
@@ -2079,12 +2083,34 @@ class ModelBuilder:
 
         """
 
+        if armature is None:
+            armature = self.default_joint_cfg.armature
+        if friction is None:
+            friction = self.default_joint_cfg.friction
+
+        x = ModelBuilder.JointDofConfig(
+            axis=Axis.X,
+            armature=armature,
+            friction=friction,
+        )
+        y = ModelBuilder.JointDofConfig(
+            axis=Axis.Y,
+            armature=armature,
+            friction=friction,
+        )
+        z = ModelBuilder.JointDofConfig(
+            axis=Axis.Z,
+            armature=armature,
+            friction=friction,
+        )
+
         return self.add_joint(
             JointType.BALL,
             parent,
             child,
             parent_xform=parent_xform,
             child_xform=child_xform,
+            angular_axes=[x, y, z],
             key=key,
             collision_filter_parent=collision_filter_parent,
             enabled=enabled,

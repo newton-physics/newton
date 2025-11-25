@@ -1253,6 +1253,22 @@ class SolverMuJoCo(SolverBase):
                     dof_to_mjc_joint[qd_start + i] = num_mjc_joints
                 num_dofs += 6
                 num_mjc_joints += 1
+            elif j_type == JointType.BALL:
+                body.add_joint(
+                    name=name,
+                    type=mujoco.mjtJoint.mjJNT_BALL,
+                    axis=wp.quat_rotate(joint_rot, wp.vec3(1.0, 0.0, 0.0)),
+                    pos=joint_pos,
+                    damping=0.0,
+                    limited=False,
+                    armature=joint_armature[qd_start],
+                    frictionloss=joint_friction[qd_start],
+                )
+                # For ball joints, all 3 DOFs map to the same MuJoCo joint
+                for i in range(3):
+                    dof_to_mjc_joint[qd_start + i] = num_mjc_joints
+                num_dofs += 3
+                num_mjc_joints += 1
             elif j_type in supported_joint_types:
                 lin_axis_count, ang_axis_count = joint_dof_dim[j]
                 num_dofs += lin_axis_count + ang_axis_count
