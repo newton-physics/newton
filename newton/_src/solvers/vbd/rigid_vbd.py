@@ -4,9 +4,9 @@
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
-# 
+#
 #     http://www.apache.org/licenses/LICENSE-2.0
-# 
+#
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -35,9 +35,7 @@ from warp.types import float32, vector
 from newton._src.sim import JointType
 from newton._src.solvers.solver import integrate_rigid_body
 
-wp.set_module_options(
-    {"enable_backward": False}
-)
+wp.set_module_options({"enable_backward": False})
 
 # ---------------------------------
 # Constants
@@ -72,8 +70,10 @@ _USE_JACOBI_CONTACTS = False
 # Helper classes and device functions
 # ---------------------------------
 
+
 class vec6(vector(length=6, dtype=float32)):
     """Packed lower-triangular 3x3 matrix storage: [L00, L10, L11, L20, L21, L22]."""
+
     pass
 
 
@@ -94,7 +94,7 @@ def quat_diff_to_omega(q_now: wp.quat, q_prev: wp.quat, dt: float) -> wp.vec3:
     # Normalize inputs
     q1 = wp.normalize(q_now)
     q0 = wp.normalize(q_prev)
-    
+
     # Enforce shortest-arc by aligning quaternion hemisphere
     dot_q = q1[0] * q0[0] + q1[1] * q0[1] + q1[2] * q0[2] + q1[3] * q0[3]
     if dot_q < 0.0:
@@ -108,7 +108,7 @@ def quat_diff_to_omega(q_now: wp.quat, q_prev: wp.quat, dt: float) -> wp.vec3:
     v = wp.vec3(dq[0], dq[1], dq[2])
     w = dq[3]
     v_len = wp.length(v)
-    
+
     # angle = 2*atan2(|v|, w); with small-angle fallback consistent with other sites
     if v_len > _SMALL_ANGLE_EPS:
         angle = 2.0 * wp.atan2(v_len, w)
@@ -376,9 +376,9 @@ def evaluate_cable_bend_force_hessian_avbd(
     q_wc_prev: wp.quat,
     is_parent: bool,
     k_eff: float,
-    sigma0: wp.vec3,      # Dahl friction initial stress
-    C_fric: wp.vec3,      # Dahl friction rate coefficient
-    damping: float,       # Rayleigh damping coefficient
+    sigma0: wp.vec3,  # Dahl friction initial stress
+    C_fric: wp.vec3,  # Dahl friction rate coefficient
+    damping: float,  # Rayleigh damping coefficient
     dt: float,
 ):
     """
@@ -581,6 +581,7 @@ def evaluate_cable_stretch_force_hessian_avbd(
 # ---------------------------------
 # Data structures
 # ---------------------------------
+
 
 @wp.struct
 class RigidForceElementAdjacencyInfo:
@@ -797,20 +798,20 @@ def evaluate_body_particle_contact(
 ):
     """
     Evaluate particle-rigid body contact force and Hessian (on particle side).
-    
+
     Computes contact forces and Hessians for a particle interacting with a rigid body shape.
     The function is agnostic to whether the rigid body is static, kinematic, or dynamic.
-    
+
     Contact model:
     - Normal: Linear spring-damper (stiffness: body_particle_contact_ke, damping: body_particle_contact_kd)
     - Friction: 3D projector-based Coulomb friction with IPC regularization
     - Normal direction: Points from rigid surface towards particle (into particle)
-    
+
     Args:
         particle_index: Index of the particle
         particle_pos: Current particle position (world frame)
         particle_prev_pos: Previous particle position (world frame)
-        contact_index: Index in the body–particle contact arrays
+        contact_index: Index in the body-particle contact arrays
         body_particle_contact_ke: Contact stiffness (model-level or AVBD adaptive)
         body_particle_contact_kd: Contact damping (model-level or AVBD averaged)
         friction_mu: Friction coefficient (model-level or AVBD averaged)
@@ -827,7 +828,7 @@ def evaluate_body_particle_contact(
         contact_body_vel: Array of contact velocities (local frame)
         contact_normal: Array of contact normals (world frame, from rigid to particle)
         dt: Time step
-        
+
     Returns:
         tuple[wp.vec3, wp.mat33]: (force, Hessian) on the particle (world frame)
     """
@@ -851,7 +852,7 @@ def evaluate_body_particle_contact(
         body_contact_force = n * body_contact_force_norm
         body_contact_hessian = body_particle_contact_ke * wp.outer(n, n)
 
-        # Use the larger of body–particle friction and shape material friction
+        # Use the larger of body-particle friction and shape material friction
         mu = wp.max(friction_mu, shape_material_mu[shape_index])
 
         dx = particle_pos - particle_prev_pos
@@ -1213,11 +1214,11 @@ def build_body_body_contact_lists(
 ):
     """
     Build per-body contact lists for body-centric per-color contact evaluation.
-    
-    Each contact index t_id is appended to both bodies' lists (shape0's body and 
+
+    Each contact index t_id is appended to both bodies' lists (shape0's body and
     shape1's body), enabling efficient lookup of all contacts involving a given body
     during per-body solve iterations.
-    
+
     Notes:
       - body_contact_counts[b] is reset to 0 on the host before launch and
         atomically incremented here; consumers must only read the first
@@ -1259,19 +1260,19 @@ def build_body_particle_contact_lists(
     body_particle_contact_indices: wp.array(dtype=wp.int32),
 ):
     """
-    Build per-body contact lists for body–particle (particle–rigid) contacts.
+    Build per-body contact lists for body-particle (particle-rigid) contacts.
 
-    Each body–particle contact index tid (from the external contacts.soft_contact_*
+    Each body-particle contact index tid (from the external contacts.soft_contact_*
     arrays) is appended to the list of the rigid body associated with
     body_particle_contact_shape[tid] via shape_body. This enables efficient
-    per-body processing of particle–rigid contacts during the rigid-body solve
-    (e.g., Gauss–Seidel color sweeps).
+    per-body processing of particle-rigid contacts during the rigid-body solve
+    (e.g., Gauss-Seidel color sweeps).
 
     Notes:
       - body_particle_contact_counts[b] must be zeroed on the host before launch.
       - Only the first body_particle_contact_counts[b] entries in the flat
         body_particle_contact_indices array are considered valid for body b.
-      - If a body has more than body_particle_contact_buffer_pre_alloc body–particle
+      - If a body has more than body_particle_contact_buffer_pre_alloc body-particle
         contacts, extra indices are dropped (overflow is ignored safely).
     """
     tid = wp.tid()
@@ -1376,11 +1377,11 @@ def warmstart_body_particle_contacts(
     body_particle_contact_material_mu: wp.array(dtype=float),
 ):
     """
-    Warm-start body–particle (particle–rigid) contact penalties and cache material
+    Warm-start body-particle (particle-rigid) contact penalties and cache material
     properties (once per step).
 
     The scalar inputs soft_contact_ke/kd/mu are the particle-side soft-contact
-    material parameters (from model.soft_contact_*). For each body–particle
+    material parameters (from model.soft_contact_*). For each body-particle
     contact, this kernel averages those particle-side values with the rigid
     shape's material parameters, and decays the AVBD penalty parameter using
     standard warmstart logic.
@@ -1518,7 +1519,7 @@ def compute_cable_dahl_parameters(
 
     sigma_out = wp.vec3(0.0)
     C_fric_out = wp.vec3(0.0)
-    
+
     for axis in range(3):
         kappa_i = kappa_now[axis]
         kappa_i_prev = kappa_prev[axis]
@@ -1536,10 +1537,10 @@ def compute_cable_dahl_parameters(
         exp_term = wp.exp(-s_i * d_kappa_i / tau)
         sigma0_i = s_i * sigma_max * (1.0 - exp_term) + sigma_i_prev * exp_term
         sigma0_i = wp.clamp(sigma0_i, -sigma_max, sigma_max)
-        
+
         numerator = sigma_max - s_i * sigma0_i
         denominator = tau + dt * wp.abs(kappa_dot_i)
-        
+
         C_fric_i = wp.max(dt * (numerator / denominator), 0.0)
         sigma_out[axis] = sigma0_i
         C_fric_out[axis] = C_fric_i
@@ -1578,7 +1579,7 @@ def accumulate_body_body_contacts_jacobi(
     body_hessian_aa: wp.array(dtype=wp.mat33),
 ):
     """
-    Jacobi-style body–body contact accumulation: one thread per contact, applying
+    Jacobi-style body-body contact accumulation: one thread per contact, applying
     equal-and-opposite forces/torques and Hessians to the two incident bodies.
 
     Uses the same contact model as accumulate_body_body_contacts_per_body but
@@ -1693,18 +1694,18 @@ def accumulate_body_body_contacts_per_body(
     tid = wp.tid()
     body_idx_in_group = tid // _NUM_CONTACT_THREADS_PER_BODY
     thread_id_within_body = tid % _NUM_CONTACT_THREADS_PER_BODY
-    
+
     if body_idx_in_group >= color_group.shape[0]:
         return
-    
+
     body_id = color_group[body_idx_in_group]
     if body_inv_mass[body_id] <= 0.0:
         return
-    
+
     num_contacts = body_contact_counts[body_id]
     if num_contacts > body_contact_buffer_pre_alloc:
         num_contacts = body_contact_buffer_pre_alloc
-    
+
     i = thread_id_within_body
     while i < num_contacts:
         contact_idx = body_contact_indices[body_id * body_contact_buffer_pre_alloc + i]
@@ -1716,20 +1717,20 @@ def accumulate_body_body_contacts_per_body(
         s1 = rigid_contact_shape1[contact_idx]
         b0 = shape_body[s0] if s0 >= 0 else -1
         b1 = shape_body[s1] if s1 >= 0 else -1
-    
+
         if b0 != body_id and b1 != body_id:
             i += _NUM_CONTACT_THREADS_PER_BODY
             continue
 
         cp0_local = rigid_contact_point0[contact_idx]
         cp1_local = rigid_contact_point1[contact_idx]
-        contact_normal = -rigid_contact_normal[contact_idx]    
+        contact_normal = -rigid_contact_normal[contact_idx]
         cp0_world = wp.transform_point(body_q[b0], cp0_local) if b0 >= 0 else cp0_local
         cp1_world = wp.transform_point(body_q[b1], cp1_local) if b1 >= 0 else cp1_local
         thickness = rigid_contact_thickness0[contact_idx] + rigid_contact_thickness1[contact_idx]
         dist = wp.dot(contact_normal, cp1_world - cp0_world)
         penetration = thickness - dist
-    
+
         if penetration <= _SMALL_LENGTH_EPS:
             i += _NUM_CONTACT_THREADS_PER_BODY
             continue
@@ -1795,12 +1796,12 @@ def accumulate_body_particle_contacts_per_body(
     body_qd: wp.array(dtype=wp.spatial_vector),
     body_com: wp.array(dtype=wp.vec3),
     body_inv_mass: wp.array(dtype=float),
-    # AVBD body–particle soft contact penalties and material properties
+    # AVBD body-particle soft contact penalties and material properties
     friction_epsilon: float,
     body_particle_contact_penalty_k: wp.array(dtype=float),
     body_particle_contact_material_kd: wp.array(dtype=float),
     body_particle_contact_material_mu: wp.array(dtype=float),
-    # Soft contact data (body–particle)
+    # Soft contact data (body-particle)
     body_particle_contact_count: wp.array(dtype=int),
     body_particle_contact_particle: wp.array(dtype=int),
     body_particle_contact_shape: wp.array(dtype=int),
@@ -1822,14 +1823,14 @@ def accumulate_body_particle_contacts_per_body(
     body_hessian_aa: wp.array(dtype=wp.mat33),
 ):
     """
-    Per-body accumulation of body–particle (particle–rigid) soft contact forces and
+    Per-body accumulation of body-particle (particle-rigid) soft contact forces and
     Hessians on rigid bodies.
 
-    This kernel mirrors the Gauss–Seidel per-body pattern used for body–body contacts,
-    but iterates over body–particle contacts associated with each body via the
+    This kernel mirrors the Gauss-Seidel per-body pattern used for body-body contacts,
+    but iterates over body-particle contacts associated with each body via the
     precomputed body_particle_contact_* adjacency.
 
-    For each body–particle contact, we:
+    For each body-particle contact, we:
       1. Reuse the particle-side contact model via evaluate_body_particle_contact to
          compute the force and Hessian on the particle using adaptive AVBD penalties.
       2. Apply the equal-and-opposite reaction force, torque, and Hessian contributions
@@ -1877,7 +1878,7 @@ def accumulate_body_particle_contacts_per_body(
         n = body_particle_contact_normal[contact_idx]
         radius = particle_radius[particle_idx]
         penetration_depth = -(wp.dot(n, particle_pos - cp_world) - radius)
-        
+
         if penetration_depth <= 0.0:
             i += _NUM_CONTACT_THREADS_PER_BODY
             continue
@@ -2228,7 +2229,7 @@ def update_duals_joint(
 
     Increases per-DOF penalties based on current constraint violation magnitudes,
     clamped by the per-DOF material target stiffness.
-    
+
     Args:
         joint_type: Joint types
         joint_parent: Parent body indices
@@ -2401,9 +2402,9 @@ def update_duals_body_particle_contacts(
     per-contact material stiffness.
 
     Args:
-        body_particle_contact_count: Number of active body–particle soft contacts
-        body_particle_contact_particle: Particle index for each body–particle soft contact
-        body_particle_contact_shape: Shape index for each body–particle soft contact
+        body_particle_contact_count: Number of active body-particle soft contacts
+        body_particle_contact_particle: Particle index for each body-particle soft contact
+        body_particle_contact_shape: Shape index for each body-particle soft contact
         body_particle_contact_body_pos: Contact points in local shape frames
         body_particle_contact_normal: Contact normals (pointing from rigid to particle)
         particle_q: Current particle positions

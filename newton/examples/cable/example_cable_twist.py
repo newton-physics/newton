@@ -60,17 +60,17 @@ class Example:
         self, pos: wp.vec3 | None = None, num_elements=16, length=6.4, twisting_angle=0.0
     ):
         """Create a zigzag cable route with parallel-transported quaternions.
-        
+
         Generates a cable path with three sharp 90-degree turns lying on the XY-plane.
         Path order: +Y -> +X -> -Y -> +X. Uses parallel transport to maintain smooth
         reference frames across turns, with optional twist around the local capsule axis.
-        
+
         Args:
             pos: Starting position of the cable (default: origin).
             num_elements: Number of cable segments (num_points = num_elements + 1).
             length: Total cable length.
             twisting_angle: Total twist in radians around capsule axis (0 = no twist).
-        
+
         Returns:
             Tuple of (points, edge_indices, quaternions):
             - points: List of capsule center positions (num_elements + 1).
@@ -161,7 +161,7 @@ class Example:
         # Store viewer and arguments
         self.viewer = viewer
         self.args = args
-        
+
         # Simulation cadence
         self.fps = 60
         self.frame_dt = 1.0 / self.fps
@@ -355,5 +355,5 @@ if __name__ == "__main__":
 
     # Create example and run
     example = Example(viewer, args)
-    
+
     newton.examples.run(example, args)

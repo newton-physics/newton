@@ -324,21 +324,21 @@ def test_coloring_rigid_body_cable_chain(test, device):
     """Test rigid body coloring for a cable chain (linear connectivity)."""
     with wp.ScopedDevice(device):
         builder = ModelBuilder()
-        
+
         # Create a cable chain with 10 elements
         num_elements = 10
         cable_length = 2.0
         segment_length = cable_length / num_elements
-        
+
         points = []
         for i in range(num_elements + 1):
             x = i * segment_length
             points.append(wp.vec3(x, 0.0, 1.0))
-        
+
         # Create orientation (align capsule +Z with +X direction)
         rot_z_to_x = wp.quat_between_vectors(wp.vec3(0.0, 0.0, 1.0), wp.vec3(1.0, 0.0, 0.0))
         edge_q = [rot_z_to_x] * num_elements
-        
+
         # Add cable using rod_mesh (creates bodies + cable joints)
         _rod_bodies, _rod_joints = builder.add_rod_mesh(
             positions=points,
@@ -350,16 +350,16 @@ def test_coloring_rigid_body_cable_chain(test, device):
             stretch_damping=1.0e-2,
             key="test_cable",
         )
-        
+
         # Apply coloring
         builder.color()
-        
+
         # Finalize model
         model = builder.finalize()
-        
+
         # Verify coloring exists
         test.assertGreater(len(model.body_color_groups), 0, "No body color groups generated")
-        
+
         # Verify all bodies are colored exactly once
         body_color_count = np.zeros(model.body_count, dtype=int)
         for color_group in model.body_color_groups:
@@ -367,17 +367,17 @@ def test_coloring_rigid_body_cable_chain(test, device):
             test.assertTrue(np.all(color_group_np >= 0), "Invalid body index in color group")
             test.assertTrue(np.all(color_group_np < model.body_count), "Body index out of range")
             body_color_count[color_group_np] += 1
-        
+
         test.assertTrue(np.all(body_color_count == 1), "Each body must be colored exactly once")
-        
+
         # Verify adjacent bodies (connected by joints) have different colors
         body_colors = np.full(model.body_count, -1, dtype=int)
         for color_idx, color_group in enumerate(model.body_color_groups):
             body_colors[color_group.numpy()] = color_idx
-        
+
         joint_parent = model.joint_parent.numpy()
         joint_child = model.joint_child.numpy()
-        
+
         for i in range(len(joint_parent)):
             parent = joint_parent[i]
             child = joint_child[i]
@@ -385,71 +385,74 @@ def test_coloring_rigid_body_cable_chain(test, device):
                 test.assertNotEqual(
                     body_colors[parent],
                     body_colors[child],
-                    f"Joint {i}: parent body {parent} and child body {child} have same color"
+                    f"Joint {i}: parent body {parent} and child body {child} have same color",
                 )
-        
+
         # For a linear chain, expect 2 colors (alternating pattern)
         # This is optimal for cable chains
-        test.assertLessEqual(len(model.body_color_groups), 2, 
-                           f"Cable chain should use at most 2 colors, got {len(model.body_color_groups)}")
+        test.assertLessEqual(
+            len(model.body_color_groups),
+            2,
+            f"Cable chain should use at most 2 colors, got {len(model.body_color_groups)}",
+        )
 
 
 def test_coloring_rigid_body_color_algorithms(test, device):
     """Test different coloring algorithms (MCS vs GREEDY) for rigid bodies."""
     with wp.ScopedDevice(device):
         # Create a more complex cable structure for algorithm comparison
-        builder = ModelBuilder()
-        
+        builder_mcs = ModelBuilder()
+        builder_greedy = ModelBuilder()
+
         num_elements = 20
         points = []
         for i in range(num_elements + 1):
             points.append(wp.vec3(float(i) * 0.1, 0.0, 1.0))
-        
+
         rot_z_to_x = wp.quat_between_vectors(wp.vec3(0.0, 0.0, 1.0), wp.vec3(1.0, 0.0, 0.0))
         edge_q = [rot_z_to_x] * num_elements
-        
-        builder.add_rod_mesh(
-            positions=points,
-            quaternions=edge_q,
-            radius=0.05,
-            bend_stiffness=1.0e2,
-            bend_damping=1.0e-2,
-            stretch_stiffness=1.0e6,
-            stretch_damping=1.0e-2,
-            key="test_cable",
-        )
-        
+
+        for b in (builder_mcs, builder_greedy):
+            b.add_rod_mesh(
+                positions=points,
+                quaternions=edge_q,
+                radius=0.05,
+                bend_stiffness=1.0e2,
+                bend_damping=1.0e-2,
+                stretch_stiffness=1.0e6,
+                stretch_damping=1.0e-2,
+                key="test_cable",
+            )
+
         # Test MCS algorithm
-        builder.body_color_groups = []  # Reset
-        builder.color(coloring_algorithm=ColoringAlgorithm.MCS)
-        model_mcs = builder.finalize()
-        
+        builder_mcs.body_color_groups = []  # Reset
+        builder_mcs.color(coloring_algorithm=ColoringAlgorithm.MCS)
+        model_mcs = builder_mcs.finalize()
+
         # Test GREEDY algorithm
-        builder.body_color_groups = []  # Reset
-        builder.color(coloring_algorithm=ColoringAlgorithm.GREEDY)
-        model_greedy = builder.finalize()
-        
+        builder_greedy.body_color_groups = []  # Reset
+        builder_greedy.color(coloring_algorithm=ColoringAlgorithm.GREEDY)
+        model_greedy = builder_greedy.finalize()
+
         # Both should produce valid colorings
         test.assertGreater(len(model_mcs.body_color_groups), 0, "MCS produced no colors")
         test.assertGreater(len(model_greedy.body_color_groups), 0, "GREEDY produced no colors")
-        
+
         # Verify both colorings are valid (connected bodies have different colors)
         for model, name in [(model_mcs, "MCS"), (model_greedy, "GREEDY")]:
             body_colors = np.full(model.body_count, -1, dtype=int)
             for color_idx, color_group in enumerate(model.body_color_groups):
                 body_colors[color_group.numpy()] = color_idx
-            
+
             joint_parent = model.joint_parent.numpy()
             joint_child = model.joint_child.numpy()
-            
+
             for i in range(len(joint_parent)):
                 parent = joint_parent[i]
                 child = joint_child[i]
                 if parent >= 0 and child >= 0:
                     test.assertNotEqual(
-                        body_colors[parent],
-                        body_colors[child],
-                        f"{name}: Joint {i} connects bodies with same color"
+                        body_colors[parent], body_colors[child], f"{name}: Joint {i} connects bodies with same color"
                     )
 
 
@@ -457,23 +460,21 @@ def test_coloring_rigid_body_no_joints(test, device):
     """Test rigid body coloring when there are no joints (all bodies independent)."""
     with wp.ScopedDevice(device):
         builder = ModelBuilder()
-        
+
         # Add 5 independent bodies (no joints)
         for i in range(5):
             body = builder.add_body(xform=wp.transform(wp.vec3(float(i), 0.0, 1.0), wp.quat_identity()))
             builder.add_shape_capsule(body, radius=0.05, half_height=0.25)
-        
+
         # Apply coloring
         builder.color()
-        
+
         # Finalize model
         model = builder.finalize()
-        
+
         # With no joints, all bodies can have the same color
-        test.assertEqual(len(model.body_color_groups), 1, 
-                        "Expected 1 color group for independent bodies")
-        test.assertEqual(model.body_color_groups[0].size, 5,
-                        "All 5 bodies should be in same color group")
+        test.assertEqual(len(model.body_color_groups), 1, "Expected 1 color group for independent bodies")
+        test.assertEqual(model.body_color_groups[0].size, 5, "All 5 bodies should be in same color group")
 
 
 devices = get_test_devices()
@@ -487,9 +488,18 @@ add_function_test(TestColoring, "test_coloring_trimesh", test_coloring_trimesh, 
 add_function_test(TestColoring, "test_combine_coloring", test_combine_coloring, devices=devices)
 
 # Rigid body coloring tests
-add_function_test(TestColoring, "test_coloring_rigid_body_cable_chain", test_coloring_rigid_body_cable_chain, devices=devices)
-add_function_test(TestColoring, "test_coloring_rigid_body_color_algorithms", test_coloring_rigid_body_color_algorithms, devices=devices)
-add_function_test(TestColoring, "test_coloring_rigid_body_no_joints", test_coloring_rigid_body_no_joints, devices=devices)
+add_function_test(
+    TestColoring, "test_coloring_rigid_body_cable_chain", test_coloring_rigid_body_cable_chain, devices=devices
+)
+add_function_test(
+    TestColoring,
+    "test_coloring_rigid_body_color_algorithms",
+    test_coloring_rigid_body_color_algorithms,
+    devices=devices,
+)
+add_function_test(
+    TestColoring, "test_coloring_rigid_body_no_joints", test_coloring_rigid_body_no_joints, devices=devices
+)
 
 if __name__ == "__main__":
     unittest.main(verbosity=2, failfast=True)

@@ -31,6 +31,7 @@ import warp as wp
 import newton
 import newton.examples
 
+
 def create_cable_geometry(
     start_pos: wp.vec3,
     num_elements: int,
@@ -40,11 +41,11 @@ def create_cable_geometry(
     twist_total: float = 0.0,
 ) -> tuple[list[wp.vec3], np.ndarray, list[wp.quat]]:
     """Build a cable polyline with optional sinusoidal waviness and distributed twist.
-    
+
     Creates a cable along a specified axis with parallel-transported quaternions for
     physically consistent orientation. Supports waviness (sinusoidal perturbations) and
     twist (rotation along the cable axis).
-    
+
     Args:
         start_pos: Starting position of the cable (will be centered).
         num_elements: Number of cable segments (num_points = num_elements + 1).
@@ -52,7 +53,7 @@ def create_cable_geometry(
         orientation: Cable direction ("x" for +X axis, "y" for +Y axis).
         waviness: Amplitude scaling for sinusoidal waviness (0.0 = straight).
         twist_total: Total twist in radians distributed uniformly along cable.
-    
+
     Returns:
         Tuple of (points, edge_indices, quaternions):
         - points: List of capsule center positions (num_elements + 1).
@@ -118,7 +119,7 @@ class Example:
         # Store viewer and arguments
         self.viewer = viewer
         self.args = args
-        
+
         # Simulation cadence
         self.fps = 60
         self.frame_dt = 1.0 / self.fps
@@ -148,7 +149,7 @@ class Example:
         # Default config will be used by plane and any shape without explicit cfg
         builder.default_shape_cfg.ke = 1.0e5  # Contact stiffness (used by plane)
         builder.default_shape_cfg.kd = 1.0e-1  # Contact damping
-        builder.default_shape_cfg.mu = 5.0e0  # Friction coefficient
+        builder.default_shape_cfg.mu = 5.0  # Friction coefficient
 
         cable_shape_cfg = newton.ModelBuilder.ShapeConfig(
             density=builder.default_shape_cfg.density,
@@ -264,11 +265,11 @@ class Example:
 
             # Apply forces to the model
             self.viewer.apply_forces(self.state_0)
-            
+
             # Collide for contact detection
             self.contacts = self.model.collide(self.state_0)
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
-            
+
             # Swap states
             self.state_0, self.state_1 = self.state_1, self.state_0
 
@@ -337,5 +338,5 @@ if __name__ == "__main__":
     # Create example and run
     # For sloped friction tests, use: Example(viewer, args, slope_enabled=True, slope_angle_deg=20.0, slope_mu=0.8)
     example = Example(viewer, args)
-    
+
     newton.examples.run(example, args)

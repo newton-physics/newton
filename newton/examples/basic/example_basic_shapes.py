@@ -26,8 +26,6 @@
 #
 ###########################################################################
 
-import argparse
-
 import warp as wp
 from pxr import Usd
 
@@ -53,7 +51,7 @@ class Example:
         if self.solver_type == "vbd":
             # VBD: Higher stiffness for stable rigid body contacts
             builder.default_shape_cfg.ke = 1.0e6  # Contact stiffness
-            builder.default_shape_cfg.kd = 1.0e-1  # Contact damping
+            builder.default_shape_cfg.kd = 1.0e1  # Contact damping
             builder.default_shape_cfg.mu = 0.5  # Friction coefficient
 
         # add ground plane
@@ -218,11 +216,8 @@ class Example:
 
 
 if __name__ == "__main__":
-    # Parse arguments and initialize viewer
-    viewer, args = newton.examples.init()
-    
-    # Parse solver-specific arguments
-    parser = argparse.ArgumentParser(description="Basic shapes with multiple solvers")
+    # Extend the shared examples parser with a solver choice
+    parser = newton.examples.create_parser()
     parser.add_argument(
         "--solver",
         type=str,
@@ -230,12 +225,9 @@ if __name__ == "__main__":
         choices=["vbd", "xpbd"],
         help="Solver type: xpbd (default) or vbd",
     )
-    solver_args, _ = parser.parse_known_args()
-    
-    # Add solver choice to args
-    args.solver = solver_args.solver
 
-    # Create example and run
+    viewer, args = newton.examples.init(parser)
+
     example = Example(viewer, args)
 
     newton.examples.run(example, args)

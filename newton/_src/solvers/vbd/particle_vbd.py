@@ -4,9 +4,9 @@
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
-# 
+#
 #     http://www.apache.org/licenses/LICENSE-2.0
-# 
+#
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -24,9 +24,10 @@ The high-level :class:`SolverVBD` interface should remain in
 
 from __future__ import annotations
 
-import numpy as np
 import warp as wp
 from warp.types import float32, matrix
+
+from newton._src.solvers.vbd.rigid_vbd import evaluate_body_particle_contact
 
 from ...geometry import ParticleFlags
 from ...geometry.kernels import triangle_closest_point
@@ -34,8 +35,6 @@ from .tri_mesh_collision import TriMeshCollisionInfo
 
 # TODO: Grab changes from Warp that has fixed the backward pass
 wp.set_module_options({"enable_backward": False})
-
-from newton._src.solvers.vbd.rigid_vbd import evaluate_body_particle_contact
 
 VBD_DEBUG_PRINTING_OPTIONS = {
     # "elasticity_force_hessian",
@@ -54,6 +53,7 @@ TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE = 16
 
 class mat32(matrix(shape=(3, 2), dtype=float32)):
     pass
+
 
 @wp.struct
 class ParticleForceElementAdjacencyInfo:
@@ -304,6 +304,8 @@ def _test_compute_force_element_adjacency(
                     face_indices[face, 1],
                     face_indices[face, 2],
                 )
+
+
 @wp.func
 def build_orthonormal_basis(n: wp.vec3):
     """
@@ -666,8 +668,6 @@ def evaluate_dihedral_angle_based_bending_force_hessian(
         bending_hessian = bending_hessian + damping_hessian
 
     return bending_force, bending_hessian
-
-
 
 
 @wp.func
@@ -1710,7 +1710,7 @@ def accumulate_contact_force_and_hessian(
     body_particle_contact_particle: wp.array(dtype=int),
     body_particle_contact_count: wp.array(dtype=int),
     body_particle_contact_max: int,
-    # per-contact soft AVBD parameters for body–particle contacts (shared with rigid side)
+    # per-contact soft AVBD parameters for body-particle contacts (shared with rigid side)
     body_particle_contact_penalty_k: wp.array(dtype=float),
     body_particle_contact_material_kd: wp.array(dtype=float),
     body_particle_contact_material_mu: wp.array(dtype=float),
@@ -1978,7 +1978,7 @@ def accumulate_contact_force_and_hessian_no_self_contact(
     body_particle_contact_particle: wp.array(dtype=int),
     body_particle_contact_count: wp.array(dtype=int),
     body_particle_contact_max: int,
-    # per-contact soft AVBD parameters for body–particle contacts (shared with rigid side)
+    # per-contact soft AVBD parameters for body-particle contacts (shared with rigid side)
     body_particle_contact_penalty_k: wp.array(dtype=float),
     body_particle_contact_material_kd: wp.array(dtype=float),
     body_particle_contact_material_mu: wp.array(dtype=float),
@@ -2292,4 +2292,3 @@ def solve_trimesh_with_self_contact_penetration_free_tile(
             pos_new[particle_index] = apply_conservative_bound_truncation(
                 particle_index, particle_pos_new, pos_prev_collision_detection, particle_conservative_bounds
             )
-

@@ -33,22 +33,25 @@ import newton.examples
 class Example:
     def create_cable_geometry(self, pos: wp.vec3 | None = None, num_elements=10, length=10.0, twisting_angle=0.0):
         """Create a straight cable geometry with parallel-transported quaternions.
-        
+
         Uses proper parallel transport to maintain a consistent reference frame along the cable.
         This ensures smooth rotational continuity and physically accurate twist distribution.
-        
+
         Args:
             pos: Starting position of the cable (default: origin).
             num_elements: Number of cable segments (num_points = num_elements + 1).
             length: Total cable length.
             twisting_angle: Total twist in radians distributed uniformly along the cable.
-        
+
         Returns:
             Tuple of (points, edge_indices, quaternions):
             - points: List of capsule center positions (num_elements + 1).
             - edge_indices: Flattened array of edge connectivity (2*num_elements).
             - quaternions: List of capsule orientations using parallel transport (num_elements).
         """
+        if num_elements <= 0:
+            raise ValueError("create_cable_geometry: num_elements must be positive")
+
         if pos is None:
             pos = wp.vec3()
 
@@ -147,8 +150,6 @@ class Example:
         builder.default_shape_cfg.kd = 1.0e1  # Contact damping
         builder.default_shape_cfg.mu = 1.0  # Friction coefficient
 
-        kinematic_body_indices = []
-
         y_separation = 0.5
 
         # Create 5 cables in a row along the y-axis, centered around origin
@@ -182,10 +183,6 @@ class Example:
             first_body = rod_bodies[0]
             builder.body_mass[first_body] = 0.0
             builder.body_inv_mass[first_body] = 0.0
-            kinematic_body_indices.append(first_body)
-
-        # Create array of kinematic body indices
-        self.kinematic_bodies = wp.array(kinematic_body_indices, dtype=wp.int32)
 
         # Add ground plane
         builder.add_ground_plane()
@@ -208,7 +205,7 @@ class Example:
         self.capture()
 
     def capture(self):
-        if wp.get_device().is_cuda:
+        if self.solver.device.is_cuda:
             with wp.ScopedCapture() as capture:
                 self.simulate()
             self.graph = capture.graph

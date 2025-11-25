@@ -42,11 +42,11 @@ class Example:
         twisting_angle: float = 0.0,
     ):
         """Create a helix-shaped cable geometry rising along the Z axis.
-        
+
         Generates a helical path with parallel-transported quaternions for physically
         consistent capsule orientations. The helix has a circular cross-section in the
         XY plane and rises linearly in Z.
-        
+
         Args:
             pos: World position offset for the helix base (default: origin).
             num_elements: Number of cable segments (num_points = num_elements + 1).
@@ -54,7 +54,7 @@ class Example:
             height: Total vertical rise along Z from start to end.
             turns: Number of complete helical turns (2*pi radians per turn).
             twisting_angle: Total twist in radians around local tangent (distributed uniformly).
-        
+
         Returns:
             Tuple of (points, edge_indices, quaternions):
             - points: List of capsule center positions (num_elements + 1).
@@ -118,7 +118,7 @@ class Example:
         # Store viewer and arguments
         self.viewer = viewer
         self.args = args
-        
+
         # Simulation cadence
         self.fps = 60
         self.frame_dt = 1.0 / self.fps
@@ -144,6 +144,7 @@ class Example:
         # Stiffness sweep for cables (increasing)
         bend_stiffness_values = [5.0e2, 5.0e3, 5.0e4]
         num_cables = len(bend_stiffness_values)
+        self.cable_bodies_list: list[list[int]] = []
         y_separation = 5.0
         stretch_stiffness = 1.0e6
 
@@ -162,7 +163,7 @@ class Example:
                 twisting_angle=0.0,  # No initial twist
             )
 
-            _rod_bodies, _rod_joints = builder.add_rod_mesh(
+            rod_bodies, _rod_joints = builder.add_rod_mesh(
                 positions=points,
                 quaternions=quats,
                 radius=self.cable_radius,
@@ -172,6 +173,9 @@ class Example:
                 stretch_damping=1.0e-4,
                 key=f"helix_{i}",
             )
+
+            # Record the body indices for this cable for robust testing
+            self.cable_bodies_list.append(rod_bodies)
 
         # Add ground plane
         builder.add_ground_plane()
@@ -201,7 +205,7 @@ class Example:
 
     def capture(self):
         """Capture simulation loop into a CUDA graph for optimal GPU performance."""
-        if wp.get_device().is_cuda:
+        if self.solver.device.is_cuda:
             with wp.ScopedCapture() as capture:
                 self.simulate()
             self.graph = capture.graph
@@ -215,11 +219,11 @@ class Example:
 
             # Apply forces to the model
             self.viewer.apply_forces(self.state_0)
-            
+
             # Collide for contact detection
             self.contacts = self.model.collide(self.state_0)
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
-            
+
             # Swap states
             self.state_0, self.state_1 = self.state_1, self.state_0
 
@@ -240,26 +244,23 @@ class Example:
 
     def test(self):
         """Test helix cable simulation for stability and correctness."""
-        num_cables = 3
-        
         # Helix dimensions for physical bounds checking
         initial_height = 0.5  # Helices start at z=0.5
         helix_max_height = initial_height + self.helix_height  # Top of helix
         ground_tolerance = 0.1  # Allow some ground penetration (soft contacts)
-        
+
         # Check final state after viewer has run 100 frames (no additional simulation needed)
         if self.state_0.body_q is not None and self.state_0.body_qd is not None:
             body_positions = self.state_0.body_q.numpy()
             body_velocities = self.state_0.body_qd.numpy()
-            
+
             # Test 1: Check for numerical stability
             assert np.isfinite(body_positions).all(), "Non-finite positions"
             assert np.isfinite(body_velocities).all(), "Non-finite velocities"
-            
+
             # Test 2: Check connectivity - cables should maintain joint distances
-            num_bodies_per_cable = self.num_elements
-            joint_tolerance = 0.15  # Allow 15% stretch max for helical geometry
-            
+            joint_tolerance = 0.05  # Allow 5% stretch max for helical geometry
+
             # Calculate expected segment length from initial helix geometry
             # For a helix with n turns over height h and radius r, the arc length per segment is:
             # s ~= sqrt((2*pi*r * turns / n)^2 + (h / n)^2)
@@ -267,27 +268,28 @@ class Example:
             horizontal_arc = 2.0 * np.pi * self.helix_radius * turns_per_segment
             vertical_rise = self.helix_height / self.num_elements
             expected_segment_length = np.sqrt(horizontal_arc**2 + vertical_rise**2)
-            
-            for cable_idx in range(num_cables):
-                start_body = cable_idx * num_bodies_per_cable
-                for body_idx in range(start_body, start_body + num_bodies_per_cable - 1):
-                    p0 = body_positions[body_idx, :3]
-                    p1 = body_positions[body_idx + 1, :3]
+
+            for cable_idx, rod_bodies in enumerate(self.cable_bodies_list):
+                for seg_idx in range(len(rod_bodies) - 1):
+                    b0 = rod_bodies[seg_idx]
+                    b1 = rod_bodies[seg_idx + 1]
+                    p0 = body_positions[b0, :3]
+                    p1 = body_positions[b1, :3]
                     distance = np.linalg.norm(p1 - p0)
-                    
+
                     assert distance < expected_segment_length * (1.0 + joint_tolerance), (
-                        f"Cable {cable_idx} joint {body_idx} overstretched: "
+                        f"Cable {cable_idx} segment {seg_idx} overstretched: "
                         f"distance={distance:.3f} > expected {expected_segment_length:.3f}"
                     )
-            
+
             # Test 3: Check ground interaction - no excessive penetration
             z_positions = body_positions[:, 2]
             min_z = np.min(z_positions)
-            
+
             assert min_z > -ground_tolerance, (
                 f"Cables penetrated ground too much: min_z={min_z:.3f} < {-ground_tolerance:.3f}"
             )
-            
+
             # Test 4: Check reasonable height range (helix should settle but not explode)
             max_z = np.max(z_positions)
             assert max_z < helix_max_height + 1.0, (
@@ -301,5 +303,5 @@ if __name__ == "__main__":
 
     # Create example and run
     example = Example(viewer, args)
-    
+
     newton.examples.run(example, args)

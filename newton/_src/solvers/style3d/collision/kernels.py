@@ -15,7 +15,7 @@
 
 import warp as wp
 
-from newton._src.solvers.vbd.solver_vbd import evaluate_body_particle_contact
+from newton._src.solvers.vbd.rigid_vbd import evaluate_body_particle_contact
 
 
 @wp.func

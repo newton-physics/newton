@@ -394,7 +394,12 @@ def color_rigid_bodies(
     # Build edge list from joint connections
     edge_list = []
 
-    for parent, child in zip(joint_parent, joint_child, strict=False):
+    if len(joint_parent) != len(joint_child):
+        raise ValueError(
+            f"joint_parent and joint_child must have the same length (got {len(joint_parent)} and {len(joint_child)})"
+        )
+
+    for parent, child in zip(joint_parent, joint_child, strict=True):
         if parent != -1 and child != -1 and parent != child:
             edge_list.append([parent, child])
 

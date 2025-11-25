@@ -33,16 +33,16 @@ import newton.examples
 class Example:
     def create_cable_geometry(self, pos: wp.vec3 | None = None, num_elements=10, length=10.0, twisting_angle=0.0):
         """Create a straight cable geometry with parallel-transported quaternions.
-        
+
         Uses proper parallel transport to maintain a consistent reference frame along the cable.
         This ensures smooth rotational continuity and physically accurate twist distribution.
-        
+
         Args:
             pos: Starting position of the cable (default: origin).
             num_elements: Number of cable segments (num_points = num_elements + 1).
             length: Total cable length.
             twisting_angle: Total twist in radians distributed uniformly along the cable.
-        
+
         Returns:
             Tuple of (points, edge_indices, quaternions):
             - points: List of capsule center positions (num_elements + 1).
@@ -51,11 +51,11 @@ class Example:
         """
         if pos is None:
             pos = wp.vec3()
-        
+
         # Create points along straight line in X direction
         num_points = num_elements + 1
         points = []
-        
+
         for i in range(num_points):
             t = i / num_elements
             x = length * t
@@ -152,6 +152,7 @@ class Example:
         builder.default_shape_cfg.mu = 1.0  # Friction coefficient
 
         kinematic_body_indices = []
+        self.cable_bodies_list: list[list[int]] = []
 
         y_separation = 0.5
 
@@ -187,6 +188,9 @@ class Example:
             builder.body_mass[first_body] = 0.0
             builder.body_inv_mass[first_body] = 0.0
             kinematic_body_indices.append(first_body)
+
+            # Store full body index list for each cable for robust testing
+            self.cable_bodies_list.append(rod_bodies)
 
         # Create array of kinematic body indices
         self.kinematic_bodies = wp.array(kinematic_body_indices, dtype=wp.int32)
@@ -248,7 +252,7 @@ class Example:
 
     def test(self):
         """Test cable damping simulation for stability and correctness."""
-        
+
         # Use instance variables for consistency with initialization
         segment_length = self.cable_length / self.num_elements
 
@@ -264,11 +268,10 @@ class Example:
             assert (np.abs(body_velocities) < 5e2).all(), "Body velocities too large (>500)"
 
             # Test 2: Check cable connectivity (joint constraints)
-            for cable_idx in range(self.num_cables):
-                start_body = cable_idx * self.num_elements
-                for segment in range(self.num_elements - 1):
-                    body1_idx = start_body + segment
-                    body2_idx = start_body + segment + 1
+            for cable_idx, rod_bodies in enumerate(self.cable_bodies_list):
+                for segment in range(len(rod_bodies) - 1):
+                    body1_idx = rod_bodies[segment]
+                    body2_idx = rod_bodies[segment + 1]
 
                     pos1 = body_positions[body1_idx][:3]  # Extract translation part
                     pos2 = body_positions[body2_idx][:3]

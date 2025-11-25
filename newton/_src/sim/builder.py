@@ -2318,7 +2318,12 @@ class ModelBuilder:
         that constrains the distance between the attachment points, and one angular (bend/twist)
         that penalizes the relative rotation of the attachment frames.
 
-        .. note:: Cable joints are supported by :class:`newton.solvers.SolverAVBD`.
+        .. note::
+
+            Cable joints are supported by :class:`newton.solvers.SolverVBD`, which uses an
+            AVBD backend for rigid bodies. For cable joints, the stretch and bend behavior
+            is defined by the parent/child attachment transforms; the joint axis stored in
+            :class:`JointDofConfig` is not currently used directly.
 
         Args:
             parent: The index of the parent body.
@@ -3885,6 +3890,11 @@ class ModelBuilder:
 
             # Calculate segment properties
             segment_length = wp.length(p1 - p0)
+            if segment_length <= 0.0:
+                raise ValueError(
+                    f"add_rod_mesh: segment {i} has zero or negative length; "
+                    "positions must form strictly positive-length segments"
+                )
             half_height = 0.5 * segment_length
 
             # Sanity check: ensure the capsule orientation aligns its local +Z axis with
@@ -5019,6 +5029,13 @@ class ModelBuilder:
         """
         Runs coloring algorithm to generate coloring information.
 
+        This populates both :attr:`particle_color_groups` (for particles) and
+        :attr:`body_color_groups` (for rigid bodies) on the builder, which are
+        consumed by :class:`newton.solvers.SolverVBD`.
+
+        Call :meth:`color` (or :meth:`set_coloring`) before :meth:`finalize` when using
+        :class:`newton.solvers.SolverVBD`; :meth:`finalize` does not implicitly color the model.
+
         Args:
             include_bending_energy: Whether to consider bending energy for trimeshes in the coloring process. If set to `True`, the generated
                 graph will contain all the edges connecting o1 and o2; otherwise, the graph will be equivalent to the trimesh.
@@ -5319,6 +5336,11 @@ class ModelBuilder:
             m.body_world = wp.array(self.body_world, dtype=wp.int32)
 
             # body colors
+            if not self.body_color_groups and len(self.body_q) > 0:
+                # If no explicit rigid-body coloring was requested, assign all bodies to a single color group.
+                # This mirrors the default behavior of the rigid-body coloring utilities.
+                self.body_color_groups = [np.arange(len(self.body_q), dtype=int)]
+
             body_colors = np.empty(len(self.body_q), dtype=int)
             for color in range(len(self.body_color_groups)):
                 body_colors[self.body_color_groups[color]] = color

@@ -21,7 +21,6 @@ import warp as wp
 import newton
 from newton.tests.unittest_utils import add_function_test, get_test_devices
 
-
 devices = get_test_devices()
 
 
@@ -106,7 +105,7 @@ def _build_cable_loop(device, num_links: int = 6):
     builder.default_shape_cfg.kd = 1.0e1
     builder.default_shape_cfg.mu = 1.0
 
-    # Geometry: points on a circle in the X–Y plane at fixed height
+    # Geometry: points on a circle in the X-Y plane at fixed height
     num_elements = num_links
     radius = 1.0
     z_height = 3.0
@@ -125,7 +124,7 @@ def _build_cable_loop(device, num_links: int = 6):
         p0 = points[i]
         p1 = points[i + 1]
         dir_vec = wp.normalize(p1 - p0)
-        
+
         # Capsule internal axis is +Z; rotate +Z into dir_vec
         q = wp.quat_between_vectors(wp.vec3(0.0, 0.0, 1.0), dir_vec)
         edge_q.append(q)
@@ -213,8 +212,9 @@ def _cable_chain_connectivity_impl(test: unittest.TestCase, device):
     test.assertTrue(np.all(cable_children < model.body_count))
 
     # No duplicate (parent, child) pairs
-    cable_pairs = set(zip(cable_parents.tolist(), cable_children.tolist()))
-    test.assertEqual(len(cable_pairs), len(cable_indices))
+    pairs_list = list(zip(cable_parents.tolist(), cable_children.tolist(), strict=True))
+    cable_pairs = set(pairs_list)
+    test.assertEqual(len(cable_pairs), len(pairs_list))
 
     # Simple sequential connectivity check: in the current joint order,
     # the child of joint i should be the parent of joint i+1.
@@ -250,7 +250,7 @@ def _cable_loop_connectivity_impl(test: unittest.TestCase, device):
     test.assertTrue(np.all(cable_children < model.body_count))
 
     # No duplicate (parent, child) pairs
-    cable_pairs = list(zip(cable_parents.tolist(), cable_children.tolist()))
+    cable_pairs = list(zip(cable_parents.tolist(), cable_children.tolist(), strict=True))
     test.assertEqual(len(set(cable_pairs)), len(cable_pairs))
 
     # Sequential loop connectivity: child[i] == parent[i+1], and last child == first parent
@@ -329,9 +329,7 @@ def _cable_bend_stiffness_impl(test: unittest.TestCase, device):
 def _cable_sagging_and_stability_impl(test: unittest.TestCase, device):
     """Cable VBD: pinned chain should sag under gravity while remaining numerically stable."""
     segment_length = 0.2
-    model, state0, state1, control, _rod_bodies = _build_cable_chain(
-        device, num_links=6, segment_length=segment_length
-    )
+    model, state0, state1, control, _rod_bodies = _build_cable_chain(device, num_links=6, segment_length=segment_length)
     solver = newton.solvers.SolverVBD(model, iterations=10)
     frame_dt = 1.0 / 60.0
     sim_substeps = 10
@@ -456,7 +454,9 @@ def _cable_twist_response_impl(test: unittest.TestCase, device):
     final_q = state0.body_q.numpy()
 
     # Check capsule attachments remain good
-    _assert_capsule_attachments(test, body_q=final_q, rod_bodies=rod_bodies, segment_length=segment_length, context="Twist")
+    _assert_capsule_attachments(
+        test, body_q=final_q, rod_bodies=rod_bodies, segment_length=segment_length, context="Twist"
+    )
 
     # Check that the child orientation has changed significantly due to twist
     q_child_final = final_q[child_body, 3:]
@@ -470,13 +470,13 @@ def _cable_twist_response_impl(test: unittest.TestCase, device):
     )
 
     # Also check a specific geometric response: in the orthogonal "L" configuration,
-    # twisting 180 degrees about the +X axis should reflect the free capsule across the X–Z plane:
+    # twisting 180 degrees about the +X axis should reflect the free capsule across the X-Z plane:
     # its Y coordinate should change sign while X and Z remain approximately the same.
-    
+
     # We check the tip of the capsule, because the body origin is at the pivot (which doesn't move).
     def get_tip_pos(body_idx, q_all):
         p = q_all[body_idx, :3]
-        q = q_all[body_idx, 3:] # x, y, z, w
+        q = q_all[body_idx, 3:]  # x, y, z, w
         rot = wp.quat(float(q[0]), float(q[1]), float(q[2]), float(q[3]))
         v = wp.vec3(0.0, 0.0, segment_length)
         v_rot = wp.quat_rotate(rot, v)
@@ -484,7 +484,7 @@ def _cable_twist_response_impl(test: unittest.TestCase, device):
 
     tip_initial = get_tip_pos(child_body, q_initial)
     tip_final = get_tip_pos(child_body, final_q)
-    
+
     tol = 0.1 * segment_length
 
     # X and Z should stay close to their original values
@@ -501,13 +501,13 @@ def _cable_twist_response_impl(test: unittest.TestCase, device):
         msg=f"Twist: expected child tip z to stay near {float(tip_initial[2])}, got {float(tip_final[2])}",
     )
 
-    # Y should approximately flip sign (reflect across the X–Z plane)
+    # Y should approximately flip sign (reflect across the X-Z plane)
     # Initial tip Y should be approx segment_length (0.2)
     # We check if the sign is flipped, but allow for some deviation in magnitude
     # because the twist might not be perfectly 180 degrees or there might be some energy loss/damping
     test.assertTrue(
         float(tip_final[1]) * float(tip_initial[1]) < 0,
-        msg=f"Twist: expected child tip y to flip sign from {float(tip_initial[1])}, got {float(tip_final[1])}"
+        msg=f"Twist: expected child tip y to flip sign from {float(tip_initial[1])}, got {float(tip_final[1])}",
     )
     test.assertAlmostEqual(
         float(tip_final[1]),
@@ -575,11 +575,11 @@ def _two_layer_cable_pile_collision_impl(test: unittest.TestCase, device):
             # Symmetric offset: lane 0 → -0.5*spacing, lane 1 → +0.5*spacing
             # This centers both layers at the same (x,y) = (0,0) position
             offset = (lane - 0.5) * lane_spacing
-            
+
             # Build straight cable geometry manually
             points = []
             start_coord = -0.5 * cable_length
-            
+
             for i in range(num_elements + 1):
                 coord = start_coord + i * segment_length
                 if orient == "x":
@@ -596,7 +596,7 @@ def _two_layer_cable_pile_collision_impl(test: unittest.TestCase, device):
                 cable_direction = wp.vec3(1.0, 0.0, 0.0)
             else:
                 cable_direction = wp.vec3(0.0, 1.0, 0.0)
-            
+
             rot = wp.quat_between_vectors(local_axis, cable_direction)
             edge_q = [rot] * num_elements
 
@@ -665,7 +665,7 @@ def _two_layer_cable_pile_collision_impl(test: unittest.TestCase, device):
     # Ensure we actually formed two distinct layers
     num_bottom = np.sum(bottom_band)
     num_top = np.sum(top_band)
-    
+
     test.assertGreater(
         num_bottom,
         0,
@@ -676,7 +676,7 @@ def _two_layer_cable_pile_collision_impl(test: unittest.TestCase, device):
         0,
         msg=f"No bodies found in the top cable layer band [{cable_width:.4f}, {2.0 * cable_width:.4f}].",
     )
-    
+
     # Verify the layers are reasonably balanced (not all bodies in one layer)
     total_bodies = len(z_positions)
     test.assertGreater(
@@ -734,5 +734,3 @@ add_function_test(
 
 if __name__ == "__main__":
     unittest.main(verbosity=2, failfast=True)
-
-
