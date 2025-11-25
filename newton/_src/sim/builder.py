@@ -1012,10 +1012,12 @@ class ModelBuilder:
             xform[:3] = offsets[i]
             self.add_builder(builder, xform=xform)
 
-    def add_articulation(self, joints: list[int], key: str | None = None, custom_attributes: dict[str, Any] | None = None):
+    def add_articulation(
+        self, joints: list[int], key: str | None = None, custom_attributes: dict[str, Any] | None = None
+    ):
         """
         Adds an articulation to the model from a list of joint indices.
-        
+
         The articulation is a set of joints that must be contiguous and monotonically increasing.
         Some functions, such as forward kinematics :func:`newton.eval_fk`, are parallelized over articulations.
 
@@ -1023,48 +1025,52 @@ class ModelBuilder:
             joints: List of joint indices to include in the articulation. Must be contiguous and monotonic.
             key: The key of the articulation. If None, a default key will be created.
             custom_attributes: Dictionary of custom attribute values for ARTICULATION frequency attributes.
-            
+
         Raises:
             ValueError: If joints are not contiguous, not monotonic, or belong to different worlds.
-            
+
         Example:
             .. code-block:: python
-            
+
                 link1 = builder.add_link(...)
                 link2 = builder.add_link(...)
                 link3 = builder.add_link(...)
-                
+
                 joint1 = builder.add_joint_revolute(parent=-1, child=link1)
                 joint2 = builder.add_joint_revolute(parent=link1, child=link2)
                 joint3 = builder.add_joint_revolute(parent=link2, child=link3)
-                
+
                 # Create articulation from the joints
                 builder.add_articulation([joint1, joint2, joint3])
         """
         if not joints:
             raise ValueError("Cannot create an articulation with no joints")
-        
+
         # Sort joints to ensure we can validate them properly
         sorted_joints = sorted(joints)
-        
+
         # Validate joints are monotonically increasing (no duplicates)
         if sorted_joints != joints:
-            raise ValueError(f"Joints must be provided in monotonically increasing order. Got {joints}, expected {sorted_joints}")
-        
+            raise ValueError(
+                f"Joints must be provided in monotonically increasing order. Got {joints}, expected {sorted_joints}"
+            )
+
         # Validate joints are contiguous
         for i in range(1, len(sorted_joints)):
-            if sorted_joints[i] != sorted_joints[i-1] + 1:
+            if sorted_joints[i] != sorted_joints[i - 1] + 1:
                 raise ValueError(
                     f"Joints must be contiguous. Got indices {sorted_joints}, but there is a gap between "
-                    f"{sorted_joints[i-1]} and {sorted_joints[i]}. Create all joints for an articulation "
+                    f"{sorted_joints[i - 1]} and {sorted_joints[i]}. Create all joints for an articulation "
                     f"before creating joints for another articulation."
                 )
-        
+
         # Validate all joints exist
         for joint_idx in joints:
             if joint_idx < 0 or joint_idx >= len(self.joint_type):
-                raise ValueError(f"Joint index {joint_idx} is out of range. Valid range is 0 to {len(self.joint_type)-1}")
-        
+                raise ValueError(
+                    f"Joint index {joint_idx} is out of range. Valid range is 0 to {len(self.joint_type) - 1}"
+                )
+
         # Validate all joints belong to the same world (current world)
         for joint_idx in joints:
             if joint_idx < len(self.joint_world) and self.joint_world[joint_idx] != self.current_world:
@@ -1072,21 +1078,21 @@ class ModelBuilder:
                     f"Joint {joint_idx} belongs to world {self.joint_world[joint_idx]}, but current world is "
                     f"{self.current_world}. All joints in an articulation must belong to the same world."
                 )
-        
+
         # Basic tree structure validation (check for cycles, single parent)
         # Build a simple tree structure check - each child should have only one parent in this articulation
         child_to_parent = {}
         for joint_idx in joints:
             child = self.joint_child[joint_idx]
             parent = self.joint_parent[joint_idx]
-            
+
             if child in child_to_parent and child_to_parent[child] != parent:
                 raise ValueError(
                     f"Body {child} has multiple parents in this articulation: {child_to_parent[child]} and {parent}. "
                     f"This creates an invalid tree structure."
                 )
             child_to_parent[child] = parent
-        
+
         # Store the articulation using the first joint's index as the start
         articulation_idx = self.articulation_count
         self.articulation_start.append(sorted_joints[0])
@@ -1924,7 +1930,7 @@ class ModelBuilder:
                     f"Cannot create joint: parent body {parent} belongs to world {self.body_world[parent]}, "
                     f"but current world is {self.current_world}"
                 )
-        
+
         if child < 0 or child >= len(self.body_world):
             raise ValueError(f"Child body index {child} is out of range")
         if self.body_world[child] != self.current_world:

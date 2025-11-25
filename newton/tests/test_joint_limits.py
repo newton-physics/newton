@@ -90,7 +90,9 @@ class TestJointLimits(unittest.TestCase):
         # Test the other way - only lower limit
         builder2 = newton.ModelBuilder()
         body2 = builder2.add_link()
-        joint2 = builder2.add_joint_revolute(parent=-1, child=body2, limit_lower=-1.5, limit_upper=JOINT_LIMIT_UNLIMITED)
+        joint2 = builder2.add_joint_revolute(
+            parent=-1, child=body2, limit_lower=-1.5, limit_upper=JOINT_LIMIT_UNLIMITED
+        )
         builder2.add_articulation([joint2])
         model2 = builder2.finalize()
 

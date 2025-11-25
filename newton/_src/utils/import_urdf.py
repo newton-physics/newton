@@ -442,15 +442,17 @@ def parse_urdf(
                 "y": [0.0, 1.0, 0.0],
                 "z": [0.0, 0.0, 1.0],
             }
-            joint_indices.append(builder.add_joint_d6(
-                linear_axes=[ModelBuilder.JointDofConfig(axes[a]) for a in linear_axes],
-                angular_axes=[ModelBuilder.JointDofConfig(axes[a]) for a in angular_axes],
-                parent_xform=base_parent_xform,
-                child_xform=base_child_xform,
-                parent=-1,
-                child=root,
-                key="base_joint",
-            ))
+            joint_indices.append(
+                builder.add_joint_d6(
+                    linear_axes=[ModelBuilder.JointDofConfig(axes[a]) for a in linear_axes],
+                    angular_axes=[ModelBuilder.JointDofConfig(axes[a]) for a in angular_axes],
+                    parent_xform=base_parent_xform,
+                    child_xform=base_child_xform,
+                    parent=-1,
+                    child=root,
+                    key="base_joint",
+                )
+            )
         elif isinstance(base_joint, dict):
             base_joint["parent"] = -1
             base_joint["child"] = root
@@ -502,21 +504,25 @@ def parse_urdf(
         }
 
         if joint["type"] == "revolute" or joint["type"] == "continuous":
-            joint_indices.append(builder.add_joint_revolute(
-                axis=joint["axis"],
-                target_kd=joint_damping,
-                limit_lower=lower,
-                limit_upper=upper,
-                **joint_params,
-            ))
+            joint_indices.append(
+                builder.add_joint_revolute(
+                    axis=joint["axis"],
+                    target_kd=joint_damping,
+                    limit_lower=lower,
+                    limit_upper=upper,
+                    **joint_params,
+                )
+            )
         elif joint["type"] == "prismatic":
-            joint_indices.append(builder.add_joint_prismatic(
-                axis=joint["axis"],
-                target_kd=joint_damping,
-                limit_lower=lower * scale,
-                limit_upper=upper * scale,
-                **joint_params,
-            ))
+            joint_indices.append(
+                builder.add_joint_prismatic(
+                    axis=joint["axis"],
+                    target_kd=joint_damping,
+                    limit_lower=lower * scale,
+                    limit_upper=upper * scale,
+                    **joint_params,
+                )
+            )
         elif joint["type"] == "fixed":
             joint_indices.append(builder.add_joint_fixed(**joint_params))
         elif joint["type"] == "floating":
@@ -535,30 +541,34 @@ def parse_urdf(
             v = np.cross(axis, u)
             v /= np.linalg.norm(v)
 
-            joint_indices.append(builder.add_joint_d6(
-                linear_axes=[
-                    ModelBuilder.JointDofConfig(
-                        u,
-                        limit_lower=lower * scale,
-                        limit_upper=upper * scale,
-                        target_kd=joint_damping,
-                    ),
-                    ModelBuilder.JointDofConfig(
-                        v,
-                        limit_lower=lower * scale,
-                        limit_upper=upper * scale,
-                        target_kd=joint_damping,
-                    ),
-                ],
-                **joint_params,
-            ))
+            joint_indices.append(
+                builder.add_joint_d6(
+                    linear_axes=[
+                        ModelBuilder.JointDofConfig(
+                            u,
+                            limit_lower=lower * scale,
+                            limit_upper=upper * scale,
+                            target_kd=joint_damping,
+                        ),
+                        ModelBuilder.JointDofConfig(
+                            v,
+                            limit_lower=lower * scale,
+                            limit_upper=upper * scale,
+                            target_kd=joint_damping,
+                        ),
+                    ],
+                    **joint_params,
+                )
+            )
         else:
             raise Exception("Unsupported joint type: " + joint["type"])
 
     # Create articulation from all collected joints
     if joint_indices:
         articulation_key = urdf_root.attrib.get("name")
-        articulation_custom_attrs = parse_custom_attributes(urdf_root.attrib, builder_custom_attr_articulation, parsing_mode="urdf")
+        articulation_custom_attrs = parse_custom_attributes(
+            urdf_root.attrib, builder_custom_attr_articulation, parsing_mode="urdf"
+        )
         builder.add_articulation(
             joints=joint_indices,
             key=articulation_key,

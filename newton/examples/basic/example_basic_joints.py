@@ -87,7 +87,7 @@ class Example:
         )
         # Create articulation from joints
         builder.add_articulation([j_fixed_rev, j_revolute], key="revolute_articulation")
-        
+
         # set initial joint angle
         builder.joint_q[-1] = wp.pi * 0.5
 

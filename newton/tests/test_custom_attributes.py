@@ -1192,13 +1192,13 @@ class TestCustomAttributes(unittest.TestCase):
                 child_xform=wp.transform([0.0, 0.0, -0.2], wp.quat_identity()),
                 axis=[0.0, 1.0, 0.0],
             )
-            
+
             # Create articulation from joints
             builder.add_articulation(
                 [j_base, j_revolute],
                 custom_attributes={
                     "articulation_stiffness": 100.0 + float(i) * 50.0,
-                }
+                },
             )
             arctic_body_ids.extend([base, link])
 

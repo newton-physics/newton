@@ -861,7 +861,7 @@ def parse_usd(
                     builder.joint_qd[qd_start + dof_idx] = vel_val
                     if verbose:
                         print(f"Set D6 joint {joint_index} {axis_name} velocity to {vel} rad/s")
-        
+
         return joint_index
 
     # Looking for and parsing the attributes on PhysicsScene prims
@@ -1178,7 +1178,9 @@ def parse_usd(
                         joint_id = builder.add_joint_free(child=child_body_id)
                         # note the free joint's coordinates will be initialized by the body_q of the
                         # child body
-                        builder.add_articulation([joint_id], key=body_data[i]["key"], custom_attributes=articulation_custom_attrs)
+                        builder.add_articulation(
+                            [joint_id], key=body_data[i]["key"], custom_attributes=articulation_custom_attrs
+                        )
                 else:
                     for i, child_body_id in enumerate(art_bodies):
                         # apply the articulation transform to the body
@@ -1186,7 +1188,9 @@ def parse_usd(
                         joint_id = builder.add_joint_free(child=child_body_id)
                         # note the free joint's coordinates will be initialized by the body_q of the
                         # child body
-                        builder.add_articulation([joint_id], key=body_keys[i], custom_attributes=articulation_custom_attrs)
+                        builder.add_articulation(
+                            [joint_id], key=body_keys[i], custom_attributes=articulation_custom_attrs
+                        )
                 sorted_joints = []
             else:
                 # we have an articulation with joints, we need to sort them topologically
@@ -1238,22 +1242,24 @@ def parse_usd(
                     if joint_id == 0 and first_joint_parent == -1:
                         # the articulation root joint receives the articulation transform as parent transform
                         # except if we already inserted a floating-base joint
-                        joint_id = parse_joint(
+                        joint = parse_joint(
                             joint_descriptions[joint_names[i]],
                             joint_path=joint_names[i],
                             incoming_xform=articulation_xform,
                         )
                     else:
-                        joint_id = parse_joint(
+                        joint = parse_joint(
                             joint_descriptions[joint_names[i]],
                             joint_path=joint_names[i],
                         )
-                    if joint_id is not None:
-                        articulation_joint_indices.append(joint_id)
-            
+                    if joint is not None:
+                        articulation_joint_indices.append(joint)
+
             # Create the articulation from all collected joints
             if articulation_joint_indices:
-                builder.add_articulation(articulation_joint_indices, key=articulation_path, custom_attributes=articulation_custom_attrs)
+                builder.add_articulation(
+                    articulation_joint_indices, key=articulation_path, custom_attributes=articulation_custom_attrs
+                )
 
             articulation_bodies[articulation_id] = art_bodies
             # determine if self-collisions are enabled

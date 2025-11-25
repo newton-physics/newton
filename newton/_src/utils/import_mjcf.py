@@ -687,15 +687,17 @@ def parse_mjcf(
                         "y": [0.0, 1.0, 0.0],
                         "z": [0.0, 0.0, 1.0],
                     }
-                    joint_indices.append(builder.add_joint_d6(
-                        linear_axes=[ModelBuilder.JointDofConfig(axis=axes[a]) for a in linear_axes],
-                        angular_axes=[ModelBuilder.JointDofConfig(axis=axes[a]) for a in angular_axes],
-                        parent_xform=base_parent_xform,
-                        child_xform=base_child_xform,
-                        parent=-1,
-                        child=link,
-                        key="base_joint",
-                    ))
+                    joint_indices.append(
+                        builder.add_joint_d6(
+                            linear_axes=[ModelBuilder.JointDofConfig(axis=axes[a]) for a in linear_axes],
+                            angular_axes=[ModelBuilder.JointDofConfig(axis=axes[a]) for a in angular_axes],
+                            parent_xform=base_parent_xform,
+                            child_xform=base_child_xform,
+                            parent=-1,
+                            child=link,
+                            key="base_joint",
+                        )
+                    )
                 elif isinstance(base_joint, dict):
                     base_joint["parent"] = -1
                     base_joint["child"] = root
@@ -718,24 +720,28 @@ def parse_mjcf(
                 joint_name = [f"{body_name}_joint"]
             if joint_type == JointType.FREE:
                 assert parent == -1, "Free joints must have the world body as parent"
-                joint_indices.append(builder.add_joint_free(
-                    link,
-                    key="_".join(joint_name),
-                    custom_attributes=joint_custom_attributes,
-                ))
+                joint_indices.append(
+                    builder.add_joint_free(
+                        link,
+                        key="_".join(joint_name),
+                        custom_attributes=joint_custom_attributes,
+                    )
+                )
             else:
                 # TODO parse ref, springref values from joint_attrib
-                joint_indices.append(builder.add_joint(
-                    joint_type,
-                    parent=parent,
-                    child=link,
-                    linear_axes=linear_axes,
-                    angular_axes=angular_axes,
-                    key="_".join(joint_name),
-                    parent_xform=wp.transform(body_pos_for_joints + joint_pos, body_ori_for_joints),
-                    child_xform=wp.transform(joint_pos, wp.quat_identity()),
-                    custom_attributes=joint_custom_attributes | dof_custom_attributes,
-                ))
+                joint_indices.append(
+                    builder.add_joint(
+                        joint_type,
+                        parent=parent,
+                        child=link,
+                        linear_axes=linear_axes,
+                        angular_axes=angular_axes,
+                        key="_".join(joint_name),
+                        parent_xform=wp.transform(body_pos_for_joints + joint_pos, body_ori_for_joints),
+                        child_xform=wp.transform(joint_pos, wp.quat_identity()),
+                        custom_attributes=joint_custom_attributes | dof_custom_attributes,
+                    )
+                )
 
         # -----------------
         # add shapes
@@ -1065,7 +1071,7 @@ def parse_mjcf(
         for i in range(start_shape_count, end_shape_count):
             for j in range(i + 1, end_shape_count):
                 builder.shape_collision_filter_pairs.append((i, j))
-    
+
     # Create articulation from all collected joints
     if joint_indices:
         articulation_key = root.attrib.get("model")

@@ -71,7 +71,7 @@ class Example:
             parent_xform=wp.transform(p=wp.vec3(hx, 0.0, 0.0), q=wp.quat_identity()),
             child_xform=wp.transform(p=wp.vec3(-hx, 0.0, 0.0), q=wp.quat_identity()),
         )
-        
+
         # Create articulation from joints
         builder.add_articulation([j0, j1], key="pendulum")
 

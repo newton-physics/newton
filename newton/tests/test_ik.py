@@ -63,7 +63,7 @@ def _build_two_link_planar(device) -> newton.Model:
         child_xform=wp.transform([-0.5, 0.0, 0.0], wp.quat_identity()),
         axis=[0.0, 0.0, 1.0],
     )
-    
+
     # Create articulation from joints
     builder.add_articulation([joint1, joint2])
 
@@ -105,7 +105,7 @@ def _build_free_plus_revolute(device) -> newton.Model:
         child_xform=wp.transform([-0.5, 0.0, 0.0], wp.quat_identity()),
         axis=[0.0, 0.0, 1.0],
     )
-    
+
     # Create articulation from joints
     builder.add_articulation([joint1, joint2])
 

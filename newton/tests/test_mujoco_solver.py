@@ -246,7 +246,7 @@ class TestMuJoCoSolverPropertiesBase(TestMuJoCoSolver):
             child_xform=wp.transform((0.0, -link_half_length, 0.0), wp.quat_identity()),
             axis=(1.0, 0.0, 0.0),
         )
-        
+
         template_builder.add_articulation([joint1, joint2, joint3])
 
         self.builder = newton.ModelBuilder()
@@ -2469,7 +2469,7 @@ class TestMuJoCoAttributes(unittest.TestCase):
         b2 = builder.add_link()
         j2 = builder.add_joint_revolute(b1, b2, axis=(0.0, 0.0, 1.0))  # Default should be 0.0
         builder.add_shape_box(body=b2, hx=0.1, hy=0.1, hz=0.1)
-        
+
         builder.add_articulation([j0, j1, j2])
 
         model = builder.finalize()
@@ -2587,7 +2587,7 @@ class TestMuJoCoAttributes(unittest.TestCase):
         b1 = builder.add_link()
         j1 = builder.add_joint_revolute(b0, b1, axis=(0.0, 0.0, 1.0), custom_attributes={"mujoco:limit_margin": [0.02]})
         builder.add_shape_box(body=b1, hx=0.1, hy=0.1, hz=0.1)
-        
+
         builder.add_articulation([j0, j1])
 
         model = builder.finalize()

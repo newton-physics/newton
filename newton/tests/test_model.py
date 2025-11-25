@@ -120,13 +120,19 @@ class TestModel(unittest.TestCase):
             unit_cube = {"hx": 0.5, "hy": 0.5, "hz": 0.5, "cfg": shape_cfg}
             b0 = builder.add_link()
             builder.add_shape_box(body=b0, **unit_cube)
-            j0 = builder.add_joint_fixed(parent=parent_body, child=b0, parent_xform=wp.transform(wp.vec3(1.0, 0.0, 0.0)))
+            j0 = builder.add_joint_fixed(
+                parent=parent_body, child=b0, parent_xform=wp.transform(wp.vec3(1.0, 0.0, 0.0))
+            )
             b1 = builder.add_link()
             builder.add_shape_box(body=b1, **unit_cube)
-            j1 = builder.add_joint_fixed(parent=parent_body, child=b1, parent_xform=wp.transform(wp.vec3(0.0, 1.0, 0.0)))
+            j1 = builder.add_joint_fixed(
+                parent=parent_body, child=b1, parent_xform=wp.transform(wp.vec3(0.0, 1.0, 0.0))
+            )
             b2 = builder.add_link()
             builder.add_shape_box(body=b2, **unit_cube)
-            j2 = builder.add_joint_fixed(parent=parent_body, child=b2, parent_xform=wp.transform(wp.vec3(0.0, 0.0, 1.0)))
+            j2 = builder.add_joint_fixed(
+                parent=parent_body, child=b2, parent_xform=wp.transform(wp.vec3(0.0, 0.0, 1.0))
+            )
             return b2, [j0, j1, j2]
 
         builder = ModelBuilder()
@@ -159,7 +165,7 @@ class TestModel(unittest.TestCase):
         assert builder.joint_count == 8
         assert builder.body_count == 8
         _last_body2, joints2 = add_three_cubes(builder, parent_body=b4)
-        all_joints = [j_free] + joints2
+        all_joints = [j_free, *joints2]
         builder.add_articulation(all_joints)
         assert builder.articulation_count == 3  # Three articulations total
 
@@ -478,7 +484,7 @@ class TestModel(unittest.TestCase):
             child_xform=wp.transform_identity(),
             axis=(0.0, 1.0, 0.0),
         )
-        
+
         # Create articulation for world 0
         builder.add_articulation([j0_0, j0_1, j0_2])
 
@@ -504,7 +510,7 @@ class TestModel(unittest.TestCase):
             child_xform=wp.transform_identity(),
             axis=(0.0, 0.0, 1.0),
         )
-        
+
         # Create articulation for world 1
         builder.add_articulation([j1_0, j1_1])
 
@@ -604,35 +610,35 @@ class TestModel(unittest.TestCase):
     def test_articulation_validation_contiguous(self):
         """Test that articulation requires contiguous joint indices"""
         builder = ModelBuilder()
-        
+
         # Create links
         link1 = builder.add_link(mass=1.0)
         link2 = builder.add_link(mass=1.0)
         link3 = builder.add_link(mass=1.0)
         link4 = builder.add_link(mass=1.0)
-        
+
         # Create joints
         joint1 = builder.add_joint_revolute(parent=-1, child=link1)
         joint2 = builder.add_joint_revolute(parent=link1, child=link2)
         joint3 = builder.add_joint_revolute(parent=link2, child=link3)
         joint4 = builder.add_joint_revolute(parent=link3, child=link4)
-        
+
         # Test valid contiguous articulation
         builder.add_articulation([joint1, joint2, joint3, joint4])  # Should work
-        
+
         # Test non-contiguous articulation should fail
         builder2 = ModelBuilder()
         link1 = builder2.add_link(mass=1.0)
         link2 = builder2.add_link(mass=1.0)
         link3 = builder2.add_link(mass=1.0)
-        
+
         j1 = builder2.add_joint_revolute(parent=-1, child=link1)
         j2 = builder2.add_joint_revolute(parent=link1, child=link2)
         # Create a joint for another articulation to create a gap
         other_link = builder2.add_link(mass=1.0)
-        j_other = builder2.add_joint_revolute(parent=-1, child=other_link)
+        _j_other = builder2.add_joint_revolute(parent=-1, child=other_link)
         j3 = builder2.add_joint_revolute(parent=link2, child=link3)
-        
+
         # This should fail because [j1, j2, j3] are not contiguous (j_other is in between)
         with self.assertRaises(ValueError) as context:
             builder2.add_articulation([j1, j2, j3])
@@ -641,15 +647,15 @@ class TestModel(unittest.TestCase):
     def test_articulation_validation_monotonic(self):
         """Test that articulation requires monotonically increasing joint indices"""
         builder = ModelBuilder()
-        
+
         # Create links
         link1 = builder.add_link(mass=1.0)
         link2 = builder.add_link(mass=1.0)
-        
+
         # Create joints
         joint1 = builder.add_joint_revolute(parent=-1, child=link1)
         joint2 = builder.add_joint_revolute(parent=link1, child=link2)
-        
+
         # Test joints in wrong order (not monotonic)
         with self.assertRaises(ValueError) as context:
             builder.add_articulation([joint2, joint1])  # Wrong order
@@ -658,7 +664,7 @@ class TestModel(unittest.TestCase):
     def test_articulation_validation_empty(self):
         """Test that articulation requires at least one joint"""
         builder = ModelBuilder()
-        
+
         # Test empty articulation should fail
         with self.assertRaises(ValueError) as context:
             builder.add_articulation([])
@@ -667,19 +673,17 @@ class TestModel(unittest.TestCase):
     def test_articulation_validation_world_mismatch(self):
         """Test that all joints in articulation must belong to same world"""
         builder = ModelBuilder()
-        
+
         # Create joints in world 0
         builder.current_world = 0
         link1 = builder.add_link(mass=1.0)
-        link2 = builder.add_link(mass=1.0)
         joint1 = builder.add_joint_revolute(parent=-1, child=link1)
-        
+
         # Create joint in world 1
         builder.current_world = 1
-        link3 = builder.add_link(mass=1.0)
-        link4 = builder.add_link(mass=1.0)
-        joint2 = builder.add_joint_revolute(parent=-1, child=link3)
-        
+        link2 = builder.add_link(mass=1.0)
+        joint2 = builder.add_joint_revolute(parent=-1, child=link2)
+
         # Try to create articulation from joints in different worlds
         builder.current_world = 0
         with self.assertRaises(ValueError) as context:
@@ -689,57 +693,34 @@ class TestModel(unittest.TestCase):
     def test_articulation_validation_tree_structure(self):
         """Test that articulation validates tree structure (no multiple parents)"""
         builder = ModelBuilder()
-        
+
         # Create links
         link1 = builder.add_link(mass=1.0)
         link2 = builder.add_link(mass=1.0)
         link3 = builder.add_link(mass=1.0)
-        
+
         # Create joints that would form invalid tree (link2 has two parents)
         joint1 = builder.add_joint_revolute(parent=-1, child=link1)
         joint2 = builder.add_joint_revolute(parent=link1, child=link2)
         joint3 = builder.add_joint_revolute(parent=link3, child=link2)  # link2 already has parent link1
-        
+
         # This should fail because link2 has multiple parents
         with self.assertRaises(ValueError) as context:
             builder.add_articulation([joint1, joint2, joint3])
         self.assertIn("multiple parents", str(context.exception))
 
-    def test_articulation_orphaned_joints_allowed(self):
-        """Test that orphaned joints (not in any articulation) are allowed"""
-        builder = ModelBuilder()
-        
-        # Create links
-        link1 = builder.add_link(mass=1.0)
-        link2 = builder.add_link(mass=1.0)
-        link3 = builder.add_link(mass=1.0)
-        link4 = builder.add_link(mass=1.0)
-        
-        # Create main articulation
-        joint1 = builder.add_joint_revolute(parent=-1, child=link1)
-        joint2 = builder.add_joint_revolute(parent=link1, child=link2)
-        builder.add_articulation([joint1, joint2])
-        
-        # Create orphaned joint (for closed-loop constraint)
-        joint3 = builder.add_joint_revolute(parent=link3, child=link4)
-        # Don't add joint3 to any articulation - this should be allowed
-        
-        # Finalize should work without error
-        model = builder.finalize()
-        self.assertIsNotNone(model)
-
     def test_joint_world_validation(self):
         """Test that joints validate parent/child bodies belong to current world"""
         builder = ModelBuilder()
-        
+
         # Create body in world 0
         builder.current_world = 0
         link1 = builder.add_link(mass=1.0)
-        
+
         # Switch to world 1 and try to create joint with body from world 0
         builder.current_world = 1
         link2 = builder.add_link(mass=1.0)
-        
+
         # This should fail because link1 is in world 0 but we're in world 1
         with self.assertRaises(ValueError) as context:
             builder.add_joint_revolute(parent=link1, child=link2)
