@@ -151,8 +151,8 @@ class SolverVBD(SolverBase):
         avbd_beta: float = 1.0e5,
         avbd_gamma: float = 0.99,
         k_start_body_contact: float = 1.0e1,  # AVBD: initial stiffness for all body contacts (body-body + body-particle)
-        k_start_cable_stretch: float = 1.0e4,  # AVBD: initial stiffness for cable stretch
-        k_start_cable_bend: float = 1.0e1,  # AVBD: initial stiffness for cable bend
+        k_start_joint_linear: float = 1.0e4,  # AVBD: initial stiffness seed for linear joint DOFs (e.g., cable stretch)
+        k_start_joint_angular: float = 1.0e1,  # AVBD: initial stiffness seed for angular joint DOFs (e.g., cable bend)
         body_body_contact_buffer_pre_alloc: int = 64,
         body_particle_contact_buffer_pre_alloc: int = 64,
         enable_dahl_friction: bool = False,  # Cable bending plasticity/hysteresis
@@ -196,8 +196,10 @@ class SolverVBD(SolverBase):
             avbd_gamma: Warmstart decay for penalty k (cross-step decay factor for rigid body constraints).
             k_start_body_contact: Initial penalty stiffness for all body contact constraints, including both body-body (rigid-rigid)
                 and body-particle (rigid-particle) contacts (AVBD).
-            k_start_cable_stretch: Initial penalty stiffness for cable stretch constraints (AVBD).
-            k_start_cable_bend: Initial penalty stiffness for cable bend constraints (AVBD).
+            k_start_joint_linear: Initial penalty seed for linear joint DOFs (e.g., cable stretch). Used to seed the per-DOF
+                adaptive penalties for all linear joint constraints.
+            k_start_joint_angular: Initial penalty seed for angular joint DOFs (e.g., cable bend). Used to seed the per-DOF
+                adaptive penalties for all angular joint constraints.
             body_body_contact_buffer_pre_alloc: Max body-body (rigid-rigid) contacts per rigid body for per-body contact lists (tune based on expected body-body contact density).
             body_particle_contact_buffer_pre_alloc: Max body-particle (rigid-particle) contacts per rigid body for per-body soft-contact lists (tune based on expected body-particle contact density).
             enable_dahl_friction: Enable Dahl hysteresis friction model for cable bending (default: False).
@@ -251,8 +253,8 @@ class SolverVBD(SolverBase):
             avbd_beta,
             avbd_gamma,
             k_start_body_contact,
-            k_start_cable_stretch,
-            k_start_cable_bend,
+            k_start_joint_linear,
+            k_start_joint_angular,
             body_body_contact_buffer_pre_alloc,
             body_particle_contact_buffer_pre_alloc,
             enable_dahl_friction,
@@ -346,8 +348,8 @@ class SolverVBD(SolverBase):
         avbd_beta: float,
         avbd_gamma: float,
         k_start_body_contact: float,
-        k_start_cable_stretch: float,
-        k_start_cable_bend: float,
+        k_start_joint_linear: float,
+        k_start_joint_angular: float,
         body_body_contact_buffer_pre_alloc: int,
         body_particle_contact_buffer_pre_alloc: int,
         enable_dahl_friction: bool,
@@ -406,8 +408,8 @@ class SolverVBD(SolverBase):
                 )
 
             # AVBD constraint penalties
-            # Joint penalties (per-DOF adaptive penalties for cable stretch and bend)
-            self.joint_penalty_k = self._init_joint_penalty_k(k_start_cable_stretch, k_start_cable_bend)
+            # Joint penalties (per-DOF adaptive penalties seeded from joint-wide linear/angular stiffness)
+            self.joint_penalty_k = self._init_joint_penalty_k(k_start_joint_linear, k_start_joint_angular)
 
             # Contact penalties (adaptive penalties for body-body contacts)
             if model.shape_count > 0:
@@ -479,7 +481,7 @@ class SolverVBD(SolverBase):
     # Initialization Helper Methods
     # =====================================================
 
-    def _init_joint_penalty_k(self, k_start_cable_stretch: float, k_start_cable_bend: float):
+    def _init_joint_penalty_k(self, k_start_joint_linear: float, k_start_joint_angular: float):
         """
         Build initial per-DOF joint penalty array on CPU and upload to solver device.
         - Default seed is a global rigid-body penalty for all DOFs.
@@ -487,9 +489,9 @@ class SolverVBD(SolverBase):
         """
         dof_count = self.model.joint_dof_count
         with wp.ScopedDevice("cpu"):
-            # Seed all DOFs with the cable stretch stiffness and specialize cable bend DOFs below.
-            # This keeps a single k_start_* API as the authoritative source of joint stiffness.
-            stretch_k = max(0.0, k_start_cable_stretch)
+            # Seed all DOFs with the joint-linear stiffness and specialize cable bend DOFs below.
+            # This keeps a single pair of joint-wide seeds as the authoritative source of joint stiffness.
+            stretch_k = max(0.0, k_start_joint_linear)
             joint_k_min_np = np.full((dof_count,), 0.0, dtype=float)
             joint_k0_np = np.full((dof_count,), stretch_k, dtype=float)
 
@@ -500,7 +502,7 @@ class SolverVBD(SolverBase):
             jdofs = jdofs_cpu.numpy() if hasattr(jdofs_cpu, "numpy") else np.asarray(jdofs_cpu, dtype=int)
 
             n_j = self.model.joint_count
-            bend_k = max(0.0, k_start_cable_bend)
+            bend_k = max(0.0, k_start_joint_angular)
             for j in range(n_j):
                 if jt[j] == JointType.CABLE:
                     dof0 = jdofs[j]
