@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import os
 import math
 import unittest
 
@@ -23,7 +24,7 @@ from newton.sensors import TiledCameraSensor
 
 
 class TestTiledCameraSensorBenchmark(unittest.TestCase):
-    @unittest.skip("Tiled Camera Sensor Benchmark")
+    @unittest.skipIf(os.environ.get("RUN_TILED_CAMERA_SENSOR_BENCHMARK") != "1", "Tiled Camera Sensor Benchmark Skipped")
     def test_benchmark(self):
         franka = newton.ModelBuilder()
         franka.add_urdf(

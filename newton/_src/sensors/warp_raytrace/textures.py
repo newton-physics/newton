@@ -113,7 +113,7 @@ def sample_texture(
     if geom_material_id == -1 or material_texture_id == -1:
         return tex_color
 
-    if geom_type[geom_id] == wp.int32(GeomType.PLANE.value):
+    if geom_type[geom_id] == GeomType.PLANE:
         tex_color = sample_texture_plane(
             hit_point,
             geom_position,
@@ -125,7 +125,7 @@ def sample_texture(
             texture_width,
         )
 
-    if geom_type[geom_id] == wp.int32(GeomType.MESH.value):
+    if geom_type[geom_id] == GeomType.MESH:
         if f < 0 or mesh_id < 0 or not mesh_texcoord_offsets.shape[0]:
             return tex_color
 
