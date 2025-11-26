@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# Some ray intersection functions are adapted from https://iquilezles.org/articles/intersectors/
 
 import warp as wp
 
@@ -112,6 +113,67 @@ def ray_intersect_particle_sphere(ray_origin: wp.vec3, ray_direction: wp.vec3, c
         return -1.0
 
     return t_hit
+
+
+@wp.func
+def ray_intersect_ellipsoid(
+    geom_to_world: wp.transform, ray_origin: wp.vec3, ray_direction: wp.vec3, semi_axes: wp.vec3
+):
+    """Computes ray-ellipsoid intersection.
+
+    The ellipsoid is defined by semi-axes (a, b, c) along the local X, Y, Z axes respectively.
+    Based on Inigo Quilez's ellipsoid intersection algorithm.
+
+    Args:
+        geom_to_world: The world transform of the ellipsoid.
+        ray_origin: The origin of the ray in world space.
+        ray_direction: The direction of the ray in world space.
+        semi_axes: The semi-axes (a, b, c) of the ellipsoid.
+
+    Returns:
+        The distance along the ray to the closest intersection point, or -1.0 if there is no intersection.
+    """
+    # Transform ray to local frame
+    world_to_geom = wp.transform_inverse(geom_to_world)
+    ro = wp.transform_point(world_to_geom, ray_origin)
+    rd = wp.transform_vector(world_to_geom, ray_direction)
+
+    # Reject degenerate rays (matching sphere/capsule pattern)
+    d_len_sq = wp.dot(rd, rd)
+    if d_len_sq < MINVAL:
+        return -1.0
+
+    ra = semi_axes
+
+    # Ensure semi-axes are valid
+    if ra[0] < MINVAL or ra[1] < MINVAL or ra[2] < MINVAL:
+        return -1.0
+
+    # Scale by inverse semi-axes (transforms ellipsoid to unit sphere)
+    ocn = wp.cw_div(ro, ra)
+    rdn = wp.cw_div(rd, ra)
+
+    a = wp.dot(rdn, rdn)
+    b = wp.dot(ocn, rdn)
+    c = wp.dot(ocn, ocn)
+
+    h = b * b - a * (c - 1.0)
+    if h < 0.0:
+        return -1.0  # No intersection
+
+    h = wp.sqrt(h)
+
+    # Two intersection points: (-b - h) / a and (-b + h) / a
+    t1 = (-b - h) / a
+    t2 = (-b + h) / a
+
+    # Return nearest positive intersection
+    if t1 >= 0.0:
+        return t1
+    if t2 >= 0.0:
+        return t2
+
+    return -1.0
 
 
 @wp.func
@@ -512,6 +574,9 @@ def ray_intersect_geom(
         r = size[0]
         h = size[1]
         t_hit = ray_intersect_cone(geom_to_world, ray_origin, ray_direction, r, h)
+
+    elif geomtype == GeoType.ELLIPSOID:
+        t_hit = ray_intersect_ellipsoid(geom_to_world, ray_origin, ray_direction, size)
 
     elif geomtype == GeoType.MESH or geomtype == GeoType.CONVEX_MESH:
         t_hit = ray_intersect_mesh(geom_to_world, ray_origin, ray_direction, size, mesh_id)
