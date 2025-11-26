@@ -19,6 +19,7 @@ from asv_runner.benchmarks.mark import skip_benchmark_if
 wp.config.quiet = True
 
 import math
+import os
 
 import newton
 from newton.sensors import TiledCameraSensor
@@ -99,16 +100,21 @@ class TiledCameraSensorBenchmark:
         with wp.ScopedTimer("Tiled Rendering", synchronize=True, print=False) as timer:
             for _ in range(iterations):
                 self.tiled_camera_sensor.render(self.color_image, self.depth_image, refit_bvh=False, clear_images=False)
-        self.timings["render_tiledl"] = timer.elapsed
+        self.timings["render_tiled"] = timer.elapsed
 
     def teardown(self, resolution: int, num_worlds: int, iterations: int):
         print("")
         print("=== Benchmark Results (FPS) ===")
-        self.__print_timer("Refit BVH", self.timings["refit"], 1, self.tiled_camera_sensor)
-        self.__print_timer("Rendering (Pixel)", self.timings["render_pixel"], iterations, self.tiled_camera_sensor)
-        self.__print_timer("Rendering (Tiled)", self.timings["render_tiledl"], iterations, self.tiled_camera_sensor)
-        self.tiled_camera_sensor.save_color_image(self.color_image, "benchmark_color.png")
-        self.tiled_camera_sensor.save_depth_image(self.depth_image, "benchmark_depth.png")
+        if "refit" in self.timings:
+            self.__print_timer("Refit BVH", self.timings["refit"], 1, self.tiled_camera_sensor)
+        if "render_pixel" in self.timings:
+            self.__print_timer("Rendering (Pixel)", self.timings["render_pixel"], iterations, self.tiled_camera_sensor)
+        if "render_tiled" in self.timings:
+            self.__print_timer("Rendering (Tiled)", self.timings["render_tiled"], iterations, self.tiled_camera_sensor)
+
+        if os.environ.get("SAVE_IMAGES", "0") != "0":
+            self.tiled_camera_sensor.save_color_image(self.color_image, "benchmark_color.png")
+            self.tiled_camera_sensor.save_depth_image(self.depth_image, "benchmark_depth.png")
 
     def __print_timer(self, name: str, elapsed: float, iterations: int, sensor: TiledCameraSensor):
         title = f"{name}"
