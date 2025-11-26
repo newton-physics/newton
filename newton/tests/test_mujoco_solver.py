@@ -2343,7 +2343,7 @@ class TestMuJoCoMocapBodies(unittest.TestCase):
 
         # Create fixed-base (mocap) body at root (at origin)
         # This body will have a FIXED joint to the world, making it a mocap body in MuJoCo
-        mocap_body = builder.add_body(
+        mocap_body = builder.add_link(
             mass=10.0,
             com=wp.vec3(0.0, 0.0, 0.0),
             I_m=wp.mat33(np.eye(3)),
@@ -2351,7 +2351,7 @@ class TestMuJoCoMocapBodies(unittest.TestCase):
         )
 
         # Add FIXED joint to world - this makes it a mocap body
-        builder.add_joint_fixed(
+        mocap_joint = builder.add_joint_fixed(
             parent=-1,
             child=mocap_body,
             parent_xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
@@ -2360,7 +2360,7 @@ class TestMuJoCoMocapBodies(unittest.TestCase):
 
         # Create welded/fixed descendant body with collision geometry (platform)
         # Offset horizontally (X direction) from mocap body, at height 0.5m
-        platform_body = builder.add_body(
+        platform_body = builder.add_link(
             mass=5.0,
             com=wp.vec3(0.0, 0.0, 0.0),
             I_m=wp.mat33(np.eye(3)),
@@ -2368,7 +2368,7 @@ class TestMuJoCoMocapBodies(unittest.TestCase):
 
         # Add FIXED joint from mocap body to platform (welded connection)
         # Platform is offset in +X direction by 1m and up in +Z by 0.5m
-        builder.add_joint_fixed(
+        platform_joint = builder.add_joint_fixed(
             parent=mocap_body,
             child=platform_body,
             parent_xform=wp.transform(wp.vec3(1.0, 0.0, 0.5), wp.quat_identity()),
@@ -2385,6 +2385,9 @@ class TestMuJoCoMocapBodies(unittest.TestCase):
             hz=platform_height,
         )
 
+        # Add mocap articulation
+        builder.add_articulation([mocap_joint, platform_joint])
+
         # Create dynamic ball resting on the platform
         # Position it above the platform at (1.0, 0, 0.5 + platform_height + ball_radius)
         ball_radius = 0.2
@@ -2394,7 +2397,6 @@ class TestMuJoCoMocapBodies(unittest.TestCase):
             I_m=wp.mat33(np.eye(3) * 0.01),
             xform=wp.transform(wp.vec3(1.0, 0.0, 0.5 + platform_height + ball_radius), wp.quat_identity()),
         )
-        builder.add_joint_free(child=ball_body)
         builder.add_shape_sphere(
             body=ball_body,
             radius=ball_radius,
