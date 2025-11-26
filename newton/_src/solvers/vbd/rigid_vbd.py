@@ -62,9 +62,6 @@ _DAHL_KAPPADOT_DEADBAND = wp.constant(1.0e-6)
 _NUM_CONTACT_THREADS_PER_BODY = 16
 """Threads per body for contact accumulation using strided iteration"""
 
-_USE_JACOBI_CONTACTS = False
-"""Contact evaluation mode: False = Gauss-Seidel (per-color updates); True = Jacobi (single-pass, preserves Newton's 3rd law within iteration)"""
-
 
 # ---------------------------------
 # Helper classes and device functions
@@ -1552,112 +1549,6 @@ def compute_cable_dahl_parameters(
 # -----------------------------
 # Iteration kernels (per color per iteration)
 # -----------------------------
-@wp.kernel
-def accumulate_body_body_contacts_jacobi(
-    dt: float,
-    body_q_prev: wp.array(dtype=wp.transform),
-    body_q: wp.array(dtype=wp.transform),
-    body_com: wp.array(dtype=wp.vec3),
-    body_inv_mass: wp.array(dtype=float),
-    friction_epsilon: float,
-    contact_penalty_k: wp.array(dtype=float),
-    contact_material_kd: wp.array(dtype=float),
-    contact_material_mu: wp.array(dtype=float),
-    rigid_contact_count: wp.array(dtype=int),
-    rigid_contact_shape0: wp.array(dtype=int),
-    rigid_contact_shape1: wp.array(dtype=int),
-    rigid_contact_point0: wp.array(dtype=wp.vec3),
-    rigid_contact_point1: wp.array(dtype=wp.vec3),
-    rigid_contact_normal: wp.array(dtype=wp.vec3),
-    rigid_contact_thickness0: wp.array(dtype=float),
-    rigid_contact_thickness1: wp.array(dtype=float),
-    shape_body: wp.array(dtype=wp.int32),
-    body_forces: wp.array(dtype=wp.vec3),
-    body_torques: wp.array(dtype=wp.vec3),
-    body_hessian_ll: wp.array(dtype=wp.mat33),
-    body_hessian_al: wp.array(dtype=wp.mat33),
-    body_hessian_aa: wp.array(dtype=wp.mat33),
-):
-    """
-    Jacobi-style body-body contact accumulation: one thread per contact, applying
-    equal-and-opposite forces/torques and Hessians to the two incident bodies.
-
-    Uses the same contact model as accumulate_body_body_contacts_per_body but
-    evaluates each contact exactly once (no per-body loops). Static/kinematic
-    bodies (inv_mass <= 0) only serve as collision geometry and do not receive
-    force or Hessian contributions.
-    """
-    contact_idx = wp.tid()
-    if contact_idx >= rigid_contact_count[0]:
-        return
-
-    s0 = rigid_contact_shape0[contact_idx]
-    s1 = rigid_contact_shape1[contact_idx]
-    b0 = shape_body[s0] if s0 >= 0 else -1
-    b1 = shape_body[s1] if s1 >= 0 else -1
-
-    # Early-out if no dynamic body is involved (both are static or kinematic)
-    if (b0 < 0 or body_inv_mass[b0] <= 0.0) and (b1 < 0 or body_inv_mass[b1] <= 0.0):
-        return
-
-    cp0_local = rigid_contact_point0[contact_idx]
-    cp1_local = rigid_contact_point1[contact_idx]
-    contact_normal = -rigid_contact_normal[contact_idx]
-    cp0_world = wp.transform_point(body_q[b0], cp0_local) if b0 >= 0 else cp0_local
-    cp1_world = wp.transform_point(body_q[b1], cp1_local) if b1 >= 0 else cp1_local
-    thickness = rigid_contact_thickness0[contact_idx] + rigid_contact_thickness1[contact_idx]
-    dist = wp.dot(contact_normal, cp1_world - cp0_world)
-    penetration = thickness - dist
-
-    if penetration <= _SMALL_LENGTH_EPS:
-        return
-
-    contact_ke = contact_penalty_k[contact_idx]
-    contact_kd = contact_material_kd[contact_idx]
-    contact_mu = contact_material_mu[contact_idx]
-    (
-        force_0,
-        torque_0,
-        h_ll_0,
-        h_al_0,
-        h_aa_0,
-        force_1,
-        torque_1,
-        h_ll_1,
-        h_al_1,
-        h_aa_1,
-    ) = evaluate_rigid_contact_from_collision(
-        b0,
-        b1,
-        body_q,
-        body_q_prev,
-        body_com,
-        cp0_local,
-        cp1_local,
-        contact_normal,
-        penetration,
-        contact_ke,
-        contact_kd,
-        contact_mu,
-        friction_epsilon,
-        dt,
-    )
-
-    if b0 >= 0 and body_inv_mass[b0] > 0.0:
-        wp.atomic_add(body_forces, b0, force_0)
-        wp.atomic_add(body_torques, b0, torque_0)
-        wp.atomic_add(body_hessian_ll, b0, h_ll_0)
-        wp.atomic_add(body_hessian_al, b0, h_al_0)
-        wp.atomic_add(body_hessian_aa, b0, h_aa_0)
-
-    if b1 >= 0 and body_inv_mass[b1] > 0.0:
-        wp.atomic_add(body_forces, b1, force_1)
-        wp.atomic_add(body_torques, b1, torque_1)
-        wp.atomic_add(body_hessian_ll, b1, h_ll_1)
-        wp.atomic_add(body_hessian_al, b1, h_al_1)
-        wp.atomic_add(body_hessian_aa, b1, h_aa_1)
-
-
 @wp.kernel
 def accumulate_body_body_contacts_per_body(
     dt: float,
