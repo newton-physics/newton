@@ -975,6 +975,7 @@ class SolverMuJoCo(SolverBase):
         eq_constraint_joint2 = model.equality_constraint_joint2.numpy()
         eq_constraint_polycoef = model.equality_constraint_polycoef.numpy()
         eq_constraint_enabled = model.equality_constraint_enabled.numpy()
+        eq_constraint_world = model.equality_constraint_world.numpy()
 
         INT32_MAX = np.iinfo(np.int32).max
         collision_mask_everything = INT32_MAX
@@ -1034,15 +1035,17 @@ class SolverMuJoCo(SolverBase):
             selected_shapes = np.where((shape_world == first_group) | (shape_world < 0))[0]
             selected_bodies = np.where((body_world == first_group) | (body_world < 0))[0]
             selected_joints = np.where((joint_world == first_group) | (joint_world < 0))[0]
+            selected_constraints = np.where((eq_constraint_world == first_group) | (eq_constraint_world < 0))[0]
         else:
             # if we are not separating environments to worlds, we use all shapes, bodies, joints
             first_group = 0
             shape_range_len = model.shape_count
 
-            # if we are not separating worlds, we use all shapes, bodies, joints
+            # if we are not separating worlds, we use all shapes, bodies, joints, constraints
             selected_shapes = np.arange(model.shape_count, dtype=np.int32)
             selected_bodies = np.arange(model.body_count, dtype=np.int32)
             selected_joints = np.arange(model.joint_count, dtype=np.int32)
+            selected_constraints = np.arange(model.equality_constraint_count, dtype=np.int32)
 
         # sort joints topologically depth-first since this is the order that will also be used
         # for placing bodies in the MuJoCo model
@@ -1427,7 +1430,8 @@ class SolverMuJoCo(SolverBase):
 
             add_geoms(child)
 
-        for i, constraint_type in enumerate(eq_constraint_type):
+        for i in selected_constraints:
+            constraint_type = eq_constraint_type[i]
             if constraint_type == EqType.CONNECT:
                 eq = spec.add_equality(objtype=mujoco.mjtObj.mjOBJ_BODY)
                 eq.type = mujoco.mjtEq.mjEQ_CONNECT

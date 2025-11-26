@@ -614,6 +614,7 @@ class ModelBuilder:
         self.equality_constraint_polycoef = []
         self.equality_constraint_key = []
         self.equality_constraint_enabled = []
+        self.equality_constraint_world = []
 
         # Custom attributes (user-defined per-frequency arrays)
         self.custom_attributes: dict[str, ModelBuilder.CustomAttribute] = {}
@@ -1514,6 +1515,11 @@ class ModelBuilder:
             articulation_groups = [self.current_world] * builder.articulation_count
             self.articulation_world.extend(articulation_groups)
 
+        # For equality constraints
+        if len(builder.equality_constraint_type) > 0:
+            constraint_worlds = [self.current_world] * len(builder.equality_constraint_type)
+            self.equality_constraint_world.extend(constraint_worlds)
+
         more_builder_attrs = [
             "articulation_key",
             "body_inertia",
@@ -2343,6 +2349,7 @@ class ModelBuilder:
         self.equality_constraint_polycoef.append(polycoef or [0.0, 0.0, 0.0, 0.0, 0.0])
         self.equality_constraint_key.append(key)
         self.equality_constraint_enabled.append(enabled)
+        self.equality_constraint_world.append(self.current_world)
 
         return len(self.equality_constraint_type) - 1
 
@@ -5151,6 +5158,7 @@ class ModelBuilder:
             m.equality_constraint_polycoef = wp.array(self.equality_constraint_polycoef, dtype=wp.float32)
             m.equality_constraint_key = self.equality_constraint_key
             m.equality_constraint_enabled = wp.array(self.equality_constraint_enabled, dtype=wp.bool)
+            m.equality_constraint_world = wp.array(self.equality_constraint_world, dtype=wp.int32)
 
             # counts
             m.joint_count = self.joint_count
