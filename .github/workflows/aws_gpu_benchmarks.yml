@@ -92,6 +92,7 @@ jobs:
         with:
           ref: ${{ inputs.ref }}
           fetch-depth: 0
+
       - name: Install system dependencies
         run: |
           sudo apt-get update
