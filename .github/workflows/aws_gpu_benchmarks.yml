@@ -9,7 +9,7 @@ name: GPU Benchmarks on AWS EC2 (Reusable)
 env:
   AWS_REGION: us-east-2
   AWS_INSTANCE_TYPE: g6e.2xlarge
-  AWS_VOLUME_SIZE: 92
+  AWS_VOLUME_SIZE: 150
   AWS_VOLUME_TYPE: gp3
   AWS_SECURITY_GROUP_IDS: sg-07807c44e7f2a368a
   AWS_ROLE_ARN: arn:aws:iam::968945269301:role/newton-physics-newton-ec2-github-runner-role
@@ -98,6 +98,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev \
               libgl1-mesa-dev libglu1-mesa-dev
+          # Clean up apt cache immediately after install
+          sudo apt-get clean
 
       - name: Install uv
         uses: astral-sh/setup-uv@6b9c6063abd6010835644d4c2e1bef4cf5cd0fca
