@@ -92,6 +92,11 @@ jobs:
         with:
           ref: ${{ inputs.ref }}
           fetch-depth: 0
+          
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libxrandr-dev
 
       - name: Install uv
         uses: astral-sh/setup-uv@6b9c6063abd6010835644d4c2e1bef4cf5cd0fca
