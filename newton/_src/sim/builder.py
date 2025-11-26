@@ -2313,6 +2313,8 @@ class ModelBuilder:
         key: str | None = None,
         collision_filter_parent: bool = True,
         enabled: bool = True,
+        custom_attributes: dict[str, Any] | None = None,
+        **kwargs,
     ) -> int:
         """Adds a cable joint to the model. It has two degrees of freedom: one linear (stretch)
         that constrains the distance between the attachment points, and one angular (bend/twist)
@@ -2339,6 +2341,8 @@ class ModelBuilder:
             key: The key of the joint.
             collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies.
             enabled: Whether the joint is enabled.
+            custom_attributes: Dictionary of custom attribute values for JOINT, JOINT_DOF, or JOINT_COORD
+                frequency attributes.
 
         Returns:
             The index of the added joint.
@@ -2365,6 +2369,8 @@ class ModelBuilder:
             key=key,
             collision_filter_parent=collision_filter_parent,
             enabled=enabled,
+            custom_attributes=custom_attributes,
+            **kwargs,
         )
 
     def add_equality_constraint(
@@ -3809,7 +3815,7 @@ class ModelBuilder:
 
         return remeshed_shapes
 
-    def add_rod_mesh(
+    def add_rod(
         self,
         positions: list[Vec3],
         quaternions: list[Quat],
@@ -3892,7 +3898,7 @@ class ModelBuilder:
             segment_length = wp.length(p1 - p0)
             if segment_length <= 0.0:
                 raise ValueError(
-                    f"add_rod_mesh: segment {i} has zero or negative length; "
+                    f"add_rod: segment {i} has zero or negative length; "
                     "positions must form strictly positive-length segments"
                 )
             half_height = 0.5 * segment_length
@@ -3907,7 +3913,7 @@ class ModelBuilder:
             alignment = wp.dot(seg_dir, local_z_world)
             if alignment < 0.999:
                 raise ValueError(
-                    "add_rod_mesh: quaternion at index "
+                    "add_rod: quaternion at index "
                     f"{i} does not align capsule +Z with segment (positions[i+1] - positions[i]); "
                     "quaternions must be world-space and constructed so that local +Z maps to the "
                     "segment direction positions[i+1] - positions[i]."
@@ -5077,7 +5083,7 @@ class ModelBuilder:
 
         # Also color rigid bodies based on joint connectivity
         self.body_color_groups = color_rigid_bodies(
-            len(self.body_q),
+            self.body_count,
             self.joint_parent,
             self.joint_child,
             algorithm=coloring_algorithm,
@@ -5336,16 +5342,12 @@ class ModelBuilder:
             m.body_world = wp.array(self.body_world, dtype=wp.int32)
 
             # body colors
-            if not self.body_color_groups and len(self.body_q) > 0:
-                # If no explicit rigid-body coloring was requested, assign all bodies to a single color group.
-                # This mirrors the default behavior of the rigid-body coloring utilities.
-                self.body_color_groups = [np.arange(len(self.body_q), dtype=int)]
-
-            body_colors = np.empty(len(self.body_q), dtype=int)
-            for color in range(len(self.body_color_groups)):
-                body_colors[self.body_color_groups[color]] = color
-            m.body_colors = wp.array(body_colors, dtype=int)
-            m.body_color_groups = [wp.array(group, dtype=int) for group in self.body_color_groups]
+            if self.body_color_groups:
+                body_colors = np.empty(self.body_count, dtype=int)
+                for color in range(len(self.body_color_groups)):
+                    body_colors[self.body_color_groups[color]] = color
+                m.body_colors = wp.array(body_colors, dtype=int)
+                m.body_color_groups = [wp.array(group, dtype=int) for group in self.body_color_groups]
 
             # joints
             m.joint_type = wp.array(self.joint_type, dtype=wp.int32)
@@ -5428,7 +5430,7 @@ class ModelBuilder:
             m.joint_dof_count = self.joint_dof_count
             m.joint_coord_count = self.joint_coord_count
             m.particle_count = len(self.particle_q)
-            m.body_count = len(self.body_q)
+            m.body_count = self.body_count
             m.shape_count = len(self.shape_type)
             m.tri_count = len(self.tri_poses)
             m.tet_count = len(self.tet_poses)

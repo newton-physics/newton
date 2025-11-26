@@ -172,7 +172,7 @@ class Example:
                 twisting_angle=0.0,
             )
 
-            rod_bodies, _rod_joints = builder.add_rod_mesh(
+            rod_bodies, _rod_joints = builder.add_rod(
                 positions=cable_points,
                 quaternions=cable_edge_q,
                 radius=cable_radius,

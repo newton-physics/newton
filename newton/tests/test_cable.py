@@ -38,8 +38,8 @@ def _build_cable_chain(
         device: Warp device to build the model on.
         num_links: Number of rod elements (segments) in the cable.
         pin_first: If True, make the first rod body kinematic (anchor); if False, leave all dynamic.
-        bend_stiffness: Cable bend stiffness passed to :func:`add_rod_mesh`.
-        bend_damping: Cable bend damping passed to :func:`add_rod_mesh`.
+        bend_stiffness: Cable bend stiffness passed to :func:`add_rod`.
+        bend_damping: Cable bend damping passed to :func:`add_rod`.
         segment_length: Rest length of each capsule segment.
     """
     builder = newton.ModelBuilder()
@@ -67,7 +67,7 @@ def _build_cable_chain(
     edge_q = [rot_z_to_x] * num_elements
 
     # Create a rod-based cable
-    rod_bodies, _rod_joints = builder.add_rod_mesh(
+    rod_bodies, _rod_joints = builder.add_rod(
         positions=points,
         quaternions=edge_q,
         radius=0.05,
@@ -129,7 +129,7 @@ def _build_cable_loop(device, num_links: int = 6):
         q = wp.quat_between_vectors(wp.vec3(0.0, 0.0, 1.0), dir_vec)
         edge_q.append(q)
 
-    _rod_bodies, _rod_joints = builder.add_rod_mesh(
+    _rod_bodies, _rod_joints = builder.add_rod(
         positions=points,
         quaternions=edge_q,
         radius=0.05,
@@ -392,7 +392,7 @@ def _cable_twist_response_impl(test: unittest.TestCase, device):
     q1 = wp.quat_between_vectors(local_z, dir1)
     quats = [q0, q1]
 
-    rod_bodies, _rod_joints = builder.add_rod_mesh(
+    rod_bodies, _rod_joints = builder.add_rod(
         positions=positions,
         quaternions=quats,
         radius=0.05,
@@ -600,7 +600,7 @@ def _two_layer_cable_pile_collision_impl(test: unittest.TestCase, device):
             rot = wp.quat_between_vectors(local_axis, cable_direction)
             edge_q = [rot] * num_elements
 
-            builder.add_rod_mesh(
+            builder.add_rod(
                 positions=points,
                 quaternions=edge_q,
                 radius=cable_radius,

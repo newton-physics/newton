@@ -213,7 +213,7 @@ class Example:
                     twist_total=twist,
                 )
 
-                rod_bodies, _rod_joints = builder.add_rod_mesh(
+                rod_bodies, _rod_joints = builder.add_rod(
                     positions=pts,
                     quaternions=edge_q,
                     radius=cable_radius,

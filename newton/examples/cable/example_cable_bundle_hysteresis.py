@@ -225,7 +225,7 @@ class Example:
             # All segments use same orientation (straight cable)
             quats = [q_cable for _ in range(self.num_elements)]
 
-            _rod_bodies, _rod_joints = builder.add_rod_mesh(
+            _rod_bodies, _rod_joints = builder.add_rod(
                 positions=points,
                 quaternions=quats,
                 radius=self.cable_radius,
