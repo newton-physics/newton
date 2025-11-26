@@ -19,6 +19,7 @@ from asv_runner.benchmarks.mark import skip_benchmark_if
 wp.config.quiet = True
 
 import math
+
 import newton
 from newton.sensors import TiledCameraSensor
 
@@ -63,7 +64,9 @@ class TiledCameraSensorBenchmark:
         transform = wp.transformf(camera_position, wp.quat_from_matrix(camera_orientation))
         camera_transforms = wp.array([transform], dtype=wp.transformf)
 
-        self.tiled_camera_sensor = TiledCameraSensor(model=self.model, num_cameras=1, width=resolution, height=resolution)
+        self.tiled_camera_sensor = TiledCameraSensor(
+            model=self.model, num_cameras=1, width=resolution, height=resolution
+        )
         self.tiled_camera_sensor.assign_debug_colors_per_shape()
         self.tiled_camera_sensor.assign_default_checkerboard_material()
         self.tiled_camera_sensor.create_default_light(False)
@@ -97,7 +100,7 @@ class TiledCameraSensorBenchmark:
             for _ in range(iterations):
                 self.tiled_camera_sensor.render(self.color_image, self.depth_image, refit_bvh=False, clear_images=False)
         self.timings["render_tiledl"] = timer.elapsed
-    
+
     def teardown(self, resolution: int, num_worlds: int, iterations: int):
         print("")
         print("=== Benchmark Results (FPS) ===")
