@@ -274,35 +274,27 @@ class TiledCameraSensor:
             ],
         )
 
-    def save_color_image(self, color_image: wp.array(dtype=wp.uint32, ndim=3), filename: str) -> bool:
+    def flatten_color_image(self, image: wp.array(dtype=wp.uint32, ndim=3)) -> np.ndarray | None:
         """
-        Save rendered color image as a tiled file.
+        Flatten rendered color image to a tiled image buffer.
 
         Arranges (num_worlds x num_cameras) tiles in a grid layout. Each tile
-        shows one camera's view of one world. Requires PIL.
+        shows one camera's view of one world.
 
         Args:
-            color_image: Color output array from render(), shape (num_worlds, num_cameras, width*height).
-            filename: Output file path (e.g., "output.png").
+            image: Color output array from render(), shape (num_worlds, num_cameras, width*height).
 
         Returns:
-            True if saved successfully, False if PIL unavailable or color_image is None.
+            Numpy array representing the image data.
         """
-
-        if color_image is None:
-            return False
-
-        try:
-            from PIL import Image  # noqa: PLC0415
-        except ImportError:
-            print("Failed to import PIL.Image, not saving image.")
-            return False
+        if image is None:
+            return None
 
         num_worlds_and_cameras = self.render_context.num_worlds * self.render_context.num_cameras
         rows = math.ceil(math.sqrt(num_worlds_and_cameras))
         cols = math.ceil(num_worlds_and_cameras / rows)
 
-        tile_data = color_image.numpy().astype(np.uint32)
+        tile_data = image.numpy().astype(np.uint32)
         tile_data = tile_data.reshape(num_worlds_and_cameras, self.render_context.width * self.render_context.height)
 
         if rows * cols > num_worlds_and_cameras:
@@ -320,39 +312,30 @@ class TiledCameraSensor:
         tile_data = tile_data.reshape(rows, cols, self.render_context.height, self.render_context.width, 3)
         tile_data = tile_data.transpose(0, 2, 1, 3, 4)
         tile_data = tile_data.reshape(rows * self.render_context.height, cols * self.render_context.width, 3)
-        Image.fromarray(tile_data).save(filename)
-        return True
+        return tile_data
 
-    def save_depth_image(self, depth_image: wp.array(dtype=wp.float32, ndim=3), filename: str) -> bool:
+    def flatten_depth_image(self, image: wp.array(dtype=wp.uint32, ndim=3)) -> np.ndarray | None:
         """
-        Save rendered depth image as a tiled grayscale file.
+        Flatten rendered depth image to a tiled grayscale image buffer.
 
         Arranges (num_worlds x num_cameras) tiles in a grid. Depth values are
         inverted (closer = brighter) and normalized to [50, 255] range. Background (depth < 0
-        or no hit) remains black. Requires PIL.
+        or no hit) remains black.
 
         Args:
-            depth_image: Depth output array from render(), shape (num_worlds, num_cameras, width*height).
-            filename: Output file path (e.g., "output.png").
+            image: Depth output array from render(), shape (num_worlds, num_cameras, width*height).
 
         Returns:
-            True if saved successfully, False if PIL unavailable or depth_image is None.
+            Numpy array representing the image data.
         """
-
-        if depth_image is None:
-            return False
-
-        try:
-            from PIL import Image  # noqa: PLC0415
-        except ImportError:
-            print("Failed to import PIL.Image, not saving image.")
-            return False
+        if image is None:
+            return None
 
         num_worlds_and_cameras = self.render_context.num_worlds * self.render_context.num_cameras
         rows = math.ceil(math.sqrt(num_worlds_and_cameras))
         cols = math.ceil(num_worlds_and_cameras / rows)
 
-        tile_data = depth_image.numpy().astype(np.float32)
+        tile_data = image.numpy().astype(np.float32)
         tile_data = tile_data.reshape(num_worlds_and_cameras, self.render_context.width * self.render_context.height)
 
         tile_data[tile_data < 0] = 0
@@ -379,7 +362,55 @@ class TiledCameraSensor:
         tile_data = tile_data.reshape(rows, cols, self.render_context.height, self.render_context.width)
         tile_data = tile_data.transpose(0, 2, 1, 3)
         tile_data = tile_data.reshape(rows * self.render_context.height, cols * self.render_context.width)
-        Image.fromarray(tile_data).save(filename)
+        return tile_data
+
+    def save_color_image(self, image: wp.array(dtype=wp.uint32, ndim=3), filename: str) -> bool:
+        """
+        Save rendered color image as a tiled file.
+
+        Arranges (num_worlds x num_cameras) tiles in a grid layout. Each tile
+        shows one camera's view of one world. Requires PIL.
+
+        Args:
+            image: Color output array from render(), shape (num_worlds, num_cameras, width*height).
+            filename: Output file path (e.g., "output.png").
+
+        Returns:
+            True if saved successfully, False if PIL unavailable or image is None.
+        """
+
+        try:
+            from PIL import Image  # noqa: PLC0415
+        except ImportError:
+            print("Failed to import PIL.Image, not saving image.")
+            return False
+
+        Image.fromarray(self.flatten_color_image(image)).save(filename)
+        return True
+
+    def save_depth_image(self, image: wp.array(dtype=wp.float32, ndim=3), filename: str) -> bool:
+        """
+        Save rendered depth image as a tiled grayscale file.
+
+        Arranges (num_worlds x num_cameras) tiles in a grid. Depth values are
+        inverted (closer = brighter) and normalized to [50, 255] range. Background (depth < 0
+        or no hit) remains black. Requires PIL.
+
+        Args:
+            image: Depth output array from render(), shape (num_worlds, num_cameras, width*height).
+            filename: Output file path (e.g., "output.png").
+
+        Returns:
+            True if saved successfully, False if PIL unavailable or image is None.
+        """
+
+        try:
+            from PIL import Image  # noqa: PLC0415
+        except ImportError:
+            print("Failed to import PIL.Image, not saving image.")
+            return False
+
+        Image.fromarray(self.flatten_depth_image(image)).save(filename)
         return True
 
     def assign_debug_colors_per_world(self, seed: int = 100):

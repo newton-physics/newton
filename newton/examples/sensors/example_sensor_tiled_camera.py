@@ -18,7 +18,7 @@
 #
 # Shows how to use the TiledCameraSensor class.
 # The current view will be rendered using the Tiled Camera Sensor
-# upon pressing ENTER and saved to example_color.png and example_depth.png.
+# upon pressing ENTER and displayed in the side panel.
 #
 # Command: python -m newton.examples sensor_tiled_camera
 #
@@ -27,6 +27,7 @@
 import math
 
 import numpy as np
+import OpenGL.GL as gl
 import warp as wp
 from pxr import Usd, UsdGeom
 
@@ -40,6 +41,8 @@ from ...viewer import ViewerGL
 class Example:
     def __init__(self, viewer):
         self.render_key_is_pressed = False
+        self.color_image_texture = 0
+        self.depth_image_texture = 0
 
         self.viewer = viewer
 
@@ -100,6 +103,7 @@ class Example:
             self.tiled_camera_sensor.compute_camera_rays(wp.array([math.radians(45.0)], dtype=wp.float32))
         self.tiled_camera_sensor_color_image = self.tiled_camera_sensor.create_color_image_output()
         self.tiled_camera_sensor_depth_image = self.tiled_camera_sensor.create_depth_image_output()
+        self.create_textures()
 
     def step(self):
         pass
@@ -132,8 +136,65 @@ class Example:
         self.tiled_camera_sensor.render(
             self.state, camera_transforms, self.tiled_camera_sensor_color_image, self.tiled_camera_sensor_depth_image
         )
-        self.tiled_camera_sensor.save_color_image(self.tiled_camera_sensor_color_image, "example_color.png")
-        self.tiled_camera_sensor.save_depth_image(self.tiled_camera_sensor_depth_image, "example_depth.png")
+        self.update_textures()
+
+    def create_textures(self):
+        checker_size = 64
+        width = self.tiled_camera_sensor.render_context.width
+        height = self.tiled_camera_sensor.render_context.height
+
+        pattern = ((np.arange(height) // checker_size)[:, None] + (np.arange(width) // checker_size)) % 2 == 0
+        pixels = np.where(pattern, 0x22, 0x33).astype(np.uint8)
+        pixels = np.dstack([pixels, pixels, pixels])
+
+        self.color_image_texture, self.depth_image_texture = gl.glGenTextures(2)
+
+        gl.glBindTexture(gl.GL_TEXTURE_2D, self.color_image_texture)
+        gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MIN_FILTER, gl.GL_LINEAR)
+        gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MAG_FILTER, gl.GL_LINEAR)
+        gl.glTexImage2D(
+            gl.GL_TEXTURE_2D, 0, gl.GL_RGB8, width, height, 0, gl.GL_RGB, gl.GL_UNSIGNED_BYTE, pixels.tobytes()
+        )
+
+        gl.glBindTexture(gl.GL_TEXTURE_2D, self.depth_image_texture)
+        gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MIN_FILTER, gl.GL_LINEAR)
+        gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MAG_FILTER, gl.GL_LINEAR)
+        gl.glTexImage2D(
+            gl.GL_TEXTURE_2D, 0, gl.GL_RGB8, width, height, 0, gl.GL_RGB, gl.GL_UNSIGNED_BYTE, pixels.tobytes()
+        )
+
+        gl.glBindTexture(gl.GL_TEXTURE_2D, 0)
+
+    def update_textures(self):
+        gl.glBindTexture(gl.GL_TEXTURE_2D, self.color_image_texture)
+        gl.glTexSubImage2D(
+            gl.GL_TEXTURE_2D,
+            0,
+            0,
+            0,
+            self.tiled_camera_sensor.render_context.width,
+            self.tiled_camera_sensor.render_context.height,
+            gl.GL_RGB,
+            gl.GL_UNSIGNED_BYTE,
+            self.tiled_camera_sensor.flatten_color_image(self.tiled_camera_sensor_color_image).tobytes(),
+        )
+
+        gl.glBindTexture(gl.GL_TEXTURE_2D, self.depth_image_texture)
+        gl.glTexSubImage2D(
+            gl.GL_TEXTURE_2D,
+            0,
+            0,
+            0,
+            self.tiled_camera_sensor.render_context.width,
+            self.tiled_camera_sensor.render_context.height,
+            gl.GL_RGB,
+            gl.GL_UNSIGNED_BYTE,
+            np.dstack(
+                [self.tiled_camera_sensor.flatten_depth_image(self.tiled_camera_sensor_depth_image)] * 3
+            ).tobytes(),
+        )
+
+        gl.glBindTexture(gl.GL_TEXTURE_2D, 0)
 
     def test(self):
         self.render_sensors()
@@ -144,6 +205,21 @@ class Example:
         depth_image = self.tiled_camera_sensor_depth_image.numpy()
         assert depth_image.shape == (1, 1, 1280 * 720)
         assert depth_image.min() < depth_image.max()
+
+    def gui(self, ui):
+        width = 270
+        height = width / self.tiled_camera_sensor.render_context.width * self.tiled_camera_sensor.render_context.height
+
+        if ui.button("Render (Enter)", ui.ImVec2(width, 30)):
+            self.render_sensors()
+
+        ui.text("Color Image")
+        if self.color_image_texture > 0:
+            ui.image(ui.ImTextureRef(self.color_image_texture), ui.ImVec2(width, height))
+
+        ui.text("Depth Image")
+        if self.depth_image_texture > 0:
+            ui.image(ui.ImTextureRef(self.depth_image_texture), ui.ImVec2(width, height))
 
 
 if __name__ == "__main__":
