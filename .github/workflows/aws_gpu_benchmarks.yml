@@ -93,10 +93,22 @@ jobs:
           ref: ${{ inputs.ref }}
           fetch-depth: 0
           
-      - name: Install system dependencies
+      - name: Install GLFW / X / GL dev packages
         run: |
-          sudo apt-get update
-          sudo apt-get install -y libxrandr-dev
+          echo "Installing system dependencies for imgui-bundle / GLFW"
+          if [ -f /etc/debian_version ]; then
+            sudo apt-get update
+            sudo apt-get install -y build-essential cmake pkg-config \
+              libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev \
+              libgl1-mesa-dev libglu1-mesa-dev
+          elif [ -f /etc/os-release ] && grep -qi "amzn\|amazon" /etc/os-release; then
+            sudo yum install -y gcc gcc-c++ make cmake pkgconfig \
+              libXrandr-devel libXinerama-devel libXcursor-devel libXi-devel \
+              mesa-libGL-devel mesa-libGLU-devel
+          else
+            echo "Unknown distro, attempting apt then yum"
+            sudo apt-get update && sudo apt-get install -y libxrandr-dev || sudo yum install -y libXrandr-devel
+          fi
 
       - name: Install uv
         uses: astral-sh/setup-uv@6b9c6063abd6010835644d4c2e1bef4cf5cd0fca
