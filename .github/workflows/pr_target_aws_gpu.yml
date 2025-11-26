@@ -21,9 +21,6 @@ jobs:
     outputs:
       membership_status: ${{ steps.check_org.outputs.membership_status }}
     steps:
-      - name: Install dependencies for building imgui-bundle
-        run: |
-          sudo apt-get update && sudo apt-get install -y libxrandr-dev
       - name: Check user's organization membership
         id: check_org
         run: |
