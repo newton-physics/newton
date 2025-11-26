@@ -91,10 +91,13 @@ class Example:
         self.viewer.set_model(self.model)
 
         # Setup Tiled Camera Sensor
-        self.tiled_camera_sensor = TiledCameraSensor(model=self.model, num_cameras=1, width=1280, height=720)
-        self.tiled_camera_sensor.create_default_light()
-        self.tiled_camera_sensor.assign_debug_colors_per_shape()
-        self.tiled_camera_sensor.assign_default_checkerboard_material()
+        self.tiled_camera_sensor = TiledCameraSensor(
+            model=self.model,
+            num_cameras=1,
+            width=1280,
+            height=720,
+            options=TiledCameraSensor.Options(default_light=True, colors_per_shape=True, checkerboard_texture=True),
+        )
         if isinstance(self.viewer, ViewerGL):
             self.tiled_camera_sensor.compute_camera_rays(
                 wp.array([math.radians(self.viewer.camera.fov)], dtype=wp.float32)
@@ -125,7 +128,16 @@ class Example:
 
         camera_transforms = None
         if isinstance(self.viewer, ViewerGL):
-            camera_transforms = self.tiled_camera_sensor.convert_camera_to_warp_arrays([self.viewer.camera])
+            camera_transforms = wp.array(
+                [
+                    wp.transformf(
+                        self.viewer.camera.pos,
+                        wp.quat_from_matrix(wp.mat33f(self.viewer.camera.get_view_matrix().reshape(4, 4)[:3, :3])),
+                    )
+                ],
+                dtype=wp.transformf,
+            )
+
         else:
             camera_position = wp.vec3f(10.0, 0.0, 2.0)
             camera_orientation = wp.mat33f(0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0)

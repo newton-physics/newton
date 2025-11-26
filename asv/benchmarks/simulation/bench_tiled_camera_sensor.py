@@ -66,11 +66,12 @@ class TiledCameraSensorBenchmark:
         self.camera_transforms = wp.array([transform], dtype=wp.transformf)
 
         self.tiled_camera_sensor = TiledCameraSensor(
-            model=self.model, num_cameras=1, width=resolution, height=resolution
+            model=self.model,
+            num_cameras=1,
+            width=resolution,
+            height=resolution,
+            options=TiledCameraSensor.Options(default_light=True, colors_per_shape=True, checkerboard_texture=True),
         )
-        self.tiled_camera_sensor.assign_debug_colors_per_shape()
-        self.tiled_camera_sensor.assign_default_checkerboard_material()
-        self.tiled_camera_sensor.create_default_light(False)
         self.tiled_camera_sensor.compute_camera_rays(wp.array([math.radians(45.0)], dtype=wp.float32))
         self.color_image = self.tiled_camera_sensor.create_color_image_output()
         self.depth_image = self.tiled_camera_sensor.create_depth_image_output()
@@ -128,8 +129,10 @@ class TiledCameraSensorBenchmark:
             self.__print_timer("Rendering (Tiled)", self.timings["render_tiled"], iterations, self.tiled_camera_sensor)
 
         if os.environ.get("SAVE_IMAGES", "0") != "0":
-            self.tiled_camera_sensor.save_color_image(self.color_image, "benchmark_color.png")
-            self.tiled_camera_sensor.save_depth_image(self.depth_image, "benchmark_depth.png")
+            from PIL import Image  # noqa: PLC0415
+
+            Image.fromarray(self.tiled_camera_sensor.flatten_color_image(self.color_image)).save("benchmark_color.png")
+            Image.fromarray(self.tiled_camera_sensor.flatten_depth_image(self.color_image)).save("benchmark_depth.png")
 
     def __print_timer(self, name: str, elapsed: float, iterations: int, sensor: TiledCameraSensor):
         title = f"{name}"

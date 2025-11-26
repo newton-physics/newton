@@ -16,13 +16,13 @@
 from __future__ import annotations
 
 import math
+from dataclasses import dataclass
 
 import numpy as np
 import warp as wp
 
 from ..geometry import ShapeFlags
 from ..sim import Model, State
-from ..viewer.camera import Camera
 from .warp_raytrace import GeomType, LightType, RenderContext
 
 
@@ -141,7 +141,15 @@ class TiledCameraSensor:
         height: Image height in pixels for each camera.
     """
 
-    def __init__(self, model: Model, num_cameras: int, width: int, height: int):
+    @dataclass
+    class Options:
+        checkerboard_texture: bool = False
+        default_light: bool = False
+        default_light_shadows: bool = False
+        colors_per_world: bool = False
+        colors_per_shape: bool = False
+
+    def __init__(self, model: Model, num_cameras: int, width: int, height: int, options: Options | None = None):
         self.model = model
 
         self.render_context = RenderContext(
@@ -192,6 +200,16 @@ class TiledCameraSensor:
             dim=self.model.shape_count,
             inputs=[self.render_context.mesh_ids, self.render_context.mesh_bounds],
         )
+
+        if options is not None:
+            if options.checkerboard_texture:
+                self.assign_checkerboard_material_to_all_shapes()
+            if options.default_light:
+                self.create_default_light(options.default_light_shadows)
+            if options.colors_per_world:
+                self.assign_random_colors_per_world()
+            elif options.colors_per_shape:
+                self.assign_random_colors_per_shape()
 
     def update_from_state(self, state: State):
         """
@@ -364,56 +382,7 @@ class TiledCameraSensor:
         tile_data = tile_data.reshape(rows * self.render_context.height, cols * self.render_context.width)
         return tile_data
 
-    def save_color_image(self, image: wp.array(dtype=wp.uint32, ndim=3), filename: str) -> bool:
-        """
-        Save rendered color image as a tiled file.
-
-        Arranges (num_worlds x num_cameras) tiles in a grid layout. Each tile
-        shows one camera's view of one world. Requires PIL.
-
-        Args:
-            image: Color output array from render(), shape (num_worlds, num_cameras, width*height).
-            filename: Output file path (e.g., "output.png").
-
-        Returns:
-            True if saved successfully, False if PIL unavailable or image is None.
-        """
-
-        try:
-            from PIL import Image  # noqa: PLC0415
-        except ImportError:
-            print("Failed to import PIL.Image, not saving image.")
-            return False
-
-        Image.fromarray(self.flatten_color_image(image)).save(filename)
-        return True
-
-    def save_depth_image(self, image: wp.array(dtype=wp.float32, ndim=3), filename: str) -> bool:
-        """
-        Save rendered depth image as a tiled grayscale file.
-
-        Arranges (num_worlds x num_cameras) tiles in a grid. Depth values are
-        inverted (closer = brighter) and normalized to [50, 255] range. Background (depth < 0
-        or no hit) remains black. Requires PIL.
-
-        Args:
-            image: Depth output array from render(), shape (num_worlds, num_cameras, width*height).
-            filename: Output file path (e.g., "output.png").
-
-        Returns:
-            True if saved successfully, False if PIL unavailable or image is None.
-        """
-
-        try:
-            from PIL import Image  # noqa: PLC0415
-        except ImportError:
-            print("Failed to import PIL.Image, not saving image.")
-            return False
-
-        Image.fromarray(self.flatten_depth_image(image)).save(filename)
-        return True
-
-    def assign_debug_colors_per_world(self, seed: int = 100):
+    def assign_random_colors_per_world(self, seed: int = 100):
         """
         Assign a random color to all shapes, per world.
 
@@ -425,7 +394,7 @@ class TiledCameraSensor:
         colors[:, -1] = 1.0
         self.render_context.geom_colors = wp.array(colors[self.model.shape_world.numpy() % len(colors)], dtype=wp.vec4f)
 
-    def assign_debug_colors_per_shape(self, seed: int = 100):
+    def assign_random_colors_per_shape(self, seed: int = 100):
         """
         Assign a random color to all shapes.
 
@@ -453,7 +422,7 @@ class TiledCameraSensor:
             [wp.vec3f(-0.57735026, 0.57735026, -0.57735026)], dtype=wp.vec3f
         )
 
-    def assign_default_checkerboard_material(self, resolution: int = 64, checker_size: int = 32):
+    def assign_checkerboard_material_to_all_shapes(self, resolution: int = 64, checker_size: int = 32):
         """
         Assign a checkerboard texture material to all shapes.
 
@@ -501,24 +470,3 @@ class TiledCameraSensor:
             wp.array of shape (num_worlds, num_cameras, width*height) with dtype float32.
         """
         return self.render_context.create_depth_image_output()
-
-    def convert_camera_to_warp_arrays(self, cameras: list[Camera]) -> wp.array(dtype=wp.transformf):
-        """
-        Convert Camera objects to Warp arrays for positions and orientations.
-
-        Args:
-            cameras: List of Camera instances.
-
-        Returns:
-            Warp array of wp.transformf.
-        """
-
-        return wp.array(
-            [
-                wp.transformf(
-                    camera.pos, wp.quat_from_matrix(wp.mat33f(camera.get_view_matrix().reshape(4, 4)[:3, :3]))
-                )
-                for camera in cameras
-            ],
-            dtype=wp.transformf,
-        )
