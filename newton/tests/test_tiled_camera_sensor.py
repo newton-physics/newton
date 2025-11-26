@@ -103,10 +103,15 @@ class TestTiledCameraSensor(unittest.TestCase):
             wp.transformf(camera_position, wp.quat_from_matrix(camera_orientation)), dtype=wp.transformf
         )
 
-        tiled_camera_sensor = TiledCameraSensor(model=model, num_cameras=1, width=320, height=240)
-        tiled_camera_sensor.create_default_light()
-        tiled_camera_sensor.assign_debug_colors_per_shape()
-        tiled_camera_sensor.assign_default_checkerboard_material()
+        tiled_camera_sensor = TiledCameraSensor(
+            model=model,
+            num_cameras=1,
+            width=320,
+            height=240,
+            options=TiledCameraSensor.Options(
+                default_light=True, default_light_shadows=True, colors_per_shape=True, checkerboard_texture=True
+            ),
+        )
         tiled_camera_sensor.compute_camera_rays(wp.array([math.radians(45.0)], dtype=wp.float32))
         color_image = tiled_camera_sensor.create_color_image_output()
         depth_image = tiled_camera_sensor.create_depth_image_output()
