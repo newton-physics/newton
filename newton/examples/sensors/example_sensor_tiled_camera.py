@@ -142,7 +142,7 @@ class Example:
             camera_position = wp.vec3f(10.0, 0.0, 2.0)
             camera_orientation = wp.mat33f(0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0)
             camera_transforms = wp.array(
-                wp.transformf(camera_position, wp.quat_from_matrix(camera_orientation)), dtype=wp.transformf
+                [wp.transformf(camera_position, wp.quat_from_matrix(camera_orientation))], dtype=wp.transformf
             )
 
         self.tiled_camera_sensor.render(
