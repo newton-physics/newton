@@ -63,7 +63,7 @@ class TiledCameraSensorBenchmark:
         )
 
         transform = wp.transformf(camera_position, wp.quat_from_matrix(camera_orientation))
-        camera_transforms = wp.array([transform], dtype=wp.transformf)
+        self.camera_transforms = wp.array([transform], dtype=wp.transformf)
 
         self.tiled_camera_sensor = TiledCameraSensor(
             model=self.model, num_cameras=1, width=resolution, height=resolution
@@ -75,7 +75,6 @@ class TiledCameraSensorBenchmark:
         self.color_image = self.tiled_camera_sensor.create_color_image_output()
         self.depth_image = self.tiled_camera_sensor.create_depth_image_output()
 
-        self.tiled_camera_sensor.update_cameras(camera_transforms)
         self.tiled_camera_sensor.update_from_state(self.state)
 
         with wp.ScopedTimer("Refit BVH", synchronize=True, print=False) as timer:
@@ -83,14 +82,23 @@ class TiledCameraSensorBenchmark:
         self.timings["refit"] = timer.elapsed
 
         for _ in range(iterations):
-            self.tiled_camera_sensor.render(self.color_image, self.depth_image, refit_bvh=False, clear_images=False)
+            self.tiled_camera_sensor.render(
+                None, self.camera_transforms, self.color_image, self.depth_image, refit_bvh=False
+            )
 
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
     def time_rendering_pixel(self, resolution: int, num_worlds: int, iterations: int):
         self.tiled_camera_sensor.render_context.tile_rendering = False
         with wp.ScopedTimer("Rendering", synchronize=True, print=True) as timer:
             for _ in range(iterations):
-                self.tiled_camera_sensor.render(self.color_image, self.depth_image, refit_bvh=False, clear_images=False)
+                self.tiled_camera_sensor.render(
+                    None,
+                    self.camera_transforms,
+                    self.color_image,
+                    self.depth_image,
+                    refit_bvh=False,
+                    clear_images=False,
+                )
         self.timings["render_pixel"] = timer.elapsed
 
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
@@ -99,7 +107,14 @@ class TiledCameraSensorBenchmark:
         self.tiled_camera_sensor.render_context.tile_size = 8
         with wp.ScopedTimer("Tiled Rendering", synchronize=True, print=False) as timer:
             for _ in range(iterations):
-                self.tiled_camera_sensor.render(self.color_image, self.depth_image, refit_bvh=False, clear_images=False)
+                self.tiled_camera_sensor.render(
+                    None,
+                    self.camera_transforms,
+                    self.color_image,
+                    self.depth_image,
+                    refit_bvh=False,
+                    clear_images=False,
+                )
         self.timings["render_tiled"] = timer.elapsed
 
     def teardown(self, resolution: int, num_worlds: int, iterations: int):

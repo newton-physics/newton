@@ -305,6 +305,7 @@ def _render_megakernel(
 
 def render_megakernel(
     rc: RenderContext,
+    camera_transforms: wp.array(dtype=wp.transformf),
     color_image: wp.array(dtype=wp.uint32, ndim=3) | None = None,
     depth_image: wp.array(dtype=wp.float32, ndim=3) | None = None,
     clear_images: bool = True,
@@ -340,7 +341,7 @@ def render_megakernel(
             rc.max_distance,
             # Camera
             rc.camera_rays,
-            rc.camera_transforms,
+            camera_transforms,
             # Geometry BVH
             rc.num_geoms,
             rc.bvh_geom.id if rc.bvh_geom else 0,

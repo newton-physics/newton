@@ -119,19 +119,19 @@ class Example:
     def render_sensors(self):
         print("Rendering Tiled Camera Sensor")
 
+        camera_transforms = None
         if isinstance(self.viewer, ViewerGL):
-            self.tiled_camera_sensor.update_cameras(
-                self.tiled_camera_sensor.convert_camera_to_warp_arrays([self.viewer.camera])
-            )
+            camera_transforms = self.tiled_camera_sensor.convert_camera_to_warp_arrays([self.viewer.camera])
         else:
             camera_position = wp.vec3f(10.0, 0.0, 2.0)
             camera_orientation = wp.mat33f(0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0)
-            self.tiled_camera_sensor.update_cameras(
-                wp.array(wp.transformf(camera_position, wp.quat_from_matrix(camera_orientation)), dtype=wp.transformf)
+            camera_transforms = wp.array(
+                wp.transformf(camera_position, wp.quat_from_matrix(camera_orientation)), dtype=wp.transformf
             )
 
-        self.tiled_camera_sensor.update_from_state(self.state)
-        self.tiled_camera_sensor.render(self.tiled_camera_sensor_color_image, self.tiled_camera_sensor_depth_image)
+        self.tiled_camera_sensor.render(
+            self.state, camera_transforms, self.tiled_camera_sensor_color_image, self.tiled_camera_sensor_depth_image
+        )
         self.tiled_camera_sensor.save_color_image(self.tiled_camera_sensor_color_image, "example_color.png")
         self.tiled_camera_sensor.save_depth_image(self.tiled_camera_sensor_depth_image, "example_depth.png")
 

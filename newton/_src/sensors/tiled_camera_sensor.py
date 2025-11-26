@@ -223,6 +223,8 @@ class TiledCameraSensor:
 
     def render(
         self,
+        state: State | None,
+        camera_transforms: wp.array(dtype=wp.transformf),
         color_image: wp.array(dtype=wp.uint32, ndim=3) | None = None,
         depth_image: wp.array(dtype=wp.float32, ndim=3) | None = None,
         refit_bvh: bool = True,
@@ -232,6 +234,8 @@ class TiledCameraSensor:
         Render color and depth images for all worlds and cameras.
 
         Args:
+            state: The current simulation state containing body transforms.
+            camera_transforms: Array of camera transforms in world space, shape (num_cameras,).
             color_image: Optional output array for color data (num_worlds, num_cameras, width*height).
                         If None, no color rendering is performed.
             depth_image: Optional output array for depth data (num_worlds, num_cameras, width*height).
@@ -239,16 +243,12 @@ class TiledCameraSensor:
             refit_bvh: Whether to refit the BVH or not.
             clear_images: Whether to clear the images before rendering or not.
         """
-        self.render_context.render(color_image, depth_image, refit_bvh=refit_bvh, clear_images=clear_images)
+        if state is not None:
+            self.update_from_state(state)
 
-    def update_cameras(self, transforms: wp.array(dtype=wp.transformf)):
-        """
-        Update camera transforms.
-
-        Args:
-            transforms: Array of camera transforms in world space, shape (num_cameras,).
-        """
-        self.render_context.camera_transforms = transforms
+        self.render_context.render(
+            camera_transforms, color_image, depth_image, refit_bvh=refit_bvh, clear_images=clear_images
+        )
 
     def compute_camera_rays(self, camera_fovs: wp.array(dtype=wp.float32)):
         """

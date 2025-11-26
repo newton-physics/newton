@@ -84,7 +84,6 @@ class RenderContext:
 
         self.num_cameras = num_cameras
         self.camera_rays: wp.array(dtype=wp.vec3f, ndim=4) = None
-        self.camera_transforms: wp.array(dtype=wp.transformf) = None
 
         self.material_texture_ids: wp.array(dtype=wp.int32) = None
         self.material_texture_repeat: wp.array(dtype=wp.vec2f) = None
@@ -171,6 +170,7 @@ class RenderContext:
 
     def render(
         self,
+        camera_transforms: wp.array(dtype=wp.transformf),
         color_image: wp.array(dtype=wp.uint32, ndim=3) | None = None,
         depth_image: wp.array(dtype=wp.float32, ndim=3) | None = None,
         refit_bvh: bool = True,
@@ -179,7 +179,7 @@ class RenderContext:
         if self.has_geometries or self.has_particles or self.has_triangle_mesh:
             if refit_bvh:
                 self.refit_bvh()
-            render_megakernel(self, color_image, depth_image, clear_images)
+            render_megakernel(self, camera_transforms, color_image, depth_image, clear_images)
 
     def __compute_bvh_geom_bounds(self):
         wp.launch(
