@@ -167,6 +167,18 @@ class SolverMuJoCo(SolverBase):
         )
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
+                name="limit_margin",
+                frequency=ModelAttributeFrequency.JOINT_DOF,
+                assignment=ModelAttributeAssignment.MODEL,
+                dtype=wp.float32,
+                default=0.0,
+                namespace="mujoco",
+                usd_attribute_name="mjc:margin",
+                mjcf_attribute_name="margin",
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
                 name="solimplimit",
                 frequency=ModelAttributeFrequency.JOINT_DOF,
                 assignment=ModelAttributeAssignment.MODEL,
@@ -246,6 +258,8 @@ class SolverMuJoCo(SolverBase):
         """Mapping from Newton joint axis index to MJC actuator index. Shape [dof_count], dtype int32."""
         self.to_mjc_body_index: wp.array(dtype=int) | None = None
         """Mapping from MuJoCo body index to Newton body index (skip world body index -1). Shape [bodies_per_world], dtype int32."""
+        self.newton_body_to_mocap_index: wp.array(dtype=int) | None = None
+        """Mapping from Newton body index to MuJoCo mocap body index. -1 if body is not mocap. Shape [bodies_per_world], dtype int32."""
         self.to_newton_shape_index: wp.array(dtype=int, ndim=2) | None = None
         """Mapping from MuJoCo [worldid, geom index] to Newton shape index. This is used to map MuJoCo geoms to Newton shapes."""
         self.to_mjc_geom_index: wp.array(dtype=wp.vec2i) | None = None
@@ -948,6 +962,7 @@ class SolverMuJoCo(SolverBase):
             return attr.numpy()
 
         shape_condim = get_custom_attribute("condim")
+        joint_dof_limit_margin = get_custom_attribute("limit_margin")
         joint_solimp_limit = get_custom_attribute("solimplimit")
 
         eq_constraint_type = model.equality_constraint_type.numpy()
@@ -994,6 +1009,10 @@ class SolverMuJoCo(SolverBase):
         body_mapping = {-1: 0}
         # mapping from Newton shape id to MuJoCo geom name
         shape_mapping = {}
+        # track mocap index for each Newton body (dict: newton_body_id -> mocap_index)
+        newton_body_to_mocap_index = {}
+        # counter for assigning sequential mocap indices
+        next_mocap_index = 0
 
         # ensure unique names
         body_name_counts = {}
@@ -1199,6 +1218,11 @@ class SolverMuJoCo(SolverBase):
             # use the correct global joint index
             j = selected_joints[ji]
 
+            # check if fixed-base articulation
+            fixed_base = False
+            if parent == -1 and joint_type[j] == JointType.FIXED:
+                fixed_base = True
+
             # this assumes that the joint position is 0
             tf = wp.transform(*joint_parent_xform[j])
             tf = tf * wp.transform_inverse(wp.transform(*joint_child_xform[j]))
@@ -1225,8 +1249,12 @@ class SolverMuJoCo(SolverBase):
                 ipos=body_com[child, :],
                 fullinertia=[inertia[0, 0], inertia[1, 1], inertia[2, 2], inertia[0, 1], inertia[0, 2], inertia[1, 2]],
                 explicitinertial=True,
+                mocap=fixed_base,
             )
             mj_bodies.append(body)
+            if fixed_base:
+                newton_body_to_mocap_index[child] = next_mocap_index
+                next_mocap_index += 1
 
             # add joint
             j_type = joint_type[j]
@@ -1269,6 +1297,9 @@ class SolverMuJoCo(SolverBase):
                     }
                     # Set friction
                     joint_params["frictionloss"] = joint_friction[ai]
+                    # Set margin if available
+                    if joint_dof_limit_margin is not None:
+                        joint_params["margin"] = joint_dof_limit_margin[ai]
                     lower, upper = joint_limit_lower[ai], joint_limit_upper[ai]
                     if lower <= -JOINT_LIMIT_UNLIMITED and upper >= JOINT_LIMIT_UNLIMITED:
                         joint_params["limited"] = False
@@ -1335,6 +1366,9 @@ class SolverMuJoCo(SolverBase):
                     }
                     # Set friction
                     joint_params["frictionloss"] = joint_friction[ai]
+                    # Set margin if available
+                    if joint_dof_limit_margin is not None:
+                        joint_params["margin"] = joint_dof_limit_margin[ai]
                     lower, upper = joint_limit_lower[ai], joint_limit_upper[ai]
                     if lower <= -JOINT_LIMIT_UNLIMITED and upper >= JOINT_LIMIT_UNLIMITED:
                         joint_params["limited"] = False
@@ -1525,6 +1559,13 @@ class SolverMuJoCo(SolverBase):
             to_mjc_body_index = np.fromiter(body_mapping.keys(), dtype=int)[1:] + 1
             self.to_mjc_body_index = wp.array(to_mjc_body_index, dtype=wp.int32)
 
+            # create mapping from Newton body index to mocap index (-1 if not mocap)
+            newton_body_indices = np.fromiter(body_mapping.keys(), dtype=int)[1:]
+            body_to_mocap = np.array(
+                [newton_body_to_mocap_index.get(idx, -1) for idx in newton_body_indices], dtype=np.int32
+            )
+            self.newton_body_to_mocap_index = wp.array(body_to_mocap, dtype=wp.int32)
+
             # set mjwarp-only settings
             self.mjw_model.opt.ls_parallel = ls_parallel
 
@@ -1532,13 +1573,6 @@ class SolverMuJoCo(SolverBase):
                 nworld = model.num_worlds
             else:
                 nworld = 1
-
-            # expand model fields that can be expanded:
-            self.expand_model_fields(self.mjw_model, nworld)
-
-            # so far we have only defined the first world,
-            # now complete the data from the Newton model
-            self.notify_model_changed(SolverNotifyFlags.ALL)
 
             # TODO find better heuristics to determine nconmax and njmax
             if disable_contacts:
@@ -1575,6 +1609,13 @@ class SolverMuJoCo(SolverBase):
                 njmax=njmax,
             )
 
+            # expand model fields that can be expanded:
+            self.expand_model_fields(self.mjw_model, nworld)
+
+            # so far we have only defined the first world,
+            # now complete the data from the Newton model
+            self.notify_model_changed(SolverNotifyFlags.ALL)
+
     def expand_model_fields(self, mj_model: MjWarpModel, nworld: int):
         if nworld == 1:
             return
@@ -1598,7 +1639,7 @@ class SolverMuJoCo(SolverBase):
             # "jnt_stiffness",
             "jnt_range",
             # "jnt_actfrcrange",
-            # "jnt_margin",
+            "jnt_margin",  # corresponds to newton custom attribute "limit_margin"
             "dof_armature",
             # "dof_damping",
             # "dof_invweight0",
@@ -1743,6 +1784,7 @@ class SolverMuJoCo(SolverBase):
         # Update DOF properties (armature, friction, and solimplimit) with proper DOF mapping
         mujoco_attrs = getattr(self.model, "mujoco", None)
         solimplimit = getattr(mujoco_attrs, "solimplimit", None) if mujoco_attrs is not None else None
+        joint_dof_limit_margin = getattr(mujoco_attrs, "limit_margin", None) if mujoco_attrs is not None else None
 
         wp.launch(
             update_joint_dof_properties_kernel,
@@ -1759,6 +1801,7 @@ class SolverMuJoCo(SolverBase):
                 self.model.joint_limit_lower,
                 self.model.joint_limit_upper,
                 solimplimit,
+                joint_dof_limit_margin,
                 joints_per_world,
             ],
             outputs=[
@@ -1766,6 +1809,7 @@ class SolverMuJoCo(SolverBase):
                 self.mjw_model.dof_frictionloss,
                 self.mjw_model.jnt_solimp,
                 self.mjw_model.jnt_solref,
+                self.mjw_model.jnt_margin,
                 self.mjw_model.jnt_range,
             ],
             device=self.model.device,
@@ -1792,6 +1836,7 @@ class SolverMuJoCo(SolverBase):
                 self.model.joint_type,
                 self.dof_to_mjc_joint,
                 self.to_mjc_body_index,
+                self.newton_body_to_mocap_index,
                 joints_per_world,
             ],
             outputs=[
@@ -1799,6 +1844,8 @@ class SolverMuJoCo(SolverBase):
                 self.mjw_model.jnt_axis,
                 self.mjw_model.body_pos,
                 self.mjw_model.body_quat,
+                self.mjw_data.mocap_pos,
+                self.mjw_data.mocap_quat,
             ],
             device=self.model.device,
         )

@@ -116,6 +116,7 @@ class ViewerGL(ViewerBase):
             self.ui = UI(self.renderer.window)
         else:
             self.ui = None
+        self._gizmo_log = None
 
         # Performance tracking
         self._fps_history = []
@@ -213,6 +214,14 @@ class ViewerGL(ViewerBase):
 
     @override
     def set_camera(self, pos: wp.vec3, pitch: float, yaw: float):
+        """
+        Set the camera position, pitch, and yaw.
+
+        Args:
+            pos: The camera position.
+            pitch: The camera pitch.
+            yaw: The camera yaw.
+        """
         self.camera.pos = pos
         self.camera.pitch = pitch
         self.camera.yaw = yaw
@@ -508,7 +517,7 @@ class ViewerGL(ViewerBase):
 
         self.renderer.present()
 
-    def get_frame(self, target_image: wp.array | None = None) -> wp.array:
+    def get_frame(self, target_image: wp.array | None = None, render_ui: bool = False) -> wp.array:
         """
         Retrieve the last rendered frame.
 
@@ -519,6 +528,7 @@ class ViewerGL(ViewerBase):
             target_image (wp.array, optional):
                 Optional pre-allocated Warp array with shape `(height, width, 3)`
                 and dtype `wp.uint8`. If `None`, a new array will be created.
+            render_ui (bool): Whether to render the UI.
 
         Returns:
             wp.array: GPU array containing RGB image data with shape `(height, width, 3)`
@@ -553,6 +563,13 @@ class ViewerGL(ViewerBase):
         assert self.renderer._frame_fbo is not None
         gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, self.renderer._frame_fbo)
         gl.glBindBuffer(gl.GL_PIXEL_PACK_BUFFER, self._pbo)
+
+        if render_ui and self.ui:
+            self.ui.begin_frame()
+            self._render_ui()
+            self.ui.end_frame()
+            self.ui.render()
+
         gl.glReadPixels(0, 0, w, h, gl.GL_RGB, gl.GL_UNSIGNED_BYTE, ctypes.c_void_p(0))
         gl.glBindBuffer(gl.GL_PIXEL_PACK_BUFFER, 0)
         gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, 0)
