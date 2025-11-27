@@ -196,7 +196,7 @@ class SolverMuJoCo(SolverBase):
                 dtype=wp.float32,
                 default=0.0,
                 namespace="mujoco",
-                usd_attribute_name="mjc:stiffness"
+                usd_attribute_name="mjc:stiffness",
             )
         )
         builder.add_custom_attribute(
@@ -207,7 +207,7 @@ class SolverMuJoCo(SolverBase):
                 dtype=wp.float32,
                 default=0.0,
                 namespace="mujoco",
-                usd_attribute_name="mjc:damping"
+                usd_attribute_name="mjc:damping",
             )
         )
 
