@@ -223,35 +223,30 @@ class ContactSensor:
             match_fn = fnmatch
 
         if sensing_obj_bodies is not None:
-            sensing_obj_bodies = self._match_elem_key(match_fn, model, model.body_key, sensing_obj_bodies)
-            sensing_obj_shapes = []
+            s_bodies = self._match_elem_key(match_fn, model, model.body_key, sensing_obj_bodies)
+            s_shapes = []
         else:
-            sensing_obj_bodies = []
-            sensing_obj_shapes = self._match_elem_key(match_fn, model, model.shape_key, sensing_obj_shapes)
+            s_bodies = []
+            s_shapes = self._match_elem_key(match_fn, model, model.shape_key, sensing_obj_shapes)
 
         if counterpart_bodies is not None:
-            counterpart_bodies = self._match_elem_key(match_fn, model, model.body_key, counterpart_bodies)
-            counterpart_shapes = []
+            c_bodies = self._match_elem_key(match_fn, model, model.body_key, counterpart_bodies)
+            c_shapes = []
             if include_total:
-                counterpart_bodies = [MatchAny, *counterpart_bodies]
+                c_bodies = [MatchAny, *c_bodies]
         elif counterpart_shapes is not None:
-            counterpart_bodies = []
-            counterpart_shapes = self._match_elem_key(match_fn, model, model.shape_key, counterpart_shapes)
+            c_bodies = []
+            c_shapes = self._match_elem_key(match_fn, model, model.shape_key, counterpart_shapes)
             if include_total:
-                counterpart_shapes = [MatchAny, *counterpart_shapes]
+                c_shapes = [MatchAny, *c_shapes]
         else:
-            counterpart_shapes = [MatchAny]
-            counterpart_bodies = []
+            c_shapes = [MatchAny]
+            c_bodies = []
+
+        contact_pairs = set(map(tuple, model.shape_contact_pairs.list())) if prune_noncolliding else None
 
         sp_sorted, sp_reading, self.shape, self.reading_indices, self.sensing_objs, self.counterparts = (
-            self._assemble_sensor_mappings(
-                sensing_obj_bodies,
-                sensing_obj_shapes,
-                counterpart_bodies,
-                counterpart_shapes,
-                model.body_shapes,
-                set(map(tuple, model.shape_contact_pairs.list())) if prune_noncolliding else None,
-            )
+            self._assemble_sensor_mappings(s_bodies, s_shapes, c_bodies, c_shapes, model.body_shapes, contact_pairs)
         )
 
         # initialize warp arrays
@@ -342,7 +337,7 @@ class ContactSensor:
             counterpart_indices.append(sens_counterparts)
 
         # maximum number of readings for any sensing object
-        n_readings = max(map(len, counterpart_indices))
+        n_readings = max(map(len, counterpart_indices)) if counterpart_indices else 0
 
         sp_sorted = sorted(sp_to_reading)
         sp_reading = []
