@@ -1214,11 +1214,9 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
                     msg=f"Slide friction mismatch for shape {shape_idx} (type {shape_type}) in world {world_idx}, geom {geom_idx}",
                 )
 
-                # Torsional and rolling friction should be scaled by mu and per-shape coefficients
-                shape_torsional = self.model.shape_material_torsional_friction.numpy()[shape_idx]
-                shape_rolling = self.model.shape_material_rolling_friction.numpy()[shape_idx]
-                expected_torsional = expected_mu * shape_torsional
-                expected_rolling = expected_mu * shape_rolling
+                # Torsional and rolling friction should be absolute values (not scaled by mu)
+                expected_torsional = self.model.shape_material_torsional_friction.numpy()[shape_idx]
+                expected_rolling = self.model.shape_material_rolling_friction.numpy()[shape_idx]
 
                 self.assertAlmostEqual(
                     float(actual_friction[1]),
@@ -1409,8 +1407,8 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
 
                 # Verify 1: Friction updated (slide, torsional, and rolling)
                 expected_mu = new_mu[shape_idx]
-                expected_torsional = new_torsional[shape_idx] * expected_mu
-                expected_rolling = new_rolling[shape_idx] * expected_mu
+                expected_torsional = new_torsional[shape_idx]
+                expected_rolling = new_rolling[shape_idx]
 
                 # Verify slide friction
                 self.assertAlmostEqual(
@@ -1664,12 +1662,8 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
 
                 tested_count += 1
                 expected_mu = initial_mu[shape_idx]
-                expected_torsional_coef = initial_torsional[shape_idx]
-                expected_rolling_coef = initial_rolling[shape_idx]
-
-                # MuJoCo stores: (mu, torsion_coef * mu, roll_coef * mu)
-                expected_torsional_abs = expected_torsional_coef * expected_mu
-                expected_rolling_abs = expected_rolling_coef * expected_mu
+                expected_torsional_abs = initial_torsional[shape_idx]
+                expected_rolling_abs = initial_rolling[shape_idx]
 
                 actual_friction = geom_friction[world_idx, geom_idx]
 
@@ -1726,8 +1720,8 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
                     continue
 
                 expected_mu = updated_mu[shape_idx]
-                expected_torsional_abs = updated_torsional[shape_idx] * expected_mu
-                expected_rolling_abs = updated_rolling[shape_idx] * expected_mu
+                expected_torsional_abs = updated_torsional[shape_idx]
+                expected_rolling_abs = updated_rolling[shape_idx]
 
                 actual_friction = updated_geom_friction[world_idx, geom_idx]
 
