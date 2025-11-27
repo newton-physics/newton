@@ -39,17 +39,15 @@ from newton.tests.unittest_utils import find_nonfinite_members
 
 
 class Example:
-    def __init__(self, viewer, num_worlds=1):
+    def __init__(self, viewer):
         # setup simulation parameters first
-        self.fps = 240
+        self.fps = 120
         self.frame_dt = 1.0 / self.fps
         self.sim_time = 0.0
         self.sim_substeps = 1
         self.substep_parity = 0
         self.sim_dt = self.frame_dt / self.sim_substeps
         self.reset_interval = 5.0
-
-        self.num_worlds = num_worlds
 
         self.viewer = viewer
         self.plot_window = ViewerPlot(
@@ -58,15 +56,12 @@ class Example:
         if isinstance(self.viewer, newton.viewer.ViewerGL):
             self.viewer.register_ui_callback(self.plot_window.render, "free")
 
-        world_builder = newton.ModelBuilder()
-        world_builder.add_usd(newton.examples.get_asset("contact_sensor_scene.usda"))
-        newton.solvers.SolverMuJoCo.register_custom_attributes(world_builder)
-
         builder = newton.ModelBuilder()
-        builder.replicate(world_builder, self.num_worlds)
+        builder.add_usd(newton.examples.get_asset("contact_sensor_scene.usda"))
+        newton.solvers.SolverMuJoCo.register_custom_attributes(builder)
 
         builder.add_ground_plane()
-        # stores contact info required by contact sensors
+        # used for storing contact info required by contact sensors
         self.contacts = Contacts(0, 0)
 
         # finalize model
@@ -190,7 +185,6 @@ class Example:
         self.state_0.joint_qd.assign(self.initial_joint_qd)
         # Recompute forward kinematics to refresh derived state.
         newton.eval_fk(self.model, self.state_0.joint_q, self.state_0.joint_qd, self.state_0)
-        # pass
 
     def render(self):
         self.viewer.begin_frame(self.sim_time)
@@ -256,10 +250,9 @@ class ViewerPlot:
 
 if __name__ == "__main__":
     parser = newton.examples.create_parser()
-    parser.add_argument("--num-worlds", type=int, default=1, help="Total number of simulated worlds.")
 
     viewer, args = newton.examples.init(parser)
 
-    example = Example(viewer, args.num_worlds)
+    example = Example(viewer)
 
     newton.examples.run(example, args)
