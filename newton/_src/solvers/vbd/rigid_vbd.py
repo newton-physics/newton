@@ -32,6 +32,7 @@ Organization:
 import warp as wp
 from warp.types import float32, vector
 
+from newton._src.core.spatial import quat_velocity
 from newton._src.sim import JointType
 from newton._src.solvers.solver import integrate_rigid_body
 
@@ -72,51 +73,6 @@ class vec6(vector(length=6, dtype=float32)):
     """Packed lower-triangular 3x3 matrix storage: [L00, L10, L11, L20, L21, L22]."""
 
     pass
-
-
-@wp.func
-def quat_diff_to_omega(q_now: wp.quat, q_prev: wp.quat, dt: float) -> wp.vec3:
-    """Approximate angular velocity from successive world quaternions (world frame).
-
-    Uses right-trivialized mapping via dq = q_now * conj(q_prev) with a small-angle fallback.
-
-    Args:
-        q_now: Current orientation in world frame.
-        q_prev: Previous orientation in world frame.
-        dt: Time step [s].
-
-    Returns:
-        wp.vec3: Angular velocity omega in world frame [rad/s].
-    """
-    # Normalize inputs
-    q1 = wp.normalize(q_now)
-    q0 = wp.normalize(q_prev)
-
-    # Enforce shortest-arc by aligning quaternion hemisphere
-    dot_q = q1[0] * q0[0] + q1[1] * q0[1] + q1[2] * q0[2] + q1[3] * q0[3]
-    if dot_q < 0.0:
-        q0 = wp.quat(-q0[0], -q0[1], -q0[2], -q0[3])
-
-    # dq = q1 * conj(q0)
-    dq = wp.mul(q1, wp.quat_inverse(q0))
-
-    # Normalize delta for numerical safety
-    dq = wp.normalize(dq)
-    v = wp.vec3(dq[0], dq[1], dq[2])
-    w = dq[3]
-    v_len = wp.length(v)
-
-    # angle = 2*atan2(|v|, w); with small-angle fallback consistent with other sites
-    if v_len > _SMALL_ANGLE_EPS:
-        angle = 2.0 * wp.atan2(v_len, w)
-        if angle > _SMALL_ANGLE_EPS:
-            return (angle / (v_len * dt)) * v
-        else:
-            # Small rotation: sin(theta/2) ~ theta/2 -> omega ~ (2/dt) * v
-            return (2.0 / dt) * v
-    else:
-        # Degenerate case (no rotation)
-        return wp.vec3(0.0)
 
 
 @wp.func
@@ -212,64 +168,6 @@ def chol33_solve(Lp: vec6, b: wp.vec3) -> wp.vec3:
 
 
 @wp.func
-def rotation_vector_from_delta(R_delta: wp.mat33) -> wp.vec3:
-    """Rotation vector (axis-angle) from relative rotation matrix using v-branch log map.
-
-    Numerically safe small-angle and near-pi fallbacks are used.
-
-    Args:
-        R_delta: Relative rotation matrix (any frame).
-
-    Returns:
-        wp.vec3: Rotation vector theta*axis in the same frame as R_delta.
-    """
-    # vee(R - R^T) without materializing the full skew matrix
-    vx = R_delta[2, 1] - R_delta[1, 2]
-    vy = R_delta[0, 2] - R_delta[2, 0]
-    vz = R_delta[1, 0] - R_delta[0, 1]
-    v2 = vx * vx + vy * vy + vz * vz
-
-    # theta from trace and |vee|: theta = atan2( ||vee||/2, (trace(R)-1)/2 )
-    s = 0.5 * wp.sqrt(v2)
-    tr = R_delta[0, 0] + R_delta[1, 1] + R_delta[2, 2]
-    c = 0.5 * (tr - 1.0)
-    c = wp.clamp(c, -1.0, 1.0)
-    theta = wp.atan2(s, c)
-
-    if v2 > _SMALL_ANGLE_EPS2:
-        inv_norm_v = 1.0 / wp.sqrt(v2)
-        scale = theta * inv_norm_v
-        return wp.vec3(vx * scale, vy * scale, vz * scale)
-
-    # Small-angle or near-pi fallbacks
-    if c > 0.0:
-        # Small angle: theta * axis ~ 0.5 * vee(R - R^T)
-        return wp.vec3(0.5 * vx, 0.5 * vy, 0.5 * vz)
-
-    # Near-pi: recover axis from diagonals, then return theta * axis
-    # Note: This branch is rare in typical simulation (requires approximately 180-degree rotation between consecutive frames)
-    ax2 = 0.5 * (R_delta[0, 0] + 1.0)
-    ay2 = 0.5 * (R_delta[1, 1] + 1.0)
-    az2 = 0.5 * (R_delta[2, 2] + 1.0)
-    if ax2 >= ay2 and ax2 >= az2:
-        ax = wp.sqrt(wp.max(ax2, 0.0))
-        ay = (R_delta[0, 1] + R_delta[1, 0]) * 0.25 / (ax + 1.0e-12)
-        az = (R_delta[0, 2] + R_delta[2, 0]) * 0.25 / (ax + 1.0e-12)
-        axis = wp.normalize(wp.vec3(ax, ay, az))
-    elif ay2 >= az2:
-        ay = wp.sqrt(wp.max(ay2, 0.0))
-        ax = (R_delta[0, 1] + R_delta[1, 0]) * 0.25 / (ay + 1.0e-12)
-        az = (R_delta[1, 2] + R_delta[2, 1]) * 0.25 / (ay + 1.0e-12)
-        axis = wp.normalize(wp.vec3(ax, ay, az))
-    else:
-        az = wp.sqrt(wp.max(az2, 0.0))
-        ax = (R_delta[0, 2] + R_delta[2, 0]) * 0.25 / (az + 1.0e-12)
-        ay = (R_delta[1, 2] + R_delta[2, 1]) * 0.25 / (az + 1.0e-12)
-        axis = wp.normalize(wp.vec3(ax, ay, az))
-    return axis * theta
-
-
-@wp.func
 def cable_get_kappa(q_wp: wp.quat, q_wc: wp.quat, q_wp_rest: wp.quat, q_wc_rest: wp.quat) -> wp.vec3:
     """Compute cable bending curvature vector kappa in the parent frame.
 
@@ -284,18 +182,18 @@ def cable_get_kappa(q_wp: wp.quat, q_wc: wp.quat, q_wp_rest: wp.quat, q_wc_rest:
     Returns:
         wp.vec3: Curvature vector kappa in parent frame (rotation vector form).
     """
-    # Build R_align = R_rel * R_rel_rest^T using matrices (matches analytic path)
-    R_wp = wp.quat_to_matrix(q_wp)
-    R_wc = wp.quat_to_matrix(q_wc)
-    R_wp_r = wp.quat_to_matrix(q_wp_rest)
-    R_wc_r = wp.quat_to_matrix(q_wc_rest)
+    # Build R_align = R_rel * R_rel_rest^T using quaternions
+    q_rel = wp.mul(wp.quat_inverse(q_wp), q_wc)
+    q_rel_rest = wp.mul(wp.quat_inverse(q_wp_rest), q_wc_rest)
+    q_align = wp.mul(q_rel, wp.quat_inverse(q_rel_rest))
 
-    R_rel = wp.transpose(R_wp) * R_wc
-    R_rel_rest = wp.transpose(R_wp_r) * R_wc_r
-    R_align = R_rel * wp.transpose(R_rel_rest)
+    # Enforce shortest path (w > 0) to avoid double-cover ambiguity
+    if q_align[3] < 0.0:
+        q_align = wp.quat(-q_align[0], -q_align[1], -q_align[2], -q_align[3])
 
-    # Log map to rotation vector (handles small-angle and near-pi safely)
-    return rotation_vector_from_delta(R_align)
+    # Log map to rotation vector
+    axis, angle = wp.quat_to_axis_angle(q_align)
+    return axis * angle
 
 
 @wp.func
@@ -430,8 +328,8 @@ def evaluate_cable_bend_force_hessian_avbd(
     # Optional Rayleigh damping (independent of Dahl)
     if damping > 0.0:
         # World angular velocities
-        omega_p_world = quat_diff_to_omega(q_wp, q_wp_prev, dt)
-        omega_c_world = quat_diff_to_omega(q_wc, q_wc_prev, dt)
+        omega_p_world = quat_velocity(q_wp, q_wp_prev, dt)
+        omega_c_world = quat_velocity(q_wc, q_wc_prev, dt)
 
         # Consistent right-trivialized, aligned rate:
         # kappa_dot = Jr_inv(kappa_now) * (R_align^T * (R_wp^T * (omega_c - omega_p)))
@@ -1340,10 +1238,10 @@ def warmstart_body_body_contacts(
     shape_id_0 = rigid_contact_shape0[i]
     shape_id_1 = rigid_contact_shape1[i]
 
-    # Cache averaged material properties (arithmetic mean)
+    # Cache averaged material properties (arithmetic mean for stiffness/damping, geometric for friction)
     avg_ke = 0.5 * (shape_material_ke[shape_id_0] + shape_material_ke[shape_id_1])
     avg_kd = 0.5 * (shape_material_kd[shape_id_0] + shape_material_kd[shape_id_1])
-    avg_mu = 0.5 * (shape_material_mu[shape_id_0] + shape_material_mu[shape_id_1])
+    avg_mu = wp.sqrt(shape_material_mu[shape_id_0] * shape_material_mu[shape_id_1])
 
     contact_material_ke[i] = avg_ke
     contact_material_kd[i] = avg_kd
@@ -1391,10 +1289,10 @@ def warmstart_body_particle_contacts(
     # Read shape index for the rigid body side
     shape_idx = body_particle_contact_shape[i]
 
-    # Cache averaged material properties (arithmetic mean between particle and shape)
+    # Cache averaged material properties (arithmetic mean for stiffness/damping, geometric for friction)
     avg_ke = 0.5 * (soft_contact_ke + shape_material_ke[shape_idx])
     avg_kd = 0.5 * (soft_contact_kd + shape_material_kd[shape_idx])
-    avg_mu = 0.5 * (soft_contact_mu + shape_material_mu[shape_idx])
+    avg_mu = wp.sqrt(soft_contact_mu * shape_material_mu[shape_idx])
 
     body_particle_contact_material_ke[i] = avg_ke
     body_particle_contact_material_kd[i] = avg_kd
@@ -1938,20 +1836,24 @@ def solve_rigid_body(
     inertial_coeff = m * dt_sqr_reciprocal
     f_lin = (com_star - com_current) * inertial_coeff
 
-    # Compute relative rotation via matrix-log (v-branch) to avoid +/- quaternion ambiguity
-    # Build R_delta = R_current^T * R_star
-    R_cur = wp.quat_to_matrix(rot_current)
-    R_star = wp.quat_to_matrix(rot_star)
-    R_delta = wp.transpose(R_cur) * R_star
+    # Compute relative rotation via quaternion difference
+    # dq = q_current^-1 * q_star
+    q_delta = wp.mul(wp.quat_inverse(rot_current), rot_star)
 
-    # Rotation vector using shared helper
-    theta_body = rotation_vector_from_delta(R_delta)
+    # Enforce shortest path (w > 0) to avoid double-cover ambiguity
+    if q_delta[3] < 0.0:
+        q_delta = wp.quat(-q_delta[0], -q_delta[1], -q_delta[2], -q_delta[3])
+
+    # Rotation vector
+    axis_body, angle_body = wp.quat_to_axis_angle(q_delta)
+    theta_body = axis_body * angle_body
 
     # Angular inertial torque
     tau_body = I_body * (theta_body * dt_sqr_reciprocal)
     tau_world = wp.quat_rotate(rot_current, tau_body)
 
     # Angular Hessian in world frame: use full inertia (supports off-diagonal products of inertia)
+    R_cur = wp.quat_to_matrix(rot_current)
     I_world = R_cur * I_body * wp.transpose(R_cur)
     angular_hessian = dt_sqr_reciprocal * I_world
 
@@ -2387,26 +2289,8 @@ def update_body_velocity(
     # Linear velocity
     v = (x_com - x_com_prev) / dt
 
-    # Compute quaternion difference
-    dq = q * wp.quat_inverse(q_prev)
-    dq = wp.normalize(dq)
-
-    # Enforce shortest arc
-    if dq[3] < 0.0:
-        dq = wp.quat(-dq[0], -dq[1], -dq[2], -dq[3])
-
-    # Convert to angular velocity
-    if not _USE_SMALL_ANGLE_APPROX:
-        v_part = wp.vec3(dq[0], dq[1], dq[2])
-        w_scalar = dq[3]
-        v_norm = wp.length(v_part)
-        if v_norm > _SMALL_ANGLE_EPS:
-            theta = 2.0 * wp.atan2(v_norm, w_scalar)
-            omega = (theta / dt) * (v_part / v_norm)
-        else:
-            omega = (2.0 / dt) * v_part
-    else:
-        omega = (2.0 / dt) * wp.vec3(dq[0], dq[1], dq[2])
+    # Angular velocity
+    omega = quat_velocity(q, q_prev, dt)
 
     body_qd[tid] = wp.spatial_vector(v, omega)
 

@@ -61,6 +61,9 @@ def create_cable_geometry(
         - quaternions: List of capsule orientations using parallel transport (num_elements).
     """
     num_points = num_elements + 1
+    if num_elements <= 0:
+        raise ValueError("num_elements must be positive")
+
     points: list[wp.vec3] = []
 
     dir_vec = wp.vec3(1.0, 0.0, 0.0) if orientation == "x" else wp.vec3(0.0, 1.0, 0.0)
