@@ -2491,6 +2491,214 @@ class TestMuJoCoConversion(unittest.TestCase):
         )
 
 
+class TestMuJoCoMocapBodies(unittest.TestCase):
+    def test_mocap_body_transform_updates_collision_geoms(self):
+        """
+        Test that mocap bodies (fixed-base articulations) correctly update collision geometry
+        when their joint transforms change.
+
+        Setup:
+        - Fixed-base (mocap) body at root
+        - Welded/fixed descendant body with collision geometry
+        - Dynamic ball resting on the descendant body
+
+        Test:
+        - Rotate and translate the mocap body (update joint transform)
+        - Verify mocap_pos/mocap_quat are correctly updated in MuJoCo arrays
+        - Step simulation and verify ball falls (collision geometry moved, contact lost)
+        """
+        builder = newton.ModelBuilder()
+        builder.default_shape_cfg.ke = 1e4
+        builder.default_shape_cfg.kd = 1000.0
+
+        # Create fixed-base (mocap) body at root (at origin)
+        # This body will have a FIXED joint to the world, making it a mocap body in MuJoCo
+        mocap_body = builder.add_body(
+            mass=10.0,
+            com=wp.vec3(0.0, 0.0, 0.0),
+            I_m=wp.mat33(np.eye(3)),
+            xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
+        )
+
+        # Add FIXED joint to world - this makes it a mocap body
+        builder.add_joint_fixed(
+            parent=-1,
+            child=mocap_body,
+            parent_xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
+            child_xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
+        )
+
+        # Create welded/fixed descendant body with collision geometry (platform)
+        # Offset horizontally (X direction) from mocap body, at height 0.5m
+        platform_body = builder.add_body(
+            mass=5.0,
+            com=wp.vec3(0.0, 0.0, 0.0),
+            I_m=wp.mat33(np.eye(3)),
+        )
+
+        # Add FIXED joint from mocap body to platform (welded connection)
+        # Platform is offset in +X direction by 1m and up in +Z by 0.5m
+        builder.add_joint_fixed(
+            parent=mocap_body,
+            child=platform_body,
+            parent_xform=wp.transform(wp.vec3(1.0, 0.0, 0.5), wp.quat_identity()),
+            child_xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
+        )
+
+        # Add collision box to platform (thin platform)
+        platform_height = 0.1
+        builder.add_shape_box(
+            body=platform_body,
+            xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
+            hx=1.0,
+            hy=1.0,
+            hz=platform_height,
+        )
+
+        # Create dynamic ball resting on the platform
+        # Position it above the platform at (1.0, 0, 0.5 + platform_height + ball_radius)
+        ball_radius = 0.2
+        ball_body = builder.add_body(
+            mass=1.0,
+            com=wp.vec3(0.0, 0.0, 0.0),
+            I_m=wp.mat33(np.eye(3) * 0.01),
+            xform=wp.transform(wp.vec3(1.0, 0.0, 0.5 + platform_height + ball_radius), wp.quat_identity()),
+        )
+        builder.add_joint_free(child=ball_body)
+        builder.add_shape_sphere(
+            body=ball_body,
+            radius=ball_radius,
+        )
+
+        model = builder.finalize()
+
+        # Create MuJoCo solver
+        try:
+            solver = SolverMuJoCo(model, use_mujoco_contacts=True)
+        except ImportError as e:
+            self.skipTest(f"MuJoCo or deps not installed. Skipping test: {e}")
+            return
+
+        # Verify mocap body was created
+        self.assertIsNotNone(solver.newton_body_to_mocap_index)
+        mocap_mapping = solver.newton_body_to_mocap_index.numpy()
+
+        # mocap_body should have a valid mocap index (>= 0)
+        mocap_index = mocap_mapping[mocap_body]
+        self.assertGreaterEqual(mocap_index, 0, f"mocap_body should be a mocap body, got index {mocap_index}")
+
+        # platform_body and ball_body should NOT be mocap bodies (-1)
+        self.assertEqual(mocap_mapping[platform_body], -1, "platform_body should not be a mocap body")
+        self.assertEqual(mocap_mapping[ball_body], -1, "ball_body should not be a mocap body")
+
+        # Setup simulation
+        state_in = model.state()
+        state_out = model.state()
+        control = model.control()
+
+        sim_dt = 1.0 / 240.0
+
+        # Let ball settle on platform
+        for _ in range(5):
+            solver.step(state_in, state_out, control, None, sim_dt)
+            state_in, state_out = state_out, state_in
+
+        # Verify ball is resting on platform (should have contacts)
+        initial_n_contacts = int(solver.mjw_data.nacon.numpy()[0])
+        self.assertGreater(initial_n_contacts, 0, "Ball should be in contact with platform initially")
+
+        # Record initial ball state
+        initial_ball_height = state_in.body_q.numpy()[ball_body, 2]
+        initial_ball_velocity_z = state_in.body_qd.numpy()[ball_body, 2]
+
+        # Verify ball is at rest (vertical velocity near zero)
+        self.assertAlmostEqual(
+            initial_ball_velocity_z,
+            0.0,
+            delta=0.001,
+            msg=f"Ball should be at rest initially, got Z velocity {initial_ball_velocity_z}",
+        )
+
+        # Get initial mocap_pos/mocap_quat for verification
+        initial_mocap_pos = solver.mjw_data.mocap_pos.numpy()[0, mocap_index].copy()
+        initial_mocap_quat = solver.mjw_data.mocap_quat.numpy()[0, mocap_index].copy()
+
+        # Rotate mocap body by 90 degrees around Z-axis (vertical) and translate slightly
+        # Since platform is offset in +X from mocap, after 90° Z rotation it becomes offset in +Y
+        # This swings the platform away horizontally, leaving the ball with no support
+        # Add small translation to verify mocap_pos is updated correctly
+        rotation_angle = wp.pi / 2  # 90 degrees
+        rotation_quat = wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), rotation_angle)
+        new_position = wp.vec3(0.1, 0.2, 0.0)  # Small translation for verification
+        new_parent_xform = wp.transform(new_position, rotation_quat)
+
+        # Update the mocap body's joint transform
+        model.joint_X_p.assign([new_parent_xform])
+
+        # Notify solver that joint properties changed
+        solver.notify_model_changed(SolverNotifyFlags.JOINT_PROPERTIES)
+
+        # Verify mocap_pos was updated correctly
+        updated_mocap_pos = solver.mjw_data.mocap_pos.numpy()[0, mocap_index]
+        updated_mocap_quat = solver.mjw_data.mocap_quat.numpy()[0, mocap_index]
+
+        # Check that position changed
+        pos_changed = not np.allclose(initial_mocap_pos, updated_mocap_pos, atol=1e-6)
+        self.assertTrue(pos_changed, "mocap_pos should be updated after transform change")
+
+        # Verify position was updated to new position
+        np.testing.assert_allclose(
+            updated_mocap_pos,
+            [new_position.x, new_position.y, new_position.z],
+            atol=1e-5,
+            err_msg="mocap_pos should match the new position",
+        )
+
+        # Check that quaternion changed
+        quat_changed = not np.allclose(initial_mocap_quat, updated_mocap_quat, atol=1e-6)
+        self.assertTrue(quat_changed, "mocap_quat should be updated after rotation")
+
+        # Verify the rotation is approximately correct (90 degrees around Y)
+        expected_quat_mjc = np.array([rotation_quat.w, rotation_quat.x, rotation_quat.y, rotation_quat.z])
+        # Account for potential quaternion sign flip
+        if np.dot(updated_mocap_quat, expected_quat_mjc) < 0:
+            expected_quat_mjc = -expected_quat_mjc
+        np.testing.assert_allclose(
+            updated_mocap_quat, expected_quat_mjc, atol=1e-5, err_msg="mocap_quat should match the rotation"
+        )
+
+        # Simulate and verify ball falls (collision geometry moved with mocap body)
+        for _ in range(10):
+            solver.step(state_in, state_out, control, None, sim_dt)
+            state_in, state_out = state_out, state_in
+
+        # Verify ball has fallen (lost contact and dropped in height)
+        final_ball_height = state_in.body_q.numpy()[ball_body, 2]
+        final_ball_velocity_z = state_in.body_qd.numpy()[ball_body, 2]
+        final_n_contacts = int(solver.mjw_data.nacon.numpy()[0])
+
+        # Ball should have fallen below initial height
+        self.assertLess(
+            final_ball_height,
+            initial_ball_height,
+            f"Ball should have fallen after platform rotated. Initial: {initial_ball_height:.3f}, Final: {final_ball_height:.3f}",
+        )
+
+        # Ball should have significant downward (negative Z) velocity
+        self.assertLess(
+            final_ball_velocity_z,
+            -0.2,
+            f"Ball should be falling with downward velocity, got {final_ball_velocity_z:.3f} m/s",
+        )
+
+        # Ball should have zero contacts (platform moved away)
+        self.assertEqual(
+            final_n_contacts,
+            0,
+            f"Ball should have no contacts after platform rotated away, got {final_n_contacts} contacts",
+        )
+
+
 class TestMuJoCoAttributes(unittest.TestCase):
     def test_custom_attributes_from_code(self):
         builder = newton.ModelBuilder()

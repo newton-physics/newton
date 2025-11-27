@@ -39,6 +39,15 @@ class UI:
 
         self.io = self.imgui.get_io()
 
+        # Set up proper DPI scaling for high-DPI displays
+        window_width, window_height = self.window.get_size()
+        fb_width, fb_height = self.window.get_framebuffer_size()
+        if window_width > 0 and window_height > 0:
+            scale_x = fb_width / window_width
+            scale_y = fb_height / window_height
+            self.io.display_framebuffer_scale = (scale_x, scale_y)
+            self.io.display_size = (fb_width, fb_height)
+
         self._setup_dark_style()
 
     def _setup_grey_style(self):
@@ -268,7 +277,17 @@ class UI:
         if not self.is_available:
             return
 
-        self.io.display_size = width, height
+        # Get framebuffer size for proper DPI scaling
+        fb_width, fb_height = self.window.get_framebuffer_size()
+
+        # Update display framebuffer scale
+        if width > 0 and height > 0:
+            scale_x = fb_width / width
+            scale_y = fb_height / height
+            self.io.display_framebuffer_scale = (scale_x, scale_y)
+
+        # Use framebuffer size for display size
+        self.io.display_size = fb_width, fb_height
 
     def get_theme_color(self, color_id, fallback_color=(1.0, 1.0, 1.0, 1.0)):
         """Get a color from the current theme with fallback.

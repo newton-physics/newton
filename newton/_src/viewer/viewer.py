@@ -13,6 +13,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import annotations
+
 from abc import abstractmethod
 
 import numpy as np
@@ -25,10 +27,12 @@ from newton.utils import (
     create_capsule_mesh,
     create_cone_mesh,
     create_cylinder_mesh,
+    create_ellipsoid_mesh,
     create_plane_mesh,
     create_sphere_mesh,
 )
 
+from ..core.types import nparray
 from .kernels import estimate_world_extents
 
 
@@ -73,6 +77,13 @@ class ViewerBase:
         self.show_visual = True  # show visual shapes (non collider)
         self.show_static = False  # force static shapes to be visible
         self.show_inertia_boxes = False
+
+        self.model_shape_color: wp.array(dtype=wp.vec3) = None
+        """Color of shapes created from ``self.model``, shape (model.shape_count,)"""
+        # map from shape index to the slot in the contiguous shape color array ``self.model_shape_color``
+        self._shape_to_slot: nparray | None = None
+        # map from shape index -> Instances
+        self._shape_to_batch: list[ViewerBase.ShapeInstances | None] | None = None
 
     def is_running(self) -> bool:
         return True
@@ -226,11 +237,13 @@ class ViewerBase:
                 shapes.name,
                 shapes.mesh,
                 shapes.world_xforms,
-                shapes.scales if self.model_changed else None,
-                shapes.colors if self.model_changed else None,
+                shapes.scales,  # Always pass scales - needed for transform matrix calculation
+                shapes.colors if self.model_changed or shapes.colors_changed else None,
                 shapes.materials if self.model_changed else None,
                 hidden=not visible,
             )
+
+            shapes.colors_changed = False
 
         # update inertia box transforms if visible
         if self.show_inertia_boxes:
@@ -483,6 +496,13 @@ class ViewerBase:
             else:
                 ext = tuple(geo_scale[:3])
             vertices, indices = create_box_mesh(ext)
+
+        elif geo_type == newton.GeoType.ELLIPSOID:
+            # geo_scale contains (rx, ry, rz) semi-axes
+            rx = geo_scale[0] if len(geo_scale) > 0 else 1.0
+            ry = geo_scale[1] if len(geo_scale) > 1 else rx
+            rz = geo_scale[2] if len(geo_scale) > 2 else rx
+            vertices, indices = create_ellipsoid_mesh(rx, ry, rz)
         else:
             raise ValueError(f"log_geo does not support geo_type={geo_type} (name={name})")
 
@@ -559,12 +579,18 @@ class ViewerBase:
             self.xforms = []
             self.scales = []
             self.colors = []
+            """Color (vec3f) per instance."""
             self.materials = []
             self.worlds = []  # World index for each shape
 
-            self.world_xforms = None
+            self.model_shapes = []
 
-        def add(self, parent, xform, scale, color, material, world=-1):
+            self.world_xforms = None
+            self.colors_changed: bool = False
+            """Indicates that the (finalized) ``self.colors`` has changed and it should be included
+            in ``Viewer.log_instances()``."""
+
+        def add(self, parent, xform, scale, color, material, shape_index, world=-1):
             # add an instance of the geometry to the batch
             self.parents.append(parent)
             self.xforms.append(xform)
@@ -572,13 +598,18 @@ class ViewerBase:
             self.colors.append(color)
             self.materials.append(material)
             self.worlds.append(world)
+            self.model_shapes.append(shape_index)
 
-        def finalize(self):
+        def finalize(self, shape_colors: wp.array(dtype=wp.vec3) | None = None):
             # convert to warp arrays
             self.parents = wp.array(self.parents, dtype=int, device=self.device)
             self.xforms = wp.array(self.xforms, dtype=wp.transform, device=self.device)
             self.scales = wp.array(self.scales, dtype=wp.vec3, device=self.device)
-            self.colors = wp.array(self.colors, dtype=wp.vec3, device=self.device)
+            if shape_colors is not None:
+                assert len(shape_colors) == len(self.scales), "shape_colors length mismatch"
+                self.colors = shape_colors
+            else:
+                self.colors = wp.array(self.colors, dtype=wp.vec3, device=self.device)
             self.materials = wp.array(self.materials, dtype=wp.vec4, device=self.device)
             self.worlds = wp.array(self.worlds, dtype=int, device=self.device)
 
@@ -669,6 +700,7 @@ class ViewerBase:
             newton.GeoType.CYLINDER: "cylinder",
             newton.GeoType.CONE: "cone",
             newton.GeoType.BOX: "box",
+            newton.GeoType.ELLIPSOID: "ellipsoid",
             newton.GeoType.MESH: "mesh",
             newton.GeoType.CONVEX_MESH: "convex_hull",
         }.get(geo_type)
@@ -773,11 +805,58 @@ class ViewerBase:
                 material = wp.vec4(0.5, 0.5, 1.0, 0.0)
 
             # add render instance
-            batch.add(parent, xform, scale, color, material, shape_world[s])
+            batch.add(parent, xform, scale, color, material, s, shape_world[s])
 
-        # upload all batches to the GPU
-        for batch in self._shape_instances.values():
-            batch.finalize()
+        # each shape instance object (batch) is associated with one slice
+        batches = list(self._shape_instances.values())
+        offsets = np.cumsum(np.array([0, *[len(b.scales) for b in batches]], dtype=np.int32)).tolist()
+        total_instances = int(offsets[-1])
+
+        # Allocate single contiguous color buffer and copy initial per-batch colors
+        if total_instances:
+            self.model_shape_color = wp.zeros(total_instances, dtype=wp.vec3, device=self.device)
+
+        for b_idx, batch in enumerate(batches):
+            if total_instances:
+                color_array = self.model_shape_color[offsets[b_idx] : offsets[b_idx + 1]]
+                color_array.assign(wp.array(batch.colors, dtype=wp.vec3, device=self.device))
+                batch.finalize(shape_colors=color_array)
+            else:
+                batch.finalize()
+
+        shape_to_slot = np.full(shape_count, -1, dtype=np.int32)
+        for b_idx, batch in enumerate(batches):
+            start = offsets[b_idx]
+            for local_idx, s_idx in enumerate(batch.model_shapes):
+                shape_to_slot[s_idx] = start + local_idx
+        self._shape_to_slot = shape_to_slot
+
+        # Build shape -> batch reference mapping for change signalling
+        shape_to_batch = [None] * shape_count
+        for batch in batches:
+            for s_idx in batch.model_shapes:
+                shape_to_batch[s_idx] = batch
+        self._shape_to_batch = shape_to_batch
+
+    def update_shape_colors(self, shape_colors: dict[int, wp.vec3 | tuple[float, float, float]]):
+        """
+        Set colors for a set of shapes at runtime.
+        Args:
+            shape_colors: mapping from shape index -> color
+        """
+        if self.model_shape_color is None or self._shape_to_slot is None or self._shape_to_batch is None:
+            return
+
+        for s_idx, col in shape_colors.items():
+            if s_idx < 0 or s_idx >= len(self._shape_to_slot):
+                raise ValueError(f"Shape index {s_idx} out of bounds")
+            slot = int(self._shape_to_slot[s_idx])
+            if slot < 0:
+                continue
+            self.model_shape_color[slot : slot + 1].fill_(wp.vec3(col))
+            batch_ref = self._shape_to_batch[s_idx]
+            if batch_ref is not None:
+                batch_ref.colors_changed = True
 
     # creates meshes and instances for each shape in the Model
     def _populate_inertia_boxes(self):
