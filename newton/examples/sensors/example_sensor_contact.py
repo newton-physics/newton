@@ -44,14 +44,12 @@ class Example:
         self.fps = 120
         self.frame_dt = 1.0 / self.fps
         self.sim_time = 0.0
-        self.sim_substeps = 1
-        self.substep_parity = 0
-        self.sim_dt = self.frame_dt / self.sim_substeps
+        self.sim_dt = self.frame_dt
         self.reset_interval = 8.0
 
         self.viewer = viewer
         self.plot_window = ViewerPlot(
-            viewer, "Flap Contact Force", n_points=100, avg=20, scale_min=0, graph_size=(400, 200)
+            viewer, "Flap Contact Force", n_points=100, avg=10, scale_min=0, graph_size=(400, 200)
         )
         if isinstance(self.viewer, newton.viewer.ViewerGL):
             self.viewer.register_ui_callback(self.plot_window.render, "free")
@@ -123,10 +121,9 @@ class Example:
         self.graph = capture.graph
 
     def simulate(self):
-        for _ in range(self.sim_substeps):
-            self.state_0.clear_forces()
-            self.viewer.apply_forces(self.state_0)
-            self.solver.step(self.state_0, self.state_0, self.control, self.contacts, self.sim_dt)
+        self.state_0.clear_forces()
+        self.viewer.apply_forces(self.state_0)
+        self.solver.step(self.state_0, self.state_0, self.control, self.contacts, self.sim_dt)
 
     def step(self):
         if self.sim_time >= self.next_reset:
