@@ -313,13 +313,10 @@ def parse_mjcf(
                     shape_cfg.mu = float(friction_values[0])
 
                 if len(friction_values) >= 2:
-                    torsion_abs = float(friction_values[1])
-                    # MJCF stores absolute values; Newton stores coefficients (coef * mu = abs_value)
-                    shape_cfg.torsional_friction = torsion_abs / shape_cfg.mu if shape_cfg.mu > 0.0 else torsion_abs
+                    shape_cfg.torsional_friction = float(friction_values[1])
 
                 if len(friction_values) >= 3:
-                    roll_abs = float(friction_values[2])
-                    shape_cfg.rolling_friction = roll_abs / shape_cfg.mu if shape_cfg.mu > 0.0 else roll_abs
+                    shape_cfg.rolling_friction = float(friction_values[2])
 
             custom_attributes = parse_custom_attributes(geom_attrib, builder_custom_attr_shape, parsing_mode="mjcf")
             shape_kwargs = {
