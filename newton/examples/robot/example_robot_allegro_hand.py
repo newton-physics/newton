@@ -90,6 +90,9 @@ class Example:
         self.device = wp.get_device()
 
         allegro_hand = newton.ModelBuilder()
+        newton.solvers.SolverMuJoCo.register_custom_attributes(allegro_hand)
+        allegro_hand.default_shape_cfg.ke = 1.0e3
+        allegro_hand.default_shape_cfg.kd = 1.0e2
 
         asset_path = newton.utils.download_asset("wonik_allegro")
         asset_file = str(asset_path / "usd" / "allegro_left_hand_with_cube.usda")
@@ -98,7 +101,6 @@ class Example:
             xform=wp.transform(wp.vec3(0, 0, 0.5)),
             enable_self_collisions=True,
             ignore_paths=[".*Dummy", ".*CollisionPlane", ".*goal", ".*DexCube/visuals"],
-            load_non_physics_prims=True,
         )
 
         # hide collision shapes for the hand links
@@ -113,15 +115,19 @@ class Example:
             allegro_hand.joint_target_pos[i] = 0.0
 
         builder = newton.ModelBuilder()
-        newton.solvers.SolverMuJoCo.register_custom_attributes(builder)
         builder.replicate(allegro_hand, self.num_worlds)
 
+        builder.default_shape_cfg.ke = 1.0e3
+        builder.default_shape_cfg.kd = 1.0e2
         builder.add_ground_plane()
 
         self.model = builder.finalize()
 
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.model)
         self.initial_world_positions = self.model.body_q.numpy()[:: allegro_hand.body_count, :3].copy()
+
+        # Find the cube body index (it's the last body in each world)
+        self.cube_body_offset = allegro_hand.body_count - 1
 
         self.world_time = wp.zeros(self.num_worlds, dtype=wp.float32)
 
@@ -200,15 +206,33 @@ class Example:
     def test(self):
         num_bodies_per_world = self.model.body_count // self.num_worlds
         for i in range(self.num_worlds):
+            world_offset = i * num_bodies_per_world
             world_pos = wp.vec3(*self.initial_world_positions[i])
-            world_lower = world_pos - wp.vec3(0.5, 0.5, 0.5)
-            world_upper = world_pos + wp.vec3(0.5, 0.5, 0.5)
+
+            # Test hand bodies (all except the cube) - keep original tight bounds
+            hand_lower = world_pos - wp.vec3(0.5, 0.5, 0.5)
+            hand_upper = world_pos + wp.vec3(0.5, 0.5, 0.5)
+            hand_body_indices = np.arange(num_bodies_per_world - 1, dtype=np.int32) + world_offset
             newton.examples.test_body_state(
                 self.model,
                 self.state_0,
-                f"all bodies from world {i} are close to the initial position",
-                lambda q, qd: newton.utils.vec_inside_limits(q.p, world_lower, world_upper),  # noqa: B023
-                indices=np.arange(num_bodies_per_world, dtype=np.int32) + i * num_bodies_per_world,
+                f"hand bodies from world {i} are close to the initial position",
+                lambda q, qd: newton.utils.vec_inside_limits(q.p, hand_lower, hand_upper),  # noqa: B023
+                indices=hand_body_indices,
+            )
+
+            # Test cube body - allow it to fall to ground plane
+            # Keep X/Y bounds tight, but allow Z from ground (0.0) to initial position + 0.5
+            cube_body_idx = world_offset + self.cube_body_offset
+            cube_lower = wp.vec3(world_pos.x - 0.5, world_pos.y - 0.5, 0.0)
+            cube_upper = world_pos + wp.vec3(0.5, 0.5, 0.5)
+            newton.examples.test_body_state(
+                self.model,
+                self.state_0,
+                f"cube from world {i} is within bounds and above ground",
+                lambda q, _qd, lower=cube_lower, upper=cube_upper: newton.utils.vec_inside_limits(q.p, lower, upper)
+                and q.p[2] > 0.0,
+                indices=np.array([cube_body_idx], dtype=np.int32),
             )
 
 

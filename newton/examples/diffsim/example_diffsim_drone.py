@@ -752,6 +752,7 @@ class Example:
 
         loss = np.min(self.rollout_costs.numpy())
         print(f"[{(self.frame + 1):3d}/{self.sim_steps}] loss={loss:.8f}")
+        self.viewer.log_scalar("/loss", loss)
         self.cost_history.append(loss)
 
     def test(self):

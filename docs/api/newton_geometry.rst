@@ -33,5 +33,6 @@ newton.geometry
    collide_sphere_sphere
    compute_shape_inertia
    generate_terrain_grid
+   heightfield_to_mesh
    remesh_mesh
    transform_inertia
