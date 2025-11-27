@@ -192,11 +192,11 @@ def run(example, args):
         if test_final:
             example.test_final()
         elif not (test_post_step or test_final):
-            raise NotImplementedError("Example does not have a test or test_post_step method")
+            raise NotImplementedError("Example does not have a test_final or test_post_step method")
 
     example.viewer.close()
 
-    if args is not None and args.test:
+    if perform_test:
         # generic tests for finiteness of Newton objects
         if hasattr(example, "state_0"):
             nan_members = find_nan_members(example.state_0)
