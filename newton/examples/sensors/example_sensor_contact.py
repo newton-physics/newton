@@ -192,7 +192,19 @@ class Example:
         self.viewer.log_contacts(self.contacts, self.state_0)
         self.viewer.end_frame()
 
+    def test_post_step(self):
+        assert not self.plates_touched[1] or self.plates_touched[0]  # plate 0 always touched first
+        assert len(find_nonfinite_members(self.flap_contact_sensor)) == 0
+        assert len(find_nonfinite_members(self.plate_contact_sensor)) == 0
+        # first plate touched by 1.4s, second by 4s, flap left by 2.8s
+        if self.sim_time > 1.4:
+            assert self.plates_touched[0]
+        if self.sim_time > 2.8:
+            assert self.flap_contact_sensor.net_force.numpy().sum() == 0
+        # if self.sim_time > 4.0: assert self.plates_touched[1]   # unreliable due to jerky cube motion
+
     def test(self):
+        self.test_post_step()
         newton.examples.test_body_state(
             self.model,
             self.state_0,
