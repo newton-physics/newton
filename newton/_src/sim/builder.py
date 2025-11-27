@@ -125,14 +125,14 @@ class ModelBuilder:
            builder.current_world = 0  # Following entities will be in world 0
            builder.add_body(...)
 
-    2. **Using add_builder()**: ALL entities from the sub-builder are assigned to the specified world::
+    2. **Using add_world()**: ALL entities from the sub-builder are assigned to a new world::
 
            robot = ModelBuilder()
            robot.add_body(...)  # World assignments here will be overridden
 
            main = ModelBuilder()
-           main.add_builder(robot, world=0)  # All robot entities -> world 0
-           main.add_builder(robot, world=1)  # All robot entities -> world 1
+           main.add_world(robot)  # All robot entities -> world 0
+           main.add_world(robot)  # All robot entities -> world 1
 
     Note:
         It is strongly recommended to use the ModelBuilder to construct a simulation rather
@@ -582,9 +582,8 @@ class ModelBuilder:
         self.joint_dof_count = 0
         self.joint_coord_count = 0
 
-        # current world index for entities being added directly to this builder.
+        # current world index for entities being added to this builder.
         # set to -1 to create global entities shared across all worlds.
-        # note: this value is temporarily overridden when using add_builder().
         self.current_world = -1
 
         self.up_axis: Axis = Axis.from_any(up_axis)
@@ -1011,7 +1010,7 @@ class ModelBuilder:
         xform = wp.transform_identity()
         for i in range(num_worlds):
             xform[:3] = offsets[i]
-            self.add_builder(builder, xform=xform)
+            self.add_world(builder, xform=xform)
 
     def add_articulation(self, key: str | None = None, custom_attributes: dict[str, Any] | None = None):
         """
@@ -1142,7 +1141,7 @@ class ModelBuilder:
             joint_drive_gains_scaling (float): The default scaling of the PD control gains (stiffness and damping), if not set in the PhysicsScene with as "newton:joint_drive_gains_scaling".
             verbose (bool): If True, print additional information about the parsed USD file. Default is False.
             ignore_paths (List[str]): A list of regular expressions matching prim paths to ignore.
-            cloned_world (str): The prim path of a world which is cloned within this USD file. Siblings of this world prim will not be parsed but instead be replicated via `ModelBuilder.add_builder(builder, xform)` to speed up the loading of many instantiated worlds.
+            cloned_world (str): The prim path of a world which is cloned within this USD file. Siblings of this world prim will not be parsed but instead be replicated via `ModelBuilder.add_world(builder, xform)` to speed up the loading of many instantiated worlds.
             collapse_fixed_joints (bool): If True, fixed joints are removed and the respective bodies are merged. Only considered if not set on the PhysicsScene as "newton:collapse_fixed_joints".
             enable_self_collisions (bool): Determines the default behavior of whether self-collisions are enabled for all shapes within an articulation. If an articulation has the attribute ``physxArticulation:enabledSelfCollisions`` defined, this attribute takes precedence.
             apply_up_axis_from_stage (bool): If True, the up axis of the stage will be used to set :attr:`newton.ModelBuilder.up_axis`. Otherwise, the stage will be rotated such that its up axis aligns with the builder's up axis. Default is False.
@@ -1322,67 +1321,155 @@ class ModelBuilder:
 
     # endregion
 
+    # region World management methods
+
+    def begin_world(self, key: str | None = None, attributes: dict[str, Any] | None = None):
+        """Begin a new world context for adding entities.
+
+        This method starts a new world scope where all subsequently added entities
+        (bodies, shapes, joints, particles, etc.) will be assigned to this world.
+        Use :meth:`end_world` to close the world context and return to the global scope.
+
+        **Important:** Worlds cannot be nested. You must call :meth:`end_world` before
+        calling :meth:`begin_world` again.
+
+        Args:
+            key (str | None): Optional unique identifier for this world. If None,
+                a default key "world_{index}" will be generated.
+            attributes (dict[str, Any] | None): Optional custom attributes to associate
+                with this world for later use.
+
+        Raises:
+            RuntimeError: If called when already inside a world context (current_world != -1).
+
+        Example::
+
+            builder = ModelBuilder()
+
+            # Add global ground plane
+            builder.add_ground_plane()  # Added to world -1 (global)
+
+            # Create world 0
+            builder.begin_world(key="robot_0")
+            builder.add_body(...)  # Added to world 0
+            builder.add_shape_box(...)  # Added to world 0
+            builder.end_world()
+
+            # Create world 1
+            builder.begin_world(key="robot_1")
+            builder.add_body(...)  # Added to world 1
+            builder.add_shape_box(...)  # Added to world 1
+            builder.end_world()
+        """
+        if self.current_world != -1:
+            raise RuntimeError(
+                f"Cannot begin a new world: already in world context (current_world={self.current_world}). "
+                "Call end_world() first to close the current world context."
+            )
+
+        # Set the current world to the next available world index
+        self.current_world = self.num_worlds
+        self.num_worlds += 1
+
+        # Store world metadata if needed (for future use)
+        # Note: We might want to add world_key and world_attributes lists in __init__ if needed
+        # For now, we just track the world index
+
+    def end_world(self):
+        """End the current world context and return to global scope.
+
+        After calling this method, subsequently added entities will be assigned
+        to the global world (-1) until :meth:`begin_world` is called again.
+
+        Raises:
+            RuntimeError: If called when not in a world context (current_world == -1).
+
+        Example::
+
+            builder = ModelBuilder()
+            builder.begin_world()
+            builder.add_body(...)  # Added to current world
+            builder.end_world()  # Return to global scope
+            builder.add_ground_plane()  # Added to world -1 (global)
+        """
+        if self.current_world == -1:
+            raise RuntimeError("Cannot end world: not currently in a world context (current_world is already -1).")
+
+        # Reset to global world
+        self.current_world = -1
+
+    def add_world(self, builder: ModelBuilder, xform: Transform | None = None):
+        """Add a builder as a new world.
+
+        This is a convenience method that combines :meth:`begin_world`,
+        :meth:`add_builder`, and :meth:`end_world` into a single call.
+        It's the recommended way to add homogeneous worlds (multiple instances
+        of the same scene/robot).
+
+        Args:
+            builder (ModelBuilder): The builder containing entities to add as a new world.
+            xform (Transform | None): Optional transform to apply to all root bodies
+                in the builder. Useful for spacing out worlds visually.
+
+        Raises:
+            RuntimeError: If called when already in a world context (via begin_world).
+
+        Example::
+
+            # Create a robot blueprint
+            robot = ModelBuilder()
+            robot.add_body(...)
+            robot.add_shape_box(...)
+
+            # Create main scene with multiple robot instances
+            scene = ModelBuilder()
+            scene.add_ground_plane()  # Global ground plane
+
+            # Add multiple robot worlds
+            for i in range(3):
+                scene.add_world(robot)  # Each robot is a separate world
+        """
+        self.begin_world()
+        self.add_builder(builder, xform=xform)
+        self.end_world()
+
+    # endregion
+
     def add_builder(
         self,
         builder: ModelBuilder,
         xform: Transform | None = None,
-        update_num_world_count: bool = True,
-        world: int | None = None,
     ):
-        """Copies the data from `builder`, another `ModelBuilder` to this `ModelBuilder`.
+        """Copies the data from another `ModelBuilder` into this `ModelBuilder`.
 
-        **World Grouping Behavior:**
-        When adding a builder, ALL entities from the source builder will be assigned to the same
-        world, overriding any world assignments that existed in the source builder.
-        This ensures that all entities from a sub-builder are grouped together as a single world.
+        All entities from the source builder are added to this builder's current world context
+        (the value of `self.current_world`). Any world assignments that existed in the source
+        builder are overwritten - all entities will be assigned to the current world.
 
-        Worlds automatically handle collision filtering between different worlds:
-        - Entities from different worlds (except -1) do not collide with each other
-        - Global entities (index -1) collide with all worlds
-        - Collision groups from the source builder are preserved as-is for fine-grained collision control within each world
-
-        To create global entities that are shared across all worlds, set the main builder's
-        `current_world` to -1 before adding entities directly (not via add_builder).
+        Note:
+            The current world defaults to -1 (global). All entities from the source builder
+            will be assigned to this world value, regardless of their original world assignments.
 
         Example::
 
             main_builder = ModelBuilder()
-            # Create global ground plane
-            main_builder.current_world = -1
-            main_builder.add_ground_plane()
+            sub_builder = ModelBuilder()
+            sub_builder.add_body(...)
+            sub_builder.add_shape_box(...)
 
-            # Create robot builder
-            robot_builder = ModelBuilder()
-            robot_builder.add_body(...)  # These world assignments will be overridden
+            # Adds all entities from sub_builder to main_builder's current world (-1 by default)
+            main_builder.add_builder(sub_builder)
 
-            # Add multiple robot instances
-            main_builder.add_builder(robot_builder, world=0)  # All entities -> world 0
-            main_builder.add_builder(robot_builder, world=1)  # All entities -> world 1
+            # With transform
+            main_builder.add_builder(sub_builder, xform=wp.transform((1, 0, 0)))
 
         Args:
-            builder (ModelBuilder): a model builder to add model data from.
-            xform (Transform): offset transform applied to root bodies.
-            update_num_world_count (bool): if True, the number of worlds is updated appropriately.
-                For non-global entities (world >= 0), this either increments num_worlds (when world is None)
-                or ensures num_worlds is at least world+1. Global entities (world=-1) do not affect num_worlds.
-            world (int | None): world index to assign to ALL entities from this builder.
-                If None, uses the current world count as the index. Use -1 for global entities.
-                Note: world=-1 does not increase num_worlds even when update_num_world_count=True.
+            builder (ModelBuilder): The model builder to copy data from.
+            xform (Transform): Optional offset transform applied to root bodies.
         """
 
         if builder.up_axis != self.up_axis:
             raise ValueError("Cannot add a builder with a different up axis.")
-
-        # Set the world index for entities being added
-        if world is None:
-            # Use the current world count as the index if not specified
-            group_idx = self.num_worlds if update_num_world_count else self.current_world
-        else:
-            group_idx = world
-
-        # Save the previous world
-        prev_world = self.current_world
-        self.current_world = group_idx
 
         # explicitly resolve the transform multiplication function to avoid
         # repeatedly resolving builtin overloads during shape transformation
@@ -1653,19 +1740,6 @@ class ModelBuilder:
             if merged.values is None:
                 merged.values = {}
             merged.values.update({offset + idx: value for idx, value in attr.values.items()})
-
-        if update_num_world_count:
-            # Globals do not contribute to the world count
-            if group_idx >= 0:
-                # If an explicit world is provided, ensure num_worlds >= group_idx+1.
-                # Otherwise, auto-increment for the next world.
-                if world is None:
-                    self.num_worlds += 1
-                else:
-                    self.num_worlds = max(self.num_worlds, group_idx + 1)
-
-        # Restore the previous world
-        self.current_world = prev_world
 
     def add_body(
         self,
@@ -4904,6 +4978,98 @@ class ModelBuilder:
             target_max_min_color_ratio=target_max_min_color_ratio,
         )
 
+    def _validate_world_ordering(self):
+        """Validate that world indices are monotonic, contiguous, and properly ordered.
+
+        This method checks:
+        1. World indices are monotonic (non-decreasing after first non-negative)
+        2. World indices are contiguous (no gaps in sequence)
+        3. Global entities (world -1) only appear at beginning or end of arrays
+
+        Raises:
+            ValueError: If any validation check fails.
+        """
+        # List of all world arrays to validate
+        world_arrays = [
+            ("particle_world", self.particle_world),
+            ("body_world", self.body_world),
+            ("shape_world", self.shape_world),
+            ("joint_world", self.joint_world),
+            ("articulation_world", self.articulation_world),
+            ("equality_constraint_world", self.equality_constraint_world),
+        ]
+
+        all_world_indices = set()
+
+        for array_name, world_array in world_arrays:
+            if not world_array:
+                continue
+
+            arr = np.array(world_array, dtype=np.int32)
+
+            # Check for global entity positioning (world -1)
+            # Find first and last occurrence of -1
+            negative_indices = np.where(arr == -1)[0]
+            if len(negative_indices) > 0:
+                # Check that all -1s form contiguous blocks at start and/or end
+                # Count -1s at the start
+                start_neg_count = 0
+                for i in range(len(arr)):
+                    if arr[i] == -1:
+                        start_neg_count += 1
+                    else:
+                        break
+
+                # Count -1s at the end (but only if they don't overlap with start)
+                end_neg_count = 0
+                if start_neg_count < len(arr):  # There are non-negative values after the start block
+                    for i in range(len(arr) - 1, -1, -1):
+                        if arr[i] == -1:
+                            end_neg_count += 1
+                        else:
+                            break
+
+                expected_neg_count = start_neg_count + end_neg_count
+                actual_neg_count = len(negative_indices)
+
+                if expected_neg_count != actual_neg_count:
+                    # There are -1s in the middle
+                    raise ValueError(
+                        f"Invalid world ordering in {array_name}: global entities (world -1) "
+                        f"must only appear at the beginning or end of the array, not in the middle. "
+                        f"Found -1 values at indices: {negative_indices.tolist()}"
+                    )
+
+            # Check monotonic ordering for non-negative values
+            non_neg_mask = arr >= 0
+            if np.any(non_neg_mask):
+                non_neg_values = arr[non_neg_mask]
+
+                # Check that non-negative values are monotonic (non-decreasing)
+                if not np.all(non_neg_values[1:] >= non_neg_values[:-1]):
+                    # Find where the order breaks
+                    for i in range(1, len(non_neg_values)):
+                        if non_neg_values[i] < non_neg_values[i - 1]:
+                            raise ValueError(
+                                f"Invalid world ordering in {array_name}: world indices must be monotonic "
+                                f"(non-decreasing). Found world {non_neg_values[i]} after world {non_neg_values[i - 1]}."
+                            )
+
+                # Collect all non-negative world indices for contiguity check
+                all_world_indices.update(non_neg_values)
+
+        # Check contiguity: all world indices should form a sequence 0, 1, 2, ..., n-1
+        if all_world_indices:
+            world_list = sorted(all_world_indices)
+            expected = list(range(world_list[-1] + 1))
+
+            if world_list != expected:
+                missing = set(expected) - set(world_list)
+                raise ValueError(
+                    f"World indices are not contiguous. Missing world(s): {sorted(missing)}. "
+                    f"Found worlds: {world_list}. Worlds must form a continuous sequence starting from 0."
+                )
+
     def finalize(self, device: Devicelike | None = None, requires_grad: bool = False) -> Model:
         """
         Finalize the builder and create a concrete Model for simulation.
@@ -4929,6 +5095,9 @@ class ModelBuilder:
 
         # ensure the world count is set correctly
         self.num_worlds = max(1, self.num_worlds)
+
+        # validate world ordering and contiguity
+        self._validate_world_ordering()
 
         # construct particle inv masses
         ms = np.array(self.particle_mass, dtype=np.float32)

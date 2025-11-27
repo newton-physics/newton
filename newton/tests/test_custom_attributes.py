@@ -724,7 +724,7 @@ class TestCustomAttributes(unittest.TestCase):
         self.assertEqual(int_val[body], 7)
 
     def test_custom_attributes_with_multi_builders(self):
-        """Test that custom attributes are preserved when using add_builder()."""
+        """Test that custom attributes are preserved when using add_world()."""
         # Create a sub-builder with custom attributes
         sub_builder = ModelBuilder()
 
@@ -801,9 +801,9 @@ class TestCustomAttributes(unittest.TestCase):
         main_builder.add_joint_revolute(parent=body3, child=body4, axis=[0, 0, 1])
 
         # Add first instance
-        main_builder.add_builder(sub_builder, world=0)
+        main_builder.add_world(sub_builder)  # World 0
         # Add second instance
-        main_builder.add_builder(sub_builder, world=1)
+        main_builder.add_world(sub_builder)  # World 1
 
         # Verify custom attributes were merged
         self.assertIn("robot_id", main_builder.custom_attributes)

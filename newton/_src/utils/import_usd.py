@@ -73,7 +73,7 @@ def parse_usd(
         joint_drive_gains_scaling (float): The default scaling of the PD control gains (stiffness and damping), if not set in the PhysicsScene with as "newton:joint_drive_gains_scaling".
         verbose (bool): If True, print additional information about the parsed USD file. Default is False.
         ignore_paths (List[str]): A list of regular expressions matching prim paths to ignore.
-        cloned_world (str): The prim path of a world which is cloned within this USD file. Siblings of this world prim will not be parsed but instead be replicated via `ModelBuilder.add_builder(builder, xform)` to speed up the loading of many instantiated worlds.
+        cloned_world (str): The prim path of a world which is cloned within this USD file. Siblings of this world prim will not be parsed but instead be replicated via `ModelBuilder.add_world(builder, xform)` to speed up the loading of many instantiated worlds.
         collapse_fixed_joints (bool): If True, fixed joints are removed and the respective bodies are merged. Only considered if not set on the PhysicsScene as "newton:collapse_fixed_joints".
         enable_self_collisions (bool): Determines the default behavior of whether self-collisions are enabled for all shapes within an articulation. If an articulation has the attribute ``physxArticulation:enabledSelfCollisions`` defined, this attribute takes precedence.
         apply_up_axis_from_stage (bool): If True, the up axis of the stage will be used to set :attr:`newton.ModelBuilder.up_axis`. Otherwise, the stage will be rotated such that its up axis aligns with the builder's up axis. Default is False.
@@ -211,8 +211,8 @@ def parse_usd(
         cloned_world_paths = []
         # get paths of the siblings of the cloned world
         # and ignore them during parsing, later we use
-        # ModelBuilder.add_builder() to instantiate these
-        # worlds at their respective Xform transforms
+        # ModelBuilder.add_world() to instantiate these
+        # cloned worlds at their respective Xform transforms
         worlds_prim = cloned_world_prim.GetParent()
         for sibling in worlds_prim.GetChildren():
             # print(sibling.GetPath(), usd.get_transform(sibling))
@@ -223,8 +223,8 @@ def parse_usd(
                 ignore_paths.append(p)
 
         # set xform of the cloned world (e.g. "world0") to identity
-        # and later apply this xform via ModelBuilder.add_builder()
-        # to instantiate the world at the correct location
+        # and later apply this xform via ModelBuilder.add_world()
+        # to instantiate the cloned world at the correct location
         UsdGeom.Xform(cloned_world_prim).SetXformOpOrder([])
 
         # create a new builder for the cloned world, then instantiate
@@ -1629,7 +1629,7 @@ def parse_usd(
                 builder.shape_key = [key.replace(cloned_world, world_path) for key in shape_key]
                 builder.joint_key = [key.replace(cloned_world, world_path) for key in joint_key]
                 builder.body_key = [key.replace(cloned_world, world_path) for key in body_key]
-                multi_world_builder.add_builder(builder, xform=world_xform)
+                multi_world_builder.add_world(builder, xform=world_xform)
 
             path_shape_map = path_shape_map_updates
             path_body_map = path_body_map_updates

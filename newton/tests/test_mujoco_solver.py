@@ -253,7 +253,7 @@ class TestMuJoCoSolverPropertiesBase(TestMuJoCoSolver):
 
         for i in range(num_worlds):
             world_transform = wp.transform((i * 2.0, 0.0, 0.0), wp.quat_identity())
-            self.builder.add_builder(template_builder, xform=world_transform, update_num_world_count=True)
+            self.builder.add_world(template_builder, xform=world_transform)
 
         try:
             if self.builder.num_worlds == 0 and num_worlds > 0:
@@ -1664,7 +1664,7 @@ class TestMuJoCoConversion(unittest.TestCase):
         builder.add_ground_plane()
         for i in range(2):
             world_transform = wp.transform((i * 2.0, 0.0, 0.0), wp.quat_identity())
-            builder.add_builder(template_builder, xform=world_transform, update_num_world_count=True)
+            builder.add_world(template_builder, xform=world_transform)
 
         model = builder.finalize()
         self.assertEqual(model.num_worlds, 2, "Model should have 2 worlds")
@@ -2043,15 +2043,17 @@ class TestMuJoCoConversion(unittest.TestCase):
 
         # Main builder adds the robot to world 0 and world 1
         builder = newton.ModelBuilder()
-        builder.add_builder(robot, world=0)  # Creates bodies 0,1 and joint 0 (revolute)
-        builder.add_builder(robot, world=1)  # Creates bodies 2,3 and joint 1 (revolute)
+        builder.add_world(robot)  # Creates world 0 with bodies 0,1 and joint 0 (revolute)
+        builder.add_world(robot)  # Creates world 1 with bodies 2,3 and joint 1 (revolute)
 
         # Now add free joints to the parent bodies of each robot
-        builder.current_world = 0
+        builder.begin_world(key="world_0")
         builder.add_joint_free(child=0)  # Free joint for body 0 (world 0) - joint 2
+        builder.end_world()
 
-        builder.current_world = 1
+        builder.begin_world(key="world_1")
         builder.add_joint_free(child=2)  # Free joint for body 2 (world 1) - joint 3
+        builder.end_world()
 
         model = builder.finalize()
 
@@ -2142,8 +2144,8 @@ class TestMuJoCoConversion(unittest.TestCase):
             xform=wp.transform([1.0, 0, 0], wp.quat_identity()),  # offset by 1 unit
         )
 
-        # Add world 1 at normal scale
-        builder.add_builder(env1, xform=wp.transform([0, 0, 0], wp.quat_identity()))
+        # Add world 0 at normal scale
+        builder.add_world(env1, xform=wp.transform([0, 0, 0], wp.quat_identity()))
 
         # Create shapes for world 2 at 0.5x scale
         env2 = newton.ModelBuilder()
@@ -2164,8 +2166,8 @@ class TestMuJoCoConversion(unittest.TestCase):
             xform=wp.transform([0.5, 0, 0], wp.quat_identity()),  # scaled offset
         )
 
-        # Add world 2 at different location
-        builder.add_builder(env2, xform=wp.transform([2.0, 0, 0], wp.quat_identity()))
+        # Add world 1 at different location
+        builder.add_world(env2, xform=wp.transform([2.0, 0, 0], wp.quat_identity()))
 
         # Finalize model
         model = builder.finalize()
@@ -2273,7 +2275,7 @@ class TestMuJoCoConversion(unittest.TestCase):
         # Create mesh source
         mesh_src = newton.Mesh(vertices=vertices, indices=indices)
 
-        # Create shapes for world 1
+        # Create shapes for world 0
         env1 = newton.ModelBuilder()
         body1 = env1.add_body(key="mesh_body1", mass=1.0)
         env1.add_joint_free(parent=-1, child=body1)
@@ -2285,10 +2287,10 @@ class TestMuJoCoConversion(unittest.TestCase):
             xform=wp.transform([1.0, 0, 0], wp.quat_identity()),  # offset by 1 unit in x
         )
 
-        # Add world 1 at origin
-        builder.add_builder(env1, xform=wp.transform([0, 0, 0], wp.quat_identity()))
+        # Add world 0 at origin
+        builder.add_world(env1, xform=wp.transform([0, 0, 0], wp.quat_identity()))
 
-        # Create shapes for world 2
+        # Create shapes for world 1
         env2 = newton.ModelBuilder()
         body2 = env2.add_body(key="mesh_body2", mass=1.0)
         env2.add_joint_free(parent=-1, child=body2)
@@ -2300,8 +2302,8 @@ class TestMuJoCoConversion(unittest.TestCase):
             xform=wp.transform([2.0, 0, 0], wp.quat_identity()),  # offset by 2 units in x
         )
 
-        # Add world 2 at different location
-        builder.add_builder(env2, xform=wp.transform([5.0, 0, 0], wp.quat_identity()))
+        # Add world 1 at different location
+        builder.add_world(env2, xform=wp.transform([5.0, 0, 0], wp.quat_identity()))
 
         # Finalize model
         model = builder.finalize()

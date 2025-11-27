@@ -90,7 +90,7 @@ class Example:
             scale=1.0,
             particle_radius=3.0e-3,
         )
-        h1.add_builder(cloth_builder)
+        h1.add_world(cloth_builder)
 
         self.graph = None
         self.model = h1.finalize()
