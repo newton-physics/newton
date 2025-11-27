@@ -490,6 +490,8 @@ add_example_test(TestIKExamples, name="ik.example_ik_franka", devices=test_devic
 
 add_example_test(TestIKExamples, name="ik.example_ik_h1", devices=test_devices, use_viewer=True)
 
+add_example_test(TestIKExamples, name="ik.example_ik_custom", devices=cuda_test_devices, use_viewer=True)
+
 add_example_test(
     TestIKExamples,
     name="ik.example_ik_benchmark",

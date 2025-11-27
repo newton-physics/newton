@@ -407,6 +407,8 @@ class Model:
         """Constraint name/key, shape [equality_constraint_count], str."""
         self.equality_constraint_enabled = None
         """Whether constraint is active, shape [equality_constraint_count], bool."""
+        self.equality_constraint_world = None
+        """World index for each constraint, shape [equality_constraint_count], int."""
 
         self.particle_count = 0
         """Total number of particles in the system."""
