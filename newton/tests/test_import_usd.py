@@ -1469,8 +1469,8 @@ def Xform "Articulation" (
         token physics:axis = "Z"
         float physics:lowerLimit = -45
         float physics:upperLimit = 45
-        float[] mjc:stiffness = [0.05]
-        float[] mjc:damping = [0.5]
+        float mjc:stiffness = 0.05
+        float mjc:damping = 0.5
         float drive:angular:physics:stiffness = 10000.0
         float drive:angular:physics:damping = 2000.0
     }
@@ -1533,8 +1533,8 @@ def Xform "Articulation" (
         token physics:axis = "X"
         float physics:lowerLimit = -60
         float physics:upperLimit = 60
-        float[] mjc:stiffness = [0.1]
-        float[] mjc:damping = [0.8]
+        float mjc:stiffness = 0.1
+        float mjc:damping = 0.8
     }
 }
 """
