@@ -48,7 +48,7 @@ class TestImportMjcf(unittest.TestCase):
         self.assertTrue(all(np.array(builder.shape_material_kd)[non_site_indices] == 456.0))
 
         # Check friction values from nv_humanoid.xml: friction="1.0 0.05 0.05"
-        # mu = 1.0, torsional_coef = 0.05/1.0 = 0.05, rolling_coef = 0.05/1.0 = 0.05
+        # mu = 1.0, torsional = 0.05, rolling = 0.05
         self.assertTrue(np.allclose(np.array(builder.shape_material_mu)[non_site_indices], 1.0))
         self.assertTrue(np.allclose(np.array(builder.shape_material_torsional_friction)[non_site_indices], 0.05))
         self.assertTrue(np.allclose(np.array(builder.shape_material_rolling_friction)[non_site_indices], 0.05))
@@ -939,30 +939,30 @@ class TestImportMjcf(unittest.TestCase):
 
             self.assertEqual(builder.shape_count, 5)
 
-            # 3-element: friction="0.5 0.1 0.01" → coefficients: 0.1/0.5=0.2, 0.01/0.5=0.02
+            # 3-element: friction="0.5 0.1 0.01" → absolute values
             self.assertAlmostEqual(builder.shape_material_mu[0], 0.5, places=5)
-            self.assertAlmostEqual(builder.shape_material_torsional_friction[0], 0.2, places=5)
-            self.assertAlmostEqual(builder.shape_material_rolling_friction[0], 0.02, places=5)
+            self.assertAlmostEqual(builder.shape_material_torsional_friction[0], 0.1, places=5)
+            self.assertAlmostEqual(builder.shape_material_rolling_friction[0], 0.01, places=5)
 
-            # 3-element: friction="0.8 0.2 0.05" → coefficients: 0.2/0.8=0.25, 0.05/0.8=0.0625
+            # 3-element: friction="0.8 0.2 0.05" → absolute values
             self.assertAlmostEqual(builder.shape_material_mu[1], 0.8, places=5)
-            self.assertAlmostEqual(builder.shape_material_torsional_friction[1], 0.25, places=5)
-            self.assertAlmostEqual(builder.shape_material_rolling_friction[1], 0.0625, places=5)
+            self.assertAlmostEqual(builder.shape_material_torsional_friction[1], 0.2, places=5)
+            self.assertAlmostEqual(builder.shape_material_rolling_friction[1], 0.05, places=5)
 
             # 3-element with zeros
             self.assertAlmostEqual(builder.shape_material_mu[2], 0.0, places=5)
             self.assertAlmostEqual(builder.shape_material_torsional_friction[2], 0.0, places=5)
             self.assertAlmostEqual(builder.shape_material_rolling_friction[2], 0.0, places=5)
 
-            # 1-element: friction="1.0" → others use ShapeConfig defaults
+            # 1-element: friction="1.0" → others use ShapeConfig defaults (0.25, 0.0005)
             self.assertAlmostEqual(builder.shape_material_mu[3], 1.0, places=5)
-            self.assertAlmostEqual(builder.shape_material_torsional_friction[3], 0.5, places=5)
-            self.assertAlmostEqual(builder.shape_material_rolling_friction[3], 0.001, places=5)
+            self.assertAlmostEqual(builder.shape_material_torsional_friction[3], 0.25, places=5)
+            self.assertAlmostEqual(builder.shape_material_rolling_friction[3], 0.0005, places=5)
 
-            # 2-element: friction="0.6 0.15" → torsional: 0.15/0.6=0.25, rolling uses default
+            # 2-element: friction="0.6 0.15" → torsional: 0.15, rolling uses default (0.0005)
             self.assertAlmostEqual(builder.shape_material_mu[4], 0.6, places=5)
-            self.assertAlmostEqual(builder.shape_material_torsional_friction[4], 0.25, places=5)
-            self.assertAlmostEqual(builder.shape_material_rolling_friction[4], 0.001, places=5)
+            self.assertAlmostEqual(builder.shape_material_torsional_friction[4], 0.15, places=5)
+            self.assertAlmostEqual(builder.shape_material_rolling_friction[4], 0.0005, places=5)
 
         finally:
             os.unlink(mjcf_file)
