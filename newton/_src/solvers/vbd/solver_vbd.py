@@ -23,7 +23,7 @@ import warp as wp
 from ...core.types import override
 from ...sim import Contacts, Control, JointType, Model, State
 from ..solver import SolverBase
-from .particle_vbd import (
+from .particle_vbd_kernels import (
     NUM_THREADS_PER_COLLISION_PRIMITIVE,
     TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE,
     ParticleForceElementAdjacencyInfo,
@@ -48,7 +48,7 @@ from .particle_vbd import (
     solve_trimesh_with_self_contact_penetration_free_tile,
     update_velocity,
 )
-from .rigid_vbd import (
+from .rigid_vbd_kernels import (
     _NUM_CONTACT_THREADS_PER_BODY,
     RigidForceElementAdjacencyInfo,
     # Iteration kernels

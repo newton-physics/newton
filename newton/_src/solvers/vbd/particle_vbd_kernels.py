@@ -25,8 +25,9 @@ The high-level :class:`SolverVBD` interface should remain in
 from __future__ import annotations
 
 import warp as wp
-from newton._src.solvers.vbd.rigid_vbd import evaluate_body_particle_contact
 from warp.types import float32, matrix
+
+from newton._src.solvers.vbd.rigid_vbd_kernels import evaluate_body_particle_contact
 
 from ...geometry import ParticleFlags
 from ...geometry.kernels import triangle_closest_point
