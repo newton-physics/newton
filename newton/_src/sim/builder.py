@@ -160,9 +160,9 @@ class ModelBuilder:
         """The coefficient of friction."""
         restitution: float = 0.0
         """The coefficient of restitution."""
-        torsional_friction: float = 0.5
+        torsional_friction: float = 0.25
         """The coefficient of torsional friction (resistance to spinning at contact point)."""
-        rolling_friction: float = 0.001
+        rolling_friction: float = 0.0005
         """The coefficient of rolling friction (resistance to rolling motion)."""
         thickness: float = 1e-5
         """The thickness of the shape."""
