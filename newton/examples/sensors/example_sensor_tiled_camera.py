@@ -96,7 +96,9 @@ class Example:
             num_cameras=1,
             width=640,
             height=360,
-            options=TiledCameraSensor.Options(default_light=True, default_light_shadows=True, colors_per_shape=True, checkerboard_texture=True),
+            options=TiledCameraSensor.Options(
+                default_light=True, default_light_shadows=True, colors_per_shape=True, checkerboard_texture=True
+            ),
         )
         if isinstance(self.viewer, ViewerGL):
             self.tiled_camera_sensor.compute_camera_rays(
