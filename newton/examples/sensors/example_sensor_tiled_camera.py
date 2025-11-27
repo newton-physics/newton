@@ -40,7 +40,7 @@ from ...viewer import ViewerGL
 
 class Example:
     def __init__(self, viewer):
-        self.render_key_is_pressed = False
+        self.enable_rendering = True
         self.color_image_texture = 0
         self.depth_image_texture = 0
 
@@ -94,9 +94,9 @@ class Example:
         self.tiled_camera_sensor = TiledCameraSensor(
             model=self.model,
             num_cameras=1,
-            width=1280,
-            height=720,
-            options=TiledCameraSensor.Options(default_light=True, colors_per_shape=True, checkerboard_texture=True),
+            width=640,
+            height=360,
+            options=TiledCameraSensor.Options(default_light=True, default_light_shadows=True, colors_per_shape=True, checkerboard_texture=True),
         )
         if isinstance(self.viewer, ViewerGL):
             self.tiled_camera_sensor.compute_camera_rays(
@@ -112,20 +112,13 @@ class Example:
         pass
 
     def render(self):
-        if self.viewer.is_key_down("enter"):
-            if not self.render_key_is_pressed:
-                self.render_sensors()
-            self.render_key_is_pressed = True
-        else:
-            self.render_key_is_pressed = False
-
+        if self.enable_rendering:
+            self.render_sensors()
         self.viewer.begin_frame(0.0)
         self.viewer.log_state(self.state)
         self.viewer.end_frame()
 
     def render_sensors(self):
-        print("Rendering Tiled Camera Sensor")
-
         camera_transforms = None
         if isinstance(self.viewer, ViewerGL):
             camera_transforms = wp.array(
@@ -211,19 +204,19 @@ class Example:
     def test(self):
         self.render_sensors()
         color_image = self.tiled_camera_sensor_color_image.numpy()
-        assert color_image.shape == (1, 1, 1280 * 720)
+        assert color_image.shape == (1, 1, 640 * 360)
         assert color_image.min() < color_image.max()
 
         depth_image = self.tiled_camera_sensor_depth_image.numpy()
-        assert depth_image.shape == (1, 1, 1280 * 720)
+        assert depth_image.shape == (1, 1, 640 * 360)
         assert depth_image.min() < depth_image.max()
 
     def gui(self, ui):
         width = 270
         height = width / self.tiled_camera_sensor.render_context.width * self.tiled_camera_sensor.render_context.height
 
-        if ui.button("Render (Enter)", ui.ImVec2(width, 30)):
-            self.render_sensors()
+        if ui.button("Pause Rendering" if self.enable_rendering else "Resume Rendering", ui.ImVec2(width, 30)):
+            self.enable_rendering = not self.enable_rendering
 
         ui.text("Color Image")
         if self.color_image_texture > 0:
