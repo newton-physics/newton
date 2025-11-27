@@ -138,7 +138,7 @@ class RenderContext:
             self.__init_geom_outputs()
             self.__compute_bvh_geom_bounds()
             if self.bvh_geom is None:
-                self.bvh_geom = wp.Bvh(self.bvh_geom_lowers, self.bvh_geom_uppers, groups=self.bvh_geom_groups)
+                self.bvh_geom = wp.Bvh(self.bvh_geom_lowers, self.bvh_geom_uppers, groups=self.bvh_geom_groups, constructor="sah")
                 wp.launch(
                     kernel=compute_bvh_group_roots,
                     dim=self.num_worlds_total,
@@ -152,7 +152,7 @@ class RenderContext:
             self.__compute_bvh_particle_bounds()
             if self.bvh_particles is None:
                 self.bvh_particles = wp.Bvh(
-                    self.bvh_particles_lowers, self.bvh_particles_uppers, groups=self.bvh_particles_groups
+                    self.bvh_particles_lowers, self.bvh_particles_uppers, groups=self.bvh_particles_groups, constructor="sah"
                 )
                 wp.launch(
                     kernel=compute_bvh_group_roots,
@@ -164,7 +164,7 @@ class RenderContext:
 
         if self.has_triangle_mesh:
             if self.triangle_mesh is None:
-                self.triangle_mesh = wp.Mesh(self.triangle_points, self.triangle_indices)
+                self.triangle_mesh = wp.Mesh(self.triangle_points, self.triangle_indices, bvh_constructor="sah")
             else:
                 self.triangle_mesh.refit()
 
