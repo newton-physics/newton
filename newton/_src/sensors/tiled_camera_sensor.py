@@ -332,7 +332,7 @@ class TiledCameraSensor:
         tile_data = tile_data.reshape(rows * self.render_context.height, cols * self.render_context.width, 3)
         return tile_data
 
-    def flatten_depth_image(self, image: wp.array(dtype=wp.uint32, ndim=3)) -> np.ndarray | None:
+    def flatten_depth_image(self, image: wp.array(dtype=wp.float32, ndim=3)) -> np.ndarray | None:
         """
         Flatten rendered depth image to a tiled grayscale image buffer.
 
