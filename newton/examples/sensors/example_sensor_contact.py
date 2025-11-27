@@ -47,7 +47,7 @@ class Example:
         self.sim_substeps = 1
         self.substep_parity = 0
         self.sim_dt = self.frame_dt / self.sim_substeps
-        self.reset_interval = 5.0
+        self.reset_interval = 8.0
 
         self.viewer = viewer
         self.plot_window = ViewerPlot(
@@ -99,7 +99,6 @@ class Example:
         self.shape_map = {key: s for s, key in enumerate(self.model.shape_key)}
 
         self.state_0 = self.model.state()
-        self.state_1 = self.model.state()
 
         self.control = self.model.control()
         hinge_joint_idx = self.model.joint_key.index("/env/Hinge")
@@ -114,25 +113,20 @@ class Example:
         self.capture()
 
     def capture(self):
-        self.graph_even, self.graph_odd = None, None
+        self.graph = None
 
         if not wp.get_device().is_cuda:
             return
 
         with wp.ScopedCapture() as capture:
             self.simulate()
-        self.graph_even = capture.graph
-        if self.sim_substeps & 1:
-            with wp.ScopedCapture() as capture:
-                self.simulate()
-            self.graph_odd = capture.graph
+        self.graph = capture.graph
 
     def simulate(self):
         for _ in range(self.sim_substeps):
             self.state_0.clear_forces()
             self.viewer.apply_forces(self.state_0)
-            self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
-            self.state_0, self.state_1 = self.state_1, self.state_0
+            self.solver.step(self.state_0, self.state_0, self.control, self.contacts, self.sim_dt)
 
     def step(self):
         if self.sim_time >= self.next_reset:
@@ -142,14 +136,10 @@ class Example:
         self.control.joint_target_pos[self.hinge_joint_q_start : self.hinge_joint_q_start + 1].fill_(hinge_angle)
 
         with wp.ScopedTimer("step", active=False):
-            if self.graph_even:
-                wp.capture_launch(self.graph_odd if self.substep_parity else self.graph_even)
-                if self.sim_substeps & 1:
-                    self.state_0, self.state_1 = self.state_1, self.state_0
+            if self.graph:
+                wp.capture_launch(self.graph)
             else:
                 self.simulate()
-            if self.sim_substeps & 1:
-                self.substep_parity = 1 - self.substep_parity
 
         populate_contacts(self.contacts, self.solver)
         self.plate_contact_sensor.eval(self.contacts)
