@@ -1425,9 +1425,7 @@ def Xform "TestBody" (
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_joint_stiffness_damping(self):
         """Test that joint stiffness and damping are parsed correctly from USD."""
-        from pxr import Usd
-
-        from newton.solvers import SolverMuJoCo
+        from pxr import Usd  # noqa: PLC0415
 
         usd_content = """#usda 1.0
 (
@@ -1557,7 +1555,7 @@ def Xform "Articulation" (
         joint_target_ke = model.joint_target_ke.numpy()
         joint_target_kd = model.joint_target_kd.numpy()
 
-        import math
+        import math  # noqa: PLC0415
 
         deg_to_rad_scale = math.degrees(1.0)
         expected_values = {
