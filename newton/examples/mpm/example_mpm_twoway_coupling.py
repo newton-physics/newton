@@ -271,7 +271,7 @@ class Example:
 
         self.sim_time += self.frame_dt
 
-    def test(self):
+    def test_final(self):
         newton.examples.test_body_state(
             self.model,
             self.state_0,
