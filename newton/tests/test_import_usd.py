@@ -1557,19 +1557,19 @@ def Xform "Articulation" (
 
         import math  # noqa: PLC0415
 
-        deg_to_rad_scale = math.degrees(1.0)
+        angular_gain_unit_scale = math.degrees(1.0)
         expected_values = {
             "/Articulation/Joint1": {
                 "stiffness": 0.05,
                 "damping": 0.5,
-                "target_ke": 10000.0 * deg_to_rad_scale,
-                "target_kd": 2000.0 * deg_to_rad_scale,
+                "target_ke": 10000.0 * angular_gain_unit_scale,
+                "target_kd": 2000.0 * angular_gain_unit_scale,
             },
             "/Articulation/Joint2": {
                 "stiffness": 0.0,
                 "damping": 0.0,
-                "target_ke": 5000.0 * deg_to_rad_scale,
-                "target_kd": 1000.0 * deg_to_rad_scale,
+                "target_ke": 5000.0 * angular_gain_unit_scale,
+                "target_kd": 1000.0 * angular_gain_unit_scale,
             },
             "/Articulation/Joint3": {"stiffness": 0.1, "damping": 0.8, "target_ke": 0.0, "target_kd": 0.0},
         }
@@ -1593,19 +1593,19 @@ def Xform "Articulation" (
                 "dof_damping": 0.5,
                 "jnt_stiffness": 0.05,
                 "has_actuator": True,
-                "pos_gain": 10000.0 * deg_to_rad_scale,
-                "pos_bias": 10000.0 * deg_to_rad_scale,
-                "vel_gain": 2000.0 * deg_to_rad_scale,
-                "vel_bias": 2000.0 * deg_to_rad_scale,
+                "pos_gain": 10000.0 * angular_gain_unit_scale,
+                "pos_bias": 10000.0 * angular_gain_unit_scale,
+                "vel_gain": 2000.0 * angular_gain_unit_scale,
+                "vel_bias": 2000.0 * angular_gain_unit_scale,
             },
             "/Articulation/Joint2": {
                 "dof_damping": 0.0,
                 "jnt_stiffness": 0.0,
                 "has_actuator": True,
-                "pos_gain": 5000.0 * deg_to_rad_scale,
-                "pos_bias": 5000.0 * deg_to_rad_scale,
-                "vel_gain": 1000.0 * deg_to_rad_scale,
-                "vel_bias": 1000.0 * deg_to_rad_scale,
+                "pos_gain": 5000.0 * angular_gain_unit_scale,
+                "pos_bias": 5000.0 * angular_gain_unit_scale,
+                "vel_gain": 1000.0 * angular_gain_unit_scale,
+                "vel_bias": 1000.0 * angular_gain_unit_scale,
             },
             "/Articulation/Joint3": {"dof_damping": 0.8, "jnt_stiffness": 0.1, "has_actuator": False},
         }
