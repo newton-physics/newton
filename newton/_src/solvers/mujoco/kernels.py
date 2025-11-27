@@ -1158,7 +1158,7 @@ def update_geom_properties_kernel(
     mu = shape_mu[shape_idx]
     torsional = shape_torsional_friction[shape_idx]
     rolling = shape_rolling_friction[shape_idx]
-    geom_friction[worldid, geom_idx] = wp.vec3f(mu, torsional * mu, rolling * mu)
+    geom_friction[worldid, geom_idx] = wp.vec3f(mu, torsional, rolling)
 
     # update geom_solref (timeconst, dampratio) using stiffness and damping
     # we don't use negative convention for geom_solref because MJWarp's code

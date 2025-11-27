@@ -1174,8 +1174,8 @@ class SolverMuJoCo(SolverBase):
                 rolling = shape_rolling_friction[shape]
                 geom_params["friction"] = [
                     mu,
-                    torsional * mu,
-                    rolling * mu,
+                    torsional,
+                    rolling,
                 ]
                 if shape_condim is not None:
                     geom_params["condim"] = shape_condim[shape]
