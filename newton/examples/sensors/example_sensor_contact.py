@@ -41,17 +41,20 @@ from newton.tests.unittest_utils import find_nonfinite_members
 class Example:
     def __init__(self, viewer, num_worlds=1):
         # setup simulation parameters first
-        self.fps = 120
+        self.fps = 240
         self.frame_dt = 1.0 / self.fps
         self.sim_time = 0.0
-        self.sim_substeps = 2
+        self.sim_substeps = 1
+        self.substep_parity = 0
         self.sim_dt = self.frame_dt / self.sim_substeps
-        self.reset_interval = 5
+        self.reset_interval = 5.0
 
         self.num_worlds = num_worlds
 
         self.viewer = viewer
-        self.plot_window = ViewerPlot(viewer, "Flap Contact Force", scale_min=0, graph_size=(400, 200))
+        self.plot_window = ViewerPlot(
+            viewer, "Flap Contact Force", n_points=100, avg=20, scale_min=0, graph_size=(400, 200)
+        )
         if isinstance(self.viewer, newton.viewer.ViewerGL):
             self.viewer.register_ui_callback(self.plot_window.render, "free")
 
@@ -60,7 +63,7 @@ class Example:
         newton.solvers.SolverMuJoCo.register_custom_attributes(world_builder)
 
         builder = newton.ModelBuilder()
-        builder.replicate(world_builder, self.num_worlds, spacing=(1.0, 1.0, 0.0))
+        builder.replicate(world_builder, self.num_worlds)
 
         builder.add_ground_plane()
         # stores contact info required by contact sensors
@@ -116,11 +119,18 @@ class Example:
         self.capture()
 
     def capture(self):
-        self.graph = None
-        if wp.get_device().is_cuda:
+        self.graph_even, self.graph_odd = None, None
+
+        if not wp.get_device().is_cuda:
+            return
+
+        with wp.ScopedCapture() as capture:
+            self.simulate()
+        self.graph_even = capture.graph
+        if self.sim_substeps & 1:
             with wp.ScopedCapture() as capture:
                 self.simulate()
-            self.graph = capture.graph
+            self.graph_odd = capture.graph
 
     def simulate(self):
         for _ in range(self.sim_substeps):
@@ -137,10 +147,14 @@ class Example:
         self.control.joint_target_pos[self.hinge_joint_q_start : self.hinge_joint_q_start + 1].fill_(hinge_angle)
 
         with wp.ScopedTimer("step", active=False):
-            if self.graph:
-                wp.capture_launch(self.graph)
+            if self.graph_even:
+                wp.capture_launch(self.graph_odd if self.substep_parity else self.graph_even)
+                if self.sim_substeps & 1:
+                    self.state_0, self.state_1 = self.state_1, self.state_0
             else:
                 self.simulate()
+            if self.sim_substeps & 1:
+                self.substep_parity = 1 - self.substep_parity
 
         populate_contacts(self.contacts, self.solver)
         self.plate_contact_sensor.eval(self.contacts)
@@ -198,7 +212,7 @@ class Example:
 class ViewerPlot:
     """ImGui plot window"""
 
-    def __init__(self, viewer=None, title="Plot", n_points=200, avg=4, **kwargs):
+    def __init__(self, viewer=None, title="Plot", n_points=200, avg=1, **kwargs):
         self.viewer = viewer
         self.avg = avg
         self.title = title
@@ -225,7 +239,7 @@ class ViewerPlot:
 
         io = self.viewer.ui.io
 
-        # Position the replay controls window
+        # Position the plot window
         window_shape = (400, 350)
         imgui.set_next_window_pos(
             imgui.ImVec2(io.display_size[0] - window_shape[0] - 10, io.display_size[1] - window_shape[1] - 10)
