@@ -22,6 +22,8 @@ import warp as wp
 import newton
 from newton.tests.unittest_utils import find_nan_members
 
+wp.config.quiet = True
+
 
 def get_source_directory() -> str:
     return os.path.realpath(os.path.dirname(__file__))

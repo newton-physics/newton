@@ -4904,7 +4904,9 @@ class ModelBuilder:
             target_max_min_color_ratio=target_max_min_color_ratio,
         )
 
-    def finalize(self, device: Devicelike | None = None, requires_grad: bool = False) -> Model:
+    def finalize(
+        self, device: Devicelike | None = None, requires_grad: bool = False, verbose: bool = wp.config.verbose
+    ) -> Model:
         """
         Finalize the builder and create a concrete Model for simulation.
 
@@ -5128,7 +5130,7 @@ class ModelBuilder:
 
                     # Check if any corrections were made
                     num_corrections = int(np.sum(correction_flags.numpy()))
-                    if num_corrections > 0:
+                    if num_corrections > 0 and verbose:
                         warnings.warn(
                             f"Inertia validation corrected {num_corrections} bodies. "
                             f"Set validate_inertia_detailed=True for detailed per-body warnings.",
