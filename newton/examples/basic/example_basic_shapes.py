@@ -144,7 +144,7 @@ class Example:
 
         self.sim_time += self.frame_dt
 
-    def test(self):
+    def test_final(self):
         self.sphere_pos[2] = 0.5
         sphere_q = wp.transform(self.sphere_pos, wp.quat_identity())
         newton.examples.test_body_state(

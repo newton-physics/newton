@@ -302,7 +302,7 @@ class Example:
 
             self.frame += 1
 
-    def test(self):
+    def test_final(self):
         assert most(np.diff(self.loss_history) < -0.0, min_ratio=0.8)
 
 
