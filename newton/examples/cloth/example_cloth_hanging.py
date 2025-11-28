@@ -184,7 +184,7 @@ class Example:
 
         self.sim_time += self.frame_dt
 
-    def test(self):
+    def test_final(self):
         if self.solver_type != "style3d":
             newton.examples.test_particle_state(
                 self.state_0,

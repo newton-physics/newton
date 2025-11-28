@@ -166,7 +166,7 @@ class Example:
         self.train_iter += 1
         self.loss_history.append(self.loss.numpy()[0])
 
-    def test(self):
+    def test_final(self):
         x_grad_numeric, x_grad_analytic = self.check_grad()
         assert_np_equal(x_grad_numeric, x_grad_analytic, tol=5e-2)
         assert all(np.array(self.loss_history) < 10.0)

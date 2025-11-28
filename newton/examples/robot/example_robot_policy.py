@@ -407,7 +407,7 @@ class Example:
         self.viewer.log_contacts(self.contacts, self.state_0)
         self.viewer.end_frame()
 
-    def test(self):
+    def test_final(self):
         newton.examples.test_body_state(
             self.model,
             self.state_0,

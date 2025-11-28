@@ -174,7 +174,7 @@ class Example:
         self.viewer.log_state(self.state_0)
         self.viewer.end_frame()
 
-    def test(self):
+    def test_final(self):
         num_bodies_per_world = self.model.body_count // self.num_worlds
         newton.examples.test_body_state(
             self.model,

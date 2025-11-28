@@ -65,7 +65,8 @@ class Example:
         b_rev = builder.add_body(
             xform=wp.transform(
                 p=wp.vec3(0.0, y, drop_z - cuboid_hz), q=wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), 0.15)
-            )
+            ),
+            key="b_rev",
         )
         builder.add_shape_box(a_rev, hx=cuboid_hx, hy=cuboid_hy, hz=upper_hz)
         builder.add_shape_box(b_rev, hx=cuboid_hx, hy=cuboid_hy, hz=cuboid_hz)
@@ -96,7 +97,8 @@ class Example:
         b_pri = builder.add_body(
             xform=wp.transform(
                 p=wp.vec3(0.0, y, drop_z - cuboid_hz), q=wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), 0.12)
-            )
+            ),
+            key="b_prismatic",
         )
         builder.add_shape_box(a_pri, hx=cuboid_hx, hy=cuboid_hy, hz=upper_hz)
         builder.add_shape_box(b_pri, hx=cuboid_hx, hy=cuboid_hy, hz=cuboid_hz)
@@ -133,7 +135,8 @@ class Example:
         b_ball = builder.add_body(
             xform=wp.transform(
                 p=wp.vec3(0.0, y, drop_z + radius + z_offset), q=wp.quat_from_axis_angle(wp.vec3(1.0, 1.0, 0.0), 0.1)
-            )
+            ),
+            key="b_ball",
         )
 
         rigid_cfg = newton.ModelBuilder.ShapeConfig()
@@ -200,7 +203,33 @@ class Example:
 
         self.sim_time += self.frame_dt
 
-    def test(self):
+    def test_post_step(self):
+        newton.examples.test_body_state(
+            self.model,
+            self.state_0,
+            "revolute motion in plane",
+            lambda q, qd: wp.length(abs(wp.cross(wp.spatial_bottom(qd), wp.vec3(1.0, 0.0, 0.0)))) < 1e-5,
+            indices=[self.model.body_key.index("b_rev")],
+        )
+
+        newton.examples.test_body_state(
+            self.model,
+            self.state_0,
+            "linear motion on axis",
+            lambda q, qd: wp.length(abs(wp.cross(wp.spatial_top(qd), wp.vec3(0.0, 0.0, 1.0)))) < 1e-5
+            and wp.length(wp.spatial_bottom(qd)) < 1e-5,
+            indices=[self.model.body_key.index("b_prismatic")],
+        )
+
+        newton.examples.test_body_state(
+            self.model,
+            self.state_0,
+            "ball motion on sphere",
+            lambda q, qd: abs(wp.dot(wp.spatial_bottom(qd), wp.vec3(0.0, 0.0, 1.0))) < 1e-3,
+            indices=[self.model.body_key.index("b_ball")],
+        )
+
+    def test_final(self):
         newton.examples.test_body_state(
             self.model,
             self.state_0,
