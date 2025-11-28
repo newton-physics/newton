@@ -162,7 +162,6 @@ class TestFrameTransformSensor(unittest.TestCase):
             key="target",
         )
 
-        builder.add_joint_free(body)
         model = builder.finalize()
         state = model.state()
 
@@ -206,7 +205,6 @@ class TestFrameTransformSensor(unittest.TestCase):
             xform=wp.transform(wp.vec3(0.2, 0.1, 0), wp.quat_from_axis_angle(wp.vec3(1, 0, 0), np.pi / 6)),
             key="ref",
         )
-        builder.add_joint_free(body1)
 
         # Target body at (1, 2, 3), rotated 60° around Y
         body2 = builder.add_body(
@@ -220,7 +218,6 @@ class TestFrameTransformSensor(unittest.TestCase):
             xform=wp.transform(wp.vec3(0.3, 0, 0.2), wp.quat_from_axis_angle(wp.vec3(0, 0, 1), np.pi / 2)),
             key="target",
         )
-        builder.add_joint_free(body2)
 
         model = builder.finalize()
         state = model.state()
@@ -272,13 +269,11 @@ class TestFrameTransformSensor(unittest.TestCase):
             mass=1.0, I_m=wp.mat33(np.eye(3)), xform=wp.transform(wp.vec3(0, 0, 0), wp.quat_identity())
         )
         ref_site = builder.add_site(body1, key="ref")
-        builder.add_joint_free(body1)
 
         body2 = builder.add_body(
             mass=1.0, I_m=wp.mat33(np.eye(3)), xform=wp.transform(wp.vec3(1, 0, 0), wp.quat_identity())
         )
         geom = builder.add_shape_sphere(body2, radius=0.1, xform=wp.transform(wp.vec3(0.5, 0, 0), wp.quat_identity()))
-        builder.add_joint_free(body2)
 
         model = builder.finalize()
         state = model.state()
@@ -306,7 +301,6 @@ class TestFrameTransformSensor(unittest.TestCase):
         site_b = builder.add_site(body, xform=wp.transform(wp.vec3(0, 1, 0), wp.quat_identity()), key="site_b")
         site_c = builder.add_site(body, xform=wp.transform(wp.vec3(0, 0, 1), wp.quat_identity()), key="site_c")
 
-        builder.add_joint_free(body)
         model = builder.finalize()
         state = model.state()
 
@@ -344,7 +338,6 @@ class TestFrameTransformSensor(unittest.TestCase):
             mass=1.0, I_m=wp.mat33(np.eye(3)), xform=wp.transform(wp.vec3(1, 2, 3), wp.quat_identity())
         )
         moving_site = builder.add_site(body, xform=wp.transform(wp.vec3(0, 0, 0), wp.quat_identity()), key="moving")
-        builder.add_joint_free(body)
 
         model = builder.finalize()
         state = model.state()
@@ -371,14 +364,12 @@ class TestFrameTransformSensor(unittest.TestCase):
             xform=wp.transform(wp.vec3(0, 0, 0), wp.quat_from_axis_angle(wp.vec3(0, 0, 1), np.pi / 2)),
         )
         ref_site = builder.add_site(body1, xform=wp.transform(wp.vec3(0, 0, 0), wp.quat_identity()), key="ref")
-        builder.add_joint_free(body1)
 
         # Target at (1, 0, 0) in world frame
         body2 = builder.add_body(
             mass=1.0, I_m=wp.mat33(np.eye(3)), xform=wp.transform(wp.vec3(1, 0, 0), wp.quat_identity())
         )
         target_site = builder.add_site(body2, xform=wp.transform(wp.vec3(0, 0, 0), wp.quat_identity()), key="target")
-        builder.add_joint_free(body2)
 
         model = builder.finalize()
         state = model.state()
@@ -436,13 +427,13 @@ class TestFrameTransformSensor(unittest.TestCase):
         builder = newton.ModelBuilder()
 
         # Root body at origin
-        root = builder.add_body(mass=1.0, I_m=wp.mat33(np.eye(3)))
+        root = builder.add_link(mass=1.0, I_m=wp.mat33(np.eye(3)))
         ref_site = builder.add_site(root, key="ref")
 
         # Link 1: connected by revolute joint, extends 1m in +X from joint
-        link1 = builder.add_body(mass=1.0, I_m=wp.mat33(np.eye(3)))
+        link1 = builder.add_link(mass=1.0, I_m=wp.mat33(np.eye(3)))
         site1 = builder.add_site(link1, key="site1")
-        builder.add_joint_revolute(
+        joint1 = builder.add_joint_revolute(
             parent=root,
             child=link1,
             axis=wp.vec3(0, 0, 1),
@@ -450,15 +441,17 @@ class TestFrameTransformSensor(unittest.TestCase):
         )
 
         # Link 2: connected to link1, extends another 1m in +X
-        link2 = builder.add_body(mass=1.0, I_m=wp.mat33(np.eye(3)))
+        link2 = builder.add_link(mass=1.0, I_m=wp.mat33(np.eye(3)))
         site2 = builder.add_site(link2, key="site2")
-        builder.add_joint_revolute(
+        joint2 = builder.add_joint_revolute(
             parent=link1,
             child=link2,
             axis=wp.vec3(0, 0, 1),
             parent_xform=wp.transform(wp.vec3(1, 0, 0), wp.quat_identity()),  # Joint is 1m from link1 origin
             child_xform=wp.transform(wp.vec3(-1, 0, 0), wp.quat_identity()),  # Joint is 1m from link2 origin
         )
+
+        builder.add_articulation([joint1, joint2])
 
         model = builder.finalize()
         state = model.state()
@@ -516,7 +509,6 @@ class TestFrameTransformSensor(unittest.TestCase):
         all_sites.append(
             builder.add_site(body1, xform=wp.transform(wp.vec3(0.2, 0, 0), wp.quat_identity()), key="b1_s2")
         )
-        builder.add_joint_free(body1)
 
         # Body 2 with 3 sites at different positions
         body2 = builder.add_body(
@@ -529,7 +521,6 @@ class TestFrameTransformSensor(unittest.TestCase):
         all_sites.append(
             builder.add_site(body2, xform=wp.transform(wp.vec3(0.2, 0, 0), wp.quat_identity()), key="b2_s2")
         )
-        builder.add_joint_free(body2)
 
         # Body 3 with 3 sites at different positions
         body3 = builder.add_body(
@@ -542,7 +533,6 @@ class TestFrameTransformSensor(unittest.TestCase):
         all_sites.append(
             builder.add_site(body3, xform=wp.transform(wp.vec3(0.2, 0, 0), wp.quat_identity()), key="b3_s2")
         )
-        builder.add_joint_free(body3)
 
         model = builder.finalize()
         state = model.state()
