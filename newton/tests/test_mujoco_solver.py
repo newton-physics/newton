@@ -927,9 +927,9 @@ class TestMuJoCoSolverJointProperties(TestMuJoCoSolverPropertiesBase):
                         f"Newton solimplimit[{newton_dof_idx}] for joint {joint_idx} DOF {dof_offset}",
                     )
 
-    def test_joint_passive_stiffness_damping_multiworld(self):
+    def test_dof_passive_stiffness_damping_multiworld(self):
         """
-        Verify that joint_passive_stiffness and joint_passive_damping propagate correctly:
+        Verify that dof_passive_stiffness and dof_passive_damping propagate correctly:
         1. Different per-world values survive conversion to MuJoCo.
         2. notify_model_changed updates all worlds consistently.
         """
@@ -975,8 +975,8 @@ class TestMuJoCoSolverJointProperties(TestMuJoCoSolverPropertiesBase):
                 initial_stiffness[global_idx] = 0.05 + 0.01 * dof_idx + 0.25 * world_idx
                 initial_damping[global_idx] = 0.4 + 0.02 * dof_idx + 0.3 * world_idx
 
-        model.mujoco.joint_passive_stiffness.assign(initial_stiffness)
-        model.mujoco.joint_passive_damping.assign(initial_damping)
+        model.mujoco.dof_passive_stiffness.assign(initial_stiffness)
+        model.mujoco.dof_passive_damping.assign(initial_damping)
 
         solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
 
@@ -1029,8 +1029,8 @@ class TestMuJoCoSolverJointProperties(TestMuJoCoSolverPropertiesBase):
         updated_stiffness = initial_stiffness + 0.5 + 0.05 * np.arange(model.joint_dof_count, dtype=np.float32)
         updated_damping = initial_damping + 0.3 + 0.03 * np.arange(model.joint_dof_count, dtype=np.float32)
 
-        model.mujoco.joint_passive_stiffness.assign(updated_stiffness)
-        model.mujoco.joint_passive_damping.assign(updated_damping)
+        model.mujoco.dof_passive_stiffness.assign(updated_stiffness)
+        model.mujoco.dof_passive_damping.assign(updated_damping)
         solver.notify_model_changed(SolverNotifyFlags.JOINT_DOF_PROPERTIES)
 
         assert_passive_values(updated_stiffness, updated_damping)

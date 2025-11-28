@@ -1545,13 +1545,13 @@ def Xform "Articulation" (
         model = builder.finalize()
 
         self.assertTrue(hasattr(model, "mujoco"))
-        self.assertTrue(hasattr(model.mujoco, "joint_passive_stiffness"))
-        self.assertTrue(hasattr(model.mujoco, "joint_passive_damping"))
+        self.assertTrue(hasattr(model.mujoco, "dof_passive_stiffness"))
+        self.assertTrue(hasattr(model.mujoco, "dof_passive_damping"))
 
         joint_names = model.joint_key
         joint_qd_start = model.joint_qd_start.numpy()
-        joint_stiffness = model.mujoco.joint_passive_stiffness.numpy()
-        joint_damping = model.mujoco.joint_passive_damping.numpy()
+        joint_stiffness = model.mujoco.dof_passive_stiffness.numpy()
+        joint_damping = model.mujoco.dof_passive_damping.numpy()
         joint_target_ke = model.joint_target_ke.numpy()
         joint_target_kd = model.joint_target_kd.numpy()
 

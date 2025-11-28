@@ -190,7 +190,7 @@ class SolverMuJoCo(SolverBase):
         )
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
-                name="joint_passive_stiffness",
+                name="dof_passive_stiffness",
                 frequency=ModelAttributeFrequency.JOINT_DOF,
                 assignment=ModelAttributeAssignment.MODEL,
                 dtype=wp.float32,
@@ -202,7 +202,7 @@ class SolverMuJoCo(SolverBase):
         )
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
-                name="joint_passive_damping",
+                name="dof_passive_damping",
                 frequency=ModelAttributeFrequency.JOINT_DOF,
                 assignment=ModelAttributeAssignment.MODEL,
                 dtype=wp.float32,
@@ -988,8 +988,8 @@ class SolverMuJoCo(SolverBase):
         shape_condim = get_custom_attribute("condim")
         joint_dof_limit_margin = get_custom_attribute("limit_margin")
         joint_solimp_limit = get_custom_attribute("solimplimit")
-        joint_stiffness = get_custom_attribute("joint_passive_stiffness")
-        joint_damping = get_custom_attribute("joint_passive_damping")
+        joint_stiffness = get_custom_attribute("dof_passive_stiffness")
+        joint_damping = get_custom_attribute("dof_passive_damping")
 
         eq_constraint_type = model.equality_constraint_type.numpy()
         eq_constraint_body1 = model.equality_constraint_body1.numpy()
@@ -1825,9 +1825,9 @@ class SolverMuJoCo(SolverBase):
         solimplimit = getattr(mujoco_attrs, "solimplimit", None) if mujoco_attrs is not None else None
         joint_dof_limit_margin = getattr(mujoco_attrs, "limit_margin", None) if mujoco_attrs is not None else None
         joint_stiffness = (
-            getattr(mujoco_attrs, "joint_passive_stiffness", None) if mujoco_attrs is not None else None
+            getattr(mujoco_attrs, "dof_passive_stiffness", None) if mujoco_attrs is not None else None
         )
-        joint_damping = getattr(mujoco_attrs, "joint_passive_damping", None) if mujoco_attrs is not None else None
+        joint_damping = getattr(mujoco_attrs, "dof_passive_damping", None) if mujoco_attrs is not None else None
         wp.launch(
             update_joint_dof_properties_kernel,
             dim=self.model.joint_count,
