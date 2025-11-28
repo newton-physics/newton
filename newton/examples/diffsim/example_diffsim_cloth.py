@@ -183,7 +183,7 @@ class Example:
         self.train_iter += 1
         self.loss_history.append(self.loss.numpy()[0])
 
-    def test(self):
+    def test_final(self):
         assert all(np.array(self.loss_history) < 300.0)
         assert most(np.diff(self.loss_history[:-1]) < -1.0)
 
