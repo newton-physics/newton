@@ -51,6 +51,7 @@ from .kernels import (
     convert_mj_coords_to_warp_kernel,
     convert_mjw_contact_to_warp_kernel,
     convert_newton_contacts_to_mjwarp_kernel,
+    convert_rigid_forces_from_mj_kernel,
     convert_warp_coords_to_mj_kernel,
     eval_articulation_fk,
     repeat_array_kernel,
@@ -474,6 +475,7 @@ class SolverMuJoCo(SolverBase):
             self._mujoco.mj_step(self.mj_model, self.mj_data)
             self.update_newton_state(self.model, state_out, self.mj_data)
         else:
+            self.enable_rne_postconstraint(state_out)
             self.apply_mjc_control(self.model, state_in, control, self.mjw_data)
             if self.update_data_interval > 0 and self._step % self.update_data_interval == 0:
                 self.update_mjc_data(self.mjw_data, self.model, state_in)
@@ -488,6 +490,19 @@ class SolverMuJoCo(SolverBase):
             self.update_newton_state(self.model, state_out, self.mjw_data)
         self._step += 1
         return state_out
+
+    def enable_rne_postconstraint(self, state_out: State):
+        """Request computation of RNE forces if required for state fields."""
+        rne_postconstraint_fields = {"body_qdd", "body_parent_f"}
+        # TODO: handle use_mujoco_cpu
+        m = self.mjw_model
+        if m.sensor_rne_postconstraint:
+            return
+        if any(hasattr(state_out, field) for field in rne_postconstraint_fields):
+            if wp.config.verbose:
+                print("Setting model.sensor_rne_postconstraint True")
+            m.sensor_rne_postconstraint = True
+            # required for cfrc_ext, cfrc_int, cacc
 
     def convert_contacts_to_mjwarp(self, model: Model, state_in: State, contacts: Contacts):
         # Ensure the inverse shape mapping exists (lazy creation)
@@ -778,6 +793,25 @@ class SolverMuJoCo(SolverBase):
                 ],
                 outputs=[state.body_q],
                 device=model.device,
+            )
+
+        # Update rigid force fields on state.
+        if any((state.body_qdd, state.body_parent_f)):
+            bodies_per_world = model.body_count // model.num_worlds
+            wp.launch(
+                convert_rigid_forces_from_mj_kernel,
+                (nworld, bodies_per_world),
+                inputs=[
+                    self.to_mjc_body_index,
+                    bodies_per_world,
+                    self.mjw_model.body_rootid,
+                    self.mjw_data.xipos,
+                    self.mjw_data.subtree_com,
+                    self.mjw_data.cacc,
+                    self.mjw_data.cvel,
+                    # self.mjw_data.cfrc_int,
+                ],
+                outputs=[state.body_qdd, state.body_parent_f],
             )
 
     @staticmethod
