@@ -523,7 +523,7 @@ class TestMuJoCoSolverMassProperties(TestMuJoCoSolverPropertiesBase):
 
         # Re-finalize model to allocate space for custom attributes
         # Note: The bodies are already added by _add_test_robot, so they have default gravcomp=0.0
-        self.model = self.builder.finalize(device=self.device)
+        self.model = self.builder.finalize()
 
         # Verify attribute exists
         self.assertTrue(hasattr(self.model, "mujoco"))
