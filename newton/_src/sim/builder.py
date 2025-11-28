@@ -1519,7 +1519,7 @@ class ModelBuilder:
         if len(builder.equality_constraint_type) > 0:
             constraint_worlds = [self.current_world] * len(builder.equality_constraint_type)
             self.equality_constraint_world.extend(constraint_worlds)
-            
+
             # Remap body and joint indices in equality constraints
             self.equality_constraint_type.extend(builder.equality_constraint_type)
             self.equality_constraint_body1.extend(
