@@ -1648,7 +1648,7 @@ class SolverMuJoCo(SolverBase):
             # "body_subtreemass",
             "body_inertia",
             # "body_invweight0",
-            # "body_gravcomp",
+            "body_gravcomp",
             "jnt_solref",
             "jnt_solimp",
             "jnt_pos",
