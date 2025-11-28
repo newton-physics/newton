@@ -516,10 +516,10 @@ class SolverXPBD(SolverBase):
                                 contacts.rigid_contact_shape0,
                                 contacts.rigid_contact_shape1,
                                 model.shape_material_mu,
+                                model.shape_material_torsional_friction,
+                                model.shape_material_rolling_friction,
                                 self.rigid_contact_relaxation,
                                 dt,
-                                model.rigid_contact_torsional_friction,
-                                model.rigid_contact_rolling_friction,
                             ],
                             outputs=[
                                 body_deltas,
