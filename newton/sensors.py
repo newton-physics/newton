@@ -33,9 +33,15 @@ from ._src.sensors.tiled_camera_sensor import (
     TiledCameraSensor,
 )
 
+# IMU sensors
+from ._src.sensors.imu_sensor import (
+    IMUSensor,
+)
+
 __all__ = [
     "ContactSensor",
     "FrameTransformSensor",
+    "IMUSensor",
     "MatchKind",
     "RaycastSensor",
     "TiledCameraSensor",
