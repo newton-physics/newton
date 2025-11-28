@@ -1425,7 +1425,7 @@ def Xform "TestBody" (
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_import_usd_gravcomp(self):
         """Test parsing of gravcomp from USD"""
-        from pxr import Gf, Usd, UsdPhysics  # noqa: PLC0415
+        from pxr import Sdf, Usd, UsdPhysics  # noqa: PLC0415
 
         stage = Usd.Stage.CreateInMemory()
         UsdPhysics.Scene.Define(stage, "/physicsScene")
@@ -1435,7 +1435,7 @@ def Xform "TestBody" (
         prim1 = stage.DefinePrim(body1_path, "Xform")
         UsdPhysics.RigidBodyAPI.Apply(prim1)
         UsdPhysics.MassAPI.Apply(prim1)
-        attr1 = prim1.CreateAttribute("mjc:gravcomp", Gf.Type.FindByName("float"))
+        attr1 = prim1.CreateAttribute("mjc:gravcomp", Sdf.ValueTypeNames.Float)
         attr1.Set(0.5)
 
         # Body 2 without gravcomp
