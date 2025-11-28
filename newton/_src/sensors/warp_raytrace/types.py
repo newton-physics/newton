@@ -13,31 +13,30 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Contact sensors
-from ._src.sensors.contact_sensor import (
-    ContactSensor,
-    MatchKind,
-    populate_contacts,
-)
+import enum
 
-# Frame transform sensors
-from ._src.sensors.frame_transform_sensor import (
-    FrameTransformSensor,
-)
+from .... import GeoType
 
-# Raycast sensors
-from ._src.sensors.raycast_sensor import (
-    RaycastSensor,
-)
-from ._src.sensors.tiled_camera_sensor import (
-    TiledCameraSensor,
-)
 
-__all__ = [
-    "ContactSensor",
-    "FrameTransformSensor",
-    "MatchKind",
-    "RaycastSensor",
-    "TiledCameraSensor",
-    "populate_contacts",
-]
+class GeomType(enum.IntEnum):
+    """Geometry types supported by the Warp raytracer (subset of newton.GeoType)."""
+
+    PLANE = GeoType.PLANE
+    SPHERE = GeoType.SPHERE
+    CAPSULE = GeoType.CAPSULE
+    ELLIPSOID = GeoType.ELLIPSOID
+    CYLINDER = GeoType.CYLINDER
+    BOX = GeoType.BOX
+    MESH = GeoType.MESH
+    CONE = GeoType.CONE
+    NONE = GeoType.NONE
+
+
+class LightType(enum.IntEnum):
+    """Light types supported by the Warp raytracer."""
+
+    SPOTLIGHT = 0
+    """Spotlight."""
+
+    DIRECTIONAL = 1
+    """Directional Light."""

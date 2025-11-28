@@ -561,6 +561,14 @@ add_example_test(
     use_viewer=True,
 )
 
+add_example_test(
+    TestSensorExamples,
+    name="sensors.example_sensor_tiled_camera",
+    devices=cuda_test_devices,
+    test_options={"num-frames": 4 * 36},  # train_iters * sim_steps
+    use_viewer=True,
+)
+
 
 class TestMPMExamples(unittest.TestCase):
     pass
