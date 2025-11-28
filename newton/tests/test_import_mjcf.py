@@ -931,7 +931,7 @@ class TestImportMjcf(unittest.TestCase):
         <position joint="joint1" kp="10000.0" kv="2000.0"/>
         <velocity joint="joint1" kv="500.0"/>
         <position joint="joint2" kp="5000.0" kv="1000.0"/>
-        <velocity joint="joint2" kv="300.0"/>
+        <velocity joint="joint3" kv="800.0"/>
         <velocity joint="joint4" kv="3000.0"/>
     </actuator>
 </mujoco>
@@ -954,8 +954,8 @@ class TestImportMjcf(unittest.TestCase):
 
         expected_values = {
             "joint1": {"stiffness": 0.05, "damping": 0.5, "target_ke": 10000.0, "target_kd": 500.0},
-            "joint2": {"stiffness": 0.0, "damping": 0.0, "target_ke": 5000.0, "target_kd": 300.0},
-            "joint3": {"stiffness": 0.1, "damping": 0.8, "target_ke": 0.0, "target_kd": 0.0},
+            "joint2": {"stiffness": 0.0, "damping": 0.0, "target_ke": 5000.0, "target_kd": 1000.0},
+            "joint3": {"stiffness": 0.1, "damping": 0.8, "target_ke": 0.0, "target_kd": 800.0},
             "joint4": {"stiffness": 0.02, "damping": 0.3, "target_ke": 0.0, "target_kd": 3000.0},
         }
 
@@ -966,6 +966,7 @@ class TestImportMjcf(unittest.TestCase):
             self.assertAlmostEqual(joint_damping[dof_idx], expected["damping"], places=4)
             self.assertAlmostEqual(joint_target_ke[dof_idx], expected["target_ke"], places=1)
             self.assertAlmostEqual(joint_target_kd[dof_idx], expected["target_kd"], places=1)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
