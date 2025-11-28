@@ -162,6 +162,11 @@ Joint types
      - up to 6
      - up to 6
      - up to 6
+   * - ``JointType.CABLE``
+     - Cable joint with 1 linear (stretch/shear) and 1 angular (bend/twist) degree of freedom
+     - 2
+     - 2
+     - 2
 
 D6 joints are the most general joint type in Newton and can be used to represent any combination of translational and rotational degrees of freedom.
 Prismatic, revolute, planar, and universal joints can be seen as special cases of the D6 joint.
