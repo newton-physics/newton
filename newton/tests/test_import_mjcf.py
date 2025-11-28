@@ -906,6 +906,39 @@ class TestImportMjcf(unittest.TestCase):
         # Verify hide_visuals=True doesn't crash
         self.assertGreater(builder_hidden.shape_count, 0, "Should still load collision shapes")
 
+    def test_mjcf_gravcomp(self):
+        """Test parsing of gravcomp from MJCF"""
+        mjcf_content = """
+        <mujoco>
+            <worldbody>
+                <body name="body1" gravcomp="0.5">
+                    <geom type="sphere" size="0.1" />
+                </body>
+                <body name="body2" gravcomp="1.0">
+                    <geom type="sphere" size="0.1" />
+                </body>
+                <body name="body3">
+                    <geom type="sphere" size="0.1" />
+                </body>
+            </worldbody>
+        </mujoco>
+        """
+        builder = newton.ModelBuilder()
+        # Register gravcomp
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_mjcf(mjcf_content)
+        model = builder.finalize()
+
+        self.assertTrue(hasattr(model, "mujoco"))
+        self.assertTrue(hasattr(model.mujoco, "gravcomp"))
+
+        gravcomp = model.mujoco.gravcomp.numpy()
+
+        # Bodies are added in order
+        self.assertAlmostEqual(gravcomp[0], 0.5)
+        self.assertAlmostEqual(gravcomp[1], 1.0)
+        self.assertAlmostEqual(gravcomp[2], 0.0)  # Default
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
