@@ -30,9 +30,15 @@ from ._src.sensors.raycast_sensor import (
     RaycastSensor,
 )
 
+# IMU sensors
+from ._src.sensors.imu_sensor import (
+    IMUSensor,
+)
+
 __all__ = [
     "ContactSensor",
     "FrameTransformSensor",
+    "IMUSensor",
     "MatchKind",
     "RaycastSensor",
     "populate_contacts",

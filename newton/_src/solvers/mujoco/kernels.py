@@ -20,6 +20,8 @@ from __future__ import annotations
 from typing import Any
 
 import warp as wp
+from mujoco_warp._src.sensor import _framelinacc
+from mujoco_warp._src.types import ObjType
 
 from ...sim import JointType
 
@@ -1222,3 +1224,48 @@ def update_geom_properties_kernel(
     # store position and orientation
     geom_pos[worldid, geom_idx] = tf.p
     geom_quat[worldid, geom_idx] = wp.quat(tf.q.w, tf.q.x, tf.q.y, tf.q.z)
+
+
+@wp.kernel
+def convert_rigid_forces_from_mj_kernel(
+    to_mjc_body_index: wp.array(dtype=int),
+    bodies_per_world: int,
+    # mjw sources
+    mjw_body_rootid: wp.array(dtype=int),
+    mjw_xpos: wp.array2d(dtype=wp.vec3),
+    mjw_subtree_com: wp.array2d(dtype=wp.vec3),
+    mjw_cacc: wp.array2d(dtype=wp.spatial_vector),
+    mjw_cvel: wp.array2d(dtype=wp.spatial_vector),
+    # outputs
+    body_qdd: wp.array(dtype=wp.spatial_vector),
+    body_parent_f: wp.array(dtype=wp.spatial_vector),
+):
+    """Update RNE-computed rigid forces from mj_warp com-based forces."""
+    worldid, b = wp.tid()
+    newton_body_id = bodies_per_world * worldid + b
+    mj_body_id = to_mjc_body_index[b]
+
+    if body_qdd:
+        cacc = mjw_cacc[worldid, mj_body_id]
+        lin = _framelinacc(
+            mjw_body_rootid,
+            mjw_body_rootid,
+            mjw_body_rootid,
+            mjw_body_rootid,
+            mjw_xpos,
+            mjw_xpos,
+            mjw_xpos,
+            mjw_xpos,
+            mjw_xpos,
+            mjw_subtree_com,
+            mjw_cvel,
+            mjw_cacc,
+            worldid,
+            mj_body_id,
+            ObjType.BODY,
+        )
+        # TODO: check if BODY or XBODY appropriate
+        body_qdd[newton_body_id] = wp.spatial_vector(lin, wp.spatial_top(cacc))
+
+    if body_parent_f:
+        pass
