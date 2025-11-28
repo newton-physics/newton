@@ -27,6 +27,7 @@ from newton.utils import (
     create_capsule_mesh,
     create_cone_mesh,
     create_cylinder_mesh,
+    create_ellipsoid_mesh,
     create_plane_mesh,
     create_sphere_mesh,
 )
@@ -236,7 +237,7 @@ class ViewerBase:
                 shapes.name,
                 shapes.mesh,
                 shapes.world_xforms,
-                shapes.scales if self.model_changed else None,
+                shapes.scales,  # Always pass scales - needed for transform matrix calculation
                 shapes.colors if self.model_changed or shapes.colors_changed else None,
                 shapes.materials if self.model_changed else None,
                 hidden=not visible,
@@ -495,6 +496,13 @@ class ViewerBase:
             else:
                 ext = tuple(geo_scale[:3])
             vertices, indices = create_box_mesh(ext)
+
+        elif geo_type == newton.GeoType.ELLIPSOID:
+            # geo_scale contains (rx, ry, rz) semi-axes
+            rx = geo_scale[0] if len(geo_scale) > 0 else 1.0
+            ry = geo_scale[1] if len(geo_scale) > 1 else rx
+            rz = geo_scale[2] if len(geo_scale) > 2 else rx
+            vertices, indices = create_ellipsoid_mesh(rx, ry, rz)
         else:
             raise ValueError(f"log_geo does not support geo_type={geo_type} (name={name})")
 
@@ -692,6 +700,7 @@ class ViewerBase:
             newton.GeoType.CYLINDER: "cylinder",
             newton.GeoType.CONE: "cone",
             newton.GeoType.BOX: "box",
+            newton.GeoType.ELLIPSOID: "ellipsoid",
             newton.GeoType.MESH: "mesh",
             newton.GeoType.CONVEX_MESH: "convex_hull",
         }.get(geo_type)
