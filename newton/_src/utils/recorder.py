@@ -489,9 +489,17 @@ def serialize(obj, callback, _visited=None, _path="", format_type="json", cache:
         _visited.discard(obj_id)
 
 
+def _is_struct_dtype(dtype) -> bool:
+    """Check if a warp dtype is a struct type (decorated with @wp.struct)."""
+    return type(dtype).__name__ == "Struct"
+
+
 def pointer_as_key(obj, format_type: str = "json", cache: ArrayCache | None = None):
     def callback(x, path):
         if isinstance(x, wp.array):
+            # Skip arrays with struct dtypes - they can't be serialized
+            if _is_struct_dtype(x.dtype):
+                return None
             # Use device pointer as cache key
             if cache is not None:
                 key = _warp_key(x)

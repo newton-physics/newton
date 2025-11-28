@@ -260,7 +260,11 @@ def find_nan_members(obj: Any | None) -> list[str]:
         return nan_members
     for key, attr in obj.__dict__.items():
         if isinstance(attr, wp.array):
-            if np.isnan(attr.numpy()).any():
+            arr = attr.numpy()
+            # Skip structured arrays (e.g., arrays of warp structs) - np.isnan doesn't support them
+            if arr.dtype.names is not None:
+                continue
+            if np.isnan(arr).any():
                 nan_members.append(key)
     return nan_members
 
@@ -272,7 +276,11 @@ def find_nonfinite_members(obj: Any | None) -> list[str]:
         return nonfinite_members
     for key, attr in obj.__dict__.items():
         if isinstance(attr, wp.array):
-            if not np.isfinite(attr.numpy()).all():
+            arr = attr.numpy()
+            # Skip structured arrays (e.g., arrays of warp structs) - np.isfinite doesn't support them
+            if arr.dtype.names is not None:
+                continue
+            if not np.isfinite(arr).all():
                 nonfinite_members.append(key)
     return nonfinite_members
 

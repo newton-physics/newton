@@ -711,6 +711,8 @@ def pre_contact_check(
     shape_pairs_mesh_plane_cumsum: wp.array(dtype=int),
     shape_pairs_mesh_plane_count: wp.array(dtype=int),
     mesh_plane_vertex_total_count: wp.array(dtype=int),
+    shape_pairs_mesh_mesh: wp.array(dtype=wp.vec2i),
+    shape_pairs_mesh_mesh_count: wp.array(dtype=int),
 ):
     """
     Perform pre-contact checks for early rejection and special case handling.
@@ -737,6 +739,8 @@ def pre_contact_check(
         shape_pairs_mesh_plane_cumsum: Cumulative sum array for mesh-plane vertices
         shape_pairs_mesh_plane_count: Counter for mesh-plane collision pairs
         mesh_plane_vertex_total_count: Total vertex count for mesh-plane collisions
+        shape_pairs_mesh_mesh: Output array for mesh-mesh collision pairs
+        shape_pairs_mesh_mesh_count: Counter for mesh-mesh collision pairs
 
     Returns:
         Tuple of (skip_pair, is_infinite_plane_a, is_infinite_plane_b, bsphere_radius_a, bsphere_radius_b)
@@ -798,7 +802,15 @@ def pre_contact_check(
                     shape_pairs_mesh_plane_cumsum[mesh_plane_idx] = cumulative_count_inclusive
             return True, is_infinite_plane_a, is_infinite_plane_b, bsphere_radius_a, bsphere_radius_b
 
-    # Check for other mesh collisions - add to separate buffer for specialized handling
+    # Check for mesh-mesh collisions - add to separate buffer for specialized handling
+    if type_a == int(GeoType.MESH) and type_b == int(GeoType.MESH):
+        # Add to mesh-mesh collision buffer using atomic counter
+        mesh_mesh_pair_idx = wp.atomic_add(shape_pairs_mesh_mesh_count, 0, 1)
+        if mesh_mesh_pair_idx < shape_pairs_mesh_mesh.shape[0]:
+            shape_pairs_mesh_mesh[mesh_mesh_pair_idx] = pair
+        return True, is_infinite_plane_a, is_infinite_plane_b, bsphere_radius_a, bsphere_radius_b
+
+    # Check for other mesh collisions (mesh vs non-mesh) - add to separate buffer for specialized handling
     if type_a == int(GeoType.MESH) or type_b == int(GeoType.MESH):
         # Add to mesh collision buffer using atomic counter
         mesh_pair_idx = wp.atomic_add(shape_pairs_mesh_count, 0, 1)
@@ -811,6 +823,7 @@ def pre_contact_check(
 
 @wp.func
 def mesh_vs_convex_midphase(
+    idx_in_thread_block: int,
     mesh_shape: int,
     non_mesh_shape: int,
     X_mesh_ws: wp.transform,
@@ -892,8 +905,20 @@ def mesh_vs_convex_midphase(
 
             # Add this triangle pair to the output buffer if valid
             # Store (mesh_shape, non_mesh_shape, tri_index) to guarantee mesh is always first
+            has_tri = 0
             if tri_index >= 0:
-                out_idx = wp.atomic_add(triangle_pairs_count, 0, 1)
+                has_tri = 1
+            count_tile = wp.tile(has_tri)
+            inclusive_scan = wp.tile_scan_inclusive(count_tile)
+            offset = 0
+            if idx_in_thread_block == wp.block_dim() - 1:
+                offset = wp.atomic_add(triangle_pairs_count, 0, inclusive_scan[wp.block_dim() - 1])
+            offset_broadcast_tile = wp.tile(offset)
+            offset_broadcast = offset_broadcast_tile[wp.block_dim() - 1]
+
+            if tri_index >= 0:
+                # out_idx = wp.atomic_add(triangle_pairs_count, 0, 1)
+                out_idx = offset_broadcast + inclusive_scan[idx_in_thread_block] - has_tri
                 if out_idx < triangle_pairs.shape[0]:
                     triangle_pairs[out_idx] = wp.vec3i(mesh_shape, non_mesh_shape, tri_index)
 
