@@ -538,7 +538,7 @@ class Example:
         self.viewer.log_state(self.state_0)
         self.viewer.end_frame()
 
-    def test(self):
+    def test_final(self):
         p_lower = wp.vec3(-0.34, -0.9, 0.0)
         p_upper = wp.vec3(0.34, 0.0, 0.51)
         newton.examples.test_particle_state(
