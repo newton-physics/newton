@@ -182,7 +182,7 @@ def run(example, args):
         if not example.viewer.is_paused():
             with wp.ScopedTimer("step", active=False):
                 example.step()
-        if args is not None and args.test and hasattr(example, "test_post_step"):
+        if test_post_step:
             example.test_post_step()
 
         with wp.ScopedTimer("render", active=False):
