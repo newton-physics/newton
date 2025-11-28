@@ -479,14 +479,14 @@ class TestModel(unittest.TestCase):
             builder1.begin_world()
         self.assertIn("Cannot begin a new world", str(cm.exception))
         self.assertIn("already in world context", str(cm.exception))
-        
+
         # Test calling end_world() without begin_world()
         builder2 = ModelBuilder()
         with self.assertRaises(RuntimeError) as cm:
             builder2.end_world()
         self.assertIn("Cannot end world", str(cm.exception))
         self.assertIn("not currently in a world context", str(cm.exception))
-        
+
         # Test that we can still use the builder correctly after proper usage
         builder3 = ModelBuilder()
         builder3.begin_world()
