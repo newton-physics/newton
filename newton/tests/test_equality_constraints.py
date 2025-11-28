@@ -134,13 +134,12 @@ class TestEqualityConstraints(unittest.TestCase):
         main_builder = newton.ModelBuilder()
 
         # Add ground plane (global, world -1)
-        main_builder.current_world = -1
         main_builder.add_ground_plane()
 
         # Add multiple robot instances
         num_worlds = 3
         for i in range(num_worlds):
-            main_builder.add_builder(robot, world=i, xform=wp.transform((i * 5, 0, 0)))
+            main_builder.add_world(robot, xform=wp.transform((i * 5, 0, 0)))
 
         # Finalize the model
         model = main_builder.finalize()

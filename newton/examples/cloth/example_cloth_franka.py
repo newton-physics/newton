@@ -173,7 +173,7 @@ class Example:
             franka = ModelBuilder()
             self.create_articulation(franka)
 
-            self.scene.add_builder(franka)
+            self.scene.add_world(franka)
             self.bodies_per_world = franka.body_count
             self.dof_q_per_world = franka.joint_coord_count
             self.dof_qd_per_world = franka.joint_dof_count
