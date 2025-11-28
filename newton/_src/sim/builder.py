@@ -1519,6 +1519,27 @@ class ModelBuilder:
         if len(builder.equality_constraint_type) > 0:
             constraint_worlds = [self.current_world] * len(builder.equality_constraint_type)
             self.equality_constraint_world.extend(constraint_worlds)
+            
+            # Remap body and joint indices in equality constraints
+            self.equality_constraint_type.extend(builder.equality_constraint_type)
+            self.equality_constraint_body1.extend(
+                [b + start_body_idx if b != -1 else -1 for b in builder.equality_constraint_body1]
+            )
+            self.equality_constraint_body2.extend(
+                [b + start_body_idx if b != -1 else -1 for b in builder.equality_constraint_body2]
+            )
+            self.equality_constraint_anchor.extend(builder.equality_constraint_anchor)
+            self.equality_constraint_torquescale.extend(builder.equality_constraint_torquescale)
+            self.equality_constraint_relpose.extend(builder.equality_constraint_relpose)
+            self.equality_constraint_joint1.extend(
+                [j + start_joint_idx if j != -1 else -1 for j in builder.equality_constraint_joint1]
+            )
+            self.equality_constraint_joint2.extend(
+                [j + start_joint_idx if j != -1 else -1 for j in builder.equality_constraint_joint2]
+            )
+            self.equality_constraint_polycoef.extend(builder.equality_constraint_polycoef)
+            self.equality_constraint_key.extend(builder.equality_constraint_key)
+            self.equality_constraint_enabled.extend(builder.equality_constraint_enabled)
 
         more_builder_attrs = [
             "articulation_key",
@@ -1582,17 +1603,6 @@ class ModelBuilder:
             "tet_poses",
             "tet_activations",
             "tet_materials",
-            "equality_constraint_type",
-            "equality_constraint_body1",
-            "equality_constraint_body2",
-            "equality_constraint_anchor",
-            "equality_constraint_torquescale",
-            "equality_constraint_relpose",
-            "equality_constraint_joint1",
-            "equality_constraint_joint2",
-            "equality_constraint_polycoef",
-            "equality_constraint_key",
-            "equality_constraint_enabled",
         ]
 
         for attr in more_builder_attrs:
