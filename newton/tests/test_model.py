@@ -470,6 +470,31 @@ class TestModel(unittest.TestCase):
             builder2.finalize()
         self.assertIn("monotonic", str(cm.exception))
 
+    def test_world_context_errors(self):
+        """Test error handling for begin_world() and end_world()."""
+        # Test calling begin_world() twice without end_world()
+        builder1 = ModelBuilder()
+        builder1.begin_world()
+        with self.assertRaises(RuntimeError) as cm:
+            builder1.begin_world()
+        self.assertIn("Cannot begin a new world", str(cm.exception))
+        self.assertIn("already in world context", str(cm.exception))
+        
+        # Test calling end_world() without begin_world()
+        builder2 = ModelBuilder()
+        with self.assertRaises(RuntimeError) as cm:
+            builder2.end_world()
+        self.assertIn("Cannot end world", str(cm.exception))
+        self.assertIn("not currently in a world context", str(cm.exception))
+        
+        # Test that we can still use the builder correctly after proper usage
+        builder3 = ModelBuilder()
+        builder3.begin_world()
+        builder3.add_body()
+        builder3.end_world()
+        model = builder3.finalize()
+        self.assertEqual(model.num_worlds, 1)
+
     def test_collapse_fixed_joints_with_groups(self):
         """Test that collapse_fixed_joints correctly preserves world groups."""
         builder = ModelBuilder()
