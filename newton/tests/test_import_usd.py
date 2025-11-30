@@ -1422,6 +1422,44 @@ def Xform "TestBody" (
             builder_visuals.shape_count, collision_count + visual_count, "Should have collision + visuals only"
         )
 
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_import_usd_gravcomp(self):
+        """Test parsing of gravcomp from USD"""
+        from pxr import Sdf, Usd, UsdPhysics  # noqa: PLC0415
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        # Body 1 with gravcomp
+        body1_path = "/Body1"
+        prim1 = stage.DefinePrim(body1_path, "Xform")
+        UsdPhysics.RigidBodyAPI.Apply(prim1)
+        UsdPhysics.MassAPI.Apply(prim1)
+        attr1 = prim1.CreateAttribute("mjc:gravcomp", Sdf.ValueTypeNames.Float)
+        attr1.Set(0.5)
+
+        # Body 2 without gravcomp
+        body2_path = "/Body2"
+        prim2 = stage.DefinePrim(body2_path, "Xform")
+        UsdPhysics.RigidBodyAPI.Apply(prim2)
+        UsdPhysics.MassAPI.Apply(prim2)
+
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_usd(stage)
+        model = builder.finalize()
+
+        self.assertTrue(hasattr(model, "mujoco"))
+        self.assertTrue(hasattr(model.mujoco, "gravcomp"))
+
+        gravcomp = model.mujoco.gravcomp.numpy()
+        self.assertEqual(len(gravcomp), 2)
+
+        # Check that we have one body with 0.5 and one with 0.0
+        # Use assertIn/list checking since order is not strictly guaranteed without path map
+        self.assertTrue(np.any(np.isclose(gravcomp, 0.5)))
+        self.assertTrue(np.any(np.isclose(gravcomp, 0.0)))
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2, failfast=True)
