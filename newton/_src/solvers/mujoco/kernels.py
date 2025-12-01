@@ -781,12 +781,14 @@ def convert_body_xforms_to_warp_kernel(
 def update_body_mass_ipos_kernel(
     body_com: wp.array(dtype=wp.vec3f),
     body_mass: wp.array(dtype=float),
+    body_gravcomp: wp.array(dtype=float),
     bodies_per_world: int,
     up_axis: int,
     body_mapping: wp.array(dtype=int),
     # outputs
     body_ipos: wp.array2d(dtype=wp.vec3f),
     body_mass_out: wp.array2d(dtype=float),
+    body_gravcomp_out: wp.array2d(dtype=float),
 ):
     tid = wp.tid()
     worldid = wp.tid() // bodies_per_world
@@ -803,6 +805,10 @@ def update_body_mass_ipos_kernel(
 
     # update mass
     body_mass_out[worldid, mjc_idx] = body_mass[tid]
+
+    # update gravcomp
+    if body_gravcomp:
+        body_gravcomp_out[worldid, mjc_idx] = body_gravcomp[tid]
 
 
 @wp.kernel
