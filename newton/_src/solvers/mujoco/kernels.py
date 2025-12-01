@@ -922,6 +922,8 @@ def update_joint_dof_properties_kernel(
     joint_limit_upper: wp.array(dtype=float),
     solimplimit: wp.array(dtype=vec5),
     dof_solimp: wp.array(dtype=vec5),
+    joint_stiffness: wp.array(dtype=float),
+    joint_damping: wp.array(dtype=float),
     limit_margin: wp.array(dtype=float),
     joints_per_world: int,
     # outputs
@@ -930,6 +932,8 @@ def update_joint_dof_properties_kernel(
     jnt_solimp: wp.array2d(dtype=vec5),
     dof_solimp_out: wp.array2d(dtype=vec5),
     jnt_solref: wp.array2d(dtype=wp.vec2),
+    jnt_stiffness: wp.array2d(dtype=float),
+    dof_damping: wp.array2d(dtype=float),
     jnt_margin: wp.array2d(dtype=float),
     jnt_range: wp.array2d(dtype=wp.vec2),
 ):
@@ -967,6 +971,9 @@ def update_joint_dof_properties_kernel(
         # Update armature and friction (per DOF)
         dof_armature[worldid, mjc_dof_index] = joint_armature[newton_dof_index]
         dof_frictionloss[worldid, mjc_dof_index] = joint_friction[newton_dof_index]
+        # Update passive damping (per dof)
+        if joint_damping:
+            dof_damping[worldid, mjc_dof_index] = joint_damping[newton_dof_index]
 
         # Update dof_solimp (per DOF)
         if dof_solimp:
@@ -981,7 +988,9 @@ def update_joint_dof_properties_kernel(
         # Update solimplimit (per joint)
         if solimplimit:
             jnt_solimp[worldid, mjc_joint_index] = solimplimit[newton_dof_index]
-
+        # Update passive stiffness (per joint)
+        if joint_stiffness:
+            jnt_stiffness[worldid, mjc_joint_index] = joint_stiffness[newton_dof_index]
         if limit_margin:
             jnt_margin[worldid, mjc_joint_index] = limit_margin[newton_dof_index]
 
@@ -1000,6 +1009,9 @@ def update_joint_dof_properties_kernel(
         # Update armature and friction (per DOF)
         dof_armature[worldid, mjc_dof_index] = joint_armature[newton_dof_index]
         dof_frictionloss[worldid, mjc_dof_index] = joint_friction[newton_dof_index]
+        # Update passive damping (per dof)
+        if joint_damping:
+            dof_damping[worldid, mjc_dof_index] = joint_damping[newton_dof_index]
 
         # Update dof_solimp (per DOF)
         if dof_solimp:
@@ -1014,7 +1026,9 @@ def update_joint_dof_properties_kernel(
         # Update solimplimit (per joint)
         if solimplimit:
             jnt_solimp[worldid, mjc_joint_index] = solimplimit[newton_dof_index]
-
+        # Update passive stiffness (per joint)
+        if joint_stiffness:
+            jnt_stiffness[worldid, mjc_joint_index] = joint_stiffness[newton_dof_index]
         if limit_margin:
             jnt_margin[worldid, mjc_joint_index] = limit_margin[newton_dof_index]
 

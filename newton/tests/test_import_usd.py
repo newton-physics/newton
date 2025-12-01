@@ -1579,6 +1579,166 @@ def Xform "TestBody" (
         self.assertTrue(np.any(np.isclose(gravcomp, 0.5)))
         self.assertTrue(np.any(np.isclose(gravcomp, 0.0)))
 
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_joint_stiffness_damping(self):
+        """Test that joint stiffness and damping are parsed correctly from USD."""
+        from pxr import Usd  # noqa: PLC0415
+
+        usd_content = """#usda 1.0
+(
+    upAxis = "Z"
+)
+
+def PhysicsScene "physicsScene"
+{
+}
+
+def Xform "Articulation" (
+    prepend apiSchemas = ["PhysicsArticulationRootAPI"]
+)
+{
+    def Xform "Body1" (
+        prepend apiSchemas = ["PhysicsRigidBodyAPI"]
+    )
+    {
+        double3 xformOp:translate = (0, 0, 1)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+
+        def Cube "Collision1" (
+            prepend apiSchemas = ["PhysicsCollisionAPI"]
+        )
+        {
+            double size = 0.2
+        }
+    }
+
+    def PhysicsRevoluteJoint "Joint1" (
+        prepend apiSchemas = ["PhysicsDriveAPI:angular"]
+    )
+    {
+        rel physics:body0 = </Articulation/Body1>
+        point3f physics:localPos0 = (0, 0, 0)
+        point3f physics:localPos1 = (0, 0, 0)
+        quatf physics:localRot0 = (1, 0, 0, 0)
+        quatf physics:localRot1 = (1, 0, 0, 0)
+        token physics:axis = "Z"
+        float physics:lowerLimit = -45
+        float physics:upperLimit = 45
+        float mjc:stiffness = 0.05
+        float mjc:damping = 0.5
+        float drive:angular:physics:stiffness = 10000.0
+        float drive:angular:physics:damping = 2000.0
+    }
+
+    def Xform "Body2" (
+        prepend apiSchemas = ["PhysicsRigidBodyAPI"]
+    )
+    {
+        double3 xformOp:translate = (1, 0, 1)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+
+        def Sphere "Collision2" (
+            prepend apiSchemas = ["PhysicsCollisionAPI"]
+        )
+        {
+            double radius = 0.1
+        }
+    }
+
+    def PhysicsRevoluteJoint "Joint2" (
+        prepend apiSchemas = ["PhysicsDriveAPI:angular"]
+    )
+    {
+        rel physics:body0 = </Articulation/Body1>
+        rel physics:body1 = </Articulation/Body2>
+        point3f physics:localPos0 = (0, 0, 0)
+        point3f physics:localPos1 = (0, 0, 0)
+        quatf physics:localRot0 = (1, 0, 0, 0)
+        quatf physics:localRot1 = (1, 0, 0, 0)
+        token physics:axis = "Y"
+        float physics:lowerLimit = -30
+        float physics:upperLimit = 30
+        float drive:angular:physics:stiffness = 5000.0
+        float drive:angular:physics:damping = 1000.0
+    }
+
+    def Xform "Body3" (
+        prepend apiSchemas = ["PhysicsRigidBodyAPI"]
+    )
+    {
+        double3 xformOp:translate = (2, 0, 1)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+
+        def Sphere "Collision3" (
+            prepend apiSchemas = ["PhysicsCollisionAPI"]
+        )
+        {
+            double radius = 0.1
+        }
+    }
+
+    def PhysicsRevoluteJoint "Joint3"
+    {
+        rel physics:body0 = </Articulation/Body2>
+        rel physics:body1 = </Articulation/Body3>
+        point3f physics:localPos0 = (0, 0, 0)
+        point3f physics:localPos1 = (0, 0, 0)
+        quatf physics:localRot0 = (1, 0, 0, 0)
+        quatf physics:localRot1 = (1, 0, 0, 0)
+        token physics:axis = "X"
+        float physics:lowerLimit = -60
+        float physics:upperLimit = 60
+        float mjc:stiffness = 0.1
+        float mjc:damping = 0.8
+    }
+}
+"""
+        stage = Usd.Stage.CreateInMemory()
+        stage.GetRootLayer().ImportFromString(usd_content)
+
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_usd(stage)
+        model = builder.finalize()
+
+        self.assertTrue(hasattr(model, "mujoco"))
+        self.assertTrue(hasattr(model.mujoco, "dof_passive_stiffness"))
+        self.assertTrue(hasattr(model.mujoco, "dof_passive_damping"))
+
+        joint_names = model.joint_key
+        joint_qd_start = model.joint_qd_start.numpy()
+        joint_stiffness = model.mujoco.dof_passive_stiffness.numpy()
+        joint_damping = model.mujoco.dof_passive_damping.numpy()
+        joint_target_ke = model.joint_target_ke.numpy()
+        joint_target_kd = model.joint_target_kd.numpy()
+
+        import math  # noqa: PLC0415
+
+        angular_gain_unit_scale = math.degrees(1.0)
+        expected_values = {
+            "/Articulation/Joint1": {
+                "stiffness": 0.05,
+                "damping": 0.5,
+                "target_ke": 10000.0 * angular_gain_unit_scale,
+                "target_kd": 2000.0 * angular_gain_unit_scale,
+            },
+            "/Articulation/Joint2": {
+                "stiffness": 0.0,
+                "damping": 0.0,
+                "target_ke": 5000.0 * angular_gain_unit_scale,
+                "target_kd": 1000.0 * angular_gain_unit_scale,
+            },
+            "/Articulation/Joint3": {"stiffness": 0.1, "damping": 0.8, "target_ke": 0.0, "target_kd": 0.0},
+        }
+
+        for joint_name, expected in expected_values.items():
+            joint_idx = joint_names.index(joint_name)
+            dof_idx = joint_qd_start[joint_idx]
+            self.assertAlmostEqual(joint_stiffness[dof_idx], expected["stiffness"], places=4)
+            self.assertAlmostEqual(joint_damping[dof_idx], expected["damping"], places=4)
+            self.assertAlmostEqual(joint_target_ke[dof_idx], expected["target_ke"], places=1)
+            self.assertAlmostEqual(joint_target_kd[dof_idx], expected["target_kd"], places=1)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2, failfast=True)
