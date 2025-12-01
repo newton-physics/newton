@@ -48,7 +48,9 @@ def compute_imu_sensor_kernel(
 
     vel_ang = wp.spatial_bottom(body_qd[body_idx])
 
-    acc_lin = wp.spatial_top(body_acc) + wp.cross(wp.spatial_bottom(body_acc), r) + wp.cross(vel_ang, wp.cross(vel_ang, r))
+    acc_lin = (
+        wp.spatial_top(body_acc) + wp.cross(wp.spatial_bottom(body_acc), r) + wp.cross(vel_ang, wp.cross(vel_ang, r))
+    )
 
     q = body_quat * site_transform.q
     imu_sensor[sensor_idx] = wp.spatial_vector(wp.quat_rotate_inv(q, acc_lin), wp.quat_rotate_inv(q, vel_ang))
@@ -61,7 +63,7 @@ class IMUSensor:
         self.model = model
         self.verbose = verbose if verbose is not None else wp.config.verbose
 
-        self.model.require_state_fields("body_qdd")
+        self.model.request_state_attributes("body_qdd")
 
         self.reference_sites_arr = wp.array(reference_sites, dtype=int, device=model.device)
         self.n_sensors = len(reference_sites)

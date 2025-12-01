@@ -463,7 +463,7 @@ class Model:
         """Assignment for custom attributes using ModelAttributeAssignment enum values.
         If an attribute is not in this dictionary, it is assumed to be a Model attribute (assignment=ModelAttributeAssignment.MODEL)."""
 
-        self._required_state_fields = []
+        self._requested_state_attributes: set[str] = set()
 
         # attributes per body
         self.attribute_frequency["body_q"] = ModelAttributeFrequency.BODY
@@ -526,23 +526,6 @@ class Model:
         self.attribute_frequency["shape_scale"] = ModelAttributeFrequency.SHAPE
         self.attribute_frequency["shape_filter"] = ModelAttributeFrequency.SHAPE
 
-    def _default_state_fields(self) -> List[str]:
-        """Get the default state fields for the model based on particle, body, and joint presence."""
-        default_fields = []
-        # particles
-        if self.particle_count:
-            default_fields.extend(["particle_q", "particle_qd", "particle_f"])
-
-        # rigid bodies
-        if self.body_count:
-            default_fields.extend(["body_q", "body_qd", "body_f"])
-
-        # joints
-        if self.joint_count:
-            default_fields.extend(["joint_q", "joint_qd"])
-
-        return default_fields
-
     def state(self, requires_grad: bool | None = None) -> State:
         """
         Create and return a new :class:`State` object for this model.
@@ -557,7 +540,7 @@ class Model:
             State: The state object
         """
 
-        required_fields = self._default_state_fields() + self._required_state_fields
+        requested = self._requested_state_attributes
 
         s = State()
         if requires_grad is None:
@@ -565,27 +548,34 @@ class Model:
 
         # particles
         if self.particle_count:
-            s.particle_q = wp.clone(self.particle_q, requires_grad=requires_grad)
-            s.particle_qd = wp.clone(self.particle_qd, requires_grad=requires_grad)
-            s.particle_f = wp.zeros_like(self.particle_qd, requires_grad=requires_grad)
+            if "particle_q" in requested:
+                s.particle_q = wp.clone(self.particle_q, requires_grad=requires_grad)
+            if "particle_qd" in requested:
+                s.particle_qd = wp.clone(self.particle_qd, requires_grad=requires_grad)
+            if "particle_f" in requested:
+                s.particle_f = wp.zeros_like(self.particle_qd, requires_grad=requires_grad)
 
         # rigid bodies
         if self.body_count:
-            s.body_q = wp.clone(self.body_q, requires_grad=requires_grad)
-            s.body_qd = wp.clone(self.body_qd, requires_grad=requires_grad)
-            s.body_f = wp.zeros_like(self.body_qd, requires_grad=requires_grad)
+            if "body_q" in requested:
+                s.body_q = wp.clone(self.body_q, requires_grad=requires_grad)
+            if "body_qd" in requested:
+                s.body_qd = wp.clone(self.body_qd, requires_grad=requires_grad)
+            if "body_f" in requested:
+                s.body_f = wp.zeros_like(self.body_qd, requires_grad=requires_grad)
 
         # joints
         if self.joint_count:
-            s.joint_q = wp.clone(self.joint_q, requires_grad=requires_grad)
-            s.joint_qd = wp.clone(self.joint_qd, requires_grad=requires_grad)
+            if "joint_q" in requested:
+                s.joint_q = wp.clone(self.joint_q, requires_grad=requires_grad)
+            if "joint_qd" in requested:
+                s.joint_qd = wp.clone(self.joint_qd, requires_grad=requires_grad)
 
+        if "body_qdd" in requested:
+            s.body_qdd = wp.zeros_like(self.body_qd, requires_grad=requires_grad)
 
-        if "body_qdd" in required_fields:
-            s.body_qdd = wp.zeros_like(s.body_qd, requires_grad=requires_grad)
-
-        if "body_parent_f" in required_fields:
-            s.body_parent_f = wp.zeros_like(s.body_qd, requires_grad=requires_grad)
+        if "body_parent_f" in requested:
+            s.body_parent_f = wp.zeros_like(self.body_qd, requires_grad=requires_grad)
 
         # attach custom attributes with assignment==STATE
         self._add_custom_attributes(s, ModelAttributeAssignment.STATE, requires_grad=requires_grad)
@@ -718,14 +708,14 @@ class Model:
         self._add_custom_attributes(contacts, ModelAttributeAssignment.CONTACT, requires_grad=requires_grad)
         return contacts
 
-    def require_state_fields(self, *fields: str) -> None:
-        """Require additional state fields for the model."""
-        additional_fields = list(set(fields).difference(self._required_state_fields))
-        supported_fields = {"body_qdd", "body_parent_f"}
-        unsupported_fields = set(additional_fields).difference(supported_fields)
-        if unsupported_fields:
-            raise ValueError(f"Unsupported attribute: {unsupported_fields}")
-        self._required_state_fields.extend(additional_fields)
+    def request_state_attributes(self, *attributes: str) -> None:
+        """
+        Request that specific state attributes be allocated when creating a State object.
+
+        Args:
+            *attributes: Variable number of attribute names (strings).
+        """
+        self._requested_state_attributes.update(attributes)
 
     def _add_custom_attributes(
         self,
@@ -745,6 +735,9 @@ class Model:
         """
         for full_name, _freq in self.attribute_frequency.items():
             if self.attribute_assignment.get(full_name, ModelAttributeAssignment.MODEL) != assignment:
+                continue
+
+            if assignment == ModelAttributeAssignment.STATE and full_name not in self._requested_state_attributes:
                 continue
 
             # Parse namespace from full_name (format: "namespace:attr_name" or "attr_name")

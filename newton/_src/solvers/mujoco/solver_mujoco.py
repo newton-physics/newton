@@ -379,6 +379,9 @@ class SolverMuJoCo(SolverBase):
             include_sites (bool): If ``True`` (default), Newton shapes marked with ``ShapeFlags.SITE`` are exported as MuJoCo sites. Sites are non-colliding reference points used for sensor attachment, debugging, or as frames of reference. If ``False``, sites are skipped during export. Defaults to ``True``.
         """
         super().__init__(model)
+
+        model.request_state_attributes("body_q", "body_qd", "body_f", "joint_q", "joint_qd")
+
         # Import and cache MuJoCo modules (only happens once per class)
         mujoco, _ = self.import_mujoco()
 
