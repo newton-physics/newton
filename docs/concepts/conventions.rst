@@ -91,7 +91,9 @@ aligning with Isaac Lab's approach, but with one important exception:
 * **Featherstone solver**  
   Newton's :attr:`State.body_qd` stores **both** linear and angular velocities 
   in the world frame, with linear velocity representing the COM velocity (same as other solvers).
-  Internally, Featherstone uses spatial twist convention, but this is handled transparently.
+  Internally, Featherstone uses spatial twist convention :math:`V_s = (v_s, \omega_s)` where :math:`v_s` is the linear 
+  velocity of a hypothetical point on the moving body that is instantaneously 
+  at the world origin, **not** the COM velocity
 
 Summary of Conventions
 ~~~~~~~~~~~~~~~~~~~~~~
