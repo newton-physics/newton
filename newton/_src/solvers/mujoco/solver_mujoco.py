@@ -190,6 +190,18 @@ class SolverMuJoCo(SolverBase):
         )
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
+                name="solimpfriction",
+                frequency=ModelAttributeFrequency.JOINT_DOF,
+                assignment=ModelAttributeAssignment.MODEL,
+                dtype=wp.types.vector(length=5, dtype=wp.float32),
+                default=wp.types.vector(length=5, dtype=wp.float32)(0.9, 0.95, 0.001, 0.5, 2.0),
+                namespace="mujoco",
+                usd_attribute_name="mjc:solimpfriction",
+                mjcf_attribute_name="solimp_friction",
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
                 name="gravcomp",
                 frequency=ModelAttributeFrequency.BODY,
                 assignment=ModelAttributeAssignment.MODEL,
@@ -976,6 +988,7 @@ class SolverMuJoCo(SolverBase):
         shape_condim = get_custom_attribute("condim")
         joint_dof_limit_margin = get_custom_attribute("limit_margin")
         joint_solimp_limit = get_custom_attribute("solimplimit")
+        joint_dof_solimp = get_custom_attribute("solimpfriction")
 
         eq_constraint_type = model.equality_constraint_type.numpy()
         eq_constraint_body1 = model.equality_constraint_body1.numpy()
@@ -1329,6 +1342,8 @@ class SolverMuJoCo(SolverBase):
                         joint_params["solref_limit"] = (-joint_limit_ke[ai], -joint_limit_kd[ai])
                     if joint_solimp_limit is not None:
                         joint_params["solimp_limit"] = joint_solimp_limit[ai]
+                    if joint_dof_solimp is not None:
+                        joint_params["solimp_friction"] = joint_dof_solimp[ai]
                     axname = name
                     if lin_axis_count > 1 or ang_axis_count > 1:
                         axname += "_lin"
@@ -1398,6 +1413,8 @@ class SolverMuJoCo(SolverBase):
                         joint_params["solref_limit"] = (-joint_limit_ke[ai], -joint_limit_kd[ai])
                     if joint_solimp_limit is not None:
                         joint_params["solimp_limit"] = joint_solimp_limit[ai]
+                    if joint_dof_solimp is not None:
+                        joint_params["solimp_friction"] = joint_dof_solimp[ai]
 
                     axname = name
                     if lin_axis_count > 1 or ang_axis_count > 1:
@@ -1661,7 +1678,7 @@ class SolverMuJoCo(SolverBase):
             # "dof_damping",
             # "dof_invweight0",
             "dof_frictionloss",
-            # "dof_solimp",
+            "dof_solimp",
             # "dof_solref",
             # "geom_matid",
             # "geom_solmix",
@@ -1810,6 +1827,7 @@ class SolverMuJoCo(SolverBase):
         # Update DOF properties (armature, friction, and solimplimit) with proper DOF mapping
         mujoco_attrs = getattr(self.model, "mujoco", None)
         solimplimit = getattr(mujoco_attrs, "solimplimit", None) if mujoco_attrs is not None else None
+        dof_solimp = getattr(mujoco_attrs, "solimpfriction", None) if mujoco_attrs is not None else None
         joint_dof_limit_margin = getattr(mujoco_attrs, "limit_margin", None) if mujoco_attrs is not None else None
 
         wp.launch(
@@ -1827,6 +1845,7 @@ class SolverMuJoCo(SolverBase):
                 self.model.joint_limit_lower,
                 self.model.joint_limit_upper,
                 solimplimit,
+                dof_solimp,
                 joint_dof_limit_margin,
                 joints_per_world,
             ],
@@ -1834,6 +1853,7 @@ class SolverMuJoCo(SolverBase):
                 self.mjw_model.dof_armature,
                 self.mjw_model.dof_frictionloss,
                 self.mjw_model.jnt_solimp,
+                self.mjw_model.dof_solimp,
                 self.mjw_model.jnt_solref,
                 self.mjw_model.jnt_margin,
                 self.mjw_model.jnt_range,
