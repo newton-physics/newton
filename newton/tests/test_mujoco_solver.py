@@ -204,8 +204,8 @@ class TestMuJoCoSolverPropertiesBase(TestMuJoCoSolver):
         # --- Articulated tree (3 bodies) ---
         link_radius = 0.05
         link_half_length = 0.15
-        # tree_root_initial_pos_y = link_half_length * 2.0
-        # tree_root_initial_transform = wp.transform((0.0, tree_root_initial_pos_y, 0.0), wp.quat_identity())
+        tree_root_initial_pos_y = link_half_length * 2.0
+        tree_root_initial_transform = wp.transform((0.0, tree_root_initial_pos_y, 0.0), wp.quat_identity())
 
         body1_idx = template_builder.add_link(mass=0.1)
         template_builder.add_shape_capsule(
@@ -215,7 +215,7 @@ class TestMuJoCoSolverPropertiesBase(TestMuJoCoSolver):
             half_height=link_half_length,
             cfg=shape_cfg,
         )
-        joint1 = template_builder.add_joint_free(body1_idx)
+        joint1 = template_builder.add_joint_free(child=body1_idx, parent_xform=tree_root_initial_transform)
 
         body2_idx = template_builder.add_link(mass=0.1)
         template_builder.add_shape_capsule(
