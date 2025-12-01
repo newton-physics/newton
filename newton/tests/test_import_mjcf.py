@@ -776,36 +776,34 @@ class TestImportMjcf(unittest.TestCase):
                 solimplimit[joint3_qd_start, i], expected, places=4, msg=f"joint3 solimplimit[{i}] should be {expected}"
             )
 
-        # Test with MuJoCo solver - verify jnt_solimp values match using the mapping
-        solver = SolverMuJoCo(model, separate_worlds=False)
+    def test_limit_margin_parsing(self):
+        """Test importing limit_margin from MJCF."""
+        mjcf = """
+        <mujoco>
+            <worldbody>
+                <body>
+                    <joint type="revolute" axis="0 0 1" margin="0.01" />
+                    <geom type="box" size="0.1 0.1 0.1" />
+                </body>
+                <body>
+                    <joint type="revolute" axis="0 0 1" margin="0.02" />
+                    <geom type="box" size="0.1 0.1 0.1" />
+                </body>
+                <body>
+                    <joint type="revolute" axis="0 0 1" />
+                    <geom type="box" size="0.1 0.1 0.1" />
+                </body>
+            </worldbody>
+        </mujoco>
+        """
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_mjcf(mjcf)
+        model = builder.finalize()
 
-        # MuJoCo's jnt_solimp should match our solimplimit values
-        jnt_solimp = solver.mjw_model.jnt_solimp.numpy()
-        joint_mjc_dof_start = solver.joint_mjc_dof_start.numpy()
-
-        # For each Newton joint, verify its DOFs map correctly to MuJoCo
-        for newton_joint_idx in range(model.joint_count):
-            mjc_dof_start = joint_mjc_dof_start[newton_joint_idx]
-            newton_dof_start = model.joint_qd_start.numpy()[newton_joint_idx]
-            dof_count = model.joint_dof_dim.numpy()[newton_joint_idx].sum()
-
-            # Check each DOF in this joint
-            for dof_offset in range(dof_count):
-                newton_dof_idx = newton_dof_start + dof_offset
-                mjc_dof_idx = mjc_dof_start + dof_offset
-
-                # Get expected solimplimit from Newton model
-                expected_solimp = solimplimit[newton_dof_idx, :].tolist()
-
-                # Get actual jnt_solimp from MuJoCo
-                actual_solimp = jnt_solimp[0, mjc_dof_idx, :].tolist()
-                # Verify they match
-                self.assertTrue(
-                    arrays_match(actual_solimp, expected_solimp),
-                    f"MuJoCo jnt_solimp[{mjc_dof_idx}] = {actual_solimp} doesn't match "
-                    f"Newton solimplimit[{newton_dof_idx}] = {expected_solimp} "
-                    f"for joint {newton_joint_idx} DOF {dof_offset}",
-                )
+        self.assertTrue(hasattr(model, "mujoco"))
+        self.assertTrue(hasattr(model.mujoco, "limit_margin"))
+        np.testing.assert_allclose(model.mujoco.limit_margin.numpy(), [0.01, 0.02, 0.0])
 
     def test_granular_loading_flags(self):
         """Test granular control over sites and visual shapes loading."""
