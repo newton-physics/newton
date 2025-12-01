@@ -808,6 +808,157 @@ def Xform "Articulation" (
                     f"for joint {newton_joint_idx} DOF {dof_offset}",
                 )
 
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_solreffriction_parsing(self):
+        """Test that solreffriction attribute is parsed correctly from USD."""
+        from pxr import Usd  # noqa: PLC0415
+
+        # Create USD stage with multiple single-DOF revolute joints
+        usd_content = """#usda 1.0
+(
+    upAxis = "Z"
+)
+
+def PhysicsScene "physicsScene"
+{
+}
+
+def Xform "Articulation" (
+    prepend apiSchemas = ["PhysicsArticulationRootAPI"]
+)
+{
+    def Xform "Body1" (
+        prepend apiSchemas = ["PhysicsRigidBodyAPI"]
+    )
+    {
+        double3 xformOp:translate = (0, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+
+        def Cube "Collision1" (
+            prepend apiSchemas = ["PhysicsCollisionAPI"]
+        )
+        {
+            double size = 0.2
+        }
+    }
+
+    def PhysicsRevoluteJoint "Joint1" (
+        prepend apiSchemas = ["PhysicsDriveAPI:angular"]
+    )
+    {
+        rel physics:body0 = </Articulation/Body1>
+        point3f physics:localPos0 = (0, 0, 0)
+        point3f physics:localPos1 = (0, 0, 0)
+        quatf physics:localRot0 = (1, 0, 0, 0)
+        quatf physics:localRot1 = (1, 0, 0, 0)
+        token physics:axis = "X"
+        float physics:lowerLimit = -90
+        float physics:upperLimit = 90
+
+        # MuJoCo solreffriction attribute (2 elements)
+        uniform double[] mjc:solreffriction = [0.01, 0.5]
+    }
+
+    def Xform "Body2" (
+        prepend apiSchemas = ["PhysicsRigidBodyAPI"]
+    )
+    {
+        double3 xformOp:translate = (1, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+
+        def Sphere "Collision2" (
+            prepend apiSchemas = ["PhysicsCollisionAPI"]
+        )
+        {
+            double radius = 0.1
+        }
+    }
+
+    def PhysicsRevoluteJoint "Joint2" (
+        prepend apiSchemas = ["PhysicsDriveAPI:angular"]
+    )
+    {
+        rel physics:body0 = </Articulation/Body1>
+        rel physics:body1 = </Articulation/Body2>
+        point3f physics:localPos0 = (0, 0, 0)
+        point3f physics:localPos1 = (0, 0, 0)
+        quatf physics:localRot0 = (1, 0, 0, 0)
+        quatf physics:localRot1 = (1, 0, 0, 0)
+        token physics:axis = "Z"
+        float physics:lowerLimit = -180
+        float physics:upperLimit = 180
+
+        # No solreffriction - should use defaults
+    }
+}
+"""
+        stage = Usd.Stage.CreateInMemory()
+        stage.GetRootLayer().ImportFromString(usd_content)
+
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_usd(stage)
+        model = builder.finalize()
+
+        # Check if solreffriction custom attribute exists
+        self.assertTrue(hasattr(model, "mujoco"), "Model should have mujoco namespace for custom attributes")
+        self.assertTrue(hasattr(model.mujoco, "solreffriction"), "Model should have solreffriction attribute")
+
+        solreffriction = model.mujoco.solreffriction.numpy()
+
+        # Should have 2 joints: Joint1 (world to Body1) and Joint2 (Body1 to Body2)
+        self.assertEqual(model.joint_count, 2, "Should have 2 single-DOF joints")
+
+        # Helper to check if two arrays match within tolerance
+        def arrays_match(arr, expected, tol=1e-4):
+            return all(abs(arr[i] - expected[i]) < tol for i in range(len(expected)))
+
+        # Expected values
+        expected_joint1 = [0.01, 0.5]  # from Joint1
+        expected_joint2 = [0.02, 1.0]  # from Joint2 (default values)
+
+        # Check that both expected solreffriction values are present in the model
+        num_dofs = solreffriction.shape[0]
+        found_values = [solreffriction[i, :].tolist() for i in range(num_dofs)]
+
+        found_joint1 = any(arrays_match(val, expected_joint1) for val in found_values)
+        found_joint2 = any(arrays_match(val, expected_joint2) for val in found_values)
+
+        self.assertTrue(found_joint1, f"Expected solreffriction {expected_joint1} not found in model")
+        self.assertTrue(found_joint2, f"Expected default solreffriction {expected_joint2} not found in model")
+
+        # Test with MuJoCo solver - verify dof_solref values match using the mapping
+        solver = SolverMuJoCo(model, separate_worlds=False)
+
+        # MuJoCo's dof_solref should match our solreffriction values
+        mjw_dof_solref = solver.mjw_model.dof_solref.numpy()
+        joint_mjc_dof_start = solver.joint_mjc_dof_start.numpy()
+
+        # For each Newton joint, verify its DOFs map correctly to MuJoCo
+        for newton_joint_idx in range(model.joint_count):
+            mjc_dof_start = joint_mjc_dof_start[newton_joint_idx]
+            newton_dof_start = model.joint_qd_start.numpy()[newton_joint_idx]
+            dof_count = model.joint_dof_dim.numpy()[newton_joint_idx].sum()
+
+            # Check each DOF in this joint
+            for dof_offset in range(dof_count):
+                newton_dof_idx = newton_dof_start + dof_offset
+                mjc_dof_idx = mjc_dof_start + dof_offset
+
+                # Get expected solreffriction from Newton model
+                expected_solref = solreffriction[newton_dof_idx, :].tolist()
+
+                # Get actual dof_solref from MuJoCo
+                actual_solref = mjw_dof_solref[0, mjc_dof_idx, :].tolist()
+
+                # Verify they match
+                self.assertTrue(
+                    arrays_match(actual_solref, expected_solref),
+                    f"MuJoCo dof_solref[{mjc_dof_idx}] = {actual_solref} doesn't match "
+                    f"Newton solreffriction[{newton_dof_idx}] = {expected_solref} "
+                    f"for joint {newton_joint_idx} DOF {dof_offset}",
+                )
+
 
 class TestImportSampleAssets(unittest.TestCase):
     def verify_usdphysics_parser(self, file, model, compare_min_max_coords, floating):

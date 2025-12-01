@@ -190,6 +190,17 @@ class SolverMuJoCo(SolverBase):
         )
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
+                name="solreffriction",
+                frequency=ModelAttributeFrequency.JOINT_DOF,
+                assignment=ModelAttributeAssignment.MODEL,
+                dtype=wp.types.vector(length=2, dtype=wp.float32),
+                default=wp.types.vector(length=2, dtype=wp.float32)(0.02, 1.0),
+                namespace="mujoco",
+                usd_attribute_name="mjc:solreffriction",
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
                 name="gravcomp",
                 frequency=ModelAttributeFrequency.BODY,
                 assignment=ModelAttributeAssignment.MODEL,
@@ -1000,6 +1011,7 @@ class SolverMuJoCo(SolverBase):
         shape_condim = get_custom_attribute("condim")
         joint_dof_limit_margin = get_custom_attribute("limit_margin")
         joint_solimp_limit = get_custom_attribute("solimplimit")
+        joint_solreffriction = get_custom_attribute("solreffriction")
         joint_stiffness = get_custom_attribute("dof_passive_stiffness")
         joint_damping = get_custom_attribute("dof_passive_damping")
 
@@ -1359,6 +1371,8 @@ class SolverMuJoCo(SolverBase):
                         joint_params["solref_limit"] = (-joint_limit_ke[ai], -joint_limit_kd[ai])
                     if joint_solimp_limit is not None:
                         joint_params["solimp_limit"] = joint_solimp_limit[ai]
+                    if joint_solreffriction is not None:
+                        joint_params["solref_friction"] = joint_solreffriction[ai]
                     axname = name
                     if lin_axis_count > 1 or ang_axis_count > 1:
                         axname += "_lin"
@@ -1432,6 +1446,8 @@ class SolverMuJoCo(SolverBase):
                         joint_params["solref_limit"] = (-joint_limit_ke[ai], -joint_limit_kd[ai])
                     if joint_solimp_limit is not None:
                         joint_params["solimp_limit"] = joint_solimp_limit[ai]
+                    if joint_solreffriction is not None:
+                        joint_params["solref_friction"] = joint_solreffriction[ai]
 
                     axname = name
                     if lin_axis_count > 1 or ang_axis_count > 1:
@@ -1696,7 +1712,7 @@ class SolverMuJoCo(SolverBase):
             # "dof_invweight0",
             "dof_frictionloss",
             # "dof_solimp",
-            # "dof_solref",
+            "dof_solref",
             # "geom_matid",
             # "geom_solmix",
             "geom_solref",
@@ -1844,6 +1860,7 @@ class SolverMuJoCo(SolverBase):
         # Update DOF properties (armature, friction, passive stiffness and damping, and solimplimit) with proper DOF mapping
         mujoco_attrs = getattr(self.model, "mujoco", None)
         solimplimit = getattr(mujoco_attrs, "solimplimit", None) if mujoco_attrs is not None else None
+        solreffriction = getattr(mujoco_attrs, "solreffriction", None) if mujoco_attrs is not None else None
         joint_dof_limit_margin = getattr(mujoco_attrs, "limit_margin", None) if mujoco_attrs is not None else None
         joint_stiffness = getattr(mujoco_attrs, "dof_passive_stiffness", None) if mujoco_attrs is not None else None
         joint_damping = getattr(mujoco_attrs, "dof_passive_damping", None) if mujoco_attrs is not None else None
@@ -1862,6 +1879,7 @@ class SolverMuJoCo(SolverBase):
                 self.model.joint_limit_lower,
                 self.model.joint_limit_upper,
                 solimplimit,
+                solreffriction,
                 joint_stiffness,
                 joint_damping,
                 joint_dof_limit_margin,
@@ -1871,6 +1889,7 @@ class SolverMuJoCo(SolverBase):
                 self.mjw_model.dof_armature,
                 self.mjw_model.dof_frictionloss,
                 self.mjw_model.jnt_solimp,
+                self.mjw_model.dof_solref,
                 self.mjw_model.jnt_solref,
                 self.mjw_model.jnt_stiffness,
                 self.mjw_model.dof_damping,
