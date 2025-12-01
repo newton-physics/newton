@@ -117,6 +117,33 @@ def distance_point_to_plane(point, plane_pos, plane_normal):
     return np.dot(point - plane_pos, plane_normal)
 
 
+def distance_point_to_ellipsoid(point, ellipsoid_pos, ellipsoid_rot, semi_axes):
+    """Calculate approximate distance from a point to an ellipsoid surface.
+
+    Args:
+        point: Point to check (world space)
+        ellipsoid_pos: Ellipsoid center position
+        ellipsoid_rot: Ellipsoid rotation matrix (3x3)
+        semi_axes: Semi-axes (a, b, c) along local x, y, z
+
+    Returns:
+        Approximate distance to ellipsoid surface
+    """
+    # Transform point to ellipsoid local coordinates
+    local_point = np.dot(ellipsoid_rot.T, point - ellipsoid_pos)
+
+    # Scale to unit sphere
+    a, b, c = semi_axes
+    scaled_point = local_point / np.array([a, b, c])
+
+    # Distance from unit sphere surface
+    dist_to_unit_sphere = np.linalg.norm(scaled_point) - 1.0
+
+    # Approximate distance (this is not exact but good enough for tests)
+    avg_scale = (a + b + c) / 3.0
+    return dist_to_unit_sphere * avg_scale
+
+
 def check_surface_reconstruction(contact_pos, normal, penetration_depth, dist_func_a, dist_func_b, tolerance=0.08):
     """Verify that contact position is at midpoint between surfaces.
 
@@ -213,6 +240,9 @@ class TestNarrowPhase(unittest.TestCase):
                 geom_collision_radius[i] = np.linalg.norm(scale_array)
             elif geo_type == int(GeoType.CAPSULE) or geo_type == int(GeoType.CYLINDER) or geo_type == int(GeoType.CONE):
                 geom_collision_radius[i] = scale_array[0] + scale_array[1]
+            elif geo_type == int(GeoType.ELLIPSOID):
+                # Bounding sphere radius is the largest semi-axis
+                geom_collision_radius[i] = max(scale_array[0], scale_array[1], scale_array[2])
             elif geo_type == int(GeoType.PLANE):
                 if scale_array[0] > 0.0 and scale_array[1] > 0.0:
                     # finite plane
@@ -1340,6 +1370,285 @@ class TestNarrowPhase(unittest.TestCase):
         )
         wp.synchronize()
         self.assertGreater(contact_count.numpy()[0], 0, "Sphere B with larger margin should have contact")
+
+    # ================================================================================
+    # Ellipsoid collision tests
+    # ================================================================================
+
+    def test_ellipsoid_ellipsoid_separated(self):
+        """Test ellipsoid-ellipsoid collision when separated."""
+        # Two ellipsoids separated along X axis
+        geom_list = [
+            {
+                "type": GeoType.ELLIPSOID,
+                "transform": ([0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0]),
+                "data": ([1.0, 0.5, 0.3], 0.0),  # semi-axes a=1.0, b=0.5, c=0.3
+            },
+            {
+                "type": GeoType.ELLIPSOID,
+                "transform": ([3.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0]),
+                "data": ([1.0, 0.5, 0.3], 0.0),
+            },
+        ]
+
+        count, _pairs, _positions, normals, penetrations, _tangents = self._run_narrow_phase(geom_list, [(0, 1)])
+
+        # Separated ellipsoids should produce no contacts (or contacts with positive separation)
+        if count > 0:
+            # If contact is generated, penetration should be positive (separation)
+            self.assertGreater(
+                penetrations[0], 0.0, "Separated ellipsoids should have positive penetration (separation)"
+            )
+
+            # Normal should be unit length
+            normal_length = np.linalg.norm(normals[0])
+            self.assertAlmostEqual(normal_length, 1.0, places=5, msg="Normal should be unit length")
+
+    def test_ellipsoid_ellipsoid_penetrating(self):
+        """Test ellipsoid-ellipsoid collision with penetration."""
+        # Two ellipsoids with overlap along X axis
+        # Ellipsoid A centered at origin with a=1.0 extends to x=1.0
+        # Ellipsoid B centered at x=1.8 with a=1.0 extends to x=0.8
+        # Overlap region from x=0.8 to x=1.0 = 0.2 overlap
+        pos_a = np.array([0.0, 0.0, 0.0])
+        pos_b = np.array([1.8, 0.0, 0.0])
+
+        geom_list = [
+            {
+                "type": GeoType.ELLIPSOID,
+                "transform": (pos_a.tolist(), [0.0, 0.0, 0.0, 1.0]),
+                "data": ([1.0, 0.5, 0.3], 0.0),
+            },
+            {
+                "type": GeoType.ELLIPSOID,
+                "transform": (pos_b.tolist(), [0.0, 0.0, 0.0, 1.0]),
+                "data": ([1.0, 0.5, 0.3], 0.0),
+            },
+        ]
+
+        count, _pairs, _positions, normals, penetrations, _tangents = self._run_narrow_phase(geom_list, [(0, 1)])
+
+        self.assertGreater(count, 0, "Penetrating ellipsoids should generate contact")
+        self.assertLess(penetrations[0], 0.0, "Should have negative penetration (overlap)")
+
+        # Normal should be unit length
+        normal_length = np.linalg.norm(normals[0])
+        self.assertAlmostEqual(normal_length, 1.0, places=5, msg="Normal should be unit length")
+
+        # Normal should point from ellipsoid 0 toward ellipsoid 1 (approximately +X)
+        self.assertTrue(
+            check_normal_direction(pos_a, pos_b, normals[0]),
+            msg="Normal should point from ellipsoid 0 toward ellipsoid 1",
+        )
+
+    def test_ellipsoid_sphere_penetrating(self):
+        """Test ellipsoid-sphere collision with penetration."""
+        # Ellipsoid at origin, sphere approaching from +X
+        # Note: Narrow phase may swap shapes to ensure consistent ordering (lower type first)
+        # SPHERE=2 < ELLIPSOID=4, so sphere becomes shape A
+        ellipsoid_pos = np.array([0.0, 0.0, 0.0])
+        sphere_pos = np.array([1.4, 0.0, 0.0])
+        sphere_radius = 0.5
+
+        geom_list = [
+            {
+                "type": GeoType.ELLIPSOID,
+                "transform": (ellipsoid_pos.tolist(), [0.0, 0.0, 0.0, 1.0]),
+                "data": ([1.0, 0.5, 0.3], 0.0),
+            },
+            {
+                "type": GeoType.SPHERE,
+                "transform": (sphere_pos.tolist(), [0.0, 0.0, 0.0, 1.0]),
+                "data": ([sphere_radius, sphere_radius, sphere_radius], 0.0),
+            },
+        ]
+
+        count, pairs, _positions, normals, _penetrations, _tangents = self._run_narrow_phase(geom_list, [(0, 1)])
+
+        self.assertGreater(count, 0, "Ellipsoid-sphere should generate contact")
+
+        # Normal should be unit length
+        normal_length = np.linalg.norm(normals[0])
+        self.assertAlmostEqual(normal_length, 1.0, places=5, msg="Normal should be unit length")
+
+        # Get actual pair to determine shape order (narrow phase may swap)
+        pair = pairs[0]
+        shape_a_idx = pair[0]
+        if shape_a_idx == 0:
+            # Ellipsoid is shape A, normal points toward sphere (+X)
+            pos_a, pos_b = ellipsoid_pos, sphere_pos
+        else:
+            # Sphere is shape A, normal points toward ellipsoid (-X)
+            pos_a, pos_b = sphere_pos, ellipsoid_pos
+
+        # Normal should point from shape A toward shape B
+        self.assertTrue(
+            check_normal_direction(pos_a, pos_b, normals[0]),
+            msg="Normal should point from shape A toward shape B",
+        )
+
+    def test_ellipsoid_box_penetrating(self):
+        """Test ellipsoid-box collision with penetration."""
+        # Ellipsoid at origin, box approaching from +X
+        ellipsoid_pos = np.array([0.0, 0.0, 0.0])
+        box_pos = np.array([1.4, 0.0, 0.0])
+        box_size = np.array([0.5, 0.5, 0.5])
+
+        geom_list = [
+            {
+                "type": GeoType.ELLIPSOID,
+                "transform": (ellipsoid_pos.tolist(), [0.0, 0.0, 0.0, 1.0]),
+                "data": ([1.0, 0.5, 0.3], 0.0),
+            },
+            {
+                "type": GeoType.BOX,
+                "transform": (box_pos.tolist(), [0.0, 0.0, 0.0, 1.0]),
+                "data": (box_size.tolist(), 0.0),
+            },
+        ]
+
+        count, _pairs, _positions, normals, _penetrations, _tangents = self._run_narrow_phase(geom_list, [(0, 1)])
+
+        self.assertGreater(count, 0, "Ellipsoid-box should generate contact")
+
+        # Normal should be unit length
+        normal_length = np.linalg.norm(normals[0])
+        self.assertAlmostEqual(normal_length, 1.0, places=5, msg="Normal should be unit length")
+
+        # Normal should point from ellipsoid toward box
+        self.assertTrue(
+            check_normal_direction(ellipsoid_pos, box_pos, normals[0]),
+            msg="Normal should point from ellipsoid toward box",
+        )
+
+    def test_ellipsoid_plane_penetrating(self):
+        """Test ellipsoid-plane collision with penetration."""
+        # Infinite plane at z=0, ellipsoid resting on plane with small penetration
+        # Ellipsoid with c=0.3 semi-axis along Z, positioned so bottom just penetrates
+        plane_pos = np.array([0.0, 0.0, 0.0])
+        ellipsoid_pos = np.array([0.0, 0.0, 0.29])  # Bottom at z=-0.01 (small penetration)
+
+        geom_list = [
+            {
+                "type": GeoType.PLANE,
+                "transform": (plane_pos.tolist(), [0.0, 0.0, 0.0, 1.0]),
+                "data": ([0.0, 0.0, 0.0], 0.0),  # infinite plane
+            },
+            {
+                "type": GeoType.ELLIPSOID,
+                "transform": (ellipsoid_pos.tolist(), [0.0, 0.0, 0.0, 1.0]),
+                "data": ([1.0, 0.5, 0.3], 0.0),
+            },
+        ]
+
+        count, _pairs, _positions, normals, penetrations, _tangents = self._run_narrow_phase(geom_list, [(0, 1)])
+
+        self.assertGreater(count, 0, "Ellipsoid-plane should generate contact")
+        self.assertLess(penetrations[0], 0.0, "Should have negative penetration (overlap)")
+
+        # Normal should be unit length
+        normal_length = np.linalg.norm(normals[0])
+        self.assertAlmostEqual(normal_length, 1.0, places=5, msg="Normal should be unit length")
+
+        # Normal should point in plane normal direction (+Z)
+        self.assertGreater(abs(normals[0][2]), 0.9, msg="Normal should be along Z axis")
+
+    def test_ellipsoid_capsule_penetrating(self):
+        """Test ellipsoid-capsule collision with penetration."""
+        # Ellipsoid at origin, capsule approaching from +Y
+        ellipsoid_pos = np.array([0.0, 0.0, 0.0])
+        capsule_pos = np.array([0.0, 0.9, 0.0])
+
+        geom_list = [
+            {
+                "type": GeoType.ELLIPSOID,
+                "transform": (ellipsoid_pos.tolist(), [0.0, 0.0, 0.0, 1.0]),
+                "data": ([1.0, 0.5, 0.3], 0.0),
+            },
+            {
+                "type": GeoType.CAPSULE,
+                "transform": (capsule_pos.tolist(), [0.0, 0.0, 0.0, 1.0]),
+                "data": ([0.5, 1.0, 0.0], 0.0),  # radius=0.5, half_length=1.0
+            },
+        ]
+
+        count, _pairs, _positions, normals, _penetrations, _tangents = self._run_narrow_phase(geom_list, [(0, 1)])
+
+        self.assertGreater(count, 0, "Ellipsoid-capsule should generate contact")
+
+        # Normal should be unit length
+        normal_length = np.linalg.norm(normals[0])
+        self.assertAlmostEqual(normal_length, 1.0, places=5, msg="Normal should be unit length")
+
+    def test_ellipsoid_different_orientations(self):
+        """Test ellipsoid collision with rotated ellipsoids."""
+        # Two ellipsoids, one rotated 90 degrees around Z axis
+        angle = np.pi / 2.0
+        quat = [0.0, 0.0, np.sin(angle / 2.0), np.cos(angle / 2.0)]
+
+        pos_a = np.array([0.0, 0.0, 0.0])
+        pos_b = np.array([1.3, 0.0, 0.0])
+
+        geom_list = [
+            {
+                "type": GeoType.ELLIPSOID,
+                "transform": (pos_a.tolist(), [0.0, 0.0, 0.0, 1.0]),
+                "data": ([1.0, 0.3, 0.3], 0.0),  # elongated along X
+            },
+            {
+                "type": GeoType.ELLIPSOID,
+                "transform": (pos_b.tolist(), quat),  # rotated, now elongated along Y
+                "data": ([1.0, 0.3, 0.3], 0.0),
+            },
+        ]
+
+        count, _pairs, _positions, normals, _penetrations, _tangents = self._run_narrow_phase(geom_list, [(0, 1)])
+
+        # Ellipsoid A extends to x=1.0, ellipsoid B after rotation has semi-axis 0.3 along X
+        # Starting at x=1.3, B extends from x=1.0 to x=1.6, so they just touch
+        if count > 0:
+            # Normal should be unit length
+            normal_length = np.linalg.norm(normals[0])
+            self.assertAlmostEqual(normal_length, 1.0, places=5, msg="Normal should be unit length")
+
+    def test_ellipsoid_sphere_equivalent(self):
+        """Test that an ellipsoid with equal semi-axes behaves like a sphere."""
+        # Two ellipsoids with a=b=c should behave like spheres
+        # Sphere 1 at origin with radius 1.0, sphere 2 at x=1.8 with radius 1.0
+        # Expected: same behavior as sphere-sphere with penetration ~-0.2
+        pos_a = np.array([0.0, 0.0, 0.0])
+        pos_b = np.array([1.8, 0.0, 0.0])
+        radius = 1.0
+
+        geom_list = [
+            {
+                "type": GeoType.ELLIPSOID,
+                "transform": (pos_a.tolist(), [0.0, 0.0, 0.0, 1.0]),
+                "data": ([radius, radius, radius], 0.0),  # sphere-like ellipsoid
+            },
+            {
+                "type": GeoType.ELLIPSOID,
+                "transform": (pos_b.tolist(), [0.0, 0.0, 0.0, 1.0]),
+                "data": ([radius, radius, radius], 0.0),
+            },
+        ]
+
+        count, _pairs, _positions, normals, penetrations, _tangents = self._run_narrow_phase(geom_list, [(0, 1)])
+
+        self.assertGreater(count, 0, "Sphere-like ellipsoids should generate contact")
+        self.assertLess(penetrations[0], 0.0, "Should have negative penetration")
+
+        # Expected penetration for sphere-sphere: distance - 2*radius = 1.8 - 2.0 = -0.2
+        self.assertAlmostEqual(
+            penetrations[0], -0.2, places=1, msg=f"Expected penetration ~-0.2, got {penetrations[0]}"
+        )
+
+        # Normal should be unit length
+        normal_length = np.linalg.norm(normals[0])
+        self.assertAlmostEqual(normal_length, 1.0, places=5, msg="Normal should be unit length")
+
+        # Normal should point along +X
+        self.assertAlmostEqual(normals[0][0], 1.0, places=1, msg="Normal should point along +X")
 
 
 if __name__ == "__main__":

@@ -1590,6 +1590,27 @@ class ModelBuilder:
             constraint_worlds = [self.current_world] * len(builder.equality_constraint_type)
             self.equality_constraint_world.extend(constraint_worlds)
 
+            # Remap body and joint indices in equality constraints
+            self.equality_constraint_type.extend(builder.equality_constraint_type)
+            self.equality_constraint_body1.extend(
+                [b + start_body_idx if b != -1 else -1 for b in builder.equality_constraint_body1]
+            )
+            self.equality_constraint_body2.extend(
+                [b + start_body_idx if b != -1 else -1 for b in builder.equality_constraint_body2]
+            )
+            self.equality_constraint_anchor.extend(builder.equality_constraint_anchor)
+            self.equality_constraint_torquescale.extend(builder.equality_constraint_torquescale)
+            self.equality_constraint_relpose.extend(builder.equality_constraint_relpose)
+            self.equality_constraint_joint1.extend(
+                [j + start_joint_idx if j != -1 else -1 for j in builder.equality_constraint_joint1]
+            )
+            self.equality_constraint_joint2.extend(
+                [j + start_joint_idx if j != -1 else -1 for j in builder.equality_constraint_joint2]
+            )
+            self.equality_constraint_polycoef.extend(builder.equality_constraint_polycoef)
+            self.equality_constraint_key.extend(builder.equality_constraint_key)
+            self.equality_constraint_enabled.extend(builder.equality_constraint_enabled)
+
         more_builder_attrs = [
             "articulation_key",
             "body_inertia",
@@ -1652,17 +1673,6 @@ class ModelBuilder:
             "tet_poses",
             "tet_activations",
             "tet_materials",
-            "equality_constraint_type",
-            "equality_constraint_body1",
-            "equality_constraint_body2",
-            "equality_constraint_anchor",
-            "equality_constraint_torquescale",
-            "equality_constraint_relpose",
-            "equality_constraint_joint1",
-            "equality_constraint_joint2",
-            "equality_constraint_polycoef",
-            "equality_constraint_key",
-            "equality_constraint_enabled",
         ]
 
         for attr in more_builder_attrs:
@@ -3298,6 +3308,77 @@ class ModelBuilder:
         return self.add_shape(
             body=body,
             type=GeoType.SPHERE,
+            xform=xform,
+            cfg=cfg,
+            scale=scale,
+            key=key,
+            custom_attributes=custom_attributes,
+        )
+
+    def add_shape_ellipsoid(
+        self,
+        body: int,
+        xform: Transform | None = None,
+        a: float = 1.0,
+        b: float = 0.75,
+        c: float = 0.5,
+        cfg: ShapeConfig | None = None,
+        as_site: bool = False,
+        key: str | None = None,
+        custom_attributes: dict[str, Any] | None = None,
+    ) -> int:
+        """Adds an ellipsoid collision shape or site to a body.
+
+        The ellipsoid is centered at its local origin as defined by `xform`, with semi-axes
+        `a`, `b`, `c` along the local X, Y, Z axes respectively.
+
+        Note:
+            Ellipsoid collision is handled by the unified GJK/MPR collision pipeline,
+            which provides accurate collision detection for all convex shape pairs.
+
+        Args:
+            body (int): The index of the parent body this shape belongs to. Use -1 for shapes not attached to any specific body.
+            xform (Transform | None): The transform of the ellipsoid in the parent body's local frame. If `None`, the identity transform `wp.transform()` is used. Defaults to `None`.
+            a (float): The semi-axis of the ellipsoid along its local X-axis. Defaults to `1.0`.
+            b (float): The semi-axis of the ellipsoid along its local Y-axis. Defaults to `0.75`.
+            c (float): The semi-axis of the ellipsoid along its local Z-axis. Defaults to `0.5`.
+            cfg (ShapeConfig | None): The configuration for the shape's properties. If `None`, uses :attr:`default_shape_cfg` (or :attr:`default_site_cfg` when `as_site=True`). If `as_site=True` and `cfg` is provided, a copy is made and site invariants are enforced via `mark_as_site()`. Defaults to `None`.
+            as_site (bool): If `True`, creates a site (non-colliding reference point) instead of a collision shape. Defaults to `False`.
+            key (str | None): An optional unique key for identifying the shape. If `None`, a default key is automatically generated. Defaults to `None`.
+            custom_attributes: Dictionary of custom attribute names to values.
+
+        Returns:
+            int: The index of the newly added shape or site.
+
+        Example:
+            Create an ellipsoid with different semi-axes:
+
+            .. doctest::
+
+                builder = newton.ModelBuilder()
+                body = builder.add_body()
+
+                # Add an ellipsoid with semi-axes 1.0, 0.5, 0.25
+                builder.add_shape_ellipsoid(
+                    body=body,
+                    a=1.0,  # X semi-axis
+                    b=0.5,  # Y semi-axis
+                    c=0.25,  # Z semi-axis
+                )
+
+                # A sphere is a special case where a = b = c
+                builder.add_shape_ellipsoid(body=body, a=0.5, b=0.5, c=0.5)
+        """
+        if cfg is None:
+            cfg = self.default_site_cfg if as_site else self.default_shape_cfg
+        elif as_site:
+            cfg = cfg.copy()
+            cfg.mark_as_site()
+
+        scale = wp.vec3(a, b, c)
+        return self.add_shape(
+            body=body,
+            type=GeoType.ELLIPSOID,
             xform=xform,
             cfg=cfg,
             scale=scale,

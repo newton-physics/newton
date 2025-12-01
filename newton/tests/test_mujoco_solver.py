@@ -515,6 +515,71 @@ class TestMuJoCoSolverMassProperties(TestMuJoCoSolverPropertiesBase):
         # Check updated inertia tensors
         check_inertias(updated_inertias, "Updated ")
 
+    def test_body_gravcomp(self):
+        """
+        Tests if the body gravity compensation is updated properly.
+        """
+        # Register custom attributes manually since setUp only creates basic builder
+        newton.solvers.SolverMuJoCo.register_custom_attributes(self.builder)
+
+        # Re-finalize model to allocate space for custom attributes
+        # Note: The bodies are already added by _add_test_robot, so they have default gravcomp=0.0
+        self.model = self.builder.finalize()
+
+        # Verify attribute exists
+        self.assertTrue(hasattr(self.model, "mujoco"))
+        self.assertTrue(hasattr(self.model.mujoco, "gravcomp"))
+
+        # Initialize deterministic gravcomp values based on index
+        # Pattern: 0.1 + (i * 0.01) % 0.9
+        indices = np.arange(self.model.body_count, dtype=np.float32)
+        new_gravcomp = 0.1 + (indices * 0.01) % 0.9
+        self.model.mujoco.gravcomp.assign(new_gravcomp)
+
+        # Initialize solver
+        solver = SolverMuJoCo(self.model, ls_iterations=1, iterations=1, disable_contacts=True)
+
+        # Check initial values transferred to solver
+        bodies_per_world = self.model.body_count // self.model.num_worlds
+        body_mapping = solver.to_mjc_body_index.numpy()
+
+        for world_idx in range(self.model.num_worlds):
+            for body_idx in range(bodies_per_world):
+                newton_idx = world_idx * bodies_per_world + body_idx
+                mjc_idx = body_mapping[body_idx]
+                if mjc_idx != -1:
+                    self.assertAlmostEqual(
+                        new_gravcomp[newton_idx],
+                        solver.mjw_model.body_gravcomp.numpy()[world_idx, mjc_idx],
+                        places=6,
+                        msg=f"Gravcomp mismatch for body {body_idx} in world {world_idx}",
+                    )
+
+        # Step simulation
+        solver.step(self.state_in, self.state_out, self.control, self.contacts, 0.01)
+        self.state_in, self.state_out = self.state_out, self.state_in
+
+        # Update gravcomp values (shift pattern)
+        # Pattern: 0.9 - (i * 0.01) % 0.9
+        updated_gravcomp = 0.9 - (indices * 0.01) % 0.9
+        self.model.mujoco.gravcomp.assign(updated_gravcomp)
+
+        # Notify solver
+        solver.notify_model_changed(SolverNotifyFlags.BODY_INERTIAL_PROPERTIES)
+
+        # Verify updates
+        for world_idx in range(self.model.num_worlds):
+            for body_idx in range(bodies_per_world):
+                newton_idx = world_idx * bodies_per_world + body_idx
+                mjc_idx = body_mapping[body_idx]
+                if mjc_idx != -1:
+                    self.assertAlmostEqual(
+                        updated_gravcomp[newton_idx],
+                        solver.mjw_model.body_gravcomp.numpy()[world_idx, mjc_idx],
+                        places=6,
+                        msg=f"Updated gravcomp mismatch for body {body_idx} in world {world_idx}",
+                    )
+
 
 class TestMuJoCoSolverJointProperties(TestMuJoCoSolverPropertiesBase):
     def test_joint_attributes_registration_and_updates(self):

@@ -83,6 +83,92 @@ def create_sphere_mesh(
     return np.array(vertices, dtype=np.float32), np.array(indices, dtype=np.uint32)
 
 
+def create_ellipsoid_mesh(
+    rx=1.0,
+    ry=1.0,
+    rz=1.0,
+    num_latitudes=default_num_segments,
+    num_longitudes=default_num_segments,
+    reverse_winding=False,
+):
+    """Create an ellipsoid mesh with specified semi-axes.
+
+    Generates vertices and triangle indices for a UV ellipsoid using
+    latitude/longitude parametrization. Each vertex contains position,
+    normal, and UV coordinates. The ellipsoid is centered at the origin
+    with semi-axes along the X, Y, and Z axes.
+
+    Args:
+        rx (float): Semi-axis length along the X direction. Defaults to 1.0.
+        ry (float): Semi-axis length along the Y direction. Defaults to 1.0.
+        rz (float): Semi-axis length along the Z direction. Defaults to 1.0.
+        num_latitudes (int): Number of horizontal divisions (latitude lines).
+            Defaults to default_num_segments.
+        num_longitudes (int): Number of vertical divisions (longitude lines).
+            Defaults to default_num_segments.
+        reverse_winding (bool): If True, reverses triangle winding order.
+            Defaults to False.
+
+    Returns:
+        tuple[np.ndarray, np.ndarray]: A tuple containing:
+            - vertices (np.ndarray): Float32 array of shape (N, 8) where each
+              vertex contains [x, y, z, nx, ny, nz, u, v] (position, normal,
+              UV coords).
+            - indices (np.ndarray): Uint32 array of triangle indices for
+              rendering.
+    """
+    vertices = []
+    indices = []
+
+    for i in range(num_latitudes + 1):
+        theta = i * np.pi / num_latitudes
+        sin_theta = np.sin(theta)
+        cos_theta = np.cos(theta)
+
+        for j in range(num_longitudes + 1):
+            phi = j * 2 * np.pi / num_longitudes
+            sin_phi = np.sin(phi)
+            cos_phi = np.cos(phi)
+
+            # Unit sphere coordinates
+            ux = cos_phi * sin_theta
+            uy = cos_theta
+            uz = sin_phi * sin_theta
+
+            # Scaled position for ellipsoid
+            px = ux * rx
+            py = uy * ry
+            pz = uz * rz
+
+            # Normal for ellipsoid: gradient of (x/rx)^2 + (y/ry)^2 + (z/rz)^2 = 1
+            # n = (2x/rx^2, 2y/ry^2, 2z/rz^2), normalized
+            nx = ux / rx
+            ny = uy / ry
+            nz = uz / rz
+            n_len = np.sqrt(nx * nx + ny * ny + nz * nz)
+            if n_len > 1e-10:
+                nx /= n_len
+                ny /= n_len
+                nz /= n_len
+
+            u = float(j) / num_longitudes
+            v = float(i) / num_latitudes
+
+            vertices.append([px, py, pz, nx, ny, nz, u, v])
+
+    for i in range(num_latitudes):
+        for j in range(num_longitudes):
+            first = i * (num_longitudes + 1) + j
+            second = first + num_longitudes + 1
+
+            if reverse_winding:
+                indices.extend([first, second, first + 1, second, second + 1, first + 1])
+            else:
+                indices.extend([first, first + 1, second, second, first + 1, second + 1])
+
+    return np.array(vertices, dtype=np.float32), np.array(indices, dtype=np.uint32)
+
+
 def create_capsule_mesh(radius, half_height, up_axis=1, segments=default_num_segments):
     """Create a capsule (pill-shaped) mesh with hemispherical ends.
 
