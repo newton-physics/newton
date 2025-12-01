@@ -193,6 +193,7 @@ def eval_single_articulation_fk(
     joint_axis: wp.array(dtype=wp.vec3),
     joint_dof_dim: wp.array(dtype=int, ndim=2),
     body_com: wp.array(dtype=wp.vec3),
+    convert_velocity: bool,
     # outputs
     body_q: wp.array(dtype=wp.transform),
     body_qd: wp.array(dtype=wp.spatial_vector),
@@ -335,10 +336,10 @@ def eval_single_articulation_fk(
 
         body_q[child] = X_wc
 
-        # For FREE joints, v_wc is a spatial twist
+        # For FREE and DISTANCE joints, v_wc is a spatial twist in Featherstone
         # but body_qd should store COM velocity. Transform it:
         # v_com = v_origin + ω x r_com
-        if type == JointType.FREE:
+        if convert_velocity and (type == JointType.FREE or type == JointType.DISTANCE):
             v_origin = wp.spatial_top(v_wc)
             omega = wp.spatial_bottom(v_wc)
             r_com = wp.transform_point(X_wc, body_com[child])
@@ -368,6 +369,7 @@ def eval_articulation_fk(
     joint_axis: wp.array(dtype=wp.vec3),
     joint_dof_dim: wp.array(dtype=int, ndim=2),
     body_com: wp.array(dtype=wp.vec3),
+    convert_velocity: bool,
     # outputs
     body_q: wp.array(dtype=wp.transform),
     body_qd: wp.array(dtype=wp.spatial_vector),
@@ -409,6 +411,7 @@ def eval_articulation_fk(
         joint_axis,
         joint_dof_dim,
         body_com,
+        convert_velocity,
         # outputs
         body_q,
         body_qd,
@@ -422,6 +425,7 @@ def eval_fk(
     state: State | object,
     mask: wp.array(dtype=bool) | None = None,
     indices: wp.array(dtype=int) | None = None,
+    convert_velocity: bool = False,
 ):
     """
     Evaluates the model's forward kinematics given the joint coordinates and updates the state's body information (:attr:`State.body_q` and :attr:`State.body_qd`).
@@ -434,6 +438,7 @@ def eval_fk(
         mask (array): The mask to use to enable / disable FK for an articulation. If None then treat all as enabled, shape [articulation_count], bool
         indices (array): Integer indices of articulations to update. If None, updates all articulations.
                         Cannot be used together with mask parameter.
+        convert_velocity (bool): If True, converts FREE/DISTANCE joint velocities to COM frame (needed by Featherstone). Default: False.
     """
     # Validate inputs
     if mask is not None and indices is not None:
@@ -465,6 +470,7 @@ def eval_fk(
             model.joint_axis,
             model.joint_dof_dim,
             model.body_com,
+            convert_velocity,
         ],
         outputs=[
             state.body_q,

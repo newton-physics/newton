@@ -672,7 +672,7 @@ class SolverFeatherstone(SolverBase):
                 )
 
                 # update maximal coordinates
-                eval_fk(model, state_out.joint_q, state_out.joint_qd, state_out)
+                eval_fk(model, state_out.joint_q, state_out.joint_qd, state_out, convert_velocity=True)
 
             self.integrate_particles(model, state_in, state_out, dt)
 

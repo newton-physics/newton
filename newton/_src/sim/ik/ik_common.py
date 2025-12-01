@@ -75,6 +75,7 @@ def _eval_fk_articulation_batched(
         joint_axis,
         joint_dof_dim,
         body_com,
+        False,
         body_q[problem_idx],
         body_qd[problem_idx],
     )
