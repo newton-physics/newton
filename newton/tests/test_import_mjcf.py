@@ -813,12 +813,12 @@ class TestImportMjcf(unittest.TestCase):
 <mujoco>
     <worldbody>
         <body name="body1">
-            <joint name="joint1" type="hinge" axis="0 1 0" solimp_friction="0.89 0.9 0.01 2.1 1.8" range="-45 45" />
+            <joint name="joint1" type="hinge" axis="0 1 0" solimpfriction="0.89 0.9 0.01 2.1 1.8" range="-45 45" />
             <joint name="joint2" type="hinge" axis="1 0 0" range="-30 30" />
             <geom type="box" size="0.1 0.1 0.1" />
         </body>
         <body name="body2">
-            <joint name="joint3" type="hinge" axis="0 0 1" solimp_friction="0.8 0.85 0.002 0.6 1.5" range="-90 90" />
+            <joint name="joint3" type="hinge" axis="0 0 1" solimpfriction="0.8 0.85 0.002 0.6 1.5" range="-90 90" />
             <geom type="sphere" size="0.05" />
         </body>
     </worldbody>

@@ -197,7 +197,6 @@ class SolverMuJoCo(SolverBase):
                 default=wp.types.vector(length=5, dtype=wp.float32)(0.9, 0.95, 0.001, 0.5, 2.0),
                 namespace="mujoco",
                 usd_attribute_name="mjc:solimpfriction",
-                mjcf_attribute_name="solimp_friction",
             )
         )
         builder.add_custom_attribute(
