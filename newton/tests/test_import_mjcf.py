@@ -896,19 +896,17 @@ class TestImportMjcf(unittest.TestCase):
         # Verify hide_visuals=True doesn't crash
         self.assertGreater(builder_hidden.shape_count, 0, "Should still load collision shapes")
 
-    def test_mjcf_gravcomp(self):
-        """Test parsing of gravcomp from MJCF"""
+    def test_mjcf_friction_parsing(self):
+        """Test MJCF friction parsing with 1, 2, and 3 element vectors."""
         mjcf_content = """
         <mujoco>
             <worldbody>
-                <body name="body1" gravcomp="0.5">
-                    <geom type="sphere" size="0.1" />
-                </body>
-                <body name="body2" gravcomp="1.0">
-                    <geom type="sphere" size="0.1" />
-                </body>
-                <body name="body3">
-                    <geom type="sphere" size="0.1" />
+                <body name="test_body">
+                    <geom name="geom1" type="box" size="0.1 0.1 0.1" friction="0.5 0.1 0.01"/>
+                    <geom name="geom2" type="sphere" size="0.1" friction="0.8 0.2 0.05"/>
+                    <geom name="geom3" type="capsule" size="0.1 0.2" friction="0.0 0.0 0.0"/>
+                    <geom name="geom4" type="box" size="0.1 0.1 0.1" friction="1.0"/>
+                    <geom name="geom5" type="sphere" size="0.1" friction="0.6 0.15"/>
                 </body>
             </worldbody>
         </mujoco>
@@ -944,17 +942,19 @@ class TestImportMjcf(unittest.TestCase):
         self.assertAlmostEqual(builder.shape_material_torsional_friction[4], 0.15, places=5)
         self.assertAlmostEqual(builder.shape_material_rolling_friction[4], 0.0005, places=5)
 
-    def test_mjcf_friction_parsing(self):
-        """Test MJCF friction parsing with 1, 2, and 3 element vectors."""
+    def test_mjcf_gravcomp(self):
+        """Test parsing of gravcomp from MJCF"""
         mjcf_content = """
         <mujoco>
             <worldbody>
-                <body name="test_body">
-                    <geom name="geom1" type="box" size="0.1 0.1 0.1" friction="0.5 0.1 0.01"/>
-                    <geom name="geom2" type="sphere" size="0.1" friction="0.8 0.2 0.05"/>
-                    <geom name="geom3" type="capsule" size="0.1 0.2" friction="0.0 0.0 0.0"/>
-                    <geom name="geom4" type="box" size="0.1 0.1 0.1" friction="1.0"/>
-                    <geom name="geom5" type="sphere" size="0.1" friction="0.6 0.15"/>
+                <body name="body1" gravcomp="0.5">
+                    <geom type="sphere" size="0.1" />
+                </body>
+                <body name="body2" gravcomp="1.0">
+                    <geom type="sphere" size="0.1" />
+                </body>
+                <body name="body3">
+                    <geom type="sphere" size="0.1" />
                 </body>
             </worldbody>
         </mujoco>
