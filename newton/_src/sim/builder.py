@@ -4917,6 +4917,7 @@ class ModelBuilder:
         Args:
             device: The simulation device to use (e.g., 'cpu', 'cuda'). If None, uses the current Warp device.
             requires_grad: If True, enables gradient computation for the model (for differentiable simulation).
+            verbose: If True, emit warnings for inertia corrections and other diagnostic messages. Defaults to `wp.config.verbose`.
 
         Returns:
             Model: A fully constructed Model object containing all simulation data on the specified device.
