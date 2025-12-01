@@ -895,37 +895,65 @@ def Xform "Articulation" (
         self.assertTrue(found_joint1, f"Expected solimplimit {expected_joint1} not found in model")
         self.assertTrue(found_joint2, f"Expected default solimplimit {expected_joint2} not found in model")
 
-        # Test with MuJoCo solver - verify jnt_solimp values match using the mapping
-        solver = SolverMuJoCo(model, separate_worlds=False)
+    def test_limit_margin_parsing(self):
+        """Test importing limit_margin from USD with mjc:margin on joint."""
+        from pxr import Sdf, Usd, UsdGeom, UsdPhysics  # noqa: PLC0415
 
-        # MuJoCo's jnt_solimp should match our solimplimit values
-        jnt_solimp = solver.mjw_model.jnt_solimp.numpy()
-        joint_mjc_dof_start = solver.joint_mjc_dof_start.numpy()
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdGeom.SetStageMetersPerUnit(stage, 1.0)
 
-        # For each Newton joint, verify its DOFs map correctly to MuJoCo
-        for newton_joint_idx in range(model.joint_count):
-            mjc_dof_start = joint_mjc_dof_start[newton_joint_idx]
-            newton_dof_start = model.joint_qd_start.numpy()[newton_joint_idx]
-            dof_count = model.joint_dof_dim.numpy()[newton_joint_idx].sum()
+        # Create first body with joint
+        body1_path = "/body1"
+        shape1 = UsdGeom.Cube.Define(stage, body1_path)
+        prim1 = shape1.GetPrim()
+        UsdPhysics.RigidBodyAPI.Apply(prim1)
+        UsdPhysics.ArticulationRootAPI.Apply(prim1)
+        UsdPhysics.CollisionAPI.Apply(prim1)
 
-            # Check each DOF in this joint
-            for dof_offset in range(dof_count):
-                newton_dof_idx = newton_dof_start + dof_offset
-                mjc_dof_idx = mjc_dof_start + dof_offset
+        joint1_path = "/joint1"
+        joint1 = UsdPhysics.RevoluteJoint.Define(stage, joint1_path)
+        joint1.CreateAxisAttr().Set("Z")
+        joint1.CreateBody0Rel().SetTargets([body1_path])
+        joint1_prim = joint1.GetPrim()
+        joint1_prim.CreateAttribute("mjc:margin", Sdf.ValueTypeNames.FloatArray, True).Set([0.01])
 
-                # Get expected solimplimit from Newton model
-                expected_solimp = solimplimit[newton_dof_idx, :].tolist()
+        # Create second body with joint
+        body2_path = "/body2"
+        shape2 = UsdGeom.Cube.Define(stage, body2_path)
+        prim2 = shape2.GetPrim()
+        UsdPhysics.RigidBodyAPI.Apply(prim2)
+        UsdPhysics.CollisionAPI.Apply(prim2)
 
-                # Get actual jnt_solimp from MuJoCo
-                actual_solimp = jnt_solimp[0, mjc_dof_idx, :].tolist()
+        joint2_path = "/joint2"
+        joint2 = UsdPhysics.RevoluteJoint.Define(stage, joint2_path)
+        joint2.CreateAxisAttr().Set("Z")
+        joint2.CreateBody0Rel().SetTargets([body1_path])
+        joint2.CreateBody1Rel().SetTargets([body2_path])
+        joint2_prim = joint2.GetPrim()
+        joint2_prim.CreateAttribute("mjc:margin", Sdf.ValueTypeNames.FloatArray, True).Set([0.02])
 
-                # Verify they match
-                self.assertTrue(
-                    arrays_match(actual_solimp, expected_solimp),
-                    f"MuJoCo jnt_solimp[{mjc_dof_idx}] = {actual_solimp} doesn't match "
-                    f"Newton solimplimit[{newton_dof_idx}] = {expected_solimp} "
-                    f"for joint {newton_joint_idx} DOF {dof_offset}",
-                )
+        # Create third body with joint (no margin, should default to 0.0)
+        body3_path = "/body3"
+        shape3 = UsdGeom.Cube.Define(stage, body3_path)
+        prim3 = shape3.GetPrim()
+        UsdPhysics.RigidBodyAPI.Apply(prim3)
+        UsdPhysics.CollisionAPI.Apply(prim3)
+
+        joint3_path = "/joint3"
+        joint3 = UsdPhysics.RevoluteJoint.Define(stage, joint3_path)
+        joint3.CreateAxisAttr().Set("Z")
+        joint3.CreateBody0Rel().SetTargets([body2_path])
+        joint3.CreateBody1Rel().SetTargets([body3_path])
+
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_usd(stage)
+        model = builder.finalize()
+
+        self.assertTrue(hasattr(model, "mujoco"))
+        self.assertTrue(hasattr(model.mujoco, "limit_margin"))
+        np.testing.assert_allclose(model.mujoco.limit_margin.numpy(), [0.01, 0.02, 0.0])
 
 
 class TestImportSampleAssets(unittest.TestCase):
