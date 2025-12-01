@@ -710,7 +710,7 @@ class SolverMuJoCo(SolverBase):
                         is_parent_child = True
                         parent_static = not is_body_dynamic(b2)
 
-                    if is_parent_child and parent_static:
+                    if is_parent_child and not parent_static:
                         continue
 
                 body_exclude_pairs.append((b1, b2))
