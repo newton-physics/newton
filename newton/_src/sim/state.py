@@ -74,6 +74,42 @@ class State:
             if self.body_count:
                 self.body_f.zero_()
 
+    def assign(self, other: State) -> None:
+        """
+        Copies the contents of another State object into this one.
+
+        Args:
+            other: The source State object to copy from.
+
+        Raises:
+            ValueError: If the states have mismatched attributes (one has an array where the other is None).
+        """
+        attributes = (
+            "particle_q",
+            "particle_qd",
+            "particle_f",
+            "body_q",
+            "body_qd",
+            "body_f",
+            "joint_q",
+            "joint_qd",
+        )
+
+        for attr in attributes:
+            val_self = getattr(self, attr)
+            val_other = getattr(other, attr)
+
+            if val_self is None and val_other is None:
+                continue
+
+            if val_self is None:
+                raise ValueError(f"State is missing array for '{attr}' which is present in the other state.")
+
+            if val_other is None:
+                raise ValueError(f"Other state is missing array for '{attr}' which is present in this state.")
+
+            val_self.assign(val_other)
+
     @property
     def requires_grad(self) -> bool:
         """Indicates whether the state arrays have gradient computation enabled."""
