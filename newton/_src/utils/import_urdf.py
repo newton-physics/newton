@@ -465,10 +465,11 @@ def parse_urdf(
                 "base_joint must be a comma-separated string of joint axes or a dict with joint parameters"
             )
     elif floating:
-        joint_indices.append(builder.add_joint_free(root, key="floating_base"))
+        floating_joint_id = builder.add_joint_free(root, key="floating_base")
+        joint_indices.append(floating_joint_id)
 
-        # set dofs to transform
-        start = builder.joint_q_start[root]
+        # set dofs to transform for the floating base joint
+        start = builder.joint_q_start[floating_joint_id]
 
         builder.joint_q[start + 0] = xform.p[0]
         builder.joint_q[start + 1] = xform.p[1]
