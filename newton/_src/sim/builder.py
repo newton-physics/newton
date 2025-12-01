@@ -494,6 +494,8 @@ class ModelBuilder:
         # filtering to ignore certain collision pairs
         self.shape_collision_filter_pairs: list[tuple[int, int]] = []
 
+        self._requested_state_attributes: set[str] = set()
+
         # springs
         self.spring_indices = []
         self.spring_rest_length = []
@@ -1383,6 +1385,8 @@ class ModelBuilder:
         # Save the previous world
         prev_world = self.current_world
         self.current_world = group_idx
+
+        self._requested_state_attributes.update(builder._requested_state_attributes)
 
         # explicitly resolve the transform multiplication function to avoid
         # repeatedly resolving builtin overloads during shape transformation
@@ -4857,6 +4861,15 @@ class ModelBuilder:
             if self.body_mass[body_id] > 0:
                 self.add_joint_free(child=body_id)
 
+    def request_state_attributes(self, *attributes: str) -> None:
+        """
+        Request that specific state attributes be allocated when creating a State object from the finalized Model.
+
+        Args:
+            *attributes: Variable number of attribute names (strings).
+        """
+        self._requested_state_attributes.update(attributes)
+
     def set_coloring(self, particle_color_groups):
         """
         Sets coloring information with user-provided coloring.
@@ -4950,6 +4963,7 @@ class ModelBuilder:
             # construct Model (non-time varying) data
 
             m = Model(device)
+            m.request_state_attributes(*self._requested_state_attributes)
             m.requires_grad = requires_grad
 
             m.num_worlds = self.num_worlds

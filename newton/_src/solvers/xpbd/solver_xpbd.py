@@ -100,6 +100,12 @@ class SolverXPBD(SolverBase):
         self._particle_delta_counter = 0
         self._body_delta_counter = 0
 
+        if model.body_count > 0:
+            model.request_state_attributes("body_q", "body_qd", "body_f")
+
+        if model.particle_count > 0:
+            model.request_state_attributes("particle_q", "particle_qd", "particle_f")
+
     def apply_particle_deltas(
         self,
         model: Model,
