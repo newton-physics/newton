@@ -87,8 +87,8 @@ class State:
         attributes = set(self.__dict__).union(other.__dict__)
 
         for attr in attributes:
-            val_self = getattr(self, attr)
-            val_other = getattr(other, attr)
+            val_self = getattr(self, attr, None)
+            val_other = getattr(other, attr, None)
 
             if val_self is None and val_other is None:
                 continue
