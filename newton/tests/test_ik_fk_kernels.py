@@ -46,20 +46,18 @@ class _NoopObjective(ik.IKObjective):
     def residual_dim(self):
         return 1
 
-    def compute_residuals(self, state, model, residuals, start_idx):
-        # write a single zero residual per world so nothing influences FK
-        world = 0  # only 1 world used here
-        residuals[world, start_idx] = 0.0
+    def compute_residuals(self, body_q, joint_q, model, residuals, start_idx, problem_idx):
+        return
 
-    def compute_jacobian_autodiff(self, tape, model, jacobian, start_idx):
-        pass
+    def compute_jacobian_autodiff(self, tape, model, jacobian, start_idx, dq_dof):
+        return
 
     # keep analytic path trivial too
     def supports_analytic(self):
         return True
 
-    def compute_jacobian_analytic(self, state, model, jacobian, joint_S_s, start_idx):
-        pass
+    def compute_jacobian_analytic(self, body_q, joint_q, model, jacobian, joint_S_s, start_idx):
+        return
 
 
 # -----------------------------------------------------------------------------
@@ -223,8 +221,13 @@ def _fk_parity_for_joint(test, device, jt):
 
         # two-pass FK (via IKSolver helper)
         joint_q = model.joint_q.reshape((1, model.joint_coord_count))
-        ik_solver = ik.IKSolver(model, joint_q, objectives=[_NoopObjective()], jacobian_mode=ik.IKJacobianMode.AUTODIFF)
-        ik_solver._fk_two_pass(model, ik_solver.joint_q, ik_solver.body_q, ik_solver.X_local, ik_solver.n_problems)
+        ik_solver = ik.IKSolver(
+            model,
+            1,
+            objectives=[_NoopObjective()],
+            jacobian_mode=ik.IKJacobianMode.AUTODIFF,
+        )
+        ik_solver._fk_two_pass(model, joint_q, ik_solver.body_q, ik_solver.X_local, ik_solver.n_problems)
 
         assert_np_equal(state_ref.body_q.numpy(), ik_solver.body_q.numpy(), tol=1e-6)
 

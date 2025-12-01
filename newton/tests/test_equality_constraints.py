@@ -170,6 +170,44 @@ class TestEqualityConstraints(unittest.TestCase):
         print(f"Test passed: MuJoCo model has {solver.mj_model.neq} equality constraints (expected 2)")
         print(f"Newton model has {model.equality_constraint_count} total constraints across {num_worlds} worlds")
 
+        # Verify that indices are correctly remapped for each world
+        # Each world adds 3 bodies, so body indices should be offset by 3 * world_index
+        # The first world's base body should be at index 0, second at 3, third at 6
+        eq_body1 = model.equality_constraint_body1.numpy()
+        eq_body2 = model.equality_constraint_body2.numpy()
+        eq_joint1 = model.equality_constraint_joint1.numpy()
+        eq_joint2 = model.equality_constraint_joint2.numpy()
+
+        for world_idx in range(num_worlds):
+            # Each world has 2 constraints
+            constraint_idx = world_idx * 2
+
+            # For connect constraint: body1 should be base (offset by 3 * world_idx)
+            # body2 should be link2 (offset by 3 * world_idx + 2)
+            expected_body1 = world_idx * 3 + 0  # base body
+            expected_body2 = world_idx * 3 + 2  # link2 body
+            self.assertEqual(
+                eq_body1[constraint_idx], expected_body1, f"World {world_idx} connect constraint body1 index incorrect"
+            )
+            self.assertEqual(
+                eq_body2[constraint_idx], expected_body2, f"World {world_idx} connect constraint body2 index incorrect"
+            )
+
+            # For joint constraint: joint1 and joint2 should be offset by 3 * world_idx
+            # (each robot has 3 joints: fixed, revolute1, revolute2)
+            expected_joint1 = world_idx * 3 + 1  # joint1 (base to link1)
+            expected_joint2 = world_idx * 3 + 2  # joint2 (link1 to link2)
+            self.assertEqual(
+                eq_joint1[constraint_idx + 1],
+                expected_joint1,
+                f"World {world_idx} joint constraint joint1 index incorrect",
+            )
+            self.assertEqual(
+                eq_joint2[constraint_idx + 1],
+                expected_joint2,
+                f"World {world_idx} joint constraint joint2 index incorrect",
+            )
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

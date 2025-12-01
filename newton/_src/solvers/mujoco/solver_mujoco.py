@@ -188,6 +188,18 @@ class SolverMuJoCo(SolverBase):
                 usd_attribute_name="mjc:solimplimit",
             )
         )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="gravcomp",
+                frequency=ModelAttributeFrequency.BODY,
+                assignment=ModelAttributeAssignment.MODEL,
+                dtype=wp.float32,
+                default=0.0,
+                namespace="mujoco",
+                usd_attribute_name="mjc:gravcomp",
+                mjcf_attribute_name="gravcomp",
+            )
+        )
 
     def __init__(
         self,
@@ -1001,6 +1013,7 @@ class SolverMuJoCo(SolverBase):
             GeoType.CAPSULE: mujoco.mjtGeom.mjGEOM_CAPSULE,
             GeoType.CYLINDER: mujoco.mjtGeom.mjGEOM_CYLINDER,
             GeoType.BOX: mujoco.mjtGeom.mjGEOM_BOX,
+            GeoType.ELLIPSOID: mujoco.mjtGeom.mjGEOM_ELLIPSOID,
             GeoType.MESH: mujoco.mjtGeom.mjGEOM_MESH,
             GeoType.CONVEX_MESH: mujoco.mjtGeom.mjGEOM_MESH,
         }
@@ -1635,7 +1648,7 @@ class SolverMuJoCo(SolverBase):
             # "body_subtreemass",
             "body_inertia",
             # "body_invweight0",
-            # "body_gravcomp",
+            "body_gravcomp",
             "jnt_solref",
             "jnt_solimp",
             "jnt_pos",
@@ -1731,17 +1744,26 @@ class SolverMuJoCo(SolverBase):
 
         bodies_per_world = self.model.body_count // self.model.num_worlds
 
+        # Get gravcomp if available
+        mujoco_attrs = getattr(self.model, "mujoco", None)
+        gravcomp = getattr(mujoco_attrs, "gravcomp", None) if mujoco_attrs is not None else None
+
         wp.launch(
             update_body_mass_ipos_kernel,
             dim=self.model.body_count,
             inputs=[
                 self.model.body_com,
                 self.model.body_mass,
+                gravcomp,
                 bodies_per_world,
                 self.model.up_axis,
                 self.to_mjc_body_index,
             ],
-            outputs=[self.mjw_model.body_ipos, self.mjw_model.body_mass],
+            outputs=[
+                self.mjw_model.body_ipos,
+                self.mjw_model.body_mass,
+                self.mjw_model.body_gravcomp,
+            ],
             device=self.model.device,
         )
 
