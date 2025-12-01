@@ -1247,9 +1247,8 @@ def warmstart_body_body_contacts(
     contact_material_kd[i] = avg_kd
     contact_material_mu[i] = avg_mu
 
-    # Warm-start penalty: decay and clamp to [k_start_body_contact, avg_ke]
-    k_prev = contact_penalty_k[i]
-    k_new = wp.clamp(gamma * k_prev, k_start_body_contact, avg_ke)
+    # Reset contact penalty to k_start every frame because contact indices are not persistent across frames.
+    k_new = wp.min(k_start_body_contact, avg_ke)
     contact_penalty_k[i] = k_new
 
 
@@ -1298,9 +1297,8 @@ def warmstart_body_particle_contacts(
     body_particle_contact_material_kd[i] = avg_kd
     body_particle_contact_material_mu[i] = avg_mu
 
-    # Warm-start penalty: decay and clamp to [k_start_body_contact, avg_ke]
-    k_prev = body_particle_contact_penalty_k[i]
-    k_new = wp.clamp(gamma * k_prev, k_start_body_contact, avg_ke)
+    # Reset contact penalty to k_start every frame because contact indices are not persistent across frames.
+    k_new = wp.min(k_start_body_contact, avg_ke)
     body_particle_contact_penalty_k[i] = k_new
 
 

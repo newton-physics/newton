@@ -126,7 +126,7 @@ class Example:
         self.frame_dt = 1.0 / self.fps
         self.sim_time = 0.0
         self.sim_substeps = 10
-        self.sim_iterations = 10
+        self.sim_iterations = 1
         self.sim_dt = self.frame_dt / self.sim_substeps
 
         self.viewer = viewer
