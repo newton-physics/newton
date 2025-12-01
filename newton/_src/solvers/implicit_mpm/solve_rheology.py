@@ -29,9 +29,12 @@ __SLIDING_NEWTON_TOL = wp.constant(1.0e-12)
 """Tolerance for the Newton method to solve for the sliding velocity"""
 
 vec6 = wp.types.vector(length=6, dtype=wp.float32)
+
 mat66 = wp.types.matrix(shape=(6, 6), dtype=wp.float32)
-mat63 = wp.types.matrix(shape=(6, 3), dtype=wp.float32)
-mat36 = wp.types.matrix(shape=(3, 6), dtype=wp.float32)
+mat55 = wp.types.matrix(shape=(5, 5), dtype=wp.float32)
+
+mat13 = wp.vec3
+mat31 = wp.vec3
 
 wp.set_module_options({"enable_backward": False})
 
@@ -71,23 +74,33 @@ def shear_yield_stress(yield_params: YieldParamVec, r_N: float):
     return s + wp.min(0.5 * yield_params[3], mu * wp.min(r_N - p_min, p_max - r_N))
 
 
+@wp.func
+def _B_op(b: wp.vec3, u: wp.vec3):
+    return fem.SymmetricTensorMapper.value_to_dof_3d(wp.outer(u, b)) * 2.0
+
+
+@wp.func
+def _B_transposed_op(b: wp.vec3, sig: vec6):
+    return wp.vec3(
+        wp.dot(_B_op(b, wp.vec3(1.0, 0.0, 0.0)), sig),
+        wp.dot(_B_op(b, wp.vec3(0.0, 1.0, 0.0)), sig),
+        wp.dot(_B_op(b, wp.vec3(0.0, 0.0, 1.0)), sig),
+    )
+
+
 @wp.kernel
 def compute_delassus_diagonal(
     split_mass: wp.bool,
     strain_mat_offsets: wp.array(dtype=int),
     strain_mat_columns: wp.array(dtype=int),
-    strain_mat_values: wp.array(dtype=mat63),
+    strain_mat_values: wp.array(dtype=mat13),
     inv_volume: wp.array(dtype=float),
-    compliance_mat_diagonal: wp.array(dtype=mat66),
+    compliance_mat_offsets: wp.array(dtype=int),
+    compliance_mat_columns: wp.array(dtype=int),
+    compliance_mat_values: wp.array(dtype=mat66),
     transposed_strain_mat_offsets: wp.array(dtype=int),
-    strain_rhs: wp.array(dtype=vec6),
-    stress: wp.array(dtype=vec6),
-    delassus_rotation: wp.array(dtype=mat66),
+    delassus_rotation: wp.array(dtype=mat55),
     delassus_diagonal: wp.array(dtype=vec6),
-    delassus_normal: wp.array(dtype=vec6),
-    local_strain_mat_values: wp.array(dtype=mat63),
-    local_strain_rhs: wp.array(dtype=vec6),
-    local_stress: wp.array(dtype=vec6),
 ):
     """
     Computes the diagonal blocks of the Delassus operator and performs
@@ -113,9 +126,11 @@ def compute_delassus_diagonal(
     block_beg = strain_mat_offsets[tau_i]
     block_end = strain_mat_offsets[tau_i + 1]
 
-    diag_block = mat66(0.0)
-    if compliance_mat_diagonal:
-        diag_block = compliance_mat_diagonal[tau_i]
+    compliance_diag_index = sp.bsr_block_index(tau_i, tau_i, compliance_mat_offsets, compliance_mat_columns)
+    if compliance_diag_index == -1:
+        diag_block = mat66(0.0)
+    else:
+        diag_block = compliance_mat_values[compliance_diag_index]
 
     mass_ratio = float(1.0)
     for b in range(block_beg, block_end):
@@ -127,12 +142,18 @@ def compute_delassus_diagonal(
         b_val = strain_mat_values[b]
         inv_frac = inv_volume[u_i] * mass_ratio
 
-        diag_block += (b_val * inv_frac) @ wp.transpose(b_val)
+        b_v0 = _B_op(b_val, wp.vec3(1.0, 0.0, 0.0))
+        diag_block += inv_frac * wp.outer(b_v0, b_v0)
+        b_v1 = _B_op(b_val, wp.vec3(0.0, 1.0, 0.0))
+        diag_block += inv_frac * wp.outer(b_v1, b_v1)
+        b_v2 = _B_op(b_val, wp.vec3(0.0, 0.0, 1.0))
+        diag_block += inv_frac * wp.outer(b_v2, b_v2)
 
     diag_block += _DELASSUS_PROXIMAL_REG * wp.identity(n=6, dtype=float)
 
     # Remove shear-divergence coupling
     # (current implementation of solve_coulomb_aniso normal and tangential responses are independent)
+    # Ensures that only the tangential part is rotated
     for k in range(1, 6):
         diag_block[0, k] = 0.0
         diag_block[k, 0] = 0.0
@@ -147,17 +168,7 @@ def compute_delassus_diagonal(
         ev = wp.identity(n=6, dtype=float)
 
     delassus_diagonal[tau_i] = diag
-    delassus_rotation[tau_i] = wp.transpose(ev)
-
-    # Apply rotation to contact data
-    nor = ev * vec6(1.0, 0.0, 0.0, 0.0, 0.0, 0.0)
-    delassus_normal[tau_i] = nor
-
-    local_strain_rhs[tau_i] = ev * strain_rhs[tau_i]
-    local_stress[tau_i] = wp.cw_mul(ev * stress[tau_i], diag)
-
-    for b in range(block_beg, block_end):
-        local_strain_mat_values[b] = ev * strain_mat_values[b]
+    delassus_rotation[tau_i] = wp.transpose(ev[1:6, 1:6])
 
 
 @wp.kernel
@@ -181,77 +192,20 @@ def project_initial_stress(
     # if p_min < 0.0:
     #     sig = vec6(0.0)
 
-    nor = vec6(1.0, 0.0, 0.0, 0.0, 0.0, 0.0)
-    stress[tau_i] = project_stress(sig, nor, yield_params)
-
-
-@wp.kernel
-def rotate_and_scale_compliance_mat(
-    compliance_mat_offsets: wp.array(dtype=int),
-    compliance_mat_columns: wp.array(dtype=int),
-    compliance_mat_values: wp.array(dtype=mat66),
-    delassus_rotation: wp.array(dtype=mat66),
-    delassus_diagonal: wp.array(dtype=vec6),
-):
-    """Rotate and scale the compliance matrix according to the local basis."""
-
-    sig_i = wp.tid()
-    block_beg = compliance_mat_offsets[sig_i]
-    block_end = compliance_mat_offsets[sig_i + 1]
-
-    for b in range(block_beg, block_end):
-        tau_i = compliance_mat_columns[b]
-
-        compliance_mat_values[b] = (
-            wp.transpose(delassus_rotation[sig_i])
-            @ compliance_mat_values[b]
-            @ delassus_rotation[tau_i]
-            @ wp.diag(1.0 / delassus_diagonal[tau_i])
-        )
-
-
-@wp.kernel
-def rotate_and_scale_transposed_strain_mat(
-    tr_strain_mat_offsets: wp.array(dtype=int),
-    tr_strain_mat_columns: wp.array(dtype=int),
-    tr_strain_mat_values: wp.array(dtype=mat36),
-    inv_volume: wp.array(dtype=float),
-    delassus_rotation: wp.array(dtype=mat66),
-    delassus_diagonal: wp.array(dtype=vec6),
-):
-    """
-    Rotate and scale the transposed strain matrix according to the local basis.
-    (Jacobi solver only)
-    """
-
-    u_i = wp.tid()
-    block_beg = tr_strain_mat_offsets[u_i]
-    block_end = tr_strain_mat_offsets[u_i + 1]
-
-    for b in range(block_beg, block_end):
-        tau_i = tr_strain_mat_columns[b]
-
-        tr_strain_mat_values[b] = (
-            inv_volume[u_i]
-            * tr_strain_mat_values[b]
-            @ delassus_rotation[tau_i]
-            @ wp.diag(1.0 / delassus_diagonal[tau_i])
-        )
+    stress[tau_i] = project_stress(sig, yield_params)
 
 
 @wp.kernel
 def postprocess_stress_and_strain(
-    delassus_rotation: wp.array(dtype=mat66),
-    delassus_diagonal: wp.array(dtype=vec6),
     compliance_mat_offsets: wp.array(dtype=int),
     compliance_mat_columns: wp.array(dtype=int),
-    local_compliance_mat_values: wp.array(dtype=mat66),
+    compliance_mat_values: wp.array(dtype=mat66),
     strain_mat_offsets: wp.array(dtype=int),
     strain_mat_columns: wp.array(dtype=int),
-    local_strain_mat_values: wp.array(dtype=mat63),
-    local_stress: wp.array(dtype=vec6),
-    velocity: wp.array(dtype=wp.vec3),
+    strain_mat_values: wp.array(dtype=mat13),
+    strain_rhs: wp.array(dtype=vec6),
     stress: wp.array(dtype=vec6),
+    velocity: wp.array(dtype=wp.vec3),
     elastic_strain: wp.array(dtype=vec6),
     plastic_strain: wp.array(dtype=vec6),
 ):
@@ -260,28 +214,23 @@ def postprocess_stress_and_strain(
     elastic and plastic strain deltas after the solver iterations.
     """
     tau_i = wp.tid()
-    rot = delassus_rotation[tau_i]
-    diag = delassus_diagonal[tau_i]
 
-    loc_stress = local_stress[tau_i]
-
-    loc_strain = elastic_strain[tau_i]
+    minus_elastic_strain = strain_rhs[tau_i]
     comp_block_beg = compliance_mat_offsets[tau_i]
     comp_block_end = compliance_mat_offsets[tau_i + 1]
     for b in range(comp_block_beg, comp_block_end):
         sig_i = compliance_mat_columns[b]
-        loc_strain += local_compliance_mat_values[b] * local_stress[sig_i]
+        minus_elastic_strain += compliance_mat_values[b] * stress[sig_i]
 
-    loc_plastic_strain = loc_strain
+    world_plastic_strain = minus_elastic_strain
     block_beg = strain_mat_offsets[tau_i]
     block_end = strain_mat_offsets[tau_i + 1]
     for b in range(block_beg, block_end):
         u_i = strain_mat_columns[b]
-        loc_plastic_strain += local_strain_mat_values[b] * velocity[u_i]
+        world_plastic_strain += _B_op(strain_mat_values[b], velocity[u_i])
 
-    stress[tau_i] = rot * wp.cw_div(loc_stress, diag)
-    elastic_strain[tau_i] = (-rot * loc_strain)
-    plastic_strain[tau_i] = (rot * loc_plastic_strain)
+    elastic_strain[tau_i] = -minus_elastic_strain
+    plastic_strain[tau_i] = world_plastic_strain
 
 
 @wp.func
@@ -344,7 +293,6 @@ def solve_sliding_aniso(D: vec6, b_T: vec6, yield_stress: float):
 def solve_flow_rule_aniso(
     D: vec6,
     b: vec6,
-    nor: vec6,
     off: float,
     yield_params: YieldParamVec,
 ):
@@ -358,42 +306,39 @@ def solve_flow_rule_aniso(
     u_T in NC(|r_T| <= alpha s(r_N))
     """
 
-    # Note: this assumes that D.nor = lambda nor
-    # i.e. nor should be along one canonical axis
-    # (solve_sliding aniso would get a lot more complex otherwise as normal and tangential
-    # responses become interlinked)
-
-    b_N = wp.dot(b, nor)
-
     r_0 = -wp.cw_div(b, D)
-    r_N0 = wp.dot(r_0, nor)
+    r_N0 = r_0[0]
     r_N_min, r_N_max = normal_yield_bounds(yield_params)
 
     r_N = wp.clamp(r_N0, r_N_min, 0.0) + wp.clamp(r_N0 - off / D[0], 0.0, r_N_max)
 
-    u_N = r_N * wp.cw_mul(nor, D) + b_N * nor
+    # u_N = r_N * D[0] + b_N
+    u = vec6(0.0)
+    u[0] = r_N * D[0] + b[0]
 
     # Static friction, zero shear
     mu_rn = shear_yield_stress(yield_params, r_N)
-    r_T = r_0 - r_N0 * nor
-    if wp.length_sq(r_T) <= mu_rn * mu_rn:
-        return u_N
+    r_T = r_0
+    r_T[0] = 0.0
 
-    # Sliding case
-    b_T = b - b_N * nor
-    return u_N + solve_sliding_aniso(D, b_T, mu_rn)
+    if wp.length_sq(r_T) > mu_rn * mu_rn:
+        # Sliding case
+        b[0] = 0.0
+        u += solve_sliding_aniso(D, b, mu_rn)
+
+    return u
 
 
 @wp.func
 def project_stress(
     r: vec6,
-    nor: vec6,
     yield_params: YieldParamVec,
 ):
     """Projects a stress vector onto the yield surface."""
 
-    r_N = wp.dot(r, nor)
-    r_T = r - r_N * nor
+    r_N = r[0]
+    r_T = r
+    r_T[0] = 0.0
 
     r_N_min, r_N_max = normal_yield_bounds(yield_params)
     r_N = wp.clamp(r_N, r_N_min, r_N_max)
@@ -403,7 +348,9 @@ def project_stress(
     if r_T_n2 > mu_rn * mu_rn:
         r_T *= mu_rn / wp.sqrt(r_T_n2)
 
-    return r_N * nor + r_T
+    r = r_T
+    r[0] = r_N
+    return r
 
 
 @wp.func
@@ -411,10 +358,10 @@ def compute_local_strain(
     tau_i: int,
     compliance_mat_offsets: wp.array(dtype=int),
     compliance_mat_columns: wp.array(dtype=int),
-    local_compliance_mat_values: wp.array(dtype=mat66),
+    compliance_mat_values: wp.array(dtype=mat66),
     strain_mat_offsets: wp.array(dtype=int),
     strain_mat_columns: wp.array(dtype=int),
-    local_strain_mat_values: wp.array(dtype=mat63),
+    strain_mat_values: wp.array(dtype=mat13),
     local_strain_rhs: wp.array(dtype=vec6),
     velocities: wp.array(dtype=wp.vec3),
     local_stress: wp.array(dtype=vec6),
@@ -427,42 +374,64 @@ def compute_local_strain(
     block_end = strain_mat_offsets[tau_i + 1]
     for b in range(block_beg, block_end):
         u_i = strain_mat_columns[b]
-        tau += local_strain_mat_values[b] * velocities[u_i]
+        tau += _B_op(strain_mat_values[b], velocities[u_i])
 
     # tau += C sigma
     comp_block_beg = compliance_mat_offsets[tau_i]
     comp_block_end = compliance_mat_offsets[tau_i + 1]
     for b in range(comp_block_beg, comp_block_end):
         sig_i = compliance_mat_columns[b]
-        tau += local_compliance_mat_values[b] * local_stress[sig_i]
+        tau += compliance_mat_values[b] @ local_stress[sig_i]
 
     return tau
 
 
 @wp.func
+def _world_to_local(
+    world_vec: vec6,
+    rotation: mat55,
+):
+    local_vec = vec6(world_vec[0])
+    local_vec[1:6] = world_vec[1:6] @ rotation
+    return local_vec
+
+
+@wp.func
+def _local_to_world(
+    local_vec: vec6,
+    rotation: mat55,
+):
+    world_vec = vec6(local_vec[0])
+    world_vec[1:6] = rotation @ local_vec[1:6]
+    return world_vec
+
+
+@wp.func
 def solve_local_stress(
     tau_i: int,
-    D: vec6,
-    local_strain: vec6,
+    strain_rhs: vec6,
     yield_params: wp.array(dtype=YieldParamVec),
-    delassus_normal: wp.array(dtype=vec6),
+    delassus_diagonal: wp.array(dtype=vec6),
+    delassus_rotation: wp.array(dtype=mat55),
     unilateral_strain_offset: wp.array(dtype=float),
-    local_stress: wp.array(dtype=vec6),
+    cur_stress: wp.array(dtype=vec6),
 ):
     """Computes the stress delta required to satisfy the local flow rule."""
 
-    nor = delassus_normal[tau_i]
-    cur_stress = local_stress[tau_i]
+    rot = delassus_rotation[tau_i]
+    local_strain = _world_to_local(strain_rhs, rot)
+
+    D = delassus_diagonal[tau_i]
+    local_stress = wp.cw_mul(_world_to_local(cur_stress[tau_i], rot), D)
 
     tau_new = solve_flow_rule_aniso(
         D,
-        local_strain - cur_stress,
-        nor,
+        local_strain - local_stress,
         unilateral_strain_offset[tau_i],
         yield_params[tau_i],
     )
 
-    return tau_new - local_strain
+    return _local_to_world(wp.cw_div(tau_new - local_strain, D), rot)
 
 
 @wp.kernel
@@ -473,9 +442,9 @@ def solve_local_stress_jacobi(
     local_compliance_mat_values: wp.array(dtype=mat66),
     strain_mat_offsets: wp.array(dtype=int),
     strain_mat_columns: wp.array(dtype=int),
-    local_strain_mat_values: wp.array(dtype=mat63),
+    strain_mat_values: wp.array(dtype=mat13),
     delassus_diagonal: wp.array(dtype=vec6),
-    delassus_normal: wp.array(dtype=vec6),
+    delassus_rotation: wp.array(dtype=mat55),
     local_strain_rhs: wp.array(dtype=vec6),
     unilateral_strain_offset: wp.array(dtype=float),
     velocities: wp.array(dtype=wp.vec3),
@@ -486,7 +455,6 @@ def solve_local_stress_jacobi(
     Solves the local stress problem for each constraint in a Jacobi-like manner.
     """
     tau_i = wp.tid()
-    D = delassus_diagonal[tau_i]
 
     local_strain = compute_local_strain(
         tau_i,
@@ -495,7 +463,7 @@ def solve_local_stress_jacobi(
         local_compliance_mat_values,
         strain_mat_offsets,
         strain_mat_columns,
-        local_strain_mat_values,
+        strain_mat_values,
         local_strain_rhs,
         velocities,
         local_stress,
@@ -503,10 +471,10 @@ def solve_local_stress_jacobi(
 
     delta_correction[tau_i] = solve_local_stress(
         tau_i,
-        D,
         local_strain,
         yield_params,
-        delassus_normal,
+        delassus_diagonal,
+        delassus_rotation,
         unilateral_strain_offset,
         local_stress,
     )
@@ -518,7 +486,7 @@ def apply_stress_delta(
     delta_stress: vec6,
     strain_mat_offsets: wp.array(dtype=int),
     strain_mat_columns: wp.array(dtype=int),
-    local_strain_mat_values: wp.array(dtype=mat63),
+    strain_mat_values: wp.array(dtype=mat13),
     inv_mass_matrix: wp.array(dtype=float),
     velocities: wp.array(dtype=wp.vec3),
 ):
@@ -529,8 +497,36 @@ def apply_stress_delta(
 
     for b in range(block_beg, block_end):
         u_i = strain_mat_columns[b]
-        delta_impulse = delta_stress @ local_strain_mat_values[b]
-        velocities[u_i] += inv_mass_matrix[u_i] * delta_impulse
+        strain_val = strain_mat_values[b]
+        delta_u = _B_transposed_op(strain_val, delta_stress)
+        velocities[u_i] += inv_mass_matrix[u_i] * delta_u
+
+
+@wp.kernel
+def apply_stress_delta_jacobi(
+    transposed_strain_mat_offsets: wp.array(dtype=int),
+    transposed_strain_mat_columns: wp.array(dtype=int),
+    transposed_strain_mat_values: wp.array(dtype=mat13),
+    inv_mass_matrix: wp.array(dtype=float),
+    stress: wp.array(dtype=vec6),
+    velocities: wp.array(dtype=wp.vec3),
+):
+    """Updates particle velocities from a local stress delta."""
+
+    u_i = wp.tid()
+
+    inv_mass = inv_mass_matrix[u_i]
+
+    block_beg = transposed_strain_mat_offsets[u_i]
+    block_end = transposed_strain_mat_offsets[u_i + 1]
+
+    delta_u = wp.vec3(0.0)
+    for b in range(block_beg, block_end):
+        tau_i = transposed_strain_mat_columns[b]
+        delta_stress = stress[tau_i]
+        delta_u += _B_transposed_op(transposed_strain_mat_values[b], delta_stress)
+
+    velocities[u_i] += inv_mass * delta_u
 
 
 @wp.kernel
@@ -542,10 +538,9 @@ def apply_stress_gs(
     color_indices: wp.array(dtype=int),
     strain_mat_offsets: wp.array(dtype=int),
     strain_mat_columns: wp.array(dtype=int),
-    local_strain_mat_values: wp.array(dtype=mat63),
-    delassus_diagonal: wp.array(dtype=vec6),
+    strain_mat_values: wp.array(dtype=mat13),
     inv_mass_matrix: wp.array(dtype=float),  # Note: Likely inv_volume in context
-    local_stress: wp.array(dtype=vec6),
+    stress: wp.array(dtype=vec6),
     velocities: wp.array(dtype=wp.vec3),
 ):
     """
@@ -562,15 +557,14 @@ def apply_stress_gs(
         beg = color_indices[color_offset]
         end = beg + color_nodes_per_element
         for tau_i in range(beg, end):
-            D = delassus_diagonal[tau_i]
-            cur_stress = local_stress[tau_i]
+            cur_stress = stress[tau_i]
 
             apply_stress_delta(
                 tau_i,
-                wp.cw_div(cur_stress, D),
+                cur_stress,
                 strain_mat_offsets,
                 strain_mat_columns,
-                local_strain_mat_values,
+                strain_mat_values,
                 inv_mass_matrix,
                 velocities,
             )
@@ -586,12 +580,12 @@ def solve_local_stress_gs(
     yield_params: wp.array(dtype=YieldParamVec),
     compliance_mat_offsets: wp.array(dtype=int),
     compliance_mat_columns: wp.array(dtype=int),
-    local_compliance_mat_values: wp.array(dtype=mat66),
+    compliance_mat_values: wp.array(dtype=mat66),
     strain_mat_offsets: wp.array(dtype=int),
     strain_mat_columns: wp.array(dtype=int),
-    local_strain_mat_values: wp.array(dtype=mat63),
+    strain_mat_values: wp.array(dtype=mat13),
     delassus_diagonal: wp.array(dtype=vec6),
-    delassus_normal: wp.array(dtype=vec6),
+    delassus_rotation: wp.array(dtype=mat55),
     inv_mass_matrix: wp.array(dtype=float),  # Note: Likely inv_volume in context
     local_strain_rhs: wp.array(dtype=vec6),
     unilateral_strain_offset: wp.array(dtype=float),
@@ -617,22 +611,21 @@ def solve_local_stress_gs(
                 tau_i,
                 compliance_mat_offsets,
                 compliance_mat_columns,
-                local_compliance_mat_values,
+                compliance_mat_values,
                 strain_mat_offsets,
                 strain_mat_columns,
-                local_strain_mat_values,
+                strain_mat_values,
                 local_strain_rhs,
                 velocities,
                 local_stress,
             )
 
-            D = delassus_diagonal[tau_i]
             delta_stress = solve_local_stress(
                 tau_i,
-                D,
                 local_strain,
                 yield_params,
-                delassus_normal,
+                delassus_diagonal,
+                delassus_rotation,
                 unilateral_strain_offset,
                 local_stress,
             )
@@ -642,10 +635,10 @@ def solve_local_stress_gs(
 
             apply_stress_delta(
                 tau_i,
-                wp.cw_div(delta_stress, D),
+                delta_stress,
                 strain_mat_offsets,
                 strain_mat_columns,
-                local_strain_mat_values,
+                strain_mat_values,
                 inv_mass_matrix,
                 velocities,
             )
@@ -1041,7 +1034,7 @@ def solve_rheology(
     rigidity_operator: tuple[sp.BsrMatrix, sp.BsrMatrix, sp.BsrMatrix] | None = None,
     temporary_store: fem.TemporaryStore | None = None,
     use_graph=True,
-    verbose=True#wp.config.verbose,
+    verbose=True,  # wp.config.verbose,
 ):
     """Solve coupled plasticity and collider contact to compute grid velocities.
 
@@ -1104,9 +1097,8 @@ def solve_rheology(
 
     delta_stress = _register_temp(fem.borrow_temporary_like(stress, temporary_store))
 
-    delassus_rotation = _register_temp(fem.borrow_temporary(temporary_store, shape=stress.shape, dtype=mat66))
+    delassus_rotation = _register_temp(fem.borrow_temporary(temporary_store, shape=stress.shape, dtype=mat55))
     delassus_diagonal = _register_temp(fem.borrow_temporary(temporary_store, shape=stress.shape, dtype=vec6))
-    delassus_normal = _register_temp(fem.borrow_temporary(temporary_store, shape=stress.shape, dtype=vec6))
 
     # If coloring is provided, use Gauss-Seidel, otherwise Jacobi with mass splitting
     color_count = 0 if color_offsets is None else len(color_offsets) - 1
@@ -1118,14 +1110,6 @@ def solve_rheology(
     if not gs:
         sp.bsr_set_transpose(dest=transposed_strain_mat, src=strain_mat)
 
-    if compliance_mat.nnz == 0:
-        compliance_mat_diagonal = None
-    else:
-        compliance_mat_diagonal = _register_temp(fem.borrow_temporary(temporary_store, shape=stress.shape, dtype=mat66))
-        # TODO: Remove .zero_() workaround once Newton uses warp_lang-1.12.0.dev20260113 or newer.
-        compliance_mat_diagonal.zero_()
-        sp.bsr_get_diag(compliance_mat, out=compliance_mat_diagonal)
-
     # Project initial stress on yield surface
     wp.launch(
         kernel=project_initial_stress,
@@ -1136,13 +1120,7 @@ def solve_rheology(
         ],
     )
 
-    # Compute and factorize diagonal blacks, rotate strain matrix to diagonal basis
-    # NOTE: we reuse the same memory for local versions of the variables
-    local_strain_mat_values = strain_mat.values
-    local_compliance_mat_values = compliance_mat.values
-    local_strain_rhs = strain_rhs
-    local_stress = stress
-
+    strain_mat_values = strain_mat.values.view(dtype=mat13)
     wp.launch(
         kernel=compute_delassus_diagonal,
         dim=stress.shape[0],
@@ -1150,35 +1128,18 @@ def solve_rheology(
             split_mass,
             strain_mat.offsets,
             strain_mat.columns,
-            strain_mat.values,
+            strain_mat_values,
             inv_volume,
-            compliance_mat_diagonal,
+            compliance_mat.offsets,
+            compliance_mat.columns,
+            compliance_mat.values,
             transposed_strain_mat.offsets,
-            strain_rhs,
-            stress,
         ],
         outputs=[
             delassus_rotation,
             delassus_diagonal,
-            delassus_normal,
-            local_strain_mat_values,
-            local_strain_rhs,
-            local_stress,
         ],
     )
-
-    if compliance_mat is not None:
-        wp.launch(
-            kernel=rotate_and_scale_compliance_mat,
-            dim=stress.shape[0],
-            inputs=[
-                compliance_mat.offsets,
-                compliance_mat.columns,
-                compliance_mat.values,
-                delassus_rotation,
-                delassus_diagonal,
-            ],
-        )
 
     if gs:
         device = velocity.device
@@ -1200,10 +1161,9 @@ def solve_rheology(
                 color_indices,
                 strain_mat.offsets,
                 strain_mat.columns,
-                local_strain_mat_values,
-                delassus_diagonal,
+                strain_mat_values,
                 inv_volume,
-                local_stress,
+                stress,
             ],
             outputs=[
                 velocity,
@@ -1231,19 +1191,19 @@ def solve_rheology(
                 yield_params,
                 compliance_mat.offsets,
                 compliance_mat.columns,
-                local_compliance_mat_values,
+                compliance_mat.values,
                 strain_mat.offsets,
                 strain_mat.columns,
-                strain_mat.values,
+                strain_mat_values,
                 delassus_diagonal,
-                delassus_normal,
+                delassus_rotation,
                 inv_volume,
                 strain_rhs,
                 unilateral_strain_offset,
             ],
             outputs=[
                 velocity,
-                local_stress,
+                stress,
                 delta_stress,
             ],
             block_dim=color_block_dim,
@@ -1252,22 +1212,25 @@ def solve_rheology(
         )
 
     else:
-        # Apply local scaling and rotations to transposed strain matrix
-        wp.launch(
-            kernel=rotate_and_scale_transposed_strain_mat,
-            dim=inv_volume.shape[0],
+        apply_stress_launch = wp.launch(
+            kernel=apply_stress_delta_jacobi,
+            dim=velocity.shape[0],
             inputs=[
                 transposed_strain_mat.offsets,
                 transposed_strain_mat.columns,
-                transposed_strain_mat.values,
+                transposed_strain_mat.values.view(dtype=mat13),
                 inv_volume,
-                delassus_rotation,
-                delassus_diagonal,
+                delta_stress,
             ],
+            outputs=[
+                velocity,
+            ],
+            record_cmd=True,
         )
 
         # Apply initial guess
-        sp.bsr_mv(A=transposed_strain_mat, x=stress, y=velocity, alpha=1.0, beta=1.0)
+        delta_stress.assign(stress)
+        apply_stress_launch.launch()
 
         # Solve kernel
         solve_local_launch = wp.launch(
@@ -1277,16 +1240,16 @@ def solve_rheology(
                 yield_params,
                 compliance_mat.offsets,
                 compliance_mat.columns,
-                local_compliance_mat_values,
+                compliance_mat.values,
                 strain_mat.offsets,
                 strain_mat.columns,
-                local_strain_mat_values,
+                strain_mat_values,
                 delassus_diagonal,
-                delassus_normal,
-                local_strain_rhs,
+                delassus_rotation,
+                strain_rhs,
                 unilateral_strain_offset,
                 velocity,
-                local_stress,
+                stress,
             ],
             outputs=[
                 delta_stress,
@@ -1431,14 +1394,8 @@ def solve_rheology(
         else:
             solve_local_launch.launch()
             # Add jacobi delta
-            sp.bsr_mv(
-                A=transposed_strain_mat,
-                x=delta_stress,
-                y=velocity,
-                alpha=1.0,
-                beta=1.0,
-            )
-            array_axpy(x=delta_stress, y=local_stress, alpha=1.0, beta=1.0)
+            apply_stress_launch.launch()
+            array_axpy(x=delta_stress, y=stress, alpha=1.0, beta=1.0)
 
     # Run solver loop
 
@@ -1514,24 +1471,21 @@ def solve_rheology(
     # Convert stress back to world space,
     # and compute final elastic strain
 
-    delta_stress.assign(local_stress)
     wp.launch(
         kernel=postprocess_stress_and_strain,
         dim=stress.shape[0],
         inputs=[
-            delassus_rotation,
-            delassus_diagonal,
             compliance_mat.offsets,
             compliance_mat.columns,
-            local_compliance_mat_values,
+            compliance_mat.values,
             strain_mat.offsets,
             strain_mat.columns,
-            local_strain_mat_values,
-            delta_stress,
+            strain_mat_values,
+            strain_rhs,
+            stress,
             velocity,
         ],
         outputs=[
-            stress,
             strain_rhs,
             plastic_strain_delta,
         ],

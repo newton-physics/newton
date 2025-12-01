@@ -69,6 +69,8 @@ vec6 = wp.types.vector(length=6, dtype=wp.float32)
 mat66 = wp.types.matrix(shape=(6, 6), dtype=wp.float32)
 mat63 = wp.types.matrix(shape=(6, 3), dtype=wp.float32)
 mat36 = wp.types.matrix(shape=(3, 6), dtype=wp.float32)
+mat13 = wp.types.matrix(shape=(1, 3), dtype=wp.float32)
+mat31 = wp.types.matrix(shape=(3, 1), dtype=wp.float32)
 
 
 @fem.integrand
@@ -403,7 +405,7 @@ def update_particle_strains(
 
     stress_0 = fem.SymmetricTensorMapper.value_to_dof_3d(stress(s))
     particle_stress[s.qp_index] = fem.SymmetricTensorMapper.dof_to_value_3d(
-        project_stress(stress_0, vec6(1.0, 0.0, 0.0, 0.0, 0.0, 0.0), yield_parameters_vec)
+        project_stress(stress_0, yield_parameters_vec)
     )
 
     strain_proj = project_particle_strain(
@@ -477,7 +479,7 @@ def strain_delta_form(
     domain: fem.Domain,
     inv_cell_volume: float,
 ):
-    return wp.ddot(fem.grad(u, s), tau(s)) * (dt * inv_cell_volume)
+    return wp.trace(fem.grad(u, s)) * tau(s) * (dt * inv_cell_volume)
 
 
 @wp.kernel
@@ -899,8 +901,8 @@ class ImplicitMPMScratchpad:
         self.strain_yield_parameters_field = None
         self.strain_yield_parameters_test = None
 
-        self.strain_matrix = wps.bsr_zeros(0, 0, mat63)
-        self.transposed_strain_matrix = wps.bsr_zeros(0, 0, mat36)
+        self.strain_matrix = wps.bsr_zeros(0, 0, mat13)
+        self.transposed_strain_matrix = wps.bsr_zeros(0, 0, mat31)
 
         self.compliance_matrix = wps.bsr_zeros(0, 0, mat66)
 
@@ -1767,7 +1769,7 @@ class SolverImplicitMPM(SolverBase):
         self.temporary_store = fem.TemporaryStore()
 
         self._use_cuda_graph = self.model.device.is_cuda and wp.is_conditional_graph_supported()
-        self._stress_warmstart = "grid"
+        self._stress_warmstart = "particles"
 
         self._enable_timers = False
         self._timers_use_nvtx = False
@@ -2618,7 +2620,7 @@ class SolverImplicitMPM(SolverBase):
                 quadrature=pic,
                 fields={
                     "u": scratch.velocity_trial,
-                    "tau": scratch.sym_strain_test,
+                    "tau": scratch.divergence_test,
                 },
                 values={
                     "dt": dt,
