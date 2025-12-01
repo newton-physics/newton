@@ -2888,6 +2888,133 @@ class TestMuJoCoAttributes(unittest.TestCase):
         assert np.allclose(model.mujoco.limit_margin.numpy(), [0.05, 0.10])
         assert np.allclose(solver.mjw_model.jnt_margin.numpy(), [0.05, 0.10])
 
+    def test_solimp_friction_conversion_and_update(self):
+        """
+        Test validation of solimp_friction custom attribute:
+        1. Initial conversion from Model to MuJoCo (multi-world)
+        2. Runtime updates (multi-world)
+        """
+        # Create template with a few joints
+        template_builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(template_builder)
+
+        # Body 1
+        b1 = template_builder.add_body()
+        template_builder.add_joint_revolute(-1, b1, axis=(0, 0, 1))
+        template_builder.add_shape_box(body=b1, hx=0.1, hy=0.1, hz=0.1)
+
+        # Body 2
+        b2 = template_builder.add_body()
+        template_builder.add_joint_revolute(b1, b2, axis=(1, 0, 0))
+        template_builder.add_shape_box(body=b2, hx=0.1, hy=0.1, hz=0.1)
+
+        # Create main builder with multiple worlds
+        num_worlds = 2
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+
+        for i in range(num_worlds):
+            builder.add_builder(
+                template_builder, xform=wp.transform((i * 2.0, 0, 0), wp.quat_identity()), update_num_world_count=True
+            )
+
+        model = builder.finalize()
+
+        # Verify we have the custom attribute
+        assert hasattr(model, "mujoco")
+        assert hasattr(model.mujoco, "solimpfriction")
+
+        # --- Step 1: Set initial values and verify conversion ---
+
+        # Initialize with unique values for every DOF
+        # 2 joints per world -> 2 DOFs per world
+        total_dofs = model.joint_dof_count
+        initial_values = np.zeros((total_dofs, 5), dtype=np.float32)
+
+        for i in range(total_dofs):
+            # Unique pattern: [i, i*2, i*3, i*4, i*5] normalized roughly
+            initial_values[i] = [
+                0.1 + (i * 0.01) % 0.8,
+                0.1 + (i * 0.02) % 0.8,
+                0.001 + (i * 0.001) % 0.1,
+                0.5 + (i * 0.1) % 0.5,
+                1.0 + (i * 0.1) % 2.0,
+            ]
+
+        model.mujoco.solimpfriction.assign(wp.array(initial_values, dtype=wp.types.vector(5, float)))
+
+        solver = SolverMuJoCo(model)
+
+        # Check mapping to MuJoCo
+        # Note: SolverMuJoCo maps Newton DOFs to MuJoCo DOFs.
+        # For simple revolute joints, the mapping is usually 1:1 if ordering is preserved.
+        # But we should use solver.dof_to_mjc_joint to be precise, although that maps to JOINT index.
+        # Since these are 1-DOF joints, Newton DOF index i roughly corresponds to MuJoCo joint index i (within world).
+        # SolverMuJoCo stores dof_solimp as (n_worlds, n_mjc_dofs, 5)
+
+        mjw_dof_solimp = solver.mjw_model.dof_solimp.numpy()
+
+        dofs_per_world = total_dofs // num_worlds
+
+        for w in range(num_worlds):
+            for local_dof in range(dofs_per_world):
+                newton_dof = w * dofs_per_world + local_dof
+                # Assuming standard mapping where Newton DOF i -> MuJoCo DOF i
+                # We can verify this assumption:
+                # In this simple case with add_builder, the order should be preserved.
+                mjc_dof = local_dof
+
+                expected = initial_values[newton_dof]
+                actual = mjw_dof_solimp[w, mjc_dof]
+
+                np.testing.assert_allclose(
+                    actual,
+                    expected,
+                    rtol=1e-5,
+                    err_msg=f"Initial conversion mismatch at World {w}, DOF {local_dof}",
+                )
+
+        # --- Step 2: Runtime Update ---
+
+        # Generate new unique values
+        updated_values = np.zeros((total_dofs, 5), dtype=np.float32)
+        for i in range(total_dofs):
+            updated_values[i] = [
+                0.8 - (i * 0.01) % 0.8,
+                0.8 - (i * 0.02) % 0.8,
+                0.1 - (i * 0.001) % 0.05,
+                0.9 - (i * 0.1) % 0.5,
+                2.5 - (i * 0.1) % 1.0,
+            ]
+
+        # Update model attribute
+        model.mujoco.solimpfriction.assign(wp.array(updated_values, dtype=wp.types.vector(5, float)))
+
+        # Notify solver
+        solver.notify_model_changed(SolverNotifyFlags.JOINT_DOF_PROPERTIES)
+
+        # Verify updates
+        mjw_dof_solimp_updated = solver.mjw_model.dof_solimp.numpy()
+
+        for w in range(num_worlds):
+            for local_dof in range(dofs_per_world):
+                newton_dof = w * dofs_per_world + local_dof
+                mjc_dof = local_dof
+
+                expected = updated_values[newton_dof]
+                actual = mjw_dof_solimp_updated[w, mjc_dof]
+
+                # Check that it matches expected
+                np.testing.assert_allclose(
+                    actual,
+                    expected,
+                    rtol=1e-5,
+                    err_msg=f"Runtime update mismatch at World {w}, DOF {local_dof}",
+                )
+
+                # Check that it is different from initial (sanity check)
+                assert not np.allclose(actual, initial_values[newton_dof]), "Value did not change from initial!"
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
