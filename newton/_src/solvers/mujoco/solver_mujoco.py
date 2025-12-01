@@ -620,26 +620,70 @@ class SolverMuJoCo(SolverBase):
 
     @staticmethod
     def find_body_collision_filter_pairs(
-        model: Model,
+        body_shapes: dict[int, list[int]],
+        shape_collision_filter_pairs: set[tuple[int, int]] | list[tuple[int, int]],
         selected_bodies: nparray,
         colliding_shapes: nparray,
+        selected_joints: nparray | None = None,
+        joint_parent: nparray | None = None,
+        joint_type: nparray | None = None,
+        joint_child: nparray | None = None,
+        joint_axis_mode: nparray | None = None,
     ):
         """For shape collision filter pairs, find body collision filter pairs that are contained within."""
 
         body_exclude_pairs = []
         shape_set = set(colliding_shapes)
 
-        body_shapes = {}
+        body_shapes_subset = {}
         for body in selected_bodies:
-            shapes = model.body_shapes[body]
+            shapes = body_shapes.get(body, [])
             shapes = [s for s in shapes if s in shape_set]
-            body_shapes[body] = shapes
+            body_shapes_subset[body] = shapes
+
+        # Precompute parent joint info for filtering static parents
+        body_to_joint_idx = {}
+
+        if selected_joints is not None:
+            # Build map from child body to its parent joint
+            for j_idx in selected_joints:
+                child_body = joint_child[j_idx]
+                body_to_joint_idx[child_body] = j_idx
+
+        def is_body_dynamic(body_idx):
+            if body_idx == -1:  # World body is static
+                return False
+
+            if selected_joints is None:
+                # If no joint info provided, assume dynamic to be safe (keep exclusion)
+                return True
+
+            # Check if body has a joint
+            if body_idx not in body_to_joint_idx:
+                # No joint in this world connects to it -> static/fixed
+                return False
+
+            j_idx = body_to_joint_idx[body_idx]
+            j_type = joint_type[j_idx]
+
+            # Check joint type
+            if j_type == JointType.FIXED:
+                return False
+
+            # Check if D6 has 0 DOFs
+            if j_type == JointType.D6:
+                if joint_axis_mode is not None:
+                    modes = joint_axis_mode[j_idx]
+                    if np.all(modes == 0):
+                        return False
+
+            return True
 
         bodies_a, bodies_b = np.triu_indices(len(selected_bodies), k=1)
         for body_a, body_b in zip(bodies_a, bodies_b, strict=True):
             b1, b2 = selected_bodies[body_a], selected_bodies[body_b]
-            shapes_1 = body_shapes[b1]
-            shapes_2 = body_shapes[b2]
+            shapes_1 = body_shapes_subset[b1]
+            shapes_2 = body_shapes_subset[b2]
             excluded = True
             for shape_1 in shapes_1:
                 for shape_2 in shapes_2:
@@ -647,10 +691,28 @@ class SolverMuJoCo(SolverBase):
                         s1, s2 = shape_2, shape_1
                     else:
                         s1, s2 = shape_1, shape_2
-                    if (s1, s2) not in model.shape_collision_filter_pairs:
+                    if (s1, s2) not in shape_collision_filter_pairs:
                         excluded = False
                         break
             if excluded:
+                # Check if this is a parent-child pair that should be filtered out
+                if selected_joints is not None:
+                    is_parent_child = False
+                    parent_static = False
+
+                    # Check b1 parent of b2
+                    if b2 in body_to_joint_idx and joint_parent[body_to_joint_idx[b2]] == b1:
+                        is_parent_child = True
+                        parent_static = not is_body_dynamic(b1)
+
+                    # Check b2 parent of b1
+                    elif b1 in body_to_joint_idx and joint_parent[body_to_joint_idx[b1]] == b2:
+                        is_parent_child = True
+                        parent_static = not is_body_dynamic(b2)
+
+                    if is_parent_child and parent_static:
+                        continue
+
                 body_exclude_pairs.append((b1, b2))
         return body_exclude_pairs
 
@@ -942,6 +1004,11 @@ class SolverMuJoCo(SolverBase):
         joint_type = model.joint_type.numpy()
         joint_axis = model.joint_axis.numpy()
         joint_dof_dim = model.joint_dof_dim.numpy()
+        joint_axis_mode = (
+            model.joint_axis_mode.numpy()
+            if hasattr(model, "joint_axis_mode") and model.joint_axis_mode is not None
+            else None
+        )
         joint_target_kd = model.joint_target_kd.numpy()
         joint_target_ke = model.joint_target_ke.numpy()
         joint_qd_start = model.joint_qd_start.numpy()
@@ -1079,9 +1146,15 @@ class SolverMuJoCo(SolverBase):
 
         # filter out non-colliding bodies using excludes
         body_filters = self.find_body_collision_filter_pairs(
-            model,
-            selected_bodies,
-            colliding_shapes,
+            body_shapes=model.body_shapes,
+            shape_collision_filter_pairs=model.shape_collision_filter_pairs,
+            selected_bodies=selected_bodies,
+            colliding_shapes=colliding_shapes,
+            selected_joints=selected_joints,
+            joint_parent=joint_parent,
+            joint_type=joint_type,
+            joint_child=joint_child,
+            joint_axis_mode=joint_axis_mode,
         )
 
         shape_color = self.color_collision_shapes(

@@ -2889,5 +2889,66 @@ class TestMuJoCoAttributes(unittest.TestCase):
         assert np.allclose(solver.mjw_model.jnt_margin.numpy(), [0.05, 0.10])
 
 
+class TestMuJoCoExclusions(unittest.TestCase):
+    def test_static_parent_exclusion_filtering(self):
+        """
+        Test that parent-child collision exclusions are filtered out if the parent is static/fixed.
+        """
+        builder = newton.ModelBuilder()
+
+        # 1. Static root body (fixed to world)
+        root = builder.add_body(mass=0.0, key="root")  # Mass 0 implies static if no joint
+        builder.add_joint_fixed(parent=-1, child=root)
+        builder.add_shape_box(body=root, hx=0.1, hy=0.1, hz=0.1)
+
+        # 2. Dynamic child of static root (should NOT have exclusion)
+        child1 = builder.add_body(mass=1.0, key="child1")
+        builder.add_joint_revolute(parent=root, child=child1, axis=(0, 0, 1))
+        builder.add_shape_box(body=child1, hx=0.1, hy=0.1, hz=0.1)
+
+        # 3. Dynamic child of dynamic child (should HAVE exclusion)
+        child2 = builder.add_body(mass=1.0, key="child2")
+        builder.add_joint_revolute(parent=child1, child=child2, axis=(0, 0, 1))
+        builder.add_shape_box(body=child2, hx=0.1, hy=0.1, hz=0.1)
+
+        # 4. Fixed child of dynamic child (should HAVE exclusion)
+        child3 = builder.add_body(mass=1.0, key="child3")
+        builder.add_joint_fixed(parent=child2, child=child3)
+        builder.add_shape_box(body=child3, hx=0.1, hy=0.1, hz=0.1)
+
+        model = builder.finalize()
+        solver = SolverMuJoCo(model)
+
+        # Verify exclusions by inspecting mj_model.exclude_signature
+        # exclude_signature contains concatenated 16-bit body indices: (b1 << 16) | b2
+        exclude_signature = solver.mj_model.exclude_signature
+        exclusions = set()
+
+        for sig in exclude_signature:
+            # Unpack body indices (assuming 32-bit int with two 16-bit indices)
+            # Note: We cast to int to ensure standard python types
+            val = int(sig)
+            b1 = (val >> 16) & 0xFFFF
+            b2 = val & 0xFFFF
+            exclusions.add(tuple(sorted((b1, b2))))
+
+        # Get MuJoCo body indices
+        # Note: Newton body indices map to MuJoCo body indices
+        mjc_body_map = solver.to_mjc_body_index.numpy()
+        mjc_root = int(mjc_body_map[root])
+        mjc_child1 = int(mjc_body_map[child1])
+        mjc_child2 = int(mjc_body_map[child2])
+        mjc_child3 = int(mjc_body_map[child3])
+
+        # Pair 1: root (static) <-> child1 (dynamic) -> Should be FILTERED OUT (no exclusion)
+        self.assertNotIn(tuple(sorted((mjc_root, mjc_child1))), exclusions)
+
+        # Pair 2: child1 (dynamic) <-> child2 (dynamic) -> Should be PRESENT
+        self.assertIn(tuple(sorted((mjc_child1, mjc_child2))), exclusions)
+
+        # Pair 3: child2 (dynamic) <-> child3 (fixed) -> Should be PRESENT
+        self.assertIn(tuple(sorted((mjc_child2, mjc_child3))), exclusions)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
