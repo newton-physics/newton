@@ -1006,7 +1006,7 @@ class TestMuJoCoSolverJointProperties(TestMuJoCoSolverPropertiesBase):
         template_builder = newton.ModelBuilder()
         SolverMuJoCo.register_custom_attributes(template_builder)
 
-        pendulum = template_builder.add_body(
+        pendulum = template_builder.add_link(
             mass=1.0,
             com=wp.vec3(0.0, 0.0, 0.0),
             I_m=wp.mat33(np.eye(3)),
@@ -1018,13 +1018,14 @@ class TestMuJoCoSolverJointProperties(TestMuJoCoSolverPropertiesBase):
             hy=0.05,
             hz=0.05,
         )
-        template_builder.add_joint_revolute(
+        joint = template_builder.add_joint_revolute(
             parent=-1,
             child=pendulum,
             axis=(0.0, 0.0, 1.0),
             parent_xform=wp.transform(),
             child_xform=wp.transform(),
         )
+        template_builder.add_articulation([joint])
 
         num_worlds = 3
         builder = newton.ModelBuilder()
