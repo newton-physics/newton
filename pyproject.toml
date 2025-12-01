@@ -47,7 +47,7 @@ importers = [
     "pycollada>=0.9",              # for loading mesh data with trimesh
 
     # USD core libraries
-    "usd-core==25.5 ; platform_machine != 'aarch64'",
+    "usd-core>=25.5 ; platform_machine != 'aarch64'",
     "usd-exchange>=2.1.0a3 ; platform_machine == 'aarch64'",
 ]
 

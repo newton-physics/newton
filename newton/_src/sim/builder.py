@@ -1753,7 +1753,7 @@ class ModelBuilder:
         to the articulation structure, you must explicitly call one of the joint methods
         (e.g., :meth:`add_joint_revolute`, :meth:`add_joint_fixed`, etc.) after creating the link.
 
-        Before calling this method, ensure that an articulation has been created using :meth:`add_articulation`.
+        After calling this method and one of the joint methods, ensure that an articulation is created using :meth:`add_articulation`.
 
         Args:
             xform: The location of the body in the world frame.
@@ -1845,7 +1845,8 @@ class ModelBuilder:
             com: The center of mass of the body w.r.t its origin. If None, the center of mass is assumed to be at the origin.
             I_m: The 3x3 inertia tensor of the body (specified relative to the center of mass). If None, the inertia tensor is assumed to be zero.
             mass: Mass of the body.
-            key: Key of the body (optional).
+            key: Key of the body. When provided, the auto-created free joint and articulation
+                are assigned keys ``{key}_free_joint`` and ``{key}_articulation`` respectively.
             custom_attributes: Dictionary of custom attribute names to values.
 
         Returns:
@@ -1869,11 +1870,11 @@ class ModelBuilder:
         # Add a free joint to make it float
         joint_id = self.add_joint_free(
             child=body_id,
-            key=f"free_joint_{key}" if key else None,
+            key=f"{key}_free_joint" if key else None,
         )
 
         # Create an articulation from the joint
-        articulation_key = f"articulation_{key}" if key else None
+        articulation_key = f"{key}_articulation" if key else None
         self.add_articulation([joint_id], key=articulation_key)
 
         return body_id
