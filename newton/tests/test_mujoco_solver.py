@@ -1626,22 +1626,19 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
 
     def test_heterogeneous_per_shape_friction(self):
         """Test per-shape friction conversion to MuJoCo and dynamic updates across multiple worlds."""
-        shape_count = self.model.shape_count
-        shapes_per_world = shape_count // self.model.num_worlds
+        # Use per-world iteration to handle potential global shapes correctly
+        shape_world = self.model.shape_world.numpy()
+        initial_mu = np.zeros(self.model.shape_count)
+        initial_torsional = np.zeros(self.model.shape_count)
+        initial_rolling = np.zeros(self.model.shape_count)
 
-        # Set unique friction values per shape and world to catch indexing bugs
-        initial_mu = np.zeros(shape_count)
-        initial_torsional = np.zeros(shape_count)
-        initial_rolling = np.zeros(shape_count)
-
+        # Set unique friction values per shape and world
         for world_idx in range(self.model.num_worlds):
-            world_shape_offset = world_idx * shapes_per_world
-
-            for shape_in_world in range(shapes_per_world):
-                global_shape_idx = world_shape_offset + shape_in_world
-                initial_mu[global_shape_idx] = 0.5 + shape_in_world * 0.1 + world_idx * 0.3
-                initial_torsional[global_shape_idx] = 0.3 + shape_in_world * 0.05 + world_idx * 0.2
-                initial_rolling[global_shape_idx] = 0.001 + shape_in_world * 0.0005 + world_idx * 0.002
+            world_shape_indices = np.where(shape_world == world_idx)[0]
+            for local_idx, shape_idx in enumerate(world_shape_indices):
+                initial_mu[shape_idx] = 0.5 + local_idx * 0.1 + world_idx * 0.3
+                initial_torsional[shape_idx] = 0.3 + local_idx * 0.05 + world_idx * 0.2
+                initial_rolling[shape_idx] = 0.001 + local_idx * 0.0005 + world_idx * 0.002
 
         self.model.shape_material_mu.assign(initial_mu)
         self.model.shape_material_torsional_friction.assign(initial_torsional)
@@ -1691,18 +1688,16 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
         self.assertGreater(tested_count, 0, "Should have tested at least one shape")
 
         # Update with different values
-        updated_mu = np.zeros(shape_count)
-        updated_torsional = np.zeros(shape_count)
-        updated_rolling = np.zeros(shape_count)
+        updated_mu = np.zeros(self.model.shape_count)
+        updated_torsional = np.zeros(self.model.shape_count)
+        updated_rolling = np.zeros(self.model.shape_count)
 
         for world_idx in range(self.model.num_worlds):
-            world_shape_offset = world_idx * shapes_per_world
-
-            for shape_in_world in range(shapes_per_world):
-                global_shape_idx = world_shape_offset + shape_in_world
-                updated_mu[global_shape_idx] = 1.0 + shape_in_world * 0.15 + world_idx * 0.4
-                updated_torsional[global_shape_idx] = 0.6 + shape_in_world * 0.08 + world_idx * 0.25
-                updated_rolling[global_shape_idx] = 0.005 + shape_in_world * 0.001 + world_idx * 0.003
+            world_shape_indices = np.where(shape_world == world_idx)[0]
+            for local_idx, shape_idx in enumerate(world_shape_indices):
+                updated_mu[shape_idx] = 1.0 + local_idx * 0.15 + world_idx * 0.4
+                updated_torsional[shape_idx] = 0.6 + local_idx * 0.08 + world_idx * 0.25
+                updated_rolling[shape_idx] = 0.005 + local_idx * 0.001 + world_idx * 0.003
 
         self.model.shape_material_mu.assign(updated_mu)
         self.model.shape_material_torsional_friction.assign(updated_torsional)
