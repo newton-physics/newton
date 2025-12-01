@@ -13,8 +13,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import os
-import tempfile
 import unittest
 
 import numpy as np
@@ -125,26 +123,16 @@ class TestJointLimits(unittest.TestCase):
         </robot>
         """
 
-        # Write URDF to temp file
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".urdf", delete=False) as f:
-            f.write(urdf_content)
-            urdf_path = f.name
+        # Import URDF
+        builder = newton.ModelBuilder()
+        parse_urdf(builder, urdf_content)
+        model = builder.finalize()
 
-        try:
-            # Import URDF
-            builder = newton.ModelBuilder()
-            parse_urdf(builder, urdf_path)
-            model = builder.finalize()
-
-            # Find the continuous joint (should be the first joint)
-            lower_limits = model.joint_limit_lower.numpy()
-            upper_limits = model.joint_limit_upper.numpy()
-            self.assertEqual(lower_limits[0], -JOINT_LIMIT_UNLIMITED)
-            self.assertEqual(upper_limits[0], JOINT_LIMIT_UNLIMITED)
-
-        finally:
-            # Clean up temp file
-            os.unlink(urdf_path)
+        # Find the continuous joint (should be the first joint)
+        lower_limits = model.joint_limit_lower.numpy()
+        upper_limits = model.joint_limit_upper.numpy()
+        self.assertEqual(lower_limits[0], -JOINT_LIMIT_UNLIMITED)
+        self.assertEqual(upper_limits[0], JOINT_LIMIT_UNLIMITED)
 
     def test_joint_d6_with_mixed_limits(self):
         """Test D6 joint with mixed limited and unlimited axes."""
