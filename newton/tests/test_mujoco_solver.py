@@ -2897,7 +2897,7 @@ class TestMuJoCoExclusions(unittest.TestCase):
         builder = newton.ModelBuilder()
 
         # 1. Static root body (fixed to world)
-        root = builder.add_body(mass=0.0, key="root")  # Mass 0 implies static if no joint
+        root = builder.add_body(mass=0.0, key="root")  # static due to fixed joint
         builder.add_joint_fixed(parent=-1, child=root)
         builder.add_shape_box(body=root, hx=0.1, hy=0.1, hz=0.1)
 
