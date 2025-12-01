@@ -174,22 +174,29 @@ def run(example, args):
     if hasattr(example, "gui") and hasattr(example.viewer, "register_ui_callback"):
         example.viewer.register_ui_callback(lambda ui: example.gui(ui), position="side")
 
+    perform_test = args is not None and args.test
+    test_post_step = perform_test and hasattr(example, "test_post_step")
+    test_final = perform_test and hasattr(example, "test_final")
+
     while example.viewer.is_running():
         if not example.viewer.is_paused():
             with wp.ScopedTimer("step", active=False):
                 example.step()
+        if test_post_step:
+            example.test_post_step()
 
         with wp.ScopedTimer("render", active=False):
             example.render()
 
-    if args is not None and args.test:
-        if not hasattr(example, "test"):
-            raise NotImplementedError("Example does not have a test method")
-        example.test()
+    if perform_test:
+        if test_final:
+            example.test_final()
+        elif not (test_post_step or test_final):
+            raise NotImplementedError("Example does not have a test_final or test_post_step method")
 
     example.viewer.close()
 
-    if args is not None and args.test:
+    if perform_test:
         # generic tests for finiteness of Newton objects
         if hasattr(example, "state_0"):
             nan_members = find_nan_members(example.state_0)

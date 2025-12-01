@@ -301,7 +301,7 @@ class Example:
             self.sim_time += self.frame_dt
         self.frame_index += 1
 
-    def test(self):
+    def test_final(self):
         p_lower = wp.vec3(-0.3, -0.8, 0.8)
         p_upper = wp.vec3(0.5, 0.8, 1.8)
         newton.examples.test_particle_state(
