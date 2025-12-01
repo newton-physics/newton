@@ -514,6 +514,71 @@ class TestMuJoCoSolverMassProperties(TestMuJoCoSolverPropertiesBase):
         # Check updated inertia tensors
         check_inertias(updated_inertias, "Updated ")
 
+    def test_body_gravcomp(self):
+        """
+        Tests if the body gravity compensation is updated properly.
+        """
+        # Register custom attributes manually since setUp only creates basic builder
+        newton.solvers.SolverMuJoCo.register_custom_attributes(self.builder)
+
+        # Re-finalize model to allocate space for custom attributes
+        # Note: The bodies are already added by _add_test_robot, so they have default gravcomp=0.0
+        self.model = self.builder.finalize()
+
+        # Verify attribute exists
+        self.assertTrue(hasattr(self.model, "mujoco"))
+        self.assertTrue(hasattr(self.model.mujoco, "gravcomp"))
+
+        # Initialize deterministic gravcomp values based on index
+        # Pattern: 0.1 + (i * 0.01) % 0.9
+        indices = np.arange(self.model.body_count, dtype=np.float32)
+        new_gravcomp = 0.1 + (indices * 0.01) % 0.9
+        self.model.mujoco.gravcomp.assign(new_gravcomp)
+
+        # Initialize solver
+        solver = SolverMuJoCo(self.model, ls_iterations=1, iterations=1, disable_contacts=True)
+
+        # Check initial values transferred to solver
+        bodies_per_world = self.model.body_count // self.model.num_worlds
+        body_mapping = solver.to_mjc_body_index.numpy()
+
+        for world_idx in range(self.model.num_worlds):
+            for body_idx in range(bodies_per_world):
+                newton_idx = world_idx * bodies_per_world + body_idx
+                mjc_idx = body_mapping[body_idx]
+                if mjc_idx != -1:
+                    self.assertAlmostEqual(
+                        new_gravcomp[newton_idx],
+                        solver.mjw_model.body_gravcomp.numpy()[world_idx, mjc_idx],
+                        places=6,
+                        msg=f"Gravcomp mismatch for body {body_idx} in world {world_idx}",
+                    )
+
+        # Step simulation
+        solver.step(self.state_in, self.state_out, self.control, self.contacts, 0.01)
+        self.state_in, self.state_out = self.state_out, self.state_in
+
+        # Update gravcomp values (shift pattern)
+        # Pattern: 0.9 - (i * 0.01) % 0.9
+        updated_gravcomp = 0.9 - (indices * 0.01) % 0.9
+        self.model.mujoco.gravcomp.assign(updated_gravcomp)
+
+        # Notify solver
+        solver.notify_model_changed(SolverNotifyFlags.BODY_INERTIAL_PROPERTIES)
+
+        # Verify updates
+        for world_idx in range(self.model.num_worlds):
+            for body_idx in range(bodies_per_world):
+                newton_idx = world_idx * bodies_per_world + body_idx
+                mjc_idx = body_mapping[body_idx]
+                if mjc_idx != -1:
+                    self.assertAlmostEqual(
+                        updated_gravcomp[newton_idx],
+                        solver.mjw_model.body_gravcomp.numpy()[world_idx, mjc_idx],
+                        places=6,
+                        msg=f"Updated gravcomp mismatch for body {body_idx} in world {world_idx}",
+                    )
+
 
 class TestMuJoCoSolverJointProperties(TestMuJoCoSolverPropertiesBase):
     def test_joint_attributes_registration_and_updates(self):
@@ -926,6 +991,278 @@ class TestMuJoCoSolverJointProperties(TestMuJoCoSolverPropertiesBase):
                         err_msg=f"Updated jnt_solimp[{world_idx}, {mjc_joint_idx}] doesn't match "
                         f"Newton solimplimit[{newton_dof_idx}] for joint {joint_idx} DOF {dof_offset}",
                     )
+
+    def test_limit_margin_runtime_update(self):
+        """Test multi-world expansion and runtime updates of limit_margin."""
+        # Step 1: Create a template builder and register SolverMuJoCo custom attributes
+        template_builder = newton.ModelBuilder()
+        newton.solvers.SolverMuJoCo.register_custom_attributes(template_builder)
+        shape_cfg = newton.ModelBuilder.ShapeConfig(density=1000.0)
+
+        # Free-floating body
+        free_body_initial_pos = wp.transform((0.5, 0.5, 0.0), wp.quat_identity())
+        free_body_idx = template_builder.add_body(mass=0.2)
+        template_builder.add_joint_free(child=free_body_idx, parent_xform=free_body_initial_pos)
+        template_builder.add_shape_box(body=free_body_idx, xform=wp.transform(), hx=0.1, hy=0.1, hz=0.1, cfg=shape_cfg)
+
+        # Articulated tree
+        link_radius = 0.05
+        link_half_length = 0.15
+        tree_root_initial_pos_y = link_half_length * 2.0
+        tree_root_initial_transform = wp.transform((0.0, tree_root_initial_pos_y, 0.0), wp.quat_identity())
+
+        body1_idx = template_builder.add_body(mass=0.1)
+        template_builder.add_joint_free(child=body1_idx, parent_xform=tree_root_initial_transform)
+        template_builder.add_shape_capsule(
+            body=body1_idx, xform=wp.transform(), radius=link_radius, half_height=link_half_length, cfg=shape_cfg
+        )
+
+        body2_idx = template_builder.add_body(mass=0.1)
+        template_builder.add_shape_capsule(
+            body=body2_idx, xform=wp.transform(), radius=link_radius, half_height=link_half_length, cfg=shape_cfg
+        )
+        template_builder.add_joint_revolute(
+            parent=body1_idx,
+            child=body2_idx,
+            axis=(1.0, 0.0, 0.0),
+            parent_xform=wp.transform((0.0, link_half_length, 0.0), wp.quat_identity()),
+            child_xform=wp.transform((0.0, -link_half_length, 0.0), wp.quat_identity()),
+            limit_lower=-np.pi / 2,
+            limit_upper=np.pi / 2,
+            custom_attributes={"mujoco:limit_margin": [0.01]},
+        )
+
+        body3_idx = template_builder.add_body(mass=0.1)
+        template_builder.add_shape_capsule(
+            body=body3_idx, xform=wp.transform(), radius=link_radius, half_height=link_half_length, cfg=shape_cfg
+        )
+        template_builder.add_joint_revolute(
+            parent=body2_idx,
+            child=body3_idx,
+            axis=(0.0, 1.0, 0.0),
+            parent_xform=wp.transform((0.0, link_half_length, 0.0), wp.quat_identity()),
+            child_xform=wp.transform((0.0, -link_half_length, 0.0), wp.quat_identity()),
+            limit_lower=-np.pi / 3,
+            limit_upper=np.pi / 3,
+            custom_attributes={"mujoco:limit_margin": [0.02]},
+        )
+
+        # Step 2: Replicate to multiple worlds
+        num_worlds = 3
+        builder = newton.ModelBuilder()
+        builder.replicate(template_builder, num_worlds)
+        model = builder.finalize()
+
+        # Step 3: Initialize solver
+        solver = SolverMuJoCo(model, separate_worlds=True, iterations=1, disable_contacts=True)
+
+        # Check solver attribute (jnt_margin)
+        jnt_margin = solver.mjw_model.jnt_margin.numpy()
+
+        # Retrieve model info
+        joint_qd_start = model.joint_qd_start.numpy()
+        joint_dof_dim = model.joint_dof_dim.numpy()
+        joint_type = model.joint_type.numpy()
+        dof_to_mjc_joint_mapping = solver.dof_to_mjc_joint.numpy()
+
+        joints_per_world = model.joint_count // model.num_worlds
+
+        # Step 4: Verify initial values
+        limit_margin = model.mujoco.limit_margin.numpy()
+
+        for world_idx in range(model.num_worlds):
+            world_joint_offset = world_idx * joints_per_world
+
+            for joint_idx in range(joints_per_world):
+                global_joint_idx = world_joint_offset + joint_idx
+                template_joint_idx = joint_idx
+
+                # Skip free joints
+                if joint_type[global_joint_idx] == JointType.FREE:
+                    continue
+
+                # In this template structure, revolute joints are indices 2 and 3 (0 and 1 are free)
+                expected_val = 0.0
+                if template_joint_idx == 2:
+                    expected_val = 0.01
+                elif template_joint_idx == 3:
+                    expected_val = 0.02
+
+                newton_dof_start = joint_qd_start[global_joint_idx]
+                template_dof_start = joint_qd_start[template_joint_idx]
+                dof_count = int(joint_dof_dim[global_joint_idx].sum())
+
+                for dof_offset in range(dof_count):
+                    newton_dof_idx = newton_dof_start + dof_offset
+                    template_dof_idx = template_dof_start + dof_offset
+
+                    # Verify model attribute
+                    self.assertAlmostEqual(limit_margin[newton_dof_idx], expected_val, places=6)
+
+                    # Verify solver attribute via mapping
+                    mjc_joint_idx = dof_to_mjc_joint_mapping[template_dof_idx]
+                    if mjc_joint_idx != -1:
+                        actual_val = jnt_margin[world_idx, mjc_joint_idx]
+                        self.assertAlmostEqual(actual_val, expected_val, places=6)
+
+        # Step 5: Update limit_margin values at runtime
+        new_margins = np.zeros_like(limit_margin)
+
+        for world_idx in range(model.num_worlds):
+            world_joint_offset = world_idx * joints_per_world
+            for joint_idx in range(joints_per_world):
+                global_joint_idx = world_joint_offset + joint_idx
+
+                if joint_type[global_joint_idx] == JointType.FREE:
+                    continue
+
+                newton_dof_start = joint_qd_start[global_joint_idx]
+                dof_count = int(joint_dof_dim[global_joint_idx].sum())
+
+                for dof_offset in range(dof_count):
+                    newton_dof_idx = newton_dof_start + dof_offset
+                    val = 0.1 + world_idx * 0.1 + joint_idx * 0.01
+                    new_margins[newton_dof_idx] = val
+
+        model.mujoco.limit_margin.assign(new_margins)
+
+        # Step 6: Notify solver
+        solver.notify_model_changed(SolverNotifyFlags.JOINT_DOF_PROPERTIES)
+
+        # Step 7: Verify updates
+        updated_jnt_margin = solver.mjw_model.jnt_margin.numpy()
+
+        for world_idx in range(model.num_worlds):
+            world_joint_offset = world_idx * joints_per_world
+            for joint_idx in range(joints_per_world):
+                global_joint_idx = world_joint_offset + joint_idx
+                template_joint_idx = joint_idx
+
+                if joint_type[global_joint_idx] == JointType.FREE:
+                    continue
+
+                newton_dof_start = joint_qd_start[global_joint_idx]
+                template_dof_start = joint_qd_start[template_joint_idx]
+                dof_count = int(joint_dof_dim[global_joint_idx].sum())
+
+                for dof_offset in range(dof_count):
+                    newton_dof_idx = newton_dof_start + dof_offset
+                    template_dof_idx = template_dof_start + dof_offset
+
+                    expected_val = new_margins[newton_dof_idx]
+
+                    mjc_joint_idx = dof_to_mjc_joint_mapping[template_dof_idx]
+                    if mjc_joint_idx != -1:
+                        actual_val = updated_jnt_margin[world_idx, mjc_joint_idx]
+                        self.assertAlmostEqual(actual_val, expected_val, places=6)
+
+    def test_dof_passive_stiffness_damping_multiworld(self):
+        """
+        Verify that dof_passive_stiffness and dof_passive_damping propagate correctly:
+        1. Different per-world values survive conversion to MuJoCo.
+        2. notify_model_changed updates all worlds consistently.
+        """
+
+        template_builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(template_builder)
+
+        pendulum = template_builder.add_body(
+            mass=1.0,
+            com=wp.vec3(0.0, 0.0, 0.0),
+            I_m=wp.mat33(np.eye(3)),
+        )
+        template_builder.add_shape_box(
+            body=pendulum,
+            xform=wp.transform(),
+            hx=0.05,
+            hy=0.05,
+            hz=0.05,
+        )
+        template_builder.add_joint_revolute(
+            parent=-1,
+            child=pendulum,
+            axis=(0.0, 0.0, 1.0),
+            parent_xform=wp.transform(),
+            child_xform=wp.transform(),
+        )
+
+        num_worlds = 3
+        builder = newton.ModelBuilder()
+        builder.replicate(template_builder, num_worlds)
+        model = builder.finalize()
+
+        dofs_per_world = model.joint_dof_count // model.num_worlds
+        joints_per_world = model.joint_count // model.num_worlds
+
+        initial_stiffness = np.zeros(model.joint_dof_count, dtype=np.float32)
+        initial_damping = np.zeros(model.joint_dof_count, dtype=np.float32)
+
+        for world_idx in range(model.num_worlds):
+            world_dof_offset = world_idx * dofs_per_world
+            for dof_idx in range(dofs_per_world):
+                global_idx = world_dof_offset + dof_idx
+                initial_stiffness[global_idx] = 0.05 + 0.01 * dof_idx + 0.25 * world_idx
+                initial_damping[global_idx] = 0.4 + 0.02 * dof_idx + 0.3 * world_idx
+
+        model.mujoco.dof_passive_stiffness.assign(initial_stiffness)
+        model.mujoco.dof_passive_damping.assign(initial_damping)
+
+        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
+
+        joint_qd_start = model.joint_qd_start.numpy()
+        joint_dof_dim = model.joint_dof_dim.numpy()
+        joint_mjc_dof_start = solver.joint_mjc_dof_start.numpy()
+        dof_to_mjc_joint = solver.dof_to_mjc_joint.numpy()
+
+        def assert_passive_values(expected_stiffness: np.ndarray, expected_damping: np.ndarray):
+            dof_damping = solver.mjw_model.dof_damping.numpy()
+            jnt_stiffness = solver.mjw_model.jnt_stiffness.numpy()
+
+            for world_idx in range(model.num_worlds):
+                world_joint_offset = world_idx * joints_per_world
+                for joint_idx in range(joints_per_world):
+                    global_joint_idx = world_joint_offset + joint_idx
+                    dof_count = int(joint_dof_dim[global_joint_idx].sum())
+                    if dof_count == 0:
+                        continue
+
+                    newton_dof_start = joint_qd_start[global_joint_idx]
+                    template_dof_start = joint_qd_start[joint_idx]
+                    mjc_dof_start = joint_mjc_dof_start[joint_idx]
+
+                    for dof_offset in range(dof_count):
+                        newton_dof_idx = newton_dof_start + dof_offset
+                        template_dof_idx = template_dof_start + dof_offset
+                        mjc_dof_idx = mjc_dof_start + dof_offset
+
+                        self.assertAlmostEqual(
+                            dof_damping[world_idx, mjc_dof_idx],
+                            expected_damping[newton_dof_idx],
+                            places=6,
+                            msg=f"dof_damping mismatch for world={world_idx}, joint={joint_idx}, dof={dof_offset}",
+                        )
+
+                        mjc_joint_idx = dof_to_mjc_joint[template_dof_idx]
+                        if mjc_joint_idx == -1:
+                            continue
+
+                        self.assertAlmostEqual(
+                            jnt_stiffness[world_idx, mjc_joint_idx],
+                            expected_stiffness[newton_dof_idx],
+                            places=6,
+                            msg=f"jnt_stiffness mismatch for world={world_idx}, joint={joint_idx}, dof={dof_offset}",
+                        )
+
+        assert_passive_values(initial_stiffness, initial_damping)
+
+        updated_stiffness = initial_stiffness + 0.5 + 0.05 * np.arange(model.joint_dof_count, dtype=np.float32)
+        updated_damping = initial_damping + 0.3 + 0.03 * np.arange(model.joint_dof_count, dtype=np.float32)
+
+        model.mujoco.dof_passive_stiffness.assign(updated_stiffness)
+        model.mujoco.dof_passive_damping.assign(updated_damping)
+        solver.notify_model_changed(SolverNotifyFlags.JOINT_DOF_PROPERTIES)
+
+        assert_passive_values(updated_stiffness, updated_damping)
 
     def test_joint_limit_solref_conversion(self):
         """
@@ -2824,158 +3161,6 @@ class TestMuJoCoAttributes(unittest.TestCase):
         assert hasattr(model.mujoco, "condim")
         assert np.allclose(model.mujoco.condim.numpy(), [6])
         assert np.allclose(solver.mjw_model.geom_condim.numpy(), [6])
-
-    def test_limit_margin_from_code(self):
-        """Test setting limit_margin custom attribute from code."""
-        builder = newton.ModelBuilder()
-        newton.solvers.SolverMuJoCo.register_custom_attributes(builder)
-
-        # Create joints with different margin values per DOF
-        b0 = builder.add_body()
-        builder.add_joint_revolute(-1, b0, axis=(0.0, 0.0, 1.0), custom_attributes={"mujoco:limit_margin": [0.01]})
-        builder.add_shape_box(body=b0, hx=0.1, hy=0.1, hz=0.1)
-
-        b1 = builder.add_body()
-        builder.add_joint_revolute(b0, b1, axis=(0.0, 0.0, 1.0), custom_attributes={"mujoco:limit_margin": [0.02]})
-        builder.add_shape_box(body=b1, hx=0.1, hy=0.1, hz=0.1)
-
-        b2 = builder.add_body()
-        builder.add_joint_revolute(b1, b2, axis=(0.0, 0.0, 1.0))  # Default should be 0.0
-        builder.add_shape_box(body=b2, hx=0.1, hy=0.1, hz=0.1)
-
-        model = builder.finalize()
-        solver = SolverMuJoCo(model, separate_worlds=False)
-
-        assert hasattr(model, "mujoco")
-        assert hasattr(model.mujoco, "limit_margin")
-        assert np.allclose(model.mujoco.limit_margin.numpy(), [0.01, 0.02, 0.0])
-        assert np.allclose(solver.mjw_model.jnt_margin.numpy(), [0.01, 0.02, 0.0])
-
-    def test_limit_margin_from_mjcf(self):
-        """Test importing limit_margin from MJCF."""
-        mjcf = """
-        <mujoco>
-            <worldbody>
-                <body>
-                    <joint type="revolute" axis="0 0 1" margin="0.01" />
-                    <geom type="box" size="0.1 0.1 0.1" />
-                </body>
-                <body>
-                    <joint type="revolute" axis="0 0 1" margin="0.02" />
-                    <geom type="box" size="0.1 0.1 0.1" />
-                </body>
-                <body>
-                    <joint type="revolute" axis="0 0 1" />
-                    <geom type="box" size="0.1 0.1 0.1" />
-                </body>
-            </worldbody>
-        </mujoco>
-        """
-        builder = newton.ModelBuilder()
-        newton.solvers.SolverMuJoCo.register_custom_attributes(builder)
-        builder.add_mjcf(mjcf)
-        model = builder.finalize()
-        solver = SolverMuJoCo(model, separate_worlds=False)
-
-        assert hasattr(model, "mujoco")
-        assert hasattr(model.mujoco, "limit_margin")
-        assert np.allclose(model.mujoco.limit_margin.numpy(), [0.01, 0.02, 0.0])
-        assert np.allclose(solver.mjw_model.jnt_margin.numpy(), [0.01, 0.02, 0.0])
-
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
-    def test_limit_margin_from_usd(self):
-        """Test importing limit_margin from USD with mjc:margin on joint."""
-        from pxr import Sdf, Usd, UsdGeom, UsdPhysics  # noqa: PLC0415
-
-        stage = Usd.Stage.CreateInMemory()
-        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
-        UsdGeom.SetStageMetersPerUnit(stage, 1.0)
-
-        # Create first body with joint
-        body1_path = "/body1"
-        shape1 = UsdGeom.Cube.Define(stage, body1_path)
-        prim1 = shape1.GetPrim()
-        UsdPhysics.RigidBodyAPI.Apply(prim1)
-        UsdPhysics.ArticulationRootAPI.Apply(prim1)
-        UsdPhysics.CollisionAPI.Apply(prim1)
-
-        joint1_path = "/joint1"
-        joint1 = UsdPhysics.RevoluteJoint.Define(stage, joint1_path)
-        joint1.CreateAxisAttr().Set("Z")
-        joint1.CreateBody0Rel().SetTargets([body1_path])
-        joint1_prim = joint1.GetPrim()
-        joint1_prim.CreateAttribute("mjc:margin", Sdf.ValueTypeNames.FloatArray, True).Set([0.01])
-
-        # Create second body with joint
-        body2_path = "/body2"
-        shape2 = UsdGeom.Cube.Define(stage, body2_path)
-        prim2 = shape2.GetPrim()
-        UsdPhysics.RigidBodyAPI.Apply(prim2)
-        UsdPhysics.CollisionAPI.Apply(prim2)
-
-        joint2_path = "/joint2"
-        joint2 = UsdPhysics.RevoluteJoint.Define(stage, joint2_path)
-        joint2.CreateAxisAttr().Set("Z")
-        joint2.CreateBody0Rel().SetTargets([body1_path])
-        joint2.CreateBody1Rel().SetTargets([body2_path])
-        joint2_prim = joint2.GetPrim()
-        joint2_prim.CreateAttribute("mjc:margin", Sdf.ValueTypeNames.FloatArray, True).Set([0.02])
-
-        # Create third body with joint (no margin, should default to 0.0)
-        body3_path = "/body3"
-        shape3 = UsdGeom.Cube.Define(stage, body3_path)
-        prim3 = shape3.GetPrim()
-        UsdPhysics.RigidBodyAPI.Apply(prim3)
-        UsdPhysics.CollisionAPI.Apply(prim3)
-
-        joint3_path = "/joint3"
-        joint3 = UsdPhysics.RevoluteJoint.Define(stage, joint3_path)
-        joint3.CreateAxisAttr().Set("Z")
-        joint3.CreateBody0Rel().SetTargets([body2_path])
-        joint3.CreateBody1Rel().SetTargets([body3_path])
-
-        builder = newton.ModelBuilder()
-        newton.solvers.SolverMuJoCo.register_custom_attributes(builder)
-        builder.add_usd(stage)
-        model = builder.finalize()
-        solver = SolverMuJoCo(model, separate_worlds=False)
-
-        assert hasattr(model, "mujoco")
-        assert hasattr(model.mujoco, "limit_margin")
-        assert np.allclose(model.mujoco.limit_margin.numpy(), [0.01, 0.02, 0.0])
-        assert np.allclose(solver.mjw_model.jnt_margin.numpy(), [0.01, 0.02, 0.0])
-
-    def test_limit_margin_runtime_update(self):
-        """Test runtime updates of limit_margin."""
-        builder = newton.ModelBuilder()
-        newton.solvers.SolverMuJoCo.register_custom_attributes(builder)
-
-        # Create joints
-        b0 = builder.add_body()
-        builder.add_joint_revolute(-1, b0, axis=(0.0, 0.0, 1.0), custom_attributes={"mujoco:limit_margin": [0.01]})
-        builder.add_shape_box(body=b0, hx=0.1, hy=0.1, hz=0.1)
-
-        b1 = builder.add_body()
-        builder.add_joint_revolute(b0, b1, axis=(0.0, 0.0, 1.0), custom_attributes={"mujoco:limit_margin": [0.02]})
-        builder.add_shape_box(body=b1, hx=0.1, hy=0.1, hz=0.1)
-
-        model = builder.finalize()
-        solver = SolverMuJoCo(model, separate_worlds=False, iterations=1, disable_contacts=True)
-
-        # Verify initial values
-        assert np.allclose(model.mujoco.limit_margin.numpy(), [0.01, 0.02])
-        assert np.allclose(solver.mjw_model.jnt_margin.numpy(), [0.01, 0.02])
-
-        # Update limit_margin values at runtime
-        new_margins = np.array([0.05, 0.10], dtype=np.float32)
-        model.mujoco.limit_margin.assign(new_margins)
-
-        # Notify solver of changes
-        solver.notify_model_changed(SolverNotifyFlags.JOINT_DOF_PROPERTIES)
-
-        # Verify updates propagated to MuJoCo
-        assert np.allclose(model.mujoco.limit_margin.numpy(), [0.05, 0.10])
-        assert np.allclose(solver.mjw_model.jnt_margin.numpy(), [0.05, 0.10])
 
 
 if __name__ == "__main__":

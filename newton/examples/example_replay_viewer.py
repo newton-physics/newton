@@ -238,7 +238,7 @@ class Example:
         # No need to call viewer.log_state() here
         self.viewer.end_frame()
 
-    def test(self):
+    def test_final(self):
         pass
 
 

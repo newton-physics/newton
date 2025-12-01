@@ -298,7 +298,7 @@ class Example:
             self.simulate()
         self.sim_time += self.frame_dt
 
-    def test(self):
+    def test_final(self):
         pass
 
     def render(self):

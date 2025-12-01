@@ -594,29 +594,24 @@ class TestImportMjcf(unittest.TestCase):
 </mujoco>
 """
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            mjcf_path = os.path.join(tmpdir, "cylinder_test.xml")
-            with open(mjcf_path, "w") as f:
-                f.write(mjcf_content)
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf_content)
 
-            builder = newton.ModelBuilder()
-            builder.add_mjcf(mjcf_path)
+        # Check that we have the correct number of shapes
+        self.assertEqual(builder.shape_count, 4)
 
-            # Check that we have the correct number of shapes
-            self.assertEqual(builder.shape_count, 4)
+        # Check shape types
+        shape_types = list(builder.shape_type)
 
-            # Check shape types
-            shape_types = list(builder.shape_type)
+        # First two shapes should be cylinders
+        self.assertEqual(shape_types[0], GeoType.CYLINDER)
+        self.assertEqual(shape_types[1], GeoType.CYLINDER)
 
-            # First two shapes should be cylinders
-            self.assertEqual(shape_types[0], GeoType.CYLINDER)
-            self.assertEqual(shape_types[1], GeoType.CYLINDER)
+        # Third shape should be capsule
+        self.assertEqual(shape_types[2], GeoType.CAPSULE)
 
-            # Third shape should be capsule
-            self.assertEqual(shape_types[2], GeoType.CAPSULE)
-
-            # Fourth shape should be box
-            self.assertEqual(shape_types[3], GeoType.BOX)
+        # Fourth shape should be box
+        self.assertEqual(shape_types[3], GeoType.BOX)
 
     def test_cylinder_properties_preserved(self):
         """Test that cylinder properties (radius, height) are correctly imported."""
@@ -630,23 +625,18 @@ class TestImportMjcf(unittest.TestCase):
 </mujoco>
 """
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            mjcf_path = os.path.join(tmpdir, "cylinder_props.xml")
-            with open(mjcf_path, "w") as f:
-                f.write(mjcf_content)
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf_content)
 
-            builder = newton.ModelBuilder()
-            builder.add_mjcf(mjcf_path)
+        # Check shape properties
+        self.assertEqual(builder.shape_count, 1)
+        self.assertEqual(builder.shape_type[0], GeoType.CYLINDER)
 
-            # Check shape properties
-            self.assertEqual(builder.shape_count, 1)
-            self.assertEqual(builder.shape_type[0], GeoType.CYLINDER)
-
-            # Check that radius and half_height are preserved
-            # shape_scale stores (radius, half_height, 0) for cylinders
-            shape_scale = builder.shape_scale[0]
-            self.assertAlmostEqual(shape_scale[0], 0.75)  # radius
-            self.assertAlmostEqual(shape_scale[1], 1.5)  # half_height
+        # Check that radius and half_height are preserved
+        # shape_scale stores (radius, half_height, 0) for cylinders
+        shape_scale = builder.shape_scale[0]
+        self.assertAlmostEqual(shape_scale[0], 0.75)  # radius
+        self.assertAlmostEqual(shape_scale[1], 1.5)  # half_height
 
     def test_solreflimit_parsing(self):
         """Test that solreflimit joint attribute is correctly parsed and converted to limit_ke/limit_kd."""
@@ -674,42 +664,37 @@ class TestImportMjcf(unittest.TestCase):
 </mujoco>
 """
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            mjcf_path = os.path.join(tmpdir, "solreflimit_test.xml")
-            with open(mjcf_path, "w") as f:
-                f.write(mjcf_content)
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf_content)
+        model = builder.finalize()
 
-            builder = newton.ModelBuilder()
-            builder.add_mjcf(mjcf_path)
-            model = builder.finalize()
+        # Test we have 3 joints
+        self.assertEqual(model.joint_count, 3)
+        self.assertEqual(len(model.joint_limit_ke), 3)
+        self.assertEqual(len(model.joint_limit_kd), 3)
 
-            # Test we have 3 joints
-            self.assertEqual(model.joint_count, 3)
-            self.assertEqual(len(model.joint_limit_ke), 3)
-            self.assertEqual(len(model.joint_limit_kd), 3)
+        # Convert warp arrays to numpy for testing
+        joint_limit_ke = model.joint_limit_ke.numpy()
+        joint_limit_kd = model.joint_limit_kd.numpy()
 
-            # Convert warp arrays to numpy for testing
-            joint_limit_ke = model.joint_limit_ke.numpy()
-            joint_limit_kd = model.joint_limit_kd.numpy()
+        # Test joint1: standard mode solreflimit="0.03 0.9"
+        # Expected: ke = 1/(0.03^2 * 0.9^2) = 1371.7421..., kd = 2.0/0.03 = 66.(6)
+        expected_ke_1 = 1.0 / (0.03 * 0.03 * 0.9 * 0.9)
+        expected_kd_1 = 2.0 / 0.03
+        self.assertAlmostEqual(joint_limit_ke[0], expected_ke_1, places=2)
+        self.assertAlmostEqual(joint_limit_kd[0], expected_kd_1, places=2)
 
-            # Test joint1: standard mode solreflimit="0.03 0.9"
-            # Expected: ke = 1/(0.03^2 * 0.9^2) = 1371.7421..., kd = 2.0/0.03 = 66.(6)
-            expected_ke_1 = 1.0 / (0.03 * 0.03 * 0.9 * 0.9)
-            expected_kd_1 = 2.0 / 0.03
-            self.assertAlmostEqual(joint_limit_ke[0], expected_ke_1, places=2)
-            self.assertAlmostEqual(joint_limit_kd[0], expected_kd_1, places=2)
+        # Test joint2: direct mode solreflimit="-100 -1"
+        # Expected: ke = 100, kd = 1
+        self.assertAlmostEqual(joint_limit_ke[1], 100.0, places=2)
+        self.assertAlmostEqual(joint_limit_kd[1], 1.0, places=2)
 
-            # Test joint2: direct mode solreflimit="-100 -1"
-            # Expected: ke = 100, kd = 1
-            self.assertAlmostEqual(joint_limit_ke[1], 100.0, places=2)
-            self.assertAlmostEqual(joint_limit_kd[1], 1.0, places=2)
-
-            # Test joint3: no solreflimit (should use default 0.02, 1.0)
-            # Expected: ke = 1/(0.02^2 * 1.0^2) = 2500.0, kd = 2.0/0.02 = 100.0
-            expected_ke_3 = 1.0 / (0.02 * 0.02 * 1.0 * 1.0)
-            expected_kd_3 = 2.0 / 0.02
-            self.assertAlmostEqual(joint_limit_ke[2], expected_ke_3, places=2)
-            self.assertAlmostEqual(joint_limit_kd[2], expected_kd_3, places=2)
+        # Test joint3: no solreflimit (should use default 0.02, 1.0)
+        # Expected: ke = 1/(0.02^2 * 1.0^2) = 2500.0, kd = 2.0/0.02 = 100.0
+        expected_ke_3 = 1.0 / (0.02 * 0.02 * 1.0 * 1.0)
+        expected_kd_3 = 2.0 / 0.02
+        self.assertAlmostEqual(joint_limit_ke[2], expected_ke_3, places=2)
+        self.assertAlmostEqual(joint_limit_kd[2], expected_kd_3, places=2)
 
     def test_solimplimit_parsing(self):
         """Test that solimplimit attribute is parsed correctly from MJCF."""
@@ -783,36 +768,34 @@ class TestImportMjcf(unittest.TestCase):
                 solimplimit[joint3_qd_start, i], expected, places=4, msg=f"joint3 solimplimit[{i}] should be {expected}"
             )
 
-        # Test with MuJoCo solver - verify jnt_solimp values match using the mapping
-        solver = SolverMuJoCo(model, separate_worlds=False)
+    def test_limit_margin_parsing(self):
+        """Test importing limit_margin from MJCF."""
+        mjcf = """
+        <mujoco>
+            <worldbody>
+                <body>
+                    <joint type="hinge" axis="0 0 1" margin="0.01" />
+                    <geom type="box" size="0.1 0.1 0.1" />
+                </body>
+                <body>
+                    <joint type="hinge" axis="0 0 1" margin="0.02" />
+                    <geom type="box" size="0.1 0.1 0.1" />
+                </body>
+                <body>
+                    <joint type="hinge" axis="0 0 1" />
+                    <geom type="box" size="0.1 0.1 0.1" />
+                </body>
+            </worldbody>
+        </mujoco>
+        """
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_mjcf(mjcf)
+        model = builder.finalize()
 
-        # MuJoCo's jnt_solimp should match our solimplimit values
-        jnt_solimp = solver.mjw_model.jnt_solimp.numpy()
-        joint_mjc_dof_start = solver.joint_mjc_dof_start.numpy()
-
-        # For each Newton joint, verify its DOFs map correctly to MuJoCo
-        for newton_joint_idx in range(model.joint_count):
-            mjc_dof_start = joint_mjc_dof_start[newton_joint_idx]
-            newton_dof_start = model.joint_qd_start.numpy()[newton_joint_idx]
-            dof_count = model.joint_dof_dim.numpy()[newton_joint_idx].sum()
-
-            # Check each DOF in this joint
-            for dof_offset in range(dof_count):
-                newton_dof_idx = newton_dof_start + dof_offset
-                mjc_dof_idx = mjc_dof_start + dof_offset
-
-                # Get expected solimplimit from Newton model
-                expected_solimp = solimplimit[newton_dof_idx, :].tolist()
-
-                # Get actual jnt_solimp from MuJoCo
-                actual_solimp = jnt_solimp[0, mjc_dof_idx, :].tolist()
-                # Verify they match
-                self.assertTrue(
-                    arrays_match(actual_solimp, expected_solimp),
-                    f"MuJoCo jnt_solimp[{mjc_dof_idx}] = {actual_solimp} doesn't match "
-                    f"Newton solimplimit[{newton_dof_idx}] = {expected_solimp} "
-                    f"for joint {newton_joint_idx} DOF {dof_offset}",
-                )
+        self.assertTrue(hasattr(model, "mujoco"))
+        self.assertTrue(hasattr(model.mujoco, "limit_margin"))
+        np.testing.assert_allclose(model.mujoco.limit_margin.numpy(), [0.01, 0.02, 0.0])
 
     def test_granular_loading_flags(self):
         """Test granular control over sites and visual shapes loading."""
@@ -913,17 +896,19 @@ class TestImportMjcf(unittest.TestCase):
         # Verify hide_visuals=True doesn't crash
         self.assertGreater(builder_hidden.shape_count, 0, "Should still load collision shapes")
 
-    def test_mjcf_friction_parsing(self):
-        """Test MJCF friction parsing with 1, 2, and 3 element vectors."""
+    def test_mjcf_gravcomp(self):
+        """Test parsing of gravcomp from MJCF"""
         mjcf_content = """
         <mujoco>
             <worldbody>
-                <body name="test_body">
-                    <geom name="geom1" type="box" size="0.1 0.1 0.1" friction="0.5 0.1 0.01"/>
-                    <geom name="geom2" type="sphere" size="0.1" friction="0.8 0.2 0.05"/>
-                    <geom name="geom3" type="capsule" size="0.1 0.2" friction="0.0 0.0 0.0"/>
-                    <geom name="geom4" type="box" size="0.1 0.1 0.1" friction="1.0"/>
-                    <geom name="geom5" type="sphere" size="0.1" friction="0.6 0.15"/>
+                <body name="body1" gravcomp="0.5">
+                    <geom type="sphere" size="0.1" />
+                </body>
+                <body name="body2" gravcomp="1.0">
+                    <geom type="sphere" size="0.1" />
+                </body>
+                <body name="body3">
+                    <geom type="sphere" size="0.1" />
                 </body>
             </worldbody>
         </mujoco>
@@ -958,6 +943,99 @@ class TestImportMjcf(unittest.TestCase):
         self.assertAlmostEqual(builder.shape_material_mu[4], 0.6, places=5)
         self.assertAlmostEqual(builder.shape_material_torsional_friction[4], 0.15, places=5)
         self.assertAlmostEqual(builder.shape_material_rolling_friction[4], 0.0005, places=5)
+
+    def test_mjcf_friction_parsing(self):
+        """Test MJCF friction parsing with 1, 2, and 3 element vectors."""
+        mjcf_content = """
+        <mujoco>
+            <worldbody>
+                <body name="test_body">
+                    <geom name="geom1" type="box" size="0.1 0.1 0.1" friction="0.5 0.1 0.01"/>
+                    <geom name="geom2" type="sphere" size="0.1" friction="0.8 0.2 0.05"/>
+                    <geom name="geom3" type="capsule" size="0.1 0.2" friction="0.0 0.0 0.0"/>
+                    <geom name="geom4" type="box" size="0.1 0.1 0.1" friction="1.0"/>
+                    <geom name="geom5" type="sphere" size="0.1" friction="0.6 0.15"/>
+                </body>
+            </worldbody>
+        </mujoco>
+        """
+
+        builder = newton.ModelBuilder()
+        # Register gravcomp
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_mjcf(mjcf_content)
+        model = builder.finalize()
+
+        self.assertTrue(hasattr(model, "mujoco"))
+        self.assertTrue(hasattr(model.mujoco, "gravcomp"))
+
+        gravcomp = model.mujoco.gravcomp.numpy()
+
+        # Bodies are added in order
+        self.assertAlmostEqual(gravcomp[0], 0.5)
+        self.assertAlmostEqual(gravcomp[1], 1.0)
+        self.assertAlmostEqual(gravcomp[2], 0.0)  # Default
+
+    def test_joint_stiffness_damping(self):
+        mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="stiffness_damping_comprehensive_test">
+    <worldbody>
+        <body name="body1" pos="0 0 1">
+            <joint name="joint1" type="hinge" axis="0 0 1" stiffness="0.05" damping="0.5" range="-45 45"/>
+            <geom type="box" size="0.1 0.1 0.1"/>
+        </body>
+        <body name="body2" pos="1 0 1">
+            <joint name="joint2" type="hinge" axis="0 1 0" range="-30 30"/>
+            <geom type="box" size="0.1 0.1 0.1"/>
+        </body>
+        <body name="body3" pos="2 0 1">
+            <joint name="joint3" type="hinge" axis="1 0 0" stiffness="0.1" damping="0.8" range="-60 60"/>
+            <geom type="box" size="0.1 0.1 0.1"/>
+        </body>
+        <body name="body4" pos="3 0 1">
+            <joint name="joint4" type="hinge" axis="0 1 0" stiffness="0.02" damping="0.3" range="-90 90"/>
+            <geom type="box" size="0.1 0.1 0.1"/>
+        </body>
+    </worldbody>
+    <actuator>
+        <position joint="joint1" kp="10000.0" kv="2000.0"/>
+        <velocity joint="joint1" kv="500.0"/>
+        <position joint="joint2" kp="5000.0" kv="1000.0"/>
+        <velocity joint="joint3" kv="800.0"/>
+        <velocity joint="joint4" kv="3000.0"/>
+    </actuator>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_mjcf(mjcf_content)
+        model = builder.finalize()
+
+        self.assertTrue(hasattr(model, "mujoco"))
+        self.assertTrue(hasattr(model.mujoco, "dof_passive_stiffness"))
+        self.assertTrue(hasattr(model.mujoco, "dof_passive_damping"))
+
+        joint_names = model.joint_key
+        joint_qd_start = model.joint_qd_start.numpy()
+        joint_stiffness = model.mujoco.dof_passive_stiffness.numpy()
+        joint_damping = model.mujoco.dof_passive_damping.numpy()
+        joint_target_ke = model.joint_target_ke.numpy()
+        joint_target_kd = model.joint_target_kd.numpy()
+
+        expected_values = {
+            "joint1": {"stiffness": 0.05, "damping": 0.5, "target_ke": 10000.0, "target_kd": 500.0},
+            "joint2": {"stiffness": 0.0, "damping": 0.0, "target_ke": 5000.0, "target_kd": 1000.0},
+            "joint3": {"stiffness": 0.1, "damping": 0.8, "target_ke": 0.0, "target_kd": 800.0},
+            "joint4": {"stiffness": 0.02, "damping": 0.3, "target_ke": 0.0, "target_kd": 3000.0},
+        }
+
+        for joint_name, expected in expected_values.items():
+            joint_idx = joint_names.index(joint_name)
+            dof_idx = joint_qd_start[joint_idx]
+            self.assertAlmostEqual(joint_stiffness[dof_idx], expected["stiffness"], places=4)
+            self.assertAlmostEqual(joint_damping[dof_idx], expected["damping"], places=4)
+            self.assertAlmostEqual(joint_target_ke[dof_idx], expected["target_ke"], places=1)
+            self.assertAlmostEqual(joint_target_kd[dof_idx], expected["target_kd"], places=1)
 
 
 if __name__ == "__main__":
