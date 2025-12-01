@@ -782,15 +782,15 @@ class TestImportMjcf(unittest.TestCase):
         <mujoco>
             <worldbody>
                 <body>
-                    <joint type="revolute" axis="0 0 1" margin="0.01" />
+                    <joint type="hinge" axis="0 0 1" margin="0.01" />
                     <geom type="box" size="0.1 0.1 0.1" />
                 </body>
                 <body>
-                    <joint type="revolute" axis="0 0 1" margin="0.02" />
+                    <joint type="hinge" axis="0 0 1" margin="0.02" />
                     <geom type="box" size="0.1 0.1 0.1" />
                 </body>
                 <body>
-                    <joint type="revolute" axis="0 0 1" />
+                    <joint type="hinge" axis="0 0 1" />
                     <geom type="box" size="0.1 0.1 0.1" />
                 </body>
             </worldbody>
