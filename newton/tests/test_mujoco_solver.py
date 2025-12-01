@@ -1906,16 +1906,19 @@ class TestMuJoCoConversion(unittest.TestCase):
         )
 
         # Add free joint to parent
-        builder.add_joint_free(parent_body)
+        joint_free = builder.add_joint_free(parent_body)
 
         # Add revolute joint between parent and child with specified transforms and axis
-        builder.add_joint_revolute(
+        joint_revolute = builder.add_joint_revolute(
             parent=parent_body,
             child=child_body,
             parent_xform=parent_xform,
             child_xform=child_xform,
             axis=(0.0, 0.0, 1.0),  # Revolute about Z
         )
+
+        # Add articulation for the root free joint and the revolute joint
+        builder.add_articulation([joint_free, joint_revolute])
 
         # Add simple box shapes for both bodies (not strictly needed for kinematics)
         builder.add_shape_box(body=parent_body, hx=0.1, hy=0.1, hz=0.1)
@@ -2010,7 +2013,7 @@ class TestMuJoCoConversion(unittest.TestCase):
         )
 
         # Add joint with limits - attach to world (-1)
-        builder.add_joint_revolute(
+        joint = builder.add_joint_revolute(
             parent=-1,  # World/ground
             child=pendulum,
             parent_xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
@@ -2019,6 +2022,9 @@ class TestMuJoCoConversion(unittest.TestCase):
             limit_lower=0.0,  # Lower limit at 0 degrees
             limit_upper=np.pi / 2,  # Upper limit at 90 degrees
         )
+
+        # Register the articulation containing the joint
+        builder.add_articulation([joint])
 
         model = builder.finalize(requires_grad=False)
         state = model.state()
@@ -2096,13 +2102,15 @@ class TestMuJoCoConversion(unittest.TestCase):
         parent_xform = wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity())
         child_xform = wp.transform(wp.vec3(0.0, 0.0, 1.0), wp.quat_identity())
 
-        builder.add_joint_revolute(
+        joint = builder.add_joint_revolute(
             parent=-1,
             child=body,
             parent_xform=parent_xform,
             child_xform=child_xform,
             axis=newton.Axis.X,
         )
+
+        builder.add_articulation([joint])
 
         model = builder.finalize(requires_grad=False)
         solver = newton.solvers.SolverMuJoCo(model)
