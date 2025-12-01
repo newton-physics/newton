@@ -337,7 +337,7 @@ def eval_single_articulation_fk(
 
         # For FREE joints, v_wc is a spatial twist
         # but body_qd should store COM velocity. Transform it:
-        # v_com = v_origin + ω × r_com
+        # v_com = v_origin + ω x r_com
         if type == JointType.FREE:
             v_origin = wp.spatial_top(v_wc)
             omega = wp.spatial_bottom(v_wc)
