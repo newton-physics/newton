@@ -587,29 +587,24 @@ class TestImportMjcf(unittest.TestCase):
 </mujoco>
 """
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            mjcf_path = os.path.join(tmpdir, "cylinder_test.xml")
-            with open(mjcf_path, "w") as f:
-                f.write(mjcf_content)
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf_content)
 
-            builder = newton.ModelBuilder()
-            builder.add_mjcf(mjcf_path)
+        # Check that we have the correct number of shapes
+        self.assertEqual(builder.shape_count, 4)
 
-            # Check that we have the correct number of shapes
-            self.assertEqual(builder.shape_count, 4)
+        # Check shape types
+        shape_types = list(builder.shape_type)
 
-            # Check shape types
-            shape_types = list(builder.shape_type)
+        # First two shapes should be cylinders
+        self.assertEqual(shape_types[0], GeoType.CYLINDER)
+        self.assertEqual(shape_types[1], GeoType.CYLINDER)
 
-            # First two shapes should be cylinders
-            self.assertEqual(shape_types[0], GeoType.CYLINDER)
-            self.assertEqual(shape_types[1], GeoType.CYLINDER)
+        # Third shape should be capsule
+        self.assertEqual(shape_types[2], GeoType.CAPSULE)
 
-            # Third shape should be capsule
-            self.assertEqual(shape_types[2], GeoType.CAPSULE)
-
-            # Fourth shape should be box
-            self.assertEqual(shape_types[3], GeoType.BOX)
+        # Fourth shape should be box
+        self.assertEqual(shape_types[3], GeoType.BOX)
 
     def test_cylinder_properties_preserved(self):
         """Test that cylinder properties (radius, height) are correctly imported."""
@@ -623,23 +618,18 @@ class TestImportMjcf(unittest.TestCase):
 </mujoco>
 """
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            mjcf_path = os.path.join(tmpdir, "cylinder_props.xml")
-            with open(mjcf_path, "w") as f:
-                f.write(mjcf_content)
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf_content)
 
-            builder = newton.ModelBuilder()
-            builder.add_mjcf(mjcf_path)
+        # Check shape properties
+        self.assertEqual(builder.shape_count, 1)
+        self.assertEqual(builder.shape_type[0], GeoType.CYLINDER)
 
-            # Check shape properties
-            self.assertEqual(builder.shape_count, 1)
-            self.assertEqual(builder.shape_type[0], GeoType.CYLINDER)
-
-            # Check that radius and half_height are preserved
-            # shape_scale stores (radius, half_height, 0) for cylinders
-            shape_scale = builder.shape_scale[0]
-            self.assertAlmostEqual(shape_scale[0], 0.75)  # radius
-            self.assertAlmostEqual(shape_scale[1], 1.5)  # half_height
+        # Check that radius and half_height are preserved
+        # shape_scale stores (radius, half_height, 0) for cylinders
+        shape_scale = builder.shape_scale[0]
+        self.assertAlmostEqual(shape_scale[0], 0.75)  # radius
+        self.assertAlmostEqual(shape_scale[1], 1.5)  # half_height
 
     def test_solreflimit_parsing(self):
         """Test that solreflimit joint attribute is correctly parsed and converted to limit_ke/limit_kd."""
@@ -667,42 +657,37 @@ class TestImportMjcf(unittest.TestCase):
 </mujoco>
 """
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            mjcf_path = os.path.join(tmpdir, "solreflimit_test.xml")
-            with open(mjcf_path, "w") as f:
-                f.write(mjcf_content)
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf_content)
+        model = builder.finalize()
 
-            builder = newton.ModelBuilder()
-            builder.add_mjcf(mjcf_path)
-            model = builder.finalize()
+        # Test we have 3 joints
+        self.assertEqual(model.joint_count, 3)
+        self.assertEqual(len(model.joint_limit_ke), 3)
+        self.assertEqual(len(model.joint_limit_kd), 3)
 
-            # Test we have 3 joints
-            self.assertEqual(model.joint_count, 3)
-            self.assertEqual(len(model.joint_limit_ke), 3)
-            self.assertEqual(len(model.joint_limit_kd), 3)
+        # Convert warp arrays to numpy for testing
+        joint_limit_ke = model.joint_limit_ke.numpy()
+        joint_limit_kd = model.joint_limit_kd.numpy()
 
-            # Convert warp arrays to numpy for testing
-            joint_limit_ke = model.joint_limit_ke.numpy()
-            joint_limit_kd = model.joint_limit_kd.numpy()
+        # Test joint1: standard mode solreflimit="0.03 0.9"
+        # Expected: ke = 1/(0.03^2 * 0.9^2) = 1371.7421..., kd = 2.0/0.03 = 66.(6)
+        expected_ke_1 = 1.0 / (0.03 * 0.03 * 0.9 * 0.9)
+        expected_kd_1 = 2.0 / 0.03
+        self.assertAlmostEqual(joint_limit_ke[0], expected_ke_1, places=2)
+        self.assertAlmostEqual(joint_limit_kd[0], expected_kd_1, places=2)
 
-            # Test joint1: standard mode solreflimit="0.03 0.9"
-            # Expected: ke = 1/(0.03^2 * 0.9^2) = 1371.7421..., kd = 2.0/0.03 = 66.(6)
-            expected_ke_1 = 1.0 / (0.03 * 0.03 * 0.9 * 0.9)
-            expected_kd_1 = 2.0 / 0.03
-            self.assertAlmostEqual(joint_limit_ke[0], expected_ke_1, places=2)
-            self.assertAlmostEqual(joint_limit_kd[0], expected_kd_1, places=2)
+        # Test joint2: direct mode solreflimit="-100 -1"
+        # Expected: ke = 100, kd = 1
+        self.assertAlmostEqual(joint_limit_ke[1], 100.0, places=2)
+        self.assertAlmostEqual(joint_limit_kd[1], 1.0, places=2)
 
-            # Test joint2: direct mode solreflimit="-100 -1"
-            # Expected: ke = 100, kd = 1
-            self.assertAlmostEqual(joint_limit_ke[1], 100.0, places=2)
-            self.assertAlmostEqual(joint_limit_kd[1], 1.0, places=2)
-
-            # Test joint3: no solreflimit (should use default 0.02, 1.0)
-            # Expected: ke = 1/(0.02^2 * 1.0^2) = 2500.0, kd = 2.0/0.02 = 100.0
-            expected_ke_3 = 1.0 / (0.02 * 0.02 * 1.0 * 1.0)
-            expected_kd_3 = 2.0 / 0.02
-            self.assertAlmostEqual(joint_limit_ke[2], expected_ke_3, places=2)
-            self.assertAlmostEqual(joint_limit_kd[2], expected_kd_3, places=2)
+        # Test joint3: no solreflimit (should use default 0.02, 1.0)
+        # Expected: ke = 1/(0.02^2 * 1.0^2) = 2500.0, kd = 2.0/0.02 = 100.0
+        expected_ke_3 = 1.0 / (0.02 * 0.02 * 1.0 * 1.0)
+        expected_kd_3 = 2.0 / 0.02
+        self.assertAlmostEqual(joint_limit_ke[2], expected_ke_3, places=2)
+        self.assertAlmostEqual(joint_limit_kd[2], expected_kd_3, places=2)
 
     def test_solimplimit_parsing(self):
         """Test that solimplimit attribute is parsed correctly from MJCF."""
