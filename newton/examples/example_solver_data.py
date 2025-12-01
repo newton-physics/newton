@@ -53,7 +53,6 @@ class Example:
 
         # finalize model
         self.model = builder.finalize()
-        # self.model.require_state_fields("body_qdd")
 
         self.imu = newton.sensors.IMUSensor(self.model, [imu_site])
 
