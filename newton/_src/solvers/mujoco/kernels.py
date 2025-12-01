@@ -921,12 +921,14 @@ def update_joint_dof_properties_kernel(
     joint_limit_lower: wp.array(dtype=float),
     joint_limit_upper: wp.array(dtype=float),
     solimplimit: wp.array(dtype=vec5),
+    dof_solimp: wp.array(dtype=vec5),
     limit_margin: wp.array(dtype=float),
     joints_per_world: int,
     # outputs
     dof_armature: wp.array2d(dtype=float),
     dof_frictionloss: wp.array2d(dtype=float),
     jnt_solimp: wp.array2d(dtype=vec5),
+    dof_solimp_out: wp.array2d(dtype=vec5),
     jnt_solref: wp.array2d(dtype=wp.vec2),
     jnt_margin: wp.array2d(dtype=float),
     jnt_range: wp.array2d(dtype=wp.vec2),
@@ -966,6 +968,10 @@ def update_joint_dof_properties_kernel(
         dof_armature[worldid, mjc_dof_index] = joint_armature[newton_dof_index]
         dof_frictionloss[worldid, mjc_dof_index] = joint_friction[newton_dof_index]
 
+        # Update dof_solimp (per DOF)
+        if dof_solimp:
+            dof_solimp_out[worldid, mjc_dof_index] = dof_solimp[newton_dof_index]
+
         # Update joint limit solref using negative convention (per joint)
         if joint_limit_ke[newton_dof_index] > 0.0:
             jnt_solref[worldid, mjc_joint_index] = wp.vec2(
@@ -994,6 +1000,10 @@ def update_joint_dof_properties_kernel(
         # Update armature and friction (per DOF)
         dof_armature[worldid, mjc_dof_index] = joint_armature[newton_dof_index]
         dof_frictionloss[worldid, mjc_dof_index] = joint_friction[newton_dof_index]
+
+        # Update dof_solimp (per DOF)
+        if dof_solimp:
+            dof_solimp_out[worldid, mjc_dof_index] = dof_solimp[newton_dof_index]
 
         # Update joint limit solref using negative convention (per joint)
         if joint_limit_ke[newton_dof_index] > 0.0:
