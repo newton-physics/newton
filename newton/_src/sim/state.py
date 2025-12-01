@@ -51,8 +51,9 @@ class State:
         First three entries: linear force; last three: torque.
 
         Note:
-            :attr:`body_f` represents external wrenches in world frame, measured at the body's center of mass
-            for all solvers except :class:`~newton.solvers.SolverFeatherstone`, which expects wrenches at the world origin.
+            :attr:`body_f` represents external wrenches in world frame, measured at the body's center of mass (COM).
+            The linear force component is applied at the COM, and the torque is about the COM.
+            This convention is consistent across all solvers (XPBD, SemiImplicit, Featherstone, MuJoCo, VBD).
         """
 
         self.joint_q: wp.array | None = None

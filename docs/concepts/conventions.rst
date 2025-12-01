@@ -89,11 +89,9 @@ aligning with Isaac Lab's approach, but with one important exception:
   convert from this convention to MuJoCo's mixed-frame format when using the SolverMuJoCo.
 
 * **Featherstone solver**  
-  Newton's Featherstone implementation uses the **spatial twist** convention 
-  from *Modern Robotics*. Here :attr:`State.body_qd` represents a spatial 
-  twist :math:`V_s = (v_s, \omega_s)` where :math:`v_s` is the linear 
-  velocity of a hypothetical point on the moving body that is instantaneously 
-  at the world origin, **not** the COM velocity.
+  Newton's :attr:`State.body_qd` stores **both** linear and angular velocities 
+  in the world frame, with linear velocity representing the COM velocity (same as other solvers).
+  Internally, Featherstone uses spatial twist convention, but this is handled transparently.
 
 Summary of Conventions
 ~~~~~~~~~~~~~~~~~~~~~~
@@ -126,14 +124,10 @@ Summary of Conventions
      - COM, **world frame**
      - **World frame**
      - "Root" linear / angular velocity
-   * - **Newton** (standard solvers)
+   * - **Newton** (all solvers)
      - COM, **world frame**
      - **World frame**
      - Physics engine convention
-   * - **Newton** (Featherstone)
-     - World origin, **world frame**
-     - **World frame**
-     - Spatial twist :math:`V_s`
 
 Mapping Between Representations
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

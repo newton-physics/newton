@@ -334,7 +334,18 @@ def eval_single_articulation_fk(
         v_wc = v_wpj + wp.spatial_vector(linear_vel, angular_vel)
 
         body_q[child] = X_wc
-        body_qd[child] = v_wc
+
+        # For FREE joints, v_wc is a spatial twist (velocity at world origin)
+        # but body_qd should store COM velocity. Transform it:
+        # v_com = v_origin + ω x r_com
+        if type == JointType.FREE:
+            v_origin = wp.spatial_top(v_wc)
+            omega = wp.spatial_bottom(v_wc)
+            r_com = wp.transform_point(X_wc, body_com[child])
+            v_com = v_origin + wp.cross(omega, r_com)
+            body_qd[child] = wp.spatial_vector(v_com, omega)
+        else:
+            body_qd[child] = v_wc
 
 
 @wp.kernel

@@ -35,6 +35,7 @@ from ..solver import SolverBase
 from .kernels import (
     compute_com_transforms,
     compute_spatial_inertia,
+    convert_body_force_com_to_origin,
     create_inertia_matrix_cholesky_kernel,
     create_inertia_matrix_kernel,
     eval_dense_cholesky_batched,
@@ -313,6 +314,13 @@ class SolverFeatherstone(SolverBase):
 
             if state_in.body_count:
                 body_f = state_in.body_f
+                wp.launch(
+                    convert_body_force_com_to_origin,
+                    dim=model.body_count,
+                    inputs=[state_in.body_q, self.body_X_com],
+                    outputs=[body_f],
+                    device=model.device,
+                )
 
             # damped springs
             eval_spring_forces(model, state_in, particle_f)
