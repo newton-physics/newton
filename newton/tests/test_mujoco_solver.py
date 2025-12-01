@@ -2901,17 +2901,17 @@ class TestMuJoCoExclusions(unittest.TestCase):
         builder.add_joint_fixed(parent=-1, child=root)
         builder.add_shape_box(body=root, hx=0.1, hy=0.1, hz=0.1)
 
-        # 2. Dynamic child of static root (should NOT have exclusion)
+        # 2. Dynamic child of static root (should HAVE exclusion)
         child1 = builder.add_body(mass=1.0, key="child1")
         builder.add_joint_revolute(parent=root, child=child1, axis=(0, 0, 1))
         builder.add_shape_box(body=child1, hx=0.1, hy=0.1, hz=0.1)
 
-        # 3. Dynamic child of dynamic child (should HAVE exclusion)
+        # 3. Dynamic child of dynamic child (should NOT have exclusion)
         child2 = builder.add_body(mass=1.0, key="child2")
         builder.add_joint_revolute(parent=child1, child=child2, axis=(0, 0, 1))
         builder.add_shape_box(body=child2, hx=0.1, hy=0.1, hz=0.1)
 
-        # 4. Fixed child of dynamic child (should HAVE exclusion)
+        # 4. Fixed child of dynamic child (should NOT have exclusion)
         child3 = builder.add_body(mass=1.0, key="child3")
         builder.add_joint_fixed(parent=child2, child=child3)
         builder.add_shape_box(body=child3, hx=0.1, hy=0.1, hz=0.1)
@@ -2940,14 +2940,14 @@ class TestMuJoCoExclusions(unittest.TestCase):
         mjc_child2 = int(mjc_body_map[child2])
         mjc_child3 = int(mjc_body_map[child3])
 
-        # Pair 1: root (static) <-> child1 (dynamic) -> Should be FILTERED OUT (no exclusion)
-        self.assertNotIn(tuple(sorted((mjc_root, mjc_child1))), exclusions)
+        # Pair 1: root (static) <-> child1 (dynamic) -> Should be PRESENT (to avoid self-collision)
+        self.assertIn(tuple(sorted((mjc_root, mjc_child1))), exclusions)
 
-        # Pair 2: child1 (dynamic) <-> child2 (dynamic) -> Should be PRESENT
-        self.assertIn(tuple(sorted((mjc_child1, mjc_child2))), exclusions)
+        # Pair 2: child1 (dynamic) <-> child2 (dynamic) -> Should be FILTERED OUT (handled by solver)
+        self.assertNotIn(tuple(sorted((mjc_child1, mjc_child2))), exclusions)
 
-        # Pair 3: child2 (dynamic) <-> child3 (fixed) -> Should be PRESENT
-        self.assertIn(tuple(sorted((mjc_child2, mjc_child3))), exclusions)
+        # Pair 3: child2 (dynamic) <-> child3 (fixed) -> Should be FILTERED OUT (handled by solver, child3 is static relative to child2)
+        self.assertNotIn(tuple(sorted((mjc_child2, mjc_child3))), exclusions)
 
 
 if __name__ == "__main__":
