@@ -1446,10 +1446,6 @@ class ModelBuilder:
         (the value of `self.current_world`). Any world assignments that existed in the source
         builder are overwritten - all entities will be assigned to the current world.
 
-        Note:
-            The current world defaults to -1 (global). All entities from the source builder
-            will be assigned to this world value, regardless of their original world assignments.
-
         Example::
 
             main_builder = ModelBuilder()
