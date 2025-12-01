@@ -992,6 +992,114 @@ class TestMuJoCoSolverJointProperties(TestMuJoCoSolverPropertiesBase):
                         f"Newton solimplimit[{newton_dof_idx}] for joint {joint_idx} DOF {dof_offset}",
                     )
 
+    def test_dof_passive_stiffness_damping_multiworld(self):
+        """
+        Verify that dof_passive_stiffness and dof_passive_damping propagate correctly:
+        1. Different per-world values survive conversion to MuJoCo.
+        2. notify_model_changed updates all worlds consistently.
+        """
+
+        template_builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(template_builder)
+
+        pendulum = template_builder.add_body(
+            mass=1.0,
+            com=wp.vec3(0.0, 0.0, 0.0),
+            I_m=wp.mat33(np.eye(3)),
+        )
+        template_builder.add_shape_box(
+            body=pendulum,
+            xform=wp.transform(),
+            hx=0.05,
+            hy=0.05,
+            hz=0.05,
+        )
+        template_builder.add_joint_revolute(
+            parent=-1,
+            child=pendulum,
+            axis=(0.0, 0.0, 1.0),
+            parent_xform=wp.transform(),
+            child_xform=wp.transform(),
+        )
+
+        num_worlds = 3
+        builder = newton.ModelBuilder()
+        builder.replicate(template_builder, num_worlds)
+        model = builder.finalize()
+
+        dofs_per_world = model.joint_dof_count // model.num_worlds
+        joints_per_world = model.joint_count // model.num_worlds
+
+        initial_stiffness = np.zeros(model.joint_dof_count, dtype=np.float32)
+        initial_damping = np.zeros(model.joint_dof_count, dtype=np.float32)
+
+        for world_idx in range(model.num_worlds):
+            world_dof_offset = world_idx * dofs_per_world
+            for dof_idx in range(dofs_per_world):
+                global_idx = world_dof_offset + dof_idx
+                initial_stiffness[global_idx] = 0.05 + 0.01 * dof_idx + 0.25 * world_idx
+                initial_damping[global_idx] = 0.4 + 0.02 * dof_idx + 0.3 * world_idx
+
+        model.mujoco.dof_passive_stiffness.assign(initial_stiffness)
+        model.mujoco.dof_passive_damping.assign(initial_damping)
+
+        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
+
+        joint_qd_start = model.joint_qd_start.numpy()
+        joint_dof_dim = model.joint_dof_dim.numpy()
+        joint_mjc_dof_start = solver.joint_mjc_dof_start.numpy()
+        dof_to_mjc_joint = solver.dof_to_mjc_joint.numpy()
+
+        def assert_passive_values(expected_stiffness: np.ndarray, expected_damping: np.ndarray):
+            dof_damping = solver.mjw_model.dof_damping.numpy()
+            jnt_stiffness = solver.mjw_model.jnt_stiffness.numpy()
+
+            for world_idx in range(model.num_worlds):
+                world_joint_offset = world_idx * joints_per_world
+                for joint_idx in range(joints_per_world):
+                    global_joint_idx = world_joint_offset + joint_idx
+                    dof_count = int(joint_dof_dim[global_joint_idx].sum())
+                    if dof_count == 0:
+                        continue
+
+                    newton_dof_start = joint_qd_start[global_joint_idx]
+                    template_dof_start = joint_qd_start[joint_idx]
+                    mjc_dof_start = joint_mjc_dof_start[joint_idx]
+
+                    for dof_offset in range(dof_count):
+                        newton_dof_idx = newton_dof_start + dof_offset
+                        template_dof_idx = template_dof_start + dof_offset
+                        mjc_dof_idx = mjc_dof_start + dof_offset
+
+                        self.assertAlmostEqual(
+                            dof_damping[world_idx, mjc_dof_idx],
+                            expected_damping[newton_dof_idx],
+                            places=6,
+                            msg=f"dof_damping mismatch for world={world_idx}, joint={joint_idx}, dof={dof_offset}",
+                        )
+
+                        mjc_joint_idx = dof_to_mjc_joint[template_dof_idx]
+                        if mjc_joint_idx == -1:
+                            continue
+
+                        self.assertAlmostEqual(
+                            jnt_stiffness[world_idx, mjc_joint_idx],
+                            expected_stiffness[newton_dof_idx],
+                            places=6,
+                            msg=f"jnt_stiffness mismatch for world={world_idx}, joint={joint_idx}, dof={dof_offset}",
+                        )
+
+        assert_passive_values(initial_stiffness, initial_damping)
+
+        updated_stiffness = initial_stiffness + 0.5 + 0.05 * np.arange(model.joint_dof_count, dtype=np.float32)
+        updated_damping = initial_damping + 0.3 + 0.03 * np.arange(model.joint_dof_count, dtype=np.float32)
+
+        model.mujoco.dof_passive_stiffness.assign(updated_stiffness)
+        model.mujoco.dof_passive_damping.assign(updated_damping)
+        solver.notify_model_changed(SolverNotifyFlags.JOINT_DOF_PROPERTIES)
+
+        assert_passive_values(updated_stiffness, updated_damping)
+
     def test_joint_limit_solref_conversion(self):
         """
         Verify that joint_limit_ke and joint_limit_kd are properly converted to MuJoCo's solref_limit
