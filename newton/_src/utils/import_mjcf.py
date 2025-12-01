@@ -700,7 +700,7 @@ def parse_mjcf(
                     )
                 elif isinstance(base_joint, dict):
                     base_joint["parent"] = -1
-                    base_joint["child"] = root
+                    base_joint["child"] = link
                     base_joint["parent_xform"] = base_parent_xform
                     base_joint["child_xform"] = base_child_xform
                     base_joint["key"] = "base_joint"

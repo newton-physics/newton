@@ -313,7 +313,7 @@ class TestModel(unittest.TestCase):
 
         # Create global entities (group -1)
         main_builder.current_world = -1
-        ground_body = main_builder.add_link(xform=wp.transform(wp.vec3(0.0, 0.0, -1.0), wp.quat_identity()), mass=0.0)
+        ground_body = main_builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, -1.0), wp.quat_identity()), mass=0.0)
         main_builder.add_shape_box(
             body=ground_body, xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()), hx=5.0, hy=5.0, hz=0.1
         )
@@ -367,8 +367,8 @@ class TestModel(unittest.TestCase):
         self.assertEqual(model.particle_count, 7)  # 1 global + 2*3 = 7
         self.assertEqual(model.body_count, 7)  # 1 global + 2*3 = 7
         self.assertEqual(model.shape_count, 7)  # 1 global + 2*3 = 7
-        self.assertEqual(model.joint_count, 3)  # 0 global + 1*3 = 3
-        self.assertEqual(model.articulation_count, 3)  # 0 global + 1*3 = 3
+        self.assertEqual(model.joint_count, 4)  # 1 global + 1*3 = 4
+        self.assertEqual(model.articulation_count, 4)  # 1 global + 1*3 = 4
 
         # Verify group assignments
         particle_groups = model.particle_world.numpy() if model.particle_world is not None else []
@@ -403,14 +403,16 @@ class TestModel(unittest.TestCase):
             self.assertTrue(np.all(shape_worlds[5:7] == 2))
 
         if len(joint_worlds) > 0:
-            self.assertEqual(joint_worlds[0], 0)
-            self.assertEqual(joint_worlds[1], 1)
-            self.assertEqual(joint_worlds[2], 2)
+            self.assertEqual(joint_worlds[0], -1)  # ground body's free joint
+            self.assertEqual(joint_worlds[1], 0)
+            self.assertEqual(joint_worlds[2], 1)
+            self.assertEqual(joint_worlds[3], 2)
 
         if len(articulation_groups) > 0:
-            self.assertEqual(articulation_groups[0], 0)
-            self.assertEqual(articulation_groups[1], 1)
-            self.assertEqual(articulation_groups[2], 2)
+            self.assertEqual(articulation_groups[0], -1)  # ground body's articulation
+            self.assertEqual(articulation_groups[1], 0)
+            self.assertEqual(articulation_groups[2], 1)
+            self.assertEqual(articulation_groups[3], 2)
 
     def test_num_worlds_tracking(self):
         """Test that num_worlds is properly tracked when using add_builder with worlds."""

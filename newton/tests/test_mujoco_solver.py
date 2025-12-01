@@ -43,8 +43,9 @@ class TestMuJoCoSolver(unittest.TestCase):
         """Test that ls_parallel option is properly set on the MuJoCo Warp model."""
         # Create minimal model with proper inertia
         builder = newton.ModelBuilder()
-        body = builder.add_link(mass=1.0, com=wp.vec3(0.0, 0.0, 0.0), I_m=wp.mat33(np.eye(3)))
-        builder.add_joint_revolute(-1, body)
+        link = builder.add_link(mass=1.0, com=wp.vec3(0.0, 0.0, 0.0), I_m=wp.mat33(np.eye(3)))
+        joint = builder.add_joint_revolute(-1, link)
+        builder.add_articulation([joint])
         model = builder.finalize()
 
         # Test with ls_parallel=True
@@ -59,8 +60,9 @@ class TestMuJoCoSolver(unittest.TestCase):
         """Test that tolerance and ls_tolerance options are properly set on the MuJoCo Warp model."""
         # Create minimal model with proper inertia
         builder = newton.ModelBuilder()
-        body = builder.add_link(mass=1.0, com=wp.vec3(0.0, 0.0, 0.0), I_m=wp.mat33(np.eye(3)))
-        builder.add_joint_revolute(-1, body)
+        link = builder.add_link(mass=1.0, com=wp.vec3(0.0, 0.0, 0.0), I_m=wp.mat33(np.eye(3)))
+        joint = builder.add_joint_revolute(-1, link)
+        builder.add_articulation([joint])
         model = builder.finalize()
 
         # Test with custom tolerance and ls_tolerance values
@@ -188,8 +190,8 @@ class TestMuJoCoSolverPropertiesBase(TestMuJoCoSolver):
         shape_cfg = newton.ModelBuilder.ShapeConfig(density=1000.0)  # Define ShapeConfig
 
         # --- Free-floating body (e.g., a box) ---
-        # free_body_initial_pos = wp.transform((0.5, 0.5, 0.0), wp.quat_identity())
-        free_body_idx = template_builder.add_body(mass=0.2)
+        free_body_initial_pos = wp.transform((0.5, 0.5, 0.0), wp.quat_identity())
+        free_body_idx = template_builder.add_body(mass=0.2, xform=free_body_initial_pos)
         template_builder.add_shape_box(
             body=free_body_idx,
             xform=wp.transform(),  # Shape at body's local origin
@@ -781,7 +783,7 @@ class TestMuJoCoSolverJointProperties(TestMuJoCoSolverPropertiesBase):
         tree_root_initial_transform = wp.transform((0.0, tree_root_initial_pos_y, 0.0), wp.quat_identity())
 
         body1_idx = template_builder.add_link(mass=0.1)
-        template_builder.add_joint_free(child=body1_idx, parent_xform=tree_root_initial_transform)
+        joint1_idx = template_builder.add_joint_free(child=body1_idx, parent_xform=tree_root_initial_transform)
         template_builder.add_shape_capsule(
             body=body1_idx, xform=wp.transform(), radius=link_radius, half_height=link_half_length, cfg=shape_cfg
         )
@@ -790,7 +792,7 @@ class TestMuJoCoSolverJointProperties(TestMuJoCoSolverPropertiesBase):
         template_builder.add_shape_capsule(
             body=body2_idx, xform=wp.transform(), radius=link_radius, half_height=link_half_length, cfg=shape_cfg
         )
-        template_builder.add_joint_revolute(
+        joint2_idx = template_builder.add_joint_revolute(
             parent=body1_idx,
             child=body2_idx,
             axis=(1.0, 0.0, 0.0),
@@ -804,7 +806,7 @@ class TestMuJoCoSolverJointProperties(TestMuJoCoSolverPropertiesBase):
         template_builder.add_shape_capsule(
             body=body3_idx, xform=wp.transform(), radius=link_radius, half_height=link_half_length, cfg=shape_cfg
         )
-        template_builder.add_joint_revolute(
+        joint3_idx = template_builder.add_joint_revolute(
             parent=body2_idx,
             child=body3_idx,
             axis=(0.0, 1.0, 0.0),
@@ -813,6 +815,8 @@ class TestMuJoCoSolverJointProperties(TestMuJoCoSolverPropertiesBase):
             limit_lower=-np.pi / 3,
             limit_upper=np.pi / 3,
         )
+
+        template_builder.add_articulation([joint1_idx, joint2_idx, joint3_idx])
 
         # Replicate to create multiple worlds
         num_worlds = 2
@@ -1707,7 +1711,8 @@ class TestMuJoCoConversion(unittest.TestCase):
     def test_no_shapes(self):
         builder = newton.ModelBuilder()
         b = builder.add_link(mass=1.0, com=wp.vec3(1.0, 2.0, 3.0), I_m=wp.mat33(np.eye(3)))
-        builder.add_joint_prismatic(-1, b)
+        j = builder.add_joint_prismatic(-1, b)
+        builder.add_articulation([j])
         model = builder.finalize()
         solver = SolverMuJoCo(model)
         self.assertEqual(solver.mj_model.nv, 1)
@@ -1717,8 +1722,9 @@ class TestMuJoCoConversion(unittest.TestCase):
         # Create a model with 2 worlds
         template_builder = newton.ModelBuilder()
         body = template_builder.add_link(mass=1.0, com=wp.vec3(0.0, 0.0, 0.0), I_m=wp.mat33(np.eye(3)))
-        template_builder.add_joint_revolute(-1, body, axis=(0.0, 0.0, 1.0))
         template_builder.add_shape_box(body=body, hx=0.1, hy=0.1, hz=0.1)
+        joint = template_builder.add_joint_revolute(-1, body, axis=(0.0, 0.0, 1.0))
+        template_builder.add_articulation([joint])
 
         builder = newton.ModelBuilder()
         builder.add_ground_plane()
@@ -1745,8 +1751,9 @@ class TestMuJoCoConversion(unittest.TestCase):
         """Test that separate_worlds=False works correctly for single-world models."""
         builder = newton.ModelBuilder()
         b = builder.add_link(mass=1.0, com=wp.vec3(0.0, 0.0, 0.0), I_m=wp.mat33(np.eye(3)))
-        builder.add_joint_revolute(-1, b, axis=(0.0, 0.0, 1.0))
         builder.add_shape_box(body=b, hx=0.1, hy=0.1, hz=0.1)
+        j = builder.add_joint_revolute(-1, b, axis=(0.0, 0.0, 1.0))
+        builder.add_articulation([j])
         model = builder.finalize()
 
         # Should work fine with single world
@@ -2098,10 +2105,11 @@ class TestMuJoCoConversion(unittest.TestCase):
         # Create a simple robot with 2 bodies and 1 revolute joint
         robot = newton.ModelBuilder()
         robot.add_link()  # body 0
-        robot.add_link()  # body 1
-        robot.add_joint_revolute(parent=0, child=1, axis=(0, 0, 1))
         robot.add_shape_box(0, hx=0.1, hy=0.1, hz=0.1)
+        robot.add_link()  # body 1
         robot.add_shape_box(1, hx=0.1, hy=0.1, hz=0.1)
+        robot.add_joint_revolute(parent=0, child=1, axis=(0, 0, 1))  # joint 0
+        robot.add_articulation([0])
 
         # Main builder adds the robot to world 0 and world 1
         builder = newton.ModelBuilder()
@@ -2601,14 +2609,15 @@ class TestMuJoCoAttributes(unittest.TestCase):
         builder = newton.ModelBuilder()
         newton.solvers.SolverMuJoCo.register_custom_attributes(builder)
         b0 = builder.add_link()
-        builder.add_joint_revolute(-1, b0, axis=(0.0, 0.0, 1.0))
+        j0 = builder.add_joint_revolute(-1, b0, axis=(0.0, 0.0, 1.0))
         builder.add_shape_box(body=b0, hx=0.1, hy=0.1, hz=0.1, custom_attributes={"mujoco:condim": 6})
         b1 = builder.add_link()
-        builder.add_joint_revolute(b0, b1, axis=(0.0, 0.0, 1.0))
+        j1 = builder.add_joint_revolute(b0, b1, axis=(0.0, 0.0, 1.0))
         builder.add_shape_box(body=b1, hx=0.1, hy=0.1, hz=0.1, custom_attributes={"mujoco:condim": 4})
         b2 = builder.add_link()
-        builder.add_joint_revolute(b1, b2, axis=(0.0, 0.0, 1.0))
+        j2 = builder.add_joint_revolute(b1, b2, axis=(0.0, 0.0, 1.0))
         builder.add_shape_box(body=b2, hx=0.1, hy=0.1, hz=0.1)
+        builder.add_articulation([j0, j1, j2])
         model = builder.finalize()
 
         # Should work fine with single world
