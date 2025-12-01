@@ -3030,8 +3030,8 @@ class TestMuJoCoAttributes(unittest.TestCase):
         model = builder.finalize()
 
         # Verify we have the custom attribute
-        assert hasattr(model, "mujoco")
-        assert hasattr(model.mujoco, "solimpfriction")
+        self.assertTrue(hasattr(model, "mujoco"))
+        self.assertTrue(hasattr(model.mujoco, "solimpfriction"))
 
         # --- Step 1: Set initial values and verify conversion ---
 
@@ -3119,7 +3119,10 @@ class TestMuJoCoAttributes(unittest.TestCase):
 
         # Check that it is different from initial (sanity check)
         # Just check the first element
-        assert not np.allclose(mjw_dof_solimp_updated[0, 0], initial_values[0]), "Value did not change from initial!"
+        self.assertFalse(
+            np.allclose(mjw_dof_solimp_updated[0, 0], initial_values[0]),
+            "Value did not change from initial!",
+        )
 
 
 if __name__ == "__main__":
