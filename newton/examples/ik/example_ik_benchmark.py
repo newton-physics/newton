@@ -282,7 +282,7 @@ class Example:
     def render(self):
         pass  # Not used in this benchmark
 
-    def test(self):
+    def test_final(self):
         pass  # Not used in this benchmark
 
 

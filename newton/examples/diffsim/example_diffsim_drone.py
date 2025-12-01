@@ -755,7 +755,7 @@ class Example:
         self.viewer.log_scalar("/loss", loss)
         self.cost_history.append(loss)
 
-    def test(self):
+    def test_final(self):
         assert all(np.array(self.cost_history) < 2.0)
         assert most(np.diff(self.cost_history) < 0.0, min_ratio=0.6)
         assert all(np.diff(self.cost_history) < 1e-2)

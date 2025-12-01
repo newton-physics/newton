@@ -206,7 +206,7 @@ class Example:
 
         self.time += 1.0 / 60.0
 
-    def test(self):
+    def test_final(self):
         pass
 
 

@@ -190,7 +190,7 @@ class Example:
             assert self.flap_contact_sensor.net_force.numpy().sum() == 0
         # if self.sim_time > 4.0: assert self.plates_touched[1]   # unreliable due to jerky cube motion
 
-    def test(self):
+    def test_final(self):
         self.test_post_step()
         newton.examples.test_body_state(
             self.model,

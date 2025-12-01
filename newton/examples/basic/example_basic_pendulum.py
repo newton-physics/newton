@@ -126,7 +126,7 @@ class Example:
 
         self.sim_time += self.frame_dt
 
-    def test(self):
+    def test_final(self):
         # rough check that the pendulum links are in the correct area
         newton.examples.test_body_state(
             self.model,
