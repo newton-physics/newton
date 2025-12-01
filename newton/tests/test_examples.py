@@ -556,7 +556,7 @@ class TestSensorExamples(unittest.TestCase):
 add_example_test(
     TestSensorExamples,
     name="sensors.example_sensor_contact",
-    devices=cuda_test_devices,
+    devices=test_devices,
     test_options={"num-frames": 160},  # required for ball to reach plate
     use_viewer=True,
 )
