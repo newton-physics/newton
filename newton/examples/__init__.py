@@ -33,7 +33,6 @@ def _quiet_warp_context():
     finally:
         wp.config.quiet = original_quiet
 
-
 def get_source_directory() -> str:
     return os.path.realpath(os.path.dirname(__file__))
 
@@ -512,6 +511,7 @@ def main():
     # Keep the module name as argv[0] and pass remaining args
     sys.argv = [target_module, *sys.argv[2:]]
 
+    # Run the target example module
     with _quiet_warp_context():
         runpy.run_module(target_module, run_name="__main__")
 
