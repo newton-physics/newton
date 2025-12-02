@@ -792,17 +792,19 @@ class TestModel(unittest.TestCase):
         builder = ModelBuilder()
 
         # Create body in world 0
-        builder.current_world = 0
+        builder.begin_world()
         link1 = builder.add_link(mass=1.0)
+        builder.end_world()
 
         # Switch to world 1 and try to create joint with body from world 0
-        builder.current_world = 1
+        builder.begin_world()
         link2 = builder.add_link(mass=1.0)
 
         # This should fail because link1 is in world 0 but we're in world 1
         with self.assertRaises(ValueError) as context:
             builder.add_joint_revolute(parent=link1, child=link2)
         self.assertIn("world", str(context.exception).lower())
+        builder.end_world()
 
 
 if __name__ == "__main__":
