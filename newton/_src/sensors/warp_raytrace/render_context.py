@@ -83,7 +83,6 @@ class RenderContext:
         self.texture_height: wp.array(dtype=wp.int32) = None
 
         self.num_cameras = num_cameras
-        self.camera_rays: wp.array(dtype=wp.vec3f, ndim=4) = None
 
         self.material_texture_ids: wp.array(dtype=wp.int32) = None
         self.material_texture_repeat: wp.array(dtype=wp.vec2f) = None
@@ -124,9 +123,6 @@ class RenderContext:
         if self.bvh_particles_group_roots is None:
             self.bvh_particles_group_roots = wp.zeros((self.num_worlds_total), dtype=wp.int32)
 
-    def init_camera_rays(self):
-        self.camera_rays = wp.empty((self.num_cameras, self.height, self.width, 2), dtype=wp.vec3f)
-
     def create_color_image_output(self):
         return wp.zeros((self.num_worlds, self.num_cameras, self.width * self.height), dtype=wp.uint32)
 
@@ -138,7 +134,7 @@ class RenderContext:
             self.__init_geom_outputs()
             self.__compute_bvh_geom_bounds()
             if self.bvh_geom is None:
-                self.bvh_geom = wp.Bvh(self.bvh_geom_lowers, self.bvh_geom_uppers, groups=self.bvh_geom_groups, constructor="sah")
+                self.bvh_geom = wp.Bvh(self.bvh_geom_lowers, self.bvh_geom_uppers, groups=self.bvh_geom_groups)
                 wp.launch(
                     kernel=compute_bvh_group_roots,
                     dim=self.num_worlds_total,
@@ -152,7 +148,9 @@ class RenderContext:
             self.__compute_bvh_particle_bounds()
             if self.bvh_particles is None:
                 self.bvh_particles = wp.Bvh(
-                    self.bvh_particles_lowers, self.bvh_particles_uppers, groups=self.bvh_particles_groups, constructor="sah"
+                    self.bvh_particles_lowers,
+                    self.bvh_particles_uppers,
+                    groups=self.bvh_particles_groups,
                 )
                 wp.launch(
                     kernel=compute_bvh_group_roots,
@@ -164,13 +162,14 @@ class RenderContext:
 
         if self.has_triangle_mesh:
             if self.triangle_mesh is None:
-                self.triangle_mesh = wp.Mesh(self.triangle_points, self.triangle_indices, bvh_constructor="sah")
+                self.triangle_mesh = wp.Mesh(self.triangle_points, self.triangle_indices)
             else:
                 self.triangle_mesh.refit()
 
     def render(
         self,
-        camera_transforms: wp.array(dtype=wp.transformf),
+        camera_transforms: wp.array(dtype=wp.transformf, ndim=2),
+        camera_rays: wp.array(dtype=wp.vec3f, ndim=4),
         color_image: wp.array(dtype=wp.uint32, ndim=3) | None = None,
         depth_image: wp.array(dtype=wp.float32, ndim=3) | None = None,
         refit_bvh: bool = True,
@@ -179,7 +178,7 @@ class RenderContext:
         if self.has_geometries or self.has_particles or self.has_triangle_mesh:
             if refit_bvh:
                 self.refit_bvh()
-            render_megakernel(self, camera_transforms, color_image, depth_image, clear_images)
+            render_megakernel(self, camera_transforms, camera_rays, color_image, depth_image, clear_images)
 
     def __compute_bvh_geom_bounds(self):
         wp.launch(

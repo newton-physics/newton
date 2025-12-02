@@ -63,7 +63,7 @@ class TiledCameraSensorBenchmark:
         )
 
         transform = wp.transformf(camera_position, wp.quat_from_matrix(camera_orientation))
-        self.camera_transforms = wp.array([transform], dtype=wp.transformf)
+        self.camera_transforms = wp.array([[transform] * num_worlds], dtype=wp.transformf)
 
         self.tiled_camera_sensor = TiledCameraSensor(
             model=self.model,
@@ -72,7 +72,7 @@ class TiledCameraSensorBenchmark:
             height=resolution,
             options=TiledCameraSensor.Options(default_light=True, colors_per_shape=True, checkerboard_texture=True),
         )
-        self.tiled_camera_sensor.compute_camera_rays(wp.array([math.radians(45.0)], dtype=wp.float32))
+        self.camera_rays = self.tiled_camera_sensor.compute_pinhole_camera_rays(math.radians(45.0))
         self.color_image = self.tiled_camera_sensor.create_color_image_output()
         self.depth_image = self.tiled_camera_sensor.create_depth_image_output()
 
@@ -84,7 +84,7 @@ class TiledCameraSensorBenchmark:
 
         for _ in range(iterations):
             self.tiled_camera_sensor.render(
-                None, self.camera_transforms, self.color_image, self.depth_image, refit_bvh=False
+                None, self.camera_transforms, self.camera_rays, self.color_image, self.depth_image, refit_bvh=False
             )
 
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
@@ -95,6 +95,7 @@ class TiledCameraSensorBenchmark:
                 self.tiled_camera_sensor.render(
                     None,
                     self.camera_transforms,
+                    self.camera_rays,
                     self.color_image,
                     self.depth_image,
                     refit_bvh=False,
@@ -111,6 +112,7 @@ class TiledCameraSensorBenchmark:
                 self.tiled_camera_sensor.render(
                     None,
                     self.camera_transforms,
+                    self.camera_rays,
                     self.color_image,
                     self.depth_image,
                     refit_bvh=False,

@@ -242,7 +242,8 @@ class TiledCameraSensor:
     def render(
         self,
         state: State | None,
-        camera_transforms: wp.array(dtype=wp.transformf),
+        camera_transforms: wp.array(dtype=wp.transformf, ndim=2),
+        camera_rays: wp.array(dtype=wp.vec3f, ndim=4),
         color_image: wp.array(dtype=wp.uint32, ndim=3) | None = None,
         depth_image: wp.array(dtype=wp.float32, ndim=3) | None = None,
         refit_bvh: bool = True,
@@ -253,7 +254,8 @@ class TiledCameraSensor:
 
         Args:
             state: The current simulation state containing body transforms.
-            camera_transforms: Array of camera transforms in world space, shape (num_cameras,).
+            camera_transforms: Array of camera transforms in world space, shape (num_cameras, num_worlds).
+            camera_rays: Array of camera rays in camera space, shape (num_cameras, ).
             color_image: Optional output array for color data (num_worlds, num_cameras, width*height).
                         If None, no color rendering is performed.
             depth_image: Optional output array for depth data (num_worlds, num_cameras, width*height).
@@ -265,10 +267,12 @@ class TiledCameraSensor:
             self.update_from_state(state)
 
         self.render_context.render(
-            camera_transforms, color_image, depth_image, refit_bvh=refit_bvh, clear_images=clear_images
+            camera_transforms, camera_rays, color_image, depth_image, refit_bvh=refit_bvh, clear_images=clear_images
         )
 
-    def compute_camera_rays(self, camera_fovs: wp.array(dtype=wp.float32)):
+    def compute_pinhole_camera_rays(
+        self, camera_fovs: float | list[float] | np.ndarray(dtpye=np.float32) | wp.array(dtype=wp.float32)
+    ) -> wp.array(dtype=wp.vec3f, ndim=4):
         """
         Compute camera-space ray directions for pinhole cameras.
 
@@ -276,10 +280,25 @@ class TiledCameraSensor:
         pixel in each camera based on the specified field-of-view angles.
 
         Args:
-            camera_fovs: Array of vertical FOV angles in radians, shape (num_cameras,).
+            camera_fovs: Array of vertical FOV angles in radians, shape (num_cameras, height, width, 2, ).
         """
-        if self.render_context.camera_rays is None:
-            self.render_context.init_camera_rays()
+
+        camera_rays = wp.empty(
+            (self.render_context.num_cameras, self.render_context.height, self.render_context.width, 2), dtype=wp.vec3f
+        )
+
+        if isinstance(camera_fovs, float):
+            camera_fovs = wp.array([camera_fovs] * self.render_context.num_cameras, dtype=wp.float32)
+        elif isinstance(camera_fovs, list[float]):
+            assert len(camera_fovs) == self.render_context.num_cameras, (
+                "Length of camera_fovs does not match the number of cameras"
+            )
+            camera_fovs = wp.array(camera_fovs, dtype=wp.float32)
+        elif isinstance(camera_fovs, np.ndarray):
+            assert camera_fovs.size == self.render_context.num_cameras, (
+                "Length of camera_fovs does not match the number of cameras"
+            )
+            camera_fovs = wp.array(camera_fovs, dtype=wp.float32)
 
         wp.launch(
             kernel=compute_pinhole_camera_rays,
@@ -288,9 +307,11 @@ class TiledCameraSensor:
                 self.render_context.width,
                 self.render_context.height,
                 camera_fovs,
-                self.render_context.camera_rays,
+                camera_rays,
             ],
         )
+
+        return camera_rays
 
     def flatten_color_image(self, image: wp.array(dtype=wp.uint32, ndim=3)) -> np.ndarray | None:
         """

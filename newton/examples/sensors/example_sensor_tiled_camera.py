@@ -101,11 +101,11 @@ class Example:
             ),
         )
         if isinstance(self.viewer, ViewerGL):
-            self.tiled_camera_sensor.compute_camera_rays(
-                wp.array([math.radians(self.viewer.camera.fov)], dtype=wp.float32)
+            self.camera_rays = self.tiled_camera_sensor.compute_pinhole_camera_rays(
+                math.radians(self.viewer.camera.fov)
             )
         else:
-            self.tiled_camera_sensor.compute_camera_rays(wp.array([math.radians(45.0)], dtype=wp.float32))
+            self.camera_rays = self.tiled_camera_sensor.compute_pinhole_camera_rays(math.radians(45.0))
         self.tiled_camera_sensor_color_image = self.tiled_camera_sensor.create_color_image_output()
         self.tiled_camera_sensor_depth_image = self.tiled_camera_sensor.create_depth_image_output()
         self.create_textures()
@@ -125,10 +125,12 @@ class Example:
         if isinstance(self.viewer, ViewerGL):
             camera_transforms = wp.array(
                 [
-                    wp.transformf(
-                        self.viewer.camera.pos,
-                        wp.quat_from_matrix(wp.mat33f(self.viewer.camera.get_view_matrix().reshape(4, 4)[:3, :3])),
-                    )
+                    [
+                        wp.transformf(
+                            self.viewer.camera.pos,
+                            wp.quat_from_matrix(wp.mat33f(self.viewer.camera.get_view_matrix().reshape(4, 4)[:3, :3])),
+                        )
+                    ]
                 ],
                 dtype=wp.transformf,
             )
@@ -137,11 +139,15 @@ class Example:
             camera_position = wp.vec3f(10.0, 0.0, 2.0)
             camera_orientation = wp.mat33f(0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0)
             camera_transforms = wp.array(
-                [wp.transformf(camera_position, wp.quat_from_matrix(camera_orientation))], dtype=wp.transformf
+                [[wp.transformf(camera_position, wp.quat_from_matrix(camera_orientation))]], dtype=wp.transformf
             )
 
         self.tiled_camera_sensor.render(
-            self.state, camera_transforms, self.tiled_camera_sensor_color_image, self.tiled_camera_sensor_depth_image
+            self.state,
+            camera_transforms,
+            self.camera_rays,
+            self.tiled_camera_sensor_color_image,
+            self.tiled_camera_sensor_depth_image,
         )
         self.update_textures()
 
