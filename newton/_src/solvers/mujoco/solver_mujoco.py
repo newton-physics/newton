@@ -1358,6 +1358,11 @@ class SolverMuJoCo(SolverBase):
                         joint_params["solref_limit"] = (-joint_limit_ke[ai], -joint_limit_kd[ai])
                     if joint_solimp_limit is not None:
                         joint_params["solimp_limit"] = joint_solimp_limit[ai]
+                    # Use actfrcrange to clamp total actuator force (P+D sum) on this joint
+                    if actuated_axes is None or ai in actuated_axes:
+                        effort_limit = joint_effort_limit[ai]
+                        joint_params["actfrclimited"] = True
+                        joint_params["actfrcrange"] = (-effort_limit, effort_limit)
                     axname = name
                     if lin_axis_count > 1 or ang_axis_count > 1:
                         axname += "_lin"
@@ -1376,7 +1381,6 @@ class SolverMuJoCo(SolverBase):
                     if actuated_axes is None or ai in actuated_axes:
                         kp = joint_target_ke[ai]
                         kd = joint_target_kd[ai]
-                        effort_limit = joint_effort_limit[ai]
                         gear = actuator_gears.get(axname)
                         if gear is not None:
                             args = {}
@@ -1384,9 +1388,6 @@ class SolverMuJoCo(SolverBase):
                             args["gear"] = [gear, 0.0, 0.0, 0.0, 0.0, 0.0]
                         else:
                             args = actuator_args
-                        # forcerange is defined per actuator, meaning that P and D terms will be clamped separately in PD control and not their sum
-                        # is there a similar attribute per joint dof?
-                        args["forcerange"] = [-effort_limit, effort_limit]
                         args["gainprm"] = [kp, 0, 0, 0, 0, 0, 0, 0, 0, 0]
                         args["biasprm"] = [0, -kp, 0, 0, 0, 0, 0, 0, 0, 0]
                         spec.add_actuator(target=axname, **args)
@@ -1431,6 +1432,11 @@ class SolverMuJoCo(SolverBase):
                         joint_params["solref_limit"] = (-joint_limit_ke[ai], -joint_limit_kd[ai])
                     if joint_solimp_limit is not None:
                         joint_params["solimp_limit"] = joint_solimp_limit[ai]
+                    # Use actfrcrange to clamp total actuator force (P+D sum) on this joint
+                    if actuated_axes is None or ai in actuated_axes:
+                        effort_limit = joint_effort_limit[ai]
+                        joint_params["actfrclimited"] = True
+                        joint_params["actfrcrange"] = (-effort_limit, effort_limit)
 
                     axname = name
                     if lin_axis_count > 1 or ang_axis_count > 1:
@@ -1450,7 +1456,6 @@ class SolverMuJoCo(SolverBase):
                     if actuated_axes is None or ai in actuated_axes:
                         kp = joint_target_ke[ai]
                         kd = joint_target_kd[ai]
-                        effort_limit = joint_effort_limit[ai]
                         gear = actuator_gears.get(axname)
                         if gear is not None:
                             args = {}
@@ -1458,7 +1463,6 @@ class SolverMuJoCo(SolverBase):
                             args["gear"] = [gear, 0.0, 0.0, 0.0, 0.0, 0.0]
                         else:
                             args = actuator_args
-                        args["forcerange"] = [-effort_limit, effort_limit]
                         args["gainprm"] = [kp, 0, 0, 0, 0, 0, 0, 0, 0, 0]
                         args["biasprm"] = [0, -kp, 0, 0, 0, 0, 0, 0, 0, 0]
                         spec.add_actuator(target=axname, **args)
@@ -1688,7 +1692,7 @@ class SolverMuJoCo(SolverBase):
             "jnt_axis",
             "jnt_stiffness",
             "jnt_range",
-            # "jnt_actfrcrange",
+            "jnt_actfrcrange",  # joint-level actuator force range (effort limit)
             "jnt_margin",  # corresponds to newton custom attribute "limit_margin"
             "dof_armature",
             "dof_damping",
@@ -1726,7 +1730,7 @@ class SolverMuJoCo(SolverBase):
             "actuator_gainprm",
             "actuator_biasprm",
             # "actuator_ctrlrange",
-            "actuator_forcerange",
+            # "actuator_forcerange",  # No longer used - force clamping via jnt_actfrcrange
             # "actuator_actrange",
             # "actuator_gear",
             # "pair_solref",
@@ -1820,7 +1824,7 @@ class SolverMuJoCo(SolverBase):
         joints_per_world = self.model.joint_count // self.model.num_worlds
         dofs_per_world = self.model.joint_dof_count // self.model.num_worlds
 
-        # Update actuator force ranges (effort limits) if actuators exist
+        # Update actuator gains and biases if actuators exist
         if self.mjc_axis_to_actuator is not None:
             wp.launch(
                 update_axis_properties_kernel,
@@ -1835,7 +1839,6 @@ class SolverMuJoCo(SolverBase):
                 outputs=[
                     self.mjw_model.actuator_biasprm,
                     self.mjw_model.actuator_gainprm,
-                    self.mjw_model.actuator_forcerange,
                 ],
                 device=self.model.device,
             )
@@ -1860,6 +1863,7 @@ class SolverMuJoCo(SolverBase):
                 self.model.joint_limit_kd,
                 self.model.joint_limit_lower,
                 self.model.joint_limit_upper,
+                self.model.joint_effort_limit,
                 solimplimit,
                 joint_stiffness,
                 joint_damping,
@@ -1875,6 +1879,7 @@ class SolverMuJoCo(SolverBase):
                 self.mjw_model.dof_damping,
                 self.mjw_model.jnt_margin,
                 self.mjw_model.jnt_range,
+                self.mjw_model.jnt_actfrcrange,
             ],
             device=self.model.device,
         )

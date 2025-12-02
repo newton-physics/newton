@@ -882,30 +882,26 @@ def update_axis_properties_kernel(
     # outputs
     actuator_bias: wp.array2d(dtype=vec10),
     actuator_gain: wp.array2d(dtype=vec10),
-    actuator_forcerange: wp.array2d(dtype=wp.vec2f),
 ):
-    """Update actuator force ranges based on joint effort limits."""
+    """Update actuator gains and biases for PD control."""
     tid = wp.tid()
     worldid = tid // axes_per_world
     axis_in_world = tid % axes_per_world
 
     kp = joint_target_kp[tid]
     kv = joint_target_kv[tid]
-    effort_limit = joint_effort_limit[tid]
 
     # Update position actuator (index 0)
     pos_actuator_idx = axis_to_actuator[axis_in_world, 0]
     if pos_actuator_idx >= 0:  # Valid actuator
         actuator_bias[worldid, pos_actuator_idx][1] = -kp
         actuator_gain[worldid, pos_actuator_idx][0] = kp
-        actuator_forcerange[worldid, pos_actuator_idx] = wp.vec2f(-effort_limit, effort_limit)
 
     # Update velocity actuator (index 1)
     vel_actuator_idx = axis_to_actuator[axis_in_world, 1]
     if vel_actuator_idx >= 0:  # Valid actuator
         actuator_bias[worldid, vel_actuator_idx][2] = -kv
         actuator_gain[worldid, vel_actuator_idx][0] = kv
-        actuator_forcerange[worldid, vel_actuator_idx] = wp.vec2f(-effort_limit, effort_limit)
 
 
 @wp.kernel
@@ -920,6 +916,7 @@ def update_joint_dof_properties_kernel(
     joint_limit_kd: wp.array(dtype=float),
     joint_limit_lower: wp.array(dtype=float),
     joint_limit_upper: wp.array(dtype=float),
+    joint_effort_limit: wp.array(dtype=float),
     solimplimit: wp.array(dtype=vec5),
     joint_stiffness: wp.array(dtype=float),
     joint_damping: wp.array(dtype=float),
@@ -934,6 +931,7 @@ def update_joint_dof_properties_kernel(
     dof_damping: wp.array2d(dtype=float),
     jnt_margin: wp.array2d(dtype=float),
     jnt_range: wp.array2d(dtype=wp.vec2),
+    jnt_actfrcrange: wp.array2d(dtype=wp.vec2),
 ):
     """Update joint DOF properties including armature, friction loss, joint impedance limits, and solref.
 
@@ -992,6 +990,10 @@ def update_joint_dof_properties_kernel(
         jnt_range[worldid, mjc_joint_index] = wp.vec2(
             joint_limit_lower[newton_dof_index], joint_limit_upper[newton_dof_index]
         )
+        
+        # update joint actuator force range (effort limit)
+        effort_limit = joint_effort_limit[newton_dof_index]
+        jnt_actfrcrange[worldid, mjc_joint_index] = wp.vec2(-effort_limit, effort_limit)
 
     # update angular dofs
     for i in range(ang_axis_count):
@@ -1025,6 +1027,10 @@ def update_joint_dof_properties_kernel(
         jnt_range[worldid, mjc_joint_index] = wp.vec2(
             joint_limit_lower[newton_dof_index], joint_limit_upper[newton_dof_index]
         )
+        
+        # update joint actuator force range (effort limit)
+        effort_limit = joint_effort_limit[newton_dof_index]
+        jnt_actfrcrange[worldid, mjc_joint_index] = wp.vec2(-effort_limit, effort_limit)
 
 
 @wp.kernel
