@@ -1832,7 +1832,6 @@ class SolverMuJoCo(SolverBase):
                 inputs=[
                     self.model.joint_target_ke,
                     self.model.joint_target_kd,
-                    self.model.joint_effort_limit,
                     self.mjc_axis_to_actuator,
                     dofs_per_world,
                 ],

@@ -876,7 +876,6 @@ def repeat_array_kernel(
 def update_axis_properties_kernel(
     joint_target_kp: wp.array(dtype=float),
     joint_target_kv: wp.array(dtype=float),
-    joint_effort_limit: wp.array(dtype=float),
     axis_to_actuator: wp.array2d(dtype=wp.int32),
     axes_per_world: int,
     # outputs
