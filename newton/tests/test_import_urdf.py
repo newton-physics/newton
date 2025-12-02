@@ -19,6 +19,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import numpy as np
+import warp as wp
 
 import newton
 import newton.examples
@@ -468,7 +469,6 @@ class TestImportUrdf(unittest.TestCase):
 
     def test_xform_with_floating_false(self):
         """Test that xform parameter is respected when floating=False"""
-        import warp as wp
 
         # Create a simple URDF with a link (no position/orientation in URDF for root link)
         urdf_content = """<?xml version="1.0" encoding="utf-8"?>
