@@ -15,12 +15,22 @@
 
 import os
 from collections.abc import Callable
+from contextlib import contextmanager
 
 import numpy as np
 import warp as wp
 
 import newton
 from newton.tests.unittest_utils import find_nan_members
+
+
+@contextmanager
+def _quiet_warp_context(args):
+    try:
+        yield
+    finally:
+        if args is not None and hasattr(args, "_original_warp_quiet"):
+            wp.config.quiet = args._original_warp_quiet
 
 
 def get_source_directory() -> str:
@@ -171,49 +181,47 @@ def test_particle_state(
 
 
 def run(example, args):
-    if hasattr(example, "gui") and hasattr(example.viewer, "register_ui_callback"):
-        example.viewer.register_ui_callback(lambda ui: example.gui(ui), position="side")
+    with _quiet_warp_context(args):
+        if hasattr(example, "gui") and hasattr(example.viewer, "register_ui_callback"):
+            example.viewer.register_ui_callback(lambda ui: example.gui(ui), position="side")
 
-    while example.viewer.is_running():
-        if not example.viewer.is_paused():
-            with wp.ScopedTimer("step", active=False):
-                example.step()
+        while example.viewer.is_running():
+            if not example.viewer.is_paused():
+                with wp.ScopedTimer("step", active=False):
+                    example.step()
 
-        with wp.ScopedTimer("render", active=False):
-            example.render()
+            with wp.ScopedTimer("render", active=False):
+                example.render()
 
-    if args is not None and args.test:
-        if not hasattr(example, "test"):
-            raise NotImplementedError("Example does not have a test method")
-        example.test()
+        if args is not None and args.test:
+            if not hasattr(example, "test"):
+                raise NotImplementedError("Example does not have a test method")
+            example.test()
 
-    example.viewer.close()
+        example.viewer.close()
 
-    if args is not None and args.test:
-        # generic tests for finiteness of Newton objects
-        if hasattr(example, "state_0"):
-            nan_members = find_nan_members(example.state_0)
-            if nan_members:
-                raise ValueError(f"NaN members found in state_0: {nan_members}")
-        if hasattr(example, "state_1"):
-            nan_members = find_nan_members(example.state_1)
-            if nan_members:
-                raise ValueError(f"NaN members found in state_1: {nan_members}")
-        if hasattr(example, "model"):
-            nan_members = find_nan_members(example.model)
-            if nan_members:
-                raise ValueError(f"NaN members found in model: {nan_members}")
-        if hasattr(example, "control"):
-            nan_members = find_nan_members(example.control)
-            if nan_members:
-                raise ValueError(f"NaN members found in control: {nan_members}")
-        if hasattr(example, "contacts"):
-            nan_members = find_nan_members(example.contacts)
-            if nan_members:
-                raise ValueError(f"NaN members found in contacts: {nan_members}")
-
-    if args is not None and hasattr(args, "_original_warp_quiet"):
-        wp.config.quiet = args._original_warp_quiet
+        if args is not None and args.test:
+            # generic tests for finiteness of Newton objects
+            if hasattr(example, "state_0"):
+                nan_members = find_nan_members(example.state_0)
+                if nan_members:
+                    raise ValueError(f"NaN members found in state_0: {nan_members}")
+            if hasattr(example, "state_1"):
+                nan_members = find_nan_members(example.state_1)
+                if nan_members:
+                    raise ValueError(f"NaN members found in state_1: {nan_members}")
+            if hasattr(example, "model"):
+                nan_members = find_nan_members(example.model)
+                if nan_members:
+                    raise ValueError(f"NaN members found in model: {nan_members}")
+            if hasattr(example, "control"):
+                nan_members = find_nan_members(example.control)
+                if nan_members:
+                    raise ValueError(f"NaN members found in control: {nan_members}")
+            if hasattr(example, "contacts"):
+                nan_members = find_nan_members(example.contacts)
+                if nan_members:
+                    raise ValueError(f"NaN members found in contacts: {nan_members}")
 
 
 def compute_world_offsets(
@@ -362,6 +370,9 @@ def init(parser=None):
         # When parser is provided, use parse_args() to properly handle --help
         args = parser.parse_args()
 
+    args._original_warp_quiet = wp.config.quiet
+    wp.config.quiet = True
+
     # Set device if specified
     if args.device:
         wp.set_device(args.device)
@@ -379,9 +390,6 @@ def init(parser=None):
         viewer = newton.viewer.ViewerNull(num_frames=args.num_frames)
     else:
         raise ValueError(f"Invalid viewer: {args.viewer}")
-
-    args._original_warp_quiet = wp.config.quiet
-    wp.config.quiet = True
 
     return viewer, args
 
