@@ -578,25 +578,41 @@ def corner_angles(face_pos: np.ndarray) -> np.ndarray:
 
 
 def triangulate(counts: nparray, indices: nparray) -> nparray:
-    counts = np.asarray(counts)
-    indices = np.asarray(indices)
+    """
+    Perform fan triangulation on polygonal faces.
 
-    num_tris = np.sum(counts - 2)
-    out = np.zeros(num_tris * 3, dtype=int)
+    Args:
+        counts: Array of vertex counts per face
+        indices: Flattened array of vertex indices
 
-    o = 0
-    base = 0
+    Returns:
+        Array of shape (num_triangles, 3) containing triangle indices (dtype=np.int32)
+    """
+    counts = np.asarray(counts, dtype=np.int32)
+    indices = np.asarray(indices, dtype=np.int32)
 
-    for n in counts:
-        # fan triangulation
-        for i in range(n - 2):
-            out[o : o + 3] = [
-                indices[base],
-                indices[base + i + 1],
-                indices[base + i + 2],
-            ]
-            o += 3
-        base += n
+    num_tris = int(np.sum(counts - 2))
+
+    if num_tris == 0:
+        return np.zeros((0, 3), dtype=np.int32)
+
+    # Vectorized approach: build all triangle indices at once
+    # For each face with n vertices, we create (n-2) triangles
+    # Each triangle uses: [base, base+i+1, base+i+2] for i in range(n-2)
+
+    # Array to track which face each triangle belongs to
+    tri_face_ids = np.repeat(np.arange(len(counts), dtype=np.int32), counts - 2)
+
+    # Array for triangle index within each face (0 to n-3)
+    tri_local_ids = np.concatenate([np.arange(n - 2, dtype=np.int32) for n in counts])
+
+    # Base index for each face
+    face_bases = np.concatenate([[0], np.cumsum(counts[:-1], dtype=np.int32)])
+
+    out = np.empty((num_tris, 3), dtype=np.int32)
+    out[:, 0] = indices[face_bases[tri_face_ids]]  # First vertex (anchor)
+    out[:, 1] = indices[face_bases[tri_face_ids] + tri_local_ids + 1]  # Second vertex
+    out[:, 2] = indices[face_bases[tri_face_ids] + tri_local_ids + 2]  # Third vertex
 
     return out
 
@@ -610,7 +626,6 @@ def get_mesh(
         "vertex_averaging", "angle_weighted", "vertex_splitting"
     ] = "vertex_averaging",
     vertex_splitting_angle_threshold_deg: float = 25.0,
-    verbose: bool = False,
 ) -> Mesh:
     """
     Load a triangle mesh from a USD prim that has the ``UsdGeom.Mesh`` schema.
@@ -660,7 +675,6 @@ def get_mesh(
 
         vertex_splitting_angle_threshold_deg (float): The threshold angle in degrees for splitting vertices based on the face normals in case of faceVarying normals and ``face_varying_normal_conversion`` is "vertex_splitting". Corners whose normals differ by more than angle_deg will be split
             into different vertex clusters. Lower = more splits (sharper), higher = fewer splits (smoother).
-        verbose (bool): Whether to print verbose output for debugging.
 
     Returns:
         newton.Mesh: The loaded mesh.
@@ -672,17 +686,17 @@ def get_mesh(
     indices = np.array(mesh.GetFaceVertexIndicesAttr().Get(), dtype=np.int32)
     counts = mesh.GetFaceVertexCountsAttr().Get()
 
-    normals = None
-    if load_normals:
-        normals_attr = mesh.GetNormalsAttr()
-        if normals_attr and normals_attr.HasValue():
-            normals = normals_attr.Get()
-
     uvs = None
     if load_uvs:
         uv_primvar = UsdGeom.PrimvarsAPI(prim).GetPrimvar("st")
         if uv_primvar and uv_primvar.HasValue():
             uvs = uv_primvar.Get()
+
+    normals = None
+    if load_normals:
+        normals_attr = mesh.GetNormalsAttr()
+        if normals_attr and normals_attr.HasValue():
+            normals = normals_attr.Get()
 
     if normals is not None:
         normals = np.array(normals, dtype=np.float64)
