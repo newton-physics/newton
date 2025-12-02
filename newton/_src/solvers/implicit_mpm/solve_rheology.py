@@ -533,9 +533,8 @@ def apply_stress_delta_jacobi(
 def apply_stress_gs(
     color: int,
     launch_dim: int,
-    color_nodes_per_element: int,
     color_offsets: wp.array(dtype=int),
-    color_indices: wp.array(dtype=int),
+    color_blocks: wp.array2d(dtype=int),
     strain_mat_offsets: wp.array(dtype=int),
     strain_mat_columns: wp.array(dtype=int),
     strain_mat_values: wp.array(dtype=mat13),
@@ -554,8 +553,7 @@ def apply_stress_gs(
     color_end = color_offsets[color + 1]
 
     for color_offset in range(color_beg, color_end, launch_dim):
-        beg = color_indices[color_offset]
-        end = beg + color_nodes_per_element
+        beg, end = color_blocks[0, color_offset], color_blocks[1, color_offset]
         for tau_i in range(beg, end):
             cur_stress = stress[tau_i]
 
@@ -574,9 +572,8 @@ def apply_stress_gs(
 def solve_local_stress_gs(
     color: int,
     launch_dim: int,
-    color_nodes_per_element: int,
     color_offsets: wp.array(dtype=int),
-    color_indices: wp.array(dtype=int),
+    color_blocks: wp.array2d(dtype=int),
     yield_params: wp.array(dtype=YieldParamVec),
     compliance_mat_offsets: wp.array(dtype=int),
     compliance_mat_columns: wp.array(dtype=int),
@@ -604,8 +601,7 @@ def solve_local_stress_gs(
     color_end = color_offsets[color + 1]
 
     for color_offset in range(color_beg, color_end, launch_dim):
-        beg = color_indices[color_offset]
-        end = beg + color_nodes_per_element
+        beg, end = color_blocks[0, color_offset], color_blocks[1, color_offset]
         for tau_i in range(beg, end):
             local_strain = compute_local_strain(
                 tau_i,
@@ -1029,8 +1025,7 @@ def solve_rheology(
     collider_inv_mass,
     collider_impulse,
     color_offsets,
-    color_indices: wp.array | None = None,
-    color_nodes_per_element: int = 1,
+    color_blocks: wp.array | None = None,
     rigidity_operator: tuple[sp.BsrMatrix, sp.BsrMatrix, sp.BsrMatrix] | None = None,
     temporary_store: fem.TemporaryStore | None = None,
     use_graph=True,
@@ -1078,8 +1073,7 @@ def solve_rheology(
         collider_inv_mass: Per-velocity-node collider inverse masses.
         collider_impulse: In/out stored collider impulses (warm start, N.s/V0).
         color_offsets: Optional coloring offsets for Gauss-Seidel.
-        color_indices: Optional coloring indices for Gauss-Seidel.
-        color_nodes_per_element: Number of nodes per colored element.
+        color_blocks: Optional coloring blocked indices for Gauss-Seidel.
         rigidity_operator: Optional rigidity operator coupling nodes to collider DOFs.
         temporary_store: Temporary storage arena for intermediate arrays.
         use_graph: If True, uses conditional CUDA graphs for the iteration loop.
@@ -1156,9 +1150,8 @@ def solve_rheology(
             inputs=[
                 0,  # color
                 color_launch_dim,
-                color_nodes_per_element,
                 color_offsets,
-                color_indices,
+                color_blocks,
                 strain_mat.offsets,
                 strain_mat.columns,
                 strain_mat_values,
@@ -1185,9 +1178,8 @@ def solve_rheology(
             inputs=[
                 0,  # color
                 color_launch_dim,
-                color_nodes_per_element,
                 color_offsets,
-                color_indices,
+                color_blocks,
                 yield_params,
                 compliance_mat.offsets,
                 compliance_mat.columns,

@@ -235,6 +235,28 @@ def _create_body_collider_mesh(
     return wp.Mesh(collider_points, collider_indices, wp.zeros_like(collider_points)), face_material_ids
 
 
+@wp.struct
+class MaterialParameters:
+    """Convenience struct for passing material parameters to kernels."""
+
+    young_modulus: wp.array(dtype=float)
+    """Young's modulus for the material."""
+    poisson_ratio: wp.array(dtype=float)
+    """Poisson's ratio for the material."""
+    damping: wp.array(dtype=float)
+    """Damping for the material."""
+    hardening: wp.array(dtype=float)
+    """Hardening for the material."""
+    friction: wp.array(dtype=float)
+    """Friction for the material."""
+    yield_pressure: wp.array(dtype=float)
+    """Yield pressure for the material."""
+    tensile_yield_ratio: wp.array(dtype=float)
+    """Tensile yield ratio for the material."""
+    yield_stress: wp.array(dtype=float)
+    """Yield stress for the material."""
+
+
 class ImplicitMPMModel:
     """Wrapper augmenting a ``newton.Model`` with implicit MPM data and setup.
 
@@ -263,6 +285,9 @@ class ImplicitMPMModel:
 
         self.collider = Collider()
         """Collider struct"""
+
+        self.material_parameters = MaterialParameters()
+        """Material parameters struct"""
 
         self.collider_velocity_mode = options.collider_velocity_mode
         """Collider velocity computation mode (instantaneous or finite_difference)"""
@@ -324,11 +349,20 @@ class ImplicitMPMModel:
         num_particles = model.particle_q.shape[0]
 
         with wp.ScopedDevice(model.device):
-            # Assume that particles represent a cuboid volume of space
-            # (they are typically laid out on a grid)
+            # Assume that particles represent a cuboid volume of space, i.e, V = 8 r**3
+            # (particles are typically laid out in a grid, and represent an uniform material)
             self.particle_radius = _particle_parameter(num_particles, model.particle_radius)
             self.particle_volume = wp.array(8.0 * self.particle_radius.numpy() ** 3)
             self.particle_density = model.particle_mass / self.particle_volume
+
+        self.material_parameters.young_modulus = model.mpm.young_modulus
+        self.material_parameters.poisson_ratio = model.mpm.poisson_ratio
+        self.material_parameters.damping = model.mpm.damping
+        self.material_parameters.hardening = model.mpm.hardening
+        self.material_parameters.friction = model.mpm.friction
+        self.material_parameters.yield_pressure = model.mpm.yield_pressure
+        self.material_parameters.tensile_yield_ratio = model.mpm.tensile_yield_ratio
+        self.material_parameters.yield_stress = model.mpm.yield_stress
 
         self.notify_particle_material_changed()
 

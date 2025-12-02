@@ -394,6 +394,7 @@ if __name__ == "__main__":
     parser.add_argument("--max-active-cell-count", "-mac", type=int, default=-1)
     parser.add_argument("--solver", "-s", type=str, default="gauss-seidel", choices=["gauss-seidel", "jacobi"])
     parser.add_argument("--transfer-scheme", "-ts", type=str, default="apic", choices=["apic", "pic"])
+    parser.add_argument("--integration-scheme", "-is", type=str, default="pic", choices=["pic", "gimp"])
 
     parser.add_argument("--strain-basis", "-sb", type=str, default="P0")
     parser.add_argument("--collider-basis", "-cb", type=str, default="Q1")
