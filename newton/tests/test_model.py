@@ -537,10 +537,10 @@ class TestModel(unittest.TestCase):
             child_xform=wp.transform_identity(),
             axis=(0.0, 1.0, 0.0),
         )
-        builder.end_world()
-
         # Create articulation for world 0
         builder.add_articulation([j0_0, j0_1, j0_2])
+
+        builder.end_world()
 
         # World 1: Another chain
         builder.begin_world()
@@ -564,10 +564,11 @@ class TestModel(unittest.TestCase):
             child_xform=wp.transform_identity(),
             axis=(0.0, 0.0, 1.0),
         )
-        builder.end_world()
 
         # Create articulation for world 1
         builder.add_articulation([j1_0, j1_1])
+        
+        builder.end_world()
 
         # Global body (connected to world via free joint)
         # Using add_body for a standalone body with free joint
