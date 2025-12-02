@@ -113,7 +113,6 @@ class Example:
             ("left_foot", 5),
             ("right_foot", 10),
         ]
-        num_ees = len(self.ee)
 
         # ------------------------------------------------------------------
         # Persistent gizmo transforms (pass-by-ref objects mutated by viewer)
@@ -124,8 +123,6 @@ class Example:
         # ------------------------------------------------------------------
         # IK setup (single problem)
         # ------------------------------------------------------------------
-        total_residuals = num_ees * 3 * 2 + self.model.joint_coord_count  # positions + rotations + joint limits
-
         def _q2v4(q):
             return wp.vec4(q[0], q[1], q[2], q[3])
 
@@ -140,9 +137,6 @@ class Example:
                     link_index=link_idx,
                     link_offset=wp.vec3(0.0, 0.0, 0.0),
                     target_positions=wp.array([wp.transform_get_translation(tf)], dtype=wp.vec3),
-                    n_problems=1,
-                    total_residuals=total_residuals,
-                    residual_offset=ee_i * 3,  # 0,3,6,9 for 4 EEs
                 )
             )
 
@@ -151,9 +145,6 @@ class Example:
                     link_index=link_idx,
                     link_offset_rotation=wp.quat_identity(),
                     target_rotations=wp.array([_q2v4(wp.transform_get_rotation(tf))], dtype=wp.vec4),
-                    n_problems=1,
-                    total_residuals=total_residuals,
-                    residual_offset=num_ees * 3 + ee_i * 3,  # 12,15,18,21 for 4 EEs
                 )
             )
 
@@ -161,9 +152,6 @@ class Example:
         self.obj_joint_limits = ik.IKJointLimitObjective(
             joint_limit_lower=self.model.joint_limit_lower,
             joint_limit_upper=self.model.joint_limit_upper,
-            n_problems=1,
-            total_residuals=total_residuals,
-            residual_offset=num_ees * 6,  # 24 when 4 EEs
             weight=10.0,
         )
 
@@ -173,12 +161,12 @@ class Example:
         self.ik_iters = 24
         self.ik_solver = ik.IKSolver(
             model=self.model,
-            joint_q=self.joint_q,
+            n_problems=1,
             objectives=[*self.pos_objs, *self.rot_objs, self.obj_joint_limits],
             lambda_initial=0.1,
             jacobian_mode=ik.IKJacobianMode.ANALYTIC,
         )
-        self.ik_solver.solve(iterations=self.ik_iters)
+        self.ik_solver.step(self.joint_q, self.joint_q, iterations=self.ik_iters)
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state)
 
         # ------------------------------------------------------------------
@@ -224,7 +212,7 @@ class Example:
         new_transform[tid] = wp.transformation(new_pos, new_rot, dtype=float)
 
     def simulate(self):
-        self.ik_solver.solve(iterations=self.ik_iters)
+        self.ik_solver.step(self.joint_q, self.joint_q, iterations=self.ik_iters)
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state)
 
         self.body_q_1.assign(self.state.body_q)
@@ -313,7 +301,7 @@ class Example:
             self.sim_time += self.frame_dt
         self.frame_index += 1
 
-    def test(self):
+    def test_final(self):
         p_lower = wp.vec3(-0.3, -0.8, 0.8)
         p_upper = wp.vec3(0.5, 0.8, 1.8)
         newton.examples.test_particle_state(

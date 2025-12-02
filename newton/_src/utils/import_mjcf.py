@@ -114,8 +114,8 @@ def parse_mjcf(
     # load joint defaults
     default_joint_limit_lower = builder.default_joint_cfg.limit_lower
     default_joint_limit_upper = builder.default_joint_cfg.limit_upper
-    default_joint_stiffness = builder.default_joint_cfg.target_ke
-    default_joint_damping = builder.default_joint_cfg.target_kd
+    default_joint_target_ke = builder.default_joint_cfg.target_ke
+    default_joint_target_kd = builder.default_joint_cfg.target_kd
     default_joint_armature = builder.default_joint_cfg.armature
 
     # load shape defaults
@@ -303,6 +303,20 @@ def parse_mjcf(
             shape_cfg.has_shape_collision = not just_visual
             shape_cfg.has_particle_collision = not just_visual
             shape_cfg.density = geom_density
+
+            # Parse MJCF friction: "slide [torsion [roll]]"
+            # Can't use parse_vec - it would replicate single values to all dimensions
+            if "friction" in geom_attrib:
+                friction_values = np.fromstring(geom_attrib["friction"], sep=" ", dtype=np.float32)
+
+                if len(friction_values) >= 1:
+                    shape_cfg.mu = float(friction_values[0])
+
+                if len(friction_values) >= 2:
+                    shape_cfg.torsional_friction = float(friction_values[1])
+
+                if len(friction_values) >= 3:
+                    shape_cfg.rolling_friction = float(friction_values[2])
 
             custom_attributes = parse_custom_attributes(geom_attrib, builder_custom_attr_shape, parsing_mode="mjcf")
             shape_kwargs = {
@@ -632,8 +646,8 @@ def parse_mjcf(
                     limit_upper=limit_upper,
                     limit_ke=limit_ke,
                     limit_kd=limit_kd,
-                    target_ke=parse_float(joint_attrib, "stiffness", default_joint_stiffness),
-                    target_kd=parse_float(joint_attrib, "damping", default_joint_damping),
+                    target_ke=default_joint_target_ke,
+                    target_kd=default_joint_target_kd,
                     armature=joint_armature[-1],
                 )
                 if is_angular:
@@ -652,7 +666,7 @@ def parse_mjcf(
                 current_dof_index += 1
 
         body_custom_attributes = parse_custom_attributes(body_attrib, builder_custom_attr_body, parsing_mode="mjcf")
-        link = builder.add_body(
+        link = builder.add_link(
             xform=world_xform,  # Use the composed world transform
             key=body_name,
             custom_attributes=body_custom_attributes,
@@ -687,30 +701,32 @@ def parse_mjcf(
                         "y": [0.0, 1.0, 0.0],
                         "z": [0.0, 0.0, 1.0],
                     }
-                    builder.add_joint_d6(
-                        linear_axes=[ModelBuilder.JointDofConfig(axis=axes[a]) for a in linear_axes],
-                        angular_axes=[ModelBuilder.JointDofConfig(axis=axes[a]) for a in angular_axes],
-                        parent_xform=base_parent_xform,
-                        child_xform=base_child_xform,
-                        parent=-1,
-                        child=link,
-                        key="base_joint",
+                    joint_indices.append(
+                        builder.add_joint_d6(
+                            linear_axes=[ModelBuilder.JointDofConfig(axis=axes[a]) for a in linear_axes],
+                            angular_axes=[ModelBuilder.JointDofConfig(axis=axes[a]) for a in angular_axes],
+                            parent_xform=base_parent_xform,
+                            child_xform=base_child_xform,
+                            parent=-1,
+                            child=link,
+                            key="base_joint",
+                        )
                     )
                 elif isinstance(base_joint, dict):
                     base_joint["parent"] = -1
-                    base_joint["child"] = root
+                    base_joint["child"] = link
                     base_joint["parent_xform"] = base_parent_xform
                     base_joint["child_xform"] = base_child_xform
                     base_joint["key"] = "base_joint"
-                    builder.add_joint(**base_joint)
+                    joint_indices.append(builder.add_joint(**base_joint))
                 else:
                     raise ValueError(
                         "base_joint must be a comma-separated string of joint axes or a dict with joint parameters"
                     )
             elif floating is not None and floating:
-                builder.add_joint_free(link, key="floating_base")
+                joint_indices.append(builder.add_joint_free(link, key="floating_base"))
             else:
-                builder.add_joint_fixed(-1, link, parent_xform=_xform, key="fixed_base")
+                joint_indices.append(builder.add_joint_fixed(-1, link, parent_xform=_xform, key="fixed_base"))
 
         else:
             joint_pos = joint_pos[0] if len(joint_pos) > 0 else wp.vec3(0.0, 0.0, 0.0)
@@ -718,23 +734,27 @@ def parse_mjcf(
                 joint_name = [f"{body_name}_joint"]
             if joint_type == JointType.FREE:
                 assert parent == -1, "Free joints must have the world body as parent"
-                builder.add_joint_free(
-                    link,
-                    key="_".join(joint_name),
-                    custom_attributes=joint_custom_attributes,
+                joint_indices.append(
+                    builder.add_joint_free(
+                        link,
+                        key="_".join(joint_name),
+                        custom_attributes=joint_custom_attributes,
+                    )
                 )
             else:
                 # TODO parse ref, springref values from joint_attrib
-                builder.add_joint(
-                    joint_type,
-                    parent=parent,
-                    child=link,
-                    linear_axes=linear_axes,
-                    angular_axes=angular_axes,
-                    key="_".join(joint_name),
-                    parent_xform=wp.transform(body_pos_for_joints + joint_pos, body_ori_for_joints),
-                    child_xform=wp.transform(joint_pos, wp.quat_identity()),
-                    custom_attributes=joint_custom_attributes | dof_custom_attributes,
+                joint_indices.append(
+                    builder.add_joint(
+                        joint_type,
+                        parent=parent,
+                        child=link,
+                        linear_axes=linear_axes,
+                        angular_axes=angular_axes,
+                        key="_".join(joint_name),
+                        parent_xform=wp.transform(body_pos_for_joints + joint_pos, body_ori_for_joints),
+                        child_xform=wp.transform(joint_pos, wp.quat_identity()),
+                        custom_attributes=joint_custom_attributes | dof_custom_attributes,
+                    )
                 )
 
         # -----------------
@@ -1013,7 +1033,7 @@ def parse_mjcf(
 
     visual_shapes = []
     start_shape_count = len(builder.shape_type)
-    builder.add_articulation(key=root.attrib.get("model"))
+    joint_indices = []  # Collect joint indices as we create them
 
     world = root.find("worldbody")
     world_class = get_class(world)
@@ -1054,6 +1074,63 @@ def parse_mjcf(
         parse_equality_constraints(equality)
 
     # -----------------
+    # parse actuators
+
+    def parse_actuators(actuator_section):
+        """Parse actuators and set target_ke/target_kd for joints."""
+        for position_actuator in actuator_section.findall("position"):
+            joint_name = position_actuator.attrib.get("joint")
+            if not joint_name:
+                continue
+
+            if joint_name not in builder.joint_key:
+                if verbose:
+                    print(f"Warning: Actuator references unknown joint '{joint_name}'")
+                continue
+
+            joint_idx = builder.joint_key.index(joint_name)
+            qd_start = builder.joint_qd_start[joint_idx]
+            lin_dofs, ang_dofs = builder.joint_dof_dim[joint_idx]
+            total_dofs = lin_dofs + ang_dofs
+
+            kp = parse_float(position_actuator.attrib, "kp", 0.0)
+            kv = parse_float(position_actuator.attrib, "kv", 0.0)
+
+            for i in range(total_dofs):
+                dof_idx = qd_start + i
+                builder.joint_target_ke[dof_idx] = kp
+                builder.joint_target_kd[dof_idx] = kv
+
+            if verbose:
+                print(f"Position actuator on joint '{joint_name}': kp={kp}, kv={kv}")
+
+        for velocity_actuator in actuator_section.findall("velocity"):
+            joint_name = velocity_actuator.attrib.get("joint")
+            if not joint_name:
+                continue
+
+            if joint_name not in builder.joint_key:
+                if verbose:
+                    print(f"Warning: Actuator references unknown joint '{joint_name}'")
+                continue
+
+            joint_idx = builder.joint_key.index(joint_name)
+            qd_start = builder.joint_qd_start[joint_idx]
+            lin_dofs, ang_dofs = builder.joint_dof_dim[joint_idx]
+            total_dofs = lin_dofs + ang_dofs
+            kv = parse_float(velocity_actuator.attrib, "kv", 0.0)
+            for i in range(total_dofs):
+                dof_idx = qd_start + i
+                builder.joint_target_kd[dof_idx] = kv
+
+            if verbose:
+                print(f"Velocity actuator on joint '{joint_name}': kv={kv}")
+
+    actuator_section = root.find("actuator")
+    if actuator_section is not None:
+        parse_actuators(actuator_section)
+
+    # -----------------
 
     end_shape_count = len(builder.shape_type)
 
@@ -1065,6 +1142,11 @@ def parse_mjcf(
         for i in range(start_shape_count, end_shape_count):
             for j in range(i + 1, end_shape_count):
                 builder.shape_collision_filter_pairs.append((i, j))
+
+    # Create articulation from all collected joints
+    if joint_indices:
+        articulation_key = root.attrib.get("model")
+        builder.add_articulation(joints=joint_indices, key=articulation_key)
 
     if collapse_fixed_joints:
         builder.collapse_fixed_joints()

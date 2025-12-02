@@ -129,7 +129,7 @@ class Example:
         self.viewer.log_state(self.state_0)
         self.viewer.end_frame()
 
-    def test(self):
+    def test_final(self):
         newton.examples.test_particle_state(
             self.state_0,
             "particles have come close to a rest",

@@ -431,7 +431,7 @@ def parse_usd(
         # Extract custom attributes for this body
         body_custom_attrs = usd.get_custom_attribute_values(prim, builder_custom_attr_body)
 
-        b = builder.add_body(
+        b = builder.add_link(
             xform=xform,
             key=key,
             armature=armature,
@@ -499,7 +499,7 @@ def parse_usd(
 
     def parse_joint(joint_desc, joint_path, incoming_xform=None):
         if not joint_desc.jointEnabled and only_load_enabled_joints:
-            return
+            return None
         key = joint_desc.type
         joint_prim = stage.GetPrimAtPath(joint_desc.primPath)
         # collect engine-specific attributes on the joint prim if requested
@@ -862,6 +862,8 @@ def parse_usd(
                     if verbose:
                         print(f"Set D6 joint {joint_index} {axis_name} velocity to {vel} rad/s")
 
+        return joint_index
+
     # Looking for and parsing the attributes on PhysicsScene prims
     scene_attributes = {}
     physics_scene_prim = None
@@ -1164,30 +1166,34 @@ def parse_usd(
                 joint_edges.append((parent_id, child_id))
 
             articulation_xform = wp.mul(incoming_world_xform, usd.get_transform(articulation_prim))
+            articulation_joint_indices = []
 
             if len(joint_edges) == 0:
                 # We have an articulation without joints, i.e. only free rigid bodies
                 if bodies_follow_joint_ordering:
                     for i in body_ids.values():
-                        builder.add_articulation(body_data[i]["key"], custom_attributes=articulation_custom_attrs)
                         child_body_id = add_body(**body_data[i])
                         # apply the articulation transform to the body
                         builder.body_q[child_body_id] = articulation_xform
-                        builder.add_joint_free(child=child_body_id)
+                        joint_id = builder.add_joint_free(child=child_body_id)
                         # note the free joint's coordinates will be initialized by the body_q of the
                         # child body
+                        builder.add_articulation(
+                            [joint_id], key=body_data[i]["key"], custom_attributes=articulation_custom_attrs
+                        )
                 else:
                     for i, child_body_id in enumerate(art_bodies):
-                        builder.add_articulation(body_keys[i], custom_attributes=articulation_custom_attrs)
                         # apply the articulation transform to the body
                         builder.body_q[child_body_id] = articulation_xform
-                        builder.add_joint_free(child=child_body_id)
+                        joint_id = builder.add_joint_free(child=child_body_id)
                         # note the free joint's coordinates will be initialized by the body_q of the
                         # child body
+                        builder.add_articulation(
+                            [joint_id], key=body_keys[i], custom_attributes=articulation_custom_attrs
+                        )
                 sorted_joints = []
             else:
                 # we have an articulation with joints, we need to sort them topologically
-                builder.add_articulation(articulation_path, custom_attributes=articulation_custom_attrs)
                 if joint_ordering is not None:
                     if verbose:
                         print(f"Sorting joints using {joint_ordering} ordering...")
@@ -1227,7 +1233,8 @@ def parse_usd(
                     # apply the articulation transform to the body
                     #! investigate why assigning body_q (joint_q) by art_xform * body_q is breaking the tests
                     # builder.body_q[child_body_id] = articulation_xform * builder.body_q[child_body_id]
-                    builder.add_joint_free(child=child_body_id)
+                    free_joint_id = builder.add_joint_free(child=child_body_id)
+                    articulation_joint_indices.append(free_joint_id)
                     builder.joint_q[-7:] = articulation_xform
 
                 # insert the remaining joints in topological order
@@ -1235,16 +1242,24 @@ def parse_usd(
                     if joint_id == 0 and first_joint_parent == -1:
                         # the articulation root joint receives the articulation transform as parent transform
                         # except if we already inserted a floating-base joint
-                        parse_joint(
+                        joint = parse_joint(
                             joint_descriptions[joint_names[i]],
                             joint_path=joint_names[i],
                             incoming_xform=articulation_xform,
                         )
                     else:
-                        parse_joint(
+                        joint = parse_joint(
                             joint_descriptions[joint_names[i]],
                             joint_path=joint_names[i],
                         )
+                    if joint is not None:
+                        articulation_joint_indices.append(joint)
+
+            # Create the articulation from all collected joints
+            if articulation_joint_indices:
+                builder.add_articulation(
+                    articulation_joint_indices, key=articulation_path, custom_attributes=articulation_custom_attrs
+                )
 
             articulation_bodies[articulation_id] = art_bodies
             # determine if self-collisions are enabled
@@ -1265,8 +1280,8 @@ def parse_usd(
             add_body_to_builder=True,
         )
         # add articulation and free joint for this body
-        builder.add_articulation(key)
-        builder.add_joint_free(child=body_id)
+        joint_id = builder.add_joint_free(child=body_id)
+        builder.add_articulation([joint_id], key=key)
 
     # parse shapes attached to the rigid bodies
     path_collision_filters = set()

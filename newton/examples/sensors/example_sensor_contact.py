@@ -310,7 +310,7 @@ class Example:
         if not isinstance(self.solver, newton.solvers.SolverMuJoCo):
             self.ants.eval_fk(self.state_0, mask=mask)
 
-    def test(self):
+    def test_final(self):
         assert len(find_nonfinite_members(self.torso_all_contact_sensor)) == 0
         assert len(find_nonfinite_members(self.arm_ground_contact_sensor)) == 0
         assert len(find_nonfinite_members(self.foot_arm_contact_sensor)) == 0

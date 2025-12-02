@@ -13,7 +13,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -205,6 +204,10 @@ class TestImportUrdf(unittest.TestCase):
         urdf: URDF file to parse
         res_dir: dict[str, str]: (filename, content): extra resources files to include in the directory"""
 
+        if not res_dir:
+            builder.add_urdf(urdf, up_axis="Y", **kwargs)
+            return
+
         urdf_filename = "robot.urdf"
         # Create a temporary directory to store files
         res_dir = res_dir or {}
@@ -342,31 +345,26 @@ class TestImportUrdf(unittest.TestCase):
 </robot>
 """
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            urdf_path = os.path.join(tmpdir, "cylinder_test.urdf")
-            with open(urdf_path, "w") as f:
-                f.write(urdf_content)
+        builder = newton.ModelBuilder()
+        builder.add_urdf(urdf_content)
 
-            builder = newton.ModelBuilder()
-            builder.add_urdf(urdf_path)
+        # Check shape types
+        shape_types = list(builder.shape_type)
 
-            # Check shape types
-            shape_types = list(builder.shape_type)
+        # First shape should be cylinder (collision)
+        self.assertEqual(shape_types[0], GeoType.CYLINDER)
 
-            # First shape should be cylinder (collision)
-            self.assertEqual(shape_types[0], GeoType.CYLINDER)
+        # Second shape should be cylinder (visual)
+        self.assertEqual(shape_types[1], GeoType.CYLINDER)
 
-            # Second shape should be cylinder (visual)
-            self.assertEqual(shape_types[1], GeoType.CYLINDER)
+        # Third shape should be capsule
+        self.assertEqual(shape_types[2], GeoType.CAPSULE)
 
-            # Third shape should be capsule
-            self.assertEqual(shape_types[2], GeoType.CAPSULE)
-
-            # Check cylinder properties - radius and half_height
-            # shape_scale stores (radius, half_height, 0) for cylinders
-            shape_scale = builder.shape_scale[0]
-            self.assertAlmostEqual(shape_scale[0], 0.5)  # radius
-            self.assertAlmostEqual(shape_scale[1], 1.0)  # half_height (length/2)
+        # Check cylinder properties - radius and half_height
+        # shape_scale stores (radius, half_height, 0) for cylinders
+        shape_scale = builder.shape_scale[0]
+        self.assertAlmostEqual(shape_scale[0], 0.5)  # radius
+        self.assertAlmostEqual(shape_scale[1], 1.0)  # half_height (length/2)
 
     def test_joint_ordering_original(self):
         builder = newton.ModelBuilder()
