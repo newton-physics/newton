@@ -752,20 +752,21 @@ class TestModel(unittest.TestCase):
         builder = ModelBuilder()
 
         # Create joints in world 0
-        builder.current_world = 0
+        builder.begin_world()
         link1 = builder.add_link(mass=1.0)
         joint1 = builder.add_joint_revolute(parent=-1, child=link1)
+        builder.end_world()
 
         # Create joint in world 1
-        builder.current_world = 1
+        builder.begin_world()
         link2 = builder.add_link(mass=1.0)
         joint2 = builder.add_joint_revolute(parent=-1, child=link2)
 
-        # Try to create articulation from joints in different worlds
-        builder.current_world = 0
+        # Try to create articulation from joints in different worlds (while still in world 1)
         with self.assertRaises(ValueError) as context:
             builder.add_articulation([joint1, joint2])
         self.assertIn("world", str(context.exception).lower())
+        builder.end_world()
 
     def test_articulation_validation_tree_structure(self):
         """Test that articulation validates tree structure (no multiple parents)"""
