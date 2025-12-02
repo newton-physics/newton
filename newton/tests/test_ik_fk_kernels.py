@@ -76,7 +76,7 @@ def _add_single_joint(builder: newton.ModelBuilder, jt: int) -> None:
     child_xf = wp.transform((-0.05, 0.0, 0.0), wp.quat_from_axis_angle(wp.vec3(1, 0, 0), 0.5))
 
     # a 0.1-kg cube just so the body exists
-    child = builder.add_body(
+    child = builder.add_link(
         xform=wp.transform_identity(),
         mass=0.1,
         key=f"body_{jt}",
@@ -88,6 +88,8 @@ def _add_single_joint(builder: newton.ModelBuilder, jt: int) -> None:
         hy=0.05,
         hz=0.05,
     )
+
+    ji = builder.joint_count
 
     if jt == JointType.REVOLUTE:
         builder.add_joint_revolute(
@@ -143,6 +145,9 @@ def _add_single_joint(builder: newton.ModelBuilder, jt: int) -> None:
 
     else:
         raise ValueError(f"Unhandled joint type {jt}")
+
+    if ji == builder.joint_count - 1:
+        builder.add_articulation([ji])
 
 
 def _build_model_for_joint(jt: int, device):
