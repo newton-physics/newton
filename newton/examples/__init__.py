@@ -22,8 +22,6 @@ import warp as wp
 import newton
 from newton.tests.unittest_utils import find_nan_members
 
-wp.config.quiet = True
-
 
 def get_source_directory() -> str:
     return os.path.realpath(os.path.dirname(__file__))
@@ -214,6 +212,9 @@ def run(example, args):
             if nan_members:
                 raise ValueError(f"NaN members found in contacts: {nan_members}")
 
+    if args is not None and hasattr(args, "_original_warp_quiet"):
+        wp.config.quiet = args._original_warp_quiet
+
 
 def compute_world_offsets(
     num_worlds: int,
@@ -378,6 +379,9 @@ def init(parser=None):
         viewer = newton.viewer.ViewerNull(num_frames=args.num_frames)
     else:
         raise ValueError(f"Invalid viewer: {args.viewer}")
+
+    args._original_warp_quiet = wp.config.quiet
+    wp.config.quiet = True
 
     return viewer, args
 
