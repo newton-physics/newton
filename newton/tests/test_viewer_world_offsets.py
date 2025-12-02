@@ -413,7 +413,6 @@ class TestViewerWorldOffsets(unittest.TestCase):
         builder = newton.ModelBuilder()
 
         # Add global ground plane (world -1)
-        builder.current_world = -1
         builder.add_ground_plane()
 
         # Add world-specific bodies

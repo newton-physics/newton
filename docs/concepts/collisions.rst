@@ -62,14 +62,13 @@ Collision rules based on world indices:
 2. Global entities (index -1) **collide with all worlds**
 3. Within the same world, collision groups determine fine-grained interactions
 
-World indices are automatically managed when using :meth:`ModelBuilder.add_builder` to instantiate multiple copies of a scene:
+World indices are automatically managed when using :meth:`ModelBuilder.add_world` to instantiate multiple copies of a scene:
 
 .. testcode::
 
     builder = newton.ModelBuilder()
     
     # Create global ground plane (collides with all worlds)
-    builder.current_world = -1
     builder.add_ground_plane()
     
     # Create robot builder
@@ -80,9 +79,9 @@ World indices are automatically managed when using :meth:`ModelBuilder.add_build
     robot_builder.add_articulation([joint])
     
     # Instantiate robots in separate worlds
-    builder.add_builder(robot_builder, world=0)  # All entities -> world 0
-    builder.add_builder(robot_builder, world=1)  # All entities -> world 1
-    builder.add_builder(robot_builder, world=2)  # All entities -> world 2
+    builder.add_world(robot_builder)  # Creates world 0
+    builder.add_world(robot_builder)  # Creates world 1  
+    builder.add_world(robot_builder)  # Creates world 2
     
     model = builder.finalize()
     
@@ -90,6 +89,31 @@ World indices are automatically managed when using :meth:`ModelBuilder.add_build
     # but all robots will collide with the global ground plane
 
 World indices are stored in :attr:`Model.shape_world`, :attr:`Model.particle_world`, :attr:`Model.body_world`, etc.
+
+For heterogeneous worlds (where each world has different contents), use the :meth:`begin_world` and :meth:`end_world` methods:
+
+.. code-block:: python
+
+    builder = newton.ModelBuilder()
+    
+    # Global ground plane (default world -1)
+    builder.add_ground_plane()
+    
+    # World 0: Robot with arm
+    builder.begin_world(key="robot_arm")
+    arm_base = builder.add_body()
+    builder.add_shape_box(arm_base, hx=0.5, hy=0.5, hz=0.5)
+    # ... add more robot parts
+    builder.end_world()
+    
+    # World 1: Quadruped
+    builder.begin_world(key="quadruped")
+    quad_body = builder.add_body()
+    builder.add_shape_sphere(quad_body, radius=0.3)
+    # ... add legs and joints
+    builder.end_world()
+    
+    model = builder.finalize()
 
 **Performance benefits**
 
@@ -236,14 +260,13 @@ Use world indices to prevent collision between robot copies while allowing each 
 .. code-block:: python
 
     # Global environment
-    builder.current_world = -1
     builder.add_ground_plane()
     obstacles = builder.add_body()
     builder.add_shape_box(obstacles, hx=1, hy=1, hz=1)
     
     # Robot instances in separate worlds
     for i in range(num_robots):
-        builder.add_builder(robot_builder, world=i)
+        builder.add_world(robot_builder)
 
 **Layer-based collision**
 
