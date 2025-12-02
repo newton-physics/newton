@@ -710,7 +710,7 @@ def parse_mjcf(
             elif floating is not None and floating:
                 builder.add_joint_free(link, key="floating_base")
             else:
-                builder.add_joint_fixed(-1, link, parent_xform=_xform, key="fixed_base")
+                builder.add_joint_fixed(-1, link, parent_xform=world_xform, key="fixed_base")
 
         else:
             joint_pos = joint_pos[0] if len(joint_pos) > 0 else wp.vec3(0.0, 0.0, 0.0)
