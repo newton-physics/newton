@@ -247,12 +247,10 @@ class TestSiteNonCollision(unittest.TestCase):
         # Body 1 with collision shape
         body1 = builder.add_body(xform=wp.transform(wp.vec3(0, 0, 1), wp.quat_identity()))
         builder.add_shape_sphere(body1, radius=0.5)
-        builder.add_joint_free(child=body1)
 
         # Body 2 with site (overlapping with body1)
         body2 = builder.add_body(xform=wp.transform(wp.vec3(0, 0, 0.9), wp.quat_identity()))
         builder.add_site(body2, type=GeoType.SPHERE, scale=(0.5, 0.5, 0.5))
-        builder.add_joint_free(child=body2)
 
         model = builder.finalize()
         state = model.state()
