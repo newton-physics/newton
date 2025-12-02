@@ -112,6 +112,11 @@ class SolverFeatherstone(SolverBase):
         """
         super().__init__(model)
 
+        model.request_state_attributes("body_q", "body_qd", "body_f", "joint_q", "joint_qd")
+
+        if model.particle_count > 0:
+            model.request_state_attributes("particle_q", "particle_qd", "particle_f")
+
         self.angular_damping = angular_damping
         self.update_mass_matrix_interval = update_mass_matrix_interval
         self.friction_smoothing = friction_smoothing

@@ -89,6 +89,12 @@ class SolverSemiImplicit(SolverBase):
         self.joint_attach_kd = joint_attach_kd
         self.enable_tri_contact = enable_tri_contact
 
+        if model.body_count > 0:
+            model.request_state_attributes("body_q", "body_qd", "body_f")
+
+        if model.particle_count > 0:
+            model.request_state_attributes("particle_q", "particle_qd", "particle_f")
+
     @override
     def step(
         self,
