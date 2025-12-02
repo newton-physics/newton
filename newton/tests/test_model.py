@@ -505,6 +505,22 @@ class TestModel(unittest.TestCase):
         model = builder3.finalize()
         self.assertEqual(model.num_worlds, 1)
 
+        # Test world index out of range validation
+        # Create a builder with 2 worlds but manually add a body at world index 2
+        # This creates contiguous worlds [0, 1, 2] but num_worlds is only 2
+        builder4 = ModelBuilder()
+        builder4.begin_world()  # Creates world 0
+        builder4.add_body()
+        builder4.end_world()
+        builder4.begin_world()  # Creates world 1
+        builder4.add_body()
+        builder4.end_world()
+        # Add a third body manually at world 2 without calling begin_world
+        builder4.body_world.append(2)  # World 2 is out of range since num_worlds=2
+        with self.assertRaises(ValueError) as cm:
+            builder4.finalize()
+        self.assertIn("out of range", str(cm.exception))
+
     def test_collapse_fixed_joints_with_groups(self):
         """Test that collapse_fixed_joints correctly preserves world groups."""
         builder = ModelBuilder()

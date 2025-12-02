@@ -5152,6 +5152,7 @@ class ModelBuilder:
         1. World indices are monotonic (non-decreasing after first non-negative)
         2. World indices are contiguous (no gaps in sequence)
         3. Global entities (world -1) only appear at beginning or end of arrays
+        4. All world indices are in valid range [-1, num_worlds-1]
 
         Raises:
             ValueError: If any validation check fails.
@@ -5235,6 +5236,14 @@ class ModelBuilder:
                 raise ValueError(
                     f"World indices are not contiguous. Missing world(s): {sorted(missing)}. "
                     f"Found worlds: {world_list}. Worlds must form a continuous sequence starting from 0."
+                )
+
+            # Check that max world index matches num_worlds - 1
+            max_world_index = world_list[-1]
+            if max_world_index >= self.num_worlds:
+                raise ValueError(
+                    f"World index {max_world_index} is out of range. "
+                    f"Valid range is -1 to {self.num_worlds - 1} (num_worlds={self.num_worlds})."
                 )
 
     def finalize(self, device: Devicelike | None = None, requires_grad: bool = False) -> Model:
