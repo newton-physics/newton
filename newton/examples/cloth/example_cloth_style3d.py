@@ -19,6 +19,7 @@ from pxr import Usd, UsdGeom
 
 import newton
 import newton.examples
+import newton.usd
 import newton.utils
 from newton import Mesh, ParticleFlags
 
@@ -49,19 +50,23 @@ class Example:
             garment_usd_name = "Women_Sweatshirt"
 
             usd_stage = Usd.Stage.Open(str(asset_path / "garments" / (garment_usd_name + ".usd")))
-            usd_geom_garment = UsdGeom.Mesh(usd_stage.GetPrimAtPath(str("/Root/" + garment_usd_name + "/Root_Garment")))
+            usd_prim_garment = usd_stage.GetPrimAtPath(str("/Root/" + garment_usd_name + "/Root_Garment"))
 
-            garment_prim = UsdGeom.PrimvarsAPI(usd_geom_garment.GetPrim()).GetPrimvar("st")
-            garment_mesh_indices = np.array(usd_geom_garment.GetFaceVertexIndicesAttr().Get())
-            garment_mesh_points = np.array(usd_geom_garment.GetPointsAttr().Get())
+            garment_mesh = newton.usd.get_mesh(usd_prim_garment, load_uvs=True)
+            garment_mesh_indices = garment_mesh.indices
+            garment_mesh_points = garment_mesh.vertices
+            garment_mesh_uv = garment_mesh.uvs * 1e-3
+
+            # Load UV indices separately (not part of Mesh class)
+            garment_prim = UsdGeom.PrimvarsAPI(usd_prim_garment).GetPrimvar("st")
             garment_mesh_uv_indices = np.array(garment_prim.GetIndices())
-            garment_mesh_uv = np.array(garment_prim.Get()) * 1e-3
 
             # Avatar
             usd_stage = Usd.Stage.Open(str(asset_path / "avatars" / "Female.usd"))
-            usd_geom_avatar = UsdGeom.Mesh(usd_stage.GetPrimAtPath("/Root/Female/Root_SkinnedMesh_Avatar_0_Sub_2"))
-            avatar_mesh_indices = np.array(usd_geom_avatar.GetFaceVertexIndicesAttr().Get())
-            avatar_mesh_points = np.array(usd_geom_avatar.GetPointsAttr().Get())
+            usd_prim_avatar = usd_stage.GetPrimAtPath("/Root/Female/Root_SkinnedMesh_Avatar_0_Sub_2")
+            avatar_mesh = newton.usd.get_mesh(usd_prim_avatar, load_normals=True)
+            avatar_mesh_indices = avatar_mesh.indices
+            avatar_mesh_points = avatar_mesh.vertices
 
             builder.add_aniso_cloth_mesh(
                 pos=wp.vec3(0, 0, 0),

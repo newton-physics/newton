@@ -33,6 +33,7 @@ from pxr import Usd, UsdGeom
 import newton
 import newton.examples
 import newton.ik as ik
+import newton.usd
 import newton.utils
 
 
@@ -69,12 +70,16 @@ class Example:
         cloth_builder = newton.Style3DModelBuilder()
         asset_path = newton.utils.download_asset("style3d")
         usd_stage = Usd.Stage.Open(f"{asset_path}/garments/{garment_usd_name}.usd")
-        usd_geom_garment = UsdGeom.Mesh(usd_stage.GetPrimAtPath(f"/Root/{garment_usd_name}/Root_Garment"))
-        garment_prim = UsdGeom.PrimvarsAPI(usd_geom_garment.GetPrim()).GetPrimvar("st")
-        self.garment_mesh_indices = np.array(usd_geom_garment.GetFaceVertexIndicesAttr().Get())
-        self.garment_mesh_points = np.array(usd_geom_garment.GetPointsAttr().Get())[:, [2, 0, 1]]  # y-up to z-up
+        usd_prim_garment = usd_stage.GetPrimAtPath(f"/Root/{garment_usd_name}/Root_Garment")
+
+        garment_mesh = newton.usd.get_mesh(usd_prim_garment, load_uvs=True)
+        self.garment_mesh_indices = garment_mesh.indices
+        self.garment_mesh_points = garment_mesh.vertices[:, [2, 0, 1]]  # y-up to z-up
+        self.garment_mesh_uv = garment_mesh.uvs * 1e-3
+
+        # Load UV indices separately (not part of Mesh class)
+        garment_prim = UsdGeom.PrimvarsAPI(usd_prim_garment).GetPrimvar("st")
         self.garment_mesh_uv_indices = np.array(garment_prim.GetIndices())
-        self.garment_mesh_uv = np.array(garment_prim.Get()) * 1e-3
 
         cloth_builder.add_aniso_cloth_mesh(
             pos=wp.vec3(0, 0, 0),
