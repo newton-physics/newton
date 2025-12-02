@@ -5175,6 +5175,16 @@ class ModelBuilder:
 
             arr = np.array(world_array, dtype=np.int32)
 
+            # Check for invalid world indices (must be in range [-1, num_worlds-1])
+            max_valid = self.num_worlds - 1
+            invalid_indices = np.where((arr < -1) | (arr > max_valid))[0]
+            if len(invalid_indices) > 0:
+                invalid_values = arr[invalid_indices]
+                raise ValueError(
+                    f"Invalid world index in {array_name}: found value(s) {invalid_values.tolist()} "
+                    f"at indices {invalid_indices.tolist()}. Valid range is -1 to {max_valid} (num_worlds={self.num_worlds})."
+                )
+
             # Check for global entity positioning (world -1)
             # Find first and last occurrence of -1
             negative_indices = np.where(arr == -1)[0]
@@ -5236,14 +5246,6 @@ class ModelBuilder:
                 raise ValueError(
                     f"World indices are not contiguous. Missing world(s): {sorted(missing)}. "
                     f"Found worlds: {world_list}. Worlds must form a continuous sequence starting from 0."
-                )
-
-            # Check that max world index matches num_worlds - 1
-            max_world_index = world_list[-1]
-            if max_world_index >= self.num_worlds:
-                raise ValueError(
-                    f"World index {max_world_index} is out of range. "
-                    f"Valid range is -1 to {self.num_worlds - 1} (num_worlds={self.num_worlds})."
                 )
 
     def finalize(self, device: Devicelike | None = None, requires_grad: bool = False) -> Model:
