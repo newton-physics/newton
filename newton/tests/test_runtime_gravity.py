@@ -88,7 +88,6 @@ def test_runtime_gravity_bodies(test, device, solver_fn):
     # Add a free-floating rigid body
     b = builder.add_body()
     builder.add_shape_box(b, hx=0.5, hy=0.5, hz=0.5)
-    builder.add_joint_free(b)
 
     model = builder.finalize(device=device)
     solver = solver_fn(model)

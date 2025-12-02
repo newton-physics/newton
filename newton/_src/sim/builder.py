@@ -160,6 +160,10 @@ class ModelBuilder:
         """The coefficient of friction."""
         restitution: float = 0.0
         """The coefficient of restitution."""
+        torsional_friction: float = 0.25
+        """The coefficient of torsional friction (resistance to spinning at contact point)."""
+        rolling_friction: float = 0.0005
+        """The coefficient of rolling friction (resistance to rolling motion)."""
         thickness: float = 1e-5
         """The thickness of the shape."""
         contact_margin: float | None = None
@@ -483,6 +487,8 @@ class ModelBuilder:
         self.shape_material_ka = []
         self.shape_material_mu = []
         self.shape_material_restitution = []
+        self.shape_material_torsional_friction = []
+        self.shape_material_rolling_friction = []
         self.shape_contact_margin = []
         # collision groups within collisions are handled
         self.shape_collision_group = []
@@ -592,10 +598,6 @@ class ModelBuilder:
         # contacts to be generated within the given distance margin to be generated at
         # every simulation substep (can be 0 if only one PBD solver iteration is used)
         self.rigid_contact_margin = 0.1
-        # torsional friction coefficient (only considered by XPBD so far)
-        self.rigid_contact_torsional_friction = 0.5
-        # rolling friction coefficient (only considered by XPBD so far)
-        self.rigid_contact_rolling_friction = 0.001
 
         # number of rigid contact points to allocate in the model during self.finalize() per world
         # if setting is None, the number of worst-case number of contacts will be calculated in self.finalize()
@@ -1012,20 +1014,90 @@ class ModelBuilder:
             xform[:3] = offsets[i]
             self.add_world(builder, xform=xform)
 
-    def add_articulation(self, key: str | None = None, custom_attributes: dict[str, Any] | None = None):
+    def add_articulation(
+        self, joints: list[int], key: str | None = None, custom_attributes: dict[str, Any] | None = None
+    ):
         """
-        Adds an articulation to the model.
-        An articulation is a set of contiguous joints from ``articulation_start[i]`` to ``articulation_start[i+1]``.
+        Adds an articulation to the model from a list of joint indices.
+
+        The articulation is a set of joints that must be contiguous and monotonically increasing.
         Some functions, such as forward kinematics :func:`newton.eval_fk`, are parallelized over articulations.
-        Articulations are automatically 'closed' when calling :meth:`~newton.ModelBuilder.finalize`.
 
         Args:
+            joints: List of joint indices to include in the articulation. Must be contiguous and monotonic.
             key: The key of the articulation. If None, a default key will be created.
             custom_attributes: Dictionary of custom attribute values for ARTICULATION frequency attributes.
+
+        Raises:
+            ValueError: If joints are not contiguous, not monotonic, or belong to different worlds.
+
+        Example:
+            .. code-block:: python
+
+                link1 = builder.add_link(...)
+                link2 = builder.add_link(...)
+                link3 = builder.add_link(...)
+
+                joint1 = builder.add_joint_revolute(parent=-1, child=link1)
+                joint2 = builder.add_joint_revolute(parent=link1, child=link2)
+                joint3 = builder.add_joint_revolute(parent=link2, child=link3)
+
+                # Create articulation from the joints
+                builder.add_articulation([joint1, joint2, joint3])
         """
-        # local index since self.articulation_count will change after appending the articulation
+        if not joints:
+            raise ValueError("Cannot create an articulation with no joints")
+
+        # Sort joints to ensure we can validate them properly
+        sorted_joints = sorted(joints)
+
+        # Validate joints are monotonically increasing (no duplicates)
+        if sorted_joints != joints:
+            raise ValueError(
+                f"Joints must be provided in monotonically increasing order. Got {joints}, expected {sorted_joints}"
+            )
+
+        # Validate joints are contiguous
+        for i in range(1, len(sorted_joints)):
+            if sorted_joints[i] != sorted_joints[i - 1] + 1:
+                raise ValueError(
+                    f"Joints must be contiguous. Got indices {sorted_joints}, but there is a gap between "
+                    f"{sorted_joints[i - 1]} and {sorted_joints[i]}. Create all joints for an articulation "
+                    f"before creating joints for another articulation."
+                )
+
+        # Validate all joints exist
+        for joint_idx in joints:
+            if joint_idx < 0 or joint_idx >= len(self.joint_type):
+                raise ValueError(
+                    f"Joint index {joint_idx} is out of range. Valid range is 0 to {len(self.joint_type) - 1}"
+                )
+
+        # Validate all joints belong to the same world (current world)
+        for joint_idx in joints:
+            if joint_idx < len(self.joint_world) and self.joint_world[joint_idx] != self.current_world:
+                raise ValueError(
+                    f"Joint {joint_idx} belongs to world {self.joint_world[joint_idx]}, but current world is "
+                    f"{self.current_world}. All joints in an articulation must belong to the same world."
+                )
+
+        # Basic tree structure validation (check for cycles, single parent)
+        # Build a simple tree structure check - each child should have only one parent in this articulation
+        child_to_parent = {}
+        for joint_idx in joints:
+            child = self.joint_child[joint_idx]
+            parent = self.joint_parent[joint_idx]
+
+            if child in child_to_parent and child_to_parent[child] != parent:
+                raise ValueError(
+                    f"Body {child} has multiple parents in this articulation: {child_to_parent[child]} and {parent}. "
+                    f"This creates an invalid tree structure."
+                )
+            child_to_parent[child] = parent
+
+        # Store the articulation using the first joint's index as the start
         articulation_idx = self.articulation_count
-        self.articulation_start.append(self.joint_count)
+        self.articulation_start.append(sorted_joints[0])
         self.articulation_key.append(key or f"articulation_{articulation_idx}")
         self.articulation_world.append(self.current_world)
 
@@ -1666,6 +1738,8 @@ class ModelBuilder:
             "shape_material_ka",
             "shape_material_mu",
             "shape_material_restitution",
+            "shape_material_torsional_friction",
+            "shape_material_rolling_friction",
             "shape_collision_radius",
             "shape_contact_margin",
             "particle_qd",
@@ -1747,7 +1821,7 @@ class ModelBuilder:
                 merged.values = {}
             merged.values.update({offset + idx: value for idx, value in attr.values.items()})
 
-    def add_body(
+    def add_link(
         self,
         xform: Transform | None = None,
         armature: float | None = None,
@@ -1757,7 +1831,13 @@ class ModelBuilder:
         key: str | None = None,
         custom_attributes: dict[str, Any] | None = None,
     ) -> int:
-        """Adds a rigid body to the model.
+        """Adds a link (rigid body) to the model within an articulation.
+
+        This method creates a link without automatically adding a joint. To connect this link
+        to the articulation structure, you must explicitly call one of the joint methods
+        (e.g., :meth:`add_joint_revolute`, :meth:`add_joint_fixed`, etc.) after creating the link.
+
+        After calling this method and one of the joint methods, ensure that an articulation is created using :meth:`add_articulation`.
 
         Args:
             xform: The location of the body in the world frame.
@@ -1821,6 +1901,68 @@ class ModelBuilder:
 
         return body_id
 
+    def add_body(
+        self,
+        xform: Transform | None = None,
+        armature: float | None = None,
+        com: Vec3 | None = None,
+        I_m: Mat33 | None = None,
+        mass: float = 0.0,
+        key: str | None = None,
+        custom_attributes: dict[str, Any] | None = None,
+    ) -> int:
+        """Adds a stand-alone free-floating rigid body to the model.
+
+        This is a convenience method that creates a single-body articulation with a free joint,
+        allowing the body to move freely in 6 degrees of freedom. Internally, this method calls:
+
+        1. :meth:`add_link` to create the body
+        2. :meth:`add_joint_free` to add a free joint connecting the body to the world
+        3. :meth:`add_articulation` to create a new articulation from the joint
+
+        For creating articulations with multiple linked bodies, use :meth:`add_link`,
+        the appropriate joint methods, and :meth:`add_articulation` directly.
+
+        Args:
+            xform: The location of the body in the world frame.
+            armature: Artificial inertia added to the body. If None, the default value from :attr:`default_body_armature` is used.
+            com: The center of mass of the body w.r.t its origin. If None, the center of mass is assumed to be at the origin.
+            I_m: The 3x3 inertia tensor of the body (specified relative to the center of mass). If None, the inertia tensor is assumed to be zero.
+            mass: Mass of the body.
+            key: Key of the body. When provided, the auto-created free joint and articulation
+                are assigned keys ``{key}_free_joint`` and ``{key}_articulation`` respectively.
+            custom_attributes: Dictionary of custom attribute names to values.
+
+        Returns:
+            The index of the body in the model.
+
+        Note:
+            If the mass is zero then the body is treated as kinematic with no dynamics.
+
+        """
+        # Create the link
+        body_id = self.add_link(
+            xform=xform,
+            armature=armature,
+            com=com,
+            I_m=I_m,
+            mass=mass,
+            key=key,
+            custom_attributes=custom_attributes,
+        )
+
+        # Add a free joint to make it float
+        joint_id = self.add_joint_free(
+            child=body_id,
+            key=f"{key}_free_joint" if key else None,
+        )
+
+        # Create an articulation from the joint
+        articulation_key = f"{key}_articulation" if key else None
+        self.add_articulation([joint_id], key=articulation_key)
+
+        return body_id
+
     # region joints
 
     def add_joint(
@@ -1870,9 +2012,24 @@ class ModelBuilder:
         else:
             child_xform = wp.transform(*child_xform)
 
-        if len(self.articulation_start) == 0:
-            # automatically add an articulation if none exists
-            self.add_articulation()
+        # Validate that parent and child bodies belong to the current world
+        if parent != -1:  # -1 means world/ground
+            if parent < 0 or parent >= len(self.body_world):
+                raise ValueError(f"Parent body index {parent} is out of range")
+            if self.body_world[parent] != self.current_world:
+                raise ValueError(
+                    f"Cannot create joint: parent body {parent} belongs to world {self.body_world[parent]}, "
+                    f"but current world is {self.current_world}"
+                )
+
+        if child < 0 or child >= len(self.body_world):
+            raise ValueError(f"Child body index {child} is out of range")
+        if self.body_world[child] != self.current_world:
+            raise ValueError(
+                f"Cannot create joint: child body {child} belongs to world {self.body_world[child]}, "
+                f"but current world is {self.current_world}"
+            )
+
         self.joint_type.append(joint_type)
         self.joint_parent.append(parent)
         if child not in self.joint_parents:
@@ -3086,6 +3243,8 @@ class ModelBuilder:
         self.shape_material_ka.append(cfg.ka)
         self.shape_material_mu.append(cfg.mu)
         self.shape_material_restitution.append(cfg.restitution)
+        self.shape_material_torsional_friction.append(cfg.torsional_friction)
+        self.shape_material_rolling_friction.append(cfg.rolling_friction)
         self.shape_contact_margin.append(
             cfg.contact_margin if cfg.contact_margin is not None else self.rigid_contact_margin
         )
@@ -3811,6 +3970,8 @@ class ModelBuilder:
                             ka=self.shape_material_ka[shape],
                             mu=self.shape_material_mu[shape],
                             restitution=self.shape_material_restitution[shape],
+                            torsional_friction=self.shape_material_torsional_friction[shape],
+                            rolling_friction=self.shape_material_rolling_friction[shape],
                             thickness=self.shape_thickness[shape],
                             is_solid=self.shape_is_solid[shape],
                             collision_group=self.shape_collision_group[shape],
@@ -5184,6 +5345,12 @@ class ModelBuilder:
             m.shape_material_restitution = wp.array(
                 self.shape_material_restitution, dtype=wp.float32, requires_grad=requires_grad
             )
+            m.shape_material_torsional_friction = wp.array(
+                self.shape_material_torsional_friction, dtype=wp.float32, requires_grad=requires_grad
+            )
+            m.shape_material_rolling_friction = wp.array(
+                self.shape_material_rolling_friction, dtype=wp.float32, requires_grad=requires_grad
+            )
             m.shape_contact_margin = wp.array(self.shape_contact_margin, dtype=wp.float32, requires_grad=requires_grad)
 
             m.shape_collision_filter_pairs = set(self.shape_collision_filter_pairs)
@@ -5423,9 +5590,6 @@ class ModelBuilder:
 
             self.find_shape_contact_pairs(m)
             m.rigid_contact_max = count_rigid_contact_points(m)
-
-            m.rigid_contact_torsional_friction = self.rigid_contact_torsional_friction
-            m.rigid_contact_rolling_friction = self.rigid_contact_rolling_friction
 
             # enable ground plane
             m.up_axis = self.up_axis

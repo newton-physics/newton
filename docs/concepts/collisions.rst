@@ -73,10 +73,10 @@ World indices are automatically managed when using :meth:`ModelBuilder.add_world
     
     # Create robot builder
     robot_builder = newton.ModelBuilder()
-    robot_builder.add_articulation()
-    robot_body = robot_builder.add_body()
+    robot_body = robot_builder.add_link()
     robot_builder.add_shape_sphere(robot_body, radius=0.5)
-    robot_builder.add_joint_free(robot_body)
+    joint = robot_builder.add_joint_free(robot_body)
+    robot_builder.add_articulation([joint])
     
     # Instantiate robots in separate worlds
     builder.add_world(robot_builder)  # Creates world 0
