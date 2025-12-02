@@ -990,7 +990,7 @@ def update_joint_dof_properties_kernel(
         jnt_range[worldid, mjc_joint_index] = wp.vec2(
             joint_limit_lower[newton_dof_index], joint_limit_upper[newton_dof_index]
         )
-        
+
         # update joint actuator force range (effort limit)
         effort_limit = joint_effort_limit[newton_dof_index]
         jnt_actfrcrange[worldid, mjc_joint_index] = wp.vec2(-effort_limit, effort_limit)
@@ -1027,7 +1027,7 @@ def update_joint_dof_properties_kernel(
         jnt_range[worldid, mjc_joint_index] = wp.vec2(
             joint_limit_lower[newton_dof_index], joint_limit_upper[newton_dof_index]
         )
-        
+
         # update joint actuator force range (effort limit)
         effort_limit = joint_effort_limit[newton_dof_index]
         jnt_actfrcrange[worldid, mjc_joint_index] = wp.vec2(-effort_limit, effort_limit)
