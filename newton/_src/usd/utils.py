@@ -577,7 +577,7 @@ def corner_angles(face_pos: np.ndarray) -> np.ndarray:
     return angles
 
 
-def triangulate(counts: nparray, indices: nparray) -> nparray:
+def fan_triangulate_faces(counts: nparray, indices: nparray) -> nparray:
     """
     Perform fan triangulation on polygonal faces.
 
@@ -815,7 +815,7 @@ def get_mesh(
             else:
                 raise ValueError(f"Invalid face_varying_normal_conversion: {face_varying_normal_conversion}")
 
-    faces = triangulate(counts, indices)
+    faces = fan_triangulate_faces(counts, indices)
 
     flip_winding = False
     orientation_attr = mesh.GetOrientationAttr()
