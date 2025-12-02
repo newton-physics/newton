@@ -160,6 +160,10 @@ class ModelBuilder:
         """The coefficient of friction."""
         restitution: float = 0.0
         """The coefficient of restitution."""
+        torsional_friction: float = 0.25
+        """The coefficient of torsional friction (resistance to spinning at contact point)."""
+        rolling_friction: float = 0.0005
+        """The coefficient of rolling friction (resistance to rolling motion)."""
         thickness: float = 1e-5
         """The thickness of the shape."""
         contact_margin: float | None = None
@@ -483,6 +487,8 @@ class ModelBuilder:
         self.shape_material_ka = []
         self.shape_material_mu = []
         self.shape_material_restitution = []
+        self.shape_material_torsional_friction = []
+        self.shape_material_rolling_friction = []
         self.shape_contact_margin = []
         # collision groups within collisions are handled
         self.shape_collision_group = []
@@ -593,10 +599,6 @@ class ModelBuilder:
         # contacts to be generated within the given distance margin to be generated at
         # every simulation substep (can be 0 if only one PBD solver iteration is used)
         self.rigid_contact_margin = 0.1
-        # torsional friction coefficient (only considered by XPBD so far)
-        self.rigid_contact_torsional_friction = 0.5
-        # rolling friction coefficient (only considered by XPBD so far)
-        self.rigid_contact_rolling_friction = 0.001
 
         # number of rigid contact points to allocate in the model during self.finalize() per world
         # if setting is None, the number of worst-case number of contacts will be calculated in self.finalize()
@@ -1653,6 +1655,8 @@ class ModelBuilder:
             "shape_material_ka",
             "shape_material_mu",
             "shape_material_restitution",
+            "shape_material_torsional_friction",
+            "shape_material_rolling_friction",
             "shape_collision_radius",
             "shape_contact_margin",
             "particle_qd",
@@ -3169,6 +3173,8 @@ class ModelBuilder:
         self.shape_material_ka.append(cfg.ka)
         self.shape_material_mu.append(cfg.mu)
         self.shape_material_restitution.append(cfg.restitution)
+        self.shape_material_torsional_friction.append(cfg.torsional_friction)
+        self.shape_material_rolling_friction.append(cfg.rolling_friction)
         self.shape_contact_margin.append(
             cfg.contact_margin if cfg.contact_margin is not None else self.rigid_contact_margin
         )
@@ -3894,6 +3900,8 @@ class ModelBuilder:
                             ka=self.shape_material_ka[shape],
                             mu=self.shape_material_mu[shape],
                             restitution=self.shape_material_restitution[shape],
+                            torsional_friction=self.shape_material_torsional_friction[shape],
+                            rolling_friction=self.shape_material_rolling_friction[shape],
                             thickness=self.shape_thickness[shape],
                             is_solid=self.shape_is_solid[shape],
                             collision_group=self.shape_collision_group[shape],
@@ -5172,6 +5180,12 @@ class ModelBuilder:
             m.shape_material_restitution = wp.array(
                 self.shape_material_restitution, dtype=wp.float32, requires_grad=requires_grad
             )
+            m.shape_material_torsional_friction = wp.array(
+                self.shape_material_torsional_friction, dtype=wp.float32, requires_grad=requires_grad
+            )
+            m.shape_material_rolling_friction = wp.array(
+                self.shape_material_rolling_friction, dtype=wp.float32, requires_grad=requires_grad
+            )
             m.shape_contact_margin = wp.array(self.shape_contact_margin, dtype=wp.float32, requires_grad=requires_grad)
 
             m.shape_collision_filter_pairs = set(self.shape_collision_filter_pairs)
@@ -5411,9 +5425,6 @@ class ModelBuilder:
 
             self.find_shape_contact_pairs(m)
             m.rigid_contact_max = count_rigid_contact_points(m)
-
-            m.rigid_contact_torsional_friction = self.rigid_contact_torsional_friction
-            m.rigid_contact_rolling_friction = self.rigid_contact_rolling_friction
 
             # enable ground plane
             m.up_axis = self.up_axis

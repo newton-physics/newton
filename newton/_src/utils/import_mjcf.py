@@ -304,6 +304,20 @@ def parse_mjcf(
             shape_cfg.has_particle_collision = not just_visual
             shape_cfg.density = geom_density
 
+            # Parse MJCF friction: "slide [torsion [roll]]"
+            # Can't use parse_vec - it would replicate single values to all dimensions
+            if "friction" in geom_attrib:
+                friction_values = np.fromstring(geom_attrib["friction"], sep=" ", dtype=np.float32)
+
+                if len(friction_values) >= 1:
+                    shape_cfg.mu = float(friction_values[0])
+
+                if len(friction_values) >= 2:
+                    shape_cfg.torsional_friction = float(friction_values[1])
+
+                if len(friction_values) >= 3:
+                    shape_cfg.rolling_friction = float(friction_values[2])
+
             custom_attributes = parse_custom_attributes(geom_attrib, builder_custom_attr_shape, parsing_mode="mjcf")
             shape_kwargs = {
                 "key": geom_name,
