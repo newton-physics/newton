@@ -739,7 +739,7 @@ def get_mesh(
                 new_points = []
                 new_norm_sums = []  # accumulate directions per new vertex id
                 new_indices = np.empty_like(indices)
-                new_uvs = []
+                new_uvs = [] if uvs is not None else None
 
                 # Helper to create a new vertex clone from original v
                 def _new_vertex_from(v, n_dir):
@@ -747,7 +747,7 @@ def get_mesh(
                     new_points.append(points[v])
                     new_norm_sums.append(n_dir.copy())
                     clusters_per_v[v].append([n_dir.copy(), 1, new_vid])
-                    if uvs:
+                    if new_uvs is not None:
                         new_uvs.append(uvs[v])
                     return new_vid
 
