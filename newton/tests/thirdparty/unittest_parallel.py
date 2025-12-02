@@ -174,6 +174,8 @@ def main(argv=None):
 
     import warp as wp  # noqa: PLC0415 NVIDIA Modification
 
+    wp.config.quiet = True
+
     # Clear the Warp cache (NVIDIA Modification)
     wp.clear_lto_cache()
     wp.clear_kernel_cache()
@@ -571,6 +573,8 @@ def initialize_test_process(lock, shared_index, args, temp_dir):
 
     with _coverage(args, temp_dir):
         import warp as wp  # noqa: PLC0415
+
+        wp.config.quiet = True
 
         if args.no_shared_cache:
             from warp.thirdparty import appdirs  # noqa: PLC0415

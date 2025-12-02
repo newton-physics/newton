@@ -672,7 +672,12 @@ class Style3DModelBuilder(ModelBuilder):
         for spring in sew_springs:
             self.add_spring(spring[0], spring[1], self.default_spring_ke, self.default_spring_kd, control=0.0)
 
-    def finalize(self, device: Devicelike | None = None, requires_grad: bool = False) -> Style3DModel:
+    def finalize(
+        self,
+        device: Devicelike | None = None,
+        requires_grad: bool = False,
+        verbose: bool | None = None,
+    ) -> Style3DModel:
         """Convert this builder object to a concrete model for simulation.
 
         After building simulation elements this method should be called to transfer
@@ -681,13 +686,15 @@ class Style3DModelBuilder(ModelBuilder):
         Args:
             device: The simulation device to use, e.g.: 'cpu', 'cuda'
             requires_grad: Whether to enable gradient computation for the model
+            verbose: If True, emit warnings for inertia corrections and other diagnostic messages.
+                If None, mirrors the current value of `wp.config.verbose` at call time.
 
         Returns:
 
             A model object.
         """
 
-        model = super().finalize(device=device, requires_grad=requires_grad)
+        model = super().finalize(device=device, requires_grad=requires_grad, verbose=verbose)
         style3d_model = Style3DModel.from_model(model)
 
         with wp.ScopedDevice(device):

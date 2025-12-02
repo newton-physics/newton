@@ -175,7 +175,7 @@ class TestInertiaValidation(unittest.TestCase):
         )
 
         with warnings.catch_warnings(record=True) as w:
-            model = builder.finalize()
+            model = builder.finalize(verbose=True)
 
             # Should get one summary warning
             self.assertEqual(len(w), 1)
@@ -247,7 +247,7 @@ class TestInertiaValidation(unittest.TestCase):
         )
 
         with warnings.catch_warnings(record=True) as w:
-            model = builder.finalize()
+            model = builder.finalize(verbose=True)
 
             # Should get warning about issues found
             self.assertEqual(len(w), 1)
