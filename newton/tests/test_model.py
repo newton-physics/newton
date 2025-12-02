@@ -567,7 +567,7 @@ class TestModel(unittest.TestCase):
 
         # Create articulation for world 1
         builder.add_articulation([j1_0, j1_1])
-        
+
         builder.end_world()
 
         # Global body (connected to world via free joint)
