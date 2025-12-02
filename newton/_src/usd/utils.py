@@ -577,6 +577,30 @@ def corner_angles(face_pos: np.ndarray) -> np.ndarray:
     return angles
 
 
+def triangulate(counts: nparray, indices: nparray) -> nparray:
+    counts = np.asarray(counts)
+    indices = np.asarray(indices)
+
+    num_tris = np.sum(counts - 2)
+    out = np.zeros(num_tris * 3, dtype=int)
+
+    o = 0
+    base = 0
+
+    for n in counts:
+        # fan triangulation
+        for i in range(n - 2):
+            out[o : o + 3] = [
+                indices[base],
+                indices[base + i + 1],
+                indices[base + i + 2],
+            ]
+            o += 3
+        base += n
+
+    return out
+
+
 def get_mesh(
     prim: Usd.Prim,
     load_normals: bool = False,
@@ -647,9 +671,18 @@ def get_mesh(
     points = np.array(mesh.GetPointsAttr().Get(), dtype=np.float64)
     indices = np.array(mesh.GetFaceVertexIndicesAttr().Get(), dtype=np.int32)
     counts = mesh.GetFaceVertexCountsAttr().Get()
-    normals = mesh.GetNormalsAttr().Get() if load_normals else None
 
-    uvs = mesh.GetPrimvarsAttr("st").Get() if load_uvs else None
+    normals = None
+    if load_normals:
+        normals_attr = mesh.GetNormalsAttr()
+        if normals_attr and normals_attr.HasValue():
+            normals = normals_attr.Get()
+
+    uvs = None
+    if load_uvs:
+        uv_primvar = UsdGeom.PrimvarsAPI(prim).GetPrimvar("st")
+        if uv_primvar and uv_primvar.HasValue():
+            uvs = uv_primvar.Get()
 
     if normals is not None:
         normals = np.array(normals, dtype=np.float64)
@@ -768,31 +801,18 @@ def get_mesh(
             else:
                 raise ValueError(f"Invalid face_varying_normal_conversion: {face_varying_normal_conversion}")
 
-    faces = []
-    face_id = 0
-    for count in counts:
-        if count == 3:
-            faces.append(indices[face_id : face_id + 3])
-        elif count == 4:
-            faces.append(indices[face_id : face_id + 3])
-            faces.append(indices[[face_id, face_id + 2, face_id + 3]])
-        elif verbose:
-            print(
-                f"Error while parsing USD mesh {prim.GetPath()}: encountered polygon with {count} vertices, but only triangles and quads are supported."
-            )
-            continue
-        face_id += count
-
-    faces = np.array(faces, dtype=np.int32)
+    faces = triangulate(counts, indices)
 
     flip_winding = False
-    handedness = mesh.GetOrientationAttr().Get()
-    if handedness.lower() == "lefthanded":
-        flip_winding = True
+    orientation_attr = mesh.GetOrientationAttr()
+    if orientation_attr and orientation_attr.HasValue():
+        handedness = orientation_attr.Get()
+        if handedness and handedness.lower() == "lefthanded":
+            flip_winding = True
     if flip_winding:
         faces = faces[:, ::-1]
 
-    if uvs:
+    if uvs is not None:
         uvs = np.array(uvs, dtype=np.float32)
 
     return Mesh(points, faces.flatten(), normals=normals, uvs=uvs, maxhullvert=maxhullvert)
