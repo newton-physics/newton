@@ -1856,8 +1856,8 @@ def Xform "Articulation" (
         self.assertEqual(model.shape_count, 2)
 
         # Find the values - one should be 1, one should be 0
-        self.assertTrue(np.any(geom_priority))
-        self.assertTrue(np.any(not geom_priority))
+        self.assertTrue(np.any(geom_priority == 1))
+        self.assertTrue(np.any(geom_priority == 0))
 
 
 if __name__ == "__main__":
