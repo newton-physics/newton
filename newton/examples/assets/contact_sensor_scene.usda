@@ -1,0 +1,126 @@
+#usda 1.0
+(
+    defaultPrim = "env"
+    metersPerUnit = 1
+    kilogramsPerUnit = 1
+    upAxis = "Z"
+)
+
+
+def DistantLight "DistantLight" (
+    prepend apiSchemas = ["ShapingAPI"]
+)
+{
+    float inputs:angle = 1
+    float inputs:intensity = 3000
+    float inputs:shaping:cone:angle = 180
+    float inputs:shaping:cone:softness
+    float inputs:shaping:focus
+    color3f inputs:shaping:focusTint
+    asset inputs:shaping:ies:file
+    double3 xformOp:rotateXYZ = (45, 0, 90)
+    double3 xformOp:scale = (1, 1, 1)
+    double3 xformOp:translate = (0, 0, 0)
+    uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:rotateXYZ", "xformOp:scale"]
+}
+
+def Xform "env" (
+)
+{
+    def Xform "Anchor"
+    (
+        prepend apiSchemas = ["PhysicsArticulationRootAPI", "PhysicsRigidBodyAPI", "PhysicsMassAPI"]
+    )
+    {
+        double3 xformOp:rotateXYZ = (0, 0, 0)
+        double3 xformOp:scale = (1, 1, 1)
+        double3 xformOp:translate = (0, 0, 0.01)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:rotateXYZ", "xformOp:scale"]
+
+        float3 physics:diagonalInertia = (10, 10, 10)
+        float physics:mass = 100
+
+    }
+
+    def Cube "Flap" (
+        prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsCollisionAPI"]
+    )
+    {
+        double3 xformOp:rotateXYZ = (0, 0, 0)
+        double3 xformOp:scale = (0.4, 0.4, 0.04)
+        double3 xformOp:translate = (0, 0, 1.96)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:rotateXYZ", "xformOp:scale"]
+    }
+
+    def PhysicsRevoluteJoint "Hinge" (
+        prepend apiSchemas = ["PhysxLimitAPI:angular", "PhysicsDriveAPI:angular"]
+    )
+    {
+        float drive:angular:physics:damping = 10
+        float drive:angular:physics:stiffness = 100
+        float drive:angular:physics:targetPosition = 0
+        float drive:angular:physics:targetVelocity = 0
+
+        uniform token physics:axis = "X"
+        rel physics:body0 = </env/Anchor>
+        rel physics:body1 = </env/Flap>
+        point3f physics:localPos0 = (0, 0.4, 2)
+        point3f physics:localPos1 = (0, 1.0, 1)
+    }
+
+    def PhysicsFixedJoint "AnchorJoint" {
+        rel physics:body1 = </env/Anchor>
+        point3f physics:localPos0 = (0, 0, 0)
+        point3f physics:localPos1 = (0, 0, 0)
+    }
+
+    def Cube "Cube" (
+        prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI", "PhysicsCollisionAPI"]
+    )
+    {
+        double3 xformOp:rotateXYZ = (0, 0, 0)
+        double3 xformOp:scale = (0.1, 0.1, 0.1)
+        #double3 xformOp:scale = (0.1, 0.1, 0.1)
+        double3 xformOp:translate = (-0.15, 0, 2.1)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:rotateXYZ", "xformOp:scale"]
+
+        float physics:density = 1
+
+    }
+
+    def Sphere "Sphere" (
+        prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI", "PhysicsCollisionAPI"]
+    )
+    {
+        #double radius = 0.1
+        double3 xformOp:rotateXYZ = (0, 0, 0)
+        double3 xformOp:scale = (0.1, 0.1, 0.1)
+        double3 xformOp:translate = (0.15, 0, 2.1)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:rotateXYZ", "xformOp:scale"]
+
+        float physics:density = 1
+    }
+
+    def Cube "Plate1" (
+        prepend apiSchemas = ["PhysicsCollisionAPI"]
+    )
+    {
+        double3 xformOp:rotateXYZ = (-35, 0, 0)
+        double3 xformOp:scale = (0.4, 0.6, 0.02)
+        double3 xformOp:translate = (0, -0.6, 1.2)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:rotateXYZ", "xformOp:scale"]
+    }
+
+    def Cube "Plate2" (
+        prepend apiSchemas = ["PhysicsCollisionAPI"]
+    )
+    {
+        double3 xformOp:rotateXYZ = (35, 0, 0)
+        double3 xformOp:scale = (0.4, 0.6, 0.02)
+        double3 xformOp:translate = (0, 0.6, 0.5)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:rotateXYZ", "xformOp:scale"]
+    }
+
+
+}
+

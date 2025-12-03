@@ -751,13 +751,13 @@ class SolverMuJoCo(SolverBase):
         contacts.separation = mj_contact.dist
 
         if not hasattr(contacts, "pair"):
-            contacts.pair = wp.empty(naconmax, dtype=wp.vec2i, device=self.model.device)
+            contacts.pair = wp.zeros(naconmax, dtype=wp.vec2i, device=self.model.device)
 
         if not hasattr(contacts, "normal"):
-            contacts.normal = wp.empty(naconmax, dtype=wp.vec3f, device=self.model.device)
+            contacts.normal = wp.zeros(naconmax, dtype=wp.vec3f, device=self.model.device)
 
         if not hasattr(contacts, "force"):
-            contacts.force = wp.empty(naconmax, dtype=wp.float32, device=self.model.device)
+            contacts.force = wp.zeros(naconmax, dtype=wp.float32, device=self.model.device)
 
         wp.launch(
             convert_mjw_contact_to_warp_kernel,
