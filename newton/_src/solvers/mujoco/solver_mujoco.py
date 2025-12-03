@@ -934,12 +934,6 @@ class SolverMuJoCo(SolverBase):
         spec.option.ls_tolerance = ls_tolerance
         spec.option.jacobian = mujoco.mjtJacobian.mjJAC_AUTO
 
-        defaults = spec.default
-        if callable(defaults):
-            defaults = defaults()
-        defaults.geom.solref = (0.02, 1.0)
-        defaults.geom.solimp = (0.9, 0.95, 0.001, 0.5, 2.0)  # default, will be overridden per-shape
-        # defaults.geom.contype = 0
         spec.compiler.inertiafromgeom = mujoco.mjtInertiaFromGeom.mjINERTIAFROMGEOM_AUTO
 
         if add_axes:
