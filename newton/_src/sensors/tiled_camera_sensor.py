@@ -255,7 +255,7 @@ class TiledCameraSensor:
         Args:
             state: The current simulation state containing body transforms.
             camera_transforms: Array of camera transforms in world space, shape (num_cameras, num_worlds).
-            camera_rays: Array of camera rays in camera space, shape (num_cameras, ).
+            camera_rays: Array of camera rays in camera space, shape (num_cameras, height, width, 2).
             color_image: Optional output array for color data (num_worlds, num_cameras, width*height).
                         If None, no color rendering is performed.
             depth_image: Optional output array for depth data (num_worlds, num_cameras, width*height).
