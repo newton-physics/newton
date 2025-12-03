@@ -922,6 +922,7 @@ def update_joint_dof_properties_kernel(
     joint_limit_upper: wp.array(dtype=float),
     solimplimit: wp.array(dtype=vec5),
     solreffriction: wp.array(dtype=wp.vec2),
+    dof_solimp: wp.array(dtype=vec5),
     joint_stiffness: wp.array(dtype=float),
     joint_damping: wp.array(dtype=float),
     limit_margin: wp.array(dtype=float),
@@ -931,6 +932,7 @@ def update_joint_dof_properties_kernel(
     dof_frictionloss: wp.array2d(dtype=float),
     jnt_solimp: wp.array2d(dtype=vec5),
     dof_solref: wp.array2d(dtype=wp.vec2),
+    dof_solimp_out: wp.array2d(dtype=vec5),
     jnt_solref: wp.array2d(dtype=wp.vec2),
     jnt_stiffness: wp.array2d(dtype=float),
     dof_damping: wp.array2d(dtype=float),
@@ -977,6 +979,10 @@ def update_joint_dof_properties_kernel(
         if solreffriction:
             dof_solref[worldid, mjc_dof_index] = solreffriction[newton_dof_index]
 
+        # Update dof_solimp (per DOF)
+        if dof_solimp:
+            dof_solimp_out[worldid, mjc_dof_index] = dof_solimp[newton_dof_index]
+
         # Update joint limit solref using negative convention (per joint)
         if joint_limit_ke[newton_dof_index] > 0.0:
             jnt_solref[worldid, mjc_joint_index] = wp.vec2(
@@ -1012,6 +1018,10 @@ def update_joint_dof_properties_kernel(
             dof_damping[worldid, mjc_dof_index] = joint_damping[newton_dof_index]
         if solreffriction:
             dof_solref[worldid, mjc_dof_index] = solreffriction[newton_dof_index]
+
+        # Update dof_solimp (per DOF)
+        if dof_solimp:
+            dof_solimp_out[worldid, mjc_dof_index] = dof_solimp[newton_dof_index]
 
         # Update joint limit solref using negative convention (per joint)
         if joint_limit_ke[newton_dof_index] > 0.0:
@@ -1173,8 +1183,8 @@ def update_geom_properties_kernel(
     geom_dataid: wp.array(dtype=int),
     mesh_pos: wp.array(dtype=wp.vec3),
     mesh_quat: wp.array(dtype=wp.quat),
-    torsional_friction: float,
-    rolling_friction: float,
+    shape_torsional_friction: wp.array(dtype=float),
+    shape_rolling_friction: wp.array(dtype=float),
     # outputs
     geom_rbound: wp.array2d(dtype=float),
     geom_friction: wp.array2d(dtype=wp.vec3f),
@@ -1195,7 +1205,9 @@ def update_geom_properties_kernel(
 
     # update friction (slide, torsion, roll)
     mu = shape_mu[shape_idx]
-    geom_friction[worldid, geom_idx] = wp.vec3f(mu, torsional_friction * mu, rolling_friction * mu)
+    torsional = shape_torsional_friction[shape_idx]
+    rolling = shape_rolling_friction[shape_idx]
+    geom_friction[worldid, geom_idx] = wp.vec3f(mu, torsional, rolling)
 
     # update geom_solref (timeconst, dampratio) using stiffness and damping
     # we don't use negative convention for geom_solref because MJWarp's code
