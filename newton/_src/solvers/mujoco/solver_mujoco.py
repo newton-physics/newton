@@ -167,6 +167,18 @@ class SolverMuJoCo(SolverBase):
         )
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
+                name="geom_solimp",
+                frequency=ModelAttributeFrequency.SHAPE,
+                assignment=ModelAttributeAssignment.MODEL,
+                dtype=wp.types.vector(length=5, dtype=wp.float32),
+                default=wp.types.vector(length=5, dtype=wp.float32)(0.9, 0.95, 0.001, 0.5, 2.0),
+                namespace="mujoco",
+                usd_attribute_name="mjc:solimp",
+                mjcf_attribute_name="solimp",
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
                 name="limit_margin",
                 frequency=ModelAttributeFrequency.JOINT_DOF,
                 assignment=ModelAttributeAssignment.MODEL,
@@ -222,18 +234,6 @@ class SolverMuJoCo(SolverBase):
                 namespace="mujoco",
                 usd_attribute_name="mjc:damping",
                 mjcf_attribute_name="damping",
-            )
-        )
-        builder.add_custom_attribute(
-            ModelBuilder.CustomAttribute(
-                name="geom_solimp",
-                frequency=ModelAttributeFrequency.SHAPE,
-                assignment=ModelAttributeAssignment.MODEL,
-                dtype=wp.types.vector(length=5, dtype=wp.float32),
-                default=wp.types.vector(length=5, dtype=wp.float32)(0.9, 0.95, 0.001, 0.5, 2.0),
-                namespace="mujoco",
-                usd_attribute_name="mjc:solimp",
-                mjcf_attribute_name="solimp",
             )
         )
 
