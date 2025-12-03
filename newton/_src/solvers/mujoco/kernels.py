@@ -921,6 +921,7 @@ def update_joint_dof_properties_kernel(
     joint_limit_lower: wp.array(dtype=float),
     joint_limit_upper: wp.array(dtype=float),
     solimplimit: wp.array(dtype=vec5),
+    dof_solimp: wp.array(dtype=vec5),
     joint_stiffness: wp.array(dtype=float),
     joint_damping: wp.array(dtype=float),
     limit_margin: wp.array(dtype=float),
@@ -929,6 +930,7 @@ def update_joint_dof_properties_kernel(
     dof_armature: wp.array2d(dtype=float),
     dof_frictionloss: wp.array2d(dtype=float),
     jnt_solimp: wp.array2d(dtype=vec5),
+    dof_solimp_out: wp.array2d(dtype=vec5),
     jnt_solref: wp.array2d(dtype=wp.vec2),
     jnt_stiffness: wp.array2d(dtype=float),
     dof_damping: wp.array2d(dtype=float),
@@ -973,6 +975,10 @@ def update_joint_dof_properties_kernel(
         if joint_damping:
             dof_damping[worldid, mjc_dof_index] = joint_damping[newton_dof_index]
 
+        # Update dof_solimp (per DOF)
+        if dof_solimp:
+            dof_solimp_out[worldid, mjc_dof_index] = dof_solimp[newton_dof_index]
+
         # Update joint limit solref using negative convention (per joint)
         if joint_limit_ke[newton_dof_index] > 0.0:
             jnt_solref[worldid, mjc_joint_index] = wp.vec2(
@@ -1006,6 +1012,11 @@ def update_joint_dof_properties_kernel(
         # Update passive damping (per dof)
         if joint_damping:
             dof_damping[worldid, mjc_dof_index] = joint_damping[newton_dof_index]
+
+        # Update dof_solimp (per DOF)
+        if dof_solimp:
+            dof_solimp_out[worldid, mjc_dof_index] = dof_solimp[newton_dof_index]
+
         # Update joint limit solref using negative convention (per joint)
         if joint_limit_ke[newton_dof_index] > 0.0:
             jnt_solref[worldid, mjc_joint_index] = wp.vec2(

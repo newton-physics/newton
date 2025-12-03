@@ -29,10 +29,11 @@ from __future__ import annotations
 
 import numpy as np
 import warp as wp
-from pxr import Usd, UsdGeom
+from pxr import Usd
 
 import newton
 import newton.examples
+import newton.usd
 import newton.utils
 from newton import Model, ModelBuilder, State, eval_fk
 from newton.solvers import SolverFeatherstone, SolverVBD
@@ -192,9 +193,11 @@ class Example:
 
         # add the T-shirt
         usd_stage = Usd.Stage.Open(newton.examples.get_asset("unisex_shirt.usd"))
-        usd_geom = UsdGeom.Mesh(usd_stage.GetPrimAtPath("/root/shirt"))
-        mesh_points = np.array(usd_geom.GetPointsAttr().Get())
-        mesh_indices = np.array(usd_geom.GetFaceVertexIndicesAttr().Get())
+        usd_prim = usd_stage.GetPrimAtPath("/root/shirt")
+
+        shirt_mesh = newton.usd.get_mesh(usd_prim)
+        mesh_points = shirt_mesh.vertices
+        mesh_indices = shirt_mesh.indices
         vertices = [wp.vec3(v) for v in mesh_points]
 
         if self.add_cloth:
