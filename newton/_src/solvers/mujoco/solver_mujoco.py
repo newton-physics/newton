@@ -1019,7 +1019,7 @@ class SolverMuJoCo(SolverBase):
         shape_condim = get_custom_attribute("condim")
         joint_dof_limit_margin = get_custom_attribute("limit_margin")
         joint_solimp_limit = get_custom_attribute("solimplimit")
-        joint_solreffriction = get_custom_attribute("solreffriction")
+        joint_dof_solref = get_custom_attribute("solreffriction")
         joint_dof_solimp = get_custom_attribute("solimpfriction")
         joint_stiffness = get_custom_attribute("dof_passive_stiffness")
         joint_damping = get_custom_attribute("dof_passive_damping")
@@ -1382,8 +1382,8 @@ class SolverMuJoCo(SolverBase):
                         joint_params["solref_limit"] = (-joint_limit_ke[ai], -joint_limit_kd[ai])
                     if joint_solimp_limit is not None:
                         joint_params["solimp_limit"] = joint_solimp_limit[ai]
-                    if joint_solreffriction is not None:
-                        joint_params["solref_friction"] = joint_solreffriction[ai]
+                    if joint_dof_solref is not None:
+                        joint_params["solref_friction"] = joint_dof_solref[ai]
                     if joint_dof_solimp is not None:
                         joint_params["solimp_friction"] = joint_dof_solimp[ai]
                     axname = name
@@ -1459,8 +1459,8 @@ class SolverMuJoCo(SolverBase):
                         joint_params["solref_limit"] = (-joint_limit_ke[ai], -joint_limit_kd[ai])
                     if joint_solimp_limit is not None:
                         joint_params["solimp_limit"] = joint_solimp_limit[ai]
-                    if joint_solreffriction is not None:
-                        joint_params["solref_friction"] = joint_solreffriction[ai]
+                    if joint_dof_solref is not None:
+                        joint_params["solref_friction"] = joint_dof_solref[ai]
                     if joint_dof_solimp is not None:
                         joint_params["solimp_friction"] = joint_dof_solimp[ai]
 
@@ -1875,7 +1875,7 @@ class SolverMuJoCo(SolverBase):
         # Update DOF properties (armature, friction, passive stiffness and damping, and solimplimit) with proper DOF mapping
         mujoco_attrs = getattr(self.model, "mujoco", None)
         solimplimit = getattr(mujoco_attrs, "solimplimit", None) if mujoco_attrs is not None else None
-        solreffriction = getattr(mujoco_attrs, "solreffriction", None) if mujoco_attrs is not None else None
+        dof_solref = getattr(mujoco_attrs, "solreffriction", None) if mujoco_attrs is not None else None
         dof_solimp = getattr(mujoco_attrs, "solimpfriction", None) if mujoco_attrs is not None else None
         joint_dof_limit_margin = getattr(mujoco_attrs, "limit_margin", None) if mujoco_attrs is not None else None
         joint_stiffness = getattr(mujoco_attrs, "dof_passive_stiffness", None) if mujoco_attrs is not None else None
@@ -1895,7 +1895,7 @@ class SolverMuJoCo(SolverBase):
                 self.model.joint_limit_lower,
                 self.model.joint_limit_upper,
                 solimplimit,
-                solreffriction,
+                dof_solref,
                 dof_solimp,
                 joint_stiffness,
                 joint_damping,
