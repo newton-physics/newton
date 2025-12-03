@@ -30,10 +30,11 @@ class TestJointLimits(unittest.TestCase):
         builder = newton.ModelBuilder()
 
         # Add a body
-        body = builder.add_body()
+        body = builder.add_link()
 
         # Add a revolute joint with default limits
-        builder.add_joint_revolute(parent=-1, child=body)
+        joint = builder.add_joint_revolute(parent=-1, child=body)
+        builder.add_articulation([joint])
 
         # Build model
         model = builder.finalize()
@@ -49,10 +50,11 @@ class TestJointLimits(unittest.TestCase):
         builder = newton.ModelBuilder()
 
         # Add a body
-        body = builder.add_body()
+        body = builder.add_link()
 
         # Add a revolute joint with specific limits
-        builder.add_joint_revolute(parent=-1, child=body, limit_lower=-1.0, limit_upper=1.0)
+        joint = builder.add_joint_revolute(parent=-1, child=body, limit_lower=-1.0, limit_upper=1.0)
+        builder.add_articulation([joint])
 
         # Build model
         model = builder.finalize()
@@ -68,10 +70,11 @@ class TestJointLimits(unittest.TestCase):
         builder = newton.ModelBuilder()
 
         # Add a body
-        body = builder.add_body()
+        body = builder.add_link()
 
         # Add a revolute joint with only upper limit
-        builder.add_joint_revolute(parent=-1, child=body, limit_lower=-JOINT_LIMIT_UNLIMITED, limit_upper=2.0)
+        joint = builder.add_joint_revolute(parent=-1, child=body, limit_lower=-JOINT_LIMIT_UNLIMITED, limit_upper=2.0)
+        builder.add_articulation([joint])
 
         # Build model
         model = builder.finalize()
@@ -84,8 +87,11 @@ class TestJointLimits(unittest.TestCase):
 
         # Test the other way - only lower limit
         builder2 = newton.ModelBuilder()
-        body2 = builder2.add_body()
-        builder2.add_joint_revolute(parent=-1, child=body2, limit_lower=-1.5, limit_upper=JOINT_LIMIT_UNLIMITED)
+        body2 = builder2.add_link()
+        joint2 = builder2.add_joint_revolute(
+            parent=-1, child=body2, limit_lower=-1.5, limit_upper=JOINT_LIMIT_UNLIMITED
+        )
+        builder2.add_articulation([joint2])
         model2 = builder2.finalize()
 
         lower_limits2 = model2.joint_limit_lower.numpy()
@@ -133,7 +139,7 @@ class TestJointLimits(unittest.TestCase):
         builder = newton.ModelBuilder()
 
         # Add a body
-        body = builder.add_body()
+        body = builder.add_link()
 
         # Create a D6 joint with:
         # - X translation: limited

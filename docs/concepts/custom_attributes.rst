@@ -129,12 +129,14 @@ When entities don't explicitly specify custom attribute values, the default valu
    
    # Articulation attributes: create multiple articulations with custom values
    for i in range(3):
+       base = builder.add_link(mass=1.0)
+       joint = builder.add_joint_free(child=base)
        builder.add_articulation(
+           joints=[joint],
            custom_attributes={
                "articulation_stiffness": 100.0 + float(i) * 50.0  # 100, 150, 200
            }
        )
-       base = builder.add_body(mass=1.0)
    
    # After finalization, access both types of attributes
    model = builder.finalize()
@@ -143,15 +145,15 @@ When entities don't explicitly specify custom attribute values, the default valu
    
    print(f"Body 1: {temps[body1]}")  # 20.0 (default)
    print(f"Body 2: {temps[body2]}")  # 37.5 (authored)
-   print(f"Articulation 0: {arctic_stiff[0]}")  # 100.0
-   print(f"Articulation 2: {arctic_stiff[2]}")  # 200.0
+   print(f"Articulation 2: {arctic_stiff[2]}")  # 100.0
+   print(f"Articulation 4: {arctic_stiff[4]}")  # 200.0
 
 .. testoutput::
 
    Body 1: 20.0
    Body 2: 37.5
-   Articulation 0: 100.0
-   Articulation 2: 200.0
+   Articulation 2: 100.0
+   Articulation 4: 200.0
 
 .. note::
    Uniqueness is determined by the full identifier (namespace + name):
@@ -178,9 +180,9 @@ For example, to allow the MuJoCo solver to register its custom attributes, you c
    SolverMuJoCo.register_custom_attributes(builder_mujoco)
 
    # Build a scene with a body and a shape
-   builder_mujoco.add_articulation()
-   body = builder_mujoco.add_body()
-   builder_mujoco.add_joint_free(body)
+   body = builder_mujoco.add_link()
+   joint = builder_mujoco.add_joint_free(body)
+   builder_mujoco.add_articulation([joint])
    shape = builder_mujoco.add_shape_box(body=body, hx=0.1, hy=0.1, hz=0.1)
 
    # Finalize the model and allocate arrays for the custom attributes

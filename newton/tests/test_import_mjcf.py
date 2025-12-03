@@ -33,6 +33,8 @@ class TestImportMjcf(unittest.TestCase):
         builder.default_shape_cfg.ke = 123.0
         builder.default_shape_cfg.kd = 456.0
         builder.default_shape_cfg.mu = 789.0
+        builder.default_shape_cfg.torsional_friction = 0.999
+        builder.default_shape_cfg.rolling_friction = 0.888
         builder.default_joint_cfg.armature = 42.0
         mjcf_filename = newton.examples.get_asset("nv_humanoid.xml")
         builder.add_mjcf(
@@ -44,7 +46,12 @@ class TestImportMjcf(unittest.TestCase):
         non_site_indices = [i for i, flags in enumerate(builder.shape_flags) if not (flags & ShapeFlags.SITE)]
         self.assertTrue(all(np.array(builder.shape_material_ke)[non_site_indices] == 123.0))
         self.assertTrue(all(np.array(builder.shape_material_kd)[non_site_indices] == 456.0))
-        self.assertTrue(all(np.array(builder.shape_material_mu)[non_site_indices] == 789.0))
+
+        # Check friction values from nv_humanoid.xml: friction="1.0 0.05 0.05"
+        # mu = 1.0, torsional = 0.05, rolling = 0.05
+        self.assertTrue(np.allclose(np.array(builder.shape_material_mu)[non_site_indices], 1.0))
+        self.assertTrue(np.allclose(np.array(builder.shape_material_torsional_friction)[non_site_indices], 0.05))
+        self.assertTrue(np.allclose(np.array(builder.shape_material_rolling_friction)[non_site_indices], 0.05))
         self.assertTrue(all(np.array(builder.joint_armature[:6]) == 0.0))
         self.assertEqual(
             builder.joint_armature[6:],
@@ -963,6 +970,52 @@ class TestImportMjcf(unittest.TestCase):
         # Verify hide_visuals=True doesn't crash
         self.assertGreater(builder_hidden.shape_count, 0, "Should still load collision shapes")
 
+    def test_mjcf_friction_parsing(self):
+        """Test MJCF friction parsing with 1, 2, and 3 element vectors."""
+        mjcf_content = """
+        <mujoco>
+            <worldbody>
+                <body name="test_body">
+                    <geom name="geom1" type="box" size="0.1 0.1 0.1" friction="0.5 0.1 0.01"/>
+                    <geom name="geom2" type="sphere" size="0.1" friction="0.8 0.2 0.05"/>
+                    <geom name="geom3" type="capsule" size="0.1 0.2" friction="0.0 0.0 0.0"/>
+                    <geom name="geom4" type="box" size="0.1 0.1 0.1" friction="1.0"/>
+                    <geom name="geom5" type="sphere" size="0.1" friction="0.6 0.15"/>
+                </body>
+            </worldbody>
+        </mujoco>
+        """
+
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf_content, up_axis="Z")
+
+        self.assertEqual(builder.shape_count, 5)
+
+        # 3-element: friction="0.5 0.1 0.01" → absolute values
+        self.assertAlmostEqual(builder.shape_material_mu[0], 0.5, places=5)
+        self.assertAlmostEqual(builder.shape_material_torsional_friction[0], 0.1, places=5)
+        self.assertAlmostEqual(builder.shape_material_rolling_friction[0], 0.01, places=5)
+
+        # 3-element: friction="0.8 0.2 0.05" → absolute values
+        self.assertAlmostEqual(builder.shape_material_mu[1], 0.8, places=5)
+        self.assertAlmostEqual(builder.shape_material_torsional_friction[1], 0.2, places=5)
+        self.assertAlmostEqual(builder.shape_material_rolling_friction[1], 0.05, places=5)
+
+        # 3-element with zeros
+        self.assertAlmostEqual(builder.shape_material_mu[2], 0.0, places=5)
+        self.assertAlmostEqual(builder.shape_material_torsional_friction[2], 0.0, places=5)
+        self.assertAlmostEqual(builder.shape_material_rolling_friction[2], 0.0, places=5)
+
+        # 1-element: friction="1.0" → others use ShapeConfig defaults (0.25, 0.0005)
+        self.assertAlmostEqual(builder.shape_material_mu[3], 1.0, places=5)
+        self.assertAlmostEqual(builder.shape_material_torsional_friction[3], 0.25, places=5)
+        self.assertAlmostEqual(builder.shape_material_rolling_friction[3], 0.0005, places=5)
+
+        # 2-element: friction="0.6 0.15" → torsional: 0.15, rolling uses default (0.0005)
+        self.assertAlmostEqual(builder.shape_material_mu[4], 0.6, places=5)
+        self.assertAlmostEqual(builder.shape_material_torsional_friction[4], 0.15, places=5)
+        self.assertAlmostEqual(builder.shape_material_rolling_friction[4], 0.0005, places=5)
+
     def test_mjcf_gravcomp(self):
         """Test parsing of gravcomp from MJCF"""
         mjcf_content = """
@@ -980,6 +1033,7 @@ class TestImportMjcf(unittest.TestCase):
             </worldbody>
         </mujoco>
         """
+
         builder = newton.ModelBuilder()
         # Register gravcomp
         SolverMuJoCo.register_custom_attributes(builder)
@@ -1056,6 +1110,91 @@ class TestImportMjcf(unittest.TestCase):
             self.assertAlmostEqual(joint_damping[dof_idx], expected["damping"], places=4)
             self.assertAlmostEqual(joint_target_ke[dof_idx], expected["target_ke"], places=1)
             self.assertAlmostEqual(joint_target_kd[dof_idx], expected["target_kd"], places=1)
+
+    def test_xform_with_floating_false(self):
+        """Test that xform parameter is respected when floating=False"""
+        local_pos = wp.vec3(1.0, 2.0, 3.0)
+        local_quat = wp.quat_rpy(0.5, -0.8, 0.7)
+        local_xform = wp.transform(local_pos, local_quat)
+
+        # Create a simple MJCF with a body that has a freejoint
+        mjcf_content = f"""<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test_xform">
+    <worldbody>
+        <body name="test_body" pos="{local_pos.x} {local_pos.y} {local_pos.z}" quat="{local_quat.w} {local_quat.x} {local_quat.y} {local_quat.z}">
+            <freejoint/>
+            <geom type="sphere" size="0.1"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        # Create a non-identity transform to apply
+        xform_pos = wp.vec3(5.0, 10.0, 15.0)
+        xform_quat = wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), wp.pi / 4.0)  # 45 degree rotation around Z
+        xform = wp.transform(xform_pos, xform_quat)
+
+        # Parse with floating=False and the xform
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf_content, floating=False, xform=xform)
+        model = builder.finalize()
+
+        # Verify the model has a fixed joint
+        self.assertEqual(model.joint_count, 1)
+        joint_type = model.joint_type.numpy()[0]
+        self.assertEqual(joint_type, newton.JointType.FIXED)
+
+        # Verify the fixed joint has the correct parent_xform
+        # The joint_X_p should match the world_xform (xform * local_xform)
+        joint_X_p = model.joint_X_p.numpy()[0]
+
+        expected_xform = xform * local_xform
+
+        # Check position
+        np.testing.assert_allclose(
+            joint_X_p[:3],
+            [expected_xform.p[0], expected_xform.p[1], expected_xform.p[2]],
+            rtol=1e-5,
+            atol=1e-5,
+            err_msg="Fixed joint parent_xform position does not match expected xform",
+        )
+
+        # Check quaternion (note: quaternions can be negated and still represent the same rotation)
+        expected_quat = np.array([expected_xform.q[0], expected_xform.q[1], expected_xform.q[2], expected_xform.q[3]])
+        actual_quat = joint_X_p[3:7]
+
+        # Check if quaternions match (accounting for q and -q representing the same rotation)
+        quat_match = np.allclose(actual_quat, expected_quat, rtol=1e-5, atol=1e-5) or np.allclose(
+            actual_quat, -expected_quat, rtol=1e-5, atol=1e-5
+        )
+        self.assertTrue(
+            quat_match,
+            f"Fixed joint parent_xform quaternion does not match expected xform.\n"
+            f"Expected: {expected_quat}\nActual: {actual_quat}",
+        )
+
+        # Verify body_q after eval_fk also matches the expected transform
+        state = model.state()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+
+        body_q = state.body_q.numpy()[0]
+        np.testing.assert_allclose(
+            body_q[:3],
+            [expected_xform.p[0], expected_xform.p[1], expected_xform.p[2]],
+            rtol=1e-5,
+            atol=1e-5,
+            err_msg="Body position after eval_fk does not match expected xform",
+        )
+
+        # Check body quaternion
+        body_quat = body_q[3:7]
+        quat_match = np.allclose(body_quat, expected_quat, rtol=1e-5, atol=1e-5) or np.allclose(
+            body_quat, -expected_quat, rtol=1e-5, atol=1e-5
+        )
+        self.assertTrue(
+            quat_match,
+            f"Body quaternion after eval_fk does not match expected xform.\n"
+            f"Expected: {expected_quat}\nActual: {body_quat}",
+        )
 
 
 if __name__ == "__main__":

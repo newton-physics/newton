@@ -85,24 +85,24 @@ class TestEqualityConstraints(unittest.TestCase):
         robot = newton.ModelBuilder()
 
         # Add bodies with shapes
-        base = robot.add_body(xform=wp.transform((0, 0, 0)), mass=1.0, key="base")
+        base = robot.add_link(xform=wp.transform((0, 0, 0)), mass=1.0, key="base")
         robot.add_shape_box(base, hx=0.5, hy=0.5, hz=0.5)
 
-        link1 = robot.add_body(xform=wp.transform((1, 0, 0)), mass=1.0, key="link1")
+        link1 = robot.add_link(xform=wp.transform((1, 0, 0)), mass=1.0, key="link1")
         robot.add_shape_box(link1, hx=0.5, hy=0.5, hz=0.5)
 
-        link2 = robot.add_body(xform=wp.transform((2, 0, 0)), mass=1.0, key="link2")
+        link2 = robot.add_link(xform=wp.transform((2, 0, 0)), mass=1.0, key="link2")
         robot.add_shape_box(link2, hx=0.5, hy=0.5, hz=0.5)
 
         # Add joints - connect base to world (-1) first
-        robot.add_joint_fixed(
+        joint1 = robot.add_joint_fixed(
             parent=-1,  # world
             child=base,
             parent_xform=wp.transform((0, 0, 0)),
             child_xform=wp.transform((0, 0, 0)),
             key="joint_fixed",
         )
-        robot.add_joint_revolute(
+        joint2 = robot.add_joint_revolute(
             parent=base,
             child=link1,
             parent_xform=wp.transform((0.5, 0, 0)),
@@ -110,7 +110,7 @@ class TestEqualityConstraints(unittest.TestCase):
             axis=(0, 0, 1),
             key="joint1",
         )
-        robot.add_joint_revolute(
+        joint3 = robot.add_joint_revolute(
             parent=link1,
             child=link2,
             parent_xform=wp.transform((0.5, 0, 0)),
@@ -118,6 +118,9 @@ class TestEqualityConstraints(unittest.TestCase):
             axis=(0, 0, 1),
             key="joint2",
         )
+
+        # Add articulation
+        robot.add_articulation([joint1, joint2, joint3], key="articulation")
 
         # Add 2 equality constraints
         robot.add_equality_constraint_connect(
@@ -134,13 +137,12 @@ class TestEqualityConstraints(unittest.TestCase):
         main_builder = newton.ModelBuilder()
 
         # Add ground plane (global, world -1)
-        main_builder.current_world = -1
         main_builder.add_ground_plane()
 
         # Add multiple robot instances
         num_worlds = 3
         for i in range(num_worlds):
-            main_builder.add_builder(robot, world=i, xform=wp.transform((i * 5, 0, 0)))
+            main_builder.add_world(robot, xform=wp.transform((i * 5, 0, 0)))
 
         # Finalize the model
         model = main_builder.finalize()

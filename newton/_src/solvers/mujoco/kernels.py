@@ -1177,8 +1177,8 @@ def update_geom_properties_kernel(
     geom_dataid: wp.array(dtype=int),
     mesh_pos: wp.array(dtype=wp.vec3),
     mesh_quat: wp.array(dtype=wp.quat),
-    torsional_friction: float,
-    rolling_friction: float,
+    shape_torsional_friction: wp.array(dtype=float),
+    shape_rolling_friction: wp.array(dtype=float),
     # outputs
     geom_rbound: wp.array2d(dtype=float),
     geom_friction: wp.array2d(dtype=wp.vec3f),
@@ -1199,7 +1199,9 @@ def update_geom_properties_kernel(
 
     # update friction (slide, torsion, roll)
     mu = shape_mu[shape_idx]
-    geom_friction[worldid, geom_idx] = wp.vec3f(mu, torsional_friction * mu, rolling_friction * mu)
+    torsional = shape_torsional_friction[shape_idx]
+    rolling = shape_rolling_friction[shape_idx]
+    geom_friction[worldid, geom_idx] = wp.vec3f(mu, torsional, rolling)
 
     # update geom_solref (timeconst, dampratio) using stiffness and damping
     # we don't use negative convention for geom_solref because MJWarp's code
