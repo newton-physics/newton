@@ -1741,7 +1741,7 @@ def Xform "Articulation" (
 
         # Find the values - one should be True, one should be False
         self.assertTrue(np.any(jnt_actgravcomp))
-        self.assertTrue(np.any(not jnt_actgravcomp))
+        self.assertTrue(np.any(~jnt_actgravcomp))
 
 
 if __name__ == "__main__":
