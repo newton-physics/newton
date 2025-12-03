@@ -222,12 +222,12 @@ def convert_newton_contacts_to_mjwarp_kernel(
     shape_a = rigid_contact_shape0[tid]
     shape_b = rigid_contact_shape1[tid]
 
-    body_a = -1
-    if shape_a >= 0:
-        body_a = shape_body[shape_a]
-    body_b = -1
-    if shape_b >= 0:
-        body_b = shape_body[shape_b]
+    # Skip invalid contacts - both shapes must be specified
+    if shape_a < 0 or shape_b < 0:
+        return
+
+    body_a = shape_body[shape_a]
+    body_b = shape_body[shape_b]
 
     X_wb_a = wp.transform_identity()
     X_wb_b = wp.transform_identity()
