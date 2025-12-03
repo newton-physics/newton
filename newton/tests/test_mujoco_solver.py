@@ -3090,25 +3090,22 @@ class TestMuJoCoAttributes(unittest.TestCase):
         SolverMuJoCo.register_custom_attributes(template_builder)
 
         # Body 1
-        b1 = template_builder.add_body()
-        template_builder.add_joint_revolute(-1, b1, axis=(0, 0, 1))
+        b1 = template_builder.add_link()
+        j1 = template_builder.add_joint_revolute(-1, b1, axis=(0, 0, 1))
         template_builder.add_shape_box(body=b1, hx=0.1, hy=0.1, hz=0.1)
 
         # Body 2
         b2 = template_builder.add_body()
-        template_builder.add_joint_revolute(b1, b2, axis=(1, 0, 0))
+        j2 = template_builder.add_joint_revolute(b1, b2, axis=(1, 0, 0))
         template_builder.add_shape_box(body=b2, hx=0.1, hy=0.1, hz=0.1)
+        template_builder.add_articulation([j1, j2])
 
         # Create main builder with multiple worlds
         num_worlds = 2
         builder = newton.ModelBuilder()
         SolverMuJoCo.register_custom_attributes(builder)
 
-        for i in range(num_worlds):
-            builder.add_builder(
-                template_builder, xform=wp.transform((i * 2.0, 0, 0), wp.quat_identity()), update_num_world_count=True
-            )
-
+        builder.replicate(template_builder, num_worlds)
         model = builder.finalize()
 
         # Verify we have the custom attribute
