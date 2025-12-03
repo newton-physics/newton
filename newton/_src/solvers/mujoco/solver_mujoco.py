@@ -224,6 +224,18 @@ class SolverMuJoCo(SolverBase):
                 mjcf_attribute_name="damping",
             )
         )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="jnt_actgravcomp",
+                frequency=ModelAttributeFrequency.JOINT_DOF,
+                assignment=ModelAttributeAssignment.MODEL,
+                dtype=wp.bool,
+                default=False,
+                namespace="mujoco",
+                usd_attribute_name="mjc:actuatorgravcomp",
+                mjcf_attribute_name="actuatorgravcomp",
+            )
+        )
 
     def __init__(
         self,
@@ -999,6 +1011,7 @@ class SolverMuJoCo(SolverBase):
         joint_solimp_limit = get_custom_attribute("solimplimit")
         joint_stiffness = get_custom_attribute("dof_passive_stiffness")
         joint_damping = get_custom_attribute("dof_passive_damping")
+        joint_actgravcomp = get_custom_attribute("jnt_actgravcomp")
 
         eq_constraint_type = model.equality_constraint_type.numpy()
         eq_constraint_body1 = model.equality_constraint_body1.numpy()
@@ -1345,6 +1358,8 @@ class SolverMuJoCo(SolverBase):
                         joint_params["stiffness"] = joint_stiffness[ai]
                     if joint_damping is not None:
                         joint_params["damping"] = joint_damping[ai]
+                    if joint_actgravcomp is not None:
+                        joint_params["actuatorgravcomp"] = joint_actgravcomp[ai]
                     lower, upper = joint_limit_lower[ai], joint_limit_upper[ai]
                     if lower <= -JOINT_LIMIT_UNLIMITED and upper >= JOINT_LIMIT_UNLIMITED:
                         joint_params["limited"] = False
@@ -1418,6 +1433,8 @@ class SolverMuJoCo(SolverBase):
                         joint_params["stiffness"] = joint_stiffness[ai]
                     if joint_damping is not None:
                         joint_params["damping"] = joint_damping[ai]
+                    if jnt_actgravcomp is not None:
+                        joint_params["actuatorgravcomp"] = jnt_actgravcomp[ai]
                     lower, upper = joint_limit_lower[ai], joint_limit_upper[ai]
                     if lower <= -JOINT_LIMIT_UNLIMITED and upper >= JOINT_LIMIT_UNLIMITED:
                         joint_params["limited"] = False
