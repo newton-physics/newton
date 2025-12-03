@@ -375,6 +375,12 @@ Shape contact material properties control how contacts are resolved by different
    * - ``restitution``
      - Coefficient of restitution (bounciness)
      - XPBD
+   * - ``torsional_friction``
+     - Coefficient of torsional friction (resistance to spinning at contact point)
+     - XPBD, MuJoCo
+   * - ``rolling_friction``
+     - Coefficient of rolling friction (resistance to rolling motion)
+     - XPBD, MuJoCo
 
 For solvers SemiImplicit and Featherstone, contact forces are computed using the ``ke``, ``kd``, ``kf``, and ``ka`` parameters. For position-based solvers (XPBD), the ``restitution`` parameter controls velocity reflection at contacts.
 
