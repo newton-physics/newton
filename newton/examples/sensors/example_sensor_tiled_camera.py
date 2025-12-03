@@ -209,7 +209,7 @@ class Example:
 
         gl.glBindTexture(gl.GL_TEXTURE_2D, 0)
 
-    def test(self):
+    def test_final(self):
         self.render_sensors()
         color_image = self.tiled_camera_sensor_color_image.numpy()
         assert color_image.shape == (1, 1, 640 * 360)
