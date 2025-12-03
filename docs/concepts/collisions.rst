@@ -344,6 +344,42 @@ Soft contact margins are specified via the ``soft_contact_margin`` parameter in 
 
 Contacts between particles and shapes are generated separately via :attr:`Contacts.soft_contact_*` arrays. Soft contact generation is automatically enabled when particles are present in the model.
 
+.. _Contact Material Properties:
+
+**Contact material properties**
+
+Shape contact material properties control how contacts are resolved by different solvers. Not all properties are used by all solvers:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 20 50 30
+
+   * - Property
+     - Description
+     - Used by
+   * - ``ke``
+     - Contact elastic stiffness
+     - SemiImplicit, Featherstone, MuJoCo
+   * - ``kd``
+     - Contact damping stiffness
+     - SemiImplicit, Featherstone, MuJoCo
+   * - ``kf``
+     - Contact friction stiffness (viscous friction)
+     - SemiImplicit, Featherstone
+   * - ``ka``
+     - Contact adhesion distance
+     - SemiImplicit, Featherstone
+   * - ``mu``
+     - Coefficient of friction
+     - all solvers
+   * - ``restitution``
+     - Coefficient of restitution (bounciness)
+     - XPBD
+
+For solvers SemiImplicit and Featherstone, contact forces are computed using the ``ke``, ``kd``, ``kf``, and ``ka`` parameters. For position-based solvers (XPBD), the ``restitution`` parameter controls velocity reflection at contacts.
+
+The MuJoCo solver converts ``ke`` and ``kd`` to MuJoCo's ``solref`` parameters (timeconst and dampratio) for its constraint-based contact model.
+
 **USD collision attributes**
 
 Custom collision groups and world indices can be authored in USD using custom attributes:

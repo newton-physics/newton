@@ -149,21 +149,21 @@ class ModelBuilder:
         density: float = 1000.0
         """The density of the shape material."""
         ke: float = 1.0e5
-        """The contact elastic stiffness."""
+        """The contact elastic stiffness. Used by: SemiImplicit, Featherstone, MuJoCo."""
         kd: float = 1000.0
-        """The contact damping stiffness."""
+        """The contact damping stiffness. Used by: SemiImplicit, Featherstone, MuJoCo."""
         kf: float = 1000.0
-        """The contact friction stiffness."""
+        """The contact friction stiffness (viscous friction). Used by: SemiImplicit, Featherstone."""
         ka: float = 0.0
-        """The contact adhesion distance."""
+        """The contact adhesion distance. Used by: SemiImplicit, Featherstone."""
         mu: float = 0.5
-        """The coefficient of friction."""
+        """The coefficient of friction. Used by: all solvers."""
         restitution: float = 0.0
-        """The coefficient of restitution."""
+        """The coefficient of restitution. Used by: XPBD."""
         torsional_friction: float = 0.25
-        """The coefficient of torsional friction (resistance to spinning at contact point)."""
+        """The coefficient of torsional friction (resistance to spinning at contact point). Used by: XPBD, MuJoCo."""
         rolling_friction: float = 0.0005
-        """The coefficient of rolling friction (resistance to rolling motion)."""
+        """The coefficient of rolling friction (resistance to rolling motion). Used by: XPBD, MuJoCo."""
         thickness: float = 1e-5
         """The thickness of the shape."""
         contact_margin: float | None = None
