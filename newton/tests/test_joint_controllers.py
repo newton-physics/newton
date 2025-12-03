@@ -19,6 +19,7 @@
 
 import unittest
 
+import numpy as np
 import warp as wp
 
 import newton
@@ -98,6 +99,110 @@ def test_revolute_controller(
         test.assertAlmostEqual(joint_qd[0], expected_vel, delta=1e-2)
 
 
+def test_effort_limit_clamping(
+    test: TestJointController,
+    device,
+    solver_fn,
+):
+    builder = newton.ModelBuilder(up_axis=newton.Axis.Y, gravity=0.0)
+
+    # Simple pendulum with known inertia for analytical calculations
+    box_mass = 1.0
+    inertia_value = 0.1  # Small inertia for easier calculations
+    box_inertia = wp.mat33((inertia_value, 0.0, 0.0), (0.0, inertia_value, 0.0), (0.0, 0.0, inertia_value))
+    b = builder.add_link(armature=0.0, I_m=box_inertia, mass=box_mass)
+    builder.add_shape_box(body=b, hx=0.1, hy=0.1, hz=0.1, cfg=newton.ModelBuilder.ShapeConfig(density=0.0))
+
+    # Very high PD gains that would generate large forces
+    high_kp = 10000.0
+    high_kd = 1000.0
+
+    # Low effort limit that should clamp the forces
+    effort_limit = 5.0
+
+    # Create a revolute joint with high gains but low effort limit
+    j = builder.add_joint_revolute(
+        parent=-1,
+        child=b,
+        parent_xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
+        child_xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
+        axis=wp.vec3(0.0, 0.0, 1.0),
+        target_pos=0.0,
+        target_vel=0.0,
+        armature=0.0,
+        limit_ke=0.0,
+        limit_kd=0.0,
+        target_ke=high_kp,
+        target_kd=high_kd,
+        effort_limit=effort_limit,  # This should clamp the total P+D force
+    )
+    builder.add_articulation([j])
+
+    model = builder.finalize(device=device)
+    model.ground = False
+
+    solver = solver_fn(model)
+
+    state_0 = model.state()
+    state_1 = model.state()
+
+    # Set initial position far from target to generate large error
+    # This should create forces that would exceed the effort limit without clamping
+    initial_q = 1.0  # radians
+    initial_qd = 0.0
+    state_0.joint_q.assign([initial_q])
+    state_0.joint_qd.assign([initial_qd])
+    newton.eval_fk(model, state_0.joint_q, state_0.joint_qd, state_0)
+
+    control = model.control()
+    control.joint_target_pos = wp.array([0.0], dtype=wp.float32, device=device)
+    control.joint_target_vel = wp.array([0.0], dtype=wp.float32, device=device)
+
+    dt = 0.01
+
+    # Analytical calculation of expected motion with clamped force
+    F_unclamped = -high_kp * initial_q - high_kd * initial_qd
+    F_clamped = np.clip(F_unclamped, -effort_limit, effort_limit)
+
+    alpha = F_clamped / inertia_value
+    qd_expected = initial_qd + alpha * dt
+    q_expected = initial_q + qd_expected * dt
+
+    # Step the solver
+    solver.step(state_0, state_1, control, None, dt=dt)
+
+    if not isinstance(solver, newton.solvers.SolverMuJoCo | newton.solvers.SolverFeatherstone):
+        newton.eval_ik(model, state_1, state_1.joint_q, state_1.joint_qd)
+
+    q_actual = state_1.joint_q.numpy()[0]
+    qd_actual = state_1.joint_qd.numpy()[0]
+
+    # The actual position should be much closer to q_expected (with clamping)
+    # than it would be if unlimited force were applied
+
+    # Calculate what would happen without clamping (for comparison)
+    alpha_unclamped = F_unclamped / inertia_value
+    qd_unclamped = initial_qd + alpha_unclamped * dt
+    q_unclamped = initial_q + qd_unclamped * dt
+
+    # Verify that clamping had a significant effect
+    test.assertGreater(abs(q_unclamped - q_expected), 0.5, "Clamping should significantly affect the motion")
+
+    tolerance = 0.05
+    test.assertAlmostEqual(
+        q_actual,
+        q_expected,
+        delta=tolerance,
+        msg=f"Position with clamped effort limit: expected {q_expected:.4f}, got {q_actual:.4f}",
+    )
+    test.assertAlmostEqual(
+        qd_actual,
+        qd_expected,
+        delta=tolerance * 10,  # Velocity tolerance can be larger
+        msg=f"Velocity with clamped effort limit: expected {qd_expected:.4f}, got {qd_actual:.4f}",
+    )
+
+
 devices = get_test_devices()
 solvers = {
     "featherstone": lambda model: newton.solvers.SolverFeatherstone(model, angular_damping=0.0),
@@ -110,6 +215,16 @@ for device in devices:
     for solver_name, solver_fn in solvers.items():
         if device.is_cuda and solver_name == "mujoco_cpu":
             continue
+
+        if "mujoco" in solver_name:
+            add_function_test(
+                TestJointController,
+                f"test_effort_limit_clamping_{solver_name}",
+                test_effort_limit_clamping,
+                devices=[device],
+                solver_fn=solver_fn,
+            )
+
         # add_function_test(TestJointController, f"test_floating_body_linear_{solver_name}", test_floating_body, devices=[device], solver_fn=solver_fn, test_angular=False)
         add_function_test(
             TestJointController,
