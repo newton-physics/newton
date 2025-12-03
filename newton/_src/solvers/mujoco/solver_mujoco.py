@@ -167,6 +167,18 @@ class SolverMuJoCo(SolverBase):
         )
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
+                name="geom_priority",
+                frequency=ModelAttributeFrequency.SHAPE,
+                assignment=ModelAttributeAssignment.MODEL,
+                dtype=wp.int32,
+                default=0,
+                namespace="mujoco",
+                usd_attribute_name="mjc:priority",
+                mjcf_attribute_name="priority",
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
                 name="limit_margin",
                 frequency=ModelAttributeFrequency.JOINT_DOF,
                 assignment=ModelAttributeAssignment.MODEL,
@@ -995,6 +1007,7 @@ class SolverMuJoCo(SolverBase):
             return attr.numpy()
 
         shape_condim = get_custom_attribute("condim")
+        shape_priority = get_custom_attribute("geom_priority")
         joint_dof_limit_margin = get_custom_attribute("limit_margin")
         joint_solimp_limit = get_custom_attribute("solimplimit")
         joint_stiffness = get_custom_attribute("dof_passive_stiffness")
@@ -1227,6 +1240,8 @@ class SolverMuJoCo(SolverBase):
                 ]
                 if shape_condim is not None:
                     geom_params["condim"] = shape_condim[shape]
+                if shape_priority is not None:
+                    geom_params["priority"] = shape_priority[shape]
 
                 body.add_geom(**geom_params)
                 # store the geom name instead of assuming index
