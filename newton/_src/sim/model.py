@@ -126,7 +126,7 @@ class Model:
         self.requires_grad = False
         """Whether the model was finalized (see :meth:`ModelBuilder.finalize`) with gradient computation enabled."""
         self.num_worlds = 0
-        """Number of articulation worlds added to the ModelBuilder via `add_builder`."""
+        """Number of worlds added to the ModelBuilder."""
 
         self.particle_q = None
         """Particle positions, shape [particle_count, 3], float."""
