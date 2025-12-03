@@ -1111,6 +1111,41 @@ class TestImportMjcf(unittest.TestCase):
             self.assertAlmostEqual(joint_target_ke[dof_idx], expected["target_ke"], places=1)
             self.assertAlmostEqual(joint_target_kd[dof_idx], expected["target_kd"], places=1)
 
+    def test_jnt_actgravcomp_parsing(self):
+        """Test parsing of actuatorgravcomp from MJCF"""
+        mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="actgravcomp_test">
+    <worldbody>
+        <body name="body1" pos="0 0 1">
+            <joint name="joint1" type="hinge" axis="0 0 1" actuatorgravcomp="true"/>
+            <geom type="box" size="0.1 0.1 0.1"/>
+        </body>
+        <body name="body2" pos="1 0 1">
+            <joint name="joint2" type="hinge" axis="0 1 0" actuatorgravcomp="false"/>
+            <geom type="box" size="0.1 0.1 0.1"/>
+        </body>
+        <body name="body3" pos="2 0 1">
+            <joint name="joint3" type="hinge" axis="1 0 0"/>
+            <geom type="box" size="0.1 0.1 0.1"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_mjcf(mjcf_content)
+        model = builder.finalize()
+
+        self.assertTrue(hasattr(model, "mujoco"))
+        self.assertTrue(hasattr(model.mujoco, "jnt_actgravcomp"))
+
+        jnt_actgravcomp = model.mujoco.jnt_actgravcomp.numpy()
+
+        # Bodies are added in order
+        self.assertEqual(jnt_actgravcomp[0], True)
+        self.assertEqual(jnt_actgravcomp[1], False)
+        self.assertEqual(jnt_actgravcomp[2], False)  # Default
+
     def test_xform_with_floating_false(self):
         """Test that xform parameter is respected when floating=False"""
         local_pos = wp.vec3(1.0, 2.0, 3.0)

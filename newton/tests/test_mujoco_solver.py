@@ -1501,6 +1501,46 @@ class TestMuJoCoSolverJointProperties(TestMuJoCoSolverPropertiesBase):
                     msg=f"Range upper should have changed for Newton DOF {newton_dof_idx} in world {world_idx}",
                 )
 
+    def test_jnt_actgravcomp_conversion(self):
+        """Test that jnt_actgravcomp custom attribute is properly converted to MuJoCo."""
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+
+        # Add two bodies with revolute joints
+        body1 = builder.add_link(mass=1.0, com=wp.vec3(0.0, 0.0, 0.0), I_m=wp.mat33(np.eye(3)))
+        body2 = builder.add_link(mass=1.0, com=wp.vec3(0.0, 0.0, 0.0), I_m=wp.mat33(np.eye(3)))
+
+        # Add shapes
+        builder.add_shape_box(body=body1, hx=0.1, hy=0.1, hz=0.1)
+        builder.add_shape_box(body=body2, hx=0.1, hy=0.1, hz=0.1)
+
+        # Add joints with custom actuatorgravcomp values
+        joint1 = builder.add_joint_revolute(
+            -1, body1, axis=(0.0, 0.0, 1.0), custom_attributes={"mujoco:jnt_actgravcomp": True}
+        )
+        joint2 = builder.add_joint_revolute(
+            body1, body2, axis=(0.0, 1.0, 0.0), custom_attributes={"mujoco:jnt_actgravcomp": False}
+        )
+
+        builder.add_articulation([joint1, joint2])
+        model = builder.finalize()
+
+        # Verify the custom attribute exists and has correct values
+        self.assertTrue(hasattr(model, "mujoco"))
+        self.assertTrue(hasattr(model.mujoco, "jnt_actgravcomp"))
+
+        jnt_actgravcomp = model.mujoco.jnt_actgravcomp.numpy()
+        self.assertEqual(jnt_actgravcomp[0], True)
+        self.assertEqual(jnt_actgravcomp[1], False)
+
+        # Create solver and verify it's properly converted to MuJoCo
+        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
+
+        # Verify the MuJoCo model has the correct jnt_actgravcomp values
+        mjc_actgravcomp = solver.mj_model.jnt_actgravcomp
+        self.assertEqual(mjc_actgravcomp[0], 1)  # True -> 1
+        self.assertEqual(mjc_actgravcomp[1], 0)  # False -> 0
+
     def test_solimp_friction_conversion_and_update(self):
         """
         Test validation of solimp_friction custom attribute:
