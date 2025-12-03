@@ -2080,6 +2080,118 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
                     msg=f"Updated rolling friction mismatch for shape {shape_idx} in world {world_idx}",
                 )
 
+    def test_geom_solimp_conversion_and_update(self):
+        """Test per-shape geom_solimp conversion to MuJoCo and dynamic updates across multiple worlds."""
+        vec5 = wp.types.vector(length=5, dtype=wp.float32)
+
+        # Create a model with custom attributes registered
+        num_worlds = 2
+        template_builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(template_builder)
+        shape_cfg = newton.ModelBuilder.ShapeConfig(density=1000.0)
+
+        # Create bodies with shapes
+        body1 = template_builder.add_link(mass=0.1)
+        template_builder.add_shape_box(body=body1, hx=0.1, hy=0.1, hz=0.1, cfg=shape_cfg)
+        joint1 = template_builder.add_joint_free(child=body1)
+
+        body2 = template_builder.add_link(mass=0.1)
+        template_builder.add_shape_sphere(body=body2, radius=0.1, cfg=shape_cfg)
+        joint2 = template_builder.add_joint_revolute(parent=body1, child=body2, axis=(0.0, 0.0, 1.0))
+
+        template_builder.add_articulation([joint1, joint2])
+
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.replicate(template_builder, num_worlds)
+        model = builder.finalize()
+
+        self.assertTrue(hasattr(model, "mujoco"), "Model should have mujoco namespace")
+        self.assertTrue(hasattr(model.mujoco, "geom_solimp"), "Model should have geom_solimp attribute")
+
+        # Use per-world iteration to handle potential global shapes correctly
+        shape_world = model.shape_world.numpy()
+        initial_solimp = np.zeros((model.shape_count, 5), dtype=np.float32)
+
+        # Set unique solimp values per shape and world
+        for world_idx in range(model.num_worlds):
+            world_shape_indices = np.where(shape_world == world_idx)[0]
+            for local_idx, shape_idx in enumerate(world_shape_indices):
+                initial_solimp[shape_idx] = [
+                    0.8 + local_idx * 0.02 + world_idx * 0.05,  # dmin
+                    0.9 + local_idx * 0.01 + world_idx * 0.02,  # dmax
+                    0.001 + local_idx * 0.0005 + world_idx * 0.001,  # width
+                    0.4 + local_idx * 0.05 + world_idx * 0.1,  # midpoint
+                    2.0 + local_idx * 0.2 + world_idx * 0.5,  # power
+                ]
+
+        model.mujoco.geom_solimp.assign(wp.array(initial_solimp, dtype=vec5, device=model.device))
+
+        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
+        to_newton_shape_index = solver.to_newton_shape_index.numpy()
+        num_geoms = solver.mj_model.ngeom
+
+        # Verify initial conversion
+        geom_solimp = solver.mjw_model.geom_solimp.numpy()
+        tested_count = 0
+        for world_idx in range(model.num_worlds):
+            for geom_idx in range(num_geoms):
+                shape_idx = to_newton_shape_index[world_idx, geom_idx]
+                if shape_idx < 0:
+                    continue
+
+                tested_count += 1
+                expected_solimp = initial_solimp[shape_idx]
+                actual_solimp = geom_solimp[world_idx, geom_idx]
+
+                for i in range(5):
+                    self.assertAlmostEqual(
+                        float(actual_solimp[i]),
+                        expected_solimp[i],
+                        places=5,
+                        msg=f"Initial geom_solimp[{i}] mismatch for shape {shape_idx} in world {world_idx}, geom {geom_idx}",
+                    )
+
+        self.assertGreater(tested_count, 0, "Should have tested at least one shape")
+
+        # Update with different values
+        updated_solimp = np.zeros((model.shape_count, 5), dtype=np.float32)
+
+        for world_idx in range(model.num_worlds):
+            world_shape_indices = np.where(shape_world == world_idx)[0]
+            for local_idx, shape_idx in enumerate(world_shape_indices):
+                updated_solimp[shape_idx] = [
+                    0.7 + local_idx * 0.03 + world_idx * 0.06,
+                    0.85 + local_idx * 0.02 + world_idx * 0.03,
+                    0.002 + local_idx * 0.0003 + world_idx * 0.0005,
+                    0.5 + local_idx * 0.06 + world_idx * 0.08,
+                    2.5 + local_idx * 0.3 + world_idx * 0.4,
+                ]
+
+        model.mujoco.geom_solimp.assign(wp.array(updated_solimp, dtype=vec5, device=model.device))
+
+        solver.notify_model_changed(SolverNotifyFlags.SHAPE_PROPERTIES)
+
+        # Verify updates
+        updated_geom_solimp = solver.mjw_model.geom_solimp.numpy()
+
+        for world_idx in range(model.num_worlds):
+            for geom_idx in range(num_geoms):
+                shape_idx = to_newton_shape_index[world_idx, geom_idx]
+                if shape_idx < 0:
+                    continue
+
+                expected_solimp = updated_solimp[shape_idx]
+                actual_solimp = updated_geom_solimp[world_idx, geom_idx]
+
+                for i in range(5):
+                    self.assertAlmostEqual(
+                        float(actual_solimp[i]),
+                        expected_solimp[i],
+                        places=5,
+                        msg=f"Updated geom_solimp[{i}] mismatch for shape {shape_idx} in world {world_idx}",
+                    )
+
 
 class TestMuJoCoSolverNewtonContacts(unittest.TestCase):
     def setUp(self):
