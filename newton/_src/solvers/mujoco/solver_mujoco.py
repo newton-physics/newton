@@ -1359,7 +1359,7 @@ class SolverMuJoCo(SolverBase):
                     if joint_damping is not None:
                         joint_params["damping"] = joint_damping[ai]
                     if joint_actgravcomp is not None:
-                        joint_params["actuatorgravcomp"] = joint_actgravcomp[ai]
+                        joint_params["actgravcomp"] = joint_actgravcomp[ai]
                     lower, upper = joint_limit_lower[ai], joint_limit_upper[ai]
                     if lower <= -JOINT_LIMIT_UNLIMITED and upper >= JOINT_LIMIT_UNLIMITED:
                         joint_params["limited"] = False
@@ -1433,8 +1433,8 @@ class SolverMuJoCo(SolverBase):
                         joint_params["stiffness"] = joint_stiffness[ai]
                     if joint_damping is not None:
                         joint_params["damping"] = joint_damping[ai]
-                    if jnt_actgravcomp is not None:
-                        joint_params["actuatorgravcomp"] = jnt_actgravcomp[ai]
+                    if joint_actgravcomp is not None:
+                        joint_params["actgravcomp"] = joint_actgravcomp[ai]
                     lower, upper = joint_limit_lower[ai], joint_limit_upper[ai]
                     if lower <= -JOINT_LIMIT_UNLIMITED and upper >= JOINT_LIMIT_UNLIMITED:
                         joint_params["limited"] = False
