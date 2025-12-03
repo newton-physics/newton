@@ -141,6 +141,10 @@ class TiledCameraSensor:
         height: Image height in pixels for each camera.
     """
 
+    RenderContext = RenderContext
+    LightType = LightType
+    GeomType = GeomType
+
     @dataclass
     class Options:
         checkerboard_texture: bool = False
