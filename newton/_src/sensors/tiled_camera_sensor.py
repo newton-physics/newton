@@ -280,7 +280,10 @@ class TiledCameraSensor:
         pixel in each camera based on the specified field-of-view angles.
 
         Args:
-            camera_fovs: Array of vertical FOV angles in radians, shape (num_cameras, height, width, 2, ).
+            camera_fovs: Array of vertical FOV angles in radians, shape (num_cameras,).
+
+        Returns:
+            camera_rays: Array of camera rays in camera space, shape (num_cameras, height, width, 2).
         """
 
         camera_rays = wp.empty(
