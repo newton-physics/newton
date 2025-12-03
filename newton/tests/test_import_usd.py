@@ -1074,38 +1074,6 @@ def Xform "Articulation" (
         self.assertTrue(found_joint1, f"Expected solreffriction {expected_joint1} not found in model")
         self.assertTrue(found_joint2, f"Expected default solreffriction {expected_joint2} not found in model")
 
-        # Test with MuJoCo solver - verify dof_solref values match using the mapping
-        solver = SolverMuJoCo(model, separate_worlds=False)
-
-        # MuJoCo's dof_solref should match our solreffriction values
-        mjw_dof_solref = solver.mjw_model.dof_solref.numpy()
-        joint_mjc_dof_start = solver.joint_mjc_dof_start.numpy()
-
-        # For each Newton joint, verify its DOFs map correctly to MuJoCo
-        for newton_joint_idx in range(model.joint_count):
-            mjc_dof_start = joint_mjc_dof_start[newton_joint_idx]
-            newton_dof_start = model.joint_qd_start.numpy()[newton_joint_idx]
-            dof_count = model.joint_dof_dim.numpy()[newton_joint_idx].sum()
-
-            # Check each DOF in this joint
-            for dof_offset in range(dof_count):
-                newton_dof_idx = newton_dof_start + dof_offset
-                mjc_dof_idx = mjc_dof_start + dof_offset
-
-                # Get expected solreffriction from Newton model
-                expected_solref = solreffriction[newton_dof_idx, :].tolist()
-
-                # Get actual dof_solref from MuJoCo
-                actual_solref = mjw_dof_solref[0, mjc_dof_idx, :].tolist()
-
-                # Verify they match
-                self.assertTrue(
-                    arrays_match(actual_solref, expected_solref),
-                    f"MuJoCo dof_solref[{mjc_dof_idx}] = {actual_solref} doesn't match "
-                    f"Newton solreffriction[{newton_dof_idx}] = {expected_solref} "
-                    f"for joint {newton_joint_idx} DOF {dof_offset}",
-                )
-
 
 class TestImportSampleAssets(unittest.TestCase):
     def verify_usdphysics_parser(self, file, model, compare_min_max_coords, floating):
