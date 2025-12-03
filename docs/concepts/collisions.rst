@@ -361,10 +361,10 @@ Shape contact material properties control how contacts are resolved by different
      - Contact elastic stiffness
      - SemiImplicit, Featherstone, MuJoCo
    * - ``kd``
-     - Contact damping stiffness
+     - Contact damping coefficient
      - SemiImplicit, Featherstone, MuJoCo
    * - ``kf``
-     - Contact friction stiffness (viscous friction)
+     - Contact friction damping coefficient
      - SemiImplicit, Featherstone
    * - ``ka``
      - Contact adhesion distance

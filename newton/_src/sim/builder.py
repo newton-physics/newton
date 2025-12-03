@@ -151,9 +151,9 @@ class ModelBuilder:
         ke: float = 1.0e5
         """The contact elastic stiffness. Used by: SemiImplicit, Featherstone, MuJoCo."""
         kd: float = 1000.0
-        """The contact damping stiffness. Used by: SemiImplicit, Featherstone, MuJoCo."""
+        """The contact damping coefficient. Used by: SemiImplicit, Featherstone, MuJoCo."""
         kf: float = 1000.0
-        """The contact friction stiffness (viscous friction). Used by: SemiImplicit, Featherstone."""
+        """The friction damping coefficient. Used by: SemiImplicit, Featherstone."""
         ka: float = 0.0
         """The contact adhesion distance. Used by: SemiImplicit, Featherstone."""
         mu: float = 0.5
