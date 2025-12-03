@@ -1240,7 +1240,7 @@ class SolverMuJoCo(SolverBase):
                 if shape_condim is not None:
                     geom_params["condim"] = shape_condim[shape]
                 if shape_geom_solimp is not None:
-                    geom_params["solimp"] = shape_geom_solimp[shape].tolist()
+                    geom_params["solimp"] = shape_geom_solimp[shape]
 
                 body.add_geom(**geom_params)
                 # store the geom name instead of assuming index
