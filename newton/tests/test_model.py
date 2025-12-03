@@ -118,48 +118,56 @@ class TestModel(unittest.TestCase):
 
         def add_three_cubes(builder: ModelBuilder, parent_body=-1):
             unit_cube = {"hx": 0.5, "hy": 0.5, "hz": 0.5, "cfg": shape_cfg}
-            b0 = builder.add_body()
+            b0 = builder.add_link()
             builder.add_shape_box(body=b0, **unit_cube)
-            builder.add_joint_fixed(parent=parent_body, child=b0, parent_xform=wp.transform(wp.vec3(1.0, 0.0, 0.0)))
-            b1 = builder.add_body()
+            j0 = builder.add_joint_fixed(
+                parent=parent_body, child=b0, parent_xform=wp.transform(wp.vec3(1.0, 0.0, 0.0))
+            )
+            b1 = builder.add_link()
             builder.add_shape_box(body=b1, **unit_cube)
-            builder.add_joint_fixed(parent=parent_body, child=b1, parent_xform=wp.transform(wp.vec3(0.0, 1.0, 0.0)))
-            b2 = builder.add_body()
+            j1 = builder.add_joint_fixed(
+                parent=parent_body, child=b1, parent_xform=wp.transform(wp.vec3(0.0, 1.0, 0.0))
+            )
+            b2 = builder.add_link()
             builder.add_shape_box(body=b2, **unit_cube)
-            builder.add_joint_fixed(parent=parent_body, child=b2, parent_xform=wp.transform(wp.vec3(0.0, 0.0, 1.0)))
-            return b2
+            j2 = builder.add_joint_fixed(
+                parent=parent_body, child=b2, parent_xform=wp.transform(wp.vec3(0.0, 0.0, 1.0))
+            )
+            return b2, [j0, j1, j2]
 
         builder = ModelBuilder()
         # only fixed joints
-        builder.add_articulation()
-        add_three_cubes(builder)
+        last_body, joints = add_three_cubes(builder)
+        builder.add_articulation(joints)
         assert builder.joint_count == 3
         assert builder.body_count == 3
 
         # fixed joints followed by a non-fixed joint
-        builder.add_articulation()
-        last_body = add_three_cubes(builder)
+        last_body, joints = add_three_cubes(builder)
         assert builder.joint_count == 6
         assert builder.body_count == 6
-        assert builder.articulation_count == 2
-        b3 = builder.add_body()
+        assert builder.articulation_count == 1  # Only one articulation created so far
+        b3 = builder.add_link()
         builder.add_shape_box(
             body=b3, hx=0.5, hy=0.5, hz=0.5, cfg=shape_cfg, xform=wp.transform(wp.vec3(1.0, 2.0, 3.0))
         )
-        builder.add_joint_revolute(parent=last_body, child=b3, axis=wp.vec3(0.0, 1.0, 0.0))
+        joints.append(builder.add_joint_revolute(parent=last_body, child=b3, axis=wp.vec3(0.0, 1.0, 0.0)))
+        builder.add_articulation(joints)
+        assert builder.articulation_count == 2  # Now we have two articulations
 
         # a non-fixed joint followed by fixed joints
-        builder.add_articulation()
         free_xform = wp.transform(wp.vec3(1.0, 2.0, 3.0), wp.quat_rpy(0.4, 0.5, 0.6))
-        b4 = builder.add_body(xform=free_xform)
+        b4 = builder.add_link(xform=free_xform)
         builder.add_shape_box(body=b4, hx=0.5, hy=0.5, hz=0.5, cfg=shape_cfg)
-        builder.add_joint_free(parent=-1, child=b4, parent_xform=wp.transform(wp.vec3(0.0, -1.0, 0.0)))
+        j_free = builder.add_joint_free(parent=-1, child=b4, parent_xform=wp.transform(wp.vec3(0.0, -1.0, 0.0)))
         assert_np_equal(builder.body_q[b4], np.array(free_xform))
         assert_np_equal(builder.joint_q[-7:], np.array(free_xform))
         assert builder.joint_count == 8
         assert builder.body_count == 8
-        assert builder.articulation_count == 3
-        add_three_cubes(builder, parent_body=b4)
+        _last_body2, joints2 = add_three_cubes(builder, parent_body=b4)
+        all_joints = [j_free, *joints2]
+        builder.add_articulation(all_joints)
+        assert builder.articulation_count == 3  # Three articulations total
 
         builder.collapse_fixed_joints()
 
@@ -188,7 +196,7 @@ class TestModel(unittest.TestCase):
         assert builder2.articulation_count == 2 * builder.articulation_count
         assert builder2.articulation_start == [0, 1, 2, 3]
 
-    def test_add_builder_with_open_edges(self):
+    def test_add_world_with_open_edges(self):
         builder = ModelBuilder()
 
         dim_x = 16
@@ -214,11 +222,7 @@ class TestModel(unittest.TestCase):
 
         for i in range(num_worlds):
             xform = wp.transform(world_offsets[i], wp.quat_identity())
-            builder.add_builder(
-                world_builder,
-                xform,
-                update_num_world_count=True,
-            )
+            builder.add_world(world_builder, xform)
 
         self.assertEqual(
             np.sum(np.array(builder.edge_indices) == -1),
@@ -286,9 +290,10 @@ class TestModel(unittest.TestCase):
             pos=[(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (2.0, 0.0, 0.0)], vel=[(0.0, 0.0, 0.0)] * 3, mass=[1.0] * 3
         )
 
-        # Change to group 0 and add more particles
-        builder.current_world = 0
+        # Change to world 0 and add more particles
+        builder.begin_world()
         builder.add_particles(pos=[(3.0, 0.0, 0.0), (4.0, 0.0, 0.0)], vel=[(0.0, 0.0, 0.0)] * 2, mass=[1.0] * 2)
+        builder.end_world()
 
         # Finalize and check groups
         model = builder.finalize()
@@ -303,8 +308,7 @@ class TestModel(unittest.TestCase):
         """Test world grouping functionality for Model entities."""
         main_builder = ModelBuilder()
 
-        # Create global entities (group -1)
-        main_builder.current_world = -1
+        # Create global entities (world -1)
         ground_body = main_builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, -1.0), wp.quat_identity()), mass=0.0)
         main_builder.add_shape_box(
             body=ground_body, xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()), hx=5.0, hy=5.0, hz=0.1
@@ -320,10 +324,10 @@ class TestModel(unittest.TestCase):
             world_builder.add_spring(p1, p2, ke=100.0, kd=1.0, control=0.0)
 
             # Add articulated body
-            world_builder.add_articulation()
-            b1 = world_builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()), mass=10.0)
-            b2 = world_builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.5), wp.quat_identity()), mass=5.0)
-            world_builder.add_joint_revolute(parent=b1, child=b2, axis=(0, 1, 0))
+            b1 = world_builder.add_link(xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()), mass=10.0)
+            b2 = world_builder.add_link(xform=wp.transform(wp.vec3(0.0, 0.0, 0.5), wp.quat_identity()), mass=5.0)
+            j1 = world_builder.add_joint_revolute(parent=b1, child=b2, axis=(0, 1, 0))
+            world_builder.add_articulation([j1])
             world_builder.add_shape_sphere(
                 body=b1, xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()), radius=0.1
             )
@@ -335,21 +339,15 @@ class TestModel(unittest.TestCase):
 
         # Add world 0
         world0_builder = create_world_builder()
-        main_builder.add_builder(
-            world0_builder, xform=wp.transform(wp.vec3(1.0, 0.0, 0.0), wp.quat_identity()), world=0
-        )
+        main_builder.add_world(world0_builder, xform=wp.transform(wp.vec3(1.0, 0.0, 0.0), wp.quat_identity()))
 
         # Add world 1
         world1_builder = create_world_builder()
-        main_builder.add_builder(
-            world1_builder, xform=wp.transform(wp.vec3(2.0, 0.0, 0.0), wp.quat_identity()), world=1
-        )
+        main_builder.add_world(world1_builder, xform=wp.transform(wp.vec3(2.0, 0.0, 0.0), wp.quat_identity()))
 
-        # Add world 2 (testing auto-assignment)
+        # Add world 2
         world2_builder = create_world_builder()
-        main_builder.add_builder(
-            world2_builder, xform=wp.transform(wp.vec3(3.0, 0.0, 0.0), wp.quat_identity())
-        )  # should get world 2
+        main_builder.add_world(world2_builder, xform=wp.transform(wp.vec3(3.0, 0.0, 0.0), wp.quat_identity()))
 
         # Finalize the model
         model = main_builder.finalize()
@@ -359,8 +357,8 @@ class TestModel(unittest.TestCase):
         self.assertEqual(model.particle_count, 7)  # 1 global + 2*3 = 7
         self.assertEqual(model.body_count, 7)  # 1 global + 2*3 = 7
         self.assertEqual(model.shape_count, 7)  # 1 global + 2*3 = 7
-        self.assertEqual(model.joint_count, 3)  # 0 global + 1*3 = 3
-        self.assertEqual(model.articulation_count, 3)  # 0 global + 1*3 = 3
+        self.assertEqual(model.joint_count, 4)  # 1 global + 1*3 = 4
+        self.assertEqual(model.articulation_count, 4)  # 1 global + 1*3 = 4
 
         # Verify group assignments
         particle_groups = model.particle_world.numpy() if model.particle_world is not None else []
@@ -395,17 +393,19 @@ class TestModel(unittest.TestCase):
             self.assertTrue(np.all(shape_worlds[5:7] == 2))
 
         if len(joint_worlds) > 0:
-            self.assertEqual(joint_worlds[0], 0)
-            self.assertEqual(joint_worlds[1], 1)
-            self.assertEqual(joint_worlds[2], 2)
+            self.assertEqual(joint_worlds[0], -1)  # ground body's free joint
+            self.assertEqual(joint_worlds[1], 0)
+            self.assertEqual(joint_worlds[2], 1)
+            self.assertEqual(joint_worlds[3], 2)
 
         if len(articulation_groups) > 0:
-            self.assertEqual(articulation_groups[0], 0)
-            self.assertEqual(articulation_groups[1], 1)
-            self.assertEqual(articulation_groups[2], 2)
+            self.assertEqual(articulation_groups[0], -1)  # ground body's articulation
+            self.assertEqual(articulation_groups[1], 0)
+            self.assertEqual(articulation_groups[2], 1)
+            self.assertEqual(articulation_groups[3], 2)
 
     def test_num_worlds_tracking(self):
-        """Test that num_worlds is properly tracked when using add_builder with worlds."""
+        """Test that num_worlds is properly tracked when using add_world."""
         main_builder = ModelBuilder()
 
         # Create a simple sub-builder
@@ -414,48 +414,131 @@ class TestModel(unittest.TestCase):
 
         # Test 1: Global entities should not increment num_worlds
         self.assertEqual(main_builder.num_worlds, 0)
-        main_builder.add_builder(sub_builder, world=-1, update_num_world_count=True)
+        main_builder.add_builder(sub_builder)  # Adds to global world (-1)
         self.assertEqual(main_builder.num_worlds, 0)  # Should still be 0
 
-        # Test 2: Auto-increment with world=None
-        main_builder.add_builder(sub_builder, world=None, update_num_world_count=True)
+        # Test 2: Using add_world() for automatic world management
+        main_builder.add_world(sub_builder)
         self.assertEqual(main_builder.num_worlds, 1)
 
-        main_builder.add_builder(sub_builder, world=None, update_num_world_count=True)
+        main_builder.add_world(sub_builder)
         self.assertEqual(main_builder.num_worlds, 2)
 
-        # Test 3: Explicit world indices
+        # Test 3: Using begin_world/end_world
         main_builder2 = ModelBuilder()
 
-        # Add world 3 directly (skipping 0, 1, 2)
-        main_builder2.add_builder(sub_builder, world=3, update_num_world_count=True)
-        self.assertEqual(main_builder2.num_worlds, 4)  # Should be 3+1
+        # Add worlds in sequence
+        main_builder2.begin_world()
+        main_builder2.add_builder(sub_builder)
+        main_builder2.end_world()
+        self.assertEqual(main_builder2.num_worlds, 1)
 
-        # Add world 1 (should not change num_worlds since 4 > 1+1)
-        main_builder2.add_builder(sub_builder, world=1, update_num_world_count=True)
-        self.assertEqual(main_builder2.num_worlds, 4)  # Should still be 4
+        main_builder2.begin_world()
+        main_builder2.add_builder(sub_builder)
+        main_builder2.end_world()
+        self.assertEqual(main_builder2.num_worlds, 2)
 
-        # Add world 5 (should increase to 6)
-        main_builder2.add_builder(sub_builder, world=5, update_num_world_count=True)
-        self.assertEqual(main_builder2.num_worlds, 6)  # Should be 5+1
+        # Test 4: Adding to same world using begin_world with existing index
+        main_builder2.begin_world()
+        main_builder2.add_builder(sub_builder)  # Adds to world 2
+        main_builder2.add_builder(sub_builder)  # Also adds to world 2
+        main_builder2.end_world()
+        self.assertEqual(main_builder2.num_worlds, 3)  # Should now be 3
 
-        # Test 4: update_num_world_count=False should not change num_worlds
-        main_builder3 = ModelBuilder()
-        main_builder3.add_builder(sub_builder, world=2, update_num_world_count=False)
-        self.assertEqual(main_builder3.num_worlds, 0)  # Should remain 0
+    def test_world_validation_errors(self):
+        """Test that world validation catches non-contiguous and non-monotonic world indices."""
+        # Test non-contiguous worlds
+        builder1 = ModelBuilder()
+        sub_builder = ModelBuilder()
+        sub_builder.add_body(mass=1.0)
+
+        # Create world 0 and world 2, skipping world 1
+        # We need to manually manipulate world indices to create invalid cases
+        builder1.add_world(sub_builder)  # Creates world 0
+        # Manually skip world 1 by incrementing num_worlds
+        builder1.num_worlds = 2
+        builder1.begin_world()  # This will be world 2
+        builder1.add_builder(sub_builder)
+        builder1.end_world()
+
+        # Should raise error about non-contiguous worlds
+        with self.assertRaises(ValueError) as cm:
+            builder1.finalize()
+        self.assertIn("not contiguous", str(cm.exception))
+
+        # Test non-monotonic worlds
+        # This is harder to create with the new API since worlds are always added in order
+        # We'll have to directly manipulate the world arrays
+        builder2 = ModelBuilder()
+        builder2.add_world(sub_builder)  # World 0
+        builder2.add_world(sub_builder)  # World 1
+        # Manually swap world indices to create non-monotonic ordering
+        builder2.body_world[0], builder2.body_world[1] = builder2.body_world[1], builder2.body_world[0]
+
+        # Should raise error about non-monotonic ordering
+        with self.assertRaises(ValueError) as cm:
+            builder2.finalize()
+        self.assertIn("monotonic", str(cm.exception))
+
+    def test_world_context_errors(self):
+        """Test error handling for begin_world() and end_world()."""
+        # Test calling begin_world() twice without end_world()
+        builder1 = ModelBuilder()
+        builder1.begin_world()
+        with self.assertRaises(RuntimeError) as cm:
+            builder1.begin_world()
+        self.assertIn("Cannot begin a new world", str(cm.exception))
+        self.assertIn("already in world context", str(cm.exception))
+
+        # Test calling end_world() without begin_world()
+        builder2 = ModelBuilder()
+        with self.assertRaises(RuntimeError) as cm:
+            builder2.end_world()
+        self.assertIn("Cannot end world", str(cm.exception))
+        self.assertIn("not currently in a world context", str(cm.exception))
+
+        # Test that we can still use the builder correctly after proper usage
+        builder3 = ModelBuilder()
+        builder3.begin_world()
+        builder3.add_body()
+        builder3.end_world()
+        model = builder3.finalize()
+        self.assertEqual(model.num_worlds, 1)
+
+        # Test world index out of range (above num_worlds-1)
+        builder4 = ModelBuilder()
+        builder4.begin_world()  # Creates world 0
+        builder4.add_body()
+        builder4.end_world()
+        # Manually set world index above valid range
+        builder4.body_world[0] = 5  # num_worlds=1, so valid range is -1 to 0
+        with self.assertRaises(ValueError) as cm:
+            builder4.finalize()
+        self.assertIn("Invalid world index", str(cm.exception))
+
+        # Test world index below -1 (invalid)
+        builder5 = ModelBuilder()
+        builder5.begin_world()
+        builder5.add_body()
+        builder5.end_world()
+        # Manually set an invalid world index below -1
+        builder5.body_world[0] = -2
+        with self.assertRaises(ValueError) as cm:
+            builder5.finalize()
+        self.assertIn("Invalid world index", str(cm.exception))
 
     def test_collapse_fixed_joints_with_groups(self):
         """Test that collapse_fixed_joints correctly preserves world groups."""
         builder = ModelBuilder()
 
         # World 0: Chain with fixed joints
-        builder.current_world = 0
-        b0_0 = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()), mass=1.0)
-        b0_1 = builder.add_body(xform=wp.transform(wp.vec3(1.0, 0.0, 0.0), wp.quat_identity()), mass=1.0)
-        b0_2 = builder.add_body(xform=wp.transform(wp.vec3(2.0, 0.0, 0.0), wp.quat_identity()), mass=1.0)
+        builder.begin_world()
+        b0_0 = builder.add_link(xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()), mass=1.0)
+        b0_1 = builder.add_link(xform=wp.transform(wp.vec3(1.0, 0.0, 0.0), wp.quat_identity()), mass=1.0)
+        b0_2 = builder.add_link(xform=wp.transform(wp.vec3(2.0, 0.0, 0.0), wp.quat_identity()), mass=1.0)
 
         # Connect to world so collapse_fixed_joints processes this chain
-        builder.add_joint_revolute(
+        j0_0 = builder.add_joint_revolute(
             parent=-1,
             child=b0_0,
             parent_xform=wp.transform_identity(),
@@ -464,26 +547,30 @@ class TestModel(unittest.TestCase):
         )
 
         # Add fixed joint (will be collapsed)
-        builder.add_joint_fixed(
+        j0_1 = builder.add_joint_fixed(
             parent=b0_0, child=b0_1, parent_xform=wp.transform_identity(), child_xform=wp.transform_identity()
         )
 
         # Add revolute joint (will be retained)
-        builder.add_joint_revolute(
+        j0_2 = builder.add_joint_revolute(
             parent=b0_1,
             child=b0_2,
             parent_xform=wp.transform_identity(),
             child_xform=wp.transform_identity(),
             axis=(0.0, 1.0, 0.0),
         )
+        # Create articulation for world 0
+        builder.add_articulation([j0_0, j0_1, j0_2])
+
+        builder.end_world()
 
         # World 1: Another chain
-        builder.current_world = 1
-        b1_0 = builder.add_body(xform=wp.transform(wp.vec3(0.0, 2.0, 0.0), wp.quat_identity()), mass=1.0)
-        b1_1 = builder.add_body(xform=wp.transform(wp.vec3(1.0, 2.0, 0.0), wp.quat_identity()), mass=1.0)
+        builder.begin_world()
+        b1_0 = builder.add_link(xform=wp.transform(wp.vec3(0.0, 2.0, 0.0), wp.quat_identity()), mass=1.0)
+        b1_1 = builder.add_link(xform=wp.transform(wp.vec3(1.0, 2.0, 0.0), wp.quat_identity()), mass=1.0)
 
         # Connect to world
-        builder.add_joint_revolute(
+        j1_0 = builder.add_joint_revolute(
             parent=-1,
             child=b1_0,
             parent_xform=wp.transform_identity(),
@@ -492,7 +579,7 @@ class TestModel(unittest.TestCase):
         )
 
         # Add revolute joint
-        builder.add_joint_revolute(
+        j1_1 = builder.add_joint_revolute(
             parent=b1_0,
             child=b1_1,
             parent_xform=wp.transform_identity(),
@@ -500,13 +587,18 @@ class TestModel(unittest.TestCase):
             axis=(0.0, 0.0, 1.0),
         )
 
-        # Global body (not connected to world via joints, will be ignored by collapse)
-        builder.current_world = -1
+        # Create articulation for world 1
+        builder.add_articulation([j1_0, j1_1])
+
+        builder.end_world()
+
+        # Global body (connected to world via free joint)
+        # Using add_body for a standalone body with free joint
         builder.add_body(xform=wp.transform(wp.vec3(0.0, -5.0, 0.0), wp.quat_identity()), mass=0.0)
 
-        # Check groups before collapse
+        # Check worlds before collapse
         self.assertEqual(builder.body_world, [0, 0, 0, 1, 1, -1])
-        self.assertEqual(builder.joint_world, [0, 0, 0, 1, 1])  # 5 joints now
+        self.assertEqual(builder.joint_world, [0, 0, 0, 1, 1, -1])  # 6 joints now (includes free joint from add_body)
 
         # Collapse fixed joints
         builder.collapse_fixed_joints(verbose=False)
@@ -514,16 +606,16 @@ class TestModel(unittest.TestCase):
         # After collapse:
         # - b0_0 and b0_1 are merged (b0_1 removed)
         # - Fixed joint is removed
-        # - Remaining bodies: b0_0 (merged), b0_2, b1_0, b1_1
-        # - Note: global_body is removed because it's not connected to world
-        # - Remaining joints: world->b0_0, b0_0->b0_2, world->b1_0, b1_0->b1_1
+        # - Remaining bodies: b0_0 (merged), b0_2, b1_0, b1_1, global_body
+        # - Note: global_body is now retained because it's connected to world via free joint
+        # - Remaining joints: world->b0_0, b0_0->b0_2, world->b1_0, b1_0->b1_1, world->global_body (free joint)
 
-        self.assertEqual(builder.body_count, 4)  # Two bodies removed (b0_1 merged, global_body removed)
-        self.assertEqual(builder.joint_count, 4)  # One joint removed (fixed joint)
+        self.assertEqual(builder.body_count, 5)  # One body removed (b0_1 merged)
+        self.assertEqual(builder.joint_count, 5)  # One joint removed (fixed joint)
 
         # Check that groups are preserved correctly
-        self.assertEqual(builder.body_world, [0, 0, 1, 1])  # Groups preserved for retained bodies
-        self.assertEqual(builder.joint_world, [0, 0, 1, 1])  # Groups preserved for retained joints
+        self.assertEqual(builder.body_world, [0, 0, 1, 1, -1])  # Groups preserved for retained bodies
+        self.assertEqual(builder.joint_world, [0, 0, 1, 1, -1])  # Groups preserved for retained joints
 
         # Finalize and verify
         model = builder.finalize()
@@ -542,27 +634,29 @@ class TestModel(unittest.TestCase):
         self.assertEqual(joint_worlds[2], 1)  # world->b1_0 from world 1
         self.assertEqual(joint_worlds[3], 1)  # b1_0->b1_1 from world 1
 
-    def test_add_builder(self):
+    def test_add_world(self):
         orig_xform = wp.transform(wp.vec3(1.0, 2.0, 3.0), wp.quat_rpy(0.5, 0.6, 0.7))
         offset_xform = wp.transform(wp.vec3(4.0, 5.0, 6.0), wp.quat_rpy(-0.7, 0.8, -0.9))
 
         fixed_base = ModelBuilder()
-        fixed_base.add_body(xform=orig_xform)
-        fixed_base.add_joint_revolute(parent=-1, child=0, parent_xform=orig_xform)
-        fixed_base.add_shape_sphere(body=0, xform=orig_xform)
+        b0 = fixed_base.add_link(xform=orig_xform)
+        j0 = fixed_base.add_joint_revolute(parent=-1, child=b0, parent_xform=orig_xform)
+        fixed_base.add_articulation([j0])
+        fixed_base.add_shape_sphere(body=b0, xform=orig_xform)
 
         floating_base = ModelBuilder()
-        floating_base.add_body(xform=orig_xform)
-        floating_base.add_joint_free(parent=-1, child=0)
-        floating_base.add_shape_sphere(body=0, xform=orig_xform)
+        b1 = floating_base.add_link(xform=orig_xform)
+        j1 = floating_base.add_joint_free(parent=-1, child=b1)
+        floating_base.add_articulation([j1])
+        floating_base.add_shape_sphere(body=b1, xform=orig_xform)
 
         static_shape = ModelBuilder()
         static_shape.add_shape_sphere(body=-1, xform=orig_xform)
 
         builder = ModelBuilder()
-        builder.add_builder(fixed_base, xform=offset_xform)
-        builder.add_builder(floating_base, xform=offset_xform)
-        builder.add_builder(static_shape, xform=offset_xform)
+        builder.add_world(fixed_base, xform=offset_xform)
+        builder.add_world(floating_base, xform=offset_xform)
+        builder.add_world(static_shape, xform=offset_xform)
 
         self.assertEqual(builder.body_count, 2)
         self.assertEqual(builder.joint_count, 2)
@@ -589,6 +683,128 @@ class TestModel(unittest.TestCase):
         assert_np_equal(np.array(builder.shape_transform[1]), np.array(orig_xform), tol=1.0e-6)
         # static shape receives the offset transform
         assert_np_equal(np.array(builder.shape_transform[2]), np.array(offset_xform * orig_xform), tol=1.0e-6)
+
+    def test_articulation_validation_contiguous(self):
+        """Test that articulation requires contiguous joint indices"""
+        builder = ModelBuilder()
+
+        # Create links
+        link1 = builder.add_link(mass=1.0)
+        link2 = builder.add_link(mass=1.0)
+        link3 = builder.add_link(mass=1.0)
+        link4 = builder.add_link(mass=1.0)
+
+        # Create joints
+        joint1 = builder.add_joint_revolute(parent=-1, child=link1)
+        joint2 = builder.add_joint_revolute(parent=link1, child=link2)
+        joint3 = builder.add_joint_revolute(parent=link2, child=link3)
+        joint4 = builder.add_joint_revolute(parent=link3, child=link4)
+
+        # Test valid contiguous articulation
+        builder.add_articulation([joint1, joint2, joint3, joint4])  # Should work
+
+        # Test non-contiguous articulation should fail
+        builder2 = ModelBuilder()
+        link1 = builder2.add_link(mass=1.0)
+        link2 = builder2.add_link(mass=1.0)
+        link3 = builder2.add_link(mass=1.0)
+
+        j1 = builder2.add_joint_revolute(parent=-1, child=link1)
+        j2 = builder2.add_joint_revolute(parent=link1, child=link2)
+        # Create a joint for another articulation to create a gap
+        other_link = builder2.add_link(mass=1.0)
+        _j_other = builder2.add_joint_revolute(parent=-1, child=other_link)
+        j3 = builder2.add_joint_revolute(parent=link2, child=link3)
+
+        # This should fail because [j1, j2, j3] are not contiguous (j_other is in between)
+        with self.assertRaises(ValueError) as context:
+            builder2.add_articulation([j1, j2, j3])
+        self.assertIn("contiguous", str(context.exception))
+
+    def test_articulation_validation_monotonic(self):
+        """Test that articulation requires monotonically increasing joint indices"""
+        builder = ModelBuilder()
+
+        # Create links
+        link1 = builder.add_link(mass=1.0)
+        link2 = builder.add_link(mass=1.0)
+
+        # Create joints
+        joint1 = builder.add_joint_revolute(parent=-1, child=link1)
+        joint2 = builder.add_joint_revolute(parent=link1, child=link2)
+
+        # Test joints in wrong order (not monotonic)
+        with self.assertRaises(ValueError) as context:
+            builder.add_articulation([joint2, joint1])  # Wrong order
+        self.assertIn("monotonically increasing", str(context.exception))
+
+    def test_articulation_validation_empty(self):
+        """Test that articulation requires at least one joint"""
+        builder = ModelBuilder()
+
+        # Test empty articulation should fail
+        with self.assertRaises(ValueError) as context:
+            builder.add_articulation([])
+        self.assertIn("no joints", str(context.exception))
+
+    def test_articulation_validation_world_mismatch(self):
+        """Test that all joints in articulation must belong to same world"""
+        builder = ModelBuilder()
+
+        # Create joints in world 0
+        builder.begin_world()
+        link1 = builder.add_link(mass=1.0)
+        joint1 = builder.add_joint_revolute(parent=-1, child=link1)
+        builder.end_world()
+
+        # Create joint in world 1
+        builder.begin_world()
+        link2 = builder.add_link(mass=1.0)
+        joint2 = builder.add_joint_revolute(parent=-1, child=link2)
+
+        # Try to create articulation from joints in different worlds (while still in world 1)
+        with self.assertRaises(ValueError) as context:
+            builder.add_articulation([joint1, joint2])
+        self.assertIn("world", str(context.exception).lower())
+        builder.end_world()
+
+    def test_articulation_validation_tree_structure(self):
+        """Test that articulation validates tree structure (no multiple parents)"""
+        builder = ModelBuilder()
+
+        # Create links
+        link1 = builder.add_link(mass=1.0)
+        link2 = builder.add_link(mass=1.0)
+        link3 = builder.add_link(mass=1.0)
+
+        # Create joints that would form invalid tree (link2 has two parents)
+        joint1 = builder.add_joint_revolute(parent=-1, child=link1)
+        joint2 = builder.add_joint_revolute(parent=link1, child=link2)
+        joint3 = builder.add_joint_revolute(parent=link3, child=link2)  # link2 already has parent link1
+
+        # This should fail because link2 has multiple parents
+        with self.assertRaises(ValueError) as context:
+            builder.add_articulation([joint1, joint2, joint3])
+        self.assertIn("multiple parents", str(context.exception))
+
+    def test_joint_world_validation(self):
+        """Test that joints validate parent/child bodies belong to current world"""
+        builder = ModelBuilder()
+
+        # Create body in world 0
+        builder.begin_world()
+        link1 = builder.add_link(mass=1.0)
+        builder.end_world()
+
+        # Switch to world 1 and try to create joint with body from world 0
+        builder.begin_world()
+        link2 = builder.add_link(mass=1.0)
+
+        # This should fail because link1 is in world 0 but we're in world 1
+        with self.assertRaises(ValueError) as context:
+            builder.add_joint_revolute(parent=link1, child=link2)
+        self.assertIn("world", str(context.exception).lower())
+        builder.end_world()
 
 
 if __name__ == "__main__":

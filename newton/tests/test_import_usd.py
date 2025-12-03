@@ -776,37 +776,65 @@ def Xform "Articulation" (
         self.assertTrue(found_joint1, f"Expected solimplimit {expected_joint1} not found in model")
         self.assertTrue(found_joint2, f"Expected default solimplimit {expected_joint2} not found in model")
 
-        # Test with MuJoCo solver - verify jnt_solimp values match using the mapping
-        solver = SolverMuJoCo(model, separate_worlds=False)
+    def test_limit_margin_parsing(self):
+        """Test importing limit_margin from USD with mjc:margin on joint."""
+        from pxr import Sdf, Usd, UsdGeom, UsdPhysics  # noqa: PLC0415
 
-        # MuJoCo's jnt_solimp should match our solimplimit values
-        jnt_solimp = solver.mjw_model.jnt_solimp.numpy()
-        joint_mjc_dof_start = solver.joint_mjc_dof_start.numpy()
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdGeom.SetStageMetersPerUnit(stage, 1.0)
 
-        # For each Newton joint, verify its DOFs map correctly to MuJoCo
-        for newton_joint_idx in range(model.joint_count):
-            mjc_dof_start = joint_mjc_dof_start[newton_joint_idx]
-            newton_dof_start = model.joint_qd_start.numpy()[newton_joint_idx]
-            dof_count = model.joint_dof_dim.numpy()[newton_joint_idx].sum()
+        # Create first body with joint
+        body1_path = "/body1"
+        shape1 = UsdGeom.Cube.Define(stage, body1_path)
+        prim1 = shape1.GetPrim()
+        UsdPhysics.RigidBodyAPI.Apply(prim1)
+        UsdPhysics.ArticulationRootAPI.Apply(prim1)
+        UsdPhysics.CollisionAPI.Apply(prim1)
 
-            # Check each DOF in this joint
-            for dof_offset in range(dof_count):
-                newton_dof_idx = newton_dof_start + dof_offset
-                mjc_dof_idx = mjc_dof_start + dof_offset
+        joint1_path = "/joint1"
+        joint1 = UsdPhysics.RevoluteJoint.Define(stage, joint1_path)
+        joint1.CreateAxisAttr().Set("Z")
+        joint1.CreateBody0Rel().SetTargets([body1_path])
+        joint1_prim = joint1.GetPrim()
+        joint1_prim.CreateAttribute("mjc:margin", Sdf.ValueTypeNames.FloatArray, True).Set([0.01])
 
-                # Get expected solimplimit from Newton model
-                expected_solimp = solimplimit[newton_dof_idx, :].tolist()
+        # Create second body with joint
+        body2_path = "/body2"
+        shape2 = UsdGeom.Cube.Define(stage, body2_path)
+        prim2 = shape2.GetPrim()
+        UsdPhysics.RigidBodyAPI.Apply(prim2)
+        UsdPhysics.CollisionAPI.Apply(prim2)
 
-                # Get actual jnt_solimp from MuJoCo
-                actual_solimp = jnt_solimp[0, mjc_dof_idx, :].tolist()
+        joint2_path = "/joint2"
+        joint2 = UsdPhysics.RevoluteJoint.Define(stage, joint2_path)
+        joint2.CreateAxisAttr().Set("Z")
+        joint2.CreateBody0Rel().SetTargets([body1_path])
+        joint2.CreateBody1Rel().SetTargets([body2_path])
+        joint2_prim = joint2.GetPrim()
+        joint2_prim.CreateAttribute("mjc:margin", Sdf.ValueTypeNames.FloatArray, True).Set([0.02])
 
-                # Verify they match
-                self.assertTrue(
-                    arrays_match(actual_solimp, expected_solimp),
-                    f"MuJoCo jnt_solimp[{mjc_dof_idx}] = {actual_solimp} doesn't match "
-                    f"Newton solimplimit[{newton_dof_idx}] = {expected_solimp} "
-                    f"for joint {newton_joint_idx} DOF {dof_offset}",
-                )
+        # Create third body with joint (no margin, should default to 0.0)
+        body3_path = "/body3"
+        shape3 = UsdGeom.Cube.Define(stage, body3_path)
+        prim3 = shape3.GetPrim()
+        UsdPhysics.RigidBodyAPI.Apply(prim3)
+        UsdPhysics.CollisionAPI.Apply(prim3)
+
+        joint3_path = "/joint3"
+        joint3 = UsdPhysics.RevoluteJoint.Define(stage, joint3_path)
+        joint3.CreateAxisAttr().Set("Z")
+        joint3.CreateBody0Rel().SetTargets([body2_path])
+        joint3.CreateBody1Rel().SetTargets([body3_path])
+
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_usd(stage)
+        model = builder.finalize()
+
+        self.assertTrue(hasattr(model, "mujoco"))
+        self.assertTrue(hasattr(model.mujoco, "limit_margin"))
+        np.testing.assert_allclose(model.mujoco.limit_margin.numpy(), [0.01, 0.02, 0.0])
 
 
 class TestImportSampleAssets(unittest.TestCase):
@@ -1459,6 +1487,166 @@ def Xform "TestBody" (
         # Use assertIn/list checking since order is not strictly guaranteed without path map
         self.assertTrue(np.any(np.isclose(gravcomp, 0.5)))
         self.assertTrue(np.any(np.isclose(gravcomp, 0.0)))
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_joint_stiffness_damping(self):
+        """Test that joint stiffness and damping are parsed correctly from USD."""
+        from pxr import Usd  # noqa: PLC0415
+
+        usd_content = """#usda 1.0
+(
+    upAxis = "Z"
+)
+
+def PhysicsScene "physicsScene"
+{
+}
+
+def Xform "Articulation" (
+    prepend apiSchemas = ["PhysicsArticulationRootAPI"]
+)
+{
+    def Xform "Body1" (
+        prepend apiSchemas = ["PhysicsRigidBodyAPI"]
+    )
+    {
+        double3 xformOp:translate = (0, 0, 1)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+
+        def Cube "Collision1" (
+            prepend apiSchemas = ["PhysicsCollisionAPI"]
+        )
+        {
+            double size = 0.2
+        }
+    }
+
+    def PhysicsRevoluteJoint "Joint1" (
+        prepend apiSchemas = ["PhysicsDriveAPI:angular"]
+    )
+    {
+        rel physics:body0 = </Articulation/Body1>
+        point3f physics:localPos0 = (0, 0, 0)
+        point3f physics:localPos1 = (0, 0, 0)
+        quatf physics:localRot0 = (1, 0, 0, 0)
+        quatf physics:localRot1 = (1, 0, 0, 0)
+        token physics:axis = "Z"
+        float physics:lowerLimit = -45
+        float physics:upperLimit = 45
+        float mjc:stiffness = 0.05
+        float mjc:damping = 0.5
+        float drive:angular:physics:stiffness = 10000.0
+        float drive:angular:physics:damping = 2000.0
+    }
+
+    def Xform "Body2" (
+        prepend apiSchemas = ["PhysicsRigidBodyAPI"]
+    )
+    {
+        double3 xformOp:translate = (1, 0, 1)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+
+        def Sphere "Collision2" (
+            prepend apiSchemas = ["PhysicsCollisionAPI"]
+        )
+        {
+            double radius = 0.1
+        }
+    }
+
+    def PhysicsRevoluteJoint "Joint2" (
+        prepend apiSchemas = ["PhysicsDriveAPI:angular"]
+    )
+    {
+        rel physics:body0 = </Articulation/Body1>
+        rel physics:body1 = </Articulation/Body2>
+        point3f physics:localPos0 = (0, 0, 0)
+        point3f physics:localPos1 = (0, 0, 0)
+        quatf physics:localRot0 = (1, 0, 0, 0)
+        quatf physics:localRot1 = (1, 0, 0, 0)
+        token physics:axis = "Y"
+        float physics:lowerLimit = -30
+        float physics:upperLimit = 30
+        float drive:angular:physics:stiffness = 5000.0
+        float drive:angular:physics:damping = 1000.0
+    }
+
+    def Xform "Body3" (
+        prepend apiSchemas = ["PhysicsRigidBodyAPI"]
+    )
+    {
+        double3 xformOp:translate = (2, 0, 1)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+
+        def Sphere "Collision3" (
+            prepend apiSchemas = ["PhysicsCollisionAPI"]
+        )
+        {
+            double radius = 0.1
+        }
+    }
+
+    def PhysicsRevoluteJoint "Joint3"
+    {
+        rel physics:body0 = </Articulation/Body2>
+        rel physics:body1 = </Articulation/Body3>
+        point3f physics:localPos0 = (0, 0, 0)
+        point3f physics:localPos1 = (0, 0, 0)
+        quatf physics:localRot0 = (1, 0, 0, 0)
+        quatf physics:localRot1 = (1, 0, 0, 0)
+        token physics:axis = "X"
+        float physics:lowerLimit = -60
+        float physics:upperLimit = 60
+        float mjc:stiffness = 0.1
+        float mjc:damping = 0.8
+    }
+}
+"""
+        stage = Usd.Stage.CreateInMemory()
+        stage.GetRootLayer().ImportFromString(usd_content)
+
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_usd(stage)
+        model = builder.finalize()
+
+        self.assertTrue(hasattr(model, "mujoco"))
+        self.assertTrue(hasattr(model.mujoco, "dof_passive_stiffness"))
+        self.assertTrue(hasattr(model.mujoco, "dof_passive_damping"))
+
+        joint_names = model.joint_key
+        joint_qd_start = model.joint_qd_start.numpy()
+        joint_stiffness = model.mujoco.dof_passive_stiffness.numpy()
+        joint_damping = model.mujoco.dof_passive_damping.numpy()
+        joint_target_ke = model.joint_target_ke.numpy()
+        joint_target_kd = model.joint_target_kd.numpy()
+
+        import math  # noqa: PLC0415
+
+        angular_gain_unit_scale = math.degrees(1.0)
+        expected_values = {
+            "/Articulation/Joint1": {
+                "stiffness": 0.05,
+                "damping": 0.5,
+                "target_ke": 10000.0 * angular_gain_unit_scale,
+                "target_kd": 2000.0 * angular_gain_unit_scale,
+            },
+            "/Articulation/Joint2": {
+                "stiffness": 0.0,
+                "damping": 0.0,
+                "target_ke": 5000.0 * angular_gain_unit_scale,
+                "target_kd": 1000.0 * angular_gain_unit_scale,
+            },
+            "/Articulation/Joint3": {"stiffness": 0.1, "damping": 0.8, "target_ke": 0.0, "target_kd": 0.0},
+        }
+
+        for joint_name, expected in expected_values.items():
+            joint_idx = joint_names.index(joint_name)
+            dof_idx = joint_qd_start[joint_idx]
+            self.assertAlmostEqual(joint_stiffness[dof_idx], expected["stiffness"], places=4)
+            self.assertAlmostEqual(joint_damping[dof_idx], expected["damping"], places=4)
+            self.assertAlmostEqual(joint_target_ke[dof_idx], expected["target_ke"], places=1)
+            self.assertAlmostEqual(joint_target_kd[dof_idx], expected["target_kd"], places=1)
 
 
 if __name__ == "__main__":
