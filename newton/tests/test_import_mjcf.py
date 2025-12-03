@@ -1037,6 +1037,91 @@ class TestImportMjcf(unittest.TestCase):
             self.assertAlmostEqual(joint_target_ke[dof_idx], expected["target_ke"], places=1)
             self.assertAlmostEqual(joint_target_kd[dof_idx], expected["target_kd"], places=1)
 
+    def test_xform_with_floating_false(self):
+        """Test that xform parameter is respected when floating=False"""
+        local_pos = wp.vec3(1.0, 2.0, 3.0)
+        local_quat = wp.quat_rpy(0.5, -0.8, 0.7)
+        local_xform = wp.transform(local_pos, local_quat)
+
+        # Create a simple MJCF with a body that has a freejoint
+        mjcf_content = f"""<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test_xform">
+    <worldbody>
+        <body name="test_body" pos="{local_pos.x} {local_pos.y} {local_pos.z}" quat="{local_quat.w} {local_quat.x} {local_quat.y} {local_quat.z}">
+            <freejoint/>
+            <geom type="sphere" size="0.1"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        # Create a non-identity transform to apply
+        xform_pos = wp.vec3(5.0, 10.0, 15.0)
+        xform_quat = wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), wp.pi / 4.0)  # 45 degree rotation around Z
+        xform = wp.transform(xform_pos, xform_quat)
+
+        # Parse with floating=False and the xform
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf_content, floating=False, xform=xform)
+        model = builder.finalize()
+
+        # Verify the model has a fixed joint
+        self.assertEqual(model.joint_count, 1)
+        joint_type = model.joint_type.numpy()[0]
+        self.assertEqual(joint_type, newton.JointType.FIXED)
+
+        # Verify the fixed joint has the correct parent_xform
+        # The joint_X_p should match the world_xform (xform * local_xform)
+        joint_X_p = model.joint_X_p.numpy()[0]
+
+        expected_xform = xform * local_xform
+
+        # Check position
+        np.testing.assert_allclose(
+            joint_X_p[:3],
+            [expected_xform.p[0], expected_xform.p[1], expected_xform.p[2]],
+            rtol=1e-5,
+            atol=1e-5,
+            err_msg="Fixed joint parent_xform position does not match expected xform",
+        )
+
+        # Check quaternion (note: quaternions can be negated and still represent the same rotation)
+        expected_quat = np.array([expected_xform.q[0], expected_xform.q[1], expected_xform.q[2], expected_xform.q[3]])
+        actual_quat = joint_X_p[3:7]
+
+        # Check if quaternions match (accounting for q and -q representing the same rotation)
+        quat_match = np.allclose(actual_quat, expected_quat, rtol=1e-5, atol=1e-5) or np.allclose(
+            actual_quat, -expected_quat, rtol=1e-5, atol=1e-5
+        )
+        self.assertTrue(
+            quat_match,
+            f"Fixed joint parent_xform quaternion does not match expected xform.\n"
+            f"Expected: {expected_quat}\nActual: {actual_quat}",
+        )
+
+        # Verify body_q after eval_fk also matches the expected transform
+        state = model.state()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+
+        body_q = state.body_q.numpy()[0]
+        np.testing.assert_allclose(
+            body_q[:3],
+            [expected_xform.p[0], expected_xform.p[1], expected_xform.p[2]],
+            rtol=1e-5,
+            atol=1e-5,
+            err_msg="Body position after eval_fk does not match expected xform",
+        )
+
+        # Check body quaternion
+        body_quat = body_q[3:7]
+        quat_match = np.allclose(body_quat, expected_quat, rtol=1e-5, atol=1e-5) or np.allclose(
+            body_quat, -expected_quat, rtol=1e-5, atol=1e-5
+        )
+        self.assertTrue(
+            quat_match,
+            f"Body quaternion after eval_fk does not match expected xform.\n"
+            f"Expected: {expected_quat}\nActual: {body_quat}",
+        )
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

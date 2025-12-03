@@ -19,6 +19,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import numpy as np
+import warp as wp
 
 import newton
 import newton.examples
@@ -204,8 +205,12 @@ class TestImportUrdf(unittest.TestCase):
         urdf: URDF file to parse
         res_dir: dict[str, str]: (filename, content): extra resources files to include in the directory"""
 
+        # Default to up_axis="Y" if not specified in kwargs
+        if "up_axis" not in kwargs:
+            kwargs["up_axis"] = "Y"
+
         if not res_dir:
-            builder.add_urdf(urdf, up_axis="Y", **kwargs)
+            builder.add_urdf(urdf, **kwargs)
             return
 
         urdf_filename = "robot.urdf"
@@ -220,7 +225,7 @@ class TestImportUrdf(unittest.TestCase):
 
             # Parse the URDF file
             urdf_path = Path(temp_dir) / urdf_filename
-            builder.add_urdf(str(urdf_path), up_axis="Y", **kwargs)
+            builder.add_urdf(str(urdf_path), **kwargs)
 
     def test_sphere_urdf(self):
         # load a urdf containing a sphere with r=0.5 and pos=(1.0,2.0,3.0)
@@ -461,6 +466,95 @@ class TestImportUrdf(unittest.TestCase):
             "grandchild_link_1b",
         ]
         assert builder.joint_key == ["fixed_base", "joint_2", "joint_1", "joint_2b", "joint_2a", "joint_1a", "joint_1b"]
+
+    def test_xform_with_floating_false(self):
+        """Test that xform parameter is respected when floating=False"""
+
+        # Create a simple URDF with a link (no position/orientation in URDF for root link)
+        urdf_content = """<?xml version="1.0" encoding="utf-8"?>
+<robot name="test_xform">
+    <link name="base_link">
+        <inertial>
+            <mass value="1.0"/>
+            <inertia ixx="0.1" ixy="0.0" ixz="0.0" iyy="0.1" iyz="0.0" izz="0.1"/>
+        </inertial>
+        <visual>
+            <geometry>
+                <sphere radius="0.1"/>
+            </geometry>
+        </visual>
+    </link>
+</robot>
+"""
+        # Create a non-identity transform to apply
+        xform_pos = wp.vec3(5.0, 10.0, 15.0)
+        xform_quat = wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), wp.pi / 4.0)  # 45 degree rotation around Z
+        xform = wp.transform(xform_pos, xform_quat)
+
+        # Parse with floating=False and the xform
+        # Use up_axis="Z" to match builder default and avoid axis transformation
+        builder = newton.ModelBuilder()
+        self.parse_urdf(urdf_content, builder, floating=False, xform=xform, up_axis="Z")
+        model = builder.finalize()
+
+        # Verify the model has a fixed joint
+        self.assertEqual(model.joint_count, 1)
+        joint_type = model.joint_type.numpy()[0]
+        self.assertEqual(joint_type, newton.JointType.FIXED)
+
+        # Verify the fixed joint has the correct parent_xform
+        # In URDF, the xform is applied directly to the root body (no local transform)
+        joint_X_p = model.joint_X_p.numpy()[0]
+
+        # Expected transform is just xform (URDF root links don't have position/orientation)
+        expected_xform = xform
+
+        # Check position
+        np.testing.assert_allclose(
+            joint_X_p[:3],
+            [expected_xform.p[0], expected_xform.p[1], expected_xform.p[2]],
+            rtol=1e-5,
+            atol=1e-5,
+            err_msg="Fixed joint parent_xform position does not match expected xform",
+        )
+
+        # Check quaternion (note: quaternions can be negated and still represent the same rotation)
+        expected_quat = np.array([expected_xform.q[0], expected_xform.q[1], expected_xform.q[2], expected_xform.q[3]])
+        actual_quat = joint_X_p[3:7]
+
+        # Check if quaternions match (accounting for q and -q representing the same rotation)
+        quat_match = np.allclose(actual_quat, expected_quat, rtol=1e-5, atol=1e-5) or np.allclose(
+            actual_quat, -expected_quat, rtol=1e-5, atol=1e-5
+        )
+        self.assertTrue(
+            quat_match,
+            f"Fixed joint parent_xform quaternion does not match expected xform.\n"
+            f"Expected: {expected_quat}\nActual: {actual_quat}",
+        )
+
+        # Verify body_q after eval_fk also matches the expected transform
+        state = model.state()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+
+        body_q = state.body_q.numpy()[0]
+        np.testing.assert_allclose(
+            body_q[:3],
+            [expected_xform.p[0], expected_xform.p[1], expected_xform.p[2]],
+            rtol=1e-5,
+            atol=1e-5,
+            err_msg="Body position after eval_fk does not match expected xform",
+        )
+
+        # Check body quaternion
+        body_quat = body_q[3:7]
+        quat_match = np.allclose(body_quat, expected_quat, rtol=1e-5, atol=1e-5) or np.allclose(
+            body_quat, -expected_quat, rtol=1e-5, atol=1e-5
+        )
+        self.assertTrue(
+            quat_match,
+            f"Body quaternion after eval_fk does not match expected xform.\n"
+            f"Expected: {expected_quat}\nActual: {body_quat}",
+        )
 
 
 if __name__ == "__main__":

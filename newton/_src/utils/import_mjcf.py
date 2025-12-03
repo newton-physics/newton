@@ -726,7 +726,7 @@ def parse_mjcf(
             elif floating is not None and floating:
                 joint_indices.append(builder.add_joint_free(link, key="floating_base"))
             else:
-                joint_indices.append(builder.add_joint_fixed(-1, link, parent_xform=_xform, key="fixed_base"))
+                joint_indices.append(builder.add_joint_fixed(-1, link, parent_xform=world_xform, key="fixed_base"))
 
         else:
             joint_pos = joint_pos[0] if len(joint_pos) > 0 else wp.vec3(0.0, 0.0, 0.0)
@@ -743,6 +743,12 @@ def parse_mjcf(
                 )
             else:
                 # TODO parse ref, springref values from joint_attrib
+                # When parent is world (-1), use world_xform to respect the xform argument
+                if parent == -1:
+                    parent_xform_for_joint = world_xform * wp.transform(joint_pos, wp.quat_identity())
+                else:
+                    parent_xform_for_joint = wp.transform(body_pos_for_joints + joint_pos, body_ori_for_joints)
+
                 joint_indices.append(
                     builder.add_joint(
                         joint_type,
@@ -751,7 +757,7 @@ def parse_mjcf(
                         linear_axes=linear_axes,
                         angular_axes=angular_axes,
                         key="_".join(joint_name),
-                        parent_xform=wp.transform(body_pos_for_joints + joint_pos, body_ori_for_joints),
+                        parent_xform=parent_xform_for_joint,
                         child_xform=wp.transform(joint_pos, wp.quat_identity()),
                         custom_attributes=joint_custom_attributes | dof_custom_attributes,
                     )
