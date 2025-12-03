@@ -797,6 +797,80 @@ class TestImportMjcf(unittest.TestCase):
         self.assertTrue(hasattr(model.mujoco, "limit_margin"))
         np.testing.assert_allclose(model.mujoco.limit_margin.numpy(), [0.01, 0.02, 0.0])
 
+    def test_solimp_friction_parsing(self):
+        """Test that solimp_friction attribute is parsed correctly from MJCF."""
+        mjcf = """<?xml version="1.0" ?>
+<mujoco>
+    <worldbody>
+        <body name="body1">
+            <joint name="joint1" type="hinge" axis="0 1 0" solimpfriction="0.89 0.9 0.01 2.1 1.8" range="-45 45" />
+            <joint name="joint2" type="hinge" axis="1 0 0" range="-30 30" />
+            <geom type="box" size="0.1 0.1 0.1" />
+        </body>
+        <body name="body2">
+            <joint name="joint3" type="hinge" axis="0 0 1" solimpfriction="0.8 0.85 0.002 0.6 1.5" range="-90 90" />
+            <geom type="sphere" size="0.05" />
+        </body>
+    </worldbody>
+</mujoco>
+"""
+
+        builder = newton.ModelBuilder()
+
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_mjcf(mjcf)
+        model = builder.finalize()
+
+        # Check if solimpfriction custom attribute exists
+        self.assertTrue(hasattr(model, "mujoco"), "Model should have mujoco namespace for custom attributes")
+        self.assertTrue(hasattr(model.mujoco, "solimpfriction"), "Model should have solimpfriction attribute")
+
+        solimpfriction = model.mujoco.solimpfriction.numpy()
+
+        # Newton model has only 2 joints because it combines the ones under the same body into a single joint
+        self.assertEqual(model.joint_count, 2, "Should have 2 joints")
+
+        # Find joints by name
+        joint_names = model.joint_key
+        joint1_idx = joint_names.index("joint1_joint2")
+        joint2_idx = joint_names.index("joint3")
+
+        # For the merged joint (joint1_idx), both joint1 and joint2 should be present in the qd array.
+        joint1_qd_start = model.joint_qd_start.numpy()[joint1_idx]
+        # The joint should have 2 DoFs (since joint1 and joint2 are merged)
+        self.assertEqual(model.joint_dof_dim.numpy()[joint1_idx, 1], 2)
+        expected_joint1 = [0.89, 0.9, 0.01, 2.1, 1.8]  # from joint1
+        expected_joint2 = [0.9, 0.95, 0.001, 0.5, 2.0]  # from joint2 (default values)
+        val_qd_0 = solimpfriction[joint1_qd_start, :]
+        val_qd_1 = solimpfriction[joint1_qd_start + 1, :]
+
+        # Helper to check if two arrays match within tolerance
+        def arrays_match(arr, expected, tol=1e-4):
+            return all(abs(arr[i] - expected[i]) < tol for i in range(len(expected)))
+
+        # The two DoFs should be exactly one joint1 and one default, in _some_ order
+        if arrays_match(val_qd_0, expected_joint1):
+            self.assertTrue(
+                arrays_match(val_qd_1, expected_joint2), "Second DoF should have default solimpfriction values"
+            )
+        elif arrays_match(val_qd_0, expected_joint2):
+            self.assertTrue(
+                arrays_match(val_qd_1, expected_joint1), "Second DoF should have joint1's solimpfriction values"
+            )
+        else:
+            self.fail(f"First DoF solimpfriction {val_qd_0.tolist()} doesn't match either expected value")
+
+        # Test joint3: explicit solimp_friction with different values
+        joint3_qd_start = model.joint_qd_start.numpy()[joint2_idx]
+        expected_joint3 = [0.8, 0.85, 0.002, 0.6, 1.5]
+        for i, expected in enumerate(expected_joint3):
+            self.assertAlmostEqual(
+                solimpfriction[joint3_qd_start, i],
+                expected,
+                places=4,
+                msg=f"joint3 solimpfriction[{i}] should be {expected}",
+            )
+
     def test_granular_loading_flags(self):
         """Test granular control over sites and visual shapes loading."""
         mjcf_filename = newton.examples.get_asset("nv_humanoid.xml")

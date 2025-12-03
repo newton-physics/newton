@@ -323,6 +323,125 @@ class TestImportUsd(unittest.TestCase):
             )
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_solimp_friction_parsing(self):
+        """Test that solimp_friction attribute is parsed correctly from USD."""
+        from pxr import Usd  # noqa: PLC0415
+
+        # Create USD stage with multiple single-DOF revolute joints
+        usd_content = """#usda 1.0
+(
+    upAxis = "Z"
+)
+
+def PhysicsScene "physicsScene"
+{
+}
+
+def Xform "Articulation" (
+    prepend apiSchemas = ["PhysicsArticulationRootAPI"]
+)
+{
+    def Xform "Body1" (
+        prepend apiSchemas = ["PhysicsRigidBodyAPI"]
+    )
+    {
+        double3 xformOp:translate = (0, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+
+        def Cube "Collision1" (
+            prepend apiSchemas = ["PhysicsCollisionAPI"]
+        )
+        {
+            double size = 0.2
+        }
+    }
+
+    def PhysicsRevoluteJoint "Joint1" (
+        prepend apiSchemas = ["PhysicsDriveAPI:angular"]
+    )
+    {
+        rel physics:body0 = </Articulation/Body1>
+        point3f physics:localPos0 = (0, 0, 0)
+        point3f physics:localPos1 = (0, 0, 0)
+        quatf physics:localRot0 = (1, 0, 0, 0)
+        quatf physics:localRot1 = (1, 0, 0, 0)
+        token physics:axis = "X"
+        float physics:lowerLimit = -90
+        float physics:upperLimit = 90
+
+        # MuJoCo solimpfriction attribute (5 elements)
+        uniform double[] mjc:solimpfriction = [0.89, 0.9, 0.01, 2.1, 1.8]
+    }
+
+    def Xform "Body2" (
+        prepend apiSchemas = ["PhysicsRigidBodyAPI"]
+    )
+    {
+        double3 xformOp:translate = (1, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+
+        def Sphere "Collision2" (
+            prepend apiSchemas = ["PhysicsCollisionAPI"]
+        )
+        {
+            double radius = 0.1
+        }
+    }
+
+    def PhysicsRevoluteJoint "Joint2" (
+        prepend apiSchemas = ["PhysicsDriveAPI:angular"]
+    )
+    {
+        rel physics:body0 = </Articulation/Body1>
+        rel physics:body1 = </Articulation/Body2>
+        point3f physics:localPos0 = (0, 0, 0)
+        point3f physics:localPos1 = (0, 0, 0)
+        quatf physics:localRot0 = (1, 0, 0, 0)
+        quatf physics:localRot1 = (1, 0, 0, 0)
+        token physics:axis = "Z"
+        float physics:lowerLimit = -180
+        float physics:upperLimit = 180
+
+        # No solimpfriction - should use defaults
+    }
+}
+"""
+        stage = Usd.Stage.CreateInMemory()
+        stage.GetRootLayer().ImportFromString(usd_content)
+
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_usd(stage)
+        model = builder.finalize()
+
+        # Check if solimpfriction custom attribute exists
+        self.assertTrue(hasattr(model, "mujoco"), "Model should have mujoco namespace for custom attributes")
+        self.assertTrue(hasattr(model.mujoco, "solimpfriction"), "Model should have solimpfriction attribute")
+
+        solimpfriction = model.mujoco.solimpfriction.numpy()
+
+        # Should have 2 joints: Joint1 (world to Body1) and Joint2 (Body1 to Body2)
+        self.assertEqual(model.joint_count, 2, "Should have 2 single-DOF joints")
+
+        # Helper to check if two arrays match within tolerance
+        def arrays_match(arr, expected, tol=1e-4):
+            return all(abs(arr[i] - expected[i]) < tol for i in range(len(expected)))
+
+        # Expected values
+        expected_joint1 = [0.89, 0.9, 0.01, 2.1, 1.8]  # from Joint1
+        expected_joint2 = [0.9, 0.95, 0.001, 0.5, 2.0]  # from Joint2 (default values)
+
+        # Check that both expected solimpfriction values are present in the model
+        num_dofs = solimpfriction.shape[0]
+        found_values = [solimpfriction[i, :].tolist() for i in range(num_dofs)]
+
+        found_joint1 = any(arrays_match(val, expected_joint1) for val in found_values)
+        found_joint2 = any(arrays_match(val, expected_joint2) for val in found_values)
+
+        self.assertTrue(found_joint1, f"Expected solimpfriction {expected_joint1} not found in model")
+        self.assertTrue(found_joint2, f"Expected default solimpfriction {expected_joint2} not found in model")
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_env_cloning(self):
         builder_no_cloning = newton.ModelBuilder()
         builder_cloning = newton.ModelBuilder()
