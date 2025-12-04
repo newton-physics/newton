@@ -1179,6 +1179,7 @@ def update_geom_properties_kernel(
     mesh_quat: wp.array(dtype=wp.quat),
     shape_torsional_friction: wp.array(dtype=float),
     shape_rolling_friction: wp.array(dtype=float),
+    shape_geom_solimp: wp.array(dtype=vec5),
     # outputs
     geom_rbound: wp.array2d(dtype=float),
     geom_friction: wp.array2d(dtype=wp.vec3f),
@@ -1186,6 +1187,7 @@ def update_geom_properties_kernel(
     geom_size: wp.array2d(dtype=wp.vec3f),
     geom_pos: wp.array2d(dtype=wp.vec3f),
     geom_quat: wp.array2d(dtype=wp.quatf),
+    geom_solimp: wp.array2d(dtype=vec5),
 ):
     """Update geom properties from Newton shape properties."""
     worldid, geom_idx = wp.tid()
@@ -1215,6 +1217,10 @@ def update_geom_properties_kernel(
         geom_solref[worldid, geom_idx] = wp.vec2f(timeconst, dampratio)
     else:
         geom_solref[worldid, geom_idx] = wp.vec2f(0.02, 1.0)
+
+    # update geom_solimp from custom attribute
+    if shape_geom_solimp:
+        geom_solimp[worldid, geom_idx] = shape_geom_solimp[shape_idx]
 
     # update size
     geom_size[worldid, geom_idx] = shape_size[shape_idx]
