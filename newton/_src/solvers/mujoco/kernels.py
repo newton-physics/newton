@@ -946,16 +946,18 @@ def update_dof_properties_kernel(
     joint_friction: wp.array(dtype=float),
     joint_damping: wp.array(dtype=float),
     dof_solimp: wp.array(dtype=vec5),
+    dof_solref: wp.array(dtype=wp.vec2),
     # outputs
     dof_armature: wp.array2d(dtype=float),
     dof_frictionloss: wp.array2d(dtype=float),
     dof_damping: wp.array2d(dtype=float),
     dof_solimp_out: wp.array2d(dtype=vec5),
+    dof_solref_out: wp.array2d(dtype=wp.vec2),
 ):
     """Update MuJoCo DOF properties from Newton DOF properties.
 
     Iterates over MuJoCo DOFs [world, dof], looks up Newton DOF,
-    and copies armature, friction, damping, solimp.
+    and copies armature, friction, damping, solimp, solref.
     """
     world, mjc_dof = wp.tid()
     newton_dof = mjc_dof_to_newton_dof[world, mjc_dof]
@@ -968,6 +970,8 @@ def update_dof_properties_kernel(
         dof_damping[world, mjc_dof] = joint_damping[newton_dof]
     if dof_solimp:
         dof_solimp_out[world, mjc_dof] = dof_solimp[newton_dof]
+    if dof_solref:
+        dof_solref_out[world, mjc_dof] = dof_solref[newton_dof]
 
 
 @wp.kernel
