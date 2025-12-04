@@ -246,7 +246,8 @@ class TiledCameraSensor:
     def render(
         self,
         state: State | None,
-        camera_transforms: wp.array(dtype=wp.transformf, ndim=2),
+        camera_positions: wp.array(dtype=wp.vec3f, ndim=2),
+        camera_orientations: wp.array(dtype=wp.mat33f, ndim=2),
         camera_rays: wp.array(dtype=wp.vec3f, ndim=4),
         color_image: wp.array(dtype=wp.uint32, ndim=3) | None = None,
         depth_image: wp.array(dtype=wp.float32, ndim=3) | None = None,
@@ -258,7 +259,8 @@ class TiledCameraSensor:
 
         Args:
             state: The current simulation state containing body transforms.
-            camera_transforms: Array of camera transforms in world space, shape (num_cameras, num_worlds).
+            camera_positions: Array of camera positions in world space, shape (num_cameras, num_worlds).
+            camera_orientations: Array of camera orientations in world space, shape (num_cameras, num_worlds).
             camera_rays: Array of camera rays in camera space, shape (num_cameras, height, width, 2).
             color_image: Optional output array for color data (num_worlds, num_cameras, width*height).
                         If None, no color rendering is performed.
@@ -271,7 +273,7 @@ class TiledCameraSensor:
             self.update_from_state(state)
 
         self.render_context.render(
-            camera_transforms, camera_rays, color_image, depth_image, refit_bvh=refit_bvh, clear_images=clear_images
+            camera_positions, camera_orientations, camera_rays, color_image, depth_image, refit_bvh=refit_bvh, clear_images=clear_images
         )
 
     def compute_pinhole_camera_rays(
