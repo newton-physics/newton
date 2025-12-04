@@ -357,32 +357,33 @@ Shape contact material properties control how contacts are resolved by different
    * - Property
      - Description
      - Used by
-   * - ``ke``
+   * - :attr:`~newton.Model.shape_material_ke`
      - Contact elastic stiffness
      - SemiImplicit, Featherstone, MuJoCo
-   * - ``kd``
+   * - :attr:`~newton.Model.shape_material_kd`
      - Contact damping coefficient
      - SemiImplicit, Featherstone, MuJoCo
-   * - ``kf``
+   * - :attr:`~newton.Model.shape_material_kf`
      - Contact friction damping coefficient
      - SemiImplicit, Featherstone
-   * - ``ka``
+   * - :attr:`~newton.Model.shape_material_ka`
      - Contact adhesion distance
      - SemiImplicit, Featherstone
-   * - ``mu``
+   * - :attr:`~newton.Model.shape_material_mu`
      - Coefficient of friction
      - all solvers
-   * - ``restitution``
-     - Coefficient of restitution (bounciness)
+   * - :attr:`~newton.Model.shape_material_restitution`
+     - Coefficient of restitution (bounciness).
      - XPBD
-   * - ``torsional_friction``
+   * - :attr:`~newton.Model.shape_material_torsional_friction`
      - Coefficient of torsional friction (resistance to spinning at contact point)
      - XPBD, MuJoCo
-   * - ``rolling_friction``
+   * - :attr:`~newton.Model.shape_material_rolling_friction`
      - Coefficient of rolling friction (resistance to rolling motion)
      - XPBD, MuJoCo
 
-For solvers SemiImplicit and Featherstone, contact forces are computed using the ``ke``, ``kd``, ``kf``, and ``ka`` parameters. For position-based solvers (XPBD), the ``restitution`` parameter controls velocity reflection at contacts.
+For solvers SemiImplicit and Featherstone, contact forces are computed using the ``ke``, ``kd``, ``kf``, and ``ka`` parameters. 
+For position-based solvers (XPBD), the ``restitution`` parameter controls velocity reflection at contacts. To take effect, enable restitution in solver constructor via ``enable_restitution=True``.
 
 The MuJoCo solver converts ``ke`` and ``kd`` to MuJoCo's ``solref`` parameters (timeconst and dampratio) for its constraint-based contact model.
 

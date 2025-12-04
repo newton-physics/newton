@@ -159,7 +159,7 @@ class ModelBuilder:
         mu: float = 0.5
         """The coefficient of friction. Used by all solvers."""
         restitution: float = 0.0
-        """The coefficient of restitution. Used by XPBD."""
+        """The coefficient of restitution. Used by XPBD. To take effect, enable restitution in solver constructor via ``enable_restitution=True``."""
         torsional_friction: float = 0.25
         """The coefficient of torsional friction (resistance to spinning at contact point). Used by XPBD, MuJoCo."""
         rolling_friction: float = 0.0005
