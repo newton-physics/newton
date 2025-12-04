@@ -945,15 +945,17 @@ def update_dof_properties_kernel(
     joint_armature: wp.array(dtype=float),
     joint_friction: wp.array(dtype=float),
     joint_damping: wp.array(dtype=float),
+    dof_solimp: wp.array(dtype=vec5),
     # outputs
     dof_armature: wp.array2d(dtype=float),
     dof_frictionloss: wp.array2d(dtype=float),
     dof_damping: wp.array2d(dtype=float),
+    dof_solimp_out: wp.array2d(dtype=vec5),
 ):
     """Update MuJoCo DOF properties from Newton DOF properties.
 
     Iterates over MuJoCo DOFs [world, dof], looks up Newton DOF,
-    and copies armature, friction, damping.
+    and copies armature, friction, damping, solimp.
     """
     world, mjc_dof = wp.tid()
     newton_dof = mjc_dof_to_newton_dof[world, mjc_dof]
@@ -964,6 +966,8 @@ def update_dof_properties_kernel(
     dof_frictionloss[world, mjc_dof] = joint_friction[newton_dof]
     if joint_damping:
         dof_damping[world, mjc_dof] = joint_damping[newton_dof]
+    if dof_solimp:
+        dof_solimp_out[world, mjc_dof] = dof_solimp[newton_dof]
 
 
 @wp.kernel
@@ -1177,6 +1181,7 @@ def update_geom_properties_kernel(
     mesh_quat: wp.array(dtype=wp.quat),
     shape_torsional_friction: wp.array(dtype=float),
     shape_rolling_friction: wp.array(dtype=float),
+    shape_geom_solimp: wp.array(dtype=vec5),
     # outputs
     geom_rbound: wp.array2d(dtype=float),
     geom_friction: wp.array2d(dtype=wp.vec3f),
@@ -1184,6 +1189,7 @@ def update_geom_properties_kernel(
     geom_size: wp.array2d(dtype=wp.vec3f),
     geom_pos: wp.array2d(dtype=wp.vec3f),
     geom_quat: wp.array2d(dtype=wp.quatf),
+    geom_solimp: wp.array2d(dtype=vec5),
 ):
     """Update MuJoCo geom properties from Newton shape properties.
 
@@ -1217,6 +1223,10 @@ def update_geom_properties_kernel(
         geom_solref[world, geom_idx] = wp.vec2f(timeconst, dampratio)
     else:
         geom_solref[world, geom_idx] = wp.vec2f(0.02, 1.0)
+
+    # update geom_solimp from custom attribute
+    if shape_geom_solimp:
+        geom_solimp[world, geom_idx] = shape_geom_solimp[shape_idx]
 
     # update size
     geom_size[world, geom_idx] = shape_size[shape_idx]
