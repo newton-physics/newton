@@ -536,19 +536,25 @@ def parse_usd(
         if key == UsdPhysics.ObjectType.FixedJoint:
             builder.add_joint_fixed(**joint_params)
         elif key == UsdPhysics.ObjectType.RevoluteJoint or key == UsdPhysics.ObjectType.PrismaticJoint:
+            # we need to scale the builder defaults for the joint limits to degrees for revolute joints
+            if key == UsdPhysics.ObjectType.RevoluteJoint:
+                limit_gains_scaling = DegreesToRadian
+            else:
+                limit_gains_scaling = 1.0
+
             # Resolve limit gains with precedence, fallback to builder defaults when missing
             current_joint_limit_ke = R.get_value(
                 joint_prim,
                 prim_type=PrimType.JOINT,
                 key="limit_angular_ke" if key == UsdPhysics.ObjectType.RevoluteJoint else "limit_linear_ke",
-                default=default_joint_limit_ke,
+                default=default_joint_limit_ke * limit_gains_scaling,
                 verbose=verbose,
             )
             current_joint_limit_kd = R.get_value(
                 joint_prim,
                 prim_type=PrimType.JOINT,
                 key="limit_angular_kd" if key == UsdPhysics.ObjectType.RevoluteJoint else "limit_linear_kd",
-                default=default_joint_limit_kd,
+                default=default_joint_limit_kd * limit_gains_scaling,
                 verbose=verbose,
             )
             joint_params["axis"] = usd_axis_to_axis[joint_desc.axis]
@@ -602,8 +608,8 @@ def parse_usd(
 
                 joint_params["limit_lower"] *= DegreesToRadian
                 joint_params["limit_upper"] *= DegreesToRadian
-                joint_params["limit_ke"] /= DegreesToRadian / joint_drive_gains_scaling
-                joint_params["limit_kd"] /= DegreesToRadian / joint_drive_gains_scaling
+                joint_params["limit_ke"] /= DegreesToRadian
+                joint_params["limit_kd"] /= DegreesToRadian
 
                 builder.add_joint_revolute(**joint_params)
         elif key == UsdPhysics.ObjectType.SphericalJoint:
@@ -749,23 +755,24 @@ def parse_usd(
                         joint_prim,
                         prim_type=PrimType.JOINT,
                         key=f"limit_{rot_name}_ke",
-                        default=default_joint_limit_ke,
+                        default=default_joint_limit_ke * DegreesToRadian,
                         verbose=verbose,
                     )
                     current_joint_limit_kd = R.get_value(
                         joint_prim,
                         prim_type=PrimType.JOINT,
                         key=f"limit_{rot_name}_kd",
-                        default=default_joint_limit_kd,
+                        default=default_joint_limit_kd * DegreesToRadian,
                         verbose=verbose,
                     )
+
                     angular_axes.append(
                         ModelBuilder.JointDofConfig(
                             axis=_rot_axes[dof],
                             limit_lower=limit_lower * DegreesToRadian,
                             limit_upper=limit_upper * DegreesToRadian,
-                            limit_ke=current_joint_limit_ke / DegreesToRadian / joint_drive_gains_scaling,
-                            limit_kd=current_joint_limit_kd / DegreesToRadian / joint_drive_gains_scaling,
+                            limit_ke=current_joint_limit_ke / DegreesToRadian,
+                            limit_kd=current_joint_limit_kd / DegreesToRadian,
                             target_pos=target_pos * DegreesToRadian,
                             target_vel=target_vel * DegreesToRadian,
                             target_ke=target_ke / DegreesToRadian / joint_drive_gains_scaling,
