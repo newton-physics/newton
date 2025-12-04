@@ -580,6 +580,7 @@ class ModelBuilder:
         self.joint_qd_start = []
         self.joint_dof_dim = []
         self.joint_world = []  # world index for each joint
+        self.joint_articulation = []  # articulation index for each joint, -1 if not in any articulation
 
         self.articulation_start = []
         self.articulation_key = []
@@ -1100,6 +1101,10 @@ class ModelBuilder:
         self.articulation_start.append(sorted_joints[0])
         self.articulation_key.append(key or f"articulation_{articulation_idx}")
         self.articulation_world.append(self.current_world)
+
+        # Mark all joints as belonging to this articulation
+        for joint_idx in joints:
+            self.joint_articulation[joint_idx] = articulation_idx
 
         # Process custom attributes for this articulation
         if custom_attributes:
@@ -1664,6 +1669,10 @@ class ModelBuilder:
         if builder.joint_count > 0:
             s = [self.current_world] * builder.joint_count
             self.joint_world.extend(s)
+            # Offset articulation indices for joints (-1 stays -1)
+            self.joint_articulation.extend(
+                [a + start_articulation_idx if a >= 0 else -1 for a in builder.joint_articulation]
+            )
 
         # For articulations
         if builder.articulation_count > 0:
@@ -2043,6 +2052,7 @@ class ModelBuilder:
         self.joint_dof_dim.append((len(linear_axes), len(angular_axes)))
         self.joint_enabled.append(enabled)
         self.joint_world.append(self.current_world)
+        self.joint_articulation.append(-1)
 
         def add_axis_dim(dim: ModelBuilder.JointDofConfig):
             self.joint_axis.append(dim.axis)
@@ -5276,6 +5286,17 @@ class ModelBuilder:
 
         # validate world ordering and contiguity
         self._validate_world_ordering()
+
+        # validate all joints belong to an articulation
+        if self.joint_count > 0:
+            orphan_joints = [i for i, art in enumerate(self.joint_articulation) if art < 0]
+            if orphan_joints:
+                joint_keys = [self.joint_key[i] for i in orphan_joints[:5]]  # Show first 5
+                raise ValueError(
+                    f"Found {len(orphan_joints)} joint(s) not belonging to any articulation. "
+                    f"Call add_articulation() for all joints. Orphan joints: {joint_keys}"
+                    + ("..." if len(orphan_joints) > 5 else "")
+                )
 
         # construct particle inv masses
         ms = np.array(self.particle_mass, dtype=np.float32)
