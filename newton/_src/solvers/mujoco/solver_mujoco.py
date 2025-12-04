@@ -321,9 +321,6 @@ class SolverMuJoCo(SolverBase):
         # Import and cache MuJoCo modules (only happens once per class)
         mujoco, _ = self.import_mujoco()
 
-        if use_mujoco_cpu and not use_mujoco_contacts:
-            print("Setting use_mujoco_contacts to False has no effect when use_mujoco_cpu is True")
-
         # --- New unified mappings: MuJoCo[world, entity] -> Newton[entity] ---
         self.mjc_body_to_newton: wp.array(dtype=wp.int32, ndim=2) | None = None
         """Mapping from MuJoCo [world, body] to Newton body index. Shape [nworld, nbody], dtype int32."""
@@ -500,9 +497,6 @@ class SolverMuJoCo(SolverBase):
         Create the inverse shape mapping (Newton shape -> MuJoCo [world, geom]).
         This is lazily created only when use_mujoco_contacts=False.
         """
-        if self.mjc_geom_to_newton_shape is None:
-            raise RuntimeError("Cannot create inverse shape mapping: mjc_geom_to_newton_shape is not initialized")
-
         nworld = self.mjc_geom_to_newton_shape.shape[0]
         ngeom = self.mjc_geom_to_newton_shape.shape[1]
 
