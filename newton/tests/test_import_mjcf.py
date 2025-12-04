@@ -1251,6 +1251,7 @@ class TestImportMjcf(unittest.TestCase):
     </worldbody>
 </mujoco>
 """
+
         builder = newton.ModelBuilder()
         SolverMuJoCo.register_custom_attributes(builder)
         builder.add_mjcf(mjcf_content)
@@ -1265,6 +1266,50 @@ class TestImportMjcf(unittest.TestCase):
         self.assertEqual(geom_priority[0], 1)
         self.assertEqual(geom_priority[1], 0)
         self.assertEqual(geom_priority[2], 0)  # Default
+
+    def test_geom_solimp_parsing(self):
+        """Test that geom_solimp attribute is parsed correctly from MJCF."""
+        mjcf = """<?xml version="1.0" ?>
+<mujoco>
+    <worldbody>
+        <body name="body1">
+            <freejoint/>
+            <geom type="box" size="0.1 0.1 0.1" solimp="0.8 0.9 0.002 0.4 3.0"/>
+        </body>
+        <body name="body2">
+            <freejoint/>
+            <geom type="sphere" size="0.05"/>
+        </body>
+        <body name="body3">
+            <freejoint/>
+            <geom type="capsule" size="0.05 0.1" solimp="0.7 0.85 0.003 0.6 2.5"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_mjcf(mjcf)
+        model = builder.finalize()
+
+        self.assertTrue(hasattr(model, "mujoco"), "Model should have mujoco namespace for custom attributes")
+        self.assertTrue(hasattr(model.mujoco, "geom_solimp"), "Model should have geom_solimp attribute")
+
+        geom_solimp = model.mujoco.geom_solimp.numpy()
+        self.assertEqual(model.shape_count, 3, "Should have 3 shapes")
+
+        # Expected values: shape 0 has explicit solimp, shape 1 has defaults, shape 2 has explicit solimp
+        expected_values = {
+            0: [0.8, 0.9, 0.002, 0.4, 3.0],
+            1: [0.9, 0.95, 0.001, 0.5, 2.0],  # default
+            2: [0.7, 0.85, 0.003, 0.6, 2.5],
+        }
+
+        for shape_idx, expected in expected_values.items():
+            actual = geom_solimp[shape_idx].tolist()
+            for i, (a, e) in enumerate(zip(actual, expected, strict=False)):
+                self.assertAlmostEqual(a, e, places=4, msg=f"geom_solimp[{shape_idx}][{i}] should be {e}, got {a}")
 
 
 if __name__ == "__main__":
