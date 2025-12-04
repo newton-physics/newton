@@ -3060,8 +3060,9 @@ class ModelBuilder:
         # remove empty articulation starts, i.e. where the start and end are the same
         self.articulation_start = list(set(self.articulation_start))
 
-        # save original joint groups before clearing
+        # save original joint worlds and articulations before clearing
         original_ = self.joint_world[:] if self.joint_world else []
+        original_articulation = self.joint_articulation[:] if self.joint_articulation else []
 
         self.joint_key.clear()
         self.joint_type.clear()
@@ -3087,6 +3088,7 @@ class ModelBuilder:
         self.joint_target_pos.clear()
         self.joint_target_vel.clear()
         self.joint_world.clear()
+        self.joint_articulation.clear()
         for joint in retained_joints:
             self.joint_key.append(joint["key"])
             self.joint_type.append(joint["type"])
@@ -3101,12 +3103,17 @@ class ModelBuilder:
             self.joint_X_p.append(joint["parent_xform"])
             self.joint_X_c.append(joint["child_xform"])
             self.joint_dof_dim.append(joint["axis_dim"])
-            # Rebuild joint group - use original group if it exists
+            # Rebuild joint world - use original world if it exists
             if original_ and joint["original_id"] < len(original_):
                 self.joint_world.append(original_[joint["original_id"]])
             else:
-                # If no group was assigned, use default -1
+                # If no world was assigned, use default -1
                 self.joint_world.append(-1)
+            # Rebuild joint articulation assignment
+            if original_articulation and joint["original_id"] < len(original_articulation):
+                self.joint_articulation.append(original_articulation[joint["original_id"]])
+            else:
+                self.joint_articulation.append(-1)
             for axis in joint["axes"]:
                 self.joint_axis.append(axis["axis"])
                 self.joint_target_ke.append(axis["target_ke"])
