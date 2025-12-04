@@ -151,7 +151,7 @@ def test_contact_matcher_stacked_cubes(test: TestContactMatcher, device):
                 rotation = wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), rotation_angle)
 
                 # Create cube
-                cube = builder.add_body(xform=wp.transform([x_base, y_base, z_pos], rotation))
+                cube = builder.add_link(xform=wp.transform([x_base, y_base, z_pos], rotation))
                 builder.add_shape_box(
                     body=cube,
                     hx=cube_size / 2,
@@ -173,7 +173,6 @@ def test_contact_matcher_stacked_cubes(test: TestContactMatcher, device):
     # Create collision pipeline with contact matching enabled
     collision_pipeline = CollisionPipelineUnified.from_model(
         model,
-        rigid_contact_margin=0.1,
         broad_phase_mode=BroadPhaseMode.NXN,
         enable_contact_matching=True,
     )

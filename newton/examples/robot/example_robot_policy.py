@@ -324,10 +324,10 @@ class Example:
 
     def simulate(self):
         """Simulate performs one frame's worth of updates."""
-        state_0_dict = self.state_0.__dict__
-        state_1_dict = self.state_1.__dict__
-        state_temp_dict = self.state_temp.__dict__
         self.contacts = self.model.collide(self.state_0)
+
+        need_state_copy = self.use_cuda_graph and self.sim_substeps % 2 == 1
+
         for i in range(self.sim_substeps):
             self.state_0.clear_forces()
 
@@ -337,18 +337,12 @@ class Example:
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
 
             # Swap states - handle CUDA graph case specially
-            if i < self.sim_substeps - 1 or not self.use_cuda_graph:
+            if need_state_copy and i == self.sim_substeps - 1:
+                # Swap states by copying the state arrays for graph capture
+                self.state_0.assign(self.state_1)
+            else:
                 # We can just swap the state references
                 self.state_0, self.state_1 = self.state_1, self.state_0
-            elif self.use_cuda_graph:
-                # Swap states by copying the state arrays for graph capture
-                for key, value in state_0_dict.items():
-                    if isinstance(value, wp.array):
-                        if key not in state_temp_dict:
-                            state_temp_dict[key] = wp.empty_like(value)
-                        state_temp_dict[key].assign(value)
-                        state_0_dict[key].assign(state_1_dict[key])
-                        state_1_dict[key].assign(state_temp_dict[key])
 
     def reset(self):
         print("[INFO] Resetting example")
@@ -407,7 +401,7 @@ class Example:
         self.viewer.log_contacts(self.contacts, self.state_0)
         self.viewer.end_frame()
 
-    def test(self):
+    def test_final(self):
         newton.examples.test_body_state(
             self.model,
             self.state_0,

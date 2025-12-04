@@ -92,6 +92,9 @@ def compute_shape_radius(geo_type: int, scale: Vec3, src: Mesh | SDF | None) -> 
         return np.linalg.norm(scale)
     elif geo_type == GeoType.CAPSULE or geo_type == GeoType.CYLINDER or geo_type == GeoType.CONE:
         return scale[0] + scale[1]
+    elif geo_type == GeoType.ELLIPSOID:
+        # Bounding sphere radius is the largest semi-axis
+        return max(scale[0], scale[1], scale[2])
     elif geo_type == GeoType.MESH or geo_type == GeoType.CONVEX_MESH:
         vmax = np.max(np.abs(src.vertices), axis=0) * np.max(scale)
         return np.linalg.norm(vmax)

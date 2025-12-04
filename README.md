@@ -269,6 +269,11 @@ uv sync --extra examples
   </tr>
   <tr>
     <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/ik/example_ik_custom.py">
+        <img src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_ik_custom.jpg" alt="IK Custom">
+      </a>
+    </td>
+    <td align="center" width="33%">
       <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/cloth/example_cloth_franka.py">
         <img src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_cloth_franka.jpg" alt="Cloth Franka">
       </a>
@@ -280,6 +285,9 @@ uv sync --extra examples
     </td>
   </tr>
   <tr>
+    <td align="center">
+      <code>uv run -m newton.examples ik_custom</code>
+    </td>
     <td align="center">
       <code>uv run -m newton.examples cloth_franka</code>
     </td>
@@ -319,6 +327,35 @@ uv sync --extra examples
     </td>
     <td align="center">
       <code>uv run -m newton.examples mpm_twoway_coupling</code>
+    </td>
+  </tr>
+</table>
+
+### Sensor Examples
+
+<table>
+  <tr>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/sensors/example_sensor_contact.py">
+        <img src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_sensor_contact.jpg" alt="Sensor Contact">
+      </a>
+    </td>
+    <td align="center" width="33%">
+      <!-- Future Sensor example -->
+    </td>
+    <td align="center" width="33%">
+      <!-- Future Sensor example -->
+    </td>
+  </tr>
+  <tr>
+    <td align="center">
+      <code>uv run -m newton.examples sensor_contact</code>
+    </td>
+    <td align="center">
+      <!-- Future Sensor example -->
+    </td>
+    <td align="center">
+      <!-- Future Sensor example -->
     </td>
   </tr>
 </table>

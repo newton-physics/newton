@@ -37,11 +37,38 @@ class Example:
         builder = newton.ModelBuilder()
         Example.emit_particles(builder, options)
 
-        if options.collider and options.collider != "none":
-            extents = (0.5, 2.0, 0.6)
-            if options.collider == "cube":
-                xform = wp.transform(wp.vec3(0.75, 0.0, 0.9), wp.quat_identity())
-            elif options.collider == "wedge":
+        # Setup collision geometry
+        self.collider = options.collider
+        if self.collider == "concave":
+            extents = (1.0, 2.0, 0.25)
+            left_xform = wp.transform(
+                wp.vec3(-0.7, 0.0, 0.8), wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), np.pi / 4.0)
+            )
+            right_xform = wp.transform(
+                wp.vec3(0.7, 0.0, 0.8), wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), -np.pi / 4.0)
+            )
+
+            builder.add_shape_box(
+                body=-1,
+                cfg=newton.ModelBuilder.ShapeConfig(mu=0.1, density=0.0),
+                xform=left_xform,
+                hx=extents[0],
+                hy=extents[1],
+                hz=extents[2],
+            )
+            builder.add_shape_box(
+                body=-1,
+                cfg=newton.ModelBuilder.ShapeConfig(mu=0.1, density=0.0),
+                xform=right_xform,
+                hx=extents[0],
+                hy=extents[1],
+                hz=extents[2],
+            )
+        elif self.collider != "none":
+            extents = (0.5, 2.0, 0.8)
+            if self.collider == "cube":
+                xform = wp.transform(wp.vec3(0.75, 0.0, 0.8), wp.quat_identity())
+            elif self.collider == "wedge":
                 xform = wp.transform(
                     wp.vec3(0.0, 0.0, 0.9), wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), np.pi / 4.0)
                 )
@@ -86,7 +113,13 @@ class Example:
         self.solver.enrich_state(self.state_1)
 
         self.viewer.set_model(self.model)
+
+        if isinstance(self.viewer, newton.viewer.ViewerGL):
+            self.viewer.register_ui_callback(self.render_ui, position="side")
+
         self.viewer.show_particles = True
+        self.show_normals = False
+
         self.capture()
 
     def capture(self):
@@ -112,27 +145,65 @@ class Example:
             self.simulate()
         self.sim_time += self.frame_dt
 
-    def test(self):
+    def test_final(self):
         voxel_size = self.solver.mpm_model.voxel_size
         newton.examples.test_particle_state(
             self.state_0,
             "all particles are above the ground",
             lambda q, qd: q[2] > -voxel_size,
         )
-        cube_extents = wp.vec3(0.5, 2.0, 0.6) * 0.9
-        cube_center = wp.vec3(0.75, 0, 0.9)
-        cube_lower = cube_center - cube_extents
-        cube_upper = cube_center + cube_extents
-        newton.examples.test_particle_state(
-            self.state_0,
-            "all particles are outside the cube",
-            lambda q, qd: not newton.utils.vec_inside_limits(q, cube_lower, cube_upper),
-        )
+
+        if self.collider == "cube":
+            cube_extents = wp.vec3(0.5, 2.0, 0.6) * 0.9
+            cube_center = wp.vec3(0.75, 0, 0.9)
+            cube_lower = cube_center - cube_extents
+            cube_upper = cube_center + cube_extents
+            newton.examples.test_particle_state(
+                self.state_0,
+                "all particles are outside the cube",
+                lambda q, qd: not newton.utils.vec_inside_limits(q, cube_lower, cube_upper),
+            )
+
+        # Test that some particles are still high-enough
+        if self.collider in ("concave", "cube"):
+            max_z = np.max(self.state_0.particle_q.numpy()[:, 2])
+            assert max_z > 0.8, "All particles have collapsed"
 
     def render(self):
         self.viewer.begin_frame(self.sim_time)
         self.viewer.log_state(self.state_0)
+
+        if self.show_normals:
+            # for debugging purposes, we can visualize the collider normals
+            _impulses, pos, _cid = self.solver.collect_collider_impulses(self.state_0)
+            normals = self.state_0.collider_normal_field.dof_values
+
+            normal_vecs = 0.25 * self.solver.mpm_model.voxel_size * normals
+            root = pos
+            mid = pos + normal_vecs
+            tip = mid + normal_vecs
+
+            # draw two segments per normal so we can visualize direction (red roots, orange tips)
+            self.viewer.log_lines(
+                "/normal_roots",
+                starts=root,
+                ends=mid,
+                colors=wp.full(pos.shape[0], value=wp.vec3(0.8, 0.0, 0.0), dtype=wp.vec3),
+            )
+            self.viewer.log_lines(
+                "/normal_tips",
+                starts=mid,
+                ends=tip,
+                colors=wp.full(pos.shape[0], value=wp.vec3(1.0, 0.5, 0.3), dtype=wp.vec3),
+            )
+        else:
+            self.viewer.log_lines("/normal_roots", None, None, None)
+            self.viewer.log_lines("/normal_tips", None, None, None)
+
         self.viewer.end_frame()
+
+    def render_ui(self, imgui):
+        _changed, self.show_normals = imgui.checkbox("Show Normals", self.show_normals)
 
     @staticmethod
     def emit_particles(builder: newton.ModelBuilder, args):
@@ -174,7 +245,7 @@ if __name__ == "__main__":
     parser = newton.examples.create_parser()
 
     # Scene configuration
-    parser.add_argument("--collider", default="cube", choices=["cube", "wedge", "none"], type=str)
+    parser.add_argument("--collider", default="cube", choices=["cube", "wedge", "concave", "none"], type=str)
     parser.add_argument("--emit-lo", type=float, nargs=3, default=[-1, -1, 1.5])
     parser.add_argument("--emit-hi", type=float, nargs=3, default=[1, 1, 3.5])
     parser.add_argument("--gravity", type=float, nargs=3, default=[0, 0, -10])
@@ -202,6 +273,7 @@ if __name__ == "__main__":
     parser.add_argument("--transfer-scheme", "-ts", type=str, default="apic", choices=["apic", "pic"])
 
     parser.add_argument("--strain-basis", "-sb", type=str, default="P0", choices=["P0", "Q1"])
+    parser.add_argument("--collider-basis", "-cb", type=str, default="Q1")
 
     parser.add_argument("--max-iterations", "-it", type=int, default=250)
     parser.add_argument("--tolerance", "-tol", type=float, default=1.0e-6)

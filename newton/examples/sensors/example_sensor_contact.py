@@ -16,249 +16,121 @@
 ###########################################################################
 # Example Contact Sensor
 #
-# Shows how to use the ContactSensor class to evaluate contact forces and torques.
-# The example spawns ant and humanoid robots across multiple worlds,
-# applies random forces to their joints, and performs selective resets on subsets of worlds.
+# Shows how to use the ContactSensor class to evaluate both net contact
+# forces and contact forces between individual objects.
+# The flap has a contact sensor registering the net contact force of the
+# objects on top. The upper and lower plates' sensors will only register
+# contacts with the cube and with the ball, respectively.
 #
 # Command: python -m newton.examples sensor_contact
 #
 ###########################################################################
 
+import re
+
+import numpy as np
 import warp as wp
 
 import newton
 import newton.examples
 from newton import Contacts
-from newton.selection import ArticulationView
 from newton.sensors import ContactSensor, populate_contacts
 from newton.tests.unittest_utils import find_nonfinite_members
 
-USE_TORCH = False
-COLLAPSE_FIXED_JOINTS = False
-VERBOSE = True
-
-
-@wp.kernel
-def compute_middle_kernel(
-    lower: wp.array2d(dtype=float), upper: wp.array2d(dtype=float), middle: wp.array2d(dtype=float)
-):
-    i, j = wp.tid()
-    middle[i, j] = 0.5 * (lower[i, j] + upper[i, j])
-
-
-@wp.kernel
-def init_masks(mask_0: wp.array(dtype=bool), mask_1: wp.array(dtype=bool)):
-    tid = wp.tid()
-    yes = tid % 2 == 0
-    mask_0[tid] = yes
-    mask_1[tid] = not yes
-
-
-@wp.kernel
-def reset_kernel(
-    ant_root_velocities: wp.array(dtype=wp.spatial_vector),
-    hum_root_velocities: wp.array(dtype=wp.spatial_vector),
-    mask: wp.array(dtype=bool),  # optional, can be None
-    seed: int,
-):
-    tid = wp.tid()
-
-    if mask:
-        do_it = mask[tid]
-    else:
-        do_it = True
-
-    if do_it:
-        rng = wp.rand_init(seed, tid)
-        spin_vel = 4.0 * wp.pi * (0.5 - wp.randf(rng))
-        jump_vel = 3.0 * wp.randf(rng)
-        ant_root_velocities[tid] = wp.spatial_vector(0.0, 0.0, jump_vel, 0.0, 0.0, spin_vel)
-        hum_root_velocities[tid] = wp.spatial_vector(0.0, 0.0, jump_vel, 0.0, 0.0, -spin_vel)
-
-
-@wp.kernel
-def random_forces_kernel(dof_forces: wp.array2d(dtype=float), seed: int, num_worlds: int):
-    i, j = wp.tid()
-    rng = wp.rand_init(seed, i * num_worlds + j)
-    dof_forces[i, j] = 5.0 - 10.0 * wp.randf(rng)
-
 
 class Example:
-    def __init__(self, viewer, num_worlds=16, use_cuda_graph=True):
+    def __init__(self, viewer):
         # setup simulation parameters first
-        self.fps = 60
+        self.fps = 120
         self.frame_dt = 1.0 / self.fps
         self.sim_time = 0.0
-        self.sim_substeps = 10
-        self.sim_dt = self.frame_dt / self.sim_substeps
+        self.sim_dt = self.frame_dt
+        self.reset_interval = 8.0
 
-        self.num_worlds = num_worlds
         self.viewer = viewer
-
-        up_axis = newton.Axis.Z
-
-        world_builder = newton.ModelBuilder(up_axis=up_axis)
-        newton.solvers.SolverMuJoCo.register_custom_attributes(world_builder)
-        world_builder.add_mjcf(
-            newton.examples.get_asset("nv_ant.xml"),
-            ignore_names=["floor", "ground"],
-            up_axis=up_axis,
-            xform=wp.transform((0.0, 0.0, 1.0), wp.quat_identity()),
-            collapse_fixed_joints=COLLAPSE_FIXED_JOINTS,
+        self.plot_window = ViewerPlot(
+            viewer, "Flap Contact Force", n_points=100, avg=10, scale_min=0, graph_size=(400, 200)
         )
-        world_builder.add_mjcf(
-            newton.examples.get_asset("nv_humanoid.xml"),
-            ignore_names=["floor", "ground"],
-            up_axis=up_axis,
-            xform=wp.transform((0.0, 0.0, 3.5), wp.quat_identity()),
-            collapse_fixed_joints=COLLAPSE_FIXED_JOINTS,
-            parse_sites=False,  # AD: remove once asset is fixed
-        )
+        if isinstance(self.viewer, newton.viewer.ViewerGL):
+            self.viewer.register_ui_callback(self.plot_window.render, "free")
 
         builder = newton.ModelBuilder()
-        builder.replicate(world_builder, self.num_worlds)
+        builder.add_usd(newton.examples.get_asset("contact_sensor_scene.usda"))
+        newton.solvers.SolverMuJoCo.register_custom_attributes(builder)
 
         builder.add_ground_plane()
-        # stores contact info required by contact sensors
+        # used for storing contact info required by contact sensors
         self.contacts = Contacts(0, 0)
 
         # finalize model
         self.model = builder.finalize()
 
-        self.torso_all_contact_sensor = ContactSensor(self.model, sensing_obj_shapes="torso_geom", verbose=True)
-        self.arm_ground_contact_sensor = ContactSensor(
-            self.model, sensing_obj_bodies="*arm", counterpart_shapes="ground_plane", verbose=True
-        )
-        self.foot_arm_contact_sensor = ContactSensor(
+        self.flap_contact_sensor = ContactSensor(self.model, sensing_obj_shapes="*Flap", verbose=True)
+
+        self.plate_contact_sensor = ContactSensor(
             self.model,
-            sensing_obj_bodies="*foot",
-            counterpart_shapes="*arm",
+            sensing_obj_shapes=".*Plate.*",
+            counterpart_shapes=".*Cube.*|.*Sphere.*",
+            match_fn=lambda string, pat: re.match(pat, string),
             include_total=False,
             verbose=True,
-            prune_noncolliding=True,
         )
 
-        self.solver = newton.solvers.SolverMuJoCo(self.model, njmax=100, nconmax=100)
+        self.solver = newton.solvers.SolverMuJoCo(
+            self.model,
+            njmax=100,
+            nconmax=100,
+            cone="pyramidal",
+            impratio=1,
+        )
 
         self.viewer.set_model(self.model)
 
+        self.plates_touched = 2 * [False]
+        self.shape_colors = {
+            "/env/Plate1": 3 * [0.4],
+            "/env/Plate2": 3 * [0.4],
+            "/env/Sphere": [1.0, 0.4, 0.2],
+            "/env/Cube": [0.2, 0.4, 0.8],
+            "/env/Flap": 3 * [0.8],
+        }
+        self.shape_map = {key: s for s, key in enumerate(self.model.shape_key)}
+
         self.state_0 = self.model.state()
-        self.state_1 = self.model.state()
+
         self.control = self.model.control()
+        hinge_joint_idx = self.model.joint_key.index("/env/Hinge")
+        self.hinge_joint_q_start = int(self.model.joint_q_start.numpy()[hinge_joint_idx])
 
         self.next_reset = 0.0
-        self.seed = 0
 
-        # ===========================================================
-        # create articulation views
-        # ===========================================================
-        self.ants = ArticulationView(self.model, "ant", verbose=VERBOSE, exclude_joint_types=[newton.JointType.FREE])
-        self.humanoids = ArticulationView(
-            self.model, "humanoid", verbose=VERBOSE, exclude_joint_types=[newton.JointType.FREE]
-        )
-
-        if USE_TORCH:
-            import torch  # noqa: PLC0415
-
-            # default ant root states
-            self.default_ant_root_transforms = wp.to_torch(self.ants.get_root_transforms(self.model)).clone()
-            self.default_ant_root_velocities = wp.to_torch(self.ants.get_root_velocities(self.model)).clone()
-
-            # set ant DOFs to the middle of their range by default
-            dof_limit_lower = wp.to_torch(self.ants.get_attribute("joint_limit_lower", self.model))
-            dof_limit_upper = wp.to_torch(self.ants.get_attribute("joint_limit_upper", self.model))
-            self.default_ant_dof_positions = 0.5 * (dof_limit_lower + dof_limit_upper)
-            self.default_ant_dof_velocities = wp.to_torch(self.ants.get_dof_velocities(self.model)).clone()
-
-            # default humanoid states
-            self.default_hum_root_transforms = wp.to_torch(self.humanoids.get_root_transforms(self.model)).clone()
-            self.default_hum_root_velocities = wp.to_torch(self.humanoids.get_root_velocities(self.model)).clone()
-            self.default_hum_dof_positions = wp.to_torch(self.humanoids.get_dof_positions(self.model)).clone()
-            self.default_hum_dof_velocities = wp.to_torch(self.humanoids.get_dof_velocities(self.model)).clone()
-
-            # create disjoint subsets to alternate resets
-            all_indices = torch.arange(num_worlds, dtype=torch.int32)
-            self.mask_0 = torch.zeros(num_worlds, dtype=bool)
-            self.mask_0[all_indices[::2]] = True
-            self.mask_1 = torch.zeros(num_worlds, dtype=bool)
-            self.mask_1[all_indices[1::2]] = True
-        else:
-            # default ant root states
-            self.default_ant_root_transforms = wp.clone(self.ants.get_root_transforms(self.model))
-            self.default_ant_root_velocities = wp.clone(self.ants.get_root_velocities(self.model))
-
-            # set ant DOFs to the middle of their range by default
-            dof_limit_lower = self.ants.get_attribute("joint_limit_lower", self.model)
-            dof_limit_upper = self.ants.get_attribute("joint_limit_upper", self.model)
-            self.default_ant_dof_positions = wp.empty_like(dof_limit_lower)
-            wp.launch(
-                compute_middle_kernel,
-                dim=self.default_ant_dof_positions.shape,
-                inputs=[dof_limit_lower, dof_limit_upper, self.default_ant_dof_positions],
-            )
-            self.default_ant_dof_velocities = wp.clone(self.ants.get_dof_velocities(self.model))
-
-            # default humanoid states
-            self.default_hum_root_transforms = wp.clone(self.humanoids.get_root_transforms(self.model))
-            self.default_hum_root_velocities = wp.clone(self.humanoids.get_root_velocities(self.model))
-            self.default_hum_dof_positions = wp.clone(self.humanoids.get_dof_positions(self.model))
-            self.default_hum_dof_velocities = wp.clone(self.humanoids.get_dof_velocities(self.model))
-
-            # create disjoint subsets to alternate resets
-            self.mask_0 = wp.empty(num_worlds, dtype=bool)
-            self.mask_1 = wp.empty(num_worlds, dtype=bool)
-            wp.launch(init_masks, dim=num_worlds, inputs=[self.mask_0, self.mask_1])
-
-        # reset all
-        self.reset()
-        self.next_reset = self.sim_time + 2.0
-
-        self.use_cuda_graph = wp.get_device().is_cuda and use_cuda_graph
-        if self.use_cuda_graph:
-            with wp.ScopedCapture() as capture:
-                self.simulate()
-            self.graph = capture.graph
+        # store initial state for reset
+        self.initial_joint_q = wp.clone(self.state_0.joint_q)
+        self.initial_joint_qd = wp.clone(self.state_0.joint_qd)
 
         self.capture()
 
     def capture(self):
-        if wp.get_device().is_cuda:
-            with wp.ScopedCapture() as capture:
-                self.simulate()
-            self.graph = capture.graph
-        else:
-            self.graph = None
+        self.graph = None
+
+        if not wp.get_device().is_cuda:
+            return
+
+        with wp.ScopedCapture() as capture:
+            self.simulate()
+        self.graph = capture.graph
 
     def simulate(self):
-        for _ in range(self.sim_substeps):
-            self.state_0.clear_forces()
-
-            # apply forces to the model
-            self.viewer.apply_forces(self.state_0)
-
-            self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
-
-            # swap states
-            self.state_0, self.state_1 = self.state_1, self.state_0
+        self.state_0.clear_forces()
+        self.viewer.apply_forces(self.state_0)
+        self.solver.step(self.state_0, self.state_0, self.control, self.contacts, self.sim_dt)
 
     def step(self):
         if self.sim_time >= self.next_reset:
-            self.reset(mask=self.mask_0)
-            self.mask_0, self.mask_1 = self.mask_1, self.mask_0
-            self.next_reset = self.sim_time + 2.0
+            self.reset()
 
-        # ================================
-        # apply random controls
-        # ================================
-        if USE_TORCH:
-            import torch  # noqa: PLC0415
-
-            dof_forces = 5.0 - 10.0 * torch.rand((self.num_worlds, self.ants.joint_dof_count))
-        else:
-            dof_forces = self.ants.get_dof_forces(self.control)
-            wp.launch(random_forces_kernel, dim=dof_forces.shape, inputs=[dof_forces, self.seed, self.num_worlds])
-
-        self.ants.set_dof_forces(self.control, dof_forces)
+        hinge_angle = min(self.sim_time / 3, 1.6)
+        self.control.joint_target_pos[self.hinge_joint_q_start : self.hinge_joint_q_start + 1].fill_(hinge_angle)
 
         with wp.ScopedTimer("step", active=False):
             if self.graph:
@@ -267,89 +139,119 @@ class Example:
                 self.simulate()
 
         populate_contacts(self.contacts, self.solver)
-        self.torso_all_contact_sensor.eval(self.contacts)
-        print(f"Torso net forces: {self.torso_all_contact_sensor.net_force}")
-        self.arm_ground_contact_sensor.eval(self.contacts)
-        self.foot_arm_contact_sensor.eval(self.contacts)
+        self.plate_contact_sensor.eval(self.contacts)
 
+        net_force = self.plate_contact_sensor.net_force.numpy()
+        for i in range(2):
+            if np.abs(net_force[i, i]).max() == 0:
+                continue
+            if self.plates_touched[i]:
+                continue
+
+            # color newly touched plate
+            plate = self.plate_contact_sensor.sensing_objs[i][0]
+            obj = self.plate_contact_sensor.counterparts[i][0]
+            obj_key = self.model.shape_key[obj]
+            self.plates_touched[i] = True
+            print(f"Plate {self.model.shape_key[plate]} was touched by counterpart {obj_key}")
+            self.viewer.update_shape_colors({plate: self.shape_colors[obj_key]})
+
+        self.flap_contact_sensor.eval(self.contacts)
+        self.plot_window.add_point(np.abs(self.flap_contact_sensor.net_force.numpy()[0, 0, 2]))
         self.sim_time += self.frame_dt
 
-    def reset(self, mask=None):
-        # ================================
-        # reset transforms and velocities
-        # ================================
+    def reset(self):
+        self.sim_time = 0
+        self.next_reset = self.sim_time + self.reset_interval
+        self.viewer.update_shape_colors({self.shape_map[s]: v for s, v in self.shape_colors.items()})
+        self.plates_touched = 2 * [False]
 
-        if USE_TORCH:
-            import torch  # noqa: PLC0415
-
-            # randomize ant velocities
-            self.default_ant_root_velocities[:, 2] = 4.0 * torch.pi * (0.5 - torch.rand(self.num_worlds))
-            self.default_ant_root_velocities[:, 5] = 3.0 * torch.rand(self.num_worlds)
-
-            # humanoids spin in the opposite direction
-            self.default_hum_root_velocities[:, 2] = -self.default_ant_root_velocities[:, 2]
-            # humanoids move up at the same speed
-            self.default_hum_root_velocities[:, 5] = self.default_ant_root_velocities[:, 5]
-        else:
-            wp.launch(
-                reset_kernel,
-                dim=self.num_worlds,
-                inputs=[self.default_ant_root_velocities, self.default_hum_root_velocities, mask, self.seed],
-            )
-
-        self.ants.set_root_transforms(self.state_0, self.default_ant_root_transforms, mask=mask)
-        self.ants.set_root_velocities(self.state_0, self.default_ant_root_velocities, mask=mask)
-        self.ants.set_dof_positions(self.state_0, self.default_ant_dof_positions, mask=mask)
-        self.ants.set_dof_velocities(self.state_0, self.default_ant_dof_velocities, mask=mask)
-
-        self.humanoids.set_root_transforms(self.state_0, self.default_hum_root_transforms, mask=mask)
-        self.humanoids.set_root_velocities(self.state_0, self.default_hum_root_velocities, mask=mask)
-        self.humanoids.set_dof_positions(self.state_0, self.default_hum_dof_positions, mask=mask)
-        self.humanoids.set_dof_velocities(self.state_0, self.default_hum_dof_velocities, mask=mask)
-
-        if not isinstance(self.solver, newton.solvers.SolverMuJoCo):
-            self.ants.eval_fk(self.state_0, mask=mask)
-
-    def test(self):
-        assert len(find_nonfinite_members(self.torso_all_contact_sensor)) == 0
-        assert len(find_nonfinite_members(self.arm_ground_contact_sensor)) == 0
-        assert len(find_nonfinite_members(self.foot_arm_contact_sensor)) == 0
+        print("Resetting")
+        # Restore initial joint positions and velocities in-place.
+        self.state_0.joint_q.assign(self.initial_joint_q)
+        self.state_0.joint_qd.assign(self.initial_joint_qd)
+        # Recompute forward kinematics to refresh derived state.
+        newton.eval_fk(self.model, self.state_0.joint_q, self.state_0.joint_qd, self.state_0)
 
     def render(self):
-        with wp.ScopedTimer("render", active=False):
-            self.viewer.begin_frame(self.sim_time)
-            self.viewer.log_state(self.state_0)
-            self.viewer.end_frame()
+        self.viewer.begin_frame(self.sim_time)
+        self.viewer.log_state(self.state_0)
+        self.viewer.log_contacts(self.contacts, self.state_0)
+        self.viewer.end_frame()
+
+    def test_post_step(self):
+        assert not self.plates_touched[1] or self.plates_touched[0]  # plate 0 always touched first
+        assert len(find_nonfinite_members(self.flap_contact_sensor)) == 0
+        assert len(find_nonfinite_members(self.plate_contact_sensor)) == 0
+        # first plate touched by 1.4s, second by 4s, flap left by 2.8s
+        if self.sim_time > 1.4:
+            assert self.plates_touched[0]
+        if self.sim_time > 2.8:
+            assert self.flap_contact_sensor.net_force.numpy().sum() == 0
+        # if self.sim_time > 4.0: assert self.plates_touched[1]   # unreliable due to jerky cube motion
+
+    def test_final(self):
+        self.test_post_step()
+        newton.examples.test_body_state(
+            self.model,
+            self.state_0,
+            "all bodies are above the ground",
+            lambda q, qd: q[2] > 0.0,
+        )
+        assert len(find_nonfinite_members(self.flap_contact_sensor)) == 0
+        assert len(find_nonfinite_members(self.plate_contact_sensor)) == 0
 
 
-class ScopedDevice:
-    def __init__(self, device):
-        self.warp_scoped_device = wp.ScopedDevice(device)
-        if USE_TORCH:
-            import torch  # noqa: PLC0415
+class ViewerPlot:
+    """ImGui plot window"""
 
-            self.torch_scoped_device = torch.device(wp.device_to_torch(device))
+    def __init__(self, viewer=None, title="Plot", n_points=200, avg=1, **kwargs):
+        self.viewer = viewer
+        self.avg = avg
+        self.title = title
+        self.data = np.zeros(n_points, dtype=np.float32)
+        self.plot_kwargs = kwargs
+        self.cache = []
 
-    def __enter__(self):
-        self.warp_scoped_device.__enter__()
-        if USE_TORCH:
-            self.torch_scoped_device.__enter__()
+    def add_point(self, point):
+        self.cache.append(point)
+        if len(self.cache) == self.avg:
+            self.data[0] = sum(self.cache) / self.avg
+            self.data = np.roll(self.data, -1)
+            self.cache.clear()
 
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        self.warp_scoped_device.__exit__(exc_type, exc_val, exc_tb)
-        if USE_TORCH:
-            self.torch_scoped_device.__exit__(exc_type, exc_val, exc_tb)
+    def render(self, imgui):
+        """
+        Render the replay UI controls.
+
+        Args:
+            imgui: The ImGui object passed by the ViewerGL callback system
+        """
+        if not self.viewer or not self.viewer.ui.is_available:
+            return
+
+        io = self.viewer.ui.io
+
+        # Position the plot window
+        window_shape = (400, 350)
+        imgui.set_next_window_pos(
+            imgui.ImVec2(io.display_size[0] - window_shape[0] - 10, io.display_size[1] - window_shape[1] - 10)
+        )
+        imgui.set_next_window_size(imgui.ImVec2(*window_shape))
+
+        flags = imgui.WindowFlags_.no_resize.value
+
+        if imgui.begin(self.title, flags=flags):
+            imgui.text("Flap contact force")
+            imgui.plot_lines("Force", self.data, **self.plot_kwargs)
+        imgui.end()
 
 
 if __name__ == "__main__":
-    # Parse arguments and initialize viewer
     parser = newton.examples.create_parser()
-    parser.add_argument("--num-worlds", type=int, default=16, help="Total number of simulated worlds.")
 
     viewer, args = newton.examples.init(parser)
 
-    with ScopedDevice(args.device):
-        # Create viewer and run
-        example = Example(viewer, num_worlds=args.num_worlds)
+    example = Example(viewer)
 
-        newton.examples.run(example, args)
+    newton.examples.run(example, args)

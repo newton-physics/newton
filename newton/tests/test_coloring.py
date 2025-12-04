@@ -297,8 +297,8 @@ def test_combine_coloring(test, device):
             color_lattice_grid(50, 100),
         )
 
-        builder1.add_builder(builder2)
-        builder1.add_builder(builder3)
+        builder1.add_world(builder2)
+        builder1.add_world(builder3)
 
         model = builder2.finalize()
 

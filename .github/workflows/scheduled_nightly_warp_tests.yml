@@ -20,7 +20,7 @@ env:
 
 on:
   schedule:
-    - cron: '0 8 * * *'  # Daily at 8 AM UTC (midnight PST)
+    - cron: '0 11 * * *'  # Daily at 11 AM UTC (3 AM PST)
   workflow_dispatch:  # Allow manual triggers
 
 jobs:

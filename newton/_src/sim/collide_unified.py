@@ -41,11 +41,11 @@ from ..sim.state import State
 class UnifiedContactWriterData:
     """Contact writer data for collide_unified write_contact function."""
 
-    rigid_contact_margin: float
     contact_max: int
     # Body information arrays (for transforming to body-local coordinates)
     body_q: wp.array(dtype=wp.transform)
     shape_body: wp.array(dtype=int)
+    shape_contact_margin: wp.array(dtype=float)
     # Output arrays
     contact_count: wp.array(dtype=int)
     out_shape0: wp.array(dtype=int)
@@ -108,7 +108,13 @@ def write_contact(
     diff = b_contact_world - a_contact_world
     distance = wp.dot(diff, contact_normal_a_to_b)
     d = distance - total_separation_needed
-    if d < writer_data.rigid_contact_margin:
+
+    # Use per-shape contact margins (max of both shapes)
+    margin_a = writer_data.shape_contact_margin[contact_data.shape_a]
+    margin_b = writer_data.shape_contact_margin[contact_data.shape_b]
+    contact_margin = wp.max(margin_a, margin_b)
+
+    if d < contact_margin:
         index = wp.atomic_add(writer_data.contact_count, 0, 1)
         if index >= writer_data.contact_max:
             # Reached buffer limit
@@ -157,7 +163,7 @@ def compute_shape_aabbs(
     shape_scale: wp.array(dtype=wp.vec3),
     shape_collision_radius: wp.array(dtype=float),
     shape_source_ptr: wp.array(dtype=wp.uint64),
-    rigid_contact_margin: float,
+    shape_contact_margin: wp.array(dtype=float),
     # outputs
     aabb_lower: wp.array(dtype=wp.vec3),
     aabb_upper: wp.array(dtype=wp.vec3),
@@ -165,7 +171,10 @@ def compute_shape_aabbs(
     """Compute axis-aligned bounding boxes for each shape in world space.
 
     Uses support function for most shapes. Infinite planes and meshes use bounding sphere fallback.
-    AABBs are enlarged by rigid_contact_margin for contact detection margin.
+    AABBs are enlarged by per-shape contact margin for contact detection.
+
+    Note: Shape thickness is NOT included in AABB expansion - it is applied during narrow phase.
+    Therefore, shape_contact_margin should be >= shape_thickness to ensure proper broad phase detection.
     """
     shape_id = wp.tid()
 
@@ -181,8 +190,9 @@ def compute_shape_aabbs(
     pos = wp.transform_get_translation(X_ws)
     orientation = wp.transform_get_rotation(X_ws)
 
-    # Enlarge AABB by rigid_contact_margin for contact detection
-    margin_vec = wp.vec3(rigid_contact_margin, rigid_contact_margin, rigid_contact_margin)
+    # Enlarge AABB by per-shape contact margin for contact detection
+    contact_margin = shape_contact_margin[shape_id]
+    margin_vec = wp.vec3(contact_margin, contact_margin, contact_margin)
 
     # Check if this is an infinite plane, mesh, or SDF - use bounding sphere fallback
     scale = shape_scale[shape_id]
@@ -260,7 +270,6 @@ class CollisionPipelineUnified:
         shape_pairs_filtered: wp.array(dtype=wp.vec2i) | None = None,
         rigid_contact_max: int | None = None,
         rigid_contact_max_per_pair: int = 10,
-        rigid_contact_margin: float = 0.01,
         soft_contact_max: int | None = None,
         soft_contact_margin: float = 0.01,
         edge_sdf_iter: int = 10,
@@ -285,7 +294,6 @@ class CollisionPipelineUnified:
             rigid_contact_max (int | None, optional): Maximum number of rigid contacts to allocate.
                 If None, computed as shape_pairs_max * rigid_contact_max_per_pair.
             rigid_contact_max_per_pair (int, optional): Maximum number of contact points per shape pair. Defaults to 10.
-            rigid_contact_margin (float, optional): Margin for rigid contact generation. Defaults to 0.01.
             soft_contact_max (int | None, optional): Maximum number of soft contacts to allocate.
                 If None, computed as shape_count * particle_count.
             soft_contact_margin (float, optional): Margin for soft contact generation. Defaults to 0.01.
@@ -319,13 +327,12 @@ class CollisionPipelineUnified:
         self.enable_contact_matching = enable_contact_matching
 
         self.shape_pairs_max = (shape_count * (shape_count - 1)) // 2
-        self.rigid_contact_margin = rigid_contact_margin
 
         # Initialize broad phase
         if self.broad_phase_mode == BroadPhaseMode.NXN:
             if shape_world is None:
                 raise ValueError("shape_world must be provided when using BroadPhaseMode.NXN")
-            self.nxn_broadphase = BroadPhaseAllPairs(shape_world, geom_flags=shape_flags, device=device)
+            self.nxn_broadphase = BroadPhaseAllPairs(shape_world, shape_flags=shape_flags, device=device)
             self.sap_broadphase = None
             self.explicit_broadphase = None
             self.shape_pairs_filtered = None
@@ -334,7 +341,7 @@ class CollisionPipelineUnified:
                 raise ValueError("shape_world must be provided when using BroadPhaseMode.SAP")
             self.sap_broadphase = BroadPhaseSAP(
                 shape_world,
-                geom_flags=shape_flags,
+                shape_flags=shape_flags,
                 sort_type=sap_sort_type,
                 device=device,
             )
@@ -373,8 +380,8 @@ class CollisionPipelineUnified:
             max_candidate_pairs=self.shape_pairs_max,
             max_triangle_pairs=1000000,
             device=device,
-            geom_aabb_lower=self.shape_aabb_lower,
-            geom_aabb_upper=self.shape_aabb_upper,
+            shape_aabb_lower=self.shape_aabb_lower,
+            shape_aabb_upper=self.shape_aabb_upper,
             contact_writer_warp_func=write_contact,
         )
 
@@ -382,7 +389,6 @@ class CollisionPipelineUnified:
             # Narrow phase input arrays
             self.geom_data = wp.zeros(shape_count, dtype=wp.vec4, device=device)
             self.geom_transform = wp.zeros(shape_count, dtype=wp.transform, device=device)
-            self.geom_cutoff = wp.full(shape_count, rigid_contact_margin, dtype=wp.float32, device=device)
 
             # Contact matching arrays (optional)
             if enable_contact_matching:
@@ -404,7 +410,6 @@ class CollisionPipelineUnified:
         cls,
         model: Model,
         rigid_contact_max_per_pair: int | None = None,
-        rigid_contact_margin: float = 0.01,
         soft_contact_max: int | None = None,
         soft_contact_margin: float = 0.01,
         edge_sdf_iter: int = 10,
@@ -422,7 +427,6 @@ class CollisionPipelineUnified:
             model (Model): The simulation model.
             rigid_contact_max_per_pair (int | None, optional): Maximum number of contact points per shape pair.
                 If None, uses model.rigid_contact_max and sets per-pair to 0.
-            rigid_contact_margin (float, optional): Margin for rigid contact generation. Defaults to 0.01.
             soft_contact_max (int | None, optional): Maximum number of soft contacts to allocate.
             soft_contact_margin (float, optional): Margin for soft contact generation. Defaults to 0.01.
             edge_sdf_iter (int, optional): Number of iterations for edge SDF collision. Defaults to 10.
@@ -456,13 +460,12 @@ class CollisionPipelineUnified:
                 # Will raise error in __init__ if EXPLICIT mode requires it
                 shape_pairs_filtered = None
 
-        return CollisionPipelineUnified(
+        pipeline = CollisionPipelineUnified(
             model.shape_count,
             model.particle_count,
             shape_pairs_filtered,
             rigid_contact_max,
             rigid_contact_max_per_pair,
-            rigid_contact_margin,
             soft_contact_max,
             soft_contact_margin,
             edge_sdf_iter,
@@ -477,6 +480,8 @@ class CollisionPipelineUnified:
             enable_contact_matching=enable_contact_matching,
         )
 
+        return pipeline
+
     def collide(self, model: Model, state: State) -> Contacts:
         """
         Run the collision pipeline using NarrowPhase.
@@ -488,6 +493,7 @@ class CollisionPipelineUnified:
         Returns:
             Contacts: The generated contacts
         """
+
         # Allocate or clear contacts
         if self.contacts is None or self.requires_grad:
             self.contacts = Contacts(
@@ -505,7 +511,7 @@ class CollisionPipelineUnified:
         self.broad_phase_pair_count.zero_()
         contacts.rigid_contact_count.zero_()  # Clear since write_contact uses atomic_add
 
-        # Compute AABBs for all shapes
+        # Compute AABBs for all shapes (already expanded by per-shape contact margins)
         wp.launch(
             kernel=compute_shape_aabbs,
             dim=model.shape_count,
@@ -517,7 +523,7 @@ class CollisionPipelineUnified:
                 model.shape_scale,
                 model.shape_collision_radius,
                 model.shape_source_ptr,
-                self.rigid_contact_margin,
+                model.shape_contact_margin,
             ],
             outputs=[
                 self.shape_aabb_lower,
@@ -526,12 +532,12 @@ class CollisionPipelineUnified:
             device=self.device,
         )
 
-        # Run broad phase
+        # Run broad phase (AABBs are already expanded by contact margins, so pass None)
         if self.broad_phase_mode == BroadPhaseMode.NXN:
             self.nxn_broadphase.launch(
                 self.shape_aabb_lower,
                 self.shape_aabb_upper,
-                model.shape_thickness,
+                None,  # AABBs are pre-expanded, no additional margin needed
                 model.shape_collision_group,
                 model.shape_world,
                 model.shape_count,
@@ -543,7 +549,7 @@ class CollisionPipelineUnified:
             self.sap_broadphase.launch(
                 self.shape_aabb_lower,
                 self.shape_aabb_upper,
-                model.shape_thickness,
+                None,  # AABBs are pre-expanded, no additional margin needed
                 model.shape_collision_group,
                 model.shape_world,
                 model.shape_count,
@@ -555,7 +561,7 @@ class CollisionPipelineUnified:
             self.explicit_broadphase.launch(
                 self.shape_aabb_lower,
                 self.shape_aabb_upper,
-                model.shape_thickness,  # Use thickness as cutoff
+                None,  # AABBs are pre-expanded, no additional margin needed
                 self.shape_pairs_filtered,
                 len(self.shape_pairs_filtered),
                 self.broad_phase_shape_pairs,
@@ -584,10 +590,10 @@ class CollisionPipelineUnified:
 
         # Create UnifiedContactWriterData struct for custom contact writing
         writer_data = UnifiedContactWriterData()
-        writer_data.rigid_contact_margin = self.rigid_contact_margin
         writer_data.contact_max = contacts.rigid_contact_max
         writer_data.body_q = state.body_q
         writer_data.shape_body = model.shape_body
+        writer_data.shape_contact_margin = model.shape_contact_margin
         writer_data.contact_count = contacts.rigid_contact_count
         writer_data.out_shape0 = contacts.rigid_contact_shape0
         writer_data.out_shape1 = contacts.rigid_contact_shape1
@@ -611,12 +617,12 @@ class CollisionPipelineUnified:
         self.narrow_phase.launch_custom_write(
             candidate_pair=self.broad_phase_shape_pairs,
             num_candidate_pair=self.broad_phase_pair_count,
-            geom_types=model.shape_type,
-            geom_data=self.geom_data,
-            geom_transform=self.geom_transform,
-            geom_source=model.shape_source_ptr,
-            geom_cutoff=self.geom_cutoff,
-            geom_collision_radius=model.shape_collision_radius,
+            shape_types=model.shape_type,
+            shape_data=self.geom_data,
+            shape_transform=self.geom_transform,
+            shape_source=model.shape_source_ptr,
+            shape_contact_margin=model.shape_contact_margin,
+            shape_collision_radius=model.shape_collision_radius,
             writer_data=writer_data,
             device=self.device,
         )

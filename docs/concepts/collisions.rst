@@ -38,7 +38,6 @@ To use a collision pipeline, create it from your model and pass it to :meth:`Mod
     collision_pipeline = newton.CollisionPipelineUnified.from_model(
         model,
         rigid_contact_max_per_pair=10,
-        rigid_contact_margin=0.01,
         broad_phase_mode=newton.BroadPhaseMode.NXN,
     )
     
@@ -63,27 +62,26 @@ Collision rules based on world indices:
 2. Global entities (index -1) **collide with all worlds**
 3. Within the same world, collision groups determine fine-grained interactions
 
-World indices are automatically managed when using :meth:`ModelBuilder.add_builder` to instantiate multiple copies of a scene:
+World indices are automatically managed when using :meth:`ModelBuilder.add_world` to instantiate multiple copies of a scene:
 
 .. testcode::
 
     builder = newton.ModelBuilder()
     
     # Create global ground plane (collides with all worlds)
-    builder.current_world = -1
     builder.add_ground_plane()
     
     # Create robot builder
     robot_builder = newton.ModelBuilder()
-    robot_builder.add_articulation()
-    robot_body = robot_builder.add_body()
+    robot_body = robot_builder.add_link()
     robot_builder.add_shape_sphere(robot_body, radius=0.5)
-    robot_builder.add_joint_free(robot_body)
+    joint = robot_builder.add_joint_free(robot_body)
+    robot_builder.add_articulation([joint])
     
     # Instantiate robots in separate worlds
-    builder.add_builder(robot_builder, world=0)  # All entities -> world 0
-    builder.add_builder(robot_builder, world=1)  # All entities -> world 1
-    builder.add_builder(robot_builder, world=2)  # All entities -> world 2
+    builder.add_world(robot_builder)  # Creates world 0
+    builder.add_world(robot_builder)  # Creates world 1  
+    builder.add_world(robot_builder)  # Creates world 2
     
     model = builder.finalize()
     
@@ -91,6 +89,31 @@ World indices are automatically managed when using :meth:`ModelBuilder.add_build
     # but all robots will collide with the global ground plane
 
 World indices are stored in :attr:`Model.shape_world`, :attr:`Model.particle_world`, :attr:`Model.body_world`, etc.
+
+For heterogeneous worlds (where each world has different contents), use the :meth:`begin_world` and :meth:`end_world` methods:
+
+.. code-block:: python
+
+    builder = newton.ModelBuilder()
+    
+    # Global ground plane (default world -1)
+    builder.add_ground_plane()
+    
+    # World 0: Robot with arm
+    builder.begin_world(key="robot_arm")
+    arm_base = builder.add_body()
+    builder.add_shape_box(arm_base, hx=0.5, hy=0.5, hz=0.5)
+    # ... add more robot parts
+    builder.end_world()
+    
+    # World 1: Quadruped
+    builder.begin_world(key="quadruped")
+    quad_body = builder.add_body()
+    builder.add_shape_sphere(quad_body, radius=0.3)
+    # ... add legs and joints
+    builder.end_world()
+    
+    model = builder.finalize()
 
 **Performance benefits**
 
@@ -237,14 +260,13 @@ Use world indices to prevent collision between robot copies while allowing each 
 .. code-block:: python
 
     # Global environment
-    builder.current_world = -1
     builder.add_ground_plane()
     obstacles = builder.add_body()
     builder.add_shape_box(obstacles, hx=1, hy=1, hz=1)
     
     # Robot instances in separate worlds
     for i in range(num_robots):
-        builder.add_builder(robot_builder, world=i)
+        builder.add_world(robot_builder)
 
 **Layer-based collision**
 
@@ -303,7 +325,20 @@ Additional Topics
 
 **Contact margins**
 
-Both ``rigid_contact_margin`` and ``soft_contact_margin`` parameters expand AABBs during broad phase to detect contacts slightly before actual penetration. This improves stability for implicit integrators. Default: 0.01.
+Contact margins expand AABBs during broad phase to detect contacts slightly before actual penetration, improving stability for implicit integrators.
+
+Rigid contact margins are controlled per-shape via ``ShapeConfig.contact_margin``:
+
+.. code-block:: python
+
+    # Set margin for specific shape
+    cfg = builder.ShapeConfig(contact_margin=0.05)
+    builder.add_shape_box(body=body_id, hx=1.0, hy=1.0, hz=1.0, cfg=cfg)
+    
+    # Or set default margin for all shapes
+    builder.rigid_contact_margin = 0.05  # Must be set before finalize()
+
+Soft contact margins are specified via the ``soft_contact_margin`` parameter in :meth:`Model.collide`. Default: 0.01.
 
 **Soft-rigid contacts**
 

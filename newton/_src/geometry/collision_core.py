@@ -170,10 +170,10 @@ def compute_plane_normal_from_contacts(
 @wp.func
 def no_post_process_contact(
     contact_data: ContactData,
-    geom_a: GenericShapeData,
+    shape_a: GenericShapeData,
     pos_a_adjusted: wp.vec3,
     rot_a: wp.quat,
-    geom_b: GenericShapeData,
+    shape_b: GenericShapeData,
     pos_b_adjusted: wp.vec3,
     rot_b: wp.quat,
 ) -> ContactData:
@@ -183,10 +183,10 @@ def no_post_process_contact(
 @wp.func
 def post_process_axial_on_discrete_contact(
     contact_data: ContactData,
-    geom_a: GenericShapeData,
+    shape_a: GenericShapeData,
     pos_a_adjusted: wp.vec3,
     rot_a: wp.quat,
-    geom_b: GenericShapeData,
+    shape_b: GenericShapeData,
     pos_b_adjusted: wp.vec3,
     rot_b: wp.quat,
 ) -> ContactData:
@@ -199,18 +199,18 @@ def post_process_axial_on_discrete_contact(
 
     Args:
         contact_data: Contact data to post-process
-        geom_a: Shape data for shape A
+        shape_a: Shape data for shape A
         pos_a_adjusted: Position of shape A
         rot_a: Orientation of shape A
-        geom_b: Shape data for shape B
+        shape_b: Shape data for shape B
         pos_b_adjusted: Position of shape B
         rot_b: Orientation of shape B
 
     Returns:
         Post-processed contact data
     """
-    type_a = geom_a.shape_type
-    type_b = geom_b.shape_type
+    type_a = shape_a.shape_type
+    type_b = shape_b.shape_type
     normal = contact_data.contact_normal_a_to_b
     radius_eff_a = contact_data.radius_eff_a
     radius_eff_b = contact_data.radius_eff_b
@@ -237,15 +237,15 @@ def post_process_axial_on_discrete_contact(
         # Extract the axial shape parameters
         if is_discrete_a and is_axial_b:
             shape_axis = wp.quat_rotate(rot_b, wp.vec3(0.0, 0.0, 1.0))
-            shape_radius = geom_b.scale[0]
-            shape_half_height = geom_b.scale[1]
+            shape_radius = shape_b.scale[0]
+            shape_half_height = shape_b.scale[1]
             is_cone = type_b == int(GeoType.CONE)
             shape_pos = pos_b_adjusted
             axial_normal = normal
         else:  # is_discrete_b and is_axial_a
             shape_axis = wp.quat_rotate(rot_a, wp.vec3(0.0, 0.0, 1.0))
-            shape_radius = geom_a.scale[0]
-            shape_half_height = geom_a.scale[1]
+            shape_radius = shape_a.scale[0]
+            shape_half_height = shape_a.scale[1]
             is_cone = type_a == int(GeoType.CONE)
             shape_pos = pos_a_adjusted
             axial_normal = -normal  # Flip normal for shape A
@@ -301,8 +301,8 @@ def create_compute_gjk_mpr_contacts(
 
     @wp.func
     def compute_gjk_mpr_contacts(
-        geom_a: GenericShapeData,
-        geom_b: GenericShapeData,
+        shape_a_data: GenericShapeData,
+        shape_b_data: GenericShapeData,
         rot_a: wp.quat,
         rot_b: wp.quat,
         pos_a_adjusted: wp.vec3,
@@ -319,8 +319,8 @@ def create_compute_gjk_mpr_contacts(
         Compute contacts between two shapes using GJK/MPR algorithm and write them.
 
         Args:
-            geom_a: Generic shape data for shape A (contains shape_type)
-            geom_b: Generic shape data for shape B (contains shape_type)
+            shape_a_data: Generic shape data for shape A (contains shape_type)
+            shape_b_data: Generic shape data for shape B (contains shape_type)
             rot_a: Orientation of shape A
             rot_b: Orientation of shape B
             pos_a_adjusted: Adjusted position of shape A
@@ -340,17 +340,17 @@ def create_compute_gjk_mpr_contacts(
         small_radius = 0.0001
 
         # Get shape types from shape data
-        type_a = geom_a.shape_type
-        type_b = geom_b.shape_type
+        type_a = shape_a_data.shape_type
+        type_b = shape_b_data.shape_type
 
         # Special treatment for minkowski objects
         if type_a == int(GeoType.SPHERE) or type_a == int(GeoType.CAPSULE):
-            radius_eff_a = geom_a.scale[0]
-            geom_a.scale[0] = small_radius
+            radius_eff_a = shape_a_data.scale[0]
+            shape_a_data.scale[0] = small_radius
 
         if type_b == int(GeoType.SPHERE) or type_b == int(GeoType.CAPSULE):
-            radius_eff_b = geom_b.scale[0]
-            geom_b.scale[0] = small_radius
+            radius_eff_b = shape_b_data.scale[0]
+            shape_b_data.scale[0] = small_radius
 
         # Pre-pack ContactData template with static information
         contact_template = ContactData()
@@ -365,8 +365,8 @@ def create_compute_gjk_mpr_contacts(
 
         if wp.static(ENABLE_MULTI_CONTACT):
             wp.static(create_solve_convex_multi_contact(support_map, writer_func, post_process_contact))(
-                geom_a,
-                geom_b,
+                shape_a_data,
+                shape_b_data,
                 rot_a,
                 rot_b,
                 pos_a_adjusted,
@@ -374,14 +374,17 @@ def create_compute_gjk_mpr_contacts(
                 0.0,  # sum_of_contact_offsets - gap
                 data_provider,
                 rigid_contact_margin + radius_eff_a + radius_eff_b,
-                type_a == int(GeoType.SPHERE) or type_b == int(GeoType.SPHERE),
+                type_a == int(GeoType.SPHERE)
+                or type_b == int(GeoType.SPHERE)
+                or type_a == int(GeoType.ELLIPSOID)
+                or type_b == int(GeoType.ELLIPSOID),
                 writer_data,
                 contact_template,
             )
         else:
             wp.static(create_solve_convex_single_contact(support_map, writer_func, post_process_contact))(
-                geom_a,
-                geom_b,
+                shape_a_data,
+                shape_b_data,
                 rot_a,
                 rot_b,
                 pos_a_adjusted,

@@ -825,7 +825,7 @@ class ClothSim:
 
     def finalize(self, handle_self_contact=False, ground=True, use_gravity=True):
         builder = newton.ModelBuilder(up_axis="Y")
-        builder.add_builder(self.builder)
+        builder.add_world(self.builder)
         if ground:
             builder.add_ground_plane()
         builder.color(include_bending=True)

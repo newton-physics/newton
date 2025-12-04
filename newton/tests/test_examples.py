@@ -449,6 +449,8 @@ add_example_test(TestIKExamples, name="ik.example_ik_franka", devices=test_devic
 
 add_example_test(TestIKExamples, name="ik.example_ik_h1", devices=test_devices, use_viewer=True)
 
+add_example_test(TestIKExamples, name="ik.example_ik_custom", devices=cuda_test_devices, use_viewer=True)
+
 add_example_test(
     TestIKExamples,
     name="ik.example_ik_benchmark",
@@ -554,6 +556,14 @@ class TestSensorExamples(unittest.TestCase):
 add_example_test(
     TestSensorExamples,
     name="sensors.example_sensor_contact",
+    devices=test_devices,
+    test_options={"num-frames": 160},  # required for ball to reach plate
+    use_viewer=True,
+)
+
+add_example_test(
+    TestSensorExamples,
+    name="sensors.example_sensor_tiled_camera",
     devices=cuda_test_devices,
     test_options={"num-frames": 4 * 36},  # train_iters * sim_steps
     use_viewer=True,
