@@ -329,7 +329,7 @@ class SolverMuJoCo(SolverBase):
         self.mjc_jnt_to_newton_jnt: wp.array(dtype=wp.int32, ndim=2) | None = None
         """Mapping from MuJoCo [world, joint] to Newton joint index. Shape [nworld, njnt], dtype int32."""
         self.mjc_jnt_to_newton_dof: wp.array(dtype=wp.int32, ndim=2) | None = None
-        """Mapping from MuJoCo [world, joint] to Newton DOF start index. Shape [nworld, njnt], dtype int32."""
+        """Mapping from MuJoCo [world, joint] to Newton DOF index. Shape [nworld, njnt], dtype int32."""
         self.mjc_dof_to_newton_dof: wp.array(dtype=wp.int32, ndim=2) | None = None
         """Mapping from MuJoCo [world, dof] to Newton DOF index. Shape [nworld, nv], dtype int32."""
         self.mjc_actuator_to_newton_axis: wp.array(dtype=wp.int32, ndim=2) | None = None
@@ -2099,7 +2099,6 @@ class SolverMuJoCo(SolverBase):
                     self.mjc_jnt_to_newton_dof,
                     self.mjw_model.jnt_bodyid,
                     self.mjw_model.jnt_type,
-                    self.mjw_model.body_mocapid,
                     # Newton model data (joint-indexed)
                     self.model.joint_X_p,
                     self.model.joint_X_c,
@@ -2111,8 +2110,6 @@ class SolverMuJoCo(SolverBase):
                     self.mjw_model.jnt_axis,
                     self.mjw_model.body_pos,
                     self.mjw_model.body_quat,
-                    self.mjw_data.mocap_pos,
-                    self.mjw_data.mocap_quat,
                 ],
                 device=self.model.device,
             )

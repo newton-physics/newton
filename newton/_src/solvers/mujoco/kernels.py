@@ -518,7 +518,7 @@ def apply_mjc_control_kernel(
 
     The actuator type is encoded in the sign of mjc_actuator_to_newton_axis:
     - Positive value: position actuator, newton_axis = value
-    - Negative value: velocity actuator, newton_axis = -(value + 1)
+    - Negative value: velocity actuator, newton_axis = -(value + 2)
     """
     world, mjc_actuator = wp.tid()
     raw_value = mjc_actuator_to_newton_axis[world, mjc_actuator]
@@ -1056,7 +1056,6 @@ def update_joint_transforms_kernel(
     mjc_jnt_to_newton_dof: wp.array2d(dtype=wp.int32),
     mjc_jnt_bodyid: wp.array(dtype=wp.int32),
     mjc_jnt_type: wp.array(dtype=wp.int32),
-    body_mocapid: wp.array(dtype=wp.int32),
     # Newton model data (joint-indexed)
     newton_joint_X_p: wp.array(dtype=wp.transform),
     newton_joint_X_c: wp.array(dtype=wp.transform),
@@ -1067,16 +1066,14 @@ def update_joint_transforms_kernel(
     jnt_axis: wp.array2d(dtype=wp.vec3),
     body_pos: wp.array2d(dtype=wp.vec3),
     body_quat: wp.array2d(dtype=wp.quat),
-    mocap_pos: wp.array2d(dtype=wp.vec3),
-    mocap_quat: wp.array2d(dtype=wp.quat),
 ):
     """Update MuJoCo joint transforms and body positions from Newton joint data.
 
     Iterates over MuJoCo joints [world, jnt]. For each joint:
-    - Updates MuJoCo body_pos/body_quat (or mocap_pos/mocap_quat for mocap bodies)
+    - Updates MuJoCo body_pos/body_quat from Newton joint transforms
     - Updates MuJoCo jnt_pos and jnt_axis
 
-    Uses MuJoCo's body_mocapid to determine if a body is mocap.
+    Note: Mocap bodies are handled by update_mocap_transforms_kernel.
     """
     world, mjc_jnt = wp.tid()
 
@@ -1100,18 +1097,12 @@ def update_joint_transforms_kernel(
     # Update body pos and quat from parent joint transform
     tf = parent_xform * wp.transform_inverse(child_xform)
 
-    # Get the MuJoCo body for this joint
+    # Get the MuJoCo body for this joint and update its transform
+    # Note: Mocap bodies don't have MuJoCo joints, so they're handled
+    # separately by update_mocap_transforms_kernel
     mjc_body = mjc_jnt_bodyid[mjc_jnt]
-
-    # Check if this is a mocap body using MuJoCo's body_mocapid
-    mocap_index = body_mocapid[mjc_body]
-    rotation = wp.quat(tf.q.w, tf.q.x, tf.q.y, tf.q.z)
-    if mocap_index >= 0:
-        mocap_pos[world, mocap_index] = tf.p
-        mocap_quat[world, mocap_index] = rotation
-    else:
-        body_pos[world, mjc_body] = tf.p
-        body_quat[world, mjc_body] = rotation
+    body_pos[world, mjc_body] = tf.p
+    body_quat[world, mjc_body] = wp.quat(tf.q.w, tf.q.x, tf.q.y, tf.q.z)
 
     # Update joint axis and position (DOF-indexed for axis)
     if newton_dof >= 0:
