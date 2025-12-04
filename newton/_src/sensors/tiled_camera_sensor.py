@@ -320,7 +320,7 @@ class TiledCameraSensor:
 
         return camera_rays
 
-    def flatten_color_image(self, image: wp.array(dtype=wp.uint32, ndim=3)) -> np.ndarray | None:
+    def flatten_color_image(self, image: wp.array(dtype=wp.uint32, ndim=3), num_rows: int | None = None) -> np.ndarray | None:
         """
         Flatten rendered color image to a tiled image buffer.
 
@@ -329,6 +329,7 @@ class TiledCameraSensor:
 
         Args:
             image: Color output array from render(), shape (num_worlds, num_cameras, width*height).
+            num_rows: Optional number of rows
 
         Returns:
             Numpy array representing the image data.
@@ -338,6 +339,8 @@ class TiledCameraSensor:
 
         num_worlds_and_cameras = self.render_context.num_worlds * self.render_context.num_cameras
         rows = math.ceil(math.sqrt(num_worlds_and_cameras))
+        if num_rows:
+            rows = num_rows
         cols = math.ceil(num_worlds_and_cameras / rows)
 
         tile_data = image.numpy().astype(np.uint32)
@@ -360,7 +363,7 @@ class TiledCameraSensor:
         tile_data = tile_data.reshape(rows * self.render_context.height, cols * self.render_context.width, 3)
         return tile_data
 
-    def flatten_depth_image(self, image: wp.array(dtype=wp.float32, ndim=3)) -> np.ndarray | None:
+    def flatten_depth_image(self, image: wp.array(dtype=wp.float32, ndim=3), num_rows: int | None = None) -> np.ndarray | None:
         """
         Flatten rendered depth image to a tiled grayscale image buffer.
 
@@ -370,6 +373,7 @@ class TiledCameraSensor:
 
         Args:
             image: Depth output array from render(), shape (num_worlds, num_cameras, width*height).
+            num_rows: Optional number of rows
 
         Returns:
             Numpy array representing the image data.
@@ -379,6 +383,8 @@ class TiledCameraSensor:
 
         num_worlds_and_cameras = self.render_context.num_worlds * self.render_context.num_cameras
         rows = math.ceil(math.sqrt(num_worlds_and_cameras))
+        if num_rows:
+            rows = num_rows
         cols = math.ceil(num_worlds_and_cameras / rows)
 
         tile_data = image.numpy().astype(np.float32)

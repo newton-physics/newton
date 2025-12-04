@@ -34,147 +34,139 @@ from pxr import Usd, UsdGeom
 import newton
 import newton.examples
 from newton.sensors import TiledCameraSensor
-
 from ...viewer import ViewerGL
 
 
+@wp.kernel
+def animate_franka(time: wp.float32, joint_dof_dim: wp.array(dtype=wp.int32, ndim=2), joint_q_start: wp.array(dtype=wp.int32), joint_qd_start: wp.array(dtype=wp.int32), joint_q: wp.array(dtype=wp.float32), joint_limit_lower: wp.array(dtype=wp.float32), joint_limit_upper: wp.array(dtype=wp.float32)):
+    tid = wp.tid()
+
+    rng = wp.rand_init(1234, tid)
+
+    num_linear_dofs = joint_dof_dim[tid, 0]
+    num_angular_dofs = joint_dof_dim[tid, 1]
+    q_start = joint_q_start[tid]
+    qd_start = joint_qd_start[tid]
+    for i in range(num_linear_dofs + num_angular_dofs):
+        joint_q[q_start + i] = joint_limit_lower[qd_start + i] + (joint_limit_upper[qd_start + i] - joint_limit_lower[qd_start + i]) * wp.sin(time + wp.randf(rng))
+
+
 class Example:
-    def __init__(self, viewer):
-        self.enable_rendering = True
+    def __init__(self, viewer: ViewerGL):
+        self.num_worlds_per_row = 4
+        self.num_worlds_per_col = 4
+
+        self.time = 0.0
+        self.time_delta = 0.005
+
         self.color_image_texture = 0
         self.depth_image_texture = 0
+        self.show_rgb_image = True
 
         self.viewer = viewer
+        self.viewer.register_ui_callback(self.display, "free")
 
         builder = newton.ModelBuilder()
 
-        # add ground plane
-        builder.add_ground_plane()
-
-        # SPHERE
-        self.sphere_pos = wp.vec3(0.0, -2.0, 0.5)
-        body_sphere = builder.add_body(xform=wp.transform(p=self.sphere_pos, q=wp.quat_identity()), key="sphere")
-        builder.add_shape_sphere(body_sphere, radius=0.5)
-
-        # CAPSULE
-        self.capsule_pos = wp.vec3(0.0, 0.0, 0.75)
-        body_capsule = builder.add_body(xform=wp.transform(p=self.capsule_pos, q=wp.quat_identity()), key="capsule")
-        builder.add_shape_capsule(body_capsule, radius=0.25, half_height=0.5)
-
-        # CYLINDER
-        self.cylinder_pos = wp.vec3(0.0, -4.0, 0.5)
-        body_cylinder = builder.add_body(xform=wp.transform(p=self.cylinder_pos, q=wp.quat_identity()), key="cylinder")
-        builder.add_shape_cylinder(body_cylinder, radius=0.4, half_height=0.5)
-
-        # BOX
-        self.box_pos = wp.vec3(0.0, 2.0, 0.5)
-        body_box = builder.add_body(xform=wp.transform(p=self.box_pos, q=wp.quat_identity()), key="box")
-        builder.add_shape_box(body_box, hx=0.5, hy=0.35, hz=0.5)
-
-        # MESH (bunny)
         usd_stage = Usd.Stage.Open(newton.examples.get_asset("bunny.usd"))
         usd_geom = UsdGeom.Mesh(usd_stage.GetPrimAtPath("/root/bunny"))
+        bunny_mesh = newton.Mesh(np.array(usd_geom.GetPointsAttr().Get()), np.array(usd_geom.GetFaceVertexIndicesAttr().Get()))
 
-        mesh_vertices = np.array(usd_geom.GetPointsAttr().Get())
-        mesh_indices = np.array(usd_geom.GetFaceVertexIndicesAttr().Get())
+        # builder.add_shape_cylinder(builder.add_body(xform=wp.transform(p=wp.vec3(0.0, -4.0, 0.5), q=wp.quat_identity())), radius=0.4, half_height=0.5)
+        # builder.add_shape_sphere(builder.add_body(xform=wp.transform(p=wp.vec3(-2.0, -2.0, 0.5), q=wp.quat_identity())), radius=0.5)
+        # builder.add_shape_capsule(builder.add_body(xform=wp.transform(p=wp.vec3(-4.0, 0.0, 0.75), q=wp.quat_identity())), radius=0.25, half_height=0.5)
+        # builder.add_shape_box(builder.add_body(xform=wp.transform(p=wp.vec3(-2.0, 2.0, 0.5), q=wp.quat_identity())), hx=0.5, hy=0.35, hz=0.5)
+        # builder.add_shape_mesh(builder.add_body(xform=wp.transform(p=wp.vec3(0.0, 4.0, 0.0), q=wp.quat(0.5, 0.5, 0.5, 0.5))), mesh=bunny_mesh)
+        builder.add_urdf(newton.utils.download_asset("franka_emika_panda") / "urdf/fr3_franka_hand.urdf", floating=False)
 
-        demo_mesh = newton.Mesh(mesh_vertices, mesh_indices)
+        scene = newton.ModelBuilder()
+        scene.replicate(builder, self.num_worlds_per_row * self.num_worlds_per_col)
+        scene.add_ground_plane()
 
-        self.mesh_pos = wp.vec3(0.0, 4.0, 0.0)
-        body_mesh = builder.add_body(xform=wp.transform(p=self.mesh_pos, q=wp.quat(0.5, 0.5, 0.5, 0.5)), key="mesh")
-        builder.add_shape_mesh(body_mesh, mesh=demo_mesh)
-
-        # finalize model
-        self.model = builder.finalize()
+        self.model = scene.finalize()
         self.state = self.model.state()
 
         self.viewer.set_model(self.model)
+
+        sensor_render_width = int(self.viewer.ui.io.display_size[0] // self.num_worlds_per_col)
+        sensor_render_height = int(self.viewer.ui.io.display_size[1] // self.num_worlds_per_row)
 
         # Setup Tiled Camera Sensor
         self.tiled_camera_sensor = TiledCameraSensor(
             model=self.model,
             num_cameras=1,
-            width=640,
-            height=360,
+            width=sensor_render_width,
+            height=sensor_render_height,
             options=TiledCameraSensor.Options(
                 default_light=True, default_light_shadows=True, colors_per_shape=True, checkerboard_texture=True
             ),
         )
+
+        fov = 45.0
         if isinstance(self.viewer, ViewerGL):
-            self.camera_rays = self.tiled_camera_sensor.compute_pinhole_camera_rays(
-                math.radians(self.viewer.camera.fov)
-            )
-        else:
-            self.camera_rays = self.tiled_camera_sensor.compute_pinhole_camera_rays(math.radians(45.0))
+            fov = self.viewer.camera.fov
+
+        self.camera_rays = self.tiled_camera_sensor.compute_pinhole_camera_rays(math.radians(fov))
         self.tiled_camera_sensor_color_image = self.tiled_camera_sensor.create_color_image_output()
         self.tiled_camera_sensor_depth_image = self.tiled_camera_sensor.create_depth_image_output()
         self.create_textures()
 
     def step(self):
-        pass
+        wp.launch(animate_franka, self.model.joint_count, [self.time, self.model.joint_dof_dim, self.model.joint_q_start, self.model.joint_qd_start, self.model.joint_q, self.model.joint_limit_lower, self.model.joint_limit_upper])
+        newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state)
+        self.time += self.time_delta
 
     def render(self):
-        if self.enable_rendering:
-            self.render_sensors()
+        self.render_sensors()
         self.viewer.begin_frame(0.0)
         self.viewer.log_state(self.state)
         self.viewer.end_frame()
 
     def render_sensors(self):
-        camera_transforms = None
-        if isinstance(self.viewer, ViewerGL):
-            camera_transforms = wp.array(
-                [
-                    [
-                        wp.transformf(
-                            self.viewer.camera.pos,
-                            wp.quat_from_matrix(wp.mat33f(self.viewer.camera.get_view_matrix().reshape(4, 4)[:3, :3])),
-                        )
-                    ]
-                ],
-                dtype=wp.transformf,
-            )
-
-        else:
-            camera_position = wp.vec3f(10.0, 0.0, 2.0)
-            camera_orientation = wp.mat33f(0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0)
-            camera_transforms = wp.array(
-                [[wp.transformf(camera_position, wp.quat_from_matrix(camera_orientation))]], dtype=wp.transformf
-            )
-
         self.tiled_camera_sensor.render(
             self.state,
-            camera_transforms,
+            self.get_camera_transforms(),
             self.camera_rays,
             self.tiled_camera_sensor_color_image,
             self.tiled_camera_sensor_depth_image,
         )
         self.update_textures()
 
-    def create_textures(self):
-        checker_size = 64
-        width = self.tiled_camera_sensor.render_context.width
-        height = self.tiled_camera_sensor.render_context.height
+    def get_camera_transforms(self) -> wp.array(dtype=wp.transformf):
+        if isinstance(self.viewer, ViewerGL):
+            return wp.array(
+                [
+                    [
+                        wp.transformf(
+                            self.viewer.camera.pos,
+                            wp.quat_from_matrix(wp.mat33f(self.viewer.camera.get_view_matrix().reshape(4, 4)[:3, :3])),
+                        )
+                    ] * (self.num_worlds_per_row * self.num_worlds_per_col)
+                ],
+                dtype=wp.transformf,
+            )
 
-        pattern = ((np.arange(height) // checker_size)[:, None] + (np.arange(width) // checker_size)) % 2 == 0
-        pixels = np.where(pattern, 0x22, 0x33).astype(np.uint8)
-        pixels = np.dstack([pixels, pixels, pixels])
+        camera_position = wp.vec3f(10.0, 0.0, 2.0)
+        camera_orientation = wp.mat33f(0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0)
+        return wp.array(
+            [[wp.transformf(camera_position, wp.quat_from_matrix(camera_orientation))] * (self.num_worlds_per_row * self.num_worlds_per_col)], dtype=wp.transformf
+        )
+
+    def create_textures(self):
+        width = self.tiled_camera_sensor.render_context.width * self.num_worlds_per_col
+        height = self.tiled_camera_sensor.render_context.height * self.num_worlds_per_row
 
         self.color_image_texture, self.depth_image_texture = gl.glGenTextures(2)
 
         gl.glBindTexture(gl.GL_TEXTURE_2D, self.color_image_texture)
         gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MIN_FILTER, gl.GL_LINEAR)
         gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MAG_FILTER, gl.GL_LINEAR)
-        gl.glTexImage2D(
-            gl.GL_TEXTURE_2D, 0, gl.GL_RGB8, width, height, 0, gl.GL_RGB, gl.GL_UNSIGNED_BYTE, pixels.tobytes()
-        )
+        gl.glTexImage2D(gl.GL_TEXTURE_2D, 0, gl.GL_RGB8, width, height, 0, gl.GL_RGB, gl.GL_UNSIGNED_BYTE, None)
 
         gl.glBindTexture(gl.GL_TEXTURE_2D, self.depth_image_texture)
         gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MIN_FILTER, gl.GL_LINEAR)
         gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MAG_FILTER, gl.GL_LINEAR)
-        gl.glTexImage2D(
-            gl.GL_TEXTURE_2D, 0, gl.GL_RGB8, width, height, 0, gl.GL_RGB, gl.GL_UNSIGNED_BYTE, pixels.tobytes()
-        )
+        gl.glTexImage2D(gl.GL_TEXTURE_2D, 0, gl.GL_RGB8, width, height, 0, gl.GL_RGB, gl.GL_UNSIGNED_BYTE, None)
 
         gl.glBindTexture(gl.GL_TEXTURE_2D, 0)
 
@@ -185,11 +177,11 @@ class Example:
             0,
             0,
             0,
-            self.tiled_camera_sensor.render_context.width,
-            self.tiled_camera_sensor.render_context.height,
+            self.tiled_camera_sensor.render_context.width * self.num_worlds_per_col,
+            self.tiled_camera_sensor.render_context.height * self.num_worlds_per_row,
             gl.GL_RGB,
             gl.GL_UNSIGNED_BYTE,
-            self.tiled_camera_sensor.flatten_color_image(self.tiled_camera_sensor_color_image).tobytes(),
+            self.tiled_camera_sensor.flatten_color_image(self.tiled_camera_sensor_color_image, num_rows=self.num_worlds_per_row).tobytes(),
         )
 
         gl.glBindTexture(gl.GL_TEXTURE_2D, self.depth_image_texture)
@@ -198,12 +190,12 @@ class Example:
             0,
             0,
             0,
-            self.tiled_camera_sensor.render_context.width,
-            self.tiled_camera_sensor.render_context.height,
+            self.tiled_camera_sensor.render_context.width * self.num_worlds_per_col,
+            self.tiled_camera_sensor.render_context.height * self.num_worlds_per_row,
             gl.GL_RGB,
             gl.GL_UNSIGNED_BYTE,
             np.dstack(
-                [self.tiled_camera_sensor.flatten_depth_image(self.tiled_camera_sensor_depth_image)] * 3
+                [self.tiled_camera_sensor.flatten_depth_image(self.tiled_camera_sensor_depth_image, num_rows=self.num_worlds_per_row)] * 3
             ).tobytes(),
         )
 
@@ -220,19 +212,31 @@ class Example:
         assert depth_image.min() < depth_image.max()
 
     def gui(self, ui):
-        width = 270
-        height = width / self.tiled_camera_sensor.render_context.width * self.tiled_camera_sensor.render_context.height
+        if ui.button("Toggle RGB / Depth Image", ui.ImVec2(280, 30)):
+            self.show_rgb_image = not self.show_rgb_image
 
-        if ui.button("Pause Rendering" if self.enable_rendering else "Resume Rendering", ui.ImVec2(width, 30)):
-            self.enable_rendering = not self.enable_rendering
+    def display(self, imgui):
+        side_panel_width = 300
+        padding = 10
 
-        ui.text("Color Image")
-        if self.color_image_texture > 0:
-            ui.image(ui.ImTextureRef(self.color_image_texture), ui.ImVec2(width, height))
+        io = self.viewer.ui.io
 
-        ui.text("Depth Image")
-        if self.depth_image_texture > 0:
-            ui.image(ui.ImTextureRef(self.depth_image_texture), ui.ImVec2(width, height))
+        width = io.display_size[0] - side_panel_width - padding * 4
+        height = io.display_size[1] - padding * 2
+
+        imgui.set_next_window_pos(imgui.ImVec2(0, 0))
+        imgui.set_next_window_size(io.display_size)
+
+        flags = imgui.WindowFlags_.no_title_bar.value | imgui.WindowFlags_.no_mouse_inputs.value | imgui.WindowFlags_.no_bring_to_front_on_focus.value | imgui.WindowFlags_.no_scrollbar.value
+
+        if imgui.begin("Sensors", flags=flags):
+            if self.color_image_texture > 0:
+                imgui.set_cursor_pos(imgui.ImVec2(side_panel_width + padding * 2, padding))
+                if self.show_rgb_image:
+                    imgui.image(imgui.ImTextureRef(self.color_image_texture), imgui.ImVec2(width, height))
+                else:
+                    imgui.image(imgui.ImTextureRef(self.depth_image_texture), imgui.ImVec2(width, height))
+        imgui.end()
 
 
 if __name__ == "__main__":
