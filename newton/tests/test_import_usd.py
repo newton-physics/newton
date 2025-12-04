@@ -1294,7 +1294,7 @@ class TestImportSampleAssets(unittest.TestCase):
 
         self.assertEqual(int(total_dofs), int(model.joint_axis.numpy().shape[0]))
         joint_enabled = model.joint_enabled.numpy()
-        self.assertTrue(all(joint_enabled[i] != 0 for i in range(len(joint_enabled))))
+        self.assertTrue(all(joint_enabled))
 
         axis_vectors = {
             "X": [1.0, 0.0, 0.0],

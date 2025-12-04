@@ -333,8 +333,10 @@ class Model:
         """Joint friction coefficient, shape [joint_dof_count], float."""
         self.joint_dof_dim = None
         """Number of linear and angular dofs per joint, shape [joint_count, 2], int."""
+        self.joint_is_loop = None
+        """Whether the joint is a loop joint that some solvers need to treat separately from joints that are part of the regular articulation tree structure, shape [joint_count], bool."""
         self.joint_enabled = None
-        """Controls which joint is simulated (bodies become disconnected if False), shape [joint_count], int."""
+        """Controls which joint is simulated (bodies become disconnected if False, only supported by :class:`~newton.solvers.SolverXPBD` and :class:`~newton.solvers.SolverSemiImplicit`), shape [joint_count], bool."""
         self.joint_limit_lower = None
         """Joint lower position limits, shape [joint_dof_count], float."""
         self.joint_limit_upper = None
@@ -472,6 +474,7 @@ class Model:
         self.attribute_frequency["joint_X_c"] = ModelAttributeFrequency.JOINT
         self.attribute_frequency["joint_dof_dim"] = ModelAttributeFrequency.JOINT
         self.attribute_frequency["joint_enabled"] = ModelAttributeFrequency.JOINT
+        self.attribute_frequency["joint_is_loop"] = ModelAttributeFrequency.JOINT
         self.attribute_frequency["joint_twist_lower"] = ModelAttributeFrequency.JOINT
         self.attribute_frequency["joint_twist_upper"] = ModelAttributeFrequency.JOINT
 
