@@ -1185,6 +1185,41 @@ class TestImportMjcf(unittest.TestCase):
             self.assertAlmostEqual(joint_target_ke[dof_idx], expected["target_ke"], places=1)
             self.assertAlmostEqual(joint_target_kd[dof_idx], expected["target_kd"], places=1)
 
+    def test_jnt_actgravcomp_parsing(self):
+        """Test parsing of actuatorgravcomp from MJCF"""
+        mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="actgravcomp_test">
+    <worldbody>
+        <body name="body1" pos="0 0 1">
+            <joint name="joint1" type="hinge" axis="0 0 1" actuatorgravcomp="true"/>
+            <geom type="box" size="0.1 0.1 0.1"/>
+        </body>
+        <body name="body2" pos="1 0 1">
+            <joint name="joint2" type="hinge" axis="0 1 0" actuatorgravcomp="false"/>
+            <geom type="box" size="0.1 0.1 0.1"/>
+        </body>
+        <body name="body3" pos="2 0 1">
+            <joint name="joint3" type="hinge" axis="1 0 0"/>
+            <geom type="box" size="0.1 0.1 0.1"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_mjcf(mjcf_content)
+        model = builder.finalize()
+
+        self.assertTrue(hasattr(model, "mujoco"))
+        self.assertTrue(hasattr(model.mujoco, "jnt_actgravcomp"))
+
+        jnt_actgravcomp = model.mujoco.jnt_actgravcomp.numpy()
+
+        # Bodies are added in order
+        self.assertEqual(jnt_actgravcomp[0], True)
+        self.assertEqual(jnt_actgravcomp[1], False)
+        self.assertEqual(jnt_actgravcomp[2], False)  # Default
+
     def test_xform_with_floating_false(self):
         """Test that xform parameter is respected when floating=False"""
         local_pos = wp.vec3(1.0, 2.0, 3.0)
@@ -1269,6 +1304,50 @@ class TestImportMjcf(unittest.TestCase):
             f"Body quaternion after eval_fk does not match expected xform.\n"
             f"Expected: {expected_quat}\nActual: {body_quat}",
         )
+
+    def test_geom_solimp_parsing(self):
+        """Test that geom_solimp attribute is parsed correctly from MJCF."""
+        mjcf = """<?xml version="1.0" ?>
+<mujoco>
+    <worldbody>
+        <body name="body1">
+            <freejoint/>
+            <geom type="box" size="0.1 0.1 0.1" solimp="0.8 0.9 0.002 0.4 3.0"/>
+        </body>
+        <body name="body2">
+            <freejoint/>
+            <geom type="sphere" size="0.05"/>
+        </body>
+        <body name="body3">
+            <freejoint/>
+            <geom type="capsule" size="0.05 0.1" solimp="0.7 0.85 0.003 0.6 2.5"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_mjcf(mjcf)
+        model = builder.finalize()
+
+        self.assertTrue(hasattr(model, "mujoco"), "Model should have mujoco namespace for custom attributes")
+        self.assertTrue(hasattr(model.mujoco, "geom_solimp"), "Model should have geom_solimp attribute")
+
+        geom_solimp = model.mujoco.geom_solimp.numpy()
+        self.assertEqual(model.shape_count, 3, "Should have 3 shapes")
+
+        # Expected values: shape 0 has explicit solimp, shape 1 has defaults, shape 2 has explicit solimp
+        expected_values = {
+            0: [0.8, 0.9, 0.002, 0.4, 3.0],
+            1: [0.9, 0.95, 0.001, 0.5, 2.0],  # default
+            2: [0.7, 0.85, 0.003, 0.6, 2.5],
+        }
+
+        for shape_idx, expected in expected_values.items():
+            actual = geom_solimp[shape_idx].tolist()
+            for i, (a, e) in enumerate(zip(actual, expected, strict=False)):
+                self.assertAlmostEqual(a, e, places=4, msg=f"geom_solimp[{shape_idx}][{i}] should be {e}, got {a}")
 
 
 if __name__ == "__main__":

@@ -167,6 +167,18 @@ class SolverMuJoCo(SolverBase):
         )
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
+                name="geom_solimp",
+                frequency=ModelAttributeFrequency.SHAPE,
+                assignment=ModelAttributeAssignment.MODEL,
+                dtype=wp.types.vector(length=5, dtype=wp.float32),
+                default=wp.types.vector(length=5, dtype=wp.float32)(0.9, 0.95, 0.001, 0.5, 2.0),
+                namespace="mujoco",
+                usd_attribute_name="mjc:solimp",
+                mjcf_attribute_name="solimp",
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
                 name="limit_margin",
                 frequency=ModelAttributeFrequency.JOINT_DOF,
                 assignment=ModelAttributeAssignment.MODEL,
@@ -244,6 +256,18 @@ class SolverMuJoCo(SolverBase):
                 namespace="mujoco",
                 usd_attribute_name="mjc:damping",
                 mjcf_attribute_name="damping",
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="jnt_actgravcomp",
+                frequency=ModelAttributeFrequency.JOINT_DOF,
+                assignment=ModelAttributeAssignment.MODEL,
+                dtype=wp.bool,
+                default=False,
+                namespace="mujoco",
+                usd_attribute_name="mjc:actuatorgravcomp",
+                mjcf_attribute_name="actuatorgravcomp",
             )
         )
 
@@ -822,7 +846,6 @@ class SolverMuJoCo(SolverBase):
         tolerance: float = 1e-6,
         ls_tolerance: float = 0.01,
         cone: int | str = "pyramidal",
-        geom_solimp: tuple[float, float, float, float, float] = (0.9, 0.95, 0.001, 0.5, 2.0),
         target_filename: str | None = None,
         default_actuator_args: dict | None = None,
         default_actuator_gear: float | None = None,
@@ -934,12 +957,6 @@ class SolverMuJoCo(SolverBase):
         spec.option.ls_tolerance = ls_tolerance
         spec.option.jacobian = mujoco.mjtJacobian.mjJAC_AUTO
 
-        defaults = spec.default
-        if callable(defaults):
-            defaults = defaults()
-        defaults.geom.solref = (0.02, 1.0)
-        defaults.geom.solimp = geom_solimp
-        # defaults.geom.contype = 0
         spec.compiler.inertiafromgeom = mujoco.mjtInertiaFromGeom.mjINERTIAFROMGEOM_AUTO
 
         if add_axes:
@@ -1017,12 +1034,14 @@ class SolverMuJoCo(SolverBase):
             return attr.numpy()
 
         shape_condim = get_custom_attribute("condim")
+        shape_geom_solimp = get_custom_attribute("geom_solimp")
         joint_dof_limit_margin = get_custom_attribute("limit_margin")
         joint_solimp_limit = get_custom_attribute("solimplimit")
         joint_dof_solref = get_custom_attribute("solreffriction")
         joint_dof_solimp = get_custom_attribute("solimpfriction")
         joint_stiffness = get_custom_attribute("dof_passive_stiffness")
         joint_damping = get_custom_attribute("dof_passive_damping")
+        joint_actgravcomp = get_custom_attribute("jnt_actgravcomp")
 
         eq_constraint_type = model.equality_constraint_type.numpy()
         eq_constraint_body1 = model.equality_constraint_body1.numpy()
@@ -1251,6 +1270,8 @@ class SolverMuJoCo(SolverBase):
                 ]
                 if shape_condim is not None:
                     geom_params["condim"] = shape_condim[shape]
+                if shape_geom_solimp is not None:
+                    geom_params["solimp"] = shape_geom_solimp[shape]
 
                 body.add_geom(**geom_params)
                 # store the geom name instead of assuming index
@@ -1369,6 +1390,8 @@ class SolverMuJoCo(SolverBase):
                         joint_params["stiffness"] = joint_stiffness[ai]
                     if joint_damping is not None:
                         joint_params["damping"] = joint_damping[ai]
+                    if joint_actgravcomp is not None:
+                        joint_params["actgravcomp"] = joint_actgravcomp[ai]
                     lower, upper = joint_limit_lower[ai], joint_limit_upper[ai]
                     if lower <= -JOINT_LIMIT_UNLIMITED and upper >= JOINT_LIMIT_UNLIMITED:
                         joint_params["limited"] = False
@@ -1446,6 +1469,8 @@ class SolverMuJoCo(SolverBase):
                         joint_params["stiffness"] = joint_stiffness[ai]
                     if joint_damping is not None:
                         joint_params["damping"] = joint_damping[ai]
+                    if joint_actgravcomp is not None:
+                        joint_params["actgravcomp"] = joint_actgravcomp[ai]
                     lower, upper = joint_limit_lower[ai], joint_limit_upper[ai]
                     if lower <= -JOINT_LIMIT_UNLIMITED and upper >= JOINT_LIMIT_UNLIMITED:
                         joint_params["limited"] = False
@@ -1731,7 +1756,7 @@ class SolverMuJoCo(SolverBase):
             # "geom_matid",
             # "geom_solmix",
             "geom_solref",
-            # "geom_solimp",
+            "geom_solimp",
             "geom_size",
             "geom_rbound",
             "geom_pos",
@@ -1962,6 +1987,10 @@ class SolverMuJoCo(SolverBase):
 
         num_worlds = self.model.num_worlds
 
+        # Get custom attribute for geom_solimp
+        mujoco_attrs = getattr(self.model, "mujoco", None)
+        shape_geom_solimp = getattr(mujoco_attrs, "geom_solimp", None) if mujoco_attrs is not None else None
+
         wp.launch(
             update_geom_properties_kernel,
             dim=(num_worlds, num_geoms),
@@ -1980,6 +2009,7 @@ class SolverMuJoCo(SolverBase):
                 self.mjw_model.mesh_quat,
                 self.model.shape_material_torsional_friction,
                 self.model.shape_material_rolling_friction,
+                shape_geom_solimp,
             ],
             outputs=[
                 self.mjw_model.geom_rbound,
@@ -1988,6 +2018,7 @@ class SolverMuJoCo(SolverBase):
                 self.mjw_model.geom_size,
                 self.mjw_model.geom_pos,
                 self.mjw_model.geom_quat,
+                self.mjw_model.geom_solimp,
             ],
             device=self.model.device,
         )
