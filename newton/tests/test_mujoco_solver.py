@@ -2362,6 +2362,42 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
                     msg=f"Updated rolling friction mismatch for shape {shape_idx} in world {world_idx}",
                 )
 
+    def test_geom_priority_conversion(self):
+        """Test that geom_priority custom attribute is properly converted to MuJoCo."""
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+
+        # Add two bodies with shapes
+        body1 = builder.add_link(mass=1.0, com=wp.vec3(0.0, 0.0, 0.0), I_m=wp.mat33(np.eye(3)))
+        body2 = builder.add_link(mass=1.0, com=wp.vec3(0.0, 0.0, 0.0), I_m=wp.mat33(np.eye(3)))
+
+        # Add shapes with custom priority values
+        builder.add_shape_box(body=body1, hx=0.1, hy=0.1, hz=0.1, custom_attributes={"mujoco:geom_priority": 1})
+        builder.add_shape_box(body=body2, hx=0.1, hy=0.1, hz=0.1, custom_attributes={"mujoco:geom_priority": 0})
+
+        # Add joints
+        joint1 = builder.add_joint_revolute(-1, body1, axis=(0.0, 0.0, 1.0))
+        joint2 = builder.add_joint_revolute(body1, body2, axis=(0.0, 1.0, 0.0))
+
+        builder.add_articulation([joint1, joint2])
+        model = builder.finalize()
+
+        # Verify the custom attribute exists and has correct values
+        self.assertTrue(hasattr(model, "mujoco"))
+        self.assertTrue(hasattr(model.mujoco, "geom_priority"))
+
+        geom_priority = model.mujoco.geom_priority.numpy()
+        self.assertEqual(geom_priority[0], 1)
+        self.assertEqual(geom_priority[1], 0)
+
+        # Create solver and verify it's properly converted to MuJoCo
+        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
+
+        # Verify the MuJoCo model has the correct geom_priority values
+        mjc_priority = solver.mjw_model.geom_priority.numpy()
+        self.assertEqual(mjc_priority[0], 1)
+        self.assertEqual(mjc_priority[1], 0)
+
     def test_geom_solimp_conversion_and_update(self):
         """Test per-shape geom_solimp conversion to MuJoCo and dynamic updates across multiple worlds."""
         vec5 = wp.types.vector(length=5, dtype=wp.float32)

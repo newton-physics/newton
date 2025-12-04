@@ -1305,6 +1305,42 @@ class TestImportMjcf(unittest.TestCase):
             f"Expected: {expected_quat}\nActual: {body_quat}",
         )
 
+    def test_geom_priority_parsing(self):
+        """Test parsing of geom priority from MJCF"""
+        mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="priority_test">
+    <worldbody>
+        <body name="body1" pos="0 0 1">
+            <joint name="joint1" type="hinge" axis="0 0 1"/>
+            <geom type="box" size="0.1 0.1 0.1" priority="1"/>
+        </body>
+        <body name="body2" pos="1 0 1">
+            <joint name="joint2" type="hinge" axis="0 1 0"/>
+            <geom type="box" size="0.1 0.1 0.1" priority="0"/>
+        </body>
+        <body name="body3" pos="2 0 1">
+            <joint name="joint3" type="hinge" axis="1 0 0"/>
+            <geom type="box" size="0.1 0.1 0.1"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_mjcf(mjcf_content)
+        model = builder.finalize()
+
+        self.assertTrue(hasattr(model, "mujoco"))
+        self.assertTrue(hasattr(model.mujoco, "geom_priority"))
+
+        geom_priority = model.mujoco.geom_priority.numpy()
+
+        # Shapes are added in order
+        self.assertEqual(geom_priority[0], 1)
+        self.assertEqual(geom_priority[1], 0)
+        self.assertEqual(geom_priority[2], 0)  # Default
+
     def test_geom_solimp_parsing(self):
         """Test that geom_solimp attribute is parsed correctly from MJCF."""
         mjcf = """<?xml version="1.0" ?>
