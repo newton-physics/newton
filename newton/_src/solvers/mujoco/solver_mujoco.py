@@ -1782,7 +1782,6 @@ class SolverMuJoCo(SolverBase):
             nv = self.mj_model.nv  # Number of DOFs in MuJoCo
             mjc_dof_to_newton_dof_np = np.full((nworld, nv), -1, dtype=np.int32)
             # joint_mjc_dof_start tells us where each Newton template joint's DOFs start in MuJoCo
-            joints_per_world = model.joint_count // model.num_worlds
             for ji, mjc_dof_start in enumerate(joint_mjc_dof_start):
                 if mjc_dof_start >= 0 and ji < len(selected_joints):
                     j = selected_joints[ji]
