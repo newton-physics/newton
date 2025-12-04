@@ -36,7 +36,7 @@ from .rasterized_collisions import (
     rasterize_collider,
 )
 from .render_grains import sample_render_grains, update_render_grains
-from .solve_rheology import YieldParamVec, solve_rheology, project_stress
+from .solve_rheology import MomentumData, RheologyData, CollisionData, YieldParamVec, project_stress, solve_rheology
 
 __all__ = ["SolverImplicitMPM"]
 
@@ -1778,6 +1778,7 @@ class SolverImplicitMPM(SolverBase):
         self,
         model: newton.Model,
         config: Config,
+        temporary_store: fem.TemporaryStore | None = None,
     ):
         super().__init__(model)
 
@@ -1786,13 +1787,18 @@ class SolverImplicitMPM(SolverBase):
         self.max_iterations = config.max_iterations
         self.tolerance = float(config.tolerance)
 
+        self.temporary_store = temporary_store
+        self.verbose = wp.config.verbose
+        self.enable_timers = False
+
         self.velocity_basis = "Q1"
         self.strain_basis = config.strain_basis
         self.velocity_basis = config.velocity_basis
 
         self.grid_padding = config.grid_padding
         self.grid_type = config.grid_type
-        self.coloring = config.solver == "gauss-seidel"
+        self.solver = config.solver
+        self.coloring = self.solver == "gauss-seidel"
         self.apic = config.transfer_scheme == "apic"
         self.gimp = config.integration_scheme == "gimp"
         self.max_active_cell_count = config.max_active_cell_count
@@ -1801,16 +1807,19 @@ class SolverImplicitMPM(SolverBase):
         self.collider_basis = config.collider_basis
         self.collider_velocity_mode = self._mpm_model.collider_velocity_mode
 
-        self.temporary_store = fem.TemporaryStore()
+        if config.warmstart_mode == "none":
+            self._stress_warmstart = ""
+        elif config.warmstart_mode == "auto":
+            if self.strain_basis in ("P1d", "Q1d"):
+                self._stress_warmstart = "particles"
+            else:
+                self._stress_warmstart = "grid"
+        else:
+            assert config.warmstart_mode in ("particles", "grid"), "Invalid warmstart mode"
+            self._stress_warmstart = config.warmstart_mode
 
         self._use_cuda_graph = self.model.device.is_cuda and wp.is_conditional_graph_supported()
 
-        if self.strain_basis in ("P1d", "Q1d"):
-            self._stress_warmstart = "particles"
-        else:
-            self._stress_warmstart = "grid"
-
-        self._enable_timers = False
         self._timers_use_nvtx = False
 
         # Pre-allocate scratchpad and last step data so that step() can be graph-captured
@@ -3008,8 +3017,6 @@ class SolverImplicitMPM(SolverBase):
         with self._timer("Warmstart fields"):
             self._warmstart_fields(scratch, pic, last_step_data)
 
-        # FIXME
-
         # TODO solve for yields as M^-1 int yield
         # set yield = 0 if lumped mass < 0
         #  or swap pressure/tensile yield?
@@ -3020,11 +3027,6 @@ class SolverImplicitMPM(SolverBase):
         # print(scratch.strain_yield_parameters_field.dof_values[:10])
         M_diag = scratch.strain_node_particle_volume
         # print(scratch.strain_yield_parameters_field.dof_values[:10])
-        wp.launch(
-            inverse_scale_vector,
-            dim=strain_node_count,
-            inputs=[M_diag, scratch.strain_yield_parameters_field.dof_values],
-        )
         # print(scratch.strain_yield_parameters_field.dof_values[:10])
         if self._stress_warmstart == "particles":
             wp.launch(
@@ -3032,43 +3034,58 @@ class SolverImplicitMPM(SolverBase):
                 dim=strain_node_count,
                 inputs=[M_diag, scratch.stress_field.dof_values],
             )
-            # print(scratch.stress_field.dof_values[:10])
-
-        if not self._stress_warmstart:
+        elif not self._stress_warmstart:
             scratch.stress_field.dof_values.zero_()
 
         # print(M_diag)
         # scratch.strain_yield_parameters_field.dof_values.fill_(YieldParamVec(1.0e12, 0.0e12, 0.0e12, 0.75e12))
         # raise X
+        wp.launch(
+            inverse_scale_vector,
+            dim=strain_node_count,
+            inputs=[M_diag, scratch.strain_yield_parameters_field.dof_values],
+        )
 
         with self._timer("Strain solve"):
-            # Retain graph to avoid immediate CPU synch
-            solve_graph = solve_rheology(
-                self.max_iterations,
-                self.tolerance,
-                scratch.strain_matrix,
-                scratch.transposed_strain_matrix,
-                scratch.compliance_matrix,
-                scratch.inv_mass_matrix,
-                scratch.strain_yield_parameters_field.dof_values,
-                scratch.unilateral_strain_offset,
-                scratch.elastic_strain_delta_field.dof_values,
-                scratch.plastic_strain_delta_field.dof_values,
-                scratch.stress_field.dof_values,
-                scratch.velocity_field.dof_values,
-                scratch.collider_matrix,
-                scratch.transposed_collider_matrix,
-                scratch.collider_friction,
-                scratch.collider_adhesion,
-                scratch.collider_normal_field.dof_values,
-                scratch.collider_velocity,
-                scratch.collider_inv_mass_matrix,
-                scratch.impulse_field.dof_values,
+            momentum_data = MomentumData(
+                inv_volume=scratch.inv_mass_matrix,
+                velocity=scratch.velocity_field.dof_values,
+            )
+            rheology_data = RheologyData(
+                strain_mat=scratch.strain_matrix,
+                transposed_strain_mat=scratch.transposed_strain_matrix,
+                compliance_mat=scratch.compliance_matrix,
+                yield_params=scratch.strain_yield_parameters_field.dof_values,
+                unilateral_strain_offset=scratch.unilateral_strain_offset,
                 color_offsets=scratch.color_offsets,
                 color_blocks=scratch.color_indices,
+                elastic_strain_delta=scratch.elastic_strain_delta_field.dof_values,
+                plastic_strain_delta=scratch.plastic_strain_delta_field.dof_values,
+                stress=scratch.stress_field.dof_values,
+            )
+            collision_data = CollisionData(
+                collider_mat=scratch.collider_matrix,
+                transposed_collider_mat=scratch.transposed_collider_matrix,
+                collider_friction=scratch.collider_friction,
+                collider_adhesion=scratch.collider_adhesion,
+                collider_normals=scratch.collider_normal_field.dof_values,
+                collider_velocities=scratch.collider_velocity,
+                collider_inv_mass=scratch.collider_inv_mass_matrix,
                 rigidity_operator=rigidity_operator,
+                collider_impulse=scratch.impulse_field.dof_values,
+            )
+
+            # Retain graph to avoid immediate CPU synch
+            solve_graph = solve_rheology(
+                self.solver,
+                self.max_iterations,
+                self.tolerance,
+                momentum_data,
+                rheology_data,
+                collision_data,
                 temporary_store=self.temporary_store,
                 use_graph=self._use_cuda_graph,
+                verbose=self.verbose,
             )
 
         # if self.mpm_model.has_compliant_particles:
@@ -3427,7 +3444,7 @@ class SolverImplicitMPM(SolverBase):
     def _timer(self, name: str):
         return wp.ScopedTimer(
             name,
-            active=self._enable_timers,
+            active=self.enable_timers,
             use_nvtx=self._timers_use_nvtx,
             synchronize=not self._timers_use_nvtx,
         )
