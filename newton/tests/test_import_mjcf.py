@@ -797,8 +797,82 @@ class TestImportMjcf(unittest.TestCase):
         self.assertTrue(hasattr(model.mujoco, "limit_margin"))
         np.testing.assert_allclose(model.mujoco.limit_margin.numpy(), [0.01, 0.02, 0.0])
 
-    def test_solimp_friction_parsing(self):
-        """Test that solimp_friction attribute is parsed correctly from MJCF."""
+    def test_solreffriction_parsing(self):
+        """Test that solreffriction attribute is parsed correctly from MJCF."""
+        mjcf = """<?xml version="1.0" ?>
+<mujoco>
+    <worldbody>
+        <body name="body1">
+            <joint name="joint1" type="hinge" axis="0 1 0" solreffriction="0.01 0.5" range="-45 45" />
+            <joint name="joint2" type="hinge" axis="1 0 0" range="-30 30" />
+            <geom type="box" size="0.1 0.1 0.1" />
+        </body>
+        <body name="body2">
+            <joint name="joint3" type="hinge" axis="0 0 1" solreffriction="0.05 2.0" range="-90 90" />
+            <geom type="sphere" size="0.05" />
+        </body>
+    </worldbody>
+</mujoco>
+"""
+
+        builder = newton.ModelBuilder()
+
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_mjcf(mjcf)
+        model = builder.finalize()
+
+        # Check if solreffriction custom attribute exists
+        self.assertTrue(hasattr(model, "mujoco"), "Model should have mujoco namespace for custom attributes")
+        self.assertTrue(hasattr(model.mujoco, "solreffriction"), "Model should have solreffriction attribute")
+
+        solreffriction = model.mujoco.solreffriction.numpy()
+
+        # Newton model has only 2 joints because it combines the ones under the same body into a single joint
+        self.assertEqual(model.joint_count, 2, "Should have 2 joints")
+
+        # Find joints by name
+        joint_names = model.joint_key
+        joint1_idx = joint_names.index("joint1_joint2")
+        joint2_idx = joint_names.index("joint3")
+
+        # For the merged joint (joint1_idx), both joint1 and joint2 should be present in the qd array.
+        joint1_qd_start = model.joint_qd_start.numpy()[joint1_idx]
+        # The joint should have 2 DoFs (since joint1 and joint2 are merged)
+        self.assertEqual(model.joint_dof_dim.numpy()[joint1_idx, 1], 2)
+        expected_joint1 = [0.01, 0.5]  # from joint1
+        expected_joint2 = [0.02, 1.0]  # from joint2 (default values)
+        val_qd_0 = solreffriction[joint1_qd_start, :]
+        val_qd_1 = solreffriction[joint1_qd_start + 1, :]
+
+        # Helper to check if two arrays match within tolerance
+        def arrays_match(arr, expected, tol=1e-4):
+            return all(abs(arr[i] - expected[i]) < tol for i in range(len(expected)))
+
+        # The two DoFs should be exactly one joint1 and one default, in _some_ order
+        if arrays_match(val_qd_0, expected_joint1):
+            self.assertTrue(
+                arrays_match(val_qd_1, expected_joint2), "Second DoF should have default solreffriction values"
+            )
+        elif arrays_match(val_qd_0, expected_joint2):
+            self.assertTrue(
+                arrays_match(val_qd_1, expected_joint1), "Second DoF should have joint1's solreffriction values"
+            )
+        else:
+            self.fail(f"First DoF solreffriction {val_qd_0.tolist()} doesn't match either expected value")
+
+        # Test joint3: explicit solreffriction with different values
+        joint3_qd_start = model.joint_qd_start.numpy()[joint2_idx]
+        expected_joint3 = [0.05, 2.0]
+        for i, expected in enumerate(expected_joint3):
+            self.assertAlmostEqual(
+                solreffriction[joint3_qd_start, i],
+                expected,
+                places=4,
+                msg=f"joint3 solreffriction[{i}] should be {expected}",
+            )
+
+    def test_solimpfriction_parsing(self):
+        """Test that solimpfriction attribute is parsed correctly from MJCF."""
         mjcf = """<?xml version="1.0" ?>
 <mujoco>
     <worldbody>
