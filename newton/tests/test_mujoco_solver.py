@@ -1665,6 +1665,123 @@ class TestMuJoCoSolverJointProperties(TestMuJoCoSolverPropertiesBase):
             "Value did not change from initial!",
         )
 
+    def test_solref_friction_conversion_and_update(self):
+        """
+        Test validation of solref_friction custom attribute:
+        1. Initial conversion from Model to MuJoCo (multi-world)
+        2. Runtime updates (multi-world)
+        """
+        # Create template with a few joints
+        template_builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(template_builder)
+
+        # Body 1
+        b1 = template_builder.add_link()
+        j1 = template_builder.add_joint_revolute(-1, b1, axis=(0, 0, 1))
+        template_builder.add_shape_box(body=b1, hx=0.1, hy=0.1, hz=0.1)
+
+        # Body 2
+        b2 = template_builder.add_link()
+        j2 = template_builder.add_joint_revolute(b1, b2, axis=(1, 0, 0))
+        template_builder.add_shape_box(body=b2, hx=0.1, hy=0.1, hz=0.1)
+        template_builder.add_articulation([j1, j2])
+
+        # Create main builder with multiple worlds
+        num_worlds = 2
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+
+        builder.replicate(template_builder, num_worlds)
+        model = builder.finalize()
+
+        # Verify we have the custom attribute
+        self.assertTrue(hasattr(model, "mujoco"))
+        self.assertTrue(hasattr(model.mujoco, "solreffriction"))
+
+        # --- Step 1: Set initial values and verify conversion ---
+
+        # Initialize with unique values for every DOF
+        # 2 joints per world -> 2 DOFs per world
+        total_dofs = model.joint_dof_count
+        initial_values = np.zeros((total_dofs, 2), dtype=np.float32)
+
+        for i in range(total_dofs):
+            # Unique pattern for 2-element solref
+            initial_values[i] = [
+                0.01 + (i * 0.005) % 0.05,  # timeconst
+                0.5 + (i * 0.1) % 1.5,  # dampratio
+            ]
+
+        model.mujoco.solreffriction.assign(initial_values)
+
+        solver = SolverMuJoCo(model)
+
+        # Check mapping to MuJoCo
+        joint_qd_start = model.joint_qd_start.numpy()
+        joint_dof_dim = model.joint_dof_dim.numpy()
+        joint_mjc_dof_start = solver.joint_mjc_dof_start.numpy()
+        mjw_dof_solref = solver.mjw_model.dof_solref.numpy()
+
+        joints_per_world = model.joint_count // num_worlds
+
+        def check_values(expected_values, actual_mjw_values, msg_prefix):
+            for w in range(num_worlds):
+                world_joint_offset = w * joints_per_world
+                for joint_idx in range(joints_per_world):
+                    global_joint_idx = world_joint_offset + joint_idx
+                    dof_count = int(joint_dof_dim[global_joint_idx].sum())
+                    if dof_count == 0:
+                        continue
+
+                    newton_dof_start = joint_qd_start[global_joint_idx]
+                    # Use template relative indexing for MuJoCo mapping
+                    # Since joints are replicated, the solver.joint_mjc_dof_start matches the template joint index.
+                    mjc_dof_start = joint_mjc_dof_start[joint_idx]
+
+                    for dof_offset in range(dof_count):
+                        newton_dof_idx = newton_dof_start + dof_offset
+                        mjc_dof_idx = mjc_dof_start + dof_offset
+
+                        expected = expected_values[newton_dof_idx]
+                        actual = actual_mjw_values[w, mjc_dof_idx]
+
+                        np.testing.assert_allclose(
+                            actual,
+                            expected,
+                            rtol=1e-5,
+                            err_msg=f"{msg_prefix} mismatch at World {w}, Joint {joint_idx}, DOF {dof_offset}",
+                        )
+
+        check_values(initial_values, mjw_dof_solref, "Initial conversion")
+
+        # --- Step 2: Runtime Update ---
+
+        # Generate new unique values
+        updated_values = np.zeros((total_dofs, 2), dtype=np.float32)
+        for i in range(total_dofs):
+            updated_values[i] = [
+                0.05 - (i * 0.005) % 0.04,  # timeconst
+                2.0 - (i * 0.1) % 1.0,  # dampratio
+            ]
+
+        # Update model attribute
+        model.mujoco.solreffriction.assign(updated_values)
+
+        # Notify solver
+        solver.notify_model_changed(SolverNotifyFlags.JOINT_DOF_PROPERTIES)
+
+        # Verify updates
+        mjw_dof_solref_updated = solver.mjw_model.dof_solref.numpy()
+
+        check_values(updated_values, mjw_dof_solref_updated, "Runtime update")
+
+        # Check that it is different from initial (sanity check)
+        # Just check the first element
+        self.assertFalse(
+            np.allclose(mjw_dof_solref_updated[0, 0], initial_values[0]),
+            "Value did not change from initial!",
+        )
+
 
 class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
     def test_geom_property_conversion(self):
@@ -2244,6 +2361,42 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
                     places=5,
                     msg=f"Updated rolling friction mismatch for shape {shape_idx} in world {world_idx}",
                 )
+
+    def test_geom_priority_conversion(self):
+        """Test that geom_priority custom attribute is properly converted to MuJoCo."""
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+
+        # Add two bodies with shapes
+        body1 = builder.add_link(mass=1.0, com=wp.vec3(0.0, 0.0, 0.0), I_m=wp.mat33(np.eye(3)))
+        body2 = builder.add_link(mass=1.0, com=wp.vec3(0.0, 0.0, 0.0), I_m=wp.mat33(np.eye(3)))
+
+        # Add shapes with custom priority values
+        builder.add_shape_box(body=body1, hx=0.1, hy=0.1, hz=0.1, custom_attributes={"mujoco:geom_priority": 1})
+        builder.add_shape_box(body=body2, hx=0.1, hy=0.1, hz=0.1, custom_attributes={"mujoco:geom_priority": 0})
+
+        # Add joints
+        joint1 = builder.add_joint_revolute(-1, body1, axis=(0.0, 0.0, 1.0))
+        joint2 = builder.add_joint_revolute(body1, body2, axis=(0.0, 1.0, 0.0))
+
+        builder.add_articulation([joint1, joint2])
+        model = builder.finalize()
+
+        # Verify the custom attribute exists and has correct values
+        self.assertTrue(hasattr(model, "mujoco"))
+        self.assertTrue(hasattr(model.mujoco, "geom_priority"))
+
+        geom_priority = model.mujoco.geom_priority.numpy()
+        self.assertEqual(geom_priority[0], 1)
+        self.assertEqual(geom_priority[1], 0)
+
+        # Create solver and verify it's properly converted to MuJoCo
+        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
+
+        # Verify the MuJoCo model has the correct geom_priority values
+        mjc_priority = solver.mjw_model.geom_priority.numpy()
+        self.assertEqual(mjc_priority[0], 1)
+        self.assertEqual(mjc_priority[1], 0)
 
     def test_geom_solimp_conversion_and_update(self):
         """Test per-shape geom_solimp conversion to MuJoCo and dynamic updates across multiple worlds."""
