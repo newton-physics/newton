@@ -167,6 +167,30 @@ class SolverMuJoCo(SolverBase):
         )
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
+                name="geom_priority",
+                frequency=ModelAttributeFrequency.SHAPE,
+                assignment=ModelAttributeAssignment.MODEL,
+                dtype=wp.int32,
+                default=0,
+                namespace="mujoco",
+                usd_attribute_name="mjc:priority",
+                mjcf_attribute_name="priority",
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="geom_solimp",
+                frequency=ModelAttributeFrequency.SHAPE,
+                assignment=ModelAttributeAssignment.MODEL,
+                dtype=wp.types.vector(length=5, dtype=wp.float32),
+                default=wp.types.vector(length=5, dtype=wp.float32)(0.9, 0.95, 0.001, 0.5, 2.0),
+                namespace="mujoco",
+                usd_attribute_name="mjc:solimp",
+                mjcf_attribute_name="solimp",
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
                 name="limit_margin",
                 frequency=ModelAttributeFrequency.JOINT_DOF,
                 assignment=ModelAttributeAssignment.MODEL,
@@ -190,6 +214,28 @@ class SolverMuJoCo(SolverBase):
         )
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
+                name="solreffriction",
+                frequency=ModelAttributeFrequency.JOINT_DOF,
+                assignment=ModelAttributeAssignment.MODEL,
+                dtype=wp.types.vector(length=2, dtype=wp.float32),
+                default=wp.types.vector(length=2, dtype=wp.float32)(0.02, 1.0),
+                namespace="mujoco",
+                usd_attribute_name="mjc:solreffriction",
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="solimpfriction",
+                frequency=ModelAttributeFrequency.JOINT_DOF,
+                assignment=ModelAttributeAssignment.MODEL,
+                dtype=wp.types.vector(length=5, dtype=wp.float32),
+                default=wp.types.vector(length=5, dtype=wp.float32)(0.9, 0.95, 0.001, 0.5, 2.0),
+                namespace="mujoco",
+                usd_attribute_name="mjc:solimpfriction",
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
                 name="gravcomp",
                 frequency=ModelAttributeFrequency.BODY,
                 assignment=ModelAttributeAssignment.MODEL,
@@ -198,6 +244,42 @@ class SolverMuJoCo(SolverBase):
                 namespace="mujoco",
                 usd_attribute_name="mjc:gravcomp",
                 mjcf_attribute_name="gravcomp",
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="dof_passive_stiffness",
+                frequency=ModelAttributeFrequency.JOINT_DOF,
+                assignment=ModelAttributeAssignment.MODEL,
+                dtype=wp.float32,
+                default=0.0,
+                namespace="mujoco",
+                usd_attribute_name="mjc:stiffness",
+                mjcf_attribute_name="stiffness",
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="dof_passive_damping",
+                frequency=ModelAttributeFrequency.JOINT_DOF,
+                assignment=ModelAttributeAssignment.MODEL,
+                dtype=wp.float32,
+                default=0.0,
+                namespace="mujoco",
+                usd_attribute_name="mjc:damping",
+                mjcf_attribute_name="damping",
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="jnt_actgravcomp",
+                frequency=ModelAttributeFrequency.JOINT_DOF,
+                assignment=ModelAttributeAssignment.MODEL,
+                dtype=wp.bool,
+                default=False,
+                namespace="mujoco",
+                usd_attribute_name="mjc:actuatorgravcomp",
+                mjcf_attribute_name="actuatorgravcomp",
             )
         )
 
@@ -727,13 +809,13 @@ class SolverMuJoCo(SolverBase):
         contacts.separation = mj_contact.dist
 
         if not hasattr(contacts, "pair"):
-            contacts.pair = wp.empty(naconmax, dtype=wp.vec2i, device=self.model.device)
+            contacts.pair = wp.zeros(naconmax, dtype=wp.vec2i, device=self.model.device)
 
         if not hasattr(contacts, "normal"):
-            contacts.normal = wp.empty(naconmax, dtype=wp.vec3f, device=self.model.device)
+            contacts.normal = wp.zeros(naconmax, dtype=wp.vec3f, device=self.model.device)
 
         if not hasattr(contacts, "force"):
-            contacts.force = wp.empty(naconmax, dtype=wp.float32, device=self.model.device)
+            contacts.force = wp.zeros(naconmax, dtype=wp.float32, device=self.model.device)
 
         wp.launch(
             convert_mjw_contact_to_warp_kernel,
@@ -776,8 +858,6 @@ class SolverMuJoCo(SolverBase):
         tolerance: float = 1e-6,
         ls_tolerance: float = 0.01,
         cone: int | str = "pyramidal",
-        geom_solimp: tuple[float, float, float, float, float] = (0.9, 0.95, 0.001, 0.5, 2.0),
-        geom_friction: tuple[float, float, float] | None = None,
         target_filename: str | None = None,
         default_actuator_args: dict | None = None,
         default_actuator_gear: float | None = None,
@@ -889,16 +969,6 @@ class SolverMuJoCo(SolverBase):
         spec.option.ls_tolerance = ls_tolerance
         spec.option.jacobian = mujoco.mjtJacobian.mjJAC_AUTO
 
-        defaults = spec.default
-        if callable(defaults):
-            defaults = defaults()
-        defaults.geom.solref = (0.02, 1.0)
-        defaults.geom.solimp = geom_solimp
-        # Use model's friction parameters if geom_friction is not provided
-        if geom_friction is None:
-            geom_friction = (1.0, model.rigid_contact_torsional_friction, model.rigid_contact_rolling_friction)
-        defaults.geom.friction = geom_friction
-        # defaults.geom.contype = 0
         spec.compiler.inertiafromgeom = mujoco.mjtInertiaFromGeom.mjINERTIAFROMGEOM_AUTO
 
         if add_axes:
@@ -961,6 +1031,8 @@ class SolverMuJoCo(SolverBase):
         shape_flags = model.shape_flags.numpy()
         shape_world = model.shape_world.numpy()
         shape_mu = model.shape_material_mu.numpy()
+        shape_torsional_friction = model.shape_material_torsional_friction.numpy()
+        shape_rolling_friction = model.shape_material_rolling_friction.numpy()
 
         # retrieve MuJoCo-specific attributes
         mujoco_attrs = getattr(model, "mujoco", None)
@@ -974,8 +1046,15 @@ class SolverMuJoCo(SolverBase):
             return attr.numpy()
 
         shape_condim = get_custom_attribute("condim")
+        shape_priority = get_custom_attribute("geom_priority")
+        shape_geom_solimp = get_custom_attribute("geom_solimp")
         joint_dof_limit_margin = get_custom_attribute("limit_margin")
         joint_solimp_limit = get_custom_attribute("solimplimit")
+        joint_dof_solref = get_custom_attribute("solreffriction")
+        joint_dof_solimp = get_custom_attribute("solimpfriction")
+        joint_stiffness = get_custom_attribute("dof_passive_stiffness")
+        joint_damping = get_custom_attribute("dof_passive_damping")
+        joint_actgravcomp = get_custom_attribute("jnt_actgravcomp")
 
         eq_constraint_type = model.equality_constraint_type.numpy()
         eq_constraint_body1 = model.equality_constraint_body1.numpy()
@@ -1193,15 +1272,21 @@ class SolverMuJoCo(SolverBase):
                         # collide with anything except shapes from the same color
                         geom_params["conaffinity"] = collision_mask_everything & ~contype
 
-                # set friction from Newton shape materials using model's friction parameters
+                # set friction from Newton shape materials
                 mu = shape_mu[shape]
+                torsional = shape_torsional_friction[shape]
+                rolling = shape_rolling_friction[shape]
                 geom_params["friction"] = [
                     mu,
-                    model.rigid_contact_torsional_friction * mu,
-                    model.rigid_contact_rolling_friction * mu,
+                    torsional,
+                    rolling,
                 ]
                 if shape_condim is not None:
                     geom_params["condim"] = shape_condim[shape]
+                if shape_priority is not None:
+                    geom_params["priority"] = shape_priority[shape]
+                if shape_geom_solimp is not None:
+                    geom_params["solimp"] = shape_geom_solimp[shape]
 
                 body.add_geom(**geom_params)
                 # store the geom name instead of assuming index
@@ -1316,6 +1401,12 @@ class SolverMuJoCo(SolverBase):
                     # Set margin if available
                     if joint_dof_limit_margin is not None:
                         joint_params["margin"] = joint_dof_limit_margin[ai]
+                    if joint_stiffness is not None:
+                        joint_params["stiffness"] = joint_stiffness[ai]
+                    if joint_damping is not None:
+                        joint_params["damping"] = joint_damping[ai]
+                    if joint_actgravcomp is not None:
+                        joint_params["actgravcomp"] = joint_actgravcomp[ai]
                     lower, upper = joint_limit_lower[ai], joint_limit_upper[ai]
                     if lower <= -JOINT_LIMIT_UNLIMITED and upper >= JOINT_LIMIT_UNLIMITED:
                         joint_params["limited"] = False
@@ -1329,6 +1420,10 @@ class SolverMuJoCo(SolverBase):
                         joint_params["solref_limit"] = (-joint_limit_ke[ai], -joint_limit_kd[ai])
                     if joint_solimp_limit is not None:
                         joint_params["solimp_limit"] = joint_solimp_limit[ai]
+                    if joint_dof_solref is not None:
+                        joint_params["solref_friction"] = joint_dof_solref[ai]
+                    if joint_dof_solimp is not None:
+                        joint_params["solimp_friction"] = joint_dof_solimp[ai]
                     axname = name
                     if lin_axis_count > 1 or ang_axis_count > 1:
                         axname += "_lin"
@@ -1385,6 +1480,12 @@ class SolverMuJoCo(SolverBase):
                     # Set margin if available
                     if joint_dof_limit_margin is not None:
                         joint_params["margin"] = joint_dof_limit_margin[ai]
+                    if joint_stiffness is not None:
+                        joint_params["stiffness"] = joint_stiffness[ai]
+                    if joint_damping is not None:
+                        joint_params["damping"] = joint_damping[ai]
+                    if joint_actgravcomp is not None:
+                        joint_params["actgravcomp"] = joint_actgravcomp[ai]
                     lower, upper = joint_limit_lower[ai], joint_limit_upper[ai]
                     if lower <= -JOINT_LIMIT_UNLIMITED and upper >= JOINT_LIMIT_UNLIMITED:
                         joint_params["limited"] = False
@@ -1398,6 +1499,10 @@ class SolverMuJoCo(SolverBase):
                         joint_params["solref_limit"] = (-joint_limit_ke[ai], -joint_limit_kd[ai])
                     if joint_solimp_limit is not None:
                         joint_params["solimp_limit"] = joint_solimp_limit[ai]
+                    if joint_dof_solref is not None:
+                        joint_params["solref_friction"] = joint_dof_solref[ai]
+                    if joint_dof_solimp is not None:
+                        joint_params["solimp_friction"] = joint_dof_solimp[ai]
 
                     axname = name
                     if lin_axis_count > 1 or ang_axis_count > 1:
@@ -1653,20 +1758,20 @@ class SolverMuJoCo(SolverBase):
             "jnt_solimp",
             "jnt_pos",
             "jnt_axis",
-            # "jnt_stiffness",
+            "jnt_stiffness",
             "jnt_range",
             # "jnt_actfrcrange",
             "jnt_margin",  # corresponds to newton custom attribute "limit_margin"
             "dof_armature",
-            # "dof_damping",
+            "dof_damping",
             # "dof_invweight0",
             "dof_frictionloss",
-            # "dof_solimp",
-            # "dof_solref",
+            "dof_solimp",
+            "dof_solref",
             # "geom_matid",
             # "geom_solmix",
             "geom_solref",
-            # "geom_solimp",
+            "geom_solimp",
             "geom_size",
             "geom_rbound",
             "geom_pos",
@@ -1780,7 +1885,7 @@ class SolverMuJoCo(SolverBase):
         )
 
     def update_joint_dof_properties(self):
-        """Update all joint DOF properties including effort limits, friction, armature, solimplimit, solref, and joint limit ranges in the MuJoCo model."""
+        """Update all joint DOF properties including effort limits, friction, armature, solimplimit, solref, passive stiffness and damping, and joint limit ranges in the MuJoCo model."""
         if self.model.joint_dof_count == 0:
             return
 
@@ -1807,11 +1912,14 @@ class SolverMuJoCo(SolverBase):
                 device=self.model.device,
             )
 
-        # Update DOF properties (armature, friction, and solimplimit) with proper DOF mapping
+        # Update DOF properties (armature, friction, passive stiffness and damping, and solimplimit) with proper DOF mapping
         mujoco_attrs = getattr(self.model, "mujoco", None)
         solimplimit = getattr(mujoco_attrs, "solimplimit", None) if mujoco_attrs is not None else None
+        dof_solref = getattr(mujoco_attrs, "solreffriction", None) if mujoco_attrs is not None else None
+        dof_solimp = getattr(mujoco_attrs, "solimpfriction", None) if mujoco_attrs is not None else None
         joint_dof_limit_margin = getattr(mujoco_attrs, "limit_margin", None) if mujoco_attrs is not None else None
-
+        joint_stiffness = getattr(mujoco_attrs, "dof_passive_stiffness", None) if mujoco_attrs is not None else None
+        joint_damping = getattr(mujoco_attrs, "dof_passive_damping", None) if mujoco_attrs is not None else None
         wp.launch(
             update_joint_dof_properties_kernel,
             dim=self.model.joint_count,
@@ -1827,6 +1935,10 @@ class SolverMuJoCo(SolverBase):
                 self.model.joint_limit_lower,
                 self.model.joint_limit_upper,
                 solimplimit,
+                dof_solref,
+                dof_solimp,
+                joint_stiffness,
+                joint_damping,
                 joint_dof_limit_margin,
                 joints_per_world,
             ],
@@ -1834,7 +1946,11 @@ class SolverMuJoCo(SolverBase):
                 self.mjw_model.dof_armature,
                 self.mjw_model.dof_frictionloss,
                 self.mjw_model.jnt_solimp,
+                self.mjw_model.dof_solref,
+                self.mjw_model.dof_solimp,
                 self.mjw_model.jnt_solref,
+                self.mjw_model.jnt_stiffness,
+                self.mjw_model.dof_damping,
                 self.mjw_model.jnt_margin,
                 self.mjw_model.jnt_range,
             ],
@@ -1886,6 +2002,10 @@ class SolverMuJoCo(SolverBase):
 
         num_worlds = self.model.num_worlds
 
+        # Get custom attribute for geom_solimp
+        mujoco_attrs = getattr(self.model, "mujoco", None)
+        shape_geom_solimp = getattr(mujoco_attrs, "geom_solimp", None) if mujoco_attrs is not None else None
+
         wp.launch(
             update_geom_properties_kernel,
             dim=(num_worlds, num_geoms),
@@ -1902,8 +2022,9 @@ class SolverMuJoCo(SolverBase):
                 self.mjw_model.geom_dataid,
                 self.mjw_model.mesh_pos,
                 self.mjw_model.mesh_quat,
-                self.model.rigid_contact_torsional_friction,
-                self.model.rigid_contact_rolling_friction,
+                self.model.shape_material_torsional_friction,
+                self.model.shape_material_rolling_friction,
+                shape_geom_solimp,
             ],
             outputs=[
                 self.mjw_model.geom_rbound,
@@ -1912,6 +2033,7 @@ class SolverMuJoCo(SolverBase):
                 self.mjw_model.geom_size,
                 self.mjw_model.geom_pos,
                 self.mjw_model.geom_quat,
+                self.mjw_model.geom_solimp,
             ],
             device=self.model.device,
         )

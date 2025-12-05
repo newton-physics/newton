@@ -23,12 +23,12 @@
 #
 ###########################################################################
 
-import numpy as np
 import warp as wp
-from pxr import Usd, UsdGeom
+from pxr import Usd
 
 import newton
 import newton.examples
+import newton.usd
 
 
 class Example:
@@ -46,10 +46,11 @@ class Example:
         self.viewer = viewer
 
         usd_stage = Usd.Stage.Open(newton.examples.get_asset("curvedSurface.usd"))
-        usd_geom = UsdGeom.Mesh(usd_stage.GetPrimAtPath("/root/cloth"))
+        usd_prim = usd_stage.GetPrimAtPath("/root/cloth")
 
-        mesh_points = np.array(usd_geom.GetPointsAttr().Get())
-        mesh_indices = np.array(usd_geom.GetFaceVertexIndicesAttr().Get())
+        cloth_mesh = newton.usd.get_mesh(usd_prim)
+        mesh_points = cloth_mesh.vertices
+        mesh_indices = cloth_mesh.indices
 
         self.input_scale_factor = 1.0
         vertices = [wp.vec3(v) * self.input_scale_factor for v in mesh_points]
