@@ -64,7 +64,7 @@ def animate_franka(
     for i in range(num_linear_dofs + num_angular_dofs):
         joint_q[q_start + i] = joint_limit_lower[qd_start + i] + (
             joint_limit_upper[qd_start + i] - joint_limit_lower[qd_start + i]
-        ) * wp.sin(time + wp.randf(rng))
+        ) * ((wp.sin(time + wp.randf(rng)) + 1.0) * 0.5)
 
 
 class Example:
