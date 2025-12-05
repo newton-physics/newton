@@ -201,6 +201,15 @@ def parse_mjcf(
                 attrib[key] = value
         return attrib
 
+    def resolve_defaults(class_name):
+        if class_name in class_children:
+            for child_name in class_children[class_name]:
+                if class_name in class_defaults and child_name in class_defaults:
+                    class_defaults[child_name] = merge_attrib(class_defaults[class_name], class_defaults[child_name])
+                resolve_defaults(child_name)
+
+    resolve_defaults("__all__")
+
     axis_xform = wp.transform(wp.vec3(0.0), quat_between_axes(up_axis, builder.up_axis))
     xform = xform * axis_xform
 
