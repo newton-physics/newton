@@ -570,11 +570,32 @@ def ray_mesh(
 
 
 @wp.func
+def scale_mat(scale: wp.vec3f) -> wp.mat33f:
+    return wp.mat33f(scale[0], 0.0, 0.0, 0.0, scale[1], 0.0, 0.0, 0.0, scale[2])
+
+
+@wp.func
+def inv_cale_mat(scale: wp.vec3f) -> wp.mat33f:
+    return wp.mat33f(
+        1.0 / scale[0] if scale[0] != 0 else 0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0 / scale[1] if scale[1] != 0 else 0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0 / scale[2] if scale[2] != 0 else 0.0,
+    )
+
+
+@wp.func
 def ray_mesh_with_bvh(
     mesh_bvh_ids: wp.array(dtype=wp.uint64),
     mesh_geom_id: wp.int32,
     pos: wp.vec3f,
     mat: wp.mat33f,
+    size: wp.vec3f,
     ray_origin_world: wp.vec3f,
     ray_direction_world: wp.vec3f,
     max_t: wp.float32,
@@ -583,7 +604,9 @@ def ray_mesh_with_bvh(
 
     Requires wp.Mesh be constructed and their ids to be passed"""
 
-    ray_origin_local, ray_direction_local = map_ray_to_local(pos, mat, ray_origin_world, ray_direction_world)
+    ray_origin_local, ray_direction_local = map_ray_to_local(
+        pos, inv_cale_mat(size) @ mat, ray_origin_world, ray_direction_world
+    )
     query = wp.mesh_query_ray(mesh_bvh_ids[mesh_geom_id], ray_origin_local, ray_direction_local, max_t)
 
     if query.result and wp.dot(ray_direction_local, query.normal) < 0.0:  # Backface culling in local space

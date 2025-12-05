@@ -122,6 +122,7 @@ class Example:
                 builder.add_shape_mesh(
                     builder.add_body(xform=wp.transform(p=wp.vec3(0.0, 4.0, 0.0), q=wp.quat(0.5, 0.5, 0.5, 0.5))),
                     mesh=bunny_mesh,
+                    scale=(0.5, 0.5, 0.5),
                 )
             builder.add_builder(robot_builder)
             builder.end_world()
