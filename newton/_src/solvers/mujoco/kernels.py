@@ -21,6 +21,7 @@ from typing import Any
 
 import warp as wp
 
+from ...core.types import vec5
 from ...sim import JointType
 
 # Custom vector types
