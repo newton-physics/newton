@@ -54,9 +54,6 @@ _SMALL_LENGTH_EPS = wp.constant(1.0e-9)
 _USE_SMALL_ANGLE_APPROX = wp.constant(True)
 """If True use first-order small-angle rotation approximation; if False use closed-form rotation update"""
 
-_USE_ANALYTICAL_KAPPA_DOT = wp.constant(True)
-"""If True compute kappa_dot (curvature rate) analytically from angular velocities; else use finite differences"""
-
 _DAHL_KAPPADOT_DEADBAND = wp.constant(1.0e-6)
 """Deadband threshold for hysteresis direction selection"""
 
@@ -272,7 +269,7 @@ def evaluate_cable_bend_force_hessian_avbd(
     is_parent: bool,
     k_eff: float,
     sigma0: wp.vec3,  # Dahl friction initial stress
-    C_fric: wp.vec3,  # Dahl friction rate coefficient
+    C_fric: wp.vec3,  # Dahl friction stiffness d(sigma)/d(kappa)
     damping: float,  # Rayleigh damping coefficient
     dt: float,
 ):
@@ -281,10 +278,11 @@ def evaluate_cable_bend_force_hessian_avbd(
 
     Summary:
       - Curvature kappa from rest-aligned relative rotation
-      - Generalized local force: f_kappa = k_eff * kappa + sigma0
-      - Local Hessian (rate form): H_local = diag(k_eff + C_fric/dt)
+      - Generalized local force: f_kappa = k_eff * kappa + sigma0 + f_damp
+      - Local Hessian in kappa-space: H_local = diag(k_eff + C_fric + k_damp),
+        where C_fric is the Dahl stiffness d(sigma)/d(kappa)
       - Map once: J = R_wp * (R_align * Jr^{-T}), tau = J * f_kappa, H_aa = J * H_local * J^T
-      - Optional Rayleigh damping in kappa-space via (damping/dt) * k_eff on the diagonal
+      - Rayleigh damping in kappa-space contributes k_damp = (damping/dt) * k_eff on the diagonal
 
     Frames:
       - All outputs (tau_world, H_aa) are in world frame.
@@ -318,9 +316,9 @@ def evaluate_cable_bend_force_hessian_avbd(
 
     # Defer mapping to world torque until all local forces are accumulated, then map once
     # Base Hessian in kappa-space (component-wise Dahl)
-    k_fric_0 = C_fric[0] * inv_dt
-    k_fric_1 = C_fric[1] * inv_dt
-    k_fric_2 = C_fric[2] * inv_dt
+    k_fric_0 = C_fric[0]
+    k_fric_1 = C_fric[1]
+    k_fric_2 = C_fric[2]
     k0 = k_eff + k_fric_0
     k1 = k_eff + k_fric_1
     k2 = k_eff + k_fric_2
@@ -524,7 +522,7 @@ def evaluate_rigid_contact_from_collision(
     body_a_index: int,
     body_b_index: int,
     body_q: wp.array(dtype=wp.transform),
-    body_q_prev: wp.array(dtype=wp.transform),
+    body_q_anchor: wp.array(dtype=wp.transform),
     body_com: wp.array(dtype=wp.vec3),
     contact_point_a_local: wp.vec3,  # Local contact point on body A
     contact_point_b_local: wp.vec3,  # Local contact point on body B
@@ -576,7 +574,7 @@ def evaluate_rigid_contact_from_collision(
         body_a_com_local = wp.vec3(0.0)
     else:
         X_wa = body_q[body_a_index]
-        X_wa_prev = body_q_prev[body_a_index]
+        X_wa_prev = body_q_anchor[body_a_index]
         body_a_com_local = body_com[body_a_index]
 
     if body_b_index < 0:
@@ -585,7 +583,7 @@ def evaluate_rigid_contact_from_collision(
         body_b_com_local = wp.vec3(0.0)
     else:
         X_wb = body_q[body_b_index]
-        X_wb_prev = body_q_prev[body_b_index]
+        X_wb_prev = body_q_anchor[body_b_index]
         body_b_com_local = body_com[body_b_index]
 
     # Centers of mass in world coordinates
@@ -682,7 +680,7 @@ def evaluate_body_particle_contact(
     shape_material_mu: wp.array(dtype=float),
     shape_body: wp.array(dtype=int),
     body_q: wp.array(dtype=wp.transform),
-    body_q_prev: wp.array(dtype=wp.transform),
+    body_q_anchor: wp.array(dtype=wp.transform),
     body_qd: wp.array(dtype=wp.spatial_vector),
     body_com: wp.array(dtype=wp.vec3),
     contact_shape: wp.array(dtype=int),
@@ -760,12 +758,12 @@ def evaluate_body_particle_contact(
             body_contact_force = body_contact_force - damping_hessian * dx
 
         # body velocity
-        if body_q_prev:
-            # if body_q_prev is available, compute velocity using finite difference method
+        if body_q_anchor:
+            # if body_q_anchor is available, compute velocity using finite difference method
             # this is more accurate for simulating static friction
             X_wb_prev = wp.transform_identity()
             if body_index >= 0:
-                X_wb_prev = body_q_prev[body_index]
+                X_wb_prev = body_q_anchor[body_index]
             bx_prev = wp.transform_point(X_wb_prev, contact_body_pos[contact_index])
             bv = (bx - bx_prev) / dt + wp.transform_vector(X_wb, contact_body_vel[contact_index])
 
@@ -848,7 +846,7 @@ def evaluate_joint_force_hessian(
     body_index: int,
     joint_index: int,
     body_q: wp.array(dtype=wp.transform),
-    body_q_prev: wp.array(dtype=wp.transform),
+    body_q_anchor: wp.array(dtype=wp.transform),
     body_q_rest: wp.array(dtype=wp.transform),
     body_com: wp.array(dtype=wp.vec3),
     joint_type: wp.array(dtype=int),
@@ -882,8 +880,8 @@ def evaluate_joint_force_hessian(
 
     parent_pose = body_q[parent_index]
     child_pose = body_q[child_index]
-    parent_pose_prev = body_q_prev[parent_index]
-    child_pose_prev = body_q_prev[child_index]
+    parent_pose_prev = body_q_anchor[parent_index]
+    child_pose_prev = body_q_anchor[child_index]
     parent_pose_rest = body_q_rest[parent_index]
     child_pose_rest = body_q_rest[child_index]
     parent_com = body_com[parent_index]
@@ -1020,57 +1018,60 @@ def fill_adjacent_joints(
 def forward_step_rigid_bodies(
     # Inputs
     dt: float,
+    update_step_history: bool,
     gravity: wp.array(dtype=wp.vec3),
     body_f: wp.array(dtype=wp.spatial_vector),
     body_com: wp.array(dtype=wp.vec3),
     body_inertia: wp.array(dtype=wp.mat33),
     body_inv_mass: wp.array(dtype=float),
     body_inv_inertia: wp.array(dtype=wp.mat33),
-    # Input/output
-    body_q: wp.array(dtype=wp.transform),
-    body_qd: wp.array(dtype=wp.spatial_vector),
-    # Outputs
-    body_q_prev: wp.array(dtype=wp.transform),
+    # Input
+    body_q_in: wp.array(dtype=wp.transform),  # state_in
+    body_qd_in: wp.array(dtype=wp.spatial_vector),  # state_in
+    # Output
+    body_q_out: wp.array(dtype=wp.transform),  # state_out
+    body_qd_out: wp.array(dtype=wp.spatial_vector),  # state_out
+    body_q_anchor: wp.array(dtype=wp.transform),  # frame start anchor
     body_inertia_q: wp.array(dtype=wp.transform),
 ):
     """
     Forward integration step for rigid bodies in rigid VBD solver.
 
-    Integrates rigid body motion using semi-implicit Euler integration.
-    Stores previous transforms for velocity computation and sets inertial targets
-    for the VBD-style solve. Updates both positions and velocities for consistent
-    Dahl friction computation. All outputs are in world frame. No angular damping
-    is applied (consistent with particle VBD).
-
     Args:
         dt: Time step
+        update_step_history: If True, updates body_q_anchor (damping anchor) with current position.
         gravity: Gravity vector array (world frame)
         body_f: External forces on bodies (spatial wrenches)
         body_com: Center of mass offsets (local body frame)
         body_inertia: Inertia tensors (local body frame)
         body_inv_mass: Inverse masses (0 for kinematic bodies)
         body_inv_inertia: Inverse inertia tensors (local body frame)
-        body_q: Current body transforms (input/output, predicted state)
-        body_qd: Current body velocities (input/output, predicted state)
-        body_q_prev: Previous body transforms (output, for velocity computation)
+        body_q_in: Current body transforms (input, start of step)
+        body_qd_in: Current body velocities (input, start of step)
+        body_q_out: Predicted body transforms (output, end of step / predictor)
+        body_qd_out: Predicted body velocities (output)
+        body_q_anchor: Previous body transforms (output, updated only if update_step_history is True)
         body_inertia_q: Inertial body transforms (output, VBD solve target)
     """
     tid = wp.tid()
 
     # Read current transform
-    q_current = body_q[tid]
+    q_current = body_q_in[tid]
 
-    # Store previous transform for velocity computation
-    body_q_prev[tid] = q_current
+    # Update history buffer if this is the start of a frame
+    if update_step_history:
+        body_q_anchor[tid] = q_current
 
     # Early exit for kinematic bodies (inv_mass == 0)
     inv_m = body_inv_mass[tid]
     if inv_m == 0.0:
         body_inertia_q[tid] = q_current
+        body_q_out[tid] = q_current
+        body_qd_out[tid] = body_qd_in[tid]
         return
 
     # Read body state (only for dynamic bodies)
-    qd_current = body_qd[tid]
+    qd_current = body_qd_in[tid]
     f_current = body_f[tid]
     com_local = body_com[tid]
     I_local = body_inertia[tid]
@@ -1090,10 +1091,9 @@ def forward_step_rigid_bodies(
         dt,
     )
 
-    # Update current transform, velocity, and set inertial target
-    body_q[tid] = q_new
-    if _USE_ANALYTICAL_KAPPA_DOT:
-        body_qd[tid] = qd_new  # Needed for analytic kappa_dot at beginning-of-step
+    # Update output transform, velocity, and set inertial target
+    body_q_out[tid] = q_new
+    body_qd_out[tid] = qd_new
     body_inertia_q[tid] = q_new
 
 
@@ -1313,7 +1313,6 @@ def compute_cable_dahl_parameters(
     joint_qd_start: wp.array(dtype=int),
     joint_target_ke: wp.array(dtype=float),
     body_q: wp.array(dtype=wp.transform),
-    body_qd: wp.array(dtype=wp.spatial_vector),
     body_q_rest: wp.array(dtype=wp.transform),
     body_com: wp.array(dtype=wp.vec3),
     joint_sigma_prev: wp.array(dtype=wp.vec3),
@@ -1321,18 +1320,17 @@ def compute_cable_dahl_parameters(
     joint_dkappa_prev: wp.array(dtype=wp.vec3),
     joint_eps_max: wp.array(dtype=float),
     joint_tau: wp.array(dtype=float),
-    dt: float,
     # Outputs
     joint_sigma_start: wp.array(dtype=wp.vec3),
     joint_C_fric: wp.array(dtype=wp.vec3),
 ):
     """
-    Compute Dahl hysteresis parameters for cable bending.
+    Compute Dahl hysteresis parameters (sigma0, C_fric) for cable bending,
+    given the current curvature state and the stored previous Dahl state.
 
-    This kernel runs once per timestep before solver iterations using the
-    beginning-of-step state (predicted by forward integration, before inner VBD iterations).
-    The computed parameters (sigma0, C_fric) are frozen and remain constant during all
-    VBD iterations. This ensures path-consistency of the friction model.
+    The outputs are:
+      - sigma0: linearized friction stress at the start of the step (per component)
+      - C_fric: tangent stiffness d(sigma)/d(kappa) (per component)
     """
     j = wp.tid()
 
@@ -1368,20 +1366,8 @@ def compute_cable_dahl_parameters(
 
     # Read previous state (from last converged timestep)
     kappa_prev = joint_kappa_prev[j]
-    kappa_dot_prev = joint_dkappa_prev[j]
+    d_kappa_prev = joint_dkappa_prev[j]
     sigma_prev = joint_sigma_prev[j]
-
-    # Compute curvature rate vector
-    if _USE_ANALYTICAL_KAPPA_DOT:
-        qd_parent = body_qd[parent]
-        qd_child = body_qd[child]
-        omega_p_world = wp.spatial_bottom(qd_parent)
-        omega_c_world = wp.spatial_bottom(qd_child)
-        kappa_dot_now = compute_kappa_dot_analytic(
-            q_wp, q_wc, q_wp_rest, q_wc_rest, omega_p_world, omega_c_world, kappa_now
-        )
-    else:
-        kappa_dot_now = (kappa_now - kappa_prev) / dt
 
     # Read per-joint Dahl parameters (isotropic)
     eps_max = joint_eps_max[j]
@@ -1416,25 +1402,30 @@ def compute_cable_dahl_parameters(
     for axis in range(3):
         kappa_i = kappa_now[axis]
         kappa_i_prev = kappa_prev[axis]
-        kappa_dot_i = kappa_dot_now[axis]
-        kappa_dot_i_prev = kappa_dot_prev[axis]
         sigma_i_prev = sigma_prev[axis]
+
+        # Geometric curvature change
         d_kappa_i = kappa_i - kappa_i_prev
+
+        # Direction flag based primarily on geometric change, with stored Delta-kappa fallback
         s_i = 1.0
-        if kappa_dot_i > _DAHL_KAPPADOT_DEADBAND:
+        if d_kappa_i > _DAHL_KAPPADOT_DEADBAND:
             s_i = 1.0
-        elif kappa_dot_i < -_DAHL_KAPPADOT_DEADBAND:
+        elif d_kappa_i < -_DAHL_KAPPADOT_DEADBAND:
             s_i = -1.0
         else:
-            s_i = 1.0 if kappa_dot_i_prev >= 0.0 else -1.0
+            # Within deadband: maintain previous direction from stored Delta kappa
+            s_i = 1.0 if d_kappa_prev[axis] >= 0.0 else -1.0
         exp_term = wp.exp(-s_i * d_kappa_i / tau)
         sigma0_i = s_i * sigma_max * (1.0 - exp_term) + sigma_i_prev * exp_term
         sigma0_i = wp.clamp(sigma0_i, -sigma_max, sigma_max)
 
         numerator = sigma_max - s_i * sigma0_i
-        denominator = tau + dt * wp.abs(kappa_dot_i)
+        # Use geometric curvature change for the length scale
+        denominator = tau + wp.abs(d_kappa_i)
 
-        C_fric_i = wp.max(dt * (numerator / denominator), 0.0)
+        # Store pure stiffness K = numerator / (tau + |d_kappa|)
+        C_fric_i = wp.max(numerator / denominator, 0.0)
         sigma_out[axis] = sigma0_i
         C_fric_out[axis] = C_fric_i
 
@@ -1447,9 +1438,9 @@ def compute_cable_dahl_parameters(
 # -----------------------------
 @wp.kernel
 def accumulate_body_body_contacts_per_body(
-    dt: float,
+    dt_damping: float,
     color_group: wp.array(dtype=wp.int32),
-    body_q_prev: wp.array(dtype=wp.transform),
+    body_q_anchor: wp.array(dtype=wp.transform),
     body_q: wp.array(dtype=wp.transform),
     body_com: wp.array(dtype=wp.vec3),
     body_inv_mass: wp.array(dtype=float),
@@ -1492,6 +1483,12 @@ def accumulate_body_body_contacts_per_body(
     num_contacts = body_contact_counts[body_id]
     if num_contacts > body_contact_buffer_pre_alloc:
         num_contacts = body_contact_buffer_pre_alloc
+
+    force_acc = wp.vec3(0.0)
+    torque_acc = wp.vec3(0.0)
+    h_ll_acc = wp.mat33(0.0)
+    h_al_acc = wp.mat33(0.0)
+    h_aa_acc = wp.mat33(0.0)
 
     i = thread_id_within_body
     while i < num_contacts:
@@ -1540,7 +1537,7 @@ def accumulate_body_body_contacts_per_body(
             b0,
             b1,
             body_q,
-            body_q_prev,
+            body_q_anchor,
             body_com,
             cp0_local,
             cp1_local,
@@ -1550,35 +1547,41 @@ def accumulate_body_body_contacts_per_body(
             contact_kd,
             contact_mu,
             friction_epsilon,
-            dt,
+            dt_damping,
         )
 
         if body_id == b0:
-            wp.atomic_add(body_forces, body_id, force_0)
-            wp.atomic_add(body_torques, body_id, torque_0)
-            wp.atomic_add(body_hessian_ll, body_id, h_ll_0)
-            wp.atomic_add(body_hessian_al, body_id, h_al_0)
-            wp.atomic_add(body_hessian_aa, body_id, h_aa_0)
+            force_acc += force_0
+            torque_acc += torque_0
+            h_ll_acc += h_ll_0
+            h_al_acc += h_al_0
+            h_aa_acc += h_aa_0
         else:
-            wp.atomic_add(body_forces, body_id, force_1)
-            wp.atomic_add(body_torques, body_id, torque_1)
-            wp.atomic_add(body_hessian_ll, body_id, h_ll_1)
-            wp.atomic_add(body_hessian_al, body_id, h_al_1)
-            wp.atomic_add(body_hessian_aa, body_id, h_aa_1)
+            force_acc += force_1
+            torque_acc += torque_1
+            h_ll_acc += h_ll_1
+            h_al_acc += h_al_1
+            h_aa_acc += h_aa_1
 
         i += _NUM_CONTACT_THREADS_PER_BODY
+
+    wp.atomic_add(body_forces, body_id, force_acc)
+    wp.atomic_add(body_torques, body_id, torque_acc)
+    wp.atomic_add(body_hessian_ll, body_id, h_ll_acc)
+    wp.atomic_add(body_hessian_al, body_id, h_al_acc)
+    wp.atomic_add(body_hessian_aa, body_id, h_aa_acc)
 
 
 @wp.kernel
 def accumulate_body_particle_contacts_per_body(
-    dt: float,
+    dt_damping: float,
     color_group: wp.array(dtype=wp.int32),
     # Particle state
     particle_q: wp.array(dtype=wp.vec3),
-    particle_q_prev: wp.array(dtype=wp.vec3),
+    particle_q_anchor: wp.array(dtype=wp.vec3),
     particle_radius: wp.array(dtype=float),
     # Rigid body state
-    body_q_prev: wp.array(dtype=wp.transform),
+    body_q_anchor: wp.array(dtype=wp.transform),
     body_q: wp.array(dtype=wp.transform),
     body_qd: wp.array(dtype=wp.spatial_vector),
     body_com: wp.array(dtype=wp.vec3),
@@ -1671,7 +1674,7 @@ def accumulate_body_particle_contacts_per_body(
             continue
 
         # Compute contact force and Hessian on particle using AVBD adaptive penalty
-        particle_prev_pos = particle_q_prev[particle_idx]
+        particle_prev_pos = particle_q_anchor[particle_idx]
 
         # Read per-contact AVBD penalty and material properties
         contact_ke = body_particle_contact_penalty_k[contact_idx]
@@ -1691,14 +1694,14 @@ def accumulate_body_particle_contacts_per_body(
             shape_material_mu,
             shape_body,
             body_q,
-            body_q_prev,
+            body_q_anchor,
             body_qd,
             body_com,
             body_particle_contact_shape,
             body_particle_contact_body_pos,
             body_particle_contact_body_vel,
             body_particle_contact_normal,
-            dt,
+            dt_damping,
         )
 
         # Reaction on the body (Newton's 3rd law)
@@ -1732,9 +1735,9 @@ def accumulate_body_particle_contacts_per_body(
 @wp.kernel
 def solve_rigid_body(
     dt: float,
+    dt_damping: float,
     body_ids_in_color: wp.array(dtype=wp.int32),
-    body_q: wp.array(dtype=wp.transform),
-    body_q_prev: wp.array(dtype=wp.transform),
+    body_q_anchor: wp.array(dtype=wp.transform),
     body_q_rest: wp.array(dtype=wp.transform),
     body_mass: wp.array(dtype=float),
     body_inv_mass: wp.array(dtype=float),
@@ -1760,8 +1763,7 @@ def solve_rigid_body(
     external_hessian_ll: wp.array(dtype=wp.mat33),  # Linear-linear block from rigid contacts
     external_hessian_al: wp.array(dtype=wp.mat33),  # Angular-linear coupling block from rigid contacts
     external_hessian_aa: wp.array(dtype=wp.mat33),  # Angular-angular block from rigid contacts
-    # Output
-    body_q_new: wp.array(dtype=wp.transform),
+    body_q: wp.array(dtype=wp.transform),  # input/output (current body transforms)
 ):
     """
     AVBD solve step for rigid bodies using block Cholesky decomposition.
@@ -1778,25 +1780,27 @@ def solve_rigid_body(
       5. Update pose: rotation from angular increment, position from linear increment
 
     Args:
-        dt: Time step
-        body_ids_in_color: Body indices in current color group (for parallel coloring)
-        body_q: Current body transforms (input/output via body_q_new)
-        body_q_prev: Previous body transforms (for damping)
-        body_q_rest: Rest transforms (for joint targets)
-        body_mass: Body masses
-        body_inv_mass: Inverse masses (0 for kinematic bodies)
-        body_inertia: Inertia tensors (local body frame)
-        body_inertia_q: Inertial target transforms (from forward integration)
-        body_com: Center of mass offsets (local body frame)
-        adjacency: Body-joint adjacency (CSR format)
-        joint_*: Joint configuration arrays
-        joint_penalty_k: AVBD per-DOF penalty stiffness
-        external_forces: External linear forces from rigid contacts
-        external_torques: External angular torques from rigid contacts
-        external_hessian_ll: Linear-linear Hessian block (3x3)
-        external_hessian_al: Angular-linear coupling Hessian block (3x3)
-        external_hessian_aa: Angular-angular Hessian block (3x3)
-        body_q_new: Output updated body transforms
+        dt: Time step.
+        dt_damping: Long-range damping/history time window used for joint damping.
+        body_ids_in_color: Body indices in current color group (for parallel coloring).
+        body_q_anchor: Previous body transforms (damping anchor).
+        body_q_rest: Rest transforms (for joint targets).
+        body_mass: Body masses.
+        body_inv_mass: Inverse masses (0 for kinematic bodies).
+        body_inertia: Inertia tensors (local body frame).
+        body_inertia_q: Inertial target transforms (from forward integration).
+        body_com: Center of mass offsets (local body frame).
+        adjacency: Body-joint adjacency (CSR format).
+        joint_*: Joint configuration arrays.
+        joint_penalty_k: AVBD per-DOF penalty stiffness.
+        joint_sigma_start: Dahl hysteresis state at start of step.
+        joint_C_fric: Dahl friction configuration per joint.
+        external_forces: External linear forces from rigid contacts.
+        external_torques: External angular torques from rigid contacts.
+        external_hessian_ll: Linear-linear Hessian block (3x3) from rigid contacts.
+        external_hessian_al: Angular-linear coupling Hessian block (3x3) from rigid contacts.
+        external_hessian_aa: Angular-angular Hessian block (3x3) from rigid contacts.
+        body_q: Current body transforms (input/output, updated in-place).
 
     Note:
       - All forces, torques, and Hessian blocks are expressed in the world frame.
@@ -1808,7 +1812,7 @@ def solve_rigid_body(
 
     # Early exit for kinematic bodies
     if body_inv_mass[body_index] == 0.0:
-        body_q_new[body_index] = q_current
+        body_q[body_index] = q_current
         return
 
     # Inertial force and Hessian
@@ -1889,7 +1893,7 @@ def solve_rigid_body(
             body_index,
             joint_idx,
             body_q,
-            body_q_prev,
+            body_q_anchor,
             body_q_rest,
             body_com,
             joint_type,
@@ -1902,7 +1906,7 @@ def solve_rigid_body(
             joint_penalty_k,
             joint_sigma_start,
             joint_C_fric,
-            dt,
+            dt_damping,
         )
 
         f_force = f_force + joint_force
@@ -1974,7 +1978,7 @@ def solve_rigid_body(
     com_new = com_current + x_inc
     pos_new = com_new - wp.quat_rotate(rot_new, body_com_local)
 
-    body_q_new[body_index] = wp.transform(pos_new, rot_new)
+    body_q[body_index] = wp.transform(pos_new, rot_new)
 
 
 @wp.kernel
@@ -2248,8 +2252,8 @@ def update_duals_body_particle_contacts(
 @wp.kernel
 def update_body_velocity(
     dt: float,
-    body_q: wp.array(dtype=wp.transform),
-    body_q_prev: wp.array(dtype=wp.transform),
+    body_q_anchor: wp.array(dtype=wp.transform),
+    body_q_end: wp.array(dtype=wp.transform),
     body_com: wp.array(dtype=wp.vec3),
     body_qd: wp.array(dtype=wp.spatial_vector),
 ):
@@ -2263,16 +2267,16 @@ def update_body_velocity(
 
     Args:
         dt: Time step
-        body_q: Current body transforms (world)
-        body_q_prev: Previous body transforms (world)
+        body_q_anchor: Body transforms at start of step (world)
+        body_q_end: Body transforms at end of step (world)
         body_com: Center of mass offsets (local frame)
         body_qd: Output body velocities (spatial vectors, world frame)
     """
     tid = wp.tid()
 
     # Read transforms
-    pose = body_q[tid]
-    pose_prev = body_q_prev[tid]
+    pose = body_q_end[tid]
+    pose_prev = body_q_anchor[tid]
 
     x = wp.transform_get_translation(pose)
     x_prev = wp.transform_get_translation(pose_prev)
@@ -2310,16 +2314,15 @@ def update_cable_dahl_state(
     # Dahl model parameters (PER-JOINT arrays, isotropic)
     joint_eps_max: wp.array(dtype=float),
     joint_tau: wp.array(dtype=float),
-    dt: float,
     # Dahl state (inputs - from previous timestep, outputs - to next timestep) - component-wise (vec3)
     joint_sigma_prev: wp.array(dtype=wp.vec3),  # input/output
     joint_kappa_prev: wp.array(dtype=wp.vec3),  # input/output
-    joint_dkappa_prev: wp.array(dtype=wp.vec3),  # input/output
+    joint_dkappa_prev: wp.array(dtype=wp.vec3),  # input/output (stores Delta kappa)
 ):
     """
-    Post-iteration kernel: Update Dahl hysteresis state after solver convergence (component-wise).
+    Post-iteration kernel: update Dahl hysteresis state after solver convergence (component-wise).
 
-    Stores final curvature, friction stress, and curvature rate for the next timestep. Each
+    Stores final curvature, friction stress, and curvature Delta kappa for the next step. Each
     curvature component (x, y, z) is updated independently to preserve path-dependent memory.
 
     Args:
@@ -2333,10 +2336,9 @@ def update_cable_dahl_state(
         body_com: Body COM in local frame (used to compute segment length for Cosserat discretization)
         joint_sigma_prev: Friction stress state (read old, write new), wp.vec3 per joint
         joint_kappa_prev: Curvature state (read old, write new), wp.vec3 per joint
-        joint_dkappa_prev: Curvature rate state (write new), wp.vec3 per joint
+        joint_dkappa_prev: Delta-kappa state (write new), wp.vec3 per joint
         joint_eps_max: Maximum persistent strain [rad] (scalar per joint)
         joint_tau: Memory decay length [rad] (scalar per joint)
-        dt: Time step
     """
     j = wp.tid()
 
@@ -2366,10 +2368,10 @@ def update_cable_dahl_state(
     # Compute final curvature vector at end of timestep
     kappa_final = cable_get_kappa(q_wp, q_wc, q_wp_rest, q_wc_rest)
 
-    # Read previous stored state (vectors)
-    kappa_old = joint_kappa_prev[j]  # Curvature from previous timestep (stored state)
-    kappa_dot_old = joint_dkappa_prev[j]  # Curvature rate from previous timestep (stored state)
-    sigma_old = joint_sigma_prev[j]  # Friction stress from previous timestep (stored state)
+    # Read stored Dahl state (component-wise vectors)
+    kappa_old = joint_kappa_prev[j]  # stored curvature
+    d_kappa_old = joint_dkappa_prev[j]  # stored Delta kappa
+    sigma_old = joint_sigma_prev[j]  # stored friction stress
 
     # Read per-joint Dahl parameters (isotropic)
     eps_max = joint_eps_max[j]  # Maximum persistent strain [rad]
@@ -2401,35 +2403,32 @@ def update_cable_dahl_state(
     if sigma_max <= 0.0 or tau <= 0.0:
         joint_sigma_prev[j] = wp.vec3(0.0)
         joint_kappa_prev[j] = kappa_final
-        joint_dkappa_prev[j] = (kappa_final - kappa_old) / dt
+        joint_dkappa_prev[j] = kappa_final - kappa_old  # store Delta kappa
         return
 
     # Update each component independently (3 separate hysteresis loops)
     sigma_final_out = wp.vec3(0.0)
-    kappa_rate_prev_out = wp.vec3(0.0)
+    d_kappa_out = wp.vec3(0.0)
 
     for axis in range(3):
         # Get component values
         kappa_i_final = kappa_final[axis]
         kappa_i_prev = kappa_old[axis]
-        kappa_dot_i_prev = kappa_dot_old[axis]
+        d_kappa_i_prev = d_kappa_old[axis]
         sigma_i_prev = sigma_old[axis]
 
         # Curvature change for this component
         d_kappa_i = kappa_i_final - kappa_i_prev
 
-        # Curvature rate (finite difference for sign determination)
-        kappa_dot_i = d_kappa_i / dt  # FD is sufficient for sign
-
-        # Direction flag (same logic as pre-iteration kernel)
+        # Direction flag (same logic as pre-iteration kernel), in kappa-space
         s_i = 1.0
-        if kappa_dot_i > _DAHL_KAPPADOT_DEADBAND:
+        if d_kappa_i > _DAHL_KAPPADOT_DEADBAND:
             s_i = 1.0
-        elif kappa_dot_i < -_DAHL_KAPPADOT_DEADBAND:
+        elif d_kappa_i < -_DAHL_KAPPADOT_DEADBAND:
             s_i = -1.0
         else:
             # Within deadband: maintain previous direction
-            s_i = 1.0 if kappa_dot_i_prev >= 0.0 else -1.0
+            s_i = 1.0 if d_kappa_i_prev >= 0.0 else -1.0
 
         # sigma_i_next = s_i*sigma_max * [1 - exp(-s_i*d_kappa_i/tau)] + sigma_i_prev * exp(-s_i*d_kappa_i/tau)
         exp_term = wp.exp(-s_i * d_kappa_i / tau)
@@ -2437,9 +2436,9 @@ def update_cable_dahl_state(
 
         # Store component results
         sigma_final_out[axis] = sigma_i_next
-        kappa_rate_prev_out[axis] = kappa_dot_i
+        d_kappa_out[axis] = d_kappa_i
 
     # Store final vector state for next timestep
     joint_sigma_prev[j] = sigma_final_out
     joint_kappa_prev[j] = kappa_final
-    joint_dkappa_prev[j] = kappa_rate_prev_out
+    joint_dkappa_prev[j] = d_kappa_out

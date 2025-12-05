@@ -123,7 +123,8 @@ class Example:
         self.frame_dt = 1.0 / self.fps
         self.sim_time = 0.0
         self.sim_substeps = 10
-        self.sim_iterations = 5
+        self.sim_iterations = 1
+        self.update_step_interval = 5
         self.sim_dt = self.frame_dt / self.sim_substeps
 
         self.viewer = viewer
@@ -140,7 +141,7 @@ class Example:
         stretch_stiffness = 1.0e6
 
         # Damping sweep (increasing)
-        bend_damping_values = [1.0e-4, 1.0e-3, 1.0e-2, 1.0e-1, 1.0e0]
+        bend_damping_values = [1.0e-3, 1.0e-2, 1.0e-1, 1.0e0]
         self.num_cables = len(bend_damping_values)
 
         # Create builder for the simulation
@@ -195,8 +196,8 @@ class Example:
         # Create array of kinematic body indices
         self.kinematic_bodies = wp.array(kinematic_body_indices, dtype=wp.int32)
 
-        # Add ground plane
-        builder.add_ground_plane()
+        # # Add ground plane
+        # builder.add_ground_plane()
 
         # Color particles and rigid bodies for VBD solver
         builder.color()
@@ -224,15 +225,29 @@ class Example:
             self.graph = None
 
     def simulate(self):
-        for _ in range(self.sim_substeps):
+        # update_step_history = True
+        for substep in range(self.sim_substeps):
             self.state_0.clear_forces()
 
             # Apply forces to the model
             self.viewer.apply_forces(self.state_0)
 
+            # Decide whether to refresh solver history (anchors used for long-range damping)
+            # and recompute contacts on this substep, using a configurable cadence.
+            update_step_history = (substep % self.update_step_interval) == 0
+
             # Collide for contact detection
-            self.contacts = self.model.collide(self.state_0)
-            self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
+            if update_step_history:
+                self.contacts = self.model.collide(self.state_0)
+
+            self.solver.step(
+                self.state_0,
+                self.state_1,
+                self.control,
+                self.contacts,
+                self.sim_dt,
+                update_step_history=update_step_history,
+            )
 
             # Swap states
             self.state_0, self.state_1 = self.state_1, self.state_0

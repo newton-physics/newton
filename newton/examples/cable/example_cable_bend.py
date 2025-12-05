@@ -127,6 +127,7 @@ class Example:
         self.sim_time = 0.0
         self.sim_substeps = 10
         self.sim_iterations = 1
+        self.update_step_interval = 2
         self.sim_dt = self.frame_dt / self.sim_substeps
 
         self.viewer = viewer
@@ -175,7 +176,7 @@ class Example:
                 bend_stiffness=bend_stiffness,
                 bend_damping=1.0e-2,
                 stretch_stiffness=1.0e9,
-                stretch_damping=1.0e-4,
+                stretch_damping=0.0,
                 key=f"cable_{i}",
             )
 
@@ -213,15 +214,28 @@ class Example:
             self.graph = None
 
     def simulate(self):
-        for _ in range(self.sim_substeps):
+        for substep in range(self.sim_substeps):
             self.state_0.clear_forces()
 
             # Apply forces to the model
             self.viewer.apply_forces(self.state_0)
 
+            # Decide whether to refresh solver history (anchors used for long-range damping)
+            # and recompute contacts on this substep, using a configurable cadence.
+            update_step_history = (substep % self.update_step_interval) == 0
+
             # Collide for contact detection
-            self.contacts = self.model.collide(self.state_0)
-            self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
+            if update_step_history:
+                self.contacts = self.model.collide(self.state_0)
+
+            self.solver.step(
+                self.state_0,
+                self.state_1,
+                self.control,
+                self.contacts,
+                self.sim_dt,
+                update_step_history=update_step_history,
+            )
 
             # Swap states
             self.state_0, self.state_1 = self.state_1, self.state_0

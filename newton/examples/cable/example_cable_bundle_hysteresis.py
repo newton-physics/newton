@@ -174,7 +174,8 @@ class Example:
         self.frame_dt = 1.0 / self.fps
         self.sim_time = 0.0
         self.sim_substeps = 10
-        self.sim_iterations = 5
+        self.sim_iterations = 1
+        self.update_step_interval = 10
         self.sim_dt = self.frame_dt / self.sim_substeps
 
         # Cable bundle parameters
@@ -300,9 +301,9 @@ class Example:
             self.model,
             iterations=self.sim_iterations,
             friction_epsilon=0.1,
-            enable_dahl_friction=with_dahl,
-            dahl_eps_max=eps_max,
-            dahl_tau=tau,
+            rigid_enable_dahl_friction=with_dahl,
+            rigid_dahl_eps_max=eps_max,
+            rigid_dahl_tau=tau,
         )
 
         # Initialize states and contacts
@@ -348,7 +349,7 @@ class Example:
 
     def simulate(self):
         """Execute all simulation substeps for one frame."""
-        for _ in range(self.sim_substeps):
+        for substep in range(self.sim_substeps):
             self.state_0.clear_forces()
 
             # Apply forces to the model
@@ -374,9 +375,22 @@ class Example:
                 device=self.solver.device,
             )
 
+            # Decide whether to refresh solver history (anchors used for long-range damping)
+            # and recompute contacts on this substep, using a configurable cadence.
+            update_step_history = (substep % self.update_step_interval) == 0
+
             # Collide for contact detection
-            self.contacts = self.model.collide(self.state_0)
-            self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
+            if update_step_history:
+                self.contacts = self.model.collide(self.state_0)
+
+            self.solver.step(
+                self.state_0,
+                self.state_1,
+                self.control,
+                self.contacts,
+                self.sim_dt,
+                update_step_history=update_step_history,
+            )
 
             # Swap states
             self.state_0, self.state_1 = self.state_1, self.state_0
