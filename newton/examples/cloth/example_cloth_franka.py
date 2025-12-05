@@ -261,14 +261,14 @@ class Example:
             self.cloth_solver = SolverVBD(
                 self.model,
                 iterations=self.iterations,
+                integrate_with_external_rigid_solver=True,
                 particle_self_contact_radius=self.self_contact_radius,
                 particle_self_contact_margin=self.self_contact_margin,
                 particle_enable_self_contact=True,
                 particle_vertex_contact_buffer_size=32,
                 particle_edge_contact_buffer_size=64,
-                integrate_with_external_rigid_solver=True,
                 particle_collision_detection_interval=-1,
-                k_start_body_contact=self.soft_contact_ke,
+                rigid_contact_k_start=self.soft_contact_ke,
             )
 
         self.viewer.set_model(self.model)

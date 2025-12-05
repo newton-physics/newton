@@ -17,7 +17,7 @@
 # Example Cable Bend Damping
 #
 # Demonstrates the effect of bend damping on cable dynamics.
-# Shows 5 cables side-by-side with increasing damping values (from low to high).
+# Shows 4 cables side-by-side with increasing damping values (from low to high).
 # All cables have identical bend stiffness, differing only in damping coefficients.
 # This illustrates how damping affects settling time, oscillation, and overshoot.
 #
