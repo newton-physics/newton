@@ -282,6 +282,19 @@ class SolverMuJoCo(SolverBase):
                 mjcf_attribute_name="actuatorgravcomp",
             )
         )
+        # Solver options (frequency WORLD for per-world values)
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="impratio",
+                frequency=ModelAttributeFrequency.WORLD,
+                assignment=ModelAttributeAssignment.MODEL,
+                dtype=wp.float32,
+                default=1.0,
+                namespace="mujoco",
+                usd_attribute_name="mjc:option:impratio",
+                mjcf_attribute_name="impratio",
+            )
+        )
 
     def __init__(
         self,
@@ -297,7 +310,7 @@ class SolverMuJoCo(SolverBase):
         solver: int | str = "cg",
         integrator: int | str = "implicitfast",
         cone: int | str = "pyramidal",
-        impratio: float = 1.0,
+        impratio: float | None = None,
         use_mujoco_cpu: bool = False,
         disable_contacts: bool = False,
         default_actuator_gear: float | None = None,
@@ -323,7 +336,7 @@ class SolverMuJoCo(SolverBase):
             solver (int | str): Solver type. Can be "cg" or "newton", or their corresponding MuJoCo integer constants.
             integrator (int | str): Integrator type. Can be "euler", "rk4", or "implicitfast", or their corresponding MuJoCo integer constants.
             cone (int | str): The type of contact friction cone. Can be "pyramidal", "elliptic", or their corresponding MuJoCo integer constants.
-            impratio (float): Frictional-to-normal constraint impedance ratio.
+            impratio (float | None): Frictional-to-normal constraint impedance ratio. If None, uses the value from model custom attribute ``mujoco:impratio`` or MuJoCo's default (1.0).
             use_mujoco_cpu (bool): If True, use the MuJoCo-C CPU backend instead of `mujoco_warp`.
             disable_contacts (bool): If True, disable contact computation in MuJoCo.
             register_collision_groups (bool): If True, register collision groups from the Newton model in MuJoCo.
@@ -368,6 +381,12 @@ class SolverMuJoCo(SolverBase):
 
         self._viewer = None
         """Instance of the MuJoCo viewer for debugging."""
+
+        # Resolve impratio: constructor arg > custom attribute > None (use MuJoCo default)
+        if impratio is None:
+            mujoco_attrs = getattr(model, "mujoco", None)
+            if mujoco_attrs and hasattr(mujoco_attrs, "impratio"):
+                impratio = float(mujoco_attrs.impratio.numpy()[0])
 
         disableflags = 0
         if disable_contacts:
@@ -854,7 +873,7 @@ class SolverMuJoCo(SolverBase):
         integrator: int | str = "implicitfast",
         disableflags: int = 0,
         disable_contacts: bool = False,
-        impratio: float = 1.0,
+        impratio: float | None = None,
         tolerance: float = 1e-6,
         ls_tolerance: float = 0.01,
         cone: int | str = "pyramidal",
@@ -964,7 +983,8 @@ class SolverMuJoCo(SolverBase):
         spec.option.iterations = iterations
         spec.option.ls_iterations = ls_iterations
         spec.option.cone = cone
-        spec.option.impratio = impratio
+        if impratio is not None:
+            spec.option.impratio = impratio
         spec.option.tolerance = tolerance
         spec.option.ls_tolerance = ls_tolerance
         spec.option.jacobian = mujoco.mjtJacobian.mjJAC_AUTO
