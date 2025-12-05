@@ -199,8 +199,8 @@ class Example:
         # Create array of kinematic body indices
         self.kinematic_bodies = wp.array(kinematic_body_indices, dtype=wp.int32)
 
-        # # Add ground plane
-        # builder.add_ground_plane()
+        # Add ground plane
+        builder.add_ground_plane()
 
         # Color particles and rigid bodies for VBD solver
         builder.color()
