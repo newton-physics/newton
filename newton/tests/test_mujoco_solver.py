@@ -21,10 +21,9 @@ import warp as wp
 
 import newton
 from newton import JointType, Mesh
+from newton._src.core.types import vec5
 from newton.solvers import SolverMuJoCo, SolverNotifyFlags
 from newton.tests.unittest_utils import USD_AVAILABLE
-
-vec5 = wp.types.vector(length=5, dtype=wp.float32)
 
 
 class TestMuJoCoSolver(unittest.TestCase):
@@ -2400,8 +2399,6 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
 
     def test_geom_solimp_conversion_and_update(self):
         """Test per-shape geom_solimp conversion to MuJoCo and dynamic updates across multiple worlds."""
-        vec5 = wp.types.vector(length=5, dtype=wp.float32)
-
         # Create a model with custom attributes registered
         num_worlds = 2
         template_builder = newton.ModelBuilder()

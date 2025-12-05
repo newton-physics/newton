@@ -24,7 +24,6 @@ import warp as wp
 from ...sim import JointType
 
 # Custom vector types
-vec5 = wp.types.vector(length=5, dtype=wp.float32)
 vec10 = wp.types.vector(length=10, dtype=wp.float32)
 
 

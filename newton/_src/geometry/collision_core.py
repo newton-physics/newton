@@ -19,6 +19,7 @@ from typing import Any
 
 import warp as wp
 
+from ..core.types import vec5
 from .broad_phase_common import binary_search
 from .collision_convex import create_solve_convex_multi_contact, create_solve_convex_single_contact
 from .contact_data import ContactData
@@ -33,7 +34,6 @@ ENABLE_TILE_BVH_QUERY = True
 
 # Type definitions for multi-contact manifolds
 _mat53f = wp.types.matrix((5, 3), wp.float32)
-_vec5 = wp.types.vector(5, wp.float32)
 
 # Type definitions for single-contact mode
 _vec1 = wp.types.vector(1, wp.float32)
@@ -109,7 +109,7 @@ def project_point_onto_plane(point: wp.vec3, plane_point: wp.vec3, plane_normal:
 def compute_plane_normal_from_contacts(
     points: _mat53f,
     normal: wp.vec3,
-    signed_distances: _vec5,
+    signed_distances: vec5,
     count: int,
 ) -> wp.vec3:
     """
