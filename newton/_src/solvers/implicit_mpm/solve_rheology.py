@@ -31,6 +31,9 @@ _DELASSUS_PROXIMAL_REG = wp.constant(1.0e-9)
 __SLIDING_NEWTON_TOL = wp.constant(1.0e-12)
 """Tolerance for the Newton method to solve for the sliding velocity"""
 
+_INCLUDE_LEFTOVER_STRAIN = wp.constant(False)
+"Whether to include leftover strain (due to not fully-converged implicit solve) in the elastic strain. More accurate, but less stable for stiff materials"
+
 vec6 = wp.types.vector(length=6, dtype=wp.float32)
 
 mat66 = wp.types.matrix(shape=(6, 6), dtype=wp.float32)
@@ -206,6 +209,10 @@ def postprocess_stress_and_strain(
     strain_mat_offsets: wp.array(dtype=int),
     strain_mat_columns: wp.array(dtype=int),
     strain_mat_values: wp.array(dtype=mat13),
+    delassus_diagonal: wp.array(dtype=vec6),
+    delassus_rotation: wp.array(dtype=mat55),
+    unilateral_strain_offset: wp.array(dtype=float),
+    yield_params: wp.array(dtype=YieldParamVec),
     strain_rhs: wp.array(dtype=vec6),
     stress: wp.array(dtype=vec6),
     velocity: wp.array(dtype=wp.vec3),
@@ -232,8 +239,25 @@ def postprocess_stress_and_strain(
         u_i = strain_mat_columns[b]
         world_plastic_strain += _B_op(strain_mat_values[b], velocity[u_i])
 
+    # Make sure that all strain that does not comply with the yield surface is moved
+    # to the elastic strain. That way, if the solver has not fully converged, we track
+    # the correct leastic strain.
+    rot = delassus_rotation[tau_i]
+    diag = delassus_diagonal[tau_i]
+
+    loc_plastic_strain = _world_to_local(world_plastic_strain, rot)
+    loc_stress = wp.cw_mul(_world_to_local(stress[tau_i], rot), diag)
+
+    loc_plastic_strain_new = solve_flow_rule_aniso(
+        diag, loc_plastic_strain - loc_stress, unilateral_strain_offset[tau_i], yield_params[tau_i]
+    )
+    world_plastic_strain_new = _local_to_world(loc_plastic_strain_new, rot)
+
+    if _INCLUDE_LEFTOVER_STRAIN:
+        minus_elastic_strain -= world_plastic_strain - world_plastic_strain_new
+
     elastic_strain[tau_i] = -minus_elastic_strain
-    plastic_strain[tau_i] = world_plastic_strain
+    plastic_strain[tau_i] = world_plastic_strain_new
 
 
 @wp.func
@@ -1004,7 +1028,7 @@ class ArraySquaredNorm:
             num_blocks = (array_length + self.tile_size - 1) // self.tile_size
             partial_sums = (self.partial_sums_a if flip_flop else self.partial_sums_b)[:, :num_blocks]
 
-            self.sum_launch.set_param_at_index(0, data)
+            self.sum_launch.set_param_at_index(0, data[:, :array_length])
             self.sum_launch.set_param_at_index(1, partial_sums)
             self.sum_launch.set_dim((num_blocks, self.tile_size))
             self.sum_launch.launch()
@@ -1245,29 +1269,32 @@ class _DelassusOperator:
             record_cmd=record_cmd,
         )
 
-
-def _postprocess_stress_and_strain(rheology: RheologyData, momentum: MomentumData):
-    # Convert stress back to world space,
-    # and compute final elastic strain
-    wp.launch(
-        kernel=postprocess_stress_and_strain,
-        dim=rheology.strain_mat.nrow,
-        inputs=[
-            rheology.compliance_mat.offsets,
-            rheology.compliance_mat.columns,
-            rheology.compliance_mat.values,
-            rheology.strain_mat.offsets,
-            rheology.strain_mat.columns,
-            rheology.strain_mat.values.view(dtype=mat13),
-            rheology.elastic_strain_delta,
-            rheology.stress,
-            momentum.velocity,
-        ],
-        outputs=[
-            rheology.elastic_strain_delta,
-            rheology.plastic_strain_delta,
-        ],
-    )
+    def postprocess_stress_and_strain(self):
+        # Convert stress back to world space,
+        # and compute final elastic strain
+        wp.launch(
+            kernel=postprocess_stress_and_strain,
+            dim=self.size,
+            inputs=[
+                self.rheology.compliance_mat.offsets,
+                self.rheology.compliance_mat.columns,
+                self.rheology.compliance_mat.values,
+                self.rheology.strain_mat.offsets,
+                self.rheology.strain_mat.columns,
+                self.rheology.strain_mat.values.view(dtype=mat13),
+                self.delassus_diagonal,
+                self.delassus_rotation,
+                self.rheology.unilateral_strain_offset,
+                self.rheology.yield_params,
+                self.rheology.elastic_strain_delta,
+                self.rheology.stress,
+                self.momentum.velocity,
+            ],
+            outputs=[
+                self.rheology.elastic_strain_delta,
+                self.rheology.plastic_strain_delta,
+            ],
+        )
 
 
 class _RheologySolver:
@@ -1911,7 +1938,8 @@ def solve_rheology(
 
         if solver == "cg":
             delassus_operator.apply_stress_delta(rheology.stress, momentum.velocity)
-            _postprocess_stress_and_strain(rheology_solver.rheology, rheology_solver.momentum)
+            delassus_operator.postprocess_stress_and_strain()
+            delassus_operator.release()
             return None
 
         # use only as initial guess for the next solver
@@ -1943,8 +1971,8 @@ def solve_rheology(
     # release temporary storage
     rheology_solver.release()
     contact_solver.release()
-    delassus_operator.release()
 
-    _postprocess_stress_and_strain(rheology_solver.rheology, rheology_solver.momentum)
+    delassus_operator.postprocess_stress_and_strain()
+    delassus_operator.release()
 
     return solve_graph

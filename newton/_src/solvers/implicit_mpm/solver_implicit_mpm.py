@@ -373,7 +373,10 @@ def update_particle_strains(
 
     # elastic strain
     prev_strain = elastic_strain_prev[s.qp_index]
-    strain_delta = elastic_strain_delta(s)  # + skew * dt
+    vel_grad = fem.grad(grid_vel, s)
+    skew = 0.5 * dt * (vel_grad - wp.transpose(vel_grad))
+    strain_delta = elastic_strain_delta(s) + skew
+    # strain_delta = fem.grad(grid_vel, s) * dt
     strain_new = prev_strain + strain_delta @ prev_strain
 
     elastic_parameters_vec = get_elastic_parameters(s.qp_index, material_parameters, particle_Jp)
@@ -384,16 +387,10 @@ def update_particle_strains(
     stress_0 = fem.SymmetricTensorMapper.value_to_dof_3d(stress(s))
     particle_stress_new = fem.SymmetricTensorMapper.dof_to_value_3d(project_stress(stress_0, yield_parameters_vec))
 
-    strain_proj = project_particle_strain(
+    elastic_strain_new = project_particle_strain(
         s.qp_index, strain_new, prev_strain, compliance, poisson, yield_parameters_vec
     )
 
-    # rotation
-    rot = fem.curl(grid_vel, s) * dt
-    q = wp.quat_from_axis_angle(wp.normalize(rot), wp.length(rot))
-    R = wp.quat_to_matrix(q)
-
-    elastic_strain_new = R @ strain_proj
 
     gimp_weight = s.qp_weight * fem.measure(domain, s) / particle_volume[s.qp_index]
     wp.atomic_add(particle_Jp, s.qp_index, gimp_weight * particle_Jp_new)
@@ -1798,7 +1795,7 @@ class SolverImplicitMPM(SolverBase):
         self.grid_padding = config.grid_padding
         self.grid_type = config.grid_type
         self.solver = config.solver
-        self.coloring = self.solver == "gauss-seidel"
+        self.coloring = "gauss-seidel" in self.solver
         self.apic = config.transfer_scheme == "apic"
         self.gimp = config.integration_scheme == "gimp"
         self.max_active_cell_count = config.max_active_cell_count
