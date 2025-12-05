@@ -182,7 +182,7 @@ def flatten_depth_image(
     px = col * width + x
     py = row * height + y
 
-    value = wp.uint8(8)
+    value = wp.uint8(0)
     depth = depth_image[world_id, camera_id, y * width + x]
     if depth > 0:
         denom = wp.max(depth_range[1] - depth_range[0], 1e-6)
