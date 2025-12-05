@@ -293,7 +293,6 @@ class SolverMuJoCo(SolverBase):
                 default=1.0,
                 namespace="mujoco",
                 usd_attribute_name="mjc:option:impratio",
-                mjcf_attribute_name="impratio",
             )
         )
 
