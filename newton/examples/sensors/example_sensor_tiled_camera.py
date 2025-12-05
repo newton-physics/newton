@@ -40,16 +40,16 @@ from newton.sensors import TiledCameraSensor
 from ...viewer import ViewerGL
 
 
-@wp.kernel
+@wp.kernel(enable_backward=False)
 def animate_franka(
     time: wp.float32,
     joint_type: wp.array(dtype=wp.int32),
     joint_dof_dim: wp.array(dtype=wp.int32, ndim=2),
     joint_q_start: wp.array(dtype=wp.int32),
     joint_qd_start: wp.array(dtype=wp.int32),
-    joint_q: wp.array(dtype=wp.float32),
     joint_limit_lower: wp.array(dtype=wp.float32),
     joint_limit_upper: wp.array(dtype=wp.float32),
+    joint_q: wp.array(dtype=wp.float32),
 ):
     tid = wp.tid()
 
@@ -167,12 +167,12 @@ class Example:
                 self.model.joint_dof_dim,
                 self.model.joint_q_start,
                 self.model.joint_qd_start,
-                self.model.joint_q,
                 self.model.joint_limit_lower,
                 self.model.joint_limit_upper,
             ],
+            outputs=[self.state.joint_q],
         )
-        newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state)
+        newton.eval_fk(self.model, self.state.joint_q, self.state.joint_qd, self.state)
         self.time += self.time_delta
 
     def render(self):

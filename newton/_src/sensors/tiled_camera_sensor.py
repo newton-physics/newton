@@ -127,7 +127,7 @@ def compute_pinhole_camera_rays(
     out_rays[camera_index, py, px, 1] = wp.normalize(ray_direction_camera_space)
 
 
-@wp.kernel
+@wp.kernel(enable_backward=False)
 def flatten_color_image(
     color_image: wp.array(dtype=wp.uint32, ndim=3),
     buffer: wp.array(dtype=wp.uint8, ndim=3),
@@ -153,7 +153,7 @@ def flatten_color_image(
     buffer[py, px, 3] = wp.uint8((color >> wp.uint32(24)) & wp.uint32(0xFF))
 
 
-@wp.kernel
+@wp.kernel(enable_backward=False)
 def find_depth_range(depth_image: wp.array(dtype=wp.float32, ndim=3), depth_range: wp.array(dtype=wp.float32)):
     world_id, camera_id, yx = wp.tid()
     depth = depth_image[world_id, camera_id, yx]
@@ -162,7 +162,7 @@ def find_depth_range(depth_image: wp.array(dtype=wp.float32, ndim=3), depth_rang
         wp.atomic_max(depth_range, 1, depth)
 
 
-@wp.kernel
+@wp.kernel(enable_backward=False)
 def flatten_depth_image(
     depth_image: wp.array(dtype=wp.float32, ndim=3),
     buffer: wp.array(dtype=wp.uint8, ndim=3),
@@ -450,7 +450,7 @@ class TiledCameraSensor:
     def flatten_depth_image_to_rgba(
         self,
         image: wp.array(dtype=wp.float32, ndim=3),
-        out_buffer: wp.array(dtype=wp.uint32) | None = None,
+        out_buffer: wp.array(dtype=wp.uint8, ndim=3) | None = None,
         num_worlds_per_row: int | None = None,
     ):
         """
