@@ -61,6 +61,7 @@ from .kernels import (
     update_joint_transforms_kernel,
     update_model_properties_kernel,
     update_shape_mappings_kernel,
+    update_solver_options_kernel,
 )
 
 if TYPE_CHECKING:
@@ -381,12 +382,6 @@ class SolverMuJoCo(SolverBase):
 
         self._viewer = None
         """Instance of the MuJoCo viewer for debugging."""
-
-        # Resolve impratio: constructor arg > custom attribute > None (use MuJoCo default)
-        if impratio is None:
-            mujoco_attrs = getattr(model, "mujoco", None)
-            if mujoco_attrs and hasattr(mujoco_attrs, "impratio"):
-                impratio = float(mujoco_attrs.impratio.numpy()[0])
 
         disableflags = 0
         if disable_contacts:
@@ -974,6 +969,14 @@ class SolverMuJoCo(SolverBase):
                 arr[keys] = vals
             else:
                 arr[tuple(keys.T)] = vals
+
+        # Resolve solver options: constructor arg > custom attribute > MuJoCo default
+        # Track if overridden (tile() handles expansion) vs needs per-world update from Newton model
+        impratio_overridden = impratio is not None
+        if impratio is None:
+            mujoco_attrs = getattr(model, "mujoco", None)
+            if mujoco_attrs and hasattr(mujoco_attrs, "impratio"):
+                impratio = float(mujoco_attrs.impratio.numpy()[0])
 
         spec = mujoco.MjSpec()
         spec.option.disableflags = disableflags
@@ -1754,6 +1757,9 @@ class SolverMuJoCo(SolverBase):
             # expand model fields that can be expanded:
             self.expand_model_fields(self.mjw_model, nworld)
 
+            # update solver options from Newton model (only if not overridden by constructor)
+            self.update_solver_options(impratio_overridden=impratio_overridden)
+
             # so far we have only defined the first world,
             # now complete the data from the Newton model
             self.notify_model_changed(SolverNotifyFlags.ALL)
@@ -1836,6 +1842,11 @@ class SolverMuJoCo(SolverBase):
             # "mat_rgba",
         }
 
+        # Solver option fields to expand (nested in mj_model.opt)
+        opt_fields_to_expand = {
+            "impratio",
+        }
+
         def tile(x: wp.array):
             # Create new array with same shape but first dim multiplied by nworld
             new_shape = list(x.shape)
@@ -1862,6 +1873,41 @@ class SolverMuJoCo(SolverBase):
             if field in model_fields_to_expand:
                 array = getattr(mj_model, field)
                 setattr(mj_model, field, tile(array))
+
+        for field in opt_fields_to_expand:
+            if hasattr(mj_model.opt, field):
+                array = getattr(mj_model.opt, field)
+                setattr(mj_model.opt, field, tile(array))
+
+    def update_solver_options(self, impratio_overridden: bool = False):
+        """Update solver options from Newton model to MuJoCo Warp.
+
+        Copies per-world values from Newton custom attributes to the MuJoCo Warp model.
+        If a value was overridden by constructor, tile() already handled expansion so we skip it.
+
+        Args:
+            impratio_overridden: If True, impratio was set by constructor and tile() handled it.
+        """
+        mujoco_attrs = getattr(self.model, "mujoco", None)
+        nworld = self.model.num_worlds
+
+        # Get Newton arrays - pass None if overridden or not available (kernel checks for None)
+        if not impratio_overridden and mujoco_attrs and hasattr(mujoco_attrs, "impratio"):
+            newton_impratio = mujoco_attrs.impratio
+        else:
+            newton_impratio = None
+
+        # Skip kernel if all options are None (add more checks here as options are added)
+        all_none = newton_impratio is None  # and other_option is None and ...
+        if all_none:
+            return
+
+        wp.launch(
+            update_solver_options_kernel,
+            dim=nworld,
+            inputs=[newton_impratio],
+            outputs=[self.mjw_model.opt.impratio],
+        )
 
     def update_model_inertial_properties(self):
         if self.model.body_count == 0:
