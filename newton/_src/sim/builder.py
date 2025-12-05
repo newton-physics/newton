@@ -1773,6 +1773,10 @@ class ModelBuilder:
             # Determine the offset based on frequency
             if attr.frequency == ModelAttributeFrequency.ONCE:
                 offset = 0
+            elif attr.frequency == ModelAttributeFrequency.WORLD:
+                # For WORLD frequency, use current_world as the offset
+                # This remaps local index 0 to the actual world index
+                offset = self.current_world if self.current_world >= 0 else 0
             elif attr.frequency == ModelAttributeFrequency.BODY:
                 offset = start_body_idx
             elif attr.frequency == ModelAttributeFrequency.SHAPE:
@@ -5626,6 +5630,8 @@ class ModelBuilder:
                 # determine count by frequency
                 if frequency == ModelAttributeFrequency.ONCE:
                     count = 1
+                elif frequency == ModelAttributeFrequency.WORLD:
+                    count = m.num_worlds
                 elif frequency == ModelAttributeFrequency.BODY:
                     count = m.body_count
                 elif frequency == ModelAttributeFrequency.SHAPE:
