@@ -2190,6 +2190,73 @@ def Xform "Articulation" (
         self.assertTrue(np.any(jnt_actgravcomp))
         self.assertTrue(np.any(~jnt_actgravcomp))
 
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_option_impratio_parsing(self):
+        """Test parsing of impratio from USD PhysicsScene with mjc:option:impratio attribute."""
+        from pxr import Usd  # noqa: PLC0415
+
+        usd_content = """#usda 1.0
+(
+    defaultPrim = "World"
+    metersPerUnit = 1.0
+    upAxis = "Z"
+)
+
+def Xform "World"
+{
+    def PhysicsScene "PhysicsScene" (
+        prepend apiSchemas = ["MjcSceneAPI"]
+    )
+    {
+        float mjc:option:impratio = 1.5
+    }
+
+    def Xform "Articulation" (
+        prepend apiSchemas = ["PhysicsArticulationRootAPI"]
+    )
+    {
+        def Xform "Body1" (
+            prepend apiSchemas = ["PhysicsRigidBodyAPI"]
+        )
+        {
+            double3 xformOp:translate = (0, 0, 1)
+            uniform token[] xformOpOrder = ["xformOp:translate"]
+
+            def Sphere "Collision" (
+                prepend apiSchemas = ["PhysicsCollisionAPI"]
+            )
+            {
+                double radius = 0.1
+            }
+        }
+
+        def PhysicsRevoluteJoint "Joint"
+        {
+            rel physics:body0 = </World/Articulation/Body1>
+            point3f physics:localPos0 = (0, 0, 0)
+            quatf physics:localRot0 = (1, 0, 0, 0)
+            token physics:axis = "Z"
+        }
+    }
+}
+"""
+        stage = Usd.Stage.CreateInMemory()
+        stage.GetRootLayer().ImportFromString(usd_content)
+
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_usd(stage)
+        model = builder.finalize()
+
+        self.assertTrue(hasattr(model, "mujoco"))
+        self.assertTrue(hasattr(model.mujoco, "impratio"))
+
+        impratio = model.mujoco.impratio.numpy()
+
+        # Single world should have single value
+        self.assertEqual(len(impratio), 1)
+        self.assertAlmostEqual(impratio[0], 1.5, places=4)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2, failfast=True)

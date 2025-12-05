@@ -1385,6 +1385,82 @@ class TestImportMjcf(unittest.TestCase):
             for i, (a, e) in enumerate(zip(actual, expected, strict=False)):
                 self.assertAlmostEqual(a, e, places=4, msg=f"geom_solimp[{shape_idx}][{i}] should be {e}, got {a}")
 
+    def test_option_impratio_parsing(self):
+        """Test parsing of impratio from MJCF option tag."""
+        mjcf = """<?xml version="1.0" ?>
+<mujoco>
+    <option impratio="1.5"/>
+    <worldbody>
+        <body name="body1" pos="0 0 1">
+            <joint type="hinge" axis="0 0 1"/>
+            <geom type="sphere" size="0.1"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_mjcf(mjcf)
+        model = builder.finalize()
+
+        self.assertTrue(hasattr(model, "mujoco"))
+        self.assertTrue(hasattr(model.mujoco, "impratio"))
+
+        impratio = model.mujoco.impratio.numpy()
+
+        # Single world should have single value
+        self.assertEqual(len(impratio), 1)
+        self.assertAlmostEqual(impratio[0], 1.5, places=4)
+
+    def test_option_impratio_per_world(self):
+        """Test that impratio is correctly remapped per world when merging builders."""
+        # Robot A with impratio=1.5
+        robot_a = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(robot_a)
+        robot_a.add_mjcf("""
+<mujoco>
+    <option impratio="1.5"/>
+    <worldbody>
+        <body name="a" pos="0 0 1">
+            <joint type="hinge" axis="0 0 1"/>
+            <geom type="sphere" size="0.1"/>
+        </body>
+    </worldbody>
+</mujoco>
+""")
+
+        # Robot B with impratio=2.0
+        robot_b = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(robot_b)
+        robot_b.add_mjcf("""
+<mujoco>
+    <option impratio="2.0"/>
+    <worldbody>
+        <body name="b" pos="0 0 1">
+            <joint type="hinge" axis="0 0 1"/>
+            <geom type="sphere" size="0.1"/>
+        </body>
+    </worldbody>
+</mujoco>
+""")
+
+        # Merge into main builder
+        main = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(main)
+        main.add_world(robot_a)
+        main.add_world(robot_b)
+        model = main.finalize()
+
+        self.assertTrue(hasattr(model, "mujoco"))
+        self.assertTrue(hasattr(model.mujoco, "impratio"))
+
+        impratio = model.mujoco.impratio.numpy()
+
+        # Should have 2 worlds with different impratio values
+        self.assertEqual(len(impratio), 2)
+        self.assertAlmostEqual(impratio[0], 1.5, places=4, msg="World 0 should have impratio=1.5")
+        self.assertAlmostEqual(impratio[1], 2.0, places=4, msg="World 1 should have impratio=2.0")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
