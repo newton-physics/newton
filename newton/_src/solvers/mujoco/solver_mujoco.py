@@ -1844,7 +1844,16 @@ class SolverMuJoCo(SolverBase):
 
         # Solver option fields to expand (nested in mj_model.opt)
         opt_fields_to_expand = {
+            # "timestep",
             "impratio",
+            # "tolerance",
+            # "ls_tolerance",
+            # "ccd_tolerance",
+            # "density",
+            # "viscosity",
+            # "gravity",
+            # "wind",
+            # "magnetic",
         }
 
         def tile(x: wp.array):
