@@ -76,6 +76,7 @@ class Example:
         self.time = 0.0
         self.time_delta = 0.005
         self.show_rgb_image = True
+        self.texture_id = 0
 
         self.viewer = viewer
         if isinstance(self.viewer, ViewerGL):
@@ -138,15 +139,15 @@ class Example:
         self.ui_padding = 10
         self.ui_side_panel_width = 300
 
-        self.display_width = 640
-        self.display_height = 360
+        sensor_render_width = 64
+        sensor_render_height = 64
 
         if isinstance(self.viewer, ViewerGL):
-            self.display_width = self.viewer.ui.io.display_size[0] - self.ui_side_panel_width - self.ui_padding * 4
-            self.display_height = self.viewer.ui.io.display_size[1] - self.ui_padding * 2
+            display_width = self.viewer.ui.io.display_size[0] - self.ui_side_panel_width - self.ui_padding * 4
+            display_height = self.viewer.ui.io.display_size[1] - self.ui_padding * 2
 
-        sensor_render_width = int(self.display_width // self.num_worlds_per_row)
-        sensor_render_height = int(self.display_height // self.num_worlds_per_col)
+            sensor_render_width = int(display_width // self.num_worlds_per_row)
+            sensor_render_height = int(display_height // self.num_worlds_per_col)
 
         # Setup Tiled Camera Sensor
         self.tiled_camera_sensor = TiledCameraSensor(
@@ -166,7 +167,9 @@ class Example:
         self.camera_rays = self.tiled_camera_sensor.compute_pinhole_camera_rays(math.radians(fov))
         self.tiled_camera_sensor_color_image = self.tiled_camera_sensor.create_color_image_output()
         self.tiled_camera_sensor_depth_image = self.tiled_camera_sensor.create_depth_image_output()
-        self.create_texture()
+
+        if isinstance(self.viewer, ViewerGL):
+            self.create_texture()
 
     def step(self):
         wp.launch(
@@ -238,6 +241,9 @@ class Example:
         self.texture_buffer = wp.RegisteredGLBuffer(self.pixel_buffer)
 
     def update_texture(self):
+        if not self.texture_id:
+            return
+
         texture_buffer = self.texture_buffer.map(
             dtype=wp.uint8,
             shape=(
@@ -274,12 +280,13 @@ class Example:
 
     def test_final(self):
         self.render_sensors()
+
         color_image = self.tiled_camera_sensor_color_image.numpy()
-        assert color_image.shape == (1, 1, 640 * 360)
+        assert color_image.shape == (24, 1, 64 * 64)
         assert color_image.min() < color_image.max()
 
         depth_image = self.tiled_camera_sensor_depth_image.numpy()
-        assert depth_image.shape == (1, 1, 640 * 360)
+        assert depth_image.shape == (24, 1, 64 * 64)
         assert depth_image.min() < depth_image.max()
 
     def gui(self, ui):
