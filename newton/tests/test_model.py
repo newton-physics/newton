@@ -787,6 +787,30 @@ class TestModel(unittest.TestCase):
             builder.add_articulation([joint1, joint2, joint3])
         self.assertIn("multiple parents", str(context.exception))
 
+    def test_articulation_validation_duplicate_joint(self):
+        """Test that adding a joint to multiple articulations raises an error"""
+        builder = ModelBuilder()
+
+        # Create links and joints
+        link1 = builder.add_link(mass=1.0)
+        link2 = builder.add_link(mass=1.0)
+
+        joint1 = builder.add_joint_revolute(parent=-1, child=link1)
+        joint2 = builder.add_joint_revolute(parent=link1, child=link2)
+
+        # Add joints to first articulation
+        builder.add_articulation([joint1, joint2])
+
+        # Create another joint
+        link3 = builder.add_link(mass=1.0)
+        joint3 = builder.add_joint_revolute(parent=link2, child=link3)
+
+        # Try to add joint2 (already in articulation) to a new articulation
+        with self.assertRaises(ValueError) as context:
+            builder.add_articulation([joint2, joint3])
+        self.assertIn("already belongs to articulation", str(context.exception))
+        self.assertIn("joint_2", str(context.exception))  # joint2's key
+
     def test_joint_world_validation(self):
         """Test that joints validate parent/child bodies belong to current world"""
         builder = ModelBuilder()

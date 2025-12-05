@@ -1067,11 +1067,17 @@ class ModelBuilder:
                     f"before creating joints for another articulation."
                 )
 
-        # Validate all joints exist
+        # Validate all joints exist and don't already belong to an articulation
         for joint_idx in joints:
             if joint_idx < 0 or joint_idx >= len(self.joint_type):
                 raise ValueError(
                     f"Joint index {joint_idx} is out of range. Valid range is 0 to {len(self.joint_type) - 1}"
+                )
+            if self.joint_articulation[joint_idx] >= 0:
+                existing_art = self.joint_articulation[joint_idx]
+                raise ValueError(
+                    f"Joint {joint_idx} ('{self.joint_key[joint_idx]}') already belongs to articulation {existing_art} "
+                    f"('{self.articulation_key[existing_art]}'). Each joint can only belong to one articulation."
                 )
 
         # Validate all joints belong to the same world (current world)
