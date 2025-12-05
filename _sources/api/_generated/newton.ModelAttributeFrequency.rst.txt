@@ -1,0 +1,8 @@
+﻿newton.ModelAttributeFrequency
+==============================
+
+.. autoclass:: newton.ModelAttributeFrequency
+   :members:
+   :undoc-members:
+   :show-inheritance:
+   :member-order: groupwise
