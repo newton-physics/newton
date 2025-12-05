@@ -78,7 +78,8 @@ class Example:
         self.show_rgb_image = True
 
         self.viewer = viewer
-        self.viewer.register_ui_callback(self.display, "free")
+        if isinstance(self.viewer, ViewerGL):
+            self.viewer.register_ui_callback(self.display, "free")
 
         usd_stage = Usd.Stage.Open(newton.examples.get_asset("bunny.usd"))
         usd_geom = UsdGeom.Mesh(usd_stage.GetPrimAtPath("/root/bunny"))
@@ -137,8 +138,12 @@ class Example:
         self.ui_padding = 10
         self.ui_side_panel_width = 300
 
-        self.display_width = self.viewer.ui.io.display_size[0] - self.ui_side_panel_width - self.ui_padding * 4
-        self.display_height = self.viewer.ui.io.display_size[1] - self.ui_padding * 2
+        self.display_width = 640
+        self.display_height = 360
+
+        if isinstance(self.viewer, ViewerGL):
+            self.display_width = self.viewer.ui.io.display_size[0] - self.ui_side_panel_width - self.ui_padding * 4
+            self.display_height = self.viewer.ui.io.display_size[1] - self.ui_padding * 2
 
         sensor_render_width = int(self.display_width // self.num_worlds_per_row)
         sensor_render_height = int(self.display_height // self.num_worlds_per_col)
