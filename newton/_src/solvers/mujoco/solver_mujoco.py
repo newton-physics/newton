@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 import warp as wp
 
-from ...core.types import nparray, override
+from ...core.types import nparray, override, vec5
 from ...geometry import MESH_MAXHULLVERT, GeoType, ShapeFlags
 from ...sim import (
     JOINT_LIMIT_UNLIMITED,
@@ -185,8 +185,8 @@ class SolverMuJoCo(SolverBase):
                 name="geom_solimp",
                 frequency=ModelAttributeFrequency.SHAPE,
                 assignment=ModelAttributeAssignment.MODEL,
-                dtype=wp.types.vector(length=5, dtype=wp.float32),
-                default=wp.types.vector(length=5, dtype=wp.float32)(0.9, 0.95, 0.001, 0.5, 2.0),
+                dtype=vec5,
+                default=vec5(0.9, 0.95, 0.001, 0.5, 2.0),
                 namespace="mujoco",
                 usd_attribute_name="mjc:solimp",
                 mjcf_attribute_name="solimp",
@@ -209,8 +209,8 @@ class SolverMuJoCo(SolverBase):
                 name="solimplimit",
                 frequency=ModelAttributeFrequency.JOINT_DOF,
                 assignment=ModelAttributeAssignment.MODEL,
-                dtype=wp.types.vector(length=5, dtype=wp.float32),
-                default=wp.types.vector(length=5, dtype=wp.float32)(0.9, 0.95, 0.001, 0.5, 2.0),
+                dtype=vec5,
+                default=vec5(0.9, 0.95, 0.001, 0.5, 2.0),
                 namespace="mujoco",
                 usd_attribute_name="mjc:solimplimit",
             )
@@ -220,8 +220,8 @@ class SolverMuJoCo(SolverBase):
                 name="solreffriction",
                 frequency=ModelAttributeFrequency.JOINT_DOF,
                 assignment=ModelAttributeAssignment.MODEL,
-                dtype=wp.types.vector(length=2, dtype=wp.float32),
-                default=wp.types.vector(length=2, dtype=wp.float32)(0.02, 1.0),
+                dtype=wp.vec2,
+                default=wp.vec2(0.02, 1.0),
                 namespace="mujoco",
                 usd_attribute_name="mjc:solreffriction",
             )
@@ -231,8 +231,8 @@ class SolverMuJoCo(SolverBase):
                 name="solimpfriction",
                 frequency=ModelAttributeFrequency.JOINT_DOF,
                 assignment=ModelAttributeAssignment.MODEL,
-                dtype=wp.types.vector(length=5, dtype=wp.float32),
-                default=wp.types.vector(length=5, dtype=wp.float32)(0.9, 0.95, 0.001, 0.5, 2.0),
+                dtype=vec5,
+                default=vec5(0.9, 0.95, 0.001, 0.5, 2.0),
                 namespace="mujoco",
                 usd_attribute_name="mjc:solimpfriction",
             )
