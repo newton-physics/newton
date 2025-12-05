@@ -43,7 +43,6 @@ from .simplex_solver import create_solve_closest_distance
 
 _mat43f = wp.types.matrix((4, 3), wp.float32)
 _mat53f = wp.types.matrix((5, 3), wp.float32)
-_vec5 = wp.types.vector(5, wp.float32)
 _vec5u = wp.types.vector(5, wp.uint32)
 
 # Single-contact types (saves registers)
