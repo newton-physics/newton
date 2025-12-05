@@ -956,9 +956,12 @@ def parse_usd(
     )
 
     if physics_scene_prim is not None:
-        # Extract custom attributes for model (ONCE) frequency from the PhysicsScene prim
+        # Extract custom attributes for model (ONCE and WORLD frequency) from the PhysicsScene prim
+        # WORLD frequency attributes use index 0 here; they get remapped during add_world()
         builder_custom_attr_model: list[ModelBuilder.CustomAttribute] = [
-            attr for attr in builder.custom_attributes.values() if attr.frequency == ModelAttributeFrequency.ONCE
+            attr
+            for attr in builder.custom_attributes.values()
+            if attr.frequency in (ModelAttributeFrequency.ONCE, ModelAttributeFrequency.WORLD)
         ]
         scene_custom_attrs = usd.get_custom_attribute_values(physics_scene_prim, builder_custom_attr_model)
         scene_attributes.update(scene_custom_attrs)

@@ -143,6 +143,18 @@ def parse_mjcf(
     else:
         mesh_dir = "."
 
+    # Parse MJCF option tag for ONCE and WORLD frequency custom attributes (solver options)
+    # WORLD frequency attributes use index 0 here; they get remapped during add_world()
+    builder_custom_attr_option: list[ModelBuilder.CustomAttribute] = builder.get_custom_attributes_by_frequency(
+        [ModelAttributeFrequency.ONCE, ModelAttributeFrequency.WORLD]
+    )
+    option_elem = root.find("option")
+    if option_elem is not None and builder_custom_attr_option:
+        option_attrs = parse_custom_attributes(option_elem.attrib, builder_custom_attr_option, "mjcf")
+        for key, value in option_attrs.items():
+            if key in builder.custom_attributes:
+                builder.custom_attributes[key].values[0] = value
+
     mesh_assets = {}
     for asset in root.findall("asset"):
         for mesh in asset.findall("mesh"):
