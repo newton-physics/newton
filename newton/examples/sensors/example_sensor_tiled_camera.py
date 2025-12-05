@@ -134,8 +134,14 @@ class Example:
 
         self.viewer.set_model(self.model)
 
-        sensor_render_width = int(self.viewer.ui.io.display_size[0] // self.num_worlds_per_row)
-        sensor_render_height = int(self.viewer.ui.io.display_size[1] // self.num_worlds_per_col)
+        self.ui_padding = 10
+        self.ui_side_panel_width = 300
+
+        self.display_width = self.viewer.ui.io.display_size[0] - self.ui_side_panel_width - self.ui_padding * 4
+        self.display_height = self.viewer.ui.io.display_size[1] - self.ui_padding * 2
+
+        sensor_render_width = int(self.display_width // self.num_worlds_per_row)
+        sensor_render_height = int(self.display_height // self.num_worlds_per_col)
 
         # Setup Tiled Camera Sensor
         self.tiled_camera_sensor = TiledCameraSensor(
@@ -276,18 +282,13 @@ class Example:
             self.show_rgb_image = not self.show_rgb_image
 
     def display(self, imgui):
-        side_panel_width = 300
-        padding = 10
-
-        io = self.viewer.ui.io
-
         line_color = imgui.get_color_u32(imgui.Col_.window_bg)
 
-        width = io.display_size[0] - side_panel_width - padding * 4
-        height = io.display_size[1] - padding * 2
+        width = self.viewer.ui.io.display_size[0] - self.ui_side_panel_width - self.ui_padding * 4
+        height = self.viewer.ui.io.display_size[1] - self.ui_padding * 2
 
         imgui.set_next_window_pos(imgui.ImVec2(0, 0))
-        imgui.set_next_window_size(io.display_size)
+        imgui.set_next_window_size(self.viewer.ui.io.display_size)
 
         flags = (
             imgui.WindowFlags_.no_title_bar.value
@@ -297,8 +298,8 @@ class Example:
         )
 
         if imgui.begin("Sensors", flags=flags):
-            pos_x = side_panel_width + padding * 2
-            pos_y = padding
+            pos_x = self.ui_side_panel_width + self.ui_padding * 2
+            pos_y = self.ui_padding
 
             if self.texture_id > 0:
                 imgui.set_cursor_pos(imgui.ImVec2(pos_x, pos_y))
