@@ -113,7 +113,9 @@ class TestTiledCameraSensor(unittest.TestCase):
         color_image = tiled_camera_sensor.create_color_image_output()
         depth_image = tiled_camera_sensor.create_depth_image_output()
 
-        tiled_camera_sensor.render(model.state(), camera_positions, camera_orientations, camera_rays, color_image, depth_image)
+        tiled_camera_sensor.render(
+            model.state(), camera_positions, camera_orientations, camera_rays, color_image, depth_image
+        )
 
         golden_color_data = np.load(
             os.path.join(os.path.dirname(__file__), "golden_data", "test_tiled_camera_sensor", "color.npy")
@@ -137,7 +139,9 @@ class TestTiledCameraSensor(unittest.TestCase):
 
         color_image = tiled_camera_sensor.create_color_image_output()
         depth_image = tiled_camera_sensor.create_depth_image_output()
-        tiled_camera_sensor.render(model.state(), camera_positions, camera_orientations, camera_rays, color_image, depth_image)
+        tiled_camera_sensor.render(
+            model.state(), camera_positions, camera_orientations, camera_rays, color_image, depth_image
+        )
         self.assertTrue(np.any(color_image.numpy() != 0), "Color image should contain rendered data")
         self.assertTrue(np.any(depth_image.numpy() != 0), "Depth image should contain rendered data")
 

@@ -179,7 +179,9 @@ class RenderContext:
         if self.has_geometries or self.has_particles or self.has_triangle_mesh:
             if refit_bvh:
                 self.refit_bvh()
-            render_megakernel(self, camera_positions, camera_orientations, camera_rays, color_image, depth_image, clear_images)
+            render_megakernel(
+                self, camera_positions, camera_orientations, camera_rays, color_image, depth_image, clear_images
+            )
 
     def __compute_bvh_geom_bounds(self):
         wp.launch(
