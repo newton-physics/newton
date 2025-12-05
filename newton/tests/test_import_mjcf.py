@@ -1385,6 +1385,43 @@ class TestImportMjcf(unittest.TestCase):
             for i, (a, e) in enumerate(zip(actual, expected, strict=False)):
                 self.assertAlmostEqual(a, e, places=4, msg=f"geom_solimp[{shape_idx}][{i}] should be {e}, got {a}")
 
+    def test_default_inheritance(self):
+        """Test nested default class inheritanc."""
+        mjcf_content = """<?xml version="1.0" ?>
+<mujoco>
+    <default>
+        <default class="collision">
+            <geom group="3" type="mesh" condim="6" friction="1 5e-3 5e-4" solref=".01 1"/>
+            <default class="sphere_collision">
+                <geom type="sphere" size="0.0006" rgba="1 0 0 1"/>
+            </default>
+        </default>
+    </default>
+    <worldbody>
+        <body name="body1">
+            <geom class="sphere_collision" />
+        </body>
+    </worldbody>
+</mujoco>
+"""
+
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_mjcf(mjcf_content)
+        model = builder.finalize()
+
+        self.assertEqual(builder.shape_count, 1)
+
+        self.assertEqual(builder.shape_type[0], GeoType.SPHERE)
+
+        # Verify condim is 6 (inherited from parent)
+        # If inheritance is broken, this will be the default value (usually 3)
+        if hasattr(model, "mujoco") and hasattr(model.mujoco, "condim"):
+            condim = model.mujoco.condim.numpy()[0]
+            self.assertEqual(condim, 6, "condim should be 6 (inherited from parent class 'collision')")
+        else:
+            self.fail("Model should have mujoco.condim attribute")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
