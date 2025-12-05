@@ -64,6 +64,9 @@ class Example:
         if pos is None:
             pos = wp.vec3()
 
+        if num_elements <= 0:
+            raise ValueError("num_elements must be positive")
+
         # Parameter along the helix
         t_vals = np.linspace(0.0, 2.0 * np.pi * turns, num_elements + 1, dtype=np.float32)
 
@@ -256,8 +259,8 @@ class Example:
         self.viewer.log_contacts(self.contacts, self.state_0)
         self.viewer.end_frame()
 
-    def test(self):
-        """Test helix cable simulation for stability and correctness."""
+    def test_final(self):
+        """Test helix cable simulation for stability and correctness (called after simulation)."""
         # Helix dimensions for physical bounds checking
         initial_height = 0.5  # Helices start at z=0.5
         helix_max_height = initial_height + self.helix_height  # Top of helix

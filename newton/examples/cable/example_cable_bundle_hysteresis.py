@@ -413,8 +413,8 @@ class Example:
         self.viewer.log_contacts(self.contacts, self.state_0)
         self.viewer.end_frame()
 
-    def test(self):
-        """Test cable bundle hysteresis simulation for stability and correctness."""
+    def test_final(self):
+        """Test cable bundle hysteresis simulation for stability and correctness (called after simulation)."""
         pass
 
 

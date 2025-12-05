@@ -306,8 +306,8 @@ class Example:
         self.viewer.log_contacts(self.contacts, self.state_0)
         self.viewer.end_frame()
 
-    def test(self):
-        """Test cable pile simulation for stability and correctness."""
+    def test_final(self):
+        """Test cable pile simulation for stability and correctness (called after simulation)."""
         cable_radius = 0.012
         cable_diameter = 2.0 * cable_radius  # 0.024m
         layers = 4

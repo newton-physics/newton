@@ -1216,7 +1216,6 @@ def warmstart_body_body_contacts(
     shape_material_ke: wp.array(dtype=float),
     shape_material_kd: wp.array(dtype=float),
     shape_material_mu: wp.array(dtype=float),
-    gamma: float,
     k_start_body_contact: float,
     # Outputs
     contact_penalty_k: wp.array(dtype=float),
@@ -1262,7 +1261,6 @@ def warmstart_body_particle_contacts(
     shape_material_ke: wp.array(dtype=float),
     shape_material_kd: wp.array(dtype=float),
     shape_material_mu: wp.array(dtype=float),
-    gamma: float,
     k_start_body_contact: float,
     # Outputs
     body_particle_contact_penalty_k: wp.array(dtype=float),

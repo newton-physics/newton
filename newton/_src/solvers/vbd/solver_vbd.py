@@ -928,7 +928,6 @@ class SolverVBD(SolverBase):
                         model.shape_material_ke,
                         model.shape_material_kd,
                         model.shape_material_mu,
-                        self.avbd_gamma,
                         self.k_start_body_contact,
                     ],
                     outputs=[
@@ -1026,7 +1025,6 @@ class SolverVBD(SolverBase):
                     model.shape_material_ke,
                     model.shape_material_kd,
                     model.shape_material_mu,
-                    self.avbd_gamma,
                     self.k_start_body_contact,
                 ],
                 outputs=[

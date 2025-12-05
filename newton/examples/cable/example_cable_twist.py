@@ -80,6 +80,9 @@ class Example:
         if pos is None:
             pos = wp.vec3()
 
+        if num_elements <= 0:
+            raise ValueError("num_elements must be positive")
+
         # Calculate segment length from total length
         segment_length = length / num_elements
 
@@ -322,8 +325,8 @@ class Example:
         self.viewer.log_contacts(self.contacts, self.state_0)
         self.viewer.end_frame()
 
-    def test(self):
-        """Test cable twist simulation for stability and correctness."""
+    def test_final(self):
+        """Test cable twist simulation for stability and correctness (called after simulation)."""
 
         # Use instance variables for consistency with initialization
         segment_length = self.cable_length / self.num_elements
