@@ -46,21 +46,22 @@ The sensor takes shape indices (which can include sites or regular shapes) and c
    # Create model with sites
    builder = newton.ModelBuilder()
    
-   base = builder.add_body(mass=1.0, I_m=wp.mat33(np.eye(3)))
+   base = builder.add_link(mass=1.0, I_m=wp.mat33(np.eye(3)))
    ref_site = builder.add_site(base, key="reference")
-   builder.add_joint_free(base)
+   j_free = builder.add_joint_free(base)
    
-   end_effector = builder.add_body(mass=1.0, I_m=wp.mat33(np.eye(3)))
+   end_effector = builder.add_link(mass=1.0, I_m=wp.mat33(np.eye(3)))
    ee_site = builder.add_site(end_effector, key="end_effector")
    
    # Add a revolute joint to connect bodies
-   builder.add_joint_revolute(
+   j_revolute = builder.add_joint_revolute(
        parent=base,
        child=end_effector,
        axis=newton.Axis.X,
        parent_xform=wp.transform(wp.vec3(0, 0, 0.5), wp.quat_identity()),
        child_xform=wp.transform(wp.vec3(0, 0, 0), wp.quat_identity()),
    )
+   builder.add_articulation([j_free, j_revolute])
    
    model = builder.finalize()
    state = model.state()
@@ -108,12 +109,6 @@ The sensor supports measuring multiple objects, optionally with different refere
    site3 = builder.add_site(body3, key="site3")
    ref_body = builder.add_body(mass=1.0, I_m=wp.mat33(np.eye(3)))
    ref_site = builder.add_site(ref_body, key="ref_site")
-   
-   # Add joints
-   builder.add_joint_free(body1)
-   builder.add_joint_free(body2)
-   builder.add_joint_free(body3)
-   builder.add_joint_free(ref_body)
 
    # Multiple objects, multiple references (must match in count) for sensor 2
    ref1 = builder.add_site(body1, key="ref1")

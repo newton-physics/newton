@@ -580,6 +580,7 @@ class ModelBuilder:
         self.joint_qd_start = []
         self.joint_dof_dim = []
         self.joint_world = []  # world index for each joint
+        self.joint_articulation = []  # articulation index for each joint, -1 if not in any articulation
 
         self.articulation_start = []
         self.articulation_key = []
@@ -1066,11 +1067,17 @@ class ModelBuilder:
                     f"before creating joints for another articulation."
                 )
 
-        # Validate all joints exist
+        # Validate all joints exist and don't already belong to an articulation
         for joint_idx in joints:
             if joint_idx < 0 or joint_idx >= len(self.joint_type):
                 raise ValueError(
                     f"Joint index {joint_idx} is out of range. Valid range is 0 to {len(self.joint_type) - 1}"
+                )
+            if self.joint_articulation[joint_idx] >= 0:
+                existing_art = self.joint_articulation[joint_idx]
+                raise ValueError(
+                    f"Joint {joint_idx} ('{self.joint_key[joint_idx]}') already belongs to articulation {existing_art} "
+                    f"('{self.articulation_key[existing_art]}'). Each joint can only belong to one articulation."
                 )
 
         # Validate all joints belong to the same world (current world)
@@ -1100,6 +1107,10 @@ class ModelBuilder:
         self.articulation_start.append(sorted_joints[0])
         self.articulation_key.append(key or f"articulation_{articulation_idx}")
         self.articulation_world.append(self.current_world)
+
+        # Mark all joints as belonging to this articulation
+        for joint_idx in joints:
+            self.joint_articulation[joint_idx] = articulation_idx
 
         # Process custom attributes for this articulation
         if custom_attributes:
@@ -1664,6 +1675,10 @@ class ModelBuilder:
         if builder.joint_count > 0:
             s = [self.current_world] * builder.joint_count
             self.joint_world.extend(s)
+            # Offset articulation indices for joints (-1 stays -1)
+            self.joint_articulation.extend(
+                [a + start_articulation_idx if a >= 0 else -1 for a in builder.joint_articulation]
+            )
 
         # For articulations
         if builder.articulation_count > 0:
@@ -2043,6 +2058,7 @@ class ModelBuilder:
         self.joint_dof_dim.append((len(linear_axes), len(angular_axes)))
         self.joint_enabled.append(enabled)
         self.joint_world.append(self.current_world)
+        self.joint_articulation.append(-1)
 
         def add_axis_dim(dim: ModelBuilder.JointDofConfig):
             self.joint_axis.append(dim.axis)
@@ -3050,8 +3066,9 @@ class ModelBuilder:
         # remove empty articulation starts, i.e. where the start and end are the same
         self.articulation_start = list(set(self.articulation_start))
 
-        # save original joint groups before clearing
+        # save original joint worlds and articulations before clearing
         original_ = self.joint_world[:] if self.joint_world else []
+        original_articulation = self.joint_articulation[:] if self.joint_articulation else []
 
         self.joint_key.clear()
         self.joint_type.clear()
@@ -3077,6 +3094,7 @@ class ModelBuilder:
         self.joint_target_pos.clear()
         self.joint_target_vel.clear()
         self.joint_world.clear()
+        self.joint_articulation.clear()
         for joint in retained_joints:
             self.joint_key.append(joint["key"])
             self.joint_type.append(joint["type"])
@@ -3091,12 +3109,17 @@ class ModelBuilder:
             self.joint_X_p.append(joint["parent_xform"])
             self.joint_X_c.append(joint["child_xform"])
             self.joint_dof_dim.append(joint["axis_dim"])
-            # Rebuild joint group - use original group if it exists
+            # Rebuild joint world - use original world if it exists
             if original_ and joint["original_id"] < len(original_):
                 self.joint_world.append(original_[joint["original_id"]])
             else:
-                # If no group was assigned, use default -1
+                # If no world was assigned, use default -1
                 self.joint_world.append(-1)
+            # Rebuild joint articulation assignment
+            if original_articulation and joint["original_id"] < len(original_articulation):
+                self.joint_articulation.append(original_articulation[joint["original_id"]])
+            else:
+                self.joint_articulation.append(-1)
             for axis in joint["axes"]:
                 self.joint_axis.append(axis["axis"])
                 self.joint_target_ke.append(axis["target_ke"])
@@ -5072,7 +5095,8 @@ class ModelBuilder:
 
     def add_free_joints_to_floating_bodies(self, new_bodies: Iterable[int] | None = None):
         """
-        Adds a free joint to every rigid body that is not a child in any joint and has positive mass.
+        Adds a free joint and single-joint articulation to every rigid body that is not a child in any joint
+        and has positive mass.
 
         Args:
             new_bodies (Iterable[int] or None, optional): The set of body indices to consider for adding free joints.
@@ -5080,13 +5104,15 @@ class ModelBuilder:
         Note:
             - Bodies that are already a child in any joint will be skipped.
             - Only bodies with strictly positive mass will receive a free joint.
+            - Each free joint is added to its own single-joint articulation.
             - This is useful for ensuring that all floating (unconnected) bodies are properly articulated.
         """
         # set(self.joint_child) is connected_bodies
         floating_bodies = set(new_bodies) - set(self.joint_child)
         for body_id in floating_bodies:
             if self.body_mass[body_id] > 0:
-                self.add_joint_free(child=body_id)
+                joint = self.add_joint_free(child=body_id)
+                self.add_articulation([joint])
 
     def set_coloring(self, particle_color_groups):
         """
@@ -5276,6 +5302,17 @@ class ModelBuilder:
 
         # validate world ordering and contiguity
         self._validate_world_ordering()
+
+        # validate all joints belong to an articulation
+        if self.joint_count > 0:
+            orphan_joints = [i for i, art in enumerate(self.joint_articulation) if art < 0]
+            if orphan_joints:
+                joint_keys = [self.joint_key[i] for i in orphan_joints[:5]]  # Show first 5
+                raise ValueError(
+                    f"Found {len(orphan_joints)} joint(s) not belonging to any articulation. "
+                    f"Call add_articulation() for all joints. Orphan joints: {joint_keys}"
+                    + ("..." if len(orphan_joints) > 5 else "")
+                )
 
         # construct particle inv masses
         ms = np.array(self.particle_mass, dtype=np.float32)

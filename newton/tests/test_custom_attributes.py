@@ -63,6 +63,9 @@ class TestCustomAttributes(unittest.TestCase):
             axis=[0.0, 1.0, 0.0],
         )
 
+        # Add articulation for the joints
+        builder.add_articulation([joint1, joint2])
+
         return {"base": base, "link1": link1, "link2": link2, "joint1": joint1, "joint2": joint2}
 
     def test_body_custom_attributes(self):
@@ -344,7 +347,7 @@ class TestCustomAttributes(unittest.TestCase):
         robot_entities = self._add_test_robot(builder)
 
         body = builder.add_link(mass=1.0)
-        builder.add_joint_revolute(
+        joint3 = builder.add_joint_revolute(
             parent=robot_entities["link2"],
             child=body,
             axis=[0.0, 0.0, 1.0],
@@ -355,6 +358,7 @@ class TestCustomAttributes(unittest.TestCase):
                 "custom_int_coord": [12],
             },
         )
+        builder.add_articulation([joint3])
 
         model = builder.finalize(device=self.device)
 
@@ -400,7 +404,7 @@ class TestCustomAttributes(unittest.TestCase):
         cfg = ModelBuilder.JointDofConfig
 
         body = builder.add_link(mass=1.0)
-        builder.add_joint_d6(
+        joint3 = builder.add_joint_d6(
             parent=robot_entities["link2"],
             child=body,
             linear_axes=[cfg(axis=newton.Axis.X), cfg(axis=newton.Axis.Y)],
@@ -410,6 +414,7 @@ class TestCustomAttributes(unittest.TestCase):
                 "custom_int_coord": [100, 200, 300],
             },
         )
+        builder.add_articulation([joint3])
 
         model = builder.finalize(device=self.device)
 
@@ -451,7 +456,7 @@ class TestCustomAttributes(unittest.TestCase):
         cfg = ModelBuilder.JointDofConfig
 
         body = builder.add_link(mass=1.0)
-        builder.add_joint_d6(
+        joint3 = builder.add_joint_d6(
             parent=robot_entities["link2"],
             child=body,
             linear_axes=[cfg(axis=newton.Axis.X), cfg(axis=newton.Axis.Y)],
@@ -461,6 +466,7 @@ class TestCustomAttributes(unittest.TestCase):
                 "custom_vec3_coord": [[0.1, 0.2, 0.3], [0.4, 0.5, 0.6], [0.7, 0.8, 0.9]],
             },
         )
+        builder.add_articulation([joint3])
 
         model = builder.finalize(device=self.device)
 
@@ -781,12 +787,13 @@ class TestCustomAttributes(unittest.TestCase):
             custom_attributes={"shape_color": [0.0, 1.0, 0.0]},
         )
 
-        sub_builder.add_joint_revolute(
+        sub_joint = sub_builder.add_joint_revolute(
             parent=body1,
             child=body2,
             axis=[0, 0, 1],
             custom_attributes={"gain_dof": [1.5]},
         )
+        sub_builder.add_articulation([sub_joint])
 
         # Create main builder and add sub-builder multiple times
         main_builder = ModelBuilder()
@@ -798,7 +805,8 @@ class TestCustomAttributes(unittest.TestCase):
         body4 = main_builder.add_link(mass=1.0)
         main_builder.add_shape_sphere(body3, radius=0.1)
         main_builder.add_shape_sphere(body4, radius=0.1)
-        main_builder.add_joint_revolute(parent=body3, child=body4, axis=[0, 0, 1])
+        main_joint = main_builder.add_joint_revolute(parent=body3, child=body4, axis=[0, 0, 1])
+        main_builder.add_articulation([main_joint])
 
         # Add first instance
         main_builder.add_world(sub_builder)  # World 0
