@@ -5089,7 +5089,8 @@ class ModelBuilder:
 
     def add_free_joints_to_floating_bodies(self, new_bodies: Iterable[int] | None = None):
         """
-        Adds a free joint to every rigid body that is not a child in any joint and has positive mass.
+        Adds a free joint and single-joint articulation to every rigid body that is not a child in any joint
+        and has positive mass.
 
         Args:
             new_bodies (Iterable[int] or None, optional): The set of body indices to consider for adding free joints.
@@ -5097,13 +5098,15 @@ class ModelBuilder:
         Note:
             - Bodies that are already a child in any joint will be skipped.
             - Only bodies with strictly positive mass will receive a free joint.
+            - Each free joint is added to its own single-joint articulation.
             - This is useful for ensuring that all floating (unconnected) bodies are properly articulated.
         """
         # set(self.joint_child) is connected_bodies
         floating_bodies = set(new_bodies) - set(self.joint_child)
         for body_id in floating_bodies:
             if self.body_mass[body_id] > 0:
-                self.add_joint_free(child=body_id)
+                joint = self.add_joint_free(child=body_id)
+                self.add_articulation([joint])
 
     def set_coloring(self, particle_color_groups):
         """
