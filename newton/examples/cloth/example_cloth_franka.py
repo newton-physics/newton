@@ -147,8 +147,8 @@ class Example:
         self.cloth_particle_radius = 0.008
         self.cloth_body_contact_margin = 0.01
         #       self-contact
-        self.self_contact_radius = 0.002
-        self.self_contact_margin = 0.003
+        self.particle_self_contact_radius = 0.002
+        self.particle_self_contact_margin = 0.003
 
         self.soft_contact_ke = 100
         self.soft_contact_kd = 2e-3
@@ -262,8 +262,8 @@ class Example:
                 self.model,
                 iterations=self.iterations,
                 integrate_with_external_rigid_solver=True,
-                particle_self_contact_radius=self.self_contact_radius,
-                particle_self_contact_margin=self.self_contact_margin,
+                particle_self_contact_radius=self.particle_self_contact_radius,
+                particle_self_contact_margin=self.particle_self_contact_margin,
                 particle_enable_self_contact=True,
                 particle_vertex_contact_buffer_size=32,
                 particle_edge_contact_buffer_size=64,

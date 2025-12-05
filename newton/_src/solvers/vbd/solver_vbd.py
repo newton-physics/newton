@@ -292,9 +292,9 @@ class SolverVBD(SolverBase):
         self.particle_adjacency = self.compute_particle_force_element_adjacency(model).to(self.device)
 
         # Self-contact settings
-        self.handle_self_contact = particle_enable_self_contact
-        self.self_contact_radius = particle_self_contact_radius
-        self.self_contact_margin = particle_self_contact_margin
+        self.particle_enable_self_contact = particle_enable_self_contact
+        self.particle_self_contact_radius = particle_self_contact_radius
+        self.particle_self_contact_margin = particle_self_contact_margin
 
         # Tile solve settings
         if model.device.is_cpu and particle_enable_tile_solve:
@@ -310,7 +310,7 @@ class SolverVBD(SolverBase):
                     "It is advisable to make particle_self_contact_margin 1.5-2 times larger than particle_self_contact_radius."
                 )
 
-            self.conservative_bound_relaxation = particle_conservative_bound_relaxation
+            self.particle_conservative_bound_relaxation = particle_conservative_bound_relaxation
             self.pos_prev_collision_detection = wp.zeros_like(model.particle_q, device=self.device)
             self.particle_conservative_bounds = wp.zeros((model.particle_count,), dtype=float, device=self.device)
 
@@ -807,7 +807,7 @@ class SolverVBD(SolverBase):
         if model.particle_count == 0:
             return
 
-        if self.handle_self_contact:
+        if self.particle_enable_self_contact:
             # Collision detection before initialization to compute conservative bounds
             self.collision_detection_penetration_free(state_in)
 
@@ -1065,7 +1065,7 @@ class SolverVBD(SolverBase):
             return
 
         # Update collision detection if needed (penetration-free mode only)
-        if self.handle_self_contact:
+        if self.particle_enable_self_contact:
             if (self.collision_detection_interval == 0 and iter_num == 0) or (
                 self.collision_detection_interval >= 1 and iter_num % self.collision_detection_interval == 0
             ):
@@ -1078,7 +1078,7 @@ class SolverVBD(SolverBase):
         # Iterate over color groups
         for color in range(len(model.particle_color_groups)):
             # Accumulate contact forces
-            if self.handle_self_contact:
+            if self.particle_enable_self_contact:
                 if contacts is not None:
                     wp.launch(
                         kernel=accumulate_contact_force_and_hessian,
@@ -1093,7 +1093,7 @@ class SolverVBD(SolverBase):
                             model.edge_indices,
                             # self-contact
                             self.trimesh_collision_info,
-                            self.self_contact_radius,
+                            self.particle_self_contact_radius,
                             model.soft_contact_ke,
                             model.soft_contact_kd,
                             model.soft_contact_mu,
@@ -1186,7 +1186,7 @@ class SolverVBD(SolverBase):
                 )
 
             # Solve for this color group
-            if self.handle_self_contact:
+            if self.particle_enable_self_contact:
                 if self.use_particle_tile_solve:
                     wp.launch(
                         kernel=solve_trimesh_with_self_contact_penetration_free_tile,
@@ -1620,15 +1620,15 @@ class SolverVBD(SolverBase):
 
     def collision_detection_penetration_free(self, current_state: State):
         self.trimesh_collision_detector.refit(current_state.particle_q)
-        self.trimesh_collision_detector.vertex_triangle_collision_detection(self.self_contact_margin)
-        self.trimesh_collision_detector.edge_edge_collision_detection(self.self_contact_margin)
+        self.trimesh_collision_detector.vertex_triangle_collision_detection(self.particle_self_contact_margin)
+        self.trimesh_collision_detector.edge_edge_collision_detection(self.particle_self_contact_margin)
 
         self.pos_prev_collision_detection.assign(current_state.particle_q)
         wp.launch(
             kernel=compute_particle_conservative_bound,
             inputs=[
-                self.conservative_bound_relaxation,
-                self.self_contact_margin,
+                self.particle_conservative_bound_relaxation,
+                self.particle_self_contact_margin,
                 self.particle_adjacency,
                 self.trimesh_collision_detector.collision_info,
             ],
@@ -1648,5 +1648,5 @@ class SolverVBD(SolverBase):
         Args:
             state (newton.State):  The state whose particle positions (:attr:`State.particle_q`) will be used for rebuilding the BVHs.
         """
-        if self.handle_self_contact:
+        if self.particle_enable_self_contact:
             self.trimesh_collision_detector.rebuild(state.particle_q)
