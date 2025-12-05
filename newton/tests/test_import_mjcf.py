@@ -1281,13 +1281,13 @@ class TestImportMjcf(unittest.TestCase):
 <mujoco>
     <default>
         <default class="collision">
-            <geom group="3" type="mesh" condim="6" friction="1 5e-3 5e-4" solref=".01 1"/>        
+            <geom group="3" type="mesh" condim="6" friction="1 5e-3 5e-4" solref=".01 1"/>
             <default class="sphere_collision">
                 <geom type="sphere" size="0.0006" rgba="1 0 0 1"/>
             </default>
         </default>
     </default>
-            
+
     <worldbody>
         <body name="body1">
             <geom class="sphere_collision" />
