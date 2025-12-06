@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from typing import Literal
 import warnings
 from enum import Enum
 
@@ -259,7 +260,7 @@ def color_graph(
     return color_groups
 
 
-def plot_graph(vertices, edges, edge_labels=None, node_labels=None, node_colors=None):
+def plot_graph(vertices, edges, edge_labels=None, node_labels=None, node_colors=None, layout: Literal["spring", "kamada_kawai"] = "kamada_kawai"):
     """
     Plots a graph using matplotlib and networkx.
 
@@ -269,6 +270,7 @@ def plot_graph(vertices, edges, edge_labels=None, node_labels=None, node_colors=
         edge_labels: A list of edge labels.
         node_labels: A list of node labels.
         node_colors: A list of node colors.
+        layout: The layout of the graph. Can be "spring" or "kamada_kawai".
     """
     import matplotlib.pyplot as plt  # noqa: PLC0415
     import networkx as nx  # noqa: PLC0415
@@ -290,7 +292,13 @@ def plot_graph(vertices, edges, edge_labels=None, node_labels=None, node_colors=
             g_edge_labels[(ai, bi)] = label
         G.add_edge(ai, bi, label=label)
 
-    pos = nx.spring_layout(G, k=3.5, iterations=200)
+    if layout == "spring":
+        pos = nx.spring_layout(G, k=3.5, iterations=200)
+    elif layout == "kamada_kawai":
+        pos = nx.kamada_kawai_layout(G)
+    else:
+        raise ValueError(f"Invalid layout: {layout}")
+
 
     default_draw_args = {"alpha": 0.9, "edgecolors": "black", "linewidths": 0.5}
     nx.draw_networkx_nodes(G, pos, node_color=node_colors, **default_draw_args)
