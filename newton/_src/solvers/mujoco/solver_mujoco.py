@@ -1043,6 +1043,7 @@ class SolverMuJoCo(SolverBase):
 
         joint_parent = model.joint_parent.numpy()
         joint_child = model.joint_child.numpy()
+        joint_is_loop = model.joint_is_loop.numpy()
         joint_parent_xform = model.joint_X_p.numpy()
         joint_child_xform = model.joint_X_c.numpy()
         joint_limit_lower = model.joint_limit_lower.numpy()
@@ -1179,10 +1180,13 @@ class SolverMuJoCo(SolverBase):
             selected_joints = np.arange(model.joint_count, dtype=np.int32)
             selected_constraints = np.arange(model.equality_constraint_count, dtype=np.int32)
 
+        # split joints into loop and non-loop joints (loop joints will be instantiated separately as equality constraints)
+        joints_loop = np.where(joint_is_loop[selected_joints])[0]
+        joints_non_loop = np.where(~joint_is_loop[selected_joints])[0]
         # sort joints topologically depth-first since this is the order that will also be used
         # for placing bodies in the MuJoCo model
-        joints_simple = list(zip(joint_parent[selected_joints], joint_child[selected_joints], strict=False))
-        joint_order = topological_sort(joints_simple, use_dfs=True)
+        joints_simple = [(joint_parent[i], joint_child[i]) for i in joints_non_loop]
+        joint_order = topological_sort(joints_simple, use_dfs=True, custom_indices=joints_non_loop)
         if any(joint_order[i] != i for i in range(len(joints_simple))):
             warnings.warn(
                 "Joint order is not in depth-first topological order while converting Newton model to MuJoCo, this may lead to diverging kinematics between MuJoCo and Newton.",

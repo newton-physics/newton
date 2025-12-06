@@ -13,9 +13,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Literal
 import warnings
 from enum import Enum
+from typing import Literal
 
 import numpy as np
 import warp as wp
@@ -260,7 +260,14 @@ def color_graph(
     return color_groups
 
 
-def plot_graph(vertices, edges, edge_labels=None, node_labels=None, node_colors=None, layout: Literal["spring", "kamada_kawai"] = "kamada_kawai"):
+def plot_graph(
+    vertices,
+    edges,
+    edge_labels=None,
+    node_labels=None,
+    node_colors=None,
+    layout: Literal["spring", "kamada_kawai"] = "kamada_kawai",
+):
     """
     Plots a graph using matplotlib and networkx.
 
@@ -298,7 +305,6 @@ def plot_graph(vertices, edges, edge_labels=None, node_labels=None, node_colors=
         pos = nx.kamada_kawai_layout(G)
     else:
         raise ValueError(f"Invalid layout: {layout}")
-
 
     default_draw_args = {"alpha": 0.9, "edgecolors": "black", "linewidths": 0.5}
     nx.draw_networkx_nodes(G, pos, node_color=node_colors, **default_draw_args)

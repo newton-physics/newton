@@ -16,14 +16,21 @@
 from __future__ import annotations
 
 from collections import defaultdict, deque
+from collections.abc import Sequence
 
 
-def topological_sort(joints: list[tuple[int, int]] | list[tuple[str, str]], use_dfs: bool = True, ensure_single_root: bool = False) -> list[int]:
+def topological_sort(
+    joints: Sequence[tuple[int, int]] | Sequence[tuple[str, str]],
+    custom_indices: Sequence[int] | None = None,
+    use_dfs: bool = True,
+    ensure_single_root: bool = False,
+) -> list[int]:
     """
     Topological sort of a list of joints connecting rigid bodies.
 
     Args:
-        joints (list[tuple[int, int]] | list[tuple[str, str]]): A list of body link pairs (parent, child). Bodies can be identified by their name or index.
+        joints (Sequence[tuple[int, int]] | Sequence[tuple[str, str]]): A list of body link pairs (parent, child). Bodies can be identified by their name or index.
+        custom_indices (Sequence[int] | None): A list of custom indices to return for the joints. If None, the joint indices will be used.
         use_dfs (bool): If True, use depth-first search for topological sorting.
             If False, use Kahn's algorithm. Default is True.
         ensure_single_root (bool): If True, raise a ValueError if there is more than one root body. Default is False.
@@ -31,6 +38,11 @@ def topological_sort(joints: list[tuple[int, int]] | list[tuple[str, str]], use_
     Returns:
         list[int]: A list of joint indices in topological order.
     """
+    if custom_indices is not None and len(custom_indices) != len(joints):
+        raise ValueError(
+            f"Length of custom indices must match length of joints: {len(custom_indices)} != {len(joints)}"
+        )
+
     incoming = defaultdict(set)
     outgoing = defaultdict(set)
     nodes = set()
@@ -79,4 +91,6 @@ def topological_sort(joints: list[tuple[int, int]] | list[tuple[str, str]], use_
                 joint_order.append(joint_id)
                 queue.append(child)
 
+    if custom_indices is not None:
+        joint_order = [custom_indices[i] for i in joint_order]
     return joint_order

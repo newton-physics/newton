@@ -1170,7 +1170,7 @@ def parse_usd(
                     continue
                 if str(joint_desc.body1) in ignored_body_paths:
                     continue
-                parent_id, child_id = resolve_joint_parent_child(joint_desc, body_ids, get_transforms=False)    # pyright: ignore[reportAssignmentType]
+                parent_id, child_id = resolve_joint_parent_child(joint_desc, body_ids, get_transforms=False)  # pyright: ignore[reportAssignmentType]
                 if joint_desc.excludeFromArticulation:
                     joint_excluded.add(joint_key)
                 else:
@@ -1211,7 +1211,9 @@ def parse_usd(
                         print(f"Sorting joints using {joint_ordering} ordering...")
                     # from ..sim.graph_coloring import plot_graph
                     # plot_graph(body_keys, joint_edges)
-                    sorted_joints = topological_sort(joint_edges, use_dfs=joint_ordering == "dfs", ensure_single_root=True)
+                    sorted_joints = topological_sort(
+                        joint_edges, use_dfs=joint_ordering == "dfs", ensure_single_root=True
+                    )
                     if verbose:
                         print("Joint ordering:", sorted_joints)
                 else:
@@ -1284,7 +1286,9 @@ def parse_usd(
             # Create the articulation from all collected joints
             if articulation_joint_indices:
                 builder.add_articulation(
-                    articulation_joint_indices, key=articulation_path, custom_attributes=articulation_custom_attrs,
+                    articulation_joint_indices,
+                    key=articulation_path,
+                    custom_attributes=articulation_custom_attrs,
                 )
 
             articulation_bodies[articulation_id] = art_bodies
