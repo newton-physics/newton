@@ -59,6 +59,9 @@ Transform = tuple[Vec3, Quat] | wp.transform
 # type alias for numpy arrays
 nparray = np.ndarray[Any, np.dtype[Any]]
 
+# Warp vector types
+vec5 = wp.types.vector(length=5, dtype=wp.float32)
+
 
 class Axis(IntEnum):
     """Enumeration of axes in 3D space."""
@@ -187,4 +190,5 @@ __all__ = [
     "Vec4",
     "flag_to_int",
     "override",
+    "vec5",
 ]
