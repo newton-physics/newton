@@ -819,15 +819,15 @@ class SolverVBD(SolverBase):
         # window is used for damping and friction calculations.
         dt_damping = self.time_since_anchor
 
-        self.initialize_particles(state_in, dt, update_step_history)
         self.initialize_rigid_bodies(state_in, contacts, dt, update_step_history)
+        self.initialize_particles(state_in, dt, update_step_history)
 
         for iter_num in range(self.iterations):
-            self.solve_particle_iteration(state_in, state_out, contacts, dt, dt_damping, iter_num)
             self.solve_rigid_body_iteration(state_in, state_out, contacts, dt, dt_damping)
+            self.solve_particle_iteration(state_in, state_out, contacts, dt, dt_damping, iter_num)
 
-        self.finalize_particles(state_out, dt)
         self.finalize_rigid_bodies(state_out, dt)
+        self.finalize_particles(state_out, dt)
 
     def initialize_particles(self, state_in: State, dt: float, update_step_history: bool):
         """Initialize particle positions for the VBD iteration."""
