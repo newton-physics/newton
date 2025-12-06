@@ -21,10 +21,10 @@ from typing import Any
 
 import warp as wp
 
+from ...core.types import vec5
 from ...sim import JointType
 
 # Custom vector types
-vec5 = wp.types.vector(length=5, dtype=wp.float32)
 vec10 = wp.types.vector(length=10, dtype=wp.float32)
 
 
@@ -189,7 +189,7 @@ def convert_newton_contacts_to_mjwarp_kernel(
     rigid_contact_thickness0: wp.array(dtype=wp.float32),
     rigid_contact_thickness1: wp.array(dtype=wp.float32),
     bodies_per_world: int,
-    to_mjc_geom_index: wp.array(dtype=wp.vec2i),
+    newton_shape_to_mjc_geom: wp.array(dtype=wp.int32),
     # Mujoco warp contacts
     nacon_out: wp.array(dtype=int),
     contact_dist_out: wp.array(dtype=float),
@@ -222,12 +222,12 @@ def convert_newton_contacts_to_mjwarp_kernel(
     shape_a = rigid_contact_shape0[tid]
     shape_b = rigid_contact_shape1[tid]
 
-    body_a = -1
-    if shape_a >= 0:
-        body_a = shape_body[shape_a]
-    body_b = -1
-    if shape_b >= 0:
-        body_b = shape_body[shape_b]
+    # Skip invalid contacts - both shapes must be specified
+    if shape_a < 0 or shape_b < 0:
+        return
+
+    body_a = shape_body[shape_a]
+    body_b = shape_body[shape_b]
 
     X_wb_a = wp.transform_identity()
     X_wb_b = wp.transform_identity()
@@ -251,16 +251,19 @@ def convert_newton_contacts_to_mjwarp_kernel(
     # Build contact frame
     frame = make_frame(n)
 
-    world_geom_a = to_mjc_geom_index[shape_a]
-    world_geom_b = to_mjc_geom_index[shape_b]
-    geoms = wp.vec2i(world_geom_a[1], world_geom_b[1])
+    geom_a = newton_shape_to_mjc_geom[shape_a]
+    geom_b = newton_shape_to_mjc_geom[shape_b]
+    geoms = wp.vec2i(geom_a, geom_b)
 
-    # See kernel update_body_mass_ipos_kernel, line below:
-    #     worldid = wp.tid() // bodies_per_world
-    # which uses the same strategy to determine the world id
-    worldid = world_geom_a[0]
-    if worldid < 0:
-        worldid = world_geom_b[0]
+    # Compute world ID from body indices (more reliable than shape mapping for static shapes)
+    # Static shapes like ground planes share the same Newton shape index across all worlds,
+    # so the inverse shape mapping may have the wrong world ID for them.
+    # Using body indices: body_index = world * bodies_per_world + body_in_world
+    # Note: At least one shape must be attached to a body (body >= 0) since collisions
+    # between two static shapes (not attached to any body) are not supported.
+    worldid = body_a // bodies_per_world
+    if body_a < 0:
+        worldid = body_b // bodies_per_world
 
     margin, gap, condim, friction, solref, solreffriction, solimp = contact_params(
         geom_condim,
@@ -454,7 +457,7 @@ def convert_warp_coords_to_mj_kernel(
 @wp.kernel
 def convert_mjw_contact_to_warp_kernel(
     # inputs
-    contact_geom_mapping: wp.array2d(dtype=wp.int32),
+    mjc_geom_to_newton_shape: wp.array2d(dtype=wp.int32),
     pyramidal_cone: bool,
     mj_nacon: wp.array(dtype=wp.int32),
     mj_contact_frame: wp.array(dtype=wp.mat33f),
@@ -468,29 +471,33 @@ def convert_mjw_contact_to_warp_kernel(
     contact_normal: wp.array(dtype=wp.vec3f),
     contact_force: wp.array(dtype=float),
 ):
+    """Convert MuJoCo contacts to Newton contact format.
+
+    Uses mjc_geom_to_newton_shape to convert MuJoCo geom indices to Newton shape indices.
+    """
     n_contacts = mj_nacon[0]
     contact_idx = wp.tid()
 
     if contact_idx >= n_contacts:
         return
 
-    worldid = mj_contact_worldid[contact_idx]
+    world = mj_contact_worldid[contact_idx]
     geoms_mjw = mj_contact_geom[contact_idx]
 
     normalforce = wp.float(-1.0)
 
     efc_address0 = mj_contact_efc_address[contact_idx, 0]
     if efc_address0 >= 0:
-        normalforce = mj_efc_force[worldid, efc_address0]
+        normalforce = mj_efc_force[world, efc_address0]
 
         if pyramidal_cone:
             dim = mj_contact_dim[contact_idx]
             for i in range(1, 2 * (dim - 1)):
-                normalforce += mj_efc_force[worldid, mj_contact_efc_address[contact_idx, i]]
+                normalforce += mj_efc_force[world, mj_contact_efc_address[contact_idx, i]]
 
     pair = wp.vec2i()
     for i in range(2):
-        pair[i] = contact_geom_mapping[worldid, geoms_mjw[i]]
+        pair[i] = mjc_geom_to_newton_shape[world, geoms_mjw[i]]
     contact_pair[contact_idx] = pair
     contact_normal[contact_idx] = wp.transpose(mj_contact_frame[contact_idx])[0]
     contact_force[contact_idx] = wp.where(normalforce > 0.0, normalforce, 0.0)
@@ -498,41 +505,52 @@ def convert_mjw_contact_to_warp_kernel(
 
 @wp.kernel
 def apply_mjc_control_kernel(
+    mjc_actuator_to_newton_axis: wp.array2d(dtype=wp.int32),
     joint_target_pos: wp.array(dtype=wp.float32),
     joint_target_vel: wp.array(dtype=wp.float32),
-    axis_to_actuator: wp.array2d(dtype=wp.int32),
-    axes_per_world: int,
     # outputs
-    mj_act: wp.array2d(dtype=wp.float32),
+    mj_ctrl: wp.array2d(dtype=wp.float32),
 ):
-    worldid, axisid = wp.tid()
-    # Position actuator
-    actuator_id = axis_to_actuator[axisid, 0]
-    if actuator_id != -1:
-        mj_act[worldid, actuator_id] = joint_target_pos[worldid * axes_per_world + axisid]
-    # Velocity actuator
-    actuator_id = axis_to_actuator[axisid, 1]
-    if actuator_id != -1:
-        mj_act[worldid, actuator_id] = joint_target_vel[worldid * axes_per_world + axisid]
+    """Apply Newton joint targets to MuJoCo control array.
+
+    Iterates over MuJoCo actuators [world, actuator], looks up Newton axis,
+    and copies position or velocity target based on actuator type.
+
+    The actuator type is encoded in the sign of mjc_actuator_to_newton_axis:
+    - Positive value: position actuator, newton_axis = value
+    - Negative value: velocity actuator, newton_axis = -(value + 2)
+    """
+    world, mjc_actuator = wp.tid()
+    raw_value = mjc_actuator_to_newton_axis[world, mjc_actuator]
+    if raw_value >= 0:
+        # Position actuator
+        newton_axis = raw_value
+        mj_ctrl[world, mjc_actuator] = joint_target_pos[newton_axis]
+    elif raw_value != -1:  # raw_value == -1 means unmapped
+        # Velocity actuator
+        newton_axis = -raw_value - 2  # Decode: -(newton_axis + 2) -> newton_axis
+        mj_ctrl[world, mjc_actuator] = joint_target_vel[newton_axis]
 
 
 @wp.kernel
 def apply_mjc_body_f_kernel(
-    up_axis: int,
-    body_q: wp.array(dtype=wp.transform),
+    mjc_body_to_newton: wp.array2d(dtype=wp.int32),
     body_f: wp.array(dtype=wp.spatial_vector),
-    to_mjc_body_index: wp.array(dtype=wp.int32),
-    bodies_per_world: int,
     # outputs
     xfrc_applied: wp.array2d(dtype=wp.spatial_vector),
 ):
-    worldid, bodyid = wp.tid()
-    mj_body_id = to_mjc_body_index[bodyid]
-    if mj_body_id != -1:
-        f = body_f[worldid * bodies_per_world + bodyid]
+    """Apply Newton body forces to MuJoCo xfrc_applied array.
+
+    Iterates over MuJoCo bodies [world, mjc_body], looks up Newton body index,
+    and copies the force.
+    """
+    world, mjc_body = wp.tid()
+    newton_body = mjc_body_to_newton[world, mjc_body]
+    if newton_body >= 0:
+        f = body_f[newton_body]
         v = wp.vec3(f[0], f[1], f[2])
         w = wp.vec3(f[3], f[4], f[5])
-        xfrc_applied[worldid, mj_body_id] = wp.spatial_vector(v, w)
+        xfrc_applied[world, mjc_body] = wp.spatial_vector(v, w)
 
 
 @wp.kernel
@@ -757,78 +775,85 @@ def eval_articulation_fk(
 
 @wp.kernel
 def convert_body_xforms_to_warp_kernel(
+    mjc_body_to_newton: wp.array2d(dtype=wp.int32),
     xpos: wp.array2d(dtype=wp.vec3),
     xquat: wp.array2d(dtype=wp.quat),
-    to_mjc_body_index: wp.array(dtype=wp.int32),
-    bodies_per_world: int,
     # outputs
     body_q: wp.array(dtype=wp.transform),
 ):
-    worldid, bodyid = wp.tid()
-    wbi = bodies_per_world * worldid + bodyid
-    mbi = to_mjc_body_index[bodyid]
-    pos = xpos[worldid, mbi]
-    quat = xquat[worldid, mbi]
-    # convert from wxyz to xyzw
-    quat = wp.quat(quat[1], quat[2], quat[3], quat[0])
-    # quat = wp.quat(quat[3], quat[0], quat[1], quat[2])
-    # quat = wp.quat_identity()
-    # quat = wp.quat_inverse(quat)
-    body_q[wbi] = wp.transform(pos, quat)
+    """Convert MuJoCo body transforms to Newton body_q array.
+
+    Iterates over MuJoCo bodies [world, mjc_body], looks up Newton body index,
+    reads MuJoCo position/quaternion, and writes to Newton body_q.
+    """
+    world, mjc_body = wp.tid()
+    newton_body = mjc_body_to_newton[world, mjc_body]
+    if newton_body >= 0:
+        pos = xpos[world, mjc_body]
+        quat = xquat[world, mjc_body]
+        # convert from wxyz to xyzw
+        quat = wp.quat(quat[1], quat[2], quat[3], quat[0])
+        body_q[newton_body] = wp.transform(pos, quat)
 
 
 @wp.kernel
 def update_body_mass_ipos_kernel(
+    mjc_body_to_newton: wp.array2d(dtype=wp.int32),
     body_com: wp.array(dtype=wp.vec3f),
     body_mass: wp.array(dtype=float),
     body_gravcomp: wp.array(dtype=float),
-    bodies_per_world: int,
     up_axis: int,
-    body_mapping: wp.array(dtype=int),
     # outputs
     body_ipos: wp.array2d(dtype=wp.vec3f),
     body_mass_out: wp.array2d(dtype=float),
     body_gravcomp_out: wp.array2d(dtype=float),
 ):
-    tid = wp.tid()
-    worldid = wp.tid() // bodies_per_world
-    index_in_world = wp.tid() % bodies_per_world
-    mjc_idx = body_mapping[index_in_world]
-    if mjc_idx == -1:
+    """Update MuJoCo body mass and inertial position from Newton body properties.
+
+    Iterates over MuJoCo bodies [world, mjc_body], looks up Newton body index,
+    and copies mass, COM, and gravcomp.
+    """
+    world, mjc_body = wp.tid()
+    newton_body = mjc_body_to_newton[world, mjc_body]
+    if newton_body < 0:
         return
 
     # update COM position
     if up_axis == 1:
-        body_ipos[worldid, mjc_idx] = wp.vec3f(body_com[tid][0], -body_com[tid][2], body_com[tid][1])
+        body_ipos[world, mjc_body] = wp.vec3f(
+            body_com[newton_body][0], -body_com[newton_body][2], body_com[newton_body][1]
+        )
     else:
-        body_ipos[worldid, mjc_idx] = body_com[tid]
+        body_ipos[world, mjc_body] = body_com[newton_body]
 
     # update mass
-    body_mass_out[worldid, mjc_idx] = body_mass[tid]
+    body_mass_out[world, mjc_body] = body_mass[newton_body]
 
     # update gravcomp
     if body_gravcomp:
-        body_gravcomp_out[worldid, mjc_idx] = body_gravcomp[tid]
+        body_gravcomp_out[world, mjc_body] = body_gravcomp[newton_body]
 
 
 @wp.kernel
 def update_body_inertia_kernel(
+    mjc_body_to_newton: wp.array2d(dtype=wp.int32),
     body_inertia: wp.array(dtype=wp.mat33f),
-    bodies_per_world: int,
-    body_mapping: wp.array(dtype=int),
     # outputs
     body_inertia_out: wp.array2d(dtype=wp.vec3f),
     body_iquat_out: wp.array2d(dtype=wp.quatf),
 ):
-    tid = wp.tid()
-    worldid = wp.tid() // bodies_per_world
-    index_in_world = wp.tid() % bodies_per_world
-    mjc_idx = body_mapping[index_in_world]
-    if mjc_idx == -1:
+    """Update MuJoCo body inertia from Newton body inertia tensor.
+
+    Iterates over MuJoCo bodies [world, mjc_body], looks up Newton body index,
+    computes eigendecomposition, and writes to MuJoCo arrays.
+    """
+    world, mjc_body = wp.tid()
+    newton_body = mjc_body_to_newton[world, mjc_body]
+    if newton_body < 0:
         return
 
     # Get inertia tensor
-    I = body_inertia[tid]
+    I = body_inertia[newton_body]
 
     # Calculate eigenvalues and eigenvectors
     eigenvectors, eigenvalues = wp.eig3(I)
@@ -857,8 +882,8 @@ def update_body_inertia_kernel(
     q = wp.quat(q[1], q[2], q[3], q[0])
 
     # Store results
-    body_inertia_out[worldid, mjc_idx] = eigenvalues
-    body_iquat_out[worldid, mjc_idx] = q
+    body_inertia_out[world, mjc_body] = eigenvalues
+    body_iquat_out[world, mjc_body] = q
 
 
 @wp.kernel(module="unique", enable_backward=False)
@@ -874,255 +899,220 @@ def repeat_array_kernel(
 
 @wp.kernel
 def update_axis_properties_kernel(
+    mjc_actuator_to_newton_axis: wp.array2d(dtype=wp.int32),
     joint_target_kp: wp.array(dtype=float),
     joint_target_kv: wp.array(dtype=float),
     joint_effort_limit: wp.array(dtype=float),
-    axis_to_actuator: wp.array2d(dtype=wp.int32),
-    axes_per_world: int,
     # outputs
     actuator_bias: wp.array2d(dtype=vec10),
     actuator_gain: wp.array2d(dtype=vec10),
     actuator_forcerange: wp.array2d(dtype=wp.vec2f),
 ):
-    """Update actuator force ranges based on joint effort limits."""
-    tid = wp.tid()
-    worldid = tid // axes_per_world
-    axis_in_world = tid % axes_per_world
+    """Update MuJoCo actuator properties from Newton joint properties.
 
-    kp = joint_target_kp[tid]
-    kv = joint_target_kv[tid]
-    effort_limit = joint_effort_limit[tid]
+    Iterates over MuJoCo actuators [world, actuator], looks up Newton axis,
+    and updates bias/gain/forcerange based on actuator type (position or velocity).
 
-    # Update position actuator (index 0)
-    pos_actuator_idx = axis_to_actuator[axis_in_world, 0]
-    if pos_actuator_idx >= 0:  # Valid actuator
-        actuator_bias[worldid, pos_actuator_idx][1] = -kp
-        actuator_gain[worldid, pos_actuator_idx][0] = kp
-        actuator_forcerange[worldid, pos_actuator_idx] = wp.vec2f(-effort_limit, effort_limit)
+    The actuator type is encoded in the sign of mjc_actuator_to_newton_axis:
+    - Positive value: position actuator, newton_axis = value
+    - Negative value: velocity actuator, newton_axis = -(value + 2)
+    - Value of -1: unmapped actuator
+    """
+    world, mjc_actuator = wp.tid()
+    raw_value = mjc_actuator_to_newton_axis[world, mjc_actuator]
 
-    # Update velocity actuator (index 1)
-    vel_actuator_idx = axis_to_actuator[axis_in_world, 1]
-    if vel_actuator_idx >= 0:  # Valid actuator
-        actuator_bias[worldid, vel_actuator_idx][2] = -kv
-        actuator_gain[worldid, vel_actuator_idx][0] = kv
-        actuator_forcerange[worldid, vel_actuator_idx] = wp.vec2f(-effort_limit, effort_limit)
+    if raw_value >= 0:
+        # Position actuator
+        newton_axis = raw_value
+        effort_limit = joint_effort_limit[newton_axis]
+        actuator_forcerange[world, mjc_actuator] = wp.vec2f(-effort_limit, effort_limit)
+        kp = joint_target_kp[newton_axis]
+        actuator_bias[world, mjc_actuator][1] = -kp
+        actuator_gain[world, mjc_actuator][0] = kp
+    elif raw_value != -1:  # raw_value == -1 means unmapped
+        # Velocity actuator
+        newton_axis = -raw_value - 2  # Decode: -(newton_axis + 2) -> newton_axis
+        effort_limit = joint_effort_limit[newton_axis]
+        actuator_forcerange[world, mjc_actuator] = wp.vec2f(-effort_limit, effort_limit)
+        kv = joint_target_kv[newton_axis]
+        actuator_bias[world, mjc_actuator][2] = -kv
+        actuator_gain[world, mjc_actuator][0] = kv
 
 
 @wp.kernel
-def update_joint_dof_properties_kernel(
-    joint_qd_start: wp.array(dtype=wp.int32),
-    joint_dof_dim: wp.array2d(dtype=wp.int32),
-    joint_mjc_dof_start: wp.array(dtype=wp.int32),
-    dof_to_mjc_joint: wp.array(dtype=wp.int32),
+def update_dof_properties_kernel(
+    mjc_dof_to_newton_dof: wp.array2d(dtype=wp.int32),
     joint_armature: wp.array(dtype=float),
     joint_friction: wp.array(dtype=float),
+    joint_damping: wp.array(dtype=float),
+    dof_solimp: wp.array(dtype=vec5),
+    dof_solref: wp.array(dtype=wp.vec2),
+    # outputs
+    dof_armature: wp.array2d(dtype=float),
+    dof_frictionloss: wp.array2d(dtype=float),
+    dof_damping: wp.array2d(dtype=float),
+    dof_solimp_out: wp.array2d(dtype=vec5),
+    dof_solref_out: wp.array2d(dtype=wp.vec2),
+):
+    """Update MuJoCo DOF properties from Newton DOF properties.
+
+    Iterates over MuJoCo DOFs [world, dof], looks up Newton DOF,
+    and copies armature, friction, damping, solimp, solref.
+    """
+    world, mjc_dof = wp.tid()
+    newton_dof = mjc_dof_to_newton_dof[world, mjc_dof]
+    if newton_dof < 0:
+        return
+
+    dof_armature[world, mjc_dof] = joint_armature[newton_dof]
+    dof_frictionloss[world, mjc_dof] = joint_friction[newton_dof]
+    if joint_damping:
+        dof_damping[world, mjc_dof] = joint_damping[newton_dof]
+    if dof_solimp:
+        dof_solimp_out[world, mjc_dof] = dof_solimp[newton_dof]
+    if dof_solref:
+        dof_solref_out[world, mjc_dof] = dof_solref[newton_dof]
+
+
+@wp.kernel
+def update_jnt_properties_kernel(
+    mjc_jnt_to_newton_dof: wp.array2d(dtype=wp.int32),
     joint_limit_ke: wp.array(dtype=float),
     joint_limit_kd: wp.array(dtype=float),
     joint_limit_lower: wp.array(dtype=float),
     joint_limit_upper: wp.array(dtype=float),
     solimplimit: wp.array(dtype=vec5),
-    dof_solref: wp.array(dtype=wp.vec2),
-    dof_solimp: wp.array(dtype=vec5),
     joint_stiffness: wp.array(dtype=float),
-    joint_damping: wp.array(dtype=float),
     limit_margin: wp.array(dtype=float),
-    joints_per_world: int,
     # outputs
-    dof_armature: wp.array2d(dtype=float),
-    dof_frictionloss: wp.array2d(dtype=float),
     jnt_solimp: wp.array2d(dtype=vec5),
-    dof_solref_out: wp.array2d(dtype=wp.vec2),
-    dof_solimp_out: wp.array2d(dtype=vec5),
     jnt_solref: wp.array2d(dtype=wp.vec2),
     jnt_stiffness: wp.array2d(dtype=float),
-    dof_damping: wp.array2d(dtype=float),
     jnt_margin: wp.array2d(dtype=float),
     jnt_range: wp.array2d(dtype=wp.vec2),
 ):
-    """Update joint DOF properties including armature, friction loss, joint impedance limits, and solref.
+    """Update MuJoCo joint properties from Newton DOF properties.
 
-    This kernel properly maps Newton DOFs to MuJoCo DOFs using joint_mjc_dof_start.
-    For solimplimit and solref, we use dof_to_mjc_joint since jnt_solimp/jnt_solref are per-joint in MuJoCo.
-    If solimplimit is None, jnt_solimp won't be updated (MuJoCo defaults will be preserved).
+    Iterates over MuJoCo joints [world, jnt], looks up Newton DOF,
+    and copies joint-level properties (limits, stiffness, solref, solimp).
     """
-    tid = wp.tid()
-    worldid = tid // joints_per_world
-    joint_in_world = tid % joints_per_world
-
-    lin_axis_count = joint_dof_dim[tid, 0]
-    ang_axis_count = joint_dof_dim[tid, 1]
-
-    if lin_axis_count + ang_axis_count == 0:
+    world, mjc_jnt = wp.tid()
+    newton_dof = mjc_jnt_to_newton_dof[world, mjc_jnt]
+    if newton_dof < 0:
         return
 
-    newton_dof_start = joint_qd_start[tid]
-    mjc_dof_start = joint_mjc_dof_start[joint_in_world]
+    # Update joint limit solref using negative convention
+    if joint_limit_ke[newton_dof] > 0.0:
+        jnt_solref[world, mjc_jnt] = wp.vec2(-joint_limit_ke[newton_dof], -joint_limit_kd[newton_dof])
 
-    # Get the DOF start for the template joint (world 0)
-    # dof_to_mjc_joint is only populated for template DOFs (first world)
-    template_joint_idx = joint_in_world
-    template_dof_start = joint_qd_start[template_joint_idx]
+    # Update solimplimit
+    if solimplimit:
+        jnt_solimp[world, mjc_jnt] = solimplimit[newton_dof]
 
-    # update linear dofs
-    for i in range(lin_axis_count):
-        newton_dof_index = newton_dof_start + i
-        template_dof_index = template_dof_start + i
-        mjc_dof_index = mjc_dof_start + i
-        mjc_joint_index = dof_to_mjc_joint[template_dof_index]
+    # Update passive stiffness
+    if joint_stiffness:
+        jnt_stiffness[world, mjc_jnt] = joint_stiffness[newton_dof]
 
-        # Update armature and friction (per DOF)
-        dof_armature[worldid, mjc_dof_index] = joint_armature[newton_dof_index]
-        dof_frictionloss[worldid, mjc_dof_index] = joint_friction[newton_dof_index]
-        # Update passive damping (per dof)
-        if joint_damping:
-            dof_damping[worldid, mjc_dof_index] = joint_damping[newton_dof_index]
+    # Update limit margin
+    if limit_margin:
+        jnt_margin[world, mjc_jnt] = limit_margin[newton_dof]
 
-        # Update dof_solref (per DOF)
-        if dof_solref:
-            dof_solref_out[worldid, mjc_dof_index] = dof_solref[newton_dof_index]
+    # Update joint range
+    jnt_range[world, mjc_jnt] = wp.vec2(joint_limit_lower[newton_dof], joint_limit_upper[newton_dof])
 
-        # Update dof_solimp (per DOF)
-        if dof_solimp:
-            dof_solimp_out[worldid, mjc_dof_index] = dof_solimp[newton_dof_index]
 
-        # Update joint limit solref using negative convention (per joint)
-        if joint_limit_ke[newton_dof_index] > 0.0:
-            jnt_solref[worldid, mjc_joint_index] = wp.vec2(
-                -joint_limit_ke[newton_dof_index], -joint_limit_kd[newton_dof_index]
-            )
+@wp.kernel
+def update_mocap_transforms_kernel(
+    mjc_mocap_to_newton_jnt: wp.array2d(dtype=wp.int32),
+    newton_joint_X_p: wp.array(dtype=wp.transform),
+    newton_joint_X_c: wp.array(dtype=wp.transform),
+    # outputs
+    mocap_pos: wp.array2d(dtype=wp.vec3),
+    mocap_quat: wp.array2d(dtype=wp.quat),
+):
+    """Update mocap body positions and orientations from Newton joint data.
 
-        # Update solimplimit (per joint)
-        if solimplimit:
-            jnt_solimp[worldid, mjc_joint_index] = solimplimit[newton_dof_index]
-        # Update passive stiffness (per joint)
-        if joint_stiffness:
-            jnt_stiffness[worldid, mjc_joint_index] = joint_stiffness[newton_dof_index]
-        if limit_margin:
-            jnt_margin[worldid, mjc_joint_index] = limit_margin[newton_dof_index]
+    Iterates over MuJoCo mocap bodies [world, mocap_idx].
+    Mocap bodies are fixed-base articulations with no MuJoCo joint.
+    """
+    world, mocap_idx = wp.tid()
 
-        # update joint range (per joint)
-        jnt_range[worldid, mjc_joint_index] = wp.vec2(
-            joint_limit_lower[newton_dof_index], joint_limit_upper[newton_dof_index]
-        )
+    # Get the Newton joint index for this mocap body
+    newton_jnt = mjc_mocap_to_newton_jnt[world, mocap_idx]
+    if newton_jnt < 0:
+        return
 
-    # update angular dofs
-    for i in range(ang_axis_count):
-        newton_dof_index = newton_dof_start + lin_axis_count + i
-        template_dof_index = template_dof_start + lin_axis_count + i
-        mjc_dof_index = mjc_dof_start + lin_axis_count + i
-        mjc_joint_index = dof_to_mjc_joint[template_dof_index]
+    # Get transforms from Newton
+    parent_xform = newton_joint_X_p[newton_jnt]
+    child_xform = newton_joint_X_c[newton_jnt]
 
-        # Update armature and friction (per DOF)
-        dof_armature[worldid, mjc_dof_index] = joint_armature[newton_dof_index]
-        dof_frictionloss[worldid, mjc_dof_index] = joint_friction[newton_dof_index]
-        # Update passive damping (per dof)
-        if joint_damping:
-            dof_damping[worldid, mjc_dof_index] = joint_damping[newton_dof_index]
+    # Compute body transform: X_p * inv(X_c)
+    tf = parent_xform * wp.transform_inverse(child_xform)
 
-        # Update dof_solref (per DOF)
-        if dof_solref:
-            dof_solref_out[worldid, mjc_dof_index] = dof_solref[newton_dof_index]
-
-        # Update dof_solimp (per DOF)
-        if dof_solimp:
-            dof_solimp_out[worldid, mjc_dof_index] = dof_solimp[newton_dof_index]
-
-        # Update joint limit solref using negative convention (per joint)
-        if joint_limit_ke[newton_dof_index] > 0.0:
-            jnt_solref[worldid, mjc_joint_index] = wp.vec2(
-                -joint_limit_ke[newton_dof_index], -joint_limit_kd[newton_dof_index]
-            )
-
-        # Update solimplimit (per joint)
-        if solimplimit:
-            jnt_solimp[worldid, mjc_joint_index] = solimplimit[newton_dof_index]
-        # Update passive stiffness (per joint)
-        if joint_stiffness:
-            jnt_stiffness[worldid, mjc_joint_index] = joint_stiffness[newton_dof_index]
-        if limit_margin:
-            jnt_margin[worldid, mjc_joint_index] = limit_margin[newton_dof_index]
-
-        # update joint range (per joint)
-        jnt_range[worldid, mjc_joint_index] = wp.vec2(
-            joint_limit_lower[newton_dof_index], joint_limit_upper[newton_dof_index]
-        )
+    # Update mocap position and orientation
+    mocap_pos[world, mocap_idx] = tf.p
+    mocap_quat[world, mocap_idx] = wp.quat(tf.q.w, tf.q.x, tf.q.y, tf.q.z)
 
 
 @wp.kernel
 def update_joint_transforms_kernel(
-    joint_X_p: wp.array(dtype=wp.transform),
-    joint_X_c: wp.array(dtype=wp.transform),
-    joint_dof_start: wp.array(dtype=wp.int32),
-    joint_dof_dim: wp.array2d(dtype=wp.int32),
-    joint_original_axis: wp.array(dtype=wp.vec3),
-    joint_child: wp.array(dtype=wp.int32),
-    joint_type: wp.array(dtype=wp.int32),
-    dof_to_mjc_joint: wp.array(dtype=wp.int32),
-    body_mapping: wp.array(dtype=wp.int32),
-    newton_body_to_mocap_index: wp.array(dtype=wp.int32),
-    joints_per_world: int,
+    mjc_jnt_to_newton_jnt: wp.array2d(dtype=wp.int32),
+    mjc_jnt_to_newton_dof: wp.array2d(dtype=wp.int32),
+    mjc_jnt_bodyid: wp.array(dtype=wp.int32),
+    mjc_jnt_type: wp.array(dtype=wp.int32),
+    # Newton model data (joint-indexed)
+    newton_joint_X_p: wp.array(dtype=wp.transform),
+    newton_joint_X_c: wp.array(dtype=wp.transform),
+    # Newton model data (DOF-indexed)
+    newton_joint_axis: wp.array(dtype=wp.vec3),
     # outputs
-    joint_pos: wp.array2d(dtype=wp.vec3),
-    joint_axis: wp.array2d(dtype=wp.vec3),
+    jnt_pos: wp.array2d(dtype=wp.vec3),
+    jnt_axis: wp.array2d(dtype=wp.vec3),
     body_pos: wp.array2d(dtype=wp.vec3),
     body_quat: wp.array2d(dtype=wp.quat),
-    mocap_pos: wp.array2d(dtype=wp.vec3),
-    mocap_quat: wp.array2d(dtype=wp.quat),
 ):
-    tid = wp.tid()
-    worldid = tid // joints_per_world
-    joint_in_world = tid % joints_per_world
+    """Update MuJoCo joint transforms and body positions from Newton joint data.
 
-    jtype = joint_type[tid]
-    if jtype == JointType.FREE:
-        # we do not set joint transforms for free joints
+    Iterates over MuJoCo joints [world, jnt]. For each joint:
+    - Updates MuJoCo body_pos/body_quat from Newton joint transforms
+    - Updates MuJoCo jnt_pos and jnt_axis
+
+    Note: Mocap bodies are handled by update_mocap_transforms_kernel.
+    """
+    world, mjc_jnt = wp.tid()
+
+    # Get the Newton joint index for this MuJoCo joint (for joint-indexed arrays)
+    newton_jnt = mjc_jnt_to_newton_jnt[world, mjc_jnt]
+    if newton_jnt < 0:
         return
 
-    child_xform = joint_X_c[tid]
-    parent_xform = joint_X_p[tid]
+    # Get the Newton DOF for this MuJoCo joint (for DOF-indexed arrays like axis)
+    newton_dof = mjc_jnt_to_newton_dof[world, mjc_jnt]
 
-    # update body pos and quat from parent joint transform
-    child = joint_child[joint_in_world]  # Newton body id
-    body_id = body_mapping[child]  # MuJoCo body id
+    # Skip free joints
+    jtype = mjc_jnt_type[mjc_jnt]
+    if jtype == 0:  # mjJNT_FREE
+        return
+
+    # Get transforms from Newton (indexed by Newton joint)
+    child_xform = newton_joint_X_c[newton_jnt]
+    parent_xform = newton_joint_X_p[newton_jnt]
+
+    # Update body pos and quat from parent joint transform
     tf = parent_xform * wp.transform_inverse(child_xform)
 
-    # Check if this is a mocap body (fixed-base articulation)
-    # For mocap bodies, we need to update mocap_pos/mocap_quat instead of body_pos/body_quat
-    # mocap_index is -1 if not a mocap body
-    mocap_index = newton_body_to_mocap_index[child]
-    rotation = wp.quat(tf.q.w, tf.q.x, tf.q.y, tf.q.z)
-    if mocap_index >= 0:
-        mocap_pos[worldid, mocap_index] = tf.p
-        mocap_quat[worldid, mocap_index] = rotation
-    else:
-        body_pos[worldid, body_id] = tf.p
-        body_quat[worldid, body_id] = rotation
+    # Get the MuJoCo body for this joint and update its transform
+    # Note: Mocap bodies don't have MuJoCo joints, so they're handled
+    # separately by update_mocap_transforms_kernel
+    mjc_body = mjc_jnt_bodyid[mjc_jnt]
+    body_pos[world, mjc_body] = tf.p
+    body_quat[world, mjc_body] = wp.quat(tf.q.w, tf.q.x, tf.q.y, tf.q.z)
 
-    lin_axis_count = joint_dof_dim[tid, 0]
-    ang_axis_count = joint_dof_dim[tid, 1]
-
-    if lin_axis_count + ang_axis_count == 0:
-        return
-
-    newton_dof_start = joint_dof_start[tid]
-    template_dof_start = joint_dof_start[joint_in_world]
-    mjc_joint_index = dof_to_mjc_joint[template_dof_start]
-
-    # update linear dofs
-    for i in range(lin_axis_count):
-        newton_dof_index = newton_dof_start + i
-        axis = joint_original_axis[newton_dof_index]
-        ai = mjc_joint_index + i
-        joint_axis[worldid, ai] = wp.quat_rotate(child_xform.q, axis)
-        joint_pos[worldid, ai] = child_xform.p
-
-    # update angular dofs
-    for i in range(ang_axis_count):
-        newton_dof_index = newton_dof_start + lin_axis_count + i
-        axis = joint_original_axis[newton_dof_index]
-        ai = mjc_joint_index + lin_axis_count + i
-        joint_axis[worldid, ai] = wp.quat_rotate(child_xform.q, axis)
-        joint_pos[worldid, ai] = child_xform.p
+    # Update joint axis and position (DOF-indexed for axis)
+    if newton_dof >= 0:
+        axis = newton_joint_axis[newton_dof]
+        jnt_axis[world, mjc_jnt] = wp.quat_rotate(child_xform.q, axis)
+    jnt_pos[world, mjc_jnt] = child_xform.p
 
 
 @wp.kernel(enable_backward=False)
@@ -1131,11 +1121,14 @@ def update_shape_mappings_kernel(
     geom_is_static: wp.array(dtype=bool),
     shape_range_len: int,
     first_env_shape_base: int,
-    # output
-    full_shape_mapping: wp.array(dtype=wp.vec2i),
-    reverse_shape_mapping: wp.array(dtype=wp.int32, ndim=2),
+    # output - MuJoCo[world, geom] -> Newton shape
+    mjc_geom_to_newton_shape: wp.array(dtype=wp.int32, ndim=2),
 ):
-    env_idx, geom_idx = wp.tid()
+    """
+    Build the mapping from MuJoCo [world, geom] to Newton shape index.
+    This is the primary mapping direction for the new unified design.
+    """
+    world, geom_idx = wp.tid()
     template_or_static_idx = geom_to_shape_idx[geom_idx]
     if template_or_static_idx < 0:
         return
@@ -1146,20 +1139,14 @@ def update_shape_mappings_kernel(
     is_static = geom_is_static[geom_idx]
 
     if is_static:
-        # Static shape - use absolute index
-        # Store world ID as -1 (sentinel) since static shapes exist in all worlds
-        # The actual world ID will be determined from the non-static shape in the contact pair
-        global_shape_idx = template_or_static_idx
-        if env_idx == 0:
-            # Only store the mapping once for static shapes (use env 0's geom index)
-            full_shape_mapping[global_shape_idx] = wp.vec2i(-1, geom_idx)
-        reverse_shape_mapping[env_idx, geom_idx] = global_shape_idx
+        # Static shape - use absolute index (same for all worlds)
+        newton_shape_idx = template_or_static_idx
     else:
-        # Non-static shape - compute the absolute Newton shape index for this environment
+        # Non-static shape - compute the absolute Newton shape index for this world
         # template_or_static_idx is 0-based offset within first_group shapes
-        global_shape_idx = first_env_shape_base + template_or_static_idx + env_idx * shape_range_len
-        full_shape_mapping[global_shape_idx] = wp.vec2i(env_idx, geom_idx)
-        reverse_shape_mapping[env_idx, geom_idx] = global_shape_idx
+        newton_shape_idx = first_env_shape_base + template_or_static_idx + world * shape_range_len
+
+    mjc_geom_to_newton_shape[world, geom_idx] = newton_shape_idx
 
 
 @wp.kernel
@@ -1181,7 +1168,7 @@ def update_geom_properties_kernel(
     shape_kd: wp.array(dtype=float),
     shape_size: wp.array(dtype=wp.vec3f),
     shape_transform: wp.array(dtype=wp.transform),
-    to_newton_shape_index: wp.array2d(dtype=wp.int32),
+    mjc_geom_to_newton_shape: wp.array2d(dtype=wp.int32),
     geom_type: wp.array(dtype=int),
     GEOM_TYPE_MESH: int,
     geom_dataid: wp.array(dtype=int),
@@ -1199,21 +1186,25 @@ def update_geom_properties_kernel(
     geom_quat: wp.array2d(dtype=wp.quatf),
     geom_solimp: wp.array2d(dtype=vec5),
 ):
-    """Update geom properties from Newton shape properties."""
-    worldid, geom_idx = wp.tid()
+    """Update MuJoCo geom properties from Newton shape properties.
 
-    shape_idx = to_newton_shape_index[worldid, geom_idx]
+    Iterates over MuJoCo geoms [world, geom], looks up Newton shape index,
+    and copies shape properties to geom properties.
+    """
+    world, geom_idx = wp.tid()
+
+    shape_idx = mjc_geom_to_newton_shape[world, geom_idx]
     if shape_idx < 0:
         return
 
     # update bounding radius
-    geom_rbound[worldid, geom_idx] = shape_collision_radius[shape_idx]
+    geom_rbound[world, geom_idx] = shape_collision_radius[shape_idx]
 
     # update friction (slide, torsion, roll)
     mu = shape_mu[shape_idx]
     torsional = shape_torsional_friction[shape_idx]
     rolling = shape_rolling_friction[shape_idx]
-    geom_friction[worldid, geom_idx] = wp.vec3f(mu, torsional, rolling)
+    geom_friction[world, geom_idx] = wp.vec3f(mu, torsional, rolling)
 
     # update geom_solref (timeconst, dampratio) using stiffness and damping
     # we don't use negative convention for geom_solref because MJWarp's code
@@ -1224,16 +1215,16 @@ def update_geom_properties_kernel(
         # ke = 1 / (timeconst^2 * dampratio^2) -> dampratio = sqrt(1 / (timeconst^2 * ke))
         timeconst = 2.0 / kd
         dampratio = wp.sqrt(1.0 / (timeconst * timeconst * ke))
-        geom_solref[worldid, geom_idx] = wp.vec2f(timeconst, dampratio)
+        geom_solref[world, geom_idx] = wp.vec2f(timeconst, dampratio)
     else:
-        geom_solref[worldid, geom_idx] = wp.vec2f(0.02, 1.0)
+        geom_solref[world, geom_idx] = wp.vec2f(0.02, 1.0)
 
     # update geom_solimp from custom attribute
     if shape_geom_solimp:
-        geom_solimp[worldid, geom_idx] = shape_geom_solimp[shape_idx]
+        geom_solimp[world, geom_idx] = shape_geom_solimp[shape_idx]
 
     # update size
-    geom_size[worldid, geom_idx] = shape_size[shape_idx]
+    geom_size[world, geom_idx] = shape_size[shape_idx]
 
     # update position and orientation
 
@@ -1249,5 +1240,25 @@ def update_geom_properties_kernel(
         tf = tf * mesh_tf
 
     # store position and orientation
-    geom_pos[worldid, geom_idx] = tf.p
-    geom_quat[worldid, geom_idx] = wp.quat(tf.q.w, tf.q.x, tf.q.y, tf.q.z)
+    geom_pos[world, geom_idx] = tf.p
+    geom_quat[world, geom_idx] = wp.quat(tf.q.w, tf.q.x, tf.q.y, tf.q.z)
+
+
+@wp.kernel(enable_backward=False)
+def _create_inverse_shape_mapping_kernel(
+    mjc_geom_to_newton_shape: wp.array2d(dtype=wp.int32),
+    # output
+    newton_shape_to_mjc_geom: wp.array(dtype=wp.int32),
+):
+    """
+    Create partial inverse mapping from Newton shape index to MuJoCo geom index.
+
+    Note: The full inverse mapping (Newton [shape] -> MuJoCo [world, geom]) is not possible because
+    shape-to-geom is one-to-many: the same global Newton shape maps to one MuJoCo geom in every
+    world. This kernel only stores the geom index; world ID is computed from body indices
+    in the contact conversion kernel.
+    """
+    world, geom_idx = wp.tid()
+    newton_shape_idx = mjc_geom_to_newton_shape[world, geom_idx]
+    if newton_shape_idx >= 0:
+        newton_shape_to_mjc_geom[newton_shape_idx] = geom_idx

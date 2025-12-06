@@ -149,21 +149,21 @@ class ModelBuilder:
         density: float = 1000.0
         """The density of the shape material."""
         ke: float = 1.0e5
-        """The contact elastic stiffness."""
+        """The contact elastic stiffness. Used by SemiImplicit, Featherstone, MuJoCo."""
         kd: float = 1000.0
-        """The contact damping stiffness."""
+        """The contact damping coefficient. Used by SemiImplicit, Featherstone, MuJoCo."""
         kf: float = 1000.0
-        """The contact friction stiffness."""
+        """The friction damping coefficient. Used by SemiImplicit, Featherstone."""
         ka: float = 0.0
-        """The contact adhesion distance."""
+        """The contact adhesion distance. Used by SemiImplicit, Featherstone."""
         mu: float = 0.5
-        """The coefficient of friction."""
+        """The coefficient of friction. Used by all solvers."""
         restitution: float = 0.0
-        """The coefficient of restitution."""
+        """The coefficient of restitution. Used by XPBD. To take effect, enable restitution in solver constructor via ``enable_restitution=True``."""
         torsional_friction: float = 0.25
-        """The coefficient of torsional friction (resistance to spinning at contact point)."""
+        """The coefficient of torsional friction (resistance to spinning at contact point). Used by XPBD, MuJoCo."""
         rolling_friction: float = 0.0005
-        """The coefficient of rolling friction (resistance to rolling motion)."""
+        """The coefficient of rolling friction (resistance to rolling motion). Used by XPBD, MuJoCo."""
         thickness: float = 1e-5
         """The thickness of the shape."""
         contact_margin: float | None = None
@@ -183,6 +183,10 @@ class ModelBuilder:
         """Indicates whether the shape is visible in the simulation. Defaults to True."""
         is_site: bool = False
         """Indicates whether the shape is a site (non-colliding reference point). Directly setting this to True will NOT enforce site invariants. Use `mark_as_site()` or set via the `flags` property to ensure invariants. Defaults to False."""
+        sdf_narrow_band_range: tuple[float, float] = (-0.1, 0.1)
+        """The narrow band distance range (inner, outer) for SDF computation. Only used for mesh shapes."""
+        sdf_target_voxel_size: float | None = None
+        """Target voxel size for sparse SDF grid. If None, computed as max_extent/64. Only used for mesh shapes."""
 
         def mark_as_site(self) -> None:
             """Marks this shape as a site and enforces all site invariants.
@@ -457,6 +461,13 @@ class ModelBuilder:
         When True, uses a CPU implementation that reports specific issues for each body and updates
         the ModelBuilder's internal state.
         Default: False."""
+
+        self.enable_mesh_sdf_collision = False
+        """Whether to enable SDF-based mesh-mesh collision detection.
+        When enabled, signed distance fields (SDFs) are computed for mesh shapes to enable
+        mesh-mesh collision detection. Requires a CUDA-capable GPU device since wp.Volume only
+        supports CUDA. If enabled but the model is finalized on a CPU device, a ValueError is raised.
+        Default: False."""
         # endregion
 
         # particles
@@ -496,6 +507,11 @@ class ModelBuilder:
         self.shape_collision_radius = []
         # world index for each shape
         self.shape_world = []
+        # SDF parameters per shape
+        self.shape_sdf_narrow_band_range = []
+        self.shape_sdf_target_voxel_size = []
+
+        # Mesh SDF storage (volumes kept for reference counting, SDFData array created at finalize)
 
         # filtering to ignore certain collision pairs
         self.shape_collision_filter_pairs: list[tuple[int, int]] = []
@@ -581,6 +597,7 @@ class ModelBuilder:
         self.joint_qd_start = []
         self.joint_dof_dim = []
         self.joint_world = []  # world index for each joint
+        self.joint_articulation = []  # articulation index for each joint, -1 if not in any articulation
 
         self.articulation_start = []
         self.articulation_key = []
@@ -1067,11 +1084,17 @@ class ModelBuilder:
                     f"before creating joints for another articulation."
                 )
 
-        # Validate all joints exist
+        # Validate all joints exist and don't already belong to an articulation
         for joint_idx in joints:
             if joint_idx < 0 or joint_idx >= len(self.joint_type):
                 raise ValueError(
                     f"Joint index {joint_idx} is out of range. Valid range is 0 to {len(self.joint_type) - 1}"
+                )
+            if self.joint_articulation[joint_idx] >= 0:
+                existing_art = self.joint_articulation[joint_idx]
+                raise ValueError(
+                    f"Joint {joint_idx} ('{self.joint_key[joint_idx]}') already belongs to articulation {existing_art} "
+                    f"('{self.articulation_key[existing_art]}'). Each joint can only belong to one articulation."
                 )
 
         # Validate all joints belong to the same world (current world)
@@ -1103,6 +1126,10 @@ class ModelBuilder:
         self.articulation_start.append(sorted_joints[0])
         self.articulation_key.append(key or f"articulation_{articulation_idx}")
         self.articulation_world.append(self.current_world)
+
+        # Mark all joints as belonging to this articulation
+        for joint_idx in joints:
+            self.joint_articulation[joint_idx] = articulation_idx
 
         # Process custom attributes for this articulation
         if custom_attributes:
@@ -1667,6 +1694,10 @@ class ModelBuilder:
         if builder.joint_count > 0:
             s = [self.current_world] * builder.joint_count
             self.joint_world.extend(s)
+            # Offset articulation indices for joints (-1 stays -1)
+            self.joint_articulation.extend(
+                [a + start_articulation_idx if a >= 0 else -1 for a in builder.joint_articulation]
+            )
 
         # For articulations
         if builder.articulation_count > 0:
@@ -1746,6 +1777,8 @@ class ModelBuilder:
             "shape_material_rolling_friction",
             "shape_collision_radius",
             "shape_contact_margin",
+            "shape_sdf_narrow_band_range",
+            "shape_sdf_target_voxel_size",
             "particle_qd",
             "particle_mass",
             "particle_radius",
@@ -2050,6 +2083,7 @@ class ModelBuilder:
         self.joint_enabled.append(enabled)
         self.joint_is_loop.append(is_loop_joint)
         self.joint_world.append(self.current_world)
+        self.joint_articulation.append(-1)
 
         def add_axis_dim(dim: ModelBuilder.JointDofConfig):
             self.joint_axis.append(dim.axis)
@@ -3078,8 +3112,9 @@ class ModelBuilder:
         # remove empty articulation starts, i.e. where the start and end are the same
         self.articulation_start = list(set(self.articulation_start))
 
-        # save original joint groups before clearing
+        # save original joint worlds and articulations before clearing
         original_ = self.joint_world[:] if self.joint_world else []
+        original_articulation = self.joint_articulation[:] if self.joint_articulation else []
 
         self.joint_key.clear()
         self.joint_type.clear()
@@ -3105,6 +3140,7 @@ class ModelBuilder:
         self.joint_target_pos.clear()
         self.joint_target_vel.clear()
         self.joint_world.clear()
+        self.joint_articulation.clear()
         for joint in retained_joints:
             self.joint_key.append(joint["key"])
             self.joint_type.append(joint["type"])
@@ -3119,12 +3155,17 @@ class ModelBuilder:
             self.joint_X_p.append(joint["parent_xform"])
             self.joint_X_c.append(joint["child_xform"])
             self.joint_dof_dim.append(joint["axis_dim"])
-            # Rebuild joint group - use original group if it exists
+            # Rebuild joint world - use original world if it exists
             if original_ and joint["original_id"] < len(original_):
                 self.joint_world.append(original_[joint["original_id"]])
             else:
-                # If no group was assigned, use default -1
+                # If no world was assigned, use default -1
                 self.joint_world.append(-1)
+            # Rebuild joint articulation assignment
+            if original_articulation and joint["original_id"] < len(original_articulation):
+                self.joint_articulation.append(original_articulation[joint["original_id"]])
+            else:
+                self.joint_articulation.append(-1)
             for axis in joint["axes"]:
                 self.joint_axis.append(axis["axis"])
                 self.joint_target_ke.append(axis["target_ke"])
@@ -3279,6 +3320,8 @@ class ModelBuilder:
         self.shape_collision_group.append(cfg.collision_group)
         self.shape_collision_radius.append(compute_shape_radius(type, scale, src))
         self.shape_world.append(self.current_world)
+        self.shape_sdf_narrow_band_range.append(cfg.sdf_narrow_band_range)
+        self.shape_sdf_target_voxel_size.append(cfg.sdf_target_voxel_size)
         if cfg.has_shape_collision and cfg.collision_filter_parent and body > -1 and body in self.joint_parents:
             for parent_body in self.joint_parents[body]:
                 if parent_body > -1:
@@ -5100,7 +5143,8 @@ class ModelBuilder:
 
     def add_free_joints_to_floating_bodies(self, new_bodies: Iterable[int] | None = None):
         """
-        Adds a free joint to every rigid body that is not a child in any joint and has positive mass.
+        Adds a free joint and single-joint articulation to every rigid body that is not a child in any joint
+        and has positive mass.
 
         Args:
             new_bodies (Iterable[int] or None, optional): The set of body indices to consider for adding free joints.
@@ -5108,13 +5152,15 @@ class ModelBuilder:
         Note:
             - Bodies that are already a child in any joint will be skipped.
             - Only bodies with strictly positive mass will receive a free joint.
+            - Each free joint is added to its own single-joint articulation.
             - This is useful for ensuring that all floating (unconnected) bodies are properly articulated.
         """
         # set(self.joint_child) is connected_bodies
         floating_bodies = set(new_bodies) - set(self.joint_child)
         for body_id in floating_bodies:
             if self.body_mass[body_id] > 0:
-                self.add_joint_free(child=body_id)
+                joint = self.add_joint_free(child=body_id)
+                self.add_articulation([joint])
 
     def set_coloring(self, particle_color_groups):
         """
@@ -5305,6 +5351,17 @@ class ModelBuilder:
         # validate world ordering and contiguity
         self._validate_world_ordering()
 
+        # validate all joints belong to an articulation
+        if self.joint_count > 0:
+            orphan_joints = [i for i, art in enumerate(self.joint_articulation) if art < 0]
+            if orphan_joints:
+                joint_keys = [self.joint_key[i] for i in orphan_joints[:5]]  # Show first 5
+                raise ValueError(
+                    f"Found {len(orphan_joints)} joint(s) not belonging to any articulation. "
+                    f"Call add_articulation() for all joints. Orphan joints: {joint_keys}"
+                    + ("..." if len(orphan_joints) > 5 else "")
+                )
+
         # construct particle inv masses
         ms = np.array(self.particle_mass, dtype=np.float32)
         # static particles (with zero mass) have zero inverse mass
@@ -5394,6 +5451,104 @@ class ModelBuilder:
 
             m.shape_collision_filter_pairs = set(self.shape_collision_filter_pairs)
             m.shape_collision_group = wp.array(self.shape_collision_group, dtype=wp.int32)
+
+            # ---------------------
+            # Compute SDFs for mesh shapes (opt-in feature via enable_mesh_sdf_collision)
+            from ..geometry.sdf_utils import SDFData, compute_sdf, create_empty_sdf_data  # noqa: PLC0415
+            from ..geometry.types import GeoType  # noqa: PLC0415
+
+            # Check if we're running on GPU - wp.Volume only supports CUDA
+            current_device = wp.get_device(device)
+            is_gpu = current_device.is_cuda
+
+            # Check if mesh SDF collision was requested but we're on CPU
+            if self.enable_mesh_sdf_collision and not is_gpu:
+                raise ValueError(
+                    "enable_mesh_sdf_collision requires a CUDA-capable GPU device. "
+                    "wp.Volume (used for SDF generation) only supports CUDA. "
+                    "Either set enable_mesh_sdf_collision=False or use a CUDA device."
+                )
+
+            # Check if there are any mesh shapes with collision enabled
+            has_colliding_meshes = any(
+                stype == GeoType.MESH and ssrc is not None and sflags & ShapeFlags.COLLIDE_SHAPES
+                for stype, ssrc, sflags in zip(self.shape_type, self.shape_source, self.shape_flags, strict=False)
+            )
+
+            # Enable mesh-mesh collision only if explicitly enabled, on GPU, and there are colliding meshes
+            m.mesh_mesh_collision_enabled = self.enable_mesh_sdf_collision and has_colliding_meshes and is_gpu
+
+            if self.enable_mesh_sdf_collision and has_colliding_meshes:
+                sdf_data_list = []
+                # Keep volume objects alive for reference counting
+                sdf_volumes = []
+                sdf_coarse_volumes = []
+                sdf_cache = {}
+                # Create empty SDF data once for reuse by non-mesh shapes
+                empty_sdf_data = create_empty_sdf_data()
+
+                for (
+                    shape_type,
+                    shape_src,
+                    shape_flags,
+                    shape_scale,
+                    shape_thickness,
+                    shape_contact_margin,
+                    sdf_narrow_band_range,
+                    sdf_target_voxel_size,
+                ) in zip(
+                    self.shape_type,
+                    self.shape_source,
+                    self.shape_flags,
+                    self.shape_scale,
+                    self.shape_thickness,
+                    self.shape_contact_margin,
+                    self.shape_sdf_narrow_band_range,
+                    self.shape_sdf_target_voxel_size,
+                    strict=False,
+                ):
+                    # Compute SDF only for mesh shapes with collision enabled
+                    if shape_type == GeoType.MESH and shape_src is not None and shape_flags & ShapeFlags.COLLIDE_SHAPES:
+                        cache_key = (
+                            hash(shape_src),
+                            shape_thickness,
+                            tuple(shape_scale),
+                            shape_contact_margin,
+                            tuple(sdf_narrow_band_range),
+                            sdf_target_voxel_size,
+                        )
+                        if cache_key in sdf_cache:
+                            sdf_data, sparse_volume, coarse_volume = sdf_cache[cache_key]
+                        else:
+                            # Compute SDF for this mesh shape (returns SDFData struct and volume objects)
+                            sdf_data, sparse_volume, coarse_volume = compute_sdf(
+                                mesh_src=shape_src,
+                                shape_scale=shape_scale,
+                                shape_thickness=shape_thickness,
+                                narrow_band_distance=sdf_narrow_band_range,
+                                margin=shape_contact_margin,
+                                target_voxel_size=sdf_target_voxel_size,
+                            )
+                            sdf_cache[cache_key] = (sdf_data, sparse_volume, coarse_volume)
+                        sdf_volumes.append(sparse_volume)
+                        sdf_coarse_volumes.append(coarse_volume)
+                    else:
+                        # Non-mesh shapes or non-colliding shapes get empty SDFData
+                        sdf_data = empty_sdf_data
+                        sdf_volumes.append(None)
+                        sdf_coarse_volumes.append(None)
+                    sdf_data_list.append(sdf_data)
+
+                # Create array of SDFData structs
+                m.shape_sdf_data = wp.array(sdf_data_list, dtype=SDFData, device=device)
+                # Keep volume objects alive for reference counting
+                m.shape_sdf_volume = sdf_volumes
+                m.shape_sdf_coarse_volume = sdf_coarse_volumes
+            else:
+                # SDF mesh-mesh collision not enabled or no colliding meshes
+                m.shape_sdf_data = wp.empty(0, dtype=SDFData, device=device)
+                m.shape_sdf_volume = []
+                m.shape_sdf_coarse_volume = []
 
             # ---------------------
             # springs
