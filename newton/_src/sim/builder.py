@@ -4349,14 +4349,11 @@ class ModelBuilder:
             )
             link_joints.append(joint)
 
-        # Optionally wrap all rod joints into a single articulation so they are not treated
-        # as orphans during finalize() (even if closed/looped).
+        # Optionally (by default) wrap all rod joints into a single articulation.
         if wrap_in_articulation and link_joints:
             # Derive a default articulation key if none is provided.
             rod_art_key = f"{key}_articulation" if key else None
 
-            # NOTE: Currently, even for closed loops, we add an articulation
-            # to prevent the "orphan joints" error in finalize().
             self.add_articulation(link_joints, key=rod_art_key)
 
         return link_bodies, link_joints
