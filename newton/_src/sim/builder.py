@@ -4189,6 +4189,7 @@ class ModelBuilder:
         bend_damping: float | None = None,
         closed: bool = False,
         key: str | None = None,
+        wrap_in_articulation: bool = True,
     ) -> tuple[list[int], list[int]]:
         """Adds a rod composed of capsule bodies connected by cable joints.
 
@@ -4212,10 +4213,17 @@ class ModelBuilder:
             closed: If True, connects the last segment back to the first to form a closed loop. If False,
                 creates an open chain.
             key: Optional key prefix for bodies, shapes, and joints.
+            wrap_in_articulation: If True, the created joints are automatically wrapped into a single
+                articulation. Defaults to True to ensure valid simulation models.
 
         Returns:
             tuple[list[int], list[int]]: (body_indices, joint_indices). For an open chain,
             ``len(joint_indices) == num_segments - 1``; for a closed loop, ``len(joint_indices) == num_segments``.
+
+        Articulations:
+            By default (``wrap_in_articulation=True``), the created joints are wrapped into a single
+            articulation, which avoids orphan joints during :meth:`finalize`. Set ``wrap_in_articulation=False`` if you need the joints
+            to remain outside any articulation.
 
         Raises:
             ValueError: If ``positions`` and ``quaternions`` lengths are incompatible.
@@ -4340,6 +4348,16 @@ class ModelBuilder:
                 enabled=True,
             )
             link_joints.append(joint)
+
+        # Optionally wrap all rod joints into a single articulation so they are not treated
+        # as orphans during finalize() (even if closed/looped).
+        if wrap_in_articulation and link_joints:
+            # Derive a default articulation key if none is provided.
+            rod_art_key = f"{key}_articulation" if key else None
+
+            # NOTE: Currently, even for closed loops, we add an articulation
+            # to prevent the "orphan joints" error in finalize().
+            self.add_articulation(link_joints, key=rod_art_key)
 
         return link_bodies, link_joints
 
