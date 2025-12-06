@@ -21,6 +21,13 @@
 # This demonstrates how bend stiffness affects cable dynamics, settling behavior,
 # and physical realism.
 #
+# Note: This example uses standard VBD iterations.
+# If you prefer to use more substeps rather than iterations for better convergence
+# (and maintain smooth damping even with fewer iterations), see `example_cable_bend_damping.py`.
+# It demonstrates how to use `solver.set_step_history_update()` to control the
+# history update frequency across substeps for stable damping even when
+# iteration count is low.
+#
 ###########################################################################
 
 import numpy as np
@@ -126,8 +133,7 @@ class Example:
         self.frame_dt = 1.0 / self.fps
         self.sim_time = 0.0
         self.sim_substeps = 10
-        self.sim_iterations = 1
-        self.update_step_interval = 2
+        self.sim_iterations = 5
         self.sim_dt = self.frame_dt / self.sim_substeps
 
         self.viewer = viewer
@@ -214,19 +220,14 @@ class Example:
             self.graph = None
 
     def simulate(self):
-        for substep in range(self.sim_substeps):
+        for _ in range(self.sim_substeps):
             self.state_0.clear_forces()
 
             # Apply forces to the model
             self.viewer.apply_forces(self.state_0)
 
-            # Decide whether to refresh solver history (anchors used for long-range damping)
-            # and recompute contacts on this substep, using a configurable cadence.
-            update_step_history = (substep % self.update_step_interval) == 0
-
             # Collide for contact detection
-            if update_step_history:
-                self.contacts = self.model.collide(self.state_0)
+            self.contacts = self.model.collide(self.state_0)
 
             self.solver.step(
                 self.state_0,
@@ -234,7 +235,6 @@ class Example:
                 self.control,
                 self.contacts,
                 self.sim_dt,
-                update_step_history=update_step_history,
             )
 
             # Swap states

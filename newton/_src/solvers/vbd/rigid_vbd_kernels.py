@@ -542,7 +542,9 @@ def evaluate_rigid_contact_from_collision(
         body_a_index: Body A index (-1 for static/kinematic).
         body_b_index: Body B index (-1 for static/kinematic).
         body_q: Current body transforms (world frame).
-        body_q_prev: Previous body transforms (world frame).
+        body_q_anchor: Anchor body transforms (world frame) used as the
+            "previous" pose for finite-difference velocity over the damping
+            window.
         body_com: Body COM offsets (local body frame).
         contact_point_a_local: Contact point on A (local body frame).
         contact_point_b_local: Contact point on B (local body frame).
@@ -552,7 +554,7 @@ def evaluate_rigid_contact_from_collision(
         contact_kd: Damping coefficient.
         friction_mu: Coulomb friction coefficient.
         friction_epsilon: Friction regularization length.
-        dt: Time step [s].
+        dt: Effective damping window [s].
 
     Returns:
         tuple: (force_a, torque_a, h_ll_a, h_al_a, h_aa_a,
@@ -703,7 +705,9 @@ def evaluate_body_particle_contact(
     Args:
         particle_index: Index of the particle
         particle_pos: Current particle position (world frame)
-        particle_prev_pos: Previous particle position (world frame)
+        particle_prev_pos: Anchor particle position (world frame), used as the
+            "previous" position for finite-difference velocity over the
+            damping window.
         contact_index: Index in the body-particle contact arrays
         body_particle_contact_ke: Contact stiffness (model-level or AVBD adaptive)
         body_particle_contact_kd: Contact damping (model-level or AVBD averaged)
@@ -713,14 +717,15 @@ def evaluate_body_particle_contact(
         shape_material_mu: Array of shape friction coefficients
         shape_body: Array mapping shape index to body index
         body_q: Current body transforms
-        body_q_prev: Previous body transforms (optional, for finite-difference velocity)
-        body_qd: Body spatial velocities (fallback if body_q_prev unavailable)
+        body_q_anchor: Anchor body transforms (for finite-difference body
+            velocity when available)
+        body_qd: Body spatial velocities (fallback when no anchor is used)
         body_com: Body centers of mass (local frame)
         contact_shape: Array of shape indices for each soft contact
         contact_body_pos: Array of contact points (local to shape)
         contact_body_vel: Array of contact velocities (local frame)
         contact_normal: Array of contact normals (world frame, from rigid to particle)
-        dt: Time step
+        dt: Effective damping window [s].
 
     Returns:
         tuple[wp.vec3, wp.mat33]: (force, Hessian) on the particle (world frame)
@@ -863,7 +868,10 @@ def evaluate_joint_force_hessian(
 ):
     """Compute AVBD joint force and Hessian contributions for a specific body (cable joints).
 
-    Returns tuple (force, torque, H_ll, H_al, H_aa) in world frame.
+    Uses ``body_q_anchor`` as the previous pose when estimating damping and
+    friction over the long-range window ``dt``, while ``body_q`` and
+    ``body_q_rest`` provide current and rest configurations. Returns
+    (force, torque, H_ll, H_al, H_aa) in world frame.
     """
     if joint_type[joint_index] != JointType.CABLE:
         return wp.vec3(0.0), wp.vec3(0.0), wp.mat33(0.0), wp.mat33(0.0), wp.mat33(0.0)
@@ -1025,38 +1033,40 @@ def forward_step_rigid_bodies(
     body_inertia: wp.array(dtype=wp.mat33),
     body_inv_mass: wp.array(dtype=float),
     body_inv_inertia: wp.array(dtype=wp.mat33),
-    # Input
-    body_q_in: wp.array(dtype=wp.transform),  # state_in
-    body_qd_in: wp.array(dtype=wp.spatial_vector),  # state_in
-    # Output
-    body_q_out: wp.array(dtype=wp.transform),  # state_out
-    body_qd_out: wp.array(dtype=wp.spatial_vector),  # state_out
-    body_q_anchor: wp.array(dtype=wp.transform),  # frame start anchor
+    body_q: wp.array(dtype=wp.transform),
+    body_qd: wp.array(dtype=wp.spatial_vector),
+    body_q_prev: wp.array(dtype=wp.transform),
+    body_q_anchor: wp.array(dtype=wp.transform),
     body_inertia_q: wp.array(dtype=wp.transform),
 ):
     """
-    Forward integration step for rigid bodies in rigid VBD solver.
+    Forward integration step for rigid bodies in the AVBD/VBD solver.
 
     Args:
-        dt: Time step
-        update_step_history: If True, updates body_q_anchor (damping anchor) with current position.
-        gravity: Gravity vector array (world frame)
-        body_f: External forces on bodies (spatial wrenches)
-        body_com: Center of mass offsets (local body frame)
-        body_inertia: Inertia tensors (local body frame)
-        body_inv_mass: Inverse masses (0 for kinematic bodies)
-        body_inv_inertia: Inverse inertia tensors (local body frame)
-        body_q_in: Current body transforms (input, start of step)
-        body_qd_in: Current body velocities (input, start of step)
-        body_q_out: Predicted body transforms (output, end of step / predictor)
-        body_qd_out: Predicted body velocities (output)
-        body_q_anchor: Previous body transforms (output, updated only if update_step_history is True)
-        body_inertia_q: Inertial body transforms (output, VBD solve target)
+        dt: Time step [s].
+        update_step_history: If True, updates ``body_q_anchor`` with the current pose
+            at the start of the macro-step (damping/friction anchor).
+        gravity: Gravity vector array (world frame).
+        body_f: External forces on bodies (spatial wrenches, world frame).
+        body_com: Centers of mass (local body frame).
+        body_inertia: Inertia tensors (local body frame).
+        body_inv_mass: Inverse masses (0 for kinematic bodies).
+        body_inv_inertia: Inverse inertia tensors (local body frame).
+        body_q: Body transforms (input: start-of-step pose, output: integrated pose).
+        body_qd: Body velocities (input: start-of-step velocity, output: integrated velocity).
+        body_q_prev: Previous body transforms (output, snapshot of ``body_q`` before integration,
+            used for BDF1 velocity update).
+        body_q_anchor: Anchor body transforms (output, updated only when
+            ``update_step_history`` is True, used as a long-range damping/friction anchor).
+        body_inertia_q: Inertial target body transforms for the AVBD solve (output).
     """
     tid = wp.tid()
 
     # Read current transform
-    q_current = body_q_in[tid]
+    q_current = body_q[tid]
+
+    # Store previous transform for velocity computation
+    body_q_prev[tid] = q_current
 
     # Update history buffer if this is the start of a frame
     if update_step_history:
@@ -1066,12 +1076,10 @@ def forward_step_rigid_bodies(
     inv_m = body_inv_mass[tid]
     if inv_m == 0.0:
         body_inertia_q[tid] = q_current
-        body_q_out[tid] = q_current
-        body_qd_out[tid] = body_qd_in[tid]
         return
 
     # Read body state (only for dynamic bodies)
-    qd_current = body_qd_in[tid]
+    qd_current = body_qd[tid]
     f_current = body_f[tid]
     com_local = body_com[tid]
     I_local = body_inertia[tid]
@@ -1091,9 +1099,9 @@ def forward_step_rigid_bodies(
         dt,
     )
 
-    # Update output transform, velocity, and set inertial target
-    body_q_out[tid] = q_new
-    body_qd_out[tid] = qd_new
+    # Update current transform, velocity, and set inertial target
+    body_q[tid] = q_new
+    body_qd[tid] = qd_new
     body_inertia_q[tid] = q_new
 
 
@@ -1224,10 +1232,11 @@ def warmstart_body_body_contacts(
     contact_material_mu: wp.array(dtype=float),
 ):
     """
-    Warm-start contact penalties and cache material properties (once per step).
+    Warm-start contact penalties and cache material properties (once per macro-step).
 
-    Computes averaged material properties and decays penalty parameters.
-    Uses k_start_body_contact as an effective penalty minimum.
+    Computes averaged material properties for each rigid contact and resets the
+    AVBD penalty to a bounded initial value based on `k_start_body_contact` and the
+    material stiffness.
     """
     i = wp.tid()
     if i >= rigid_contact_count[0]:
@@ -1270,14 +1279,13 @@ def warmstart_body_particle_contacts(
 ):
     """
     Warm-start body-particle (particle-rigid) contact penalties and cache material
-    properties (once per step).
+    properties (once per macro-step).
 
-    The scalar inputs soft_contact_ke/kd/mu are the particle-side soft-contact
-    material parameters (from model.soft_contact_*). For each body-particle
+    The scalar inputs `soft_contact_ke/kd/mu` are the particle-side soft-contact
+    material parameters (from `model.soft_contact_*`). For each body-particle
     contact, this kernel averages those particle-side values with the rigid
-    shape's material parameters, and decays the AVBD penalty parameter using
-    standard warmstart logic.
-    Uses k_start_body_contact as an effective penalty minimum.
+    shape's material parameters and resets the AVBD penalty to a bounded
+    initial value based on `k_start_body_contact` and the averaged stiffness.
     """
     i = wp.tid()
     if i >= body_particle_contact_count[0]:
@@ -1735,6 +1743,7 @@ def solve_rigid_body(
     dt: float,
     dt_damping: float,
     body_ids_in_color: wp.array(dtype=wp.int32),
+    body_q: wp.array(dtype=wp.transform),
     body_q_anchor: wp.array(dtype=wp.transform),
     body_q_rest: wp.array(dtype=wp.transform),
     body_mass: wp.array(dtype=float),
@@ -1761,7 +1770,8 @@ def solve_rigid_body(
     external_hessian_ll: wp.array(dtype=wp.mat33),  # Linear-linear block from rigid contacts
     external_hessian_al: wp.array(dtype=wp.mat33),  # Angular-linear coupling block from rigid contacts
     external_hessian_aa: wp.array(dtype=wp.mat33),  # Angular-angular block from rigid contacts
-    body_q: wp.array(dtype=wp.transform),  # input/output (current body transforms)
+    # Output
+    body_q_new: wp.array(dtype=wp.transform),
 ):
     """
     AVBD solve step for rigid bodies using block Cholesky decomposition.
@@ -1810,7 +1820,7 @@ def solve_rigid_body(
 
     # Early exit for kinematic bodies
     if body_inv_mass[body_index] == 0.0:
-        body_q[body_index] = q_current
+        body_q_new[body_index] = q_current
         return
 
     # Inertial force and Hessian
@@ -1976,7 +1986,7 @@ def solve_rigid_body(
     com_new = com_current + x_inc
     pos_new = com_new - wp.quat_rotate(rot_new, body_com_local)
 
-    body_q[body_index] = wp.transform(pos_new, rot_new)
+    body_q_new[body_index] = wp.transform(pos_new, rot_new)
 
 
 @wp.kernel
@@ -2250,8 +2260,8 @@ def update_duals_body_particle_contacts(
 @wp.kernel
 def update_body_velocity(
     dt: float,
-    body_q_anchor: wp.array(dtype=wp.transform),
-    body_q_end: wp.array(dtype=wp.transform),
+    body_q: wp.array(dtype=wp.transform),
+    body_q_prev: wp.array(dtype=wp.transform),
     body_com: wp.array(dtype=wp.vec3),
     body_qd: wp.array(dtype=wp.spatial_vector),
 ):
@@ -2265,16 +2275,16 @@ def update_body_velocity(
 
     Args:
         dt: Time step
-        body_q_anchor: Body transforms at start of step (world)
-        body_q_end: Body transforms at end of step (world)
+        body_q: Current body transforms (world)
+        body_q_prev: Previous body transforms (world)
         body_com: Center of mass offsets (local frame)
         body_qd: Output body velocities (spatial vectors, world frame)
     """
     tid = wp.tid()
 
     # Read transforms
-    pose = body_q_end[tid]
-    pose_prev = body_q_anchor[tid]
+    pose = body_q[tid]
+    pose_prev = body_q_prev[tid]
 
     x = wp.transform_get_translation(pose)
     x_prev = wp.transform_get_translation(pose_prev)

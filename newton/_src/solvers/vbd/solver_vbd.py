@@ -31,6 +31,7 @@ from .particle_vbd_kernels import (
     accumulate_contact_force_and_hessian_no_self_contact,
     accumulate_spring_force_and_hessian,
     compute_particle_conservative_bound,
+    copy_particle_positions_back,
     # Adjacency building kernels
     count_num_adjacent_edges,
     count_num_adjacent_faces,
@@ -56,6 +57,7 @@ from .rigid_vbd_kernels import (
     build_body_body_contact_lists,  # Body-body (rigid-rigid) contact adjacency
     build_body_particle_contact_lists,  # Body-particle (rigid-particle) soft-contact adjacency
     compute_cable_dahl_parameters,  # Cable bending plasticity
+    copy_rigid_body_transforms_back,
     # Adjacency building kernels
     count_num_adjacent_joints,
     fill_adjacent_joints,
@@ -150,7 +152,7 @@ class SolverVBD(SolverBase):
         rigid_joint_linear_k_start: float = 1.0e4,  # AVBD: initial stiffness seed for linear joint DOFs (e.g., cable stretch)
         rigid_joint_angular_k_start: float = 1.0e1,  # AVBD: initial stiffness seed for angular joint DOFs (e.g., cable bend)
         rigid_body_contact_buffer_size: int = 64,
-        rigid_body_particle_contact_buffer_size: int = 64,
+        rigid_body_particle_contact_buffer_size: int = 256,
         rigid_enable_dahl_friction: bool = False,  # Cable bending plasticity/hysteresis
         rigid_dahl_eps_max: float | wp.array = 0.5,  # Dahl: max persistent strain
         rigid_dahl_tau: float | wp.array = 1.0,  # Dahl: memory decay length
@@ -264,6 +266,13 @@ class SolverVBD(SolverBase):
         # enabling stable damping even when using small substeps with few solver iterations.
         self.time_since_anchor = 0.0
 
+        # Flag to control whether to update cross-step history (anchors, contact warmstart).
+        # Defaults to True. This setting applies only to the next call to :meth:`step` and is then
+        # reset to ``True``. This is useful for substepping, where history update frequency might
+        # differ from the simulation step frequency (e.g. updating only on the first substep).
+        # This flag is automatically reset to True after each step().
+        self.update_step_history = True
+
     def _init_particle_system(
         self,
         model: Model,
@@ -285,8 +294,13 @@ class SolverVBD(SolverBase):
         self.collision_detection_interval = particle_collision_detection_interval
 
         # Particle state storage
-        self.particle_q_anchor = wp.zeros_like(model.particle_q, device=self.device)
-        self.inertia = wp.zeros_like(model.particle_q, device=self.device)
+        self.particle_q_prev = wp.zeros_like(
+            model.particle_q, device=self.device
+        )  # per-substep previous q (for velocity)
+        self.particle_q_anchor = wp.zeros_like(
+            model.particle_q, device=self.device
+        )  # macro-step anchor q (for damping/friction)
+        self.inertia = wp.zeros_like(model.particle_q, device=self.device)  # inertial target positions
 
         # Particle adjacency info
         self.particle_adjacency = self.compute_particle_force_element_adjacency(model).to(self.device)
@@ -376,8 +390,13 @@ class SolverVBD(SolverBase):
         # -------------------------------------------------------------
         if not self.integrate_with_external_rigid_solver and model.body_count > 0:
             # State storage
-            self.body_q_anchor = wp.zeros_like(model.body_q, device=self.device)
-            self.body_inertia_q = wp.zeros_like(model.body_q, device=self.device)
+            self.body_q_prev = wp.zeros_like(
+                model.body_q, device=self.device
+            )  # per-substep previous body pose (for velocity)
+            self.body_q_anchor = wp.zeros_like(
+                model.body_q, device=self.device
+            )  # macro-step anchor pose (for damping/friction)
+            self.body_inertia_q = wp.zeros_like(model.body_q, device=self.device)  # inertial target poses for AVBD
 
             # Adjacency and dimensions
             self.rigid_adjacency = self.compute_rigid_force_element_adjacency(model).to(self.device)
@@ -744,6 +763,18 @@ class SolverVBD(SolverBase):
     # Main Solver Methods
     # =====================================================
 
+    def set_step_history_update(self, update: bool):
+        """Set whether the next step() should update solver history (anchors, warmstarts).
+
+        This setting applies only to the next call to :meth:`step` and is then reset to ``True``.
+        This is useful for substepping, where history update frequency might differ from the
+        simulation step frequency (e.g. updating only on the first substep).
+
+        Args:
+            update: If True, update anchors and warmstart state. If False, reuse previous.
+        """
+        self.update_step_history = update
+
     @override
     def step(
         self,
@@ -752,7 +783,6 @@ class SolverVBD(SolverBase):
         control: Control,
         contacts: Contacts,
         dt: float,
-        update_step_history: bool = True,
     ):
         """Execute one simulation timestep using VBD (particles) and AVBD (rigid bodies).
 
@@ -761,20 +791,20 @@ class SolverVBD(SolverBase):
         2. Iterate: Interleave particle VBD iterations and rigid body AVBD iterations
         3. Finalize: Update velocities and persistent state (Dahl friction)
 
+        To control substepping behavior (anchors and warmstart history), call :meth:`set_step_history_update`
+        before calling this method. It defaults to ``True`` and is reset to ``True`` after each call.
+
         Args:
             state_in: Input state.
             state_out: Output state.
             control: Control inputs.
             contacts: Collision contacts.
             dt: Time step size.
-            update_step_history: Whether to update cross-step history this call:
-                - Prev-state anchors used for damping and friction-related velocity estimates
-                - Rigid contacts and joints warmstart state (AVBD penalties)
-                Using a coarser cadence for this flag (e.g., only on outer timesteps when
-                substepping) keeps a fixed damping/velocity anchor and reuses contact/joint
-                history across inner steps, which reduces jitter when using small timesteps
-                with few iterations.
         """
+        # Use and reset the history update flag
+        update_step_history = self.update_step_history
+        self.update_step_history = True
+
         # Determine the long-range time window used for damping and friction-related calculations.
         if update_step_history:
             # We are updating anchor state to current state_in.
@@ -789,17 +819,17 @@ class SolverVBD(SolverBase):
         # window is used for damping and friction calculations.
         dt_damping = self.time_since_anchor
 
-        self.initialize_particles(state_in, state_out, dt, update_step_history)
-        self.initialize_rigid_bodies(state_in, state_out, contacts, dt, update_step_history)
+        self.initialize_particles(state_in, dt, update_step_history)
+        self.initialize_rigid_bodies(state_in, contacts, dt, update_step_history)
 
         for iter_num in range(self.iterations):
             self.solve_particle_iteration(state_in, state_out, contacts, dt, dt_damping, iter_num)
             self.solve_rigid_body_iteration(state_in, state_out, contacts, dt, dt_damping)
 
-        self.finalize_particles(state_in, state_out, dt)
-        self.finalize_rigid_bodies(state_in, state_out, dt)
+        self.finalize_particles(state_out, dt)
+        self.finalize_rigid_bodies(state_out, dt)
 
-    def initialize_particles(self, state_in: State, state_out: State, dt: float, update_step_history: bool):
+    def initialize_particles(self, state_in: State, dt: float, update_step_history: bool):
         """Initialize particle positions for the VBD iteration."""
         model = self.model
 
@@ -817,9 +847,9 @@ class SolverVBD(SolverBase):
                     dt,
                     update_step_history,
                     model.gravity,
+                    self.particle_q_prev,
                     self.particle_q_anchor,
                     state_in.particle_q,
-                    state_out.particle_q,
                     state_in.particle_qd,
                     model.particle_inv_mass,
                     state_in.particle_f,
@@ -838,9 +868,9 @@ class SolverVBD(SolverBase):
                     dt,
                     update_step_history,
                     model.gravity,
+                    self.particle_q_prev,
                     self.particle_q_anchor,
                     state_in.particle_q,
-                    state_out.particle_q,
                     state_in.particle_qd,
                     model.particle_inv_mass,
                     state_in.particle_f,
@@ -854,7 +884,6 @@ class SolverVBD(SolverBase):
     def initialize_rigid_bodies(
         self,
         state_in: State,
-        state_out: State,
         contacts: Contacts,
         dt: float,
         update_step_history: bool,
@@ -885,8 +914,7 @@ class SolverVBD(SolverBase):
                     state_in.body_qd,
                 ],
                 outputs=[
-                    state_out.body_q,
-                    state_out.body_qd,
+                    self.body_q_prev,
                     self.body_q_anchor,
                     self.body_inertia_q,
                 ],
@@ -967,7 +995,7 @@ class SolverVBD(SolverBase):
                         model.joint_X_c,
                         model.joint_qd_start,
                         model.joint_target_ke,
-                        state_in.body_q,  # current body transforms
+                        self.body_q_prev,  # Use previous body transforms (start of step) for linearization
                         model.body_q,  # rest body transforms
                         model.body_com,
                         self.joint_sigma_prev,
@@ -1040,25 +1068,21 @@ class SolverVBD(SolverBase):
     def solve_particle_iteration(
         self, state_in: State, state_out: State, contacts: Contacts, dt: float, dt_damping: float, iter_num: int
     ):
-        """Solve one VBD iteration for particles.
-
-        Updates ``state_out`` in place. ``state_in`` is treated as the immutable start-of-step state.
-        """
+        """Solve one VBD iteration for particles."""
         model = self.model
 
         # Select rigid-body poses for particle-rigid contact evaluation
         if self.integrate_with_external_rigid_solver:
-            # If external, state_out has the current (integrated) body pose
             body_q_for_particles = state_out.body_q
             body_q_prev_for_particles = state_in.body_q
+            body_qd_for_particles = state_out.body_qd
         else:
-            # If internal, state_out.body_q is the current iterate (evolving)
-            body_q_for_particles = state_out.body_q
-            # Pass frame start for FD velocity calculation in contact/friction
+            body_q_for_particles = state_in.body_q
             if model.body_count > 0:
                 body_q_prev_for_particles = self.body_q_anchor
             else:
                 body_q_prev_for_particles = None
+            body_qd_for_particles = state_in.body_qd
 
         # Early exit if no particles
         if model.particle_count == 0:
@@ -1069,7 +1093,7 @@ class SolverVBD(SolverBase):
             if (self.collision_detection_interval == 0 and iter_num == 0) or (
                 self.collision_detection_interval >= 1 and iter_num % self.collision_detection_interval == 0
             ):
-                self.collision_detection_penetration_free(state_out)
+                self.collision_detection_penetration_free(state_in)
 
         # Zero out forces and hessians
         self.particle_forces.zero_()
@@ -1087,7 +1111,7 @@ class SolverVBD(SolverBase):
                             dt_damping,
                             color,
                             self.particle_q_anchor,
-                            state_out.particle_q,
+                            state_in.particle_q,
                             model.particle_colors,
                             model.tri_indices,
                             model.edge_indices,
@@ -1111,7 +1135,7 @@ class SolverVBD(SolverBase):
                             model.shape_body,
                             body_q_for_particles,
                             body_q_prev_for_particles,
-                            state_out.body_qd,
+                            body_qd_for_particles,
                             model.body_com,
                             contacts.soft_contact_shape,
                             contacts.soft_contact_body_pos,
@@ -1133,7 +1157,7 @@ class SolverVBD(SolverBase):
                         dt_damping,
                         color,
                         self.particle_q_anchor,
-                        state_out.particle_q,
+                        state_in.particle_q,
                         model.particle_colors,
                         # body-particle contact
                         self.friction_epsilon,
@@ -1148,7 +1172,7 @@ class SolverVBD(SolverBase):
                         model.shape_body,
                         body_q_for_particles,
                         body_q_prev_for_particles,
-                        state_out.body_qd,
+                        state_in.body_qd,
                         model.body_com,
                         contacts.soft_contact_shape,
                         contacts.soft_contact_body_pos,
@@ -1169,7 +1193,7 @@ class SolverVBD(SolverBase):
                     inputs=[
                         dt_damping,
                         self.particle_q_anchor,
-                        state_out.particle_q,
+                        state_in.particle_q,
                         model.particle_color_groups[color],
                         self.particle_adjacency,
                         model.spring_indices,
@@ -1197,6 +1221,8 @@ class SolverVBD(SolverBase):
                             dt_damping,
                             model.particle_color_groups[color],
                             self.particle_q_anchor,
+                            state_in.particle_q,
+                            state_in.particle_qd,
                             model.particle_mass,
                             self.inertia,
                             model.particle_flags,
@@ -1213,8 +1239,8 @@ class SolverVBD(SolverBase):
                             self.particle_hessians,
                             self.pos_prev_collision_detection,
                             self.particle_conservative_bounds,
-                            state_out.particle_q,  # input/output
                         ],
+                        outputs=[state_out.particle_q],
                         device=self.device,
                     )
                 else:
@@ -1226,6 +1252,8 @@ class SolverVBD(SolverBase):
                             dt_damping,
                             model.particle_color_groups[color],
                             self.particle_q_anchor,
+                            state_in.particle_q,
+                            state_in.particle_qd,
                             model.particle_mass,
                             self.inertia,
                             model.particle_flags,
@@ -1242,8 +1270,8 @@ class SolverVBD(SolverBase):
                             self.particle_hessians,
                             self.pos_prev_collision_detection,
                             self.particle_conservative_bounds,
-                            state_out.particle_q,  # input/output
                         ],
+                        outputs=[state_out.particle_q],
                         device=self.device,
                     )
             else:
@@ -1255,6 +1283,8 @@ class SolverVBD(SolverBase):
                             dt_damping,
                             model.particle_color_groups[color],
                             self.particle_q_anchor,
+                            state_in.particle_q,
+                            state_in.particle_qd,
                             model.particle_mass,
                             self.inertia,
                             model.particle_flags,
@@ -1269,8 +1299,8 @@ class SolverVBD(SolverBase):
                             self.particle_adjacency,
                             self.particle_forces,
                             self.particle_hessians,
-                            state_out.particle_q,  # input/output
                         ],
+                        outputs=[state_out.particle_q],
                         dim=model.particle_color_groups[color].size * TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE,
                         block_dim=TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE,
                         device=self.device,
@@ -1283,6 +1313,8 @@ class SolverVBD(SolverBase):
                             dt_damping,
                             model.particle_color_groups[color],
                             self.particle_q_anchor,
+                            state_in.particle_q,
+                            state_in.particle_qd,
                             model.particle_mass,
                             self.inertia,
                             model.particle_flags,
@@ -1297,11 +1329,19 @@ class SolverVBD(SolverBase):
                             self.particle_adjacency,
                             self.particle_forces,
                             self.particle_hessians,
-                            state_out.particle_q,  # input/output
                         ],
+                        outputs=[state_out.particle_q],
                         dim=model.particle_color_groups[color].size,
                         device=self.device,
                     )
+
+            # Copy positions back
+            wp.launch(
+                kernel=copy_particle_positions_back,
+                inputs=[model.particle_color_groups[color], state_in.particle_q, state_out.particle_q],
+                dim=model.particle_color_groups[color].size,
+                device=self.device,
+            )
 
     def solve_rigid_body_iteration(
         self, state_in: State, state_out: State, contacts: Contacts, dt: float, dt_damping: float
@@ -1310,7 +1350,6 @@ class SolverVBD(SolverBase):
 
         Accumulates contact and joint forces/hessians, solves 6x6 rigid body systems per color,
         and updates AVBD penalty parameters (dual update).
-        Updates ``state_out`` in place. ``state_in`` is treated as the immutable start-of-step state.
         """
         model = self.model
 
@@ -1333,7 +1372,7 @@ class SolverVBD(SolverBase):
                         contacts.soft_contact_shape,
                         contacts.soft_contact_body_pos,
                         contacts.soft_contact_normal,
-                        state_out.particle_q,
+                        state_in.particle_q,
                         model.particle_radius,
                         model.shape_body,
                         # Rigid poses come from the external solver when
@@ -1376,12 +1415,12 @@ class SolverVBD(SolverBase):
                         dt_damping,
                         color_group,
                         # particle state
-                        state_out.particle_q,
+                        state_in.particle_q,
                         self.particle_q_anchor,
                         model.particle_radius,
                         # rigid body state
                         self.body_q_anchor,
-                        state_out.body_q,
+                        state_in.body_q,
                         model.body_qd,
                         model.body_com,
                         model.body_inv_mass,
@@ -1423,7 +1462,7 @@ class SolverVBD(SolverBase):
                     dt_damping,
                     color_group,
                     self.body_q_anchor,
-                    state_out.body_q,
+                    state_in.body_q,
                     model.body_com,
                     model.body_inv_mass,
                     self.friction_epsilon,
@@ -1459,6 +1498,7 @@ class SolverVBD(SolverBase):
                     dt,
                     dt_damping,
                     color_group,
+                    state_in.body_q,
                     self.body_q_anchor,
                     model.body_q,
                     model.body_mass,
@@ -1482,8 +1522,18 @@ class SolverVBD(SolverBase):
                     self.body_hessian_ll,
                     self.body_hessian_al,
                     self.body_hessian_aa,
-                    state_out.body_q,  # input/output
                 ],
+                outputs=[
+                    state_out.body_q,
+                ],
+                dim=color_group.size,
+                device=self.device,
+            )
+
+            wp.launch(
+                kernel=copy_rigid_body_transforms_back,
+                inputs=[color_group, state_out.body_q],
+                outputs=[state_in.body_q],
                 dim=color_group.size,
                 device=self.device,
             )
@@ -1523,12 +1573,12 @@ class SolverVBD(SolverBase):
                     contacts.soft_contact_shape,
                     contacts.soft_contact_body_pos,
                     contacts.soft_contact_normal,
-                    state_out.particle_q,
+                    state_in.particle_q,
                     model.particle_radius,
                     model.shape_body,
                     # Rigid poses come from SolverVBD itself when
                     # integrate_with_external_rigid_solver=False
-                    state_out.body_q,
+                    state_in.body_q,
                     self.body_particle_contact_material_ke,
                     self.avbd_beta,
                     self.body_particle_contact_penalty_k,  # input/output
@@ -1558,7 +1608,7 @@ class SolverVBD(SolverBase):
             device=self.device,
         )
 
-    def finalize_particles(self, state_in: State, state_out: State, dt: float):
+    def finalize_particles(self, state_out: State, dt: float):
         """Finalize particle velocities after VBD iterations."""
         # Early exit if no particles
         if self.model.particle_count == 0:
@@ -1566,12 +1616,12 @@ class SolverVBD(SolverBase):
 
         wp.launch(
             kernel=update_velocity,
-            inputs=[dt, state_in.particle_q, state_out.particle_q, state_out.particle_qd],
+            inputs=[dt, self.particle_q_prev, state_out.particle_q, state_out.particle_qd],
             dim=self.model.particle_count,
             device=self.device,
         )
 
-    def finalize_rigid_bodies(self, state_in: State, state_out: State, dt: float):
+    def finalize_rigid_bodies(self, state_out: State, dt: float):
         """Finalize rigid body velocities and Dahl friction state after AVBD iterations (post-iteration phase).
 
         Updates rigid body velocities using BDF1 and updates Dahl hysteresis state for cable bending.
@@ -1585,7 +1635,7 @@ class SolverVBD(SolverBase):
         # Velocity update (BDF1) after all iterations
         wp.launch(
             kernel=update_body_velocity,
-            inputs=[dt, state_in.body_q, state_out.body_q, model.body_com],
+            inputs=[dt, state_out.body_q, self.body_q_prev, model.body_com],
             outputs=[state_out.body_qd],
             dim=model.body_count,
             device=self.device,
@@ -1603,8 +1653,8 @@ class SolverVBD(SolverBase):
                     model.joint_X_c,
                     model.joint_qd_start,
                     model.joint_target_ke,
-                    state_out.body_q,  # final body transforms
-                    model.body_q,  # rest body transforms
+                    state_out.body_q,
+                    model.body_q,
                     model.body_com,
                     self.joint_dahl_eps_max,
                     self.joint_dahl_tau,

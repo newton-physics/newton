@@ -21,6 +21,10 @@
 # All cables have identical bend stiffness, differing only in damping coefficients.
 # This illustrates how damping affects settling time, oscillation, and overshoot.
 #
+# It also demonstrates the use of `solver.set_step_history_update()` to maintain
+# smooth damping behavior by controlling the history update frequency across substeps,
+# even with few iterations.
+#
 ###########################################################################
 
 import numpy as np
@@ -243,13 +247,13 @@ class Example:
             if update_step_history:
                 self.contacts = self.model.collide(self.state_0)
 
+            self.solver.set_step_history_update(update_step_history)
             self.solver.step(
                 self.state_0,
                 self.state_1,
                 self.control,
                 self.contacts,
                 self.sim_dt,
-                update_step_history=update_step_history,
             )
 
             # Swap states

@@ -298,13 +298,13 @@ class Example:
             if update_step_history:
                 self.contacts = self.model.collide(self.state_0)
 
+            self.solver.set_step_history_update(update_step_history)
             self.solver.step(
                 self.state_0,
                 self.state_1,
                 self.control,
                 self.contacts,
                 self.sim_dt,
-                update_step_history=update_step_history,
             )
 
             # Swap states

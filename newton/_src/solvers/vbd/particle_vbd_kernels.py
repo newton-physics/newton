@@ -1255,43 +1255,27 @@ def forward_step(
     dt: float,
     update_step_history: bool,
     gravity: wp.array(dtype=wp.vec3),
+    pos_prev: wp.array(dtype=wp.vec3),
     pos_anchor: wp.array(dtype=wp.vec3),
-    pos_in: wp.array(dtype=wp.vec3),
-    pos_out: wp.array(dtype=wp.vec3),
+    pos: wp.array(dtype=wp.vec3),
     vel: wp.array(dtype=wp.vec3),
     inv_mass: wp.array(dtype=float),
     external_force: wp.array(dtype=wp.vec3),
     particle_flags: wp.array(dtype=wp.int32),
     inertia: wp.array(dtype=wp.vec3),
 ):
-    """
-    Forward integration step for particles.
-
-    Args:
-        dt: Substep time step.
-        update_step_history: If True, updates pos_anchor (damping anchor) with current position.
-        gravity: Gravity vector.
-        pos_anchor: Frame start position (damping anchor).
-        pos_in: Substep start position (input).
-        pos_out: Predictor position (output).
-        vel: Particle velocity.
-        inv_mass: Inverse mass.
-        external_force: External force.
-        particle_flags: Particle flags.
-        inertia: Inertia position (output).
-    """
     particle = wp.tid()
+    pos_prev[particle] = pos[particle]
 
     if update_step_history:
-        pos_anchor[particle] = pos_in[particle]
+        pos_anchor[particle] = pos[particle]
 
     if not particle_flags[particle] & ParticleFlags.ACTIVE:
-        inertia[particle] = pos_in[particle]
-        pos_out[particle] = pos_in[particle]
+        inertia[particle] = pos[particle]
         return
     vel_new = vel[particle] + (gravity[0] + external_force[particle] * inv_mass[particle]) * dt
-    pos_out[particle] = pos_in[particle] + vel_new * dt
-    inertia[particle] = pos_out[particle]
+    pos[particle] = pos[particle] + vel_new * dt
+    inertia[particle] = pos[particle]
 
 
 @wp.kernel
@@ -1299,9 +1283,9 @@ def forward_step_penetration_free(
     dt: float,
     update_step_history: bool,
     gravity: wp.array(dtype=wp.vec3),
+    pos_prev: wp.array(dtype=wp.vec3),
     pos_anchor: wp.array(dtype=wp.vec3),
-    pos_in: wp.array(dtype=wp.vec3),
-    pos_out: wp.array(dtype=wp.vec3),
+    pos: wp.array(dtype=wp.vec3),
     vel: wp.array(dtype=wp.vec3),
     inv_mass: wp.array(dtype=float),
     external_force: wp.array(dtype=wp.vec3),
@@ -1314,19 +1298,20 @@ def forward_step_penetration_free(
     Forward integration step for particles (Penetration Free mode).
     """
     particle_index = wp.tid()
+    pos_prev[particle_index] = pos[particle_index]
 
     if update_step_history:
-        pos_anchor[particle_index] = pos_in[particle_index]
+        pos_anchor[particle_index] = pos[particle_index]
 
     if not particle_flags[particle_index] & ParticleFlags.ACTIVE:
-        inertia[particle_index] = pos_in[particle_index]
-        pos_out[particle_index] = pos_in[particle_index]
+        inertia[particle_index] = pos[particle_index]
         return
+
     vel_new = vel[particle_index] + (gravity[0] + external_force[particle_index] * inv_mass[particle_index]) * dt
-    pos_inertia = pos_in[particle_index] + vel_new * dt
+    pos_inertia = pos[particle_index] + vel_new * dt
     inertia[particle_index] = pos_inertia
 
-    pos_out[particle_index] = apply_conservative_bound_truncation(
+    pos[particle_index] = apply_conservative_bound_truncation(
         particle_index, pos_inertia, pos_prev_collision_detection, particle_conservative_bounds
     )
 
@@ -1427,6 +1412,8 @@ def solve_trimesh_no_self_contact_tile(
     dt_damping: float,
     particle_ids_in_color: wp.array(dtype=wp.int32),
     pos_anchor: wp.array(dtype=wp.vec3),
+    pos: wp.array(dtype=wp.vec3),
+    vel: wp.array(dtype=wp.vec3),
     mass: wp.array(dtype=float),
     inertia: wp.array(dtype=wp.vec3),
     particle_flags: wp.array(dtype=wp.int32),
@@ -1442,7 +1429,8 @@ def solve_trimesh_no_self_contact_tile(
     # contact info
     particle_forces: wp.array(dtype=wp.vec3),
     particle_hessians: wp.array(dtype=wp.mat33),
-    pos: wp.array(dtype=wp.vec3),
+    # output
+    pos_new: wp.array(dtype=wp.vec3),
 ):
     tid = wp.tid()
     block_idx = tid // TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE
@@ -1450,7 +1438,8 @@ def solve_trimesh_no_self_contact_tile(
     particle_index = particle_ids_in_color[block_idx]
 
     if not particle_flags[particle_index] & ParticleFlags.ACTIVE:
-        # Keep position unchanged for inactive particles
+        if thread_idx == 0:
+            pos_new[particle_index] = pos[particle_index]
         return
 
     particle_pos = pos[particle_index]
@@ -1550,7 +1539,7 @@ def solve_trimesh_no_self_contact_tile(
                 + particle_forces[particle_index]
             )
 
-            pos[particle_index] = particle_pos + h_inv * f_total
+            pos_new[particle_index] = particle_pos + h_inv * f_total
 
 
 @wp.kernel
@@ -1559,6 +1548,8 @@ def solve_trimesh_no_self_contact(
     dt_damping: float,
     particle_ids_in_color: wp.array(dtype=wp.int32),
     pos_anchor: wp.array(dtype=wp.vec3),
+    pos: wp.array(dtype=wp.vec3),
+    vel: wp.array(dtype=wp.vec3),
     mass: wp.array(dtype=float),
     inertia: wp.array(dtype=wp.vec3),
     particle_flags: wp.array(dtype=wp.int32),
@@ -1574,14 +1565,15 @@ def solve_trimesh_no_self_contact(
     # contact info
     particle_forces: wp.array(dtype=wp.vec3),
     particle_hessians: wp.array(dtype=wp.mat33),
-    pos: wp.array(dtype=wp.vec3),
+    # output
+    pos_new: wp.array(dtype=wp.vec3),
 ):
     tid = wp.tid()
 
     particle_index = particle_ids_in_color[tid]
 
     if not particle_flags[particle_index] & ParticleFlags.ACTIVE:
-        # Keep position unchanged for inactive particles
+        pos_new[particle_index] = pos[particle_index]
         return
 
     particle_pos = pos[particle_index]
@@ -1664,7 +1656,7 @@ def solve_trimesh_no_self_contact(
 
     if abs(wp.determinant(h)) > 1e-5:
         hInv = wp.inverse(h)
-        pos[particle_index] = particle_pos + hInv * f
+        pos_new[particle_index] = particle_pos + hInv * f
 
 
 @wp.kernel
@@ -1681,10 +1673,10 @@ def copy_particle_positions_back(
 
 @wp.kernel
 def update_velocity(
-    dt: float, pos_anchor: wp.array(dtype=wp.vec3), pos: wp.array(dtype=wp.vec3), vel: wp.array(dtype=wp.vec3)
+    dt: float, pos_prev: wp.array(dtype=wp.vec3), pos: wp.array(dtype=wp.vec3), vel: wp.array(dtype=wp.vec3)
 ):
     particle = wp.tid()
-    vel[particle] = (pos[particle] - pos_anchor[particle]) / dt
+    vel[particle] = (pos[particle] - pos_prev[particle]) / dt
 
 
 @wp.kernel
@@ -2064,6 +2056,8 @@ def solve_trimesh_with_self_contact_penetration_free(
     dt_damping: float,
     particle_ids_in_color: wp.array(dtype=wp.int32),
     pos_anchor: wp.array(dtype=wp.vec3),
+    pos: wp.array(dtype=wp.vec3),
+    vel: wp.array(dtype=wp.vec3),
     mass: wp.array(dtype=float),
     inertia: wp.array(dtype=wp.vec3),
     particle_flags: wp.array(dtype=wp.int32),
@@ -2080,14 +2074,16 @@ def solve_trimesh_with_self_contact_penetration_free(
     particle_hessians: wp.array(dtype=wp.mat33),
     pos_prev_collision_detection: wp.array(dtype=wp.vec3),
     particle_conservative_bounds: wp.array(dtype=float),
-    pos: wp.array(dtype=wp.vec3),
+    # output
+    pos_new: wp.array(dtype=wp.vec3),
 ):
     t_id = wp.tid()
 
     particle_index = particle_ids_in_color[t_id]
+    particle_pos = pos[particle_index]
 
     if not particle_flags[particle_index] & ParticleFlags.ACTIVE:
-        # Keep position unchanged for inactive particles
+        pos_new[particle_index] = particle_pos
         return
 
     dt_sqr_reciprocal = 1.0 / (dt * dt)
@@ -2170,7 +2166,7 @@ def solve_trimesh_with_self_contact_penetration_free(
         h_inv = wp.inverse(h)
         particle_pos_new = pos[particle_index] + h_inv * f
 
-        pos[particle_index] = apply_conservative_bound_truncation(
+        pos_new[particle_index] = apply_conservative_bound_truncation(
             particle_index, particle_pos_new, pos_prev_collision_detection, particle_conservative_bounds
         )
 
@@ -2181,6 +2177,8 @@ def solve_trimesh_with_self_contact_penetration_free_tile(
     dt_damping: float,
     particle_ids_in_color: wp.array(dtype=wp.int32),
     pos_anchor: wp.array(dtype=wp.vec3),
+    pos: wp.array(dtype=wp.vec3),
+    vel: wp.array(dtype=wp.vec3),
     mass: wp.array(dtype=float),
     inertia: wp.array(dtype=wp.vec3),
     particle_flags: wp.array(dtype=wp.int32),
@@ -2197,7 +2195,8 @@ def solve_trimesh_with_self_contact_penetration_free_tile(
     particle_hessians: wp.array(dtype=wp.mat33),
     pos_prev_collision_detection: wp.array(dtype=wp.vec3),
     particle_conservative_bounds: wp.array(dtype=float),
-    pos: wp.array(dtype=wp.vec3),
+    # output
+    pos_new: wp.array(dtype=wp.vec3),
 ):
     tid = wp.tid()
     block_idx = tid // TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE
@@ -2205,7 +2204,8 @@ def solve_trimesh_with_self_contact_penetration_free_tile(
     particle_index = particle_ids_in_color[block_idx]
 
     if not particle_flags[particle_index] & ParticleFlags.ACTIVE:
-        # Keep position unchanged for inactive particles
+        if thread_idx == 0:
+            pos_new[particle_index] = pos[particle_index]
         return
 
     particle_pos = pos[particle_index]
@@ -2306,6 +2306,6 @@ def solve_trimesh_with_self_contact_penetration_free_tile(
             )
             particle_pos_new = particle_pos + h_inv * f_total
 
-            pos[particle_index] = apply_conservative_bound_truncation(
+            pos_new[particle_index] = apply_conservative_bound_truncation(
                 particle_index, particle_pos_new, pos_prev_collision_detection, particle_conservative_bounds
             )
