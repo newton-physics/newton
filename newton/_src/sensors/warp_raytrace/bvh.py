@@ -15,45 +15,48 @@
 
 import warp as wp
 
+from .ray import scale_mat
 from .types import GeomType
 
 
 @wp.func
 def compute_mesh_bounds(
-    pos: wp.vec3f, rot: wp.mat33f, min_bounds: wp.vec3f, max_bounds: wp.vec3f
+    pos: wp.vec3f, rot: wp.mat33f, size: wp.vec3f, min_bounds: wp.vec3f, max_bounds: wp.vec3f
 ) -> tuple[wp.vec3f, wp.vec3f]:
+    mat = scale_mat(size) @ rot
+
     min_bound = wp.vec3f(wp.inf)
     max_bound = wp.vec3f(-wp.inf)
 
-    corner_1 = pos + rot @ wp.vec3f(min_bounds[0], min_bounds[1], min_bounds[2])
+    corner_1 = pos + mat @ wp.vec3f(min_bounds[0], min_bounds[1], min_bounds[2])
     min_bound = wp.min(min_bound, corner_1)
     max_bound = wp.max(max_bound, corner_1)
 
-    corner_2 = pos + rot @ wp.vec3f(max_bounds[0], min_bounds[1], min_bounds[2])
+    corner_2 = pos + mat @ wp.vec3f(max_bounds[0], min_bounds[1], min_bounds[2])
     min_bound = wp.min(min_bound, corner_2)
     max_bound = wp.max(max_bound, corner_2)
 
-    corner_3 = pos + rot @ wp.vec3f(max_bounds[0], max_bounds[1], min_bounds[2])
+    corner_3 = pos + mat @ wp.vec3f(max_bounds[0], max_bounds[1], min_bounds[2])
     min_bound = wp.min(min_bound, corner_3)
     max_bound = wp.max(max_bound, corner_3)
 
-    corner_4 = pos + rot @ wp.vec3f(min_bounds[0], max_bounds[1], min_bounds[2])
+    corner_4 = pos + mat @ wp.vec3f(min_bounds[0], max_bounds[1], min_bounds[2])
     min_bound = wp.min(min_bound, corner_4)
     max_bound = wp.max(max_bound, corner_4)
 
-    corner_5 = pos + rot @ wp.vec3f(min_bounds[0], min_bounds[1], max_bounds[2])
+    corner_5 = pos + mat @ wp.vec3f(min_bounds[0], min_bounds[1], max_bounds[2])
     min_bound = wp.min(min_bound, corner_5)
     max_bound = wp.max(max_bound, corner_5)
 
-    corner_6 = pos + rot @ wp.vec3f(max_bounds[0], min_bounds[1], max_bounds[2])
+    corner_6 = pos + mat @ wp.vec3f(max_bounds[0], min_bounds[1], max_bounds[2])
     min_bound = wp.min(min_bound, corner_6)
     max_bound = wp.max(max_bound, corner_6)
 
-    corner_7 = pos + rot @ wp.vec3f(min_bounds[0], max_bounds[1], max_bounds[2])
+    corner_7 = pos + mat @ wp.vec3f(min_bounds[0], max_bounds[1], max_bounds[2])
     min_bound = wp.min(min_bound, corner_7)
     max_bound = wp.max(max_bound, corner_7)
 
-    corner_8 = pos + rot @ wp.vec3f(max_bounds[0], max_bounds[1], max_bounds[2])
+    corner_8 = pos + mat @ wp.vec3f(max_bounds[0], max_bounds[1], max_bounds[2])
     min_bound = wp.min(min_bound, corner_8)
     max_bound = wp.max(max_bound, corner_8)
 
@@ -189,7 +192,7 @@ def compute_geom_bvh_bounds(
     elif type == GeomType.MESH:
         min_bounds = mesh_bounds[geom_mesh_indices[geom_id], 0]
         max_bounds = mesh_bounds[geom_mesh_indices[geom_id], 1]
-        lower, upper = compute_mesh_bounds(pos, rot, min_bounds, max_bounds)
+        lower, upper = compute_mesh_bounds(pos, rot, size, min_bounds, max_bounds)
     elif type == GeomType.ELLIPSOID:
         lower, upper = compute_ellipsoid_bounds(pos, rot, size)
     elif type == GeomType.BOX:
