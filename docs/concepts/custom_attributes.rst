@@ -262,8 +262,8 @@ The following example demonstrates declaring and authoring attributes for each j
    )
    
    # Create a D6 joint with 2 DOFs (1 linear + 1 angular) and 2 coordinates
-   parent = builder.add_body(mass=1.0)
-   child = builder.add_body(mass=1.0)
+   parent = builder.add_link(mass=1.0)
+   child = builder.add_link(mass=1.0)
    
    cfg = ModelBuilder.JointDofConfig
    joint_id = builder.add_joint_d6(
@@ -277,10 +277,11 @@ The following example demonstrates declaring and authoring attributes for each j
            "float_attr_coord": [0.5, 0.7],     # JOINT_COORD frequency: list with 2 values (one per coordinate)
        }
    )
+   builder.add_articulation([joint_id])
    
    # Scalar format for single-DOF joints (automatically expanded to list)
-   parent2 = builder.add_body(mass=1.0)
-   child2 = builder.add_body(mass=1.0)
+   parent2 = builder.add_link(mass=1.0)
+   child2 = builder.add_link(mass=1.0)
    revolute_joint = builder.add_joint_revolute(
        parent=parent2,
        child=child2,
@@ -290,10 +291,11 @@ The following example demonstrates declaring and authoring attributes for each j
            "float_attr_coord": 0.8,    # Scalar for 1-coord joint (expanded to [0.8])
        }
    )
+   builder.add_articulation([revolute_joint])
    
    # Dict format for sparse specification (only set specific DOF/coord indices)
-   parent3 = builder.add_body(mass=1.0)
-   child3 = builder.add_body(mass=1.0)
+   parent3 = builder.add_link(mass=1.0)
+   child3 = builder.add_link(mass=1.0)
    d6_joint = builder.add_joint_d6(
        parent=parent3,
        child=child3,
@@ -303,6 +305,7 @@ The following example demonstrates declaring and authoring attributes for each j
            "float_attr_dof": {0: 100.0, 2: 300.0},  # Dict: only DOF 0 and 2 specified
        }
    )
+   builder.add_articulation([d6_joint])
 
 Accessing Custom Attributes
 ----------------------------

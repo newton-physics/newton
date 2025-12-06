@@ -274,19 +274,19 @@ class TestEnvironmentGroupCollision(unittest.TestCase):
         builder = ModelBuilder()
 
         # Create child body with shapes first
-        child_body = builder.add_body(xform=wp.transform_identity())
+        child_body = builder.add_link(xform=wp.transform_identity())
         builder.add_shape_box(body=child_body, hx=0.5, hy=0.5, hz=0.5)  # index 0
         builder.add_shape_box(body=child_body, hx=0.5, hy=0.5, hz=0.5)  # index 1
 
         # Create parent body with shapes after
-        parent_body = builder.add_body(xform=wp.transform((2.0, 0, 0), wp.quat_identity()))
+        parent_body = builder.add_link(xform=wp.transform((2.0, 0, 0), wp.quat_identity()))
         builder.add_shape_box(body=parent_body, hx=0.5, hy=0.5, hz=0.5)  # index 2
         builder.add_shape_box(body=parent_body, hx=0.5, hy=0.5, hz=0.5)  # index 3
 
         # Connect with joint - this will naturally create non-canonical pairs!
         # Without canonicalization, this would add pairs like (2,0), (2,1), (3,0), (3,1)
         # where parent shapes (2,3) > child shapes (0,1)
-        builder.add_joint_revolute(
+        joint = builder.add_joint_revolute(
             parent=parent_body,
             child=child_body,
             parent_xform=wp.transform_identity(),
@@ -294,6 +294,7 @@ class TestEnvironmentGroupCollision(unittest.TestCase):
             axis=(0, 0, 1),
             collision_filter_parent=True,  # This triggers parent-child shape filtering
         )
+        builder.add_articulation([joint])
 
         # Also test merging builders
         sub_builder = ModelBuilder()
