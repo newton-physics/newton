@@ -191,6 +191,7 @@ def convert_newton_contacts_to_mjwarp_kernel(
     bodies_per_world: int,
     to_mjc_geom_index: wp.array(dtype=wp.vec2i),
     # Mujoco warp contacts
+    naconmax: int,
     nacon_out: wp.array(dtype=int),
     contact_dist_out: wp.array(dtype=float),
     contact_pos_out: wp.array(dtype=wp.vec3),
@@ -211,12 +212,24 @@ def convert_newton_contacts_to_mjwarp_kernel(
 
     tid = wp.tid()
 
+    count = rigid_contact_count[0]
+
     # Set number of contacts (for a single world)
     if tid == 0:
-        nacon_out[0] = rigid_contact_count[0]
+        if count > naconmax:
+            wp.printf(
+                "Number of Newton contacts (%d) exceeded MJWarp limit (%d). Increase nconmax.\n",
+                count,
+                naconmax,
+            )
+            count = naconmax
+        nacon_out[0] = count
         ncollision_out[0] = 0
 
-    if tid >= rigid_contact_count[0]:
+    if count > naconmax:
+        count = naconmax
+
+    if tid >= count:
         return
 
     shape_a = rigid_contact_shape0[tid]
