@@ -359,3 +359,61 @@ def combine_independent_particle_coloring(color_groups_1, color_groups_2) -> lis
             color_groups_combined.append(group_2)
 
     return color_groups_combined
+
+
+def color_rigid_bodies(
+    num_bodies: int,
+    joint_parent: list[int],
+    joint_child: list[int],
+    balance_colors: bool = True,
+    target_max_min_color_ratio: float = 1.1,
+    algorithm: ColoringAlgorithm = ColoringAlgorithm.MCS,
+):
+    """
+    Generate a graph coloring for rigid bodies from joint connectivity.
+
+    Bodies connected by a joint are treated as adjacent in the graph and cannot share
+    the same color. The result can be used to schedule per-color parallel processing
+    (e.g. in the VBD solver) without conflicts.
+
+    Returns a list of ``np.ndarray`` with ``dtype=int``. The list length is the number
+    of colors, and each array contains the body indices of that color. This mirrors the
+    return format of ``color_trimesh``/``color_graph``.
+
+    Args:
+        num_bodies: Number of bodies (graph nodes).
+        joint_parent: Parent body indices for each joint (use -1 for world).
+        joint_child: Child body indices for each joint.
+        balance_colors: Whether to balance color group sizes.
+        target_max_min_color_ratio: Stop balancing when max/min group size ratio reaches this value.
+        algorithm: Coloring algorithm to use.
+    """
+    if num_bodies == 0:
+        return []
+
+    # Build edge list from joint connections
+    edge_list = []
+
+    if len(joint_parent) != len(joint_child):
+        raise ValueError(
+            f"joint_parent and joint_child must have the same length (got {len(joint_parent)} and {len(joint_child)})"
+        )
+
+    for parent, child in zip(joint_parent, joint_child, strict=True):
+        if parent != -1 and child != -1 and parent != child:
+            edge_list.append([parent, child])
+
+    if not edge_list:
+        # No joints between bodies, all can have same color
+        return [np.arange(num_bodies, dtype=int)]
+
+    # Convert to numpy array for processing
+    edge_indices = np.array(edge_list, dtype=int)
+
+    # Convert to warp array for the existing color_graph function
+    edge_indices_wp = wp.array(edge_indices, dtype=int, device="cpu")
+
+    # Use existing color_graph function
+    color_groups = color_graph(num_bodies, edge_indices_wp, balance_colors, target_max_min_color_ratio, algorithm)
+
+    return color_groups

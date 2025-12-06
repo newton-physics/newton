@@ -55,6 +55,35 @@ def quat_twist_angle(axis: wp.vec3, q: wp.quat):
 
 
 @wp.func
+def quat_velocity(q_now: wp.quat, q_prev: wp.quat, dt: float) -> wp.vec3:
+    """Approximate angular velocity from successive world quaternions (world frame).
+
+    Uses right-trivialized mapping via dq = q_now * conj(q_prev).
+
+    Args:
+        q_now: Current orientation in world frame.
+        q_prev: Previous orientation in world frame.
+        dt: Time step [s].
+
+    Returns:
+        wp.vec3: Angular velocity omega in world frame [rad/s].
+    """
+    # Normalize inputs
+    q1 = wp.normalize(q_now)
+    q0 = wp.normalize(q_prev)
+
+    # Enforce shortest-arc by aligning quaternion hemisphere
+    if wp.dot(q1, q0) < 0.0:
+        q0 = wp.quat(-q0[0], -q0[1], -q0[2], -q0[3])
+
+    # dq = q1 * conj(q0)
+    dq = wp.normalize(wp.mul(q1, wp.quat_inverse(q0)))
+
+    axis, angle = wp.quat_to_axis_angle(dq)
+    return axis * (angle / dt)
+
+
+@wp.func
 def quat_decompose(q: wp.quat):
     """Decompose a quaternion into extrinsic Euler angles.
 
@@ -337,6 +366,7 @@ __all__ = [
     "quat_to_rpy",
     "quat_twist",
     "quat_twist_angle",
+    "quat_velocity",
     "transform_twist",
     "transform_wrench",
     "velocity_at_point",
