@@ -127,6 +127,73 @@ def compute_pinhole_camera_rays(
     out_rays[camera_index, py, px, 1] = wp.normalize(ray_direction_camera_space)
 
 
+@wp.kernel(enable_backward=False)
+def flatten_color_image(
+    color_image: wp.array(dtype=wp.uint32, ndim=3),
+    buffer: wp.array(dtype=wp.uint8, ndim=3),
+    width: wp.int32,
+    height: wp.int32,
+    num_cameras: wp.int32,
+    num_worlds_per_row: wp.int32,
+):
+    world_id, camera_id, y, x = wp.tid()
+
+    view_id = world_id * num_cameras + camera_id
+
+    row = view_id // num_worlds_per_row
+    col = view_id % num_worlds_per_row
+
+    px = col * width + x
+    py = row * height + y
+    color = color_image[world_id, camera_id, y * width + x]
+
+    buffer[py, px, 0] = wp.uint8((color >> wp.uint32(0)) & wp.uint32(0xFF))
+    buffer[py, px, 1] = wp.uint8((color >> wp.uint32(8)) & wp.uint32(0xFF))
+    buffer[py, px, 2] = wp.uint8((color >> wp.uint32(16)) & wp.uint32(0xFF))
+    buffer[py, px, 3] = wp.uint8((color >> wp.uint32(24)) & wp.uint32(0xFF))
+
+
+@wp.kernel(enable_backward=False)
+def find_depth_range(depth_image: wp.array(dtype=wp.float32, ndim=3), depth_range: wp.array(dtype=wp.float32)):
+    world_id, camera_id, yx = wp.tid()
+    depth = depth_image[world_id, camera_id, yx]
+    if depth > 0:
+        wp.atomic_min(depth_range, 0, depth)
+        wp.atomic_max(depth_range, 1, depth)
+
+
+@wp.kernel(enable_backward=False)
+def flatten_depth_image(
+    depth_image: wp.array(dtype=wp.float32, ndim=3),
+    buffer: wp.array(dtype=wp.uint8, ndim=3),
+    depth_range: wp.array(dtype=wp.float32),
+    width: wp.int32,
+    height: wp.int32,
+    num_cameras: wp.int32,
+    num_worlds_per_row: wp.int32,
+):
+    world_id, camera_id, y, x = wp.tid()
+
+    view_id = world_id * num_cameras + camera_id
+
+    row = view_id // num_worlds_per_row
+    col = view_id % num_worlds_per_row
+
+    px = col * width + x
+    py = row * height + y
+
+    value = wp.uint8(0)
+    depth = depth_image[world_id, camera_id, y * width + x]
+    if depth > 0:
+        denom = wp.max(depth_range[1] - depth_range[0], 1e-6)
+        value = wp.uint8(255.0 - ((depth - depth_range[0]) / denom) * 205.0)
+
+    buffer[py, px, 0] = value
+    buffer[py, px, 1] = value
+    buffer[py, px, 2] = value
+    buffer[py, px, 3] = value
+
+
 class TiledCameraSensor:
     """
     A Warp-based tiled camera sensor for raytraced rendering across multiple worlds.
@@ -246,7 +313,8 @@ class TiledCameraSensor:
     def render(
         self,
         state: State | None,
-        camera_transforms: wp.array(dtype=wp.transformf, ndim=2),
+        camera_positions: wp.array(dtype=wp.vec3f, ndim=2),
+        camera_orientations: wp.array(dtype=wp.mat33f, ndim=2),
         camera_rays: wp.array(dtype=wp.vec3f, ndim=4),
         color_image: wp.array(dtype=wp.uint32, ndim=3) | None = None,
         depth_image: wp.array(dtype=wp.float32, ndim=3) | None = None,
@@ -258,7 +326,8 @@ class TiledCameraSensor:
 
         Args:
             state: The current simulation state containing body transforms.
-            camera_transforms: Array of camera transforms in world space, shape (num_cameras, num_worlds).
+            camera_positions: Array of camera positions in world space, shape (num_cameras, num_worlds).
+            camera_orientations: Array of camera orientations in world space, shape (num_cameras, num_worlds).
             camera_rays: Array of camera rays in camera space, shape (num_cameras, height, width, 2).
             color_image: Optional output array for color data (num_worlds, num_cameras, width*height).
                         If None, no color rendering is performed.
@@ -271,7 +340,13 @@ class TiledCameraSensor:
             self.update_from_state(state)
 
         self.render_context.render(
-            camera_transforms, camera_rays, color_image, depth_image, refit_bvh=refit_bvh, clear_images=clear_images
+            camera_positions,
+            camera_orientations,
+            camera_rays,
+            color_image,
+            depth_image,
+            refit_bvh=refit_bvh,
+            clear_images=clear_images,
         )
 
     def compute_pinhole_camera_rays(
@@ -320,7 +395,12 @@ class TiledCameraSensor:
 
         return camera_rays
 
-    def flatten_color_image(self, image: wp.array(dtype=wp.uint32, ndim=3)) -> np.ndarray | None:
+    def flatten_color_image_to_rgba(
+        self,
+        image: wp.array(dtype=wp.uint32, ndim=3),
+        out_buffer: wp.array(dtype=wp.uint8, ndim=3) | None = None,
+        num_worlds_per_row: int | None = None,
+    ):
         """
         Flatten rendered color image to a tiled image buffer.
 
@@ -329,38 +409,50 @@ class TiledCameraSensor:
 
         Args:
             image: Color output array from render(), shape (num_worlds, num_cameras, width*height).
-
-        Returns:
-            Numpy array representing the image data.
+            out_buffer: Optional output array
+            num_worlds_per_row: Optional number of rows
         """
-        if image is None:
-            return None
 
         num_worlds_and_cameras = self.render_context.num_worlds * self.render_context.num_cameras
-        rows = math.ceil(math.sqrt(num_worlds_and_cameras))
-        cols = math.ceil(num_worlds_and_cameras / rows)
+        if not num_worlds_per_row:
+            num_worlds_per_row = math.ceil(math.sqrt(num_worlds_and_cameras))
+        num_worlds_per_col = math.ceil(num_worlds_and_cameras / num_worlds_per_row)
 
-        tile_data = image.numpy().astype(np.uint32)
-        tile_data = tile_data.reshape(num_worlds_and_cameras, self.render_context.width * self.render_context.height)
-
-        if rows * cols > num_worlds_and_cameras:
-            extended_data = np.zeros(
-                (rows * cols, self.render_context.width * self.render_context.height), dtype=np.uint32
+        if out_buffer is None:
+            out_buffer = wp.empty(
+                (num_worlds_per_col * self.render_context.height, num_worlds_per_row * self.render_context.width, 4),
+                dtype=wp.uint8,
             )
-            extended_data[: tile_data.shape[0]] = tile_data
-            tile_data = extended_data
+        else:
+            out_buffer = out_buffer.reshape(
+                (num_worlds_per_col * self.render_context.height, num_worlds_per_row * self.render_context.width, 4)
+            )
 
-        r = (tile_data & 0xFF).astype(np.uint8)
-        g = ((tile_data >> 8) & 0xFF).astype(np.uint8)
-        b = ((tile_data >> 16) & 0xFF).astype(np.uint8)
+        wp.launch(
+            flatten_color_image,
+            (
+                self.render_context.num_worlds,
+                self.render_context.num_cameras,
+                self.render_context.height,
+                self.render_context.width,
+            ),
+            [
+                image,
+                out_buffer,
+                self.render_context.width,
+                self.render_context.height,
+                self.render_context.num_cameras,
+                num_worlds_per_row,
+            ],
+        )
+        return out_buffer
 
-        tile_data = np.dstack([r, g, b])
-        tile_data = tile_data.reshape(rows, cols, self.render_context.height, self.render_context.width, 3)
-        tile_data = tile_data.transpose(0, 2, 1, 3, 4)
-        tile_data = tile_data.reshape(rows * self.render_context.height, cols * self.render_context.width, 3)
-        return tile_data
-
-    def flatten_depth_image(self, image: wp.array(dtype=wp.float32, ndim=3)) -> np.ndarray | None:
+    def flatten_depth_image_to_rgba(
+        self,
+        image: wp.array(dtype=wp.float32, ndim=3),
+        out_buffer: wp.array(dtype=wp.uint8, ndim=3) | None = None,
+        num_worlds_per_row: int | None = None,
+    ):
         """
         Flatten rendered depth image to a tiled grayscale image buffer.
 
@@ -370,45 +462,46 @@ class TiledCameraSensor:
 
         Args:
             image: Depth output array from render(), shape (num_worlds, num_cameras, width*height).
-
-        Returns:
-            Numpy array representing the image data.
+            out_buffer: Optional output array
+            num_worlds_per_row: Optional number of rows
         """
-        if image is None:
-            return None
 
         num_worlds_and_cameras = self.render_context.num_worlds * self.render_context.num_cameras
-        rows = math.ceil(math.sqrt(num_worlds_and_cameras))
-        cols = math.ceil(num_worlds_and_cameras / rows)
+        if not num_worlds_per_row:
+            num_worlds_per_row = math.ceil(math.sqrt(num_worlds_and_cameras))
+        num_worlds_per_col = math.ceil(num_worlds_and_cameras / num_worlds_per_row)
 
-        tile_data = image.numpy().astype(np.float32)
-        tile_data = tile_data.reshape(num_worlds_and_cameras, self.render_context.width * self.render_context.height)
-
-        tile_data[tile_data < 0] = 0
-
-        if rows * cols > num_worlds_and_cameras:
-            extended_data = np.zeros(
-                (rows * cols, self.render_context.width * self.render_context.height), dtype=np.float32
+        if out_buffer is None:
+            out_buffer = wp.empty(
+                (num_worlds_per_col * self.render_context.height, num_worlds_per_row * self.render_context.width, 4),
+                dtype=wp.uint8,
             )
-            extended_data[: tile_data.shape[0]] = tile_data
-            tile_data = extended_data
+        else:
+            out_buffer = out_buffer.reshape(
+                (num_worlds_per_col * self.render_context.height, num_worlds_per_row * self.render_context.width, 4)
+            )
 
-        # Normalize positive values to 0-255 range
-        pos_mask = tile_data > 0
-        if np.any(pos_mask):
-            pos_vals = tile_data[pos_mask]
-            min_depth = pos_vals.min()
-            max_depth = pos_vals.max()
-            denom = max(max_depth - min_depth, 1e-6)
-            # Invert: closer objects = brighter, farther = darker
-            # Scale to 50-255 range (so background/no-hit stays at 0)
-            tile_data[pos_mask] = 255 - ((pos_vals - min_depth) / denom) * 205
-
-        tile_data = np.clip(tile_data, 0, 255).astype(np.uint8)
-        tile_data = tile_data.reshape(rows, cols, self.render_context.height, self.render_context.width)
-        tile_data = tile_data.transpose(0, 2, 1, 3)
-        tile_data = tile_data.reshape(rows * self.render_context.height, cols * self.render_context.width)
-        return tile_data
+        depth_range = wp.array([100000000.0, 0.0], dtype=wp.float32)
+        wp.launch(find_depth_range, image.shape, [image, depth_range])
+        wp.launch(
+            flatten_depth_image,
+            (
+                self.render_context.num_worlds,
+                self.render_context.num_cameras,
+                self.render_context.height,
+                self.render_context.width,
+            ),
+            [
+                image,
+                out_buffer,
+                depth_range,
+                self.render_context.width,
+                self.render_context.height,
+                self.render_context.num_cameras,
+                num_worlds_per_row,
+            ],
+        )
+        return out_buffer
 
     def assign_random_colors_per_world(self, seed: int = 100):
         """
