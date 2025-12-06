@@ -1,0 +1,950 @@
+# SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""
+Provides implementations of broad-phase collision
+detection used by the primitive collision pipeline.
+"""
+
+from dataclasses import dataclass, field
+from enum import IntEnum
+
+import warp as wp
+
+from ...core.geometry import CollisionGeometriesModel, GeometriesData
+from ...core.shapes import ShapeType
+from ...core.types import float32, int32, override, transformf, vec2i, vec3f, vec4f, vec6f, vec8f
+
+###
+# Module interface
+###
+
+__all__ = [
+    "BoundingVolumeType",
+    "BoundingVolumesData",
+    "CollisionCandidatesData",
+    "CollisionCandidatesModel",
+    "primitive_broadphase_explicit",
+]
+
+###
+# Module configs
+###
+
+wp.set_module_options({"enable_backward": False})
+
+
+###
+# Constants
+###
+
+
+PRIMITIVE_BROADPHASE_SUPPORTED_SHAPES: list[ShapeType] = [
+    ShapeType.SPHERE,
+    ShapeType.CYLINDER,
+    ShapeType.CONE,
+    ShapeType.CAPSULE,
+    ShapeType.BOX,
+    ShapeType.ELLIPSOID,
+]
+"""
+List of primitive shape combinations supported by the primitive narrow-phase collider.
+"""
+
+###
+# Types
+###
+
+
+class BoundingVolumeType(IntEnum):
+    """Defines the types of bounding volumes supported for broad-phase collision detection."""
+
+    AABB = 0
+    """Axis-Aligned Bounding Box (AABB)"""
+
+    BS = 1
+    """Bounding Sphere (BS)"""
+
+    @override
+    def __str__(self):
+        """Returns a string representation of the bounding volume type."""
+        return f"BoundingVolumeType.{self.name} ({self.value})"
+
+    @override
+    def __repr__(self):
+        """Returns a string representation of the bounding volume type."""
+        return self.__str__()
+
+
+@dataclass
+class BoundingVolumesData:
+    """
+    A container to hold time-varying bounding-volume data computed for each collision geometry.
+
+    Supports broad-phase collision detection algorithms using both Axis-Aligned Bounding Boxes (AABB)
+    and Bounding Spheres (BS), and allocations are conditioned on the broad-phase algorithm used.
+
+    Attributes:
+        aabb (wp.array | None):
+            The vertices of the Axis-Aligned Bounding Box (AABB) of each collision geometry.\n
+            Shape of ``(sum_of_num_geoms,)`` and type :class:`mat83f`.
+        radius (wp.array | None):
+            The radius of the Bounding Sphere (BS) of each collision geometry.\n
+            Shape of ``(sum_of_num_geoms,)`` and type :class:`float32`.
+    """
+
+    aabb: wp.array | None = None
+    """
+    The min/max extents of the Axis-Aligned Bounding Box (AABB) of each collision geometry.\n
+    Shape of ``(sum_of_num_geoms,)`` and type :class:`vec6f`.
+    """
+
+    radius: wp.array | None = None
+    """
+    The radius of the Bounding Sphere (BS) of each collision geometry.\n
+    Shape of ``(sum_of_num_geoms,)`` and type :class:`float32`.
+    """
+
+
+@dataclass
+class CollisionCandidatesModel:
+    """
+    A container to hold time-invariant data for each candidate geom-pair. Used for
+    explicit broad-phase collision detection on pre-computed collision shape pairs.
+    """
+
+    @staticmethod
+    def _default_world_geom_pairs() -> list[int]:
+        return [0]
+
+    num_model_geom_pairs: int = 0
+    """(host-side) Total number of collision pairs in the model across all worlds."""
+
+    num_world_geom_pairs: list[int] = field(default_factory=_default_world_geom_pairs)
+    """(host-side) Number of collision pairs per world."""
+
+    model_num_pairs: wp.array | None = None
+    """
+    Total number of collisions pairs in the model.\n
+    Shape of ``(1,)`` and type :class:`int32`.
+    """
+
+    world_num_pairs: wp.array | None = None
+    """
+    The number of collisions pairs per world.
+    Shape of ``(num_worlds,)`` and type :class:`int32`.
+    """
+
+    wid: wp.array | None = None
+    """
+    World index of each collision pair.\n
+    Shape of ``(sum_of_num_candidate_pairs,)`` and type :class:`int32`.
+    """
+
+    pairid: wp.array | None = None
+    """
+    Index of each the collision pair.\n
+    Shape of ``(sum_of_num_candidate_pairs,)`` and type :class:`int32`.
+    """
+
+    geom_pair: wp.array | None = None
+    """
+    Geometry indices of each collision pair.\n
+    Shape of ``(sum_of_num_candidate_pairs,)`` and type :class:`vec2i`.
+    """
+
+
+@dataclass
+class CollisionCandidatesData:
+    """
+    A container to hold time-varying data for each active candidate geom-pair generated by
+    the broad-phase collision detection. Used for explicit broad-phase collision detection
+    on pre-computed collision shape pairs.
+    """
+
+    num_model_geom_pairs: int = 0
+    """(host-side) Total number of candidate collision pairs in the model across all worlds."""
+
+    model_num_collisions: wp.array | None = None
+    """
+    Number of collisions detected across all worlds in the model.\n
+    Shape of ``(1,)`` and type :class:`int32`.
+    """
+
+    world_num_collisions: wp.array | None = None
+    """
+    Number of collisions detected per world.\n
+    Shape of ``(num_worlds,)`` and type :class:`int32`.
+    """
+
+    wid: wp.array | None = None
+    """
+    World index of each active collision pair.\n
+    Shape of ``(num_geom_pairs,)`` and type :class:`int32`.
+    """
+
+    geom_pair: wp.array | None = None
+    """
+    Geometry indices of each active collision pair.\n
+    Shape of ``(num_geom_pairs,)`` and type :class:`vec2i`.
+    """
+
+    def clear(self):
+        """
+        Clears the active number of collision candidates.
+        """
+        self.model_num_collisions.zero_()
+        self.world_num_collisions.zero_()
+
+    def zero(self):
+        """
+        Clears the active number of collision candidates and resets all data arrays to zero.
+        """
+        self.clear()
+        self.wid.zero_()
+        self.geom_pair.zero_()
+
+
+###
+# Bounding-Spheres (BS) Functions
+###
+
+
+@wp.func
+def bs_sphere(radius: float32) -> float32:
+    return radius
+
+
+@wp.func
+def bs_cylinder(radius: float32, height: float32) -> float32:
+    return wp.sqrt(0.25 * height * height + radius * radius)
+
+
+@wp.func
+def bs_cone(radius: float32, height: float32) -> float32:
+    return wp.sqrt(0.25 * height * height + radius * radius)
+
+
+@wp.func
+def bs_capsule(radius: float32, height: float32) -> float32:
+    return 0.5 * height + radius
+
+
+@wp.func
+def bs_ellipsoid(abc: vec3f) -> float32:
+    return wp.max(abc[0], wp.max(abc[1], abc[2]))
+
+
+@wp.func
+def bs_box(size: vec3f) -> float32:
+    d, w, h = size[0], size[1], size[2]
+    radius = 0.5 * wp.sqrt(d * d + w * w + h * h)
+    return radius
+
+
+# TODO: Implement proper BS for planes
+@wp.func
+def bs_plane(normal: vec3f, distance: float32) -> float32:
+    return float32(0.0)
+
+
+@wp.func
+def bs_geom(sid: int32, params: vec4f, margin: float32) -> float32:
+    """
+    Compute the radius of the Bounding Sphere (BS) of a geometry element.
+
+    Args:
+        sid (int32): Shape index of the geometry element.
+        params (vec4f): Shape parameters of the geometry element.
+
+    Returns:
+        float32: The radius of the BS of the geometry element.
+    """
+    r = float32(0.0)
+    if sid == ShapeType.SPHERE:
+        r = bs_sphere(params[0] + margin)
+    elif sid == ShapeType.CYLINDER:
+        r = bs_cylinder(params[0] + margin, params[1] + margin)
+    elif sid == ShapeType.CONE:
+        r = bs_cone(params[0] + margin, params[1] + margin)
+    elif sid == ShapeType.CAPSULE:
+        r = bs_capsule(params[0] + margin, params[1] + margin)
+    elif sid == ShapeType.ELLIPSOID:
+        r = bs_ellipsoid(vec3f(params[0] + margin, params[1] + margin, params[2] + margin))
+    elif sid == ShapeType.BOX:
+        r = bs_box(vec3f(params[0] + margin, params[1] + margin, params[2] + margin))
+    return r
+
+
+@wp.func
+def has_bs_overlap(pose1: transformf, pose2: transformf, radius1: float32, radius2: float32) -> wp.bool:
+    """
+    Check for overlap between two bounding spheres.
+
+    Args:
+        pose1 (transformf): Pose of the first bounding sphere in world coordinates.
+        pose2 (transformf): Pose of the second bounding sphere in world coordinates.
+        radius1 (float32): Radius of the first bounding sphere.
+        radius2 (float32): Radius of the second bounding sphere.
+    """
+    position1 = wp.transform_get_translation(pose1)
+    position2 = wp.transform_get_translation(pose2)
+    distance = wp.length(position2 - position1)
+    return distance <= (radius1 + radius2)
+
+
+###
+# Axis-Aligned Bounding Box (AABB) Functions
+###
+
+
+@wp.func
+def compute_tight_aabb_from_local_extents(pose: transformf, extents: vec3f, margin: float32) -> vec6f:
+    R_g = wp.quat_to_matrix(wp.transform_get_rotation(pose))
+    r_g = wp.transform_get_translation(pose)
+    dx = extents[0] + margin
+    dy = extents[1] + margin
+    dz = extents[2] + margin
+    b_v_0 = vec3f(-dx, -dy, -dz)
+    b_v_1 = vec3f(-dx, -dy, dz)
+    b_v_2 = vec3f(-dx, dy, -dz)
+    b_v_3 = vec3f(-dx, dy, dz)
+    b_v_4 = vec3f(dx, -dy, -dz)
+    b_v_5 = vec3f(dx, -dy, dz)
+    b_v_6 = vec3f(dx, dy, -dz)
+    b_v_7 = vec3f(dx, dy, dz)
+    w_v_0 = r_g + (R_g @ b_v_0)
+    w_v_1 = r_g + (R_g @ b_v_1)
+    w_v_2 = r_g + (R_g @ b_v_2)
+    w_v_3 = r_g + (R_g @ b_v_3)
+    w_v_4 = r_g + (R_g @ b_v_4)
+    w_v_5 = r_g + (R_g @ b_v_5)
+    w_v_6 = r_g + (R_g @ b_v_6)
+    w_v_7 = r_g + (R_g @ b_v_7)
+    min_x = wp.min(vec8f(w_v_0[0], w_v_1[0], w_v_2[0], w_v_3[0], w_v_4[0], w_v_5[0], w_v_6[0], w_v_7[0]))
+    max_x = wp.max(vec8f(w_v_0[0], w_v_1[0], w_v_2[0], w_v_3[0], w_v_4[0], w_v_5[0], w_v_6[0], w_v_7[0]))
+    min_y = wp.min(vec8f(w_v_0[1], w_v_1[1], w_v_2[1], w_v_3[1], w_v_4[1], w_v_5[1], w_v_6[1], w_v_7[1]))
+    max_y = wp.max(vec8f(w_v_0[1], w_v_1[1], w_v_2[1], w_v_3[1], w_v_4[1], w_v_5[1], w_v_6[1], w_v_7[1]))
+    min_z = wp.min(vec8f(w_v_0[2], w_v_1[2], w_v_2[2], w_v_3[2], w_v_4[2], w_v_5[2], w_v_6[2], w_v_7[2]))
+    max_z = wp.max(vec8f(w_v_0[2], w_v_1[2], w_v_2[2], w_v_3[2], w_v_4[2], w_v_5[2], w_v_6[2], w_v_7[2]))
+    aabb = vec6f(min_x, min_y, min_z, max_x, max_y, max_z)
+    return aabb
+
+
+@wp.func
+def aabb_sphere(pose: transformf, radius: float32, margin: float32) -> vec6f:
+    r_g = wp.transform_get_translation(pose)
+    extents = vec3f(radius + margin, radius + margin, radius + margin)
+    min = r_g - extents
+    max = r_g + extents
+    aabb = vec6f(min.x, min.y, min.z, max.x, max.y, max.z)
+    return aabb
+
+
+@wp.func
+def aabb_cylinder(pose: transformf, radius: float32, height: float32, margin: float32) -> vec6f:
+    extents = vec3f(radius, radius, 0.5 * height)
+    return compute_tight_aabb_from_local_extents(pose, extents, margin)
+
+
+@wp.func
+def aabb_cone(pose: transformf, radius: float32, height: float32, margin: float32) -> vec6f:
+    extents = vec3f(radius, radius, 0.5 * height)
+    return compute_tight_aabb_from_local_extents(pose, extents, margin)
+
+
+@wp.func
+def aabb_capsule(pose: transformf, radius: float32, height: float32, margin: float32) -> vec6f:
+    extents = vec3f(radius, radius, 0.5 * height + radius)
+    return compute_tight_aabb_from_local_extents(pose, extents, margin)
+
+
+@wp.func
+def aabb_ellipsoid(pose: transformf, abc: vec3f, margin: float32) -> vec6f:
+    extents = vec3f(abc[0], abc[1], abc[2])
+    return compute_tight_aabb_from_local_extents(pose, extents, margin)
+
+
+@wp.func
+def aabb_box(pose: transformf, size: vec3f, margin: float32) -> vec6f:
+    extents = 0.5 * size
+    return compute_tight_aabb_from_local_extents(pose, extents, margin)
+
+
+# TODO: Implement proper AABB for planes
+@wp.func
+def aabb_plane(pose: transformf, normal: vec3f, distance: float32, margin: float32) -> vec6f:
+    return vec6f(0.0)
+
+
+@wp.func
+def aabb_geom(sid: int32, params: vec4f, margin: float32, pose: transformf) -> vec6f:
+    """
+    Compute the Axis-Aligned Bounding Box (AABB) vertices of a geometry element.
+
+    Args:
+        pose (transformf): Pose of the geometry element in world coordinates.
+        params (vec4f): Shape parameters of the geometry element.
+        sid (int32): Shape index of the geometry element.
+
+    Returns:
+        vec6f: The vertices of the AABB of the geometry element.
+    """
+    aabb = vec6f(0.0)
+    if sid == ShapeType.SPHERE:
+        aabb = aabb_sphere(pose, params[0], margin)
+    elif sid == ShapeType.CYLINDER:
+        aabb = aabb_cylinder(pose, params[0], params[1], margin)
+    elif sid == ShapeType.CONE:
+        aabb = aabb_cone(pose, params[0], params[1], margin)
+    elif sid == ShapeType.CAPSULE:
+        aabb = aabb_capsule(pose, params[0], params[1], margin)
+    elif sid == ShapeType.ELLIPSOID:
+        aabb = aabb_ellipsoid(pose, vec3f(params[0], params[1], params[2]), margin)
+    elif sid == ShapeType.BOX:
+        aabb = aabb_box(pose, vec3f(params[0], params[1], params[2]), margin)
+    elif sid == ShapeType.PLANE:
+        aabb = aabb_plane(pose, vec3f(params[0], params[1], params[2]), params[3], margin)
+    return aabb
+
+
+@wp.func
+def has_aabb_overlap(aabb1: vec6f, aabb2: vec6f) -> wp.bool:
+    overlap_x = (aabb1[0] <= aabb2[3]) and (aabb1[3] >= aabb2[0])
+    overlap_y = (aabb1[1] <= aabb2[4]) and (aabb1[4] >= aabb2[1])
+    overlap_z = (aabb1[2] <= aabb2[5]) and (aabb1[5] >= aabb2[2])
+    return overlap_x and overlap_y and overlap_z
+
+
+###
+# Common Functions
+###
+
+
+@wp.func
+def add_active_pair(
+    # Inputs:
+    wid_in: int32,
+    gid1_in: int32,
+    gid2_in: int32,
+    sid1_in: int32,
+    sid2_in: int32,
+    model_num_pairs_in: int32,
+    world_num_pairs_in: int32,
+    # Outputs:
+    model_num_collisions_out: wp.array(dtype=int32),
+    world_num_collisions_out: wp.array(dtype=int32),
+    collision_wid_out: wp.array(dtype=int32),
+    collision_geom_pair_out: wp.array(dtype=vec2i),
+):
+    model_pairid_out = wp.atomic_add(model_num_collisions_out, 0, 1)
+    world_pairid_out = wp.atomic_add(world_num_collisions_out, wid_in, 1)
+
+    # TODO: Check if this is necessary
+    if model_pairid_out >= model_num_pairs_in or world_pairid_out >= world_num_pairs_in:
+        return
+
+    # Correct the pair id order in order to invoke the correct near-phase function
+    if sid1_in > sid2_in:
+        pair_out = wp.vec2i(gid2_in, gid1_in)
+    else:
+        pair_out = wp.vec2i(gid1_in, gid2_in)
+
+    # Store the active collision output data
+    collision_wid_out[model_pairid_out] = wid_in
+    collision_geom_pair_out[model_pairid_out] = pair_out
+
+
+###
+# Kernels
+###
+
+
+@wp.kernel
+def _update_geometries_state_and_aabb(
+    # Inputs:
+    default_margin: float32,
+    geom_bid: wp.array(dtype=int32),
+    geom_sid: wp.array(dtype=int32),
+    geom_params: wp.array(dtype=vec4f),
+    geom_margin: wp.array(dtype=float32),
+    geom_offset: wp.array(dtype=transformf),
+    body_pose: wp.array(dtype=transformf),
+    # Outputs:
+    geom_pose: wp.array(dtype=transformf),
+    geom_aabb: wp.array(dtype=vec6f),
+):
+    """
+    A kernel that updates the state of each geometry and computes its Axis-Aligned Bounding Box (AABB).
+
+    Inputs:
+        geom_bid (wp.array(dtype=int32)): Body index for each geometry.
+        geom_sid (wp.array(dtype=int32)): Shape index for each geometry.
+        geom_params (wp.array(dtype=vec4f)): Shape parameters for each geometry.
+        geom_offset (wp.array(dtype=transformf)): Local pose offset of each geometry relative to its body.
+        body_pose (wp.array(dtype=transformf)): Pose of each body in world coordinates.
+
+    Outputs:
+        geom_pose (wp.array(dtype=transformf)): Pose of each geometry in world coordinates.
+        geom_aabb (wp.array(dtype=vec6f)): Axis-Aligned Bounding Box for each geometry in world coordinates.
+    """
+    # Retrieve geometry index from the thread grid
+    gid = wp.tid()
+
+    # Retrieve the geometry-specific body index and pose
+    bid = geom_bid[gid]
+    sid = geom_sid[gid]
+    X_bg = geom_offset[gid]
+    params = geom_params[gid]
+    margin = geom_margin[gid]
+
+    # Retrieve the pose of the corresponding body
+    X_b = wp.transform_identity(dtype=float32)
+    if bid > -1:
+        X_b = body_pose[bid]
+
+    # Compute the geometry pose in world coordinates
+    X_g = wp.transform_multiply(X_b, X_bg)
+
+    # Compute the geometry bounding volume AABB based on its shape parameters
+    margin = wp.max(default_margin, margin)
+    aabb_g = aabb_geom(sid, params, margin, X_g)
+
+    # Store the geometry pose and AABB
+    geom_pose[gid] = X_g
+    geom_aabb[gid] = aabb_g
+
+
+@wp.kernel
+def _update_geometries_state_and_bs(
+    # Inputs:
+    default_margin: float32,
+    geom_bid: wp.array(dtype=int32),
+    geom_sid: wp.array(dtype=int32),
+    geom_params: wp.array(dtype=vec4f),
+    geom_margin: wp.array(dtype=float32),
+    geom_offset: wp.array(dtype=transformf),
+    body_pose: wp.array(dtype=transformf),
+    # Outputs:
+    geom_pose: wp.array(dtype=transformf),
+    geom_bs_radius: wp.array(dtype=float32),
+):
+    """
+    A kernel that updates the state of each geometry and computes its bounding sphere (BS).
+
+    Inputs:
+        geom_bid (wp.array(dtype=int32)):
+            Body index for each geometry.
+        geom_sid (wp.array(dtype=int32)):
+            Shape index for each geometry.
+        geom_params (wp.array(dtype=vec4f)):
+            Shape parameters for each geometry.
+        geom_offset (wp.array(dtype=transformf)):
+            Local pose offset of each geometry relative to its body.
+        body_pose (wp.array(dtype=transformf)):
+            Pose of each body in world coordinates.
+    Outputs:
+        geom_pose (wp.array(dtype=transformf)):
+            Pose of each geometry in world coordinates.
+        geom_bs_radius (wp.array(dtype=float32)):
+            Radius of the bounding sphere for each geometry.
+    """
+    # Retrieve geometry index from the thread grid
+    gid = wp.tid()
+
+    # Retrieve the geometry-specific body index and pose
+    bid = geom_bid[gid]
+    sid = geom_sid[gid]
+    X_bg = geom_offset[gid]
+    params = geom_params[gid]
+    margin = geom_margin[gid]
+
+    # Retrieve the pose of the corresponding body
+    X_b = wp.transform_identity(dtype=float32)
+    if bid > -1:
+        X_b = body_pose[bid]
+
+    # Compute the geometry pose in world coordinates
+    X_g = wp.transform_multiply(X_b, X_bg)
+
+    # Compute the geometry bounding sphere radius based on its shape parameters
+    margin = wp.max(default_margin, margin)
+    bs_g = bs_geom(sid, params, margin)
+
+    # Store the geometry pose and bounding sphere radius
+    geom_pose[gid] = X_g
+    geom_bs_radius[gid] = bs_g
+
+
+@wp.kernel
+def _nxn_broadphase_aabb(
+    # Inputs:
+    geom_sid: wp.array(dtype=int32),
+    geom_aabb_minmax: wp.array(dtype=vec6f),
+    cmodel_model_num_pairs: wp.array(dtype=int32),
+    cmodel_world_num_pairs: wp.array(dtype=int32),
+    cmodel_wid: wp.array(dtype=int32),
+    cmodel_geom_pair: wp.array(dtype=vec2i),
+    # Outputs:
+    cdata_model_num_collisions: wp.array(dtype=int32),
+    cdata_world_num_collisions: wp.array(dtype=int32),
+    cdata_wid: wp.array(dtype=int32),
+    cdata_geom_pair: wp.array(dtype=vec2i),
+):
+    """
+    A kernel that performs broad-phase collision detection using Axis-Aligned Bounding Boxes (AABB).
+
+    Inputs:
+        geom_sid (wp.array(dtype=int32)):
+            Shape index for each geometry.
+        geom_aabb_minmax (wp.array(dtype=vec6f)):
+            Minimum and maximum coordinates for each geometry's Axis-Aligned Bounding Box (AABB).
+        cmodel_model_num_pairs (wp.array(dtype=int32)):
+            Total number of collision pairs in the model.
+        cmodel_world_num_pairs (wp.array(dtype=int32)):
+            Number of collision pairs per world.
+        cmodel_wid (wp.array(dtype=int32)):
+            World index for each collision pair candidate.
+        cmodel_geom_pair (wp.array(dtype=vec2i)):
+            Geometry indices for each collision pair candidate.
+
+    Outputs:
+        cdata_model_num_collisions (wp.array(dtype=int32)):
+            Number of collisions detected across all worlds in the model.
+        cdata_world_num_collisions (wp.array(dtype=int32)):
+            Number of collisions detected per world.
+        cdata_wid (wp.array(dtype=int32)):
+            World index for each detected collision.
+        cdata_geom_pair (wp.array(dtype=vec2i)):
+            Geometry indices for each detected collision.
+    """
+    # Retrieve the geom-pair index from the thread grid
+    gpid = wp.tid()
+
+    # Retrieve the world index for the current geom-pair
+    wid = cmodel_wid[gpid]
+
+    # Retrieve the geometry pair counts
+    num_model_pairs = cmodel_model_num_pairs[0]
+    num_world_pairs = cmodel_world_num_pairs[wid]
+
+    # Retrieve the geometry indices for the current geom-pair
+    geom_pair = cmodel_geom_pair[gpid]
+    gid1 = geom_pair[0]
+    gid2 = geom_pair[1]
+
+    # Retrieve the geometry-specific data for both geometries
+    sid1 = geom_sid[gid1]
+    aabb1 = geom_aabb_minmax[gid1]
+    sid2 = geom_sid[gid2]
+    aabb2 = geom_aabb_minmax[gid2]
+
+    # Check for BV overlap and if yes then add to active collision pairs
+    if has_aabb_overlap(aabb1, aabb2):
+        add_active_pair(
+            wid,
+            gid1,
+            gid2,
+            sid1,
+            sid2,
+            num_model_pairs,
+            num_world_pairs,
+            cdata_model_num_collisions,
+            cdata_world_num_collisions,
+            cdata_wid,
+            cdata_geom_pair,
+        )
+
+
+@wp.kernel
+def _nxn_broadphase_bs(
+    # Inputs:
+    geom_sid: wp.array(dtype=int32),
+    geom_pose: wp.array(dtype=transformf),
+    geom_bs_radius: wp.array(dtype=float32),
+    cmodel_model_num_pairs: wp.array(dtype=int32),
+    cmodel_world_num_pairs: wp.array(dtype=int32),
+    cmodel_wid: wp.array(dtype=int32),
+    cmodel_geom_pair: wp.array(dtype=vec2i),
+    # Outputs:
+    cdata_model_num_collisions: wp.array(dtype=int32),
+    cdata_world_num_collisions: wp.array(dtype=int32),
+    cdata_wid: wp.array(dtype=int32),
+    cdata_geom_pair: wp.array(dtype=vec2i),
+):
+    """
+    A kernel that performs broad-phase collision detection using bounding spheres (BS).
+
+    Inputs:
+        geom_sid (wp.array(dtype=int32)):
+            Shape index for each geometry.
+        geom_pose (wp.array(dtype=transformf)):
+            Pose of each geometry in world coordinates.
+        geom_bs_radius (wp.array(dtype=float32)):
+            Radius of the bounding sphere for each geometry.
+        cmodel_model_num_pairs (wp.array(dtype=int32)):
+            Total number of collision pairs in the model.
+        cmodel_world_num_pairs (wp.array(dtype=int32)):
+            Number of collision pairs per world.
+        cmodel_wid (wp.array(dtype=int32)):
+            World index for each collision pair candidate.
+        cmodel_geom_pair (wp.array(dtype=vec2i)):
+            Geometry indices for each collision pair candidate.
+
+    Outputs:
+        cdata_model_num_collisions (wp.array(dtype=int32)):
+            Number of collisions detected across all worlds in the model.
+        cdata_world_num_collisions (wp.array(dtype=int32)):
+            Number of collisions detected per world.
+        cdata_wid (wp.array(dtype=int32)):
+            World index of each active collision pair.
+        cdata_geom_pair (wp.array(dtype=vec2i)):
+            Geometry indices for each active collision pair.
+    """
+    # Retrieve the geom-pair index from the thread grid
+    gpid = wp.tid()
+
+    # Retrieve the world index for the current geom-pair
+    wid = cmodel_wid[gpid]
+
+    # Retrieve the geometry pair counts
+    num_model_pairs = cmodel_model_num_pairs[0]
+    num_world_pairs = cmodel_world_num_pairs[wid]
+
+    # Retrieve the geometry indices for the current geom-pair
+    geom_pair = cmodel_geom_pair[gpid]
+    gid1 = geom_pair[0]
+    gid2 = geom_pair[1]
+
+    # Retrieve the geometry-specific data for geometry 1
+    sid1 = geom_sid[gid1]
+    pose1 = geom_pose[gid1]
+    radius1 = geom_bs_radius[gid1]
+
+    # Retrieve the geometry-specific data for geometry 2
+    sid2 = geom_sid[gid2]
+    pose2 = geom_pose[gid2]
+    radius2 = geom_bs_radius[gid2]
+
+    # Check for BV overlap and if yes then add to active collision pairs
+    if has_bs_overlap(pose1, pose2, radius1, radius2):
+        add_active_pair(
+            wid,
+            gid1,
+            gid2,
+            sid1,
+            sid2,
+            num_model_pairs,
+            num_world_pairs,
+            cdata_model_num_collisions,
+            cdata_world_num_collisions,
+            cdata_wid,
+            cdata_geom_pair,
+        )
+
+
+###
+# Launchers
+###
+
+
+def update_geoms_aabb(
+    # Inputs:
+    body_poses: wp.array,
+    geoms_model: CollisionGeometriesModel,
+    geoms_data: GeometriesData,
+    # Outputs:
+    bv_data: BoundingVolumesData,
+    # Options
+    default_margin: float | None = None,
+):
+    """
+    Launches a kernel to update the state of each geometry and compute its Axis-Aligned Bounding Box (AABB).
+
+    Args:
+        body_poses (wp.array): Pose of each body in world coordinates.
+        geoms_model (CollisionGeometriesModel): Model data for collision geometries.
+        geoms_data (GeometriesData): Data for collision geometries.
+        bv_data (BoundingVolumesData): Data for bounding volumes containing Axis-Aligned Bounding Boxes (AABB) vertices.
+    """
+    wp.launch(
+        _update_geometries_state_and_aabb,
+        dim=geoms_model.num_geoms,
+        inputs=[
+            float32(default_margin) if default_margin is not None else float32(0.0),
+            geoms_model.bid,
+            geoms_model.sid,
+            geoms_model.params,
+            geoms_model.margin,
+            geoms_model.offset,
+            body_poses,
+        ],
+        outputs=[geoms_data.pose, bv_data.aabb],
+        device=body_poses.device,
+    )
+
+
+def nxn_broadphase_aabb(
+    # Inputs:
+    geoms_model: CollisionGeometriesModel,
+    bv_data: BoundingVolumesData,
+    # Outputs:
+    candidates_model: CollisionCandidatesModel,
+    candidates_data: CollisionCandidatesData,
+):
+    """
+    Launches a kernel to perform broad-phase collision detection using Axis-Aligned Bounding Boxes (AABB).
+
+    Args:
+        geoms_model (CollisionGeometriesModel): Model data for collision geometries.
+        bv_data (BoundingVolumesData): Data for bounding volumes containing Axis-Aligned Bounding Boxes (AABB) vertices.
+        candidates_model (CollisionCandidatesModel): Model data for collision candidates.
+        candidates_data (CollisionCandidatesData): Data for collision candidates.
+    """
+    wp.launch(
+        _nxn_broadphase_aabb,
+        dim=candidates_model.num_model_geom_pairs,
+        inputs=[
+            geoms_model.sid,
+            bv_data.aabb,
+            candidates_model.model_num_pairs,
+            candidates_model.world_num_pairs,
+            candidates_model.wid,
+            candidates_model.geom_pair,
+        ],
+        outputs=[
+            candidates_data.model_num_collisions,
+            candidates_data.world_num_collisions,
+            candidates_data.wid,
+            candidates_data.geom_pair,
+        ],
+        device=geoms_model.sid.device,
+    )
+
+
+def update_geoms_bs(
+    # Inputs:
+    body_poses: wp.array,
+    geoms_model: CollisionGeometriesModel,
+    geoms_data: GeometriesData,
+    # Outputs:
+    bv_data: BoundingVolumesData,
+    # Options
+    default_margin: float | None = None,
+):
+    """
+    Launches a kernel to update the state of each geometry and compute its bounding sphere (BS).
+
+    Args:
+        body_poses (wp.array): Pose of each body in world coordinates.
+        geoms_model (CollisionGeometriesModel): Model data for collision geometries.
+        geoms_data (GeometriesData): Data for collision geometries.
+        bv_data (BoundingVolumesData): Data for bounding volumes containing bounding sphere radii.
+    """
+    wp.launch(
+        _update_geometries_state_and_bs,
+        dim=geoms_model.num_geoms,
+        inputs=[
+            float32(default_margin) if default_margin is not None else float32(0.0),
+            geoms_model.bid,
+            geoms_model.sid,
+            geoms_model.params,
+            geoms_model.margin,
+            geoms_model.offset,
+            body_poses,
+        ],
+        outputs=[geoms_data.pose, bv_data.radius],
+        device=body_poses.device,
+    )
+
+
+def nxn_broadphase_bs(
+    # Inputs:
+    geoms_model: CollisionGeometriesModel,
+    geoms_data: GeometriesData,
+    bv_data: BoundingVolumesData,
+    # Outputs:
+    candidates_model: CollisionCandidatesModel,
+    candidates_data: CollisionCandidatesData,
+):
+    """
+    Launches a kernel to perform broad-phase collision detection using bounding spheres (BS).
+
+    Args:
+        geoms_model (CollisionGeometriesModel): Model data for collision geometries.
+        geoms_data (GeometriesData): Data for collision geometries.
+        bv_data (BoundingVolumesData): Data for bounding volumes containing bounding sphere radii.
+        candidates_model (CollisionCandidatesModel): Model data for collision candidates.
+        candidates_data (CollisionCandidatesData): Data for collision candidates.
+    """
+    wp.launch(
+        _nxn_broadphase_bs,
+        dim=candidates_model.num_model_geom_pairs,
+        inputs=[
+            geoms_model.sid,
+            geoms_data.pose,
+            bv_data.radius,
+            candidates_model.model_num_pairs,
+            candidates_model.world_num_pairs,
+            candidates_model.wid,
+            candidates_model.geom_pair,
+        ],
+        outputs=[
+            candidates_data.model_num_collisions,
+            candidates_data.world_num_collisions,
+            candidates_data.wid,
+            candidates_data.geom_pair,
+        ],
+        device=geoms_model.sid.device,
+    )
+
+
+def primitive_broadphase_explicit(
+    # Inputs:
+    body_poses: wp.array,
+    geoms_model: CollisionGeometriesModel,
+    geoms_data: GeometriesData,
+    bv_data: BoundingVolumesData,
+    bv_type: BoundingVolumeType,
+    # Outputs:
+    candidates_model: CollisionCandidatesModel,
+    candidates_data: CollisionCandidatesData,
+    # Options
+    default_margin: float | None = None,
+):
+    """
+    Runs explicit broad-phase collision detection between all geometry pairs
+    defined in the collision candidates model using the specified bounding volume type.
+
+    Args:
+        body_poses (wp.array): Pose of each body in world coordinates.
+        geoms_model (CollisionGeometriesModel): Model data for collision geometries.
+        geoms_data (GeometriesData): Data for collision geometries.
+        bv_data (BoundingVolumesData): Data for bounding volumes.
+        bv_type (BoundingVolumeType): Type of bounding volume to use for broad-phase collision detection.
+        candidates_model (CollisionCandidatesModel): Model data for collision candidates.
+        candidates_data (CollisionCandidatesData): Data for collision candidates.
+    """
+    # Run the broadphase collision detection
+    # depending on the bounding volumes used
+    match bv_type:
+        case BoundingVolumeType.AABB:
+            update_geoms_aabb(body_poses, geoms_model, geoms_data, bv_data, default_margin)
+            nxn_broadphase_aabb(geoms_model, bv_data, candidates_model, candidates_data)
+        case BoundingVolumeType.BS:
+            update_geoms_bs(body_poses, geoms_model, geoms_data, bv_data, default_margin)
+            nxn_broadphase_bs(geoms_model, geoms_data, bv_data, candidates_model, candidates_data)
+        case _:
+            raise ValueError(f"Unsupported bounding volume type: {bv_type}")

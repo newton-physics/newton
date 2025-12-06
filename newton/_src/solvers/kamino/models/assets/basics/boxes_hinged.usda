@@ -1,0 +1,219 @@
+#usda 1.0
+(
+    doc = """Authored manually for testing purposes."""
+    defaultPrim = "boxes_hinged"
+    timeCodesPerSecond = 1000
+    kilogramsPerUnit = 1
+    metersPerUnit = 1
+    upAxis = "Z"
+)
+
+def PhysicsScene "World"
+{
+    float physics:gravityMagnitude = 9.8067
+    vector3f physics:gravityDirection = (0, 0, -1)
+}
+
+def Xform "boxes_hinged"
+{
+    def Scope "RigidBodies"
+    {
+        def Xform "body_1" (
+            prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI"]
+        )
+        {
+            # Body Frame
+            quatf xformOp:orient = (1, 0, 0, 0)
+            double3 xformOp:translate = (0.25, -0.05, 0.05)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient"]
+
+            # Body Velocities
+            vector3f physics:linearVelocity = (0, 0, 0)
+            vector3f physics:angularVelocity = (0, 0, 0)
+
+            # Mass Properties
+            float physics:mass = 1.0
+            float3 physics:diagonalInertia = (0.0016666667070239782, 0.021666666492819786, 0.021666666492819786)
+            point3f physics:centerOfMass = (0, 0, 0)
+            quatf physics:principalAxes = (1, 0, 0, 0)
+
+            def Scope "Geometry"
+            {
+                def Scope "Primary"
+                {
+                    def Cube "box_1" (
+                        prepend apiSchemas = ["PhysicsCollisionAPI", "PhysicsMeshCollisionAPI", "MaterialBindingAPI"]
+                    )
+                    {
+                        float3[] extent = [(-1, -1, -1), (1, 1, 1)]
+                        float3 xformOp:scale = (0.25, 0.05, 0.05)
+                        quatf xformOp:orient = (1, 0, 0, 0)
+                        double3 xformOp:translate = (0, 0, 0)
+                        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+                    }
+                }
+            }
+        }
+
+        def Xform "body_2" (
+            prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI"]
+        )
+        {
+            # Body Frame
+            quatf xformOp:orient = (1, 0, 0, 0)
+            double3 xformOp:translate = (0.75, 0.05, 0.05)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient"]
+
+            # Body Velocities
+            vector3f physics:linearVelocity = (0, 0, 0)
+            vector3f physics:angularVelocity = (0, 0, 0)
+
+            # Mass Properties
+            float physics:mass = 1.0
+            float3 physics:diagonalInertia = (0.0016666667070239782, 0.021666666492819786, 0.021666666492819786)
+            point3f physics:centerOfMass = (0, 0, 0)
+            quatf physics:principalAxes = (1, 0, 0, 0)
+
+            def Scope "Geometry"
+            {
+                def Cube "box_2" (
+                    prepend apiSchemas = ["PhysicsCollisionAPI", "PhysicsMeshCollisionAPI", "MaterialBindingAPI"]
+                )
+                {
+                    float3[] extent = [(-1, -1, -1), (1, 1, 1)]
+                    float3 xformOp:scale = (0.25, 0.05, 0.05)
+                    quatf xformOp:orient = (1, 0, 0, 0)
+                    double3 xformOp:translate = (0, 0, 0)
+                    uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+                }
+            }
+        }
+    }
+
+    def Scope "Joints"
+    {
+        def PhysicsRevoluteJoint "joint_1" (
+            prepend apiSchemas = ["PhysicsDriveAPI:angular"]
+        )
+        {
+            bool physics:jointEnabled = 1
+
+            rel physics:body0 = </boxes_hinged/RigidBodies/body_1>
+            rel physics:body1 = </boxes_hinged/RigidBodies/body_2>
+
+            uniform token physics:axis = "Y"
+
+            point3f physics:localPos0 = (0.25, 0.05, 0.0)
+            point3f physics:localPos1 = (-0.25, -0.05, 0.0)
+            quatf physics:localRot0 = (1, 0, 0, 0)
+            quatf physics:localRot1 = (1, 0, 0, 0)
+
+            bool physics:collisionEnabled = 0
+
+            float physics:lowerLimit = -inf
+            float physics:upperLimit = inf
+
+            float drive:angular:physics:maxForce = inf
+            float drive:angular:physics:targetPosition = 0.0
+            float drive:angular:physics:targetVelocity = 0.0
+            float drive:angular:physics:stiffness = 0.0
+            float drive:angular:physics:damping = 0.0
+            uniform token drive:angular:physics:type = "force"
+        }
+    }
+
+    def Scope "StaticGeometry"
+    {
+        def Cube "plane" (
+            # NOTE: "MaterialBindingAPI" is required for the material binding to work.
+            prepend apiSchemas = ["PhysicsCollisionAPI", "PhysicsMeshCollisionAPI", "MaterialBindingAPI"]
+        )
+        {
+            float3[] extent = [(-1, -1, -1), (1, 1, 1)]
+
+            float3 xformOp:scale = (2.0, 2.0, 0.05)
+            quatf xformOp:orient = (1, 0, 0, 0)
+            double3 xformOp:translate = (0, 0, -0.05)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+
+            rel material:binding:physics = </boxes_hinged/Materials/Concrete> (
+                bindMaterialAs = "weakerThanDescendants"
+            )
+
+            color3f[] primvars:displayColor = [(0.8, 0.8, 0.8)]
+        }
+    }
+
+    def Scope "Meshes"
+    {
+    }
+
+    def Scope "Materials"
+    {
+        # NOTE: This provides an example for how to override the default material.
+        def Material "Default" (
+            prepend apiSchemas = ["PhysicsMaterialAPI"]
+            customData = {bool overrideDefault = 1}
+        )
+        {
+            # Color Properties
+            color3f inputs:diffuseColor = (0.5, 0.5, 0.5)
+            float inputs:roughness = 0.0
+            float metallic = 0.0
+
+            # Intrinsic Properties
+            double physics:density = 0.0
+
+            # Extrinsics Properties
+            float physics:restitution = 0.0
+            float physics:staticFriction = 0.9
+            float physics:dynamicFriction = 0.9
+        }
+        def Material "Steel" (
+            prepend apiSchemas = ["PhysicsMaterialAPI"]
+        )
+        {
+            # Color Properties
+            color3f inputs:diffuseColor = (0.95, 0.95, 0.95)
+            float inputs:roughness = 0.0
+            float metallic = 1.0
+
+            # Intrinsic Properties
+            double physics:density = 7850.0
+
+            # Extrinsics Properties
+            float physics:restitution = 0.56
+            float physics:staticFriction = 0.78
+            float physics:dynamicFriction = 0.42
+        }
+        def Material "Concrete" (
+            prepend apiSchemas = ["PhysicsMaterialAPI"]
+        )
+        {
+            # Color Properties
+            color3f inputs:diffuseColor = (0.8, 0.8, 0.8)
+            float inputs:roughness = 0.1
+            float metallic = 0.0
+
+            # Intrinsic Properties
+            double physics:density = 2500.0
+
+            # Extrinsics Properties
+            float physics:restitution = 0.0
+            float physics:staticFriction = 0.5
+            float physics:dynamicFriction = 0.5
+        }
+    }
+
+    def PhysicsCollisionGroup "Collisions"
+    {
+        rel collection:colliders:includes = [
+            </boxes_hinged/RigidBodies/body_1>,
+            </boxes_hinged/RigidBodies/body_2>,
+            </boxes_hinged/StaticGeometry/plane>,
+        ]
+        rel physics:filteredGroups = </boxes_hinged/Collisions>
+    }
+}
+
+

@@ -1,0 +1,84 @@
+#usda 1.0
+(
+    doc = """Authored manually for testing purposes."""
+    defaultPrim = "test_joint_prismatic_passive"
+    timeCodesPerSecond = 1000
+    kilogramsPerUnit = 1
+    metersPerUnit = 1
+    upAxis = "Z"
+)
+
+def PhysicsScene "World"
+{
+    float physics:gravityMagnitude = 9.8067
+    vector3f physics:gravityDirection = (0, 0, -1)
+}
+
+def Xform "test_joint_prismatic_passive"
+{
+    def Scope "RigidBodies"
+    {
+        def Xform "body_0" (
+            prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI"]
+        )
+        {
+            # Body Frame
+            quatf xformOp:orient = (1, 0, 0, 0)
+            double3 xformOp:translate = (-0.0155601, -0.0848459, -0.00574446)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient"]
+
+            # Body Velocities
+            vector3f physics:linearVelocity = (0, 0, 0)
+            vector3f physics:angularVelocity = (0, 0, 0)
+
+            # Mass Properties
+            float physics:mass = 0.2262
+            float3 physics:diagonalInertia = (1.44825e-05, 0.000123861, 0.000124459)
+            point3f physics:centerOfMass = (0, 0, 0)
+            quatf physics:principalAxes = (0.181822, -0.340445, 0.916765, -0.102857)
+        }
+
+        def Xform "body_1" (
+            prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI"]
+        )
+        {
+            # Body Frame
+            quatf xformOp:orient = (1, 0, 0, 0)
+            double3 xformOp:translate = (0.0413202, -0.0281047, 0.0230962)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient"]
+
+            # Body Velocities
+            vector3f physics:linearVelocity = (0, 0, 0)
+            vector3f physics:angularVelocity = (0, 0, 0)
+
+            # Mass Properties
+            float physics:mass = 0.2262
+            float3 physics:diagonalInertia = (1.44825e-05, 0.000123861, 0.000124459)
+            point3f physics:centerOfMass = (0, 0, 0)
+            quatf physics:principalAxes = (0.181822, -0.340445, 0.916765, -0.102857)
+        }
+    }
+
+    def Scope "Joints"
+    {
+        def PhysicsPrismaticJoint "passive_prismatic_joint"
+        {
+            bool physics:jointEnabled = 1
+
+            rel physics:body0 = </test_joint_prismatic_passive/RigidBodies/body_0>
+            rel physics:body1 = </test_joint_prismatic_passive/RigidBodies/body_1>
+
+            uniform token physics:axis = "X"
+
+            point3f physics:localPos0 = (0.0284401, 0.0283706, 0.0144203)
+            point3f physics:localPos1 = (-0.0284401, -0.0283706, -0.0144203)
+            quatf physics:localRot0 = (0.910634, -0.0921648, -0.21039, 0.343494)
+            quatf physics:localRot1 = (0.910634, -0.0921648, -0.21039, 0.343494)
+
+            float physics:lowerLimit = -1  # NOTE: The presence of these properties enables the UsdPhysics.JointLimit(...) attribute
+            float physics:upperLimit = 1
+
+            bool physics:collisionEnabled = 0
+        }
+    }
+}
