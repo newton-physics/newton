@@ -35,7 +35,7 @@ class EventTracer:
 
     .. code-block:: python
 
-      @event_trace
+      @event_scope
       def my_warp_function(...):
         ...
 
