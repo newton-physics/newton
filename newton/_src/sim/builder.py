@@ -2352,6 +2352,8 @@ class ModelBuilder:
         Returns:
             The index of the added joint.
 
+        .. note:: Target position and velocity control for ball joints is currently only supported in :class:`newton.solvers.SolverMuJoCo`.
+
         """
 
         if armature is None:
@@ -2519,7 +2521,7 @@ class ModelBuilder:
         Returns:
             The index of the added joint.
 
-        .. note:: Distance joints are currently only supported in the :class:`newton.solvers.SolverXPBD`.
+        .. note:: Distance joints are currently only supported in :class:`newton.solvers.SolverXPBD`.
 
         """
 
