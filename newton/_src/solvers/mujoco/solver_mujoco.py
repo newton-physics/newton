@@ -1434,6 +1434,34 @@ class SolverMuJoCo(SolverBase):
                     dof_to_mjc_joint[qd_start + i] = num_mjc_joints
                 num_dofs += 3
                 num_mjc_joints += 1
+                # Add actuators for the ball joint
+                for i in range(3):
+                    ai = qd_start + i
+
+                    if actuated_axes is None or ai in actuated_axes:
+                        kp = joint_target_ke[ai]
+                        kd = joint_target_kd[ai]
+                        effort_limit = joint_effort_limit[ai]
+                        gear = actuator_gears.get(name)
+                        args = {}
+                        args.update(actuator_args)
+                        args["gear"] = [0.0] * 6
+                        if gear is not None:
+                            args["gear"][i] = gear
+                        else:
+                            args["gear"][i] = 1.0
+                        args["forcerange"] = [-effort_limit, effort_limit]
+                        args["gainprm"] = [kp, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+                        args["biasprm"] = [0, -kp, 0, 0, 0, 0, 0, 0, 0, 0]
+                        spec.add_actuator(target=name, **args)
+                        axis_to_actuator[ai, 0] = actuator_count
+                        actuator_count += 1
+
+                        args["gainprm"] = [kd, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+                        args["biasprm"] = [0, 0, -kd, 0, 0, 0, 0, 0, 0, 0]
+                        spec.add_actuator(target=name, **args)
+                        axis_to_actuator[ai, 1] = actuator_count
+                        actuator_count += 1
             elif j_type in supported_joint_types:
                 lin_axis_count, ang_axis_count = joint_dof_dim[j]
                 num_dofs += lin_axis_count + ang_axis_count
