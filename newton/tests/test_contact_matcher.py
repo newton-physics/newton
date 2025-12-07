@@ -160,7 +160,6 @@ def test_contact_matcher_stacked_cubes(test: TestContactMatcher, device):
                 )
 
     model = builder.finalize(device=device)
-    model.ground = True
 
     # Create states
     state_0 = model.state()

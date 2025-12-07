@@ -450,10 +450,10 @@ def convert_warp_coords_to_mj_kernel(
 
     elif type == JointType.BALL:
         # change quaternion order from xyzw to wxyz
-        qpos[worldid, q_i + 0] = joint_q[wq_i + 1]
-        qpos[worldid, q_i + 1] = joint_q[wq_i + 2]
-        qpos[worldid, q_i + 2] = joint_q[wq_i + 3]
-        qpos[worldid, q_i + 3] = joint_q[wq_i + 0]
+        qpos[worldid, q_i + 0] = joint_q[wq_i + 3]
+        qpos[worldid, q_i + 1] = joint_q[wq_i + 0]
+        qpos[worldid, q_i + 2] = joint_q[wq_i + 1]
+        qpos[worldid, q_i + 3] = joint_q[wq_i + 2]
         for i in range(3):
             # convert velocity components
             qvel[worldid, qd_i + i] = joint_qd[wqd_i + i]
