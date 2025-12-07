@@ -558,6 +558,7 @@ class MeshInstancerGL:
         self.instance_transform_cuda_buffer = None
 
         self.allocate(num_instances)
+        self.active_instances = num_instances
 
     def __del__(self):
         gl = RendererGL.gl
@@ -692,11 +693,22 @@ class MeshInstancerGL:
         colors: wp.array = None,
         materials: wp.array = None,
     ):
-        if transforms is not None or scalings is not None:
-            # update world transforms
+        if transforms is None:
+            active_count = 0
+        else:
+            active_count = len(transforms)
+
+            if active_count > self.num_instances:
+                raise ValueError(
+                    f"Active instance count ({active_count}) exceeds allocated capacity ({self.num_instances})."
+                )
+            if scalings is not None and len(scalings) != active_count:
+                raise ValueError("Number of scalings must match number of transforms")
+
+        if active_count > 0:
             wp.launch(
                 update_vbo_transforms,
-                dim=self.num_instances,
+                dim=active_count,
                 inputs=[
                     transforms,
                     scalings,
@@ -708,15 +720,26 @@ class MeshInstancerGL:
                 record_tape=False,
             )
 
-            self._update_vbo(self.world_xforms, colors, materials)
+        self.active_instances = active_count
+        # Upload the full buffer; only the first `active_instances` rows are rendered
+        self._update_vbo(self.world_xforms, colors, materials)
 
     # helper to update instance transforms from points
     def update_from_points(self, points, widths, colors):
-        if points is not None or widths is not None:
-            # update world transforms
+        if points is None:
+            active = 0
+        else:
+            active = len(points)
+
+        if active > self.num_instances:
+            raise ValueError("Active point count exceeds allocated capacity. Reallocate before updating.")
+
+        self.active_instances = active
+
+        if self.active_instances > 0 and (points is not None or widths is not None):
             wp.launch(
                 update_vbo_transforms_from_points,
-                dim=self.num_instances,
+                dim=self.active_instances,
                 inputs=[
                     points,
                     widths,
@@ -766,7 +789,9 @@ class MeshInstancerGL:
             gl.glDisable(gl.GL_CULL_FACE)
 
         gl.glBindVertexArray(self.vao)
-        gl.glDrawElementsInstanced(gl.GL_TRIANGLES, self.mesh.num_indices, gl.GL_UNSIGNED_INT, None, self.num_instances)
+        gl.glDrawElementsInstanced(
+            gl.GL_TRIANGLES, self.mesh.num_indices, gl.GL_UNSIGNED_INT, None, self.active_instances
+        )
         gl.glBindVertexArray(0)
 
 
