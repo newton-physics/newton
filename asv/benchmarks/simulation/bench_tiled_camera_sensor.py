@@ -46,24 +46,26 @@ class TiledCameraSensorBenchmark:
         self.state = self.model.state()
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state)
 
-        # camera_position = wp.vec3f(2.0, 0.0, 0.6)
-        # camera_orientation = wp.mat33f(0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0)
-
-        camera_position = wp.vec3f(2.4, 0.0, 0.8)
-        camera_orientation = wp.mat33f(
-            -0.008726535,
-            -0.29236057,
-            0.95626837,
-            0.9999619,
-            -0.002551392,
-            0.008345228,
-            1.3010426e-18,
-            0.9563047,
-            0.2923717,
+        self.camera_positions = wp.array([[wp.vec3f(2.4, 0.0, 0.8)] * num_worlds], dtype=wp.vec3f)
+        self.camera_orientations = wp.array(
+            [
+                [
+                    wp.mat33f(
+                        -0.008726535,
+                        -0.29236057,
+                        0.95626837,
+                        0.9999619,
+                        -0.002551392,
+                        0.008345228,
+                        1.3010426e-18,
+                        0.9563047,
+                        0.2923717,
+                    )
+                ]
+                * num_worlds
+            ],
+            dtype=wp.mat33f,
         )
-
-        transform = wp.transformf(camera_position, wp.quat_from_matrix(camera_orientation))
-        self.camera_transforms = wp.array([[transform] * num_worlds], dtype=wp.transformf)
 
         self.tiled_camera_sensor = TiledCameraSensor(
             model=self.model,
@@ -84,7 +86,13 @@ class TiledCameraSensorBenchmark:
 
         for _ in range(iterations):
             self.tiled_camera_sensor.render(
-                None, self.camera_transforms, self.camera_rays, self.color_image, self.depth_image, refit_bvh=False
+                None,
+                self.camera_positions,
+                self.camera_orientations,
+                self.camera_rays,
+                self.color_image,
+                self.depth_image,
+                refit_bvh=False,
             )
 
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
@@ -94,7 +102,8 @@ class TiledCameraSensorBenchmark:
             for _ in range(iterations):
                 self.tiled_camera_sensor.render(
                     None,
-                    self.camera_transforms,
+                    self.camera_positions,
+                    self.camera_orientations,
                     self.camera_rays,
                     self.color_image,
                     self.depth_image,
@@ -111,7 +120,8 @@ class TiledCameraSensorBenchmark:
             for _ in range(iterations):
                 self.tiled_camera_sensor.render(
                     None,
-                    self.camera_transforms,
+                    self.camera_positions,
+                    self.camera_orientations,
                     self.camera_rays,
                     self.color_image,
                     self.depth_image,
@@ -133,8 +143,10 @@ class TiledCameraSensorBenchmark:
         if os.environ.get("SAVE_IMAGES", "0") != "0":
             from PIL import Image  # noqa: PLC0415
 
-            Image.fromarray(self.tiled_camera_sensor.flatten_color_image(self.color_image)).save("benchmark_color.png")
-            Image.fromarray(self.tiled_camera_sensor.flatten_depth_image(self.depth_image)).save("benchmark_depth.png")
+            color_image = self.tiled_camera_sensor.flatten_color_image_to_rgba(self.color_image)
+            depth_image = self.tiled_camera_sensor.flatten_depth_image_to_rgba(self.depth_image)
+            Image.fromarray(color_image.numpy()).save("benchmark_color.png")
+            Image.fromarray(depth_image.numpy()).save("benchmark_depth.png")
 
     def __print_timer(self, name: str, elapsed: float, iterations: int, sensor: TiledCameraSensor):
         title = f"{name}"
