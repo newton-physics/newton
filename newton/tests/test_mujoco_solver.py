@@ -2512,7 +2512,6 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
 
     def test_geom_solmix_conversion_and_update(self):
         """Test per-shape geom_solmix conversion to MuJoCo and dynamic updates across multiple worlds."""
-        vec5 = wp.types.vector(length=5, dtype=wp.float32)
 
         # Create a model with custom attributes registered
         num_worlds = 2
@@ -2543,7 +2542,7 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
         shape_world = model.shape_world.numpy()
         initial_solmix = np.zeros(model.shape_count, dtype=np.float32)
 
-        # Set unique solmax values per shape and world
+        # Set unique solmix values per shape and world
         for world_idx in range(model.num_worlds):
             world_shape_indices = np.where(shape_world == world_idx)[0]
             for local_idx, shape_idx in enumerate(world_shape_indices):
@@ -2580,7 +2579,7 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
         # Update with different values
         updated_solmix = np.zeros(model.shape_count, dtype=np.float32)
 
-        # Set unique solmax values per shape and world
+        # Set unique solmix values per shape and world
         for world_idx in range(model.num_worlds):
             world_shape_indices = np.where(shape_world == world_idx)[0]
             for local_idx, shape_idx in enumerate(world_shape_indices):
@@ -2599,8 +2598,8 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
                 if shape_idx < 0:
                     continue
 
-                expected_solimp = updated_solmix[shape_idx]
-                actual_solimp = updated_geom_solmix[world_idx, geom_idx]
+                expected_solmix = updated_solmix[shape_idx]
+                actual_solmix = updated_geom_solmix[world_idx, geom_idx]
 
                 self.assertAlmostEqual(
                     float(actual_solmix),

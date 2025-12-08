@@ -464,7 +464,6 @@ class SolverMuJoCo(SolverBase):
                 self.mjw_model.geom_solmix,
                 self.mjw_model.geom_solref,
                 self.mjw_model.geom_solimp,
-                self.mjw_model.geom_solmix,
                 self.mjw_model.geom_friction,
                 self.mjw_model.geom_margin,
                 self.mjw_model.geom_gap,
