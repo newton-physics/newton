@@ -323,6 +323,125 @@ class TestImportUsd(unittest.TestCase):
             )
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_solimp_friction_parsing(self):
+        """Test that solimp_friction attribute is parsed correctly from USD."""
+        from pxr import Usd  # noqa: PLC0415
+
+        # Create USD stage with multiple single-DOF revolute joints
+        usd_content = """#usda 1.0
+(
+    upAxis = "Z"
+)
+
+def PhysicsScene "physicsScene"
+{
+}
+
+def Xform "Articulation" (
+    prepend apiSchemas = ["PhysicsArticulationRootAPI"]
+)
+{
+    def Xform "Body1" (
+        prepend apiSchemas = ["PhysicsRigidBodyAPI"]
+    )
+    {
+        double3 xformOp:translate = (0, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+
+        def Cube "Collision1" (
+            prepend apiSchemas = ["PhysicsCollisionAPI"]
+        )
+        {
+            double size = 0.2
+        }
+    }
+
+    def PhysicsRevoluteJoint "Joint1" (
+        prepend apiSchemas = ["PhysicsDriveAPI:angular"]
+    )
+    {
+        rel physics:body0 = </Articulation/Body1>
+        point3f physics:localPos0 = (0, 0, 0)
+        point3f physics:localPos1 = (0, 0, 0)
+        quatf physics:localRot0 = (1, 0, 0, 0)
+        quatf physics:localRot1 = (1, 0, 0, 0)
+        token physics:axis = "X"
+        float physics:lowerLimit = -90
+        float physics:upperLimit = 90
+
+        # MuJoCo solimpfriction attribute (5 elements)
+        uniform double[] mjc:solimpfriction = [0.89, 0.9, 0.01, 2.1, 1.8]
+    }
+
+    def Xform "Body2" (
+        prepend apiSchemas = ["PhysicsRigidBodyAPI"]
+    )
+    {
+        double3 xformOp:translate = (1, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+
+        def Sphere "Collision2" (
+            prepend apiSchemas = ["PhysicsCollisionAPI"]
+        )
+        {
+            double radius = 0.1
+        }
+    }
+
+    def PhysicsRevoluteJoint "Joint2" (
+        prepend apiSchemas = ["PhysicsDriveAPI:angular"]
+    )
+    {
+        rel physics:body0 = </Articulation/Body1>
+        rel physics:body1 = </Articulation/Body2>
+        point3f physics:localPos0 = (0, 0, 0)
+        point3f physics:localPos1 = (0, 0, 0)
+        quatf physics:localRot0 = (1, 0, 0, 0)
+        quatf physics:localRot1 = (1, 0, 0, 0)
+        token physics:axis = "Z"
+        float physics:lowerLimit = -180
+        float physics:upperLimit = 180
+
+        # No solimpfriction - should use defaults
+    }
+}
+"""
+        stage = Usd.Stage.CreateInMemory()
+        stage.GetRootLayer().ImportFromString(usd_content)
+
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_usd(stage)
+        model = builder.finalize()
+
+        # Check if solimpfriction custom attribute exists
+        self.assertTrue(hasattr(model, "mujoco"), "Model should have mujoco namespace for custom attributes")
+        self.assertTrue(hasattr(model.mujoco, "solimpfriction"), "Model should have solimpfriction attribute")
+
+        solimpfriction = model.mujoco.solimpfriction.numpy()
+
+        # Should have 2 joints: Joint1 (world to Body1) and Joint2 (Body1 to Body2)
+        self.assertEqual(model.joint_count, 2, "Should have 2 single-DOF joints")
+
+        # Helper to check if two arrays match within tolerance
+        def arrays_match(arr, expected, tol=1e-4):
+            return all(abs(arr[i] - expected[i]) < tol for i in range(len(expected)))
+
+        # Expected values
+        expected_joint1 = [0.89, 0.9, 0.01, 2.1, 1.8]  # from Joint1
+        expected_joint2 = [0.9, 0.95, 0.001, 0.5, 2.0]  # from Joint2 (default values)
+
+        # Check that both expected solimpfriction values are present in the model
+        num_dofs = solimpfriction.shape[0]
+        found_values = [solimpfriction[i, :].tolist() for i in range(num_dofs)]
+
+        found_joint1 = any(arrays_match(val, expected_joint1) for val in found_values)
+        found_joint2 = any(arrays_match(val, expected_joint2) for val in found_values)
+
+        self.assertTrue(found_joint1, f"Expected solimpfriction {expected_joint1} not found in model")
+        self.assertTrue(found_joint2, f"Expected default solimpfriction {expected_joint2} not found in model")
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_env_cloning(self):
         builder_no_cloning = newton.ModelBuilder()
         builder_cloning = newton.ModelBuilder()
@@ -835,6 +954,242 @@ def Xform "Articulation" (
         self.assertTrue(hasattr(model, "mujoco"))
         self.assertTrue(hasattr(model.mujoco, "limit_margin"))
         np.testing.assert_allclose(model.mujoco.limit_margin.numpy(), [0.01, 0.02, 0.0])
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_solreffriction_parsing(self):
+        """Test that solreffriction attribute is parsed correctly from USD."""
+        from pxr import Usd  # noqa: PLC0415
+
+        # Create USD stage with multiple single-DOF revolute joints
+        usd_content = """#usda 1.0
+(
+    upAxis = "Z"
+)
+
+def PhysicsScene "physicsScene"
+{
+}
+
+def Xform "Articulation" (
+    prepend apiSchemas = ["PhysicsArticulationRootAPI"]
+)
+{
+    def Xform "Body1" (
+        prepend apiSchemas = ["PhysicsRigidBodyAPI"]
+    )
+    {
+        double3 xformOp:translate = (0, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+
+        def Cube "Collision1" (
+            prepend apiSchemas = ["PhysicsCollisionAPI"]
+        )
+        {
+            double size = 0.2
+        }
+    }
+
+    def PhysicsRevoluteJoint "Joint1" (
+        prepend apiSchemas = ["PhysicsDriveAPI:angular"]
+    )
+    {
+        rel physics:body0 = </Articulation/Body1>
+        point3f physics:localPos0 = (0, 0, 0)
+        point3f physics:localPos1 = (0, 0, 0)
+        quatf physics:localRot0 = (1, 0, 0, 0)
+        quatf physics:localRot1 = (1, 0, 0, 0)
+        token physics:axis = "X"
+        float physics:lowerLimit = -90
+        float physics:upperLimit = 90
+
+        # MuJoCo solreffriction attribute (2 elements)
+        uniform double[] mjc:solreffriction = [0.01, 0.5]
+    }
+
+    def Xform "Body2" (
+        prepend apiSchemas = ["PhysicsRigidBodyAPI"]
+    )
+    {
+        double3 xformOp:translate = (1, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+
+        def Sphere "Collision2" (
+            prepend apiSchemas = ["PhysicsCollisionAPI"]
+        )
+        {
+            double radius = 0.1
+        }
+    }
+
+    def PhysicsRevoluteJoint "Joint2" (
+        prepend apiSchemas = ["PhysicsDriveAPI:angular"]
+    )
+    {
+        rel physics:body0 = </Articulation/Body1>
+        rel physics:body1 = </Articulation/Body2>
+        point3f physics:localPos0 = (0, 0, 0)
+        point3f physics:localPos1 = (0, 0, 0)
+        quatf physics:localRot0 = (1, 0, 0, 0)
+        quatf physics:localRot1 = (1, 0, 0, 0)
+        token physics:axis = "Z"
+        float physics:lowerLimit = -180
+        float physics:upperLimit = 180
+
+        # No solreffriction - should use defaults
+    }
+}
+"""
+        stage = Usd.Stage.CreateInMemory()
+        stage.GetRootLayer().ImportFromString(usd_content)
+
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_usd(stage)
+        model = builder.finalize()
+
+        # Check if solreffriction custom attribute exists
+        self.assertTrue(hasattr(model, "mujoco"), "Model should have mujoco namespace for custom attributes")
+        self.assertTrue(hasattr(model.mujoco, "solreffriction"), "Model should have solreffriction attribute")
+
+        solreffriction = model.mujoco.solreffriction.numpy()
+
+        # Should have 2 joints: Joint1 (world to Body1) and Joint2 (Body1 to Body2)
+        self.assertEqual(model.joint_count, 2, "Should have 2 single-DOF joints")
+
+        # Helper to check if two arrays match within tolerance
+        def arrays_match(arr, expected, tol=1e-4):
+            return all(abs(arr[i] - expected[i]) < tol for i in range(len(expected)))
+
+        # Expected values
+        expected_joint1 = [0.01, 0.5]  # from Joint1
+        expected_joint2 = [0.02, 1.0]  # from Joint2 (default values)
+
+        # Check that both expected solreffriction values are present in the model
+        num_dofs = solreffriction.shape[0]
+        found_values = [solreffriction[i, :].tolist() for i in range(num_dofs)]
+
+        found_joint1 = any(arrays_match(val, expected_joint1) for val in found_values)
+        found_joint2 = any(arrays_match(val, expected_joint2) for val in found_values)
+
+        self.assertTrue(found_joint1, f"Expected solreffriction {expected_joint1} not found in model")
+        self.assertTrue(found_joint2, f"Expected default solreffriction {expected_joint2} not found in model")
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_geom_solimp_parsing(self):
+        """Test that geom_solimp attribute is parsed correctly from USD."""
+        from pxr import Usd  # noqa: PLC0415
+
+        usd_content = """#usda 1.0
+(
+    upAxis = "Z"
+)
+
+def PhysicsScene "physicsScene"
+{
+}
+
+def Xform "Body1" (
+    prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsArticulationRootAPI"]
+)
+{
+    double3 xformOp:translate = (0, 0, 1)
+    uniform token[] xformOpOrder = ["xformOp:translate"]
+
+    def Cube "Collision1" (
+        prepend apiSchemas = ["PhysicsCollisionAPI"]
+    )
+    {
+        double size = 0.2
+        # MuJoCo solimp attribute (5 elements)
+        uniform double[] mjc:solimp = [0.8, 0.9, 0.002, 0.4, 3.0]
+    }
+}
+
+def Xform "Body2" (
+    prepend apiSchemas = ["PhysicsRigidBodyAPI"]
+)
+{
+    double3 xformOp:translate = (1, 0, 1)
+    uniform token[] xformOpOrder = ["xformOp:translate"]
+
+    def Sphere "Collision2" (
+        prepend apiSchemas = ["PhysicsCollisionAPI"]
+    )
+    {
+        double radius = 0.1
+        # No solimp - should use defaults
+    }
+}
+
+def PhysicsRevoluteJoint "Joint1"
+{
+    rel physics:body0 = </Body1>
+    rel physics:body1 = </Body2>
+    point3f physics:localPos0 = (0, 0, 0)
+    point3f physics:localPos1 = (0, 0, 0)
+    quatf physics:localRot0 = (1, 0, 0, 0)
+    quatf physics:localRot1 = (1, 0, 0, 0)
+    token physics:axis = "Z"
+}
+
+def Xform "Body3" (
+    prepend apiSchemas = ["PhysicsRigidBodyAPI"]
+)
+{
+    double3 xformOp:translate = (2, 0, 1)
+    uniform token[] xformOpOrder = ["xformOp:translate"]
+
+    def Capsule "Collision3" (
+        prepend apiSchemas = ["PhysicsCollisionAPI"]
+    )
+    {
+        double radius = 0.05
+        double height = 0.2
+        # Different solimp values
+        uniform double[] mjc:solimp = [0.7, 0.85, 0.003, 0.6, 2.5]
+    }
+}
+
+def PhysicsRevoluteJoint "Joint2"
+{
+    rel physics:body0 = </Body2>
+    rel physics:body1 = </Body3>
+    point3f physics:localPos0 = (0, 0, 0)
+    point3f physics:localPos1 = (0, 0, 0)
+    quatf physics:localRot0 = (1, 0, 0, 0)
+    quatf physics:localRot1 = (1, 0, 0, 0)
+    token physics:axis = "Y"
+}
+"""
+        stage = Usd.Stage.CreateInMemory()
+        stage.GetRootLayer().ImportFromString(usd_content)
+
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_usd(stage)
+        model = builder.finalize()
+
+        self.assertTrue(hasattr(model, "mujoco"), "Model should have mujoco namespace for custom attributes")
+        self.assertTrue(hasattr(model.mujoco, "geom_solimp"), "Model should have geom_solimp attribute")
+
+        geom_solimp = model.mujoco.geom_solimp.numpy()
+
+        def arrays_match(arr, expected, tol=1e-4):
+            return all(abs(arr[i] - expected[i]) < tol for i in range(len(expected)))
+
+        # Check that we have shapes with expected values
+        expected_explicit_1 = [0.8, 0.9, 0.002, 0.4, 3.0]
+        expected_default = [0.9, 0.95, 0.001, 0.5, 2.0]  # default
+        expected_explicit_2 = [0.7, 0.85, 0.003, 0.6, 2.5]
+
+        # Find shapes matching each expected value
+        found_explicit_1 = any(arrays_match(geom_solimp[i], expected_explicit_1) for i in range(model.shape_count))
+        found_default = any(arrays_match(geom_solimp[i], expected_default) for i in range(model.shape_count))
+        found_explicit_2 = any(arrays_match(geom_solimp[i], expected_explicit_2) for i in range(model.shape_count))
+
+        self.assertTrue(found_explicit_1, f"Expected solimp {expected_explicit_1} not found in model")
+        self.assertTrue(found_default, f"Expected default solimp {expected_default} not found in model")
+        self.assertTrue(found_explicit_2, f"Expected solimp {expected_explicit_2} not found in model")
 
 
 class TestImportSampleAssets(unittest.TestCase):
@@ -1647,6 +2002,193 @@ def Xform "Articulation" (
             self.assertAlmostEqual(joint_damping[dof_idx], expected["damping"], places=4)
             self.assertAlmostEqual(joint_target_ke[dof_idx], expected["target_ke"], places=1)
             self.assertAlmostEqual(joint_target_kd[dof_idx], expected["target_kd"], places=1)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_geom_priority_parsing(self):
+        """Test that geom_priority attribute is parsed correctly from USD."""
+        from pxr import Usd  # noqa: PLC0415
+
+        usd_content = """#usda 1.0
+(
+    upAxis = "Z"
+)
+
+def PhysicsScene "physicsScene"
+{
+}
+
+def Xform "Articulation" (
+    prepend apiSchemas = ["PhysicsArticulationRootAPI"]
+)
+{
+    def Xform "Body1" (
+        prepend apiSchemas = ["PhysicsRigidBodyAPI"]
+    )
+    {
+        double3 xformOp:translate = (0, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+
+        def Cube "Collision1" (
+            prepend apiSchemas = ["PhysicsCollisionAPI"]
+        )
+        {
+            double size = 0.2
+            int mjc:priority = 1
+        }
+    }
+
+    def PhysicsRevoluteJoint "Joint1"
+    {
+        rel physics:body0 = </Articulation/Body1>
+        point3f physics:localPos0 = (0, 0, 0)
+        point3f physics:localPos1 = (0, 0, 0)
+        quatf physics:localRot0 = (1, 0, 0, 0)
+        quatf physics:localRot1 = (1, 0, 0, 0)
+        token physics:axis = "Z"
+    }
+
+    def Xform "Body2" (
+        prepend apiSchemas = ["PhysicsRigidBodyAPI"]
+    )
+    {
+        double3 xformOp:translate = (1, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+
+        def Sphere "Collision2" (
+            prepend apiSchemas = ["PhysicsCollisionAPI"]
+        )
+        {
+            double radius = 0.1
+            # No priority - should use default (0)
+        }
+    }
+
+    def PhysicsRevoluteJoint "Joint2"
+    {
+        rel physics:body0 = </Articulation/Body1>
+        rel physics:body1 = </Articulation/Body2>
+        point3f physics:localPos0 = (0, 0, 0)
+        point3f physics:localPos1 = (0, 0, 0)
+        quatf physics:localRot0 = (1, 0, 0, 0)
+        quatf physics:localRot1 = (1, 0, 0, 0)
+        token physics:axis = "Y"
+    }
+}
+"""
+        stage = Usd.Stage.CreateInMemory()
+        stage.GetRootLayer().ImportFromString(usd_content)
+
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_usd(stage)
+        model = builder.finalize()
+
+        self.assertTrue(hasattr(model, "mujoco"))
+        self.assertTrue(hasattr(model.mujoco, "geom_priority"))
+
+        geom_priority = model.mujoco.geom_priority.numpy()
+
+        # Should have 2 shapes
+        self.assertEqual(model.shape_count, 2)
+
+        # Find the values - one should be 1, one should be 0
+        self.assertTrue(np.any(geom_priority == 1))
+        self.assertTrue(np.any(geom_priority == 0))
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_jnt_actgravcomp_parsing(self):
+        """Test that jnt_actgravcomp attribute is parsed correctly from USD."""
+        from pxr import Usd  # noqa: PLC0415
+
+        usd_content = """#usda 1.0
+(
+    upAxis = "Z"
+)
+
+def PhysicsScene "physicsScene"
+{
+}
+
+def Xform "Articulation" (
+    prepend apiSchemas = ["PhysicsArticulationRootAPI"]
+)
+{
+    def Xform "Body1" (
+        prepend apiSchemas = ["PhysicsRigidBodyAPI"]
+    )
+    {
+        double3 xformOp:translate = (0, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+
+        def Cube "Collision1" (
+            prepend apiSchemas = ["PhysicsCollisionAPI"]
+        )
+        {
+            double size = 0.2
+        }
+    }
+
+    def PhysicsRevoluteJoint "Joint1"
+    {
+        rel physics:body0 = </Articulation/Body1>
+        point3f physics:localPos0 = (0, 0, 0)
+        point3f physics:localPos1 = (0, 0, 0)
+        quatf physics:localRot0 = (1, 0, 0, 0)
+        quatf physics:localRot1 = (1, 0, 0, 0)
+        token physics:axis = "Z"
+
+        # MuJoCo actuatorgravcomp attribute
+        bool mjc:actuatorgravcomp = true
+    }
+
+    def Xform "Body2" (
+        prepend apiSchemas = ["PhysicsRigidBodyAPI"]
+    )
+    {
+        double3 xformOp:translate = (1, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+
+        def Sphere "Collision2" (
+            prepend apiSchemas = ["PhysicsCollisionAPI"]
+        )
+        {
+            double radius = 0.1
+        }
+    }
+
+    def PhysicsRevoluteJoint "Joint2"
+    {
+        rel physics:body0 = </Articulation/Body1>
+        rel physics:body1 = </Articulation/Body2>
+        point3f physics:localPos0 = (0, 0, 0)
+        point3f physics:localPos1 = (0, 0, 0)
+        quatf physics:localRot0 = (1, 0, 0, 0)
+        quatf physics:localRot1 = (1, 0, 0, 0)
+        token physics:axis = "Y"
+
+        # No actuatorgravcomp - should use default (0.0)
+    }
+}
+"""
+        stage = Usd.Stage.CreateInMemory()
+        stage.GetRootLayer().ImportFromString(usd_content)
+
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_usd(stage)
+        model = builder.finalize()
+
+        self.assertTrue(hasattr(model, "mujoco"))
+        self.assertTrue(hasattr(model.mujoco, "jnt_actgravcomp"))
+
+        jnt_actgravcomp = model.mujoco.jnt_actgravcomp.numpy()
+
+        # Should have 2 joints
+        self.assertEqual(model.joint_count, 2)
+
+        # Find the values - one should be True, one should be False
+        self.assertTrue(np.any(jnt_actgravcomp))
+        self.assertTrue(np.any(~jnt_actgravcomp))
 
 
 if __name__ == "__main__":
