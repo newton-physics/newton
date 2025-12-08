@@ -2453,6 +2453,225 @@ class TestMuJoCoSolverNewtonContacts(unittest.TestCase):
         )
 
 
+class TestMuJoCoValidation(unittest.TestCase):
+    """Test cases for SolverMuJoCo._validate_model_for_separate_worlds()."""
+
+    def _create_homogeneous_model(self, num_worlds=2, with_ground_plane=True):
+        """Create a valid homogeneous multi-world model for validation tests."""
+        # Create a simple robot template (following pattern from working tests)
+        template = newton.ModelBuilder()
+        b1 = template.add_link(mass=1.0, com=wp.vec3(0.0, 0.0, 0.0), I_m=wp.mat33(np.eye(3)))
+        b2 = template.add_link(mass=1.0, com=wp.vec3(0.0, 0.0, 0.0), I_m=wp.mat33(np.eye(3)))
+        j1 = template.add_joint_revolute(-1, b1, axis=(0.0, 0.0, 1.0))
+        j2 = template.add_joint_revolute(b1, b2, axis=(0.0, 0.0, 1.0))
+        template.add_articulation([j1, j2])
+        template.add_shape_box(b1, hx=0.1, hy=0.1, hz=0.1)
+        template.add_shape_box(b2, hx=0.1, hy=0.1, hz=0.1)
+
+        # Build main model using replicate (pattern from working tests)
+        builder = newton.ModelBuilder()
+        if with_ground_plane:
+            builder.add_ground_plane()  # Global static shape
+        builder.replicate(template, num_worlds)
+
+        return builder.finalize()
+
+    def test_valid_homogeneous_model_passes(self):
+        """Test that a valid homogeneous model passes validation."""
+        model = self._create_homogeneous_model(num_worlds=2, with_ground_plane=False)
+        # Should not raise
+        solver = SolverMuJoCo(model, separate_worlds=True)
+        self.assertIsNotNone(solver)
+
+    def test_valid_model_with_global_shape_passes(self):
+        """Test that a model with global static shapes (ground plane) passes validation."""
+        model = self._create_homogeneous_model(num_worlds=2, with_ground_plane=True)
+        # Should not raise - global shapes are allowed
+        solver = SolverMuJoCo(model, separate_worlds=True)
+        self.assertIsNotNone(solver)
+
+    def test_heterogeneous_body_count_fails(self):
+        """Test that different body counts per world raises ValueError."""
+        # Create two robots with different body counts
+        robot1 = newton.ModelBuilder()
+        b1 = robot1.add_link(mass=1.0, com=wp.vec3(0, 0, 0), I_m=wp.mat33(np.eye(3)))
+        j1 = robot1.add_joint_revolute(-1, b1)
+        robot1.add_articulation([j1])
+        robot1.add_shape_box(b1, hx=0.1, hy=0.1, hz=0.1)
+
+        robot2 = newton.ModelBuilder()
+        b1 = robot2.add_link(mass=1.0, com=wp.vec3(0, 0, 0), I_m=wp.mat33(np.eye(3)))
+        b2 = robot2.add_link(mass=1.0, com=wp.vec3(0, 0, 0), I_m=wp.mat33(np.eye(3)))
+        j1 = robot2.add_joint_revolute(-1, b1)
+        j2 = robot2.add_joint_revolute(b1, b2)
+        robot2.add_articulation([j1, j2])
+        robot2.add_shape_box(b1, hx=0.1, hy=0.1, hz=0.1)
+        robot2.add_shape_box(b2, hx=0.1, hy=0.1, hz=0.1)
+
+        main = newton.ModelBuilder()
+        main.add_world(robot1)  # 1 body
+        main.add_world(robot2)  # 2 bodies
+        model = main.finalize()
+
+        with self.assertRaises(ValueError) as ctx:
+            SolverMuJoCo(model, separate_worlds=True)
+        self.assertIn("world 0 has 1 bodies", str(ctx.exception).lower())
+
+    def test_heterogeneous_shape_count_fails(self):
+        """Test that different shape counts per world raises ValueError."""
+        robot1 = newton.ModelBuilder()
+        b1 = robot1.add_link(mass=1.0, com=wp.vec3(0, 0, 0), I_m=wp.mat33(np.eye(3)))
+        j1 = robot1.add_joint_revolute(-1, b1)
+        robot1.add_articulation([j1])
+        robot1.add_shape_box(b1, hx=0.1, hy=0.1, hz=0.1)
+
+        robot2 = newton.ModelBuilder()
+        b1 = robot2.add_link(mass=1.0, com=wp.vec3(0, 0, 0), I_m=wp.mat33(np.eye(3)))
+        j1 = robot2.add_joint_revolute(-1, b1)
+        robot2.add_articulation([j1])
+        robot2.add_shape_box(b1, hx=0.1, hy=0.1, hz=0.1)
+        robot2.add_shape_sphere(b1, radius=0.05)  # Extra shape
+
+        main = newton.ModelBuilder()
+        main.add_world(robot1)  # 1 shape
+        main.add_world(robot2)  # 2 shapes
+        model = main.finalize()
+
+        with self.assertRaises(ValueError) as ctx:
+            SolverMuJoCo(model, separate_worlds=True)
+        self.assertIn("world 0 has 1 shapes", str(ctx.exception).lower())
+
+    def test_mismatched_joint_types_fails(self):
+        """Test that different joint types at same position across worlds raises ValueError."""
+        robot1 = newton.ModelBuilder()
+        b1 = robot1.add_link(mass=1.0, com=wp.vec3(0, 0, 0), I_m=wp.mat33(np.eye(3)))
+        j1 = robot1.add_joint_revolute(-1, b1)  # Revolute joint
+        robot1.add_articulation([j1])
+        robot1.add_shape_box(b1, hx=0.1, hy=0.1, hz=0.1)
+
+        robot2 = newton.ModelBuilder()
+        b1 = robot2.add_link(mass=1.0, com=wp.vec3(0, 0, 0), I_m=wp.mat33(np.eye(3)))
+        j1 = robot2.add_joint_prismatic(-1, b1)  # Prismatic joint (different type)
+        robot2.add_articulation([j1])
+        robot2.add_shape_box(b1, hx=0.1, hy=0.1, hz=0.1)
+
+        main = newton.ModelBuilder()
+        main.add_world(robot1)
+        main.add_world(robot2)
+        model = main.finalize()
+
+        with self.assertRaises(ValueError) as ctx:
+            SolverMuJoCo(model, separate_worlds=True)
+        self.assertIn("joint types mismatch at position", str(ctx.exception).lower())
+
+    def test_mismatched_shape_types_fails(self):
+        """Test that different shape types at same position across worlds raises ValueError."""
+        robot1 = newton.ModelBuilder()
+        b1 = robot1.add_link(mass=1.0, com=wp.vec3(0, 0, 0), I_m=wp.mat33(np.eye(3)))
+        j1 = robot1.add_joint_revolute(-1, b1)
+        robot1.add_articulation([j1])
+        robot1.add_shape_box(b1, hx=0.1, hy=0.1, hz=0.1)  # Box
+
+        robot2 = newton.ModelBuilder()
+        b1 = robot2.add_link(mass=1.0, com=wp.vec3(0, 0, 0), I_m=wp.mat33(np.eye(3)))
+        j1 = robot2.add_joint_revolute(-1, b1)
+        robot2.add_articulation([j1])
+        robot2.add_shape_sphere(b1, radius=0.1)  # Sphere (different type)
+
+        main = newton.ModelBuilder()
+        main.add_world(robot1)
+        main.add_world(robot2)
+        model = main.finalize()
+
+        with self.assertRaises(ValueError) as ctx:
+            SolverMuJoCo(model, separate_worlds=True)
+        self.assertIn("shape types mismatch at position", str(ctx.exception).lower())
+
+    def test_global_body_fails(self):
+        """Test that a body in global world (-1) raises ValueError."""
+        builder = newton.ModelBuilder()
+
+        # Add ground plane (allowed)
+        builder.add_ground_plane()
+
+        # Manually create a body in global world
+        builder.current_world = -1
+        b1 = builder.add_link(mass=1.0, com=wp.vec3(0, 0, 0), I_m=wp.mat33(np.eye(3)))
+        # Need a joint to make this a valid model
+        builder.current_world = -1
+        j1 = builder.add_joint_free(b1)
+        builder.add_articulation([j1])
+
+        # Add normal world content
+        builder.begin_world()
+        b2 = builder.add_link(mass=1.0, com=wp.vec3(0, 0, 0), I_m=wp.mat33(np.eye(3)))
+        j2 = builder.add_joint_revolute(-1, b2)
+        builder.add_articulation([j2])
+        builder.add_shape_box(b2, hx=0.1, hy=0.1, hz=0.1)
+        builder.end_world()
+
+        builder.begin_world()
+        b3 = builder.add_link(mass=1.0, com=wp.vec3(0, 0, 0), I_m=wp.mat33(np.eye(3)))
+        j3 = builder.add_joint_revolute(-1, b3)
+        builder.add_articulation([j3])
+        builder.add_shape_box(b3, hx=0.1, hy=0.1, hz=0.1)
+        builder.end_world()
+
+        model = builder.finalize()
+
+        with self.assertRaises(ValueError) as ctx:
+            SolverMuJoCo(model, separate_worlds=True)
+        self.assertIn("global world (-1) cannot contain bodies", str(ctx.exception).lower())
+
+    def test_global_joint_fails(self):
+        """Test that a joint in global world (-1) raises ValueError."""
+        builder = newton.ModelBuilder()
+        builder.add_ground_plane()
+
+        # Add a body in global world with a joint
+        builder.current_world = -1
+        b1 = builder.add_link(mass=1.0, com=wp.vec3(0, 0, 0), I_m=wp.mat33(np.eye(3)))
+        j1 = builder.add_joint_revolute(-1, b1)
+        builder.add_articulation([j1])
+
+        # Add normal world content
+        builder.begin_world()
+        b2 = builder.add_link(mass=1.0, com=wp.vec3(0, 0, 0), I_m=wp.mat33(np.eye(3)))
+        j2 = builder.add_joint_revolute(-1, b2)
+        builder.add_articulation([j2])
+        builder.add_shape_box(b2, hx=0.1, hy=0.1, hz=0.1)
+        builder.end_world()
+
+        builder.begin_world()
+        b3 = builder.add_link(mass=1.0, com=wp.vec3(0, 0, 0), I_m=wp.mat33(np.eye(3)))
+        j3 = builder.add_joint_revolute(-1, b3)
+        builder.add_articulation([j3])
+        builder.add_shape_box(b3, hx=0.1, hy=0.1, hz=0.1)
+        builder.end_world()
+
+        model = builder.finalize()
+
+        with self.assertRaises(ValueError) as ctx:
+            SolverMuJoCo(model, separate_worlds=True)
+        # Fails on global bodies first (bodies are checked before joints)
+        self.assertIn("global world (-1) cannot contain", str(ctx.exception).lower())
+
+    def test_single_world_model_skips_validation(self):
+        """Test that single-world models skip validation (no homogeneity needed)."""
+        model = self._create_homogeneous_model(num_worlds=1)
+
+        # Should not raise - single world doesn't need homogeneity validation
+        solver = SolverMuJoCo(model, separate_worlds=True)
+        self.assertIsNotNone(solver)
+
+    def test_many_worlds_homogeneous_passes(self):
+        """Test that a model with many homogeneous worlds passes validation."""
+        model = self._create_homogeneous_model(num_worlds=10)
+        # Should not raise
+        solver = SolverMuJoCo(model, separate_worlds=True)
+        self.assertIsNotNone(solver)
+
+
 class TestMuJoCoConversion(unittest.TestCase):
     def test_no_shapes(self):
         builder = newton.ModelBuilder()
