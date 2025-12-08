@@ -1233,11 +1233,10 @@ def update_geom_properties_kernel(
     # update geom_solimp from custom attribute
     if shape_geom_solimp:
         geom_solimp[worldid, geom_idx] = shape_geom_solimp[shape_idx]
-    
+
     # update geom_solmix from custom attribute
     if shape_geom_solmix:
         geom_solmix[worldid, geom_idx] = shape_geom_solmix[shape_idx]
-
 
     # update size
     geom_size[worldid, geom_idx] = shape_size[shape_idx]

@@ -895,8 +895,6 @@ def Xform "Articulation" (
         self.assertTrue(found_joint1, f"Expected solimplimit {expected_joint1} not found in model")
         self.assertTrue(found_joint2, f"Expected default solimplimit {expected_joint2} not found in model")
 
-        
-
     def test_limit_margin_parsing(self):
         """Test importing limit_margin from USD with mjc:margin on joint."""
         from pxr import Sdf, Usd, UsdGeom, UsdPhysics  # noqa: PLC0415

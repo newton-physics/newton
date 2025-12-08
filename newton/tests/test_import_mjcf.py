@@ -1385,7 +1385,6 @@ class TestImportMjcf(unittest.TestCase):
             for i, (a, e) in enumerate(zip(actual, expected, strict=False)):
                 self.assertAlmostEqual(a, e, places=4, msg=f"geom_solimp[{shape_idx}][{i}] should be {e}, got {a}")
 
-
     def test_geom_solmix_parsing(self):
         """Test that geom_solmix attribute is parsed correctly from MJCF."""
         mjcf = """<?xml version="1.0" ?>

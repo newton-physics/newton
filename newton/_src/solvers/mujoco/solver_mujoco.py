@@ -1061,7 +1061,7 @@ class SolverMuJoCo(SolverBase):
         shape_condim = get_custom_attribute("condim")
         shape_priority = get_custom_attribute("geom_priority")
         shape_geom_solimp = get_custom_attribute("geom_solimp")
-        shape_geom_solmix= get_custom_attribute("geom_solmix")
+        shape_geom_solmix = get_custom_attribute("geom_solmix")
         joint_dof_limit_margin = get_custom_attribute("limit_margin")
         joint_solimp_limit = get_custom_attribute("solimplimit")
         joint_dof_solref = get_custom_attribute("solreffriction")

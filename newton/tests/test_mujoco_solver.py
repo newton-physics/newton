@@ -2510,7 +2510,6 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
                         msg=f"Updated geom_solimp[{i}] mismatch for shape {shape_idx} in world {world_idx}",
                     )
 
-
     def test_geom_solmix_conversion_and_update(self):
         """Test per-shape geom_solmix conversion to MuJoCo and dynamic updates across multiple worlds."""
         vec5 = wp.types.vector(length=5, dtype=wp.float32)
@@ -2573,8 +2572,8 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
                     float(actual_solmix),
                     expected_solmix,
                     places=5,
-                        msg=f"Initial geom_solmix mismatch for shape {shape_idx} in world {world_idx}, geom {geom_idx}",
-                    )
+                    msg=f"Initial geom_solmix mismatch for shape {shape_idx} in world {world_idx}, geom {geom_idx}",
+                )
 
         self.assertGreater(tested_count, 0, "Should have tested at least one shape")
 
@@ -2609,6 +2608,7 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
                     places=5,
                     msg=f"Updated geom_solmix mismatch for shape {shape_idx} in world {world_idx}",
                 )
+
 
 class TestMuJoCoSolverNewtonContacts(unittest.TestCase):
     def setUp(self):
