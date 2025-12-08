@@ -1386,5 +1386,49 @@ class TestImportMjcf(unittest.TestCase):
                 self.assertAlmostEqual(a, e, places=4, msg=f"geom_solimp[{shape_idx}][{i}] should be {e}, got {a}")
 
 
+    def test_geom_solmix_parsing(self):
+        """Test that geom_solmix attribute is parsed correctly from MJCF."""
+        mjcf = """<?xml version="1.0" ?>
+<mujoco>
+    <worldbody>
+        <body name="body1">
+            <freejoint/>
+            <geom type="box" size="0.1 0.1 0.1" solmix="0.5"/>
+        </body>
+        <body name="body2">
+            <freejoint/>
+            <geom type="sphere" size="0.05"/>
+        </body>
+        <body name="body3">
+            <freejoint/>
+            <geom type="capsule" size="0.05 0.1" solmix="0.8"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_mjcf(mjcf)
+        model = builder.finalize()
+
+        self.assertTrue(hasattr(model, "mujoco"), "Model should have mujoco namespace for custom attributes")
+        self.assertTrue(hasattr(model.mujoco, "geom_solmix"), "Model should have geom_solmix attribute")
+
+        geom_solmix = model.mujoco.geom_solmix.numpy()
+        self.assertEqual(model.shape_count, 3, "Should have 3 shapes")
+
+        # Expected values: shape 0 has explicit solimp=0.5, shape 1 has solimp=default=1.0, shape 2 has explicit solimp=0.8
+        expected_values = {
+            0: 0.5,
+            1: 1.0,  # default
+            2: 0.8,
+        }
+
+        for shape_idx, expected in expected_values.items():
+            actual = geom_solmix[shape_idx].tolist()
+            self.assertAlmostEqual(actual, expected_values[shape_idx], places=4)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

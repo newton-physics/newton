@@ -191,6 +191,18 @@ class SolverMuJoCo(SolverBase):
         )
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
+                name="geom_solmix",
+                frequency=ModelAttributeFrequency.SHAPE,
+                assignment=ModelAttributeAssignment.MODEL,
+                dtype=wp.float32,
+                default=1.0,
+                namespace="mujoco",
+                usd_attribute_name="mjc:solmix",
+                mjcf_attribute_name="solmix",
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
                 name="limit_margin",
                 frequency=ModelAttributeFrequency.JOINT_DOF,
                 assignment=ModelAttributeAssignment.MODEL,
@@ -452,6 +464,7 @@ class SolverMuJoCo(SolverBase):
                 self.mjw_model.geom_solmix,
                 self.mjw_model.geom_solref,
                 self.mjw_model.geom_solimp,
+                self.mjw_model.geom_solmix,
                 self.mjw_model.geom_friction,
                 self.mjw_model.geom_margin,
                 self.mjw_model.geom_gap,
@@ -1048,6 +1061,7 @@ class SolverMuJoCo(SolverBase):
         shape_condim = get_custom_attribute("condim")
         shape_priority = get_custom_attribute("geom_priority")
         shape_geom_solimp = get_custom_attribute("geom_solimp")
+        shape_geom_solmix= get_custom_attribute("geom_solmix")
         joint_dof_limit_margin = get_custom_attribute("limit_margin")
         joint_solimp_limit = get_custom_attribute("solimplimit")
         joint_dof_solref = get_custom_attribute("solreffriction")
@@ -1287,6 +1301,8 @@ class SolverMuJoCo(SolverBase):
                     geom_params["priority"] = shape_priority[shape]
                 if shape_geom_solimp is not None:
                     geom_params["solimp"] = shape_geom_solimp[shape]
+                if shape_geom_solmix is not None:
+                    geom_params["solmix"] = shape_geom_solmix[shape]
 
                 body.add_geom(**geom_params)
                 # store the geom name instead of assuming index
@@ -1772,6 +1788,7 @@ class SolverMuJoCo(SolverBase):
             # "geom_solmix",
             "geom_solref",
             "geom_solimp",
+            "geom_solmix",
             "geom_size",
             "geom_rbound",
             "geom_pos",
@@ -2002,9 +2019,10 @@ class SolverMuJoCo(SolverBase):
 
         num_worlds = self.model.num_worlds
 
-        # Get custom attribute for geom_solimp
+        # Get custom attribute for geom_solimp and geom_solmix
         mujoco_attrs = getattr(self.model, "mujoco", None)
         shape_geom_solimp = getattr(mujoco_attrs, "geom_solimp", None) if mujoco_attrs is not None else None
+        shape_geom_solmix = getattr(mujoco_attrs, "geom_solmix", None) if mujoco_attrs is not None else None
 
         wp.launch(
             update_geom_properties_kernel,
@@ -2025,6 +2043,7 @@ class SolverMuJoCo(SolverBase):
                 self.model.shape_material_torsional_friction,
                 self.model.shape_material_rolling_friction,
                 shape_geom_solimp,
+                shape_geom_solmix,
             ],
             outputs=[
                 self.mjw_model.geom_rbound,
@@ -2034,6 +2053,7 @@ class SolverMuJoCo(SolverBase):
                 self.mjw_model.geom_pos,
                 self.mjw_model.geom_quat,
                 self.mjw_model.geom_solimp,
+                self.mjw_model.geom_solmix,
             ],
             device=self.model.device,
         )
