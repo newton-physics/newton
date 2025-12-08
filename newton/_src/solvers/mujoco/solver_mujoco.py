@@ -484,6 +484,7 @@ class SolverMuJoCo(SolverBase):
                 bodies_per_world,
                 self.newton_shape_to_mjc_geom,
                 # Mujoco warp contacts
+                self.mjw_data.naconmax,
                 self.mjw_data.nacon,
                 self.mjw_data.contact.dist,
                 self.mjw_data.contact.pos,
@@ -1874,28 +1875,22 @@ class SolverMuJoCo(SolverBase):
             # TODO find better heuristics to determine nconmax and njmax
             if disable_contacts:
                 nconmax = 0
-            else:
-                if nconmax is not None:
-                    rigid_contact_max = nconmax
-                    if rigid_contact_max < self.mj_data.ncon:
-                        warnings.warn(
-                            f"[WARNING] Value for nconmax is changed from {nconmax} to {self.mj_data.ncon} following an MjWarp requirement.",
-                            stacklevel=2,
-                        )
-                        nconmax = self.mj_data.ncon
-                    else:
-                        nconmax = rigid_contact_max
-                else:
-                    nconmax = self.mj_data.ncon
+            elif nconmax is None:
+                nconmax = self.mj_data.ncon
+            elif nconmax < self.mj_data.ncon:
+                warnings.warn(
+                    f"[WARNING] Value for nconmax is changed from {nconmax} to {self.mj_data.ncon} following an MjWarp requirement.",
+                    stacklevel=2,
+                )
+                nconmax = self.mj_data.ncon
 
-            if njmax is not None:
-                if njmax < self.mj_data.nefc:
-                    warnings.warn(
-                        f"[WARNING] Value for njmax is changed from {njmax} to {self.mj_data.nefc} following an MjWarp requirement.",
-                        stacklevel=2,
-                    )
-                    njmax = self.mj_data.nefc
-            else:
+            if njmax is None:
+                njmax = self.mj_data.nefc
+            elif njmax < self.mj_data.nefc:
+                warnings.warn(
+                    f"[WARNING] Value for njmax is changed from {njmax} to {self.mj_data.nefc} following an MjWarp requirement.",
+                    stacklevel=2,
+                )
                 njmax = self.mj_data.nefc
 
             self.mjw_data = mujoco_warp.put_data(
