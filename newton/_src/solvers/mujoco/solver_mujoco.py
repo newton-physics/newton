@@ -392,7 +392,7 @@ class SolverMuJoCo(SolverBase):
         else:
             self.use_mujoco_cpu = use_mujoco_cpu
             if separate_worlds is None:
-                separate_worlds = not use_mujoco_cpu
+                separate_worlds = not use_mujoco_cpu and model.num_worlds > 1
             with wp.ScopedTimer("convert_model_to_mujoco", active=False):
                 self._convert_to_mjc(
                     model,
