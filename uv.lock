@@ -1937,7 +1937,7 @@ requires-dist = [
     { name = "usd-exchange", marker = "platform_machine == 'aarch64' and extra == 'importers'", specifier = ">=2.1.0a3" },
     { name = "usd-exchange", marker = "platform_machine == 'aarch64' and extra == 'notebook'", specifier = ">=2.1.0a3" },
     { name = "usd-exchange", marker = "platform_machine == 'aarch64' and extra == 'torch-cu12'", specifier = ">=2.1.0a3" },
-    { name = "warp-lang", specifier = ">=1.7.0.dev20250823", index = "https://pypi.nvidia.com/" },
+    { name = "warp-lang", specifier = ">=1.11.0.dev20251208", index = "https://pypi.nvidia.com/" },
 ]
 provides-extras = ["dev", "docs", "examples", "importers", "notebook", "sim", "torch-cu12"]
 
