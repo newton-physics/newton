@@ -641,10 +641,17 @@ def parse_mjcf(
                     limit_kd = 100.0  # From MuJoCo's default solref (0.02, 1.0)
 
                 effort_limit = 1e6
-                if "actfrcrange" in joint_attrib:
-                    actfrcrange_vec = parse_vec(joint_attrib, "actfrcrange", None)
-                    if actfrcrange_vec is not None and len(actfrcrange_vec) == 2:
-                        effort_limit = max(abs(actfrcrange_vec[0]), abs(actfrcrange_vec[1]))
+                if "actuatorfrcrange" in joint_attrib:
+                    actuatorfrcrange = parse_vec(joint_attrib, "actuatorfrcrange", None)
+                    if actuatorfrcrange is not None and len(actuatorfrcrange) == 2:
+                        actuatorfrclimited = joint_attrib.get("actuatorfrclimited", "auto").lower()
+                        if actuatorfrclimited in ("true", "auto"):
+                            effort_limit = max(abs(actuatorfrcrange[0]), abs(actuatorfrcrange[1]))
+                        elif verbose:
+                            print(
+                                f"Warning: Joint '{joint_attrib.get('name', 'unnamed')}' has actuatorfrcrange "
+                                f"but actuatorfrclimited='{actuatorfrclimited}'. Force clamping will be disabled."
+                            )
 
                 ax = ModelBuilder.JointDofConfig(
                     axis=axis_vec,
