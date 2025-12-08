@@ -148,7 +148,7 @@ class TestJointLimits(unittest.TestCase):
         # - X rotation: unlimited
         # - Y rotation: limited
         # - Z rotation: partially limited (only upper)
-        builder.add_joint_d6(
+        joint = builder.add_joint_d6(
             parent=-1,
             child=body,
             linear_axes=[
@@ -170,6 +170,7 @@ class TestJointLimits(unittest.TestCase):
                 ),
             ],
         )
+        builder.add_articulation([joint])
 
         model = builder.finalize()
 
@@ -217,9 +218,10 @@ class TestJointLimits(unittest.TestCase):
         body = builder.add_body()
 
         # Add joint with unlimited limits
-        builder.add_joint_revolute(
+        joint = builder.add_joint_revolute(
             parent=-1, child=body, limit_lower=-JOINT_LIMIT_UNLIMITED, limit_upper=JOINT_LIMIT_UNLIMITED
         )
+        builder.add_articulation([joint])
 
         model = builder.finalize()
 

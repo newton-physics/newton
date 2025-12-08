@@ -344,6 +344,49 @@ Soft contact margins are specified via the ``soft_contact_margin`` parameter in 
 
 Contacts between particles and shapes are generated separately via :attr:`Contacts.soft_contact_*` arrays. Soft contact generation is automatically enabled when particles are present in the model.
 
+.. _Contact Material Properties:
+
+**Contact material properties**
+
+Shape contact material properties control how contacts are resolved by different solvers. Not all properties are used by all solvers:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 20 50 30
+
+   * - Property
+     - Description
+     - Used by
+   * - :attr:`~newton.Model.shape_material_ke`
+     - Contact elastic stiffness
+     - SemiImplicit, Featherstone, MuJoCo
+   * - :attr:`~newton.Model.shape_material_kd`
+     - Contact damping coefficient
+     - SemiImplicit, Featherstone, MuJoCo
+   * - :attr:`~newton.Model.shape_material_kf`
+     - Contact friction damping coefficient
+     - SemiImplicit, Featherstone
+   * - :attr:`~newton.Model.shape_material_ka`
+     - Contact adhesion distance
+     - SemiImplicit, Featherstone
+   * - :attr:`~newton.Model.shape_material_mu`
+     - Coefficient of friction
+     - all solvers
+   * - :attr:`~newton.Model.shape_material_restitution`
+     - Coefficient of restitution (bounciness).
+     - XPBD
+   * - :attr:`~newton.Model.shape_material_torsional_friction`
+     - Coefficient of torsional friction (resistance to spinning at contact point)
+     - XPBD, MuJoCo
+   * - :attr:`~newton.Model.shape_material_rolling_friction`
+     - Coefficient of rolling friction (resistance to rolling motion)
+     - XPBD, MuJoCo
+
+For solvers SemiImplicit and Featherstone, contact forces are computed using the ``ke``, ``kd``, ``kf``, and ``ka`` parameters. 
+For position-based solvers (XPBD), the ``restitution`` parameter controls velocity reflection at contacts. To take effect, enable restitution in solver constructor via ``enable_restitution=True``.
+
+The MuJoCo solver converts ``ke`` and ``kd`` to MuJoCo's ``solref`` parameters (timeconst and dampratio) for its constraint-based contact model.
+
 **USD collision attributes**
 
 Custom collision groups and world indices can be authored in USD using custom attributes:

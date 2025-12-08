@@ -221,6 +221,17 @@ class Model:
         self.shape_world = None
         """World index for each shape, shape [shape_count], int. -1 for global."""
 
+        # Mesh SDF storage
+        self.shape_sdf_data = None
+        """Array of SDFData structs for mesh shapes, shape [shape_count]. Contains sparse and coarse SDF pointers, extents, and voxel sizes. Empty array if there are no colliding meshes."""
+        self.shape_sdf_volume = []
+        """List of sparse SDF volume references for mesh shapes, shape [shape_count]. None for non-mesh shapes. Empty if there are no colliding meshes. Kept for reference counting."""
+        self.shape_sdf_coarse_volume = []
+        """List of coarse SDF volume references for mesh shapes, shape [shape_count]. None for non-mesh shapes. Empty if there are no colliding meshes. Kept for reference counting."""
+        self.mesh_mesh_collision_enabled = False
+        """Whether SDF-based mesh-mesh collision is enabled. Requires GPU device since wp.Volume only supports CUDA.
+        Controlled by the enable_mesh_sdf_collision parameter in ModelBuilder. Set during model finalization."""
+
         self.spring_indices = None
         """Particle spring indices, shape [spring_count*2], int."""
         self.spring_rest_length = None
