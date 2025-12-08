@@ -192,7 +192,7 @@ class Example:
         x_grad_analytic = param.grad.numpy()[0].copy()
         return x_grad_numeric, x_grad_analytic
 
-    def test(self):
+    def test_final(self):
         x_grad_numeric, x_grad_analytic = self.check_grad()
         assert np.allclose(x_grad_numeric, x_grad_analytic, atol=0.2)
         assert all(np.array(self.loss_history) < 0.3)

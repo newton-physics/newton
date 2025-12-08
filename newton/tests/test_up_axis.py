@@ -33,7 +33,6 @@ def test_gravity(test: TestControlForce, device, solver_fn, up_axis: newton.Axis
     # Apply axis rotation to transform
     xform = wp.transform(wp.vec3(), quat_between_axes(newton.Axis.Z, up_axis))
     builder.add_shape_capsule(b, xform=xform)
-    builder.add_joint_free(b)
 
     model = builder.finalize(device=device)
 

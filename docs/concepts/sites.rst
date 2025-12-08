@@ -187,7 +187,6 @@ When using ``SolverMuJoCo``, Newton sites are automatically exported to MuJoCo's
    builder = newton.ModelBuilder()
    body = builder.add_body(mass=1.0, I_m=wp.mat33(np.eye(3)))
    site = builder.add_site(body=body, key="sensor")
-   builder.add_joint_free(body)
    model = builder.finalize()
    
    # Create MuJoCo solver (sites are exported by default)

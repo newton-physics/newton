@@ -106,7 +106,7 @@ class TestJointDrive(unittest.TestCase):
             # Create a single body jointed to the world with a prismatic joint
             # Make sure that we use the mass properties specified here by setting shape density to 0.0
             world_builder = newton.ModelBuilder(gravity=g, up_axis=world_up_axis)
-            bodyIndex = world_builder.add_body(mass=body_mass, I_m=body_inertia, armature=0.0, com=body_com)
+            bodyIndex = world_builder.add_link(mass=body_mass, I_m=body_inertia, armature=0.0, com=body_com)
             world_builder.add_shape_sphere(
                 radius=1.0, body=bodyIndex, cfg=newton.ModelBuilder.ShapeConfig(density=0.0, has_shape_collision=False)
             )
@@ -139,7 +139,10 @@ class TestJointDrive(unittest.TestCase):
                     friction=0.0,
                 )
 
-            main_builder.add_builder(world_builder, world=i)
+            # Add the joint to an articulation
+            world_builder.add_articulation([0])
+
+            main_builder.add_world(world_builder)
 
             # Set the start pos and vel of the dof.
             main_builder.joint_q[i] = joint_start_position

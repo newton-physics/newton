@@ -145,7 +145,7 @@ class Example:
             self.simulate()
         self.sim_time += self.frame_dt
 
-    def test(self):
+    def test_final(self):
         voxel_size = self.solver.mpm_model.voxel_size
         newton.examples.test_particle_state(
             self.state_0,

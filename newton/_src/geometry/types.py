@@ -264,7 +264,7 @@ class Mesh:
             vel = wp.zeros_like(pos)
             indices = wp.array(self.indices, dtype=wp.int32)
 
-            self.mesh = wp.Mesh(points=pos, velocities=vel, indices=indices)
+            self.mesh = wp.Mesh(points=pos, velocities=vel, indices=indices, bvh_constructor="sah")
             return self.mesh.id
 
     def compute_convex_hull(self, replace: bool = False) -> "Mesh":

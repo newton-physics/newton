@@ -144,7 +144,7 @@ class Example:
 
         self.sim_time += self.frame_dt
 
-    def test(self):
+    def test_final(self):
         self.sphere_pos[2] = 0.5
         sphere_q = wp.transform(self.sphere_pos, wp.quat_identity())
         newton.examples.test_body_state(
@@ -199,11 +199,12 @@ class Example:
             [4],
         )
         # we only test that the bunny didn't fall through the ground and didn't slide too far
+        # Allow slight penetration (z > -0.05) due to contact reduction
         newton.examples.test_body_state(
             self.model,
             self.state_0,
             "bunny at rest pose",
-            lambda q, qd: q[2] > 0.01 and abs(q[0]) < 0.1 and abs(q[1] - 4.0) < 0.1,
+            lambda q, qd: q[2] > -0.05 and abs(q[0]) < 0.1 and abs(q[1] - 4.0) < 0.1,
             [5],
         )
 

@@ -125,14 +125,14 @@ class ModelBuilder:
            builder.current_world = 0  # Following entities will be in world 0
            builder.add_body(...)
 
-    2. **Using add_builder()**: ALL entities from the sub-builder are assigned to the specified world::
+    2. **Using add_world()**: ALL entities from the sub-builder are assigned to a new world::
 
            robot = ModelBuilder()
            robot.add_body(...)  # World assignments here will be overridden
 
            main = ModelBuilder()
-           main.add_builder(robot, world=0)  # All robot entities -> world 0
-           main.add_builder(robot, world=1)  # All robot entities -> world 1
+           main.add_world(robot)  # All robot entities -> world 0
+           main.add_world(robot)  # All robot entities -> world 1
 
     Note:
         It is strongly recommended to use the ModelBuilder to construct a simulation rather
@@ -149,17 +149,21 @@ class ModelBuilder:
         density: float = 1000.0
         """The density of the shape material."""
         ke: float = 1.0e5
-        """The contact elastic stiffness."""
+        """The contact elastic stiffness. Used by SemiImplicit, Featherstone, MuJoCo."""
         kd: float = 1000.0
-        """The contact damping stiffness."""
+        """The contact damping coefficient. Used by SemiImplicit, Featherstone, MuJoCo."""
         kf: float = 1000.0
-        """The contact friction stiffness."""
+        """The friction damping coefficient. Used by SemiImplicit, Featherstone."""
         ka: float = 0.0
-        """The contact adhesion distance."""
+        """The contact adhesion distance. Used by SemiImplicit, Featherstone."""
         mu: float = 0.5
-        """The coefficient of friction."""
+        """The coefficient of friction. Used by all solvers."""
         restitution: float = 0.0
-        """The coefficient of restitution."""
+        """The coefficient of restitution. Used by XPBD. To take effect, enable restitution in solver constructor via ``enable_restitution=True``."""
+        torsional_friction: float = 0.25
+        """The coefficient of torsional friction (resistance to spinning at contact point). Used by XPBD, MuJoCo."""
+        rolling_friction: float = 0.0005
+        """The coefficient of rolling friction (resistance to rolling motion). Used by XPBD, MuJoCo."""
         thickness: float = 1e-5
         """The thickness of the shape."""
         contact_margin: float | None = None
@@ -179,6 +183,10 @@ class ModelBuilder:
         """Indicates whether the shape is visible in the simulation. Defaults to True."""
         is_site: bool = False
         """Indicates whether the shape is a site (non-colliding reference point). Directly setting this to True will NOT enforce site invariants. Use `mark_as_site()` or set via the `flags` property to ensure invariants. Defaults to False."""
+        sdf_narrow_band_range: tuple[float, float] = (-0.1, 0.1)
+        """The narrow band distance range (inner, outer) for SDF computation. Only used for mesh shapes."""
+        sdf_target_voxel_size: float | None = None
+        """Target voxel size for sparse SDF grid. If None, computed as max_extent/64. Only used for mesh shapes."""
 
         def mark_as_site(self) -> None:
             """Marks this shape as a site and enforces all site invariants.
@@ -453,6 +461,13 @@ class ModelBuilder:
         When True, uses a CPU implementation that reports specific issues for each body and updates
         the ModelBuilder's internal state.
         Default: False."""
+
+        self.enable_mesh_sdf_collision = False
+        """Whether to enable SDF-based mesh-mesh collision detection.
+        When enabled, signed distance fields (SDFs) are computed for mesh shapes to enable
+        mesh-mesh collision detection. Requires a CUDA-capable GPU device since wp.Volume only
+        supports CUDA. If enabled but the model is finalized on a CPU device, a ValueError is raised.
+        Default: False."""
         # endregion
 
         # particles
@@ -483,6 +498,8 @@ class ModelBuilder:
         self.shape_material_ka = []
         self.shape_material_mu = []
         self.shape_material_restitution = []
+        self.shape_material_torsional_friction = []
+        self.shape_material_rolling_friction = []
         self.shape_contact_margin = []
         # collision groups within collisions are handled
         self.shape_collision_group = []
@@ -490,6 +507,11 @@ class ModelBuilder:
         self.shape_collision_radius = []
         # world index for each shape
         self.shape_world = []
+        # SDF parameters per shape
+        self.shape_sdf_narrow_band_range = []
+        self.shape_sdf_target_voxel_size = []
+
+        # Mesh SDF storage (volumes kept for reference counting, SDFData array created at finalize)
 
         # filtering to ignore certain collision pairs
         self.shape_collision_filter_pairs: list[tuple[int, int]] = []
@@ -574,6 +596,7 @@ class ModelBuilder:
         self.joint_qd_start = []
         self.joint_dof_dim = []
         self.joint_world = []  # world index for each joint
+        self.joint_articulation = []  # articulation index for each joint, -1 if not in any articulation
 
         self.articulation_start = []
         self.articulation_key = []
@@ -582,9 +605,8 @@ class ModelBuilder:
         self.joint_dof_count = 0
         self.joint_coord_count = 0
 
-        # current world index for entities being added directly to this builder.
+        # current world index for entities being added to this builder.
         # set to -1 to create global entities shared across all worlds.
-        # note: this value is temporarily overridden when using add_builder().
         self.current_world = -1
 
         self.up_axis: Axis = Axis.from_any(up_axis)
@@ -593,10 +615,6 @@ class ModelBuilder:
         # contacts to be generated within the given distance margin to be generated at
         # every simulation substep (can be 0 if only one PBD solver iteration is used)
         self.rigid_contact_margin = 0.1
-        # torsional friction coefficient (only considered by XPBD so far)
-        self.rigid_contact_torsional_friction = 0.5
-        # rolling friction coefficient (only considered by XPBD so far)
-        self.rigid_contact_rolling_friction = 0.001
 
         # number of rigid contact points to allocate in the model during self.finalize() per world
         # if setting is None, the number of worst-case number of contacts will be calculated in self.finalize()
@@ -1011,24 +1029,104 @@ class ModelBuilder:
         xform = wp.transform_identity()
         for i in range(num_worlds):
             xform[:3] = offsets[i]
-            self.add_builder(builder, xform=xform)
+            self.add_world(builder, xform=xform)
 
-    def add_articulation(self, key: str | None = None, custom_attributes: dict[str, Any] | None = None):
+    def add_articulation(
+        self, joints: list[int], key: str | None = None, custom_attributes: dict[str, Any] | None = None
+    ):
         """
-        Adds an articulation to the model.
-        An articulation is a set of contiguous joints from ``articulation_start[i]`` to ``articulation_start[i+1]``.
+        Adds an articulation to the model from a list of joint indices.
+
+        The articulation is a set of joints that must be contiguous and monotonically increasing.
         Some functions, such as forward kinematics :func:`newton.eval_fk`, are parallelized over articulations.
-        Articulations are automatically 'closed' when calling :meth:`~newton.ModelBuilder.finalize`.
 
         Args:
+            joints: List of joint indices to include in the articulation. Must be contiguous and monotonic.
             key: The key of the articulation. If None, a default key will be created.
             custom_attributes: Dictionary of custom attribute values for ARTICULATION frequency attributes.
+
+        Raises:
+            ValueError: If joints are not contiguous, not monotonic, or belong to different worlds.
+
+        Example:
+            .. code-block:: python
+
+                link1 = builder.add_link(...)
+                link2 = builder.add_link(...)
+                link3 = builder.add_link(...)
+
+                joint1 = builder.add_joint_revolute(parent=-1, child=link1)
+                joint2 = builder.add_joint_revolute(parent=link1, child=link2)
+                joint3 = builder.add_joint_revolute(parent=link2, child=link3)
+
+                # Create articulation from the joints
+                builder.add_articulation([joint1, joint2, joint3])
         """
-        # local index since self.articulation_count will change after appending the articulation
+        if not joints:
+            raise ValueError("Cannot create an articulation with no joints")
+
+        # Sort joints to ensure we can validate them properly
+        sorted_joints = sorted(joints)
+
+        # Validate joints are monotonically increasing (no duplicates)
+        if sorted_joints != joints:
+            raise ValueError(
+                f"Joints must be provided in monotonically increasing order. Got {joints}, expected {sorted_joints}"
+            )
+
+        # Validate joints are contiguous
+        for i in range(1, len(sorted_joints)):
+            if sorted_joints[i] != sorted_joints[i - 1] + 1:
+                raise ValueError(
+                    f"Joints must be contiguous. Got indices {sorted_joints}, but there is a gap between "
+                    f"{sorted_joints[i - 1]} and {sorted_joints[i]}. Create all joints for an articulation "
+                    f"before creating joints for another articulation."
+                )
+
+        # Validate all joints exist and don't already belong to an articulation
+        for joint_idx in joints:
+            if joint_idx < 0 or joint_idx >= len(self.joint_type):
+                raise ValueError(
+                    f"Joint index {joint_idx} is out of range. Valid range is 0 to {len(self.joint_type) - 1}"
+                )
+            if self.joint_articulation[joint_idx] >= 0:
+                existing_art = self.joint_articulation[joint_idx]
+                raise ValueError(
+                    f"Joint {joint_idx} ('{self.joint_key[joint_idx]}') already belongs to articulation {existing_art} "
+                    f"('{self.articulation_key[existing_art]}'). Each joint can only belong to one articulation."
+                )
+
+        # Validate all joints belong to the same world (current world)
+        for joint_idx in joints:
+            if joint_idx < len(self.joint_world) and self.joint_world[joint_idx] != self.current_world:
+                raise ValueError(
+                    f"Joint {joint_idx} belongs to world {self.joint_world[joint_idx]}, but current world is "
+                    f"{self.current_world}. All joints in an articulation must belong to the same world."
+                )
+
+        # Basic tree structure validation (check for cycles, single parent)
+        # Build a simple tree structure check - each child should have only one parent in this articulation
+        child_to_parent = {}
+        for joint_idx in joints:
+            child = self.joint_child[joint_idx]
+            parent = self.joint_parent[joint_idx]
+
+            if child in child_to_parent and child_to_parent[child] != parent:
+                raise ValueError(
+                    f"Body {child} has multiple parents in this articulation: {child_to_parent[child]} and {parent}. "
+                    f"This creates an invalid tree structure."
+                )
+            child_to_parent[child] = parent
+
+        # Store the articulation using the first joint's index as the start
         articulation_idx = self.articulation_count
-        self.articulation_start.append(self.joint_count)
+        self.articulation_start.append(sorted_joints[0])
         self.articulation_key.append(key or f"articulation_{articulation_idx}")
         self.articulation_world.append(self.current_world)
+
+        # Mark all joints as belonging to this articulation
+        for joint_idx in joints:
+            self.joint_articulation[joint_idx] = articulation_idx
 
         # Process custom attributes for this articulation
         if custom_attributes:
@@ -1142,7 +1240,7 @@ class ModelBuilder:
             joint_drive_gains_scaling (float): The default scaling of the PD control gains (stiffness and damping), if not set in the PhysicsScene with as "newton:joint_drive_gains_scaling".
             verbose (bool): If True, print additional information about the parsed USD file. Default is False.
             ignore_paths (List[str]): A list of regular expressions matching prim paths to ignore.
-            cloned_world (str): The prim path of a world which is cloned within this USD file. Siblings of this world prim will not be parsed but instead be replicated via `ModelBuilder.add_builder(builder, xform)` to speed up the loading of many instantiated worlds.
+            cloned_world (str): The prim path of a world which is cloned within this USD file. Siblings of this world prim will not be parsed but instead be replicated via `ModelBuilder.add_world(builder, xform)` to speed up the loading of many instantiated worlds.
             collapse_fixed_joints (bool): If True, fixed joints are removed and the respective bodies are merged. Only considered if not set on the PhysicsScene as "newton:collapse_fixed_joints".
             enable_self_collisions (bool): Determines the default behavior of whether self-collisions are enabled for all shapes within an articulation. If an articulation has the attribute ``physxArticulation:enabledSelfCollisions`` defined, this attribute takes precedence.
             apply_up_axis_from_stage (bool): If True, the up axis of the stage will be used to set :attr:`newton.ModelBuilder.up_axis`. Otherwise, the stage will be rotated such that its up axis aligns with the builder's up axis. Default is False.
@@ -1322,67 +1420,151 @@ class ModelBuilder:
 
     # endregion
 
+    # region World management methods
+
+    def begin_world(self, key: str | None = None, attributes: dict[str, Any] | None = None):
+        """Begin a new world context for adding entities.
+
+        This method starts a new world scope where all subsequently added entities
+        (bodies, shapes, joints, particles, etc.) will be assigned to this world.
+        Use :meth:`end_world` to close the world context and return to the global scope.
+
+        **Important:** Worlds cannot be nested. You must call :meth:`end_world` before
+        calling :meth:`begin_world` again.
+
+        Args:
+            key (str | None): Optional unique identifier for this world. If None,
+                a default key "world_{index}" will be generated.
+            attributes (dict[str, Any] | None): Optional custom attributes to associate
+                with this world for later use.
+
+        Raises:
+            RuntimeError: If called when already inside a world context (current_world != -1).
+
+        Example::
+
+            builder = ModelBuilder()
+
+            # Add global ground plane
+            builder.add_ground_plane()  # Added to world -1 (global)
+
+            # Create world 0
+            builder.begin_world(key="robot_0")
+            builder.add_body(...)  # Added to world 0
+            builder.add_shape_box(...)  # Added to world 0
+            builder.end_world()
+
+            # Create world 1
+            builder.begin_world(key="robot_1")
+            builder.add_body(...)  # Added to world 1
+            builder.add_shape_box(...)  # Added to world 1
+            builder.end_world()
+        """
+        if self.current_world != -1:
+            raise RuntimeError(
+                f"Cannot begin a new world: already in world context (current_world={self.current_world}). "
+                "Call end_world() first to close the current world context."
+            )
+
+        # Set the current world to the next available world index
+        self.current_world = self.num_worlds
+        self.num_worlds += 1
+
+        # Store world metadata if needed (for future use)
+        # Note: We might want to add world_key and world_attributes lists in __init__ if needed
+        # For now, we just track the world index
+
+    def end_world(self):
+        """End the current world context and return to global scope.
+
+        After calling this method, subsequently added entities will be assigned
+        to the global world (-1) until :meth:`begin_world` is called again.
+
+        Raises:
+            RuntimeError: If called when not in a world context (current_world == -1).
+
+        Example::
+
+            builder = ModelBuilder()
+            builder.begin_world()
+            builder.add_body(...)  # Added to current world
+            builder.end_world()  # Return to global scope
+            builder.add_ground_plane()  # Added to world -1 (global)
+        """
+        if self.current_world == -1:
+            raise RuntimeError("Cannot end world: not currently in a world context (current_world is already -1).")
+
+        # Reset to global world
+        self.current_world = -1
+
+    def add_world(self, builder: ModelBuilder, xform: Transform | None = None):
+        """Add a builder as a new world.
+
+        This is a convenience method that combines :meth:`begin_world`,
+        :meth:`add_builder`, and :meth:`end_world` into a single call.
+        It's the recommended way to add homogeneous worlds (multiple instances
+        of the same scene/robot).
+
+        Args:
+            builder (ModelBuilder): The builder containing entities to add as a new world.
+            xform (Transform | None): Optional transform to apply to all root bodies
+                in the builder. Useful for spacing out worlds visually.
+
+        Raises:
+            RuntimeError: If called when already in a world context (via begin_world).
+
+        Example::
+
+            # Create a robot blueprint
+            robot = ModelBuilder()
+            robot.add_body(...)
+            robot.add_shape_box(...)
+
+            # Create main scene with multiple robot instances
+            scene = ModelBuilder()
+            scene.add_ground_plane()  # Global ground plane
+
+            # Add multiple robot worlds
+            for i in range(3):
+                scene.add_world(robot)  # Each robot is a separate world
+        """
+        self.begin_world()
+        self.add_builder(builder, xform=xform)
+        self.end_world()
+
+    # endregion
+
     def add_builder(
         self,
         builder: ModelBuilder,
         xform: Transform | None = None,
-        update_num_world_count: bool = True,
-        world: int | None = None,
     ):
-        """Copies the data from `builder`, another `ModelBuilder` to this `ModelBuilder`.
+        """Copies the data from another `ModelBuilder` into this `ModelBuilder`.
 
-        **World Grouping Behavior:**
-        When adding a builder, ALL entities from the source builder will be assigned to the same
-        world, overriding any world assignments that existed in the source builder.
-        This ensures that all entities from a sub-builder are grouped together as a single world.
-
-        Worlds automatically handle collision filtering between different worlds:
-        - Entities from different worlds (except -1) do not collide with each other
-        - Global entities (index -1) collide with all worlds
-        - Collision groups from the source builder are preserved as-is for fine-grained collision control within each world
-
-        To create global entities that are shared across all worlds, set the main builder's
-        `current_world` to -1 before adding entities directly (not via add_builder).
+        All entities from the source builder are added to this builder's current world context
+        (the value of `self.current_world`). Any world assignments that existed in the source
+        builder are overwritten - all entities will be assigned to the current world.
 
         Example::
 
             main_builder = ModelBuilder()
-            # Create global ground plane
-            main_builder.current_world = -1
-            main_builder.add_ground_plane()
+            sub_builder = ModelBuilder()
+            sub_builder.add_body(...)
+            sub_builder.add_shape_box(...)
 
-            # Create robot builder
-            robot_builder = ModelBuilder()
-            robot_builder.add_body(...)  # These world assignments will be overridden
+            # Adds all entities from sub_builder to main_builder's current world (-1 by default)
+            main_builder.add_builder(sub_builder)
 
-            # Add multiple robot instances
-            main_builder.add_builder(robot_builder, world=0)  # All entities -> world 0
-            main_builder.add_builder(robot_builder, world=1)  # All entities -> world 1
+            # With transform
+            main_builder.add_builder(sub_builder, xform=wp.transform((1, 0, 0)))
 
         Args:
-            builder (ModelBuilder): a model builder to add model data from.
-            xform (Transform): offset transform applied to root bodies.
-            update_num_world_count (bool): if True, the number of worlds is updated appropriately.
-                For non-global entities (world >= 0), this either increments num_worlds (when world is None)
-                or ensures num_worlds is at least world+1. Global entities (world=-1) do not affect num_worlds.
-            world (int | None): world index to assign to ALL entities from this builder.
-                If None, uses the current world count as the index. Use -1 for global entities.
-                Note: world=-1 does not increase num_worlds even when update_num_world_count=True.
+            builder (ModelBuilder): The model builder to copy data from.
+            xform (Transform): Optional offset transform applied to root bodies.
         """
 
         if builder.up_axis != self.up_axis:
             raise ValueError("Cannot add a builder with a different up axis.")
-
-        # Set the world index for entities being added
-        if world is None:
-            # Use the current world count as the index if not specified
-            group_idx = self.num_worlds if update_num_world_count else self.current_world
-        else:
-            group_idx = world
-
-        # Save the previous world
-        prev_world = self.current_world
-        self.current_world = group_idx
 
         # explicitly resolve the transform multiplication function to avoid
         # repeatedly resolving builtin overloads during shape transformation
@@ -1509,6 +1691,10 @@ class ModelBuilder:
         if builder.joint_count > 0:
             s = [self.current_world] * builder.joint_count
             self.joint_world.extend(s)
+            # Offset articulation indices for joints (-1 stays -1)
+            self.joint_articulation.extend(
+                [a + start_articulation_idx if a >= 0 else -1 for a in builder.joint_articulation]
+            )
 
         # For articulations
         if builder.articulation_count > 0:
@@ -1519,6 +1705,27 @@ class ModelBuilder:
         if len(builder.equality_constraint_type) > 0:
             constraint_worlds = [self.current_world] * len(builder.equality_constraint_type)
             self.equality_constraint_world.extend(constraint_worlds)
+
+            # Remap body and joint indices in equality constraints
+            self.equality_constraint_type.extend(builder.equality_constraint_type)
+            self.equality_constraint_body1.extend(
+                [b + start_body_idx if b != -1 else -1 for b in builder.equality_constraint_body1]
+            )
+            self.equality_constraint_body2.extend(
+                [b + start_body_idx if b != -1 else -1 for b in builder.equality_constraint_body2]
+            )
+            self.equality_constraint_anchor.extend(builder.equality_constraint_anchor)
+            self.equality_constraint_torquescale.extend(builder.equality_constraint_torquescale)
+            self.equality_constraint_relpose.extend(builder.equality_constraint_relpose)
+            self.equality_constraint_joint1.extend(
+                [j + start_joint_idx if j != -1 else -1 for j in builder.equality_constraint_joint1]
+            )
+            self.equality_constraint_joint2.extend(
+                [j + start_joint_idx if j != -1 else -1 for j in builder.equality_constraint_joint2]
+            )
+            self.equality_constraint_polycoef.extend(builder.equality_constraint_polycoef)
+            self.equality_constraint_key.extend(builder.equality_constraint_key)
+            self.equality_constraint_enabled.extend(builder.equality_constraint_enabled)
 
         more_builder_attrs = [
             "articulation_key",
@@ -1562,8 +1769,12 @@ class ModelBuilder:
             "shape_material_ka",
             "shape_material_mu",
             "shape_material_restitution",
+            "shape_material_torsional_friction",
+            "shape_material_rolling_friction",
             "shape_collision_radius",
             "shape_contact_margin",
+            "shape_sdf_narrow_band_range",
+            "shape_sdf_target_voxel_size",
             "particle_qd",
             "particle_mass",
             "particle_radius",
@@ -1582,17 +1793,6 @@ class ModelBuilder:
             "tet_poses",
             "tet_activations",
             "tet_materials",
-            "equality_constraint_type",
-            "equality_constraint_body1",
-            "equality_constraint_body2",
-            "equality_constraint_anchor",
-            "equality_constraint_torquescale",
-            "equality_constraint_relpose",
-            "equality_constraint_joint1",
-            "equality_constraint_joint2",
-            "equality_constraint_polycoef",
-            "equality_constraint_key",
-            "equality_constraint_enabled",
         ]
 
         for attr in more_builder_attrs:
@@ -1654,20 +1854,7 @@ class ModelBuilder:
                 merged.values = {}
             merged.values.update({offset + idx: value for idx, value in attr.values.items()})
 
-        if update_num_world_count:
-            # Globals do not contribute to the world count
-            if group_idx >= 0:
-                # If an explicit world is provided, ensure num_worlds >= group_idx+1.
-                # Otherwise, auto-increment for the next world.
-                if world is None:
-                    self.num_worlds += 1
-                else:
-                    self.num_worlds = max(self.num_worlds, group_idx + 1)
-
-        # Restore the previous world
-        self.current_world = prev_world
-
-    def add_body(
+    def add_link(
         self,
         xform: Transform | None = None,
         armature: float | None = None,
@@ -1677,7 +1864,13 @@ class ModelBuilder:
         key: str | None = None,
         custom_attributes: dict[str, Any] | None = None,
     ) -> int:
-        """Adds a rigid body to the model.
+        """Adds a link (rigid body) to the model within an articulation.
+
+        This method creates a link without automatically adding a joint. To connect this link
+        to the articulation structure, you must explicitly call one of the joint methods
+        (e.g., :meth:`add_joint_revolute`, :meth:`add_joint_fixed`, etc.) after creating the link.
+
+        After calling this method and one of the joint methods, ensure that an articulation is created using :meth:`add_articulation`.
 
         Args:
             xform: The location of the body in the world frame.
@@ -1741,6 +1934,68 @@ class ModelBuilder:
 
         return body_id
 
+    def add_body(
+        self,
+        xform: Transform | None = None,
+        armature: float | None = None,
+        com: Vec3 | None = None,
+        I_m: Mat33 | None = None,
+        mass: float = 0.0,
+        key: str | None = None,
+        custom_attributes: dict[str, Any] | None = None,
+    ) -> int:
+        """Adds a stand-alone free-floating rigid body to the model.
+
+        This is a convenience method that creates a single-body articulation with a free joint,
+        allowing the body to move freely in 6 degrees of freedom. Internally, this method calls:
+
+        1. :meth:`add_link` to create the body
+        2. :meth:`add_joint_free` to add a free joint connecting the body to the world
+        3. :meth:`add_articulation` to create a new articulation from the joint
+
+        For creating articulations with multiple linked bodies, use :meth:`add_link`,
+        the appropriate joint methods, and :meth:`add_articulation` directly.
+
+        Args:
+            xform: The location of the body in the world frame.
+            armature: Artificial inertia added to the body. If None, the default value from :attr:`default_body_armature` is used.
+            com: The center of mass of the body w.r.t its origin. If None, the center of mass is assumed to be at the origin.
+            I_m: The 3x3 inertia tensor of the body (specified relative to the center of mass). If None, the inertia tensor is assumed to be zero.
+            mass: Mass of the body.
+            key: Key of the body. When provided, the auto-created free joint and articulation
+                are assigned keys ``{key}_free_joint`` and ``{key}_articulation`` respectively.
+            custom_attributes: Dictionary of custom attribute names to values.
+
+        Returns:
+            The index of the body in the model.
+
+        Note:
+            If the mass is zero then the body is treated as kinematic with no dynamics.
+
+        """
+        # Create the link
+        body_id = self.add_link(
+            xform=xform,
+            armature=armature,
+            com=com,
+            I_m=I_m,
+            mass=mass,
+            key=key,
+            custom_attributes=custom_attributes,
+        )
+
+        # Add a free joint to make it float
+        joint_id = self.add_joint_free(
+            child=body_id,
+            key=f"{key}_free_joint" if key else None,
+        )
+
+        # Create an articulation from the joint
+        articulation_key = f"{key}_articulation" if key else None
+        self.add_articulation([joint_id], key=articulation_key)
+
+        return body_id
+
     # region joints
 
     def add_joint(
@@ -1790,9 +2045,24 @@ class ModelBuilder:
         else:
             child_xform = wp.transform(*child_xform)
 
-        if len(self.articulation_start) == 0:
-            # automatically add an articulation if none exists
-            self.add_articulation()
+        # Validate that parent and child bodies belong to the current world
+        if parent != -1:  # -1 means world/ground
+            if parent < 0 or parent >= len(self.body_world):
+                raise ValueError(f"Parent body index {parent} is out of range")
+            if self.body_world[parent] != self.current_world:
+                raise ValueError(
+                    f"Cannot create joint: parent body {parent} belongs to world {self.body_world[parent]}, "
+                    f"but current world is {self.current_world}"
+                )
+
+        if child < 0 or child >= len(self.body_world):
+            raise ValueError(f"Child body index {child} is out of range")
+        if self.body_world[child] != self.current_world:
+            raise ValueError(
+                f"Cannot create joint: child body {child} belongs to world {self.body_world[child]}, "
+                f"but current world is {self.current_world}"
+            )
+
         self.joint_type.append(joint_type)
         self.joint_parent.append(parent)
         if child not in self.joint_parents:
@@ -1806,6 +2076,7 @@ class ModelBuilder:
         self.joint_dof_dim.append((len(linear_axes), len(angular_axes)))
         self.joint_enabled.append(enabled)
         self.joint_world.append(self.current_world)
+        self.joint_articulation.append(-1)
 
         def add_axis_dim(dim: ModelBuilder.JointDofConfig):
             self.joint_axis.append(dim.axis)
@@ -2057,6 +2328,8 @@ class ModelBuilder:
         child: int,
         parent_xform: Transform | None = None,
         child_xform: Transform | None = None,
+        armature: float | None = None,
+        friction: float | None = None,
         key: str | None = None,
         collision_filter_parent: bool = True,
         enabled: bool = True,
@@ -2069,6 +2342,8 @@ class ModelBuilder:
             child: The index of the child body.
             parent_xform (Transform): The transform of the joint in the parent body's local frame.
             child_xform (Transform): The transform of the joint in the child body's local frame.
+            armature: Artificial inertia added around the joint axes. If None, the default value from :attr:`default_joint_armature` is used.
+            friction: Friction coefficient for the joint axes. If None, the default value from :attr:`default_joint_cfg.friction` is used.
             key: The key of the joint.
             collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies.
             enabled: Whether the joint is enabled.
@@ -2077,7 +2352,30 @@ class ModelBuilder:
         Returns:
             The index of the added joint.
 
+        .. note:: Target position and velocity control for ball joints is currently only supported in :class:`newton.solvers.SolverMuJoCo`.
+
         """
+
+        if armature is None:
+            armature = self.default_joint_cfg.armature
+        if friction is None:
+            friction = self.default_joint_cfg.friction
+
+        x = ModelBuilder.JointDofConfig(
+            axis=Axis.X,
+            armature=armature,
+            friction=friction,
+        )
+        y = ModelBuilder.JointDofConfig(
+            axis=Axis.Y,
+            armature=armature,
+            friction=friction,
+        )
+        z = ModelBuilder.JointDofConfig(
+            axis=Axis.Z,
+            armature=armature,
+            friction=friction,
+        )
 
         return self.add_joint(
             JointType.BALL,
@@ -2085,6 +2383,7 @@ class ModelBuilder:
             child,
             parent_xform=parent_xform,
             child_xform=child_xform,
+            angular_axes=[x, y, z],
             key=key,
             collision_filter_parent=collision_filter_parent,
             enabled=enabled,
@@ -2222,7 +2521,7 @@ class ModelBuilder:
         Returns:
             The index of the added joint.
 
-        .. note:: Distance joints are currently only supported in the :class:`newton.solvers.SolverXPBD`.
+        .. note:: Distance joints are currently only supported in :class:`newton.solvers.SolverXPBD`.
 
         """
 
@@ -2813,8 +3112,9 @@ class ModelBuilder:
         # remove empty articulation starts, i.e. where the start and end are the same
         self.articulation_start = list(set(self.articulation_start))
 
-        # save original joint groups before clearing
+        # save original joint worlds and articulations before clearing
         original_ = self.joint_world[:] if self.joint_world else []
+        original_articulation = self.joint_articulation[:] if self.joint_articulation else []
 
         self.joint_key.clear()
         self.joint_type.clear()
@@ -2840,6 +3140,7 @@ class ModelBuilder:
         self.joint_target_pos.clear()
         self.joint_target_vel.clear()
         self.joint_world.clear()
+        self.joint_articulation.clear()
         for joint in retained_joints:
             self.joint_key.append(joint["key"])
             self.joint_type.append(joint["type"])
@@ -2854,12 +3155,17 @@ class ModelBuilder:
             self.joint_X_p.append(joint["parent_xform"])
             self.joint_X_c.append(joint["child_xform"])
             self.joint_dof_dim.append(joint["axis_dim"])
-            # Rebuild joint group - use original group if it exists
+            # Rebuild joint world - use original world if it exists
             if original_ and joint["original_id"] < len(original_):
                 self.joint_world.append(original_[joint["original_id"]])
             else:
-                # If no group was assigned, use default -1
+                # If no world was assigned, use default -1
                 self.joint_world.append(-1)
+            # Rebuild joint articulation assignment
+            if original_articulation and joint["original_id"] < len(original_articulation):
+                self.joint_articulation.append(original_articulation[joint["original_id"]])
+            else:
+                self.joint_articulation.append(-1)
             for axis in joint["axes"]:
                 self.joint_axis.append(axis["axis"])
                 self.joint_target_ke.append(axis["target_ke"])
@@ -3006,12 +3312,16 @@ class ModelBuilder:
         self.shape_material_ka.append(cfg.ka)
         self.shape_material_mu.append(cfg.mu)
         self.shape_material_restitution.append(cfg.restitution)
+        self.shape_material_torsional_friction.append(cfg.torsional_friction)
+        self.shape_material_rolling_friction.append(cfg.rolling_friction)
         self.shape_contact_margin.append(
             cfg.contact_margin if cfg.contact_margin is not None else self.rigid_contact_margin
         )
         self.shape_collision_group.append(cfg.collision_group)
         self.shape_collision_radius.append(compute_shape_radius(type, scale, src))
         self.shape_world.append(self.current_world)
+        self.shape_sdf_narrow_band_range.append(cfg.sdf_narrow_band_range)
+        self.shape_sdf_target_voxel_size.append(cfg.sdf_target_voxel_size)
         if cfg.has_shape_collision and cfg.collision_filter_parent and body > -1 and body in self.joint_parents:
             for parent_body in self.joint_parents[body]:
                 if parent_body > -1:
@@ -3731,6 +4041,8 @@ class ModelBuilder:
                             ka=self.shape_material_ka[shape],
                             mu=self.shape_material_mu[shape],
                             restitution=self.shape_material_restitution[shape],
+                            torsional_friction=self.shape_material_torsional_friction[shape],
+                            rolling_friction=self.shape_material_rolling_friction[shape],
                             thickness=self.shape_thickness[shape],
                             is_solid=self.shape_is_solid[shape],
                             collision_group=self.shape_collision_group[shape],
@@ -4831,7 +5143,8 @@ class ModelBuilder:
 
     def add_free_joints_to_floating_bodies(self, new_bodies: Iterable[int] | None = None):
         """
-        Adds a free joint to every rigid body that is not a child in any joint and has positive mass.
+        Adds a free joint and single-joint articulation to every rigid body that is not a child in any joint
+        and has positive mass.
 
         Args:
             new_bodies (Iterable[int] or None, optional): The set of body indices to consider for adding free joints.
@@ -4839,13 +5152,15 @@ class ModelBuilder:
         Note:
             - Bodies that are already a child in any joint will be skipped.
             - Only bodies with strictly positive mass will receive a free joint.
+            - Each free joint is added to its own single-joint articulation.
             - This is useful for ensuring that all floating (unconnected) bodies are properly articulated.
         """
         # set(self.joint_child) is connected_bodies
         floating_bodies = set(new_bodies) - set(self.joint_child)
         for body_id in floating_bodies:
             if self.body_mass[body_id] > 0:
-                self.add_joint_free(child=body_id)
+                joint = self.add_joint_free(child=body_id)
+                self.add_articulation([joint])
 
     def set_coloring(self, particle_color_groups):
         """
@@ -4904,9 +5219,110 @@ class ModelBuilder:
             target_max_min_color_ratio=target_max_min_color_ratio,
         )
 
-    def finalize(
-        self, device: Devicelike | None = None, requires_grad: bool = False, verbose: bool | None = None
-    ) -> Model:
+    def _validate_world_ordering(self):
+        """Validate that world indices are monotonic, contiguous, and properly ordered.
+
+        This method checks:
+        1. World indices are monotonic (non-decreasing after first non-negative)
+        2. World indices are contiguous (no gaps in sequence)
+        3. Global entities (world -1) only appear at beginning or end of arrays
+        4. All world indices are in valid range [-1, num_worlds-1]
+
+        Raises:
+            ValueError: If any validation check fails.
+        """
+        # List of all world arrays to validate
+        world_arrays = [
+            ("particle_world", self.particle_world),
+            ("body_world", self.body_world),
+            ("shape_world", self.shape_world),
+            ("joint_world", self.joint_world),
+            ("articulation_world", self.articulation_world),
+            ("equality_constraint_world", self.equality_constraint_world),
+        ]
+
+        all_world_indices = set()
+
+        for array_name, world_array in world_arrays:
+            if not world_array:
+                continue
+
+            arr = np.array(world_array, dtype=np.int32)
+
+            # Check for invalid world indices (must be in range [-1, num_worlds-1])
+            max_valid = self.num_worlds - 1
+            invalid_indices = np.where((arr < -1) | (arr > max_valid))[0]
+            if len(invalid_indices) > 0:
+                invalid_values = arr[invalid_indices]
+                raise ValueError(
+                    f"Invalid world index in {array_name}: found value(s) {invalid_values.tolist()} "
+                    f"at indices {invalid_indices.tolist()}. Valid range is -1 to {max_valid} (num_worlds={self.num_worlds})."
+                )
+
+            # Check for global entity positioning (world -1)
+            # Find first and last occurrence of -1
+            negative_indices = np.where(arr == -1)[0]
+            if len(negative_indices) > 0:
+                # Check that all -1s form contiguous blocks at start and/or end
+                # Count -1s at the start
+                start_neg_count = 0
+                for i in range(len(arr)):
+                    if arr[i] == -1:
+                        start_neg_count += 1
+                    else:
+                        break
+
+                # Count -1s at the end (but only if they don't overlap with start)
+                end_neg_count = 0
+                if start_neg_count < len(arr):  # There are non-negative values after the start block
+                    for i in range(len(arr) - 1, -1, -1):
+                        if arr[i] == -1:
+                            end_neg_count += 1
+                        else:
+                            break
+
+                expected_neg_count = start_neg_count + end_neg_count
+                actual_neg_count = len(negative_indices)
+
+                if expected_neg_count != actual_neg_count:
+                    # There are -1s in the middle
+                    raise ValueError(
+                        f"Invalid world ordering in {array_name}: global entities (world -1) "
+                        f"must only appear at the beginning or end of the array, not in the middle. "
+                        f"Found -1 values at indices: {negative_indices.tolist()}"
+                    )
+
+            # Check monotonic ordering for non-negative values
+            non_neg_mask = arr >= 0
+            if np.any(non_neg_mask):
+                non_neg_values = arr[non_neg_mask]
+
+                # Check that non-negative values are monotonic (non-decreasing)
+                if not np.all(non_neg_values[1:] >= non_neg_values[:-1]):
+                    # Find where the order breaks
+                    for i in range(1, len(non_neg_values)):
+                        if non_neg_values[i] < non_neg_values[i - 1]:
+                            raise ValueError(
+                                f"Invalid world ordering in {array_name}: world indices must be monotonic "
+                                f"(non-decreasing). Found world {non_neg_values[i]} after world {non_neg_values[i - 1]}."
+                            )
+
+                # Collect all non-negative world indices for contiguity check
+                all_world_indices.update(non_neg_values)
+
+        # Check contiguity: all world indices should form a sequence 0, 1, 2, ..., n-1
+        if all_world_indices:
+            world_list = sorted(all_world_indices)
+            expected = list(range(world_list[-1] + 1))
+
+            if world_list != expected:
+                missing = set(expected) - set(world_list)
+                raise ValueError(
+                    f"World indices are not contiguous. Missing world(s): {sorted(missing)}. "
+                    f"Found worlds: {world_list}. Worlds must form a continuous sequence starting from 0."
+                )
+
+    def finalize(self, device: Devicelike | None = None, requires_grad: bool = False) -> Model:
         """
         Finalize the builder and create a concrete Model for simulation.
 
@@ -4936,6 +5352,20 @@ class ModelBuilder:
 
         # ensure the world count is set correctly
         self.num_worlds = max(1, self.num_worlds)
+
+        # validate world ordering and contiguity
+        self._validate_world_ordering()
+
+        # validate all joints belong to an articulation
+        if self.joint_count > 0:
+            orphan_joints = [i for i, art in enumerate(self.joint_articulation) if art < 0]
+            if orphan_joints:
+                joint_keys = [self.joint_key[i] for i in orphan_joints[:5]]  # Show first 5
+                raise ValueError(
+                    f"Found {len(orphan_joints)} joint(s) not belonging to any articulation. "
+                    f"Call add_articulation() for all joints. Orphan joints: {joint_keys}"
+                    + ("..." if len(orphan_joints) > 5 else "")
+                )
 
         # construct particle inv masses
         ms = np.array(self.particle_mass, dtype=np.float32)
@@ -5016,10 +5446,114 @@ class ModelBuilder:
             m.shape_material_restitution = wp.array(
                 self.shape_material_restitution, dtype=wp.float32, requires_grad=requires_grad
             )
+            m.shape_material_torsional_friction = wp.array(
+                self.shape_material_torsional_friction, dtype=wp.float32, requires_grad=requires_grad
+            )
+            m.shape_material_rolling_friction = wp.array(
+                self.shape_material_rolling_friction, dtype=wp.float32, requires_grad=requires_grad
+            )
             m.shape_contact_margin = wp.array(self.shape_contact_margin, dtype=wp.float32, requires_grad=requires_grad)
 
             m.shape_collision_filter_pairs = set(self.shape_collision_filter_pairs)
             m.shape_collision_group = wp.array(self.shape_collision_group, dtype=wp.int32)
+
+            # ---------------------
+            # Compute SDFs for mesh shapes (opt-in feature via enable_mesh_sdf_collision)
+            from ..geometry.sdf_utils import SDFData, compute_sdf, create_empty_sdf_data  # noqa: PLC0415
+            from ..geometry.types import GeoType  # noqa: PLC0415
+
+            # Check if we're running on GPU - wp.Volume only supports CUDA
+            current_device = wp.get_device(device)
+            is_gpu = current_device.is_cuda
+
+            # Check if mesh SDF collision was requested but we're on CPU
+            if self.enable_mesh_sdf_collision and not is_gpu:
+                raise ValueError(
+                    "enable_mesh_sdf_collision requires a CUDA-capable GPU device. "
+                    "wp.Volume (used for SDF generation) only supports CUDA. "
+                    "Either set enable_mesh_sdf_collision=False or use a CUDA device."
+                )
+
+            # Check if there are any mesh shapes with collision enabled
+            has_colliding_meshes = any(
+                stype == GeoType.MESH and ssrc is not None and sflags & ShapeFlags.COLLIDE_SHAPES
+                for stype, ssrc, sflags in zip(self.shape_type, self.shape_source, self.shape_flags, strict=False)
+            )
+
+            # Enable mesh-mesh collision only if explicitly enabled, on GPU, and there are colliding meshes
+            m.mesh_mesh_collision_enabled = self.enable_mesh_sdf_collision and has_colliding_meshes and is_gpu
+
+            if self.enable_mesh_sdf_collision and has_colliding_meshes:
+                sdf_data_list = []
+                # Keep volume objects alive for reference counting
+                sdf_volumes = []
+                sdf_coarse_volumes = []
+                sdf_cache = {}
+                # Create empty SDF data once for reuse by non-mesh shapes
+                empty_sdf_data = create_empty_sdf_data()
+
+                for (
+                    shape_type,
+                    shape_src,
+                    shape_flags,
+                    shape_scale,
+                    shape_thickness,
+                    shape_contact_margin,
+                    sdf_narrow_band_range,
+                    sdf_target_voxel_size,
+                ) in zip(
+                    self.shape_type,
+                    self.shape_source,
+                    self.shape_flags,
+                    self.shape_scale,
+                    self.shape_thickness,
+                    self.shape_contact_margin,
+                    self.shape_sdf_narrow_band_range,
+                    self.shape_sdf_target_voxel_size,
+                    strict=False,
+                ):
+                    # Compute SDF only for mesh shapes with collision enabled
+                    if shape_type == GeoType.MESH and shape_src is not None and shape_flags & ShapeFlags.COLLIDE_SHAPES:
+                        cache_key = (
+                            hash(shape_src),
+                            shape_thickness,
+                            tuple(shape_scale),
+                            shape_contact_margin,
+                            tuple(sdf_narrow_band_range),
+                            sdf_target_voxel_size,
+                        )
+                        if cache_key in sdf_cache:
+                            sdf_data, sparse_volume, coarse_volume = sdf_cache[cache_key]
+                        else:
+                            # Compute SDF for this mesh shape (returns SDFData struct and volume objects)
+                            sdf_data, sparse_volume, coarse_volume = compute_sdf(
+                                mesh_src=shape_src,
+                                shape_scale=shape_scale,
+                                shape_thickness=shape_thickness,
+                                narrow_band_distance=sdf_narrow_band_range,
+                                margin=shape_contact_margin,
+                                target_voxel_size=sdf_target_voxel_size,
+                            )
+                            sdf_cache[cache_key] = (sdf_data, sparse_volume, coarse_volume)
+                        sdf_volumes.append(sparse_volume)
+                        sdf_coarse_volumes.append(coarse_volume)
+                    else:
+                        # Non-mesh shapes or non-colliding shapes get empty SDFData
+                        sdf_data = empty_sdf_data
+                        sdf_volumes.append(None)
+                        sdf_coarse_volumes.append(None)
+                    sdf_data_list.append(sdf_data)
+
+                # Create array of SDFData structs
+                m.shape_sdf_data = wp.array(sdf_data_list, dtype=SDFData, device=device)
+                # Keep volume objects alive for reference counting
+                m.shape_sdf_volume = sdf_volumes
+                m.shape_sdf_coarse_volume = sdf_coarse_volumes
+            else:
+                # SDF mesh-mesh collision not enabled or no colliding meshes
+                m.shape_sdf_data = wp.empty(0, dtype=SDFData, device=device)
+                m.shape_sdf_volume = []
+                m.shape_sdf_coarse_volume = []
 
             # ---------------------
             # springs
@@ -5255,9 +5789,6 @@ class ModelBuilder:
 
             self.find_shape_contact_pairs(m)
             m.rigid_contact_max = count_rigid_contact_points(m)
-
-            m.rigid_contact_torsional_friction = self.rigid_contact_torsional_friction
-            m.rigid_contact_rolling_friction = self.rigid_contact_rolling_friction
 
             # enable ground plane
             m.up_axis = self.up_axis
