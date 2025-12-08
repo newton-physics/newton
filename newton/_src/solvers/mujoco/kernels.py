@@ -1240,7 +1240,7 @@ def update_geom_properties_kernel(
 
     # update geom_solmix from custom attribute
     if shape_geom_solmix:
-        geom_solmix[worldid, geom_idx] = shape_geom_solmix[shape_idx]
+        geom_solmix[world, geom_idx] = shape_geom_solmix[shape_idx]
 
     # update size
     geom_size[world, geom_idx] = shape_size[shape_idx]
