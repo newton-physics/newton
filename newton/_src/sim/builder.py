@@ -5322,7 +5322,12 @@ class ModelBuilder:
                     f"Found worlds: {world_list}. Worlds must form a continuous sequence starting from 0."
                 )
 
-    def finalize(self, device: Devicelike | None = None, requires_grad: bool = False) -> Model:
+    def finalize(
+        self,
+        device: Devicelike | None = None,
+        requires_grad: bool = False,
+        verbose: bool | None = None,
+    ) -> Model:
         """
         Finalize the builder and create a concrete Model for simulation.
 
