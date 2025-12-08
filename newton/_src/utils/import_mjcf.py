@@ -640,6 +640,12 @@ def parse_mjcf(
                 if limit_kd is None:
                     limit_kd = 100.0  # From MuJoCo's default solref (0.02, 1.0)
 
+                effort_limit = 1e6
+                if "actfrcrange" in joint_attrib:
+                    actfrcrange_vec = parse_vec(joint_attrib, "actfrcrange", None)
+                    if actfrcrange_vec is not None and len(actfrcrange_vec) == 2:
+                        effort_limit = max(abs(actfrcrange_vec[0]), abs(actfrcrange_vec[1]))
+
                 ax = ModelBuilder.JointDofConfig(
                     axis=axis_vec,
                     limit_lower=limit_lower,
@@ -649,6 +655,7 @@ def parse_mjcf(
                     target_ke=default_joint_target_ke,
                     target_kd=default_joint_target_kd,
                     armature=joint_armature[-1],
+                    effort_limit=effort_limit,
                 )
                 if is_angular:
                     angular_axes.append(ax)

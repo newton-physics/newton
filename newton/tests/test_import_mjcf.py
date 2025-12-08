@@ -1122,6 +1122,65 @@ class TestImportMjcf(unittest.TestCase):
             f"Expected: {expected_quat}\nActual: {body_quat}",
         )
 
+    def test_actfrcrange_parsing(self):
+        """Test that actfrcrange is parsed from MJCF joint attributes and applied to joint effort limits."""
+        mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test_actfrcrange">
+    <worldbody>
+        <body name="link1" pos="0 0 0">
+            <joint name="joint1" axis="1 0 0" type="hinge" range="-90 90" actfrcrange="-100 100"/>
+            <geom type="box" size="0.1 0.1 0.1"/>
+        </body>
+        <body name="link2" pos="1 0 0">
+            <joint name="joint2" axis="0 1 0" type="hinge" range="-45 45" actfrcrange="-50 50"/>
+            <geom type="box" size="0.1 0.1 0.1"/>
+        </body>
+        <body name="link3" pos="2 0 0">
+            <joint name="joint3" axis="0 0 1" type="hinge" range="-180 180" actfrcrange="-200 200"/>
+            <geom type="box" size="0.1 0.1 0.1"/>
+        </body>
+        <body name="link4" pos="3 0 0">
+            <joint name="joint4" axis="1 0 0" type="hinge" range="-90 90"/>
+            <geom type="box" size="0.1 0.1 0.1"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf_content)
+        model = builder.finalize()
+
+        joint1_idx = model.joint_key.index("joint1")
+        joint2_idx = model.joint_key.index("joint2")
+        joint3_idx = model.joint_key.index("joint3")
+        joint4_idx = model.joint_key.index("joint4")
+
+        joint1_dof_idx = model.joint_qd_start.numpy()[joint1_idx]
+        joint2_dof_idx = model.joint_qd_start.numpy()[joint2_idx]
+        joint3_dof_idx = model.joint_qd_start.numpy()[joint3_idx]
+        joint4_dof_idx = model.joint_qd_start.numpy()[joint4_idx]
+
+        effort_limits = model.joint_effort_limit.numpy()
+
+        self.assertAlmostEqual(
+            effort_limits[joint1_dof_idx], 100.0, places=5, msg="Effort limit for joint1 should be 100 from actfrcrange"
+        )
+
+        self.assertAlmostEqual(
+            effort_limits[joint2_dof_idx], 50.0, places=5, msg="Effort limit for joint2 should be 50 from actfrcrange"
+        )
+
+        self.assertAlmostEqual(
+            effort_limits[joint3_dof_idx], 200.0, places=5, msg="Effort limit for joint3 should be 200 from actfrcrange"
+        )
+
+        self.assertAlmostEqual(
+            effort_limits[joint4_dof_idx],
+            1e6,
+            places=5,
+            msg="Effort limit for joint4 should be default value (1e6) when actfrcrange not specified",
+        )
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
