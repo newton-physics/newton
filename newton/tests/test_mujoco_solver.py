@@ -2671,6 +2671,95 @@ class TestMuJoCoValidation(unittest.TestCase):
         solver = SolverMuJoCo(model, separate_worlds=True)
         self.assertIsNotNone(solver)
 
+    def test_heterogeneous_equality_constraint_count_fails(self):
+        """Test that different equality constraint counts per world raises ValueError."""
+        robot1 = newton.ModelBuilder()
+        b1 = robot1.add_link(mass=1.0, com=wp.vec3(0, 0, 0), I_m=wp.mat33(np.eye(3)))
+        b2 = robot1.add_link(mass=1.0, com=wp.vec3(0, 0, 0), I_m=wp.mat33(np.eye(3)))
+        j1 = robot1.add_joint_revolute(-1, b1)
+        j2 = robot1.add_joint_revolute(b1, b2)
+        robot1.add_articulation([j1, j2])
+        robot1.add_shape_box(b1, hx=0.1, hy=0.1, hz=0.1)
+        robot1.add_shape_box(b2, hx=0.1, hy=0.1, hz=0.1)
+        robot1.add_equality_constraint_weld(body1=b1, body2=b2)  # 1 constraint
+
+        robot2 = newton.ModelBuilder()
+        b1 = robot2.add_link(mass=1.0, com=wp.vec3(0, 0, 0), I_m=wp.mat33(np.eye(3)))
+        b2 = robot2.add_link(mass=1.0, com=wp.vec3(0, 0, 0), I_m=wp.mat33(np.eye(3)))
+        j1 = robot2.add_joint_revolute(-1, b1)
+        j2 = robot2.add_joint_revolute(b1, b2)
+        robot2.add_articulation([j1, j2])
+        robot2.add_shape_box(b1, hx=0.1, hy=0.1, hz=0.1)
+        robot2.add_shape_box(b2, hx=0.1, hy=0.1, hz=0.1)
+        # No constraints in robot2
+
+        main = newton.ModelBuilder()
+        main.add_world(robot1)  # 1 constraint
+        main.add_world(robot2)  # 0 constraints
+        model = main.finalize()
+
+        with self.assertRaises(ValueError) as ctx:
+            SolverMuJoCo(model, separate_worlds=True)
+        self.assertIn("world 0 has 1 equality constraints", str(ctx.exception).lower())
+
+    def test_mismatched_equality_constraint_types_fails(self):
+        """Test that different constraint types at same position across worlds raises ValueError."""
+        robot1 = newton.ModelBuilder()
+        b1 = robot1.add_link(mass=1.0, com=wp.vec3(0, 0, 0), I_m=wp.mat33(np.eye(3)))
+        b2 = robot1.add_link(mass=1.0, com=wp.vec3(0, 0, 0), I_m=wp.mat33(np.eye(3)))
+        j1 = robot1.add_joint_revolute(-1, b1)
+        j2 = robot1.add_joint_revolute(b1, b2)
+        robot1.add_articulation([j1, j2])
+        robot1.add_shape_box(b1, hx=0.1, hy=0.1, hz=0.1)
+        robot1.add_shape_box(b2, hx=0.1, hy=0.1, hz=0.1)
+        robot1.add_equality_constraint_weld(body1=b1, body2=b2)  # WELD type
+
+        robot2 = newton.ModelBuilder()
+        b1 = robot2.add_link(mass=1.0, com=wp.vec3(0, 0, 0), I_m=wp.mat33(np.eye(3)))
+        b2 = robot2.add_link(mass=1.0, com=wp.vec3(0, 0, 0), I_m=wp.mat33(np.eye(3)))
+        j1 = robot2.add_joint_revolute(-1, b1)
+        j2 = robot2.add_joint_revolute(b1, b2)
+        robot2.add_articulation([j1, j2])
+        robot2.add_shape_box(b1, hx=0.1, hy=0.1, hz=0.1)
+        robot2.add_shape_box(b2, hx=0.1, hy=0.1, hz=0.1)
+        robot2.add_equality_constraint_connect(body1=b1, body2=b2)  # CONNECT type (different)
+
+        main = newton.ModelBuilder()
+        main.add_world(robot1)
+        main.add_world(robot2)
+        model = main.finalize()
+
+        with self.assertRaises(ValueError) as ctx:
+            SolverMuJoCo(model, separate_worlds=True)
+        self.assertIn("equality constraint types mismatch at position", str(ctx.exception).lower())
+
+    def test_global_equality_constraint_fails(self):
+        """Test that an equality constraint in global world (-1) raises ValueError."""
+        # Create a model with a global equality constraint
+        robot = newton.ModelBuilder()
+        b1 = robot.add_link(mass=1.0, com=wp.vec3(0, 0, 0), I_m=wp.mat33(np.eye(3)))
+        b2 = robot.add_link(mass=1.0, com=wp.vec3(0, 0, 0), I_m=wp.mat33(np.eye(3)))
+        j1 = robot.add_joint_revolute(-1, b1)
+        j2 = robot.add_joint_revolute(b1, b2)
+        robot.add_articulation([j1, j2])
+        robot.add_shape_box(b1, hx=0.1, hy=0.1, hz=0.1)
+        robot.add_shape_box(b2, hx=0.1, hy=0.1, hz=0.1)
+
+        main = newton.ModelBuilder()
+        main.add_world(robot)
+        main.add_world(robot)
+
+        # Add a global equality constraint
+        main.current_world = -1
+        # We need body indices in the main builder - use the first two bodies from world 0
+        main.add_equality_constraint_weld(body1=0, body2=1)
+
+        model = main.finalize()
+
+        with self.assertRaises(ValueError) as ctx:
+            SolverMuJoCo(model, separate_worlds=True)
+        self.assertIn("global world (-1) cannot contain equality constraints", str(ctx.exception).lower())
+
 
 class TestMuJoCoConversion(unittest.TestCase):
     def test_no_shapes(self):
