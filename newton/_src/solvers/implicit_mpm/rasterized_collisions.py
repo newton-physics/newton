@@ -130,7 +130,12 @@ def get_average_face_normal(
 
 @wp.func
 def collision_sdf(
-    x: wp.vec3, collider: Collider, body_q: wp.array(dtype=wp.transform), body_qd: wp.array(dtype=wp.spatial_vector)
+    x: wp.vec3,
+    collider: Collider,
+    body_q: wp.array(dtype=wp.transform),
+    body_qd: wp.array(dtype=wp.spatial_vector),
+    body_q_prev: wp.array(dtype=wp.transform),
+    dt: float,
 ):
     ground_sdf = (
         wp.dot(x, collider.ground_normal)
@@ -205,13 +210,30 @@ def collision_sdf(
             b_pos = wp.transform_get_translation(body_q[body_id])
             b_rot = wp.transform_get_rotation(body_q[body_id])
 
-            sdf_vel = wp.quat_rotate(b_rot, sdf_vel)
+            mesh_vel_world = wp.quat_rotate(b_rot, sdf_vel)
             sdf_grad = wp.normalize(wp.quat_rotate(b_rot, sdf_grad))
 
-            # Assumes linear/angular velocities in world frame
-            b_v = wp.spatial_top(body_qd[body_id])
-            b_w = wp.spatial_bottom(body_qd[body_id])
-            sdf_vel = b_v + wp.cross(b_w, wp.quat_rotate(b_rot, closest_point - collider.body_com[body_id]))
+            # Compute rigid body velocity at the contact point
+            if body_q_prev:
+                # Finite-difference velocity from position change
+                if dt > 0.0:
+                    b_pos_prev = wp.transform_get_translation(body_q_prev[body_id])
+                    b_rot_prev = wp.transform_get_rotation(body_q_prev[body_id])
+                    closest_point_world = wp.quat_rotate(b_rot, closest_point) + b_pos
+                    closest_point_world_prev = wp.quat_rotate(b_rot_prev, closest_point) + b_pos_prev
+                    rigid_vel = (closest_point_world - closest_point_world_prev) / dt
+                else:
+                    # Fallback to instantaneous velocity when dt is zero
+                    b_v = wp.spatial_top(body_qd[body_id])
+                    b_w = wp.spatial_bottom(body_qd[body_id])
+                    rigid_vel = b_v + wp.cross(b_w, wp.quat_rotate(b_rot, closest_point - collider.body_com[body_id]))
+            else:
+                # Instantaneous rigid body velocity (v + omega x r)
+                b_v = wp.spatial_top(body_qd[body_id])
+                b_w = wp.spatial_bottom(body_qd[body_id])
+                rigid_vel = b_v + wp.cross(b_w, wp.quat_rotate(b_rot, closest_point - collider.body_com[body_id]))
+
+            sdf_vel = mesh_vel_world + rigid_vel
 
     return min_sdf, sdf_grad, sdf_vel, collider_id, material_id
 
@@ -260,6 +282,7 @@ def project_outside_collider(
     collider: Collider,
     body_q: wp.array(dtype=wp.transform),
     body_qd: wp.array(dtype=wp.spatial_vector),
+    body_q_prev: wp.array(dtype=wp.transform),
     dt: float,
     positions_out: wp.array(dtype=wp.vec3),
     velocities_out: wp.array(dtype=wp.vec3),
@@ -281,6 +304,7 @@ def project_outside_collider(
         collider: Collider description and geometry.
         body_q: Rigid body transforms.
         body_qd: Rigid body velocities.
+        body_q_prev: Previous rigid body transforms (for finite-difference velocity).
         dt: Timestep length.
         positions_out: Output particle positions.
         velocities_out: Output particle velocities.
@@ -299,7 +323,9 @@ def project_outside_collider(
         return
 
     # project outside of collider
-    sdf, sdf_gradient, sdf_vel, _collider_id, material_id = collision_sdf(pos_adv, collider, body_q, body_qd)
+    sdf, sdf_gradient, sdf_vel, _collider_id, material_id = collision_sdf(
+        pos_adv, collider, body_q, body_qd, body_q_prev, dt
+    )
 
     sdf_end = sdf - wp.dot(sdf_vel, sdf_gradient) * dt + collider.material_projection_threshold[material_id]
     if sdf_end < 0:
@@ -326,6 +352,7 @@ def rasterize_collider_kernel(
     collider: Collider,
     body_q: wp.array(dtype=wp.transform),
     body_qd: wp.array(dtype=wp.spatial_vector),
+    body_q_prev: wp.array(dtype=wp.transform),
     voxel_size: float,
     activation_distance: float,
     dt: float,
@@ -350,8 +377,9 @@ def rasterize_collider_kernel(
         collider: Collider description and geometry.
         body_q: Rigid body transforms.
         body_qd: Rigid body velocities.
+        body_q_prev: Previous rigid body transforms (for finite-difference velocity).
         activation_distance: Distance below which to activate the collider.
-        dt: Timestep length (used to scale adhesion).
+        dt: Timestep length (used to scale adhesion and finite-difference velocity).
         node_positions: Grid node positions to sample at.
         collider_sdf: Output signed distance per node.
         collider_velocity: Output collider velocity per node.
@@ -367,7 +395,9 @@ def rasterize_collider_kernel(
         bc_active = False
         sdf = _INFINITY
     else:
-        sdf, sdf_gradient, sdf_vel, collider_id, material_id = collision_sdf(x, collider, body_q, body_qd)
+        sdf, sdf_gradient, sdf_vel, collider_id, material_id = collision_sdf(
+            x, collider, body_q, body_qd, body_q_prev, dt
+        )
         bc_active = sdf < activation_distance * voxel_size
 
     collider_sdf[i] = sdf
@@ -524,6 +554,7 @@ def rasterize_collider(
     collider: Collider,
     body_q: wp.array(dtype=wp.transform),
     body_qd: wp.array(dtype=wp.spatial_vector),
+    body_q_prev: wp.array(dtype=wp.transform),
     voxel_size: float,
     dt: float,
     collider_space_restriction: fem.SpaceRestriction,
@@ -552,6 +583,7 @@ def rasterize_collider(
             collider,
             body_q,
             body_qd,
+            body_q_prev,
             voxel_size,
             activation_distance,
             dt,

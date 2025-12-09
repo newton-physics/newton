@@ -632,6 +632,8 @@ class ImplicitMPMOptions:
     """Compute collider normals from sdf gradient rather than closest point"""
     collider_basis: str = "Q1"
     """Collider basis function string. Examples: P0 (piecewise constant), Q1 (trilinear), S2 (quadratic serendipity), pic8 (particle-based with max 8 points per cell)"""
+    collider_velocity_mode: str = "instantaneous"
+    """Collider velocity computation mode. May be one of instantaneous, finite_difference."""
 
 
 class _ImplicitMPMScratchpad:
@@ -1727,6 +1729,7 @@ class SolverImplicitMPM(SolverBase):
 
         self.collider_normal_from_sdf_gradient = options.collider_normal_from_sdf_gradient
         self.collider_basis = options.collider_basis
+        self.collider_velocity_mode = options.collider_velocity_mode
 
         self.temporary_store = fem.TemporaryStore()
 
@@ -1743,9 +1746,28 @@ class SolverImplicitMPM(SolverBase):
 
         self._scratchpad = None
 
+        # Store previous body transforms for finite-difference velocity computation
+        # Used when collider_velocity_mode == "finite_difference"
+        self._body_q_prev = None
+
         with wp.ScopedDevice(model.device):
             pic = self._particles_to_cells(model.particle_q)
             self._rebuild_scratchpad(pic)
+
+    @property
+    def body_q_prev(self) -> wp.array | None:
+        """Previous body transforms for finite-difference collider velocity computation."""
+        return self._body_q_prev
+
+    @body_q_prev.setter
+    def body_q_prev(self, value: wp.array | None):
+        self._body_q_prev = value
+
+    def _get_body_q_prev_for_collision(self) -> wp.array | None:
+        """Returns body_q_prev if collider_velocity_mode is finite_difference, else None."""
+        if self.collider_velocity_mode == "finite_difference":
+            return self._body_q_prev
+        return None
 
     def enrich_state(self, state: newton.State):
         """Allocate additional per-particle and per-step fields used by the solver.
@@ -1802,8 +1824,14 @@ class SolverImplicitMPM(SolverBase):
         with wp.ScopedDevice(model.device):
             pic = self._particles_to_cells(state_in.particle_q)
             scratch = self._rebuild_scratchpad(pic)
-            self._step_impl(state_in, state_out, dt, pic, scratch)
+            self._step_impl(state_in, state_out, dt, pic, scratch, self._get_body_q_prev_for_collision())
             scratch.release_temporaries()
+
+            # Auto-buffer body_q for next step's finite-difference velocity computation
+            if self.collider_velocity_mode == "finite_difference" and state_in.body_q is not None:
+                if self._body_q_prev is None or self._body_q_prev.shape[0] != state_in.body_q.shape[0]:
+                    self._body_q_prev = wp.empty_like(state_in.body_q)
+                wp.copy(self._body_q_prev, state_in.body_q)
 
     @override
     def notify_model_changed(self, flags: int):
@@ -1837,6 +1865,7 @@ class SolverImplicitMPM(SolverBase):
                 self.mpm_model.collider,
                 state_in.body_q,
                 state_in.body_qd,
+                self._get_body_q_prev_for_collision(),
                 dt,
             ],
             outputs=[
@@ -2118,6 +2147,7 @@ class SolverImplicitMPM(SolverBase):
         dt: float,
         pic: fem.PicQuadrature,
         scratch: _ImplicitMPMScratchpad,
+        body_q_prev: wp.array = None,
     ):
         """Single implicit MPM step: bin, rasterize, assemble, solve, advect.
 
@@ -2125,6 +2155,15 @@ class SolverImplicitMPM(SolverBase):
         binning, collider rasterization, RHS assembly, strain/compliance matrix
         computation, warm-starting, coupled rheology/contact solve, strain
         updates, and particle advection.
+
+        Args:
+            state_in: Input state at the beginning of the timestep.
+            state_out: Output state to write to.
+            dt: Timestep length.
+            pic: Particle-in-cell quadrature data.
+            scratch: Scratchpad for temporary storage.
+            body_q_prev: Previous rigid body transforms for finite-difference velocity computation.
+                         If None, falls back to instantaneous velocity calculation.
         """
 
         cell_volume = self.mpm_model.voxel_size**3
@@ -2136,7 +2175,7 @@ class SolverImplicitMPM(SolverBase):
         self._require_velocity_space_fields(state_out, scratch, mpm_model.has_compliant_particles)
 
         # Rasterize colliders to discrete space
-        self._rasterize_colliders(state_in, state_out, dt, scratch, inv_cell_volume)
+        self._rasterize_colliders(state_in, state_out, dt, scratch, inv_cell_volume, body_q_prev)
 
         # Velocity right-hand side and inverse mass matrix
         self._compute_unconstrained_velocity(state_in, state_out, dt, pic, scratch, inv_cell_volume)
@@ -2238,6 +2277,7 @@ class SolverImplicitMPM(SolverBase):
         dt: float,
         scratch: _ImplicitMPMScratchpad,
         inv_cell_volume: float,
+        body_q_prev: wp.array = None,
     ):
         # Rasterize collider to grid
         collider_node_count = scratch.collider_node_count
@@ -2258,6 +2298,7 @@ class SolverImplicitMPM(SolverBase):
                 self.mpm_model.collider,
                 state_in.body_q,
                 state_in.body_qd,
+                body_q_prev,
                 self.mpm_model.voxel_size,
                 dt,
                 scratch.collider_fraction_test.space_restriction,
