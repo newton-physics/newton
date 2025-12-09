@@ -995,6 +995,8 @@ class NarrowPhase:
         shape_contact_margin: wp.array(dtype=wp.float32, ndim=1),  # per-shape contact margin
         shape_collision_radius: wp.array(dtype=wp.float32, ndim=1),  # per-shape collision radius for AABB fallback
         shape_is_hydroelastic: wp.array(dtype=wp.bool, ndim=1),  # per-shape hydroelastic flag
+        shape_sdf_block_coords: wp.array(dtype=wp.vec3us, ndim=1),  # SDF block coordinates for hydroelastic
+        shape_sdf_shape2blocks: wp.array(dtype=wp.vec2i, ndim=1),  # SDF shape to blocks mapping for hydroelastic
         writer_data: Any,
         device=None,  # Device to launch on
     ):
@@ -1011,6 +1013,8 @@ class NarrowPhase:
             shape_sdf_data: Array of SDFData structs for mesh shapes
             shape_contact_margin: Array of contact margins for each shape
             shape_collision_radius: Array of collision radii for each shape (for AABB fallback for planes/meshes)
+            shape_sdf_block_coords: Array of SDF block coordinates for hydroelastic collision
+            shape_sdf_shape2blocks: Array of SDF shape to blocks mapping for hydroelastic collision
             writer_data: Custom struct instance for contact writing (type must match the custom writer function)
             device: Device to launch on
         """
@@ -1155,6 +1159,19 @@ class NarrowPhase:
                 device=device,
                 block_dim=self.tile_size_mesh_mesh,
             )
+        
+        if self.sdf_hydroelastic is not None:
+            self.sdf_hydroelastic.launch(
+                    shape_sdf_data,
+                    shape_transform,
+                    shape_contact_margin,
+                    self.shape_pairs_sdf_sdf,
+                    self.shape_pairs_sdf_sdf_count,
+                    shape_sdf_block_coords,
+                    shape_sdf_shape2blocks,
+                    writer_data,
+                    device=device,
+                )
 
     def launch(
         self,
@@ -1168,6 +1185,8 @@ class NarrowPhase:
         shape_contact_margin: wp.array(dtype=wp.float32, ndim=1),  # per-shape contact margin
         shape_collision_radius: wp.array(dtype=wp.float32, ndim=1),  # per-shape collision radius for AABB fallback
         shape_is_hydroelastic: wp.array(dtype=wp.bool, ndim=1),  # per-shape hydroelastic flag
+        shape_sdf_block_coords: wp.array(dtype=wp.vec3us, ndim=1),  # SDF block coordinates for hydroelastic
+        shape_sdf_shape2blocks: wp.array(dtype=wp.vec2i, ndim=1),  # SDF shape to blocks mapping for hydroelastic
         # Outputs
         contact_pair: wp.array(dtype=wp.vec2i),
         contact_position: wp.array(dtype=wp.vec3),
@@ -1195,6 +1214,8 @@ class NarrowPhase:
             shape_sdf_data: Array of SDFData structs for mesh shapes
             shape_contact_margin: Array of contact margins for each shape
             shape_collision_radius: Array of collision radii for each shape (for AABB fallback for planes/meshes)
+            shape_sdf_block_coords: Array of SDF block coordinates for hydroelastic collision
+            shape_sdf_shape2blocks: Array of SDF shape to blocks mapping for hydroelastic collision
             contact_pair: Output array for contact shape pairs
             contact_position: Output array for contact positions (center point)
             contact_normal: Output array for contact normals
@@ -1253,6 +1274,8 @@ class NarrowPhase:
             shape_contact_margin,
             shape_collision_radius,
             shape_is_hydroelastic,
+            shape_sdf_block_coords,
+            shape_sdf_shape2blocks,
             writer_data,
             device,
         )
