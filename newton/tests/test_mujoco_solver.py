@@ -2441,7 +2441,7 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
         solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
         to_newton_shape_index = solver.mjc_geom_to_newton_shape.numpy()
         num_geoms = solver.mj_model.ngeom
-        
+
         # Verify initial conversion
         geom_solmix = solver.mjw_model.geom_solmix.numpy()
         tested_count = 0
