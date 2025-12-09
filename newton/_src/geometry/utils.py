@@ -717,5 +717,40 @@ def transform_points(points: nparray, transform: wp.transform, scale: Vec3 | Non
         points = points * np.array(scale, dtype=np.float32)
     return points @ np.array(wp.quat_to_matrix(transform.q)).reshape(3, 3) + transform.p
 
+@wp.kernel
+def get_total_kernel(
+    counts: wp.array(dtype=int),
+    prefix_sums: wp.array(dtype=int),
+    num_elements: wp.array(dtype=int),
+    total: wp.array(dtype=int),
+):
+    """
+    Get the total of an array of counts and prefix sums.
+    """
+    if num_elements[0] <= 0:
+        total[0] = 0
+        return
+
+    final_idx = num_elements[0] - 1
+    total[0] = prefix_sums[final_idx] + counts[final_idx]
+
+
+def scan_with_total(
+    counts: wp.array(dtype=int),
+    prefix_sums: wp.array(dtype=int),
+    num_elements: wp.array(dtype=int),
+    total: wp.array(dtype=int),
+):
+    """
+    Computes an exclusive prefix sum and total of a counts array.
+
+    Args:
+        counts: Input array of per-element counts.
+        prefix_sums: Output array for exclusive prefix sums (same size as counts).
+        num_elements: Single-element array containing the number of valid elements in counts.
+        total: Single-element output array that will contain the sum of all counts.
+    """
+    wp.utils.array_scan(counts, prefix_sums, inclusive=False)
+    wp.launch(get_total_kernel, dim=[1], inputs=[counts, prefix_sums, num_elements, total])
 
 __all__ = ["compute_shape_radius", "load_mesh", "visualize_meshes"]
