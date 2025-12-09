@@ -14,6 +14,7 @@
 # limitations under the License.
 
 import warp as wp
+from broad_phase_common import binary_search
 
 from . import collision_primitive as primitive
 from .flags import ParticleFlags, ShapeFlags
@@ -2246,21 +2247,6 @@ def init_triangle_collision_data_kernel(
             resize_flags[i] = 0
 
 
-@wp.func
-def _binary_search_contains_int32(sorted_arr: wp.array(dtype=wp.int32), start: int, end: int, key: int) -> bool:
-    # Search [start, end) — end is exclusive
-    lo = wp.int32(start)
-    hi = wp.int32(end)
-    while lo < hi:
-        mid = (lo + hi) // wp.int32(2)
-        val = sorted_arr[mid]
-        if val < key:
-            lo = mid + 1
-        else:
-            hi = mid
-    return (lo < wp.int32(end)) and (sorted_arr[lo] == key)
-
-
 @wp.kernel
 def vertex_triangle_collision_detection_kernel(
     max_query_radius: float,
@@ -2348,7 +2334,7 @@ def vertex_triangle_collision_detection_kernel(
                 first_val = vertex_triangle_filtering_list[fl_start]
                 last_val = vertex_triangle_filtering_list[fl_end - 1]
                 if (tri_index >= first_val) and (tri_index <= last_val):
-                    if _binary_search_contains_int32(vertex_triangle_filtering_list, fl_start, fl_end, tri_index):
+                    if binary_search(vertex_triangle_filtering_list, tri_index, fl_start, fl_end):
                         continue
 
         u1 = pos[t1]
@@ -2464,7 +2450,7 @@ def edge_colliding_edges_detection_kernel(
                 first_val = edge_filtering_list[fl_start]
                 last_val = edge_filtering_list[fl_end - 1]
                 if (colliding_edge_index >= first_val) and (colliding_edge_index <= last_val):
-                    if _binary_search_contains_int32(edge_filtering_list, fl_start, fl_end, colliding_edge_index):
+                    if binary_search(edge_filtering_list, colliding_edge_index, fl_start, fl_end):
                         continue
                 # else: key is out of range, cannot be present -> skip_this remains False
 
