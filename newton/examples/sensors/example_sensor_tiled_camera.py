@@ -156,11 +156,7 @@ class Example:
             width=sensor_render_width,
             height=sensor_render_height,
             options=TiledCameraSensor.Options(
-                default_light=True,
-                default_light_shadows=True,
-                colors_per_shape=True,
-                checkerboard_texture=True,
-                default_semantic_ids=True,
+                default_light=True, default_light_shadows=True, colors_per_shape=True, checkerboard_texture=True
             ),
         )
 
