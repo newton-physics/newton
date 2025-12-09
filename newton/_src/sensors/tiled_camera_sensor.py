@@ -443,6 +443,22 @@ class TiledCameraSensor:
 
         return camera_rays
 
+    def __reshape_buffer_for_flatten(self, out_buffer: wp.array | None = None, num_worlds_per_row: int | None = None):
+        num_worlds_and_cameras = self.render_context.num_worlds * self.render_context.num_cameras
+        if not num_worlds_per_row:
+            num_worlds_per_row = math.ceil(math.sqrt(num_worlds_and_cameras))
+        num_worlds_per_col = math.ceil(num_worlds_and_cameras / num_worlds_per_row)
+
+        if out_buffer is None:
+            return wp.empty(
+                (num_worlds_per_col * self.render_context.height, num_worlds_per_row * self.render_context.width, 4),
+                dtype=wp.uint8,
+            )
+
+        return out_buffer.reshape(
+            (num_worlds_per_col * self.render_context.height, num_worlds_per_row * self.render_context.width, 4)
+        )
+
     def flatten_color_image_to_rgba(
         self,
         image: wp.array(dtype=wp.uint32, ndim=3),
@@ -461,20 +477,7 @@ class TiledCameraSensor:
             num_worlds_per_row: Optional number of rows
         """
 
-        num_worlds_and_cameras = self.render_context.num_worlds * self.render_context.num_cameras
-        if not num_worlds_per_row:
-            num_worlds_per_row = math.ceil(math.sqrt(num_worlds_and_cameras))
-        num_worlds_per_col = math.ceil(num_worlds_and_cameras / num_worlds_per_row)
-
-        if out_buffer is None:
-            out_buffer = wp.empty(
-                (num_worlds_per_col * self.render_context.height, num_worlds_per_row * self.render_context.width, 4),
-                dtype=wp.uint8,
-            )
-        else:
-            out_buffer = out_buffer.reshape(
-                (num_worlds_per_col * self.render_context.height, num_worlds_per_row * self.render_context.width, 4)
-            )
+        out_buffer = self.__reshape_buffer_for_flatten(out_buffer, num_worlds_per_row)
 
         wp.launch(
             flatten_color_image,
@@ -513,20 +516,7 @@ class TiledCameraSensor:
             num_worlds_per_row: Optional number of rows
         """
 
-        num_worlds_and_cameras = self.render_context.num_worlds * self.render_context.num_cameras
-        if not num_worlds_per_row:
-            num_worlds_per_row = math.ceil(math.sqrt(num_worlds_and_cameras))
-        num_worlds_per_col = math.ceil(num_worlds_and_cameras / num_worlds_per_row)
-
-        if out_buffer is None:
-            out_buffer = wp.empty(
-                (num_worlds_per_col * self.render_context.height, num_worlds_per_row * self.render_context.width, 4),
-                dtype=wp.uint8,
-            )
-        else:
-            out_buffer = out_buffer.reshape(
-                (num_worlds_per_col * self.render_context.height, num_worlds_per_row * self.render_context.width, 4)
-            )
+        out_buffer = self.__reshape_buffer_for_flatten(out_buffer, num_worlds_per_row)
 
         wp.launch(
             flatten_normal_image,
@@ -566,20 +556,7 @@ class TiledCameraSensor:
             num_worlds_per_row: Optional number of rows
         """
 
-        num_worlds_and_cameras = self.render_context.num_worlds * self.render_context.num_cameras
-        if not num_worlds_per_row:
-            num_worlds_per_row = math.ceil(math.sqrt(num_worlds_and_cameras))
-        num_worlds_per_col = math.ceil(num_worlds_and_cameras / num_worlds_per_row)
-
-        if out_buffer is None:
-            out_buffer = wp.empty(
-                (num_worlds_per_col * self.render_context.height, num_worlds_per_row * self.render_context.width, 4),
-                dtype=wp.uint8,
-            )
-        else:
-            out_buffer = out_buffer.reshape(
-                (num_worlds_per_col * self.render_context.height, num_worlds_per_row * self.render_context.width, 4)
-            )
+        out_buffer = self.__reshape_buffer_for_flatten(out_buffer, num_worlds_per_row)
 
         depth_range = wp.array([100000000.0, 0.0], dtype=wp.float32)
         wp.launch(find_depth_range, image.shape, [image, depth_range])
