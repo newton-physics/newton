@@ -2687,22 +2687,23 @@ class SolverVBD(SolverBase):
             v_tri_filter_sets = None
             edge_edge_filter_sets = None
             if self.topological_contact_filter_threshold >= 2:
-                v_tri_filter_sets = build_vertex_n_ring_tris_collision_filter(
-                    self.topological_contact_filter_threshold,
-                    self.model.particle_count,
-                    self.model.edge_indices.numpy(),
-                    self.adjacency.v_adj_edges.numpy(),
-                    self.adjacency.v_adj_edges_offsets.numpy(),
-                    self.adjacency.v_adj_faces.numpy(),
-                    self.adjacency.v_adj_faces_offsets.numpy(),
-                )
-
-                edge_edge_filter_sets = build_edge_n_ring_edge_collision_filter(
-                    self.topological_contact_filter_threshold,
-                    self.model.edge_indices.numpy(),
-                    self.adjacency.v_adj_edges.numpy(),
-                    self.adjacency.v_adj_edges_offsets.numpy(),
-                )
+                if self.adjacency.v_adj_faces_offsets.size > 0:
+                    v_tri_filter_sets = build_vertex_n_ring_tris_collision_filter(
+                        self.topological_contact_filter_threshold,
+                        self.model.particle_count,
+                        self.model.edge_indices.numpy(),
+                        self.adjacency.v_adj_edges.numpy(),
+                        self.adjacency.v_adj_edges_offsets.numpy(),
+                        self.adjacency.v_adj_faces.numpy(),
+                        self.adjacency.v_adj_faces_offsets.numpy(),
+                    )
+                if self.adjacency.v_adj_edges_offsets.size > 0:
+                    edge_edge_filter_sets = build_edge_n_ring_edge_collision_filter(
+                        self.topological_contact_filter_threshold,
+                        self.model.edge_indices.numpy(),
+                        self.adjacency.v_adj_edges.numpy(),
+                        self.adjacency.v_adj_edges_offsets.numpy(),
+                    )
 
             if external_vertex_contact_filtering_map is not None:
                 if v_tri_filter_sets is None:

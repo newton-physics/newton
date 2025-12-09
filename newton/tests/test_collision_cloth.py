@@ -608,7 +608,7 @@ def test_edge_edge_collision(test, device):
                 collision_detector.edge_colliding_edges_min_dist,
                 collision_detector.resize_flags,
             ],
-            dim=model.particle_count,
+            dim=model.edge_count,
             device=device,
         )
 

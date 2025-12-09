@@ -14,9 +14,9 @@
 # limitations under the License.
 
 import warp as wp
-from broad_phase_common import binary_search
 
 from . import collision_primitive as primitive
+from .broad_phase_common import binary_search
 from .flags import ParticleFlags, ShapeFlags
 from .types import (
     GeoType,
@@ -2279,7 +2279,7 @@ def vertex_triangle_collision_detection_kernel(
 
     Note:
 
-        The collision date buffer is pre-allocated and cannot be changed during collision detection, therefore, the space
+        The collision data buffer is pre-allocated and cannot be changed during collision detection, therefore, the space
         may not be enough. If the space is not enough to record all the collision information, the function will set a
         certain element in resized_flag to be true. The user can reallocate the buffer based on vertex_colliding_triangles_count
         and vertex_colliding_triangles_count.
@@ -2296,10 +2296,10 @@ def vertex_triangle_collision_detection_kernel(
         triangle_colliding_vertices_buffer_sizes (array): size of each triangle's collision buffer, will be modified if resizing is needed
         min_distance_filtering_ref_pos (array): the position that minimal collision distance evaluation uses.
         vertex_colliding_triangles (array): flattened buffer of vertices' collision triangles
-        vertex_colliding_triangles_count (array): number of triangles each vertex collides
+        vertex_colliding_triangles_count (array): number of triangles each vertex collides with
         triangle_colliding_vertices (array): positions of all the triangles' collision vertices, every two elements
             records the vertex index and a triangle index it collides to
-        triangle_colliding_vertices_count (array): number of triangles each vertex collides
+        triangle_colliding_vertices_count (array): number of triangles each vertex collides with
         triangle_colliding_vertices_min_dist (array): each triangle's min distance to all (non-self) vertices
         resized_flag (array): size == 3, (vertex_buffer_resize_required, triangle_buffer_resize_required, edge_buffer_resize_required)
     """
