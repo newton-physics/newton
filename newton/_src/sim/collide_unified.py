@@ -26,6 +26,7 @@ from ..geometry.broad_phase_sap import BroadPhaseSAP
 from ..geometry.collision_core import compute_tight_aabb_from_support
 from ..geometry.contact_data import ContactData
 from ..geometry.narrow_phase import NarrowPhase
+from ..geometry.sdf_hydroelastic import SDFHydroelastic, SDFHydroelasticConfig
 from ..geometry.support_function import (
     GenericShapeData,
     SupportMapDataProvider,
@@ -283,6 +284,7 @@ class CollisionPipelineUnified:
         shape_flags: wp.array(dtype=int) | None = None,
         sap_sort_type=None,
         enable_contact_matching: bool = False,
+        sdf_hydroelastic: SDFHydroelastic | None = None,
     ):
         """
         Initialize the CollisionPipelineUnified.
@@ -374,6 +376,7 @@ class CollisionPipelineUnified:
             self.shape_aabb_lower = wp.zeros(shape_count, dtype=wp.vec3, device=device)
             self.shape_aabb_upper = wp.zeros(shape_count, dtype=wp.vec3, device=device)
 
+
         # Initialize narrow phase with pre-allocated buffers
         # Pass AABB arrays so narrow phase can use them instead of computing AABBs internally
         # max_triangle_pairs is a conservative estimate for mesh collision triangle pairs
@@ -386,6 +389,7 @@ class CollisionPipelineUnified:
             shape_aabb_lower=self.shape_aabb_lower,
             shape_aabb_upper=self.shape_aabb_upper,
             contact_writer_warp_func=write_contact,
+            sdf_hydroelastic=sdf_hydroelastic,
         )
 
         with wp.ScopedDevice(device):
@@ -423,6 +427,7 @@ class CollisionPipelineUnified:
         shape_pairs_filtered: wp.array(dtype=wp.vec2i) | None = None,
         sap_sort_type=None,
         enable_contact_matching: bool = False,
+        sdf_hydroelastic_config: SDFHydroelasticConfig | None = None,
     ) -> CollisionPipelineUnified:
         """
         Create a CollisionPipelineUnified instance from a Model.
@@ -444,6 +449,7 @@ class CollisionPipelineUnified:
                 Only used when broad_phase_mode is BroadPhaseMode.SAP. If None, uses default (SEGMENTED).
             enable_contact_matching (bool, optional): Whether to enable contact matching data generation.
                 If True, allocates and populates contact_pair_key and contact_key arrays. Defaults to False.
+            sdf_hydroelastic_config (SDFHydroelasticConfig | None, optional): Configuration for SDF hydroelastic collision handling. Defaults to None.
 
         Returns:
             CollisionPipeline: The constructed collision pipeline.
@@ -465,6 +471,10 @@ class CollisionPipelineUnified:
                 # Will raise error in __init__ if EXPLICIT mode requires it
                 shape_pairs_filtered = None
 
+        # Initialize SDF hydroelastic
+        # returns None if no hydroelastic shape pairs in the model
+        sdf_hydroelastic = SDFHydroelastic._from_model(model, config=sdf_hydroelastic_config)
+
         pipeline = CollisionPipelineUnified(
             model.shape_count,
             model.particle_count,
@@ -484,6 +494,7 @@ class CollisionPipelineUnified:
             shape_flags=model.shape_flags if hasattr(model, "shape_flags") else None,
             sap_sort_type=sap_sort_type,
             enable_contact_matching=enable_contact_matching,
+            sdf_hydroelastic=sdf_hydroelastic,
         )
 
         return pipeline

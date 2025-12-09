@@ -39,6 +39,7 @@ from ..geometry.contact_reduction import (
     synchronize,
 )
 from ..geometry.sdf_contact import create_narrow_phase_process_mesh_mesh_contacts_kernel
+from ..geometry.sdf_hydroelastic import SDFHydroelastic
 from ..geometry.sdf_utils import SDFData
 from ..geometry.support_function import (
     GenericShapeData,
@@ -830,6 +831,7 @@ class NarrowPhase:
         shape_aabb_upper: wp.array(dtype=wp.vec3) | None = None,
         contact_writer_warp_func: Any | None = None,
         contact_reduction_betas: tuple = (1000000.0, 0.0001),
+        sdf_hydroelastic: SDFHydroelastic| None = None,
     ):
         """
         Initialize NarrowPhase with pre-allocated buffers.
@@ -862,6 +864,7 @@ class NarrowPhase:
                 Each beta adds 6 slots per normal bin (one per spatial direction).
                 Default is ``(1000000.0, 0.0001)`` which keeps both all spatial extremes and
                 near-penetrating spatial extremes. The number of reduction slots is ``20 * (6 * len(betas) + 1)``.
+            sdf_hydroelastic: Optional SDF hydroelastic instance. Set is_hydroelastic=True on shapes to enable hydroelastic collisions.
         """
         self.max_candidate_pairs = max_candidate_pairs
         self.max_triangle_pairs = max_triangle_pairs
@@ -918,6 +921,8 @@ class NarrowPhase:
             contact_reduction_funcs=self.contact_reduction_funcs,
         )
 
+        self.sdf_hydroelastic = sdf_hydroelastic
+
         # Pre-allocate all intermediate buffers
         with wp.ScopedDevice(device):
             # Buffers for mesh collision handling
@@ -949,6 +954,11 @@ class NarrowPhase:
 
             # Betas array for contact reduction (using the configured contact_reduction_betas tuple)
             self.betas = create_betas_array(betas=self.betas_tuple, device=device)
+
+            if sdf_hydroelastic is not None:
+                self.shape_pairs_sdf = wp.zeros(sdf_hydroelastic.max_num_shape_pairs, dtype=wp.vec2i, device=device)
+                self.shape_pairs_sdf_count = wp.zeros(1, dtype=wp.int32, device=device)
+
 
         # Fixed thread count for kernel launches
         gpu_thread_limit = 1024 * 1024 * 4

@@ -3332,7 +3332,13 @@ class ModelBuilder:
         self.shape_sdf_narrow_band_range.append(cfg.sdf_narrow_band_range)
         self.shape_sdf_target_voxel_size.append(cfg.sdf_target_voxel_size)
         self.shape_sdf_max_dims.append(cfg.sdf_max_dims)
-        self.shape_is_hydroelastic.append(cfg.is_hydroelastic)
+
+        is_hydroelastic = cfg.is_hydroelastic
+        if is_hydroelastic and (type == GeoType.PLANE or type == GeoType.HFIELD):
+            print(f"Shape '{key}' (index {shape}) has is_hydroelastic=True but is of type {GeoType(type).name}, which is not supported. Falling back to mesh collisions.")
+            is_hydroelastic = False
+        self.shape_is_hydroelastic.append(is_hydroelastic)
+        
         if cfg.has_shape_collision and cfg.collision_filter_parent and body > -1 and body in self.joint_parents:
             for parent_body in self.joint_parents[body]:
                 if parent_body > -1:
@@ -5500,7 +5506,6 @@ class ModelBuilder:
                         "Hydroelastic collision requires SDF generation. Please set sdf_max_dims (e.g., 64) or sdf_target_voxel_size."
                     )
 
-            # Check if SDF generation was requested but we're on CPU
             if has_sdf_meshes and not is_gpu:
                 raise ValueError(
                     "SDF generation for mesh shapes (sdf_max_dims != None) requires a CUDA-capable GPU device. "
@@ -5508,7 +5513,6 @@ class ModelBuilder:
                     "Either set sdf_max_dims=None for all mesh shapes or use a CUDA device."
                 )
 
-            # Check if hydroelastic shapes require GPU
             if has_hydroelastic_shapes and not is_gpu:
                 raise ValueError(
                     "Hydroelastic collision (is_hydroelastic=True) requires a CUDA-capable GPU device. "
