@@ -25,9 +25,6 @@ if TYPE_CHECKING:
     from .render_context import RenderContext
 
 
-BACKGROUND_COLOR = 255 << 24 | int(0.4 * 255.0) << 16 | int(0.4 * 255.0) << 8 | int(0.4 * 255.0)
-
-
 @wp.func
 def tid_to_tile_coord(tid: wp.int32, num_worlds: wp.int32, num_cameras: wp.int32, tile_size: wp.int32, width: wp.int32):
     num_views_per_pixel = num_worlds * num_cameras
@@ -311,18 +308,18 @@ def render_megakernel(
     camera_rays: wp.array(dtype=wp.vec3f, ndim=4),
     color_image: wp.array(dtype=wp.uint32, ndim=3) | None = None,
     depth_image: wp.array(dtype=wp.float32, ndim=3) | None = None,
-    clear_images: bool = True,
+    clear_color: int | None = 0,
+    clear_depth: float | None = 0.0,
 ):
     if rc.tile_rendering:
         assert rc.width % rc.tile_size == 0, "render width must be a multiple of tile_size"
         assert rc.height % rc.tile_size == 0, "render height must be a multiple of tile_size"
 
-    if clear_images:
-        if color_image is not None:
-            color_image.fill_(wp.uint32(BACKGROUND_COLOR))
+    if clear_color is not None and color_image is not None:
+        color_image.fill_(wp.uint32(clear_color))
 
-        if depth_image is not None:
-            depth_image.fill_(wp.float32(0.0))
+    if clear_depth is not None and depth_image is not None:
+        depth_image.fill_(wp.float32(clear_depth))
 
     wp.launch(
         kernel=_render_megakernel,
