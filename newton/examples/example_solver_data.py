@@ -39,15 +39,16 @@ class Example:
         builder.add_ground_plane()
 
         # pendulum
-        body_sphere = builder.add_body(key="pendulum")
+        body_sphere = builder.add_link(key="pendulum")
         builder.add_shape_sphere(body_sphere, radius=0.2)
         builder.add_shape_capsule(
             body_sphere, xform=wp.transform(p=(0, 0, 0.5)), radius=0.05, cfg=newton.ModelBuilder.ShapeConfig(density=0)
         )
-        builder.add_joint_revolute(
+        joint = builder.add_joint_revolute(
             -1, body_sphere, parent_xform=wp.transform(p=(0.0, 0.0, 2.0)), child_xform=wp.transform(p=(0.0, 0.0, 1.0))
         )
         builder.joint_qd[0] = 3
+        builder.add_articulation([joint])
 
         imu_site = builder.add_site(body_sphere, key="imu_site")
 
