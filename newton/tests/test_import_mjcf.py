@@ -1424,6 +1424,10 @@ class TestImportMjcf(unittest.TestCase):
             2: 0.8,
         }
 
+        for shape_idx, expected in expected_values.items():
+            actual = geom_solmix[shape_idx].tolist()
+            self.assertAlmostEqual(actual, expected, places=4)
+
     def test_geom_gap_parsing(self):
         """Test that geom_solmix attribute is parsed correctly from MJCF."""
         mjcf = """<?xml version="1.0" ?>
