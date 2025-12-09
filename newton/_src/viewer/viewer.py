@@ -733,6 +733,7 @@ class ViewerBase:
         shape_transform = self.model.shape_transform.numpy()
         shape_flags = self.model.shape_flags.numpy()
         shape_world = self.model.shape_world.numpy()
+        shape_isomesh = self.model.shape_isomesh
         shape_count = len(shape_body)
 
         # loop over shapes
@@ -742,6 +743,16 @@ class ViewerBase:
             geo_thickness = float(shape_geo_thickness[s])
             geo_is_solid = bool(shape_geo_is_solid[s])
             geo_src = shape_geo_src[s]
+
+            # Check if this collision shape has an isomesh to visualize instead
+            isomesh = shape_isomesh[s] if shape_isomesh else None
+            is_collision_shape = shape_flags[s] & int(newton.ShapeFlags.COLLIDE_SHAPES)
+            if isomesh is not None and is_collision_shape:
+                # Use isomesh as geometry source
+                geo_type = newton.GeoType.MESH
+                geo_src = isomesh
+                geo_scale = [1.0, 1.0, 1.0]  # scale is baked into isomesh
+                geo_is_solid = True
 
             # skip unsupported
             if geo_type == newton.GeoType.SDF:

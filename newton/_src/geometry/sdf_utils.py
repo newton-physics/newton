@@ -418,8 +418,6 @@ def compute_sdf(
     sdf_data.half_extents = wp.vec3(half_extents)
     sdf_data.background_value = SDF_BACKGROUND_VALUE
 
-    isomesh = compute_isomesh(sparse_volume)
-
     return sdf_data, sparse_volume, coarse_volume
 
 def compute_isomesh(volume: wp.Volume) -> Mesh | None:
@@ -440,12 +438,13 @@ def compute_isomesh(volume: wp.Volume) -> Mesh | None:
 
     # Get allocated tile points from the sparse volume
     tile_points = volume.get_tiles()
+    tile_points_wp = wp.array(tile_points, dtype=wp.vec3i)
     num_tiles = tile_points.shape[0]
 
     wp.launch(
         generate_isomesh_kernel,
         dim=(num_tiles, 8, 8, 8),
-        inputs=[volume.id, tile_points, mc_tables[0], mc_tables[4], mc_tables[3]],
+        inputs=[volume.id, tile_points_wp, mc_tables[0], mc_tables[4], mc_tables[3]],
         outputs=[face_count, verts, face_normals],
     )
     num_faces = face_count.numpy()[0]

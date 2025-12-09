@@ -468,6 +468,11 @@ class ModelBuilder:
         When True, uses a CPU implementation that reports specific issues for each body and updates
         the ModelBuilder's internal state.
         Default: False."""
+
+        self.show_isomeshes = False
+        """Whether to compute isomeshes (isosurface meshes) for each SDF Volume at finalize time.
+        When True, isomeshes are computed using marching cubes and stored in Model.shape_isomesh.
+        Useful for visualization of SDF volumes. Default: False."""
         # endregion
 
         # particles
@@ -5461,7 +5466,7 @@ class ModelBuilder:
 
             # ---------------------
             # Compute SDFs for mesh shapes (per-shape opt-in via sdf_max_dims or is_hydroelastic)
-            from ..geometry.sdf_utils import SDFData, compute_sdf, create_empty_sdf_data  # noqa: PLC0415
+            from ..geometry.sdf_utils import SDFData, compute_sdf, create_empty_sdf_data, compute_isomesh  # noqa: PLC0415
             from ..geometry.types import GeoType  # noqa: PLC0415
 
             # Check if we're running on GPU - wp.Volume only supports CUDA
@@ -5516,7 +5521,9 @@ class ModelBuilder:
                 # Keep volume objects alive for reference counting
                 sdf_volumes = []
                 sdf_coarse_volumes = []
+                isomeshes = []
                 sdf_cache = {}
+                isomesh_cache = {}
                 # Create empty SDF data once for reuse by non-mesh shapes
                 empty_sdf_data = create_empty_sdf_data()
 
@@ -5583,11 +5590,23 @@ class ModelBuilder:
                             sdf_cache[cache_key] = (sdf_data, sparse_volume, coarse_volume)
                         sdf_volumes.append(sparse_volume)
                         sdf_coarse_volumes.append(coarse_volume)
+
+                        # Compute isomesh if show_isomeshes is enabled
+                        if self.show_isomeshes and sparse_volume is not None:
+                            if cache_key in isomesh_cache:
+                                isomesh = isomesh_cache[cache_key]
+                            else:
+                                isomesh = compute_isomesh(sparse_volume)
+                                isomesh_cache[cache_key] = isomesh
+                            isomeshes.append(isomesh)
+                        else:
+                            isomeshes.append(None)
                     else:
                         # Non-SDF shapes get empty SDFData
                         sdf_data = empty_sdf_data
                         sdf_volumes.append(None)
                         sdf_coarse_volumes.append(None)
+                        isomeshes.append(None)
                     sdf_data_list.append(sdf_data)
 
                 # Create array of SDFData structs
@@ -5595,6 +5614,7 @@ class ModelBuilder:
                 # Keep volume objects alive for reference counting
                 m.shape_sdf_volume = sdf_volumes
                 m.shape_sdf_coarse_volume = sdf_coarse_volumes
+                m.shape_isomesh = isomeshes
             else:
                 # SDF mesh-mesh collision and hydroelastics not enabled or no colliding meshes/shapes
                 # Still need one SDFData per shape (all empty) so narrow phase can safely access shape_sdf_data[shape_idx]
@@ -5602,6 +5622,7 @@ class ModelBuilder:
                 m.shape_sdf_data = wp.array([empty_sdf_data] * len(self.shape_type), dtype=SDFData, device=device)
                 m.shape_sdf_volume = [None] * len(self.shape_type)
                 m.shape_sdf_coarse_volume = [None] * len(self.shape_type)
+                m.shape_isomesh = [None] * len(self.shape_type)
 
             # ---------------------
             # springs
