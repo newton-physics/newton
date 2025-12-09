@@ -75,7 +75,7 @@ class Example:
 
         self.time = 0.0
         self.time_delta = 0.005
-        self.show_rgb_image = True
+        self.image_output = 0
         self.texture_id = 0
 
         self.viewer = viewer
@@ -156,7 +156,11 @@ class Example:
             width=sensor_render_width,
             height=sensor_render_height,
             options=TiledCameraSensor.Options(
-                default_light=True, default_light_shadows=True, colors_per_shape=True, checkerboard_texture=True
+                default_light=True,
+                default_light_shadows=True,
+                colors_per_shape=True,
+                checkerboard_texture=True,
+                default_semantic_ids=True,
             ),
         )
 
@@ -167,6 +171,7 @@ class Example:
         self.camera_rays = self.tiled_camera_sensor.compute_pinhole_camera_rays(math.radians(fov))
         self.tiled_camera_sensor_color_image = self.tiled_camera_sensor.create_color_image_output()
         self.tiled_camera_sensor_depth_image = self.tiled_camera_sensor.create_depth_image_output()
+        self.tiled_camera_sensor_normal_image = self.tiled_camera_sensor.create_normal_image_output()
 
         if isinstance(self.viewer, ViewerGL):
             self.create_texture()
@@ -200,8 +205,9 @@ class Example:
             self.state,
             *self.get_camera_transforms(),
             self.camera_rays,
-            self.tiled_camera_sensor_color_image,
-            self.tiled_camera_sensor_depth_image,
+            color_image=self.tiled_camera_sensor_color_image,
+            depth_image=self.tiled_camera_sensor_depth_image,
+            normal_image=self.tiled_camera_sensor_normal_image,
         )
         self.update_texture()
 
@@ -252,13 +258,17 @@ class Example:
                 4,
             ),
         )
-        if self.show_rgb_image:
+        if self.image_output == 0:
             self.tiled_camera_sensor.flatten_color_image_to_rgba(
                 self.tiled_camera_sensor_color_image, texture_buffer, self.num_worlds_per_row
             )
-        else:
+        elif self.image_output == 1:
             self.tiled_camera_sensor.flatten_depth_image_to_rgba(
                 self.tiled_camera_sensor_depth_image, texture_buffer, self.num_worlds_per_row
+            )
+        elif self.image_output == 2:
+            self.tiled_camera_sensor.flatten_normal_image_to_rgba(
+                self.tiled_camera_sensor_normal_image, texture_buffer, self.num_worlds_per_row
             )
         self.texture_buffer.unmap()
 
@@ -290,8 +300,8 @@ class Example:
         assert depth_image.min() < depth_image.max()
 
     def gui(self, ui):
-        if ui.button("Toggle RGB / Depth Image", ui.ImVec2(260, 30)):
-            self.show_rgb_image = not self.show_rgb_image
+        if ui.button("Toggle RGB / Depth / Normal Image", ui.ImVec2(260, 30)):
+            self.image_output = (self.image_output + 1) % 3
 
     def display(self, imgui):
         line_color = imgui.get_color_u32(imgui.Col_.window_bg)

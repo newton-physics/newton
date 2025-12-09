@@ -139,11 +139,17 @@ def _render_megakernel(
     # Data
     geom_positions: wp.array(dtype=wp.vec3f),
     geom_orientations: wp.array(dtype=wp.mat33f),
-    # Output
+    geom_semantic_ids: wp.array(dtype=wp.uint32),
+    # Enabled Output
     render_color: wp.bool,
     render_depth: wp.bool,
+    render_semantic_id: wp.bool,
+    render_normal: wp.bool,
+    # Outputs
     out_pixels: wp.array3d(dtype=wp.uint32),
     out_depth: wp.array3d(dtype=wp.float32),
+    out_semantic_id: wp.array3d(dtype=wp.uint32),
+    out_normal: wp.array3d(dtype=wp.vec3f),
 ):
     tid = wp.tid()
 
@@ -191,6 +197,12 @@ def _render_megakernel(
 
     if render_depth:
         out_depth[world_id, camera_id, out_index] = closest_hit.distance
+
+    if render_normal:
+        out_normal[world_id, camera_id, out_index] = closest_hit.normal
+
+    if render_semantic_id:
+        out_semantic_id[world_id, camera_id, out_index] = geom_semantic_ids[closest_hit.geom_id]
 
     if not render_color:
         return
@@ -306,10 +318,14 @@ def render_megakernel(
     camera_positions: wp.array(dtype=wp.vec3f, ndim=2),
     camera_orientations: wp.array(dtype=wp.mat33f, ndim=2),
     camera_rays: wp.array(dtype=wp.vec3f, ndim=4),
-    color_image: wp.array(dtype=wp.uint32, ndim=3) | None = None,
-    depth_image: wp.array(dtype=wp.float32, ndim=3) | None = None,
-    clear_color: int | None = 0,
-    clear_depth: float | None = 0.0,
+    color_image: wp.array(dtype=wp.uint32, ndim=3) | None,
+    depth_image: wp.array(dtype=wp.float32, ndim=3) | None,
+    semantic_id_image: wp.array(dtype=wp.uint32, ndim=3) | None,
+    normal_image: wp.array(dtype=wp.vec3f, ndim=3) | None,
+    clear_color: int | None,
+    clear_depth: float | None,
+    clear_semantic_id: int | None,
+    clear_normal: wp.vec3f | None,
 ):
     if rc.tile_rendering:
         assert rc.width % rc.tile_size == 0, "render width must be a multiple of tile_size"
@@ -320,6 +336,12 @@ def render_megakernel(
 
     if clear_depth is not None and depth_image is not None:
         depth_image.fill_(wp.float32(clear_depth))
+
+    if clear_semantic_id is not None and semantic_id_image is not None:
+        semantic_id_image.fill_(wp.uint32(clear_semantic_id))
+
+    if clear_normal is not None and normal_image is not None:
+        normal_image.fill_(clear_normal)
 
     wp.launch(
         kernel=_render_megakernel,
@@ -385,10 +407,15 @@ def render_megakernel(
             # Data
             rc.geom_positions,
             rc.geom_orientations,
+            rc.geom_semantic_ids,
             # Outputs
             color_image is not None,
             depth_image is not None,
+            semantic_id_image is not None and rc.geom_semantic_ids is not None,
+            normal_image is not None,
             color_image,
             depth_image,
+            semantic_id_image,
+            normal_image,
         ],
     )

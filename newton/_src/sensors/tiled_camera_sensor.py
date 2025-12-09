@@ -25,6 +25,8 @@ from ..geometry import ShapeFlags
 from ..sim import Model, State
 from .warp_raytrace import GeomType, LightType, RenderContext
 
+DEFAULT_CLEAR_NORMAL = wp.vec3f(0.0)
+
 
 @wp.kernel(enable_backward=False)
 def convert_newton_transform(
@@ -154,6 +156,32 @@ def flatten_color_image(
 
 
 @wp.kernel(enable_backward=False)
+def flatten_normal_image(
+    normal_image: wp.array(dtype=wp.vec3f, ndim=3),
+    buffer: wp.array(dtype=wp.uint8, ndim=3),
+    width: wp.int32,
+    height: wp.int32,
+    num_cameras: wp.int32,
+    num_worlds_per_row: wp.int32,
+):
+    world_id, camera_id, y, x = wp.tid()
+
+    view_id = world_id * num_cameras + camera_id
+
+    row = view_id // num_worlds_per_row
+    col = view_id % num_worlds_per_row
+
+    px = col * width + x
+    py = row * height + y
+    normal = normal_image[world_id, camera_id, y * width + x] * 0.5 + wp.vec3f(0.5)
+
+    buffer[py, px, 0] = wp.uint8(normal[0] * 255.0)
+    buffer[py, px, 1] = wp.uint8(normal[1] * 255.0)
+    buffer[py, px, 2] = wp.uint8(normal[2] * 255.0)
+    buffer[py, px, 3] = wp.uint8(255)
+
+
+@wp.kernel(enable_backward=False)
 def find_depth_range(depth_image: wp.array(dtype=wp.float32, ndim=3), depth_range: wp.array(dtype=wp.float32)):
     world_id, camera_id, yx = wp.tid()
     depth = depth_image[world_id, camera_id, yx]
@@ -219,6 +247,7 @@ class TiledCameraSensor:
         default_light_shadows: bool = False
         colors_per_world: bool = False
         colors_per_shape: bool = False
+        default_semantic_ids: bool = False
 
     def __init__(self, model: Model, num_cameras: int, width: int, height: int, options: Options | None = None):
         self.model = model
@@ -281,6 +310,8 @@ class TiledCameraSensor:
                 self.assign_random_colors_per_world()
             elif options.colors_per_shape:
                 self.assign_random_colors_per_shape()
+            if options.default_semantic_ids:
+                self.assign_default_semantic_ids()
 
     def update_from_state(self, state: State):
         """
@@ -318,9 +349,13 @@ class TiledCameraSensor:
         camera_rays: wp.array(dtype=wp.vec3f, ndim=4),
         color_image: wp.array(dtype=wp.uint32, ndim=3) | None = None,
         depth_image: wp.array(dtype=wp.float32, ndim=3) | None = None,
+        semantic_id_image: wp.array(dtype=wp.uint32, ndim=3) | None = None,
+        normal_image: wp.array(dtype=wp.vec3f, ndim=3) | None = None,
         refit_bvh: bool = True,
         clear_color: int | None = 0xFF666666,
         clear_depth: float | None = 0.0,
+        clear_semantic_id: int | None = 0,
+        clear_normal: wp.vec3f | None = DEFAULT_CLEAR_NORMAL,
     ):
         """
         Render color and depth images for all worlds and cameras.
@@ -334,9 +369,15 @@ class TiledCameraSensor:
                         If None, no color rendering is performed.
             depth_image: Optional output array for depth data (num_worlds, num_cameras, width*height).
                         If None, no depth rendering is performed.
+            semantic_id_image: Optional output array for semantic id data (num_worlds, num_cameras, width*height).
+                        If None, no semantic id rendering is performed.
+            normal_image: Optional output array for normal data (num_worlds, num_cameras, width*height).
+                        If None, no normal rendering is performed.
             refit_bvh: Whether to refit the BVH or not.
             clear_color: The color to clear the color image with (or skip if None).
             clear_depth: The value to clear the depth image with (or skip if None).
+            clear_semantic_id: The value to clear the semantic id image with (or skip if None).
+            clear_normal: The value to clear the normal image with (or skip if None).
         """
         if state is not None:
             self.update_from_state(state)
@@ -347,9 +388,13 @@ class TiledCameraSensor:
             camera_rays,
             color_image,
             depth_image,
+            semantic_id_image,
+            normal_image,
             refit_bvh=refit_bvh,
             clear_color=clear_color,
             clear_depth=clear_depth,
+            clear_semantic_id=clear_semantic_id,
+            clear_normal=clear_normal,
         )
 
     def compute_pinhole_camera_rays(
@@ -450,6 +495,58 @@ class TiledCameraSensor:
         )
         return out_buffer
 
+    def flatten_normal_image_to_rgba(
+        self,
+        image: wp.array(dtype=wp.vec3f, ndim=3),
+        out_buffer: wp.array(dtype=wp.uint8, ndim=3) | None = None,
+        num_worlds_per_row: int | None = None,
+    ):
+        """
+        Flatten rendered normal image to a tiled image buffer.
+
+        Arranges (num_worlds x num_cameras) tiles in a grid layout. Each tile
+        shows one camera's view of one world.
+
+        Args:
+            image: Normal output array from render(), shape (num_worlds, num_cameras, width*height).
+            out_buffer: Optional output array
+            num_worlds_per_row: Optional number of rows
+        """
+
+        num_worlds_and_cameras = self.render_context.num_worlds * self.render_context.num_cameras
+        if not num_worlds_per_row:
+            num_worlds_per_row = math.ceil(math.sqrt(num_worlds_and_cameras))
+        num_worlds_per_col = math.ceil(num_worlds_and_cameras / num_worlds_per_row)
+
+        if out_buffer is None:
+            out_buffer = wp.empty(
+                (num_worlds_per_col * self.render_context.height, num_worlds_per_row * self.render_context.width, 4),
+                dtype=wp.uint8,
+            )
+        else:
+            out_buffer = out_buffer.reshape(
+                (num_worlds_per_col * self.render_context.height, num_worlds_per_row * self.render_context.width, 4)
+            )
+
+        wp.launch(
+            flatten_normal_image,
+            (
+                self.render_context.num_worlds,
+                self.render_context.num_cameras,
+                self.render_context.height,
+                self.render_context.width,
+            ),
+            [
+                image,
+                out_buffer,
+                self.render_context.width,
+                self.render_context.height,
+                self.render_context.num_cameras,
+                num_worlds_per_row,
+            ],
+        )
+        return out_buffer
+
     def flatten_depth_image_to_rgba(
         self,
         image: wp.array(dtype=wp.float32, ndim=3),
@@ -530,6 +627,12 @@ class TiledCameraSensor:
         colors[:, -1] = 1.0
         self.render_context.geom_colors = wp.array(colors, dtype=wp.vec4f)
 
+    def assign_default_semantic_ids(self):
+        """
+        Assign a default semantic id to all shapes.
+        """
+        self.render_context.geom_semantic_ids = wp.array(np.arange(self.model.shape_count), dtype=wp.uint32)
+
     def create_default_light(self, enable_shadows: bool = True):
         """
         Create a default directional light for the scene.
@@ -594,3 +697,21 @@ class TiledCameraSensor:
             wp.array of shape (num_worlds, num_cameras, width*height) with dtype float32.
         """
         return self.render_context.create_depth_image_output()
+
+    def create_semantic_id_image_output(self):
+        """
+        Create a Warp array for semantic id image output.
+
+        Returns:
+            wp.array of shape (num_worlds, num_cameras, width*height) with dtype float32.
+        """
+        return self.render_context.create_semantic_id_image_output()
+
+    def create_normal_image_output(self):
+        """
+        Create a Warp array for normal image output.
+
+        Returns:
+            wp.array of shape (num_worlds, num_cameras, width*height) with dtype float32.
+        """
+        return self.render_context.create_normal_image_output()

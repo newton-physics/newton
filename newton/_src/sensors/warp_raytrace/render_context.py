@@ -20,6 +20,11 @@ import warp as wp
 from .bvh import compute_bvh_group_roots, compute_geom_bvh_bounds, compute_particle_bvh_bounds
 from .render import render_megakernel
 
+DEFAULT_CLEAR_COLOR = 0
+DEFAULT_CLEAR_DEPTH = 0.0
+DEFAULT_CLEAR_SEMANTIC_ID = 0
+DEFAULT_CLEAR_NORMAL = wp.vec3f(0.0)
+
 
 class RenderContext:
     def __init__(
@@ -76,6 +81,7 @@ class RenderContext:
         self.geom_materials: wp.array(dtype=wp.int32) = None
         self.geom_colors: wp.array(dtype=wp.vec4f) = None
         self.geom_world_index: wp.array(dtype=wp.int32) = None
+        self.geom_semantic_ids: wp.array(dtype=wp.uint32) = None
 
         self.texture_offsets: wp.array(dtype=wp.int32) = None
         self.texture_data: wp.array(dtype=wp.uint32) = None
@@ -129,6 +135,12 @@ class RenderContext:
     def create_depth_image_output(self):
         return wp.zeros((self.num_worlds, self.num_cameras, self.width * self.height), dtype=wp.float32)
 
+    def create_semenatic_id_image_output(self):
+        return wp.zeros((self.num_worlds, self.num_cameras, self.width * self.height), dtype=wp.uint32)
+
+    def create_normal_image_output(self):
+        return wp.zeros((self.num_worlds, self.num_cameras, self.width * self.height), dtype=wp.vec3f)
+
     def refit_bvh(self):
         if self.num_geoms_total:
             self.__init_geom_outputs()
@@ -173,9 +185,13 @@ class RenderContext:
         camera_rays: wp.array(dtype=wp.vec3f, ndim=4),
         color_image: wp.array(dtype=wp.uint32, ndim=3) | None = None,
         depth_image: wp.array(dtype=wp.float32, ndim=3) | None = None,
+        semantic_id_image: wp.array(dtype=wp.uint32, ndim=3) | None = None,
+        normal_image: wp.array(dtype=wp.vec3f, ndim=3) | None = None,
         refit_bvh: bool = True,
-        clear_color: int | None = 0,
-        clear_depth: float | None = 0.0,
+        clear_color: int | None = DEFAULT_CLEAR_COLOR,
+        clear_depth: float | None = DEFAULT_CLEAR_DEPTH,
+        clear_semantic_id: int | None = DEFAULT_CLEAR_SEMANTIC_ID,
+        clear_normal: wp.vec3f | None = DEFAULT_CLEAR_NORMAL,
     ):
         if self.has_geometries or self.has_particles or self.has_triangle_mesh:
             if refit_bvh:
@@ -187,8 +203,12 @@ class RenderContext:
                 camera_rays,
                 color_image,
                 depth_image,
+                semantic_id_image,
+                normal_image,
                 clear_color,
                 clear_depth,
+                clear_semantic_id,
+                clear_normal,
             )
 
     def __compute_bvh_geom_bounds(self):
