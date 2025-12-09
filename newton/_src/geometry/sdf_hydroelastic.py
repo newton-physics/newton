@@ -58,7 +58,6 @@ class SDFHydroelastic:
         self,
         num_shape_pairs: int,
         total_num_tiles: int,
-        total_num_voxels: int,
         max_num_blocks_per_shape: int,
         config: SDFHydroelasticConfig = None,
     ):
@@ -69,7 +68,7 @@ class SDFHydroelastic:
 
         self.max_num_shape_pairs = num_shape_pairs
         self.total_num_tiles = total_num_tiles
-        self.total_num_voxels = total_num_voxels
+        self.total_num_voxels = total_num_tiles * 512
         self.max_num_blocks_per_shape = max_num_blocks_per_shape
 
         self.num_shape_pairs_array = wp.full((1,), self.max_num_shape_pairs, dtype=wp.int32)
@@ -188,12 +187,9 @@ class SDFHydroelastic:
             total_num_tiles += num_blocks
             max_num_blocks_per_shape = max(max_num_blocks_per_shape, num_blocks)
 
-        total_num_voxels = total_num_tiles * 512  # 8*8*8 voxels per tile
-
         return cls(
             num_shape_pairs=num_hydroelastic_pairs,
             total_num_tiles=total_num_tiles,
-            total_num_voxels=total_num_voxels,
             max_num_blocks_per_shape=max_num_blocks_per_shape,
             config=config,
         )
