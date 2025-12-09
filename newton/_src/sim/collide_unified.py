@@ -641,6 +641,7 @@ class CollisionPipelineUnified:
             shape_sdf_data=model.shape_sdf_data,
             shape_contact_margin=model.shape_contact_margin,
             shape_collision_radius=model.shape_collision_radius,
+            shape_is_hydroelastic=model.shape_is_hydroelastic,
             writer_data=writer_data,
             device=self.device,
         )

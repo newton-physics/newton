@@ -142,9 +142,6 @@ class SDFHydroelastic:
     def _from_model(cls, model: Model, config: SDFHydroelasticConfig = None) -> "SDFHydroelastic | None":
         """Create SDFHydroelastic from a model.
 
-        Uses the pre-computed hydroelastic_pair_count from the model and computes
-        total tiles/voxels for buffer allocation.
-
         Args:
             model: The simulation model.
             config: Optional configuration for hydroelastic collision handling.
