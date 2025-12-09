@@ -16,9 +16,16 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
+
 import numpy as np
 import warp as wp
+
 from ..sim.model import Model
+from .types import SDFData
+from .utils import scan_with_total
+from .collision_core import sat_box_intersection
+from .sdf_utils import SDFData
 
 
 vec8f = wp.types.vector(length=8, dtype=wp.float32)
@@ -192,221 +199,186 @@ class SDFHydroelastic:
             config=config,
         )
 
+    
+    def launch(
+        self,
+        shape_sdf_data: wp.array(dtype=SDFData),
+        shape_transform: wp.array(dtype=wp.transform),
+        shape_contact_margin: wp.array(dtype=wp.float32),
+        shape_pairs_sdf_sdf: wp.array(dtype=wp.vec2i),
+        shape_pairs_sdf_sdf_count: wp.array(dtype=wp.int32),
+        shape_sdf_block_coords: wp.array(dtype=wp.vec3us),
+        shape_sdf_shape2blocks: wp.array(dtype=wp.vec2i),
+        writer_data: Any,
+        device: Any = None,
+    ) -> None:
+        self._broadphase_collision_sdfs(
+            shape_sdf_data,
+            shape_transform,
+            shape_contact_margin,
+            shape_pairs_sdf_sdf,
+            shape_pairs_sdf_sdf_count,
+            shape_sdf_block_coords,
+            shape_sdf_shape2blocks,
+            device,
+        )
+
+    def _broadphase_collision_sdfs(
+        self,
+        shape_sdf_data: wp.array(dtype=SDFData),
+        shape_transform: wp.array(dtype=wp.transform),
+        shape_contact_margin: wp.array(dtype=wp.float32),
+        shape_pairs_sdf_sdf: wp.array(dtype=wp.vec2i),
+        shape_pairs_sdf_sdf_count: wp.array(dtype=wp.int32),
+        shape_sdf_block_coords: wp.array(dtype=wp.vec3us),
+        shape_sdf_shape2blocks: wp.array(dtype=wp.vec2i),
+        device: Any = None,
+    ) -> None:
+        # broadphase stage 0: Test collisions between OBB shapes
+        wp.launch(
+            kernel=broadphase_collision_pairs_count,
+            dim=[self.max_num_shape_pairs],
+            inputs=[
+                shape_transform,
+                shape_sdf_data,
+                shape_pairs_sdf_sdf,
+                shape_pairs_sdf_sdf_count,
+                shape_sdf_shape2blocks,
+            ],
+            outputs=[
+                self.num_blocks_per_pair,
+            ],
+            device=device,
+        )
+
+        scan_with_total(
+            self.num_blocks_per_pair,
+            self.block_start_prefix,
+            self.num_shape_pairs_array,
+            self.block_broad_collide_count,
+        )
+
+        wp.launch(
+            kernel=broadphase_collision_pairs_scatter,
+            dim=[self.max_num_shape_pairs],
+            inputs=[
+                self.num_blocks_per_pair,
+                self.block_start_prefix,
+                shape_pairs_sdf_sdf,
+                shape_pairs_sdf_sdf_count,
+                shape_sdf_shape2blocks,
+            ],
+            outputs=[
+                self.block_broad_collide_shape_pair,
+                self.block_broad_idx,
+            ],
+            device=device,
+        )
+
+        wp.launch(
+            kernel=broadphase_get_block_coords,
+            dim=[self.grid_size],
+            inputs=[
+                self.grid_size,
+                self.block_broad_collide_count,
+                self.block_broad_idx,
+                shape_sdf_block_coords,
+            ],
+            outputs=[
+                self.block_broad_collide_coords,
+            ],
+            device=device,
+        )
 
 
-def get_mc_tables(device):
-    edge_to_verts = np.array(
-        [
-            [0, 1],  # 0
-            [1, 2],  # 1
-            [2, 3],  # 2
-            [3, 0],  # 3
-            [4, 5],  # 4
-            [5, 6],  # 5
-            [6, 7],  # 6
-            [7, 4],  # 7
-            [0, 4],  # 8
-            [1, 5],  # 9
-            [2, 6],  # 10
-            [3, 7],  # 11
-        ]
+@wp.kernel
+def broadphase_collision_pairs_count(
+    shape_transform: wp.array(dtype=wp.transform),
+    shape_sdf_data: wp.array(dtype=SDFData),
+    shape_pairs_sdf_sdf: wp.array(dtype=wp.vec2i),
+    shape_pairs_sdf_sdf_count: wp.array(dtype=wp.int32),
+    shape2blocks: wp.array(dtype=wp.vec2i),
+    # outputs
+    thread_num_blocks: wp.array(dtype=wp.int32),
+):
+    tid = wp.tid()
+    if tid >= shape_pairs_sdf_sdf_count[0]:
+        return
+
+    pair = shape_pairs_sdf_sdf[tid]
+    shape_a = pair[0]
+    shape_b = pair[1]
+    half_extents_a = shape_sdf_data[shape_a].half_extents
+    half_extents_b = shape_sdf_data[shape_b].half_extents
+
+    center_offset_a = shape_sdf_data[shape_a].center
+    center_offset_b = shape_sdf_data[shape_b].center
+
+    does_collide = wp.bool(False)
+
+    world_transform_a = shape_transform[shape_a]
+    world_transform_b = shape_transform[shape_b]
+
+    # Apply center offset to transforms (since SAT assumes centered boxes)
+    centered_transform_a = wp.transform_multiply(
+        world_transform_a, wp.transform(center_offset_a, wp.quat_identity())
+    )
+    centered_transform_b = wp.transform_multiply(
+        world_transform_b, wp.transform(center_offset_b, wp.quat_identity())
     )
 
-    tri_range_table = wp.marching_cubes._get_mc_case_to_tri_range_table(device)
-    tri_local_inds_table = wp.marching_cubes._get_mc_tri_local_inds_table(device)
-    corner_offsets_table = wp.array(wp.marching_cubes.mc_cube_corner_offsets, dtype=wp.vec3ub, device=device)
-    edge_to_verts_table = wp.array(edge_to_verts, dtype=wp.vec2ub, device=device)
+    does_collide = sat_box_intersection(centered_transform_a, half_extents_a, centered_transform_b, half_extents_b)
 
-    # Create flattened table:
-    # Instead of tri_local_inds_table[i] -> edge_to_verts_table[edge_idx, 0/1],
-    # we directly map tri_local_inds_table[i] -> vec2i(v_from, v_to)
-    tri_local_inds_np = tri_local_inds_table.numpy()
-    flat_edge_verts = np.zeros((len(tri_local_inds_np), 2), dtype=np.uint8)
+    shape_b_idx = shape2blocks[shape_b]
+    block_start, block_end = shape_b_idx[0], shape_b_idx[1]
+    num_blocks = block_end - block_start
 
-    for i, edge_idx in enumerate(tri_local_inds_np):
-        flat_edge_verts[i, 0] = edge_to_verts[edge_idx, 0]
-        flat_edge_verts[i, 1] = edge_to_verts[edge_idx, 1]
-
-    flat_edge_verts_table = wp.array(flat_edge_verts, dtype=wp.vec2ub, device=device)
-
-    return (
-        tri_range_table,
-        tri_local_inds_table,
-        edge_to_verts_table,
-        corner_offsets_table,
-        flat_edge_verts_table,
-    )
-
-@wp.func
-def get_triangle_fraction(vert_depths: wp.vec3f, num_inside: wp.int32) -> wp.float32:
-    """Compute the fraction of a triangle that lies inside the object based on vertex depths."""
-    if num_inside == 3:
-        return 1.0
-
-    if num_inside == 0:
-        return 0.0
-
-    idx = wp.int32(0)
-    if num_inside == 1:
-        if vert_depths[1] > 0.0:
-            idx = 1
-        elif vert_depths[2] > 0.0:
-            idx = 2
-    else:  # num_inside == 2
-        if vert_depths[1] <= 0.0:
-            idx = 1
-        elif vert_depths[2] <= 0.0:
-            idx = 2
-
-    d0 = vert_depths[idx]
-    d1 = vert_depths[(idx + 1) % 3]
-    d2 = vert_depths[(idx + 2) % 3]
-
-    fraction = (d0 * d0) / ((d0 - d1) * (d0 - d2))
-    if num_inside == 2:
-        return 1.0 - fraction
+    if does_collide:
+        thread_num_blocks[tid] = num_blocks
     else:
-        return fraction
+        thread_num_blocks[tid] = 0
 
-@wp.func
-def clip_triangle_to_inside(
-    face_verts: wp.mat33f,
-    vert_depths: wp.vec3f,
-    original_cross: wp.vec3,
-    num_inside: wp.int32,
-) -> tuple[wp.float32, wp.mat33f, wp.vec3, wp.float32]:
-    """
-    Clip triangle vertices so all are inside the object (depth > 0).
-    Vertices outside are moved to the surface (depth = 0).
-    Args:
-        original_cross: Pre-computed cross product of original triangle edges.
-        num_inside: Pre-computed count of vertices with depth > 0.
-    Returns: (area, clipped_face_verts, center, pen_depth)
-    """
 
-    original_area = wp.length(original_cross) / 2.0
+@wp.kernel
+def broadphase_collision_pairs_scatter(
+    thread_num_blocks: wp.array(dtype=wp.int32),
+    block_start_prefix: wp.array(dtype=wp.int32),
+    shape_pairs_sdf_sdf: wp.array(dtype=wp.vec2i),
+    shape_pairs_sdf_sdf_count: wp.array(dtype=wp.int32),
+    shape2blocks: wp.array(dtype=wp.vec2i),
+    # outputs
+    block_broad_collide_shape_pair: wp.array(dtype=wp.int32),
+    block_broad_idx: wp.array(dtype=wp.int32),
+):
+    tid = wp.tid()
+    if tid >= shape_pairs_sdf_sdf_count[0]:
+        return
 
-    if num_inside == 3 or num_inside == 0:
-        center = (face_verts[0] + face_verts[1] + face_verts[2]) / 3.0
-        pen_depth = (vert_depths[0] + vert_depths[1] + vert_depths[2]) / 3.0
-        area = original_area if num_inside == 3 else 0.0
-        return area, face_verts, center, pen_depth
+    num_blocks = thread_num_blocks[tid]
+    if num_blocks == 0:
+        return
 
-    if num_inside == 1:
-        inside_idx = wp.int32(0)
-        if vert_depths[1] > 0.0:
-            inside_idx = 1
-        elif vert_depths[2] > 0.0:
-            inside_idx = 2
+    pair = shape_pairs_sdf_sdf[tid]
+    shape_b = pair[1]
+    shape_b_idx = shape2blocks[shape_b]
+    shape_b_block_start = shape_b_idx[0]
 
-        v_in = face_verts[inside_idx]
-        d_in = vert_depths[inside_idx]
+    block_start = block_start_prefix[tid]
+    for i in range(num_blocks):
+        block_broad_collide_shape_pair[block_start + i] = tid
+        block_broad_idx[block_start + i] = shape_b_block_start + i
 
-        idx1 = (inside_idx + 1) % 3
-        idx2 = (inside_idx + 2) % 3
-        v1 = face_verts[idx1]
-        d1 = vert_depths[idx1]
-        v2 = face_verts[idx2]
-        d2 = vert_depths[idx2]
 
-        t1 = d_in / (d_in - d1)
-        p1 = v_in + t1 * (v1 - v_in)
-
-        t2 = d_in / (d_in - d2)
-        p2 = v_in + t2 * (v2 - v_in)
-
-        clipped_verts = wp.mat33f()
-        clipped_verts[0] = v_in
-        clipped_verts[1] = p1
-        clipped_verts[2] = p2
-
-        # Area = original_area * fraction, where fraction = t1 * t2
-        area = original_area * t1 * t2
-        center = (v_in + p1 + p2) / 3.0
-        pen_depth = d_in / 3.0
-
-        return area, clipped_verts, center, pen_depth
-
-    # num_inside == 2: quadrilateral case
-    outside_idx = wp.int32(0)
-    if vert_depths[1] <= 0.0:
-        outside_idx = 1
-    elif vert_depths[2] <= 0.0:
-        outside_idx = 2
-
-    v_out = face_verts[outside_idx]
-    d_out = vert_depths[outside_idx]
-
-    idx1 = (outside_idx + 1) % 3
-    idx2 = (outside_idx + 2) % 3
-    v1 = face_verts[idx1]
-    d1 = vert_depths[idx1]
-    v2 = face_verts[idx2]
-    d2 = vert_depths[idx2]
-
-    t1 = d_out / (d_out - d1)
-    p1 = v_out + t1 * (v1 - v_out)
-
-    t2 = d_out / (d_out - d2)
-    p2 = v_out + t2 * (v2 - v_out)
-
-    # Area = original_area * (1 - t1 * t2) since quad = original - cut triangle
-    area = original_area * (1.0 - t1 * t2)
-
-    center = (p1 + v1 + v2 + p2) / 4.0
-    pen_depth = (d1 + d2) / 4.0
-
-    clipped_verts = wp.mat33f()
-    clipped_verts[0] = p1
-    clipped_verts[1] = v1
-    clipped_verts[2] = v2
-
-    return area, clipped_verts, center, pen_depth
-
-@wp.func
-def mc_calc_face(
-    flat_edge_verts_table: wp.array(dtype=wp.vec2ub),
-    corner_offsets_table: wp.array(dtype=wp.vec3ub),
-    tri_range_start: wp.int32,
-    corner_vals: vec8f,
-    sdf_a: wp.uint64,
-    x_id: wp.int32,
-    y_id: wp.int32,
-    z_id: wp.int32,
-    clip_triangles: bool,
-) -> tuple[float, wp.vec3, wp.vec3, float, wp.mat33f]:
-    """Calculate a marching cubes triangle face with area, normal, center, and penetration depth."""
-    face_verts = wp.mat33f()
-    vert_depths = wp.vec3f()
-    num_inside = wp.int32(0)
-    for vi in range(3):
-        edge_verts = wp.vec2i(flat_edge_verts_table[tri_range_start + vi])
-        v_idx_from = edge_verts[0]
-        v_idx_to = edge_verts[1]
-        val_0 = wp.float32(corner_vals[v_idx_from])
-        val_1 = wp.float32(corner_vals[v_idx_to])
-
-        p_0 = wp.vec3f(corner_offsets_table[v_idx_from])
-        p_1 = wp.vec3f(corner_offsets_table[v_idx_to])
-        val_diff = val_1 - val_0
-        p = p_0 + (0.0 - val_0) * (p_1 - p_0) / val_diff
-        vol_idx = p + int_to_vec3f(x_id, y_id, z_id)
-        p_scaled = wp.volume_index_to_world(sdf_a, vol_idx)
-        face_verts[vi] = p_scaled
-        depth = -wp.volume_sample_f(sdf_a, vol_idx, wp.Volume.LINEAR)
-        vert_depths[vi] = depth
-        if depth > 0.0:
-            num_inside += 1
-
-    n = wp.cross(face_verts[1] - face_verts[0], face_verts[2] - face_verts[0])
-    normal = wp.normalize(n)
-
-    if clip_triangles:
-        area, face_verts, center, pen_depth = clip_triangle_to_inside(face_verts, vert_depths, n, num_inside)
-        return area, normal, center, pen_depth, face_verts
-
-    area = wp.length(n) / 2.0
-    center = (face_verts[0] + face_verts[1] + face_verts[2]) / 3.0
-    pen_depth = (vert_depths[0] + vert_depths[1] + vert_depths[2]) / 3.0
-    area *= get_triangle_fraction(vert_depths, num_inside)
-    return area, normal, center, pen_depth, face_verts
+@wp.kernel
+def broadphase_get_block_coords(
+    grid_size: int,
+    block_count: wp.array(dtype=wp.int32),
+    block_broad_idx: wp.array(dtype=wp.int32),
+    block_coords: wp.array(dtype=wp.vec3us),
+    # outputs
+    block_broad_collide_coords: wp.array(dtype=wp.vec3us),
+):
+    offset = wp.tid()
+    for tid in range(offset, block_count[0], grid_size):
+        block_idx = block_broad_idx[tid]
+        block_broad_collide_coords[tid] = block_coords[block_idx]
