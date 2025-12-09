@@ -2398,6 +2398,104 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
                         msg=f"Updated geom_solimp[{i}] mismatch for shape {shape_idx} in world {world_idx}",
                     )
 
+    def test_geom_solmix_conversion_and_update(self):
+        """Test per-shape geom_solmix conversion to MuJoCo and dynamic updates across multiple worlds."""
+
+        # Create a model with custom attributes registered
+        num_worlds = 2
+        template_builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(template_builder)
+        shape_cfg = newton.ModelBuilder.ShapeConfig(density=1000.0)
+
+        # Create bodies with shapes
+        body1 = template_builder.add_link(mass=0.1)
+        template_builder.add_shape_box(body=body1, hx=0.1, hy=0.1, hz=0.1, cfg=shape_cfg)
+        joint1 = template_builder.add_joint_free(child=body1)
+
+        body2 = template_builder.add_link(mass=0.1)
+        template_builder.add_shape_sphere(body=body2, radius=0.1, cfg=shape_cfg)
+        joint2 = template_builder.add_joint_revolute(parent=body1, child=body2, axis=(0.0, 0.0, 1.0))
+
+        template_builder.add_articulation([joint1, joint2])
+
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.replicate(template_builder, num_worlds)
+        model = builder.finalize()
+
+        self.assertTrue(hasattr(model, "mujoco"), "Model should have mujoco namespace")
+        self.assertTrue(hasattr(model.mujoco, "geom_solmix"), "Model should have geom_solmix attribute")
+
+        # Use per-world iteration to handle potential global shapes correctly
+        shape_world = model.shape_world.numpy()
+        initial_solmix = np.zeros(model.shape_count, dtype=np.float32)
+
+        # Set unique solmix values per shape and world
+        for world_idx in range(model.num_worlds):
+            world_shape_indices = np.where(shape_world == world_idx)[0]
+            for local_idx, shape_idx in enumerate(world_shape_indices):
+                initial_solmix[shape_idx] = 0.4 + local_idx * 0.2 + world_idx * 0.05
+
+        model.mujoco.geom_solmix.assign(wp.array(initial_solmix, dtype=wp.float32, device=model.device))
+
+        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
+        to_newton_shape_index = solver.mjc_geom_to_newton_shape.numpy()
+        num_geoms = solver.mj_model.ngeom
+
+        # Verify initial conversion
+        geom_solmix = solver.mjw_model.geom_solmix.numpy()
+        tested_count = 0
+        for world_idx in range(model.num_worlds):
+            for geom_idx in range(num_geoms):
+                shape_idx = to_newton_shape_index[world_idx, geom_idx]
+                if shape_idx < 0:
+                    continue
+
+                tested_count += 1
+                expected_solmix = initial_solmix[shape_idx]
+                actual_solmix = geom_solmix[world_idx, geom_idx]
+
+                self.assertAlmostEqual(
+                    float(actual_solmix),
+                    expected_solmix,
+                    places=5,
+                    msg=f"Initial geom_solmix mismatch for shape {shape_idx} in world {world_idx}, geom {geom_idx}",
+                )
+
+        self.assertGreater(tested_count, 0, "Should have tested at least one shape")
+
+        # Update with different values
+        updated_solmix = np.zeros(model.shape_count, dtype=np.float32)
+
+        # Set unique solmix values per shape and world
+        for world_idx in range(model.num_worlds):
+            world_shape_indices = np.where(shape_world == world_idx)[0]
+            for local_idx, shape_idx in enumerate(world_shape_indices):
+                updated_solmix[shape_idx] = 0.7 + local_idx * 0.03 + world_idx * 0.06
+
+        model.mujoco.geom_solmix.assign(wp.array(updated_solmix, dtype=wp.float32, device=model.device))
+
+        solver.notify_model_changed(SolverNotifyFlags.SHAPE_PROPERTIES)
+
+        # Verify updates
+        updated_geom_solmix = solver.mjw_model.geom_solmix.numpy()
+
+        for world_idx in range(model.num_worlds):
+            for geom_idx in range(num_geoms):
+                shape_idx = to_newton_shape_index[world_idx, geom_idx]
+                if shape_idx < 0:
+                    continue
+
+                expected_solmix = updated_solmix[shape_idx]
+                actual_solmix = updated_geom_solmix[world_idx, geom_idx]
+
+                self.assertAlmostEqual(
+                    float(actual_solmix),
+                    expected_solmix,
+                    places=5,
+                    msg=f"Updated geom_solmix mismatch for shape {shape_idx} in world {world_idx}",
+                )
+
 
 class TestMuJoCoSolverNewtonContacts(unittest.TestCase):
     def setUp(self):

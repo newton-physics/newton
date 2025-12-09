@@ -1190,6 +1190,7 @@ def update_geom_properties_kernel(
     shape_torsional_friction: wp.array(dtype=float),
     shape_rolling_friction: wp.array(dtype=float),
     shape_geom_solimp: wp.array(dtype=vec5),
+    shape_geom_solmix: wp.array(dtype=float),
     # outputs
     geom_rbound: wp.array2d(dtype=float),
     geom_friction: wp.array2d(dtype=wp.vec3f),
@@ -1198,6 +1199,7 @@ def update_geom_properties_kernel(
     geom_pos: wp.array2d(dtype=wp.vec3f),
     geom_quat: wp.array2d(dtype=wp.quatf),
     geom_solimp: wp.array2d(dtype=vec5),
+    geom_solmix: wp.array2d(dtype=float),
 ):
     """Update MuJoCo geom properties from Newton shape properties.
 
@@ -1235,6 +1237,10 @@ def update_geom_properties_kernel(
     # update geom_solimp from custom attribute
     if shape_geom_solimp:
         geom_solimp[world, geom_idx] = shape_geom_solimp[shape_idx]
+
+    # update geom_solmix from custom attribute
+    if shape_geom_solmix:
+        geom_solmix[world, geom_idx] = shape_geom_solmix[shape_idx]
 
     # update size
     geom_size[world, geom_idx] = shape_size[shape_idx]
