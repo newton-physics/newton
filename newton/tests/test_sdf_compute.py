@@ -904,7 +904,7 @@ class TestSDFExtrapolation(unittest.TestCase):
 
 
 class TestMeshSDFCollisionFlag(unittest.TestCase):
-    """Test the enable_mesh_sdf_collision flag behavior."""
+    """Test per-shape SDF generation behavior."""
 
     @classmethod
     def setUpClass(cls):
@@ -916,55 +916,59 @@ class TestMeshSDFCollisionFlag(unittest.TestCase):
         self.half_extents = (0.5, 0.5, 0.5)
         self.mesh = create_box_mesh(self.half_extents)
 
-    def test_enable_mesh_sdf_collision_raises_on_cpu(self):
-        """Test that enable_mesh_sdf_collision=True raises ValueError on CPU."""
+    def test_sdf_max_dims_raises_on_cpu(self):
+        """Test that sdf_max_dims != None raises ValueError on CPU."""
         builder = newton.ModelBuilder()
-        builder.enable_mesh_sdf_collision = True
+        cfg = newton.ModelBuilder.ShapeConfig()
+        cfg.sdf_max_dims = 64  # Request SDF generation
 
         # Add a mesh shape to trigger SDF computation
         builder.add_body()
-        builder.add_shape_mesh(body=-1, mesh=self.mesh)
+        builder.add_shape_mesh(body=-1, mesh=self.mesh, cfg=cfg)
 
         # Should raise ValueError when finalizing on CPU
         with self.assertRaises(ValueError) as context:
             builder.finalize(device="cpu")
 
         self.assertIn("CUDA", str(context.exception))
-        self.assertIn("enable_mesh_sdf_collision", str(context.exception))
+        self.assertIn("sdf_max_dims", str(context.exception))
 
-    def test_mesh_sdf_collision_disabled_works_on_cpu(self):
-        """Test that enable_mesh_sdf_collision=False (default) works on CPU."""
+    def test_sdf_disabled_works_on_cpu(self):
+        """Test that sdf_max_dims=None (default) works on CPU."""
         builder = newton.ModelBuilder()
-        # Default is False, but be explicit
-        builder.enable_mesh_sdf_collision = False
+        cfg = newton.ModelBuilder.ShapeConfig()
+        cfg.sdf_max_dims = None  # No SDF generation (default)
 
         # Add a mesh shape
         builder.add_body()
-        builder.add_shape_mesh(body=-1, mesh=self.mesh)
+        builder.add_shape_mesh(body=-1, mesh=self.mesh, cfg=cfg)
 
         # Should NOT raise when finalizing on CPU
         model = builder.finalize(device="cpu")
 
-        # mesh_mesh_collision_enabled should be False
-        self.assertFalse(model.mesh_mesh_collision_enabled)
+        # SDF data array should still exist (one empty entry per shape)
+        self.assertEqual(model.shape_sdf_data.shape[0], 1)
+        # But the SDF pointer should be zero (no SDF generated)
+        self.assertEqual(model.shape_sdf_data.numpy()[0]["sparse_sdf_ptr"], 0)
 
     @unittest.skipUnless(_cuda_available, "Requires CUDA device")
-    def test_mesh_sdf_collision_enabled_works_on_gpu(self):
-        """Test that enable_mesh_sdf_collision=True works on GPU."""
+    def test_sdf_enabled_works_on_gpu(self):
+        """Test that sdf_max_dims != None works on GPU."""
         builder = newton.ModelBuilder()
-        builder.enable_mesh_sdf_collision = True
+        cfg = newton.ModelBuilder.ShapeConfig()
+        cfg.sdf_max_dims = 64  # Request SDF generation
 
         # Add a mesh shape
         builder.add_body()
-        builder.add_shape_mesh(body=-1, mesh=self.mesh)
+        builder.add_shape_mesh(body=-1, mesh=self.mesh, cfg=cfg)
 
         # Should work on GPU
         model = builder.finalize(device="cuda:0")
 
-        # mesh_mesh_collision_enabled should be True
-        self.assertTrue(model.mesh_mesh_collision_enabled)
         # SDF data should be populated
         self.assertGreater(model.shape_sdf_data.shape[0], 0)
+        # SDF pointer should be non-zero (SDF was generated)
+        self.assertNotEqual(model.shape_sdf_data.numpy()[0]["sparse_sdf_ptr"], 0)
 
 
 if __name__ == "__main__":

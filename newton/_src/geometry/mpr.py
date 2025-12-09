@@ -53,14 +53,14 @@ import warp as wp
 class Vert:
     """Vertex structure for MPR algorithm containing points on both shapes."""
 
-    A: wp.vec3  # Point on shape A
     B: wp.vec3  # Point on shape B
+    BtoA: wp.vec3  # Vector from B to A
 
 
 @wp.func
-def vert_v(vert: Vert) -> wp.vec3:
-    """Get the Minkowski difference vector V = A - B."""
-    return vert.A - vert.B
+def vert_a(vert: Vert) -> wp.vec3:
+    """Get point A by reconstructing from B and BtoA."""
+    return vert.B + vert.BtoA
 
 
 def create_support_map_function(support_func: Any):
@@ -144,7 +144,7 @@ def create_support_map_function(support_func: Any):
 
         # Support point on A in positive direction
         tmp_result_a = support_func(geom_a, direction, data_provider)
-        v.A = tmp_result_a[0]
+        point_a = tmp_result_a[0]
         feature_a_id = tmp_result_a[1]
 
         # Support point on B in negative direction
@@ -155,8 +155,11 @@ def create_support_map_function(support_func: Any):
 
         # Apply contact offset extension
         d = wp.normalize(direction) * extend * 0.5
-        v.A = v.A + d
+        point_a = point_a + d
         v.B = v.B - d
+
+        # Store BtoA vector
+        v.BtoA = point_a - v.B
 
         return v, feature_a_id, feature_b_id
 
@@ -184,12 +187,15 @@ def create_support_map_function(support_func: Any):
         center = Vert()
 
         # Get geometric center of shape A
-        center.A = wp.vec3(0.0)  # center_func(geom_a, data_provider)
+        point_a = wp.vec3(0.0)  # center_func(geom_a, data_provider)
 
         # Get geometric center of shape B and transform to world space
         center.B = wp.vec3(0.0)  # center_func(geom_b, data_provider)
         center.B = wp.quat_rotate(orientation_b, center.B)
         center.B = position_b + center.B
+
+        # Store BtoA vector
+        center.BtoA = point_a - center.B
 
         return center
 
@@ -257,35 +263,35 @@ def create_solve_mpr(support_func: Any):
         # Get geometric center
         v0 = geometric_center(geom_a, geom_b, orientation_b, position_b, data_provider)
 
-        normal = vert_v(v0)
+        normal = v0.BtoA
         if (
             wp.abs(normal[0]) < NUMERIC_EPSILON
             and wp.abs(normal[1]) < NUMERIC_EPSILON
             and wp.abs(normal[2]) < NUMERIC_EPSILON
         ):
             # Any direction is fine - add small perturbation
-            v0.A = v0.A + wp.vec3(1e-05, 0.0, 0.0)
+            v0.BtoA = wp.vec3(1e-05, 0.0, 0.0)
 
-        normal = -vert_v(v0)
+        normal = -v0.BtoA
 
         # First support point
         v1, _feature_a_id, _feature_b_id = minkowski_support(
             geom_a, geom_b, normal, orientation_b, position_b, extend, data_provider
         )
 
-        point_a = v1.A
+        point_a = vert_a(v1)
         point_b = v1.B
 
-        if wp.dot(vert_v(v1), normal) <= 0.0:
+        if wp.dot(v1.BtoA, normal) <= 0.0:
             return False, point_a, point_b, normal, penetration
 
-        normal = wp.cross(vert_v(v1), vert_v(v0))
+        normal = wp.cross(v1.BtoA, v0.BtoA)
 
         if wp.length_sq(normal) < NUMERIC_EPSILON * NUMERIC_EPSILON:
-            normal = vert_v(v1) - vert_v(v0)
+            normal = v1.BtoA - v0.BtoA
             normal = wp.normalize(normal)
 
-            temp1 = v1.A - v1.B
+            temp1 = v1.BtoA
             penetration = wp.dot(temp1, normal)
 
             return True, point_a, point_b, normal, penetration
@@ -295,25 +301,25 @@ def create_solve_mpr(support_func: Any):
             geom_a, geom_b, normal, orientation_b, position_b, extend, data_provider
         )
 
-        if wp.dot(vert_v(v2), normal) <= 0.0:
+        if wp.dot(v2.BtoA, normal) <= 0.0:
             return False, point_a, point_b, normal, penetration
 
         # Determine whether origin is on + or - side of plane
-        temp1 = vert_v(v1) - vert_v(v0)
-        temp2 = vert_v(v2) - vert_v(v0)
+        temp1 = v1.BtoA - v0.BtoA
+        temp2 = v2.BtoA - v0.BtoA
         normal = wp.cross(temp1, temp2)
 
-        dist = wp.dot(normal, vert_v(v0))
+        dist = wp.dot(normal, v0.BtoA)
 
         # If the origin is on the - side of the plane, reverse the direction
         if dist > 0.0:
             # Swap v1 and v2
-            tmp_a = v1.A
             tmp_b = v1.B
-            v1.A = v2.A
+            tmp_btoa = v1.BtoA
             v1.B = v2.B
-            v2.A = tmp_a
+            v1.BtoA = v2.BtoA
             v2.B = tmp_b
+            v2.BtoA = tmp_btoa
             normal = -normal
 
         phase1 = int(0)
@@ -332,24 +338,24 @@ def create_solve_mpr(support_func: Any):
                 geom_a, geom_b, normal, orientation_b, position_b, extend, data_provider
             )
 
-            if wp.dot(vert_v(v3), normal) <= 0.0:
+            if wp.dot(v3.BtoA, normal) <= 0.0:
                 return False, point_a, point_b, normal, penetration
 
             # If origin is outside (v1.V(),v0.V(),v3.V()), then eliminate v2.V() and loop
-            temp1 = wp.cross(vert_v(v1), vert_v(v3))
-            if wp.dot(temp1, vert_v(v0)) < 0.0:
+            temp1 = wp.cross(v1.BtoA, v3.BtoA)
+            if wp.dot(temp1, v0.BtoA) < 0.0:
                 v2 = v3
-                temp1 = vert_v(v1) - vert_v(v0)
-                temp2 = vert_v(v3) - vert_v(v0)
+                temp1 = v1.BtoA - v0.BtoA
+                temp2 = v3.BtoA - v0.BtoA
                 normal = wp.cross(temp1, temp2)
                 continue
 
             # If origin is outside (v3.V(),v0.V(),v2.V()), then eliminate v1.V() and loop
-            temp1 = wp.cross(vert_v(v3), vert_v(v2))
-            if wp.dot(temp1, vert_v(v0)) < 0.0:
+            temp1 = wp.cross(v3.BtoA, v2.BtoA)
+            if wp.dot(temp1, v0.BtoA) < 0.0:
                 v1 = v3
-                temp1 = vert_v(v3) - vert_v(v0)
-                temp2 = vert_v(v2) - vert_v(v0)
+                temp1 = v3.BtoA - v0.BtoA
+                temp2 = v2.BtoA - v0.BtoA
                 normal = wp.cross(temp1, temp2)
                 continue
 
@@ -361,8 +367,8 @@ def create_solve_mpr(support_func: Any):
             phase2 += 1
 
             # Compute normal of the wedge face
-            temp1 = vert_v(v2) - vert_v(v1)
-            temp2 = vert_v(v3) - vert_v(v1)
+            temp1 = v2.BtoA - v1.BtoA
+            temp2 = v3.BtoA - v1.BtoA
             normal = wp.cross(temp1, temp2)
 
             normal_sq = wp.length_sq(normal)
@@ -373,7 +379,7 @@ def create_solve_mpr(support_func: Any):
 
             if not hit:
                 # Compute distance from origin to wedge face
-                d = wp.dot(normal, vert_v(v1))
+                d = wp.dot(normal, v1.BtoA)
                 # If the origin is inside the wedge, we have a hit
                 hit = d >= 0.0
 
@@ -381,9 +387,9 @@ def create_solve_mpr(support_func: Any):
                 geom_a, geom_b, normal, orientation_b, position_b, extend, data_provider
             )
 
-            temp3 = vert_v(v4) - vert_v(v3)
+            temp3 = v4.BtoA - v3.BtoA
             delta = wp.dot(temp3, normal)
-            penetration = wp.dot(vert_v(v4), normal)
+            penetration = wp.dot(v4.BtoA, normal)
 
             # If the origin is on the surface of the wedge, return a hit
             if (
@@ -397,31 +403,31 @@ def create_solve_mpr(support_func: Any):
                     normal = normal * inv_normal
 
                     # Barycentric interpolation to get witness points
-                    temp3 = wp.cross(vert_v(v1), temp1)
+                    temp3 = wp.cross(v1.BtoA, temp1)
                     gamma = wp.dot(temp3, normal) * inv_normal
-                    temp3 = wp.cross(temp2, vert_v(v1))
+                    temp3 = wp.cross(temp2, v1.BtoA)
                     beta = wp.dot(temp3, normal) * inv_normal
                     alpha = 1.0 - gamma - beta
 
-                    point_a = alpha * v1.A + beta * v2.A + gamma * v3.A
+                    point_a = alpha * vert_a(v1) + beta * vert_a(v2) + gamma * vert_a(v3)
                     point_b = alpha * v1.B + beta * v2.B + gamma * v3.B
 
                 return hit, point_a, point_b, normal, penetration
 
             # Determine what region of the wedge the origin is in
-            temp1 = wp.cross(vert_v(v4), vert_v(v0))
-            dot = wp.dot(temp1, vert_v(v1))
+            temp1 = wp.cross(v4.BtoA, v0.BtoA)
+            dot = wp.dot(temp1, v1.BtoA)
 
             if dot >= 0.0:
                 # Origin is outside of (v4.V(),v0.V(),v1.V())
-                dot = wp.dot(temp1, vert_v(v2))
+                dot = wp.dot(temp1, v2.BtoA)
                 if dot >= 0.0:
                     v1 = v4
                 else:
                     v3 = v4
             else:
                 # Origin is outside of (v4.V(),v0.V(),v2.V())
-                dot = wp.dot(temp1, vert_v(v3))
+                dot = wp.dot(temp1, v3.BtoA)
                 if dot >= 0.0:
                     v2 = v4
                 else:

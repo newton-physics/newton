@@ -139,7 +139,7 @@ def compute_sdf(
 
     Args:
         mesh_src: Mesh source with vertices and indices.
-        shape_scale: Scale factors for the mesh. Default (1.0, 1.0, 1.0).
+        shape_scale: Scale factors for the mesh. Applied before SDF generation. Default (1.0, 1.0, 1.0).
         shape_thickness: Thickness offset to subtract from SDF values.
         narrow_band_distance: Tuple of (inner, outer) distances for narrow band.
         margin: Margin to add to bounding box.
@@ -167,7 +167,7 @@ def compute_sdf(
     assert margin > 0, "margin must be > 0"
 
     offset = margin + shape_thickness
-    # bake scale into SDF
+    # Bake scale into SDF by scaling vertices
     verts = mesh_src.vertices * np.array(shape_scale)[None, :]
     pos = wp.array(verts, dtype=wp.vec3)
     indices = wp.array(mesh_src.indices, dtype=wp.int32)
