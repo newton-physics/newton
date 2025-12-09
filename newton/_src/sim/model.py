@@ -191,6 +191,8 @@ class Model:
         """Shape rolling friction coefficient (resistance to rolling motion), shape [shape_count], float."""
         self.shape_contact_margin = None
         """Shape contact margin for collision detection, shape [shape_count], float."""
+        self.shape_is_hydroelastic = None
+        """Whether each shape uses hydroelastic collisions, shape [shape_count], bool."""
 
         # Shape geometry properties
         self.shape_type = None
