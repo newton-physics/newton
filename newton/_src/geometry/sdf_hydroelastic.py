@@ -22,10 +22,9 @@ import numpy as np
 import warp as wp
 
 from ..sim.model import Model
-from .types import SDFData
+from .sdf_utils import SDFData
 from .utils import scan_with_total
 from .collision_core import sat_box_intersection
-from .sdf_utils import SDFData
 
 
 vec8f = wp.types.vector(length=8, dtype=wp.float32)
