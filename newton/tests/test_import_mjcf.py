@@ -1426,7 +1426,7 @@ class TestImportMjcf(unittest.TestCase):
 
         for shape_idx, expected in expected_values.items():
             actual = geom_solmix[shape_idx].tolist()
-            self.assertAlmostEqual(actual, expected_values[shape_idx], places=4)
+            self.assertAlmostEqual(actual, expected, places=4)
 
     def test_default_inheritance(self):
         """Test nested default class inheritanc."""
