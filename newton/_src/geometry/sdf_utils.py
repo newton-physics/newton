@@ -20,7 +20,7 @@ import warp as wp
 
 from .types import Mesh, GeoType
 from ..geometry.kernels import box_sdf, capsule_sdf, cone_sdf, cylinder_sdf, ellipsoid_sdf, sphere_sdf
-from .sdf_hydroelastic import get_mc_tables, vec8f, mc_calc_face
+from .sdf_mc import mc_calc_face, get_mc_tables, vec8f, int_to_vec3f, vec8f
 
 @wp.struct
 class SDFData:
@@ -65,12 +65,6 @@ def create_empty_sdf_data() -> SDFData:
     sdf_data.half_extents = wp.vec3(0.0, 0.0, 0.0)
     sdf_data.background_value = SDF_BACKGROUND_VALUE
     return sdf_data
-
-
-@wp.func
-def int_to_vec3f(x: wp.int32, y: wp.int32, z: wp.int32):
-    return wp.vec3f(float(x), float(y), float(z))
-
 
 @wp.func
 def get_distance_to_mesh(mesh: wp.uint64, point: wp.vec3, max_dist: wp.float32):
