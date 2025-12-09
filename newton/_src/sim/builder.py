@@ -5518,39 +5518,33 @@ class ModelBuilder:
 
             if has_sdf_meshes or has_hydroelastic_shapes:
                 sdf_data_list = []
-                # Keep volume objects alive for reference counting
+                # Keep volume/isomesh objects alive for reference counting
                 sdf_volumes = []
                 sdf_coarse_volumes = []
                 isomeshes = []
+
+                # caches
                 sdf_cache = {}
                 isomesh_cache = {}
-                # Create empty SDF data once for reuse by non-mesh shapes
+
+                sdf_block_coords = [] # flat array of coordinates of active SDF tiles
+                sdf_shape2blocks = [] # array indexing into sdf_block_coords for each shape. Multiple shapes can index into the same block range.
+
+                # Create empty SDF data once for reuse by non-SDF shapes
                 empty_sdf_data = create_empty_sdf_data()
 
-                for (
-                    shape_type,
-                    shape_src,
-                    shape_flags,
-                    shape_scale,
-                    shape_thickness,
-                    shape_contact_margin,
-                    sdf_narrow_band_range,
-                    sdf_target_voxel_size,
-                    sdf_max_dims,
-                    is_hydroelastic,
-                ) in zip(
-                    self.shape_type,
-                    self.shape_source,
-                    self.shape_flags,
-                    self.shape_scale,
-                    self.shape_thickness,
-                    self.shape_contact_margin,
-                    self.shape_sdf_narrow_band_range,
-                    self.shape_sdf_target_voxel_size,
-                    self.shape_sdf_max_dims,
-                    self.shape_is_hydroelastic,
-                    strict=False,
-                ):
+                for i in range(len(self.shape_type)):
+                    shape_type = self.shape_type[i]
+                    shape_src = self.shape_source[i]
+                    shape_flags = self.shape_flags[i]
+                    shape_scale = self.shape_scale[i]
+                    shape_thickness = self.shape_thickness[i]
+                    shape_contact_margin = self.shape_contact_margin[i]
+                    sdf_narrow_band_range = self.shape_sdf_narrow_band_range[i]
+                    sdf_target_voxel_size = self.shape_sdf_target_voxel_size[i]
+                    sdf_max_dims = self.shape_sdf_max_dims[i]
+                    is_hydroelastic = self.shape_is_hydroelastic[i]
+
                     # Determine if this shape needs SDF:
                     # - Mesh shapes with sdf_max_dims set, OR
                     # - Any colliding shape with is_hydroelastic=True
@@ -5573,11 +5567,15 @@ class ModelBuilder:
                             sdf_max_dims,
                         )
                         if cache_key in sdf_cache:
-                            sdf_data, sparse_volume, coarse_volume = sdf_cache[cache_key]
+                            idx = sdf_cache[cache_key]
+                            sdf_data = sdf_data_list[idx]
+                            sparse_volume = sdf_volumes[idx]
+                            coarse_volume = sdf_coarse_volumes[idx]
+                            shape2blocks = [sdf_shape2blocks[idx][0], sdf_shape2blocks[idx][1]]
                         else:
                             # Compute SDF for this shape (returns SDFData struct and volume objects)
                             # If sdf_target_voxel_size is provided, use it; otherwise compute from max_dims
-                            sdf_data, sparse_volume, coarse_volume = compute_sdf(
+                            sdf_data, sparse_volume, coarse_volume, block_coords = compute_sdf(
                                 mesh_src=shape_src,
                                 shape_type=shape_type,
                                 shape_scale=shape_scale,
@@ -5587,27 +5585,33 @@ class ModelBuilder:
                                 target_voxel_size=sdf_target_voxel_size,
                                 max_dims=sdf_max_dims,
                             )
-                            sdf_cache[cache_key] = (sdf_data, sparse_volume, coarse_volume)
-                        sdf_volumes.append(sparse_volume)
-                        sdf_coarse_volumes.append(coarse_volume)
+                            sdf_cache[cache_key] = i
+                            block_start_idx = len(sdf_block_coords)
+                            num_blocks = len(block_coords)
+                            shape2blocks=[block_start_idx, block_start_idx + num_blocks]
+                            sdf_block_coords.extend(block_coords)       
 
                         # Compute isomesh if show_isomeshes is enabled
+                        isomesh = None
                         if self.show_isomeshes and sparse_volume is not None:
                             if cache_key in isomesh_cache:
                                 isomesh = isomesh_cache[cache_key]
                             else:
                                 isomesh = compute_isomesh(sparse_volume)
                                 isomesh_cache[cache_key] = isomesh
-                            isomeshes.append(isomesh)
-                        else:
-                            isomeshes.append(None)
                     else:
                         # Non-SDF shapes get empty SDFData
                         sdf_data = empty_sdf_data
-                        sdf_volumes.append(None)
-                        sdf_coarse_volumes.append(None)
-                        isomeshes.append(None)
+                        sparse_volume = None
+                        coarse_volume = None
+                        isomesh = None
+                        shape2blocks = [0, 0]
+
                     sdf_data_list.append(sdf_data)
+                    sdf_volumes.append(sparse_volume)
+                    sdf_coarse_volumes.append(coarse_volume)
+                    isomeshes.append(isomesh)
+                    sdf_shape2blocks.append(shape2blocks)
 
                 # Create array of SDFData structs
                 m.shape_sdf_data = wp.array(sdf_data_list, dtype=SDFData, device=device)
@@ -5615,6 +5619,8 @@ class ModelBuilder:
                 m.shape_sdf_volume = sdf_volumes
                 m.shape_sdf_coarse_volume = sdf_coarse_volumes
                 m.shape_isomesh = isomeshes
+                m.shape_sdf_block_coords = wp.array(sdf_block_coords, dtype=wp.vec3us)
+                m.shape_sdf_shape2blocks = wp.array(sdf_shape2blocks, dtype=wp.vec2i)
             else:
                 # SDF mesh-mesh collision and hydroelastics not enabled or no colliding meshes/shapes
                 # Still need one SDFData per shape (all empty) so narrow phase can safely access shape_sdf_data[shape_idx]
@@ -5623,6 +5629,8 @@ class ModelBuilder:
                 m.shape_sdf_volume = [None] * len(self.shape_type)
                 m.shape_sdf_coarse_volume = [None] * len(self.shape_type)
                 m.shape_isomesh = [None] * len(self.shape_type)
+                m.shape_sdf_block_coords = wp.array([], dtype=wp.vec3us)
+                m.shape_sdf_shape2blocks = wp.array([], dtype=wp.vec2i)
 
             # ---------------------
             # springs

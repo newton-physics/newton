@@ -262,9 +262,9 @@ def compute_sdf(
     if not wp.is_cuda_available():
         raise RuntimeError("compute_sdf requires CUDA but no CUDA device is available")
 
-    if shape_type == GeoType.PLANE:
-        print("Warning: SDF computation is not supported for Plane shapes, returning empty SDF data")
-        return create_empty_sdf_data(), None, None
+    if shape_type == GeoType.PLANE or shape_type == GeoType.HFIELD:
+        # SDF collisions are not supported for Plane or HField shapes, falling back to mesh collisions
+        return create_empty_sdf_data(), None, None, []
 
     assert isinstance(narrow_band_distance, Sequence), "narrow_band_distance must be a tuple of two floats"
     assert len(narrow_band_distance) == 2, "narrow_band_distance must be a tuple of two floats"
@@ -378,6 +378,9 @@ def compute_sdf(
             inputs=[shape_type, shape_scale, sparse_volume.id, tile_points_wp, shape_thickness],
         )
 
+    tiles = sparse_volume.get_tiles().numpy()
+    block_coords = [wp.vec3us(t_coords) for t_coords in tiles]
+
     # Create coarse background SDF (8x8x8 voxels = one tile) with same extents
     coarse_dims = 8
     coarse_voxel_size = ext / (coarse_dims - 1)
@@ -418,7 +421,7 @@ def compute_sdf(
     sdf_data.half_extents = wp.vec3(half_extents)
     sdf_data.background_value = SDF_BACKGROUND_VALUE
 
-    return sdf_data, sparse_volume, coarse_volume
+    return sdf_data, sparse_volume, coarse_volume, block_coords
 
 def compute_isomesh(volume: wp.Volume) -> Mesh | None:
     """Compute an isosurface mesh from an SDFData struct.
