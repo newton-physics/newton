@@ -591,7 +591,6 @@ class ModelBuilder:
         self.joint_twist_upper = []
 
         self.joint_enabled = []
-        self.joint_is_loop = []
 
         self.joint_q_start = []
         self.joint_qd_start = []
@@ -1111,9 +1110,6 @@ class ModelBuilder:
         for joint_idx in joints:
             child = self.joint_child[joint_idx]
             parent = self.joint_parent[joint_idx]
-            if self.joint_is_loop[joint_idx]:
-                continue
-
             if child in child_to_parent and child_to_parent[child] != parent:
                 raise ValueError(
                     f"Body {child} has multiple parents in this articulation: {child_to_parent[child]} and {parent}. "
@@ -1741,7 +1737,6 @@ class ModelBuilder:
             "body_key",
             "joint_type",
             "joint_enabled",
-            "joint_is_loop",
             "joint_X_c",
             "joint_armature",
             "joint_axis",
@@ -2081,7 +2076,6 @@ class ModelBuilder:
         self.joint_key.append(key or f"joint_{self.joint_count}")
         self.joint_dof_dim.append((len(linear_axes), len(angular_axes)))
         self.joint_enabled.append(enabled)
-        self.joint_is_loop.append(is_loop_joint)
         self.joint_world.append(self.current_world)
         self.joint_articulation.append(-1)
 
@@ -5379,17 +5373,6 @@ class ModelBuilder:
         # validate world ordering and contiguity
         self._validate_world_ordering()
 
-        # validate all joints belong to an articulation
-        if self.joint_count > 0:
-            orphan_joints = [i for i, art in enumerate(self.joint_articulation) if art < 0]
-            if orphan_joints:
-                joint_keys = [self.joint_key[i] for i in orphan_joints[:5]]  # Show first 5
-                raise ValueError(
-                    f"Found {len(orphan_joints)} joint(s) not belonging to any articulation. "
-                    f"Call add_articulation() for all joints. Orphan joints: {joint_keys}"
-                    + ("..." if len(orphan_joints) > 5 else "")
-                )
-
         # construct particle inv masses
         ms = np.array(self.particle_mass, dtype=np.float32)
         # static particles (with zero mass) have zero inverse mass
@@ -5738,6 +5721,7 @@ class ModelBuilder:
             for parent in self.joint_parent:
                 parent_joint.append(child_to_joint.get(parent, -1))
             m.joint_ancestor = wp.array(parent_joint, dtype=wp.int32)
+            m.joint_articulation = wp.array(self.joint_articulation, dtype=wp.int32)
 
             # dynamics properties
             m.joint_armature = wp.array(self.joint_armature, dtype=wp.float32, requires_grad=requires_grad)
@@ -5754,7 +5738,6 @@ class ModelBuilder:
             m.joint_limit_upper = wp.array(self.joint_limit_upper, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_limit_ke = wp.array(self.joint_limit_ke, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_limit_kd = wp.array(self.joint_limit_kd, dtype=wp.float32, requires_grad=requires_grad)
-            m.joint_is_loop = wp.array(self.joint_is_loop, dtype=wp.bool)
             m.joint_enabled = wp.array(self.joint_enabled, dtype=wp.bool)
 
             # 'close' the start index arrays with a sentinel value

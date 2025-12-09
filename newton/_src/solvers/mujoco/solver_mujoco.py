@@ -663,7 +663,7 @@ class SolverMuJoCo(SolverBase):
         model: Model,
         state: State,
         mj_data: MjWarpData | MjData,
-        eval_fk: bool = True,
+        eval_fk: bool = False,
     ):
         is_mjwarp = SolverMuJoCo._data_is_mjwarp(mj_data)
         if is_mjwarp:
@@ -1044,7 +1044,7 @@ class SolverMuJoCo(SolverBase):
 
         joint_parent = model.joint_parent.numpy()
         joint_child = model.joint_child.numpy()
-        joint_is_loop = model.joint_is_loop.numpy()
+        joint_articulation = model.joint_articulation.numpy()
         joint_parent_xform = model.joint_X_p.numpy()
         joint_child_xform = model.joint_X_c.numpy()
         joint_limit_lower = model.joint_limit_lower.numpy()
@@ -1182,8 +1182,8 @@ class SolverMuJoCo(SolverBase):
             selected_constraints = np.arange(model.equality_constraint_count, dtype=np.int32)
 
         # split joints into loop and non-loop joints (loop joints will be instantiated separately as equality constraints)
-        joints_loop = np.where(joint_is_loop[selected_joints])[0]
-        joints_non_loop = np.where(~joint_is_loop[selected_joints])[0]
+        joints_loop = np.where(joint_articulation[selected_joints]==-1)[0]
+        joints_non_loop = np.where(joint_articulation[selected_joints]>=0)[0]
         # sort joints topologically depth-first since this is the order that will also be used
         # for placing bodies in the MuJoCo model
         joints_simple = [(joint_parent[i], joint_child[i]) for i in joints_non_loop]
@@ -1662,6 +1662,16 @@ class SolverMuJoCo(SolverBase):
                 eq.data[3:6] = wp.transform_get_translation(cns_relpose)
                 eq.data[6:10] = wp.transform_get_rotation(cns_relpose)
                 eq.data[10] = eq_constraint_torquescale[i]
+
+        for i in joints_loop:
+            j = selected_joints[i]
+            eq = spec.add_equality(objtype=mujoco.mjtObj.mjOBJ_BODY)
+            eq.type = mujoco.mjtEq.mjEQ_CONNECT
+            eq.active = True
+            eq.name1 = model.body_key[joint_parent[j]]
+            eq.name2 = model.body_key[joint_child[j]]
+            eq.data[0:3] = joint_parent_xform[j][:3]
+
 
         assert len(spec.geoms) == colliding_shapes_per_world, (
             "The number of geoms in the MuJoCo model does not match the number of colliding shapes in the Newton model."

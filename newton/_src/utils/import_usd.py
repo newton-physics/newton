@@ -527,14 +527,11 @@ def parse_usd(
             "key": str(joint_path),
             "enabled": joint_desc.jointEnabled,
             "custom_attributes": joint_custom_attrs,
-            "is_loop_joint": exclude_from_articulation,
         }
 
-        # joint index before insertion
-        joint_index = builder.joint_count
-
+        joint_index: int | None = None
         if key == UsdPhysics.ObjectType.FixedJoint:
-            builder.add_joint_fixed(**joint_params)
+            joint_index = builder.add_joint_fixed(**joint_params)
         elif key == UsdPhysics.ObjectType.RevoluteJoint or key == UsdPhysics.ObjectType.PrismaticJoint:
             # we need to scale the builder defaults for the joint limits to degrees for revolute joints
             if key == UsdPhysics.ObjectType.RevoluteJoint:
@@ -598,7 +595,7 @@ def parse_usd(
             # joint_prim.CreateAttribute(f"state:{dof_type}:physics:velocity", Sdf.ValueTypeNames.Float).Set(0)
 
             if key == UsdPhysics.ObjectType.PrismaticJoint:
-                builder.add_joint_prismatic(**joint_params)
+                joint_index = builder.add_joint_prismatic(**joint_params)
             else:
                 if joint_desc.drive.enabled:
                     joint_params["target_pos"] *= DegreesToRadian
@@ -611,9 +608,9 @@ def parse_usd(
                 joint_params["limit_ke"] /= DegreesToRadian
                 joint_params["limit_kd"] /= DegreesToRadian
 
-                builder.add_joint_revolute(**joint_params)
+                joint_index = builder.add_joint_revolute(**joint_params)
         elif key == UsdPhysics.ObjectType.SphericalJoint:
-            builder.add_joint_ball(**joint_params)
+            joint_index = builder.add_joint_ball(**joint_params)
         elif key == UsdPhysics.ObjectType.D6Joint:
             linear_axes = []
             angular_axes = []
@@ -795,7 +792,7 @@ def parse_usd(
                     # ).Set(0)
                     num_dofs += 1
 
-            builder.add_joint_d6(**joint_params, linear_axes=linear_axes, angular_axes=angular_axes)
+            joint_index = builder.add_joint_d6(**joint_params, linear_axes=linear_axes, angular_axes=angular_axes)
         elif key == UsdPhysics.ObjectType.DistanceJoint:
             if joint_desc.limit.enabled and joint_desc.minEnabled:
                 min_dist = joint_desc.limit.lower
@@ -805,9 +802,12 @@ def parse_usd(
                 max_dist = joint_desc.limit.upper
             else:
                 max_dist = -1.0
-            builder.add_joint_distance(**joint_params, min_distance=min_dist, max_distance=max_dist)
+            joint_index = builder.add_joint_distance(**joint_params, min_distance=min_dist, max_distance=max_dist)
         else:
             raise NotImplementedError(f"Unsupported joint type {key}")
+
+        if joint_index is None:
+            raise ValueError(f"Failed to add joint {joint_path}")
 
         # map the joint path to the index at insertion time
         path_joint_map[str(joint_path)] = joint_index
@@ -1280,8 +1280,6 @@ def parse_usd(
                         incoming_xform=articulation_xform,
                         exclude_from_articulation=True,
                     )
-                    if joint is not None:
-                        articulation_joint_indices.append(joint)
 
             # Create the articulation from all collected joints
             if articulation_joint_indices:
