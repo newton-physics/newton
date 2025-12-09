@@ -18,7 +18,8 @@ from collections.abc import Sequence
 import numpy as np
 import warp as wp
 
-from .types import Mesh
+from .types import Mesh, GeoType
+from ..geometry.kernels import box_sdf, capsule_sdf, cone_sdf, cylinder_sdf, ellipsoid_sdf, sphere_sdf
 
 
 @wp.struct
@@ -105,6 +106,40 @@ def sdf_from_mesh_kernel(
     signed_distance -= thickness
     wp.volume_store(sdf, x_id, y_id, z_id, signed_distance)
 
+@wp.kernel
+def sdf_from_primitive_kernel(
+    shape_type: wp.int32,
+    shape_scale: wp.vec3,
+    sdf: wp.uint64,
+    tile_points: wp.array(dtype=wp.vec3i),
+    thickness: wp.float32,
+):
+    """
+    Populate SDF grid from primitive shape.
+    Only processes specified tiles. Launch with dim=(num_tiles, 8, 8, 8).
+    """
+    tile_idx, local_x, local_y, local_z = wp.tid()
+
+    tile_origin = tile_points[tile_idx]
+    x_id = tile_origin[0] + local_x
+    y_id = tile_origin[1] + local_y
+    z_id = tile_origin[2] + local_z
+
+    sample_pos = wp.volume_index_to_world(sdf, int_to_vec3f(x_id, y_id, z_id))
+    if shape_type == GeoType.SPHERE:
+        signed_distance = sphere_sdf(wp.vec3(0.0, 0.0, 0.0), shape_scale[0], sample_pos)
+    elif shape_type == GeoType.BOX:
+        signed_distance = box_sdf(shape_scale, sample_pos)
+    elif shape_type == GeoType.CAPSULE:
+        signed_distance = capsule_sdf(shape_scale[0], shape_scale[1], sample_pos)
+    elif shape_type == GeoType.CYLINDER:
+        signed_distance = cylinder_sdf(shape_scale[0], shape_scale[1], sample_pos)
+    elif shape_type == GeoType.ELLIPSOID:
+        signed_distance = ellipsoid_sdf(shape_scale, sample_pos)
+    elif shape_type == GeoType.CONE:
+        signed_distance = cone_sdf(shape_scale[0], shape_scale[1], sample_pos)
+    signed_distance -= thickness
+    wp.volume_store(sdf, x_id, y_id, z_id, signed_distance)
 
 @wp.kernel
 def check_tile_occupied_mesh_kernel(
@@ -124,9 +159,40 @@ def check_tile_occupied_mesh_kernel(
         is_occupied = signed_distance > threshold[0]
     tile_occupied[tid] = is_occupied
 
+@wp.kernel
+def check_tile_occupied_primitive_kernel(
+    shape_type: wp.int32,
+    shape_scale: wp.vec3,
+    tile_points: wp.array(dtype=wp.vec3f),
+    threshold: wp.vec2f,
+    tile_occupied: wp.array(dtype=bool),
+):
+    tid = wp.tid()
+    sample_pos = tile_points[tid]
+
+    if shape_type == GeoType.SPHERE:
+        signed_distance = sphere_sdf(wp.vec3(0.0, 0.0, 0.0), shape_scale[0], sample_pos)
+    elif shape_type == GeoType.BOX:
+        signed_distance = box_sdf(shape_scale, sample_pos)
+    elif shape_type == GeoType.CAPSULE:
+        signed_distance = capsule_sdf(shape_scale[0], shape_scale[1], sample_pos)
+    elif shape_type == GeoType.CYLINDER:
+        signed_distance = cylinder_sdf(shape_scale[0], shape_scale[1], sample_pos)
+    elif shape_type == GeoType.ELLIPSOID:
+        signed_distance = ellipsoid_sdf(shape_scale, sample_pos)
+    elif shape_type == GeoType.CONE:
+        signed_distance = cone_sdf(shape_scale[0], shape_scale[1], sample_pos)
+
+    is_occupied = wp.bool(False)
+    if wp.sign(signed_distance) > 0.0:
+        is_occupied = signed_distance < threshold[1]
+    else:
+        is_occupied = signed_distance > threshold[0]
+    tile_occupied[tid] = is_occupied
 
 def compute_sdf(
     mesh_src: Mesh,
+    shape_type: int,
     shape_scale: Sequence[float] = (1.0, 1.0, 1.0),
     shape_thickness: float = 0.0,
     narrow_band_distance: Sequence[float] = (-0.1, 0.1),
@@ -139,6 +205,7 @@ def compute_sdf(
 
     Args:
         mesh_src: Mesh source with vertices and indices.
+        shape_type: Type of the shape.
         shape_scale: Scale factors for the mesh. Applied before SDF generation. Default (1.0, 1.0, 1.0).
         shape_thickness: Thickness offset to subtract from SDF values.
         narrow_band_distance: Tuple of (inner, outer) distances for narrow band.
@@ -159,6 +226,10 @@ def compute_sdf(
     if not wp.is_cuda_available():
         raise RuntimeError("compute_sdf requires CUDA but no CUDA device is available")
 
+    if shape_type == GeoType.PLANE:
+        print("Warning: SDF computation is not supported for Plane shapes, returning empty SDF data")
+        return create_empty_sdf_data(), None, None
+
     assert isinstance(narrow_band_distance, Sequence), "narrow_band_distance must be a tuple of two floats"
     assert len(narrow_band_distance) == 2, "narrow_band_distance must be a tuple of two floats"
     assert narrow_band_distance[0] < 0.0 < narrow_band_distance[1], (
@@ -167,16 +238,42 @@ def compute_sdf(
     assert margin > 0, "margin must be > 0"
 
     offset = margin + shape_thickness
-    # Bake scale into SDF by scaling vertices
-    verts = mesh_src.vertices * np.array(shape_scale)[None, :]
-    pos = wp.array(verts, dtype=wp.vec3)
-    indices = wp.array(mesh_src.indices, dtype=wp.int32)
 
-    mesh = wp.Mesh(points=pos, indices=indices, support_winding_number=True)
-    m_id = mesh.id
+    if shape_type == GeoType.MESH:
+        # Bake scale into SDF by scaling vertices
+        verts = mesh_src.vertices * np.array(shape_scale)[None, :]
+        pos = wp.array(verts, dtype=wp.vec3)
+        indices = wp.array(mesh_src.indices, dtype=wp.int32)
 
-    min_ext = np.min(verts, axis=0).tolist()
-    max_ext = np.max(verts, axis=0).tolist()
+        mesh = wp.Mesh(points=pos, indices=indices, support_winding_number=True)
+        m_id = mesh.id
+
+        min_ext = np.min(verts, axis=0).tolist()
+        max_ext = np.max(verts, axis=0).tolist()
+    elif shape_type == GeoType.SPHERE:
+        # scale: Any = wp.vec3(radius, 0.0, 0.0)
+        min_ext = [-shape_scale[0], -shape_scale[0], -shape_scale[0]]
+        max_ext = [shape_scale[0], shape_scale[0], shape_scale[0]]
+    elif shape_type == GeoType.BOX:
+        min_ext = [-shape_scale[0], -shape_scale[1], -shape_scale[2]]
+        max_ext = [shape_scale[0], shape_scale[1], shape_scale[2]]
+    elif shape_type == GeoType.CAPSULE:
+        # scale: Any = wp.vec3(radius, half_height, 0.0)
+        min_ext = [-shape_scale[0], -shape_scale[0], -shape_scale[1] - shape_scale[0]]
+        max_ext = [shape_scale[0], shape_scale[0], shape_scale[1] + shape_scale[0]]
+    elif shape_type == GeoType.CYLINDER:
+        min_ext = [-shape_scale[0], -shape_scale[0], -shape_scale[1] - shape_scale[0]]
+        max_ext = [shape_scale[0], shape_scale[0], shape_scale[1] + shape_scale[0]]
+    elif shape_type == GeoType.ELLIPSOID:
+        # scale: Any = wp.vec3(radius_x, radius_y, radius_z)
+        min_ext = [-shape_scale[0], -shape_scale[1], -shape_scale[2]]
+        max_ext = [shape_scale[0], shape_scale[1], shape_scale[2]]
+    elif shape_type == GeoType.CONE:
+        # scale: Any = wp.vec3(radius, half_height, 0.0)
+        min_ext = [-shape_scale[0], -shape_scale[0], -shape_scale[1]]
+        max_ext = [shape_scale[0], shape_scale[0], shape_scale[1]]
+    else:
+        raise NotImplementedError(f"SDFs are not implemented for this shape type: {shape_type}")
 
     min_ext = np.array(min_ext) - offset
     max_ext = np.array(max_ext) + offset
@@ -223,12 +320,20 @@ def compute_sdf(
     tile_radius = np.linalg.norm(4 * actual_voxel_size)
     threshold = wp.vec2f(narrow_band_distance[0] - tile_radius, narrow_band_distance[1] + tile_radius)
 
-    wp.launch(
-        check_tile_occupied_mesh_kernel,
-        dim=(len(tile_points)),
-        inputs=[m_id, tile_center_points_world, threshold],
-        outputs=[tile_occupied],
-    )
+    if shape_type == GeoType.MESH:
+        wp.launch(
+            check_tile_occupied_mesh_kernel,
+            dim=(len(tile_points)),
+            inputs=[m_id, tile_center_points_world, threshold],
+            outputs=[tile_occupied],
+        )
+    else:
+        wp.launch(
+            check_tile_occupied_primitive_kernel,
+            dim=(len(tile_points)),
+            inputs=[shape_type, shape_scale, tile_center_points_world, threshold],
+            outputs=[tile_occupied],
+        )
 
     if verbose:
         print("Occupancy: ", tile_occupied.numpy().sum() / len(tile_points))
@@ -246,11 +351,18 @@ def compute_sdf(
     # populate the sparse volume with the sdf values
     # Only process allocated tiles (num_tiles x 8x8x8)
     num_allocated_tiles = len(tile_points)
-    wp.launch(
-        sdf_from_mesh_kernel,
-        dim=(num_allocated_tiles, 8, 8, 8),
-        inputs=[m_id, sparse_volume.id, tile_points_wp, shape_thickness],
-    )
+    if shape_type == GeoType.MESH:
+        wp.launch(
+            sdf_from_mesh_kernel,
+            dim=(num_allocated_tiles, 8, 8, 8),
+            inputs=[m_id, sparse_volume.id, tile_points_wp, shape_thickness],
+        )
+    else:
+        wp.launch(
+            sdf_from_primitive_kernel,
+            dim=(num_allocated_tiles, 8, 8, 8),
+            inputs=[shape_type, shape_scale, sparse_volume.id, tile_points_wp, shape_thickness],
+        )
 
     # Create coarse background SDF (8x8x8 voxels = one tile) with same extents
     coarse_dims = 8
@@ -266,11 +378,18 @@ def compute_sdf(
     )
 
     # Populate the coarse volume with SDF values (single tile)
-    wp.launch(
-        sdf_from_mesh_kernel,
-        dim=(1, 8, 8, 8),
-        inputs=[m_id, coarse_volume.id, coarse_tile_points_wp, shape_thickness],
-    )
+    if shape_type == GeoType.MESH:
+        wp.launch(
+            sdf_from_mesh_kernel,
+            dim=(1, 8, 8, 8),
+            inputs=[m_id, coarse_volume.id, coarse_tile_points_wp, shape_thickness],
+        )
+    else:
+        wp.launch(
+            sdf_from_primitive_kernel,
+            dim=(1, 8, 8, 8),
+            inputs=[shape_type, shape_scale, coarse_volume.id, coarse_tile_points_wp, shape_thickness],
+        )
 
     if verbose:
         print(f"Coarse SDF: dims={coarse_dims}x{coarse_dims}x{coarse_dims}, voxel size: {coarse_voxel_size}")
