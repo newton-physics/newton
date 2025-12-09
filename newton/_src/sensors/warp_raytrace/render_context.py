@@ -135,7 +135,7 @@ class RenderContext:
     def create_depth_image_output(self):
         return wp.zeros((self.num_worlds, self.num_cameras, self.width * self.height), dtype=wp.float32)
 
-    def create_semenatic_id_image_output(self):
+    def create_semantic_id_image_output(self):
         return wp.zeros((self.num_worlds, self.num_cameras, self.width * self.height), dtype=wp.uint32)
 
     def create_normal_image_output(self):

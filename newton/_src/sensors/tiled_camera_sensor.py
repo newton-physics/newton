@@ -680,7 +680,7 @@ class TiledCameraSensor:
         Create a Warp array for semantic id image output.
 
         Returns:
-            wp.array of shape (num_worlds, num_cameras, width*height) with dtype float32.
+            wp.array of shape (num_worlds, num_cameras, width*height) with dtype uint32.
         """
         return self.render_context.create_semantic_id_image_output()
 
@@ -689,6 +689,6 @@ class TiledCameraSensor:
         Create a Warp array for normal image output.
 
         Returns:
-            wp.array of shape (num_worlds, num_cameras, width*height) with dtype float32.
+            wp.array of shape (num_worlds, num_cameras, width*height) with dtype vec3f.
         """
         return self.render_context.create_normal_image_output()
