@@ -174,13 +174,21 @@ class RenderContext:
         color_image: wp.array(dtype=wp.uint32, ndim=3) | None = None,
         depth_image: wp.array(dtype=wp.float32, ndim=3) | None = None,
         refit_bvh: bool = True,
-        clear_images: bool = True,
+        clear_color: int | None = 0,
+        clear_depth: float | None = 0.0,
     ):
         if self.has_geometries or self.has_particles or self.has_triangle_mesh:
             if refit_bvh:
                 self.refit_bvh()
             render_megakernel(
-                self, camera_positions, camera_orientations, camera_rays, color_image, depth_image, clear_images
+                self,
+                camera_positions,
+                camera_orientations,
+                camera_rays,
+                color_image,
+                depth_image,
+                clear_color,
+                clear_depth,
             )
 
     def __compute_bvh_geom_bounds(self):
