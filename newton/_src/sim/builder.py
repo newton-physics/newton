@@ -3226,7 +3226,7 @@ class ModelBuilder:
             # Transform anchor/relpose from merged body's frame to parent body's frame
             if body1_was_merged:
                 merge_xform = body_merged_transform[old_body1]
-                if constraint_type in (EqType.CONNECT, EqType.WELD):
+                if constraint_type == EqType.CONNECT:
                     self.equality_constraint_anchor[i] = wp.transform_point(
                         merge_xform, self.equality_constraint_anchor[i]
                     )
@@ -3235,6 +3235,7 @@ class ModelBuilder:
 
             if body2_was_merged and constraint_type == EqType.WELD:
                 merge_xform = body_merged_transform[old_body2]
+                self.equality_constraint_anchor[i] = wp.transform_point(merge_xform, self.equality_constraint_anchor[i])
                 self.equality_constraint_relpose[i] = self.equality_constraint_relpose[i] * wp.transform_inverse(
                     merge_xform
                 )

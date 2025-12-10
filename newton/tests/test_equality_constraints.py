@@ -230,24 +230,34 @@ class TestEqualityConstraints(unittest.TestCase):
         fixed_child_xform = wp.transform((-0.3, 0.0, 0.0), wp.quat_identity())
 
         joint_fixed_base = builder.add_joint_fixed(
-            parent=-1, child=base,
-            parent_xform=wp.transform_identity(), child_xform=wp.transform_identity(),
+            parent=-1,
+            child=base,
+            parent_xform=wp.transform_identity(),
+            child_xform=wp.transform_identity(),
             key="j_base",
         )
         joint1 = builder.add_joint_revolute(
-            parent=base, child=link1,
-            parent_xform=wp.transform((0.5, 0, 0)), child_xform=wp.transform((-0.5, 0, 0)),
-            axis=(0, 0, 1), key="j1",
+            parent=base,
+            child=link1,
+            parent_xform=wp.transform((0.5, 0, 0)),
+            child_xform=wp.transform((-0.5, 0, 0)),
+            axis=(0, 0, 1),
+            key="j1",
         )
         joint_fixed_link2 = builder.add_joint_fixed(
-            parent=link1, child=link2,
-            parent_xform=fixed_parent_xform, child_xform=fixed_child_xform,
+            parent=link1,
+            child=link2,
+            parent_xform=fixed_parent_xform,
+            child_xform=fixed_child_xform,
             key="j2_fixed",
         )
         joint3 = builder.add_joint_revolute(
-            parent=link2, child=link3,
-            parent_xform=wp.transform((0.5, 0, 0)), child_xform=wp.transform((-0.5, 0, 0)),
-            axis=(0, 0, 1), key="j3",
+            parent=link2,
+            child=link3,
+            parent_xform=wp.transform((0.5, 0, 0)),
+            child_xform=wp.transform((-0.5, 0, 0)),
+            axis=(0, 0, 1),
+            key="j3",
         )
 
         builder.add_articulation([joint_fixed_base, joint1, joint_fixed_link2, joint3], key="articulation")
@@ -263,13 +273,16 @@ class TestEqualityConstraints(unittest.TestCase):
             joint1=joint1, joint2=joint3, polycoef=[1.0, -1.0, 0, 0, 0], key="couple_j1_j3"
         )
         eq_weld = builder.add_equality_constraint_weld(
-            body1=link2, body2=link3, anchor=original_anchor, relpose=original_relpose,
+            body1=link2,
+            body2=link3,
+            anchor=original_anchor,
+            relpose=original_relpose,
             key="weld_link2_link3",
         )
 
         # Compute expected merge transform: parent_xform * inverse(child_xform)
         merge_xform = fixed_parent_xform * wp.transform_inverse(fixed_child_xform)
-        expected_anchor = wp.transform_point(merge_xform, original_anchor)
+        expected_anchor = original_anchor
         expected_relpose = merge_xform * original_relpose
 
         # Verify initial state
@@ -310,7 +323,8 @@ class TestEqualityConstraints(unittest.TestCase):
         np.testing.assert_allclose(
             [actual_anchor[0], actual_anchor[1], actual_anchor[2]],
             [expected_anchor[0], expected_anchor[1], expected_anchor[2]],
-            rtol=1e-5, err_msg="Anchor not correctly transformed after body merge",
+            rtol=1e-5,
+            err_msg="Anchor not correctly transformed after body merge",
         )
 
         # Verify relpose was transformed correctly
@@ -323,12 +337,14 @@ class TestEqualityConstraints(unittest.TestCase):
         np.testing.assert_allclose(
             [actual_p[0], actual_p[1], actual_p[2]],
             [expected_p[0], expected_p[1], expected_p[2]],
-            rtol=1e-5, err_msg="Relpose translation not correctly transformed after body merge",
+            rtol=1e-5,
+            err_msg="Relpose translation not correctly transformed after body merge",
         )
         np.testing.assert_allclose(
             [actual_q[0], actual_q[1], actual_q[2], actual_q[3]],
             [expected_q[0], expected_q[1], expected_q[2], expected_q[3]],
-            rtol=1e-5, err_msg="Relpose rotation not correctly transformed after body merge",
+            rtol=1e-5,
+            err_msg="Relpose rotation not correctly transformed after body merge",
         )
 
         # Finalize and verify
