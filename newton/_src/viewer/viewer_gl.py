@@ -284,11 +284,22 @@ class ViewerGL(ViewerBase):
         if not isinstance(self.objects[mesh], MeshGL):
             raise RuntimeError(f"Path {mesh} is not a Mesh object")
 
-        needs_update = not hidden
-        if name not in self.objects:
-            self.objects[name] = MeshInstancerGL(len(xforms), self.objects[mesh])
-            needs_update = True
+        instancer = self.objects.get(name, None)
+        transform_count = len(xforms) if xforms is not None else 0
+        resized = False
 
+        if instancer is None:
+            capacity = max(transform_count, 1)
+            instancer = MeshInstancerGL(capacity, self.objects[mesh])
+            self.objects[name] = instancer
+            resized = True
+        elif transform_count > instancer.num_instances:
+            new_capacity = max(transform_count, instancer.num_instances * 2)
+            instancer = MeshInstancerGL(new_capacity, self.objects[mesh])
+            self.objects[name] = instancer
+            resized = True
+
+        needs_update = resized or not hidden
         if needs_update:
             self.objects[name].update_from_transforms(xforms, scales, colors, materials)
 
@@ -367,8 +378,15 @@ class ViewerGL(ViewerBase):
         if self._point_mesh is None:
             self._create_point_mesh()
 
+        num_points = len(points)
         if name not in self.objects:
-            self.objects[name] = MeshInstancerGL(len(points), self._point_mesh)
+            # Start with a reasonable default.
+            initial_capacity = max(num_points, 256)
+            self.objects[name] = MeshInstancerGL(initial_capacity, self._point_mesh)
+        elif num_points > self.objects[name].num_instances:
+            old = self.objects[name]
+            new_capacity = max(num_points, old.num_instances * 2)
+            self.objects[name] = MeshInstancerGL(new_capacity, self._point_mesh)
 
         self.objects[name].update_from_points(points, radii, colors)
         self.objects[name].hidden = hidden
