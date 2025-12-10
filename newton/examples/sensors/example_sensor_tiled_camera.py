@@ -28,16 +28,15 @@ import ctypes
 import math
 import random
 
-import numpy as np
 import OpenGL.GL as gl
 import warp as wp
-from pxr import Usd, UsdGeom
+from pxr import Usd
 
 import newton
 import newton.examples
+import newton.usd
 from newton.sensors import TiledCameraSensor
-
-from ...viewer import ViewerGL
+from newton.viewer import ViewerGL
 
 
 @wp.kernel(enable_backward=False)
@@ -83,10 +82,7 @@ class Example:
             self.viewer.register_ui_callback(self.display, "free")
 
         usd_stage = Usd.Stage.Open(newton.examples.get_asset("bunny.usd"))
-        usd_geom = UsdGeom.Mesh(usd_stage.GetPrimAtPath("/root/bunny"))
-        bunny_mesh = newton.Mesh(
-            np.array(usd_geom.GetPointsAttr().Get()), np.array(usd_geom.GetFaceVertexIndicesAttr().Get())
-        )
+        bunny_mesh = newton.usd.get_mesh(usd_stage.GetPrimAtPath("/root/bunny"))
 
         robot_asset = newton.utils.download_asset("franka_emika_panda") / "urdf/fr3_franka_hand.urdf"
         robot_builder = newton.ModelBuilder()
