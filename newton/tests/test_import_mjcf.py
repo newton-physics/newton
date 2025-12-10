@@ -1471,49 +1471,6 @@ class TestImportMjcf(unittest.TestCase):
             actual = geom_gap[shape_idx].tolist()
             self.assertAlmostEqual(actual, expected, places=4)
 
-    def test_geom_margin_parsing(self):
-        """Test that geom_margin attribute is parsed correctly from MJCF."""
-        mjcf = """<?xml version="1.0" ?>
-<mujoco>
-    <worldbody>
-        <body name="body1">
-            <freejoint/>
-            <geom type="box" size="0.1 0.1 0.1" margin="0.1"/>
-        </body>
-        <body name="body2">
-            <freejoint/>
-            <geom type="sphere" size="0.05"/>
-        </body>
-        <body name="body3">
-            <freejoint/>
-            <geom type="capsule" size="0.05 0.1" margin="0.2"/>
-        </body>
-    </worldbody>
-</mujoco>
-"""
-
-        builder = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(builder)
-        builder.add_mjcf(mjcf)
-        model = builder.finalize()
-
-        self.assertTrue(hasattr(model, "mujoco"), "Model should have mujoco namespace for custom attributes")
-        self.assertTrue(hasattr(model.mujoco, "geom_margin"), "Model should have geom_margin attribute")
-
-        geom_margin = model.mujoco.geom_margin.numpy()
-        self.assertEqual(model.shape_count, 3, "Should have 3 shapes")
-
-        # Expected values: shape 0 has explicit solimp=0.5, shape 1 has solimp=default=1.0, shape 2 has explicit solimp=0.8
-        expected_values = {
-            0: 0.1,
-            1: 0.0,  # default
-            2: 0.2,
-        }
-
-        for shape_idx, expected in expected_values.items():
-            actual = geom_margin[shape_idx].tolist()
-            self.assertAlmostEqual(actual, expected, places=4)
-
     def test_default_inheritance(self):
         """Test nested default class inheritanc."""
         mjcf_content = """<?xml version="1.0" ?>
