@@ -1104,7 +1104,7 @@ def parse_mjcf(
         parse_equality_constraints(equality)
 
     # -----------------
-    # parse contact pairs and exclusions
+    # parse contact pairs
 
     # Get variable-length custom attributes for pair parsing (frequency=None)
     # Exclude pair_geom1/pair_geom2 as they need special name-to-index lookup
@@ -1114,8 +1114,10 @@ def parse_mjcf(
         if attr.frequency is None and attr.name.startswith("pair_") and attr.name not in ("pair_geom1", "pair_geom2")
     ]
 
+    # Only parse contact pairs if custom attributes are registered
+    has_pair_attrs = "mujoco:pair_geom1" in builder.custom_attributes
     contact = root.find("contact")
-    if contact is not None:
+    if contact is not None and has_pair_attrs:
         # Parse <pair> elements - explicit contact pairs with custom properties
         for pair in contact.findall("pair"):
             geom1_name = pair.attrib.get("geom1")
