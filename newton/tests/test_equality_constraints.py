@@ -208,10 +208,11 @@ class TestEqualityConstraints(unittest.TestCase):
             )
 
     def test_collapse_fixed_joints_with_equality_constraints(self):
-        """Test that equality constraints are properly remapped after collapse_fixed_joints"""
+        """Test that equality constraints are properly remapped after collapse_fixed_joints,
+        including correct transformation of anchor points and relpose."""
         builder = newton.ModelBuilder()
 
-        # Create a simple chain: world -> base (fixed) -> link1 (revolute) -> link2 (fixed) -> link3
+        # Create chain: world -> base (fixed) -> link1 (revolute) -> link2 (fixed) -> link3
         base = builder.add_link(xform=wp.transform((0, 0, 0)), mass=1.0, key="base")
         builder.add_shape_box(base, hx=0.5, hy=0.5, hz=0.5)
 
@@ -224,61 +225,52 @@ class TestEqualityConstraints(unittest.TestCase):
         link3 = builder.add_link(xform=wp.transform((3, 0, 0)), mass=1.0, key="link3")
         builder.add_shape_box(link3, hx=0.3, hy=0.3, hz=0.3)
 
-        # Add joints
+        # Fixed joint between link1 and link2 - defines the merge transform
+        fixed_parent_xform = wp.transform((0.5, 0.1, 0.0), wp.quat_identity())
+        fixed_child_xform = wp.transform((-0.3, 0.0, 0.0), wp.quat_identity())
+
         joint_fixed_base = builder.add_joint_fixed(
-            parent=-1,
-            child=base,
-            parent_xform=wp.transform_identity(),
-            child_xform=wp.transform_identity(),
+            parent=-1, child=base,
+            parent_xform=wp.transform_identity(), child_xform=wp.transform_identity(),
             key="j_base",
         )
         joint1 = builder.add_joint_revolute(
-            parent=base,
-            child=link1,
-            parent_xform=wp.transform((0.5, 0, 0)),
-            child_xform=wp.transform((-0.5, 0, 0)),
-            axis=(0, 0, 1),
-            key="j1",
+            parent=base, child=link1,
+            parent_xform=wp.transform((0.5, 0, 0)), child_xform=wp.transform((-0.5, 0, 0)),
+            axis=(0, 0, 1), key="j1",
         )
         joint_fixed_link2 = builder.add_joint_fixed(
-            parent=link1,
-            child=link2,
-            parent_xform=wp.transform((0.5, 0, 0)),
-            child_xform=wp.transform((-0.5, 0, 0)),
+            parent=link1, child=link2,
+            parent_xform=fixed_parent_xform, child_xform=fixed_child_xform,
             key="j2_fixed",
         )
         joint3 = builder.add_joint_revolute(
-            parent=link2,
-            child=link3,
-            parent_xform=wp.transform((0.5, 0, 0)),
-            child_xform=wp.transform((-0.5, 0, 0)),
-            axis=(0, 0, 1),
-            key="j3",
+            parent=link2, child=link3,
+            parent_xform=wp.transform((0.5, 0, 0)), child_xform=wp.transform((-0.5, 0, 0)),
+            axis=(0, 0, 1), key="j3",
         )
 
-        # Add articulation
         builder.add_articulation([joint_fixed_base, joint1, joint_fixed_link2, joint3], key="articulation")
 
-        # Add equality constraints BEFORE collapse
-        # Connect constraint between base and link3
+        # Non-trivial anchor and relpose for weld constraint (link2 will be merged into link1)
+        original_anchor = wp.vec3(0.1, 0.2, 0.3)
+        original_relpose = wp.transform((0.5, 0.1, -0.2), wp.quat_from_axis_angle(wp.vec3(0, 0, 1), 0.3))
+
         eq_connect = builder.add_equality_constraint_connect(
             body1=base, body2=link3, anchor=wp.vec3(0.5, 0, 0), key="connect_base_link3"
         )
-        # Joint constraint between joint1 and joint3
         eq_joint = builder.add_equality_constraint_joint(
             joint1=joint1, joint2=joint3, polycoef=[1.0, -1.0, 0, 0, 0], key="couple_j1_j3"
         )
-        # Weld constraint between link2 and link3
         eq_weld = builder.add_equality_constraint_weld(
-            body1=link2, body2=link3, anchor=wp.vec3(0, 0, 0), key="weld_link2_link3"
+            body1=link2, body2=link3, anchor=original_anchor, relpose=original_relpose,
+            key="weld_link2_link3",
         )
 
-        # Store original indices
-        original_base = base
-        original_link1 = link1
-        original_link3 = link3
-        original_joint1 = joint1
-        original_joint3 = joint3
+        # Compute expected merge transform: parent_xform * inverse(child_xform)
+        merge_xform = fixed_parent_xform * wp.transform_inverse(fixed_child_xform)
+        expected_anchor = wp.transform_point(merge_xform, original_anchor)
+        expected_relpose = merge_xform * original_relpose
 
         # Verify initial state
         self.assertEqual(builder.body_count, 4)
@@ -290,45 +282,60 @@ class TestEqualityConstraints(unittest.TestCase):
         body_remap = result["body_remap"]
         joint_remap = result["joint_remap"]
 
-        self.assertEqual(builder.body_count, 3)  # base, link1 (merged with link2), link3
-        self.assertEqual(builder.joint_count, 3)  # fixed joint to base kept, 2 revolute joints remain
+        self.assertEqual(builder.body_count, 3)
+        self.assertEqual(builder.joint_count, 3)
 
-        # Check that equality constraints were remapped correctly
-        new_base = body_remap.get(original_base, original_base)
-        new_link1 = body_remap.get(original_link1, original_link1)
-        new_link3 = body_remap.get(original_link3, original_link3)
+        # Verify link2 was merged into link1
+        self.assertIn(link2, result["body_merged_parent"])
+        self.assertEqual(result["body_merged_parent"][link2], link1)
 
-        # Joint constraint: joint1 -> joint3 should be remapped to new joint indices
-        new_joint1 = joint_remap.get(original_joint1, -1)
-        new_joint3 = joint_remap.get(original_joint3, -1)
+        # Check index remapping
+        new_base = body_remap.get(base, base)
+        new_link1 = body_remap.get(link1, link1)
+        new_link3 = body_remap.get(link3, link3)
+        new_joint1 = joint_remap.get(joint1, -1)
+        new_joint3 = joint_remap.get(joint3, -1)
 
-        self.assertNotEqual(new_joint1, -1, "Joint1 should still exist after collapse")
-        self.assertNotEqual(new_joint3, -1, "Joint3 should still exist after collapse")
-
-        # Verify the joint constraint was remapped
+        self.assertNotEqual(new_joint1, -1)
+        self.assertNotEqual(new_joint3, -1)
         self.assertEqual(builder.equality_constraint_joint1[eq_joint], new_joint1)
         self.assertEqual(builder.equality_constraint_joint2[eq_joint], new_joint3)
-
-        # Connect constraint: base -> link3
-        # base was NOT merged (kept because it's in an equality constraint)
-        # Both bodies should be remapped to their new indices
         self.assertEqual(builder.equality_constraint_body1[eq_connect], new_base)
         self.assertEqual(builder.equality_constraint_body2[eq_connect], new_link3)
-
-        # Weld constraint: link2 -> link3
-        # link2 was merged into link1, so body1 should point to link1
         self.assertEqual(builder.equality_constraint_body1[eq_weld], new_link1)
         self.assertEqual(builder.equality_constraint_body2[eq_weld], new_link3)
 
-        # Finalize and verify the model works
-        model = builder.finalize()
+        # Verify anchor was transformed correctly
+        actual_anchor = builder.equality_constraint_anchor[eq_weld]
+        np.testing.assert_allclose(
+            [actual_anchor[0], actual_anchor[1], actual_anchor[2]],
+            [expected_anchor[0], expected_anchor[1], expected_anchor[2]],
+            rtol=1e-5, err_msg="Anchor not correctly transformed after body merge",
+        )
 
-        # Verify model has correct counts
+        # Verify relpose was transformed correctly
+        actual_relpose = builder.equality_constraint_relpose[eq_weld]
+        expected_p = wp.transform_get_translation(expected_relpose)
+        expected_q = wp.transform_get_rotation(expected_relpose)
+        actual_p = wp.transform_get_translation(actual_relpose)
+        actual_q = wp.transform_get_rotation(actual_relpose)
+
+        np.testing.assert_allclose(
+            [actual_p[0], actual_p[1], actual_p[2]],
+            [expected_p[0], expected_p[1], expected_p[2]],
+            rtol=1e-5, err_msg="Relpose translation not correctly transformed after body merge",
+        )
+        np.testing.assert_allclose(
+            [actual_q[0], actual_q[1], actual_q[2], actual_q[3]],
+            [expected_q[0], expected_q[1], expected_q[2], expected_q[3]],
+            rtol=1e-5, err_msg="Relpose rotation not correctly transformed after body merge",
+        )
+
+        # Finalize and verify
+        model = builder.finalize()
         self.assertEqual(model.body_count, 3)
         self.assertEqual(model.joint_count, 3)
         self.assertEqual(model.equality_constraint_count, 3)
-
-        print("Test passed: Equality constraints properly remapped after collapse_fixed_joints")
 
 
 if __name__ == "__main__":
