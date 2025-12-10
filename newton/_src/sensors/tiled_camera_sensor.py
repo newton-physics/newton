@@ -453,11 +453,11 @@ class TiledCameraSensor:
             return wp.empty(
                 (num_worlds_per_col * self.render_context.height, num_worlds_per_row * self.render_context.width, 4),
                 dtype=wp.uint8,
-            )
+            ), num_worlds_per_row
 
         return out_buffer.reshape(
             (num_worlds_per_col * self.render_context.height, num_worlds_per_row * self.render_context.width, 4)
-        )
+        ), num_worlds_per_row
 
     def flatten_color_image_to_rgba(
         self,
@@ -477,7 +477,7 @@ class TiledCameraSensor:
             num_worlds_per_row: Optional number of rows
         """
 
-        out_buffer = self.__reshape_buffer_for_flatten(out_buffer, num_worlds_per_row)
+        out_buffer, num_worlds_per_row = self.__reshape_buffer_for_flatten(out_buffer, num_worlds_per_row)
 
         wp.launch(
             flatten_color_image,
@@ -516,7 +516,7 @@ class TiledCameraSensor:
             num_worlds_per_row: Optional number of rows
         """
 
-        out_buffer = self.__reshape_buffer_for_flatten(out_buffer, num_worlds_per_row)
+        out_buffer, num_worlds_per_row = self.__reshape_buffer_for_flatten(out_buffer, num_worlds_per_row)
 
         wp.launch(
             flatten_normal_image,
@@ -556,7 +556,7 @@ class TiledCameraSensor:
             num_worlds_per_row: Optional number of rows
         """
 
-        out_buffer = self.__reshape_buffer_for_flatten(out_buffer, num_worlds_per_row)
+        out_buffer, num_worlds_per_row = self.__reshape_buffer_for_flatten(out_buffer, num_worlds_per_row)
 
         depth_range = wp.array([100000000.0, 0.0], dtype=wp.float32)
         wp.launch(find_depth_range, image.shape, [image, depth_range])
