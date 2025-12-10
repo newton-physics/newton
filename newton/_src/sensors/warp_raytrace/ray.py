@@ -612,7 +612,7 @@ def ray_mesh_with_bvh(
     query = wp.mesh_query_ray(mesh_bvh_ids[mesh_geom_id], ray_origin_local, ray_direction_local, max_t)
 
     if query.result and wp.dot(ray_direction_local, query.normal) < 0.0:  # Backface culling in local space
-        normal = wp.transform_vector(transform, query.normal)
+        normal = wp.transform_vector(transform, scale_mat(size) @ query.normal)
         normal = wp.normalize(normal)
         return True, query.t, normal, query.u, query.v, query.face, mesh_geom_id
 
