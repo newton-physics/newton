@@ -94,8 +94,8 @@ class SDFHydroelastic:
         self.iso_buffer_coords = [wp.empty((self.max_num_blocks_broad,), dtype=wp.vec3us)] + [
             wp.empty((self.iso_max_dims[i],), dtype=wp.vec3us) for i in range(4)
         ]
-        self.iso_buffer_shape_pairs = [wp.empty((self.max_num_blocks_broad,), dtype=wp.int32)] + [
-            wp.empty((self.iso_max_dims[i],), dtype=wp.int32) for i in range(4)
+        self.iso_buffer_shape_pairs = [wp.empty((self.max_num_blocks_broad,), dtype=wp.vec2i)] + [
+            wp.empty((self.iso_max_dims[i],), dtype=wp.vec2i) for i in range(4)
         ]
 
         # Aliases for commonly accessed final buffers
@@ -132,11 +132,11 @@ class SDFHydroelastic:
             # stores the point and depth of the iso vertex
             self.iso_vertex_point = wp.empty((3 * self.max_num_face_contacts,), dtype=wp.vec3f)
             self.iso_vertex_depth = wp.empty((self.max_num_face_contacts,), dtype=wp.float32)
-            self.iso_vertex_shape_pair = wp.empty((self.max_num_face_contacts,), dtype=wp.int32)
+            self.iso_vertex_shape_pair = wp.empty((self.max_num_face_contacts,), dtype=wp.vec2i)
         else:
             self.iso_vertex_point = wp.empty((0,), dtype=wp.vec3f)
             self.iso_vertex_depth = wp.empty((0,), dtype=wp.float32)
-            self.iso_vertex_shape_pair = wp.empty((0,), dtype=wp.int32)
+            self.iso_vertex_shape_pair = wp.empty((0,), dtype=wp.vec2i)
 
         # self.count_faces_kernel, self.scatter_faces_kernel = get_generate_contacts_kernel()
 
@@ -218,6 +218,14 @@ class SDFHydroelastic:
             device,
         )
 
+        self._find_iso_voxels(
+            shape_sdf_data,
+            shape_transform,
+            shape_contact_margin,
+            device
+        )
+
+
     def _broadphase_collision_sdfs(
         self,
         shape_sdf_data: wp.array(dtype=SDFData),
@@ -229,7 +237,7 @@ class SDFHydroelastic:
         shape_sdf_shape2blocks: wp.array(dtype=wp.vec2i),
         device: Any = None,
     ) -> None:
-        # broadphase stage 0: Test collisions between OBB shapes
+        # Test collisions between OBB of SDFs
         wp.launch(
             kernel=broadphase_collision_pairs_count,
             dim=[self.max_num_shape_pairs],
@@ -284,6 +292,64 @@ class SDFHydroelastic:
             ],
             device=device,
         )
+    def _find_iso_voxels(self, 
+    shape_sdf_data: wp.array(dtype=SDFData), 
+    shape_transform: wp.array(dtype=wp.transform), 
+    shape_contact_margin: wp.array(dtype=wp.float32), 
+    device: Any = None) -> None:
+        # Find voxels which contain the isosurface between the shapes using octree-like pruning.
+        # We do this by computing the difference between sdfs at the voxel/subblock center and comparing it to the voxel/subblock radius.
+        # The check is first performed for subblocks of size (8 x 8 x 8), then (4 x 4 x 4), then (2 x 2 x 2), and finally for each voxel.
+        for i, (subblock_size, n_blocks) in enumerate([(8, 1), (4, 2), (2, 2), (1, 2)]):
+            wp.launch(
+                kernel=count_iso_voxels_block,
+                dim=[self.grid_size],
+                inputs=[
+                    self.grid_size,
+                    self.iso_buffer_counts[i],
+                    shape_sdf_data,
+                    shape_transform,
+                    # shape_material_k_hydro,
+                    self.iso_buffer_coords[i],
+                    self.iso_buffer_shape_pairs[i],
+                    shape_contact_margin,
+                    subblock_size,
+                    n_blocks,
+                ],
+                outputs=[
+                    self.iso_buffer_num[i],
+                    self.iso_subblock_idx[i],
+                ],
+                device=device,
+            )
+
+            scan_with_total(
+                self.iso_buffer_num[i],
+                self.iso_buffer_prefix[i],
+                self.iso_buffer_counts[i],
+                self.iso_buffer_counts[i + 1],
+            )
+
+            wp.launch(
+                kernel=scatter_iso_subblock,
+                dim=[self.grid_size],
+                inputs=[
+                    self.grid_size,
+                    self.iso_buffer_counts[i],
+                    self.iso_buffer_prefix[i],
+                    self.iso_subblock_idx[i],
+                    self.iso_buffer_num[i],
+                    self.iso_buffer_shape_pairs[i],
+                    self.iso_buffer_coords[i],
+                    subblock_size,
+                    self.iso_max_dims[i],
+                ],
+                outputs=[
+                    self.iso_buffer_coords[i + 1],
+                    self.iso_buffer_shape_pairs[i + 1],
+                ],
+                device=device,
+            )
 
 
 @wp.kernel
@@ -342,7 +408,7 @@ def broadphase_collision_pairs_scatter(
     shape_pairs_sdf_sdf_count: wp.array(dtype=wp.int32),
     shape2blocks: wp.array(dtype=wp.vec2i),
     # outputs
-    block_broad_collide_shape_pair: wp.array(dtype=wp.int32),
+    block_broad_collide_shape_pair: wp.array(dtype=wp.vec2i),
     block_broad_idx: wp.array(dtype=wp.int32),
 ):
     tid = wp.tid()
@@ -357,10 +423,11 @@ def broadphase_collision_pairs_scatter(
     shape_b = pair[1]
     shape_b_idx = shape2blocks[shape_b]
     shape_b_block_start = shape_b_idx[0]
+    # TODO: sort pairs by voxel size
 
     block_start = block_start_prefix[tid]
     for i in range(num_blocks):
-        block_broad_collide_shape_pair[block_start + i] = tid
+        block_broad_collide_shape_pair[block_start + i] = pair
         block_broad_idx[block_start + i] = shape_b_block_start + i
 
 
@@ -377,3 +444,174 @@ def broadphase_get_block_coords(
     for tid in range(offset, block_count[0], grid_size):
         block_idx = block_broad_idx[tid]
         block_broad_collide_coords[tid] = block_coords[block_idx]
+
+@wp.func
+def encode_coords_8(x: wp.int32, y: wp.int32, z: wp.int32) -> wp.uint8:
+    # Encode 3D coordinates in range [0, 1] per axis into a single 8-bit integer
+    return wp.uint8(1) << (wp.uint8(x) + wp.uint8(y) * wp.uint8(2) + wp.uint8(z) * wp.uint8(4))
+
+
+@wp.func
+def decode_coords_8(bit_pos: wp.uint8) -> wp.vec3ub:
+    # Decode bit position back to 3D coordinates
+    return wp.vec3ub(
+        bit_pos & wp.uint8(1), (bit_pos >> wp.uint8(1)) & wp.uint8(1), (bit_pos >> wp.uint8(2)) & wp.uint8(1)
+    )
+
+@wp.func
+def get_scaled_stiffness(k_a: wp.float32, k_b: wp.float32) -> tuple[wp.float32, wp.float32]:
+    k_m_inv = 1.0 / wp.sqrt(k_a * k_b)
+    return k_a * k_m_inv, k_b * k_m_inv
+
+
+@wp.func
+def get_effective_stiffness(k_a: wp.float32, k_b: wp.float32) -> wp.float32:
+    k_a_inv = 1.0 / k_a
+    k_b_inv = 1.0 / k_b
+    return 1.0 / (k_a_inv + k_b_inv)
+
+@wp.func
+def sdf_diff_sdf(
+    sdfA: wp.uint64,
+    sdfB: wp.uint64,
+    transfA: wp.transform,
+    transfB: wp.transform,
+    k_eff_a: wp.float32,
+    k_eff_b: wp.float32,
+    x_id: wp.int32,
+    y_id: wp.int32,
+    z_id: wp.int32,
+) -> tuple[wp.float32, wp.float32, wp.float32]:
+    pointA = wp.volume_index_to_world(sdfA, int_to_vec3f(x_id, y_id, z_id))
+    pointA_world = wp.transform_point(transfA, pointA)
+    pointB = wp.transform_point(wp.transform_inverse(transfB), pointA_world)
+    valA = wp.volume_lookup_f(sdfA, x_id, y_id, z_id)
+
+    pointB_local = wp.volume_world_to_index(sdfB, pointB)
+    valB = wp.volume_sample_f(sdfB, pointB_local, wp.Volume.LINEAR)
+    if valA < 0 and valB < 0:
+        diff = k_eff_a * valA - k_eff_b * valB
+    else:
+        diff = valA - valB
+    return diff, valA, valB
+
+@wp.func
+def sdf_diff_sdf(
+    sdfA: wp.uint64,
+    sdfB: wp.uint64,
+    transfA: wp.transform,
+    transfB: wp.transform,
+    k_eff_a: wp.float32,
+    k_eff_b: wp.float32,
+    pos_a_local: wp.vec3,
+) -> tuple[wp.float32, wp.float32, wp.float32]:
+    pointA = wp.volume_index_to_world(sdfA, pos_a_local)
+    pointA_world = wp.transform_point(transfA, pointA)
+    pointB = wp.transform_point(wp.transform_inverse(transfB), pointA_world)
+    valA = wp.volume_sample_f(sdfA, pos_a_local, wp.Volume.LINEAR)
+
+    pointB_local = wp.volume_world_to_index(sdfB, pointB)
+    valB = wp.volume_sample_f(sdfB, pointB_local, wp.Volume.LINEAR)
+    if valA < 0 and valB < 0:
+        diff = k_eff_a * valA - k_eff_b * valB
+    else:
+        diff = valA - valB
+    return diff, valA, valB
+
+@wp.kernel
+def count_iso_voxels_block(
+    grid_size: int,
+    in_buffer_collide_count: wp.array(dtype=int),
+    shape_sdf_data: wp.array(dtype=SDFData),
+    shape_transform: wp.array(dtype=wp.transform),
+    # shape_material_k_hydro: wp.array(dtype=float),
+    in_buffer_collide_coords: wp.array(dtype=wp.vec3us),
+    in_buffer_collide_shape_pair: wp.array(dtype=wp.vec2i),
+    shape_contact_margin: wp.array(dtype=wp.float32),
+    subblock_size: int,
+    n_blocks: int,
+    # outputs
+    iso_subblock_counts: wp.array(dtype=wp.int32),
+    iso_subblock_idx: wp.array(dtype=wp.uint8),
+):
+    # checks if the isosurface between shapes a and b lies inside the subblock (iterating over subblocks of b).
+    # if so, write the subblock coordinates to the output.
+    offset = wp.tid()
+    for tid in range(offset, in_buffer_collide_count[0], grid_size):
+        pair = in_buffer_collide_shape_pair[tid]
+        shape_a = pair[0]
+        shape_b = pair[1]
+
+        # TODO: check if we should use extrapolation
+        sdf_a = shape_sdf_data[shape_a].sparse_sdf_ptr
+        sdf_b = shape_sdf_data[shape_b].sparse_sdf_ptr
+
+        X_ws_a = shape_transform[shape_a]
+        X_ws_b = shape_transform[shape_b]
+
+        margin = shape_contact_margin[shape_b]
+
+        voxel_radius = 0.5 * wp.length(shape_sdf_data[shape_b].sparse_voxel_size) # TODO: precompute
+
+        #k_a = shape_material_k_hydro[shape_a]
+        #k_b = shape_material_k_hydro[shape_b]
+
+        k_eff_a, k_eff_b = get_scaled_stiffness(1.0, 1.0)
+
+        # get global voxel coordinates
+        bc = in_buffer_collide_coords[tid]
+
+        num_iso_subblocks = wp.int32(0)
+        subblock_idx = wp.uint8(0)
+        for x_local in range(n_blocks):
+            for y_local in range(n_blocks):
+                for z_local in range(n_blocks):
+                    x_global = wp.vec3i(bc) + wp.vec3i(x_local, y_local, z_local) * subblock_size
+
+                    # lookup distances at subblock center
+                    # for subblock_size = 1 this is equivalent to the voxel center
+                    x_center = wp.vec3f(x_global) + wp.vec3f(0.5 * float(subblock_size))
+                    diff_val, v, vb = sdf_diff_sdf(sdf_b, sdf_a, X_ws_b, X_ws_a, k_eff_b, k_eff_a, x_center)
+
+                    r = float(subblock_size) * voxel_radius* wp.max(k_eff_a, k_eff_b)
+                    if wp.abs(diff_val) > 2.0 * r or v > r + margin or vb > r + margin:
+                        continue
+                    num_iso_subblocks += 1
+                    subblock_idx |= encode_coords_8(x_local, y_local, z_local)
+
+        iso_subblock_counts[tid] = num_iso_subblocks
+        iso_subblock_idx[tid] = subblock_idx
+
+
+@wp.kernel
+def scatter_iso_subblock(
+    grid_size: int,
+    in_iso_subblock_count: wp.array(dtype=int),
+    in_iso_subblock_prefix: wp.array(dtype=int),
+    in_iso_subblock_idx: wp.array(dtype=wp.uint8),
+    in_iso_subblock_num: wp.array(dtype=int),
+    in_iso_subblock_shape_pair: wp.array(dtype=wp.vec2i),
+    in_buffer_collide_coords: wp.array(dtype=wp.vec3us),
+    subblock_size: int,
+    max_num_iso_subblocks: int,
+    # outputs
+    out_iso_subblock_coords: wp.array(dtype=wp.vec3us),
+    out_iso_subblock_shape_pair: wp.array(dtype=wp.vec2i),
+):
+    offset = wp.tid()
+    for tid in range(offset, in_iso_subblock_count[0], grid_size):
+        write_idx = in_iso_subblock_prefix[tid]
+        subblock_idx = in_iso_subblock_idx[tid]
+        pair = in_iso_subblock_shape_pair[tid]
+        num = in_iso_subblock_num[tid]
+        bc = in_buffer_collide_coords[tid]
+        if write_idx + num >= max_num_iso_subblocks:
+            continue
+        for i in range(8):
+            bit_pos = wp.uint8(i)
+            if (subblock_idx >> bit_pos) & wp.uint8(1):
+                local_coords = wp.vec3us(decode_coords_8(bit_pos))
+                global_coords = bc + local_coords * wp.uint16(subblock_size)
+                out_iso_subblock_coords[write_idx] = global_coords
+                out_iso_subblock_shape_pair[write_idx] = pair
+                write_idx += 1
