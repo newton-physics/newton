@@ -60,6 +60,7 @@ def parse_mjcf(
     collapse_fixed_joints: bool = False,
     verbose: bool = False,
     skip_equality_constraints: bool = False,
+    convert_3d_hinge_to_ball_joints: bool = False,
     mesh_maxhullvert: int = MESH_MAXHULLVERT,
 ):
     """
@@ -92,6 +93,7 @@ def parse_mjcf(
         collapse_fixed_joints (bool): If True, fixed joints are removed and the respective bodies are merged.
         verbose (bool): If True, print additional information about parsing the MJCF.
         skip_equality_constraints (bool): Whether <equality> tags should be parsed. If True, equality constraints are ignored.
+        convert_3d_hinge_to_ball_joints (bool): If True, series of three hinge joints are converted to a single ball joint. Default is False.
         mesh_maxhullvert (int): Maximum vertices for convex hull approximation of meshes.
     """
     if xform is None:
@@ -688,6 +690,8 @@ def parse_mjcf(
                     joint_type = JointType.FIXED
                 elif len(angular_axes) == 1:
                     joint_type = JointType.REVOLUTE
+                elif convert_3d_hinge_to_ball_joints and len(angular_axes) == 3:
+                    joint_type = JointType.BALL
             elif len(linear_axes) == 1 and len(angular_axes) == 0:
                 joint_type = JointType.PRISMATIC
 
