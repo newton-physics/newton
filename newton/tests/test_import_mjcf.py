@@ -1429,7 +1429,7 @@ class TestImportMjcf(unittest.TestCase):
             self.assertAlmostEqual(actual, expected, places=4)
 
     def test_geom_gap_parsing(self):
-        """Test that geom_solmix attribute is parsed correctly from MJCF."""
+        """Test that geom_gap attribute is parsed correctly from MJCF."""
         mjcf = """<?xml version="1.0" ?>
 <mujoco>
     <worldbody>
@@ -1472,7 +1472,7 @@ class TestImportMjcf(unittest.TestCase):
             self.assertAlmostEqual(actual, expected, places=4)
 
     def test_geom_margin_parsing(self):
-        """Test that geom_solmix attribute is parsed correctly from MJCF."""
+        """Test that geom_margin attribute is parsed correctly from MJCF."""
         mjcf = """<?xml version="1.0" ?>
 <mujoco>
     <worldbody>
