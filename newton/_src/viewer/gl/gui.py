@@ -16,6 +16,46 @@
 from __future__ import annotations
 
 
+def _patch_pyopengl_context(window):
+    """
+    Patch PyOpenGL's context management to work with Pyglet.
+
+    This is needed because PyOpenGL's context detection doesn't work
+    with Pyglet's OpenGL context management out of the box.
+    """
+    try:
+        from OpenGL import contextdata  # noqa: PLC0415
+
+        # Create a context wrapper that PyOpenGL can use
+        class PygletContext:
+            def __init__(self, pyglet_window):
+                self.window = pyglet_window
+                self._context_id = id(pyglet_window.context)
+
+            def __hash__(self):
+                return self._context_id
+
+            def __eq__(self, other):
+                return isinstance(other, PygletContext) and self._context_id == other._context_id
+
+        # Store the original getContext function
+        if not hasattr(contextdata, "_original_getContext"):
+            contextdata._original_getContext = contextdata.getContext
+
+            # Monkey patch getContext to return our Pyglet-compatible context
+            def patched_getContext(context=None):
+                if context is None:
+                    # Return a context based on the current Pyglet window
+                    return PygletContext(window)
+                return contextdata._original_getContext(context)
+
+            contextdata.getContext = patched_getContext
+
+    except ImportError:
+        # If OpenGL is not installed, no need to patch
+        pass
+
+
 class UI:
     def __init__(self, window):
         try:
@@ -34,6 +74,10 @@ class UI:
             return
 
         self.window = window
+
+        # Patch PyOpenGL context management before creating the renderer
+        _patch_pyopengl_context(window)
+
         self.imgui.create_context()
         self.impl = pyglet_backend.create_renderer(self.window)
 
