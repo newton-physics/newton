@@ -655,7 +655,7 @@ def create_narrow_phase_process_mesh_plane_contacts_kernel(
                     contact_data.feature = wp.uint32(vertex_idx + 1)
                     contact_data.feature_pair_key = pair_key
 
-                    writer_func(contact_data, writer_data)
+                    writer_func(contact_data, writer_data, -1)
 
     # Return early if contact reduction is disabled
     if contact_reduction_funcs is None:
@@ -823,7 +823,7 @@ def create_narrow_phase_process_mesh_plane_contacts_kernel(
                 contact_data.feature = wp.uint32(contact.feature + 1)
                 contact_data.feature_pair_key = pair_key
 
-                writer_func(contact_data, writer_data)
+                writer_func(contact_data, writer_data, -1)
 
             # Ensure all threads complete before processing next pair
             synchronize()

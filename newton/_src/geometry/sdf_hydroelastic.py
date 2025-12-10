@@ -24,7 +24,9 @@ import warp as wp
 from ..sim.model import Model
 from .sdf_utils import SDFData
 from .utils import scan_with_total
-from .collision_core import sat_box_intersection
+from .collision_core import sat_box_intersection, build_pair_key2
+from .sdf_mc import get_mc_tables, mc_calc_face
+from .contact_data import ContactData
 
 
 vec8f = wp.types.vector(length=8, dtype=wp.float32)
@@ -38,6 +40,8 @@ class SDFHydroelasticConfig:
     """
     Controls properties of SDF hydroelastic collision handling.
     """
+    reduce_contacts: bool = False
+    """Whether to reduce contacts."""
     buffer_mult_broad: int = 1
     """Multiplier for buffer size for broadphase."""
     buffer_mult_iso: int = 2
@@ -48,6 +52,8 @@ class SDFHydroelasticConfig:
     """Grid size for contact handling. Can be tuned for performance."""
     output_iso_vertices: bool = False
     """Whether to output iso vertices of isosurfaces."""
+    clip_triangles: bool = False
+    """Whether to clip triangles of isosurfaces."""
 
 
 class SDFHydroelastic:
@@ -60,6 +66,8 @@ class SDFHydroelastic:
         total_num_tiles: int,
         max_num_blocks_per_shape: int,
         config: SDFHydroelasticConfig = None,
+        device: Any = None,
+        writer_func: Any = None,
     ):
         if config is None:
             config = SDFHydroelasticConfig()
@@ -120,7 +128,7 @@ class SDFHydroelastic:
 
         # Contact buffers
         self.max_num_face_contacts = 2 * self.max_num_iso_voxels
-        self.face_contact_pair_idx = wp.empty((self.max_num_face_contacts,), dtype=wp.int32)
+        self.face_contact_pair = wp.empty((self.max_num_face_contacts,), dtype=wp.vec2i)
         self.face_contact_pos = wp.empty((self.max_num_face_contacts,), dtype=wp.vec3)
         self.face_contact_normal = wp.empty((self.max_num_face_contacts,), dtype=wp.vec3)
         self.contact_normal_bin_idx = wp.empty((self.max_num_face_contacts,), dtype=wp.int32)
@@ -138,18 +146,29 @@ class SDFHydroelastic:
             self.iso_vertex_depth = wp.empty((0,), dtype=wp.float32)
             self.iso_vertex_shape_pair = wp.empty((0,), dtype=wp.vec2i)
 
-        # self.count_faces_kernel, self.scatter_faces_kernel = get_generate_contacts_kernel()
+        self.mc_tables = get_mc_tables(device)
+
+        self.count_faces_kernel, self.scatter_faces_kernel = get_generate_contacts_kernel(
+            self.config.output_iso_vertices,
+            self.config.clip_triangles,
+        )
+
+        if self.config.reduce_contacts:
+            pass 
+        else:
+            self.decode_contacts_kernel = get_decode_contacts_kernel(writer_func)
 
         self.max_depth = wp.zeros((1,), dtype=wp.float32)
         self.grid_size = min(self.config.grid_size, self.max_num_face_contacts)
 
     @classmethod
-    def _from_model(cls, model: Model, config: SDFHydroelasticConfig = None) -> "SDFHydroelastic | None":
+    def _from_model(cls, model: Model, config: SDFHydroelasticConfig = None, writer_func: Any = None) -> "SDFHydroelastic | None":
         """Create SDFHydroelastic from a model.
 
         Args:
             model: The simulation model.
             config: Optional configuration for hydroelastic collision handling.
+            writer_func: Optional writer function for decoding contacts.
 
         Returns:
             SDFHydroelastic instance, or None if no hydroelastic shape pairs exist.
@@ -192,6 +211,8 @@ class SDFHydroelastic:
             total_num_tiles=total_num_tiles,
             max_num_blocks_per_shape=max_num_blocks_per_shape,
             config=config,
+            device=model.device,
+            writer_func=writer_func,
         )
 
     
@@ -207,7 +228,7 @@ class SDFHydroelastic:
         writer_data: Any,
         device: Any = None,
     ) -> None:
-        self._broadphase_collision_sdfs(
+        self._broadphase_sdfs(
             shape_sdf_data,
             shape_transform,
             shape_contact_margin,
@@ -225,8 +246,24 @@ class SDFHydroelastic:
             device
         )
 
+        self._generate_contacts(
+            shape_sdf_data,
+            shape_transform,
+            shape_contact_margin,
+            device
+        )
 
-    def _broadphase_collision_sdfs(
+        if self.config.reduce_contacts:
+            pass
+        else:
+            self._decode_contacts(
+                shape_transform,
+                shape_contact_margin,
+                writer_data,
+            )
+
+
+    def _broadphase_sdfs(
         self,
         shape_sdf_data: wp.array(dtype=SDFData),
         shape_transform: wp.array(dtype=wp.transform),
@@ -350,6 +387,98 @@ class SDFHydroelastic:
                 ],
                 device=device,
             )
+
+    def _generate_contacts(self,
+    shape_sdf_data: wp.array(dtype=SDFData),
+    shape_transform: wp.array(dtype=wp.transform),
+    shape_contact_margin: wp.array(dtype=wp.float32),
+    device: Any = None
+    ) -> None:
+        self.voxel_face_count.zero_()
+        wp.launch(
+            kernel=self.count_faces_kernel,
+            dim=[self.grid_size],
+            inputs=[
+                self.grid_size,
+                self.iso_voxel_count,
+                shape_sdf_data,
+                shape_transform,
+                # model.shape_material_k_hydro,
+                self.iso_voxel_coords,
+                self.iso_voxel_shape_pair,
+                self.mc_tables[0],
+                self.mc_tables[3],
+                shape_contact_margin,
+            ],
+            outputs=[
+                self.voxel_face_count,
+                self.voxel_cube_indices,
+                self.voxel_corner_vals,
+            ],
+            device=device,
+        )
+
+        scan_with_total(self.voxel_face_count, self.voxel_face_prefix, self.iso_voxel_count, self.face_contact_count)
+
+        wp.launch(
+            kernel=self.scatter_faces_kernel,
+            dim=[self.grid_size],
+            inputs=[
+                self.grid_size,
+                self.iso_voxel_count,
+                shape_sdf_data,
+                shape_transform,
+                self.iso_voxel_coords,
+                self.iso_voxel_shape_pair,
+                self.mc_tables[0],
+                self.mc_tables[4],
+                self.mc_tables[3],
+                self.max_num_face_contacts,
+                self.voxel_face_prefix,
+                self.voxel_cube_indices,
+                self.voxel_corner_vals,
+                self.voxel_face_count,
+            ],
+            outputs=[
+                self.face_contact_pair,
+                self.face_contact_pos,
+                self.face_contact_depth,
+                self.face_contact_normal,
+                self.face_contact_id,
+                self.face_contact_area,
+                self.iso_vertex_point,
+                self.iso_vertex_depth,
+                self.iso_vertex_shape_pair,
+            ],
+            device=device,
+        )
+
+    def _decode_contacts(self,
+    shape_transform: wp.array(dtype=wp.transform),
+    shape_contact_margin: wp.array(dtype=wp.float32),
+    writer_data: Any,
+    device: Any = None
+    ) -> None:
+
+        wp.launch(
+            kernel=self.decode_contacts_kernel,
+            dim=[self.grid_size],
+            inputs=[
+                self.grid_size,
+                self.face_contact_count,
+                shape_transform,
+                shape_contact_margin,
+                self.face_contact_pair,
+                self.face_contact_pos,
+                self.face_contact_depth,
+                self.face_contact_normal,
+                self.face_contact_area,
+            ],
+            outputs=[
+                writer_data
+            ],
+            device=device,
+        )
 
 
 @wp.kernel
@@ -615,3 +744,272 @@ def scatter_iso_subblock(
                 out_iso_subblock_coords[write_idx] = global_coords
                 out_iso_subblock_shape_pair[write_idx] = pair
                 write_idx += 1
+
+@wp.func
+def mc_iterate_voxel_vertices(
+    x_id: wp.int32,
+    y_id: wp.int32,
+    z_id: wp.int32,
+    corner_offsets_table: wp.array(dtype=wp.vec3ub),
+    sdf: wp.uint64,
+    sdf_other: wp.uint64,
+    X_ws: wp.transform,
+    X_ws_other: wp.transform,
+    k_eff: wp.float32,
+    k_eff_other: wp.float32,
+    margin: wp.float32,
+) -> tuple[wp.uint8, vec8f, bool]:
+    """Iterate over the vertices of a voxel and return the cube index, corner values, and whether any vertices are inside the shape."""
+    cube_idx = wp.uint8(0)
+    any_verts_inside = False
+    corner_vals = vec8f()
+
+    for i in range(8):
+        corner_offset = wp.vec3i(corner_offsets_table[i])
+        x = x_id + corner_offset.x
+        y = y_id + corner_offset.y
+        z = z_id + corner_offset.z
+
+        v_diff, v, _ = sdf_diff_sdf(sdf, sdf_other, X_ws, X_ws_other, k_eff, k_eff_other, x, y, z)
+
+        corner_vals[i] = v_diff
+
+        if v_diff < 0.0:
+            cube_idx |= wp.uint8(1) << wp.uint8(i)
+
+        if v <= margin:
+            any_verts_inside = True
+
+    return cube_idx, corner_vals, any_verts_inside
+
+@wp.func
+def get_face_id(x_id: wp.int32, y_id: wp.int32, z_id: wp.int32, fi: wp.int32) -> wp.int32:
+    # generate a unique contact id based on the voxel coordinates and face index (assumes max 512 voxels per axis)
+    return x_id & 0x1FF | (y_id & 0x1FF) << 9 | (z_id & 0x1FF) << 18 | (fi & 0x07) << 27
+
+
+def get_generate_contacts_kernel(output_vertices: bool, clip_triangles: bool = False):
+    @wp.kernel(enable_backward=False)
+    def count_faces_kernel(
+        grid_size: int,
+        iso_voxel_count: wp.array(dtype=wp.int32),
+        shape_sdf_data: wp.array(dtype=SDFData),
+        shape_transform: wp.array(dtype=wp.transform),
+        # shape_material_k_hydro: wp.array(dtype=float),
+        iso_voxel_coords: wp.array(dtype=wp.vec3us),
+        iso_voxel_shape_pair: wp.array(dtype=wp.vec2i),
+        tri_range_table: wp.array(dtype=wp.int32),
+        corner_offsets_table: wp.array(dtype=wp.vec3ub),
+        shape_contact_margin: wp.array(dtype=wp.float32),
+        # outputs
+        voxel_face_count: wp.array(dtype=wp.int32),
+        voxel_cube_indices: wp.array(dtype=wp.uint8),
+        voxel_corner_vals: wp.array(dtype=vec8f),
+    ):
+        offset = wp.tid()
+        for tid in range(offset, iso_voxel_count[0], grid_size):
+            pair = iso_voxel_shape_pair[tid]
+            shape_a = pair[0]
+            shape_b = pair[1]
+
+            sdf_a = shape_sdf_data[shape_a].sparse_sdf_ptr
+            sdf_b = shape_sdf_data[shape_b].sparse_sdf_ptr
+            
+            transform_a = shape_transform[shape_a]
+            transform_b = shape_transform[shape_b]
+
+            iso_coords = iso_voxel_coords[tid]
+
+            margin = shape_contact_margin[shape_b]
+
+            # k_b = shape_material_k_hydro[shape_b]
+
+            k_eff_a, k_eff_b = get_scaled_stiffness(1.0, 1.0)
+
+            x_id = wp.int32(iso_coords.x)
+            y_id = wp.int32(iso_coords.y)
+            z_id = wp.int32(iso_coords.z)
+
+            cube_idx, corner_vals, any_verts_inside = mc_iterate_voxel_vertices(
+                x_id,
+                y_id,
+                z_id,
+                corner_offsets_table,
+                sdf_b,
+                sdf_a,
+                transform_b,
+                transform_a,
+                k_eff_b,
+                k_eff_a,
+                margin,
+            )
+
+            range_idx = wp.int32(cube_idx)
+            # look up the tri range for the cube index
+            tri_range_start = tri_range_table[range_idx]
+            tri_range_end = tri_range_table[range_idx + 1]
+            num_verts = tri_range_end - tri_range_start  # number of intersected edges
+
+            num_faces = num_verts // 3
+
+            if not any_verts_inside:
+                num_faces = 0
+
+            voxel_face_count[tid] = num_faces
+            voxel_cube_indices[tid] = cube_idx
+            voxel_corner_vals[tid] = corner_vals
+
+    @wp.kernel(enable_backward=False)
+    def scatter_faces_kernel(
+        grid_size: int,
+        iso_voxel_count: wp.array(dtype=int),
+        shape_sdf_data: wp.array(dtype=SDFData),
+        shape_transform: wp.array(dtype=wp.transform),
+        iso_voxel_coords: wp.array(dtype=wp.vec3us),
+        iso_voxel_shape_pair: wp.array(dtype=wp.vec2i),
+        tri_range_table: wp.array(dtype=wp.int32),
+        flat_edge_verts_table: wp.array(dtype=wp.vec2ub),
+        corner_offsets_table: wp.array(dtype=wp.vec3ub),
+        max_num_contacts: int,
+        face_contact_prefix: wp.array(dtype=wp.int32),
+        voxel_cube_indices: wp.array(dtype=wp.uint8),
+        voxel_corner_vals: wp.array(dtype=vec8f),
+        voxel_face_count: wp.array(dtype=wp.int32),
+        # outputs
+        contact_pair: wp.array(dtype=wp.vec2i),
+        contact_pos: wp.array(dtype=wp.vec3),
+        contact_depth: wp.array(dtype=wp.float32),
+        contact_normal: wp.array(dtype=wp.vec3),
+        contact_id: wp.array(dtype=wp.int32),
+        contact_area: wp.array(dtype=wp.float32),
+        iso_vertex_point: wp.array(dtype=wp.vec3f),
+        iso_vertex_depth: wp.array(dtype=wp.float32),
+        iso_vertex_shape_pair: wp.array(dtype=wp.vec2i),
+    ):
+        offset = wp.tid()
+        for tid in range(offset, iso_voxel_count[0], grid_size):
+            num_faces = voxel_face_count[tid]
+            idx_base = face_contact_prefix[tid]
+            if num_faces == 0 or idx_base + num_faces >= max_num_contacts:
+                continue
+
+            pair = iso_voxel_shape_pair[tid]
+            shape_b = pair[1]
+
+            sdf_b = shape_sdf_data[shape_b].sparse_sdf_ptr
+
+            iso_coords = iso_voxel_coords[tid]
+            X_ws_b = shape_transform[shape_b]
+
+            x_id = wp.int32(iso_coords.x)
+            y_id = wp.int32(iso_coords.y)
+            z_id = wp.int32(iso_coords.z)
+
+            cube_idx = voxel_cube_indices[tid]
+            corner_vals = voxel_corner_vals[tid]
+
+            tri_range_start = tri_range_table[wp.int32(cube_idx)]
+
+
+            for fi in range(num_faces):
+                area, normal, face_center, pen_depth, face_verts = mc_calc_face(
+                    flat_edge_verts_table,
+                    corner_offsets_table,
+                    tri_range_start + 3 * fi,
+                    corner_vals,
+                    sdf_b,
+                    x_id,
+                    y_id,
+                    z_id,
+                    wp.static(clip_triangles),
+                )
+
+                cid = get_face_id(x_id, y_id, z_id, fi)
+
+                idx = idx_base + fi
+
+                contact_pair[idx] = pair
+                contact_pos[idx] = face_center
+                contact_depth[idx] = pen_depth
+                contact_normal[idx] = normal
+                contact_id[idx] = cid
+                contact_area[idx] = area
+
+                if wp.static(output_vertices):
+                    for vi in range(3):
+                        iso_vertex_point[3 * idx + vi] = wp.transform_point(X_ws_b, face_verts[vi])
+                    iso_vertex_depth[idx] = pen_depth
+                    iso_vertex_shape_pair[idx] = pair
+
+    return count_faces_kernel, scatter_faces_kernel
+
+
+def get_decode_contacts_kernel(writer_func: Any = None):
+    @wp.kernel
+    def decode_contacts_kernel(
+        grid_size: int,
+        contact_count: wp.array(dtype=int),
+        shape_transform: wp.array(dtype=wp.transform),
+        shape_contact_margin: wp.array(dtype=wp.float32),
+        contact_pair: wp.array(dtype=wp.vec2i),
+        contact_pos: wp.array(dtype=wp.vec3),
+        contact_depth: wp.array(dtype=wp.float32),
+        contact_normal: wp.array(dtype=wp.vec3),
+        contact_area: wp.array(dtype=wp.float32),
+        # outputs
+        writer_data: Any,
+    ):  
+        offset = wp.tid()
+
+        num_contacts = contact_count[0]
+        prev_num_contacts = writer_data.contact_count[0]
+
+        # Clamp num_contacts to available buffer space
+        if prev_num_contacts + num_contacts >= writer_data.contact_max:
+            num_contacts = writer_data.contact_max - prev_num_contacts
+
+        if offset == 0:
+            wp.atomic_add(writer_data.contact_count, 0, num_contacts)
+
+        for tid in range(offset, num_contacts, grid_size):
+            # Compute output index directly since we know it in advance
+            output_index = prev_num_contacts + tid
+            if output_index >= writer_data.contact_max:
+                continue
+
+            pair = contact_pair[tid]
+            shape_a = pair[0]
+            shape_b = pair[1]
+
+            transform_b = shape_transform[shape_b]
+
+            depth = contact_depth[tid]
+            normal = contact_normal[tid]
+            pos = contact_pos[tid]
+            
+            normal_world = wp.transform_vector(transform_b, normal)
+            pos_world = wp.transform_point(transform_b, pos)
+
+            # Use per-shape contact margin (max of both shapes)
+            margin_a = shape_contact_margin[shape_a]
+            margin_b = shape_contact_margin[shape_b]
+            margin = wp.max(margin_a, margin_b)
+
+            # Create ContactData for the writer function
+            contact_data = ContactData()
+            contact_data.contact_point_center = pos_world
+            contact_data.contact_normal_a_to_b = normal_world
+            contact_data.contact_distance = -2.0 * depth
+            contact_data.radius_eff_a = 0.0
+            contact_data.radius_eff_b = 0.0
+            contact_data.thickness_a = 0.0
+            contact_data.thickness_b = 0.0
+            contact_data.shape_a = shape_a
+            contact_data.shape_b = shape_b
+            contact_data.margin = margin
+            contact_data.feature = wp.uint32(tid + 1)
+            contact_data.feature_pair_key = build_pair_key2(wp.uint32(shape_a), wp.uint32(shape_b))
+
+            writer_func(contact_data, writer_data, output_index)
+
+    return decode_contacts_kernel

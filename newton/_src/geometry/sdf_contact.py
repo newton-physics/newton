@@ -840,7 +840,7 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                             contact_data.feature = wp.uint32(tri_idx + 1) | wp.uint32(0x80000000)
                         contact_data.feature_pair_key = pair_key
 
-                        writer_func(contact_data, writer_data)
+                        writer_func(contact_data, writer_data, -1)
 
     # Return early if contact reduction is disabled
     if contact_reduction_funcs is None:
@@ -1094,6 +1094,6 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
             contact_data.feature = feature_id
             contact_data.feature_pair_key = build_pair_key2(wp.uint32(pair[0]), wp.uint32(pair[1]))
 
-            writer_func(contact_data, writer_data)
+            writer_func(contact_data, writer_data, -1)
 
     return mesh_sdf_collision_reduce_kernel

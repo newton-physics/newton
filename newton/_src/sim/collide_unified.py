@@ -81,6 +81,7 @@ class BroadPhaseMode(IntEnum):
 def write_contact(
     contact_data: ContactData,
     writer_data: UnifiedContactWriterData,
+    output_index: int,
 ):
     """
     Write a contact to the output arrays using ContactData and UnifiedContactWriterData.
@@ -88,6 +89,7 @@ def write_contact(
     Args:
         contact_data: ContactData struct containing contact information (includes feature and feature_pair_key)
         writer_data: UnifiedContactWriterData struct containing body info and output arrays (includes contact_pair_key and contact_key)
+        output_index: If >= 0, use this index directly. If -1, use atomic_add to get the next available index.
     """
     total_separation_needed = (
         contact_data.radius_eff_a + contact_data.radius_eff_b + contact_data.thickness_a + contact_data.thickness_b
@@ -116,10 +118,17 @@ def write_contact(
     contact_margin = wp.max(margin_a, margin_b)
 
     if d < contact_margin:
-        index = wp.atomic_add(writer_data.contact_count, 0, 1)
+        # Use provided index or get next available via atomic_add
+        if output_index >= 0:
+            index = output_index
+        else:
+            index = wp.atomic_add(writer_data.contact_count, 0, 1)
+            if index >= writer_data.contact_max:
+                # Reached buffer limit
+                wp.atomic_add(writer_data.contact_count, 0, -1)
+                return
+
         if index >= writer_data.contact_max:
-            # Reached buffer limit
-            wp.atomic_add(writer_data.contact_count, 0, -1)
             return
 
         writer_data.out_shape0[index] = contact_data.shape_a
@@ -473,7 +482,7 @@ class CollisionPipelineUnified:
 
         # Initialize SDF hydroelastic
         # returns None if no hydroelastic shape pairs in the model
-        sdf_hydroelastic = SDFHydroelastic._from_model(model, config=sdf_hydroelastic_config)
+        sdf_hydroelastic = SDFHydroelastic._from_model(model, config=sdf_hydroelastic_config, writer_func=write_contact)
 
         pipeline = CollisionPipelineUnified(
             model.shape_count,
