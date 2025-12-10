@@ -262,7 +262,6 @@ class TestEqualityConstraints(unittest.TestCase):
 
         builder.add_articulation([joint_fixed_base, joint1, joint_fixed_link2, joint3], key="articulation")
 
-        # Non-trivial anchor and relpose for weld constraint (link2 will be merged into link1)
         original_anchor = wp.vec3(0.1, 0.2, 0.3)
         original_relpose = wp.transform((0.5, 0.1, -0.2), wp.quat_from_axis_angle(wp.vec3(0, 0, 1), 0.3))
 
