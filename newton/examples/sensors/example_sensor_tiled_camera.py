@@ -345,8 +345,14 @@ class Example:
         assert depth_image.min() < depth_image.max()
 
     def gui(self, ui):
-        if ui.button("Toggle RGB / Depth / Normal Image", ui.ImVec2(260, 30)):
-            self.image_output = (self.image_output + 1) % 4
+        if ui.radio_button("Show Color Output", self.image_output == 0):
+            self.image_output = 0
+        if ui.radio_button("Show Depth Output", self.image_output == 1):
+            self.image_output = 1
+        if ui.radio_button("Show Normal Output", self.image_output == 2):
+            self.image_output = 2
+        if ui.radio_button("Show GeomId Output", self.image_output == 3):
+            self.image_output = 3
 
     def display(self, imgui):
         line_color = imgui.get_color_u32(imgui.Col_.window_bg)
