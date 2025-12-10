@@ -319,7 +319,8 @@ class TiledCameraSensor:
         color_image: wp.array(dtype=wp.uint32, ndim=3) | None = None,
         depth_image: wp.array(dtype=wp.float32, ndim=3) | None = None,
         refit_bvh: bool = True,
-        clear_images: bool = True,
+        clear_color: int | None = 0xFF666666,
+        clear_depth: float | None = 0.0,
     ):
         """
         Render color and depth images for all worlds and cameras.
@@ -334,7 +335,8 @@ class TiledCameraSensor:
             depth_image: Optional output array for depth data (num_worlds, num_cameras, width*height).
                         If None, no depth rendering is performed.
             refit_bvh: Whether to refit the BVH or not.
-            clear_images: Whether to clear the images before rendering or not.
+            clear_color: The color to clear the color image with (or skip if None).
+            clear_depth: The value to clear the depth image with (or skip if None).
         """
         if state is not None:
             self.update_from_state(state)
@@ -346,7 +348,8 @@ class TiledCameraSensor:
             color_image,
             depth_image,
             refit_bvh=refit_bvh,
-            clear_images=clear_images,
+            clear_color=clear_color,
+            clear_depth=clear_depth,
         )
 
     def compute_pinhole_camera_rays(

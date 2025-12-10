@@ -191,6 +191,7 @@ def convert_newton_contacts_to_mjwarp_kernel(
     bodies_per_world: int,
     newton_shape_to_mjc_geom: wp.array(dtype=wp.int32),
     # Mujoco warp contacts
+    naconmax: int,
     nacon_out: wp.array(dtype=int),
     contact_dist_out: wp.array(dtype=float),
     contact_pos_out: wp.array(dtype=wp.vec3),
@@ -211,12 +212,24 @@ def convert_newton_contacts_to_mjwarp_kernel(
 
     tid = wp.tid()
 
+    count = rigid_contact_count[0]
+
     # Set number of contacts (for a single world)
     if tid == 0:
-        nacon_out[0] = rigid_contact_count[0]
+        if count > naconmax:
+            wp.printf(
+                "Number of Newton contacts (%d) exceeded MJWarp limit (%d). Increase nconmax.\n",
+                count,
+                naconmax,
+            )
+            count = naconmax
+        nacon_out[0] = count
         ncollision_out[0] = 0
 
-    if tid >= rigid_contact_count[0]:
+    if count > naconmax:
+        count = naconmax
+
+    if tid >= count:
         return
 
     shape_a = rigid_contact_shape0[tid]
@@ -1176,6 +1189,7 @@ def update_geom_properties_kernel(
     shape_torsional_friction: wp.array(dtype=float),
     shape_rolling_friction: wp.array(dtype=float),
     shape_geom_solimp: wp.array(dtype=vec5),
+    shape_geom_solmix: wp.array(dtype=float),
     # outputs
     geom_rbound: wp.array2d(dtype=float),
     geom_friction: wp.array2d(dtype=wp.vec3f),
@@ -1184,6 +1198,7 @@ def update_geom_properties_kernel(
     geom_pos: wp.array2d(dtype=wp.vec3f),
     geom_quat: wp.array2d(dtype=wp.quatf),
     geom_solimp: wp.array2d(dtype=vec5),
+    geom_solmix: wp.array2d(dtype=float),
 ):
     """Update MuJoCo geom properties from Newton shape properties.
 
@@ -1221,6 +1236,10 @@ def update_geom_properties_kernel(
     # update geom_solimp from custom attribute
     if shape_geom_solimp:
         geom_solimp[world, geom_idx] = shape_geom_solimp[shape_idx]
+
+    # update geom_solmix from custom attribute
+    if shape_geom_solmix:
+        geom_solmix[world, geom_idx] = shape_geom_solmix[shape_idx]
 
     # update size
     geom_size[world, geom_idx] = shape_size[shape_idx]

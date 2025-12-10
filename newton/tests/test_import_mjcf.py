@@ -1385,6 +1385,86 @@ class TestImportMjcf(unittest.TestCase):
             for i, (a, e) in enumerate(zip(actual, expected, strict=False)):
                 self.assertAlmostEqual(a, e, places=4, msg=f"geom_solimp[{shape_idx}][{i}] should be {e}, got {a}")
 
+    def test_geom_solmix_parsing(self):
+        """Test that geom_solmix attribute is parsed correctly from MJCF."""
+        mjcf = """<?xml version="1.0" ?>
+<mujoco>
+    <worldbody>
+        <body name="body1">
+            <freejoint/>
+            <geom type="box" size="0.1 0.1 0.1" solmix="0.5"/>
+        </body>
+        <body name="body2">
+            <freejoint/>
+            <geom type="sphere" size="0.05"/>
+        </body>
+        <body name="body3">
+            <freejoint/>
+            <geom type="capsule" size="0.05 0.1" solmix="0.8"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_mjcf(mjcf)
+        model = builder.finalize()
+
+        self.assertTrue(hasattr(model, "mujoco"), "Model should have mujoco namespace for custom attributes")
+        self.assertTrue(hasattr(model.mujoco, "geom_solmix"), "Model should have geom_solmix attribute")
+
+        geom_solmix = model.mujoco.geom_solmix.numpy()
+        self.assertEqual(model.shape_count, 3, "Should have 3 shapes")
+
+        # Expected values: shape 0 has explicit solimp=0.5, shape 1 has solimp=default=1.0, shape 2 has explicit solimp=0.8
+        expected_values = {
+            0: 0.5,
+            1: 1.0,  # default
+            2: 0.8,
+        }
+
+        for shape_idx, expected in expected_values.items():
+            actual = geom_solmix[shape_idx].tolist()
+            self.assertAlmostEqual(actual, expected, places=4)
+
+    def test_default_inheritance(self):
+        """Test nested default class inheritanc."""
+        mjcf_content = """<?xml version="1.0" ?>
+<mujoco>
+    <default>
+        <default class="collision">
+            <geom group="3" type="mesh" condim="6" friction="1 5e-3 5e-4" solref=".01 1"/>
+            <default class="sphere_collision">
+                <geom type="sphere" size="0.0006" rgba="1 0 0 1"/>
+            </default>
+        </default>
+    </default>
+    <worldbody>
+        <body name="body1">
+            <geom class="sphere_collision" />
+        </body>
+    </worldbody>
+</mujoco>
+"""
+
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_mjcf(mjcf_content)
+        model = builder.finalize()
+
+        self.assertEqual(builder.shape_count, 1)
+
+        self.assertEqual(builder.shape_type[0], GeoType.SPHERE)
+
+        # Verify condim is 6 (inherited from parent)
+        # If inheritance is broken, this will be the default value (usually 3)
+        if hasattr(model, "mujoco") and hasattr(model.mujoco, "condim"):
+            condim = model.mujoco.condim.numpy()[0]
+            self.assertEqual(condim, 6, "condim should be 6 (inherited from parent class 'collision')")
+        else:
+            self.fail("Model should have mujoco.condim attribute")
+
     def test_actuatorfrcrange_parsing(self):
         """Test that actuatorfrcrange is parsed from MJCF joint attributes and applied to joint effort limits."""
         mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
