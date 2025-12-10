@@ -34,8 +34,7 @@ def convert_newton_transform(
     in_shape_body: wp.array(dtype=wp.int32),
     in_transform: wp.array(dtype=wp.transformf),
     in_scale: wp.array(dtype=wp.vec3f),
-    out_position: wp.array(dtype=wp.vec3f),
-    out_matrix: wp.array(dtype=wp.mat33f),
+    out_transforms: wp.array(dtype=wp.transformf),
     out_sizes: wp.array(dtype=wp.vec3f),
 ):
     tid = wp.tid()
@@ -45,9 +44,7 @@ def convert_newton_transform(
     if body >= 0:
         body_transform = in_body_transforms[body]
 
-    transform = wp.mul(body_transform, in_transform[tid])
-    out_position[tid] = wp.transform_get_translation(transform)
-    out_matrix[tid] = wp.quat_to_matrix(wp.normalize(wp.transform_get_rotation(transform)))
+    out_transforms[tid] = wp.mul(body_transform, in_transform[tid])
     out_sizes[tid] = in_scale[tid]
 
 
@@ -94,7 +91,7 @@ def is_supported_shape_type(shape_type: wp.int32) -> wp.bool:
 def compute_enabled_shapes(
     shape_type: wp.array(dtype=wp.int32),
     shape_flags: wp.array(dtype=wp.int32),
-    out_geom_enabled: wp.array(dtype=wp.int32),
+    out_geom_enabled: wp.array(dtype=wp.uint32),
     out_mesh_indices: wp.array(dtype=wp.int32),
     out_geom_enabled_count: wp.array(dtype=wp.int32),
 ):
@@ -109,7 +106,7 @@ def compute_enabled_shapes(
         return
 
     index = wp.atomic_add(out_geom_enabled_count, 0, 1)
-    out_geom_enabled[index] = tid
+    out_geom_enabled[index] = wp.uint32(tid)
 
 
 @wp.kernel(enable_backward=False)
@@ -247,7 +244,6 @@ class TiledCameraSensor:
         default_light_shadows: bool = False
         colors_per_world: bool = False
         colors_per_shape: bool = False
-        default_semantic_ids: bool = False
 
     def __init__(self, model: Model, num_cameras: int, width: int, height: int, options: Options | None = None):
         self.model = model
@@ -268,11 +264,10 @@ class TiledCameraSensor:
                 self.render_context.triangle_indices = model.tri_indices.flatten()
                 self.render_context.enable_particles = False
 
-        self.render_context.geom_enabled = wp.empty(self.model.shape_count, dtype=wp.int32)
+        self.render_context.geom_enabled = wp.empty(self.model.shape_count, dtype=wp.uint32)
         self.render_context.geom_types = model.shape_type
         self.render_context.geom_sizes = wp.empty(self.model.shape_count, dtype=wp.vec3f)
-        self.render_context.geom_positions = wp.empty(self.model.shape_count, dtype=wp.vec3f)
-        self.render_context.geom_orientations = wp.empty(self.model.shape_count, dtype=wp.mat33f)
+        self.render_context.geom_transforms = wp.empty(self.model.shape_count, dtype=wp.transformf)
         self.render_context.geom_materials = wp.array(
             np.full(self.model.shape_count, fill_value=-1, dtype=np.int32), dtype=wp.int32
         )
@@ -310,8 +305,6 @@ class TiledCameraSensor:
                 self.assign_random_colors_per_world()
             elif options.colors_per_shape:
                 self.assign_random_colors_per_shape()
-            if options.default_semantic_ids:
-                self.assign_default_semantic_ids()
 
     def update_from_state(self, state: State):
         """
@@ -329,8 +322,7 @@ class TiledCameraSensor:
                     self.model.shape_body,
                     self.model.shape_transform,
                     self.model.shape_scale,
-                    self.render_context.geom_positions,
-                    self.render_context.geom_orientations,
+                    self.render_context.geom_transforms,
                     self.render_context.geom_sizes,
                 ],
             )
@@ -344,17 +336,16 @@ class TiledCameraSensor:
     def render(
         self,
         state: State | None,
-        camera_positions: wp.array(dtype=wp.vec3f, ndim=2),
-        camera_orientations: wp.array(dtype=wp.mat33f, ndim=2),
+        camera_transforms: wp.array(dtype=wp.transformf, ndim=2),
         camera_rays: wp.array(dtype=wp.vec3f, ndim=4),
         color_image: wp.array(dtype=wp.uint32, ndim=3) | None = None,
         depth_image: wp.array(dtype=wp.float32, ndim=3) | None = None,
-        semantic_id_image: wp.array(dtype=wp.uint32, ndim=3) | None = None,
+        geom_id_image: wp.array(dtype=wp.uint32, ndim=3) | None = None,
         normal_image: wp.array(dtype=wp.vec3f, ndim=3) | None = None,
         refit_bvh: bool = True,
         clear_color: int | None = 0xFF666666,
         clear_depth: float | None = 0.0,
-        clear_semantic_id: int | None = 0,
+        clear_geom_id: int | None = 0,
         clear_normal: wp.vec3f | None = DEFAULT_CLEAR_NORMAL,
     ):
         """
@@ -362,38 +353,36 @@ class TiledCameraSensor:
 
         Args:
             state: The current simulation state containing body transforms.
-            camera_positions: Array of camera positions in world space, shape (num_cameras, num_worlds).
-            camera_orientations: Array of camera orientations in world space, shape (num_cameras, num_worlds).
+            camera_transforms: Array of camera transforms in world space, shape (num_cameras, num_worlds).
             camera_rays: Array of camera rays in camera space, shape (num_cameras, height, width, 2).
             color_image: Optional output array for color data (num_worlds, num_cameras, width*height).
                         If None, no color rendering is performed.
             depth_image: Optional output array for depth data (num_worlds, num_cameras, width*height).
                         If None, no depth rendering is performed.
-            semantic_id_image: Optional output array for semantic id data (num_worlds, num_cameras, width*height).
-                        If None, no semantic id rendering is performed.
+            geom_id_image: Optional output array for geom id data (num_worlds, num_cameras, width*height).
+                        If None, no geom id rendering is performed.
             normal_image: Optional output array for normal data (num_worlds, num_cameras, width*height).
                         If None, no normal rendering is performed.
             refit_bvh: Whether to refit the BVH or not.
             clear_color: The color to clear the color image with (or skip if None).
             clear_depth: The value to clear the depth image with (or skip if None).
-            clear_semantic_id: The value to clear the semantic id image with (or skip if None).
+            clear_geom_id: The value to clear the geom id image with (or skip if None).
             clear_normal: The value to clear the normal image with (or skip if None).
         """
         if state is not None:
             self.update_from_state(state)
 
         self.render_context.render(
-            camera_positions,
-            camera_orientations,
+            camera_transforms,
             camera_rays,
             color_image,
             depth_image,
-            semantic_id_image,
+            geom_id_image,
             normal_image,
             refit_bvh=refit_bvh,
             clear_color=clear_color,
             clear_depth=clear_depth,
-            clear_semantic_id=clear_semantic_id,
+            clear_geom_id=clear_geom_id,
             clear_normal=clear_normal,
         )
 
@@ -604,12 +593,6 @@ class TiledCameraSensor:
         colors[:, -1] = 1.0
         self.render_context.geom_colors = wp.array(colors, dtype=wp.vec4f)
 
-    def assign_default_semantic_ids(self):
-        """
-        Assign a default semantic id to all shapes.
-        """
-        self.render_context.geom_semantic_ids = wp.array(np.arange(self.model.shape_count), dtype=wp.uint32)
-
     def create_default_light(self, enable_shadows: bool = True):
         """
         Create a default directional light for the scene.
@@ -675,14 +658,14 @@ class TiledCameraSensor:
         """
         return self.render_context.create_depth_image_output()
 
-    def create_semantic_id_image_output(self):
+    def create_geom_id_image_output(self):
         """
-        Create a Warp array for semantic id image output.
+        Create a Warp array for geom id image output.
 
         Returns:
             wp.array of shape (num_worlds, num_cameras, width*height) with dtype uint32.
         """
-        return self.render_context.create_semantic_id_image_output()
+        return self.render_context.create_geom_id_image_output()
 
     def create_normal_image_output(self):
         """

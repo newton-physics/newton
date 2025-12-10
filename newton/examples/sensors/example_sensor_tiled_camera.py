@@ -67,6 +67,13 @@ def animate_franka(
         ) * ((wp.sin(time + wp.randf(rng)) + 1.0) * 0.5)
 
 
+@wp.kernel
+def geom_id_to_rgb(geom_id: wp.array(dtype=wp.uint32, ndim=3), rgba: wp.array(dtype=wp.uint32, ndim=3)):
+    world_id, camera_id, pixel_id = wp.tid()
+    rng = wp.rand_init(1234, wp.int32(geom_id[world_id, camera_id, pixel_id]))
+    rgba[world_id, camera_id, pixel_id] = wp.uint32(wp.randi(rng)) | wp.uint32(0xFF000000)
+
+
 class Example:
     def __init__(self, viewer: ViewerGL):
         self.num_worlds_per_row = 6
@@ -168,6 +175,7 @@ class Example:
         self.tiled_camera_sensor_color_image = self.tiled_camera_sensor.create_color_image_output()
         self.tiled_camera_sensor_depth_image = self.tiled_camera_sensor.create_depth_image_output()
         self.tiled_camera_sensor_normal_image = self.tiled_camera_sensor.create_normal_image_output()
+        self.tiled_camera_sensor_geom_id_image = self.tiled_camera_sensor.create_geom_id_image_output()
 
         if isinstance(self.viewer, ViewerGL):
             self.create_texture()
@@ -199,28 +207,33 @@ class Example:
     def render_sensors(self):
         self.tiled_camera_sensor.render(
             self.state,
-            *self.get_camera_transforms(),
+            self.get_camera_transforms(),
             self.camera_rays,
             color_image=self.tiled_camera_sensor_color_image,
             depth_image=self.tiled_camera_sensor_depth_image,
             normal_image=self.tiled_camera_sensor_normal_image,
+            geom_id_image=self.tiled_camera_sensor_geom_id_image,
         )
         self.update_texture()
 
-    def get_camera_transforms(self) -> tuple[wp.array(dtype=wp.vec3f), wp.array(dtype=wp.mat33f)]:
+    def get_camera_transforms(self) -> wp.array(dtype=wp.transformf):
         if isinstance(self.viewer, ViewerGL):
-            camera_positions = wp.array([[self.viewer.camera.pos] * self.num_worlds_total], dtype=wp.vec3f)
-            camera_orientations = wp.array(
-                [[wp.mat33f(self.viewer.camera.get_view_matrix().reshape(4, 4)[:3, :3])] * self.num_worlds_total],
-                dtype=wp.mat33f,
+            return wp.array(
+                [
+                    [
+                        wp.transformf(
+                            self.viewer.camera.pos,
+                            wp.quat_from_matrix(wp.mat33f(self.viewer.camera.get_view_matrix().reshape(4, 4)[:3, :3])),
+                        )
+                    ]
+                    * self.num_worlds_total
+                ],
+                dtype=wp.transformf,
             )
-            return camera_positions, camera_orientations
-
-        camera_positions = wp.array([[wp.vec3f(10.0, 0.0, 2.0)] * self.num_worlds_total], dtype=wp.vec3f)
-        camera_orientations = wp.array(
-            [[wp.mat33f(0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0)] * self.num_worlds_total], dtype=wp.mat33f
+        return wp.array(
+            [[wp.transformf(wp.vec3f(10.0, 0.0, 2.0), wp.quatf(0.5, 0.5, 0.5, 0.5))] * self.num_worlds_total],
+            dtype=wp.transformf,
         )
-        return camera_positions, camera_orientations
 
     def create_texture(self):
         width = self.tiled_camera_sensor.render_context.width * self.num_worlds_per_row
@@ -266,6 +279,16 @@ class Example:
             self.tiled_camera_sensor.flatten_normal_image_to_rgba(
                 self.tiled_camera_sensor_normal_image, texture_buffer, self.num_worlds_per_row
             )
+        elif self.image_output == 3:
+            wp.launch(
+                geom_id_to_rgb,
+                self.tiled_camera_sensor_geom_id_image.shape,
+                [self.tiled_camera_sensor_geom_id_image],
+                [self.tiled_camera_sensor_geom_id_image],
+            )
+            self.tiled_camera_sensor.flatten_color_image_to_rgba(
+                self.tiled_camera_sensor_geom_id_image, texture_buffer, self.num_worlds_per_row
+            )
         self.texture_buffer.unmap()
 
         gl.glBindTexture(gl.GL_TEXTURE_2D, self.texture_id)
@@ -297,7 +320,7 @@ class Example:
 
     def gui(self, ui):
         if ui.button("Toggle RGB / Depth / Normal Image", ui.ImVec2(260, 30)):
-            self.image_output = (self.image_output + 1) % 3
+            self.image_output = (self.image_output + 1) % 4
 
     def display(self, imgui):
         line_color = imgui.get_color_u32(imgui.Col_.window_bg)

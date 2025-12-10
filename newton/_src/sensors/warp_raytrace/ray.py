@@ -32,7 +32,7 @@ def safe_div(x: Any, y: Any) -> Any:
 
 @wp.func
 def map_ray_to_local(
-    pos: wp.vec3f, mat: wp.mat33f, ray_origin_world: wp.vec3f, ray_direction_world: wp.vec3f
+    transform: wp.transformf, ray_origin_world: wp.vec3f, ray_direction_world: wp.vec3f
 ) -> tuple[wp.vec3f, wp.vec3f]:
     """Maps ray to local geom frame coordinates.
 
@@ -46,9 +46,9 @@ def map_ray_to_local(
             3D point and 3D direction in local geom frame
     """
 
-    mat_transposed = wp.transpose(mat)
-    ray_origin_local = mat_transposed @ (ray_origin_world - pos)
-    ray_direction_local = mat_transposed @ ray_direction_world
+    inv_transform = wp.transform_inverse(transform)
+    ray_origin_local = wp.transform_point(inv_transform, ray_origin_world)
+    ray_direction_local = wp.transform_vector(inv_transform, ray_direction_world)
     return ray_origin_local, ray_direction_local
 
 
@@ -77,12 +77,12 @@ def ray_compute_quadratic(a: wp.float32, b: wp.float32, c: wp.float32) -> tuple[
 
 @wp.func
 def ray_plane(
-    pos: wp.vec3f, mat: wp.mat33f, size: wp.vec3f, ray_origin_world: wp.vec3f, ray_direction_world: wp.vec3f
+    transform: wp.transformf, size: wp.vec3f, ray_origin_world: wp.vec3f, ray_direction_world: wp.vec3f
 ) -> wp.float32:
     """Returns the distance at which a ray intersects with a plane."""
 
     # map to local frame
-    ray_origin_local, ray_direction_local = map_ray_to_local(pos, mat, ray_origin_world, ray_direction_world)
+    ray_origin_local, ray_direction_local = map_ray_to_local(transform, ray_origin_world, ray_direction_world)
 
     # z-vec not pointing towards front face: reject
     if ray_direction_local[2] > -EPSILON:
@@ -106,14 +106,14 @@ def ray_plane(
 
 @wp.func
 def ray_plane_with_normal(
-    pos: wp.vec3f, mat: wp.mat33f, size: wp.vec3f, ray_origin_world: wp.vec3f, ray_direction_world: wp.vec3f
+    transform: wp.transformf, size: wp.vec3f, ray_origin_world: wp.vec3f, ray_direction_world: wp.vec3f
 ) -> tuple[wp.bool, wp.float32, wp.vec3f]:
     """Returns distance and normal at which a ray intersects with a plane."""
-    t_hit = ray_plane(pos, mat, size, ray_origin_world, ray_direction_world)
+    t_hit = ray_plane(transform, size, ray_origin_world, ray_direction_world)
     if t_hit == wp.inf:
         return False, wp.inf, wp.vec3f(0.0, 0.0, 0.0)
     # Local plane normal is +Z; rotate to world space
-    normal_world = mat @ wp.vec3f(0.0, 0.0, 1.0)
+    normal_world = wp.transform_point(transform, wp.vec3f(0.0, 0.0, 1.0))
     normal_world = wp.normalize(normal_world)
     return True, t_hit, normal_world
 
@@ -147,17 +147,17 @@ def ray_sphere_with_normal(
 
 @wp.func
 def ray_capsule(
-    pos: wp.vec3f, mat: wp.mat33f, size: wp.vec3f, ray_origin_world: wp.vec3f, ray_direction_world: wp.vec3f
+    transform: wp.transformf, size: wp.vec3f, ray_origin_world: wp.vec3f, ray_direction_world: wp.vec3f
 ) -> wp.float32:
     """Returns the distance at which a ray intersects with a capsule."""
 
     # bounding sphere test
     ssz = size[0] + size[1]
-    if ray_sphere(pos, ssz * ssz, ray_origin_world, ray_direction_world) == wp.inf:
+    if ray_sphere(wp.transform_get_translation(transform), ssz * ssz, ray_origin_world, ray_direction_world) == wp.inf:
         return wp.inf
 
     # map to local frame
-    ray_origin_local, ray_direction_local = map_ray_to_local(pos, mat, ray_origin_world, ray_direction_world)
+    ray_origin_local, ray_direction_local = map_ray_to_local(transform, ray_origin_world, ray_direction_world)
 
     d_len_sq = wp.dot(ray_direction_local, ray_direction_local)
     if d_len_sq < EPSILON:
@@ -232,32 +232,32 @@ def ray_capsule(
 
 @wp.func
 def ray_capsule_with_normal(
-    pos: wp.vec3f, mat: wp.mat33f, size: wp.vec3f, ray_origin_world: wp.vec3f, ray_direction_world: wp.vec3f
+    transform: wp.transformf, size: wp.vec3f, ray_origin_world: wp.vec3f, ray_direction_world: wp.vec3f
 ) -> tuple[wp.bool, wp.float32, wp.vec3f]:
     """Returns distance and normal at which a ray intersects with a capsule."""
-    t_hit = ray_capsule(pos, mat, size, ray_origin_world, ray_direction_world)
+    t_hit = ray_capsule(transform, size, ray_origin_world, ray_direction_world)
     if t_hit == wp.inf:
         return False, wp.inf, wp.vec3f(0.0, 0.0, 0.0)
 
     # Compute continuous normal: vector from closest point on axis segment to the hit point
-    ray_origin_local, ray_direction_local = map_ray_to_local(pos, mat, ray_origin_world, ray_direction_world)
+    ray_origin_local, ray_direction_local = map_ray_to_local(transform, ray_origin_world, ray_direction_world)
     hit_local = ray_origin_local + t_hit * ray_direction_local
     z_clamped = wp.min(size[1], wp.max(-size[1], hit_local[2]))
     axis_point = wp.vec3f(0.0, 0.0, z_clamped)
     normal_local = wp.normalize(hit_local - axis_point)
-    normal_world = mat @ normal_local
+    normal_world = wp.transform_vector(transform, normal_local)
     normal_world = wp.normalize(normal_world)
     return True, t_hit, normal_world
 
 
 @wp.func
 def ray_ellipsoid(
-    pos: wp.vec3f, mat: wp.mat33f, size: wp.vec3f, ray_origin_world: wp.vec3f, ray_direction_world: wp.vec3f
+    transform: wp.transformf, size: wp.vec3f, ray_origin_world: wp.vec3f, ray_direction_world: wp.vec3f
 ) -> wp.float32:
     """Returns the distance at which a ray intersects with an ellipsoid."""
 
     # map to local frame
-    ray_origin_local, ray_direction_local = map_ray_to_local(pos, mat, ray_origin_world, ray_direction_world)
+    ray_origin_local, ray_direction_local = map_ray_to_local(transform, ray_origin_world, ray_direction_world)
 
     # invert size^2
     s = wp.vec3f(safe_div(1.0, size[0] * size[0]), safe_div(1.0, size[1] * size[1]), safe_div(1.0, size[2] * size[2]))
@@ -275,16 +275,16 @@ def ray_ellipsoid(
 
 @wp.func
 def ray_cylinder(
-    pos: wp.vec3f, mat: wp.mat33f, size: wp.vec3f, ray_origin_world: wp.vec3f, ray_direction_world: wp.vec3f
+    transform: wp.transformf, size: wp.vec3f, ray_origin_world: wp.vec3f, ray_direction_world: wp.vec3f
 ) -> tuple[wp.float32, wp.int32]:
     """Returns the distance at which a ray intersects with a cylinder."""
     # bounding sphere test
     ssz = size[0] * size[0] + size[1] * size[1]
-    if ray_sphere(pos, ssz, ray_origin_world, ray_direction_world) == wp.inf:
+    if ray_sphere(wp.transform_get_translation(transform), ssz, ray_origin_world, ray_direction_world) == wp.inf:
         return wp.inf, 0
 
     # map to local frame
-    ray_origin_local, ray_direction_local = map_ray_to_local(pos, mat, ray_origin_world, ray_direction_world)
+    ray_origin_local, ray_direction_local = map_ray_to_local(transform, ray_origin_world, ray_direction_world)
 
     radius = size[0]
     height = size[1]
@@ -344,14 +344,14 @@ def ray_cylinder(
 
 @wp.func
 def ray_cylinder_with_normal(
-    pos: wp.vec3f, mat: wp.mat33f, size: wp.vec3f, ray_origin_world: wp.vec3f, ray_direction_world: wp.vec3f
+    transform: wp.transformf, size: wp.vec3f, ray_origin_world: wp.vec3f, ray_direction_world: wp.vec3f
 ) -> tuple[wp.bool, wp.float32, wp.vec3f]:
     """Returns distance and normal at which a ray intersects with a cylinder."""
-    t_hit, hit_side = ray_cylinder(pos, mat, size, ray_origin_world, ray_direction_world)
+    t_hit, hit_side = ray_cylinder(transform, size, ray_origin_world, ray_direction_world)
     if t_hit == wp.inf:
         return False, wp.inf, wp.vec3f(0.0, 0.0, 0.0)
     # Compute continuous normal: vector from closest point on axis segment to the hit point
-    ray_origin_local, ray_direction_local = map_ray_to_local(pos, mat, ray_origin_world, ray_direction_world)
+    ray_origin_local, ray_direction_local = map_ray_to_local(transform, ray_origin_world, ray_direction_world)
     hit_local = ray_origin_local + t_hit * ray_direction_local
     normal_local = wp.vec3f(0.0, 0.0, 0.0)
     if hit_side == 0:
@@ -360,23 +360,23 @@ def ray_cylinder_with_normal(
         normal_local = wp.normalize(hit_local - axis_point)
     else:
         normal_local = wp.vec3f(0.0, 0.0, wp.float32(hit_side))
-    normal_world = mat @ normal_local
+    normal_world = wp.transform_vector(transform, normal_local)
     normal_world = wp.normalize(normal_world)
     return True, t_hit, normal_world
 
 
 @wp.func
 def ray_cone(
-    pos: wp.vec3f, mat: wp.mat33f, size: wp.vec3f, ray_origin_world: wp.vec3f, ray_direction_world: wp.vec3f
+    transform: wp.transformf, size: wp.vec3f, ray_origin_world: wp.vec3f, ray_direction_world: wp.vec3f
 ) -> wp.float32:
     """Returns the distance at which a ray intersects with a cone."""
     # bounding sphere test
     ssz = size[0] * size[0] + size[1] * size[1]
-    if ray_sphere(pos, ssz, ray_origin_world, ray_direction_world) == wp.inf:
+    if ray_sphere(wp.transform_get_translation(transform), ssz, ray_origin_world, ray_direction_world) == wp.inf:
         return wp.inf
 
     # map to local frame
-    ray_origin_local, ray_direction_local = map_ray_to_local(pos, mat, ray_origin_world, ray_direction_world)
+    ray_origin_local, ray_direction_local = map_ray_to_local(transform, ray_origin_world, ray_direction_world)
 
     half_height = size[1]
     radius = size[0]
@@ -434,14 +434,14 @@ def ray_cone(
 
 @wp.func
 def ray_cone_with_normal(
-    pos: wp.vec3f, mat: wp.mat33f, size: wp.vec3f, ray_origin_world: wp.vec3f, ray_direction_world: wp.vec3f
+    transform: wp.transformf, size: wp.vec3f, ray_origin_world: wp.vec3f, ray_direction_world: wp.vec3f
 ) -> tuple[wp.bool, wp.float32, wp.vec3f]:
     """Returns distance and normal at which a ray intersects with a cone."""
-    t_hit = ray_cone(pos, mat, size, ray_origin_world, ray_direction_world)
+    t_hit = ray_cone(transform, size, ray_origin_world, ray_direction_world)
     if t_hit == wp.inf:
         return False, wp.inf, wp.vec3f(0.0, 0.0, 0.0)
 
-    ray_origin_local, ray_direction_local = map_ray_to_local(pos, mat, ray_origin_world, ray_direction_world)
+    ray_origin_local, ray_direction_local = map_ray_to_local(transform, ray_origin_world, ray_direction_world)
     hit_local = ray_origin_local + t_hit * ray_direction_local
     half_height = size[1]
     radius = size[0]
@@ -461,7 +461,7 @@ def ray_cone_with_normal(
             normal_local = wp.vec3f(hit_local[0], hit_local[1], slope * radial)
             normal_local = wp.normalize(normal_local)
 
-    normal_world = mat @ normal_local
+    normal_world = wp.transform_vector(transform, normal_local)
     normal_world = wp.normalize(normal_world)
     return True, t_hit, normal_world
 
@@ -471,18 +471,18 @@ _IFACE = wp.types.matrix((3, 2), dtype=wp.int32)(1, 2, 0, 2, 0, 1)
 
 @wp.func
 def ray_box(
-    pos: wp.vec3f, mat: wp.mat33f, size: wp.vec3f, ray_origin_world: wp.vec3f, ray_direction_world: wp.vec3f
+    transform: wp.transformf, size: wp.vec3f, ray_origin_world: wp.vec3f, ray_direction_world: wp.vec3f
 ) -> tuple[wp.float32, vec6f]:
     """Returns the distance at which a ray intersects with a box."""
     all = vec6f(-1.0, -1.0, -1.0, -1.0, -1.0, -1.0)
 
     # bounding sphere test
     ssz = wp.dot(size, size)
-    if ray_sphere(pos, ssz, ray_origin_world, ray_direction_world) == wp.inf:
+    if ray_sphere(wp.transform_get_translation(transform), ssz, ray_origin_world, ray_direction_world) == wp.inf:
         return wp.inf, all
 
     # map to local frame
-    ray_origin_local, ray_direction_local = map_ray_to_local(pos, mat, ray_origin_world, ray_direction_world)
+    ray_origin_local, ray_direction_local = map_ray_to_local(transform, ray_origin_world, ray_direction_world)
 
     # init solution
     t_hit = wp.inf
@@ -517,10 +517,10 @@ def ray_box(
 
 @wp.func
 def ray_box_with_normal(
-    pos: wp.vec3f, mat: wp.mat33f, size: wp.vec3f, ray_origin_world: wp.vec3f, ray_direction_world: wp.vec3f
+    transform: wp.transformf, size: wp.vec3f, ray_origin_world: wp.vec3f, ray_direction_world: wp.vec3f
 ) -> tuple[wp.bool, wp.float32, wp.vec3f]:
     """Returns distance and normal at which a ray intersects with a box."""
-    t_hit, all = ray_box(pos, mat, size, ray_origin_world, ray_direction_world)
+    t_hit, all = ray_box(transform, size, ray_origin_world, ray_direction_world)
     if t_hit == wp.inf:
         return False, wp.inf, wp.vec3f(0.0, 0.0, 0.0)
 
@@ -537,7 +537,7 @@ def ray_box_with_normal(
         if found:
             break
 
-    normal_world = mat @ normal_local
+    normal_world = wp.transform_vector(transform, normal_local)
     normal_world = wp.normalize(normal_world)
     return True, t_hit, normal_world
 
@@ -593,8 +593,7 @@ def inv_scale_mat(scale: wp.vec3f) -> wp.mat33f:
 def ray_mesh_with_bvh(
     mesh_bvh_ids: wp.array(dtype=wp.uint64),
     mesh_geom_id: wp.int32,
-    pos: wp.vec3f,
-    mat: wp.mat33f,
+    transform: wp.transformf,
     size: wp.vec3f,
     ray_origin_world: wp.vec3f,
     ray_direction_world: wp.vec3f,
@@ -604,13 +603,16 @@ def ray_mesh_with_bvh(
 
     Requires wp.Mesh be constructed and their ids to be passed"""
 
-    ray_origin_local, ray_direction_local = map_ray_to_local(
-        pos, inv_scale_mat(size) @ mat, ray_origin_world, ray_direction_world
-    )
+    ray_origin_local, ray_direction_local = map_ray_to_local(transform, ray_origin_world, ray_direction_world)
+
+    scale_matrix = inv_scale_mat(size)
+    ray_origin_local = scale_matrix @ ray_origin_local
+    ray_direction_local = scale_matrix @ ray_direction_local
+
     query = wp.mesh_query_ray(mesh_bvh_ids[mesh_geom_id], ray_origin_local, ray_direction_local, max_t)
 
     if query.result and wp.dot(ray_direction_local, query.normal) < 0.0:  # Backface culling in local space
-        normal = mat @ query.normal
+        normal = wp.transform_vector(transform, query.normal)
         normal = wp.normalize(normal)
         return True, query.t, normal, query.u, query.v, query.face, mesh_geom_id
 
