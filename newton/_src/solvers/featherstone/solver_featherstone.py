@@ -16,7 +16,7 @@
 import warp as wp
 
 from ...core.types import override
-from ...sim import Contacts, Control, Model, State, eval_fk
+from ...sim import Contacts, Control, Model, State
 from ..semi_implicit.kernels_contact import (
     eval_body_contact,
     eval_particle_body_contact_forces,
@@ -41,6 +41,7 @@ from .kernels import (
     eval_dense_cholesky_batched,
     eval_dense_gemm_batched,
     eval_dense_solve_batched,
+    eval_fk_with_velocity_conversion,
     eval_rigid_fk,
     eval_rigid_id,
     eval_rigid_jacobian,
@@ -671,8 +672,8 @@ class SolverFeatherstone(SolverBase):
                     device=model.device,
                 )
 
-                # update maximal coordinates
-                eval_fk(model, state_out.joint_q, state_out.joint_qd, state_out, convert_velocity=True)
+                # update maximal coordinates using FK with velocity conversion
+                eval_fk_with_velocity_conversion(model, state_out.joint_q, state_out.joint_qd, state_out)
 
             self.integrate_particles(model, state_in, state_out, dt)
 
