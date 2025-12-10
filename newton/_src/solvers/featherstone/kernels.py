@@ -18,7 +18,7 @@ from __future__ import annotations
 import warp as wp
 
 from ...core import transform_twist
-from ...sim import JointType
+from ...sim import JointType, Model, State
 from ...sim.articulation import (
     compute_2d_rotational_dofs,
     compute_3d_rotational_dofs,
@@ -1622,10 +1622,10 @@ def eval_articulation_fk_with_velocity_conversion(
 
 
 def eval_fk_with_velocity_conversion(
-    model,
+    model: Model,
     joint_q: wp.array(dtype=float),
     joint_qd: wp.array(dtype=float),
-    state,
+    state: State,
     mask: wp.array(dtype=bool) | None = None,
     indices: wp.array(dtype=int) | None = None,
 ):
@@ -1637,10 +1637,10 @@ def eval_fk_with_velocity_conversion(
     and :attr:`State.body_qd`).
 
     Args:
-        model: The model to evaluate.
+        model (Model): The model to evaluate.
         joint_q (array): Generalized joint position coordinates, shape [joint_coord_count], float
         joint_qd (array): Generalized joint velocity coordinates, shape [joint_dof_count], float
-        state: The state to update.
+        state (State): The state to update.
         mask (array): The mask to use to enable / disable FK for an articulation. If None then treat all as enabled, shape [articulation_count], bool
         indices (array): Integer indices of articulations to update. If None, updates all articulations.
                         Cannot be used together with mask parameter.
