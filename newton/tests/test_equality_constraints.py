@@ -226,7 +226,11 @@ class TestEqualityConstraints(unittest.TestCase):
 
         # Add joints
         joint_fixed_base = builder.add_joint_fixed(
-            parent=-1, child=base, parent_xform=wp.transform_identity(), child_xform=wp.transform_identity(), key="j_base"
+            parent=-1,
+            child=base,
+            parent_xform=wp.transform_identity(),
+            child_xform=wp.transform_identity(),
+            key="j_base",
         )
         joint1 = builder.add_joint_revolute(
             parent=base,
@@ -288,7 +292,6 @@ class TestEqualityConstraints(unittest.TestCase):
         joint_remap = result["joint_remap"]
         body_merged_parent = result["body_merged_parent"]
 
-
         self.assertEqual(builder.body_count, 3)  # base, link1 (merged with link2), link3
         self.assertEqual(builder.joint_count, 3)  # fixed joint to base kept, 2 revolute joints remain
 
@@ -296,14 +299,14 @@ class TestEqualityConstraints(unittest.TestCase):
         new_base = body_remap.get(original_base, original_base)
         new_link1 = body_remap.get(original_link1, original_link1)
         new_link3 = body_remap.get(original_link3, original_link3)
-        
+
         # Joint constraint: joint1 -> joint3 should be remapped to new joint indices
         new_joint1 = joint_remap.get(original_joint1, -1)
         new_joint3 = joint_remap.get(original_joint3, -1)
-        
+
         self.assertNotEqual(new_joint1, -1, "Joint1 should still exist after collapse")
         self.assertNotEqual(new_joint3, -1, "Joint3 should still exist after collapse")
-        
+
         # Verify the joint constraint was remapped
         self.assertEqual(builder.equality_constraint_joint1[eq_joint], new_joint1)
         self.assertEqual(builder.equality_constraint_joint2[eq_joint], new_joint3)
@@ -321,13 +324,13 @@ class TestEqualityConstraints(unittest.TestCase):
 
         # Finalize and verify the model works
         model = builder.finalize()
-        
+
         # Verify model has correct counts
         self.assertEqual(model.body_count, 3)
         self.assertEqual(model.joint_count, 3)
         self.assertEqual(model.equality_constraint_count, 3)
 
-        print(f"Test passed: Equality constraints properly remapped after collapse_fixed_joints")
+        print("Test passed: Equality constraints properly remapped after collapse_fixed_joints")
 
 
 if __name__ == "__main__":

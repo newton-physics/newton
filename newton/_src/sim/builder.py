@@ -2990,10 +2990,8 @@ class ModelBuilder:
             joint = joint_data[(parent_body, child_body)]
             # Don't merge fixed joints if the child body is referenced in an equality constraint
             # and would be merged into world (last_dynamic_body == -1)
-            should_skip_merge = (
-                child_body in bodies_in_constraints and last_dynamic_body == -1
-            )
-            
+            should_skip_merge = child_body in bodies_in_constraints and last_dynamic_body == -1
+
             if should_skip_merge and joint["type"] == JointType.FIXED:
                 # Skip merging this fixed joint because the body is referenced in an equality constraint
                 if verbose:
@@ -3003,7 +3001,7 @@ class ModelBuilder:
                         f"Skipping collapse of fixed joint {joint['key']} between {parent_key} and {child_key}: "
                         f"{child_key} is referenced in an equality constraint and cannot be merged into world"
                     )
-            
+
             if joint["type"] == JointType.FIXED and not should_skip_merge:
                 joint_xform = joint["parent_xform"] * wp.transform_inverse(joint["child_xform"])
                 incoming_xform = incoming_xform * joint_xform
@@ -3225,19 +3223,21 @@ class ModelBuilder:
 
             constraint_type = self.equality_constraint_type[i]
 
-            if constraint_type == EqType.CONNECT or constraint_type == EqType.WELD:
-                # Transform anchor from merged body's frame to parent body's frame
-                if body1_was_merged and old_body1 in body_merged_transform:
-                    merge_xform = body_merged_transform[old_body1]
-                    self.equality_constraint_anchor[i] = wp.transform_point(merge_xform, self.equality_constraint_anchor[i])
-
+            # Transform anchor/relpose from merged body's frame to parent body's frame
+            if body1_was_merged:
+                merge_xform = body_merged_transform[old_body1]
+                if constraint_type in (EqType.CONNECT, EqType.WELD):
+                    self.equality_constraint_anchor[i] = wp.transform_point(
+                        merge_xform, self.equality_constraint_anchor[i]
+                    )
                 if constraint_type == EqType.WELD:
-                    if body1_was_merged and old_body1 in body_merged_transform:
-                        merge_xform = body_merged_transform[old_body1]
-                        self.equality_constraint_relpose[i] = merge_xform * self.equality_constraint_relpose[i]
-                    if body2_was_merged and old_body2 in body_merged_transform:
-                        merge_xform = body_merged_transform[old_body2]
-                        self.equality_constraint_relpose[i] = self.equality_constraint_relpose[i] * wp.transform_inverse(merge_xform)
+                    self.equality_constraint_relpose[i] = merge_xform * self.equality_constraint_relpose[i]
+
+            if body2_was_merged and constraint_type == EqType.WELD:
+                merge_xform = body_merged_transform[old_body2]
+                self.equality_constraint_relpose[i] = self.equality_constraint_relpose[i] * wp.transform_inverse(
+                    merge_xform
+                )
 
             old_joint1 = self.equality_constraint_joint1[i]
             old_joint2 = self.equality_constraint_joint2[i]
