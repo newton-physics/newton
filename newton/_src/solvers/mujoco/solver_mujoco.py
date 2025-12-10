@@ -310,6 +310,101 @@ class SolverMuJoCo(SolverBase):
             )
         )
 
+        # --- Pair attributes (variable-length, from MJCF <pair> tag) ---
+        # These define explicit contact pairs with custom contact properties
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="pair_geom1",
+                frequency=None,  # Variable length
+                assignment=ModelAttributeAssignment.MODEL,
+                dtype=wp.int32,
+                default=-1,
+                namespace="mujoco",
+                references="shape",  # Values are shape indices
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="pair_geom2",
+                frequency=None,  # Variable length
+                assignment=ModelAttributeAssignment.MODEL,
+                dtype=wp.int32,
+                default=-1,
+                namespace="mujoco",
+                references="shape",  # Values are shape indices
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="pair_condim",
+                frequency=None,  # Variable length
+                assignment=ModelAttributeAssignment.MODEL,
+                dtype=wp.int32,
+                default=3,
+                namespace="mujoco",
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="pair_solref",
+                frequency=None,  # Variable length
+                assignment=ModelAttributeAssignment.MODEL,
+                dtype=wp.vec2,
+                default=wp.vec2(0.02, 1.0),
+                namespace="mujoco",
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="pair_solreffriction",
+                frequency=None,  # Variable length
+                assignment=ModelAttributeAssignment.MODEL,
+                dtype=wp.vec2,
+                default=wp.vec2(0.02, 1.0),
+                namespace="mujoco",
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="pair_solimp",
+                frequency=None,  # Variable length
+                assignment=ModelAttributeAssignment.MODEL,
+                dtype=vec5,
+                default=vec5(0.9, 0.95, 0.001, 0.5, 2.0),
+                namespace="mujoco",
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="pair_margin",
+                frequency=None,  # Variable length
+                assignment=ModelAttributeAssignment.MODEL,
+                dtype=wp.float32,
+                default=0.0,
+                namespace="mujoco",
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="pair_gap",
+                frequency=None,  # Variable length
+                assignment=ModelAttributeAssignment.MODEL,
+                dtype=wp.float32,
+                default=0.0,
+                namespace="mujoco",
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="pair_friction",
+                frequency=None,  # Variable length
+                assignment=ModelAttributeAssignment.MODEL,
+                dtype=vec5,
+                default=vec5(1.0, 1.0, 0.005, 0.0001, 0.0001),
+                namespace="mujoco",
+            )
+        )
+
     def __init__(
         self,
         model: Model,

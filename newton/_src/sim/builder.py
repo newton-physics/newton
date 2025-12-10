@@ -325,11 +325,29 @@ class ModelBuilder:
         dtype: type
         """Warp dtype (e.g., wp.float32, wp.int32, wp.bool, wp.vec3) that is compatible with Warp arrays."""
 
-        frequency: ModelAttributeFrequency
-        """Frequency category (see :class:`ModelAttributeFrequency`) that determines how the attribute is indexed in the Model."""
+        frequency: ModelAttributeFrequency | None = None
+        """Frequency category (see :class:`ModelAttributeFrequency`) that determines how the attribute is indexed in the Model.
+        If None, the attribute has variable length determined by the number of values defined."""
 
         assignment: ModelAttributeAssignment = ModelAttributeAssignment.MODEL
         """Assignment category (see :class:`ModelAttributeAssignment`), defaults to :attr:`ModelAttributeAssignment.MODEL`"""
+
+        references: str | None = None
+        """For variable-length (frequency=None) attributes that contain entity indices, this specifies
+        what entity type's offset to apply to the values during add_world/add_builder merging.
+
+        Can be either:
+        - A built-in entity type: "shape", "body", "joint", "joint_dof", "joint_coord", "articulation"
+        - A custom attribute key (e.g., "mujoco:pair_geom1") to reference another custom attribute's indexing
+
+        Example::
+
+            # References built-in shape indices
+            references="shape"
+
+            # References another custom attribute
+            references="mujoco:other_attr"
+        """
 
         namespace: str | None = None
         """Namespace for the attribute. If None, the attribute is added directly to the assigned object without a namespace."""
@@ -1802,31 +1820,73 @@ class ModelBuilder:
         self.joint_coord_count += builder.joint_coord_count
 
         # Merge custom attributes from the sub-builder
+        # First, capture pre-merge counts for all custom attributes (needed for cross-references)
+        pre_merge_custom_attr_counts: dict[str, int] = {}
+        for key, existing_attr in self.custom_attributes.items():
+            pre_merge_custom_attr_counts[key] = len(existing_attr.values) if existing_attr.values else 0
+
         for full_key, attr in builder.custom_attributes.items():
-            # Determine the offset based on frequency
-            if attr.frequency == ModelAttributeFrequency.ONCE:
-                offset = 0
+            # Determine the index offset based on frequency (for dict keys)
+            if attr.frequency is None:
+                # Variable-length attribute: indices are just sequential, offset by pre-merge count
+                index_offset = pre_merge_custom_attr_counts.get(full_key, 0)
+            elif attr.frequency == ModelAttributeFrequency.ONCE:
+                index_offset = 0
             elif attr.frequency == ModelAttributeFrequency.BODY:
-                offset = start_body_idx
+                index_offset = start_body_idx
             elif attr.frequency == ModelAttributeFrequency.SHAPE:
-                offset = start_shape_idx
+                index_offset = start_shape_idx
             elif attr.frequency == ModelAttributeFrequency.JOINT:
-                offset = start_joint_idx
+                index_offset = start_joint_idx
             elif attr.frequency == ModelAttributeFrequency.JOINT_DOF:
-                offset = start_joint_dof_idx
+                index_offset = start_joint_dof_idx
             elif attr.frequency == ModelAttributeFrequency.JOINT_COORD:
-                offset = start_joint_coord_idx
+                index_offset = start_joint_coord_idx
             elif attr.frequency == ModelAttributeFrequency.ARTICULATION:
-                offset = start_articulation_idx
+                index_offset = start_articulation_idx
             else:
                 continue
+
+            # Determine the value offset for 'references' (for values that are entity indices)
+            value_offset = 0
+            if attr.references is not None:
+                # Built-in entity types
+                if attr.references == "body":
+                    value_offset = start_body_idx
+                elif attr.references == "shape":
+                    value_offset = start_shape_idx
+                elif attr.references == "joint":
+                    value_offset = start_joint_idx
+                elif attr.references == "joint_dof":
+                    value_offset = start_joint_dof_idx
+                elif attr.references == "joint_coord":
+                    value_offset = start_joint_coord_idx
+                elif attr.references == "articulation":
+                    value_offset = start_articulation_idx
+                else:
+                    # It's a custom attribute key - use pre-merge count
+                    value_offset = pre_merge_custom_attr_counts.get(attr.references, 0)
+
+            # Helper to offset values if needed
+            def offset_value(v, offset=value_offset):
+                if offset == 0:
+                    return v
+                # Handle scalar int values
+                if isinstance(v, int):
+                    return v + offset
+                # Handle warp vector types (e.g., wp.vec2i for pairs)
+                if hasattr(v, "__len__"):
+                    return type(v)(*[x + offset for x in v])
+                return v
 
             # Declare the attribute if it doesn't exist in the main builder
             merged = self.custom_attributes.get(full_key)
             if merged is None:
                 self.custom_attributes[full_key] = replace(
                     attr,
-                    values={offset + idx: value for idx, value in attr.values.items()} if attr.values else None,
+                    values={index_offset + idx: offset_value(value) for idx, value in attr.values.items()}
+                    if attr.values
+                    else None,
                 )
                 continue
 
@@ -1852,7 +1912,7 @@ class ModelBuilder:
             # Remap indices and copy values
             if merged.values is None:
                 merged.values = {}
-            merged.values.update({offset + idx: value for idx, value in attr.values.items()})
+            merged.values.update({index_offset + idx: offset_value(value) for idx, value in attr.values.items()})
 
     def add_link(
         self,
@@ -5807,7 +5867,10 @@ class ModelBuilder:
                 frequency = custom_attr.frequency
 
                 # determine count by frequency
-                if frequency == ModelAttributeFrequency.ONCE:
+                if frequency is None:
+                    # Variable-length: count determined by number of values
+                    count = len(custom_attr.values) if custom_attr.values else 0
+                elif frequency == ModelAttributeFrequency.ONCE:
                     count = 1
                 elif frequency == ModelAttributeFrequency.BODY:
                     count = m.body_count
@@ -5822,6 +5885,10 @@ class ModelBuilder:
                 elif frequency == ModelAttributeFrequency.ARTICULATION:
                     count = m.articulation_count
                 else:
+                    continue
+
+                # Skip empty variable-length attributes
+                if count == 0:
                     continue
 
                 wp_arr = custom_attr.build_array(count, device=device, requires_grad=requires_grad)
