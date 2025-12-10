@@ -915,11 +915,9 @@ def update_axis_properties_kernel(
     mjc_actuator_to_newton_axis: wp.array2d(dtype=wp.int32),
     joint_target_kp: wp.array(dtype=float),
     joint_target_kv: wp.array(dtype=float),
-    joint_effort_limit: wp.array(dtype=float),
     # outputs
     actuator_bias: wp.array2d(dtype=vec10),
     actuator_gain: wp.array2d(dtype=vec10),
-    actuator_forcerange: wp.array2d(dtype=wp.vec2f),
 ):
     """Update MuJoCo actuator properties from Newton joint properties.
 
@@ -937,16 +935,12 @@ def update_axis_properties_kernel(
     if raw_value >= 0:
         # Position actuator
         newton_axis = raw_value
-        effort_limit = joint_effort_limit[newton_axis]
-        actuator_forcerange[world, mjc_actuator] = wp.vec2f(-effort_limit, effort_limit)
         kp = joint_target_kp[newton_axis]
         actuator_bias[world, mjc_actuator][1] = -kp
         actuator_gain[world, mjc_actuator][0] = kp
     elif raw_value != -1:  # raw_value == -1 means unmapped
         # Velocity actuator
         newton_axis = -raw_value - 2  # Decode: -(newton_axis + 2) -> newton_axis
-        effort_limit = joint_effort_limit[newton_axis]
-        actuator_forcerange[world, mjc_actuator] = wp.vec2f(-effort_limit, effort_limit)
         kv = joint_target_kv[newton_axis]
         actuator_bias[world, mjc_actuator][2] = -kv
         actuator_gain[world, mjc_actuator][0] = kv
@@ -994,6 +988,7 @@ def update_jnt_properties_kernel(
     joint_limit_kd: wp.array(dtype=float),
     joint_limit_lower: wp.array(dtype=float),
     joint_limit_upper: wp.array(dtype=float),
+    joint_effort_limit: wp.array(dtype=float),
     solimplimit: wp.array(dtype=vec5),
     joint_stiffness: wp.array(dtype=float),
     limit_margin: wp.array(dtype=float),
@@ -1003,6 +998,7 @@ def update_jnt_properties_kernel(
     jnt_stiffness: wp.array2d(dtype=float),
     jnt_margin: wp.array2d(dtype=float),
     jnt_range: wp.array2d(dtype=wp.vec2),
+    jnt_actfrcrange: wp.array2d(dtype=wp.vec2),
 ):
     """Update MuJoCo joint properties from Newton DOF properties.
 
@@ -1032,6 +1028,9 @@ def update_jnt_properties_kernel(
 
     # Update joint range
     jnt_range[world, mjc_jnt] = wp.vec2(joint_limit_lower[newton_dof], joint_limit_upper[newton_dof])
+    # update joint actuator force range (effort limit)
+    effort_limit = joint_effort_limit[newton_dof]
+    jnt_actfrcrange[world, mjc_jnt] = wp.vec2(-effort_limit, effort_limit)
 
 
 @wp.kernel
