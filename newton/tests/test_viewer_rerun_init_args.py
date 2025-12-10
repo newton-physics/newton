@@ -41,8 +41,8 @@ class TestViewerRerunInitArgs(unittest.TestCase):
         self.mock_rrb.TimePanel = Mock(return_value=Mock())
         self.mock_rrb.TimeSeriesView = Mock(return_value=Mock())
 
-    def test_default_spawns_viewer(self):
-        """Test that ViewerRerun() with no arguments spawns a viewer."""
+    def test_default_serves_web_viewer(self):
+        """Test that ViewerRerun() with no arguments servers a web viewer."""
         with patch("newton._src.viewer.viewer_rerun.rr", self.mock_rr):
             with patch("newton._src.viewer.viewer_rerun.rrb", self.mock_rrb):
                 with patch("newton._src.viewer.viewer_rerun._is_jupyter_notebook", return_value=False):
@@ -58,24 +58,34 @@ class TestViewerRerunInitArgs(unittest.TestCase):
 
                     self.mock_rr.init.assert_called_once_with("newton-viewer", default_blueprint=ANY)
 
-                    # Verify rr.spawn() was called
-                    self.mock_rr.spawn.assert_called_once()
+                    # Verify rr.serve_grpc() was called
+                    self.mock_rr.serve_grpc.assert_called_once()
+                    # Verify rr.serve_web_viewer() was called
+                    self.mock_rr.serve_web_viewer.assert_called_once()
 
                     # Verify rr.connect_grpc() was NOT called
                     self.mock_rr.connect_grpc.assert_not_called()
+                    # Verify rr.spawn() was NOT called
+                    self.mock_rr.spawn.assert_not_called()
 
-    def test_explicit_address_none_spawns_viewer(self):
-        """Test that ViewerRerun(address=None) explicitly spawns a viewer."""
+    def test_native_viewer(self):
+        """Test that ViewerRerun() with no arguments spawns a viewer."""
         with patch("newton._src.viewer.viewer_rerun.rr", self.mock_rr):
             with patch("newton._src.viewer.viewer_rerun.rrb", self.mock_rrb):
                 with patch("newton._src.viewer.viewer_rerun._is_jupyter_notebook", return_value=False):
                     from newton._src.viewer.viewer_rerun import ViewerRerun
 
+                    # Suppress deprecation warnings for cleaner test output
                     with warnings.catch_warnings():
                         warnings.simplefilter("ignore")
-                        _ = ViewerRerun(address=None)
+                        _ = ViewerRerun(serve_web_viewer=False)
 
-                    # Verify rr.spawn() was called when address is None
+                    # Verify rr.init was called with app_id as positional arg and blueprint
+                    from unittest.mock import ANY
+
+                    self.mock_rr.init.assert_called_once_with("newton-viewer", default_blueprint=ANY)
+
+                    # Verify rr.spawn() was called
                     self.mock_rr.spawn.assert_called_once()
 
                     # Verify rr.connect_grpc() was NOT called
@@ -205,8 +215,8 @@ class TestViewerRerunInitArgs(unittest.TestCase):
                     # Verify rr.connect_grpc() was NOT called
                     self.mock_rr.connect_grpc.assert_not_called()
 
-    def test_non_jupyter_spawns_viewer(self):
-        """Test that viewer is spawned in non-Jupyter environment."""
+    def test_non_jupyter_serves_web_viewer(self):
+        """Test that viewer serves web viewer in non-Jupyter environment."""
         with patch("newton._src.viewer.viewer_rerun.rr", self.mock_rr):
             with patch("newton._src.viewer.viewer_rerun.rrb", self.mock_rrb):
                 with patch("newton._src.viewer.viewer_rerun._is_jupyter_notebook", return_value=False):
@@ -219,8 +229,10 @@ class TestViewerRerunInitArgs(unittest.TestCase):
                     # Verify viewer detected non-Jupyter environment
                     self.assertFalse(viewer.is_jupyter_notebook)
 
-                    # Verify rr.spawn() WAS called in non-Jupyter
-                    self.mock_rr.spawn.assert_called_once()
+                    # Verify rr.serve_grpc() WAS called in non-Jupyter
+                    self.mock_rr.serve_grpc.assert_called_once()
+                    # Verify rr.serve_web_viewer() WAS called in non-Jupyter
+                    self.mock_rr.serve_web_viewer.assert_called_once()
 
     def test_keep_historical_data_stored(self):
         """Test that keep_historical_data parameter is stored correctly."""
