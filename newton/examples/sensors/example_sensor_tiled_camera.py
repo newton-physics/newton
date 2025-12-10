@@ -39,6 +39,14 @@ from newton.sensors import TiledCameraSensor
 
 from ...viewer import ViewerGL
 
+SEMANTIC_COLOR_CYLINDER = 0xFFFF0000
+SEMANTIC_COLOR_SPHERE = 0xFFFFFF00
+SEMANTIC_COLOR_CAPSULE = 0xFF00FFFF
+SEMANTIC_COLOR_BOX = 0xFF0000FF
+SEMANTIC_COLOR_MESH = 0xFF00FF00
+SEMANTIC_COLOR_ROBOT = 0xFFFF00FF
+SEMANTIC_COLOR_GROUND_PLANE = 0xFF444444
+
 
 @wp.kernel(enable_backward=False)
 def animate_franka(
@@ -68,10 +76,17 @@ def animate_franka(
 
 
 @wp.kernel
-def geom_id_to_rgb(geom_id: wp.array(dtype=wp.uint32, ndim=3), rgba: wp.array(dtype=wp.uint32, ndim=3)):
+def geom_id_to_rgb(
+    geom_ids: wp.array(dtype=wp.uint32, ndim=3),
+    colors: wp.array(dtype=wp.uint32),
+    rgba: wp.array(dtype=wp.uint32, ndim=3),
+):
     world_id, camera_id, pixel_id = wp.tid()
-    rng = wp.rand_init(1234, wp.int32(geom_id[world_id, camera_id, pixel_id]))
-    rgba[world_id, camera_id, pixel_id] = wp.uint32(wp.randi(rng)) | wp.uint32(0xFF000000)
+    geom_id = geom_ids[world_id, camera_id, pixel_id]
+    if geom_id < colors.shape[0]:
+        rgba[world_id, camera_id, pixel_id] = colors[geom_id]
+    else:
+        rgba[world_id, camera_id, pixel_id] = wp.uint32(0xFF000000)
 
 
 class Example:
@@ -101,6 +116,8 @@ class Example:
 
         builder = newton.ModelBuilder()
 
+        semantic_colors = []
+
         rng = random.Random(1234)
         for _ in range(self.num_worlds_total):
             builder.begin_world()
@@ -110,16 +127,19 @@ class Example:
                     radius=0.4,
                     half_height=0.5,
                 )
+                semantic_colors.append(SEMANTIC_COLOR_CYLINDER)
             if rng.random() < 0.5:
                 builder.add_shape_sphere(
                     builder.add_body(xform=wp.transform(p=wp.vec3(-2.0, -2.0, 0.5), q=wp.quat_identity())), radius=0.5
                 )
+                semantic_colors.append(SEMANTIC_COLOR_SPHERE)
             if rng.random() < 0.5:
                 builder.add_shape_capsule(
                     builder.add_body(xform=wp.transform(p=wp.vec3(-4.0, 0.0, 0.75), q=wp.quat_identity())),
                     radius=0.25,
                     half_height=0.5,
                 )
+                semantic_colors.append(SEMANTIC_COLOR_CAPSULE)
             if rng.random() < 0.5:
                 builder.add_shape_box(
                     builder.add_body(xform=wp.transform(p=wp.vec3(-2.0, 2.0, 0.5), q=wp.quat_identity())),
@@ -127,19 +147,25 @@ class Example:
                     hy=0.35,
                     hz=0.5,
                 )
+                semantic_colors.append(SEMANTIC_COLOR_BOX)
             if rng.random() < 0.5:
                 builder.add_shape_mesh(
                     builder.add_body(xform=wp.transform(p=wp.vec3(0.0, 4.0, 0.0), q=wp.quat(0.5, 0.5, 0.5, 0.5))),
                     mesh=bunny_mesh,
                     scale=(0.5, 0.5, 0.5),
                 )
+                semantic_colors.append(SEMANTIC_COLOR_MESH)
             builder.add_builder(robot_builder)
+            semantic_colors.extend([SEMANTIC_COLOR_ROBOT] * robot_builder.shape_count)
             builder.end_world()
 
         builder.add_ground_plane()
+        semantic_colors.append(SEMANTIC_COLOR_GROUND_PLANE)
 
         self.model = builder.finalize()
         self.state = self.model.state()
+
+        self.semantic_colors = wp.array(semantic_colors, dtype=wp.uint32)
 
         self.viewer.set_model(self.model)
 
@@ -283,7 +309,7 @@ class Example:
             wp.launch(
                 geom_id_to_rgb,
                 self.tiled_camera_sensor_geom_id_image.shape,
-                [self.tiled_camera_sensor_geom_id_image],
+                [self.tiled_camera_sensor_geom_id_image, self.semantic_colors],
                 [self.tiled_camera_sensor_geom_id_image],
             )
             self.tiled_camera_sensor.flatten_color_image_to_rgba(

@@ -26,6 +26,7 @@ from ..sim import Model, State
 from .warp_raytrace import GeomType, LightType, RenderContext
 
 DEFAULT_CLEAR_NORMAL = wp.vec3f(0.0)
+DEFAULT_CLEAR_GEOM_ID = wp.uint32(0xFFFFFFFF)
 
 
 @wp.kernel(enable_backward=False)
@@ -345,7 +346,7 @@ class TiledCameraSensor:
         refit_bvh: bool = True,
         clear_color: int | None = 0xFF666666,
         clear_depth: float | None = 0.0,
-        clear_geom_id: int | None = 0,
+        clear_geom_id: int | None = DEFAULT_CLEAR_GEOM_ID,
         clear_normal: wp.vec3f | None = DEFAULT_CLEAR_NORMAL,
     ):
         """

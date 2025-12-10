@@ -22,7 +22,7 @@ from .render import render_megakernel
 
 DEFAULT_CLEAR_COLOR = 0
 DEFAULT_CLEAR_DEPTH = 0.0
-DEFAULT_CLEAR_GEOM_ID = 0
+DEFAULT_CLEAR_GEOM_ID = wp.uint32(0xFFFFFFFF)
 DEFAULT_CLEAR_NORMAL = wp.vec3f(0.0)
 
 
