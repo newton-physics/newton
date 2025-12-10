@@ -117,6 +117,7 @@ def parse_mjcf(
     default_joint_target_ke = builder.default_joint_cfg.target_ke
     default_joint_target_kd = builder.default_joint_cfg.target_kd
     default_joint_armature = builder.default_joint_cfg.armature
+    default_joint_effort_limit = builder.default_joint_cfg.effort_limit
 
     # load shape defaults
     default_shape_density = builder.default_shape_cfg.density
@@ -640,7 +641,7 @@ def parse_mjcf(
                 if limit_kd is None:
                     limit_kd = 100.0  # From MuJoCo's default solref (0.02, 1.0)
 
-                effort_limit = 1e6
+                effort_limit = default_joint_effort_limit
                 if "actuatorfrcrange" in joint_attrib:
                     actuatorfrcrange = parse_vec(joint_attrib, "actuatorfrcrange", None)
                     if actuatorfrcrange is not None and len(actuatorfrcrange) == 2:
