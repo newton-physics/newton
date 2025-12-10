@@ -113,7 +113,7 @@ def ray_plane_with_normal(
     if t_hit == wp.inf:
         return False, wp.inf, wp.vec3f(0.0, 0.0, 0.0)
     # Local plane normal is +Z; rotate to world space
-    normal_world = wp.transform_point(transform, wp.vec3f(0.0, 0.0, 1.0))
+    normal_world = wp.transform_vector(transform, wp.vec3f(0.0, 0.0, 1.0))
     normal_world = wp.normalize(normal_world)
     return True, t_hit, normal_world
 
