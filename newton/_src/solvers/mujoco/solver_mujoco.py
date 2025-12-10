@@ -311,99 +311,239 @@ class SolverMuJoCo(SolverBase):
         )
 
         # --- Pair attributes (variable-length, from MJCF <pair> tag) ---
-        # These define explicit contact pairs with custom contact properties
+        # Explicit contact pairs with custom properties. Only pairs from the template world are used.
+        # These are parsed automatically from MJCF <contact><pair> elements.
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="pair_world",
+                frequency=None,
+                dtype=wp.int32,
+                default=0,
+                namespace="mujoco",
+                references="world",
+                # No mjcf_attribute_name - this is set automatically during parsing
+            )
+        )
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="pair_geom1",
-                frequency=None,  # Variable length
-                assignment=ModelAttributeAssignment.MODEL,
+                frequency=None,
                 dtype=wp.int32,
                 default=-1,
                 namespace="mujoco",
-                references="shape",  # Values are shape indices
+                references="shape",
+                mjcf_attribute_name="geom1",  # Maps to shape index via geom name lookup
             )
         )
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="pair_geom2",
-                frequency=None,  # Variable length
-                assignment=ModelAttributeAssignment.MODEL,
+                frequency=None,
                 dtype=wp.int32,
                 default=-1,
                 namespace="mujoco",
-                references="shape",  # Values are shape indices
+                references="shape",
+                mjcf_attribute_name="geom2",  # Maps to shape index via geom name lookup
             )
         )
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="pair_condim",
-                frequency=None,  # Variable length
-                assignment=ModelAttributeAssignment.MODEL,
+                frequency=None,
                 dtype=wp.int32,
                 default=3,
                 namespace="mujoco",
+                mjcf_attribute_name="condim",
             )
         )
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="pair_solref",
-                frequency=None,  # Variable length
-                assignment=ModelAttributeAssignment.MODEL,
+                frequency=None,
                 dtype=wp.vec2,
                 default=wp.vec2(0.02, 1.0),
                 namespace="mujoco",
+                mjcf_attribute_name="solref",
             )
         )
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="pair_solreffriction",
-                frequency=None,  # Variable length
-                assignment=ModelAttributeAssignment.MODEL,
+                frequency=None,
                 dtype=wp.vec2,
                 default=wp.vec2(0.02, 1.0),
                 namespace="mujoco",
+                mjcf_attribute_name="solreffriction",
             )
         )
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="pair_solimp",
-                frequency=None,  # Variable length
-                assignment=ModelAttributeAssignment.MODEL,
+                frequency=None,
                 dtype=vec5,
                 default=vec5(0.9, 0.95, 0.001, 0.5, 2.0),
                 namespace="mujoco",
+                mjcf_attribute_name="solimp",
             )
         )
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="pair_margin",
-                frequency=None,  # Variable length
-                assignment=ModelAttributeAssignment.MODEL,
+                frequency=None,
                 dtype=wp.float32,
                 default=0.0,
                 namespace="mujoco",
+                mjcf_attribute_name="margin",
             )
         )
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="pair_gap",
-                frequency=None,  # Variable length
-                assignment=ModelAttributeAssignment.MODEL,
+                frequency=None,
                 dtype=wp.float32,
                 default=0.0,
                 namespace="mujoco",
+                mjcf_attribute_name="gap",
             )
         )
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="pair_friction",
-                frequency=None,  # Variable length
-                assignment=ModelAttributeAssignment.MODEL,
+                frequency=None,
                 dtype=vec5,
                 default=vec5(1.0, 1.0, 0.005, 0.0001, 0.0001),
                 namespace="mujoco",
+                mjcf_attribute_name="friction",
             )
         )
+
+    @staticmethod
+    def _validate_pair_attributes(model: Model) -> int:
+        """
+        Validate that all pair attributes have consistent lengths.
+
+        Args:
+            model: The Newton model to validate.
+
+        Returns:
+            int: The number of pairs defined (0 if no pairs).
+
+        Raises:
+            ValueError: If pair attributes have inconsistent lengths.
+        """
+        mujoco_attrs = getattr(model, "mujoco", None)
+        if mujoco_attrs is None:
+            return 0
+
+        pair_attr_names = [
+            "pair_world",
+            "pair_geom1",
+            "pair_geom2",
+            "pair_condim",
+            "pair_solref",
+            "pair_solreffriction",
+            "pair_solimp",
+            "pair_margin",
+            "pair_gap",
+            "pair_friction",
+        ]
+
+        lengths: dict[str, int] = {}
+        for name in pair_attr_names:
+            attr = getattr(mujoco_attrs, name, None)
+            if attr is not None:
+                lengths[name] = len(attr)
+
+        if not lengths:
+            return 0
+
+        # Check all lengths are the same
+        unique_lengths = set(lengths.values())
+        if len(unique_lengths) > 1:
+            raise ValueError(
+                f"MuJoCo pair attributes have inconsistent lengths: {lengths}. "
+                "All pair attributes must have the same number of elements."
+            )
+
+        return next(iter(unique_lengths))
+
+    def _init_pairs(self, model: Model, spec, shape_mapping: dict[int, str], template_world: int) -> None:
+        """
+        Initialize MuJoCo contact pairs from custom attributes.
+
+        Only pairs belonging to the template world are added to the MuJoCo spec.
+        MuJoCo will replicate these pairs across all worlds automatically.
+
+        Args:
+            model: The Newton model.
+            spec: The MuJoCo spec to add pairs to.
+            shape_mapping: Mapping from Newton shape index to MuJoCo geom name.
+            template_world: The world index to use as the template (typically first_group).
+        """
+        pair_count = self._validate_pair_attributes(model)
+        if pair_count == 0:
+            return
+
+        mujoco_attrs = model.mujoco
+
+        # Get pair arrays (all validated to have same length)
+        pair_world = mujoco_attrs.pair_world.numpy()
+        pair_geom1 = mujoco_attrs.pair_geom1.numpy()
+        pair_geom2 = mujoco_attrs.pair_geom2.numpy()
+        pair_condim = getattr(mujoco_attrs, "pair_condim", None)
+        pair_solref = getattr(mujoco_attrs, "pair_solref", None)
+        pair_solreffriction = getattr(mujoco_attrs, "pair_solreffriction", None)
+        pair_solimp = getattr(mujoco_attrs, "pair_solimp", None)
+        pair_margin = getattr(mujoco_attrs, "pair_margin", None)
+        pair_gap = getattr(mujoco_attrs, "pair_gap", None)
+        pair_friction = getattr(mujoco_attrs, "pair_friction", None)
+
+        for i in range(pair_count):
+            # Only include pairs from the template world
+            if int(pair_world[i]) != template_world:
+                continue
+
+            # Map Newton shape indices to MuJoCo geom names
+            newton_shape1 = int(pair_geom1[i])
+            newton_shape2 = int(pair_geom2[i])
+
+            # Skip invalid pairs
+            if newton_shape1 < 0 or newton_shape2 < 0:
+                continue
+
+            geom_name1 = shape_mapping.get(newton_shape1)
+            geom_name2 = shape_mapping.get(newton_shape2)
+
+            if geom_name1 is None or geom_name2 is None:
+                warnings.warn(
+                    f"Skipping pair {i}: Newton shapes ({newton_shape1}, {newton_shape2}) "
+                    f"not found in MuJoCo shape mapping.",
+                    stacklevel=2,
+                )
+                continue
+
+            # Build pair kwargs
+            pair_kwargs: dict[str, Any] = {
+                "geomname1": geom_name1,
+                "geomname2": geom_name2,
+            }
+
+            if pair_condim is not None:
+                pair_kwargs["condim"] = int(pair_condim.numpy()[i])
+            if pair_solref is not None:
+                pair_kwargs["solref"] = pair_solref.numpy()[i].tolist()
+            if pair_solreffriction is not None:
+                pair_kwargs["solreffriction"] = pair_solreffriction.numpy()[i].tolist()
+            if pair_solimp is not None:
+                pair_kwargs["solimp"] = pair_solimp.numpy()[i].tolist()
+            if pair_margin is not None:
+                pair_kwargs["margin"] = float(pair_margin.numpy()[i])
+            if pair_gap is not None:
+                pair_kwargs["gap"] = float(pair_gap.numpy()[i])
+            if pair_friction is not None:
+                pair_kwargs["friction"] = pair_friction.numpy()[i].tolist()
+
+            spec.add_pair(**pair_kwargs)
 
     def __init__(
         self,
@@ -1801,6 +1941,9 @@ class SolverMuJoCo(SolverBase):
         for b1, b2 in body_filters:
             mb1, mb2 = body_mapping[b1], body_mapping[b2]
             spec.add_exclude(bodyname1=spec.bodies[mb1].name, bodyname2=spec.bodies[mb2].name)
+
+        # add explicit contact pairs from custom attributes
+        self._init_pairs(model, spec, shape_mapping, first_group)
 
         self.mj_model = spec.compile()
         self.mj_data = mujoco.MjData(self.mj_model)

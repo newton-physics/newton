@@ -1104,6 +1104,76 @@ def parse_mjcf(
         parse_equality_constraints(equality)
 
     # -----------------
+    # parse contact pairs and exclusions
+
+    # Get variable-length custom attributes for pair parsing (frequency=None)
+    # Exclude pair_geom1/pair_geom2 as they need special name-to-index lookup
+    builder_custom_attr_pair: list[ModelBuilder.CustomAttribute] = [
+        attr
+        for attr in builder.custom_attributes.values()
+        if attr.frequency is None and attr.name.startswith("pair_") and attr.name not in ("pair_geom1", "pair_geom2")
+    ]
+
+    contact = root.find("contact")
+    if contact is not None:
+        # Parse <pair> elements - explicit contact pairs with custom properties
+        for pair in contact.findall("pair"):
+            geom1_name = pair.attrib.get("geom1")
+            geom2_name = pair.attrib.get("geom2")
+
+            if not geom1_name or not geom2_name:
+                if verbose:
+                    print("Warning: <pair> element missing geom1 or geom2 attribute, skipping")
+                continue
+
+            # Look up shape indices by geom name
+            try:
+                geom1_idx = builder.shape_key.index(geom1_name)
+            except ValueError:
+                if verbose:
+                    print(f"Warning: <pair> references unknown geom '{geom1_name}', skipping")
+                continue
+
+            try:
+                geom2_idx = builder.shape_key.index(geom2_name)
+            except ValueError:
+                if verbose:
+                    print(f"Warning: <pair> references unknown geom '{geom2_name}', skipping")
+                continue
+
+            # Parse other attributes using the standard custom attribute parsing
+            pair_attrs = parse_custom_attributes(pair.attrib, builder_custom_attr_pair, parsing_mode="mjcf")
+
+            # Determine the next pair index (all pair attributes should have same length)
+            pair_world_attr = builder.custom_attributes.get("mujoco:pair_world")
+            pair_idx = len(pair_world_attr.values) if pair_world_attr and pair_world_attr.values else 0
+
+            # Helper to safely set attribute value at given index
+            def set_pair_value(attr_key: str, value: Any, idx: int) -> None:
+                attr = builder.custom_attributes.get(attr_key)
+                if attr is not None:
+                    if attr.values is None:
+                        attr.values = {}
+                    attr.values[idx] = value
+
+            # Add values to all pair custom attributes using dict assignment
+            # First handle special cases: world and geom indices
+            set_pair_value("mujoco:pair_world", builder.current_world, pair_idx)
+            set_pair_value("mujoco:pair_geom1", geom1_idx, pair_idx)
+            set_pair_value("mujoco:pair_geom2", geom2_idx, pair_idx)
+
+            # Handle remaining parsed attributes
+            for attr in builder_custom_attr_pair:
+                if attr.name in ("pair_world", "pair_geom1", "pair_geom2"):
+                    continue  # Already handled above
+                # Use parsed value or default
+                value = pair_attrs.get(attr.key, attr.default)
+                set_pair_value(attr.key, value, pair_idx)
+
+            if verbose:
+                print(f"Parsed contact pair: {geom1_name} ({geom1_idx}) <-> {geom2_name} ({geom2_idx})")
+
+    # -----------------
     # parse actuators
 
     def parse_actuators(actuator_section):
