@@ -276,7 +276,6 @@ class TestEqualityConstraints(unittest.TestCase):
         # Store original indices
         original_base = base
         original_link1 = link1
-        original_link2 = link2
         original_link3 = link3
         original_joint1 = joint1
         original_joint3 = joint3
@@ -290,7 +289,6 @@ class TestEqualityConstraints(unittest.TestCase):
         result = builder.collapse_fixed_joints(verbose=False)
         body_remap = result["body_remap"]
         joint_remap = result["joint_remap"]
-        body_merged_parent = result["body_merged_parent"]
 
         self.assertEqual(builder.body_count, 3)  # base, link1 (merged with link2), link3
         self.assertEqual(builder.joint_count, 3)  # fixed joint to base kept, 2 revolute joints remain
