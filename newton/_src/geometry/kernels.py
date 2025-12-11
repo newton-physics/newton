@@ -2334,7 +2334,9 @@ def vertex_triangle_collision_detection_kernel(
                 first_val = vertex_triangle_filtering_list[fl_start]
                 last_val = vertex_triangle_filtering_list[fl_end - 1]
                 if (tri_index >= first_val) and (tri_index <= last_val):
-                    if binary_search(vertex_triangle_filtering_list, tri_index, fl_start, fl_end):
+                    idx = binary_search(vertex_triangle_filtering_list, tri_index, fl_start, fl_end)
+                    # `idx` is the first index > tri_index within [fl_start, fl_end)
+                    if idx > fl_start and vertex_triangle_filtering_list[idx - 1] == tri_index:
                         continue
 
         u1 = pos[t1]
@@ -2450,7 +2452,8 @@ def edge_colliding_edges_detection_kernel(
                 first_val = edge_filtering_list[fl_start]
                 last_val = edge_filtering_list[fl_end - 1]
                 if (colliding_edge_index >= first_val) and (colliding_edge_index <= last_val):
-                    if binary_search(edge_filtering_list, colliding_edge_index, fl_start, fl_end):
+                    idx = binary_search(edge_filtering_list, colliding_edge_index, fl_start, fl_end)
+                    if idx > fl_start and edge_filtering_list[idx - 1] == colliding_edge_index:
                         continue
                 # else: key is out of range, cannot be present -> skip_this remains False
 
