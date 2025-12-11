@@ -1281,7 +1281,6 @@ def get_decode_contacts_kernel(margin_contact_area: float = 1e-4, writer_func: A
             contact_data.feature = wp.uint32(tid + 1)
             contact_data.feature_pair_key = build_pair_key2(wp.uint32(shape_a), wp.uint32(shape_b))
             contact_data.contact_stiffness = stiffness
-            contact_data.contact_damping = 1.0
 
             writer_func(contact_data, writer_data, output_index)
 
@@ -1682,7 +1681,6 @@ def get_binning_kernels(
             contact_data.feature = wp.uint32(binned_id[tid, normal_bin_idx, dir_idx] + 1)
             contact_data.feature_pair_key = pair_key
             contact_data.contact_stiffness = c_stiffness
-            contact_data.contact_damping = 1.0
 
             writer_func(contact_data, writer_data, c_idx)
 
@@ -1708,7 +1706,6 @@ def get_binning_kernels(
             contact_data.feature = wp.uint32(0)
             contact_data.feature_pair_key = pair_key
             contact_data.contact_stiffness = c_stiffness
-            contact_data.contact_damping = 1.0
 
             writer_func(contact_data, writer_data, anchor_idx)
 

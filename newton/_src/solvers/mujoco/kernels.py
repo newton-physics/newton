@@ -293,13 +293,18 @@ def convert_newton_contacts_to_mjwarp_kernel(
         worldid,
     )
 
-    # Use per-contact stiffness/damping parameters 
+    # Use per-contact stiffness/damping parameters (only if stiffness > 0, meaning it was set)
     if rigid_contact_stiffness.shape[0] > 0:
-        solimp[0] = 0.95
-        solimp[1] = 0.95
-        
-        solref[0] = -rigid_contact_stiffness[tid]
-        solref[1] = rigid_contact_damping[tid]
+        contact_ke = rigid_contact_stiffness[tid]
+        if contact_ke > 0.0:
+            solimp[0] = 0.95
+            solimp[1] = 0.95
+            
+            solref[0] = -contact_ke
+            damping_scale = rigid_contact_damping[tid]
+            if damping_scale <= 0.0:
+                damping_scale = 1.0
+            solref[1] = damping_scale
 
     # Use the write_contact function to write all the data
     write_contact(

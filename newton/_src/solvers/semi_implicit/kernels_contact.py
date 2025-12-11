@@ -464,10 +464,15 @@ def eval_body_contact(
         ka /= float(mat_nonzero)
         mu /= float(mat_nonzero)
 
-    # per-contact stiffness/damping
+    # per-contact stiffness/damping (only use if stiffness > 0, meaning it was set)
     if rigid_contact_stiffness.shape[0] > 0:
-        ke = rigid_contact_stiffness[tid]
-        kd = rigid_contact_damping[tid] * 2.0 * wp.sqrt(ke)
+        contact_ke = rigid_contact_stiffness[tid]
+        if contact_ke > 0.0:
+            ke = contact_ke
+            damping_scale = rigid_contact_damping[tid]
+            if damping_scale <= 0.0:
+                damping_scale = 1.0
+            kd = damping_scale * 2.0 * wp.sqrt(ke)
 
     # contact normal in world space
     n = contact_normal[tid]

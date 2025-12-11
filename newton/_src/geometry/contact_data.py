@@ -44,8 +44,8 @@ class ContactData:
         margin: Contact detection margin/threshold
         feature: Shape-specific feature identifier (e.g., vertex, edge, or face ID)
         feature_pair_key: Unique key for contact pair matching across timesteps
-        contact_stiffness: Contact stiffness
-        contact_damping: Contact damping scale (default 1.0)
+        contact_stiffness: Contact stiffness. Default -1.0 means no stiffness was set.
+        contact_damping: Contact damping scale. Default -1.0 means no damping was set.
     """
 
     contact_point_center: wp.vec3
@@ -60,5 +60,5 @@ class ContactData:
     margin: float
     feature: wp.uint32
     feature_pair_key: wp.uint64
-    contact_stiffness: float
-    contact_damping: float
+    contact_stiffness: float = -1.0
+    contact_damping: float = -1.0
