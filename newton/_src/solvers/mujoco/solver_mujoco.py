@@ -380,8 +380,6 @@ class SolverMuJoCo(SolverBase):
         """
         super().__init__(model)
 
-        model.request_state_attributes("body_q", "body_qd", "body_f", "joint_q", "joint_qd")
-
         # Import and cache MuJoCo modules (only happens once per class)
         mujoco, _ = self.import_mujoco()
 

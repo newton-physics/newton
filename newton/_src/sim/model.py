@@ -540,20 +540,19 @@ class Model:
             State: The state object
         """
 
-        requested = self._requested_state_attributes
+        requested = self.get_requested_state_attributes()
 
         s = State()
         if requires_grad is None:
             requires_grad = self.requires_grad
 
         # particles
-        if self.particle_count:
-            if "particle_q" in requested:
-                s.particle_q = wp.clone(self.particle_q, requires_grad=requires_grad)
-            if "particle_qd" in requested:
-                s.particle_qd = wp.clone(self.particle_qd, requires_grad=requires_grad)
-            if "particle_f" in requested:
-                s.particle_f = wp.zeros_like(self.particle_qd, requires_grad=requires_grad)
+        if "particle_q" in requested:
+            s.particle_q = wp.clone(self.particle_q, requires_grad=requires_grad)
+        if "particle_qd" in requested:
+            s.particle_qd = wp.clone(self.particle_qd, requires_grad=requires_grad)
+        if "particle_f" in requested:
+            s.particle_f = wp.zeros_like(self.particle_qd, requires_grad=requires_grad)
 
         # rigid bodies
         if self.body_count:
@@ -737,7 +736,7 @@ class Model:
             if self.attribute_assignment.get(full_name, ModelAttributeAssignment.MODEL) != assignment:
                 continue
 
-            if assignment == ModelAttributeAssignment.STATE and full_name not in self._requested_state_attributes:
+            if assignment == ModelAttributeAssignment.STATE:
                 continue
 
             # Parse namespace from full_name (format: "namespace:attr_name" or "attr_name")
@@ -845,3 +844,28 @@ class Model:
         if frequency is None:
             raise AttributeError(f"Attribute frequency of '{name}' is not known")
         return frequency
+
+    def get_requested_state_attributes(self) -> List[str]:
+        attributes = []
+
+        if self.particle_count:
+            attributes.extend(
+                (
+                    "particle_q",
+                    "particle_qd",
+                    "particle_f",
+                )
+            )
+        if self.body_count:
+            attributes.extend(
+                (
+                    "body_q",
+                    "body_qd",
+                    "body_f",
+                )
+            )
+        if self.joint_count:
+            attributes.extend(("joint_q", "joint_qd"))
+
+        attributes.extend(self._requested_state_attributes)
+        return attributes
