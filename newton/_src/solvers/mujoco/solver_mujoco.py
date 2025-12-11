@@ -797,7 +797,7 @@ class SolverMuJoCo(SolverBase):
             )
 
         # Update rigid force fields on state.
-        if any((state.body_qdd, state.body_parent_f)):
+        if state.body_qdd is not None or state.body_parent_f is not None:
             # Launch over MuJoCo bodies
             nbody = self.mjc_body_to_newton.shape[1]
             wp.launch(
@@ -806,6 +806,7 @@ class SolverMuJoCo(SolverBase):
                 inputs=[
                     self.mjc_body_to_newton,
                     self.mjw_model.body_rootid,
+                    self.mjw_model.opt.gravity,
                     self.mjw_data.xipos,
                     self.mjw_data.subtree_com,
                     self.mjw_data.cacc,

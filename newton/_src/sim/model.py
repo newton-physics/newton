@@ -867,5 +867,5 @@ class Model:
         if self.joint_count:
             attributes.extend(("joint_q", "joint_qd"))
 
-        attributes.extend(self._requested_state_attributes)
+        attributes.extend(self._requested_state_attributes.difference(attributes))
         return attributes

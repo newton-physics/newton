@@ -1336,6 +1336,7 @@ def convert_rigid_forces_from_mj_kernel(
     mjc_body_to_newton: wp.array2d(dtype=wp.int32),
     # mjw sources
     mjw_body_rootid: wp.array(dtype=wp.int32),
+    mjw_gravity: wp.array(dtype=wp.vec3),
     mjw_xpos: wp.array2d(dtype=wp.vec3),
     mjw_subtree_com: wp.array2d(dtype=wp.vec3),
     mjw_cacc: wp.array2d(dtype=wp.spatial_vector),
@@ -1362,7 +1363,7 @@ def convert_rigid_forces_from_mj_kernel(
             world,
             mjc_body,
         )
-        body_qdd[newton_body] = wp.spatial_vector(lin, wp.spatial_top(cacc))
+        body_qdd[newton_body] = wp.spatial_vector(lin + mjw_gravity[0], wp.spatial_top(cacc))
 
     if body_parent_f:
         # TODO: implement link incoming forces

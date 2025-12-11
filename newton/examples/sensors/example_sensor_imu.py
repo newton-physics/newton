@@ -15,9 +15,35 @@
 
 import numpy as np
 import warp as wp
+from pxr import Usd
 
 import newton
 import newton.examples
+import newton.usd
+
+
+@wp.kernel
+def acc_to_color(
+    alpha: float,
+    imu_acc: wp.array(dtype=wp.vec3),
+    buffer: wp.array(dtype=wp.vec3),
+    color: wp.array(dtype=wp.vec3),
+):
+    """Kernel mapping an acceleration to a color, with exponential smoothing."""
+    idx = wp.tid()
+    if idx > len(imu_acc):
+        return
+
+    stored = buffer[idx]
+
+    limit = wp.vec3(40.0)
+    acc = wp.max(wp.min(imu_acc[idx], limit), -limit)
+
+    smoothed = (1.0 - alpha) * stored + alpha * acc
+    buffer[idx] = smoothed
+
+    c = wp.vec3(0.5) + 0.5 * (0.1*wp.min(wp.abs(smoothed), wp.vec3(10.0)) - wp.vec3(0.5))
+    color[idx] = wp.max(wp.min(c, wp.vec3(1.0)), wp.vec3(0.0))
 
 
 class Example:
@@ -30,8 +56,6 @@ class Example:
         self.sim_dt = self.frame_dt / self.sim_substeps
 
         self.viewer = viewer
-        self.plot_window = ViewerPlot(viewer, "Parent force", scale_min=0, graph_size=(400, 200))
-        self.viewer.register_ui_callback(self.plot_window.render, "free")
 
         builder = newton.ModelBuilder()
 
@@ -39,23 +63,37 @@ class Example:
         builder.add_ground_plane()
 
         # pendulum
-        body_sphere = builder.add_link(key="pendulum")
-        builder.add_shape_sphere(body_sphere, radius=0.2)
-        builder.add_shape_capsule(
-            body_sphere, xform=wp.transform(p=(0, 0, 0.5)), radius=0.05, cfg=newton.ModelBuilder.ShapeConfig(density=0)
-        )
-        joint = builder.add_joint_revolute(
-            -1, body_sphere, parent_xform=wp.transform(p=(0.0, 0.0, 2.0)), child_xform=wp.transform(p=(0.0, 0.0, 1.0))
-        )
-        builder.joint_qd[0] = 3
-        builder.add_articulation([joint])
+        usd_stage = Usd.Stage.Open(newton.examples.get_asset("/home/chris/Documents/AxisCube.usda"))
+        axis_cube_mesh = newton.usd.get_mesh(usd_stage.GetPrimAtPath("/AxisCube/VisualCube"))
 
-        imu_site = builder.add_site(body_sphere, key="imu_site")
+        body = builder.add_body(key="mesh", xform=wp.transform(wp.vec3(0, 0, 1)))
+        scale = 0.2
+
+        self.visual_cube = builder.add_shape_mesh(
+            body,
+            scale=wp.vec3(scale),
+            mesh=axis_cube_mesh,
+            cfg=newton.ModelBuilder.ShapeConfig(has_shape_collision=False),
+        )
+
+        scale_filler = scale * 0.98
+
+        visual_cube_filler = builder.add_shape_box(
+            body,
+            hx=scale_filler,
+            hy=scale_filler,
+            hz=scale_filler,
+            cfg=newton.ModelBuilder.ShapeConfig(has_shape_collision=False),
+        )
+        builder.add_shape_box(
+            body, hx=scale, hy=scale, hz=scale, cfg=newton.ModelBuilder.ShapeConfig(is_visible=False, density=0.1)
+        )
+        imu_site = builder.add_site(body, key="imu_site")
 
         # finalize model
         self.model = builder.finalize()
 
-        self.imu = newton.sensors.IMUSensor(self.model, [imu_site])
+        self.imu = newton.sensors.SensorIMU(self.model, [imu_site])
 
         self.solver = newton.solvers.SolverMuJoCo(self.model, njmax=100)
 
@@ -63,7 +101,16 @@ class Example:
         self.state_1 = self.model.state()
         self.control = self.model.control()
 
+        self.buffer = wp.zeros(1, dtype=wp.vec3)
+        self.colors = wp.zeros(1, dtype=wp.vec3)
+
         self.viewer.set_model(self.model)
+
+        if isinstance(self.viewer, newton.viewer.ViewerGL):
+            self.viewer.camera.pos = type(self.viewer.camera.pos)(3.0, 0.0, 2.0)
+            self.viewer.camera.pitch = type(self.viewer.camera.pitch)(-20)
+
+        self.viewer.update_shape_colors({visual_cube_filler: (0.1, 0.1, 0.1)})
 
         self.capture()
 
@@ -85,12 +132,17 @@ class Example:
             self.contacts = self.model.collide(self.state_0)
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
 
-            self.imu.update(self.state_0)
-
             # swap states
             self.state_0, self.state_1 = self.state_1, self.state_0
-        # for update in step graph
-        # self.solver.update_data()
+
+            # read IMU acceleration
+            self.imu.update(self.state_0)
+            # average and compute color
+            wp.launch(
+                acc_to_color,
+                dim=1,
+                inputs=[0.01, self.imu.accelerometer, self.buffer, self.colors]
+            )
 
     def step(self):
         if self.graph:
@@ -98,14 +150,8 @@ class Example:
         else:
             self.simulate()
 
-        # self.solver.update_data()  # implicit
-        # pendulum_acc = self.state_0.body_qdd.numpy()[0]
-        # self.plot_window.add_point(pendulum_acc[2])
-        # print(f"Pendulum acceleration: {pendulum_acc}")
-        imu_acc = self.imu.sensor_qdd.numpy()[0]
-        self.plot_window.add_point(imu_acc[2])
-        print(f"IMU acceleration: {imu_acc}")
         self.sim_time += self.frame_dt
+        self.viewer.update_shape_colors({self.visual_cube: self.colors.numpy()[0]})
 
     def test(self):
         pass
@@ -115,49 +161,6 @@ class Example:
         self.viewer.log_state(self.state_0)
         self.viewer.log_contacts(self.contacts, self.state_0)
         self.viewer.end_frame()
-
-
-class ViewerPlot:
-    def __init__(self, viewer=None, title="Plot", n_points=200, avg=4, **kwargs):
-        self.viewer = viewer
-        self.avg = avg
-        self.title = title
-        self.data = np.zeros(n_points, dtype=np.float32)
-        self.plot_kwargs = kwargs
-        self.cache = []
-
-    def add_point(self, point):
-        self.cache.append(point)
-        if len(self.cache) == self.avg:
-            self.data[0] = sum(self.cache) / self.avg
-            self.data = np.roll(self.data, -1)
-            self.cache.clear()
-
-    def render(self, imgui):
-        """
-        Render the replay UI controls.
-
-        Args:
-            imgui: The ImGui object passed by the ViewerGL callback system
-        """
-        if not self.viewer or not self.viewer.ui.is_available:
-            return
-
-        io = self.viewer.ui.io
-
-        # Position the replay controls window
-        window_shape = (400, 350)
-        imgui.set_next_window_pos(
-            imgui.ImVec2(io.display_size[0] - window_shape[0] - 10, io.display_size[1] - window_shape[1] - 10)
-        )
-        imgui.set_next_window_size(imgui.ImVec2(*window_shape))
-
-        flags = imgui.WindowFlags_.no_resize.value
-
-        if imgui.begin(self.title, flags=flags):
-            imgui.text("Flap contact force")
-            imgui.plot_lines("Force", self.data, **self.plot_kwargs)
-        imgui.end()
 
 
 if __name__ == "__main__":
