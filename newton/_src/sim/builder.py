@@ -194,7 +194,7 @@ class ModelBuilder:
         Only used for mesh shapes."""
         is_hydroelastic: bool = False
         """Whether the shape collides using SDF-based hydroelastics. For hydroelastic collisions, both participating shapes must have is_hydroelastic set to True. Defaults to False."""
-        k_hydro: float = 1.0e8
+        k_hydro: float = 1.0e9
         """Contact stiffness coefficient for hydroelastic collisions. Used by MuJoCo, Featherstone, SemiImplicit when is_hydroelastic is True."""
 
         def mark_as_site(self) -> None:

@@ -62,6 +62,8 @@ class UnifiedContactWriterData:
     # Contact matching arrays (optional)
     contact_pair_key: wp.array(dtype=wp.uint64)
     contact_key: wp.array(dtype=wp.uint32)
+    # Per-contact shape properties (optional, for hydroelastic)
+    out_stiffness: wp.array(dtype=float)
 
 
 class BroadPhaseMode(IntEnum):
@@ -163,6 +165,10 @@ def write_contact(
     if writer_data.contact_key.shape[0] > 0 and writer_data.contact_pair_key.shape[0] > 0:
         writer_data.contact_key[index] = contact_data.feature
         writer_data.contact_pair_key[index] = contact_data.feature_pair_key
+
+    # Write stiffness only if out_stiffness array is non-empty
+    if writer_data.out_stiffness.shape[0] > 0:
+        writer_data.out_stiffness[index] = contact_data.contact_stiffness
 
 
 @wp.kernel
@@ -386,7 +392,6 @@ class CollisionPipelineUnified:
             self.shape_aabb_lower = wp.zeros(shape_count, dtype=wp.vec3, device=device)
             self.shape_aabb_upper = wp.zeros(shape_count, dtype=wp.vec3, device=device)
 
-
         # Initialize narrow phase with pre-allocated buffers
         # Pass AABB arrays so narrow phase can use them instead of computing AABBs internally
         # max_triangle_pairs is a conservative estimate for mesh collision triangle pairs
@@ -528,6 +533,7 @@ class CollisionPipelineUnified:
                 self.soft_contact_max,
                 requires_grad=self.requires_grad,
                 device=self.device,
+                per_contact_shape_properties=self.narrow_phase.sdf_hydroelastic is not None,
             )
         else:
             self.contacts.clear()
@@ -639,6 +645,8 @@ class CollisionPipelineUnified:
         else:
             writer_data.contact_pair_key = self.narrow_phase.empty_contact_pair_key
             writer_data.contact_key = self.narrow_phase.empty_contact_key
+
+        writer_data.out_stiffness = contacts.rigid_contact_stiffness
 
         # Run narrow phase with custom contact writer (writes directly to Contacts format)
         self.narrow_phase.launch_custom_write(

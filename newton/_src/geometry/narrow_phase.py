@@ -963,6 +963,9 @@ class NarrowPhase:
             # Empty contact_key array for when contact key collection is disabled
             self.empty_contact_key = wp.zeros(0, dtype=wp.uint32, device=device)
 
+            # Empty stiffness array for when per-contact stiffness is disabled
+            self.empty_stiffness = wp.zeros(0, dtype=wp.float32, device=device)
+
             # Betas array for contact reduction (using the configured contact_reduction_betas tuple)
             self.betas = create_betas_array(betas=self.betas_tuple, device=device)
 

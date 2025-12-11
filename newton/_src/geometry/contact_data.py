@@ -44,6 +44,7 @@ class ContactData:
         margin: Contact detection margin/threshold
         feature: Shape-specific feature identifier (e.g., vertex, edge, or face ID)
         feature_pair_key: Unique key for contact pair matching across timesteps
+        contact_stiffness: Contact stiffness
     """
 
     contact_point_center: wp.vec3
@@ -58,3 +59,4 @@ class ContactData:
     margin: float
     feature: wp.uint32
     feature_pair_key: wp.uint64
+    contact_stiffness: float

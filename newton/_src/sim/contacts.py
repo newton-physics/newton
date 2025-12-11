@@ -38,6 +38,7 @@ class Contacts:
         soft_contact_max: int,
         requires_grad: bool = False,
         device: Devicelike = None,
+        per_contact_shape_properties: bool = False,
     ):
         with wp.ScopedDevice(device):
             # rigid contacts
@@ -56,6 +57,12 @@ class Contacts:
             # to be filled by the solver (currently unused)
             self.rigid_contact_force = wp.zeros(rigid_contact_max, dtype=wp.vec3, requires_grad=requires_grad)
 
+            # contact stiffness (only allocated if per_contact_shape_properties is enabled)
+            if per_contact_shape_properties:
+                self.rigid_contact_stiffness = wp.zeros(rigid_contact_max, dtype=wp.float32, requires_grad=requires_grad)
+            else:
+                self.rigid_contact_stiffness = wp.zeros(0, dtype=wp.float32)
+                
             # soft contacts
             self.soft_contact_count = wp.zeros(1, dtype=wp.int32)
             self.soft_contact_particle = wp.full(soft_contact_max, -1, dtype=int)
@@ -79,6 +86,8 @@ class Contacts:
         self.rigid_contact_shape1.fill_(-1)
         self.rigid_contact_tids.fill_(-1)
         self.rigid_contact_force.zero_()
+        if self.rigid_contact_stiffness.shape[0] > 0:
+            self.rigid_contact_stiffness.zero_()
 
         self.soft_contact_count.zero_()
         self.soft_contact_particle.fill_(-1)

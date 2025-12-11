@@ -62,6 +62,8 @@ class SDFHydroelasticConfig:
     """Whether to match the aggregated force direction."""
     moment_matching: bool = False
     """Whether to match the reference torque from all contacts."""
+    margin_contact_area: float = 1e-4
+    """Contact area used for non-penetrating contacts at the margin."""
 
 class SDFHydroelastic:
     """
@@ -208,11 +210,12 @@ class SDFHydroelastic:
                     self.config.sticky_contacts,
                     self.config.normal_matching,
                     self.config.moment_matching,
+                    self.config.margin_contact_area,
                     writer_func,
                 )
             ) 
         else:
-            self.decode_contacts_kernel = get_decode_contacts_kernel(writer_func)
+            self.decode_contacts_kernel = get_decode_contacts_kernel(self.config.margin_contact_area, writer_func)
 
         self.max_depth = wp.zeros((1,), dtype=wp.float32)
         self.grid_size = min(self.config.grid_size, self.max_num_face_contacts)
@@ -1201,11 +1204,12 @@ def compute_score(spatial_dot_product: wp.float32, pen_depth: wp.float32, beta: 
         return spatial_dot_product + pen_depth * beta
 
 
-def get_decode_contacts_kernel(writer_func: Any = None):
+def get_decode_contacts_kernel(margin_contact_area: float = 1e-4, writer_func: Any = None):
     @wp.kernel
     def decode_contacts_kernel(
         grid_size: int,
         contact_count: wp.array(dtype=int),
+        shape_material_k_hydro: wp.array(dtype=wp.float32),
         shape_transform: wp.array(dtype=wp.transform),
         shape_contact_margin: wp.array(dtype=wp.float32),
         contact_pair: wp.array(dtype=wp.vec2i),
@@ -1252,6 +1256,16 @@ def get_decode_contacts_kernel(writer_func: Any = None):
             margin_b = shape_contact_margin[shape_b]
             margin = wp.max(margin_a, margin_b)
 
+            k_a = shape_material_k_hydro[shape_a]
+            k_b = shape_material_k_hydro[shape_b]
+
+            k_eff = get_effective_stiffness(k_a, k_b)
+            # Compute stiffness, use margin_contact_area for non-penetrating contacts
+            if depth > 0.0:
+                stiffness = contact_area[tid] * k_eff
+            else:
+                stiffness = wp.static(margin_contact_area) * k_eff
+
             # Create ContactData for the writer function
             contact_data = ContactData()
             contact_data.contact_point_center = pos_world
@@ -1266,6 +1280,7 @@ def get_decode_contacts_kernel(writer_func: Any = None):
             contact_data.margin = margin
             contact_data.feature = wp.uint32(tid + 1)
             contact_data.feature_pair_key = build_pair_key2(wp.uint32(shape_a), wp.uint32(shape_b))
+            contact_data.contact_stiffness = stiffness
 
             writer_func(contact_data, writer_data, output_index)
 
@@ -1305,6 +1320,7 @@ def get_binning_kernels(
     sticky_contacts: float = 1e-6,
     normal_matching: bool = True,
     moment_matching: bool = True,
+    margin_contact_area: float = 1e-4,
     writer_func: Any = None,
 ):
     """
@@ -1318,6 +1334,7 @@ def get_binning_kernels(
         normal_matching: If True, rotate original normals so their weighted sum aligns with
             the aggregated force direction.
         moment_matching: If True, attempt to match the reference maximum moment from unreduced contacts.
+        margin_contact_area: Contact area used for non-penetrating contacts at the margin.
         writer_func: Function to write contact data.
     """
 
@@ -1552,7 +1569,11 @@ def get_binning_kernels(
 
         # Total depth includes anchor contribution if anchor will be added
         total_depth = agg_depth + wp.float32(add_anchor_contact) * max_depth
-        c_stiffness = k_eff * agg_force_mag / (total_depth + 1e-8)  # stiffness of final contacts
+        # Compute stiffness, use margin_contact_area for non-penetrating contacts
+        if total_depth > 1e-8:
+            c_stiffness = k_eff * agg_force_mag / total_depth
+        else:
+            c_stiffness = wp.static(margin_contact_area) * k_eff
 
         rotation_q = wp.quat_identity()
         if wp.static(normal_matching):
@@ -1659,6 +1680,7 @@ def get_binning_kernels(
             contact_data.margin = margin
             contact_data.feature = wp.uint32(binned_id[tid, normal_bin_idx, dir_idx] + 1)
             contact_data.feature_pair_key = pair_key
+            contact_data.contact_stiffness = c_stiffness
 
             writer_func(contact_data, writer_data, c_idx)
 
@@ -1683,6 +1705,7 @@ def get_binning_kernels(
             contact_data.margin = margin
             contact_data.feature = wp.uint32(0)
             contact_data.feature_pair_key = pair_key
+            contact_data.contact_stiffness = c_stiffness
 
             writer_func(contact_data, writer_data, anchor_idx)
 
