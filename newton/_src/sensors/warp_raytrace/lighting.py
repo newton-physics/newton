@@ -20,31 +20,31 @@ from . import ray_cast
 
 @wp.func
 def compute_lighting(
-    use_shadows: wp.bool,
-    bvh_geom_size: wp.int32,
-    bvh_geom_id: wp.uint64,
-    bvh_geom_group_roots: wp.array(dtype=wp.int32),
+    enable_shadows: wp.bool,
+    enable_particles: wp.bool,
+    world_index: wp.int32,
+    has_global_world: wp.bool,
+    bvh_shapes_size: wp.int32,
+    bvh_shapes_id: wp.uint64,
+    bvh_shapes_group_roots: wp.array(dtype=wp.int32),
     bvh_particles_size: wp.int32,
     bvh_particles_id: wp.uint64,
     bvh_particles_group_roots: wp.array(dtype=wp.int32),
-    geom_enabled: wp.array(dtype=wp.uint32),
-    world_id: wp.int32,
-    has_global_world: wp.bool,
-    enable_particles: wp.bool,
+    shape_enabled: wp.array(dtype=wp.uint32),
+    shape_geom_types: wp.array(dtype=wp.int32),
+    shape_mesh_indices: wp.array(dtype=wp.int32),
+    shape_sizes: wp.array(dtype=wp.vec3f),
+    shape_transforms: wp.array(dtype=wp.transformf),
+    mesh_ids: wp.array(dtype=wp.uint64),
     light_active: wp.bool,
     light_type: wp.int32,
     light_cast_shadow: wp.bool,
     light_position: wp.vec3f,
     light_orientation: wp.vec3f,
-    normal: wp.vec3f,
-    geom_types: wp.array(dtype=wp.int32),
-    geom_mesh_indices: wp.array(dtype=wp.int32),
-    geom_sizes: wp.array(dtype=wp.vec3f),
-    mesh_ids: wp.array(dtype=wp.uint64),
-    geom_transforms: wp.array(dtype=wp.transformf),
     particles_position: wp.array(dtype=wp.vec3f),
     particles_radius: wp.array(dtype=wp.float32),
     triangle_mesh_id: wp.uint64,
+    normal: wp.vec3f,
     hit_point: wp.vec3f,
 ) -> wp.float32:
     light_contribution = wp.float32(0.0)
@@ -79,7 +79,7 @@ def compute_lighting(
     visible = wp.float32(1.0)
     shadow_min_visibility = wp.float32(0.3)  # reduce shadow darkness (0: full black, 1: no shadow)
 
-    if use_shadows and light_cast_shadow:
+    if enable_shadows and light_cast_shadow:
         # Nudge the origin slightly along the surface normal to avoid
         # self-intersection when casting shadow rays
         eps = 1.0e-4
@@ -90,21 +90,21 @@ def compute_lighting(
             max_t = wp.float32(1.0e8)
 
         shadow_hit = ray_cast.first_hit(
-            bvh_geom_size,
-            bvh_geom_id,
-            bvh_geom_group_roots,
+            bvh_shapes_size,
+            bvh_shapes_id,
+            bvh_shapes_group_roots,
             bvh_particles_size,
             bvh_particles_id,
             bvh_particles_group_roots,
-            world_id,
+            world_index,
             has_global_world,
             enable_particles,
-            geom_enabled,
-            geom_types,
-            geom_mesh_indices,
-            geom_sizes,
+            shape_enabled,
+            shape_geom_types,
+            shape_mesh_indices,
+            shape_sizes,
+            shape_transforms,
             mesh_ids,
-            geom_transforms,
             particles_position,
             particles_radius,
             triangle_mesh_id,

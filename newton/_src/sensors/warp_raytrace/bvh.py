@@ -142,63 +142,63 @@ def compute_ellipsoid_bounds(transform: wp.transformf, size: wp.vec3f) -> tuple[
 
 
 @wp.kernel(enable_backward=False)
-def compute_geom_bvh_bounds(
-    num_geoms: wp.int32,
+def compute_shape_bvh_bounds(
+    num_shapes: wp.int32,
     num_worlds: wp.int32,
-    geom_world_index: wp.array(dtype=wp.int32),
-    geom_enabled: wp.array(dtype=wp.uint32),
-    geom_types: wp.array(dtype=wp.int32),
-    geom_mesh_indices: wp.array(dtype=wp.int32),
-    geom_sizes: wp.array(dtype=wp.vec3f),
-    geom_transforms: wp.array(dtype=wp.transformf),
+    shape_world_index: wp.array(dtype=wp.int32),
+    shape_enabled: wp.array(dtype=wp.uint32),
+    shape_geom_types: wp.array(dtype=wp.int32),
+    shape_mesh_indices: wp.array(dtype=wp.int32),
+    shape_sizes: wp.array(dtype=wp.vec3f),
+    shape_transforms: wp.array(dtype=wp.transformf),
     mesh_bounds: wp.array2d(dtype=wp.vec3f),
     out_bvh_lowers: wp.array(dtype=wp.vec3f),
     out_bvh_uppers: wp.array(dtype=wp.vec3f),
     out_bvh_groups: wp.array(dtype=wp.int32),
 ):
     tid = wp.tid()
-    bvh_geom_local = tid % num_geoms
-    if bvh_geom_local >= num_geoms:
+    bvh_index_local = tid % num_shapes
+    if bvh_index_local >= num_shapes:
         return
 
-    geom_id = geom_enabled[bvh_geom_local]
+    shape_index = shape_enabled[bvh_index_local]
 
-    world_id = geom_world_index[geom_id]
-    if world_id < 0:
-        world_id = num_worlds + world_id
+    world_index = shape_world_index[shape_index]
+    if world_index < 0:
+        world_index = num_worlds + world_index
 
-    if world_id >= num_worlds:
+    if world_index >= num_worlds:
         return
 
-    transform = geom_transforms[geom_id]
-    size = geom_sizes[geom_id]
-    type = geom_types[geom_id]
+    transform = shape_transforms[shape_index]
+    size = shape_sizes[shape_index]
+    geom_type = shape_geom_types[shape_index]
 
     lower = wp.vec3f()
     upper = wp.vec3f()
 
-    if type == GeomType.SPHERE:
+    if geom_type == GeomType.SPHERE:
         lower, upper = compute_sphere_bounds(wp.transform_get_translation(transform), size[0])
-    elif type == GeomType.CAPSULE:
+    elif geom_type == GeomType.CAPSULE:
         lower, upper = compute_capsule_bounds(transform, size)
-    elif type == GeomType.CYLINDER:
+    elif geom_type == GeomType.CYLINDER:
         lower, upper = compute_cylinder_bounds(transform, size)
-    elif type == GeomType.CONE:
+    elif geom_type == GeomType.CONE:
         lower, upper = compute_cone_bounds(transform, size)
-    elif type == GeomType.PLANE:
+    elif geom_type == GeomType.PLANE:
         lower, upper = compute_plane_bounds(transform, size)
-    elif type == GeomType.MESH:
-        min_bounds = mesh_bounds[geom_mesh_indices[geom_id], 0]
-        max_bounds = mesh_bounds[geom_mesh_indices[geom_id], 1]
+    elif geom_type == GeomType.MESH:
+        min_bounds = mesh_bounds[shape_mesh_indices[shape_index], 0]
+        max_bounds = mesh_bounds[shape_mesh_indices[shape_index], 1]
         lower, upper = compute_mesh_bounds(transform, size, min_bounds, max_bounds)
-    elif type == GeomType.ELLIPSOID:
+    elif geom_type == GeomType.ELLIPSOID:
         lower, upper = compute_ellipsoid_bounds(transform, size)
-    elif type == GeomType.BOX:
+    elif geom_type == GeomType.BOX:
         lower, upper = compute_box_bounds(transform, size)
 
-    out_bvh_lowers[bvh_geom_local] = lower
-    out_bvh_uppers[bvh_geom_local] = upper
-    out_bvh_groups[bvh_geom_local] = world_id
+    out_bvh_lowers[bvh_index_local] = lower
+    out_bvh_uppers[bvh_index_local] = upper
+    out_bvh_groups[bvh_index_local] = world_index
 
 
 @wp.kernel(enable_backward=False)
@@ -213,24 +213,24 @@ def compute_particle_bvh_bounds(
     out_bvh_groups: wp.array(dtype=wp.int32),
 ):
     tid = wp.tid()
-    bvh_geom_local = tid % num_particles
-    if bvh_geom_local >= num_particles:
+    bvh_index_local = tid % num_particles
+    if bvh_index_local >= num_particles:
         return
 
-    geom_id = bvh_geom_local
+    shape_index = bvh_index_local
 
-    world_id = particle_world_index[geom_id]
-    if world_id < 0:
-        world_id = num_worlds + world_id
+    world_index = particle_world_index[shape_index]
+    if world_index < 0:
+        world_index = num_worlds + world_index
 
-    if world_id >= num_worlds:
+    if world_index >= num_worlds:
         return
 
-    lower, upper = compute_sphere_bounds(particle_position[geom_id], particle_radius[geom_id])
+    lower, upper = compute_sphere_bounds(particle_position[shape_index], particle_radius[shape_index])
 
-    out_bvh_lowers[bvh_geom_local] = lower
-    out_bvh_uppers[bvh_geom_local] = upper
-    out_bvh_groups[bvh_geom_local] = world_id
+    out_bvh_lowers[bvh_index_local] = lower
+    out_bvh_uppers[bvh_index_local] = upper
+    out_bvh_groups[bvh_index_local] = world_index
 
 
 @wp.kernel(enable_backward=False)

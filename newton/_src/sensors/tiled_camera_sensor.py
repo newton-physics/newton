@@ -23,10 +23,9 @@ import warp as wp
 
 from ..geometry import ShapeFlags
 from ..sim import Model, State
-from .warp_raytrace import GeomType, LightType, RenderContext
+from .warp_raytrace import ClearData, GeomType, LightType, RenderContext
 
-DEFAULT_CLEAR_NORMAL = wp.vec3f(0.0)
-DEFAULT_CLEAR_GEOM_ID = wp.uint32(0xFFFFFFFF)
+DEFAULT_CLEAR_DATA = ClearData(0xFF666666)
 
 
 @wp.kernel(enable_backward=False)
@@ -67,34 +66,34 @@ def compute_mesh_bounds(in_meshes: wp.array(dtype=wp.uint64), out_bounds: wp.arr
 
 
 @wp.func
-def is_supported_shape_type(shape_type: wp.int32) -> wp.bool:
-    if shape_type == GeomType.BOX:
+def is_supported_shape_geom_type(shape_geom_type: wp.int32) -> wp.bool:
+    if shape_geom_type == GeomType.BOX:
         return True
-    if shape_type == GeomType.CAPSULE:
+    if shape_geom_type == GeomType.CAPSULE:
         return True
-    if shape_type == GeomType.CYLINDER:
+    if shape_geom_type == GeomType.CYLINDER:
         return True
-    if shape_type == GeomType.ELLIPSOID:
+    if shape_geom_type == GeomType.ELLIPSOID:
         return True
-    if shape_type == GeomType.PLANE:
+    if shape_geom_type == GeomType.PLANE:
         return True
-    if shape_type == GeomType.SPHERE:
+    if shape_geom_type == GeomType.SPHERE:
         return True
-    if shape_type == GeomType.CONE:
+    if shape_geom_type == GeomType.CONE:
         return True
-    if shape_type == GeomType.MESH:
+    if shape_geom_type == GeomType.MESH:
         return True
-    wp.printf("Unsupported shape type: %d\n", shape_type)
+    wp.printf("Unsupported shape geom type: %d\n", shape_geom_type)
     return False
 
 
 @wp.kernel(enable_backward=False)
 def compute_enabled_shapes(
-    shape_type: wp.array(dtype=wp.int32),
+    shape_geom_type: wp.array(dtype=wp.int32),
     shape_flags: wp.array(dtype=wp.int32),
-    out_geom_enabled: wp.array(dtype=wp.uint32),
+    out_shape_enabled: wp.array(dtype=wp.uint32),
     out_mesh_indices: wp.array(dtype=wp.int32),
-    out_geom_enabled_count: wp.array(dtype=wp.int32),
+    out_shape_enabled_count: wp.array(dtype=wp.int32),
 ):
     tid = wp.tid()
 
@@ -103,11 +102,11 @@ def compute_enabled_shapes(
     if not bool(shape_flags[tid] & ShapeFlags.VISIBLE):
         return
 
-    if not is_supported_shape_type(shape_type[tid]):
+    if not is_supported_shape_geom_type(shape_geom_type[tid]):
         return
 
-    index = wp.atomic_add(out_geom_enabled_count, 0, 1)
-    out_geom_enabled[index] = wp.uint32(tid)
+    index = wp.atomic_add(out_shape_enabled_count, 0, 1)
+    out_shape_enabled[index] = wp.uint32(tid)
 
 
 @wp.kernel(enable_backward=False)
@@ -253,7 +252,7 @@ class TiledCameraSensor:
             width, height, False, False, True, True, self.model.num_worlds, num_cameras, True
         )
         self.render_context.mesh_ids = model.shape_source_ptr
-        self.render_context.geom_mesh_indices = wp.empty(self.model.shape_count, dtype=wp.int32)
+        self.render_context.shape_mesh_indices = wp.empty(self.model.shape_count, dtype=wp.int32)
         self.render_context.mesh_bounds = wp.empty((self.model.shape_count, 2), dtype=wp.vec3f, ndim=2)
 
         if model.particle_q is not None and model.particle_q.shape[0]:
@@ -265,31 +264,31 @@ class TiledCameraSensor:
                 self.render_context.triangle_indices = model.tri_indices.flatten()
                 self.render_context.enable_particles = False
 
-        self.render_context.geom_enabled = wp.empty(self.model.shape_count, dtype=wp.uint32)
-        self.render_context.geom_types = model.shape_type
-        self.render_context.geom_sizes = wp.empty(self.model.shape_count, dtype=wp.vec3f)
-        self.render_context.geom_transforms = wp.empty(self.model.shape_count, dtype=wp.transformf)
-        self.render_context.geom_materials = wp.array(
+        self.render_context.shape_enabled = wp.empty(self.model.shape_count, dtype=wp.uint32)
+        self.render_context.shape_geom_types = model.shape_type
+        self.render_context.shape_sizes = wp.empty(self.model.shape_count, dtype=wp.vec3f)
+        self.render_context.shape_transforms = wp.empty(self.model.shape_count, dtype=wp.transformf)
+        self.render_context.shape_materials = wp.array(
             np.full(self.model.shape_count, fill_value=-1, dtype=np.int32), dtype=wp.int32
         )
-        self.render_context.geom_colors = wp.array(
+        self.render_context.shape_colors = wp.array(
             np.full((self.model.shape_count, 4), fill_value=1.0, dtype=wp.float32), dtype=wp.vec4f
         )
-        self.render_context.geom_world_index = self.model.shape_world
+        self.render_context.shape_world_index = self.model.shape_world
 
-        num_enabled_geoms = wp.zeros(1, dtype=wp.int32)
+        num_enabled_shapes = wp.zeros(1, dtype=wp.int32)
         wp.launch(
             kernel=compute_enabled_shapes,
             dim=self.model.shape_count,
             inputs=[
                 model.shape_type,
                 model.shape_flags,
-                self.render_context.geom_enabled,
-                self.render_context.geom_mesh_indices,
-                num_enabled_geoms,
+                self.render_context.shape_enabled,
+                self.render_context.shape_mesh_indices,
+                num_enabled_shapes,
             ],
         )
-        self.render_context.num_geoms = int(num_enabled_geoms.numpy()[0])
+        self.render_context.num_shapes = int(num_enabled_shapes.numpy()[0])
 
         wp.launch(
             kernel=compute_mesh_bounds,
@@ -314,7 +313,7 @@ class TiledCameraSensor:
         Args:
             state: The current simulation state containing body transforms.
         """
-        if self.render_context.has_geometries:
+        if self.render_context.has_shapes:
             wp.launch(
                 kernel=convert_newton_transform,
                 dim=self.model.shape_count,
@@ -323,8 +322,8 @@ class TiledCameraSensor:
                     self.model.shape_body,
                     self.model.shape_transform,
                     self.model.shape_scale,
-                    self.render_context.geom_transforms,
-                    self.render_context.geom_sizes,
+                    self.render_context.shape_transforms,
+                    self.render_context.shape_sizes,
                 ],
             )
 
@@ -341,13 +340,10 @@ class TiledCameraSensor:
         camera_rays: wp.array(dtype=wp.vec3f, ndim=4),
         color_image: wp.array(dtype=wp.uint32, ndim=3) | None = None,
         depth_image: wp.array(dtype=wp.float32, ndim=3) | None = None,
-        geom_id_image: wp.array(dtype=wp.uint32, ndim=3) | None = None,
+        shape_index_image: wp.array(dtype=wp.uint32, ndim=3) | None = None,
         normal_image: wp.array(dtype=wp.vec3f, ndim=3) | None = None,
         refit_bvh: bool = True,
-        clear_color: int | None = 0xFF666666,
-        clear_depth: float | None = 0.0,
-        clear_geom_id: int | None = DEFAULT_CLEAR_GEOM_ID,
-        clear_normal: wp.vec3f | None = DEFAULT_CLEAR_NORMAL,
+        clear_data: ClearData | None = DEFAULT_CLEAR_DATA,
     ):
         """
         Render color and depth images for all worlds and cameras.
@@ -360,15 +356,12 @@ class TiledCameraSensor:
                         If None, no color rendering is performed.
             depth_image: Optional output array for depth data (num_worlds, num_cameras, width*height).
                         If None, no depth rendering is performed.
-            geom_id_image: Optional output array for geom id data (num_worlds, num_cameras, width*height).
-                        If None, no geom id rendering is performed.
+            shape_index_image: Optional output array for shape index data (num_worlds, num_cameras, width*height).
+                        If None, no shape index rendering is performed.
             normal_image: Optional output array for normal data (num_worlds, num_cameras, width*height).
                         If None, no normal rendering is performed.
             refit_bvh: Whether to refit the BVH or not.
-            clear_color: The color to clear the color image with (or skip if None).
-            clear_depth: The value to clear the depth image with (or skip if None).
-            clear_geom_id: The value to clear the geom id image with (or skip if None).
-            clear_normal: The value to clear the normal image with (or skip if None).
+            clear_data: The data to clear the image buffers with (or skip if None).
         """
         if state is not None:
             self.update_from_state(state)
@@ -378,13 +371,10 @@ class TiledCameraSensor:
             camera_rays,
             color_image,
             depth_image,
-            geom_id_image,
+            shape_index_image,
             normal_image,
             refit_bvh=refit_bvh,
-            clear_color=clear_color,
-            clear_depth=clear_depth,
-            clear_geom_id=clear_geom_id,
-            clear_normal=clear_normal,
+            clear_data=clear_data,
         )
 
     def compute_pinhole_camera_rays(
@@ -580,7 +570,9 @@ class TiledCameraSensor:
 
         colors = np.random.default_rng(seed).random((self.model.shape_count, 4)) * 0.5 + 0.5
         colors[:, -1] = 1.0
-        self.render_context.geom_colors = wp.array(colors[self.model.shape_world.numpy() % len(colors)], dtype=wp.vec4f)
+        self.render_context.shape_colors = wp.array(
+            colors[self.model.shape_world.numpy() % len(colors)], dtype=wp.vec4f
+        )
 
     def assign_random_colors_per_shape(self, seed: int = 100):
         """
@@ -592,7 +584,7 @@ class TiledCameraSensor:
 
         colors = np.random.default_rng(seed).random((self.model.shape_count, 4)) * 0.5 + 0.5
         colors[:, -1] = 1.0
-        self.render_context.geom_colors = wp.array(colors, dtype=wp.vec4f)
+        self.render_context.shape_colors = wp.array(colors, dtype=wp.vec4f)
 
     def create_default_light(self, enable_shadows: bool = True):
         """
@@ -614,7 +606,7 @@ class TiledCameraSensor:
         """
         Assign a checkerboard texture material to all shapes.
 
-        Creates a gray checkerboard pattern texture and applies it to all geometry
+        Creates a gray checkerboard pattern texture and applies it to all shapes
         in the scene.
 
         Args:
@@ -637,7 +629,7 @@ class TiledCameraSensor:
         self.render_context.material_texture_repeat = wp.array([wp.vec2f(1.0)], dtype=wp.vec2f)
         self.render_context.material_rgba = wp.array([wp.vec4f(1.0)], dtype=wp.vec4f)
 
-        self.render_context.geom_materials = wp.array(
+        self.render_context.shape_materials = wp.array(
             np.full(self.model.shape_count, fill_value=0, dtype=np.int32), dtype=wp.int32
         )
 
@@ -659,14 +651,14 @@ class TiledCameraSensor:
         """
         return self.render_context.create_depth_image_output()
 
-    def create_geom_id_image_output(self):
+    def create_shape_index_image_output(self):
         """
-        Create a Warp array for geom id image output.
+        Create a Warp array for shape index image output.
 
         Returns:
             wp.array of shape (num_worlds, num_cameras, width*height) with dtype uint32.
         """
-        return self.render_context.create_geom_id_image_output()
+        return self.render_context.create_shape_index_image_output()
 
     def create_normal_image_output(self):
         """
