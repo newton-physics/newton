@@ -368,7 +368,7 @@ class Example:
             self.image_output = 1
         if ui.radio_button("Show Normal Output", self.image_output == 2):
             self.image_output = 2
-        if ui.radio_button("Show SemanticId Output", self.image_output == 3):
+        if ui.radio_button("Show Semantic Output", self.image_output == 3):
             self.image_output = 3
         if ui.radio_button("Show Shape Index Output", self.image_output == 4):
             self.image_output = 4
