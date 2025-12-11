@@ -23,7 +23,7 @@ import warp as wp
 
 from ..geometry import ShapeFlags
 from ..sim import Model, State
-from .warp_raytrace import ClearData, RenderShapeType, RenderLightType, RenderContext
+from .warp_raytrace import ClearData, RenderContext, RenderLightType, RenderShapeType
 
 DEFAULT_CLEAR_DATA = ClearData(0xFF666666)
 

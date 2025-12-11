@@ -323,7 +323,7 @@ def render_megakernel(
         assert rc.width % rc.tile_size == 0, "render width must be a multiple of tile_size"
         assert rc.height % rc.tile_size == 0, "render height must be a multiple of tile_size"
 
-    if clear_data is not None and clear_data.clear_color and color_image is not None:
+    if clear_data is not None and clear_data.clear_color is not None and color_image is not None:
         color_image.fill_(wp.uint32(clear_data.clear_color))
 
     if clear_data is not None and clear_data.clear_depth is not None and depth_image is not None:
