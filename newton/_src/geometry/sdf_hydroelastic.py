@@ -91,7 +91,6 @@ class SDFHydroelastic:
         self.n_shapes = n_shapes
         self.max_num_shape_pairs = num_shape_pairs
         self.total_num_tiles = total_num_tiles
-        self.total_num_voxels = total_num_tiles * 512
         self.max_num_blocks_per_shape = max_num_blocks_per_shape
 
         self.num_shape_pairs_array = wp.full((1,), self.max_num_shape_pairs, dtype=wp.int32)
@@ -150,6 +149,7 @@ class SDFHydroelastic:
         self.face_contact_id = wp.empty((self.max_num_face_contacts,), dtype=wp.int32)
         self.face_contact_area = wp.empty((self.max_num_face_contacts,), dtype=wp.float32)
         self.contact_normal_bin_idx = wp.empty((self.max_num_face_contacts,), dtype=wp.int32)
+
 
         if self.config.output_iso_vertices:
             # stores the point and depth of the iso vertex
