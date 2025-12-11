@@ -75,7 +75,7 @@ def animate_franka(
 
 
 @wp.kernel
-def geom_id_to_rgb(
+def geom_id_to_semantic_rgb(
     geom_ids: wp.array(dtype=wp.uint32, ndim=3),
     colors: wp.array(dtype=wp.uint32),
     rgba: wp.array(dtype=wp.uint32, ndim=3),
@@ -86,6 +86,17 @@ def geom_id_to_rgb(
         rgba[world_id, camera_id, pixel_id] = colors[geom_id]
     else:
         rgba[world_id, camera_id, pixel_id] = wp.uint32(0xFF000000)
+
+
+@wp.kernel
+def geom_id_to_random_rgb(
+    geom_ids: wp.array(dtype=wp.uint32, ndim=3),
+    rgba: wp.array(dtype=wp.uint32, ndim=3),
+):
+    world_id, camera_id, pixel_id = wp.tid()
+    geom_id = geom_ids[world_id, camera_id, pixel_id]
+    random_color = wp.randi(wp.rand_init(1234, wp.int32(geom_id)))
+    rgba[world_id, camera_id, pixel_id] = wp.uint32(random_color) | wp.uint32(0xFF000000)
 
 
 class Example:
@@ -303,9 +314,19 @@ class Example:
             )
         elif self.image_output == 3:
             wp.launch(
-                geom_id_to_rgb,
+                geom_id_to_semantic_rgb,
                 self.tiled_camera_sensor_geom_id_image.shape,
                 [self.tiled_camera_sensor_geom_id_image, self.semantic_colors],
+                [self.tiled_camera_sensor_geom_id_image],
+            )
+            self.tiled_camera_sensor.flatten_color_image_to_rgba(
+                self.tiled_camera_sensor_geom_id_image, texture_buffer, self.num_worlds_per_row
+            )
+        elif self.image_output == 4:
+            wp.launch(
+                geom_id_to_random_rgb,
+                self.tiled_camera_sensor_geom_id_image.shape,
+                [self.tiled_camera_sensor_geom_id_image],
                 [self.tiled_camera_sensor_geom_id_image],
             )
             self.tiled_camera_sensor.flatten_color_image_to_rgba(
@@ -347,8 +368,10 @@ class Example:
             self.image_output = 1
         if ui.radio_button("Show Normal Output", self.image_output == 2):
             self.image_output = 2
-        if ui.radio_button("Show GeomId Output", self.image_output == 3):
+        if ui.radio_button("Show SemanticId Output", self.image_output == 3):
             self.image_output = 3
+        if ui.radio_button("Show GeomId Output", self.image_output == 4):
+            self.image_output = 4
 
     def display(self, imgui):
         line_color = imgui.get_color_u32(imgui.Col_.window_bg)
