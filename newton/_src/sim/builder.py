@@ -325,14 +325,28 @@ class ModelBuilder:
         dtype: type
         """Warp dtype (e.g., wp.float32, wp.int32, wp.bool, wp.vec3) that is compatible with Warp arrays."""
 
-        frequency: ModelAttributeFrequency
-        """Frequency category (see :class:`ModelAttributeFrequency`) that determines how the attribute is indexed in the Model."""
+        frequency: ModelAttributeFrequency | None = None
+        """Frequency category (see :class:`ModelAttributeFrequency`) that determines how the attribute is indexed in the Model.
+        If None, the attribute has variable length determined by the number of values defined."""
 
         assignment: ModelAttributeAssignment = ModelAttributeAssignment.MODEL
         """Assignment category (see :class:`ModelAttributeAssignment`), defaults to :attr:`ModelAttributeAssignment.MODEL`"""
 
         namespace: str | None = None
         """Namespace for the attribute. If None, the attribute is added directly to the assigned object without a namespace."""
+
+        references: str | None = None
+        """For attributes containing entity indices, specifies how values are transformed during add_world/add_builder merging.
+
+        Built-in entity types (values are offset by entity count):
+            - ``"body"``, ``"shape"``, ``"joint"``, ``"joint_dof"``, ``"joint_coord"``, ``"articulation"``
+
+        Special handling:
+            - ``"world"``: Values are replaced with ``current_world`` (not offset)
+
+        Custom attribute references (values are offset by that attribute's value count):
+            - Any custom attribute key, e.g., ``"mujoco:pair_geom1"``
+        """
 
         default: Any = None
         """Default value for the attribute. If None, the default value is determined based on the dtype."""
@@ -1583,6 +1597,7 @@ class ModelBuilder:
         start_joint_dof_idx = self.joint_dof_count
         start_joint_coord_idx = self.joint_coord_count
         start_articulation_idx = self.articulation_count
+        start_world_idx = self.num_worlds
 
         if builder.particle_count:
             self.particle_max_velocity = builder.particle_max_velocity
@@ -1802,31 +1817,60 @@ class ModelBuilder:
         self.joint_coord_count += builder.joint_coord_count
 
         # Merge custom attributes from the sub-builder
+        # Shared offset map for both frequency and references
+        entity_offsets = {
+            "body": start_body_idx,
+            "shape": start_shape_idx,
+            "joint": start_joint_idx,
+            "joint_dof": start_joint_dof_idx,
+            "joint_coord": start_joint_coord_idx,
+            "articulation": start_articulation_idx,
+            "world": start_world_idx,
+        }
+
+        # Pre-merge counts for variable-length custom attributes
+        pre_merge_counts: dict[str, int] = {
+            key: len(attr.values) if attr.values else 0 for key, attr in self.custom_attributes.items()
+        }
+
+        def get_offset(entity_or_key: str | None) -> int:
+            """Get offset for an entity type or custom attribute key."""
+            if entity_or_key is None:
+                return 0
+            return entity_offsets.get(entity_or_key, pre_merge_counts.get(entity_or_key, 0))
+
         for full_key, attr in builder.custom_attributes.items():
-            # Determine the offset based on frequency
-            if attr.frequency == ModelAttributeFrequency.ONCE:
-                offset = 0
-            elif attr.frequency == ModelAttributeFrequency.BODY:
-                offset = start_body_idx
-            elif attr.frequency == ModelAttributeFrequency.SHAPE:
-                offset = start_shape_idx
-            elif attr.frequency == ModelAttributeFrequency.JOINT:
-                offset = start_joint_idx
-            elif attr.frequency == ModelAttributeFrequency.JOINT_DOF:
-                offset = start_joint_dof_idx
-            elif attr.frequency == ModelAttributeFrequency.JOINT_COORD:
-                offset = start_joint_coord_idx
-            elif attr.frequency == ModelAttributeFrequency.ARTICULATION:
-                offset = start_articulation_idx
+            # Index offset based on frequency
+            if attr.frequency is None:
+                index_offset = pre_merge_counts.get(full_key, 0)
+            elif attr.frequency == ModelAttributeFrequency.ONCE:
+                index_offset = 0
             else:
-                continue
+                index_offset = get_offset(attr.frequency.name.lower())
+
+            # Value transformation based on references
+            use_current_world = attr.references == "world"
+            value_offset = 0 if use_current_world else get_offset(attr.references)
+
+            def transform_value(v, offset=value_offset, replace_with_world=use_current_world):
+                if replace_with_world:
+                    return self.current_world
+                if offset == 0:
+                    return v
+                if isinstance(v, int):
+                    return v + offset
+                if hasattr(v, "__len__"):
+                    return type(v)(*[x + offset for x in v])
+                return v
 
             # Declare the attribute if it doesn't exist in the main builder
             merged = self.custom_attributes.get(full_key)
             if merged is None:
                 self.custom_attributes[full_key] = replace(
                     attr,
-                    values={offset + idx: value for idx, value in attr.values.items()} if attr.values else None,
+                    values={index_offset + idx: transform_value(value) for idx, value in attr.values.items()}
+                    if attr.values
+                    else None,
                 )
                 continue
 
@@ -1852,7 +1896,7 @@ class ModelBuilder:
             # Remap indices and copy values
             if merged.values is None:
                 merged.values = {}
-            merged.values.update({offset + idx: value for idx, value in attr.values.items()})
+            merged.values.update({index_offset + idx: transform_value(value) for idx, value in attr.values.items()})
 
     def add_link(
         self,
@@ -5807,7 +5851,10 @@ class ModelBuilder:
                 frequency = custom_attr.frequency
 
                 # determine count by frequency
-                if frequency == ModelAttributeFrequency.ONCE:
+                if frequency is None:
+                    # Variable-length: count determined by number of values
+                    count = len(custom_attr.values) if custom_attr.values else 0
+                elif frequency == ModelAttributeFrequency.ONCE:
                     count = 1
                 elif frequency == ModelAttributeFrequency.BODY:
                     count = m.body_count
@@ -5821,7 +5868,13 @@ class ModelBuilder:
                     count = m.joint_coord_count
                 elif frequency == ModelAttributeFrequency.ARTICULATION:
                     count = m.articulation_count
+                elif frequency == ModelAttributeFrequency.WORLD:
+                    count = m.num_worlds
                 else:
+                    continue
+
+                # Skip empty variable-length attributes
+                if count == 0:
                     continue
 
                 wp_arr = custom_attr.build_array(count, device=device, requires_grad=requires_grad)
