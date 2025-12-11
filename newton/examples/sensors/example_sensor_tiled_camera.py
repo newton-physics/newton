@@ -95,7 +95,7 @@ def geom_id_to_random_rgb(
 ):
     world_id, camera_id, pixel_id = wp.tid()
     geom_id = geom_ids[world_id, camera_id, pixel_id]
-    random_color = wp.randi(wp.rand_init(1234, wp.int32(geom_id)))
+    random_color = wp.randi(wp.rand_init(12345, wp.int32(geom_id)))
     rgba[world_id, camera_id, pixel_id] = wp.uint32(random_color) | wp.uint32(0xFF000000)
 
 
