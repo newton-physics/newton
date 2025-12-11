@@ -67,6 +67,7 @@ class SDFHydroelastic:
         max_num_blocks_per_shape: int,
         shape_sdf_block_coords: wp.array(dtype=wp.vec3us),
         shape_sdf_shape2blocks: wp.array(dtype=wp.vec2i),
+        shape_material_k_hydro: wp.array(dtype=wp.float32),
         config: SDFHydroelasticConfig = None,
         device: Any = None,
         writer_func: Any = None,
@@ -77,6 +78,7 @@ class SDFHydroelastic:
         self.config = config
         self.shape_sdf_block_coords = shape_sdf_block_coords
         self.shape_sdf_shape2blocks = shape_sdf_shape2blocks
+        self.shape_material_k_hydro = shape_material_k_hydro
 
         self.max_num_shape_pairs = num_shape_pairs
         self.total_num_tiles = total_num_tiles
@@ -218,6 +220,7 @@ class SDFHydroelastic:
             max_num_blocks_per_shape=max_num_blocks_per_shape,
             shape_sdf_block_coords=model.shape_sdf_block_coords,
             shape_sdf_shape2blocks=model.shape_sdf_shape2blocks,
+            shape_material_k_hydro=model.shape_material_k_hydro,
             config=config,
             device=model.device,
             writer_func=writer_func,
@@ -1035,7 +1038,7 @@ def get_decode_contacts_kernel(writer_func: Any = None):
             contact_data = ContactData()
             contact_data.contact_point_center = pos_world
             contact_data.contact_normal_a_to_b = normal_world
-            contact_data.contact_distance = -2.0 * depth
+            contact_data.contact_distance = -2.0 * depth # depth is the distance to the isosurface
             contact_data.radius_eff_a = 0.0
             contact_data.radius_eff_b = 0.0
             contact_data.thickness_a = 0.0

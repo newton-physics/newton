@@ -194,6 +194,8 @@ class ModelBuilder:
         Only used for mesh shapes."""
         is_hydroelastic: bool = False
         """Whether the shape collides using SDF-based hydroelastics. For hydroelastic collisions, both participating shapes must have is_hydroelastic set to True. Defaults to False."""
+        k_hydro: float = 1.0e8
+        """Contact stiffness coefficient for hydroelastic collisions. Used by MuJoCo, Featherstone, SemiImplicit when is_hydroelastic is True."""
 
         def mark_as_site(self) -> None:
             """Marks this shape as a site and enforces all site invariants.
@@ -505,6 +507,7 @@ class ModelBuilder:
         self.shape_material_restitution = []
         self.shape_material_torsional_friction = []
         self.shape_material_rolling_friction = []
+        self.shape_material_k_hydro = []
         self.shape_contact_margin = []
         # collision groups within collisions are handled
         self.shape_collision_group = []
@@ -1778,6 +1781,7 @@ class ModelBuilder:
             "shape_material_restitution",
             "shape_material_torsional_friction",
             "shape_material_rolling_friction",
+            "shape_material_k_hydro",
             "shape_collision_radius",
             "shape_contact_margin",
             "shape_sdf_narrow_band_range",
@@ -3323,6 +3327,7 @@ class ModelBuilder:
         self.shape_material_restitution.append(cfg.restitution)
         self.shape_material_torsional_friction.append(cfg.torsional_friction)
         self.shape_material_rolling_friction.append(cfg.rolling_friction)
+        self.shape_material_k_hydro.append(cfg.k_hydro)
         self.shape_contact_margin.append(
             cfg.contact_margin if cfg.contact_margin is not None else self.rigid_contact_margin
         )
@@ -5463,6 +5468,9 @@ class ModelBuilder:
             )
             m.shape_material_rolling_friction = wp.array(
                 self.shape_material_rolling_friction, dtype=wp.float32, requires_grad=requires_grad
+            )
+            m.shape_material_k_hydro = wp.array(
+                self.shape_material_k_hydro, dtype=wp.float32, requires_grad=requires_grad
             )
             m.shape_contact_margin = wp.array(self.shape_contact_margin, dtype=wp.float32, requires_grad=requires_grad)
 
