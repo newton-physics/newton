@@ -20,6 +20,11 @@ import warp as wp
 from .bvh import compute_bvh_group_roots, compute_geom_bvh_bounds, compute_particle_bvh_bounds
 from .render import render_megakernel
 
+DEFAULT_CLEAR_COLOR = 0
+DEFAULT_CLEAR_DEPTH = 0.0
+DEFAULT_CLEAR_GEOM_ID = wp.uint32(0xFFFFFFFF)
+DEFAULT_CLEAR_NORMAL = wp.vec3f(0.0)
+
 
 class RenderContext:
     def __init__(
@@ -67,12 +72,11 @@ class RenderContext:
         self.__particles_radius: wp.array(dtype=wp.float32) = None
         self.__particles_world_index: wp.array(dtype=wp.int32) = None
 
-        self.geom_enabled: wp.array(dtype=wp.int32) = None
+        self.geom_enabled: wp.array(dtype=wp.uint32) = None
         self.geom_types: wp.array(dtype=wp.int32) = None
         self.geom_mesh_indices: wp.array(dtype=wp.int32) = None
         self.geom_sizes: wp.array(dtype=wp.vec3f) = None
-        self.geom_positions: wp.array(dtype=wp.vec3f) = None
-        self.geom_orientations: wp.array(dtype=wp.mat33f) = None
+        self.geom_transforms: wp.array(dtype=wp.transformf) = None
         self.geom_materials: wp.array(dtype=wp.int32) = None
         self.geom_colors: wp.array(dtype=wp.vec4f) = None
         self.geom_world_index: wp.array(dtype=wp.int32) = None
@@ -129,6 +133,12 @@ class RenderContext:
     def create_depth_image_output(self):
         return wp.zeros((self.num_worlds, self.num_cameras, self.width * self.height), dtype=wp.float32)
 
+    def create_geom_id_image_output(self):
+        return wp.zeros((self.num_worlds, self.num_cameras, self.width * self.height), dtype=wp.uint32)
+
+    def create_normal_image_output(self):
+        return wp.zeros((self.num_worlds, self.num_cameras, self.width * self.height), dtype=wp.vec3f)
+
     def refit_bvh(self):
         if self.num_geoms_total:
             self.__init_geom_outputs()
@@ -168,19 +178,33 @@ class RenderContext:
 
     def render(
         self,
-        camera_positions: wp.array(dtype=wp.vec3f, ndim=2),
-        camera_orientations: wp.array(dtype=wp.mat33f, ndim=2),
+        camera_transforms: wp.array(dtype=wp.transformf, ndim=2),
         camera_rays: wp.array(dtype=wp.vec3f, ndim=4),
         color_image: wp.array(dtype=wp.uint32, ndim=3) | None = None,
         depth_image: wp.array(dtype=wp.float32, ndim=3) | None = None,
+        geom_id_image: wp.array(dtype=wp.uint32, ndim=3) | None = None,
+        normal_image: wp.array(dtype=wp.vec3f, ndim=3) | None = None,
         refit_bvh: bool = True,
-        clear_images: bool = True,
+        clear_color: int | None = DEFAULT_CLEAR_COLOR,
+        clear_depth: float | None = DEFAULT_CLEAR_DEPTH,
+        clear_geom_id: int | None = DEFAULT_CLEAR_GEOM_ID,
+        clear_normal: wp.vec3f | None = DEFAULT_CLEAR_NORMAL,
     ):
         if self.has_geometries or self.has_particles or self.has_triangle_mesh:
             if refit_bvh:
                 self.refit_bvh()
             render_megakernel(
-                self, camera_positions, camera_orientations, camera_rays, color_image, depth_image, clear_images
+                self,
+                camera_transforms,
+                camera_rays,
+                color_image,
+                depth_image,
+                geom_id_image,
+                normal_image,
+                clear_color,
+                clear_depth,
+                clear_geom_id,
+                clear_normal,
             )
 
     def __compute_bvh_geom_bounds(self):
@@ -195,8 +219,7 @@ class RenderContext:
                 self.geom_types,
                 self.geom_mesh_indices,
                 self.geom_sizes,
-                self.geom_positions,
-                self.geom_orientations,
+                self.geom_transforms,
                 self.mesh_bounds,
                 self.bvh_geom_lowers,
                 self.bvh_geom_uppers,

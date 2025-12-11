@@ -53,8 +53,12 @@ class ViewerRerun(ViewerBase):
 
     def __init__(
         self,
+        *,
         app_id: str | None = None,
         address: str | None = None,
+        serve_web_viewer: bool = True,
+        web_port: int = 9090,
+        grpc_port: int = 9876,
         keep_historical_data: bool = False,
         keep_scalar_history: bool = True,
         record_to_rrd: str | None = None,
@@ -64,15 +68,20 @@ class ViewerRerun(ViewerBase):
 
         This viewer supports both standalone and Jupyter notebook environments. When an address is provided,
         it connects to that remote rerun server regardless of environment. When address is None, it spawns
-        a local viewer only if not running in a Jupyter notebook (notebooks use show_notebook() instead).
+        a local viewer (web-based or standalone, depending on ``serve_web_viewer`` flag), only if not running in a Jupyter notebook (notebooks use show_notebook() instead).
 
         Args:
             app_id (str | None): Application ID for rerun (defaults to 'newton-viewer').
-                                 Use different IDs to differentiate between parallel simulations.
-            address (str | None): Optional server address to connect to a remote rerun server.
+                                 Use different IDs to differentiate between parallel viewer instances.
+            address (str | None): Optional server address to connect to a remote rerun server via gRPC.
+                                  You will need to start a stand-alone rerun server first, e.g. by typing ``rerun`` in your terminal.
                                   See rerun.io documentation for supported address formats.
                                   If provided, connects to the specified server regardless of environment.
-                                  If None, spawns a local viewer (only outside Jupyter notebooks).
+            serve_web_viewer (bool): If True, serves a web viewer over HTTP on the given ``web_port`` and opens it in the browser.
+                                     If False, spawns a native Rerun viewer (only outside Jupyter notebooks).
+                                     Defaults to True.
+            web_port (int): Port to serve the web viewer on. Only used if ``serve_web_viewer`` is True.
+            grpc_port (int): Port to serve the gRPC server on.
             keep_historical_data (bool): If True, keep historical data in the timeline of the web viewer.
                 If False, the web viewer will only show the current frame to keep the memory usage constant when sending transform updates via :meth:`ViewerRerun.log_state`.
                 This is useful for visualizing long and complex simulations that would quickly fill up the web viewer's memory if the historical data was kept.
@@ -105,12 +114,18 @@ class ViewerRerun(ViewerBase):
         if record_to_rrd is not None:
             rr.save(record_to_rrd, default_blueprint=blueprint)
 
+        self._grpc_server_uri = None
+
         # Launch viewer client
         self.is_jupyter_notebook = _is_jupyter_notebook()
         if address is not None:
             rr.connect_grpc(address)
         elif not self.is_jupyter_notebook:
-            rr.spawn()
+            if serve_web_viewer:
+                self._grpc_server_uri = rr.serve_grpc(grpc_port=grpc_port, default_blueprint=blueprint)
+                rr.serve_web_viewer(connect_to=self._grpc_server_uri, web_port=web_port)
+            else:
+                rr.spawn(port=grpc_port)
 
         # Make sure the timeline is set up
         rr.set_time("time", timestamp=0.0)
