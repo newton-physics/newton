@@ -81,6 +81,9 @@ class Collider:
     body_com: wp.array(dtype=wp.vec3)
     """Body center of mass of each collider. Shape (body_count,)"""
 
+    use_finite_difference_velocity: bool
+    """Use finite-difference collider velocities from body_q_prev instead of instantaneous velocities."""
+
     query_max_dist: float
     """Maximum distance to query collider sdf"""
 
@@ -214,19 +217,13 @@ def collision_sdf(
             sdf_grad = wp.normalize(wp.quat_rotate(b_rot, sdf_grad))
 
             # Compute rigid body velocity at the contact point
-            if body_q_prev:
+            if collider.use_finite_difference_velocity and dt > 0.0:
                 # Finite-difference velocity from position change
-                if dt > 0.0:
-                    b_pos_prev = wp.transform_get_translation(body_q_prev[body_id])
-                    b_rot_prev = wp.transform_get_rotation(body_q_prev[body_id])
-                    closest_point_world = wp.quat_rotate(b_rot, closest_point) + b_pos
-                    closest_point_world_prev = wp.quat_rotate(b_rot_prev, closest_point) + b_pos_prev
-                    rigid_vel = (closest_point_world - closest_point_world_prev) / dt
-                else:
-                    # Fallback to instantaneous velocity when dt is zero
-                    b_v = wp.spatial_top(body_qd[body_id])
-                    b_w = wp.spatial_bottom(body_qd[body_id])
-                    rigid_vel = b_v + wp.cross(b_w, wp.quat_rotate(b_rot, closest_point - collider.body_com[body_id]))
+                b_pos_prev = wp.transform_get_translation(body_q_prev[body_id])
+                b_rot_prev = wp.transform_get_rotation(body_q_prev[body_id])
+                closest_point_world = wp.quat_rotate(b_rot, closest_point) + b_pos
+                closest_point_world_prev = wp.quat_rotate(b_rot_prev, closest_point) + b_pos_prev
+                rigid_vel = (closest_point_world - closest_point_world_prev) / dt
             else:
                 # Instantaneous rigid body velocity (v + omega x r)
                 b_v = wp.spatial_top(body_qd[body_id])
