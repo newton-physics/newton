@@ -18,7 +18,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-import numpy as np
 import warp as wp
 
 from ..sim.model import Model
@@ -27,6 +26,7 @@ from .utils import scan_with_total
 from .collision_core import sat_box_intersection, build_pair_key2
 from .sdf_mc import get_mc_tables, mc_calc_face
 from .contact_data import ContactData
+from .contact_reduction import get_slot, get_scan_dir, NUM_NORMAL_BINS
 
 
 vec8f = wp.types.vector(length=8, dtype=wp.float32)
@@ -40,7 +40,7 @@ class SDFHydroelasticConfig:
     """
     Controls properties of SDF hydroelastic collision handling.
     """
-    reduce_contacts: bool = False
+    reduce_contacts: bool = True
     """Whether to reduce contacts."""
     buffer_mult_broad: int = 1
     """Multiplier for buffer size for broadphase."""
@@ -54,7 +54,14 @@ class SDFHydroelasticConfig:
     """Whether to output iso vertices of isosurfaces."""
     clip_triangles: bool = False
     """Whether to clip triangles of isosurfaces."""
-
+    betas: tuple[float, float] = (10.0, -0.5)
+    """Penetration beta values."""
+    sticky_contacts: float = 1e-6
+    """Stickiness factor for temporal contact persistence."""
+    normal_matching: bool = False
+    """Whether to match the aggregated force direction."""
+    moment_matching: bool = False
+    """Whether to match the reference torque from all contacts."""
 
 class SDFHydroelastic:
     """
@@ -68,6 +75,7 @@ class SDFHydroelastic:
         shape_sdf_block_coords: wp.array(dtype=wp.vec3us),
         shape_sdf_shape2blocks: wp.array(dtype=wp.vec2i),
         shape_material_k_hydro: wp.array(dtype=wp.float32),
+        n_shapes: int,
         config: SDFHydroelasticConfig = None,
         device: Any = None,
         writer_func: Any = None,
@@ -80,6 +88,7 @@ class SDFHydroelastic:
         self.shape_sdf_shape2blocks = shape_sdf_shape2blocks
         self.shape_material_k_hydro = shape_material_k_hydro
 
+        self.n_shapes = n_shapes
         self.max_num_shape_pairs = num_shape_pairs
         self.total_num_tiles = total_num_tiles
         self.total_num_voxels = total_num_tiles * 512
@@ -160,7 +169,48 @@ class SDFHydroelastic:
         )
 
         if self.config.reduce_contacts:
-            pass 
+            self.penetration_betas = wp.array(self.config.betas, dtype=wp.float32)
+            self.num_betas = len(self.config.betas)
+            self.bin_directions = self.config.bin_directions
+            num_normal_bins = NUM_NORMAL_BINS
+
+            self.max_num_bins = self.max_num_shape_pairs
+            self.sparse_pair_size = self.n_shapes * self.n_shapes
+
+            self.shape_pairs_mask = wp.zeros(self.sparse_pair_size, dtype=wp.int32)
+            self.shape_pairs_to_bin = wp.zeros((self.sparse_pair_size,), dtype=wp.int32)
+            self.shape_pairs_to_bin_prev = wp.clone(self.shape_pairs_to_bin)
+            self.bin_to_shape_pair = wp.zeros((self.max_num_bins,), dtype=wp.int32)
+            self.num_total_pairs = wp.array((self.max_num_shape_pairs,), dtype=wp.int32)
+            self.num_active_pairs = wp.zeros((1,), dtype=wp.int32)
+
+            n_slots = (
+                self.num_betas * self.bin_directions + 1
+            )  # track the max dot product for each beta and direction + contact with deepest penetration depth
+            self.binned_normals = wp.zeros((self.max_num_bins, num_normal_bins, n_slots), dtype=wp.vec3f)
+            self.binned_pos = wp.zeros((self.max_num_bins, num_normal_bins, n_slots), dtype=wp.vec3f)
+            self.binned_depth = wp.zeros((self.max_num_bins, num_normal_bins, n_slots), dtype=wp.float32)
+            self.binned_dot_product = wp.zeros((self.max_num_bins, num_normal_bins, n_slots), dtype=wp.float32)
+            self.binned_id = wp.full((self.max_num_bins, num_normal_bins, n_slots), dtype=wp.int32, value=-1)
+            self.binned_id_prev = wp.clone(self.binned_id)
+
+            self.bin_occupied = wp.zeros((self.max_num_bins, num_normal_bins), dtype=wp.bool)
+            self.binned_agg_force = wp.zeros((self.max_num_bins, num_normal_bins), dtype=wp.vec3f)
+            self.binned_weighted_pos_sum = wp.zeros((self.max_num_bins, num_normal_bins), dtype=wp.vec3f)
+            self.binned_weight_sum = wp.zeros((self.max_num_bins, num_normal_bins), dtype=wp.float32)
+            self.binned_agg_moment = wp.zeros((self.max_num_bins, num_normal_bins), dtype=wp.float32)
+
+            self.compute_bin_scores, self.assign_contacts_to_bins, self.generate_contacts_from_bins = (
+                get_binning_kernels(
+                    self.bin_directions,
+                    num_normal_bins,
+                    self.num_betas,
+                    self.config.sticky_contacts,
+                    self.config.normal_matching,
+                    self.config.moment_matching,
+                    writer_func,
+                )
+            ) 
         else:
             self.decode_contacts_kernel = get_decode_contacts_kernel(writer_func)
 
@@ -221,6 +271,7 @@ class SDFHydroelastic:
             shape_sdf_block_coords=model.shape_sdf_block_coords,
             shape_sdf_shape2blocks=model.shape_sdf_shape2blocks,
             shape_material_k_hydro=model.shape_material_k_hydro,
+            n_shapes=model.shape_count,
             config=config,
             device=model.device,
             writer_func=writer_func,
@@ -260,12 +311,18 @@ class SDFHydroelastic:
         )
 
         if self.config.reduce_contacts:
-            pass
+            self._reduce_decode_contacts(
+                shape_transform,
+                shape_contact_margin,
+                writer_data,
+                device,
+            )
         else:
             self._decode_contacts(
                 shape_transform,
                 shape_contact_margin,
                 writer_data,
+                device,
             )
 
 
@@ -354,7 +411,7 @@ class SDFHydroelastic:
                     self.iso_buffer_counts[i],
                     shape_sdf_data,
                     shape_transform,
-                    # shape_material_k_hydro,
+                    self.shape_material_k_hydro,
                     self.iso_buffer_coords[i],
                     self.iso_buffer_shape_pairs[i],
                     shape_contact_margin,
@@ -413,7 +470,7 @@ class SDFHydroelastic:
                 self.iso_voxel_count,
                 shape_sdf_data,
                 shape_transform,
-                # model.shape_material_k_hydro,
+                self.shape_material_k_hydro,
                 self.iso_voxel_coords,
                 self.iso_voxel_shape_pair,
                 self.mc_tables[0],
@@ -489,6 +546,129 @@ class SDFHydroelastic:
             ],
             outputs=[
                 writer_data
+            ],
+            device=device,
+        )
+    
+    def _reduce_decode_contacts(self, 
+    shape_transform: wp.array(dtype=wp.transform), 
+    shape_contact_margin: wp.array(dtype=wp.float32), 
+    writer_data: Any,
+    device: Any = None
+    ) -> None:
+        wp.copy(self.binned_id_prev, self.binned_id)
+        wp.copy(self.shape_pairs_to_bin_prev, self.shape_pairs_to_bin)
+
+        self.binned_dot_product.fill_(-1e10)
+        self.binned_agg_force.zero_()
+        self.binned_weighted_pos_sum.zero_()
+        self.binned_weight_sum.zero_()
+        self.binned_agg_moment.zero_()
+        self.bin_occupied.zero_()
+        self.shape_pairs_mask.zero_()
+        self.bin_to_shape_pair.fill_(-1)
+        self.num_active_pairs.zero_()
+
+        # Pass 1: Mark active shape pairs from face_contact_pair (vec2i)
+        wp.launch(
+            mark_active_shape_pairs,
+            dim=[self.max_num_face_contacts],
+            inputs=[
+                self.face_contact_pair,
+                self.face_contact_count,
+                self.n_shapes,
+            ],
+            outputs=[self.shape_pairs_mask],
+            device=device,
+        )
+
+        # Pass 2: Prefix sum to get contiguous bin indices
+        wp.utils.array_scan(self.shape_pairs_mask, self.shape_pairs_to_bin, inclusive=False)
+
+        wp.launch(
+            kernel=self.compute_bin_scores,
+            dim=[self.grid_size],
+            inputs=[
+                self.grid_size,
+                self.face_contact_count,
+                self.face_contact_normal,
+                self.face_contact_pos,
+                self.face_contact_depth,
+                self.face_contact_area,
+                self.face_contact_id,
+                self.face_contact_pair,
+                self.n_shapes,
+                self.shape_pairs_to_bin,
+                self.penetration_betas,
+                self.binned_id_prev,
+                self.shape_pairs_to_bin_prev,
+            ],
+            outputs=[
+                self.binned_dot_product,
+                self.binned_agg_force,
+                self.bin_occupied,
+                self.contact_normal_bin_idx,
+                self.bin_to_shape_pair,
+                self.binned_weighted_pos_sum,
+                self.binned_weight_sum,
+            ],
+            device=device,
+        )
+
+        wp.launch(
+            kernel=self.assign_contacts_to_bins,
+            dim=[self.grid_size],
+            inputs=[
+                self.grid_size,
+                self.face_contact_count,
+                self.face_contact_normal,
+                self.contact_normal_bin_idx,
+                self.face_contact_pos,
+                self.face_contact_depth,
+                self.face_contact_area,
+                self.face_contact_pair,
+                self.n_shapes,
+                self.face_contact_id,
+                self.shape_pairs_to_bin,
+                self.penetration_betas,
+                self.binned_dot_product,
+                self.binned_id_prev,
+                self.shape_pairs_to_bin_prev,
+                self.binned_weighted_pos_sum,
+                self.binned_weight_sum,
+            ],
+            outputs=[
+                self.binned_normals,
+                self.binned_pos,
+                self.binned_depth,
+                self.binned_id,
+                self.binned_agg_moment,
+            ],
+            device=device,
+        )
+
+        wp.launch(
+            kernel=self.generate_contacts_from_bins,
+            dim=[self.binned_pos.shape[0], self.binned_pos.shape[1]],
+            inputs=[
+                shape_transform,
+                shape_contact_margin,
+                self.shape_material_k_hydro,
+                self.n_shapes,
+                self.bin_to_shape_pair,
+                self.binned_normals,
+                self.binned_pos,
+                self.binned_depth,
+                self.binned_id,
+                self.binned_dot_product,
+                self.bin_occupied,
+                self.binned_agg_force,
+                self.binned_agg_moment,
+                self.binned_weighted_pos_sum,
+                self.binned_weight_sum,
+            ],
+            outputs=[
+                writer_data,
             ],
             device=device,
         )
@@ -619,16 +799,14 @@ def decode_coords_8(bit_pos: wp.uint8) -> wp.vec3ub:
     )
 
 @wp.func
-def get_scaled_stiffness(k_a: wp.float32, k_b: wp.float32) -> tuple[wp.float32, wp.float32]:
+def get_rel_stiffness(k_a: wp.float32, k_b: wp.float32) -> tuple[wp.float32, wp.float32]:
     k_m_inv = 1.0 / wp.sqrt(k_a * k_b)
     return k_a * k_m_inv, k_b * k_m_inv
 
 
 @wp.func
 def get_effective_stiffness(k_a: wp.float32, k_b: wp.float32) -> wp.float32:
-    k_a_inv = 1.0 / k_a
-    k_b_inv = 1.0 / k_b
-    return 1.0 / (k_a_inv + k_b_inv)
+    return (k_a * k_b) / (k_a + k_b)
 
 @wp.func
 def sdf_diff_sdf(
@@ -684,7 +862,7 @@ def count_iso_voxels_block(
     in_buffer_collide_count: wp.array(dtype=int),
     shape_sdf_data: wp.array(dtype=SDFData),
     shape_transform: wp.array(dtype=wp.transform),
-    # shape_material_k_hydro: wp.array(dtype=float),
+    shape_material_k_hydro: wp.array(dtype=float),
     in_buffer_collide_coords: wp.array(dtype=wp.vec3us),
     in_buffer_collide_shape_pair: wp.array(dtype=wp.vec2i),
     shape_contact_margin: wp.array(dtype=wp.float32),
@@ -715,10 +893,11 @@ def count_iso_voxels_block(
 
         voxel_radius = 0.5 * wp.length(shape_sdf_data[shape_b].sparse_voxel_size) # TODO: precompute
 
-        #k_a = shape_material_k_hydro[shape_a]
-        #k_b = shape_material_k_hydro[shape_b]
+        k_a = shape_material_k_hydro[shape_a]
+        k_b = shape_material_k_hydro[shape_b]
 
-        k_eff_a, k_eff_b = get_scaled_stiffness(1.0, 1.0)
+        k_eff_a, k_eff_b = get_rel_stiffness(k_a, k_b)
+        voxel_radius *= wp.max(k_eff_a, k_eff_b)
 
         # get global voxel coordinates
         bc = in_buffer_collide_coords[tid]
@@ -735,7 +914,7 @@ def count_iso_voxels_block(
                     x_center = wp.vec3f(x_global) + wp.vec3f(0.5 * float(subblock_size))
                     diff_val, v, vb = sdf_diff_sdf(sdf_b, sdf_a, X_ws_b, X_ws_a, k_eff_b, k_eff_a, x_center)
 
-                    r = float(subblock_size) * voxel_radius* wp.max(k_eff_a, k_eff_b)
+                    r = float(subblock_size) * voxel_radius
                     if wp.abs(diff_val) > 2.0 * r or v > r + margin or vb > r + margin:
                         continue
                     num_iso_subblocks += 1
@@ -830,7 +1009,7 @@ def get_generate_contacts_kernel(output_vertices: bool, clip_triangles: bool = F
         iso_voxel_count: wp.array(dtype=wp.int32),
         shape_sdf_data: wp.array(dtype=SDFData),
         shape_transform: wp.array(dtype=wp.transform),
-        # shape_material_k_hydro: wp.array(dtype=float),
+        shape_material_k_hydro: wp.array(dtype=float),
         iso_voxel_coords: wp.array(dtype=wp.vec3us),
         iso_voxel_shape_pair: wp.array(dtype=wp.vec2i),
         tri_range_table: wp.array(dtype=wp.int32),
@@ -859,9 +1038,10 @@ def get_generate_contacts_kernel(output_vertices: bool, clip_triangles: bool = F
 
             margin = shape_contact_margin[shape_b]
 
-            # k_b = shape_material_k_hydro[shape_b]
+            k_a = shape_material_k_hydro[shape_a]
+            k_b = shape_material_k_hydro[shape_b]
 
-            k_eff_a, k_eff_b = get_scaled_stiffness(1.0, 1.0)
+            k_eff_a, k_eff_b = get_rel_stiffness(k_a, k_b)
 
             x_id = wp.int32(iso_coords.x)
             y_id = wp.int32(iso_coords.y)
@@ -982,6 +1162,16 @@ def get_generate_contacts_kernel(output_vertices: bool, clip_triangles: bool = F
 
     return count_faces_kernel, scatter_faces_kernel
 
+@wp.func
+def compute_score(spatial_dot_product: wp.float32, pen_depth: wp.float32, beta: wp.float32) -> wp.float32:
+    if beta < 0.0:
+        if pen_depth < 0.0:
+            return pen_depth
+        else:
+            return spatial_dot_product * wp.pow(pen_depth, -beta)
+    else:
+        return spatial_dot_product + pen_depth * beta
+
 
 def get_decode_contacts_kernel(writer_func: Any = None):
     @wp.kernel
@@ -1052,3 +1242,420 @@ def get_decode_contacts_kernel(writer_func: Any = None):
             writer_func(contact_data, writer_data, output_index)
 
     return decode_contacts_kernel
+
+@wp.kernel
+def iso_shape_pair_mask(
+    iso_voxel_shape_pair: wp.array(dtype=wp.int32),
+    iso_voxel_count: wp.array(dtype=int),
+    shape_pairs_mask: wp.array(dtype=wp.int32),
+):
+    tid = wp.tid()
+    if tid >= iso_voxel_count[0]:
+        return
+    shape_pair_idx = iso_voxel_shape_pair[tid]
+    shape_pairs_mask[shape_pair_idx] = 1
+
+
+@wp.kernel
+def mark_active_shape_pairs(
+    face_contact_pair: wp.array(dtype=wp.vec2i),
+    face_contact_count: wp.array(dtype=wp.int32),
+    n_shapes: int,
+    shape_pairs_mask: wp.array(dtype=wp.int32),
+):
+    tid = wp.tid()
+    if tid >= face_contact_count[0]:
+        return
+    pair = face_contact_pair[tid]
+    sparse_idx = pair[0] * n_shapes + pair[1]
+    shape_pairs_mask[sparse_idx] = 1
+
+def get_binning_kernels(
+    n_bin_dirs: int,
+    num_normal_bins: int,
+    num_betas: int,
+    sticky_contacts: float = 1e-6,
+    normal_matching: bool = True,
+    moment_matching: bool = True,
+    writer_func: Any = None,
+):
+    """
+    Factory method for creating binning kernels for hydroelastic contacts.
+
+    Args:
+        n_bin_dirs: Number of spatial bin directions.
+        num_normal_bins: Number of normal bins.
+        num_betas: Number of penetration beta values.
+        sticky_contacts: Stickiness factor for temporal contact persistence.
+        normal_matching: If True, rotate original normals so their weighted sum aligns with
+            the aggregated force direction.
+        moment_matching: If True, attempt to match the reference maximum moment from unreduced contacts.
+        writer_func: Function to write contact data.
+    """
+
+    @wp.kernel
+    def compute_bin_scores(
+        grid_size: int,
+        contact_count: wp.array(dtype=int),
+        contact_normals: wp.array(dtype=wp.vec3f),
+        contact_pos: wp.array(dtype=wp.vec3f),
+        contact_depth: wp.array(dtype=wp.float32),
+        contact_area: wp.array(dtype=wp.float32),
+        contact_id: wp.array(dtype=wp.int32),
+        contact_pair: wp.array(dtype=wp.vec2i),
+        n_shapes: int,
+        shape_pairs_to_bin: wp.array(dtype=wp.int32),
+        penetration_betas: wp.array(dtype=wp.float32),
+        binned_id_prev: wp.array(dtype=wp.int32, ndim=3),
+        shape_pairs_to_bin_prev: wp.array(dtype=wp.int32),
+        # outputs
+        binned_dot_product: wp.array(dtype=wp.float32, ndim=3),
+        binned_agg_force: wp.array(dtype=wp.vec3f, ndim=2),
+        bin_occupied: wp.array(dtype=wp.bool, ndim=2),
+        contact_normal_bin_idx: wp.array(dtype=wp.int32),
+        bin_to_shape_pair: wp.array(dtype=wp.int32),
+        binned_weighted_pos_sum: wp.array(dtype=wp.vec3f, ndim=2),
+        binned_weight_sum: wp.array(dtype=wp.float32, ndim=2),
+    ):
+        offset = wp.tid()
+        for tid in range(offset, contact_count[0], grid_size):
+            pair = contact_pair[tid]
+            sparse_idx = pair[0] * n_shapes + pair[1]
+            bin_idx_0 = shape_pairs_to_bin[sparse_idx]
+            normal = contact_normals[tid]
+            face_center = contact_pos[tid]
+            pen_depth = contact_depth[tid]
+            area = contact_area[tid]
+            id = contact_id[tid]
+            # find the normal bin which is closest to the face normal (in body frame of b)
+            bin_normal_idx = get_slot(normal)
+
+            bin_to_shape_pair[bin_idx_0] = sparse_idx
+            bin_occupied[bin_idx_0, bin_normal_idx] = True
+            # aggregate force direction weighted by force magnitude (only penetrating contacts)
+            contact_normal_bin_idx[tid] = bin_normal_idx
+            force_weight = area * pen_depth
+
+            # accumulate for penetrating contacts only
+            if pen_depth > 0.0:
+                wp.atomic_add(binned_agg_force, bin_idx_0, bin_normal_idx, force_weight * normal)
+                wp.atomic_add(binned_weighted_pos_sum, bin_idx_0, bin_normal_idx, force_weight * face_center)
+                wp.atomic_add(binned_weight_sum, bin_idx_0, bin_normal_idx, force_weight)
+
+            bin_idx_prev = shape_pairs_to_bin_prev[sparse_idx]
+
+            # track the max dot product for the deepest penetration depth
+            wp.atomic_max(binned_dot_product, bin_idx_0, bin_normal_idx, wp.static(num_betas * n_bin_dirs), pen_depth)
+
+            # Loop over bin_directions, store the max dot product for each direction
+            for dir_idx in range(wp.static(n_bin_dirs)):
+                scan_dir = get_scan_dir(bin_normal_idx, dir_idx)
+                spatial_dot_product = wp.dot(scan_dir, face_center)
+                for i in range(wp.static(num_betas)):
+                    offset_i = i * n_bin_dirs
+                    idx_dir = dir_idx + offset_i
+                    dp = compute_score(spatial_dot_product, pen_depth, penetration_betas[i])
+                    if wp.static(sticky_contacts > 0.0):
+                        bin_id_prev = binned_id_prev[bin_idx_prev, bin_normal_idx, idx_dir]
+                        if bin_id_prev == id:
+                            dp += wp.static(sticky_contacts)
+
+                    wp.atomic_max(binned_dot_product, bin_idx_0, bin_normal_idx, idx_dir, dp)
+
+    @wp.kernel
+    def assign_contacts_to_bins(
+        grid_size: int,
+        contact_count: wp.array(dtype=int),
+        contact_normals: wp.array(dtype=wp.vec3f),
+        contact_normal_bin_idx: wp.array(dtype=wp.int32),
+        contact_pos: wp.array(dtype=wp.vec3f),
+        contact_depth: wp.array(dtype=wp.float32),
+        contact_area: wp.array(dtype=wp.float32),
+        contact_pair: wp.array(dtype=wp.vec2i),
+        n_shapes: int,
+        contact_id: wp.array(dtype=wp.int32),
+        shape_pairs_to_bin: wp.array(dtype=wp.int32),
+        penetration_betas: wp.array(dtype=wp.float32),
+        binned_dot_product: wp.array(dtype=wp.float32, ndim=3),
+        binned_id_prev: wp.array(dtype=wp.int32, ndim=3),
+        shape_pairs_to_bin_prev: wp.array(dtype=wp.int32),
+        binned_weighted_pos_sum: wp.array(dtype=wp.vec3f, ndim=2),
+        binned_weight_sum: wp.array(dtype=wp.float32, ndim=2),
+        # outputs
+        binned_normals: wp.array(dtype=wp.vec3f, ndim=3),
+        binned_pos: wp.array(dtype=wp.vec3f, ndim=3),
+        binned_depth: wp.array(dtype=wp.float32, ndim=3),
+        binned_id: wp.array(dtype=wp.int32, ndim=3),
+        binned_moment: wp.array(dtype=wp.float32, ndim=2),
+    ):
+        offset = wp.tid()
+        for tid in range(offset, contact_count[0], grid_size):
+            pair = contact_pair[tid]
+            sparse_idx = pair[0] * n_shapes + pair[1]
+            bin_idx_0 = shape_pairs_to_bin[sparse_idx]
+            bin_normal_idx = contact_normal_bin_idx[tid]
+
+            face_center = contact_pos[tid]
+            area = contact_area[tid]
+            pen_depth = contact_depth[tid]
+            normal = contact_normals[tid]
+            id = contact_id[tid]
+
+            # compute mean position from accumulated weighted sum and weight sum
+            weight_sum = binned_weight_sum[bin_idx_0, bin_normal_idx]
+            if weight_sum > 0.0 and pen_depth > 0.0:
+                anchor_pos = binned_weighted_pos_sum[bin_idx_0, bin_normal_idx] / weight_sum
+                r_anchor_to_face = face_center - anchor_pos
+                max_moment = wp.length(wp.cross(r_anchor_to_face, normal)) * area * pen_depth
+                wp.atomic_add(binned_moment, bin_idx_0, bin_normal_idx, max_moment)
+
+            bin_idx_prev = shape_pairs_to_bin_prev[sparse_idx]
+
+            # track the contact with the deepest penetration depth
+            max_depth_idx = wp.static(num_betas * n_bin_dirs)
+            max_dp_depth = binned_dot_product[bin_idx_0, bin_normal_idx, max_depth_idx]
+            if pen_depth >= max_dp_depth:
+                binned_normals[bin_idx_0, bin_normal_idx, max_depth_idx] = normal
+                binned_pos[bin_idx_0, bin_normal_idx, max_depth_idx] = face_center
+                binned_depth[bin_idx_0, bin_normal_idx, max_depth_idx] = pen_depth
+                binned_id[bin_idx_0, bin_normal_idx, max_depth_idx] = id
+
+            # track the max dot product for each beta and direction
+            for dir_idx in range(wp.static(n_bin_dirs)):
+                scan_dir = get_scan_dir(bin_normal_idx, dir_idx)
+                spatial_dot_product = wp.dot(scan_dir, face_center)
+                for i in range(wp.static(num_betas)):
+                    offset_i = i * n_bin_dirs
+                    idx_dir = dir_idx + offset_i
+                    dp = compute_score(spatial_dot_product, pen_depth, penetration_betas[i])
+                    if wp.static(sticky_contacts > 0.0):
+                        bin_id_prev = binned_id_prev[bin_idx_prev, bin_normal_idx, idx_dir]
+                        if bin_id_prev == id:
+                            dp += wp.static(sticky_contacts)
+                    max_dp = binned_dot_product[bin_idx_0, bin_normal_idx, idx_dir]
+                    if dp >= max_dp:
+                        binned_normals[bin_idx_0, bin_normal_idx, idx_dir] = normal
+                        binned_pos[bin_idx_0, bin_normal_idx, idx_dir] = face_center
+                        binned_depth[bin_idx_0, bin_normal_idx, idx_dir] = pen_depth
+                        binned_id[bin_idx_0, bin_normal_idx, idx_dir] = id
+
+    @wp.kernel(enable_backward=False)
+    def generate_contacts_from_bins(
+        shape_transform: wp.array(dtype=wp.transform),
+        shape_contact_margin: wp.array(dtype=wp.float32),
+        shape_material_k_hydro: wp.array(dtype=float),
+        n_shapes: int,
+        bin_to_shape_pair: wp.array(dtype=wp.int32),
+        binned_normals: wp.array(dtype=wp.vec3f, ndim=3),
+        binned_pos: wp.array(dtype=wp.vec3f, ndim=3),
+        binned_depth: wp.array(dtype=wp.float32, ndim=3),
+        binned_id: wp.array(dtype=wp.int32, ndim=3),
+        binned_dot_product: wp.array(dtype=wp.float32, ndim=3),
+        bin_occupied: wp.array(dtype=wp.bool, ndim=2),
+        binned_agg_force: wp.array(dtype=wp.vec3f, ndim=2),
+        binned_moment: wp.array(dtype=wp.float32, ndim=2),
+        binned_weighted_pos_sum: wp.array(dtype=wp.vec3f, ndim=2),
+        binned_weight_sum: wp.array(dtype=wp.float32, ndim=2),
+        # outputs
+        writer_data: Any,
+    ):
+        tid, normal_bin_idx = wp.tid()
+        if not bin_occupied[tid, normal_bin_idx]:
+            return
+        sparse_idx = bin_to_shape_pair[tid]
+
+        # Get the shape pair from sparse index
+        shape_a = sparse_idx // n_shapes
+        shape_b = sparse_idx % n_shapes
+
+        k_a = shape_material_k_hydro[shape_a]
+        k_b = shape_material_k_hydro[shape_b]
+        k_eff = get_effective_stiffness(k_a, k_b)
+
+        transform_b = shape_transform[shape_b]
+
+        # Get contact margin
+        margin_a = shape_contact_margin[shape_a]
+        margin_b = shape_contact_margin[shape_b]
+        margin = wp.max(margin_a, margin_b)
+
+        # at this point, we know that each direction has a contact in it, but the same contact id can be present in multiple directions
+        # here deduplicate contacts based on contact id
+        n_bins = wp.static(num_betas * n_bin_dirs + 1)
+
+        unique_indices = wp.zeros(shape=(n_bins,), dtype=wp.int32)
+
+        # always choose the last contact (with the deepest penetration depth)
+        unique_indices[0] = n_bins - 1
+        num_unique_contacts = wp.int32(1)
+        max_depth = binned_depth[tid, normal_bin_idx, -1]
+        num_penetrating_contacts = wp.int32(max_depth > 0.0)
+        agg_depth = wp.max(max_depth, 0.0)
+        last_bin_id = binned_id[tid, normal_bin_idx, n_bins - 1]
+        for i in range(n_bins - 1):
+            found_duplicate = wp.bool(False)
+            if binned_dot_product[tid, normal_bin_idx, i] <= -1e9:  # not active contact
+                continue
+            if binned_id[tid, normal_bin_idx, i] == last_bin_id:
+                found_duplicate = True
+            else:
+                for j in range(i - 1, -1, -1):
+                    if binned_id[tid, normal_bin_idx, j] == binned_id[tid, normal_bin_idx, i]:
+                        found_duplicate = True
+                        break
+            if not found_duplicate:
+                unique_indices[num_unique_contacts] = i
+                num_unique_contacts += 1
+                if binned_depth[tid, normal_bin_idx, i] > 0.0:
+                    num_penetrating_contacts += 1
+                    agg_depth += binned_depth[tid, normal_bin_idx, i]
+
+        # Compute the aggregated force and its direction for this normal bin
+        agg_force = binned_agg_force[tid, normal_bin_idx]
+        agg_force_mag = wp.length(agg_force)
+
+        # Determine if anchor contact will be added
+        weight_sum = binned_weight_sum[tid, normal_bin_idx]
+        anchor_pos = wp.vec3f(0.0, 0.0, 0.0)
+        add_anchor_contact = wp.int32(0)
+        if wp.static(moment_matching) and max_depth > 1e-6 and weight_sum > 1e-20:
+            anchor_pos = binned_weighted_pos_sum[tid, normal_bin_idx] / weight_sum
+            add_anchor_contact = 1
+
+        # Total depth includes anchor contribution if anchor will be added
+        total_depth = agg_depth + wp.float32(add_anchor_contact) * max_depth
+        c_stiffness = k_eff * agg_force_mag / (total_depth + 1e-8)  # stiffness of final contacts
+
+        rotation_q = wp.quat_identity()
+        if wp.static(normal_matching):
+            # Rotate original normals so their weighted sum aligns with aggregated force
+            selected_sum_normals = wp.vec3f(0.0, 0.0, 0.0)
+            for i in range(num_unique_contacts):
+                dir_idx = unique_indices[i]
+                depth = binned_depth[tid, normal_bin_idx, dir_idx]
+                if depth > 0.0:
+                    selected_sum_normals += depth * binned_normals[tid, normal_bin_idx, dir_idx]
+
+            # Add anchor's contribution to the weighted sum (anchor normal = agg_force direction)
+            if add_anchor_contact == 1 and agg_force_mag > 1e-8:
+                anchor_normal_contribution = max_depth * (agg_force / agg_force_mag)
+                selected_sum_normals += anchor_normal_contribution
+
+            # Compute rotation that aligns selected_sum with agg_force
+            selected_mag = wp.length(selected_sum_normals)
+            if selected_mag > 1e-8 and agg_force_mag > 1e-8:
+                selected_dir = selected_sum_normals / selected_mag
+                agg_dir = agg_force / agg_force_mag
+
+                cross = wp.cross(selected_dir, agg_dir)
+                cross_mag = wp.length(cross)
+                dot_val = wp.dot(selected_dir, agg_dir)
+
+                if cross_mag > 1e-8:
+                    # Normal case: compute rotation around cross product axis
+                    axis = cross / cross_mag
+                    angle = wp.acos(wp.clamp(dot_val, -1.0, 1.0))
+                    rotation_q = wp.quat_from_axis_angle(axis, angle)
+                elif dot_val < 0.0:
+                    # Vectors are anti-parallel: rotate 180 degrees around a perpendicular axis
+                    perp = wp.vec3f(1.0, 0.0, 0.0)
+                    if wp.abs(wp.dot(selected_dir, perp)) > 0.9:
+                        perp = wp.vec3f(0.0, 1.0, 0.0)
+                    axis = wp.normalize(wp.cross(selected_dir, perp))
+                    rotation_q = wp.quat_from_axis_angle(axis, wp.pi)
+
+        unique_friction = wp.float32(1.0)
+        anchor_friction = wp.float32(1.0)
+
+        if wp.static(moment_matching) and add_anchor_contact == 1:
+            # Moment matching: scale friction to match the moment of the selected contacts to the reference moment
+            ref_moment = binned_moment[tid, normal_bin_idx]
+            selected_moment = wp.float32(0.0)
+            for i in range(num_unique_contacts):
+                dir_idx = unique_indices[i]
+                depth = binned_depth[tid, normal_bin_idx, dir_idx]
+                pos = binned_pos[tid, normal_bin_idx, dir_idx]
+                normal = binned_normals[tid, normal_bin_idx, dir_idx]
+                if depth > 0.0:
+                    selected_moment += depth * wp.length(wp.cross(pos - anchor_pos, normal))
+
+            # Scale unique friction to match moments:
+            denom = wp.max(agg_force_mag * selected_moment, 1e-20)
+            unique_friction = (ref_moment * total_depth) / denom
+            unique_friction = wp.clamp(unique_friction, 0.01, 10.0)
+
+            # Scale anchor friction to preserve tangential friction:
+            anchor_friction = (total_depth - unique_friction * agg_depth) / max_depth
+            anchor_friction = wp.clamp(anchor_friction, 0.01, 10.0)
+
+        # single atomic_add per bin
+        contact_idx = wp.atomic_add(writer_data.contact_count, 0, num_unique_contacts + add_anchor_contact)
+
+        if contact_idx + num_unique_contacts + add_anchor_contact >= writer_data.contact_max:
+            return
+
+        pair_key = build_pair_key2(wp.uint32(shape_a), wp.uint32(shape_b))
+
+        # Store contacts
+        for i in range(num_unique_contacts):
+            dir_idx = unique_indices[i]
+
+            original_normal = binned_normals[tid, normal_bin_idx, dir_idx]
+            depth = binned_depth[tid, normal_bin_idx, dir_idx]
+
+            if wp.static(normal_matching) and depth > 0.0:
+                # Rotate original normal to align sum with aggregated force direction
+                normal = wp.normalize(wp.quat_rotate(rotation_q, original_normal))
+            else:
+                normal = original_normal
+
+            pos = binned_pos[tid, normal_bin_idx, dir_idx]
+
+            # Transform to world space
+            normal_world = wp.transform_vector(transform_b, normal)
+            pos_world = wp.transform_point(transform_b, pos)
+
+            c_idx = contact_idx + i
+
+            # Create ContactData for the writer function
+            contact_data = ContactData()
+            contact_data.contact_point_center = pos_world
+            contact_data.contact_normal_a_to_b = normal_world
+            contact_data.contact_distance = -2.0 * depth
+            contact_data.radius_eff_a = 0.0
+            contact_data.radius_eff_b = 0.0
+            contact_data.thickness_a = 0.0
+            contact_data.thickness_b = 0.0
+            contact_data.shape_a = shape_a
+            contact_data.shape_b = shape_b
+            contact_data.margin = margin
+            contact_data.feature = wp.uint32(binned_id[tid, normal_bin_idx, dir_idx] + 1)
+            contact_data.feature_pair_key = pair_key
+
+            writer_func(contact_data, writer_data, c_idx)
+
+        # Store anchor contact
+        if add_anchor_contact == 1:
+            anchor_idx = contact_idx + num_unique_contacts
+
+            anchor_normal = wp.normalize(agg_force)
+            anchor_normal_world = wp.transform_vector(transform_b, anchor_normal)
+            anchor_pos_world = wp.transform_point(transform_b, anchor_pos)
+
+            contact_data = ContactData()
+            contact_data.contact_point_center = anchor_pos_world
+            contact_data.contact_normal_a_to_b = anchor_normal_world
+            contact_data.contact_distance = -2.0 * max_depth
+            contact_data.radius_eff_a = 0.0
+            contact_data.radius_eff_b = 0.0
+            contact_data.thickness_a = 0.0
+            contact_data.thickness_b = 0.0
+            contact_data.shape_a = shape_a
+            contact_data.shape_b = shape_b
+            contact_data.margin = margin
+            contact_data.feature = wp.uint32(0)
+            contact_data.feature_pair_key = pair_key
+
+            writer_func(contact_data, writer_data, anchor_idx)
+
+    return compute_bin_scores, assign_contacts_to_bins, generate_contacts_from_bins
