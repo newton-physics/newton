@@ -26,7 +26,7 @@ from .utils import scan_with_total
 from .collision_core import sat_box_intersection, build_pair_key2
 from .sdf_mc import get_mc_tables, mc_calc_face
 from .contact_data import ContactData
-from .contact_reduction import get_slot, get_scan_dir, NUM_NORMAL_BINS
+from .contact_reduction import get_slot, get_scan_dir, NUM_NORMAL_BINS, NUM_SPATIAL_DIRECTIONS
 
 
 vec8f = wp.types.vector(length=8, dtype=wp.float32)
@@ -171,7 +171,7 @@ class SDFHydroelastic:
         if self.config.reduce_contacts:
             self.penetration_betas = wp.array(self.config.betas, dtype=wp.float32)
             self.num_betas = len(self.config.betas)
-            self.bin_directions = self.config.bin_directions
+            self.bin_directions = NUM_SPATIAL_DIRECTIONS
             num_normal_bins = NUM_NORMAL_BINS
 
             self.max_num_bins = self.max_num_shape_pairs
