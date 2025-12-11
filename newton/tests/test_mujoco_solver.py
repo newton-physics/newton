@@ -2595,6 +2595,118 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
                 )
 
 
+class TestMuJoCoSolverEqualityConstraintProperties(TestMuJoCoSolverPropertiesBase):
+    def test_eq_solref_conversion_and_update(self):
+        """
+        Test validation of eq_solref custom attribute:
+        1. Initial conversion from Model to MuJoCo (multi-world)
+        2. Runtime updates (multi-world)
+        """
+        # Create template with two articulations connected by an equality constraint
+        template_builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(template_builder)
+
+        # Articulation 1: revolute joint from world
+        b1 = template_builder.add_link()
+        j1 = template_builder.add_joint_revolute(-1, b1, axis=(0, 0, 1))
+        template_builder.add_shape_box(body=b1, hx=0.1, hy=0.1, hz=0.1)
+        template_builder.add_articulation([j1])
+
+        # Articulation 2: revolute joint from world (separate chain)
+        b2 = template_builder.add_link()
+        j2 = template_builder.add_joint_revolute(-1, b2, axis=(0, 0, 1))
+        template_builder.add_shape_box(body=b2, hx=0.1, hy=0.1, hz=0.1)
+        template_builder.add_articulation([j2])
+
+        # Add a connect constraint between the two bodies
+        template_builder.add_equality_constraint_connect(
+            body1=b1,
+            body2=b2,
+            anchor=wp.vec3(0.1, 0.0, 0.0),
+        )
+
+        # Create main builder with multiple worlds
+        num_worlds = 2
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+
+        builder.replicate(template_builder, num_worlds)
+        model = builder.finalize()
+
+        # Verify we have the custom attribute
+        self.assertTrue(hasattr(model, "mujoco"))
+        self.assertTrue(hasattr(model.mujoco, "eq_solref"))
+        self.assertEqual(model.equality_constraint_count, num_worlds)  # 1 constraint per world
+
+        # --- Step 1: Set initial values and verify conversion ---
+
+        total_eq = model.equality_constraint_count
+        initial_values = np.zeros((total_eq, 2), dtype=np.float32)
+
+        for i in range(total_eq):
+            # Unique pattern for 2-element solref
+            initial_values[i] = [
+                0.01 + (i * 0.005) % 0.05,  # timeconst
+                0.5 + (i * 0.2) % 1.5,  # dampratio
+            ]
+
+        model.mujoco.eq_solref.assign(initial_values)
+
+        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
+
+        # Check mapping to MuJoCo
+        mjc_eq_to_newton_eq = solver.mjc_eq_to_newton_eq.numpy()
+        mjw_eq_solref = solver.mjw_model.eq_solref.numpy()
+
+        neq = mjc_eq_to_newton_eq.shape[1]  # Number of MuJoCo equality constraints
+
+        def check_values(expected_values, actual_mjw_values, msg_prefix):
+            for w in range(num_worlds):
+                for mjc_eq in range(neq):
+                    newton_eq = mjc_eq_to_newton_eq[w, mjc_eq]
+                    if newton_eq < 0:
+                        continue
+
+                    expected = expected_values[newton_eq]
+                    actual = actual_mjw_values[w, mjc_eq]
+
+                    np.testing.assert_allclose(
+                        actual,
+                        expected,
+                        rtol=1e-5,
+                        err_msg=f"{msg_prefix} mismatch at World {w}, MuJoCo eq {mjc_eq}, Newton eq {newton_eq}",
+                    )
+
+        check_values(initial_values, mjw_eq_solref, "Initial conversion")
+
+        # --- Step 2: Runtime Update ---
+
+        # Generate new unique values
+        updated_values = np.zeros((total_eq, 2), dtype=np.float32)
+        for i in range(total_eq):
+            updated_values[i] = [
+                0.05 - (i * 0.005) % 0.04,  # timeconst
+                2.0 - (i * 0.2) % 1.0,  # dampratio
+            ]
+
+        # Update model attribute
+        model.mujoco.eq_solref.assign(updated_values)
+
+        # Notify solver
+        solver.notify_model_changed(SolverNotifyFlags.EQUALITY_CONSTRAINT_PROPERTIES)
+
+        # Verify updates
+        mjw_eq_solref_updated = solver.mjw_model.eq_solref.numpy()
+
+        check_values(updated_values, mjw_eq_solref_updated, "Runtime update")
+
+        # Check that it is different from initial (sanity check)
+        self.assertFalse(
+            np.allclose(mjw_eq_solref_updated[0, 0], initial_values[0]),
+            "Value did not change from initial!",
+        )
+
+
 class TestMuJoCoSolverNewtonContacts(unittest.TestCase):
     def setUp(self):
         """Set up a simple model with a sphere and a plane."""
