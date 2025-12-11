@@ -20,8 +20,6 @@ from __future__ import annotations
 from typing import Any
 
 import warp as wp
-from mujoco_warp._src.sensor import _framelinacc
-from mujoco_warp._src.types import ObjType
 
 from ...core.types import vec5
 from ...sim import JointType
@@ -1290,6 +1288,28 @@ def _create_inverse_shape_mapping_kernel(
         newton_shape_to_mjc_geom[newton_shape_idx] = geom_idx
 
 
+@wp.func
+def mj_body_acceleration(
+    body_rootid: wp.array(dtype=int),
+    xipos_in: wp.array2d(dtype=wp.vec3),
+    subtree_com_in: wp.array2d(dtype=wp.vec3),
+    cvel_in: wp.array2d(dtype=wp.spatial_vector),
+    cacc_in: wp.array2d(dtype=wp.spatial_vector),
+    worldid: int,
+    bodyid: int,
+) -> wp.vec3:
+    """Compute accelerations for bodies from mjwarp data."""
+    cacc = cacc_in[worldid, bodyid]
+    cvel = cvel_in[worldid, bodyid]
+    offset = xipos_in[worldid, bodyid] - subtree_com_in[worldid, body_rootid[bodyid]]
+    ang = wp.spatial_top(cvel)
+    lin = wp.spatial_bottom(cvel) - wp.cross(offset, ang)
+    acc = wp.spatial_bottom(cacc) - wp.cross(offset, wp.spatial_top(cacc))
+    correction = wp.cross(ang, lin)
+
+    return acc + correction
+
+
 @wp.kernel
 def update_eq_properties_kernel(
     mjc_eq_to_newton_eq: wp.array2d(dtype=wp.int32),
@@ -1333,26 +1353,17 @@ def convert_rigid_forces_from_mj_kernel(
 
     if body_qdd:
         cacc = mjw_cacc[world, mjc_body]
-        lin = _framelinacc(
+        lin = mj_body_acceleration(
             mjw_body_rootid,
-            mjw_body_rootid,
-            mjw_body_rootid,
-            mjw_body_rootid,
-            mjw_xpos,
-            mjw_xpos,
-            mjw_xpos,
-            mjw_xpos,
             mjw_xpos,
             mjw_subtree_com,
             mjw_cvel,
             mjw_cacc,
             world,
             mjc_body,
-            ObjType.BODY,
         )
-        # TODO: check if BODY or XBODY appropriate
         body_qdd[newton_body] = wp.spatial_vector(lin, wp.spatial_top(cacc))
 
     if body_parent_f:
-        # TODO: implement
+        # TODO: implement link incoming forces
         pass
