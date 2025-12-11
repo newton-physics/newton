@@ -31,6 +31,15 @@ def safe_div(x: Any, y: Any) -> Any:
 
 
 @wp.func
+def safe_div_vec3(x: wp.vec3f, y: wp.vec3f) -> wp.vec3f:
+    return wp.vec3f(
+        x[0] / wp.where(y[0] != 0.0, y[0], EPSILON),
+        x[1] / wp.where(y[1] != 0.0, y[1], EPSILON),
+        x[2] / wp.where(y[2] != 0.0, y[2], EPSILON),
+    )
+
+
+@wp.func
 def map_ray_to_local(
     transform: wp.transformf, ray_origin_world: wp.vec3f, ray_direction_world: wp.vec3f
 ) -> tuple[wp.vec3f, wp.vec3f]:
@@ -570,26 +579,6 @@ def ray_mesh(
 
 
 @wp.func
-def scale_mat(scale: wp.vec3f) -> wp.mat33f:
-    return wp.mat33f(scale[0], 0.0, 0.0, 0.0, scale[1], 0.0, 0.0, 0.0, scale[2])
-
-
-@wp.func
-def inv_scale_mat(scale: wp.vec3f) -> wp.mat33f:
-    return wp.mat33f(
-        1.0 / scale[0] if scale[0] != 0 else 0.0,
-        0.0,
-        0.0,
-        0.0,
-        1.0 / scale[1] if scale[1] != 0 else 0.0,
-        0.0,
-        0.0,
-        0.0,
-        1.0 / scale[2] if scale[2] != 0 else 0.0,
-    )
-
-
-@wp.func
 def ray_mesh_with_bvh(
     mesh_bvh_ids: wp.array(dtype=wp.uint64),
     mesh_geom_id: wp.int32,
@@ -605,14 +594,14 @@ def ray_mesh_with_bvh(
 
     ray_origin_local, ray_direction_local = map_ray_to_local(transform, ray_origin_world, ray_direction_world)
 
-    scale_matrix = inv_scale_mat(size)
-    ray_origin_local = scale_matrix @ ray_origin_local
-    ray_direction_local = scale_matrix @ ray_direction_local
+    inv_size = safe_div_vec3(wp.vec3f(1.0), size)
+    ray_origin_local = wp.cw_mul(ray_origin_local, inv_size)
+    ray_direction_local = wp.cw_mul(ray_direction_local, inv_size)
 
     query = wp.mesh_query_ray(mesh_bvh_ids[mesh_geom_id], ray_origin_local, ray_direction_local, max_t)
 
     if query.result and wp.dot(ray_direction_local, query.normal) < 0.0:  # Backface culling in local space
-        normal = wp.transform_vector(transform, scale_mat(size) @ query.normal)
+        normal = wp.transform_vector(transform, wp.cw_mul(size, query.normal))
         normal = wp.normalize(normal)
         return True, query.t, normal, query.u, query.v, query.face, mesh_geom_id
 
