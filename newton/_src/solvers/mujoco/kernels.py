@@ -1292,10 +1292,9 @@ def _create_inverse_shape_mapping_kernel(
 
 @wp.kernel
 def convert_rigid_forces_from_mj_kernel(
-    to_mjc_body_index: wp.array(dtype=int),
-    bodies_per_world: int,
+    mjc_body_to_newton: wp.array2d(dtype=wp.int32),
     # mjw sources
-    mjw_body_rootid: wp.array(dtype=int),
+    mjw_body_rootid: wp.array(dtype=wp.int32),
     mjw_xpos: wp.array2d(dtype=wp.vec3),
     mjw_subtree_com: wp.array2d(dtype=wp.vec3),
     mjw_cacc: wp.array2d(dtype=wp.spatial_vector),
@@ -1305,12 +1304,14 @@ def convert_rigid_forces_from_mj_kernel(
     body_parent_f: wp.array(dtype=wp.spatial_vector),
 ):
     """Update RNE-computed rigid forces from mj_warp com-based forces."""
-    world, b = wp.tid()
-    newton_body_id = bodies_per_world * world + b
-    mj_body_id = to_mjc_body_index[b]
+    world, mjc_body = wp.tid()
+    newton_body = mjc_body_to_newton[world, mjc_body]
+
+    if newton_body < 0:
+        return
 
     if body_qdd:
-        cacc = mjw_cacc[world, mj_body_id]
+        cacc = mjw_cacc[world, mjc_body]
         lin = _framelinacc(
             mjw_body_rootid,
             mjw_body_rootid,
@@ -1325,11 +1326,12 @@ def convert_rigid_forces_from_mj_kernel(
             mjw_cvel,
             mjw_cacc,
             world,
-            mj_body_id,
+            mjc_body,
             ObjType.BODY,
         )
         # TODO: check if BODY or XBODY appropriate
-        body_qdd[newton_body_id] = wp.spatial_vector(lin, wp.spatial_top(cacc))
+        body_qdd[newton_body] = wp.spatial_vector(lin, wp.spatial_top(cacc))
 
     if body_parent_f:
+        # TODO: implement
         pass
