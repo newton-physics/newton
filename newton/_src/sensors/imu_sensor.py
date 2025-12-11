@@ -56,7 +56,7 @@ def compute_imu_sensor_kernel(
     imu_sensor[sensor_idx] = wp.spatial_vector(wp.quat_rotate_inv(q, acc_lin), wp.quat_rotate_inv(q, vel_ang))
 
 
-class IMUSensor:
+class SensorIMU:
     """Sensor that measures IMU data at a site."""
 
     def __init__(self, model: Model, reference_sites: list[int], verbose: bool | None = None):
@@ -75,6 +75,8 @@ class IMUSensor:
         Args:
             state: The state to update the sensor at.
         """
+        if state.body_qdd is None:
+            raise ValueError("SensorIMU requires a State with body_qdd allocated. Create SensorIMU before State.")
 
         wp.launch(
             compute_imu_sensor_kernel,

@@ -55,7 +55,7 @@ class Example:
         # finalize model
         self.model = builder.finalize()
 
-        self.imu = newton.sensors.IMUSensor(self.model, [imu_site])
+        self.imu = newton.sensors.SensorIMU(self.model, [imu_site])
 
         self.solver = newton.solvers.SolverMuJoCo(self.model, njmax=100)
 
