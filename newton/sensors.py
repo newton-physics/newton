@@ -25,6 +25,12 @@ from ._src.sensors.frame_transform_sensor import (
     FrameTransformSensor,
 )
 
+# IMU sensors
+from ._src.sensors.imu_sensor import (
+    SensorIMU,
+)
+
+# Raycast sensors
 # Raycast sensors
 from ._src.sensors.raycast_sensor import (
     RaycastSensor,
@@ -38,6 +44,7 @@ __all__ = [
     "FrameTransformSensor",
     "MatchKind",
     "RaycastSensor",
+    "SensorIMU",
     "TiledCameraSensor",
     "populate_contacts",
 ]
