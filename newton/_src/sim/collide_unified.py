@@ -117,51 +117,52 @@ def write_contact(
     margin_b = writer_data.shape_contact_margin[contact_data.shape_b]
     contact_margin = wp.max(margin_a, margin_b)
 
-    if d < contact_margin:
-        # Use provided index or get next available via atomic_add
-        if output_index >= 0:
-            index = output_index
-        else:
-            index = wp.atomic_add(writer_data.contact_count, 0, 1)
-            if index >= writer_data.contact_max:
-                # Reached buffer limit
-                wp.atomic_add(writer_data.contact_count, 0, -1)
-                return
-
+    index = output_index
+    
+    if index < 0:
+        # compute index using atomic counter
+        if d > contact_margin:
+            return
+        index = wp.atomic_add(writer_data.contact_count, 0, 1)
         if index >= writer_data.contact_max:
+            # Reached buffer limit
+            wp.atomic_add(writer_data.contact_count, 0, -1)
             return
 
-        writer_data.out_shape0[index] = contact_data.shape_a
-        writer_data.out_shape1[index] = contact_data.shape_b
+    if index >= writer_data.contact_max:
+        return
 
-        # Get body indices for the shapes
-        body0 = writer_data.shape_body[contact_data.shape_a]
-        body1 = writer_data.shape_body[contact_data.shape_b]
+    writer_data.out_shape0[index] = contact_data.shape_a
+    writer_data.out_shape1[index] = contact_data.shape_b
 
-        # Compute body inverse transforms
-        X_bw_a = wp.transform_identity() if body0 == -1 else wp.transform_inverse(writer_data.body_q[body0])
-        X_bw_b = wp.transform_identity() if body1 == -1 else wp.transform_inverse(writer_data.body_q[body1])
+    # Get body indices for the shapes
+    body0 = writer_data.shape_body[contact_data.shape_a]
+    body1 = writer_data.shape_body[contact_data.shape_b]
 
-        # Contact points are stored in body frames
-        writer_data.out_point0[index] = wp.transform_point(X_bw_a, a_contact_world)
-        writer_data.out_point1[index] = wp.transform_point(X_bw_b, b_contact_world)
+    # Compute body inverse transforms
+    X_bw_a = wp.transform_identity() if body0 == -1 else wp.transform_inverse(writer_data.body_q[body0])
+    X_bw_b = wp.transform_identity() if body1 == -1 else wp.transform_inverse(writer_data.body_q[body1])
 
-        # Match kernels.py convention
-        contact_normal = -contact_normal_a_to_b
+    # Contact points are stored in body frames
+    writer_data.out_point0[index] = wp.transform_point(X_bw_a, a_contact_world)
+    writer_data.out_point1[index] = wp.transform_point(X_bw_b, b_contact_world)
 
-        # Offsets in body frames
-        writer_data.out_offset0[index] = wp.transform_vector(X_bw_a, -offset_mag_a * contact_normal)
-        writer_data.out_offset1[index] = wp.transform_vector(X_bw_b, offset_mag_b * contact_normal)
+    # Match kernels.py convention
+    contact_normal = -contact_normal_a_to_b
 
-        writer_data.out_normal[index] = contact_normal
-        writer_data.out_thickness0[index] = offset_mag_a
-        writer_data.out_thickness1[index] = offset_mag_b
-        writer_data.out_tids[index] = 0  # tid not available in this context
+    # Offsets in body frames
+    writer_data.out_offset0[index] = wp.transform_vector(X_bw_a, -offset_mag_a * contact_normal)
+    writer_data.out_offset1[index] = wp.transform_vector(X_bw_b, offset_mag_b * contact_normal)
 
-        # Write contact key only if contact_key array is non-empty
-        if writer_data.contact_key.shape[0] > 0 and writer_data.contact_pair_key.shape[0] > 0:
-            writer_data.contact_key[index] = contact_data.feature
-            writer_data.contact_pair_key[index] = contact_data.feature_pair_key
+    writer_data.out_normal[index] = contact_normal
+    writer_data.out_thickness0[index] = offset_mag_a
+    writer_data.out_thickness1[index] = offset_mag_b
+    writer_data.out_tids[index] = 0  # tid not available in this context
+
+    # Write contact key only if contact_key array is non-empty
+    if writer_data.contact_key.shape[0] > 0 and writer_data.contact_pair_key.shape[0] > 0:
+        writer_data.contact_key[index] = contact_data.feature
+        writer_data.contact_pair_key[index] = contact_data.feature_pair_key
 
 
 @wp.kernel
