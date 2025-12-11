@@ -77,6 +77,12 @@ class ViewerBase:
         self.show_visual = True  # show visual shapes (non collider)
         self.show_static = False  # force static shapes to be visible
         self.show_inertia_boxes = False
+        self.show_isosurface = False  # show isosurface wireframe
+
+        # cache for isosurface line rendering (lazily allocated)
+        self._iso_line_starts: wp.array | None = None
+        self._iso_line_ends: wp.array | None = None
+        self._iso_line_colors: wp.array | None = None
 
         self.model_shape_color: wp.array(dtype=wp.vec3) = None
         """Color of shapes created from ``self.model``, shape (model.shape_count,)"""
@@ -334,6 +340,65 @@ class ViewerBase:
 
         self.log_lines("/contacts", starts, ends, colors)
 
+    def log_isosurface(self, sdf_hydroelastic, color_by_depth: bool = True):
+        """
+        Render the isosurface triangles as wireframe lines from SDFHydroelastic collision detection.
+
+        Args:
+            sdf_hydroelastic: An SDFHydroelastic instance with output_iso_vertices enabled.
+            color_by_depth: If True, color lines based on penetration depth (blue=shallow, red=deep).
+        """
+        from .kernels import compute_isosurface_lines  # noqa: PLC0415
+
+        if not self.show_isosurface:
+            self.log_lines("/isosurface", None, None, None)
+            return
+
+        # Get the number of face contacts (triangles)
+        num_contacts = int(sdf_hydroelastic.face_contact_count.numpy()[0])
+
+        if num_contacts == 0:
+            self.log_lines("/isosurface", None, None, None)
+            return
+
+        # Each triangle has 3 edges -> 3 line segments per contact
+        num_lines = 3 * num_contacts
+        max_lines = 3 * sdf_hydroelastic.max_num_face_contacts
+
+        # Pre-allocate line buffers (only once, to max capacity)
+        if not hasattr(self, "_iso_line_starts") or self._iso_line_starts is None or len(self._iso_line_starts) < max_lines:
+            self._iso_line_starts = wp.zeros(max_lines, dtype=wp.vec3, device=self.device)
+            self._iso_line_ends = wp.zeros(max_lines, dtype=wp.vec3, device=self.device)
+            self._iso_line_colors = wp.zeros(max_lines, dtype=wp.vec3, device=self.device)
+
+        # Get depth range for colormap
+        depths = sdf_hydroelastic.iso_vertex_depth[:num_contacts]
+        if color_by_depth:
+            depths_np = depths.numpy()
+            min_depth = float(depths_np.min()) if len(depths_np) > 0 else 0.0
+            max_depth = float(depths_np.max()) if len(depths_np) > 0 else 1.0
+        else:
+            min_depth = 0.0
+            max_depth = 1.0
+
+        # Convert triangles to line segments with depth-based colors
+        vertices = sdf_hydroelastic.iso_vertex_point
+        wp.launch(
+            compute_isosurface_lines,
+            dim=num_contacts,
+            inputs=[vertices, depths, num_contacts, min_depth, max_depth],
+            outputs=[self._iso_line_starts, self._iso_line_ends, self._iso_line_colors],
+            device=self.device,
+        )
+
+        # Render as lines
+        self.log_lines(
+            "/isosurface",
+            self._iso_line_starts[:num_lines],
+            self._iso_line_ends[:num_lines],
+            self._iso_line_colors[:num_lines],
+        )
+
     def log_shapes(
         self,
         name: str,
@@ -530,8 +595,12 @@ class ViewerBase:
         indices: wp.array,
         normals: wp.array | None = None,
         uvs: wp.array | None = None,
+        colors: wp.array | None = None,
         hidden=False,
         backface_culling=True,
+        dynamic=False,
+        max_vertices: int | None = None,
+        max_indices: int | None = None,
     ):
         pass
 
