@@ -798,13 +798,13 @@ class SolverMuJoCo(SolverBase):
 
         # Update rigid force fields on state.
         if any((state.body_qdd, state.body_parent_f)):
-            bodies_per_world = model.body_count // model.num_worlds
+            # Launch over MuJoCo bodies
+            nbody = self.mjc_body_to_newton.shape[1]
             wp.launch(
                 convert_rigid_forces_from_mj_kernel,
-                (nworld, bodies_per_world),
+                (nworld, nbody),
                 inputs=[
-                    self.to_mjc_body_index,
-                    bodies_per_world,
+                    self.mjc_body_to_newton,
                     self.mjw_model.body_rootid,
                     self.mjw_data.xipos,
                     self.mjw_data.subtree_com,
