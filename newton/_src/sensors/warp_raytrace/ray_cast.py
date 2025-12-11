@@ -18,16 +18,17 @@ import warp as wp
 from . import ray
 from .types import GeomType
 
-TRIANGLE_MESH = -1
-TRIANGLE_MESH_GEOM_ID = -100
-PARTICLES_GEOM_ID = -200
+NO_HIT_GEOM_ID = wp.uint32(0xFFFFFFFF)
+MAX_GEOM_ID = wp.uint32(0xFFFFFFF0)
+TRIANGLE_MESH_GEOM_ID = wp.uint32(0xFFFFFFFD)
+PARTICLES_GEOM_ID = wp.uint32(0xFFFFFFFE)
 
 
 @wp.struct
 class ClosestHit:
     distance: wp.float32
     normal: wp.vec3f
-    geom_id: wp.int32
+    geom_id: wp.uint32
     bary_u: wp.float32
     bary_v: wp.float32
     face_idx: wp.int32
@@ -51,13 +52,12 @@ def closest_hit_geom(
     bvh_geom_group_roots: wp.array(dtype=wp.int32),
     world_id: wp.int32,
     has_global_world: wp.bool,
-    geom_enabled: wp.array(dtype=wp.int32),
+    geom_enabled: wp.array(dtype=wp.uint32),
     geom_types: wp.array(dtype=wp.int32),
     geom_mesh_indices: wp.array(dtype=wp.int32),
     geom_sizes: wp.array(dtype=wp.vec3f),
     mesh_ids: wp.array(dtype=wp.uint64),
-    geom_positions: wp.array(dtype=wp.vec3f),
-    geom_orientations: wp.array(dtype=wp.mat33f),
+    geom_transforms: wp.array(dtype=wp.transformf),
     ray_origin_world: wp.vec3f,
     ray_dir_world: wp.vec3f,
 ) -> ClosestHit:
@@ -85,8 +85,7 @@ def closest_hit_geom(
                     hit, hit_dist, hit_normal, hit_u, hit_v, hit_face_id, hit_mesh_id = ray.ray_mesh_with_bvh(
                         mesh_ids,
                         geom_mesh_indices[gi],
-                        geom_positions[gi],
-                        geom_orientations[gi],
+                        geom_transforms[gi],
                         geom_sizes[gi],
                         ray_origin_world,
                         ray_dir_world,
@@ -94,47 +93,42 @@ def closest_hit_geom(
                     )
                 elif geom_types[gi] == GeomType.PLANE:
                     hit, hit_dist, hit_normal = ray.ray_plane_with_normal(
-                        geom_positions[gi],
-                        geom_orientations[gi],
+                        geom_transforms[gi],
                         geom_sizes[gi],
                         ray_origin_world,
                         ray_dir_world,
                     )
                 elif geom_types[gi] == GeomType.SPHERE:
                     hit, hit_dist, hit_normal = ray.ray_sphere_with_normal(
-                        geom_positions[gi],
+                        wp.transform_get_translation(geom_transforms[gi]),
                         geom_sizes[gi][0] * geom_sizes[gi][0],
                         ray_origin_world,
                         ray_dir_world,
                     )
                 elif geom_types[gi] == GeomType.CAPSULE:
                     hit, hit_dist, hit_normal = ray.ray_capsule_with_normal(
-                        geom_positions[gi],
-                        geom_orientations[gi],
+                        geom_transforms[gi],
                         geom_sizes[gi],
                         ray_origin_world,
                         ray_dir_world,
                     )
                 elif geom_types[gi] == GeomType.CYLINDER:
                     hit, hit_dist, hit_normal = ray.ray_cylinder_with_normal(
-                        geom_positions[gi],
-                        geom_orientations[gi],
+                        geom_transforms[gi],
                         geom_sizes[gi],
                         ray_origin_world,
                         ray_dir_world,
                     )
                 elif geom_types[gi] == GeomType.CONE:
                     hit, hit_dist, hit_normal = ray.ray_cone_with_normal(
-                        geom_positions[gi],
-                        geom_orientations[gi],
+                        geom_transforms[gi],
                         geom_sizes[gi],
                         ray_origin_world,
                         ray_dir_world,
                     )
                 elif geom_types[gi] == GeomType.BOX:
                     hit, hit_dist, hit_normal = ray.ray_box_with_normal(
-                        geom_positions[gi],
-                        geom_orientations[gi],
+                        geom_transforms[gi],
                         geom_sizes[gi],
                         ray_origin_world,
                         ray_dir_world,
@@ -230,13 +224,12 @@ def closest_hit(
     has_global_world: wp.bool,
     enable_particles: wp.bool,
     max_distance: wp.float32,
-    geom_enabled: wp.array(dtype=wp.int32),
+    geom_enabled: wp.array(dtype=wp.uint32),
     geom_types: wp.array(dtype=wp.int32),
     geom_mesh_indices: wp.array(dtype=wp.int32),
     geom_sizes: wp.array(dtype=wp.vec3f),
     mesh_ids: wp.array(dtype=wp.uint64),
-    geom_positions: wp.array(dtype=wp.vec3f),
-    geom_orientations: wp.array(dtype=wp.mat33f),
+    geom_transforms: wp.array(dtype=wp.transformf),
     particles_position: wp.array(dtype=wp.vec3f),
     particles_radius: wp.array(dtype=wp.float32),
     triangle_mesh_id: wp.uint64,
@@ -246,7 +239,7 @@ def closest_hit(
     closest_hit = ClosestHit()
     closest_hit.distance = max_distance
     closest_hit.normal = wp.vec3f(0.0)
-    closest_hit.geom_id = wp.int32(-1)
+    closest_hit.geom_id = NO_HIT_GEOM_ID
     closest_hit.bary_u = wp.float32(0.0)
     closest_hit.bary_v = wp.float32(0.0)
     closest_hit.face_idx = wp.int32(-1)
@@ -266,8 +259,7 @@ def closest_hit(
         geom_mesh_indices,
         geom_sizes,
         mesh_ids,
-        geom_positions,
-        geom_orientations,
+        geom_transforms,
         ray_origin_world,
         ray_dir_world,
     )
@@ -296,13 +288,12 @@ def first_hit_geom(
     bvh_geom_group_roots: wp.array(dtype=wp.int32),
     world_id: wp.int32,
     has_global_world: wp.bool,
-    geom_enabled: wp.array(dtype=wp.int32),
+    geom_enabled: wp.array(dtype=wp.uint32),
     geom_types: wp.array(dtype=wp.int32),
     geom_mesh_indices: wp.array(dtype=wp.int32),
     geom_sizes: wp.array(dtype=wp.vec3f),
     mesh_ids: wp.array(dtype=wp.uint64),
-    geom_positions: wp.array(dtype=wp.vec3f),
-    geom_orientations: wp.array(dtype=wp.mat33f),
+    geom_transforms: wp.array(dtype=wp.transformf),
     ray_origin_world: wp.vec3f,
     ray_dir_world: wp.vec3f,
     max_dist: wp.float32,
@@ -325,8 +316,7 @@ def first_hit_geom(
                     _h, dist, _n, _u, _v, _f, _mesh_id = ray.ray_mesh_with_bvh(
                         mesh_ids,
                         geom_mesh_indices[gi],
-                        geom_positions[gi],
-                        geom_orientations[gi],
+                        geom_transforms[gi],
                         geom_sizes[gi],
                         ray_origin_world,
                         ray_dir_world,
@@ -334,47 +324,42 @@ def first_hit_geom(
                     )
                 elif geom_types[gi] == GeomType.PLANE:
                     dist = ray.ray_plane(
-                        geom_positions[gi],
-                        geom_orientations[gi],
+                        geom_transforms[gi],
                         geom_sizes[gi],
                         ray_origin_world,
                         ray_dir_world,
                     )
                 elif geom_types[gi] == GeomType.SPHERE:
                     dist = ray.ray_sphere(
-                        geom_positions[gi],
+                        wp.transform_get_translation(geom_transforms[gi]),
                         geom_sizes[gi][0] * geom_sizes[gi][0],
                         ray_origin_world,
                         ray_dir_world,
                     )
                 elif geom_types[gi] == GeomType.CAPSULE:
                     dist = ray.ray_capsule(
-                        geom_positions[gi],
-                        geom_orientations[gi],
+                        geom_transforms[gi],
                         geom_sizes[gi],
                         ray_origin_world,
                         ray_dir_world,
                     )
                 elif geom_types[gi] == GeomType.CYLINDER:
                     dist, _ = ray.ray_cylinder(
-                        geom_positions[gi],
-                        geom_orientations[gi],
+                        geom_transforms[gi],
                         geom_sizes[gi],
                         ray_origin_world,
                         ray_dir_world,
                     )
                 elif geom_types[gi] == GeomType.CONE:
                     dist = ray.ray_cone(
-                        geom_positions[gi],
-                        geom_orientations[gi],
+                        geom_transforms[gi],
                         geom_sizes[gi],
                         ray_origin_world,
                         ray_dir_world,
                     )
                 elif geom_types[gi] == GeomType.BOX:
                     dist, _all = ray.ray_box(
-                        geom_positions[gi],
-                        geom_orientations[gi],
+                        geom_transforms[gi],
                         geom_sizes[gi],
                         ray_origin_world,
                         ray_dir_world,
@@ -452,13 +437,12 @@ def first_hit(
     world_id: wp.int32,
     has_global_world: wp.bool,
     enable_particles: wp.bool,
-    geom_enabled: wp.array(dtype=wp.int32),
+    geom_enabled: wp.array(dtype=wp.uint32),
     geom_types: wp.array(dtype=wp.int32),
     geom_mesh_indices: wp.array(dtype=wp.int32),
     geom_sizes: wp.array(dtype=wp.vec3f),
     mesh_ids: wp.array(dtype=wp.uint64),
-    geom_positions: wp.array(dtype=wp.vec3f),
-    geom_orientations: wp.array(dtype=wp.mat33f),
+    geom_transforms: wp.array(dtype=wp.transformf),
     particles_position: wp.array(dtype=wp.vec3f),
     particles_radius: wp.array(dtype=wp.float32),
     triangle_mesh_id: wp.uint64,
@@ -480,8 +464,7 @@ def first_hit(
         geom_mesh_indices,
         geom_sizes,
         mesh_ids,
-        geom_positions,
-        geom_orientations,
+        geom_transforms,
         ray_origin_world,
         ray_dir_world,
         max_dist,

@@ -35,15 +35,15 @@ def sample_texture_2d(
 @wp.func
 def sample_texture_plane(
     hit_point: wp.vec3f,
-    geom_pos: wp.vec3f,
-    geom_rot: wp.mat33f,
+    geom_transform: wp.transformf,
     material_texture_repeat: wp.vec2f,
     texture_offsets: wp.int32,
     texture_data: wp.array(dtype=wp.uint32),
     texture_height: wp.int32,
     texture_width: wp.int32,
 ) -> wp.vec3f:
-    local = wp.transpose(geom_rot) @ (hit_point - geom_pos)
+    inv_transform = wp.transform_inverse(geom_transform)
+    local = wp.transform_point(inv_transform, hit_point)
     u = local[0] * material_texture_repeat[0]
     v = local[1] * material_texture_repeat[1]
     u = u - wp.floor(u)
@@ -87,7 +87,7 @@ def sample_texture_mesh(
 @wp.func
 def sample_texture(
     world_id: wp.int32,
-    geom_id: wp.int32,
+    geom_id: wp.uint32,
     geom_type: wp.array(dtype=wp.int32),
     geom_material_id: wp.int32,
     material_texture_id: wp.int32,
@@ -96,8 +96,7 @@ def sample_texture(
     texture_data: wp.array(dtype=wp.uint32),
     texture_height: wp.int32,
     texture_width: wp.int32,
-    geom_position: wp.vec3f,
-    geom_orientation: wp.mat33f,
+    geom_transforms: wp.transformf,
     mesh_face_offsets: wp.array(dtype=wp.int32),
     mesh_face_vertices: wp.array(dtype=wp.vec3i),
     mesh_texcoord: wp.array(dtype=wp.vec2f),
@@ -116,8 +115,7 @@ def sample_texture(
     if geom_type[geom_id] == GeomType.PLANE:
         tex_color = sample_texture_plane(
             hit_point,
-            geom_position,
-            geom_orientation,
+            geom_transforms,
             material_texture_repeat,
             texture_offsets,
             texture_data,
