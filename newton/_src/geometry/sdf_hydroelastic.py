@@ -65,6 +65,8 @@ class SDFHydroelastic:
         num_shape_pairs: int,
         total_num_tiles: int,
         max_num_blocks_per_shape: int,
+        shape_sdf_block_coords: wp.array(dtype=wp.vec3us),
+        shape_sdf_shape2blocks: wp.array(dtype=wp.vec2i),
         config: SDFHydroelasticConfig = None,
         device: Any = None,
         writer_func: Any = None,
@@ -73,6 +75,8 @@ class SDFHydroelastic:
             config = SDFHydroelasticConfig()
 
         self.config = config
+        self.shape_sdf_block_coords = shape_sdf_block_coords
+        self.shape_sdf_shape2blocks = shape_sdf_shape2blocks
 
         self.max_num_shape_pairs = num_shape_pairs
         self.total_num_tiles = total_num_tiles
@@ -212,6 +216,8 @@ class SDFHydroelastic:
             num_shape_pairs=num_hydroelastic_pairs,
             total_num_tiles=total_num_tiles,
             max_num_blocks_per_shape=max_num_blocks_per_shape,
+            shape_sdf_block_coords=model.shape_sdf_block_coords,
+            shape_sdf_shape2blocks=model.shape_sdf_shape2blocks,
             config=config,
             device=model.device,
             writer_func=writer_func,
@@ -225,8 +231,6 @@ class SDFHydroelastic:
         shape_contact_margin: wp.array(dtype=wp.float32),
         shape_pairs_sdf_sdf: wp.array(dtype=wp.vec2i),
         shape_pairs_sdf_sdf_count: wp.array(dtype=wp.int32),
-        shape_sdf_block_coords: wp.array(dtype=wp.vec3us),
-        shape_sdf_shape2blocks: wp.array(dtype=wp.vec2i),
         writer_data: Any,
         device: Any = None,
     ) -> None:
@@ -235,8 +239,6 @@ class SDFHydroelastic:
             shape_transform,
             shape_pairs_sdf_sdf,
             shape_pairs_sdf_sdf_count,
-            shape_sdf_block_coords,
-            shape_sdf_shape2blocks,
             device,
         )
 
@@ -270,8 +272,6 @@ class SDFHydroelastic:
         shape_transform: wp.array(dtype=wp.transform),
         shape_pairs_sdf_sdf: wp.array(dtype=wp.vec2i),
         shape_pairs_sdf_sdf_count: wp.array(dtype=wp.int32),
-        shape_sdf_block_coords: wp.array(dtype=wp.vec3us),
-        shape_sdf_shape2blocks: wp.array(dtype=wp.vec2i),
         device: Any = None,
     ) -> None:
         # Test collisions between OBB of SDFs
@@ -285,7 +285,7 @@ class SDFHydroelastic:
                 shape_sdf_data,
                 shape_pairs_sdf_sdf,
                 shape_pairs_sdf_sdf_count,
-                shape_sdf_shape2blocks,
+                self.shape_sdf_shape2blocks,
             ],
             outputs=[
                 self.num_blocks_per_pair,
@@ -309,7 +309,7 @@ class SDFHydroelastic:
                 self.block_start_prefix,
                 shape_pairs_sdf_sdf,
                 shape_pairs_sdf_sdf_count,
-                shape_sdf_shape2blocks,
+                self.shape_sdf_shape2blocks,
                 self.max_num_blocks_broad,
             ],
             outputs=[
@@ -326,7 +326,7 @@ class SDFHydroelastic:
                 self.grid_size,
                 self.block_broad_collide_count,
                 self.block_broad_idx,
-                shape_sdf_block_coords,
+                self.shape_sdf_block_coords,
                 self.max_num_blocks_broad,
             ],
             outputs=[
