@@ -325,6 +325,28 @@ class SDFHydroelastic:
                 device,
             )
 
+        wp.launch(
+            kernel=verify_collision_step,
+            dim=[1],
+            inputs=[
+                self.block_broad_collide_count,
+                self.max_num_blocks_broad,
+                self.iso_buffer_counts[1],
+                self.iso_max_dims[0],
+                self.iso_buffer_counts[2],
+                self.iso_max_dims[1],
+                self.iso_buffer_counts[3],
+                self.iso_max_dims[2],
+                self.iso_voxel_count,
+                self.max_num_iso_voxels,
+                self.face_contact_count,
+                self.max_num_face_contacts,
+                writer_data.contact_count,
+                writer_data.contact_max,
+            ],
+            device=device,
+        )
+
 
     def _broadphase_sdfs(
         self,
@@ -711,6 +733,12 @@ def broadphase_collision_pairs_count(
     )
 
     does_collide = sat_box_intersection(centered_transform_a, half_extents_a, centered_transform_b, half_extents_b)
+
+    # Sort shapes so shape with smaller voxel size is shape_b (must match scatter kernel)
+    voxel_size_a = wp.length_sq(shape_sdf_data[shape_a].sparse_voxel_size)
+    voxel_size_b = wp.length_sq(shape_sdf_data[shape_b].sparse_voxel_size)
+    if voxel_size_b > voxel_size_a:
+        shape_b, shape_a = shape_a, shape_b
 
     shape_b_idx = shape2blocks[shape_b]
     block_start, block_end = shape_b_idx[0], shape_b_idx[1]
@@ -1659,3 +1687,43 @@ def get_binning_kernels(
             writer_func(contact_data, writer_data, anchor_idx)
 
     return compute_bin_scores, assign_contacts_to_bins, generate_contacts_from_bins
+
+
+@wp.kernel
+def verify_collision_step(
+    num_broad_collide: wp.array(dtype=int),
+    max_num_broad_collide: int,
+    num_iso_subblocks_0: wp.array(dtype=int),
+    max_num_iso_subblocks_0: int,
+    num_iso_subblocks_1: wp.array(dtype=int),
+    max_num_iso_subblocks_1: int,
+    num_iso_subblocks_2: wp.array(dtype=int),
+    max_num_iso_subblocks_2: int,
+    num_iso_voxels: wp.array(dtype=int),
+    max_num_iso_voxels: int,
+    face_contact_count: wp.array(dtype=int),
+    max_face_contact_count: int,
+    contact_count: wp.array(dtype=int),
+    max_contact_count: int,
+):
+    # Checks if any buffer overflowed in any stage of the collision pipeline and print a warning
+    if num_broad_collide[0] >= max_num_broad_collide:
+        wp.printf("Warning: Broad phase buffer overflowed %u > %u\n", num_broad_collide[0], max_num_broad_collide)
+    if num_iso_subblocks_0[0] >= max_num_iso_subblocks_0:
+        wp.printf(
+            "Warning: Iso subblock 0 buffer overflowed %u > %u\n", num_iso_subblocks_0[0], max_num_iso_subblocks_0
+        )
+    if num_iso_subblocks_1[0] >= max_num_iso_subblocks_1:
+        wp.printf(
+            "Warning: Iso subblock 1 buffer overflowed %u > %u\n", num_iso_subblocks_1[0], max_num_iso_subblocks_1
+        )
+    if num_iso_subblocks_2[0] >= max_num_iso_subblocks_2:
+        wp.printf(
+            "Warning: Iso subblock 2 buffer overflowed %u > %u\n", num_iso_subblocks_2[0], max_num_iso_subblocks_2
+        )
+    if num_iso_voxels[0] >= max_num_iso_voxels:
+        wp.printf("Warning: Iso voxel buffer overflowed %u > %u\n", num_iso_voxels[0], max_num_iso_voxels)
+    if face_contact_count[0] >= max_face_contact_count:
+        wp.printf("Warning: Face contact buffer overflowed %u > %u\n", face_contact_count[0], max_face_contact_count)
+    if contact_count[0] >= max_contact_count:
+        wp.printf("Warning: Contact buffer overflowed %u > %u\n", contact_count[0], max_contact_count)
