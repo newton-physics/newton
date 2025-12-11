@@ -14,11 +14,11 @@
 # limitations under the License.
 
 from .render_context import ClearData, RenderContext
-from .types import GeomType, LightType
+from .types import RenderShapeType, RenderLightType
 
 __all__ = [
     "ClearData",
-    "GeomType",
-    "LightType",
+    "RenderShapeType",
+    "RenderLightType",
     "RenderContext",
 ]

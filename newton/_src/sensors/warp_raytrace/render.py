@@ -101,7 +101,7 @@ def _render_megakernel(
     bvh_shapes_group_roots: wp.array(dtype=wp.int32),
     # Shapes
     shape_enabled: wp.array(dtype=wp.uint32),
-    shape_geom_types: wp.array(dtype=wp.int32),
+    shape_types: wp.array(dtype=wp.int32),
     shape_mesh_indices: wp.array(dtype=wp.int32),
     shape_materials: wp.array(dtype=wp.int32),
     shape_sizes: wp.array(dtype=wp.vec3f),
@@ -179,7 +179,7 @@ def _render_megakernel(
         enable_particles,
         max_distance,
         shape_enabled,
-        shape_geom_types,
+        shape_types,
         shape_mesh_indices,
         shape_sizes,
         shape_transforms,
@@ -225,7 +225,7 @@ def _render_megakernel(
             texture_index = material_texture_ids[material_index]
             if texture_index > -1:
                 tex_color = textures.sample_texture(
-                    shape_geom_types[closest_hit.shape_index],
+                    shape_types[closest_hit.shape_index],
                     shape_transforms[closest_hit.shape_index],
                     material_index,
                     texture_index,
@@ -281,7 +281,7 @@ def _render_megakernel(
             bvh_particles_id,
             bvh_particles_group_roots,
             shape_enabled,
-            shape_geom_types,
+            shape_types,
             shape_mesh_indices,
             shape_sizes,
             shape_transforms,
@@ -362,7 +362,7 @@ def render_megakernel(
             rc.bvh_shapes_group_roots,
             # Shapes
             rc.shape_enabled,
-            rc.shape_geom_types,
+            rc.shape_types,
             rc.shape_mesh_indices,
             rc.shape_materials,
             rc.shape_sizes,

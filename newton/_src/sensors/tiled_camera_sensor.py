@@ -23,7 +23,7 @@ import warp as wp
 
 from ..geometry import ShapeFlags
 from ..sim import Model, State
-from .warp_raytrace import ClearData, GeomType, LightType, RenderContext
+from .warp_raytrace import ClearData, RenderShapeType, RenderLightType, RenderContext
 
 DEFAULT_CLEAR_DATA = ClearData(0xFF666666)
 
@@ -66,30 +66,30 @@ def compute_mesh_bounds(in_meshes: wp.array(dtype=wp.uint64), out_bounds: wp.arr
 
 
 @wp.func
-def is_supported_shape_geom_type(shape_geom_type: wp.int32) -> wp.bool:
-    if shape_geom_type == GeomType.BOX:
+def is_supported_shape_type(shape_type: wp.int32) -> wp.bool:
+    if shape_type == RenderShapeType.BOX:
         return True
-    if shape_geom_type == GeomType.CAPSULE:
+    if shape_type == RenderShapeType.CAPSULE:
         return True
-    if shape_geom_type == GeomType.CYLINDER:
+    if shape_type == RenderShapeType.CYLINDER:
         return True
-    if shape_geom_type == GeomType.ELLIPSOID:
+    if shape_type == RenderShapeType.ELLIPSOID:
         return True
-    if shape_geom_type == GeomType.PLANE:
+    if shape_type == RenderShapeType.PLANE:
         return True
-    if shape_geom_type == GeomType.SPHERE:
+    if shape_type == RenderShapeType.SPHERE:
         return True
-    if shape_geom_type == GeomType.CONE:
+    if shape_type == RenderShapeType.CONE:
         return True
-    if shape_geom_type == GeomType.MESH:
+    if shape_type == RenderShapeType.MESH:
         return True
-    wp.printf("Unsupported shape geom type: %d\n", shape_geom_type)
+    wp.printf("Unsupported shape geom type: %d\n", shape_type)
     return False
 
 
 @wp.kernel(enable_backward=False)
 def compute_enabled_shapes(
-    shape_geom_type: wp.array(dtype=wp.int32),
+    shape_type: wp.array(dtype=wp.int32),
     shape_flags: wp.array(dtype=wp.int32),
     out_shape_enabled: wp.array(dtype=wp.uint32),
     out_mesh_indices: wp.array(dtype=wp.int32),
@@ -102,7 +102,7 @@ def compute_enabled_shapes(
     if not bool(shape_flags[tid] & ShapeFlags.VISIBLE):
         return
 
-    if not is_supported_shape_geom_type(shape_geom_type[tid]):
+    if not is_supported_shape_type(shape_type[tid]):
         return
 
     index = wp.atomic_add(out_shape_enabled_count, 0, 1)
@@ -234,8 +234,8 @@ class TiledCameraSensor:
     """
 
     RenderContext = RenderContext
-    LightType = LightType
-    GeomType = GeomType
+    RenderLightType = RenderLightType
+    RenderShapeType = RenderShapeType
 
     @dataclass
     class Options:
@@ -265,7 +265,7 @@ class TiledCameraSensor:
                 self.render_context.enable_particles = False
 
         self.render_context.shape_enabled = wp.empty(self.model.shape_count, dtype=wp.uint32)
-        self.render_context.shape_geom_types = model.shape_type
+        self.render_context.shape_types = model.shape_type
         self.render_context.shape_sizes = wp.empty(self.model.shape_count, dtype=wp.vec3f)
         self.render_context.shape_transforms = wp.empty(self.model.shape_count, dtype=wp.transformf)
         self.render_context.shape_materials = wp.array(
@@ -595,7 +595,7 @@ class TiledCameraSensor:
 
         self.render_context.enable_shadows = enable_shadows
         self.render_context.lights_active = wp.array([True], dtype=wp.bool)
-        self.render_context.lights_type = wp.array([LightType.DIRECTIONAL], dtype=wp.int32)
+        self.render_context.lights_type = wp.array([RenderLightType.DIRECTIONAL], dtype=wp.int32)
         self.render_context.lights_cast_shadow = wp.array([True], dtype=wp.bool)
         self.render_context.lights_position = wp.array([wp.vec3f(0.0)], dtype=wp.vec3f)
         self.render_context.lights_orientation = wp.array(

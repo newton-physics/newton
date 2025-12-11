@@ -15,7 +15,7 @@
 
 import warp as wp
 
-from .types import GeomType
+from .types import RenderShapeType
 
 
 @wp.func
@@ -147,7 +147,7 @@ def compute_shape_bvh_bounds(
     num_worlds: wp.int32,
     shape_world_index: wp.array(dtype=wp.int32),
     shape_enabled: wp.array(dtype=wp.uint32),
-    shape_geom_types: wp.array(dtype=wp.int32),
+    shape_types: wp.array(dtype=wp.int32),
     shape_mesh_indices: wp.array(dtype=wp.int32),
     shape_sizes: wp.array(dtype=wp.vec3f),
     shape_transforms: wp.array(dtype=wp.transformf),
@@ -172,28 +172,28 @@ def compute_shape_bvh_bounds(
 
     transform = shape_transforms[shape_index]
     size = shape_sizes[shape_index]
-    geom_type = shape_geom_types[shape_index]
+    geom_type = shape_types[shape_index]
 
     lower = wp.vec3f()
     upper = wp.vec3f()
 
-    if geom_type == GeomType.SPHERE:
+    if geom_type == RenderShapeType.SPHERE:
         lower, upper = compute_sphere_bounds(wp.transform_get_translation(transform), size[0])
-    elif geom_type == GeomType.CAPSULE:
+    elif geom_type == RenderShapeType.CAPSULE:
         lower, upper = compute_capsule_bounds(transform, size)
-    elif geom_type == GeomType.CYLINDER:
+    elif geom_type == RenderShapeType.CYLINDER:
         lower, upper = compute_cylinder_bounds(transform, size)
-    elif geom_type == GeomType.CONE:
+    elif geom_type == RenderShapeType.CONE:
         lower, upper = compute_cone_bounds(transform, size)
-    elif geom_type == GeomType.PLANE:
+    elif geom_type == RenderShapeType.PLANE:
         lower, upper = compute_plane_bounds(transform, size)
-    elif geom_type == GeomType.MESH:
+    elif geom_type == RenderShapeType.MESH:
         min_bounds = mesh_bounds[shape_mesh_indices[shape_index], 0]
         max_bounds = mesh_bounds[shape_mesh_indices[shape_index], 1]
         lower, upper = compute_mesh_bounds(transform, size, min_bounds, max_bounds)
-    elif geom_type == GeomType.ELLIPSOID:
+    elif geom_type == RenderShapeType.ELLIPSOID:
         lower, upper = compute_ellipsoid_bounds(transform, size)
-    elif geom_type == GeomType.BOX:
+    elif geom_type == RenderShapeType.BOX:
         lower, upper = compute_box_bounds(transform, size)
 
     out_bvh_lowers[bvh_index_local] = lower

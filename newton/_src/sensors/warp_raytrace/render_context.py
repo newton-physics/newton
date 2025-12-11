@@ -81,7 +81,7 @@ class RenderContext:
         self.__particles_world_index: wp.array(dtype=wp.int32) = None
 
         self.shape_enabled: wp.array(dtype=wp.uint32) = None
-        self.shape_geom_types: wp.array(dtype=wp.int32) = None
+        self.shape_types: wp.array(dtype=wp.int32) = None
         self.shape_mesh_indices: wp.array(dtype=wp.int32) = None
         self.shape_sizes: wp.array(dtype=wp.vec3f) = None
         self.shape_transforms: wp.array(dtype=wp.transformf) = None
@@ -218,7 +218,7 @@ class RenderContext:
                 self.num_worlds_total,
                 self.shape_world_index,
                 self.shape_enabled,
-                self.shape_geom_types,
+                self.shape_types,
                 self.shape_mesh_indices,
                 self.shape_sizes,
                 self.shape_transforms,

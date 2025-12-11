@@ -15,7 +15,7 @@
 
 import warp as wp
 
-from .types import GeomType
+from .types import RenderShapeType
 
 
 @wp.func
@@ -86,7 +86,7 @@ def sample_texture_mesh(
 
 @wp.func
 def sample_texture(
-    shape_geom_type: wp.int32,
+    shape_type: wp.int32,
     shape_transform: wp.transformf,
     material_index: wp.int32,
     texture_index: wp.int32,
@@ -110,7 +110,7 @@ def sample_texture(
     if material_index == -1 or texture_index == -1:
         return tex_color
 
-    if shape_geom_type == GeomType.PLANE:
+    if shape_type == RenderShapeType.PLANE:
         tex_color = sample_texture_plane(
             hit_point,
             shape_transform,
@@ -121,7 +121,7 @@ def sample_texture(
             texture_width,
         )
 
-    if shape_geom_type == GeomType.MESH:
+    if shape_type == RenderShapeType.MESH:
         if f < 0 or mesh_id < 0 or not mesh_texcoord_offsets.shape[0]:
             return tex_color
 

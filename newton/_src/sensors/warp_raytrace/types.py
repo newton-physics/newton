@@ -18,7 +18,7 @@ import enum
 from .... import GeoType
 
 
-class GeomType(enum.IntEnum):
+class RenderShapeType(enum.IntEnum):
     """Geometry types supported by the Warp raytracer (subset of newton.GeoType)."""
 
     PLANE = GeoType.PLANE
@@ -32,7 +32,7 @@ class GeomType(enum.IntEnum):
     NONE = GeoType.NONE
 
 
-class LightType(enum.IntEnum):
+class RenderLightType(enum.IntEnum):
     """Light types supported by the Warp raytracer."""
 
     SPOTLIGHT = 0

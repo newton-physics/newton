@@ -16,7 +16,7 @@
 import warp as wp
 
 from . import ray
-from .types import GeomType
+from .types import RenderShapeType
 
 NO_HIT_SHAPE_ID = wp.uint32(0xFFFFFFFF)
 MAX_SHAPE_ID = wp.uint32(0xFFFFFFF0)
@@ -53,7 +53,7 @@ def closest_hit_shape(
     world_index: wp.int32,
     has_global_world: wp.bool,
     shape_enabled: wp.array(dtype=wp.uint32),
-    shape_geom_types: wp.array(dtype=wp.int32),
+    shape_types: wp.array(dtype=wp.int32),
     shape_mesh_indices: wp.array(dtype=wp.int32),
     shape_sizes: wp.array(dtype=wp.vec3f),
     shape_transforms: wp.array(dtype=wp.transformf),
@@ -81,7 +81,7 @@ def closest_hit_shape(
                 hit_face_id = wp.int32(-1)
                 hit_mesh_id = wp.int32(-1)
 
-                if shape_geom_types[si] == GeomType.MESH:
+                if shape_types[si] == RenderShapeType.MESH:
                     hit, hit_dist, hit_normal, hit_u, hit_v, hit_face_id, hit_mesh_id = ray.ray_mesh_with_bvh(
                         mesh_ids,
                         shape_mesh_indices[si],
@@ -91,42 +91,42 @@ def closest_hit_shape(
                         ray_dir_world,
                         closest_hit.distance,
                     )
-                elif shape_geom_types[si] == GeomType.PLANE:
+                elif shape_types[si] == RenderShapeType.PLANE:
                     hit, hit_dist, hit_normal = ray.ray_plane_with_normal(
                         shape_transforms[si],
                         shape_sizes[si],
                         ray_origin_world,
                         ray_dir_world,
                     )
-                elif shape_geom_types[si] == GeomType.SPHERE:
+                elif shape_types[si] == RenderShapeType.SPHERE:
                     hit, hit_dist, hit_normal = ray.ray_sphere_with_normal(
                         wp.transform_get_translation(shape_transforms[si]),
                         shape_sizes[si][0] * shape_sizes[si][0],
                         ray_origin_world,
                         ray_dir_world,
                     )
-                elif shape_geom_types[si] == GeomType.CAPSULE:
+                elif shape_types[si] == RenderShapeType.CAPSULE:
                     hit, hit_dist, hit_normal = ray.ray_capsule_with_normal(
                         shape_transforms[si],
                         shape_sizes[si],
                         ray_origin_world,
                         ray_dir_world,
                     )
-                elif shape_geom_types[si] == GeomType.CYLINDER:
+                elif shape_types[si] == RenderShapeType.CYLINDER:
                     hit, hit_dist, hit_normal = ray.ray_cylinder_with_normal(
                         shape_transforms[si],
                         shape_sizes[si],
                         ray_origin_world,
                         ray_dir_world,
                     )
-                elif shape_geom_types[si] == GeomType.CONE:
+                elif shape_types[si] == RenderShapeType.CONE:
                     hit, hit_dist, hit_normal = ray.ray_cone_with_normal(
                         shape_transforms[si],
                         shape_sizes[si],
                         ray_origin_world,
                         ray_dir_world,
                     )
-                elif shape_geom_types[si] == GeomType.BOX:
+                elif shape_types[si] == RenderShapeType.BOX:
                     hit, hit_dist, hit_normal = ray.ray_box_with_normal(
                         shape_transforms[si],
                         shape_sizes[si],
@@ -225,7 +225,7 @@ def closest_hit(
     enable_particles: wp.bool,
     max_distance: wp.float32,
     shape_enabled: wp.array(dtype=wp.uint32),
-    shape_geom_types: wp.array(dtype=wp.int32),
+    shape_types: wp.array(dtype=wp.int32),
     shape_mesh_indices: wp.array(dtype=wp.int32),
     shape_sizes: wp.array(dtype=wp.vec3f),
     shape_transforms: wp.array(dtype=wp.transformf),
@@ -255,7 +255,7 @@ def closest_hit(
         world_index,
         has_global_world,
         shape_enabled,
-        shape_geom_types,
+        shape_types,
         shape_mesh_indices,
         shape_sizes,
         shape_transforms,
@@ -289,7 +289,7 @@ def first_hit_shape(
     world_index: wp.int32,
     has_global_world: wp.bool,
     shape_enabled: wp.array(dtype=wp.uint32),
-    shape_geom_types: wp.array(dtype=wp.int32),
+    shape_types: wp.array(dtype=wp.int32),
     shape_mesh_indices: wp.array(dtype=wp.int32),
     shape_sizes: wp.array(dtype=wp.vec3f),
     shape_transforms: wp.array(dtype=wp.transformf),
@@ -312,7 +312,7 @@ def first_hit_shape(
 
                 dist = wp.float32(wp.inf)
 
-                if shape_geom_types[si] == GeomType.MESH:
+                if shape_types[si] == RenderShapeType.MESH:
                     _h, dist, _n, _u, _v, _f, _mesh_id = ray.ray_mesh_with_bvh(
                         mesh_ids,
                         shape_mesh_indices[si],
@@ -322,42 +322,42 @@ def first_hit_shape(
                         ray_dir_world,
                         max_dist,
                     )
-                elif shape_geom_types[si] == GeomType.PLANE:
+                elif shape_types[si] == RenderShapeType.PLANE:
                     dist = ray.ray_plane(
                         shape_transforms[si],
                         shape_sizes[si],
                         ray_origin_world,
                         ray_dir_world,
                     )
-                elif shape_geom_types[si] == GeomType.SPHERE:
+                elif shape_types[si] == RenderShapeType.SPHERE:
                     dist = ray.ray_sphere(
                         wp.transform_get_translation(shape_transforms[si]),
                         shape_sizes[si][0] * shape_sizes[si][0],
                         ray_origin_world,
                         ray_dir_world,
                     )
-                elif shape_geom_types[si] == GeomType.CAPSULE:
+                elif shape_types[si] == RenderShapeType.CAPSULE:
                     dist = ray.ray_capsule(
                         shape_transforms[si],
                         shape_sizes[si],
                         ray_origin_world,
                         ray_dir_world,
                     )
-                elif shape_geom_types[si] == GeomType.CYLINDER:
+                elif shape_types[si] == RenderShapeType.CYLINDER:
                     dist, _ = ray.ray_cylinder(
                         shape_transforms[si],
                         shape_sizes[si],
                         ray_origin_world,
                         ray_dir_world,
                     )
-                elif shape_geom_types[si] == GeomType.CONE:
+                elif shape_types[si] == RenderShapeType.CONE:
                     dist = ray.ray_cone(
                         shape_transforms[si],
                         shape_sizes[si],
                         ray_origin_world,
                         ray_dir_world,
                     )
-                elif shape_geom_types[si] == GeomType.BOX:
+                elif shape_types[si] == RenderShapeType.BOX:
                     dist, _all = ray.ray_box(
                         shape_transforms[si],
                         shape_sizes[si],
@@ -438,7 +438,7 @@ def first_hit(
     has_global_world: wp.bool,
     enable_particles: wp.bool,
     shape_enabled: wp.array(dtype=wp.uint32),
-    shape_geom_types: wp.array(dtype=wp.int32),
+    shape_types: wp.array(dtype=wp.int32),
     shape_mesh_indices: wp.array(dtype=wp.int32),
     shape_sizes: wp.array(dtype=wp.vec3f),
     shape_transforms: wp.array(dtype=wp.transformf),
@@ -460,7 +460,7 @@ def first_hit(
         world_index,
         has_global_world,
         shape_enabled,
-        shape_geom_types,
+        shape_types,
         shape_mesh_indices,
         shape_sizes,
         shape_transforms,
