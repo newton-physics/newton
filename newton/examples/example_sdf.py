@@ -43,6 +43,8 @@ GEAR_FILES = [
     ("factory_gear_small_space_5e-4.obj", "gear_small"),
 ]
 
+SDF_SDF = True
+
 
 def add_mesh_object(
     builder: newton.ModelBuilder,
@@ -185,7 +187,7 @@ class Example:
         world_builder.rigid_contact_margin = 0.001 * self.scene_scale
 
         shape_cfg = newton.ModelBuilder.ShapeConfig(
-            thickness=0.0, mu=0.01, sdf_max_dims=512, density=8000.0, torsional_friction=0.0, rolling_friction=0.0
+            thickness=0.0, mu=0.01, sdf_max_dims=512, density=8000.0, torsional_friction=0.0, rolling_friction=0.0, is_hydroelastic=SDF_SDF
         )
 
         bolt_file = str(asset_path / f"factory_bolt_{ASSEMBLY_STR}.obj")
@@ -246,7 +248,7 @@ class Example:
         world_builder.rigid_contact_margin = 0.001 * self.scene_scale
 
         shape_cfg = newton.ModelBuilder.ShapeConfig(
-            thickness=0.0, mu=0.5, sdf_max_dims=256, density=8000.0, torsional_friction=0.0, rolling_friction=0.0
+            thickness=0.0, mu=0.5, sdf_max_dims=256, density=8000.0, torsional_friction=0.0, rolling_friction=0.0, is_hydroelastic=SDF_SDF
         )
 
         for _, (gear_filename, gear_key) in enumerate(GEAR_FILES):
