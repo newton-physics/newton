@@ -735,9 +735,9 @@ def broadphase_collision_pairs_count(
     does_collide = sat_box_intersection(centered_transform_a, half_extents_a, centered_transform_b, half_extents_b)
 
     # Sort shapes so shape with smaller voxel size is shape_b (must match scatter kernel)
-    voxel_size_a = wp.length_sq(shape_sdf_data[shape_a].sparse_voxel_size)
-    voxel_size_b = wp.length_sq(shape_sdf_data[shape_b].sparse_voxel_size)
-    if voxel_size_b > voxel_size_a:
+    voxel_radius_a = shape_sdf_data[shape_a].sparse_voxel_radius
+    voxel_radius_b = shape_sdf_data[shape_b].sparse_voxel_radius
+    if voxel_radius_b > voxel_radius_a:
         shape_b, shape_a = shape_a, shape_b
 
     shape_b_idx = shape2blocks[shape_b]
@@ -777,10 +777,10 @@ def broadphase_collision_pairs_scatter(
 
     # sort shapes such that the shape with the smaller voxel size is in second place
     # NOTE: Confirm that this is OK to do for downstream code
-    voxel_size_a = wp.length_sq(shape_sdf_data[shape_a].sparse_voxel_size)
-    voxel_size_b = wp.length_sq(shape_sdf_data[shape_b].sparse_voxel_size)
+    voxel_radius_a = shape_sdf_data[shape_a].sparse_voxel_radius
+    voxel_radius_b = shape_sdf_data[shape_b].sparse_voxel_radius
 
-    if voxel_size_b > voxel_size_a:
+    if voxel_radius_b > voxel_radius_a:
         shape_b, shape_a = shape_a, shape_b
 
     shape_b_idx = shape2blocks[shape_b]
@@ -919,7 +919,7 @@ def count_iso_voxels_block(
 
         margin = shape_contact_margin[shape_b]
 
-        voxel_radius = 0.5 * wp.length(shape_sdf_data[shape_b].sparse_voxel_size) # TODO: precompute
+        voxel_radius = shape_sdf_data[shape_b].sparse_voxel_radius
 
         k_a = shape_material_k_hydro[shape_a]
         k_b = shape_material_k_hydro[shape_b]

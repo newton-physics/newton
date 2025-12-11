@@ -33,6 +33,7 @@ class SDFData:
     # Sparse (narrow band) SDF - high resolution near surface
     sparse_sdf_ptr: wp.uint64
     sparse_voxel_size: wp.vec3
+    sparse_voxel_radius: wp.float32
 
     # Coarse (background) SDF - 8x8x8 covering entire volume
     coarse_sdf_ptr: wp.uint64
@@ -59,6 +60,7 @@ def create_empty_sdf_data() -> SDFData:
     sdf_data = SDFData()
     sdf_data.sparse_sdf_ptr = wp.uint64(0)
     sdf_data.sparse_voxel_size = wp.vec3(0.0, 0.0, 0.0)
+    sdf_data.sparse_voxel_radius = 0.0
     sdf_data.coarse_sdf_ptr = wp.uint64(0)
     sdf_data.coarse_voxel_size = wp.vec3(0.0, 0.0, 0.0)
     sdf_data.center = wp.vec3(0.0, 0.0, 0.0)
@@ -409,6 +411,7 @@ def compute_sdf(
     sdf_data = SDFData()
     sdf_data.sparse_sdf_ptr = sparse_volume.id
     sdf_data.sparse_voxel_size = wp.vec3(actual_voxel_size)
+    sdf_data.sparse_voxel_radius = 0.5 * float(np.linalg.norm(actual_voxel_size))
     sdf_data.coarse_sdf_ptr = coarse_volume.id
     sdf_data.coarse_voxel_size = wp.vec3(coarse_voxel_size)
     sdf_data.center = wp.vec3(center)
