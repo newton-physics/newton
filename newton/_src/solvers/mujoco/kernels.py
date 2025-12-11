@@ -189,6 +189,7 @@ def convert_newton_contacts_to_mjwarp_kernel(
     rigid_contact_thickness0: wp.array(dtype=wp.float32),
     rigid_contact_thickness1: wp.array(dtype=wp.float32),
     rigid_contact_stiffness: wp.array(dtype=wp.float32),
+    rigid_contact_damping: wp.array(dtype=wp.float32),
     bodies_per_world: int,
     newton_shape_to_mjc_geom: wp.array(dtype=wp.int32),
     # Mujoco warp contacts
@@ -292,13 +293,13 @@ def convert_newton_contacts_to_mjwarp_kernel(
         worldid,
     )
 
-    # Adaptive scaling of contact stiffness/friction based per-contact parameters from SDF-hydroelastic collisions
+    # Use per-contact stiffness/damping parameters 
     if rigid_contact_stiffness.shape[0] > 0:
         solimp[0] = 0.95
         solimp[1] = 0.95
         
         solref[0] = -rigid_contact_stiffness[tid]
-        solref[1] = 1.0
+        solref[1] = rigid_contact_damping[tid]
 
     # Use the write_contact function to write all the data
     write_contact(

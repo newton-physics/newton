@@ -64,6 +64,7 @@ class UnifiedContactWriterData:
     contact_key: wp.array(dtype=wp.uint32)
     # Per-contact shape properties (optional, for hydroelastic)
     out_stiffness: wp.array(dtype=float)
+    out_damping: wp.array(dtype=float)
 
 
 class BroadPhaseMode(IntEnum):
@@ -166,9 +167,10 @@ def write_contact(
         writer_data.contact_key[index] = contact_data.feature
         writer_data.contact_pair_key[index] = contact_data.feature_pair_key
 
-    # Write stiffness only if out_stiffness array is non-empty
+    # Write stiffness/damping only if out_stiffness array is non-empty
     if writer_data.out_stiffness.shape[0] > 0:
         writer_data.out_stiffness[index] = contact_data.contact_stiffness
+        writer_data.out_damping[index] = contact_data.contact_damping
 
 
 @wp.kernel
@@ -647,6 +649,7 @@ class CollisionPipelineUnified:
             writer_data.contact_key = self.narrow_phase.empty_contact_key
 
         writer_data.out_stiffness = contacts.rigid_contact_stiffness
+        writer_data.out_damping = contacts.rigid_contact_damping
 
         # Run narrow phase with custom contact writer (writes directly to Contacts format)
         self.narrow_phase.launch_custom_write(

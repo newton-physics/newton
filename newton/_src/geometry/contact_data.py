@@ -45,6 +45,7 @@ class ContactData:
         feature: Shape-specific feature identifier (e.g., vertex, edge, or face ID)
         feature_pair_key: Unique key for contact pair matching across timesteps
         contact_stiffness: Contact stiffness
+        contact_damping: Contact damping scale (default 1.0)
     """
 
     contact_point_center: wp.vec3
@@ -60,3 +61,4 @@ class ContactData:
     feature: wp.uint32
     feature_pair_key: wp.uint64
     contact_stiffness: float
+    contact_damping: float

@@ -418,6 +418,8 @@ class SolverFeatherstone(SolverBase):
                             contacts.rigid_contact_shape1,
                             contacts.rigid_contact_thickness0,
                             contacts.rigid_contact_thickness1,
+                            contacts.rigid_contact_stiffness,
+                            contacts.rigid_contact_damping,
                             True,
                             self.friction_smoothing,
                         ],

@@ -1281,6 +1281,7 @@ def get_decode_contacts_kernel(margin_contact_area: float = 1e-4, writer_func: A
             contact_data.feature = wp.uint32(tid + 1)
             contact_data.feature_pair_key = build_pair_key2(wp.uint32(shape_a), wp.uint32(shape_b))
             contact_data.contact_stiffness = stiffness
+            contact_data.contact_damping = 1.0
 
             writer_func(contact_data, writer_data, output_index)
 
@@ -1681,6 +1682,7 @@ def get_binning_kernels(
             contact_data.feature = wp.uint32(binned_id[tid, normal_bin_idx, dir_idx] + 1)
             contact_data.feature_pair_key = pair_key
             contact_data.contact_stiffness = c_stiffness
+            contact_data.contact_damping = 1.0
 
             writer_func(contact_data, writer_data, c_idx)
 
@@ -1706,6 +1708,7 @@ def get_binning_kernels(
             contact_data.feature = wp.uint32(0)
             contact_data.feature_pair_key = pair_key
             contact_data.contact_stiffness = c_stiffness
+            contact_data.contact_damping = 1.0
 
             writer_func(contact_data, writer_data, anchor_idx)
 
@@ -1730,23 +1733,23 @@ def verify_collision_step(
     max_contact_count: int,
 ):
     # Checks if any buffer overflowed in any stage of the collision pipeline and print a warning
-    if num_broad_collide[0] >= max_num_broad_collide:
+    if num_broad_collide[0] > max_num_broad_collide:
         wp.printf("Warning: Broad phase buffer overflowed %u > %u\n", num_broad_collide[0], max_num_broad_collide)
-    if num_iso_subblocks_0[0] >= max_num_iso_subblocks_0:
+    if num_iso_subblocks_0[0] > max_num_iso_subblocks_0:
         wp.printf(
             "Warning: Iso subblock 0 buffer overflowed %u > %u\n", num_iso_subblocks_0[0], max_num_iso_subblocks_0
         )
-    if num_iso_subblocks_1[0] >= max_num_iso_subblocks_1:
+    if num_iso_subblocks_1[0] > max_num_iso_subblocks_1:
         wp.printf(
             "Warning: Iso subblock 1 buffer overflowed %u > %u\n", num_iso_subblocks_1[0], max_num_iso_subblocks_1
         )
-    if num_iso_subblocks_2[0] >= max_num_iso_subblocks_2:
+    if num_iso_subblocks_2[0] > max_num_iso_subblocks_2:
         wp.printf(
             "Warning: Iso subblock 2 buffer overflowed %u > %u\n", num_iso_subblocks_2[0], max_num_iso_subblocks_2
         )
-    if num_iso_voxels[0] >= max_num_iso_voxels:
+    if num_iso_voxels[0] > max_num_iso_voxels:
         wp.printf("Warning: Iso voxel buffer overflowed %u > %u\n", num_iso_voxels[0], max_num_iso_voxels)
-    if face_contact_count[0] >= max_face_contact_count:
+    if face_contact_count[0] > max_face_contact_count:
         wp.printf("Warning: Face contact buffer overflowed %u > %u\n", face_contact_count[0], max_face_contact_count)
-    if contact_count[0] >= max_contact_count:
+    if contact_count[0] > max_contact_count:
         wp.printf("Warning: Contact buffer overflowed %u > %u\n", contact_count[0], max_contact_count)
