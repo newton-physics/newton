@@ -25,9 +25,6 @@ if TYPE_CHECKING:
     from .render_context import RenderContext
 
 
-BACKGROUND_COLOR = 255 << 24 | int(0.4 * 255.0) << 16 | int(0.4 * 255.0) << 8 | int(0.4 * 255.0)
-
-
 @wp.func
 def tid_to_tile_coord(tid: wp.int32, num_worlds: wp.int32, num_cameras: wp.int32, tile_size: wp.int32, width: wp.int32):
     num_views_per_pixel = num_worlds * num_cameras
@@ -97,14 +94,13 @@ def _render_megakernel(
     max_distance: wp.float32,
     # Camera
     camera_rays: wp.array(dtype=wp.vec3f, ndim=4),
-    camera_positions: wp.array(dtype=wp.vec3f, ndim=2),
-    camera_orientations: wp.array(dtype=wp.mat33f, ndim=2),
+    camera_transforms: wp.array(dtype=wp.transformf, ndim=2),
     # Geometry BVH
     bvh_geom_size: wp.int32,
     bvh_geom_id: wp.uint64,
     bvh_geom_group_roots: wp.array(dtype=wp.int32),
     # Geometry
-    geom_enabled: wp.array(dtype=wp.int32),
+    geom_enabled: wp.array(dtype=wp.uint32),
     geom_types: wp.array(dtype=wp.int32),
     geom_mesh_indices: wp.array(dtype=wp.int32),
     geom_materials: wp.array(dtype=wp.int32),
@@ -140,13 +136,17 @@ def _render_megakernel(
     light_positions: wp.array(dtype=wp.vec3f),
     light_orientations: wp.array(dtype=wp.vec3f),
     # Data
-    geom_positions: wp.array(dtype=wp.vec3f),
-    geom_orientations: wp.array(dtype=wp.mat33f),
-    # Output
+    geom_transforms: wp.array(dtype=wp.transformf),
+    # Enabled Output
     render_color: wp.bool,
     render_depth: wp.bool,
+    render_geom_id: wp.bool,
+    render_normal: wp.bool,
+    # Outputs
     out_pixels: wp.array3d(dtype=wp.uint32),
     out_depth: wp.array3d(dtype=wp.float32),
+    out_geom_id: wp.array3d(dtype=wp.uint32),
+    out_normal: wp.array3d(dtype=wp.vec3f),
 ):
     tid = wp.tid()
 
@@ -160,8 +160,8 @@ def _render_megakernel(
 
     out_index = py * img_width + px
 
-    ray_origin_world = camera_positions[camera_id, world_id] + camera_rays[camera_id, py, px, 0]
-    ray_dir_world = camera_orientations[camera_id, world_id] @ camera_rays[camera_id, py, px, 1]
+    ray_origin_world = wp.transform_point(camera_transforms[camera_id, world_id], camera_rays[camera_id, py, px, 0])
+    ray_dir_world = wp.transform_vector(camera_transforms[camera_id, world_id], camera_rays[camera_id, py, px, 1])
 
     closest_hit = ray_cast.closest_hit(
         bvh_geom_size,
@@ -179,8 +179,7 @@ def _render_megakernel(
         geom_mesh_indices,
         geom_sizes,
         mesh_ids,
-        geom_positions,
-        geom_orientations,
+        geom_transforms,
         particles_position,
         particles_radius,
         triangle_mesh_id,
@@ -189,11 +188,17 @@ def _render_megakernel(
     )
 
     # Early Out
-    if closest_hit.geom_id == -1:
+    if closest_hit.geom_id == ray_cast.NO_HIT_GEOM_ID:
         return
 
     if render_depth:
         out_depth[world_id, camera_id, out_index] = closest_hit.distance
+
+    if render_normal:
+        out_normal[world_id, camera_id, out_index] = closest_hit.normal
+
+    if render_geom_id:
+        out_geom_id[world_id, camera_id, out_index] = closest_hit.geom_id
 
     if not render_color:
         return
@@ -202,7 +207,7 @@ def _render_megakernel(
     hit_point = ray_origin_world + ray_dir_world * closest_hit.distance
 
     color = wp.vec4f(1.0)
-    if closest_hit.geom_id > -1:
+    if closest_hit.geom_id < ray_cast.MAX_GEOM_ID:
         color = geom_colors[closest_hit.geom_id]
         if geom_materials[closest_hit.geom_id] > -1:
             color = wp.cw_mul(color, material_rgba[geom_materials[closest_hit.geom_id]])
@@ -210,7 +215,7 @@ def _render_megakernel(
     base_color = wp.vec3f(color[0], color[1], color[2])
     out_color = wp.vec3f(0.0)
 
-    if enable_textures and closest_hit.geom_id > -1:
+    if enable_textures and closest_hit.geom_id < ray_cast.MAX_GEOM_ID:
         mat_id = geom_materials[closest_hit.geom_id]
         if mat_id > -1:
             tex_id = material_texture_ids[mat_id]
@@ -226,8 +231,7 @@ def _render_megakernel(
                     texture_data,
                     texture_height[tex_id],
                     texture_width[tex_id],
-                    geom_positions[closest_hit.geom_id],
-                    geom_orientations[closest_hit.geom_id],
+                    geom_transforms[closest_hit.geom_id],
                     mesh_face_offsets,
                     mesh_face_vertices,
                     mesh_texcoord,
@@ -285,8 +289,7 @@ def _render_megakernel(
             geom_mesh_indices,
             geom_sizes,
             mesh_ids,
-            geom_positions,
-            geom_orientations,
+            geom_transforms,
             particles_position,
             particles_radius,
             triangle_mesh_id,
@@ -306,23 +309,32 @@ def _render_megakernel(
 
 def render_megakernel(
     rc: RenderContext,
-    camera_positions: wp.array(dtype=wp.vec3f, ndim=2),
-    camera_orientations: wp.array(dtype=wp.mat33f, ndim=2),
+    camera_transforms: wp.array(dtype=wp.transformf, ndim=2),
     camera_rays: wp.array(dtype=wp.vec3f, ndim=4),
-    color_image: wp.array(dtype=wp.uint32, ndim=3) | None = None,
-    depth_image: wp.array(dtype=wp.float32, ndim=3) | None = None,
-    clear_images: bool = True,
+    color_image: wp.array(dtype=wp.uint32, ndim=3) | None,
+    depth_image: wp.array(dtype=wp.float32, ndim=3) | None,
+    geom_id_image: wp.array(dtype=wp.uint32, ndim=3) | None,
+    normal_image: wp.array(dtype=wp.vec3f, ndim=3) | None,
+    clear_color: int | None,
+    clear_depth: float | None,
+    clear_geom_id: int | None,
+    clear_normal: wp.vec3f | None,
 ):
     if rc.tile_rendering:
         assert rc.width % rc.tile_size == 0, "render width must be a multiple of tile_size"
         assert rc.height % rc.tile_size == 0, "render height must be a multiple of tile_size"
 
-    if clear_images:
-        if color_image is not None:
-            color_image.fill_(wp.uint32(BACKGROUND_COLOR))
+    if clear_color is not None and color_image is not None:
+        color_image.fill_(wp.uint32(clear_color))
 
-        if depth_image is not None:
-            depth_image.fill_(wp.float32(0.0))
+    if clear_depth is not None and depth_image is not None:
+        depth_image.fill_(wp.float32(clear_depth))
+
+    if clear_geom_id is not None and geom_id_image is not None:
+        geom_id_image.fill_(wp.uint32(clear_geom_id))
+
+    if clear_normal is not None and normal_image is not None:
+        normal_image.fill_(clear_normal)
 
     wp.launch(
         kernel=_render_megakernel,
@@ -344,8 +356,7 @@ def render_megakernel(
             rc.max_distance,
             # Camera
             camera_rays,
-            camera_positions,
-            camera_orientations,
+            camera_transforms,
             # Geometry BVH
             rc.num_geoms,
             rc.bvh_geom.id if rc.bvh_geom else 0,
@@ -386,12 +397,15 @@ def render_megakernel(
             rc.lights_position,
             rc.lights_orientation,
             # Data
-            rc.geom_positions,
-            rc.geom_orientations,
+            rc.geom_transforms,
             # Outputs
             color_image is not None,
             depth_image is not None,
+            geom_id_image is not None,
+            normal_image is not None,
             color_image,
             depth_image,
+            geom_id_image,
+            normal_image,
         ],
     )

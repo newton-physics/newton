@@ -117,6 +117,7 @@ def parse_mjcf(
     default_joint_target_ke = builder.default_joint_cfg.target_ke
     default_joint_target_kd = builder.default_joint_cfg.target_kd
     default_joint_armature = builder.default_joint_cfg.armature
+    default_joint_effort_limit = builder.default_joint_cfg.effort_limit
 
     # load shape defaults
     default_shape_density = builder.default_shape_cfg.density
@@ -212,6 +213,15 @@ def parse_mjcf(
             else:
                 attrib[key] = value
         return attrib
+
+    def resolve_defaults(class_name):
+        if class_name in class_children:
+            for child_name in class_children[class_name]:
+                if class_name in class_defaults and child_name in class_defaults:
+                    class_defaults[child_name] = merge_attrib(class_defaults[class_name], class_defaults[child_name])
+                resolve_defaults(child_name)
+
+    resolve_defaults("__all__")
 
     axis_xform = wp.transform(wp.vec3(0.0), quat_between_axes(up_axis, builder.up_axis))
     xform = xform * axis_xform
@@ -652,6 +662,19 @@ def parse_mjcf(
                 if limit_kd is None:
                     limit_kd = 100.0  # From MuJoCo's default solref (0.02, 1.0)
 
+                effort_limit = default_joint_effort_limit
+                if "actuatorfrcrange" in joint_attrib:
+                    actuatorfrcrange = parse_vec(joint_attrib, "actuatorfrcrange", None)
+                    if actuatorfrcrange is not None and len(actuatorfrcrange) == 2:
+                        actuatorfrclimited = joint_attrib.get("actuatorfrclimited", "auto").lower()
+                        if actuatorfrclimited in ("true", "auto"):
+                            effort_limit = max(abs(actuatorfrcrange[0]), abs(actuatorfrcrange[1]))
+                        elif verbose:
+                            print(
+                                f"Warning: Joint '{joint_attrib.get('name', 'unnamed')}' has actuatorfrcrange "
+                                f"but actuatorfrclimited='{actuatorfrclimited}'. Force clamping will be disabled."
+                            )
+
                 ax = ModelBuilder.JointDofConfig(
                     axis=axis_vec,
                     limit_lower=limit_lower,
@@ -661,6 +684,7 @@ def parse_mjcf(
                     target_ke=default_joint_target_ke,
                     target_kd=default_joint_target_kd,
                     armature=joint_armature[-1],
+                    effort_limit=effort_limit,
                 )
                 if is_angular:
                     angular_axes.append(ax)
