@@ -2856,6 +2856,7 @@ class ModelBuilder:
                 vertices.append("\n".join(shape_label))
         edges = []
         edge_labels = []
+        edge_colors = []
         for i in range(self.joint_count):
             edge = (self.joint_child[i] + 1, self.joint_parent[i] + 1)
             edges.append(edge)
@@ -2866,20 +2867,26 @@ class ModelBuilder:
             if show_joint_types:
                 joint_label += f"\n({joint_type_str(self.joint_type[i])})"
             edge_labels.append(joint_label)
+            art_id = self.joint_articulation[i]
+            if art_id == -1:
+                edge_colors.append("r")
+            else:
+                edge_colors.append("k")
 
         if plot_shapes:
             for i in range(self.shape_count):
                 edges.append((len(self.body_key) + i + 1, self.shape_body[i] + 1))
 
         # plot graph
-        G = nx.Graph()
+        G = nx.DiGraph()
         for i in range(len(vertices)):
             G.add_node(i, label=vertices[i])
         for i in range(len(edges)):
             label = edge_labels[i] if i < len(edge_labels) else ""
             G.add_edge(edges[i][0], edges[i][1], label=label)
-        pos = nx.spring_layout(G)
-        nx.draw_networkx_edges(G, pos, node_size=0, edgelist=edges[: self.joint_count])
+        pos = nx.spring_layout(G, iterations=250)
+        # pos = nx.kamada_kawai_layout(G)
+        nx.draw_networkx_edges(G, pos, node_size=100, edgelist=edges, edge_color=edge_colors, arrows=True)
         # render body vertices
         draw_args = {"node_size": 100}
         bodies = nx.subgraph(G, list(range(self.body_count + 1)))
@@ -2899,7 +2906,7 @@ class ModelBuilder:
         nx.draw_networkx_labels(G, pos, dict(enumerate(vertices)), font_size=6)
         if show_legend:
             plt.plot([], [], "s", color="orange", label="body")
-            plt.plot([], [], "k-", label="joint")
+            plt.plot([], [], "k->", label="joint (child -> parent)")
             if plot_shapes:
                 plt.plot([], [], "o", color="skyblue", label="shape")
                 plt.plot([], [], "k--", label="shape-body connection")
