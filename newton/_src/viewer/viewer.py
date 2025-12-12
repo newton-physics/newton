@@ -593,12 +593,8 @@ class ViewerBase:
         indices: wp.array,
         normals: wp.array | None = None,
         uvs: wp.array | None = None,
-        colors: wp.array | None = None,
         hidden=False,
         backface_culling=True,
-        dynamic=False,
-        max_vertices: int | None = None,
-        max_indices: int | None = None,
     ):
         pass
 

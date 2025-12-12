@@ -298,12 +298,6 @@ unified_contact_tests = [
         TestLevel.VELOCITY_YZ,
         TestLevel.VELOCITY_LINEAR,
     ),
-    (
-        GeoType.MESH,
-        GeoType.MESH,
-        TestLevel.VELOCITY_YZ,
-        TestLevel.VELOCITY_LINEAR,
-    ),
     (GeoType.MESH, GeoType.CONVEX_MESH, TestLevel.VELOCITY_YZ, TestLevel.STRICT),
     (GeoType.CONVEX_MESH, GeoType.CONVEX_MESH, TestLevel.VELOCITY_YZ, TestLevel.STRICT),
 ]

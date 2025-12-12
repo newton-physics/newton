@@ -907,8 +907,6 @@ class TestSDFExtrapolation(unittest.TestCase):
 class TestMeshSDFCollisionFlag(unittest.TestCase):
     """Test per-shape SDF generation behavior."""
 
-    """Test per-shape SDF generation behavior."""
-
     @classmethod
     def setUpClass(cls):
         """Set up test fixtures once for all tests."""

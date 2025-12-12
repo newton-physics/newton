@@ -5543,14 +5543,14 @@ class ModelBuilder:
                     self.shape_flags,
                     self.shape_sdf_max_resolution,
                     self.shape_sdf_target_voxel_size,
-                    strict=False,
+                    strict=True,
                 )
             )
 
             # Check if there are any shapes with hydroelastic collision enabled
             has_hydroelastic_shapes = any(
                 is_hydro and sflags & ShapeFlags.COLLIDE_SHAPES
-                for is_hydro, sflags in zip(self.shape_is_hydroelastic, self.shape_flags, strict=False)
+                for is_hydro, sflags in zip(self.shape_is_hydroelastic, self.shape_flags, strict=True)
             )
 
             # Validate that hydroelastic shapes have sdf_max_resolution or sdf_target_voxel_size set
