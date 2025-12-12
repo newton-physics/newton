@@ -445,7 +445,12 @@ def parse_usd(
                 _load_visual_shapes_impl(b, child, wp.transform_identity())
         return b
 
-    def parse_body(rigid_body_desc: UsdPhysics.RigidBodyDesc, prim: Usd.Prim, incoming_xform: wp.transform | None = None, add_body_to_builder: bool = True) -> int | dict[str, Any]:
+    def parse_body(
+        rigid_body_desc: UsdPhysics.RigidBodyDesc,
+        prim: Usd.Prim,
+        incoming_xform: wp.transform | None = None,
+        add_body_to_builder: bool = True,
+    ) -> int | dict[str, Any]:
         """Parse a rigid body description and add it to the builder. Returns the resulting body index if add_body_to_builder is True,
         a dictionary of body data that can be passed to ModelBuilder.add_body() otherwise."""
         nonlocal path_body_map
@@ -474,7 +479,9 @@ def parse_usd(
                 "armature": body_armature,
             }
 
-    def resolve_joint_parent_child(joint_desc: UsdPhysics.JointDesc, body_index_map: dict[str, int], get_transforms: bool = True):
+    def resolve_joint_parent_child(
+        joint_desc: UsdPhysics.JointDesc, body_index_map: dict[str, int], get_transforms: bool = True
+    ):
         """Resolve the parent and child of a joint and return their parent + child transforms if requested."""
         if get_transforms:
             parent_tf = wp.transform(joint_desc.localPose0Position, usd.from_gfquat(joint_desc.localPose0Orientation))
