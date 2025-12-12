@@ -1113,7 +1113,7 @@ class ModelBuilder:
             if child in child_to_parent and child_to_parent[child] != parent:
                 raise ValueError(
                     f"Body {child} has multiple parents in this articulation: {child_to_parent[child]} and {parent}. "
-                    f"This creates an invalid tree structure. Make sure to pass in `is_loop_joint=True` when adding loop joints."
+                    f"This creates an invalid tree structure. Loop-closing joints must not be part of an articulation."
                 )
             child_to_parent[child] = parent
 
