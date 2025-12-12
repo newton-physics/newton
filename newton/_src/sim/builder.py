@@ -5553,12 +5553,12 @@ class ModelBuilder:
                 for is_hydro, sflags in zip(self.shape_is_hydroelastic, self.shape_flags, strict=False)
             )
 
-            # Validate that hydroelastic shapes have sdf_max_dims or sdf_target_voxel_size set
-            for shape_idx, (is_hydro, sflags, sdf_max_dims, sdf_target_voxel_size, shape_key) in enumerate(
+            # Validate that hydroelastic shapes have sdf_max_resolution or sdf_target_voxel_size set
+            for shape_idx, (is_hydro, sflags, sdf_max_resolution, sdf_target_voxel_size, shape_key) in enumerate(
                 zip(
                     self.shape_is_hydroelastic,
                     self.shape_flags,
-                    self.shape_sdf_max_dims,
+                    self.shape_sdf_max_resolution,
                     self.shape_sdf_target_voxel_size,
                     self.shape_key,
                     strict=False,
@@ -5567,19 +5567,19 @@ class ModelBuilder:
                 if (
                     is_hydro
                     and sflags & ShapeFlags.COLLIDE_SHAPES
-                    and sdf_max_dims is None
+                    and sdf_max_resolution is None
                     and sdf_target_voxel_size is None
                 ):
                     raise ValueError(
-                        f"Shape '{shape_key}' (index {shape_idx}) has is_hydroelastic=True but neither sdf_max_dims nor sdf_target_voxel_size is set. "
-                        "Hydroelastic collision requires SDF generation. Please set sdf_max_dims (e.g., 64) or sdf_target_voxel_size."
+                        f"Shape '{shape_key}' (index {shape_idx}) has is_hydroelastic=True but neither sdf_max_resolution nor sdf_target_voxel_size is set. "
+                        "Hydroelastic collision requires SDF generation. Please set sdf_max_resolution (e.g., 64) or sdf_target_voxel_size."
                     )
 
             if has_sdf_meshes and not is_gpu:
                 raise ValueError(
-                    "SDF generation for mesh shapes (sdf_max_dims != None) requires a CUDA-capable GPU device. "
+                    "SDF generation for mesh shapes (sdf_max_resolution != None) requires a CUDA-capable GPU device. "
                     "wp.Volume (used for SDF generation) only supports CUDA. "
-                    "Either set sdf_max_dims=None for all mesh shapes or use a CUDA device."
+                    "Either set sdf_max_resolution=None for all mesh shapes or use a CUDA device."
                 )
 
             if has_hydroelastic_shapes and not is_gpu:
@@ -5619,7 +5619,7 @@ class ModelBuilder:
                     is_hydroelastic = self.shape_is_hydroelastic[i]
 
                     # Determine if this shape needs SDF:
-                    # - Mesh shapes with sdf_max_dims set, OR
+                    # - Mesh shapes with sdf_max_resolution/sdf_target_voxel_size set, OR
                     # - Any colliding shape with is_hydroelastic=True
                     needs_sdf = (
                         shape_type == GeoType.MESH
@@ -5647,7 +5647,7 @@ class ModelBuilder:
                         else:
                             # Compute SDF for this mesh shape in unscaled local space.
                             # Scale is handled at collision time to ensure SDF and mesh are consistent.
-                            sdf_data, sparse_volume, coarse_volume = compute_sdf(
+                            sdf_data, sparse_volume, coarse_volume, block_coords = compute_sdf(
                                 mesh_src=shape_src,
                                 shape_type=shape_type,
                                 shape_scale=shape_scale,
