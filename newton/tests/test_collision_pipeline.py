@@ -61,8 +61,8 @@ class CollisionSetup:
         sim_substeps,
         use_unified_pipeline=False,
         broad_phase_mode=newton.BroadPhaseMode.EXPLICIT,
-        sdf_max_dims_a=None,
-        sdf_max_dims_b=None,
+        sdf_max_resolution_a=None,
+        sdf_max_resolution_b=None,
     ):
         self.sim_substeps = sim_substeps
         self.frame_dt = 1 / 60
@@ -72,21 +72,21 @@ class CollisionSetup:
         self.shape_type_a = shape_type_a
         self.shape_type_b = shape_type_b
         self.use_unified_pipeline = use_unified_pipeline
-        self.sdf_max_dims_a = sdf_max_dims_a
-        self.sdf_max_dims_b = sdf_max_dims_b
+        self.sdf_max_resolution_a = sdf_max_resolution_a
+        self.sdf_max_resolution_b = sdf_max_resolution_b
 
         self.builder = newton.ModelBuilder(gravity=0.0)
         # Set contact margin to match previous test expectations (was previously passed to collision pipeline)
         self.builder.rigid_contact_margin = 0.01
 
         body_a = self.builder.add_body(xform=wp.transform(wp.vec3(-1.0, 0.0, 0.0)))
-        self.add_shape(shape_type_a, body_a, sdf_max_dims=sdf_max_dims_a)
+        self.add_shape(shape_type_a, body_a, sdf_max_resolution=sdf_max_resolution_a)
 
         self.init_velocity = 5.0
         self.builder.joint_qd[0] = self.builder.body_qd[-1][0] = self.init_velocity
 
         body_b = self.builder.add_body(xform=wp.transform(wp.vec3(1.0, 0.0, 0.0)))
-        self.add_shape(shape_type_b, body_b, sdf_max_dims=sdf_max_dims_b)
+        self.add_shape(shape_type_b, body_b, sdf_max_resolution=sdf_max_resolution_b)
 
         self.model = self.builder.finalize(device=device)
         self.state_0 = self.model.state()
@@ -116,7 +116,7 @@ class CollisionSetup:
                 self.simulate()
             self.graph = capture.graph
 
-    def add_shape(self, shape_type: GeoType, body: int, sdf_max_dims: int | None = None):
+    def add_shape(self, shape_type: GeoType, body: int, sdf_max_resolution: int | None = None):
         if shape_type == GeoType.BOX:
             self.builder.add_shape_box(body, key=type_to_str(shape_type))
         elif shape_type == GeoType.SPHERE:
@@ -132,7 +132,7 @@ class CollisionSetup:
             else:
                 vertices, indices = newton.utils.create_sphere_mesh(radius=0.5)
             # Configure SDF settings if specified
-            cfg = newton.ModelBuilder.ShapeConfig(sdf_max_dims=sdf_max_dims)
+            cfg = newton.ModelBuilder.ShapeConfig(sdf_max_resolution=sdf_max_resolution)
             self.builder.add_shape_mesh(
                 body, mesh=newton.Mesh(vertices[:, :3], indices), cfg=cfg, key=type_to_str(shape_type)
             )
@@ -298,6 +298,12 @@ unified_contact_tests = [
         TestLevel.VELOCITY_YZ,
         TestLevel.VELOCITY_LINEAR,
     ),
+    (
+        GeoType.MESH,
+        GeoType.MESH,
+        TestLevel.VELOCITY_YZ,
+        TestLevel.VELOCITY_LINEAR,
+    ),
     (GeoType.MESH, GeoType.CONVEX_MESH, TestLevel.VELOCITY_YZ, TestLevel.STRICT),
     (GeoType.CONVEX_MESH, GeoType.CONVEX_MESH, TestLevel.VELOCITY_YZ, TestLevel.STRICT),
 ]
@@ -396,8 +402,8 @@ for shape_type_a, shape_type_b, test_level_a, test_level_b in unified_contact_te
 def test_mesh_mesh_sdf_modes(
     _test,
     device,
-    sdf_max_dims_a: int | None,
-    sdf_max_dims_b: int | None,
+    sdf_max_resolution_a: int | None,
+    sdf_max_resolution_b: int | None,
     broad_phase_mode: newton.BroadPhaseMode,
 ):
     """Test mesh-mesh collision with specific SDF configurations."""
@@ -411,8 +417,8 @@ def test_mesh_mesh_sdf_modes(
         shape_type_b=GeoType.MESH,
         use_unified_pipeline=True,
         broad_phase_mode=broad_phase_mode,
-        sdf_max_dims_a=sdf_max_dims_a,
-        sdf_max_dims_b=sdf_max_dims_b,
+        sdf_max_resolution_a=sdf_max_resolution_a,
+        sdf_max_resolution_b=sdf_max_resolution_b,
     )
     for _ in range(200):
         setup.step()
@@ -424,22 +430,30 @@ def test_mesh_mesh_sdf_modes(
 # Wrapper functions for different SDF modes
 def test_mesh_mesh_sdf_vs_sdf(_test, device, broad_phase_mode: newton.BroadPhaseMode):
     """Test mesh-mesh collision where both meshes have SDFs."""
-    test_mesh_mesh_sdf_modes(_test, device, sdf_max_dims_a=8, sdf_max_dims_b=8, broad_phase_mode=broad_phase_mode)
+    test_mesh_mesh_sdf_modes(
+        _test, device, sdf_max_resolution_a=8, sdf_max_resolution_b=8, broad_phase_mode=broad_phase_mode
+    )
 
 
 def test_mesh_mesh_sdf_vs_bvh(_test, device, broad_phase_mode: newton.BroadPhaseMode):
     """Test mesh-mesh collision where first mesh has SDF, second uses BVH."""
-    test_mesh_mesh_sdf_modes(_test, device, sdf_max_dims_a=8, sdf_max_dims_b=None, broad_phase_mode=broad_phase_mode)
+    test_mesh_mesh_sdf_modes(
+        _test, device, sdf_max_resolution_a=8, sdf_max_resolution_b=None, broad_phase_mode=broad_phase_mode
+    )
 
 
 def test_mesh_mesh_bvh_vs_sdf(_test, device, broad_phase_mode: newton.BroadPhaseMode):
     """Test mesh-mesh collision where first mesh uses BVH, second has SDF."""
-    test_mesh_mesh_sdf_modes(_test, device, sdf_max_dims_a=None, sdf_max_dims_b=8, broad_phase_mode=broad_phase_mode)
+    test_mesh_mesh_sdf_modes(
+        _test, device, sdf_max_resolution_a=None, sdf_max_resolution_b=8, broad_phase_mode=broad_phase_mode
+    )
 
 
 def test_mesh_mesh_bvh_vs_bvh(_test, device, broad_phase_mode: newton.BroadPhaseMode):
     """Test mesh-mesh collision where both meshes use BVH (no SDF)."""
-    test_mesh_mesh_sdf_modes(_test, device, sdf_max_dims_a=None, sdf_max_dims_b=None, broad_phase_mode=broad_phase_mode)
+    test_mesh_mesh_sdf_modes(
+        _test, device, sdf_max_resolution_a=None, sdf_max_resolution_b=None, broad_phase_mode=broad_phase_mode
+    )
 
 
 # Add mesh-mesh SDF mode tests for all broad phase modes

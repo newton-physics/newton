@@ -33,7 +33,7 @@ import newton.examples
 from newton._src.utils.download_assets import download_git_folder
 
 # Assembly type for the nut and bolt
-ASSEMBLY_STR = "m20_tight"
+ASSEMBLY_STR = "m20_loose"
 
 # Gear mesh files available (filename -> key)
 GEAR_FILES = [
@@ -74,7 +74,9 @@ def add_mesh_object(
         max_extent = vertices.max(axis=0)
         center = (min_extent + max_extent) / 2
         vertices = vertices - center
-        transform = wp.transform(transform.p + wp.vec3(center) * scale, transform.q)
+        center_vec = wp.vec3(center) * float(scale)
+        center_world = wp.quat_rotate(transform.q, center_vec)
+        transform = wp.transform(transform.p + center_world, transform.q)
 
     mesh = newton.Mesh(vertices, indices)
 
@@ -307,7 +309,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--num-worlds",
         type=int,
-        default=1,
+        default=100,
         help="Total number of simulated worlds.",
     )
     parser.add_argument(
@@ -321,7 +323,7 @@ if __name__ == "__main__":
         "--solver",
         type=str,
         choices=["xpbd", "mujoco"],
-        default="xpbd",
+        default="mujoco",
         help="Solver to use: 'xpbd' (Extended Position-Based Dynamics) or 'mujoco' (MuJoCo constraint solver).",
     )
     parser.add_argument(

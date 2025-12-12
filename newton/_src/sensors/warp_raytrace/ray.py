@@ -43,16 +43,16 @@ def safe_div_vec3(x: wp.vec3f, y: wp.vec3f) -> wp.vec3f:
 def map_ray_to_local(
     transform: wp.transformf, ray_origin_world: wp.vec3f, ray_direction_world: wp.vec3f
 ) -> tuple[wp.vec3f, wp.vec3f]:
-    """Maps ray to local geom frame coordinates.
+    """Maps ray to local shape frame coordinates.
 
     Args:
-            pos: position of geom frame
-            mat: orientation of geom frame
+            pos: position of shape frame
+            mat: orientation of shape frame
             ray_origin_world: starting point of ray in world coordinates
             ray_direction_world: direction of ray in world coordinates
 
     Returns:
-            3D point and 3D direction in local geom frame
+            3D point and 3D direction in local shape frame
     """
 
     inv_transform = wp.transform_inverse(transform)
@@ -581,7 +581,7 @@ def ray_mesh(
 @wp.func
 def ray_mesh_with_bvh(
     mesh_bvh_ids: wp.array(dtype=wp.uint64),
-    mesh_geom_id: wp.int32,
+    mesh_shape_id: wp.int32,
     transform: wp.transformf,
     size: wp.vec3f,
     ray_origin_world: wp.vec3f,
@@ -598,11 +598,11 @@ def ray_mesh_with_bvh(
     ray_origin_local = wp.cw_mul(ray_origin_local, inv_size)
     ray_direction_local = wp.cw_mul(ray_direction_local, inv_size)
 
-    query = wp.mesh_query_ray(mesh_bvh_ids[mesh_geom_id], ray_origin_local, ray_direction_local, max_t)
+    query = wp.mesh_query_ray(mesh_bvh_ids[mesh_shape_id], ray_origin_local, ray_direction_local, max_t)
 
     if query.result and wp.dot(ray_direction_local, query.normal) < 0.0:  # Backface culling in local space
         normal = wp.transform_vector(transform, wp.cw_mul(size, query.normal))
         normal = wp.normalize(normal)
-        return True, query.t, normal, query.u, query.v, query.face, mesh_geom_id
+        return True, query.t, normal, query.u, query.v, query.face, mesh_shape_id
 
     return False, wp.inf, wp.vec3f(0.0, 0.0, 0.0), 0.0, 0.0, -1, -1

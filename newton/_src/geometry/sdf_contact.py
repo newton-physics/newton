@@ -33,10 +33,45 @@ from .contact_reduction import (
 
 
 @wp.func
+def scale_sdf_result_to_world(
+    distance: float,
+    gradient: wp.vec3,
+    sdf_scale: wp.vec3,
+    inv_sdf_scale: wp.vec3,
+    min_sdf_scale: float,
+) -> tuple[float, wp.vec3]:
+    """
+    Convert SDF distance and gradient from unscaled space to scaled space.
+
+    Args:
+        distance: Signed distance in unscaled SDF local space
+        gradient: Gradient direction in unscaled SDF local space
+        sdf_scale: The SDF shape's scale vector
+        inv_sdf_scale: Precomputed 1.0 / sdf_scale
+        min_sdf_scale: Precomputed min(sdf_scale) for distance scaling
+
+    Returns:
+        Tuple of (scaled_distance, scaled_gradient)
+    """
+    # Use min scale for conservative distance (won't miss contacts)
+    scaled_distance = distance * min_sdf_scale
+
+    # Gradient: apply inverse scale and renormalize
+    scaled_grad = wp.cw_mul(gradient, inv_sdf_scale)
+    grad_len = wp.length(scaled_grad)
+    if grad_len > 0.0:
+        scaled_grad = scaled_grad / grad_len
+    else:
+        scaled_grad = gradient
+
+    return scaled_distance, scaled_grad
+
+
+@wp.func
 def sample_sdf_using_mesh(
     mesh_id: wp.uint64,
     world_pos: wp.vec3,
-    max_dist: float,
+    max_dist: float = 1000.0,
 ) -> float:
     """
     Sample signed distance to mesh surface using mesh query.
@@ -71,7 +106,7 @@ def sample_sdf_using_mesh(
 def sample_sdf_grad_using_mesh(
     mesh_id: wp.uint64,
     world_pos: wp.vec3,
-    max_dist: float,
+    max_dist: float = 1000.0,
 ) -> tuple[float, wp.vec3]:
     """
     Sample signed distance and gradient to mesh surface using mesh query.
@@ -380,12 +415,11 @@ def do_triangle_sdf_collision(
     p = center
 
     # Use extrapolated sampling for initial distance estimates
-    max_dist = 1000.0
     if use_bvh_for_sdf:
-        dist = sample_sdf_using_mesh(sdf_mesh_id, p, max_dist)
-        d0 = sample_sdf_using_mesh(sdf_mesh_id, v0, max_dist)
-        d1 = sample_sdf_using_mesh(sdf_mesh_id, v1, max_dist)
-        d2 = sample_sdf_using_mesh(sdf_mesh_id, v2, max_dist)
+        dist = sample_sdf_using_mesh(sdf_mesh_id, p)
+        d0 = sample_sdf_using_mesh(sdf_mesh_id, v0)
+        d1 = sample_sdf_using_mesh(sdf_mesh_id, v1)
+        d2 = sample_sdf_using_mesh(sdf_mesh_id, v2)
     else:
         dist = sample_sdf_extrapolated(sdf_data, p)
         d0 = sample_sdf_extrapolated(sdf_data, v0)
@@ -422,7 +456,7 @@ def do_triangle_sdf_collision(
     for _iter in range(16):
         # Use extrapolated gradient sampling
         if use_bvh_for_sdf:
-            _, sdf_gradient = sample_sdf_grad_using_mesh(sdf_mesh_id, p, max_dist)
+            _, sdf_gradient = sample_sdf_grad_using_mesh(sdf_mesh_id, p)
         else:
             _, sdf_gradient = sample_sdf_grad_extrapolated(sdf_data, p)
 
@@ -456,7 +490,7 @@ def do_triangle_sdf_collision(
 
     # Final extrapolated sampling for result
     if use_bvh_for_sdf:
-        dist, sdf_gradient = sample_sdf_grad_using_mesh(sdf_mesh_id, p, max_dist)
+        dist, sdf_gradient = sample_sdf_grad_using_mesh(sdf_mesh_id, p)
     else:
         dist, sdf_gradient = sample_sdf_grad_extrapolated(sdf_data, p)
 
@@ -599,39 +633,39 @@ def find_interesting_triangles(
     buffer: wp.array(dtype=wp.int32),
     contact_distance: float,
     use_bvh_for_sdf: bool,
+    inv_sdf_scale: wp.vec3,
 ):
     """
     Midphase triangle culling for mesh-SDF collision.
 
-    Given a mesh-mesh pair (already identified by broad phase), this function determines
-    which triangles from one mesh are close enough to the other mesh's SDF to potentially
-    generate contacts. This is an intermediate step between broad phase (which identifies
-    colliding object pairs) and narrow phase (which computes exact contact points).
-
-    Each triangle's bounding sphere is tested against the SDF. A triangle is selected if:
-        SDF_distance(sphere_center) <= sphere_radius + contact_distance
-
-    Selected triangle indices are stored in a shared memory buffer for subsequent
-    narrow-phase contact computation.
+    Determines which triangles are close enough to the SDF to potentially generate contacts.
+    Triangles are transformed to unscaled SDF space before testing.
 
     Buffer layout: [0..block_dim-1] = triangle indices, [block_dim] = count, [block_dim+1] = progress
     """
-    num_tris = wp.mesh_get(mesh_id).indices.shape[0] // 3
+    num_tris_indices = wp.mesh_get(mesh_id).indices.shape[0]
     capacity = wp.block_dim()
 
     synchronize()  # Ensure buffer state is consistent before starting
 
-    while buffer[capacity + 1] < num_tris and buffer[capacity] < capacity:
+    while buffer[capacity + 1] * 3 < num_tris_indices and buffer[capacity] < capacity:
         # All threads read the same base index (buffer consistent from previous sync)
         base_tri_idx = buffer[capacity + 1]
         tri_idx = base_tri_idx + thread_id
         add_triangle = False
 
-        if tri_idx < num_tris:
-            v0, v1, v2 = get_triangle_from_mesh(mesh_id, mesh_scale, mesh_to_sdf_transform, tri_idx)
+        if tri_idx * 3 < num_tris_indices:
+            # Get vertices in scaled SDF local space, then convert to unscaled
+            v0_scaled, v1_scaled, v2_scaled = get_triangle_from_mesh(
+                mesh_id, mesh_scale, mesh_to_sdf_transform, tri_idx
+            )
+            # Transform to unscaled SDF space for collision detection
+            v0 = wp.cw_mul(v0_scaled, inv_sdf_scale)
+            v1 = wp.cw_mul(v1_scaled, inv_sdf_scale)
+            v2 = wp.cw_mul(v2_scaled, inv_sdf_scale)
             bounding_sphere_center, bounding_sphere_radius = get_bounding_sphere(v0, v1, v2)
 
-            # Use extrapolated SDF distance query for culling
+            # Use extrapolated SDF distance query for culling (in unscaled space)
             if use_bvh_for_sdf:
                 sdf_dist = sample_sdf_using_mesh(
                     sdf_mesh_id, bounding_sphere_center, 1.01 * (bounding_sphere_radius + contact_distance)
@@ -739,6 +773,7 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                 # Initialize with dummy values (will be set in mode branches)
                 sdf_data = SDFData()
                 use_bvh_for_sdf = False
+                sdf_scale = wp.vec3(1.0, 1.0, 1.0)
 
                 if mode == 0:
                     # Process mesh A triangles against SDF B
@@ -749,6 +784,7 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
 
                     mesh_id = mesh_id_a
                     mesh_scale = mesh_scale_a
+                    sdf_scale = mesh_scale_b  # SDF is from mesh B, need its scale
                     if not use_bvh_for_sdf:
                         sdf_data = shape_sdf_data[mesh_shape_b]
                     sdf_mesh_id = mesh_id_b  # SDF belongs to mesh B
@@ -766,6 +802,7 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
 
                     mesh_id = mesh_id_b
                     mesh_scale = mesh_scale_b
+                    sdf_scale = mesh_scale_a  # SDF is from mesh A, need its scale
                     if not use_bvh_for_sdf:
                         sdf_data = shape_sdf_data[mesh_shape_a]
                     sdf_mesh_id = mesh_id_a  # SDF belongs to mesh A
@@ -775,31 +812,54 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                     mesh = mesh_b
                     triangle_mesh_thickness = thickness_b
 
+                # Precompute inverse scale for efficient point transforms
+                inv_sdf_scale = wp.cw_div(wp.vec3(1.0, 1.0, 1.0), sdf_scale)
+                min_sdf_scale = wp.min(wp.min(sdf_scale[0], sdf_scale[1]), sdf_scale[2])
+
                 # (SDF mesh's thickness is already baked into the SDF)
                 contact_threshold = margin + triangle_mesh_thickness
+                contact_threshold_unscaled = contact_threshold / min_sdf_scale
 
                 num_tris = mesh.indices.shape[0] // 3
                 # strided loop over triangles
                 for tri_idx in range(t, num_tris, wp.block_dim()):
-                    # Get triangle vertices in SDF's local space
-                    v0, v1, v2 = get_triangle_from_mesh(mesh_id, mesh_scale, X_mesh_to_sdf, tri_idx)
+                    # Get triangle vertices in SDF's scaled local space, then convert to unscaled
+                    v0_scaled, v1_scaled, v2_scaled = get_triangle_from_mesh(
+                        mesh_id, mesh_scale, X_mesh_to_sdf, tri_idx
+                    )
+                    # Transform to unscaled SDF space (SDF is computed from unscaled mesh vertices)
+                    v0 = wp.cw_mul(v0_scaled, inv_sdf_scale)
+                    v1 = wp.cw_mul(v1_scaled, inv_sdf_scale)
+                    v2 = wp.cw_mul(v2_scaled, inv_sdf_scale)
 
                     # Early out: check bounding sphere distance to SDF surface using extrapolated sampling
+                    # Bounding sphere is in unscaled SDF space
                     bounding_sphere_center, bounding_sphere_radius = get_bounding_sphere(v0, v1, v2)
                     if use_bvh_for_sdf:
+                        # For BVH queries, the mesh is also in unscaled space, so this is consistent
                         sdf_dist = sample_sdf_using_mesh(
-                            sdf_mesh_id, bounding_sphere_center, 1.01 * (bounding_sphere_radius + contact_threshold)
+                            sdf_mesh_id,
+                            bounding_sphere_center,
+                            1.01 * (bounding_sphere_radius + contact_threshold_unscaled),
                         )
                     else:
                         sdf_dist = sample_sdf_extrapolated(sdf_data, bounding_sphere_center)
 
-                    # Skip triangles that are too far from the SDF surface
-                    if sdf_dist > (bounding_sphere_radius + contact_threshold):
+                    # Skip triangles that are too far from the SDF surface (comparison in unscaled space)
+                    if sdf_dist > (bounding_sphere_radius + contact_threshold_unscaled):
                         continue
 
-                    dist, point, direction = do_triangle_sdf_collision(
+                    # Collision detection in unscaled SDF space
+                    dist_unscaled, point_unscaled, direction_unscaled = do_triangle_sdf_collision(
                         sdf_data, sdf_mesh_id, v0, v1, v2, use_bvh_for_sdf
                     )
+
+                    # Scale distance and direction back to scaled space
+                    dist, direction = scale_sdf_result_to_world(
+                        dist_unscaled, direction_unscaled, sdf_scale, inv_sdf_scale, min_sdf_scale
+                    )
+                    # Scale point back to scaled SDF local space
+                    point = wp.cw_mul(point_unscaled, sdf_scale)
 
                     if dist < contact_threshold:
                         point_world = wp.transform_point(X_sdf_ws, point)
@@ -941,9 +1001,11 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
             synchronize()
             # Determine use_bvh_for_sdf based on which mesh provides the SDF
             use_bvh_for_sdf = False
+            sdf_scale = wp.vec3(1.0, 1.0, 1.0)
             if mode == 0:
                 mesh = mesh0
                 mesh_scale = mesh0_scale
+                sdf_scale = mesh1_scale  # SDF belongs to mesh1, need its scale
                 mesh_sdf_transform = wp.transform_multiply(wp.transform_inverse(mesh1_transform), mesh0_transform)
                 sdf_data_current = sdf_data1
                 sdf_mesh_id = mesh1  # SDF belongs to mesh1
@@ -952,15 +1014,21 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
             else:
                 mesh = mesh1
                 mesh_scale = mesh1_scale
+                sdf_scale = mesh0_scale  # SDF belongs to mesh0, need its scale
                 mesh_sdf_transform = wp.transform_multiply(wp.transform_inverse(mesh0_transform), mesh1_transform)
                 sdf_data_current = sdf_data0
                 sdf_mesh_id = mesh0  # SDF belongs to mesh0
                 use_bvh_for_sdf = use_bvh_for_sdf_0
                 triangle_mesh_thickness = thickness1
 
+            # Precompute inverse scale for efficient point transforms
+            inv_sdf_scale = wp.cw_div(wp.vec3(1.0, 1.0, 1.0), sdf_scale)
+            min_sdf_scale = wp.min(wp.min(sdf_scale[0], sdf_scale[1]), sdf_scale[2])
+
             # Contact threshold: margin + triangle mesh's thickness
             # (SDF mesh's thickness is already baked into the SDF)
             contact_threshold = margin + triangle_mesh_thickness
+            contact_threshold_unscaled = contact_threshold / min_sdf_scale
 
             # Reset progress counter for this mesh
             if t == 0:
@@ -980,8 +1048,9 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                     sdf_data_current,
                     sdf_mesh_id,
                     selected_triangles,
-                    contact_threshold,
+                    contact_threshold_unscaled,
                     use_bvh_for_sdf,
+                    inv_sdf_scale,
                 )
 
                 has_contact = t < selected_triangles[tri_capacity]
@@ -989,8 +1058,15 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                 c = ContactStruct()
 
                 if has_contact:
-                    v0, v1, v2 = get_triangle_from_mesh(mesh, mesh_scale, mesh_sdf_transform, selected_triangles[t])
-                    dist, point, direction = do_triangle_sdf_collision(
+                    # Get vertices in scaled SDF local space, then convert to unscaled
+                    v0_scaled, v1_scaled, v2_scaled = get_triangle_from_mesh(
+                        mesh, mesh_scale, mesh_sdf_transform, selected_triangles[t]
+                    )
+                    v0 = wp.cw_mul(v0_scaled, inv_sdf_scale)
+                    v1 = wp.cw_mul(v1_scaled, inv_sdf_scale)
+                    v2 = wp.cw_mul(v2_scaled, inv_sdf_scale)
+
+                    dist_unscaled, point_unscaled, direction_unscaled = do_triangle_sdf_collision(
                         sdf_data_current,
                         sdf_mesh_id,
                         v0,
@@ -998,6 +1074,12 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                         v2,
                         use_bvh_for_sdf,
                     )
+
+                    # Scale results back to scaled space
+                    dist, direction = scale_sdf_result_to_world(
+                        dist_unscaled, direction_unscaled, sdf_scale, inv_sdf_scale, min_sdf_scale
+                    )
+                    point = wp.cw_mul(point_unscaled, sdf_scale)
 
                     has_contact = dist < contact_threshold
 

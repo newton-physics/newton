@@ -186,16 +186,26 @@ class ModelBuilder:
         sdf_narrow_band_range: tuple[float, float] = (-0.1, 0.1)
         """The narrow band distance range (inner, outer) for SDF computation. Only used for mesh shapes when SDF is enabled."""
         sdf_target_voxel_size: float | None = None
-        """Target voxel size for sparse SDF grid. If provided, takes precedence over sdf_max_dims. Only used for mesh shapes when SDF is enabled."""
-        sdf_max_dims: int | None = None
-        """Maximum dimension for sparse SDF grid (must be divisible by 8). Used when sdf_target_voxel_size is None.
+        """Target voxel size for sparse SDF grid.
+        If provided, enables SDF generation and takes precedence over sdf_max_resolution.
+        Requires GPU since wp.Volume only supports CUDA. Only used for mesh shapes."""
+        sdf_max_resolution: int | None = None
+        """Maximum dimension for sparse SDF grid (must be divisible by 8).
+        If provided (and sdf_target_voxel_size is None), enables SDF-based mesh-mesh collision.
         Set to None (default) to disable SDF generation for this shape (uses BVH-based collision for mesh-mesh instead).
-        Set to an integer (e.g., 64) to enable SDF-based mesh-mesh collision. Requires GPU since wp.Volume only supports CUDA.
-        Only used for mesh shapes."""
+        Requires GPU since wp.Volume only supports CUDA. Only used for mesh shapes."""
         is_hydroelastic: bool = False
         """Whether the shape collides using SDF-based hydroelastics. For hydroelastic collisions, both participating shapes must have is_hydroelastic set to True. Defaults to False."""
         k_hydro: float = 1.0e9
         """Contact stiffness coefficient for hydroelastic collisions. Used by MuJoCo, Featherstone, SemiImplicit when is_hydroelastic is True."""
+
+        def __post_init__(self) -> None:
+            """Validate ShapeConfig parameters after initialization."""
+            if self.sdf_max_resolution is not None and self.sdf_max_resolution % 8 != 0:
+                raise ValueError(
+                    f"sdf_max_resolution must be divisible by 8 (got {self.sdf_max_resolution}). "
+                    "This is required because SDF volumes are allocated in 8x8x8 tiles."
+                )
 
         def mark_as_site(self) -> None:
             """Marks this shape as a site and enforces all site invariants.
@@ -518,7 +528,7 @@ class ModelBuilder:
         # SDF parameters per shape
         self.shape_sdf_narrow_band_range = []
         self.shape_sdf_target_voxel_size = []
-        self.shape_sdf_max_dims = []
+        self.shape_sdf_max_resolution = []
         self.shape_is_hydroelastic = []
 
         # Mesh SDF storage (volumes kept for reference counting, SDFData array created at finalize)
@@ -1789,7 +1799,7 @@ class ModelBuilder:
             "shape_collision_radius",
             "shape_contact_margin",
             "shape_sdf_narrow_band_range",
-            "shape_sdf_max_dims",
+            "shape_sdf_max_resolution",
             "shape_sdf_target_voxel_size",
             "shape_is_hydroelastic",
             "particle_qd",
@@ -3363,7 +3373,7 @@ class ModelBuilder:
         self.shape_world.append(self.current_world)
         self.shape_sdf_narrow_band_range.append(cfg.sdf_narrow_band_range)
         self.shape_sdf_target_voxel_size.append(cfg.sdf_target_voxel_size)
-        self.shape_sdf_max_dims.append(cfg.sdf_max_dims)
+        self.shape_sdf_max_resolution.append(cfg.sdf_max_resolution)
 
         is_hydroelastic = cfg.is_hydroelastic
         if is_hydroelastic and (type == GeoType.PLANE or type == GeoType.HFIELD):
@@ -5508,7 +5518,7 @@ class ModelBuilder:
             m.shape_is_hydroelastic = wp.array(self.shape_is_hydroelastic, dtype=wp.bool)
 
             # ---------------------
-            # Compute SDFs for mesh shapes (per-shape opt-in via sdf_max_dims or is_hydroelastic)
+            # Compute SDFs for mesh shapes (per-shape opt-in via sdf_max_resolution or is_hydroelastic)
             from ..geometry.sdf_utils import (  # noqa: PLC0415
                 SDFData,
                 compute_isomesh,
@@ -5526,9 +5536,14 @@ class ModelBuilder:
                 stype == GeoType.MESH
                 and ssrc is not None
                 and sflags & ShapeFlags.COLLIDE_SHAPES
-                and sdf_max_dims is not None
-                for stype, ssrc, sflags, sdf_max_dims in zip(
-                    self.shape_type, self.shape_source, self.shape_flags, self.shape_sdf_max_dims, strict=False
+                and (sdf_max_resolution is not None or sdf_target_voxel_size is not None)
+                for stype, ssrc, sflags, sdf_max_resolution, sdf_target_voxel_size in zip(
+                    self.shape_type,
+                    self.shape_source,
+                    self.shape_flags,
+                    self.shape_sdf_max_resolution,
+                    self.shape_sdf_target_voxel_size,
+                    strict=False,
                 )
             )
 
@@ -5600,7 +5615,7 @@ class ModelBuilder:
                     shape_contact_margin = self.shape_contact_margin[i]
                     sdf_narrow_band_range = self.shape_sdf_narrow_band_range[i]
                     sdf_target_voxel_size = self.shape_sdf_target_voxel_size[i]
-                    sdf_max_dims = self.shape_sdf_max_dims[i]
+                    sdf_max_resolution = self.shape_sdf_max_resolution[i]
                     is_hydroelastic = self.shape_is_hydroelastic[i]
 
                     # Determine if this shape needs SDF:
@@ -5610,7 +5625,7 @@ class ModelBuilder:
                         shape_type == GeoType.MESH
                         and shape_src is not None
                         and shape_flags & ShapeFlags.COLLIDE_SHAPES
-                        and sdf_max_dims is not None
+                        and (sdf_max_resolution is not None or sdf_target_voxel_size is not None)
                     ) or (is_hydroelastic and shape_flags & ShapeFlags.COLLIDE_SHAPES)
 
                     if needs_sdf:
@@ -5618,11 +5633,10 @@ class ModelBuilder:
                             hash(shape_src),
                             shape_type,
                             shape_thickness,
-                            tuple(shape_scale),
                             shape_contact_margin,
                             tuple(sdf_narrow_band_range),
                             sdf_target_voxel_size,
-                            sdf_max_dims,
+                            sdf_max_resolution,
                         )
                         if cache_key in sdf_cache:
                             idx = sdf_cache[cache_key]
@@ -5631,9 +5645,9 @@ class ModelBuilder:
                             coarse_volume = sdf_coarse_volumes[idx]
                             shape2blocks = [sdf_shape2blocks[idx][0], sdf_shape2blocks[idx][1]]
                         else:
-                            # Compute SDF for this shape (returns SDFData struct and volume objects)
-                            # If sdf_target_voxel_size is provided, use it; otherwise compute from max_dims
-                            sdf_data, sparse_volume, coarse_volume, block_coords = compute_sdf(
+                            # Compute SDF for this mesh shape in unscaled local space.
+                            # Scale is handled at collision time to ensure SDF and mesh are consistent.
+                            sdf_data, sparse_volume, coarse_volume = compute_sdf(
                                 mesh_src=shape_src,
                                 shape_type=shape_type,
                                 shape_scale=shape_scale,
@@ -5641,7 +5655,7 @@ class ModelBuilder:
                                 narrow_band_distance=sdf_narrow_band_range,
                                 margin=shape_contact_margin,
                                 target_voxel_size=sdf_target_voxel_size,
-                                max_dims=sdf_max_dims,
+                                max_resolution=sdf_max_resolution,
                             )
                             sdf_cache[cache_key] = i
                             block_start_idx = len(sdf_block_coords)
