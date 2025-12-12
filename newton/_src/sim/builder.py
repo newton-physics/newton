@@ -1353,6 +1353,7 @@ class ModelBuilder:
         collapse_fixed_joints: bool = False,
         verbose: bool = False,
         skip_equality_constraints: bool = False,
+        convert_3d_hinge_to_ball_joints: bool = False,
         mesh_maxhullvert: int = MESH_MAXHULLVERT,
     ):
         """
@@ -1384,6 +1385,7 @@ class ModelBuilder:
             collapse_fixed_joints (bool): If True, fixed joints are removed and the respective bodies are merged.
             verbose (bool): If True, print additional information about parsing the MJCF.
             skip_equality_constraints (bool): Whether <equality> tags should be parsed. If True, equality constraints are ignored.
+            convert_3d_hinge_to_ball_joints (bool): If True, series of three hinge joints are converted to a single ball joint. Default is False.
             mesh_maxhullvert (int): Maximum vertices for convex hull approximation of meshes.
         """
         from ..utils.import_mjcf import parse_mjcf  # noqa: PLC0415
@@ -1415,6 +1417,7 @@ class ModelBuilder:
             collapse_fixed_joints,
             verbose,
             skip_equality_constraints,
+            convert_3d_hinge_to_ball_joints,
             mesh_maxhullvert,
         )
 

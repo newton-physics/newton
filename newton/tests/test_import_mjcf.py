@@ -578,6 +578,32 @@ class TestImportMjcf(unittest.TestCase):
         np.testing.assert_allclose(leaf2_pos, expected_leaf2_xform.p, atol=1e-6)
         np.testing.assert_allclose(leaf2_quat, expected_leaf2_xform.q, atol=1e-6)
 
+    def test_replace_3d_hinge_with_ball_joint(self):
+        """Test that 3D hinge joints are replaced with ball joints."""
+        mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test">
+    <worldbody>
+        <body name="root" pos="1 2 3" quat="0.7071068 0 0 0.7071068">
+            <joint name="joint1" type="hinge" axis="1 0 0" range="-60 60" armature="1.0"/>
+            <joint name="joint2" type="hinge" axis="0 1 0" range="-60 60" armature="2.0"/>
+            <joint name="joint3" type="hinge" axis="0 0 1" range="-60 60" armature="3.0"/>
+        </body>
+    </worldbody>
+</mujoco>"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf_content, convert_3d_hinge_to_ball_joints=True)
+        self.assertEqual(builder.joint_count, 1)
+        self.assertEqual(builder.joint_dof_count, 3)
+        self.assertEqual(builder.joint_coord_count, 4)
+        self.assertEqual(builder.joint_type[0], newton.JointType.BALL)
+        self.assertEqual(builder.joint_armature, [1.0, 2.0, 3.0])
+        self.assertEqual(builder.joint_limit_lower, [np.deg2rad(-60)] * 3)
+        self.assertEqual(builder.joint_limit_upper, [np.deg2rad(60)] * 3)
+        joint_x_p = builder.joint_X_p[0]
+        np.testing.assert_allclose(joint_x_p.p, [1, 2, 3], atol=1e-6)
+        # note we need to swap quaternion order wxyz -> xyzw
+        np.testing.assert_allclose(joint_x_p.q, [0, 0, 0.7071068, 0.7071068], atol=1e-6)
+
     def test_cylinder_shapes_preserved(self):
         """Test that cylinder geometries are properly imported as cylinders, not capsules."""
         # Create MJCF content with cylinder geometry
