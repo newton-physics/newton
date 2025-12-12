@@ -87,7 +87,7 @@ ROBOT_CONFIGS = {
         "solver": "newton",
         "integrator": "implicitfast",
         "njmax": 60,
-        "nconmax": 35,
+        "nconmax": 40,
         "ls_parallel": True,
         "cone": "elliptic",
     },

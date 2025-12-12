@@ -1191,6 +1191,240 @@ def PhysicsRevoluteJoint "Joint2"
         self.assertTrue(found_default, f"Expected default solimp {expected_default} not found in model")
         self.assertTrue(found_explicit_2, f"Expected solimp {expected_explicit_2} not found in model")
 
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_geom_solmix_parsing(self):
+        """Test that geom_solmix attribute is parsed correctly from USD."""
+        from pxr import Usd  # noqa: PLC0415
+
+        usd_content = """#usda 1.0
+(
+    upAxis = "Z"
+)
+
+def PhysicsScene "physicsScene"
+{
+}
+
+def Xform "Body1" (
+    prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsArticulationRootAPI"]
+)
+{
+    double3 xformOp:translate = (0, 0, 1)
+    uniform token[] xformOpOrder = ["xformOp:translate"]
+
+    def Cube "Collision1" (
+        prepend apiSchemas = ["PhysicsCollisionAPI"]
+    )
+    {
+        double size = 0.2
+        # MuJoCo solmix attribute (1 float)
+        double mjc:solmix = 0.8
+    }
+}
+
+def Xform "Body2" (
+    prepend apiSchemas = ["PhysicsRigidBodyAPI"]
+)
+{
+    double3 xformOp:translate = (1, 0, 1)
+    uniform token[] xformOpOrder = ["xformOp:translate"]
+
+    def Sphere "Collision2" (
+        prepend apiSchemas = ["PhysicsCollisionAPI"]
+    )
+    {
+        double radius = 0.1
+        # No solmix - should use defaults
+    }
+}
+
+def PhysicsRevoluteJoint "Joint1"
+{
+    rel physics:body0 = </Body1>
+    rel physics:body1 = </Body2>
+    point3f physics:localPos0 = (0, 0, 0)
+    point3f physics:localPos1 = (0, 0, 0)
+    quatf physics:localRot0 = (1, 0, 0, 0)
+    quatf physics:localRot1 = (1, 0, 0, 0)
+    token physics:axis = "Z"
+}
+
+def Xform "Body3" (
+    prepend apiSchemas = ["PhysicsRigidBodyAPI"]
+)
+{
+    double3 xformOp:translate = (2, 0, 1)
+    uniform token[] xformOpOrder = ["xformOp:translate"]
+
+    def Capsule "Collision3" (
+        prepend apiSchemas = ["PhysicsCollisionAPI"]
+    )
+    {
+        double radius = 0.05
+        double height = 0.2
+        # Different solmix values
+        double mjc:solmix = 0.7
+    }
+}
+
+def PhysicsRevoluteJoint "Joint2"
+{
+    rel physics:body0 = </Body2>
+    rel physics:body1 = </Body3>
+    point3f physics:localPos0 = (0, 0, 0)
+    point3f physics:localPos1 = (0, 0, 0)
+    quatf physics:localRot0 = (1, 0, 0, 0)
+    quatf physics:localRot1 = (1, 0, 0, 0)
+    token physics:axis = "Y"
+}
+"""
+        stage = Usd.Stage.CreateInMemory()
+        stage.GetRootLayer().ImportFromString(usd_content)
+
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_usd(stage)
+        model = builder.finalize()
+
+        self.assertTrue(hasattr(model, "mujoco"), "Model should have mujoco namespace for custom attributes")
+        self.assertTrue(hasattr(model.mujoco, "geom_solmix"), "Model should have geom_solmix attribute")
+
+        geom_solmix = model.mujoco.geom_solmix.numpy()
+
+        def floats_match(arr, expected, tol=1e-4):
+            return abs(arr - expected) < tol
+
+        # Check that we have shapes with expected values
+        expected_explicit_1 = 0.8
+        expected_default = 1.0  # default
+        expected_explicit_2 = 0.7
+
+        # Find shapes matching each expected value
+        found_explicit_1 = any(floats_match(geom_solmix[i], expected_explicit_1) for i in range(model.shape_count))
+        found_default = any(floats_match(geom_solmix[i], expected_default) for i in range(model.shape_count))
+        found_explicit_2 = any(floats_match(geom_solmix[i], expected_explicit_2) for i in range(model.shape_count))
+
+        self.assertTrue(found_explicit_1, f"Expected solmix {expected_explicit_1} not found in model")
+        self.assertTrue(found_default, f"Expected default solmix {expected_default} not found in model")
+        self.assertTrue(found_explicit_2, f"Expected solmix {expected_explicit_2} not found in model")
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_geom_gap_parsing(self):
+        """Test that geom_gap attribute is parsed correctly from USD."""
+        from pxr import Usd  # noqa: PLC0415
+
+        usd_content = """#usda 1.0
+(
+    upAxis = "Z"
+)
+
+def PhysicsScene "physicsScene"
+{
+}
+
+def Xform "Body1" (
+    prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsArticulationRootAPI"]
+)
+{
+    double3 xformOp:translate = (0, 0, 1)
+    uniform token[] xformOpOrder = ["xformOp:translate"]
+
+    def Cube "Collision1" (
+        prepend apiSchemas = ["PhysicsCollisionAPI"]
+    )
+    {
+        double size = 0.2
+        # MuJoCo gap attribute (1 float)
+        double mjc:gap = 0.8
+    }
+}
+
+def Xform "Body2" (
+    prepend apiSchemas = ["PhysicsRigidBodyAPI"]
+)
+{
+    double3 xformOp:translate = (1, 0, 1)
+    uniform token[] xformOpOrder = ["xformOp:translate"]
+
+    def Sphere "Collision2" (
+        prepend apiSchemas = ["PhysicsCollisionAPI"]
+    )
+    {
+        double radius = 0.1
+        # No gap - should use defaults
+    }
+}
+
+def PhysicsRevoluteJoint "Joint1"
+{
+    rel physics:body0 = </Body1>
+    rel physics:body1 = </Body2>
+    point3f physics:localPos0 = (0, 0, 0)
+    point3f physics:localPos1 = (0, 0, 0)
+    quatf physics:localRot0 = (1, 0, 0, 0)
+    quatf physics:localRot1 = (1, 0, 0, 0)
+    token physics:axis = "Z"
+}
+
+def Xform "Body3" (
+    prepend apiSchemas = ["PhysicsRigidBodyAPI"]
+)
+{
+    double3 xformOp:translate = (2, 0, 1)
+    uniform token[] xformOpOrder = ["xformOp:translate"]
+
+    def Capsule "Collision3" (
+        prepend apiSchemas = ["PhysicsCollisionAPI"]
+    )
+    {
+        double radius = 0.05
+        double height = 0.2
+        # Different gap values
+        double mjc:gap = 0.7
+    }
+}
+
+def PhysicsRevoluteJoint "Joint2"
+{
+    rel physics:body0 = </Body2>
+    rel physics:body1 = </Body3>
+    point3f physics:localPos0 = (0, 0, 0)
+    point3f physics:localPos1 = (0, 0, 0)
+    quatf physics:localRot0 = (1, 0, 0, 0)
+    quatf physics:localRot1 = (1, 0, 0, 0)
+    token physics:axis = "Y"
+}
+"""
+        stage = Usd.Stage.CreateInMemory()
+        stage.GetRootLayer().ImportFromString(usd_content)
+
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_usd(stage)
+        model = builder.finalize()
+
+        self.assertTrue(hasattr(model, "mujoco"), "Model should have mujoco namespace for custom attributes")
+        self.assertTrue(hasattr(model.mujoco, "geom_gap"), "Model should have geom_gap attribute")
+
+        geom_gap = model.mujoco.geom_gap.numpy()
+
+        def floats_match(arr, expected, tol=1e-4):
+            return abs(arr - expected) < tol
+
+        # Check that we have shapes with expected values
+        expected_explicit_1 = 0.8
+        expected_default = 0.0  # default
+        expected_explicit_2 = 0.7
+
+        # Find shapes matching each expected value
+        found_explicit_1 = any(floats_match(geom_gap[i], expected_explicit_1) for i in range(model.shape_count))
+        found_default = any(floats_match(geom_gap[i], expected_default) for i in range(model.shape_count))
+        found_explicit_2 = any(floats_match(geom_gap[i], expected_explicit_2) for i in range(model.shape_count))
+
+        self.assertTrue(found_explicit_1, f"Expected gap {expected_explicit_1} not found in model")
+        self.assertTrue(found_default, f"Expected default gap {expected_default} not found in model")
+        self.assertTrue(found_explicit_2, f"Expected gap {expected_explicit_2} not found in model")
+
 
 class TestImportSampleAssets(unittest.TestCase):
     def verify_usdphysics_parser(self, file, model, compare_min_max_coords, floating):

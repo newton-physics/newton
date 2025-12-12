@@ -689,13 +689,13 @@ def get_mesh(
     uvs = None
     if load_uvs:
         uv_primvar = UsdGeom.PrimvarsAPI(prim).GetPrimvar("st")
-        if uv_primvar and uv_primvar.HasValue():
+        if uv_primvar:
             uvs = uv_primvar.Get()
 
     normals = None
     if load_normals:
         normals_attr = mesh.GetNormalsAttr()
-        if normals_attr and normals_attr.HasValue():
+        if normals_attr:
             normals = normals_attr.Get()
 
     if normals is not None:
@@ -704,7 +704,7 @@ def get_mesh(
             # compute vertex normals
             # try to read primvars:normals:indices (the primvar indexer)
             normals_index_attr = prim.GetAttribute("primvars:normals:indices")
-            if normals_index_attr and normals_index_attr.HasValue():
+            if normals_index_attr:
                 normal_indices = np.array(normals_index_attr.Get(), dtype=np.int64)
                 normals_fv = normals[normal_indices]  # (C,3) expanded
             else:
@@ -819,7 +819,7 @@ def get_mesh(
 
     flip_winding = False
     orientation_attr = mesh.GetOrientationAttr()
-    if orientation_attr and orientation_attr.HasValue():
+    if orientation_attr:
         handedness = orientation_attr.Get()
         if handedness and handedness.lower() == "lefthanded":
             flip_winding = True

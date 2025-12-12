@@ -578,6 +578,32 @@ class TestImportMjcf(unittest.TestCase):
         np.testing.assert_allclose(leaf2_pos, expected_leaf2_xform.p, atol=1e-6)
         np.testing.assert_allclose(leaf2_quat, expected_leaf2_xform.q, atol=1e-6)
 
+    def test_replace_3d_hinge_with_ball_joint(self):
+        """Test that 3D hinge joints are replaced with ball joints."""
+        mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test">
+    <worldbody>
+        <body name="root" pos="1 2 3" quat="0.7071068 0 0 0.7071068">
+            <joint name="joint1" type="hinge" axis="1 0 0" range="-60 60" armature="1.0"/>
+            <joint name="joint2" type="hinge" axis="0 1 0" range="-60 60" armature="2.0"/>
+            <joint name="joint3" type="hinge" axis="0 0 1" range="-60 60" armature="3.0"/>
+        </body>
+    </worldbody>
+</mujoco>"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf_content, convert_3d_hinge_to_ball_joints=True)
+        self.assertEqual(builder.joint_count, 1)
+        self.assertEqual(builder.joint_dof_count, 3)
+        self.assertEqual(builder.joint_coord_count, 4)
+        self.assertEqual(builder.joint_type[0], newton.JointType.BALL)
+        self.assertEqual(builder.joint_armature, [1.0, 2.0, 3.0])
+        self.assertEqual(builder.joint_limit_lower, [np.deg2rad(-60)] * 3)
+        self.assertEqual(builder.joint_limit_upper, [np.deg2rad(60)] * 3)
+        joint_x_p = builder.joint_X_p[0]
+        np.testing.assert_allclose(joint_x_p.p, [1, 2, 3], atol=1e-6)
+        # note we need to swap quaternion order wxyz -> xyzw
+        np.testing.assert_allclose(joint_x_p.q, [0, 0, 0.7071068, 0.7071068], atol=1e-6)
+
     def test_cylinder_shapes_preserved(self):
         """Test that cylinder geometries are properly imported as cylinders, not capsules."""
         # Create MJCF content with cylinder geometry
@@ -1385,6 +1411,92 @@ class TestImportMjcf(unittest.TestCase):
             for i, (a, e) in enumerate(zip(actual, expected, strict=False)):
                 self.assertAlmostEqual(a, e, places=4, msg=f"geom_solimp[{shape_idx}][{i}] should be {e}, got {a}")
 
+    def test_geom_solmix_parsing(self):
+        """Test that geom_solmix attribute is parsed correctly from MJCF."""
+        mjcf = """<?xml version="1.0" ?>
+<mujoco>
+    <worldbody>
+        <body name="body1">
+            <freejoint/>
+            <geom type="box" size="0.1 0.1 0.1" solmix="0.5"/>
+        </body>
+        <body name="body2">
+            <freejoint/>
+            <geom type="sphere" size="0.05"/>
+        </body>
+        <body name="body3">
+            <freejoint/>
+            <geom type="capsule" size="0.05 0.1" solmix="0.8"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_mjcf(mjcf)
+        model = builder.finalize()
+
+        self.assertTrue(hasattr(model, "mujoco"), "Model should have mujoco namespace for custom attributes")
+        self.assertTrue(hasattr(model.mujoco, "geom_solmix"), "Model should have geom_solmix attribute")
+
+        geom_solmix = model.mujoco.geom_solmix.numpy()
+        self.assertEqual(model.shape_count, 3, "Should have 3 shapes")
+
+        # Expected values: shape 0 has explicit solimp=0.5, shape 1 has solimp=default=1.0, shape 2 has explicit solimp=0.8
+        expected_values = {
+            0: 0.5,
+            1: 1.0,  # default
+            2: 0.8,
+        }
+
+        for shape_idx, expected in expected_values.items():
+            actual = geom_solmix[shape_idx].tolist()
+            self.assertAlmostEqual(actual, expected, places=4)
+
+    def test_geom_gap_parsing(self):
+        """Test that geom_gap attribute is parsed correctly from MJCF."""
+        mjcf = """<?xml version="1.0" ?>
+<mujoco>
+    <worldbody>
+        <body name="body1">
+            <freejoint/>
+            <geom type="box" size="0.1 0.1 0.1" gap="0.1"/>
+        </body>
+        <body name="body2">
+            <freejoint/>
+            <geom type="sphere" size="0.05"/>
+        </body>
+        <body name="body3">
+            <freejoint/>
+            <geom type="capsule" size="0.05 0.1" gap="0.2"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_mjcf(mjcf)
+        model = builder.finalize()
+
+        self.assertTrue(hasattr(model, "mujoco"), "Model should have mujoco namespace for custom attributes")
+        self.assertTrue(hasattr(model.mujoco, "geom_gap"), "Model should have geom_gap attribute")
+
+        geom_gap = model.mujoco.geom_gap.numpy()
+        self.assertEqual(model.shape_count, 3, "Should have 3 shapes")
+
+        # Expected values: shape 0 has explicit solimp=0.5, shape 1 has solimp=default=1.0, shape 2 has explicit solimp=0.8
+        expected_values = {
+            0: 0.1,
+            1: 0.0,  # default
+            2: 0.2,
+        }
+
+        for shape_idx, expected in expected_values.items():
+            actual = geom_gap[shape_idx].tolist()
+            self.assertAlmostEqual(actual, expected, places=4)
+
     def test_default_inheritance(self):
         """Test nested default class inheritanc."""
         mjcf_content = """<?xml version="1.0" ?>
@@ -1421,6 +1533,137 @@ class TestImportMjcf(unittest.TestCase):
             self.assertEqual(condim, 6, "condim should be 6 (inherited from parent class 'collision')")
         else:
             self.fail("Model should have mujoco.condim attribute")
+
+    def test_actuatorfrcrange_parsing(self):
+        """Test that actuatorfrcrange is parsed from MJCF joint attributes and applied to joint effort limits."""
+        mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test_actuatorfrcrange">
+    <worldbody>
+        <body name="link1" pos="0 0 0">
+            <joint name="joint1" axis="1 0 0" type="hinge" range="-90 90" actuatorfrcrange="-100 100" actuatorfrclimited="true"/>
+            <geom type="box" size="0.1 0.1 0.1"/>
+        </body>
+        <body name="link2" pos="1 0 0">
+            <joint name="joint2" axis="0 1 0" type="slider" range="-45 45" actuatorfrcrange="-50 50" actuatorfrclimited="auto"/>
+            <geom type="box" size="0.1 0.1 0.1"/>
+        </body>
+        <body name="link3" pos="2 0 0">
+            <joint name="joint3" axis="0 0 1" type="hinge" range="-180 180" actuatorfrcrange="-200 200"/>
+            <geom type="box" size="0.1 0.1 0.1"/>
+        </body>
+        <body name="link4" pos="3 0 0">
+            <joint name="joint4" axis="1 0 0" type="hinge" range="-90 90"/>
+            <geom type="box" size="0.1 0.1 0.1"/>
+        </body>
+        <body name="link5" pos="4 0 0">
+            <joint name="joint5" axis="1 0 0" type="hinge" range="-90 90" actuatorfrcrange="-75 75" actuatorfrclimited="false"/>
+            <geom type="box" size="0.1 0.1 0.1"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf_content)
+        model = builder.finalize()
+
+        joint1_idx = model.joint_key.index("joint1")
+        joint2_idx = model.joint_key.index("joint2")
+        joint3_idx = model.joint_key.index("joint3")
+        joint4_idx = model.joint_key.index("joint4")
+        joint5_idx = model.joint_key.index("joint5")
+
+        joint1_dof_idx = model.joint_qd_start.numpy()[joint1_idx]
+        joint2_dof_idx = model.joint_qd_start.numpy()[joint2_idx]
+        joint3_dof_idx = model.joint_qd_start.numpy()[joint3_idx]
+        joint4_dof_idx = model.joint_qd_start.numpy()[joint4_idx]
+        joint5_dof_idx = model.joint_qd_start.numpy()[joint5_idx]
+
+        effort_limits = model.joint_effort_limit.numpy()
+
+        self.assertAlmostEqual(
+            effort_limits[joint1_dof_idx],
+            100.0,
+            places=5,
+            msg="Effort limit for joint1 should be 100 from actuatorfrcrange with actuatorfrclimited='true'",
+        )
+
+        self.assertAlmostEqual(
+            effort_limits[joint2_dof_idx],
+            50.0,
+            places=5,
+            msg="Effort limit for joint2 should be 50 from actuatorfrcrange with actuatorfrclimited='auto'",
+        )
+
+        self.assertAlmostEqual(
+            effort_limits[joint3_dof_idx],
+            200.0,
+            places=5,
+            msg="Effort limit for joint3 should be 200 from actuatorfrcrange with default actuatorfrclimited",
+        )
+
+        self.assertAlmostEqual(
+            effort_limits[joint4_dof_idx],
+            1e6,
+            places=5,
+            msg="Effort limit for joint4 should be default value (1e6) when actuatorfrcrange not specified",
+        )
+
+        self.assertAlmostEqual(
+            effort_limits[joint5_dof_idx],
+            1e6,
+            places=5,
+            msg="Effort limit for joint5 should be default (1e6) when actuatorfrclimited='false'",
+        )
+
+    def test_eq_solref_parsing(self):
+        """Test that equality constraint solref attribute is parsed correctly from MJCF."""
+        mjcf = """<?xml version="1.0" ?>
+<mujoco>
+    <worldbody>
+        <body name="body1">
+            <freejoint/>
+            <geom type="box" size="0.1 0.1 0.1"/>
+        </body>
+        <body name="body2">
+            <freejoint/>
+            <geom type="sphere" size="0.05"/>
+        </body>
+        <body name="body3">
+            <freejoint/>
+            <geom type="capsule" size="0.05 0.1"/>
+        </body>
+    </worldbody>
+    <equality>
+        <weld body1="body1" body2="body2" solref="0.03 0.8"/>
+        <connect body1="body2" body2="body3" anchor="0 0 0"/>
+        <weld body1="body1" body2="body3" solref="0.05 1.2"/>
+    </equality>
+</mujoco>
+"""
+
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_mjcf(mjcf)
+        model = builder.finalize()
+
+        self.assertTrue(hasattr(model, "mujoco"), "Model should have mujoco namespace for custom attributes")
+        self.assertTrue(hasattr(model.mujoco, "eq_solref"), "Model should have eq_solref attribute")
+
+        eq_solref = model.mujoco.eq_solref.numpy()
+        self.assertEqual(model.equality_constraint_count, 3, "Should have 3 equality constraints")
+
+        # Note: Newton parses equality constraints in type order: connect, then weld, then joint
+        # So the order is: connect (default), weld (0.03, 0.8), weld (0.05, 1.2)
+        expected_values = {
+            0: [0.02, 1.0],  # connect - default
+            1: [0.03, 0.8],  # first weld
+            2: [0.05, 1.2],  # second weld
+        }
+
+        for eq_idx, expected in expected_values.items():
+            actual = eq_solref[eq_idx].tolist()
+            for i, (a, e) in enumerate(zip(actual, expected, strict=False)):
+                self.assertAlmostEqual(a, e, places=4, msg=f"eq_solref[{eq_idx}][{i}] should be {e}, got {a}")
 
 
 if __name__ == "__main__":
