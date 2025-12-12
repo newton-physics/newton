@@ -56,13 +56,13 @@ class SDFHydroelasticConfig:
     """Whether to clip triangles of isosurfaces."""
     betas: tuple[float, float] = (10.0, -0.5)
     """Penetration beta values."""
-    sticky_contacts: float = 1e-6
+    sticky_contacts: float = 0.0
     """Stickiness factor for temporal contact persistence."""
     normal_matching: bool = True
     """Whether to match the aggregated force direction."""
     moment_matching: bool = False
     """Whether to match the reference torque from all contacts."""
-    margin_contact_area: float = 1e-4
+    margin_contact_area: float = 1e-2
     """Contact area used for non-penetrating contacts at the margin."""
 
 class SDFHydroelastic:
@@ -604,6 +604,7 @@ class SDFHydroelastic:
             inputs=[
                 self.grid_size,
                 self.face_contact_count,
+                self.shape_material_k_hydro,
                 shape_transform,
                 shape_contact_margin,
                 self.face_contact_pair,
@@ -967,12 +968,13 @@ def count_iso_voxels_block(
         margin = shape_contact_margin[shape_b]
 
         voxel_radius = shape_sdf_data[shape_b].sparse_voxel_radius
+        r = float(subblock_size) * voxel_radius
 
         k_a = shape_material_k_hydro[shape_a]
         k_b = shape_material_k_hydro[shape_b]
 
         k_eff_a, k_eff_b = get_rel_stiffness(k_a, k_b)
-        voxel_radius *= wp.max(k_eff_a, k_eff_b)
+        thr = r * (k_eff_a + k_eff_b)
 
         # get global voxel coordinates
         bc = in_buffer_collide_coords[tid]
@@ -988,9 +990,9 @@ def count_iso_voxels_block(
                     # for subblock_size = 1 this is equivalent to the voxel center
                     x_center = wp.vec3f(x_global) + wp.vec3f(0.5 * float(subblock_size))
                     diff_val, v, vb = sdf_diff_sdf(sdf_b, sdf_a, X_ws_b, X_ws_a, k_eff_b, k_eff_a, x_center)
-
-                    r = float(subblock_size) * voxel_radius
-                    if wp.abs(diff_val) > 2.0 * r or v > r + margin or vb > r + margin:
+                    
+                    # check if bounding sphere contains the isosurface and the distance is within contact margin
+                    if wp.abs(diff_val) > thr or v > r + margin or vb > r + margin:
                         continue
                     num_iso_subblocks += 1
                     subblock_idx |= encode_coords_8(x_local, y_local, z_local)
@@ -1314,7 +1316,7 @@ def get_decode_contacts_kernel(margin_contact_area: float = 1e-4, writer_func: A
             contact_data = ContactData()
             contact_data.contact_point_center = pos_world
             contact_data.contact_normal_a_to_b = normal_world
-            contact_data.contact_distance = -2.0 * depth # depth is the distance to the isosurface
+            contact_data.contact_distance = - 2.0 * depth # depth is the distance to the isosurface
             contact_data.radius_eff_a = 0.0
             contact_data.radius_eff_b = 0.0
             contact_data.thickness_a = 0.0
@@ -1325,6 +1327,7 @@ def get_decode_contacts_kernel(margin_contact_area: float = 1e-4, writer_func: A
             contact_data.feature = wp.uint32(tid + 1)
             contact_data.feature_pair_key = build_pair_key2(wp.uint32(shape_a), wp.uint32(shape_b))
             contact_data.contact_stiffness = stiffness
+            contact_data.contact_friction_scale = wp.where(depth > 0.0, 1.0, 0.0)
 
             writer_func(contact_data, writer_data, output_index)
 
@@ -1613,11 +1616,7 @@ def get_binning_kernels(
 
         # Total depth includes anchor contribution if anchor will be added
         total_depth = agg_depth + wp.float32(add_anchor_contact) * max_depth
-        # Compute stiffness, use margin_contact_area for non-penetrating contacts
-        if total_depth > 1e-8:
-            c_stiffness = k_eff * agg_force_mag / total_depth
-        else:
-            c_stiffness = wp.static(margin_contact_area) * k_eff
+        c_stiffness = k_eff * agg_force_mag / (total_depth + 1e-8)
 
         rotation_q = wp.quat_identity()
         if wp.static(normal_matching):
@@ -1725,7 +1724,7 @@ def get_binning_kernels(
             contact_data.feature = wp.uint32(binned_id[tid, normal_bin_idx, dir_idx] + 1)
             contact_data.feature_pair_key = pair_key
             contact_data.contact_stiffness = c_stiffness
-            contact_data.contact_friction_scale = unique_friction
+            contact_data.contact_friction_scale = unique_friction * wp.float32(depth > 0.0)
 
             writer_func(contact_data, writer_data, c_idx)
 
