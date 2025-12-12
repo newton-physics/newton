@@ -1223,8 +1223,6 @@ def parse_usd(
                 if joint_ordering is not None:
                     if verbose:
                         print(f"Sorting joints using {joint_ordering} ordering...")
-                    # from ..sim.graph_coloring import plot_graph
-                    # plot_graph(body_keys, joint_edges)
                     sorted_joints = topological_sort(
                         joint_edges, use_dfs=joint_ordering == "dfs", ensure_single_root=True
                     )
