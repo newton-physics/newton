@@ -1681,6 +1681,7 @@ def get_binning_kernels(
             contact_data.feature = wp.uint32(binned_id[tid, normal_bin_idx, dir_idx] + 1)
             contact_data.feature_pair_key = pair_key
             contact_data.contact_stiffness = c_stiffness
+            contact_data.contact_friction_scale = unique_friction
 
             writer_func(contact_data, writer_data, c_idx)
 
@@ -1706,6 +1707,7 @@ def get_binning_kernels(
             contact_data.feature = wp.uint32(0)
             contact_data.feature_pair_key = pair_key
             contact_data.contact_stiffness = c_stiffness
+            contact_data.contact_friction_scale = anchor_friction
 
             writer_func(contact_data, writer_data, anchor_idx)
 

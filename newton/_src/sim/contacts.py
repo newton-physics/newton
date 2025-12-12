@@ -57,13 +57,15 @@ class Contacts:
             # to be filled by the solver (currently unused)
             self.rigid_contact_force = wp.zeros(rigid_contact_max, dtype=wp.vec3, requires_grad=requires_grad)
 
-            # contact stiffness/damping (only allocated if per_contact_shape_properties is enabled)
+            # contact stiffness/damping/friction (only allocated if per_contact_shape_properties is enabled)
             if per_contact_shape_properties:
                 self.rigid_contact_stiffness = wp.zeros(rigid_contact_max, dtype=wp.float32, requires_grad=requires_grad)
-                self.rigid_contact_damping = wp.full(rigid_contact_max, 1.0, dtype=wp.float32, requires_grad=requires_grad)
+                self.rigid_contact_damping = wp.zeros(rigid_contact_max, dtype=wp.float32, requires_grad=requires_grad)
+                self.rigid_contact_friction = wp.zeros(rigid_contact_max, dtype=wp.float32, requires_grad=requires_grad)
             else:
                 self.rigid_contact_stiffness = wp.zeros(0, dtype=wp.float32)
                 self.rigid_contact_damping = wp.zeros(0, dtype=wp.float32)
+                self.rigid_contact_friction = wp.zeros(0, dtype=wp.float32)
                 
             # soft contacts
             self.soft_contact_count = wp.zeros(1, dtype=wp.int32)
@@ -92,6 +94,8 @@ class Contacts:
             self.rigid_contact_stiffness.zero_()
         if self.rigid_contact_damping.shape[0] > 0:
             self.rigid_contact_damping.fill_(1.0)
+        if self.rigid_contact_friction.shape[0] > 0:
+            self.rigid_contact_friction.fill_(1.0)
 
         self.soft_contact_count.zero_()
         self.soft_contact_particle.fill_(-1)
