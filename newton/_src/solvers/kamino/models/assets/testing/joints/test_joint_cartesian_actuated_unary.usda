@@ -1,0 +1,110 @@
+#usda 1.0
+(
+    doc = """Authored manually for testing purposes."""
+    defaultPrim = "test_joint_cartesian_actuated_unary"
+    timeCodesPerSecond = 1000
+    kilogramsPerUnit = 1
+    metersPerUnit = 1
+    upAxis = "Z"
+)
+
+def PhysicsScene "World"
+{
+    float physics:gravityMagnitude = 9.8067
+    vector3f physics:gravityDirection = (0, 0, -1)
+}
+
+def Xform "test_joint_cartesian_actuated_unary"
+{
+    def Scope "RigidBodies"
+    {
+        def Xform "body_1" (
+            prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI"]
+        )
+        {
+            # Body Frame
+            quatf xformOp:orient = (1, 0, 0, 0)
+            double3 xformOp:translate = (0.0277918, -0.0131508, 0.0258479)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient"]
+
+            # Body Velocities
+            vector3f physics:linearVelocity = (0, 0, 0)
+            vector3f physics:angularVelocity = (0, 0, 0)
+
+            # Mass Properties
+            float physics:mass = 0.192816
+            float3 physics:diagonalInertia = (1.29682e-05, 7.14078e-05, 7.18623e-05)
+            point3f physics:centerOfMass = (0, 0, 0)
+            quatf physics:principalAxes = (0.891551, -0.241196, -0.380002, -0.0505894)
+        }
+    }
+
+    def Scope "Joints"
+    {
+        # NOTE: The `PhysicsD6Joint` type does not work, D6 joints are specified using `PhysicsJoint`
+        def PhysicsJoint "actuated_cartesian_joint" (
+            customData = {string dofs = "cartesian"}
+            prepend apiSchemas = [
+                # NOTE: These enable the UsdPhysics.JointLimit(...) attributes
+                "PhysicsLimitAPI:transX",
+                "PhysicsLimitAPI:transY",
+                "PhysicsLimitAPI:transZ",
+                "PhysicsLimitAPI:rotX",
+                "PhysicsLimitAPI:rotY",
+                "PhysicsLimitAPI:rotZ",
+                # # NOTE: These enable the UsdPhysics.JointDrive(...) attributes
+                "PhysicsDriveAPI:transX",
+                "PhysicsDriveAPI:transY",
+                "PhysicsDriveAPI:transZ",
+            ]
+        )
+        {
+            bool physics:jointEnabled = 1
+
+            rel physics:body1 = </test_joint_cartesian_actuated_unary/RigidBodies/body_1>
+
+            point3f physics:localPos0 = (-0.0106149, 0.000104522, 0.0236799)
+            point3f physics:localPos1 = (-0.0384068, 0.0132553, -0.00216804)
+            quatf physics:localRot0 = (-3.99312e-06, 0.904622, 0.158661, -0.395583)
+            quatf physics:localRot1 = (-3.99312e-06, 0.904622, 0.158661, -0.395583)
+
+            bool physics:collisionEnabled = 0
+
+            # transX is the first DoF of the cartesian joint
+            float limit:transX:physics:low = -10
+            float limit:transX:physics:high = 10
+
+            # transY is the first DoF of the cartesian joint
+            float limit:transY:physics:low = -20
+            float limit:transY:physics:high = 20
+
+            # transZ is the first DoF of the cartesian joint
+            float limit:transZ:physics:low = -30
+            float limit:transZ:physics:high = 30
+
+            # low > high makes rotX a constraint axis
+            float limit:rotX:physics:low = 1
+            float limit:rotX:physics:high = -1
+
+            # low > high makes rotY a constraint axis
+            float limit:rotY:physics:low = 1
+            float limit:rotY:physics:high = -1
+
+            # low > high makes rotZ a constraint axis
+            float limit:rotZ:physics:low = 1
+            float limit:rotZ:physics:high = -1
+
+            # Drive of the first DoF
+            float drive:transX:physics:maxForce = 100.0
+            uniform token drive:transX:physics:type = "force"  # can be in {"force", "acceleration"}
+
+            # Drive of the second DoF
+            float drive:transY:physics:maxForce = 200.0
+            uniform token drive:transY:physics:type = "force"  # can be in {"force", "acceleration"}
+
+            # Drive of the third DoF
+            float drive:transZ:physics:maxForce = 300.0
+            uniform token drive:transZ:physics:type = "force"  # can be in {"force", "acceleration"}
+        }
+    }
+}
