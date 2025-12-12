@@ -66,8 +66,41 @@ class SDFHydroelasticConfig:
     """Contact area used for non-penetrating contacts at the margin."""
 
 class SDFHydroelastic:
-    """
-    Handles SDF hydroelastic collision handling.
+    """Hydroelastic contact generation with SDF-based collision detection.
+
+    This class implements hydroelastic contact modeling between shapes represented
+    by Signed Distance Fields (SDFs). It uses an octree-based broadphase to identify
+    potentially colliding regions, then applies marching cubes to extract the
+    zero-isosurface where both SDFs intersect. Contact points are generated at
+    triangle centroids on this isosurface, with contact forces proportional to
+    penetration depth and represented area.
+
+    The collision pipeline consists of:
+        1. Broadphase: Identifies overlapping OBBs of SDF between shape pairs
+        2. Octree refinement: Hierarchically subdivides blocks to find iso-voxels
+        3. Marching cubes: Extracts contact surface triangles from iso-voxels
+        4. Contact generation: Computes contact points, normals, depths, and areas
+        5. Optional contact reduction: Bins and reduces contacts per shape pair
+
+    Args:
+        num_shape_pairs: Maximum number of hydroelastic shape pairs to process.
+        total_num_tiles: Total number of SDF blocks across all hydroelastic shapes.
+        max_num_blocks_per_shape: Maximum block count for any single shape.
+        shape_sdf_block_coords: Block coordinates for each shape's SDF representation.
+        shape_sdf_shape2blocks: Mapping from shape index to (start, end) block range.
+        shape_material_k_hydro: Hydroelastic stiffness coefficient for each shape.
+        n_shapes: Total number of shapes in the simulation.
+        config: Configuration options controlling buffer sizes, contact reduction,
+            and other behavior. Defaults to :class:`SDFHydroelasticConfig`.
+        device: Warp device for GPU computation.
+        writer_func: Callback for writing decoded contact data.
+
+    Note:
+        Use :meth:`_from_model` to construct from a simulation :class:`Model`,
+        which automatically extracts the required SDF data and shape information.
+
+    See Also:
+        :class:`SDFHydroelasticConfig`: Configuration options for this class.
     """
     def __init__(
         self,
@@ -291,6 +324,17 @@ class SDFHydroelastic:
         writer_data: Any,
         device: Any = None,
     ) -> None:
+        """Run the full hydroelastic collision pipeline.
+
+        Args:
+            shape_sdf_data: SDF data for each shape.
+            shape_transform: World transforms for each shape.
+            shape_contact_margin: Contact margin for each shape.
+            shape_pairs_sdf_sdf: Pairs of shape indices to check for collision.
+            shape_pairs_sdf_sdf_count: Number of valid shape pairs.
+            writer_data: Contact data writer for output.
+            device: Warp device for computation.
+        """
         self._broadphase_sdfs(
             shape_sdf_data,
             shape_transform,
