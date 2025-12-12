@@ -373,20 +373,13 @@ class ViewerBase:
 
         # Get depth range for colormap
         depths = sdf_hydroelastic.iso_vertex_depth[:num_contacts]
-        if color_by_depth:
-            depths_np = depths.numpy()
-            min_depth = float(depths_np.min()) if len(depths_np) > 0 else 0.0
-            max_depth = float(depths_np.max()) if len(depths_np) > 0 else 1.0
-        else:
-            min_depth = 0.0
-            max_depth = 1.0
 
         # Convert triangles to line segments with depth-based colors
         vertices = sdf_hydroelastic.iso_vertex_point
         wp.launch(
             compute_isosurface_lines,
             dim=num_contacts,
-            inputs=[vertices, depths, num_contacts, min_depth, max_depth],
+            inputs=[vertices, depths, num_contacts, 0.0, 0.0005],
             outputs=[self._iso_line_starts, self._iso_line_ends, self._iso_line_colors],
             device=self.device,
         )

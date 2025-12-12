@@ -470,7 +470,10 @@ def compute_isosurface_lines(
 
     # Compute color from depth
     depth = face_depths[tid]
-    color = depth_to_color(depth, min_depth, max_depth)
+    if depth > 0.0:
+        color = depth_to_color(depth, min_depth, max_depth)
+    else:
+        color = wp.vec3(0.0, 0.0, 0.0)
 
     # Each triangle produces 3 line segments (edges)
     # Edge 0: v0 -> v1
