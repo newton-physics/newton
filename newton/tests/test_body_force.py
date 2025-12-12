@@ -136,7 +136,7 @@ def test_3d_articulation(test: TestBodyForce, device, solver_fn, test_angular, u
 
 devices = get_test_devices()
 solvers = {
-    # "featherstone": lambda model: newton.solvers.SolverFeatherstone(model, angular_damping=0.0),
+    "featherstone": lambda model: newton.solvers.SolverFeatherstone(model, angular_damping=0.0),
     "mujoco_cpu": lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=True, disable_contacts=True),
     "mujoco_warp": lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=False, disable_contacts=True),
     "xpbd": lambda model: newton.solvers.SolverXPBD(model, angular_damping=0.0),
