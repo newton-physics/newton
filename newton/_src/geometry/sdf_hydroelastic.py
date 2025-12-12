@@ -36,6 +36,26 @@ def int_to_vec3f(x: wp.int32, y: wp.int32, z: wp.int32):
     return wp.vec3f(float(x), float(y), float(z))
 
 @dataclass
+class IsosurfaceData:
+    """
+    Data container for contat isosurface.
+    
+    Contains the vertex arrays and metadata needed for rendering
+    the isosurface triangles from hydroelastic collision detection.
+    """
+    iso_vertex_point: wp.array
+    """World-space positions of isosurface triangle vertices (3 per face)."""
+    iso_vertex_depth: wp.array
+    """Penetration depth at each face centroid."""
+    iso_vertex_shape_pair: wp.array
+    """Shape pair indices (shape_a, shape_b) for each face."""
+    face_contact_count: wp.array
+    """Array containing the number of face contacts."""
+    max_num_face_contacts: int
+    """Maximum number of face contacts (buffer size)."""
+
+
+@dataclass
 class SDFHydroelasticConfig:
     """
     Controls properties of SDF hydroelastic collision handling.
@@ -313,7 +333,23 @@ class SDFHydroelastic:
             writer_func=writer_func,
         )
 
-    
+    def get_isosurface_data(self) -> IsosurfaceData | None:
+        """Get the isosurface data for visualization.
+
+        Returns:
+            IsosurfaceData containing vertex arrays and metadata for rendering,
+            or None if `output_iso_vertices` is False in the config.
+        """
+        if not self.config.output_iso_vertices:
+            return None
+        return IsosurfaceData(
+            iso_vertex_point=self.iso_vertex_point,
+            iso_vertex_depth=self.iso_vertex_depth,
+            iso_vertex_shape_pair=self.iso_vertex_shape_pair,
+            face_contact_count=self.face_contact_count,
+            max_num_face_contacts=self.max_num_face_contacts,
+        )
+
     def launch(
         self,
         shape_sdf_data: wp.array(dtype=SDFData),

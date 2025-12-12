@@ -454,6 +454,7 @@ def compute_isosurface_lines(
     num_faces: int,
     min_depth: float,
     max_depth: float,
+    penetrating_only: bool,
     line_starts: wp.array(dtype=wp.vec3),
     line_ends: wp.array(dtype=wp.vec3),
     line_colors: wp.array(dtype=wp.vec3),
@@ -470,6 +471,21 @@ def compute_isosurface_lines(
 
     # Compute color from depth
     depth = face_depths[tid]
+
+    # Skip non-penetrating contacts if requested (only render depth > 0)
+    if penetrating_only and depth <= 0.0:
+        zero = wp.vec3(0.0, 0.0, 0.0)
+        line_starts[tid * 3 + 0] = zero
+        line_ends[tid * 3 + 0] = zero
+        line_colors[tid * 3 + 0] = zero
+        line_starts[tid * 3 + 1] = zero
+        line_ends[tid * 3 + 1] = zero
+        line_colors[tid * 3 + 1] = zero
+        line_starts[tid * 3 + 2] = zero
+        line_ends[tid * 3 + 2] = zero
+        line_colors[tid * 3 + 2] = zero
+        return
+
     if depth > 0.0:
         color = depth_to_color(depth, min_depth, max_depth)
     else:

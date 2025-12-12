@@ -410,6 +410,7 @@ class CollisionPipelineUnified:
             contact_writer_warp_func=write_contact,
             sdf_hydroelastic=sdf_hydroelastic,
         )
+        self.sdf_hydroelastic = self.narrow_phase.sdf_hydroelastic
 
         with wp.ScopedDevice(device):
             # Narrow phase input arrays
@@ -671,3 +672,13 @@ class CollisionPipelineUnified:
         )
 
         return contacts
+
+    def get_isosurface_data(self):
+        """Get isosurface data from hydroelastic collision detection, if available.
+
+        Returns:
+            IsosurfaceData if sdf_hydroelastic is configured, None otherwise.
+        """
+        if self.sdf_hydroelastic is not None:
+            return self.sdf_hydroelastic.get_isosurface_data()
+        return None

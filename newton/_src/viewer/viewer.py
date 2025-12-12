@@ -340,22 +340,23 @@ class ViewerBase:
 
         self.log_lines("/contacts", starts, ends, colors)
 
-    def log_isosurface(self, sdf_hydroelastic, color_by_depth: bool = True):
+    def log_isosurface(self, isosurface_data, penetrating_only: bool = True):
         """
         Render the isosurface triangles as wireframe lines from SDFHydroelastic collision detection.
 
         Args:
-            sdf_hydroelastic: An SDFHydroelastic instance with output_iso_vertices enabled.
-            color_by_depth: If True, color lines based on penetration depth (blue=shallow, red=deep).
+            isosurface_data: An IsosurfaceData instance containing vertex arrays for visualization,
+                or None if hydroelastic collision is not enabled.
+            penetrating_only: If True, only render penetrating contacts (depth > 0).
         """
         from .kernels import compute_isosurface_lines  # noqa: PLC0415
 
-        if not self.show_isosurface:
+        if isosurface_data is None or not self.show_isosurface:
             self.log_lines("/isosurface", None, None, None)
             return
 
         # Get the number of face contacts (triangles)
-        num_contacts = int(sdf_hydroelastic.face_contact_count.numpy()[0])
+        num_contacts = int(isosurface_data.face_contact_count.numpy()[0])
 
         if num_contacts == 0:
             self.log_lines("/isosurface", None, None, None)
@@ -363,7 +364,7 @@ class ViewerBase:
 
         # Each triangle has 3 edges -> 3 line segments per contact
         num_lines = 3 * num_contacts
-        max_lines = 3 * sdf_hydroelastic.max_num_face_contacts
+        max_lines = 3 * isosurface_data.max_num_face_contacts
 
         # Pre-allocate line buffers (only once, to max capacity)
         if not hasattr(self, "_iso_line_starts") or self._iso_line_starts is None or len(self._iso_line_starts) < max_lines:
@@ -372,14 +373,14 @@ class ViewerBase:
             self._iso_line_colors = wp.zeros(max_lines, dtype=wp.vec3, device=self.device)
 
         # Get depth range for colormap
-        depths = sdf_hydroelastic.iso_vertex_depth[:num_contacts]
+        depths = isosurface_data.iso_vertex_depth[:num_contacts]
 
         # Convert triangles to line segments with depth-based colors
-        vertices = sdf_hydroelastic.iso_vertex_point
+        vertices = isosurface_data.iso_vertex_point
         wp.launch(
             compute_isosurface_lines,
             dim=num_contacts,
-            inputs=[vertices, depths, num_contacts, 0.0, 0.0005],
+            inputs=[vertices, depths, num_contacts, 0.0, 0.0005, penetrating_only],
             outputs=[self._iso_line_starts, self._iso_line_ends, self._iso_line_colors],
             device=self.device,
         )
