@@ -1,0 +1,8 @@
+﻿newton.SAPSortType
+==================
+
+.. autoclass:: newton.SAPSortType
+   :members:
+   :undoc-members:
+   :show-inheritance:
+   :member-order: groupwise

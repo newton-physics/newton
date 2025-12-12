@@ -1,0 +1,6 @@
+﻿newton.utils.parse\_warp\_value\_from\_string
+=============================================
+
+.. currentmodule:: newton.utils
+
+.. autofunction:: parse_warp_value_from_string

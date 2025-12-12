@@ -1,0 +1,6 @@
+﻿newton.utils.create\_ellipsoid\_mesh
+====================================
+
+.. currentmodule:: newton.utils
+
+.. autofunction:: create_ellipsoid_mesh
