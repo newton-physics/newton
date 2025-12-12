@@ -5360,7 +5360,12 @@ class ModelBuilder:
                     f"Found worlds: {world_list}. Worlds must form a continuous sequence starting from 0."
                 )
 
-    def finalize(self, device: Devicelike | None = None, requires_grad: bool = False) -> Model:
+    def finalize(
+        self,
+        device: Devicelike | None = None,
+        requires_grad: bool = False,
+        verbose: bool | None = None,
+    ) -> Model:
         """
         Finalize the builder and create a concrete Model for simulation.
 
@@ -5371,6 +5376,8 @@ class ModelBuilder:
         Args:
             device: The simulation device to use (e.g., 'cpu', 'cuda'). If None, uses the current Warp device.
             requires_grad: If True, enables gradient computation for the model (for differentiable simulation).
+            verbose: If True, emit warnings for inertia corrections and other diagnostic messages.
+                If None, mirrors the current value of `wp.config.verbose` at call time.
 
         Returns:
             Model: A fully constructed Model object containing all simulation data on the specified device.
@@ -5382,6 +5389,9 @@ class ModelBuilder:
               joints, springs, muscles, constraints, and collision/contact data.
         """
         from .collide import count_rigid_contact_points  # noqa: PLC0415
+
+        if verbose is None:
+            verbose = wp.config.verbose
 
         # ensure the world count is set correctly
         self.num_worlds = max(1, self.num_worlds)
@@ -5722,7 +5732,7 @@ class ModelBuilder:
 
                     # Check if any corrections were made
                     num_corrections = int(np.sum(correction_flags.numpy()))
-                    if num_corrections > 0:
+                    if num_corrections > 0 and verbose:
                         warnings.warn(
                             f"Inertia validation corrected {num_corrections} bodies. "
                             f"Set validate_inertia_detailed=True for detailed per-body warnings.",
