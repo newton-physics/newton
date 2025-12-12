@@ -302,7 +302,6 @@ def convert_newton_contacts_to_mjwarp_kernel(
             solimp[1] = 0.99
             solimp[2] = 0.001
             
-            print(contact_ke)
             kd = rigid_contact_damping[tid]
             if kd > 0.0:
                 timeconst = 2.0 / kd
