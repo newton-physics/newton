@@ -18,9 +18,10 @@ from collections.abc import Sequence
 import numpy as np
 import warp as wp
 
-from .types import Mesh, GeoType
 from ..geometry.kernels import box_sdf, capsule_sdf, cone_sdf, cylinder_sdf, ellipsoid_sdf, sphere_sdf
-from .sdf_mc import mc_calc_face, get_mc_tables, vec8f, int_to_vec3f, vec8f
+from .sdf_mc import get_mc_tables, int_to_vec3f, mc_calc_face, vec8f
+from .types import GeoType, Mesh
+
 
 @wp.struct
 class SDFData:
@@ -68,6 +69,7 @@ def create_empty_sdf_data() -> SDFData:
     sdf_data.background_value = SDF_BACKGROUND_VALUE
     return sdf_data
 
+
 @wp.func
 def get_distance_to_mesh(mesh: wp.uint64, point: wp.vec3, max_dist: wp.float32):
     res = wp.mesh_query_point_sign_winding_number(mesh, point, max_dist)
@@ -101,6 +103,7 @@ def sdf_from_mesh_kernel(
     signed_distance = get_distance_to_mesh(mesh, sample_pos, 10000.0)
     signed_distance -= thickness
     wp.volume_store(sdf, x_id, y_id, z_id, signed_distance)
+
 
 @wp.kernel
 def sdf_from_primitive_kernel(
@@ -137,6 +140,7 @@ def sdf_from_primitive_kernel(
     signed_distance -= thickness
     wp.volume_store(sdf, x_id, y_id, z_id, signed_distance)
 
+
 @wp.kernel
 def check_tile_occupied_mesh_kernel(
     mesh: wp.uint64,
@@ -154,6 +158,7 @@ def check_tile_occupied_mesh_kernel(
     else:
         is_occupied = signed_distance > threshold[0]
     tile_occupied[tid] = is_occupied
+
 
 @wp.kernel
 def check_tile_occupied_primitive_kernel(
@@ -185,6 +190,7 @@ def check_tile_occupied_primitive_kernel(
     else:
         is_occupied = signed_distance > threshold[0]
     tile_occupied[tid] = is_occupied
+
 
 def get_primitive_extents(shape_type: int, shape_scale: Sequence[float]) -> tuple[list[float], list[float]]:
     """Get the bounding box extents for a primitive shape.
@@ -420,6 +426,7 @@ def compute_sdf(
 
     return sdf_data, sparse_volume, coarse_volume, block_coords
 
+
 def compute_isomesh(volume: wp.Volume) -> Mesh | None:
     """Compute an isosurface mesh from an SDFData struct.
 
@@ -457,6 +464,7 @@ def compute_isomesh(volume: wp.Volume) -> Mesh | None:
         faces_np = faces_np[:, ::-1]
         isomesh = Mesh(verts_np, faces_np)
     return isomesh
+
 
 @wp.kernel
 def generate_isomesh_kernel(

@@ -475,7 +475,7 @@ def eval_body_contact(
     if rigid_contact_friction.shape[0] > 0:
         contact_mu = rigid_contact_friction[tid]
         mu = contact_mu if contact_mu > 0.0 else mu
-    
+
     # contact normal in world space
     n = contact_normal[tid]
     bx_a = contact_point0[tid]

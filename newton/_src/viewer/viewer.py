@@ -367,7 +367,11 @@ class ViewerBase:
         max_lines = 3 * isosurface_data.max_num_face_contacts
 
         # Pre-allocate line buffers (only once, to max capacity)
-        if not hasattr(self, "_iso_line_starts") or self._iso_line_starts is None or len(self._iso_line_starts) < max_lines:
+        if (
+            not hasattr(self, "_iso_line_starts")
+            or self._iso_line_starts is None
+            or len(self._iso_line_starts) < max_lines
+        ):
             self._iso_line_starts = wp.zeros(max_lines, dtype=wp.vec3, device=self.device)
             self._iso_line_ends = wp.zeros(max_lines, dtype=wp.vec3, device=self.device)
             self._iso_line_colors = wp.zeros(max_lines, dtype=wp.vec3, device=self.device)

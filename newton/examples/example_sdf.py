@@ -44,15 +44,15 @@ GEAR_FILES = [
 ]
 
 SHAPE_CFG = newton.ModelBuilder.ShapeConfig(
-    thickness=0.0, 
-    mu=0.01, 
-    sdf_max_dims=512, 
+    thickness=0.0,
+    mu=0.01,
+    sdf_max_dims=512,
     sdf_narrow_band_range=(-0.005, 0.005),
     contact_margin=0.005,
-    density=8000.0, 
-    torsional_friction=0.0, 
-    rolling_friction=0.0, 
-    is_hydroelastic=False
+    density=8000.0,
+    torsional_friction=0.0,
+    rolling_friction=0.0,
+    is_hydroelastic=False,
 )
 
 

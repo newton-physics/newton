@@ -13,10 +13,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import warp as wp
 import numpy as np
+import warp as wp
 
 vec8f = wp.types.vector(length=8, dtype=wp.float32)
+
 
 def get_mc_tables(device):
     edge_to_verts = np.array(
@@ -61,9 +62,11 @@ def get_mc_tables(device):
         flat_edge_verts_table,
     )
 
+
 @wp.func
 def int_to_vec3f(x: wp.int32, y: wp.int32, z: wp.int32):
     return wp.vec3f(float(x), float(y), float(z))
+
 
 @wp.func
 def get_triangle_fraction(vert_depths: wp.vec3f, num_inside: wp.int32) -> wp.float32:
@@ -95,6 +98,7 @@ def get_triangle_fraction(vert_depths: wp.vec3f, num_inside: wp.int32) -> wp.flo
         return 1.0 - fraction
     else:
         return fraction
+
 
 @wp.func
 def clip_triangle_to_inside(
@@ -190,6 +194,7 @@ def clip_triangle_to_inside(
     clipped_verts[2] = v2
 
     return area, clipped_verts, center, pen_depth
+
 
 @wp.func
 def mc_calc_face(

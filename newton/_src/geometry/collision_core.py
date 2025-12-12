@@ -1016,6 +1016,7 @@ def get_triangle_shape_from_mesh(
 
     return shape_data, v0_world
 
+
 # OBB collisions by Separating Axis Theorem
 @wp.func
 def get_box_axes(q: wp.quat) -> wp.mat33:

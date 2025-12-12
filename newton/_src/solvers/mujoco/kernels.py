@@ -306,10 +306,10 @@ def convert_newton_contacts_to_mjwarp_kernel(
             else:
                 timeconst = wp.sqrt(1.0 / contact_ke)
                 dampratio = 1.0
-            
+
             solref[0] = timeconst
-            solref[1] = dampratio 
-    
+            solref[1] = dampratio
+
     if rigid_contact_friction_scaling.shape[0] > 0:
         friction_scale = rigid_contact_friction_scaling[tid]
         if friction_scale > 0.0:

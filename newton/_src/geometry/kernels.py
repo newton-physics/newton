@@ -264,6 +264,7 @@ def cylinder_sdf_grad(radius: float, half_height: float, p: wp.vec3):
         return wp.normalize(wp.vec3(p[0], p[1], 0.0))
     return wp.vec3(0.0, 0.0, wp.sign(p[2]))
 
+
 @wp.func
 def ellipsoid_sdf(radii: wp.vec3, p: wp.vec3):
     # Approximate SDF for ellipsoid with radii (rx, ry, rz)
@@ -273,6 +274,7 @@ def ellipsoid_sdf(radii: wp.vec3, p: wp.vec3):
     if k1 > 0.0:
         return k0 * (k0 - 1.0) / k1
     return -wp.min(wp.min(radii[0], radii[1]), radii[2])
+
 
 @wp.func
 def cone_sdf(radius: float, half_height: float, p: wp.vec3):

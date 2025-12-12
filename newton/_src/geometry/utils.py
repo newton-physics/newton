@@ -717,6 +717,7 @@ def transform_points(points: nparray, transform: wp.transform, scale: Vec3 | Non
         points = points * np.array(scale, dtype=np.float32)
     return points @ np.array(wp.quat_to_matrix(transform.q)).reshape(3, 3) + transform.p
 
+
 @wp.kernel
 def get_total_kernel(
     counts: wp.array(dtype=int),
@@ -752,5 +753,6 @@ def scan_with_total(
     """
     wp.utils.array_scan(counts, prefix_sums, inclusive=False)
     wp.launch(get_total_kernel, dim=[1], inputs=[counts, prefix_sums, num_elements, total])
+
 
 __all__ = ["compute_shape_radius", "load_mesh", "visualize_meshes"]

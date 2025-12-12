@@ -842,7 +842,7 @@ class NarrowPhase:
         shape_aabb_upper: wp.array(dtype=wp.vec3) | None = None,
         contact_writer_warp_func: Any | None = None,
         contact_reduction_betas: tuple = (1000000.0, 0.0001),
-        sdf_hydroelastic: SDFHydroelastic| None = None,
+        sdf_hydroelastic: SDFHydroelastic | None = None,
     ):
         """
         Initialize NarrowPhase with pre-allocated buffers.
@@ -976,7 +976,6 @@ class NarrowPhase:
                 # Empty arrays for when hydroelastic is disabled
                 self.shape_pairs_sdf_sdf = wp.zeros(0, dtype=wp.vec2i, device=device)
                 self.shape_pairs_sdf_sdf_count = wp.zeros(1, dtype=wp.int32, device=device)
-
 
         # Fixed thread count for kernel launches
         gpu_thread_limit = 1024 * 1024 * 4
@@ -1158,17 +1157,17 @@ class NarrowPhase:
                 device=device,
                 block_dim=self.tile_size_mesh_mesh,
             )
-        
+
         if self.sdf_hydroelastic is not None:
             self.sdf_hydroelastic.launch(
-                    shape_sdf_data,
-                    shape_transform,
-                    shape_contact_margin,
-                    self.shape_pairs_sdf_sdf,
-                    self.shape_pairs_sdf_sdf_count,
-                    writer_data,
-                    device=device,
-                )
+                shape_sdf_data,
+                shape_transform,
+                shape_contact_margin,
+                self.shape_pairs_sdf_sdf,
+                self.shape_pairs_sdf_sdf_count,
+                writer_data,
+                device=device,
+            )
 
     def launch(
         self,

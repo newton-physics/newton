@@ -122,7 +122,7 @@ def write_contact(
     contact_margin = wp.max(margin_a, margin_b)
 
     index = output_index
-    
+
     if index < 0:
         # compute index using atomic counter
         if d > contact_margin:
@@ -654,7 +654,7 @@ class CollisionPipelineUnified:
         writer_data.out_stiffness = contacts.rigid_contact_stiffness
         writer_data.out_damping = contacts.rigid_contact_damping
         writer_data.out_friction = contacts.rigid_contact_friction
-        
+
         # Run narrow phase with custom contact writer (writes directly to Contacts format)
         self.narrow_phase.launch_custom_write(
             candidate_pair=self.broad_phase_shape_pairs,

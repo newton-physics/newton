@@ -3367,10 +3367,12 @@ class ModelBuilder:
 
         is_hydroelastic = cfg.is_hydroelastic
         if is_hydroelastic and (type == GeoType.PLANE or type == GeoType.HFIELD):
-            print(f"Shape '{key}' (index {shape}) has is_hydroelastic=True but is of type {GeoType(type).name}, which is not supported. Falling back to mesh collisions.")
+            print(
+                f"Shape '{key}' (index {shape}) has is_hydroelastic=True but is of type {GeoType(type).name}, which is not supported. Falling back to mesh collisions."
+            )
             is_hydroelastic = False
         self.shape_is_hydroelastic.append(is_hydroelastic)
-        
+
         if cfg.has_shape_collision and cfg.collision_filter_parent and body > -1 and body in self.joint_parents:
             for parent_body in self.joint_parents[body]:
                 if parent_body > -1:
@@ -5507,7 +5509,12 @@ class ModelBuilder:
 
             # ---------------------
             # Compute SDFs for mesh shapes (per-shape opt-in via sdf_max_dims or is_hydroelastic)
-            from ..geometry.sdf_utils import SDFData, compute_sdf, create_empty_sdf_data, compute_isomesh  # noqa: PLC0415
+            from ..geometry.sdf_utils import (  # noqa: PLC0415
+                SDFData,
+                compute_isomesh,
+                compute_sdf,
+                create_empty_sdf_data,
+            )
             from ..geometry.types import GeoType  # noqa: PLC0415
 
             # Check if we're running on GPU - wp.Volume only supports CUDA
@@ -5533,9 +5540,21 @@ class ModelBuilder:
 
             # Validate that hydroelastic shapes have sdf_max_dims or sdf_target_voxel_size set
             for shape_idx, (is_hydro, sflags, sdf_max_dims, sdf_target_voxel_size, shape_key) in enumerate(
-                zip(self.shape_is_hydroelastic, self.shape_flags, self.shape_sdf_max_dims, self.shape_sdf_target_voxel_size, self.shape_key, strict=False)
+                zip(
+                    self.shape_is_hydroelastic,
+                    self.shape_flags,
+                    self.shape_sdf_max_dims,
+                    self.shape_sdf_target_voxel_size,
+                    self.shape_key,
+                    strict=False,
+                )
             ):
-                if is_hydro and sflags & ShapeFlags.COLLIDE_SHAPES and sdf_max_dims is None and sdf_target_voxel_size is None:
+                if (
+                    is_hydro
+                    and sflags & ShapeFlags.COLLIDE_SHAPES
+                    and sdf_max_dims is None
+                    and sdf_target_voxel_size is None
+                ):
                     raise ValueError(
                         f"Shape '{shape_key}' (index {shape_idx}) has is_hydroelastic=True but neither sdf_max_dims nor sdf_target_voxel_size is set. "
                         "Hydroelastic collision requires SDF generation. Please set sdf_max_dims (e.g., 64) or sdf_target_voxel_size."
@@ -5566,8 +5585,8 @@ class ModelBuilder:
                 sdf_cache = {}
                 isomesh_cache = {}
 
-                sdf_block_coords = [] # flat array of coordinates of active SDF tiles
-                sdf_shape2blocks = [] # array indexing into sdf_block_coords for each shape. Multiple shapes can index into the same block range.
+                sdf_block_coords = []  # flat array of coordinates of active SDF tiles
+                sdf_shape2blocks = []  # array indexing into sdf_block_coords for each shape. Multiple shapes can index into the same block range.
 
                 # Create empty SDF data once for reuse by non-SDF shapes
                 empty_sdf_data = create_empty_sdf_data()
@@ -5627,8 +5646,8 @@ class ModelBuilder:
                             sdf_cache[cache_key] = i
                             block_start_idx = len(sdf_block_coords)
                             num_blocks = len(block_coords)
-                            shape2blocks=[block_start_idx, block_start_idx + num_blocks]
-                            sdf_block_coords.extend(block_coords)       
+                            shape2blocks = [block_start_idx, block_start_idx + num_blocks]
+                            sdf_block_coords.extend(block_coords)
 
                         # Compute isomesh if show_isomeshes is enabled
                         isomesh = None
