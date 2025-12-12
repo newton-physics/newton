@@ -1589,6 +1589,56 @@ class TestImportMjcf(unittest.TestCase):
             msg="Effort limit for joint5 should be default (1e6) when actuatorfrclimited='false'",
         )
 
+    def test_eq_solref_parsing(self):
+        """Test that equality constraint solref attribute is parsed correctly from MJCF."""
+        mjcf = """<?xml version="1.0" ?>
+<mujoco>
+    <worldbody>
+        <body name="body1">
+            <freejoint/>
+            <geom type="box" size="0.1 0.1 0.1"/>
+        </body>
+        <body name="body2">
+            <freejoint/>
+            <geom type="sphere" size="0.05"/>
+        </body>
+        <body name="body3">
+            <freejoint/>
+            <geom type="capsule" size="0.05 0.1"/>
+        </body>
+    </worldbody>
+    <equality>
+        <weld body1="body1" body2="body2" solref="0.03 0.8"/>
+        <connect body1="body2" body2="body3" anchor="0 0 0"/>
+        <weld body1="body1" body2="body3" solref="0.05 1.2"/>
+    </equality>
+</mujoco>
+"""
+
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_mjcf(mjcf)
+        model = builder.finalize()
+
+        self.assertTrue(hasattr(model, "mujoco"), "Model should have mujoco namespace for custom attributes")
+        self.assertTrue(hasattr(model.mujoco, "eq_solref"), "Model should have eq_solref attribute")
+
+        eq_solref = model.mujoco.eq_solref.numpy()
+        self.assertEqual(model.equality_constraint_count, 3, "Should have 3 equality constraints")
+
+        # Note: Newton parses equality constraints in type order: connect, then weld, then joint
+        # So the order is: connect (default), weld (0.03, 0.8), weld (0.05, 1.2)
+        expected_values = {
+            0: [0.02, 1.0],  # connect - default
+            1: [0.03, 0.8],  # first weld
+            2: [0.05, 1.2],  # second weld
+        }
+
+        for eq_idx, expected in expected_values.items():
+            actual = eq_solref[eq_idx].tolist()
+            for i, (a, e) in enumerate(zip(actual, expected, strict=False)):
+                self.assertAlmostEqual(a, e, places=4, msg=f"eq_solref[{eq_idx}][{i}] should be {e}, got {a}")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
