@@ -2015,7 +2015,6 @@ class ModelBuilder:
         child_xform: Transform | None = None,
         collision_filter_parent: bool = True,
         enabled: bool = True,
-        is_loop_joint: bool = False,
         custom_attributes: dict[str, Any] | None = None,
     ) -> int:
         """
@@ -2032,7 +2031,6 @@ class ModelBuilder:
             child_xform (Transform): The transform of the joint in the child body's local frame. If None, the identity transform is used.
             collision_filter_parent (bool): Whether to filter collisions between shapes of the parent and child bodies.
             enabled (bool): Whether the joint is enabled (not considered by :class:`SolverFeatherstone`).
-            is_loop_joint (bool): Whether the joint is a loop joint that some solvers need to treat separately from joints that are part of the regular articulation tree structure.
             custom_attributes: Dictionary of custom attribute keys (see :attr:`CustomAttribute.key`) to values. Note that custom attributes with frequency :attr:`ModelAttributeFrequency.JOINT_DOF` or :attr:`ModelAttributeFrequency.JOINT_COORD` can be provided as: (1) lists with length equal to the joint's DOF or coordinate count, (2) dicts mapping DOF/coordinate indices to values, or (3) scalar values for single-DOF/single-coordinate joints (automatically expanded to lists). Custom attributes with frequency :attr:`ModelAttributeFrequency.JOINT` require a single value to be defined.
 
         Returns:
@@ -2175,7 +2173,6 @@ class ModelBuilder:
         key: str | None = None,
         collision_filter_parent: bool = True,
         enabled: bool = True,
-        is_loop_joint: bool = False,
         custom_attributes: dict[str, Any] | None = None,
         **kwargs,
     ) -> int:
@@ -2202,7 +2199,6 @@ class ModelBuilder:
             key: The key of the joint.
             collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies.
             enabled: Whether the joint is enabled.
-            is_loop_joint: Whether the joint is a loop joint that some solvers need to treat separately from joints that are part of the regular articulation tree structure.
             custom_attributes: Dictionary of custom attribute values for JOINT, JOINT_DOF, or JOINT_COORD frequency attributes.
 
         Returns:
@@ -2240,7 +2236,6 @@ class ModelBuilder:
             key=key,
             collision_filter_parent=collision_filter_parent,
             enabled=enabled,
-            is_loop_joint=is_loop_joint,
             custom_attributes=custom_attributes,
             **kwargs,
         )
@@ -2267,7 +2262,6 @@ class ModelBuilder:
         key: str | None = None,
         collision_filter_parent: bool = True,
         enabled: bool = True,
-        is_loop_joint: bool = False,
         custom_attributes: dict[str, Any] | None = None,
     ) -> int:
         """Adds a prismatic (sliding) joint to the model. It has one degree of freedom.
@@ -2293,7 +2287,6 @@ class ModelBuilder:
             key: The key of the joint.
             collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies.
             enabled: Whether the joint is enabled.
-            is_loop_joint: Whether the joint is a loop joint that some solvers need to treat separately from joints that are part of the regular articulation tree structure.
             custom_attributes: Dictionary of custom attribute values for JOINT, JOINT_DOF, or JOINT_COORD frequency attributes.
 
         Returns:
@@ -2331,7 +2324,6 @@ class ModelBuilder:
             key=key,
             collision_filter_parent=collision_filter_parent,
             enabled=enabled,
-            is_loop_joint=is_loop_joint,
             custom_attributes=custom_attributes,
         )
 
@@ -2346,7 +2338,6 @@ class ModelBuilder:
         key: str | None = None,
         collision_filter_parent: bool = True,
         enabled: bool = True,
-        is_loop_joint: bool = False,
         custom_attributes: dict[str, Any] | None = None,
     ) -> int:
         """Adds a ball (spherical) joint to the model. Its position is defined by a 4D quaternion (xyzw) and its velocity is a 3D vector.
@@ -2361,7 +2352,6 @@ class ModelBuilder:
             key: The key of the joint.
             collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies.
             enabled: Whether the joint is enabled.
-            is_loop_joint: Whether the joint is a loop joint that some solvers need to treat separately from joints that are part of the regular articulation tree structure.
             custom_attributes: Dictionary of custom attribute values for JOINT, JOINT_DOF, or JOINT_COORD frequency attributes.
 
         Returns:
@@ -2402,7 +2392,6 @@ class ModelBuilder:
             key=key,
             collision_filter_parent=collision_filter_parent,
             enabled=enabled,
-            is_loop_joint=is_loop_joint,
             custom_attributes=custom_attributes,
         )
 
@@ -2415,7 +2404,6 @@ class ModelBuilder:
         key: str | None = None,
         collision_filter_parent: bool = True,
         enabled: bool = True,
-        is_loop_joint: bool = False,
         custom_attributes: dict[str, Any] | None = None,
     ) -> int:
         """Adds a fixed (static) joint to the model. It has no degrees of freedom.
@@ -2429,7 +2417,6 @@ class ModelBuilder:
             key: The key of the joint.
             collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies.
             enabled: Whether the joint is enabled.
-            is_loop_joint: Whether the joint is a loop joint that some solvers need to treat separately from joints that are part of the regular articulation tree structure.
             custom_attributes: Dictionary of custom attribute values for JOINT frequency attributes.
 
         Returns:
@@ -2446,7 +2433,6 @@ class ModelBuilder:
             key=key,
             collision_filter_parent=collision_filter_parent,
             enabled=enabled,
-            is_loop_joint=is_loop_joint,
         )
 
         # Process custom attributes (only JOINT frequency is valid for fixed joints)
@@ -2464,7 +2450,6 @@ class ModelBuilder:
         key: str | None = None,
         collision_filter_parent: bool = True,
         enabled: bool = True,
-        is_loop_joint: bool = False,
         custom_attributes: dict[str, Any] | None = None,
     ) -> int:
         """Adds a free joint to the model.
@@ -2479,7 +2464,6 @@ class ModelBuilder:
             key: The key of the joint.
             collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies.
             enabled: Whether the joint is enabled.
-            is_loop_joint: Whether the joint is a loop joint that some solvers need to treat separately from joints that are part of the regular articulation tree structure.
             custom_attributes: Dictionary of custom attribute values for JOINT, JOINT_DOF, or JOINT_COORD frequency attributes.
 
         Returns:
@@ -2496,7 +2480,6 @@ class ModelBuilder:
             key=key,
             collision_filter_parent=collision_filter_parent,
             enabled=enabled,
-            is_loop_joint=is_loop_joint,
             linear_axes=[
                 ModelBuilder.JointDofConfig.create_unlimited(Axis.X),
                 ModelBuilder.JointDofConfig.create_unlimited(Axis.Y),
@@ -2524,7 +2507,6 @@ class ModelBuilder:
         max_distance: float = 1.0,
         collision_filter_parent: bool = True,
         enabled: bool = True,
-        is_loop_joint: bool = False,
         custom_attributes: dict[str, Any] | None = None,
     ) -> int:
         """Adds a distance joint to the model. The distance joint constraints the distance between the joint anchor points on the two bodies (see :ref:`FK-IK`) it connects to the interval [`min_distance`, `max_distance`].
@@ -2539,7 +2521,6 @@ class ModelBuilder:
             max_distance: The maximum distance between the bodies (no limit if negative).
             collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies.
             enabled: Whether the joint is enabled.
-            is_loop_joint: Whether the joint is a loop joint that some solvers need to treat separately from joints that are part of the regular articulation tree structure.
             custom_attributes: Dictionary of custom attribute values for JOINT, JOINT_DOF, or JOINT_COORD frequency attributes.
 
         Returns:
@@ -2572,7 +2553,6 @@ class ModelBuilder:
             ],
             collision_filter_parent=collision_filter_parent,
             enabled=enabled,
-            is_loop_joint=is_loop_joint,
             custom_attributes=custom_attributes,
         )
 
@@ -2587,7 +2567,6 @@ class ModelBuilder:
         child_xform: Transform | None = None,
         collision_filter_parent: bool = True,
         enabled: bool = True,
-        is_loop_joint: bool = False,
         custom_attributes: dict[str, Any] | None = None,
         **kwargs,
     ) -> int:
@@ -2604,7 +2583,6 @@ class ModelBuilder:
             armature: Artificial inertia added around the joint axes. If None, the default value from :attr:`default_joint_armature` is used.
             collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies.
             enabled: Whether the joint is enabled.
-            is_loop_joint: Whether the joint is a loop joint that some solvers need to treat separately from joints that are part of the regular articulation tree structure.
             custom_attributes: Dictionary of custom attribute values for JOINT, JOINT_DOF, or JOINT_COORD frequency attributes.
 
         Returns:
@@ -2627,7 +2605,6 @@ class ModelBuilder:
             key=key,
             collision_filter_parent=collision_filter_parent,
             enabled=enabled,
-            is_loop_joint=is_loop_joint,
             custom_attributes=custom_attributes,
             **kwargs,
         )
