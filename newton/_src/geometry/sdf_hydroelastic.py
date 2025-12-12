@@ -58,7 +58,7 @@ class SDFHydroelasticConfig:
     """Penetration beta values."""
     sticky_contacts: float = 1e-6
     """Stickiness factor for temporal contact persistence."""
-    normal_matching: bool = False
+    normal_matching: bool = True
     """Whether to match the aggregated force direction."""
     moment_matching: bool = False
     """Whether to match the reference torque from all contacts."""

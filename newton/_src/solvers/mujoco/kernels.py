@@ -190,6 +190,7 @@ def convert_newton_contacts_to_mjwarp_kernel(
     rigid_contact_thickness1: wp.array(dtype=wp.float32),
     rigid_contact_stiffness: wp.array(dtype=wp.float32),
     rigid_contact_damping: wp.array(dtype=wp.float32),
+    rigid_contact_friction_scaling: wp.array(dtype=wp.float32),
     bodies_per_world: int,
     newton_shape_to_mjc_geom: wp.array(dtype=wp.int32),
     # Mujoco warp contacts
@@ -299,8 +300,25 @@ def convert_newton_contacts_to_mjwarp_kernel(
         if contact_ke > 0.0:
             solimp[0] = 0.99
             solimp[1] = 0.99
+            solimp[2] = 0.001
             
-            solref[0] = -contact_ke
+            print(contact_ke)
+            kd = rigid_contact_damping[tid]
+            if kd > 0.0:
+                timeconst = 2.0 / kd
+                dampratio = wp.sqrt(1.0 / (timeconst * timeconst * contact_ke))
+            else:
+                timeconst = wp.sqrt(1.0 / contact_ke)
+                dampratio = 1.0
+            
+            solref[0] = timeconst
+            solref[1] = dampratio
+    
+    if rigid_contact_friction_scaling.shape[0] > 0:
+        friction_scale = rigid_contact_friction_scaling[tid]
+        if friction_scale > 0.0:
+            friction[0] *= friction_scale
+            friction[1] *= friction_scale
 
     # Use the write_contact function to write all the data
     write_contact(
