@@ -1297,19 +1297,29 @@ def get_decode_contacts_kernel(margin_contact_area: float = 1e-4, writer_func: A
         offset = wp.tid()
 
         num_contacts = wp.min(contact_count[0], max_num_face_contacts)
-        prev_num_contacts = writer_data.contact_count[0]
 
-        if prev_num_contacts + num_contacts >= writer_data.contact_max:
-            num_contacts = writer_data.contact_max - prev_num_contacts
+        # Calculate how many contacts this thread will process
+        my_contact_count = 0
+        if offset < num_contacts:
+            my_contact_count = (num_contacts - 1 - offset) // grid_size + 1
 
-        if offset == 0:
-            writer_data.contact_count[0] = prev_num_contacts + num_contacts
+        if my_contact_count == 0:
+            return
+        # Single atomic to reserve all slots for this thread
+        my_base_index = wp.atomic_add(writer_data.contact_count, 0, my_contact_count)
 
+        # Early exit if all reserved slots are beyond buffer
+        if my_base_index >= writer_data.contact_max:
+            return
+
+        # Write contacts using reserved range
+        local_idx = int(0)
         for tid in range(offset, num_contacts, grid_size):
-            # Compute output index directly since we know it in advance
-            output_index = prev_num_contacts + tid
+            output_index = my_base_index + local_idx
+            local_idx += 1
+
             if output_index >= writer_data.contact_max:
-                continue
+                return  # Remaining slots exceed buffer
 
             pair = contact_pair[tid]
             shape_a = pair[0]
