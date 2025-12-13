@@ -434,7 +434,7 @@ def compute_isomesh(volume: wp.Volume) -> Mesh | None:
     """Compute an isosurface mesh from an SDFData struct.
 
     Args:
-        sdf_data: SDFData struct containing the SDF volume.
+        volume: The SDF volume.
 
     Returns:
         Mesh object containing the isosurface mesh.

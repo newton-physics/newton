@@ -5557,7 +5557,7 @@ class ModelBuilder:
                     self.shape_sdf_max_resolution,
                     self.shape_sdf_target_voxel_size,
                     self.shape_key,
-                    strict=False,
+                    strict=True,
                 )
             ):
                 if (

@@ -33,7 +33,7 @@ from newton.utils import (
 )
 
 from ..core.types import nparray
-from .kernels import estimate_world_extents
+from .kernels import compute_isosurface_lines, estimate_world_extents
 
 
 class ViewerBase:
@@ -349,8 +349,6 @@ class ViewerBase:
                 or None if hydroelastic collision is not enabled.
             penetrating_only: If True, only render penetrating contacts (depth > 0).
         """
-        from .kernels import compute_isosurface_lines  # noqa: PLC0415
-
         if isosurface_data is None or not self.show_isosurface:
             self.log_lines("/isosurface", None, None, None)
             return
