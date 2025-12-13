@@ -702,7 +702,7 @@ class SolverMuJoCo(SolverBase):
         model: Model,
         state: State,
         mj_data: MjWarpData | MjData,
-        eval_fk: bool = True,
+        eval_fk: bool = False,
     ):
         is_mjwarp = SolverMuJoCo._data_is_mjwarp(mj_data)
         if is_mjwarp:
@@ -943,7 +943,7 @@ class SolverMuJoCo(SolverBase):
         default_actuator_gear: float | None = None,
         actuator_gears: dict[str, float] | None = None,
         actuated_axes: list[int] | None = None,
-        skip_visual_only_geoms: bool = True,
+        skip_visual_only_geoms: bool = False,
         include_sites: bool = True,
         add_axes: bool = False,
         mesh_maxhullvert: int = MESH_MAXHULLVERT,
@@ -1087,6 +1087,7 @@ class SolverMuJoCo(SolverBase):
 
         joint_parent = model.joint_parent.numpy()
         joint_child = model.joint_child.numpy()
+        joint_articulation = model.joint_articulation.numpy()
         joint_parent_xform = model.joint_X_p.numpy()
         joint_child_xform = model.joint_X_c.numpy()
         joint_limit_lower = model.joint_limit_lower.numpy()
@@ -1226,10 +1227,13 @@ class SolverMuJoCo(SolverBase):
             selected_joints = np.arange(model.joint_count, dtype=np.int32)
             selected_constraints = np.arange(model.equality_constraint_count, dtype=np.int32)
 
+        # split joints into loop and non-loop joints (loop joints will be instantiated separately as equality constraints)
+        joints_loop = np.where(joint_articulation[selected_joints] == -1)[0]
+        joints_non_loop = np.where(joint_articulation[selected_joints] >= 0)[0]
         # sort joints topologically depth-first since this is the order that will also be used
         # for placing bodies in the MuJoCo model
-        joints_simple = list(zip(joint_parent[selected_joints], joint_child[selected_joints], strict=False))
-        joint_order = topological_sort(joints_simple, use_dfs=True)
+        joints_simple = [(joint_parent[i], joint_child[i]) for i in joints_non_loop]
+        joint_order = topological_sort(joints_simple, use_dfs=True, custom_indices=joints_non_loop)
         if any(joint_order[i] != i for i in range(len(joints_simple))):
             warnings.warn(
                 "Joint order is not in depth-first topological order while converting Newton model to MuJoCo, this may lead to diverging kinematics between MuJoCo and Newton.",
@@ -1719,9 +1723,29 @@ class SolverMuJoCo(SolverBase):
                 if eq_constraint_solref is not None:
                     eq.solref = eq_constraint_solref[i]
 
-        assert len(spec.geoms) == colliding_shapes_per_world, (
-            "The number of geoms in the MuJoCo model does not match the number of colliding shapes in the Newton model."
-        )
+        # add connect constraints for joints that are excluded from the articulation
+        # (the UsdPhysics way of defining loop closures)
+        for i in joints_loop:
+            j = selected_joints[i]
+            eq = spec.add_equality(objtype=mujoco.mjtObj.mjOBJ_BODY)
+            eq.type = mujoco.mjtEq.mjEQ_CONNECT
+            eq.active = True
+            eq.name1 = model.body_key[joint_parent[j]]
+            eq.name2 = model.body_key[joint_child[j]]
+            eq.data[0:3] = joint_parent_xform[j][:3]
+
+            eq = spec.add_equality(objtype=mujoco.mjtObj.mjOBJ_BODY)
+            eq.type = mujoco.mjtEq.mjEQ_CONNECT
+            eq.active = True
+            eq.name1 = model.body_key[joint_parent[j]]
+            eq.name2 = model.body_key[joint_child[j]]
+            eq.data[0:3] = joint_parent_xform[j][:3]
+            eq.data[0:3] = joint_child_xform[j][:3]
+
+        if skip_visual_only_geoms and len(spec.geoms) != colliding_shapes_per_world:
+            raise ValueError(
+                "The number of geoms in the MuJoCo model does not match the number of colliding shapes in the Newton model."
+            )
 
         # add contact exclusions between bodies to ensure parent <> child collisions are ignored
         # even when one of the bodies is static
