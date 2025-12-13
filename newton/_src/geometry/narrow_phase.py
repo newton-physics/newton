@@ -67,19 +67,20 @@ class ContactWriterData:
 def write_contact_simple(
     contact_data: ContactData,
     writer_data: ContactWriterData,
+    output_index: int,
 ):
     """
     Write a contact to the output arrays using the simplified API format.
 
     Args:
-        contact_data: ContactData struct containing contact information (includes feature and feature_pair_key)
-        writer_data: ContactWriterData struct containing output arrays (includes contact_pair_key and contact_key)
+        contact_data: ContactData struct containing contact information
+        writer_data: ContactWriterData struct containing output arrays
+        output_index: If >= 0, use this index directly. If < 0, use atomic_add to get the next available index.
     """
     total_separation_needed = (
         contact_data.radius_eff_a + contact_data.radius_eff_b + contact_data.thickness_a + contact_data.thickness_b
     )
 
-    # Distance calculation matching box_plane_collision
     contact_normal_a_to_b = wp.normalize(contact_data.contact_normal_a_to_b)
 
     a_contact_world = contact_data.contact_point_center - contact_normal_a_to_b * (
@@ -93,38 +94,31 @@ def write_contact_simple(
     distance = wp.dot(diff, contact_normal_a_to_b)
     d = distance - total_separation_needed
 
-    if d < contact_data.margin:
+    if output_index < 0:
+        if d >= contact_data.margin:
+            return
         index = wp.atomic_add(writer_data.contact_count, 0, 1)
         if index >= writer_data.contact_max:
-            # Reached buffer limit
             wp.atomic_add(writer_data.contact_count, 0, -1)
             return
+    else:
+        index = output_index
 
-        writer_data.contact_pair[index] = wp.vec2i(contact_data.shape_a, contact_data.shape_b)
+    writer_data.contact_pair[index] = wp.vec2i(contact_data.shape_a, contact_data.shape_b)
+    writer_data.contact_position[index] = contact_data.contact_point_center
+    writer_data.contact_normal[index] = contact_normal_a_to_b
+    writer_data.contact_penetration[index] = d
 
-        # Contact position is the center point
-        writer_data.contact_position[index] = contact_data.contact_point_center
+    if writer_data.contact_tangent.shape[0] > 0:
+        world_x = wp.vec3(1.0, 0.0, 0.0)
+        normal = contact_normal_a_to_b
+        if wp.abs(wp.dot(normal, world_x)) > 0.99:
+            world_x = wp.vec3(0.0, 1.0, 0.0)
+        writer_data.contact_tangent[index] = wp.normalize(world_x - wp.dot(world_x, normal) * normal)
 
-        # Normal pointing from shape A to shape B
-        writer_data.contact_normal[index] = contact_normal_a_to_b
-
-        # Penetration depth (negative if penetrating)
-        writer_data.contact_penetration[index] = d
-
-        # Compute tangent vector only if tangent array is non-empty
-        if writer_data.contact_tangent.shape[0] > 0:
-            # Compute tangent vector (x-axis of local contact frame)
-            # Use perpendicular to normal, defaulting to world x-axis if normal is parallel
-            world_x = wp.vec3(1.0, 0.0, 0.0)
-            normal = contact_normal_a_to_b
-            if wp.abs(wp.dot(normal, world_x)) > 0.99:
-                world_x = wp.vec3(0.0, 1.0, 0.0)
-            writer_data.contact_tangent[index] = wp.normalize(world_x - wp.dot(world_x, normal) * normal)
-
-        # Write contact key only if contact_key array is non-empty
-        if writer_data.contact_key.shape[0] > 0 and writer_data.contact_pair_key.shape[0] > 0:
-            writer_data.contact_key[index] = contact_data.feature
-            writer_data.contact_pair_key[index] = contact_data.feature_pair_key
+    if writer_data.contact_key.shape[0] > 0 and writer_data.contact_pair_key.shape[0] > 0:
+        writer_data.contact_key[index] = contact_data.feature
+        writer_data.contact_pair_key[index] = contact_data.feature_pair_key
 
 
 @wp.func
