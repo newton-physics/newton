@@ -307,13 +307,17 @@ def convert_newton_contacts_to_mjwarp_kernel(
                 timeconst = wp.sqrt(1.0 / contact_ke)
                 dampratio = 1.0
 
-            solref[0] = timeconst
-            solref[1] = dampratio
+            solref = wp.vec2(timeconst, dampratio)
 
         friction_scale = rigid_contact_friction_scaling[tid]
         if friction_scale > 0.0:
-            friction[0] *= friction_scale
-            friction[1] *= friction_scale
+            friction = vec5(
+                friction[0] * friction_scale,
+                friction[1] * friction_scale,
+                friction[2],
+                friction[3],
+                friction[4],
+            )
 
     # Use the write_contact function to write all the data
     write_contact(
