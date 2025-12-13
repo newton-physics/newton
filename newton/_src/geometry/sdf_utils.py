@@ -282,8 +282,7 @@ def compute_sdf(
     offset = margin + shape_thickness
 
     if shape_type == GeoType.MESH:
-        # Use unscaled vertices - scale is handled at collision time
-        verts = mesh_src.vertices
+        verts = mesh_src.vertices * np.array(shape_scale)[None, :]
         pos = wp.array(verts, dtype=wp.vec3)
         indices = wp.array(mesh_src.indices, dtype=wp.int32)
 

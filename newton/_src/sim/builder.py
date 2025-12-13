@@ -3377,10 +3377,7 @@ class ModelBuilder:
 
         is_hydroelastic = cfg.is_hydroelastic
         if is_hydroelastic and (type == GeoType.PLANE or type == GeoType.HFIELD):
-            print(
-                f"Shape '{key}' (index {shape}) has is_hydroelastic=True but is of type {GeoType(type).name}, which is not supported. Falling back to mesh collisions."
-            )
-            is_hydroelastic = False
+            is_hydroelastic = False  # Falling back to mesh/primitive collisions for plane and hfield shapes
         self.shape_is_hydroelastic.append(is_hydroelastic)
 
         if cfg.has_shape_collision and cfg.collision_filter_parent and body > -1 and body in self.joint_parents:
@@ -5518,14 +5515,13 @@ class ModelBuilder:
             m.shape_is_hydroelastic = wp.array(self.shape_is_hydroelastic, dtype=wp.bool)
 
             # ---------------------
-            # Compute SDFs for mesh shapes (per-shape opt-in via sdf_max_resolution or is_hydroelastic)
+            # Compute SDFs for mesh shapes (per-shape opt-in via sdf_max_resolution, sdf_target_voxel_size or is_hydroelastic)
             from ..geometry.sdf_utils import (  # noqa: PLC0415
                 SDFData,
                 compute_isomesh,
                 compute_sdf,
                 create_empty_sdf_data,
             )
-            from ..geometry.types import GeoType  # noqa: PLC0415
 
             # Check if we're running on GPU - wp.Volume only supports CUDA
             current_device = wp.get_device(device)
@@ -5629,6 +5625,12 @@ class ModelBuilder:
                     ) or (is_hydroelastic and shape_flags & ShapeFlags.COLLIDE_SHAPES)
 
                     if needs_sdf:
+                        # Mesh-sdf collisions handle shape scaling at collision time,
+                        # in which case we can compute SDF for this mesh shape in unscaled local space here.
+                        # For hydrelastic collisions this impact of this approximation has yet to be quantified
+                        # so we will bake scale into the SDF data here for now.
+                        bake_scale = is_hydroelastic
+
                         cache_key = (
                             hash(shape_src),
                             shape_type,
@@ -5637,6 +5639,7 @@ class ModelBuilder:
                             tuple(sdf_narrow_band_range),
                             sdf_target_voxel_size,
                             sdf_max_resolution,
+                            tuple(shape_scale) if bake_scale else None,
                         )
                         if cache_key in sdf_cache:
                             idx = sdf_cache[cache_key]
@@ -5645,12 +5648,10 @@ class ModelBuilder:
                             coarse_volume = sdf_coarse_volumes[idx]
                             shape2blocks = [sdf_shape2blocks[idx][0], sdf_shape2blocks[idx][1]]
                         else:
-                            # Compute SDF for this mesh shape in unscaled local space.
-                            # Scale is handled at collision time to ensure SDF and mesh are consistent.
                             sdf_data, sparse_volume, coarse_volume, block_coords = compute_sdf(
                                 mesh_src=shape_src,
                                 shape_type=shape_type,
-                                shape_scale=shape_scale,
+                                shape_scale=shape_scale if bake_scale else (1.0, 1.0, 1.0),
                                 shape_thickness=shape_thickness,
                                 narrow_band_distance=sdf_narrow_band_range,
                                 margin=shape_contact_margin,
