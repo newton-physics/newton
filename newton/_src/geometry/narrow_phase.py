@@ -1160,7 +1160,6 @@ class NarrowPhase:
                 self.shape_pairs_sdf_sdf,
                 self.shape_pairs_sdf_sdf_count,
                 writer_data,
-                device=device,
             )
 
     def launch(

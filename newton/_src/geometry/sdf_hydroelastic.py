@@ -142,6 +142,11 @@ class SDFHydroelastic:
             config = SDFHydroelasticConfig()
 
         self.config = config
+        if device is None:
+            device = wp.get_device()
+        self.device = device
+
+        # keep local references for model arrays
         self.shape_sdf_block_coords = shape_sdf_block_coords
         self.shape_sdf_shape2blocks = shape_sdf_shape2blocks
         self.shape_material_k_hydro = shape_material_k_hydro
@@ -151,10 +156,7 @@ class SDFHydroelastic:
         self.total_num_tiles = total_num_tiles
         self.max_num_blocks_per_shape = max_num_blocks_per_shape
 
-        self.num_shape_pairs_array = wp.full((1,), self.max_num_shape_pairs, dtype=wp.int32)
-
         mult = self.config.buffer_mult_iso * self.total_num_tiles
-
         self.max_num_blocks_broad = int(
             self.max_num_shape_pairs * self.max_num_blocks_per_shape * self.config.buffer_mult_broad
         )
@@ -164,112 +166,116 @@ class SDFHydroelastic:
         # Input buffer sizes for each octree level
         self.input_sizes = (self.max_num_blocks_broad, *self.iso_max_dims[:3])
 
-        # Allocate buffers for octree traversal (broadphase + 4 refinement levels)
-        self.iso_buffer_counts = [wp.zeros((1,), dtype=wp.int32) for _ in range(5)]
-        self.iso_buffer_prefix = [wp.zeros(self.input_sizes[i], dtype=wp.int32) for i in range(4)]
-        self.iso_buffer_num = [wp.zeros(self.input_sizes[i], dtype=wp.int32) for i in range(4)]
-        self.iso_subblock_idx = [wp.zeros(self.input_sizes[i], dtype=wp.uint8) for i in range(4)]
-        self.iso_buffer_coords = [wp.empty((self.max_num_blocks_broad,), dtype=wp.vec3us)] + [
-            wp.empty((self.iso_max_dims[i],), dtype=wp.vec3us) for i in range(4)
-        ]
-        self.iso_buffer_shape_pairs = [wp.empty((self.max_num_blocks_broad,), dtype=wp.vec2i)] + [
-            wp.empty((self.iso_max_dims[i],), dtype=wp.vec2i) for i in range(4)
-        ]
+        with wp.ScopedDevice(device):
+            self.num_shape_pairs_array = wp.full((1,), self.max_num_shape_pairs, dtype=wp.int32)
 
-        # Aliases for commonly accessed final buffers
-        self.block_broad_collide_count = self.iso_buffer_counts[0]
-        self.iso_voxel_count = self.iso_buffer_counts[4]
-        self.iso_voxel_coords = self.iso_buffer_coords[4]
-        self.iso_voxel_shape_pair = self.iso_buffer_shape_pairs[4]
-        self.face_contact_count = wp.zeros((1,), dtype=wp.int32)
+            # Allocate buffers for octree traversal (broadphase + 4 refinement levels)
+            self.iso_buffer_counts = [wp.zeros((1,), dtype=wp.int32) for _ in range(5)]
+            self.iso_buffer_prefix = [wp.zeros(self.input_sizes[i], dtype=wp.int32) for i in range(4)]
+            self.iso_buffer_num = [wp.zeros(self.input_sizes[i], dtype=wp.int32) for i in range(4)]
+            self.iso_subblock_idx = [wp.zeros(self.input_sizes[i], dtype=wp.uint8) for i in range(4)]
+            self.iso_buffer_coords = [wp.empty((self.max_num_blocks_broad,), dtype=wp.vec3us)] + [
+                wp.empty((self.iso_max_dims[i],), dtype=wp.vec3us) for i in range(4)
+            ]
+            self.iso_buffer_shape_pairs = [wp.empty((self.max_num_blocks_broad,), dtype=wp.vec2i)] + [
+                wp.empty((self.iso_max_dims[i],), dtype=wp.vec2i) for i in range(4)
+            ]
 
-        # Broadphase buffers
-        self.block_start_prefix = wp.zeros((self.max_num_shape_pairs,), dtype=wp.int32)
-        self.num_blocks_per_pair = wp.zeros((self.max_num_shape_pairs,), dtype=wp.int32)
-        self.block_broad_idx = wp.empty((self.max_num_blocks_broad,), dtype=wp.int32)
-        self.block_broad_collide_coords = self.iso_buffer_coords[0]
-        self.block_broad_collide_shape_pair = self.iso_buffer_shape_pairs[0]
+            # Aliases for commonly accessed final buffers
+            self.block_broad_collide_count = self.iso_buffer_counts[0]
+            self.iso_voxel_count = self.iso_buffer_counts[4]
+            self.iso_voxel_coords = self.iso_buffer_coords[4]
+            self.iso_voxel_shape_pair = self.iso_buffer_shape_pairs[4]
+            self.face_contact_count = wp.zeros((1,), dtype=wp.int32)
 
-        # Iso voxel buffers
-        self.voxel_face_count = wp.zeros((self.max_num_iso_voxels,), dtype=wp.int32)
-        self.voxel_face_prefix = wp.zeros((self.max_num_iso_voxels,), dtype=wp.int32)
-        self.voxel_cube_indices = wp.zeros((self.max_num_iso_voxels,), dtype=wp.uint8)
-        self.voxel_corner_vals = wp.zeros((self.max_num_iso_voxels,), dtype=vec8f)
+            # Broadphase buffers
+            self.block_start_prefix = wp.zeros((self.max_num_shape_pairs,), dtype=wp.int32)
+            self.num_blocks_per_pair = wp.zeros((self.max_num_shape_pairs,), dtype=wp.int32)
+            self.block_broad_idx = wp.empty((self.max_num_blocks_broad,), dtype=wp.int32)
+            self.block_broad_collide_coords = self.iso_buffer_coords[0]
+            self.block_broad_collide_shape_pair = self.iso_buffer_shape_pairs[0]
 
-        # Face contact buffers
-        self.max_num_face_contacts = 2 * self.max_num_iso_voxels
-        self.face_contact_pair = wp.empty((self.max_num_face_contacts,), dtype=wp.vec2i)
-        self.face_contact_pos = wp.empty((self.max_num_face_contacts,), dtype=wp.vec3)
-        self.face_contact_normal = wp.empty((self.max_num_face_contacts,), dtype=wp.vec3)
-        self.face_contact_depth = wp.empty((self.max_num_face_contacts,), dtype=wp.float32)
-        self.face_contact_id = wp.empty((self.max_num_face_contacts,), dtype=wp.int32)
-        self.face_contact_area = wp.empty((self.max_num_face_contacts,), dtype=wp.float32)
-        self.contact_normal_bin_idx = wp.empty((self.max_num_face_contacts,), dtype=wp.int32)
+            # Iso voxel buffers
+            self.voxel_face_count = wp.zeros((self.max_num_iso_voxels,), dtype=wp.int32)
+            self.voxel_face_prefix = wp.zeros((self.max_num_iso_voxels,), dtype=wp.int32)
+            self.voxel_cube_indices = wp.zeros((self.max_num_iso_voxels,), dtype=wp.uint8)
+            self.voxel_corner_vals = wp.zeros((self.max_num_iso_voxels,), dtype=vec8f)
 
-        if self.config.output_iso_vertices:
-            # stores the point and depth of the iso vertex
-            self.iso_vertex_point = wp.empty((3 * self.max_num_face_contacts,), dtype=wp.vec3f)
-            self.iso_vertex_depth = wp.empty((self.max_num_face_contacts,), dtype=wp.float32)
-            self.iso_vertex_shape_pair = wp.empty((self.max_num_face_contacts,), dtype=wp.vec2i)
-        else:
-            self.iso_vertex_point = wp.empty((0,), dtype=wp.vec3f)
-            self.iso_vertex_depth = wp.empty((0,), dtype=wp.float32)
-            self.iso_vertex_shape_pair = wp.empty((0,), dtype=wp.vec2i)
+            # Face contact buffers
+            self.max_num_face_contacts = 2 * self.max_num_iso_voxels
+            self.face_contact_pair = wp.empty((self.max_num_face_contacts,), dtype=wp.vec2i)
+            self.face_contact_pos = wp.empty((self.max_num_face_contacts,), dtype=wp.vec3)
+            self.face_contact_normal = wp.empty((self.max_num_face_contacts,), dtype=wp.vec3)
+            self.face_contact_depth = wp.empty((self.max_num_face_contacts,), dtype=wp.float32)
+            self.face_contact_id = wp.empty((self.max_num_face_contacts,), dtype=wp.int32)
+            self.face_contact_area = wp.empty((self.max_num_face_contacts,), dtype=wp.float32)
+            self.contact_normal_bin_idx = wp.empty((self.max_num_face_contacts,), dtype=wp.int32)
 
-        self.mc_tables = get_mc_tables(device)
+            if self.config.output_iso_vertices:
+                # stores the point and depth of the iso vertex
+                self.iso_vertex_point = wp.empty((3 * self.max_num_face_contacts,), dtype=wp.vec3f)
+                self.iso_vertex_depth = wp.empty((self.max_num_face_contacts,), dtype=wp.float32)
+                self.iso_vertex_shape_pair = wp.empty((self.max_num_face_contacts,), dtype=wp.vec2i)
+            else:
+                self.iso_vertex_point = wp.empty((0,), dtype=wp.vec3f)
+                self.iso_vertex_depth = wp.empty((0,), dtype=wp.float32)
+                self.iso_vertex_shape_pair = wp.empty((0,), dtype=wp.vec2i)
 
-        self.count_faces_kernel, self.scatter_faces_kernel = get_generate_contacts_kernel(
-            self.config.output_iso_vertices,
-        )
+            self.mc_tables = get_mc_tables(device)
 
-        if self.config.reduce_contacts:
-            self.penetration_betas = wp.array(self.config.betas, dtype=wp.float32)
-            self.num_betas = len(self.config.betas)
-            self.bin_directions = NUM_SPATIAL_DIRECTIONS
-            num_normal_bins = NUM_NORMAL_BINS
-
-            self.max_num_bins = self.max_num_shape_pairs
-            self.sparse_pair_size = self.n_shapes * self.n_shapes
-
-            self.shape_pairs_mask = wp.zeros(self.sparse_pair_size, dtype=wp.int32)
-            self.shape_pairs_to_bin = wp.zeros((self.sparse_pair_size,), dtype=wp.int32)
-            self.shape_pairs_to_bin_prev = wp.clone(self.shape_pairs_to_bin)
-            self.bin_to_shape_pair = wp.zeros((self.max_num_bins,), dtype=wp.int32)
-            self.num_total_pairs = wp.array((self.max_num_shape_pairs,), dtype=wp.int32)
-            self.num_active_pairs = wp.zeros((1,), dtype=wp.int32)
-
-            n_slots = (
-                self.num_betas * self.bin_directions + 1
-            )  # track the max dot product for each beta and direction + contact with deepest penetration depth
-            self.binned_normals = wp.zeros((self.max_num_bins, num_normal_bins, n_slots), dtype=wp.vec3f)
-            self.binned_pos = wp.zeros((self.max_num_bins, num_normal_bins, n_slots), dtype=wp.vec3f)
-            self.binned_depth = wp.zeros((self.max_num_bins, num_normal_bins, n_slots), dtype=wp.float32)
-            self.binned_dot_product = wp.zeros((self.max_num_bins, num_normal_bins, n_slots), dtype=wp.float32)
-            self.binned_id = wp.full((self.max_num_bins, num_normal_bins, n_slots), dtype=wp.int32, value=-1)
-            self.binned_id_prev = wp.clone(self.binned_id)
-
-            self.bin_occupied = wp.zeros((self.max_num_bins, num_normal_bins), dtype=wp.bool)
-            self.binned_agg_force = wp.zeros((self.max_num_bins, num_normal_bins), dtype=wp.vec3f)
-            self.binned_weighted_pos_sum = wp.zeros((self.max_num_bins, num_normal_bins), dtype=wp.vec3f)
-            self.binned_weight_sum = wp.zeros((self.max_num_bins, num_normal_bins), dtype=wp.float32)
-            self.binned_agg_moment = wp.zeros((self.max_num_bins, num_normal_bins), dtype=wp.float32)
-
-            self.compute_bin_scores, self.assign_contacts_to_bins, self.generate_contacts_from_bins = (
-                get_binning_kernels(
-                    self.bin_directions,
-                    num_normal_bins,
-                    self.num_betas,
-                    self.config.sticky_contacts,
-                    self.config.normal_matching,
-                    self.config.moment_matching,
-                    self.config.margin_contact_area,
-                    writer_func,
-                )
+            self.count_faces_kernel, self.scatter_faces_kernel = get_generate_contacts_kernel(
+                self.config.output_iso_vertices,
             )
-        else:
-            self.decode_contacts_kernel = get_decode_contacts_kernel(self.config.margin_contact_area, writer_func)
 
-        self.max_depth = wp.zeros((1,), dtype=wp.float32)
+            if self.config.reduce_contacts:
+                self.penetration_betas = wp.array(self.config.betas, dtype=wp.float32)
+                self.num_betas = len(self.config.betas)
+                self.bin_directions = NUM_SPATIAL_DIRECTIONS
+                num_normal_bins = NUM_NORMAL_BINS
+
+                self.max_num_bins = self.max_num_shape_pairs
+                self.sparse_pair_size = self.n_shapes * self.n_shapes
+
+                self.shape_pairs_mask = wp.zeros(self.sparse_pair_size, dtype=wp.int32)
+                self.shape_pairs_to_bin = wp.zeros((self.sparse_pair_size,), dtype=wp.int32)
+                self.shape_pairs_to_bin_prev = wp.clone(self.shape_pairs_to_bin)
+                self.bin_to_shape_pair = wp.zeros((self.max_num_bins,), dtype=wp.int32)
+                self.num_total_pairs = wp.array((self.max_num_shape_pairs,), dtype=wp.int32)
+                self.num_active_pairs = wp.zeros((1,), dtype=wp.int32)
+
+                n_slots = (
+                    self.num_betas * self.bin_directions + 1
+                )  # track the max dot product for each beta and direction + contact with deepest penetration depth
+                self.binned_normals = wp.zeros((self.max_num_bins, num_normal_bins, n_slots), dtype=wp.vec3f)
+                self.binned_pos = wp.zeros((self.max_num_bins, num_normal_bins, n_slots), dtype=wp.vec3f)
+                self.binned_depth = wp.zeros((self.max_num_bins, num_normal_bins, n_slots), dtype=wp.float32)
+                self.binned_dot_product = wp.zeros((self.max_num_bins, num_normal_bins, n_slots), dtype=wp.float32)
+                self.binned_id = wp.full((self.max_num_bins, num_normal_bins, n_slots), dtype=wp.int32, value=-1)
+                self.binned_id_prev = wp.clone(self.binned_id)
+
+                self.bin_occupied = wp.zeros((self.max_num_bins, num_normal_bins), dtype=wp.bool)
+                self.binned_agg_force = wp.zeros((self.max_num_bins, num_normal_bins), dtype=wp.vec3f)
+                self.binned_weighted_pos_sum = wp.zeros((self.max_num_bins, num_normal_bins), dtype=wp.vec3f)
+                self.binned_weight_sum = wp.zeros((self.max_num_bins, num_normal_bins), dtype=wp.float32)
+                self.binned_agg_moment = wp.zeros((self.max_num_bins, num_normal_bins), dtype=wp.float32)
+
+                self.compute_bin_scores, self.assign_contacts_to_bins, self.generate_contacts_from_bins = (
+                    get_binning_kernels(
+                        self.bin_directions,
+                        num_normal_bins,
+                        self.num_betas,
+                        self.config.sticky_contacts,
+                        self.config.normal_matching,
+                        self.config.moment_matching,
+                        self.config.margin_contact_area,
+                        writer_func,
+                    )
+                )
+            else:
+                self.decode_contacts_kernel = get_decode_contacts_kernel(self.config.margin_contact_area, writer_func)
+
+            self.max_depth = wp.zeros((1,), dtype=wp.float32)
+
         self.grid_size = min(self.config.grid_size, self.max_num_face_contacts)
 
     @classmethod
@@ -360,7 +366,6 @@ class SDFHydroelastic:
         shape_pairs_sdf_sdf: wp.array(dtype=wp.vec2i),
         shape_pairs_sdf_sdf_count: wp.array(dtype=wp.int32),
         writer_data: Any,
-        device: Any = None,
     ) -> None:
         """Run the full hydroelastic collision pipeline.
 
@@ -371,33 +376,29 @@ class SDFHydroelastic:
             shape_pairs_sdf_sdf: Pairs of shape indices to check for collision.
             shape_pairs_sdf_sdf_count: Number of valid shape pairs.
             writer_data: Contact data writer for output.
-            device: Warp device for computation.
         """
         self._broadphase_sdfs(
             shape_sdf_data,
             shape_transform,
             shape_pairs_sdf_sdf,
             shape_pairs_sdf_sdf_count,
-            device,
         )
 
-        self._find_iso_voxels(shape_sdf_data, shape_transform, shape_contact_margin, device)
+        self._find_iso_voxels(shape_sdf_data, shape_transform, shape_contact_margin)
 
-        self._generate_contacts(shape_sdf_data, shape_transform, shape_contact_margin, device)
+        self._generate_contacts(shape_sdf_data, shape_transform, shape_contact_margin)
 
         if self.config.reduce_contacts:
             self._reduce_decode_contacts(
                 shape_transform,
                 shape_contact_margin,
                 writer_data,
-                device,
             )
         else:
             self._decode_contacts(
                 shape_transform,
                 shape_contact_margin,
                 writer_data,
-                device,
             )
 
         wp.launch(
@@ -419,7 +420,7 @@ class SDFHydroelastic:
                 writer_data.contact_count,
                 writer_data.contact_max,
             ],
-            device=device,
+            device=self.device,
         )
 
     def _broadphase_sdfs(
@@ -428,7 +429,6 @@ class SDFHydroelastic:
         shape_transform: wp.array(dtype=wp.transform),
         shape_pairs_sdf_sdf: wp.array(dtype=wp.vec2i),
         shape_pairs_sdf_sdf_count: wp.array(dtype=wp.int32),
-        device: Any = None,
     ) -> None:
         # Test collisions between OBB of SDFs
         self.num_blocks_per_pair.zero_()
@@ -446,7 +446,7 @@ class SDFHydroelastic:
             outputs=[
                 self.num_blocks_per_pair,
             ],
-            device=device,
+            device=self.device,
         )
 
         scan_with_total(
@@ -472,7 +472,7 @@ class SDFHydroelastic:
                 self.block_broad_collide_shape_pair,
                 self.block_broad_idx,
             ],
-            device=device,
+            device=self.device,
         )
 
         wp.launch(
@@ -488,7 +488,7 @@ class SDFHydroelastic:
             outputs=[
                 self.block_broad_collide_coords,
             ],
-            device=device,
+            device=self.device,
         )
 
     def _find_iso_voxels(
@@ -496,7 +496,6 @@ class SDFHydroelastic:
         shape_sdf_data: wp.array(dtype=SDFData),
         shape_transform: wp.array(dtype=wp.transform),
         shape_contact_margin: wp.array(dtype=wp.float32),
-        device: Any = None,
     ) -> None:
         # Find voxels which contain the isosurface between the shapes using octree-like pruning.
         # We do this by computing the difference between sdfs at the voxel/subblock center and comparing it to the voxel/subblock radius.
@@ -522,7 +521,7 @@ class SDFHydroelastic:
                     self.iso_buffer_num[i],
                     self.iso_subblock_idx[i],
                 ],
-                device=device,
+                device=self.device,
             )
 
             scan_with_total(
@@ -551,7 +550,7 @@ class SDFHydroelastic:
                     self.iso_buffer_coords[i + 1],
                     self.iso_buffer_shape_pairs[i + 1],
                 ],
-                device=device,
+                device=self.device,
             )
 
     def _generate_contacts(
@@ -559,7 +558,6 @@ class SDFHydroelastic:
         shape_sdf_data: wp.array(dtype=SDFData),
         shape_transform: wp.array(dtype=wp.transform),
         shape_contact_margin: wp.array(dtype=wp.float32),
-        device: Any = None,
     ) -> None:
         self.voxel_face_count.zero_()
         wp.launch(
@@ -583,7 +581,7 @@ class SDFHydroelastic:
                 self.voxel_cube_indices,
                 self.voxel_corner_vals,
             ],
-            device=device,
+            device=self.device,
         )
 
         scan_with_total(self.voxel_face_count, self.voxel_face_prefix, self.iso_voxel_count, self.face_contact_count)
@@ -619,7 +617,7 @@ class SDFHydroelastic:
                 self.iso_vertex_depth,
                 self.iso_vertex_shape_pair,
             ],
-            device=device,
+            device=self.device,
         )
 
     def _decode_contacts(
@@ -627,7 +625,6 @@ class SDFHydroelastic:
         shape_transform: wp.array(dtype=wp.transform),
         shape_contact_margin: wp.array(dtype=wp.float32),
         writer_data: Any,
-        device: Any = None,
     ) -> None:
         wp.launch(
             kernel=self.decode_contacts_kernel,
@@ -646,7 +643,7 @@ class SDFHydroelastic:
                 self.max_num_face_contacts,
             ],
             outputs=[writer_data],
-            device=device,
+            device=self.device,
         )
 
     def _reduce_decode_contacts(
@@ -654,7 +651,6 @@ class SDFHydroelastic:
         shape_transform: wp.array(dtype=wp.transform),
         shape_contact_margin: wp.array(dtype=wp.float32),
         writer_data: Any,
-        device: Any = None,
     ) -> None:
         wp.copy(self.binned_id_prev, self.binned_id)
         wp.copy(self.shape_pairs_to_bin_prev, self.shape_pairs_to_bin)
@@ -679,7 +675,7 @@ class SDFHydroelastic:
                 self.n_shapes,
             ],
             outputs=[self.shape_pairs_mask],
-            device=device,
+            device=self.device,
         )
 
         # Pass 2: Prefix sum to get contiguous bin indices
@@ -712,7 +708,7 @@ class SDFHydroelastic:
                 self.binned_weighted_pos_sum,
                 self.binned_weight_sum,
             ],
-            device=device,
+            device=self.device,
         )
 
         wp.launch(
@@ -744,7 +740,7 @@ class SDFHydroelastic:
                 self.binned_id,
                 self.binned_agg_moment,
             ],
-            device=device,
+            device=self.device,
         )
 
         wp.launch(
@@ -770,7 +766,7 @@ class SDFHydroelastic:
             outputs=[
                 writer_data,
             ],
-            device=device,
+            device=self.device,
         )
 
 
