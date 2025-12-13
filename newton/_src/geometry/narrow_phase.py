@@ -39,6 +39,7 @@ from ..geometry.contact_reduction import (
     synchronize,
 )
 from ..geometry.sdf_contact import create_narrow_phase_process_mesh_mesh_contacts_kernel
+from ..geometry.sdf_hydroelastic import SDFHydroelastic
 from ..geometry.sdf_utils import SDFData
 from ..geometry.support_function import (
     GenericShapeData,
@@ -66,19 +67,20 @@ class ContactWriterData:
 def write_contact_simple(
     contact_data: ContactData,
     writer_data: ContactWriterData,
+    output_index: int,
 ):
     """
     Write a contact to the output arrays using the simplified API format.
 
     Args:
-        contact_data: ContactData struct containing contact information (includes feature and feature_pair_key)
-        writer_data: ContactWriterData struct containing output arrays (includes contact_pair_key and contact_key)
+        contact_data: ContactData struct containing contact information
+        writer_data: ContactWriterData struct containing output arrays
+        output_index: If >= 0, use this index directly. If < 0, use atomic_add to get the next available index.
     """
     total_separation_needed = (
         contact_data.radius_eff_a + contact_data.radius_eff_b + contact_data.thickness_a + contact_data.thickness_b
     )
 
-    # Distance calculation matching box_plane_collision
     contact_normal_a_to_b = wp.normalize(contact_data.contact_normal_a_to_b)
 
     a_contact_world = contact_data.contact_point_center - contact_normal_a_to_b * (
@@ -92,38 +94,31 @@ def write_contact_simple(
     distance = wp.dot(diff, contact_normal_a_to_b)
     d = distance - total_separation_needed
 
-    if d < contact_data.margin:
+    if output_index < 0:
+        if d >= contact_data.margin:
+            return
         index = wp.atomic_add(writer_data.contact_count, 0, 1)
         if index >= writer_data.contact_max:
-            # Reached buffer limit
             wp.atomic_add(writer_data.contact_count, 0, -1)
             return
+    else:
+        index = output_index
 
-        writer_data.contact_pair[index] = wp.vec2i(contact_data.shape_a, contact_data.shape_b)
+    writer_data.contact_pair[index] = wp.vec2i(contact_data.shape_a, contact_data.shape_b)
+    writer_data.contact_position[index] = contact_data.contact_point_center
+    writer_data.contact_normal[index] = contact_normal_a_to_b
+    writer_data.contact_penetration[index] = d
 
-        # Contact position is the center point
-        writer_data.contact_position[index] = contact_data.contact_point_center
+    if writer_data.contact_tangent.shape[0] > 0:
+        world_x = wp.vec3(1.0, 0.0, 0.0)
+        normal = contact_normal_a_to_b
+        if wp.abs(wp.dot(normal, world_x)) > 0.99:
+            world_x = wp.vec3(0.0, 1.0, 0.0)
+        writer_data.contact_tangent[index] = wp.normalize(world_x - wp.dot(world_x, normal) * normal)
 
-        # Normal pointing from shape A to shape B
-        writer_data.contact_normal[index] = contact_normal_a_to_b
-
-        # Penetration depth (negative if penetrating)
-        writer_data.contact_penetration[index] = d
-
-        # Compute tangent vector only if tangent array is non-empty
-        if writer_data.contact_tangent.shape[0] > 0:
-            # Compute tangent vector (x-axis of local contact frame)
-            # Use perpendicular to normal, defaulting to world x-axis if normal is parallel
-            world_x = wp.vec3(1.0, 0.0, 0.0)
-            normal = contact_normal_a_to_b
-            if wp.abs(wp.dot(normal, world_x)) > 0.99:
-                world_x = wp.vec3(0.0, 1.0, 0.0)
-            writer_data.contact_tangent[index] = wp.normalize(world_x - wp.dot(world_x, normal) * normal)
-
-        # Write contact key only if contact_key array is non-empty
-        if writer_data.contact_key.shape[0] > 0 and writer_data.contact_pair_key.shape[0] > 0:
-            writer_data.contact_key[index] = contact_data.feature
-            writer_data.contact_pair_key[index] = contact_data.feature_pair_key
+    if writer_data.contact_key.shape[0] > 0 and writer_data.contact_pair_key.shape[0] > 0:
+        writer_data.contact_key[index] = contact_data.feature
+        writer_data.contact_pair_key[index] = contact_data.feature_pair_key
 
 
 @wp.func
@@ -185,6 +180,7 @@ def create_narrow_phase_kernel_gjk_mpr(external_aabb: bool, writer_func: Any):
         shape_collision_radius: wp.array(dtype=float),
         shape_aabb_lower: wp.array(dtype=wp.vec3),
         shape_aabb_upper: wp.array(dtype=wp.vec3),
+        shape_is_hydroelastic: wp.array(dtype=wp.bool),
         writer_data: Any,
         total_num_threads: int,
         # mesh collision outputs (for mesh processing)
@@ -198,6 +194,9 @@ def create_narrow_phase_kernel_gjk_mpr(external_aabb: bool, writer_func: Any):
         # mesh-mesh collision outputs
         shape_pairs_mesh_mesh: wp.array(dtype=wp.vec2i),
         shape_pairs_mesh_mesh_count: wp.array(dtype=int),
+        # sdf-sdf hydroelastic collision outputs
+        shape_pairs_sdf_sdf: wp.array(dtype=wp.vec2i),
+        shape_pairs_sdf_sdf_count: wp.array(dtype=int),
     ):
         """
         Narrow phase collision detection kernel using GJK/MPR.
@@ -230,6 +229,13 @@ def create_narrow_phase_kernel_gjk_mpr(external_aabb: bool, writer_func: Any):
                 # Swap shapes to maintain consistent ordering
                 shape_a, shape_b = shape_b, shape_a
                 type_a, type_b = type_b, type_a
+
+            # Check if both shapes are hydroelastic - if so, route to SDF-SDF pipeline
+            if shape_is_hydroelastic[shape_a] and shape_is_hydroelastic[shape_b]:
+                idx = wp.atomic_add(shape_pairs_sdf_sdf_count, 0, 1)
+                if idx < shape_pairs_sdf_sdf.shape[0]:
+                    shape_pairs_sdf_sdf[idx] = wp.vec2i(shape_a, shape_b)
+                continue
 
             # Extract shape data for both shapes
             pos_a, quat_a, shape_data_a, scale_a, thickness_a = extract_shape_data(
@@ -643,7 +649,7 @@ def create_narrow_phase_process_mesh_plane_contacts_kernel(
                     contact_data.feature = wp.uint32(vertex_idx + 1)
                     contact_data.feature_pair_key = pair_key
 
-                    writer_func(contact_data, writer_data)
+                    writer_func(contact_data, writer_data, -1)
 
     # Return early if contact reduction is disabled
     if contact_reduction_funcs is None:
@@ -811,7 +817,7 @@ def create_narrow_phase_process_mesh_plane_contacts_kernel(
                 contact_data.feature = wp.uint32(contact.feature + 1)
                 contact_data.feature_pair_key = pair_key
 
-                writer_func(contact_data, writer_data)
+                writer_func(contact_data, writer_data, -1)
 
             # Ensure all threads complete before processing next pair
             synchronize()
@@ -830,6 +836,7 @@ class NarrowPhase:
         shape_aabb_upper: wp.array(dtype=wp.vec3) | None = None,
         contact_writer_warp_func: Any | None = None,
         contact_reduction_betas: tuple = (1000000.0, 0.0001),
+        sdf_hydroelastic: SDFHydroelastic | None = None,
     ):
         """
         Initialize NarrowPhase with pre-allocated buffers.
@@ -862,6 +869,7 @@ class NarrowPhase:
                 Each beta adds 6 slots per normal bin (one per spatial direction).
                 Default is ``(1000000.0, 0.0001)`` which keeps both all spatial extremes and
                 near-penetrating spatial extremes. The number of reduction slots is ``20 * (6 * len(betas) + 1)``.
+            sdf_hydroelastic: Optional SDF hydroelastic instance. Set is_hydroelastic=True on shapes to enable hydroelastic collisions.
         """
         self.max_candidate_pairs = max_candidate_pairs
         self.max_triangle_pairs = max_triangle_pairs
@@ -918,6 +926,8 @@ class NarrowPhase:
             contact_reduction_funcs=self.contact_reduction_funcs,
         )
 
+        self.sdf_hydroelastic = sdf_hydroelastic
+
         # Pre-allocate all intermediate buffers
         with wp.ScopedDevice(device):
             # Buffers for mesh collision handling
@@ -947,8 +957,19 @@ class NarrowPhase:
             # Empty contact_key array for when contact key collection is disabled
             self.empty_contact_key = wp.zeros(0, dtype=wp.uint32, device=device)
 
+            # Empty stiffness array for when per-contact stiffness is disabled
+            self.empty_stiffness = wp.zeros(0, dtype=wp.float32, device=device)
+
             # Betas array for contact reduction (using the configured contact_reduction_betas tuple)
             self.betas = create_betas_array(betas=self.betas_tuple, device=device)
+
+            if sdf_hydroelastic is not None:
+                self.shape_pairs_sdf_sdf = wp.zeros(sdf_hydroelastic.max_num_shape_pairs, dtype=wp.vec2i, device=device)
+                self.shape_pairs_sdf_sdf_count = wp.zeros(1, dtype=wp.int32, device=device)
+            else:
+                # Empty arrays for when hydroelastic is disabled
+                self.shape_pairs_sdf_sdf = wp.zeros(0, dtype=wp.vec2i, device=device)
+                self.shape_pairs_sdf_sdf_count = wp.zeros(1, dtype=wp.int32, device=device)
 
         # Fixed thread count for kernel launches
         gpu_thread_limit = 1024 * 1024 * 4
@@ -969,6 +990,7 @@ class NarrowPhase:
         shape_sdf_data: wp.array(dtype=SDFData, ndim=1),  # SDF data structs for mesh shapes
         shape_contact_margin: wp.array(dtype=wp.float32, ndim=1),  # per-shape contact margin
         shape_collision_radius: wp.array(dtype=wp.float32, ndim=1),  # per-shape collision radius for AABB fallback
+        shape_is_hydroelastic: wp.array(dtype=wp.bool, ndim=1),  # per-shape hydroelastic flag
         writer_data: Any,
         device=None,  # Device to launch on
     ):
@@ -997,6 +1019,8 @@ class NarrowPhase:
         self.shape_pairs_mesh_plane_count.zero_()
         self.mesh_plane_vertex_total_count.zero_()
         self.shape_pairs_mesh_mesh_count.zero_()
+        if self.sdf_hydroelastic is not None:
+            self.shape_pairs_sdf_sdf_count.zero_()
 
         # Launch main narrow phase kernel (using the appropriate kernel variant)
         wp.launch(
@@ -1013,6 +1037,7 @@ class NarrowPhase:
                 shape_collision_radius,
                 self.shape_aabb_lower,
                 self.shape_aabb_upper,
+                shape_is_hydroelastic,
                 writer_data,
                 self.total_num_threads,
             ],
@@ -1025,6 +1050,8 @@ class NarrowPhase:
                 self.mesh_plane_vertex_total_count,
                 self.shape_pairs_mesh_mesh,
                 self.shape_pairs_mesh_mesh_count,
+                self.shape_pairs_sdf_sdf,
+                self.shape_pairs_sdf_sdf_count,
             ],
             device=device,
             block_dim=self.block_dim,
@@ -1125,6 +1152,16 @@ class NarrowPhase:
                 block_dim=self.tile_size_mesh_mesh,
             )
 
+        if self.sdf_hydroelastic is not None:
+            self.sdf_hydroelastic.launch(
+                shape_sdf_data,
+                shape_transform,
+                shape_contact_margin,
+                self.shape_pairs_sdf_sdf,
+                self.shape_pairs_sdf_sdf_count,
+                writer_data,
+            )
+
     def launch(
         self,
         candidate_pair: wp.array(dtype=wp.vec2i, ndim=1),  # Maybe colliding pairs
@@ -1136,6 +1173,7 @@ class NarrowPhase:
         shape_sdf_data: wp.array(dtype=SDFData, ndim=1),  # SDF data structs for mesh shapes
         shape_contact_margin: wp.array(dtype=wp.float32, ndim=1),  # per-shape contact margin
         shape_collision_radius: wp.array(dtype=wp.float32, ndim=1),  # per-shape collision radius for AABB fallback
+        shape_is_hydroelastic: wp.array(dtype=wp.bool, ndim=1),  # per-shape hydroelastic flag
         # Outputs
         contact_pair: wp.array(dtype=wp.vec2i),
         contact_position: wp.array(dtype=wp.vec3),
@@ -1220,6 +1258,7 @@ class NarrowPhase:
             shape_sdf_data,
             shape_contact_margin,
             shape_collision_radius,
+            shape_is_hydroelastic,
             writer_data,
             device,
         )

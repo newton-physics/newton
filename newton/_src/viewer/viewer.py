@@ -33,7 +33,7 @@ from newton.utils import (
 )
 
 from ..core.types import nparray
-from .kernels import estimate_world_extents
+from .kernels import compute_isosurface_lines, estimate_world_extents
 
 
 class ViewerBase:
@@ -77,6 +77,12 @@ class ViewerBase:
         self.show_visual = True  # show visual shapes (non collider)
         self.show_static = False  # force static shapes to be visible
         self.show_inertia_boxes = False
+        self.show_isosurface = False  # show isosurface wireframe
+
+        # cache for isosurface line rendering (lazily allocated)
+        self._iso_line_starts: wp.array | None = None
+        self._iso_line_ends: wp.array | None = None
+        self._iso_line_colors: wp.array | None = None
 
         self.model_shape_color: wp.array(dtype=wp.vec3) = None
         """Color of shapes created from ``self.model``, shape (model.shape_count,)"""
@@ -333,6 +339,61 @@ class ViewerBase:
         colors = (0.0, 1.0, 0.0)
 
         self.log_lines("/contacts", starts, ends, colors)
+
+    def log_isosurface(self, isosurface_data, penetrating_only: bool = True):
+        """
+        Render the isosurface triangles as wireframe lines from SDFHydroelastic collision detection.
+
+        Args:
+            isosurface_data: An IsosurfaceData instance containing vertex arrays for visualization,
+                or None if hydroelastic collision is not enabled.
+            penetrating_only: If True, only render penetrating contacts (depth > 0).
+        """
+        if isosurface_data is None or not self.show_isosurface:
+            self.log_lines("/isosurface", None, None, None)
+            return
+
+        # Get the number of face contacts (triangles)
+        num_contacts = int(isosurface_data.face_contact_count.numpy()[0])
+
+        if num_contacts == 0:
+            self.log_lines("/isosurface", None, None, None)
+            return
+
+        # Each triangle has 3 edges -> 3 line segments per contact
+        num_lines = 3 * num_contacts
+        max_lines = 3 * isosurface_data.max_num_face_contacts
+
+        # Pre-allocate line buffers (only once, to max capacity)
+        if (
+            not hasattr(self, "_iso_line_starts")
+            or self._iso_line_starts is None
+            or len(self._iso_line_starts) < max_lines
+        ):
+            self._iso_line_starts = wp.zeros(max_lines, dtype=wp.vec3, device=self.device)
+            self._iso_line_ends = wp.zeros(max_lines, dtype=wp.vec3, device=self.device)
+            self._iso_line_colors = wp.zeros(max_lines, dtype=wp.vec3, device=self.device)
+
+        # Get depth range for colormap
+        depths = isosurface_data.iso_vertex_depth[:num_contacts]
+
+        # Convert triangles to line segments with depth-based colors
+        vertices = isosurface_data.iso_vertex_point
+        wp.launch(
+            compute_isosurface_lines,
+            dim=num_contacts,
+            inputs=[vertices, depths, num_contacts, 0.0, 0.0005, penetrating_only],
+            outputs=[self._iso_line_starts, self._iso_line_ends, self._iso_line_colors],
+            device=self.device,
+        )
+
+        # Render as lines
+        self.log_lines(
+            "/isosurface",
+            self._iso_line_starts[:num_lines],
+            self._iso_line_ends[:num_lines],
+            self._iso_line_colors[:num_lines],
+        )
 
     def log_shapes(
         self,
@@ -733,6 +794,7 @@ class ViewerBase:
         shape_transform = self.model.shape_transform.numpy()
         shape_flags = self.model.shape_flags.numpy()
         shape_world = self.model.shape_world.numpy()
+        shape_isomesh = self.model.shape_isomesh
         shape_count = len(shape_body)
 
         # loop over shapes
@@ -742,6 +804,16 @@ class ViewerBase:
             geo_thickness = float(shape_geo_thickness[s])
             geo_is_solid = bool(shape_geo_is_solid[s])
             geo_src = shape_geo_src[s]
+
+            # Check if this collision shape has an isomesh to visualize instead
+            isomesh = shape_isomesh[s] if shape_isomesh else None
+            is_collision_shape = shape_flags[s] & int(newton.ShapeFlags.COLLIDE_SHAPES)
+            if isomesh is not None and is_collision_shape:
+                # Use isomesh as geometry source
+                geo_type = newton.GeoType.MESH
+                geo_src = isomesh
+                geo_scale = [1.0, 1.0, 1.0]  # scale is baked into isomesh
+                geo_is_solid = True
 
             # skip unsupported
             if geo_type == newton.GeoType.SDF:

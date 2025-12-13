@@ -191,8 +191,12 @@ class Model:
         """Shape torsional friction coefficient (resistance to spinning at contact point), shape [shape_count], float."""
         self.shape_material_rolling_friction = None
         """Shape rolling friction coefficient (resistance to rolling motion), shape [shape_count], float."""
+        self.shape_material_k_hydro = None
+        """Shape hydroelastic stiffness coefficient, shape [shape_count], float."""
         self.shape_contact_margin = None
         """Shape contact margin for collision detection, shape [shape_count], float."""
+        self.shape_is_hydroelastic = None
+        """Whether each shape uses hydroelastic collisions, shape [shape_count], bool."""
 
         # Shape geometry properties
         self.shape_type = None
@@ -230,6 +234,8 @@ class Model:
         """List of sparse SDF volume references for mesh shapes, shape [shape_count]. None for non-mesh shapes. Empty if there are no colliding meshes. Kept for reference counting."""
         self.shape_sdf_coarse_volume = []
         """List of coarse SDF volume references for mesh shapes, shape [shape_count]. None for non-mesh shapes. Empty if there are no colliding meshes. Kept for reference counting."""
+        self.shape_isomesh = []
+        """List of isosurface meshes (Mesh objects) for shapes with SDF volumes, shape [shape_count]. None for shapes without SDF. Computed at finalize when ModelBuilder.show_isomeshes=True."""
 
         self.spring_indices = None
         """Particle spring indices, shape [spring_count*2], int."""
@@ -517,6 +523,8 @@ class Model:
         self.attribute_frequency["shape_material_restitution"] = ModelAttributeFrequency.SHAPE
         self.attribute_frequency["shape_material_torsional_friction"] = ModelAttributeFrequency.SHAPE
         self.attribute_frequency["shape_material_rolling_friction"] = ModelAttributeFrequency.SHAPE
+        self.attribute_frequency["shape_material_k_hydro"] = ModelAttributeFrequency.SHAPE
+        self.attribute_frequency["shape_is_hydroelastic"] = ModelAttributeFrequency.SHAPE
         self.attribute_frequency["shape_type"] = ModelAttributeFrequency.SHAPE
         self.attribute_frequency["shape_is_solid"] = ModelAttributeFrequency.SHAPE
         self.attribute_frequency["shape_thickness"] = ModelAttributeFrequency.SHAPE

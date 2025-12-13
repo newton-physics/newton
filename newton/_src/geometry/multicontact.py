@@ -990,7 +990,7 @@ def create_build_manifold(support_func: Any, writer_func: Any, post_process_cont
                 contact_data = post_process_contact(
                     contact_data, geom_a, position_a, quaternion_a, geom_b, position_b, quaternion_b
                 )
-                writer_func(contact_data, writer_data)
+                writer_func(contact_data, writer_data, -1)
         else:
             normal_dot = 0.0
             loop_count = 0
@@ -1172,7 +1172,7 @@ def create_build_manifold(support_func: Any, writer_func: Any, post_process_cont
             contact_data = post_process_contact(
                 contact_data, geom_a, position_a, quaternion_a, geom_b, position_b, quaternion_b
             )
-            writer_func(contact_data, writer_data)
+            writer_func(contact_data, writer_data, -1)
 
             count_out += 1
 

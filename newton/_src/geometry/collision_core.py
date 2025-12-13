@@ -1015,3 +1015,101 @@ def get_triangle_shape_from_mesh(
     shape_data.auxiliary = v2_world - v0_world  # C - A
 
     return shape_data, v0_world
+
+
+# OBB collisions by Separating Axis Theorem
+@wp.func
+def get_box_axes(q: wp.quat) -> wp.mat33:
+    """Get the 3 local axes of a box from its quaternion rotation"""
+    # Box local axes (x, y, z)
+    local_x = wp.vec3(1.0, 0.0, 0.0)
+    local_y = wp.vec3(0.0, 1.0, 0.0)
+    local_z = wp.vec3(0.0, 0.0, 1.0)
+
+    # Rotate local axes to world space using warp's built-in method
+    axis_x = wp.quat_rotate(q, local_x)
+    axis_y = wp.quat_rotate(q, local_y)
+    axis_z = wp.quat_rotate(q, local_z)
+
+    return wp.matrix_from_rows(axis_x, axis_y, axis_z)
+
+
+@wp.func
+def project_box_onto_axis(transform: wp.transform, extents: wp.vec3, axis: wp.vec3) -> wp.vec2:
+    """Project a box onto an axis and return [min, max] projection values"""
+    # Get box axes and extents
+    axes = get_box_axes(wp.transform_get_rotation(transform))
+
+    # Project box center onto axis
+    center_proj = wp.dot(wp.transform_get_translation(transform), axis)
+
+    # Project each axis of the box onto the separating axis and get the extent
+    extent = 0.0
+    extent += extents[0] * wp.abs(wp.dot(axes[0], axis))  # x-axis contribution
+    extent += extents[1] * wp.abs(wp.dot(axes[1], axis))  # y-axis contribution
+    extent += extents[2] * wp.abs(wp.dot(axes[2], axis))  # z-axis contribution
+
+    return wp.vec2(center_proj - extent, center_proj + extent)
+
+
+@wp.func
+def test_axis_separation(
+    transform_a: wp.transform, extents_a: wp.vec3, transform_b: wp.transform, extents_b: wp.vec3, axis: wp.vec3
+) -> bool:
+    """Test if two boxes are separated along a given axis. Returns True if separated."""
+    # Normalize the axis (handle zero-length axes)
+    axis_len = wp.length(axis)
+    if axis_len < 1e-8:
+        return False  # Invalid axis, assume no separation
+
+    normalized_axis = axis / axis_len
+
+    # Project both boxes onto the axis
+    proj_a = project_box_onto_axis(transform_a, extents_a, normalized_axis)
+    proj_b = project_box_onto_axis(transform_b, extents_b, normalized_axis)
+
+    # Check if projections overlap - if no overlap, boxes are separated
+    return proj_a[1] < proj_b[0] or proj_b[1] < proj_a[0]
+
+
+@wp.func
+def sat_box_intersection(
+    transform_a: wp.transform, extents_a: wp.vec3, transform_b: wp.transform, extents_b: wp.vec3
+) -> bool:
+    """
+    Test if two oriented boxes intersect using the Separating Axis Theorem.
+
+    Args:
+        transform_a: Transform of first box (position and rotation)
+        extents_a: Half-extents of first box
+        transform_b: Transform of second box (position and rotation)
+        extents_b: Half-extents of second box
+
+    Returns:
+        bool: True if boxes intersect, False if separated
+    """
+    # Get the axes for both boxes
+    axes_a = get_box_axes(wp.transform_get_rotation(transform_a))
+    axes_b = get_box_axes(wp.transform_get_rotation(transform_b))
+
+    # Test the 15 potential separating axes
+
+    # Test face normals of box A (3 axes)
+    for i in range(3):
+        if test_axis_separation(transform_a, extents_a, transform_b, extents_b, axes_a[i]):
+            return False  # Boxes are separated
+
+    # Test face normals of box B (3 axes)
+    for i in range(3):
+        if test_axis_separation(transform_a, extents_a, transform_b, extents_b, axes_b[i]):
+            return False  # Boxes are separated
+
+    # Test cross products of edge directions (9 axes: 3x3 combinations)
+    for i in range(3):
+        for j in range(3):
+            cross_axis = wp.cross(axes_a[i], axes_b[j])
+            if test_axis_separation(transform_a, extents_a, transform_b, extents_b, cross_axis):
+                return False  # Boxes are separated
+
+    # If no separating axis found, boxes intersect
+    return True

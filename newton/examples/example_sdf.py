@@ -43,6 +43,18 @@ GEAR_FILES = [
     ("factory_gear_small_space_5e-4.obj", "gear_small"),
 ]
 
+SHAPE_CFG = newton.ModelBuilder.ShapeConfig(
+    thickness=0.0,
+    mu=0.01,
+    sdf_max_resolution=512,
+    sdf_narrow_band_range=(-0.005, 0.005),
+    contact_margin=0.005,
+    density=8000.0,
+    torsional_friction=0.0,
+    rolling_friction=0.0,
+    is_hydroelastic=False,
+)
+
 
 def add_mesh_object(
     builder: newton.ModelBuilder,
@@ -186,10 +198,6 @@ class Example:
         world_builder = newton.ModelBuilder()
         world_builder.rigid_contact_margin = 0.001 * self.scene_scale
 
-        shape_cfg = newton.ModelBuilder.ShapeConfig(
-            thickness=0.0, mu=0.01, sdf_max_resolution=512, density=8000.0, torsional_friction=0.0, rolling_friction=0.0
-        )
-
         bolt_file = str(asset_path / f"factory_bolt_{ASSEMBLY_STR}.obj")
         nut_file = str(asset_path / f"factory_nut_{ASSEMBLY_STR}_subdiv_3x.obj")
 
@@ -214,7 +222,7 @@ class Example:
                     world_builder,
                     bolt_file,
                     bolt_xform,
-                    shape_cfg,
+                    SHAPE_CFG,
                     key=f"bolt_{i}_{j}",
                     center_origin=True,
                     scale=self.scene_scale,
@@ -229,7 +237,7 @@ class Example:
                     world_builder,
                     nut_file,
                     nut_xform,
-                    shape_cfg,
+                    SHAPE_CFG,
                     key=f"nut_{i}_{j}",
                     center_origin=True,
                     scale=self.scene_scale,
@@ -247,10 +255,6 @@ class Example:
         world_builder = newton.ModelBuilder()
         world_builder.rigid_contact_margin = 0.001 * self.scene_scale
 
-        shape_cfg = newton.ModelBuilder.ShapeConfig(
-            thickness=0.0, mu=0.5, sdf_max_resolution=256, density=8000.0, torsional_friction=0.0, rolling_friction=0.0
-        )
-
         for _, (gear_filename, gear_key) in enumerate(GEAR_FILES):
             gear_file = str(asset_path / gear_filename)
             gear_xform = wp.transform(wp.vec3(0.0, 0.0, 0.01) * self.scene_scale, wp.quat_identity())
@@ -258,7 +262,7 @@ class Example:
                 world_builder,
                 gear_file,
                 gear_xform,
-                shape_cfg,
+                SHAPE_CFG,
                 key=gear_key,
                 center_origin=True,
                 scale=self.scene_scale,
