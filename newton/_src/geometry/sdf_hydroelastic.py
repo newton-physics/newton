@@ -75,8 +75,6 @@ class SDFHydroelasticConfig:
     """Grid size for contact handling. Can be tuned for performance."""
     output_iso_vertices: bool = False
     """Whether to output iso vertices of isosurfaces."""
-    clip_triangles: bool = False
-    """Whether to clip triangles of isosurfaces."""
     betas: tuple[float, float] = (10.0, -0.5)
     """Penetration beta values."""
     sticky_contacts: float = 0.0
@@ -222,7 +220,6 @@ class SDFHydroelastic:
 
         self.count_faces_kernel, self.scatter_faces_kernel = get_generate_contacts_kernel(
             self.config.output_iso_vertices,
-            self.config.clip_triangles,
         )
 
         if self.config.reduce_contacts:
@@ -1114,7 +1111,7 @@ def get_face_id(x_id: wp.int32, y_id: wp.int32, z_id: wp.int32, fi: wp.int32) ->
     return x_id & 0x1FF | (y_id & 0x1FF) << 9 | (z_id & 0x1FF) << 18 | (fi & 0x07) << 27
 
 
-def get_generate_contacts_kernel(output_vertices: bool, clip_triangles: bool = False):
+def get_generate_contacts_kernel(output_vertices: bool):
     @wp.kernel(enable_backward=False)
     def count_faces_kernel(
         grid_size: int,
@@ -1251,7 +1248,6 @@ def get_generate_contacts_kernel(output_vertices: bool, clip_triangles: bool = F
                     x_id,
                     y_id,
                     z_id,
-                    wp.static(clip_triangles),
                 )
 
                 cid = get_face_id(x_id, y_id, z_id, fi)

@@ -528,7 +528,6 @@ def generate_isomesh_kernel(
             x_id,
             y_id,
             z_id,
-            False,
         )
         vertices[3 * out_idx_faces + 3 * fi + 0] = wp.vec3(face_verts[0])
         vertices[3 * out_idx_faces + 3 * fi + 1] = wp.vec3(face_verts[1])
