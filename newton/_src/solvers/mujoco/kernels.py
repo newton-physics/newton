@@ -294,11 +294,11 @@ def convert_newton_contacts_to_mjwarp_kernel(
         worldid,
     )
 
-    # Use per-contact stiffness/damping parameters (only if stiffness > 0, meaning it was set)
     if rigid_contact_stiffness.shape[0] > 0:
-        solimp = vec5(0.99, 0.99, 0.001, 1.0, 0.5)
+        # Use per-contact stiffness/damping parameters
         contact_ke = rigid_contact_stiffness[tid]
         if contact_ke > 0.0:
+            solimp = vec5(0.99, 0.99, 0.001, 1.0, 0.5)
             kd = rigid_contact_damping[tid]
             if kd > 0.0:
                 timeconst = 2.0 / kd
@@ -310,7 +310,6 @@ def convert_newton_contacts_to_mjwarp_kernel(
             solref[0] = timeconst
             solref[1] = dampratio
 
-    if rigid_contact_friction_scaling.shape[0] > 0:
         friction_scale = rigid_contact_friction_scaling[tid]
         if friction_scale > 0.0:
             friction[0] *= friction_scale

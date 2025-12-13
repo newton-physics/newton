@@ -40,6 +40,7 @@ class Contacts:
         device: Devicelike = None,
         per_contact_shape_properties: bool = False,
     ):
+        self.per_contact_shape_properties = per_contact_shape_properties
         with wp.ScopedDevice(device):
             # rigid contacts
             self.rigid_contact_count = wp.zeros(1, dtype=wp.int32)
@@ -58,7 +59,7 @@ class Contacts:
             self.rigid_contact_force = wp.zeros(rigid_contact_max, dtype=wp.vec3, requires_grad=requires_grad)
 
             # contact stiffness/damping/friction (only allocated if per_contact_shape_properties is enabled)
-            if per_contact_shape_properties:
+            if self.per_contact_shape_properties:
                 self.rigid_contact_stiffness = wp.zeros(
                     rigid_contact_max, dtype=wp.float32, requires_grad=requires_grad
                 )
@@ -92,12 +93,13 @@ class Contacts:
         self.rigid_contact_shape1.fill_(-1)
         self.rigid_contact_tids.fill_(-1)
         self.rigid_contact_force.zero_()
-        if self.rigid_contact_stiffness.shape[0] > 0:
+
+        # per-contact shape properties
+        # zero-values indicate that no per-contact shape properties are set for this contact
+        if self.per_contact_shape_properties:
             self.rigid_contact_stiffness.zero_()
-        if self.rigid_contact_damping.shape[0] > 0:
-            self.rigid_contact_damping.fill_(1.0)
-        if self.rigid_contact_friction.shape[0] > 0:
-            self.rigid_contact_friction.fill_(1.0)
+            self.rigid_contact_damping.zero_()
+            self.rigid_contact_friction.zero_()
 
         self.soft_contact_count.zero_()
         self.soft_contact_particle.fill_(-1)

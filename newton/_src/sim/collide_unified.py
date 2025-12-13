@@ -62,7 +62,8 @@ class UnifiedContactWriterData:
     # Contact matching arrays (optional)
     contact_pair_key: wp.array(dtype=wp.uint64)
     contact_key: wp.array(dtype=wp.uint32)
-    # Per-contact shape properties (optional, for hydroelastic)
+    # Per-contact shape properties, empty arrays if not enabled.
+    # Zero-values indicate that no per-contact shape properties are set for this contact
     out_stiffness: wp.array(dtype=float)
     out_damping: wp.array(dtype=float)
     out_friction: wp.array(dtype=float)
@@ -168,7 +169,7 @@ def write_contact(
         writer_data.contact_key[index] = contact_data.feature
         writer_data.contact_pair_key[index] = contact_data.feature_pair_key
 
-    # Write stiffness/damping/friction only if out_stiffness array is non-empty
+    # Write stiffness/damping/friction only if per-contact shape properties are enabled
     if writer_data.out_stiffness.shape[0] > 0:
         writer_data.out_stiffness[index] = contact_data.contact_stiffness
         writer_data.out_damping[index] = contact_data.contact_damping
@@ -547,7 +548,6 @@ class CollisionPipelineUnified:
 
         # Clear counters
         self.broad_phase_pair_count.zero_()
-        contacts.rigid_contact_count.zero_()  # Clear since write_contact uses atomic_add
 
         # Compute AABBs for all shapes (already expanded by per-shape contact margins)
         wp.launch(

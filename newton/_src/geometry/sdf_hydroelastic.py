@@ -1345,9 +1345,9 @@ def get_decode_contacts_kernel(margin_contact_area: float = 1e-4, writer_func: A
             k_eff = get_effective_stiffness(k_a, k_b)
             # Compute stiffness, use margin_contact_area for non-penetrating contacts
             if depth > 0.0:
-                stiffness = contact_area[tid] * k_eff
+                c_stiffness = contact_area[tid] * k_eff
             else:
-                stiffness = wp.static(margin_contact_area) * k_eff
+                c_stiffness = wp.static(margin_contact_area) * k_eff
 
             # Create ContactData for the writer function
             contact_data = ContactData()
@@ -1363,8 +1363,7 @@ def get_decode_contacts_kernel(margin_contact_area: float = 1e-4, writer_func: A
             contact_data.margin = margin
             contact_data.feature = wp.uint32(tid + 1)
             contact_data.feature_pair_key = build_pair_key2(wp.uint32(shape_a), wp.uint32(shape_b))
-            contact_data.contact_stiffness = stiffness
-            contact_data.contact_friction_scale = wp.where(depth > 0.0, 1.0, 0.0)
+            contact_data.contact_stiffness = c_stiffness
 
             writer_func(contact_data, writer_data, output_index)
 
