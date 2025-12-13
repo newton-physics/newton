@@ -46,6 +46,9 @@ class State:
         """Rigid body velocities (spatial), shape (body_count,), dtype :class:`spatial_vector`.
         First three entries: linear velocity; last three: angular velocity."""
 
+        self.body_q_prev: wp.array | None = None
+        """Previous rigid body transforms for finite-difference velocity computation."""
+
         self.body_f: wp.array | None = None
         """Rigid body forces (spatial), shape (body_count,), dtype :class:`spatial_vector`.
         First three entries: linear force; last three: torque.
