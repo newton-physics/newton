@@ -200,25 +200,22 @@ def sample_sdf_extrapolated(
     )
 
     if inside_extent:
-        # Sample sparse grid
         sparse_idx = wp.volume_world_to_index(sdf_data.sparse_sdf_ptr, sdf_pos)
         sparse_dist = wp.volume_sample_f(sdf_data.sparse_sdf_ptr, sparse_idx, wp.Volume.LINEAR)
 
-        # Check if we got the background value (outside narrow band)
-        # Use a tolerance since we're comparing floats
-        background_threshold = sdf_data.background_value * 0.5
-        if sparse_dist >= background_threshold:
-            # Fallback to coarse grid
+        if sparse_dist >= wp.inf or wp.isnan(sparse_dist):
+            # Fallback to coarse grid when sparse sample is diluted by background
             coarse_idx = wp.volume_world_to_index(sdf_data.coarse_sdf_ptr, sdf_pos)
             return wp.volume_sample_f(sdf_data.coarse_sdf_ptr, coarse_idx, wp.Volume.LINEAR)
         else:
             return sparse_dist
     else:
         # Point is outside extent - project to boundary
-        clamped_pos = wp.min(wp.max(sdf_pos, lower), upper)
+        eps = 1e-2 * sdf_data.sparse_voxel_size  # slightly shrink to avoid sampling NaN
+        clamped_pos = wp.min(wp.max(sdf_pos, lower + eps), upper - eps)
         dist_to_boundary = wp.length(sdf_pos - clamped_pos)
 
-        # Sample at the boundary point using coarse grid (more reliable for extrapolation)
+        # Sample at the boundary point using coarse grid
         coarse_idx = wp.volume_world_to_index(sdf_data.coarse_sdf_ptr, clamped_pos)
         boundary_dist = wp.volume_sample_f(sdf_data.coarse_sdf_ptr, coarse_idx, wp.Volume.LINEAR)
 
@@ -263,14 +260,11 @@ def sample_sdf_grad_extrapolated(
     )
 
     if inside_extent:
-        # Sample sparse grid
         sparse_idx = wp.volume_world_to_index(sdf_data.sparse_sdf_ptr, sdf_pos)
         sparse_dist = wp.volume_sample_grad_f(sdf_data.sparse_sdf_ptr, sparse_idx, wp.Volume.LINEAR, gradient)
 
-        # Check if we got the background value (outside narrow band)
-        background_threshold = sdf_data.background_value * 0.5
-        if sparse_dist >= background_threshold:
-            # Fallback to coarse grid
+        if sparse_dist >= wp.inf or wp.isnan(sparse_dist):
+            # Fallback to coarse grid when sparse sample is diluted by background
             coarse_idx = wp.volume_world_to_index(sdf_data.coarse_sdf_ptr, sdf_pos)
             coarse_dist = wp.volume_sample_grad_f(sdf_data.coarse_sdf_ptr, coarse_idx, wp.Volume.LINEAR, gradient)
             return coarse_dist, gradient
@@ -278,7 +272,10 @@ def sample_sdf_grad_extrapolated(
             return sparse_dist, gradient
     else:
         # Point is outside extent - project to boundary
-        clamped_pos = wp.min(wp.max(sdf_pos, lower), upper)
+        eps = (
+            1e-2 * sdf_data.sparse_voxel_size
+        )  # slightly shrink the extent to avoid sampling the background value at edge
+        clamped_pos = wp.min(wp.max(sdf_pos, lower + eps), upper - eps)
         diff = sdf_pos - clamped_pos
         dist_to_boundary = wp.length(diff)
 

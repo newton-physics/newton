@@ -24,6 +24,7 @@ from ..sim.model import Model
 from .collision_core import build_pair_key2, sat_box_intersection
 from .contact_data import ContactData
 from .contact_reduction import NUM_NORMAL_BINS, NUM_SPATIAL_DIRECTIONS, get_scan_dir, get_slot
+from .sdf_contact import sample_sdf_extrapolated
 from .sdf_mc import get_mc_tables, mc_calc_face
 from .sdf_utils import SDFData
 from .utils import scan_with_total
@@ -910,8 +911,8 @@ def get_effective_stiffness(k_a: wp.float32, k_b: wp.float32) -> wp.float32:
 
 @wp.func
 def sdf_diff_sdf(
-    sdfA: wp.uint64,
-    sdfB: wp.uint64,
+    sdfA_data: SDFData,
+    sdfB_data: SDFData,
     transfA: wp.transform,
     transfB: wp.transform,
     k_eff_a: wp.float32,
@@ -919,43 +920,59 @@ def sdf_diff_sdf(
     x_id: wp.int32,
     y_id: wp.int32,
     z_id: wp.int32,
-) -> tuple[wp.float32, wp.float32, wp.float32]:
+) -> tuple[wp.float32, wp.float32, wp.float32, wp.bool]:
+    """Compute signed distance difference between two SDFs at a voxel position.
+
+    SDF A is queried directly on the sparse grid since we know the voxel is allocated.
+    SDF B is queried using extrapolation to handle points outside the narrow band or extent.
+    """
+    sdfA = sdfA_data.sparse_sdf_ptr
     pointA = wp.volume_index_to_world(sdfA, int_to_vec3f(x_id, y_id, z_id))
     pointA_world = wp.transform_point(transfA, pointA)
     pointB = wp.transform_point(wp.transform_inverse(transfB), pointA_world)
     valA = wp.volume_lookup_f(sdfA, x_id, y_id, z_id)
 
-    pointB_local = wp.volume_world_to_index(sdfB, pointB)
-    valB = wp.volume_sample_f(sdfB, pointB_local, wp.Volume.LINEAR)
+    valB = sample_sdf_extrapolated(sdfB_data, pointB)
+
+    is_valid = not (valA >= wp.inf or wp.isnan(valA) or valB >= wp.inf or wp.isnan(valB))
+
     if valA < 0 and valB < 0:
         diff = k_eff_a * valA - k_eff_b * valB
     else:
         diff = valA - valB
-    return diff, valA, valB
+    return diff, valA, valB, is_valid
 
 
 @wp.func
 def sdf_diff_sdf(
-    sdfA: wp.uint64,
-    sdfB: wp.uint64,
+    sdfA_data: SDFData,
+    sdfB_data: SDFData,
     transfA: wp.transform,
     transfB: wp.transform,
     k_eff_a: wp.float32,
     k_eff_b: wp.float32,
     pos_a_local: wp.vec3,
-) -> tuple[wp.float32, wp.float32, wp.float32]:
+) -> tuple[wp.float32, wp.float32, wp.float32, wp.bool]:
+    """Compute signed distance difference between two SDFs at a local position.
+
+    SDF A is queried directly on the sparse grid since we know the voxel is allocated.
+    SDF B is queried using extrapolation to handle points outside the narrow band or extent.
+    """
+    sdfA = sdfA_data.sparse_sdf_ptr
     pointA = wp.volume_index_to_world(sdfA, pos_a_local)
     pointA_world = wp.transform_point(transfA, pointA)
     pointB = wp.transform_point(wp.transform_inverse(transfB), pointA_world)
     valA = wp.volume_sample_f(sdfA, pos_a_local, wp.Volume.LINEAR)
 
-    pointB_local = wp.volume_world_to_index(sdfB, pointB)
-    valB = wp.volume_sample_f(sdfB, pointB_local, wp.Volume.LINEAR)
+    valB = sample_sdf_extrapolated(sdfB_data, pointB)
+
+    is_valid = not (valA >= wp.inf or wp.isnan(valA) or valB >= wp.inf or wp.isnan(valB))
+
     if valA < 0 and valB < 0:
         diff = k_eff_a * valA - k_eff_b * valB
     else:
         diff = valA - valB
-    return diff, valA, valB
+    return diff, valA, valB, is_valid
 
 
 @wp.kernel
@@ -984,16 +1001,15 @@ def count_iso_voxels_block(
         shape_a = pair[0]
         shape_b = pair[1]
 
-        # TODO: check if we should use extrapolation
-        sdf_a = shape_sdf_data[shape_a].sparse_sdf_ptr
-        sdf_b = shape_sdf_data[shape_b].sparse_sdf_ptr
+        sdf_data_a = shape_sdf_data[shape_a]
+        sdf_data_b = shape_sdf_data[shape_b]
 
         X_ws_a = shape_transform[shape_a]
         X_ws_b = shape_transform[shape_b]
 
         margin = shape_contact_margin[shape_b]
 
-        voxel_radius = shape_sdf_data[shape_b].sparse_voxel_radius
+        voxel_radius = sdf_data_b.sparse_voxel_radius
         r = float(subblock_size) * voxel_radius
 
         k_a = shape_material_k_hydro[shape_a]
@@ -1015,10 +1031,12 @@ def count_iso_voxels_block(
                     # lookup distances at subblock center
                     # for subblock_size = 1 this is equivalent to the voxel center
                     x_center = wp.vec3f(x_global) + wp.vec3f(0.5 * float(subblock_size))
-                    diff_val, v, vb = sdf_diff_sdf(sdf_b, sdf_a, X_ws_b, X_ws_a, k_eff_b, k_eff_a, x_center)
+                    diff_val, vb, va, is_valid = sdf_diff_sdf(
+                        sdf_data_b, sdf_data_a, X_ws_b, X_ws_a, k_eff_b, k_eff_a, x_center
+                    )
 
                     # check if bounding sphere contains the isosurface and the distance is within contact margin
-                    if wp.abs(diff_val) > the or v > r + margin or vb > r + margin:
+                    if wp.abs(diff_val) > the or va > r + margin or vb > r + margin or not is_valid:
                         continue
                     num_iso_subblocks += 1
                     subblock_idx |= encode_coords_8(x_local, y_local, z_local)
@@ -1069,17 +1087,17 @@ def mc_iterate_voxel_vertices(
     y_id: wp.int32,
     z_id: wp.int32,
     corner_offsets_table: wp.array(dtype=wp.vec3ub),
-    sdf: wp.uint64,
-    sdf_other: wp.uint64,
+    sdf_data: SDFData,
+    sdf_other_data: SDFData,
     X_ws: wp.transform,
     X_ws_other: wp.transform,
     k_eff: wp.float32,
     k_eff_other: wp.float32,
     margin: wp.float32,
-) -> tuple[wp.uint8, vec8f, bool]:
+) -> tuple[wp.uint8, vec8f, bool, bool]:
     """Iterate over the vertices of a voxel and return the cube index, corner values, and whether any vertices are inside the shape."""
     cube_idx = wp.uint8(0)
-    any_verts_inside = False
+    any_verts_inside_margin = False
     corner_vals = vec8f()
 
     for i in range(8):
@@ -1088,7 +1106,12 @@ def mc_iterate_voxel_vertices(
         y = y_id + corner_offset.y
         z = z_id + corner_offset.z
 
-        v_diff, v, _ = sdf_diff_sdf(sdf, sdf_other, X_ws, X_ws_other, k_eff, k_eff_other, x, y, z)
+        v_diff, v, _v_other, is_valid = sdf_diff_sdf(
+            sdf_data, sdf_other_data, X_ws, X_ws_other, k_eff, k_eff_other, x, y, z
+        )
+
+        if not is_valid:
+            return wp.uint8(0), corner_vals, False, False
 
         corner_vals[i] = v_diff
 
@@ -1096,9 +1119,9 @@ def mc_iterate_voxel_vertices(
             cube_idx |= wp.uint8(1) << wp.uint8(i)
 
         if v <= margin:
-            any_verts_inside = True
+            any_verts_inside_margin = True
 
-    return cube_idx, corner_vals, any_verts_inside
+    return cube_idx, corner_vals, any_verts_inside_margin, True
 
 
 @wp.func
@@ -1133,8 +1156,8 @@ def get_generate_contacts_kernel(output_vertices: bool):
             shape_a = pair[0]
             shape_b = pair[1]
 
-            sdf_a = shape_sdf_data[shape_a].sparse_sdf_ptr
-            sdf_b = shape_sdf_data[shape_b].sparse_sdf_ptr
+            sdf_data_a = shape_sdf_data[shape_a]
+            sdf_data_b = shape_sdf_data[shape_b]
 
             transform_a = shape_transform[shape_a]
             transform_b = shape_transform[shape_b]
@@ -1152,13 +1175,13 @@ def get_generate_contacts_kernel(output_vertices: bool):
             y_id = wp.int32(iso_coords.y)
             z_id = wp.int32(iso_coords.z)
 
-            cube_idx, corner_vals, any_verts_inside = mc_iterate_voxel_vertices(
+            cube_idx, corner_vals, any_verts_inside, all_verts_valid = mc_iterate_voxel_vertices(
                 x_id,
                 y_id,
                 z_id,
                 corner_offsets_table,
-                sdf_b,
-                sdf_a,
+                sdf_data_b,
+                sdf_data_a,
                 transform_b,
                 transform_a,
                 k_eff_b,
@@ -1174,7 +1197,7 @@ def get_generate_contacts_kernel(output_vertices: bool):
 
             num_faces = num_verts // 3
 
-            if not any_verts_inside:
+            if not any_verts_inside or not all_verts_valid:
                 num_faces = 0
 
             voxel_face_count[tid] = num_faces
@@ -1712,11 +1735,22 @@ def get_binning_kernels(
             # Scale unique friction to match moments:
             denom = wp.max(agg_force_mag * selected_moment, 1e-20)
             unique_friction = (ref_moment * total_depth) / denom
-            unique_friction = wp.clamp(unique_friction, 0.01, 10.0)
 
-            # Scale anchor friction to preserve tangential friction:
+            # Compute anchor friction to preserve tangential friction invariant:
+            # unique_friction * agg_depth + anchor_friction * max_depth = total_depth
             anchor_friction = (total_depth - unique_friction * agg_depth) / max_depth
-            anchor_friction = wp.clamp(anchor_friction, 0.01, 10.0)
+
+            # Joint clamping: if one friction hits lower bound, adjust the other
+            min_friction = wp.float32(1e-4)
+
+            if anchor_friction < min_friction:
+                anchor_friction = min_friction
+                unique_friction = (total_depth - min_friction * max_depth) / wp.max(agg_depth, 1e-20)
+
+            if unique_friction < min_friction:
+                unique_friction = min_friction
+                anchor_friction = (total_depth - min_friction * agg_depth) / max_depth
+                anchor_friction = wp.max(anchor_friction, min_friction)
 
         # single atomic_add per bin
         contact_idx = wp.atomic_add(writer_data.contact_count, 0, num_unique_contacts + add_anchor_contact)

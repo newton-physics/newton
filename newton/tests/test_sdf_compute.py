@@ -32,7 +32,7 @@ import warp as wp
 
 import newton
 from newton._src.geometry.sdf_contact import sample_sdf_extrapolated, sample_sdf_grad_extrapolated
-from newton._src.geometry.types import Mesh
+from newton._src.geometry.types import GeoType, Mesh
 from newton.geometry import SDFData, compute_sdf
 from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices
 
@@ -185,8 +185,9 @@ class TestComputeSDF(unittest.TestCase):
 
     def test_sdf_returns_valid_data(self):
         """Test that compute_sdf returns valid data."""
-        sdf_data, sparse_volume, coarse_volume = compute_sdf(
+        sdf_data, sparse_volume, coarse_volume, _ = compute_sdf(
             mesh_src=self.mesh,
+            shape_type=GeoType.MESH,
             shape_thickness=0.0,
         )
 
@@ -197,8 +198,9 @@ class TestComputeSDF(unittest.TestCase):
 
     def test_sdf_extents_are_valid(self):
         """Test that SDF extents match the mesh bounds."""
-        sdf_data, _, _ = compute_sdf(
+        sdf_data, _, _, _ = compute_sdf(
             mesh_src=self.mesh,
+            shape_type=GeoType.MESH,
             shape_thickness=0.0,
             margin=0.05,
         )
@@ -216,8 +218,9 @@ class TestComputeSDF(unittest.TestCase):
         (within narrow_band_distance) will have valid values. Points far from the
         surface will return the background value.
         """
-        sdf_data, sparse_volume, _ = compute_sdf(
+        sdf_data, sparse_volume, _, _ = compute_sdf(
             mesh_src=self.mesh,
+            shape_type=GeoType.MESH,
             shape_thickness=0.0,
             narrow_band_distance=(-0.1, 0.1),
         )
@@ -246,8 +249,9 @@ class TestComputeSDF(unittest.TestCase):
 
     def test_coarse_sdf_values_inside_extent(self):
         """Test that coarse SDF values inside the extent are smaller than background."""
-        sdf_data, _, coarse_volume = compute_sdf(
+        sdf_data, _, coarse_volume, _ = compute_sdf(
             mesh_src=self.mesh,
+            shape_type=GeoType.MESH,
             shape_thickness=0.0,
         )
 
@@ -282,8 +286,9 @@ class TestComputeSDF(unittest.TestCase):
         Points at or near this boundary should still have valid SDF values.
         """
         margin = 0.05
-        sdf_data, _, coarse_volume = compute_sdf(
+        sdf_data, _, coarse_volume, _ = compute_sdf(
             mesh_src=self.mesh,
+            shape_type=GeoType.MESH,
             shape_thickness=0.0,
             margin=margin,
         )
@@ -351,8 +356,9 @@ class TestComputeSDF(unittest.TestCase):
         within this narrow band, so we should get valid values there.
         """
         margin = 0.05
-        sdf_data, sparse_volume, _ = compute_sdf(
+        sdf_data, sparse_volume, _, _ = compute_sdf(
             mesh_src=self.mesh,
+            shape_type=GeoType.MESH,
             shape_thickness=0.0,
             margin=margin,
         )
@@ -409,8 +415,9 @@ class TestComputeSDF(unittest.TestCase):
         For the sparse SDF, we test a point just inside the surface (within the narrow band).
         For the coarse SDF, we can test the center since it covers the entire volume.
         """
-        _sdf_data, sparse_volume, coarse_volume = compute_sdf(
+        _sdf_data, sparse_volume, coarse_volume, _ = compute_sdf(
             mesh_src=self.mesh,
+            shape_type=GeoType.MESH,
             shape_thickness=0.0,
         )
 
@@ -428,8 +435,9 @@ class TestComputeSDF(unittest.TestCase):
 
     def test_sdf_positive_outside_mesh(self):
         """Test that SDF values are positive outside the mesh."""
-        _sdf_data, sparse_volume, coarse_volume = compute_sdf(
+        _sdf_data, sparse_volume, coarse_volume, _ = compute_sdf(
             mesh_src=self.mesh,
+            shape_type=GeoType.MESH,
             shape_thickness=0.0,
         )
 
@@ -446,8 +454,9 @@ class TestComputeSDF(unittest.TestCase):
 
     def test_sdf_gradient_points_outward(self):
         """Test that SDF gradient points away from the surface (outward)."""
-        _sdf_data, sparse_volume, _ = compute_sdf(
+        _sdf_data, sparse_volume, _, _ = compute_sdf(
             mesh_src=self.mesh,
+            shape_type=GeoType.MESH,
             shape_thickness=0.0,
         )
 
@@ -474,8 +483,9 @@ class TestComputeSDF(unittest.TestCase):
         We test at a point near the surface (within the narrow band) where both
         SDFs should have valid values.
         """
-        _sdf_data, sparse_volume, coarse_volume = compute_sdf(
+        _sdf_data, sparse_volume, coarse_volume, _ = compute_sdf(
             mesh_src=self.mesh,
+            shape_type=GeoType.MESH,
             shape_thickness=0.0,
         )
 
@@ -499,13 +509,15 @@ class TestComputeSDF(unittest.TestCase):
         """
         thickness = 0.1
 
-        _, sparse_no_thickness, _ = compute_sdf(
+        _, sparse_no_thickness, _, _ = compute_sdf(
             mesh_src=self.mesh,
+            shape_type=GeoType.MESH,
             shape_thickness=0.0,
         )
 
-        _, sparse_with_thickness, _ = compute_sdf(
+        _, sparse_with_thickness, _, _ = compute_sdf(
             mesh_src=self.mesh,
+            shape_type=GeoType.MESH,
             shape_thickness=thickness,
         )
 
@@ -544,8 +556,9 @@ class TestComputeSDFGridSampling(unittest.TestCase):
         Since the sparse SDF is a narrow-band SDF, we sample points near the surface
         (on a shell around the box) where the SDF should have valid values.
         """
-        sdf_data, sparse_volume, _ = compute_sdf(
+        sdf_data, sparse_volume, _, _ = compute_sdf(
             mesh_src=self.mesh,
+            shape_type=GeoType.MESH,
             shape_thickness=0.0,
         )
 
@@ -572,8 +585,9 @@ class TestComputeSDFGridSampling(unittest.TestCase):
 
     def test_grid_sampling_coarse_sdf(self):
         """Sample coarse SDF on a grid and verify all values are less than background."""
-        sdf_data, _, coarse_volume = compute_sdf(
+        sdf_data, _, coarse_volume, _ = compute_sdf(
             mesh_src=self.mesh,
+            shape_type=GeoType.MESH,
             shape_thickness=0.0,
         )
 
@@ -676,8 +690,9 @@ class TestSDFExtrapolation(unittest.TestCase):
         self.half_extents = (0.5, 0.5, 0.5)
         self.mesh = create_box_mesh(self.half_extents)
         # Create SDF with known parameters
-        self.sdf_data, self.sparse_volume, self.coarse_volume = compute_sdf(
+        self.sdf_data, self.sparse_volume, self.coarse_volume, _ = compute_sdf(
             mesh_src=self.mesh,
+            shape_type=GeoType.MESH,
             shape_thickness=0.0,
             narrow_band_distance=(-0.1, 0.1),
             margin=0.05,
@@ -753,9 +768,9 @@ class TestSDFExtrapolation(unittest.TestCase):
         # Get boundary points (clamped to extent)
         boundary_points = np.array(
             [
-                center + np.array([half_ext[0], 0.0, 0.0]),  # +X boundary
-                center + np.array([0.0, half_ext[1], 0.0]),  # +Y boundary
-                center + np.array([0.0, 0.0, half_ext[2]]),  # +Z boundary
+                center + np.array([half_ext[0] - 1e-6, 0.0, 0.0]),  # +X boundary
+                center + np.array([0.0, half_ext[1] - 1e-6, 0.0]),  # +Y boundary
+                center + np.array([0.0, 0.0, half_ext[2] - 1e-6]),  # +Z boundary
             ],
             dtype=np.float32,
         )

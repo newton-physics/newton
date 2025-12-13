@@ -48,8 +48,10 @@ class SDFData:
     background_value: wp.float32
 
 
-# Default background value for unallocated voxels in sparse SDF
-SDF_BACKGROUND_VALUE = 1000.0
+# Default background value for unallocated voxels in sparse SDF.
+# Using inf ensures any trilinear interpolation with unallocated voxels produces inf or NaN,
+# allowing detection of unallocated voxels.
+SDF_BACKGROUND_VALUE = wp.inf
 
 
 def create_empty_sdf_data() -> SDFData:

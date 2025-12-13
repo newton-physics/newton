@@ -141,9 +141,11 @@ def mc_calc_face(
         vol_idx = p + int_to_vec3f(x_id, y_id, z_id)
         p_scaled = wp.volume_index_to_world(sdf_a, vol_idx)
         face_verts[vi] = p_scaled
-        depth = -wp.volume_sample_f(sdf_a, vol_idx, wp.Volume.LINEAR)
-        vert_depths[vi] = depth
-        if depth > 0.0:
+        depth = wp.volume_sample_f(sdf_a, vol_idx, wp.Volume.LINEAR)
+        if depth >= wp.inf or wp.isnan(depth):
+            depth = 0.0
+        vert_depths[vi] = -depth
+        if depth < 0.0:
             num_inside += 1
 
     n = wp.cross(face_verts[1] - face_verts[0], face_verts[2] - face_verts[0])
