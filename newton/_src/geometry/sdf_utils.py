@@ -127,6 +127,7 @@ def sdf_from_primitive_kernel(
     z_id = tile_origin[2] + local_z
 
     sample_pos = wp.volume_index_to_world(sdf, int_to_vec3f(x_id, y_id, z_id))
+    signed_distance = float(1.0e6)
     if shape_type == GeoType.SPHERE:
         signed_distance = sphere_sdf(wp.vec3(0.0, 0.0, 0.0), shape_scale[0], sample_pos)
     elif shape_type == GeoType.BOX:
@@ -173,6 +174,7 @@ def check_tile_occupied_primitive_kernel(
     tid = wp.tid()
     sample_pos = tile_points[tid]
 
+    signed_distance = float(1.0e6)
     if shape_type == GeoType.SPHERE:
         signed_distance = sphere_sdf(wp.vec3(0.0, 0.0, 0.0), shape_scale[0], sample_pos)
     elif shape_type == GeoType.BOX:
@@ -217,8 +219,8 @@ def get_primitive_extents(shape_type: int, shape_scale: Sequence[float]) -> tupl
         min_ext = [-shape_scale[0], -shape_scale[0], -shape_scale[1] - shape_scale[0]]
         max_ext = [shape_scale[0], shape_scale[0], shape_scale[1] + shape_scale[0]]
     elif shape_type == GeoType.CYLINDER:
-        min_ext = [-shape_scale[0], -shape_scale[0], -shape_scale[1] - shape_scale[0]]
-        max_ext = [shape_scale[0], shape_scale[0], shape_scale[1] + shape_scale[0]]
+        min_ext = [-shape_scale[0], -shape_scale[0], -shape_scale[1]]
+        max_ext = [shape_scale[0], shape_scale[0], shape_scale[1]]
     elif shape_type == GeoType.ELLIPSOID:
         min_ext = [-shape_scale[0], -shape_scale[1], -shape_scale[2]]
         max_ext = [shape_scale[0], shape_scale[1], shape_scale[2]]
@@ -240,7 +242,7 @@ def compute_sdf(
     target_voxel_size: float | None = None,
     max_resolution: int = 64,
     verbose: bool = False,
-) -> tuple[SDFData, wp.Volume | None, wp.Volume | None]:
+) -> tuple[SDFData, wp.Volume | None, wp.Volume | None, Sequence[wp.vec3us]]:
     """Compute sparse and coarse SDF volumes for a mesh.
 
     The SDF is computed in the mesh's unscaled local space. Scale is intentionally
@@ -259,10 +261,11 @@ def compute_sdf(
         verbose: Print debug info.
 
     Returns:
-        Tuple of (sdf_data, sparse_volume, coarse_volume) where:
+        Tuple of (sdf_data, sparse_volume, coarse_volume, block_coords) where:
         - sdf_data: SDFData struct with pointers and extents
         - sparse_volume: wp.Volume object for sparse SDF (keep alive for reference counting)
         - coarse_volume: wp.Volume object for coarse SDF (keep alive for reference counting)
+        - block_coords: List of wp.vec3us tile coordinates for allocated blocks in the sparse volume
 
     Raises:
         RuntimeError: If CUDA is not available.

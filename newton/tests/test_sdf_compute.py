@@ -31,8 +31,8 @@ import numpy as np
 import warp as wp
 
 import newton
+from newton import GeoType, Mesh
 from newton._src.geometry.sdf_contact import sample_sdf_extrapolated, sample_sdf_grad_extrapolated
-from newton._src.geometry.types import GeoType, Mesh
 from newton.geometry import SDFData, compute_sdf
 from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices
 
