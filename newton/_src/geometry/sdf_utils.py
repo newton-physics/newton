@@ -441,10 +441,12 @@ def compute_isomesh(volume: wp.Volume) -> Mesh | None:
     Returns:
         Mesh object containing the isosurface mesh.
     """
-
     vc = volume.get_voxel_count()
-    verts = wp.empty((3 * vc,), dtype=wp.vec3)
-    face_normals = wp.empty((2 * vc,), dtype=wp.vec3)
+    max_faces = 5 * vc
+    max_verts = 3 * max_faces
+    verts = wp.empty((max_verts,), dtype=wp.vec3)
+    face_normals = wp.empty((max_faces,), dtype=wp.vec3)
+
     face_count = wp.zeros((1,), dtype=int)
     mc_tables = get_mc_tables(verts.device)
 
@@ -501,7 +503,9 @@ def generate_isomesh_kernel(
         x = x_id + corner_offset.x
         y = y_id + corner_offset.y
         z = z_id + corner_offset.z
-        v = wp.volume_lookup(sdf, x, y, z, wp.float32)
+        v = wp.volume_lookup_f(sdf, x, y, z)
+        if wp.isnan(v) or wp.isinf(v):
+            return
         corner_vals[i] = v
 
         if v < isovalue:
