@@ -23,7 +23,7 @@ import warp as wp
 from ..sim.model import Model
 from .collision_core import build_pair_key2, sat_box_intersection
 from .contact_data import ContactData
-from .contact_reduction import NUM_NORMAL_BINS, NUM_SPATIAL_DIRECTIONS, get_scan_dir, get_slot
+from .contact_reduction import NUM_NORMAL_BINS, NUM_SPATIAL_DIRECTIONS, get_slot, project_point_to_plane
 from .sdf_contact import sample_sdf_extrapolated
 from .sdf_mc import get_mc_tables, mc_calc_face
 from .sdf_utils import SDFData
@@ -1497,13 +1497,17 @@ def get_binning_kernels(
 
             bin_idx_prev = shape_pairs_to_bin_prev[sparse_idx]
 
+            face_center_2d = project_point_to_plane(bin_normal_idx, face_center)
+            angle_increment = wp.static(2.0 * wp.pi * (1.0 / n_bin_dirs))
+
             # track the max dot product for the deepest penetration depth
             wp.atomic_max(binned_dot_product, bin_idx_0, bin_normal_idx, wp.static(num_betas * n_bin_dirs), pen_depth)
 
             # Loop over bin_directions, store the max dot product for each direction
             for dir_idx in range(wp.static(n_bin_dirs)):
-                scan_dir = get_scan_dir(bin_normal_idx, dir_idx)
-                spatial_dot_product = wp.dot(scan_dir, face_center)
+                angle = float(dir_idx) * angle_increment
+                direction_2d = wp.vec2f(wp.cos(angle), wp.sin(angle))
+                spatial_dot_product = wp.dot(face_center_2d, direction_2d)
                 for i in range(wp.static(num_betas)):
                     offset_i = i * n_bin_dirs
                     idx_dir = dir_idx + offset_i
@@ -1573,10 +1577,14 @@ def get_binning_kernels(
                 binned_depth[bin_idx_0, bin_normal_idx, max_depth_idx] = pen_depth
                 binned_id[bin_idx_0, bin_normal_idx, max_depth_idx] = id
 
+            face_center_2d = project_point_to_plane(bin_normal_idx, face_center)
+            angle_increment = wp.static(2.0 * wp.pi * (1.0 / n_bin_dirs))
+
             # track the max dot product for each beta and direction
             for dir_idx in range(wp.static(n_bin_dirs)):
-                scan_dir = get_scan_dir(bin_normal_idx, dir_idx)
-                spatial_dot_product = wp.dot(scan_dir, face_center)
+                angle = float(dir_idx) * angle_increment
+                direction_2d = wp.vec2f(wp.cos(angle), wp.sin(angle))
+                spatial_dot_product = wp.dot(face_center_2d, direction_2d)
                 for i in range(wp.static(num_betas)):
                     offset_i = i * n_bin_dirs
                     idx_dir = dir_idx + offset_i

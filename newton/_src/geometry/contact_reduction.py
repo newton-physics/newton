@@ -347,6 +347,33 @@ def get_scan_dir(icosahedron_face_id: int, i: int) -> wp.vec3:
 
 
 @wp.func
+def project_point_to_plane(bin_normal_idx: wp.int32, face_center: wp.vec3f) -> wp.vec2f:
+    """Projects a 3D point onto the 2D plane defined by an icosahedron face normal.
+
+    Args:
+        bin_normal_idx: Index of the icosahedron face (0-19) defining the plane normal.
+        face_center: 3D point to project.
+
+    Returns:
+        2D coordinates of the projected point in the plane's local basis.
+    """
+    bin_normal_dir = ICOSAHEDRON_FACE_NORMALS[bin_normal_idx]
+    # Project face center to the plane corresponding to the bin normal
+    temp_vec = wp.vec3f(0.0, 1.0, 0.0)
+    if wp.abs(wp.dot(bin_normal_dir, temp_vec)) > 0.95:
+        temp_vec = wp.vec3f(0.0, 0.0, 1.0)
+
+    # Create orthogonal basis vectors in the plane
+    plane_u = wp.normalize(wp.cross(bin_normal_dir, temp_vec))
+    plane_v = wp.normalize(wp.cross(bin_normal_dir, plane_u))
+
+    # Convert face_center to 2D coordinates in the plane basis
+    face_center_2d = wp.vec2f(wp.dot(face_center, plane_u), wp.dot(face_center, plane_v))
+
+    return face_center_2d
+
+
+@wp.func
 def get_slot(normal: wp.vec3) -> int:
     """Returns the index of the icosahedron face that best matches the normal.
 
