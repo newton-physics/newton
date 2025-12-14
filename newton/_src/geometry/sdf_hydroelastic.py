@@ -23,7 +23,7 @@ import warp as wp
 from ..sim.model import Model
 from .collision_core import build_pair_key2, sat_box_intersection
 from .contact_data import ContactData
-from .contact_reduction import NUM_NORMAL_BINS, NUM_SPATIAL_DIRECTIONS, get_slot, project_point_to_plane
+from .contact_reduction import NUM_NORMAL_BINS, NUM_SPATIAL_DIRECTIONS, get_slot_flat, project_point_to_plane
 from .sdf_contact import sample_sdf_extrapolated
 from .sdf_mc import get_mc_tables, mc_calc_face
 from .sdf_utils import SDFData
@@ -319,6 +319,12 @@ class SDFHydroelastic:
             for i in range(model.shape_count)
             if (shape_flags[i] & ShapeFlags.COLLIDE_SHAPES) and shape_is_hydroelastic[i]
         ]
+
+        # Verify all hydroelastic shapes have scale baked into their SDF
+        shape_sdf_data = model.shape_sdf_data.numpy()
+        for idx in hydroelastic_indices:
+            if not shape_sdf_data[idx]["scale_baked"]:
+                raise ValueError(f"Hydroelastic shape {idx} does not have scale baked into its SDF.")
 
         # Count total tiles and max blocks per shape for hydroelastic shapes
         total_num_tiles = 0
@@ -1007,7 +1013,8 @@ def count_iso_voxels_block(
         X_ws_a = shape_transform[shape_a]
         X_ws_b = shape_transform[shape_b]
 
-        margin = shape_contact_margin[shape_b]
+        margin_a = shape_contact_margin[shape_a]
+        margin_b = shape_contact_margin[shape_b]
 
         voxel_radius = sdf_data_b.sparse_voxel_radius
         r = float(subblock_size) * voxel_radius
@@ -1036,7 +1043,7 @@ def count_iso_voxels_block(
                     )
 
                     # check if bounding sphere contains the isosurface and the distance is within contact margin
-                    if wp.abs(diff_val) > the or va > r + margin or vb > r + margin or not is_valid:
+                    if wp.abs(diff_val) > the or va > r + margin_a or vb > r + margin_b or not is_valid:
                         continue
                     num_iso_subblocks += 1
                     subblock_idx |= encode_coords_8(x_local, y_local, z_local)
@@ -1164,7 +1171,9 @@ def get_generate_contacts_kernel(output_vertices: bool):
 
             iso_coords = iso_voxel_coords[tid]
 
-            margin = shape_contact_margin[shape_b]
+            margin_a = shape_contact_margin[shape_a]
+            margin_b = shape_contact_margin[shape_b]
+            margin = wp.max(margin_a, margin_b)
 
             k_a = shape_material_k_hydro[shape_a]
             k_b = shape_material_k_hydro[shape_b]
@@ -1481,7 +1490,7 @@ def get_binning_kernels(
             area = contact_area[tid]
             id = contact_id[tid]
             # find the normal bin which is closest to the face normal (in body frame of b)
-            bin_normal_idx = get_slot(normal)
+            bin_normal_idx = get_slot_flat(normal)
 
             bin_to_shape_pair[bin_idx_0] = sparse_idx
             bin_occupied[bin_idx_0, bin_normal_idx] = True

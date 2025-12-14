@@ -5651,12 +5651,13 @@ class ModelBuilder:
                             sdf_data, sparse_volume, coarse_volume, block_coords = compute_sdf(
                                 mesh_src=shape_src,
                                 shape_type=shape_type,
-                                shape_scale=shape_scale if bake_scale else (1.0, 1.0, 1.0),
+                                shape_scale=shape_scale,
                                 shape_thickness=shape_thickness,
                                 narrow_band_distance=sdf_narrow_band_range,
                                 margin=shape_contact_margin,
                                 target_voxel_size=sdf_target_voxel_size,
                                 max_resolution=sdf_max_resolution,
+                                bake_scale=bake_scale,
                             )
                             sdf_cache[cache_key] = i
                             block_start_idx = len(sdf_block_coords)

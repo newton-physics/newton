@@ -781,9 +781,13 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
 
                     mesh_id = mesh_id_a
                     mesh_scale = mesh_scale_a
-                    sdf_scale = mesh_scale_b  # SDF is from mesh B, need its scale
                     if not use_bvh_for_sdf:
                         sdf_data = shape_sdf_data[mesh_shape_b]
+                    # Use (1,1,1) if scale was baked into SDF, otherwise use mesh scale
+                    if sdf_data.scale_baked:
+                        sdf_scale = wp.vec3(1.0, 1.0, 1.0)
+                    else:
+                        sdf_scale = mesh_scale_b
                     sdf_mesh_id = mesh_id_b  # SDF belongs to mesh B
                     # Transform from mesh A space to mesh B space
                     X_mesh_to_sdf = wp.transform_multiply(wp.transform_inverse(X_mesh_b_ws), X_mesh_a_ws)
@@ -799,9 +803,13 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
 
                     mesh_id = mesh_id_b
                     mesh_scale = mesh_scale_b
-                    sdf_scale = mesh_scale_a  # SDF is from mesh A, need its scale
                     if not use_bvh_for_sdf:
                         sdf_data = shape_sdf_data[mesh_shape_a]
+                    # Use (1,1,1) if scale was baked into SDF, otherwise use mesh scale
+                    if sdf_data.scale_baked:
+                        sdf_scale = wp.vec3(1.0, 1.0, 1.0)
+                    else:
+                        sdf_scale = mesh_scale_a
                     sdf_mesh_id = mesh_id_a  # SDF belongs to mesh A
                     # Transform from mesh B space to mesh A space
                     X_mesh_to_sdf = wp.transform_multiply(wp.transform_inverse(X_mesh_a_ws), X_mesh_b_ws)
@@ -1002,7 +1010,9 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
             if mode == 0:
                 mesh = mesh0
                 mesh_scale = mesh0_scale
-                sdf_scale = mesh1_scale  # SDF belongs to mesh1, need its scale
+                # Use (1,1,1) if scale was baked into SDF, otherwise use mesh scale
+                if not sdf_data1.scale_baked:
+                    sdf_scale = mesh1_scale
                 mesh_sdf_transform = wp.transform_multiply(wp.transform_inverse(mesh1_transform), mesh0_transform)
                 sdf_data_current = sdf_data1
                 sdf_mesh_id = mesh1  # SDF belongs to mesh1
@@ -1011,7 +1021,9 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
             else:
                 mesh = mesh1
                 mesh_scale = mesh1_scale
-                sdf_scale = mesh0_scale  # SDF belongs to mesh0, need its scale
+                # Use (1,1,1) if scale was baked into SDF, otherwise use mesh scale
+                if not sdf_data0.scale_baked:
+                    sdf_scale = mesh0_scale
                 mesh_sdf_transform = wp.transform_multiply(wp.transform_inverse(mesh0_transform), mesh1_transform)
                 sdf_data_current = sdf_data0
                 sdf_mesh_id = mesh0  # SDF belongs to mesh0

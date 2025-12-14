@@ -47,6 +47,9 @@ class SDFData:
     # Background value used for unallocated voxels in the sparse SDF
     background_value: wp.float32
 
+    # Whether shape_scale was baked into the SDF
+    scale_baked: wp.bool
+
 
 # Default background value for unallocated voxels in sparse SDF.
 # Using inf ensures any trilinear interpolation with unallocated voxels produces inf or NaN,
@@ -69,6 +72,7 @@ def create_empty_sdf_data() -> SDFData:
     sdf_data.center = wp.vec3(0.0, 0.0, 0.0)
     sdf_data.half_extents = wp.vec3(0.0, 0.0, 0.0)
     sdf_data.background_value = SDF_BACKGROUND_VALUE
+    sdf_data.scale_baked = False
     return sdf_data
 
 
@@ -241,6 +245,7 @@ def compute_sdf(
     margin: float = 0.05,
     target_voxel_size: float | None = None,
     max_resolution: int = 64,
+    bake_scale: bool = False,
     verbose: bool = False,
 ) -> tuple[SDFData, wp.Volume | None, wp.Volume | None, Sequence[wp.vec3us]]:
     """Compute sparse and coarse SDF volumes for a mesh.
@@ -252,12 +257,13 @@ def compute_sdf(
     Args:
         mesh_src: Mesh source with vertices and indices.
         shape_type: Type of the shape.
-        shape_scale: Scale factors for the mesh. Applied before SDF generation. Default (1.0, 1.0, 1.0).
+        shape_scale: Scale factors for the mesh. Applied before SDF generation if bake_scale is True.
         shape_thickness: Thickness offset to subtract from SDF values.
         narrow_band_distance: Tuple of (inner, outer) distances for narrow band.
         margin: Margin to add to bounding box. Must be > 0.
         target_voxel_size: Target voxel size for sparse SDF grid. If None, computed as max_extent/max_resolution.
         max_resolution: Maximum dimension for sparse SDF grid when target_voxel_size is None. Must be divisible by 8.
+        bake_scale: If True, bake shape_scale into the SDF. If False, use (1,1,1) scale.
         verbose: Print debug info.
 
     Returns:
@@ -284,10 +290,13 @@ def compute_sdf(
     )
     assert margin > 0, "margin must be > 0"
 
+    # Determine effective scale based on bake_scale flag
+    effective_scale = tuple(shape_scale) if bake_scale else (1.0, 1.0, 1.0)
+
     offset = margin + shape_thickness
 
     if shape_type == GeoType.MESH:
-        verts = mesh_src.vertices * np.array(shape_scale)[None, :]
+        verts = mesh_src.vertices * np.array(effective_scale)[None, :]
         pos = wp.array(verts, dtype=wp.vec3)
         indices = wp.array(mesh_src.indices, dtype=wp.int32)
 
@@ -297,7 +306,7 @@ def compute_sdf(
         min_ext = np.min(verts, axis=0).tolist()
         max_ext = np.max(verts, axis=0).tolist()
     else:
-        min_ext, max_ext = get_primitive_extents(shape_type, shape_scale)
+        min_ext, max_ext = get_primitive_extents(shape_type, effective_scale)
 
     min_ext = np.array(min_ext) - offset
     max_ext = np.array(max_ext) + offset
@@ -355,7 +364,7 @@ def compute_sdf(
         wp.launch(
             check_tile_occupied_primitive_kernel,
             dim=(len(tile_points)),
-            inputs=[shape_type, shape_scale, tile_center_points_world, threshold],
+            inputs=[shape_type, effective_scale, tile_center_points_world, threshold],
             outputs=[tile_occupied],
         )
 
@@ -385,7 +394,7 @@ def compute_sdf(
         wp.launch(
             sdf_from_primitive_kernel,
             dim=(num_allocated_tiles, 8, 8, 8),
-            inputs=[shape_type, shape_scale, sparse_volume.id, tile_points_wp, shape_thickness],
+            inputs=[shape_type, effective_scale, sparse_volume.id, tile_points_wp, shape_thickness],
         )
 
     tiles = sparse_volume.get_tiles().numpy()
@@ -415,7 +424,7 @@ def compute_sdf(
         wp.launch(
             sdf_from_primitive_kernel,
             dim=(1, 8, 8, 8),
-            inputs=[shape_type, shape_scale, coarse_volume.id, coarse_tile_points_wp, shape_thickness],
+            inputs=[shape_type, effective_scale, coarse_volume.id, coarse_tile_points_wp, shape_thickness],
         )
 
     if verbose:
@@ -431,6 +440,7 @@ def compute_sdf(
     sdf_data.center = wp.vec3(center)
     sdf_data.half_extents = wp.vec3(half_extents)
     sdf_data.background_value = SDF_BACKGROUND_VALUE
+    sdf_data.scale_baked = bake_scale
 
     return sdf_data, sparse_volume, coarse_volume, block_coords
 
