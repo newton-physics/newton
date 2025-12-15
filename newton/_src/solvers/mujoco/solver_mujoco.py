@@ -1745,7 +1745,6 @@ class SolverMuJoCo(SolverBase):
             eq.active = True
             eq.name1 = model.body_key[joint_parent[j]]
             eq.name2 = model.body_key[joint_child[j]]
-            eq.data[0:3] = joint_parent_xform[j][:3]
             eq.data[0:3] = joint_child_xform[j][:3]
 
         if skip_visual_only_geoms and len(spec.geoms) != colliding_shapes_per_world:
