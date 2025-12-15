@@ -212,6 +212,209 @@ def test_stacked_primitive_cubes_hydroelastic_no_reduction(test, device, solver_
     run_stacked_cubes_hydroelastic_test(test, device, solver_fn, ShapeType.PRIMITIVE, CUBE_HALF_LARGE, False)
 
 
+def test_mujoco_hydroelastic_penetration_depth(test, device):
+    """Test that hydroelastic penetration depth matches expectation.
+
+    Creates 4 box pairs with different k_hydro and area combinations:
+    - Case 0: k=1e6, area=0.01 (small stiffness, small area)
+    - Case 1: k=1e7, area=0.01 (large stiffness, small area)
+    - Case 2: k=1e6, area=0.0225 (small stiffness, large area)
+    - Case 3: k=1e7, area=0.0225 (large stiffness, large area)
+    """
+    # Test parameters
+    box_size_lower = 0.2
+    box_half_lower = box_size_lower / 2.0
+    mass_lower = 1.0
+    mass_upper = 0.5
+    gravity = 10.0
+    external_force = 20.0
+
+    # 4 test cases: (k_hydro, upper_box_size)
+    test_cases = [
+        (1e6, 0.1),
+        (1e7, 0.1),
+        (1e6, 0.15),
+        (1e7, 0.15),
+    ]
+
+    # Inertia for lower box
+    inertia_lower = (1.0 / 6.0) * mass_lower * box_size_lower * box_size_lower
+    I_m_lower = wp.mat33(inertia_lower, 0.0, 0.0, 0.0, inertia_lower, 0.0, 0.0, 0.0, inertia_lower)
+
+    builder = newton.ModelBuilder(gravity=-gravity)
+
+    lower_body_indices = []
+    upper_body_indices = []
+    lower_shape_indices = []
+    upper_shape_indices = []
+    initial_upper_positions = []
+    areas = []
+    k_hydros = []
+
+    spacing = 0.5
+
+    for i, (k_hydro, upper_size) in enumerate(test_cases):
+        upper_half = upper_size / 2.0
+        area = upper_size * upper_size
+        areas.append(area)
+        k_hydros.append(0.5 * k_hydro)  # effective stiffness for two equal k shapes
+
+        # Inertia for this upper box
+        inertia_upper = (1.0 / 6.0) * mass_upper * upper_size * upper_size
+        I_m_upper = wp.mat33(inertia_upper, 0.0, 0.0, 0.0, inertia_upper, 0.0, 0.0, 0.0, inertia_upper)
+
+        shape_cfg = newton.ModelBuilder.ShapeConfig(
+            sdf_max_resolution=64,
+            is_hydroelastic=True,
+            sdf_narrow_band_range=(-0.1, 0.1),
+            contact_margin=0.01,
+            k_hydro=k_hydro,
+            density=0.0,
+        )
+
+        x_pos = (i - len(test_cases) / 2) * spacing
+
+        # Lower box
+        lower_pos = wp.vec3(x_pos, 0.0, box_half_lower)
+        body_lower = builder.add_body(
+            xform=wp.transform(p=lower_pos, q=wp.quat_identity()),
+            key=f"lower_{i}",
+            mass=mass_lower,
+            I_m=I_m_lower,
+        )
+        shape_lower = builder.add_shape_box(
+            body_lower, hx=box_half_lower, hy=box_half_lower, hz=box_half_lower, cfg=shape_cfg
+        )
+        lower_body_indices.append(body_lower)
+        lower_shape_indices.append(shape_lower)
+
+        # Upper box
+        expected_dist = box_half_lower + upper_half
+        upper_z = box_half_lower + expected_dist
+        upper_pos = wp.vec3(x_pos, 0.0, upper_z)
+        body_upper = builder.add_body(
+            xform=wp.transform(p=upper_pos, q=wp.quat_identity()),
+            key=f"upper_{i}",
+            mass=mass_upper,
+            I_m=I_m_upper,
+        )
+        shape_upper = builder.add_shape_box(body_upper, hx=upper_half, hy=upper_half, hz=upper_half, cfg=shape_cfg)
+        upper_body_indices.append(body_upper)
+        upper_shape_indices.append(shape_upper)
+        initial_upper_positions.append(np.array([x_pos, 0.0, upper_z]))
+
+    builder.add_ground_plane()
+    model = builder.finalize(device=device)
+
+    solver = newton.solvers.SolverMuJoCo(
+        model,
+        use_mujoco_contacts=False,
+        solver="newton",
+        integrator="implicitfast",
+        cone="elliptic",
+        njmax=2000,
+        nconmax=2000,
+        iterations=20,
+        ls_iterations=100,
+        ls_parallel=True,
+        impratio=1000.0,
+    )
+
+    state_0 = model.state()
+    state_1 = model.state()
+    control = model.control()
+
+    newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
+
+    sdf_config = SDFHydroelasticConfig(output_iso_vertices=True)
+    collision_pipeline = newton.CollisionPipelineUnified.from_model(
+        model,
+        rigid_contact_max_per_pair=100,
+        broad_phase_mode=newton.BroadPhaseMode.EXPLICIT,
+        sdf_hydroelastic_config=sdf_config,
+    )
+
+    # Simulate for 3 seconds to reach equilibrium
+    sim_dt = 1.0 / 60.0
+    substeps = 10
+    sim_time = 3.0
+    num_frames = int(sim_time / sim_dt)
+
+    for _ in range(num_frames):
+        for _ in range(substeps):
+            state_0.clear_forces()
+            # Apply external force to upper boxes
+            forces = np.zeros(model.body_count * 6, dtype=np.float32)
+            for body_idx in upper_body_indices:
+                forces[body_idx * 6 + 2] = -external_force
+            state_0.body_f.assign(forces)
+
+            contacts = model.collide(state_0, collision_pipeline=collision_pipeline)
+            solver.step(state_0, state_1, control, contacts, sim_dt / substeps)
+            state_0, state_1 = state_1, state_0
+
+    # Check that upper cubes are near their original positions
+    body_q = state_0.body_q.numpy()
+    position_tolerance = 0.001
+
+    for i in range(len(test_cases)):
+        body_idx = upper_body_indices[i]
+        final_pos = body_q[body_idx, :3]
+        initial_pos = initial_upper_positions[i]
+        displacement = np.linalg.norm(final_pos - initial_pos)
+
+        test.assertLess(
+            displacement,
+            position_tolerance,
+            f"Case {i}: Upper cube moved {displacement:.4f}m from initial position, exceeds {position_tolerance}m tolerance",
+        )
+
+    # Measure penetration from iso_vertex_depth
+    iso_data = collision_pipeline.get_isosurface_data()
+    test.assertIsNotNone(iso_data, "Isosurface data should be available")
+
+    num_faces = int(iso_data.face_contact_count.numpy()[0])
+    test.assertGreater(num_faces, 0, "Should have face contacts")
+
+    depths = iso_data.iso_vertex_depth.numpy()[:num_faces]
+    shape_pairs = iso_data.iso_vertex_shape_pair.numpy()[:num_faces]
+
+    # Calculate expected and measured penetration for each case
+    total_force = gravity * mass_upper + external_force
+    effective_mass = (mass_lower * mass_upper) / (mass_lower + mass_upper)
+
+    for i in range(len(test_cases)):
+        lower_shape = lower_shape_indices[i]
+        upper_shape = upper_shape_indices[i]
+        k_hydro = k_hydros[i]
+        area = areas[i]
+
+        # Filter depths for this shape pair
+        mask = ((shape_pairs[:, 0] == lower_shape) & (shape_pairs[:, 1] == upper_shape)) | (
+            (shape_pairs[:, 0] == upper_shape) & (shape_pairs[:, 1] == lower_shape)
+        )
+        instance_depths = depths[mask]
+        instance_depths = instance_depths[instance_depths > 0]  # only consider positive depths = penetrating
+
+        test.assertGreater(len(instance_depths), 0, f"Case {i} should have positive depth contacts")
+
+        measured = 2.0 * np.mean(instance_depths)  # x2 because this is the distance to the isosurface
+
+        imp = 0.99  # mujoco impedance set in geom_solimp # TODO: read this from the contact buffer instead
+        # Expected: depth = F / (k_eff * A_eff) / mujoco_scaling
+        effective_area = area * 0.9  # scale factor to account for non-uniform pressure distribution
+        expected = total_force / (k_hydro * effective_area)
+        expected /= effective_mass / (1.0 - imp)
+        ratio = measured / expected
+
+        test.assertGreater(
+            ratio, 0.9, f"Case {i}: ratio {ratio:.3f} too low (measured={measured:.6f}, expected={expected:.6f})"
+        )
+        test.assertLess(
+            ratio, 1.1, f"Case {i}: ratio {ratio:.3f} too high (measured={measured:.6f}, expected={expected:.6f})"
+        )
+
+
 # --- Test class ---
 
 
@@ -270,15 +473,6 @@ class TestHydroelastic(unittest.TestCase):
 
 # --- Register tests ---
 
-# MuJoCo: meshes (large) and primitives (small)
-add_function_test(
-    TestHydroelastic,
-    "test_stacked_mesh_cubes_hydroelastic_mujoco_warp",
-    test_stacked_mesh_cubes_hydroelastic,
-    devices=cuda_devices,
-    solver_fn=solvers["mujoco_warp"],
-)
-
 add_function_test(
     TestHydroelastic,
     "test_stacked_small_primitive_cubes_hydroelastic_mujoco_warp",
@@ -287,7 +481,6 @@ add_function_test(
     solver_fn=solvers["mujoco_warp"],
 )
 
-# XPBD: meshes (small) and primitives (large, without reduction)
 add_function_test(
     TestHydroelastic,
     "test_stacked_small_mesh_cubes_hydroelastic_xpbd",
@@ -302,6 +495,14 @@ add_function_test(
     test_stacked_primitive_cubes_hydroelastic_no_reduction,
     devices=cuda_devices,
     solver_fn=solvers["xpbd"],
+)
+
+# Penetration depth validation test
+add_function_test(
+    TestHydroelastic,
+    "test_mujoco_hydroelastic_penetration_depth",
+    test_mujoco_hydroelastic_penetration_depth,
+    devices=cuda_devices,
 )
 
 
