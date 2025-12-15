@@ -127,24 +127,26 @@ def check_tile_occupied_mesh_kernel(
 
 def compute_sdf(
     mesh_src: Mesh,
-    shape_scale: Sequence[float] = (1.0, 1.0, 1.0),
     shape_thickness: float = 0.0,
     narrow_band_distance: Sequence[float] = (-0.1, 0.1),
     margin: float = 0.05,
     target_voxel_size: float | None = None,
-    max_dims: int = 64,
+    max_resolution: int = 64,
     verbose: bool = False,
 ) -> tuple[SDFData, wp.Volume | None, wp.Volume | None]:
     """Compute sparse and coarse SDF volumes for a mesh.
 
+    The SDF is computed in the mesh's unscaled local space. Scale is intentionally
+    NOT a parameter - the collision system handles scaling at runtime, ensuring
+    the SDF and mesh BVH stay consistent and allowing dynamic scale changes.
+
     Args:
         mesh_src: Mesh source with vertices and indices.
-        shape_scale: Scale factors for the mesh. Default (1.0, 1.0, 1.0).
         shape_thickness: Thickness offset to subtract from SDF values.
         narrow_band_distance: Tuple of (inner, outer) distances for narrow band.
-        margin: Margin to add to bounding box.
-        target_voxel_size: Target voxel size for sparse SDF grid. If None, computed as max_extent/max_dims.
-        max_dims: Maximum dimension for sparse SDF grid when target_voxel_size is None. Default 64.
+        margin: Margin to add to bounding box. Must be > 0.
+        target_voxel_size: Target voxel size for sparse SDF grid. If None, computed as max_extent/max_resolution.
+        max_resolution: Maximum dimension for sparse SDF grid when target_voxel_size is None. Must be divisible by 8.
         verbose: Print debug info.
 
     Returns:
@@ -167,8 +169,8 @@ def compute_sdf(
     assert margin > 0, "margin must be > 0"
 
     offset = margin + shape_thickness
-    # bake scale into SDF
-    verts = mesh_src.vertices * np.array(shape_scale)[None, :]
+    # Use unscaled vertices - scale is handled at collision time
+    verts = mesh_src.vertices
     pos = wp.array(verts, dtype=wp.vec3)
     indices = wp.array(mesh_src.indices, dtype=wp.int32)
 
@@ -188,13 +190,13 @@ def compute_sdf(
 
     # Calculate uniform voxel size based on the longest dimension
     max_extent = np.max(ext)
-    # If target_voxel_size not specified, compute from max_dims
+    # If target_voxel_size not specified, compute from max_resolution
     if target_voxel_size is None:
         # Warp volumes are allocated in tiles of 8 voxels
-        assert max_dims % 8 == 0, "max_dims must be divisible by 8 for SDF volume allocation"
+        assert max_resolution % 8 == 0, "max_resolution must be divisible by 8 for SDF volume allocation"
         # we store coords as uint16
-        assert max_dims < 1 << 16, f"max_dims must be less than {1 << 16}"
-        target_voxel_size = max_extent / max_dims
+        assert max_resolution < 1 << 16, f"max_resolution must be less than {1 << 16}"
+        target_voxel_size = max_extent / max_resolution
     voxel_size_max_ext = target_voxel_size
     grid_tile_nums = (ext / voxel_size_max_ext).astype(int) // 8
     grid_tile_nums = np.maximum(grid_tile_nums, 1)

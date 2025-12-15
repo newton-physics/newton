@@ -15,15 +15,23 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
+
 import warp as wp
 
-from .bvh import compute_bvh_group_roots, compute_geom_bvh_bounds, compute_particle_bvh_bounds
+from .bvh import compute_bvh_group_roots, compute_particle_bvh_bounds, compute_shape_bvh_bounds
 from .render import render_megakernel
 
-DEFAULT_CLEAR_COLOR = 0
-DEFAULT_CLEAR_DEPTH = 0.0
-DEFAULT_CLEAR_GEOM_ID = wp.uint32(0xFFFFFFFF)
-DEFAULT_CLEAR_NORMAL = wp.vec3f(0.0)
+
+@dataclass
+class ClearData:
+    clear_color: int | wp.int32 | None = field(default_factory=lambda: wp.int32(0))
+    clear_depth: float | wp.float32 | None = field(default_factory=lambda: wp.float32(0.0))
+    clear_shape_index: int | wp.uint32 | None = field(default_factory=lambda: wp.uint32(0xFFFFFFFF))
+    clear_normal: wp.vec3f | None = field(default_factory=lambda: wp.vec3f(0.0))
+
+
+DEFAULT_CLEAR_DATA = ClearData()
 
 
 class RenderContext:
@@ -53,10 +61,10 @@ class RenderContext:
         self.enable_particles = enable_particles
         self.max_distance = 1000.0
 
-        self.bvh_geom: wp.Bvh = None
+        self.bvh_shapes: wp.Bvh = None
         self.bvh_particles: wp.Bvh = None
         self.triangle_mesh: wp.Mesh = None
-        self.num_geoms = 0
+        self.num_shapes = 0
 
         self.mesh_bounds: wp.array2d(dtype=wp.vec3f) = None
         self.mesh_texcoord: wp.array(dtype=wp.vec2f) = None
@@ -72,14 +80,14 @@ class RenderContext:
         self.__particles_radius: wp.array(dtype=wp.float32) = None
         self.__particles_world_index: wp.array(dtype=wp.int32) = None
 
-        self.geom_enabled: wp.array(dtype=wp.uint32) = None
-        self.geom_types: wp.array(dtype=wp.int32) = None
-        self.geom_mesh_indices: wp.array(dtype=wp.int32) = None
-        self.geom_sizes: wp.array(dtype=wp.vec3f) = None
-        self.geom_transforms: wp.array(dtype=wp.transformf) = None
-        self.geom_materials: wp.array(dtype=wp.int32) = None
-        self.geom_colors: wp.array(dtype=wp.vec4f) = None
-        self.geom_world_index: wp.array(dtype=wp.int32) = None
+        self.shape_enabled: wp.array(dtype=wp.uint32) = None
+        self.shape_types: wp.array(dtype=wp.int32) = None
+        self.shape_mesh_indices: wp.array(dtype=wp.int32) = None
+        self.shape_sizes: wp.array(dtype=wp.vec3f) = None
+        self.shape_transforms: wp.array(dtype=wp.transformf) = None
+        self.shape_materials: wp.array(dtype=wp.int32) = None
+        self.shape_colors: wp.array(dtype=wp.vec4f) = None
+        self.shape_world_index: wp.array(dtype=wp.int32) = None
 
         self.texture_offsets: wp.array(dtype=wp.int32) = None
         self.texture_data: wp.array(dtype=wp.uint32) = None
@@ -98,24 +106,24 @@ class RenderContext:
         self.lights_position: wp.array(dtype=wp.vec3f) = None
         self.lights_orientation: wp.array(dtype=wp.vec3f) = None
 
-        self.bvh_geom_lowers: wp.array(dtype=wp.vec3f) = None
-        self.bvh_geom_uppers: wp.array(dtype=wp.vec3f) = None
-        self.bvh_geom_groups: wp.array(dtype=wp.int32) = None
-        self.bvh_geom_group_roots: wp.array(dtype=wp.int32) = None
+        self.bvh_shapes_lowers: wp.array(dtype=wp.vec3f) = None
+        self.bvh_shapes_uppers: wp.array(dtype=wp.vec3f) = None
+        self.bvh_shapes_groups: wp.array(dtype=wp.int32) = None
+        self.bvh_shapes_group_roots: wp.array(dtype=wp.int32) = None
         self.bvh_particles_lowers: wp.array(dtype=wp.vec3f) = None
         self.bvh_particles_uppers: wp.array(dtype=wp.vec3f) = None
         self.bvh_particles_groups: wp.array(dtype=wp.int32) = None
         self.bvh_particles_group_roots: wp.array(dtype=wp.int32) = None
 
-    def __init_geom_outputs(self):
-        if self.bvh_geom_lowers is None:
-            self.bvh_geom_lowers = wp.zeros(self.num_geoms_total, dtype=wp.vec3f)
-        if self.bvh_geom_uppers is None:
-            self.bvh_geom_uppers = wp.zeros(self.num_geoms_total, dtype=wp.vec3f)
-        if self.bvh_geom_groups is None:
-            self.bvh_geom_groups = wp.zeros(self.num_geoms_total, dtype=wp.int32)
-        if self.bvh_geom_group_roots is None:
-            self.bvh_geom_group_roots = wp.zeros((self.num_worlds_total), dtype=wp.int32)
+    def __init_shape_outputs(self):
+        if self.bvh_shapes_lowers is None:
+            self.bvh_shapes_lowers = wp.zeros(self.num_shapes_total, dtype=wp.vec3f)
+        if self.bvh_shapes_uppers is None:
+            self.bvh_shapes_uppers = wp.zeros(self.num_shapes_total, dtype=wp.vec3f)
+        if self.bvh_shapes_groups is None:
+            self.bvh_shapes_groups = wp.zeros(self.num_shapes_total, dtype=wp.int32)
+        if self.bvh_shapes_group_roots is None:
+            self.bvh_shapes_group_roots = wp.zeros((self.num_worlds_total), dtype=wp.int32)
 
     def __init_particle_outputs(self):
         if self.bvh_particles_lowers is None:
@@ -133,25 +141,25 @@ class RenderContext:
     def create_depth_image_output(self):
         return wp.zeros((self.num_worlds, self.num_cameras, self.width * self.height), dtype=wp.float32)
 
-    def create_geom_id_image_output(self):
+    def create_shape_index_image_output(self):
         return wp.zeros((self.num_worlds, self.num_cameras, self.width * self.height), dtype=wp.uint32)
 
     def create_normal_image_output(self):
         return wp.zeros((self.num_worlds, self.num_cameras, self.width * self.height), dtype=wp.vec3f)
 
     def refit_bvh(self):
-        if self.num_geoms_total:
-            self.__init_geom_outputs()
-            self.__compute_bvh_geom_bounds()
-            if self.bvh_geom is None:
-                self.bvh_geom = wp.Bvh(self.bvh_geom_lowers, self.bvh_geom_uppers, groups=self.bvh_geom_groups)
+        if self.num_shapes_total:
+            self.__init_shape_outputs()
+            self.__compute_bvh_shape_bounds()
+            if self.bvh_shapes is None:
+                self.bvh_shapes = wp.Bvh(self.bvh_shapes_lowers, self.bvh_shapes_uppers, groups=self.bvh_shapes_groups)
                 wp.launch(
                     kernel=compute_bvh_group_roots,
                     dim=self.num_worlds_total,
-                    inputs=[self.bvh_geom.id, self.bvh_geom_group_roots],
+                    inputs=[self.bvh_shapes.id, self.bvh_shapes_group_roots],
                 )
             else:
-                self.bvh_geom.refit()
+                self.bvh_shapes.refit()
 
         if self.num_particles_total:
             self.__init_particle_outputs()
@@ -182,15 +190,12 @@ class RenderContext:
         camera_rays: wp.array(dtype=wp.vec3f, ndim=4),
         color_image: wp.array(dtype=wp.uint32, ndim=3) | None = None,
         depth_image: wp.array(dtype=wp.float32, ndim=3) | None = None,
-        geom_id_image: wp.array(dtype=wp.uint32, ndim=3) | None = None,
+        shape_index_image: wp.array(dtype=wp.uint32, ndim=3) | None = None,
         normal_image: wp.array(dtype=wp.vec3f, ndim=3) | None = None,
         refit_bvh: bool = True,
-        clear_color: int | None = DEFAULT_CLEAR_COLOR,
-        clear_depth: float | None = DEFAULT_CLEAR_DEPTH,
-        clear_geom_id: int | None = DEFAULT_CLEAR_GEOM_ID,
-        clear_normal: wp.vec3f | None = DEFAULT_CLEAR_NORMAL,
+        clear_data: ClearData | None = DEFAULT_CLEAR_DATA,
     ):
-        if self.has_geometries or self.has_particles or self.has_triangle_mesh:
+        if self.has_shapes or self.has_particles or self.has_triangle_mesh:
             if refit_bvh:
                 self.refit_bvh()
             render_megakernel(
@@ -199,31 +204,28 @@ class RenderContext:
                 camera_rays,
                 color_image,
                 depth_image,
-                geom_id_image,
+                shape_index_image,
                 normal_image,
-                clear_color,
-                clear_depth,
-                clear_geom_id,
-                clear_normal,
+                clear_data,
             )
 
-    def __compute_bvh_geom_bounds(self):
+    def __compute_bvh_shape_bounds(self):
         wp.launch(
-            kernel=compute_geom_bvh_bounds,
-            dim=self.num_geoms_total,
+            kernel=compute_shape_bvh_bounds,
+            dim=self.num_shapes_total,
             inputs=[
-                self.num_geoms_total,
+                self.num_shapes_total,
                 self.num_worlds_total,
-                self.geom_world_index,
-                self.geom_enabled,
-                self.geom_types,
-                self.geom_mesh_indices,
-                self.geom_sizes,
-                self.geom_transforms,
+                self.shape_world_index,
+                self.shape_enabled,
+                self.shape_types,
+                self.shape_mesh_indices,
+                self.shape_sizes,
+                self.shape_transforms,
                 self.mesh_bounds,
-                self.bvh_geom_lowers,
-                self.bvh_geom_uppers,
-                self.bvh_geom_groups,
+                self.bvh_shapes_lowers,
+                self.bvh_shapes_uppers,
+                self.bvh_shapes_groups,
             ],
         )
 
@@ -250,8 +252,8 @@ class RenderContext:
         return self.num_worlds
 
     @property
-    def num_geoms_total(self) -> int:
-        return self.num_geoms
+    def num_shapes_total(self) -> int:
+        return self.num_shapes
 
     @property
     def num_particles_total(self) -> int:
@@ -266,8 +268,8 @@ class RenderContext:
         return 0
 
     @property
-    def has_geometries(self) -> bool:
-        return self.num_geoms_total > 0
+    def has_shapes(self) -> bool:
+        return self.num_shapes_total > 0
 
     @property
     def has_particles(self) -> bool:
