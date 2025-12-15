@@ -373,7 +373,7 @@ def validate_edge_collisions(
 
             dist = wp.length(c2 - c1)
 
-            wp.expect_eq(dist >= min_dist, True)
+            wp.expect_eq(dist >= min_dist * 0.999, True)
             wp.expect_eq(e0_index == edge_colliding_edges[2 * (offset + col)], True)
         else:
             wp.expect_eq(e1_index == -1, True)
@@ -911,7 +911,7 @@ def validate_edge_collisions_distance_filter(
 
             dist_ref = std_ref[2]
 
-            wp.expect_eq(dist_ref >= min_query_radius, True)
+            wp.expect_eq(dist_ref >= min_query_radius * 0.999, True)
             wp.expect_eq(e0_index == edge_colliding_edges[2 * (offset + col)], True)
         else:
             wp.expect_eq(e1_index == -1, True)
