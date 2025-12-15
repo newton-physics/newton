@@ -4288,8 +4288,10 @@ class ModelBuilder:
 
         Articulations:
             By default (``wrap_in_articulation=True``), the created joints are wrapped into a single
-            articulation, which avoids orphan joints during :meth:`finalize`. Set ``wrap_in_articulation=False`` if you need the joints
-            to remain outside any articulation.
+            articulation, which avoids orphan joints during :meth:`finalize`.
+            If ``wrap_in_articulation=False``, this method will return the created joint indices but will
+            not wrap them; callers must place them into one or more articulations (via :meth:`add_articulation`)
+            before calling :meth:`finalize`.
 
         Raises:
             ValueError: If ``positions`` and ``quaternions`` lengths are incompatible.
@@ -4317,12 +4319,13 @@ class ModelBuilder:
         num_segments = len(quaternions)
         if len(positions) != num_segments + 1:
             raise ValueError(
-                f"positions must have {num_segments + 1} elements for {num_segments} segments, "
+                f"add_rod: positions must have {num_segments + 1} elements for {num_segments} segments, "
                 f"got {len(positions)} positions"
             )
 
         link_bodies = []
         link_joints = []
+        segment_lengths: list[float] = []
 
         # Create all bodies first
         for i in range(num_segments):
@@ -4337,6 +4340,7 @@ class ModelBuilder:
                     f"add_rod: segment {i} has zero or negative length; "
                     "positions must form strictly positive-length segments"
                 )
+            segment_lengths.append(float(segment_length))
             half_height = 0.5 * segment_length
 
             # Sanity check: ensure the capsule orientation aligns its local +Z axis with
@@ -4365,7 +4369,7 @@ class ModelBuilder:
             body_key = f"{key}_body_{i}" if key else None
             shape_key = f"{key}_capsule_{i}" if key else None
 
-            child_body = self.add_body(body_q, com=com_offset, key=body_key)
+            child_body = self.add_link(xform=body_q, com=com_offset, key=body_key)
 
             # Place capsule so it spans from start to end along +Z
             capsule_xform = wp.transform(wp.vec3(0.0, 0.0, half_height), wp.quat_identity())
@@ -4391,8 +4395,7 @@ class ModelBuilder:
             child_body = link_bodies[child_idx]
 
             # Parent anchor at segment end
-            segment_length = wp.length(positions[child_idx] - positions[parent_idx])
-            parent_xform = wp.transform(wp.vec3(0.0, 0.0, segment_length), wp.quat_identity())
+            parent_xform = wp.transform(wp.vec3(0.0, 0.0, segment_lengths[parent_idx]), wp.quat_identity())
 
             # Child anchor at segment start
             child_xform = wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity())
