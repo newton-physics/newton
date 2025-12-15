@@ -707,7 +707,7 @@ class SolverMuJoCo(SolverBase):
         model: Model,
         state: State,
         mj_data: MjWarpData | MjData,
-        eval_fk: bool = False,
+        eval_fk: bool = True,
     ):
         is_mjwarp = SolverMuJoCo._data_is_mjwarp(mj_data)
         if is_mjwarp:
@@ -751,6 +751,7 @@ class SolverMuJoCo(SolverBase):
                 dim=model.articulation_count,
                 inputs=[
                     model.articulation_start,
+                    model.joint_articulation,
                     state.joint_q,
                     state.joint_qd,
                     model.joint_q_start,

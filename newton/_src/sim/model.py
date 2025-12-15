@@ -317,6 +317,8 @@ class Model:
         """Generalized joint velocity targets, shape [joint_dof_count], float."""
         self.joint_type = None
         """Joint type, shape [joint_count], int."""
+        self.joint_articulation = None
+        """Joint articulation index (-1 if not in any articulation), shape [joint_count], int."""
         self.joint_parent = None
         """Joint parent body indices, shape [joint_count], int."""
         self.joint_child = None
