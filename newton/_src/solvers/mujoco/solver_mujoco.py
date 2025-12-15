@@ -1234,13 +1234,13 @@ class SolverMuJoCo(SolverBase):
             selected_constraints = np.arange(model.equality_constraint_count, dtype=np.int32)
 
         # split joints into loop and non-loop joints (loop joints will be instantiated separately as equality constraints)
-        joints_loop = np.where(joint_articulation[selected_joints] == -1)[0]
-        joints_non_loop = np.where(joint_articulation[selected_joints] >= 0)[0]
+        joints_loop = selected_joints[joint_articulation[selected_joints] == -1]
+        joints_non_loop = selected_joints[joint_articulation[selected_joints] >= 0]
         # sort joints topologically depth-first since this is the order that will also be used
         # for placing bodies in the MuJoCo model
         joints_simple = [(joint_parent[i], joint_child[i]) for i in joints_non_loop]
         joint_order = topological_sort(joints_simple, use_dfs=True, custom_indices=joints_non_loop)
-        if any(joint_order[i] != i for i in range(len(joints_simple))):
+        if any(joint_order[i] != joints_non_loop[i] for i in range(len(joints_simple))):
             warnings.warn(
                 "Joint order is not in depth-first topological order while converting Newton model to MuJoCo, this may lead to diverging kinematics between MuJoCo and Newton.",
                 stacklevel=2,
@@ -1731,8 +1731,7 @@ class SolverMuJoCo(SolverBase):
 
         # add connect constraints for joints that are excluded from the articulation
         # (the UsdPhysics way of defining loop closures)
-        for i in joints_loop:
-            j = selected_joints[i]
+        for j in joints_loop:
             eq = spec.add_equality(objtype=mujoco.mjtObj.mjOBJ_BODY)
             eq.type = mujoco.mjtEq.mjEQ_CONNECT
             eq.active = True
