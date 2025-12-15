@@ -15,48 +15,48 @@
 
 import warp as wp
 
-from .ray import scale_mat
-from .types import GeomType
+from .types import RenderShapeType
 
 
 @wp.func
 def compute_mesh_bounds(
-    pos: wp.vec3f, rot: wp.mat33f, size: wp.vec3f, min_bounds: wp.vec3f, max_bounds: wp.vec3f
+    transform: wp.transformf, scale: wp.vec3f, mesh_min_bounds: wp.vec3f, mesh_max_bounds: wp.vec3f
 ) -> tuple[wp.vec3f, wp.vec3f]:
-    mat = scale_mat(size) @ rot
+    mesh_min_bounds = wp.cw_mul(mesh_min_bounds, scale)
+    mesh_max_bounds = wp.cw_mul(mesh_max_bounds, scale)
 
     min_bound = wp.vec3f(wp.inf)
     max_bound = wp.vec3f(-wp.inf)
 
-    corner_1 = pos + mat @ wp.vec3f(min_bounds[0], min_bounds[1], min_bounds[2])
+    corner_1 = wp.transform_point(transform, wp.vec3f(mesh_min_bounds[0], mesh_min_bounds[1], mesh_min_bounds[2]))
     min_bound = wp.min(min_bound, corner_1)
     max_bound = wp.max(max_bound, corner_1)
 
-    corner_2 = pos + mat @ wp.vec3f(max_bounds[0], min_bounds[1], min_bounds[2])
+    corner_2 = wp.transform_point(transform, wp.vec3f(mesh_max_bounds[0], mesh_min_bounds[1], mesh_min_bounds[2]))
     min_bound = wp.min(min_bound, corner_2)
     max_bound = wp.max(max_bound, corner_2)
 
-    corner_3 = pos + mat @ wp.vec3f(max_bounds[0], max_bounds[1], min_bounds[2])
+    corner_3 = wp.transform_point(transform, wp.vec3f(mesh_max_bounds[0], mesh_max_bounds[1], mesh_min_bounds[2]))
     min_bound = wp.min(min_bound, corner_3)
     max_bound = wp.max(max_bound, corner_3)
 
-    corner_4 = pos + mat @ wp.vec3f(min_bounds[0], max_bounds[1], min_bounds[2])
+    corner_4 = wp.transform_point(transform, wp.vec3f(mesh_min_bounds[0], mesh_max_bounds[1], mesh_min_bounds[2]))
     min_bound = wp.min(min_bound, corner_4)
     max_bound = wp.max(max_bound, corner_4)
 
-    corner_5 = pos + mat @ wp.vec3f(min_bounds[0], min_bounds[1], max_bounds[2])
+    corner_5 = wp.transform_point(transform, wp.vec3f(mesh_min_bounds[0], mesh_min_bounds[1], mesh_max_bounds[2]))
     min_bound = wp.min(min_bound, corner_5)
     max_bound = wp.max(max_bound, corner_5)
 
-    corner_6 = pos + mat @ wp.vec3f(max_bounds[0], min_bounds[1], max_bounds[2])
+    corner_6 = wp.transform_point(transform, wp.vec3f(mesh_max_bounds[0], mesh_min_bounds[1], mesh_max_bounds[2]))
     min_bound = wp.min(min_bound, corner_6)
     max_bound = wp.max(max_bound, corner_6)
 
-    corner_7 = pos + mat @ wp.vec3f(min_bounds[0], max_bounds[1], max_bounds[2])
+    corner_7 = wp.transform_point(transform, wp.vec3f(mesh_min_bounds[0], mesh_max_bounds[1], mesh_max_bounds[2]))
     min_bound = wp.min(min_bound, corner_7)
     max_bound = wp.max(max_bound, corner_7)
 
-    corner_8 = pos + mat @ wp.vec3f(max_bounds[0], max_bounds[1], max_bounds[2])
+    corner_8 = wp.transform_point(transform, wp.vec3f(mesh_max_bounds[0], mesh_max_bounds[1], mesh_max_bounds[2]))
     min_bound = wp.min(min_bound, corner_8)
     max_bound = wp.max(max_bound, corner_8)
 
@@ -64,7 +64,7 @@ def compute_mesh_bounds(
 
 
 @wp.func
-def compute_box_bounds(pos: wp.vec3f, rot: wp.mat33f, size: wp.vec3f) -> tuple[wp.vec3f, wp.vec3f]:
+def compute_box_bounds(transform: wp.transformf, size: wp.vec3f) -> tuple[wp.vec3f, wp.vec3f]:
     min_bound = wp.vec3f(wp.inf)
     max_bound = wp.vec3f(-wp.inf)
 
@@ -76,7 +76,7 @@ def compute_box_bounds(pos: wp.vec3f, rot: wp.mat33f, size: wp.vec3f) -> tuple[w
                     size[1] * (2.0 * wp.float32(y) - 1.0),
                     size[2] * (2.0 * wp.float32(z) - 1.0),
                 )
-                world_corner = pos + rot @ local_corner
+                world_corner = wp.transform_point(transform, local_corner)
                 min_bound = wp.min(min_bound, world_corner)
                 max_bound = wp.max(max_bound, world_corner)
 
@@ -89,29 +89,29 @@ def compute_sphere_bounds(pos: wp.vec3f, radius: wp.float32) -> tuple[wp.vec3f, 
 
 
 @wp.func
-def compute_capsule_bounds(pos: wp.vec3f, rot: wp.mat33f, size: wp.vec3f) -> tuple[wp.vec3f, wp.vec3f]:
+def compute_capsule_bounds(transform: wp.transformf, size: wp.vec3f) -> tuple[wp.vec3f, wp.vec3f]:
     radius = size[0]
     half_length = size[1]
     extent = wp.vec3f(radius, radius, half_length + radius)
-    return compute_box_bounds(pos, rot, extent)
+    return compute_box_bounds(transform, extent)
 
 
 @wp.func
-def compute_cylinder_bounds(pos: wp.vec3f, rot: wp.mat33f, size: wp.vec3f) -> tuple[wp.vec3f, wp.vec3f]:
+def compute_cylinder_bounds(transform: wp.transformf, size: wp.vec3f) -> tuple[wp.vec3f, wp.vec3f]:
     radius = size[0]
     half_length = size[1]
     extent = wp.vec3f(radius, radius, half_length)
-    return compute_box_bounds(pos, rot, extent)
+    return compute_box_bounds(transform, extent)
 
 
 @wp.func
-def compute_cone_bounds(pos: wp.vec3f, rot: wp.mat33f, size: wp.vec3f) -> tuple[wp.vec3f, wp.vec3f]:
+def compute_cone_bounds(transform: wp.transformf, size: wp.vec3f) -> tuple[wp.vec3f, wp.vec3f]:
     extent = wp.vec3f(size[0], size[0], size[1])
-    return compute_box_bounds(pos, rot, extent)
+    return compute_box_bounds(transform, extent)
 
 
 @wp.func
-def compute_plane_bounds(pos: wp.vec3f, rot: wp.mat33f, size: wp.vec3f) -> tuple[wp.vec3f, wp.vec3f]:
+def compute_plane_bounds(transform: wp.transformf, size: wp.vec3f) -> tuple[wp.vec3f, wp.vec3f]:
     # If plane size is non-positive, treat as infinite plane and use a large default extent
     size_scale = wp.max(size[0], size[1]) * 2.0
     if size[0] <= 0.0 or size[1] <= 0.0:
@@ -127,7 +127,7 @@ def compute_plane_bounds(pos: wp.vec3f, rot: wp.mat33f, size: wp.vec3f) -> tuple
                 size_scale * (2.0 * wp.float32(y) - 1.0),
                 0.0,
             )
-            world_corner = pos + rot @ local_corner
+            world_corner = wp.transform_point(transform, local_corner)
             min_bound = wp.min(min_bound, world_corner)
             max_bound = wp.max(max_bound, world_corner)
 
@@ -136,71 +136,69 @@ def compute_plane_bounds(pos: wp.vec3f, rot: wp.mat33f, size: wp.vec3f) -> tuple
 
 
 @wp.func
-def compute_ellipsoid_bounds(pos: wp.vec3f, rot: wp.mat33f, size: wp.vec3f) -> tuple[wp.vec3f, wp.vec3f]:
+def compute_ellipsoid_bounds(transform: wp.transformf, size: wp.vec3f) -> tuple[wp.vec3f, wp.vec3f]:
     extent = wp.vec3f(wp.abs(size[0]), wp.abs(size[1]), wp.abs(size[2]))
-    return compute_box_bounds(pos, rot, extent)
+    return compute_box_bounds(transform, extent)
 
 
 @wp.kernel(enable_backward=False)
-def compute_geom_bvh_bounds(
-    num_geoms: wp.int32,
+def compute_shape_bvh_bounds(
+    num_shapes: wp.int32,
     num_worlds: wp.int32,
-    geom_world_index: wp.array(dtype=wp.int32),
-    geom_enabled: wp.array(dtype=wp.int32),
-    geom_types: wp.array(dtype=wp.int32),
-    geom_mesh_indices: wp.array(dtype=wp.int32),
-    geom_sizes: wp.array(dtype=wp.vec3f),
-    geom_positions: wp.array(dtype=wp.vec3f),
-    geom_orientations: wp.array(dtype=wp.mat33f),
+    shape_world_index: wp.array(dtype=wp.int32),
+    shape_enabled: wp.array(dtype=wp.uint32),
+    shape_types: wp.array(dtype=wp.int32),
+    shape_mesh_indices: wp.array(dtype=wp.int32),
+    shape_sizes: wp.array(dtype=wp.vec3f),
+    shape_transforms: wp.array(dtype=wp.transformf),
     mesh_bounds: wp.array2d(dtype=wp.vec3f),
     out_bvh_lowers: wp.array(dtype=wp.vec3f),
     out_bvh_uppers: wp.array(dtype=wp.vec3f),
     out_bvh_groups: wp.array(dtype=wp.int32),
 ):
     tid = wp.tid()
-    bvh_geom_local = tid % num_geoms
-    if bvh_geom_local >= num_geoms:
+    bvh_index_local = tid % num_shapes
+    if bvh_index_local >= num_shapes:
         return
 
-    geom_id = geom_enabled[bvh_geom_local]
+    shape_index = shape_enabled[bvh_index_local]
 
-    world_id = geom_world_index[geom_id]
-    if world_id < 0:
-        world_id = num_worlds + world_id
+    world_index = shape_world_index[shape_index]
+    if world_index < 0:
+        world_index = num_worlds + world_index
 
-    if world_id >= num_worlds:
+    if world_index >= num_worlds:
         return
 
-    pos = geom_positions[geom_id]
-    rot = geom_orientations[geom_id]
-    size = geom_sizes[geom_id]
-    type = geom_types[geom_id]
+    transform = shape_transforms[shape_index]
+    size = shape_sizes[shape_index]
+    geom_type = shape_types[shape_index]
 
     lower = wp.vec3f()
     upper = wp.vec3f()
 
-    if type == GeomType.SPHERE:
-        lower, upper = compute_sphere_bounds(pos, size[0])
-    elif type == GeomType.CAPSULE:
-        lower, upper = compute_capsule_bounds(pos, rot, size)
-    elif type == GeomType.CYLINDER:
-        lower, upper = compute_cylinder_bounds(pos, rot, size)
-    elif type == GeomType.CONE:
-        lower, upper = compute_cone_bounds(pos, rot, size)
-    elif type == GeomType.PLANE:
-        lower, upper = compute_plane_bounds(pos, rot, size)
-    elif type == GeomType.MESH:
-        min_bounds = mesh_bounds[geom_mesh_indices[geom_id], 0]
-        max_bounds = mesh_bounds[geom_mesh_indices[geom_id], 1]
-        lower, upper = compute_mesh_bounds(pos, rot, size, min_bounds, max_bounds)
-    elif type == GeomType.ELLIPSOID:
-        lower, upper = compute_ellipsoid_bounds(pos, rot, size)
-    elif type == GeomType.BOX:
-        lower, upper = compute_box_bounds(pos, rot, size)
+    if geom_type == RenderShapeType.SPHERE:
+        lower, upper = compute_sphere_bounds(wp.transform_get_translation(transform), size[0])
+    elif geom_type == RenderShapeType.CAPSULE:
+        lower, upper = compute_capsule_bounds(transform, size)
+    elif geom_type == RenderShapeType.CYLINDER:
+        lower, upper = compute_cylinder_bounds(transform, size)
+    elif geom_type == RenderShapeType.CONE:
+        lower, upper = compute_cone_bounds(transform, size)
+    elif geom_type == RenderShapeType.PLANE:
+        lower, upper = compute_plane_bounds(transform, size)
+    elif geom_type == RenderShapeType.MESH:
+        min_bounds = mesh_bounds[shape_mesh_indices[shape_index], 0]
+        max_bounds = mesh_bounds[shape_mesh_indices[shape_index], 1]
+        lower, upper = compute_mesh_bounds(transform, size, min_bounds, max_bounds)
+    elif geom_type == RenderShapeType.ELLIPSOID:
+        lower, upper = compute_ellipsoid_bounds(transform, size)
+    elif geom_type == RenderShapeType.BOX:
+        lower, upper = compute_box_bounds(transform, size)
 
-    out_bvh_lowers[bvh_geom_local] = lower
-    out_bvh_uppers[bvh_geom_local] = upper
-    out_bvh_groups[bvh_geom_local] = world_id
+    out_bvh_lowers[bvh_index_local] = lower
+    out_bvh_uppers[bvh_index_local] = upper
+    out_bvh_groups[bvh_index_local] = world_index
 
 
 @wp.kernel(enable_backward=False)
@@ -215,24 +213,24 @@ def compute_particle_bvh_bounds(
     out_bvh_groups: wp.array(dtype=wp.int32),
 ):
     tid = wp.tid()
-    bvh_geom_local = tid % num_particles
-    if bvh_geom_local >= num_particles:
+    bvh_index_local = tid % num_particles
+    if bvh_index_local >= num_particles:
         return
 
-    geom_id = bvh_geom_local
+    shape_index = bvh_index_local
 
-    world_id = particle_world_index[geom_id]
-    if world_id < 0:
-        world_id = num_worlds + world_id
+    world_index = particle_world_index[shape_index]
+    if world_index < 0:
+        world_index = num_worlds + world_index
 
-    if world_id >= num_worlds:
+    if world_index >= num_worlds:
         return
 
-    lower, upper = compute_sphere_bounds(particle_position[geom_id], particle_radius[geom_id])
+    lower, upper = compute_sphere_bounds(particle_position[shape_index], particle_radius[shape_index])
 
-    out_bvh_lowers[bvh_geom_local] = lower
-    out_bvh_uppers[bvh_geom_local] = upper
-    out_bvh_groups[bvh_geom_local] = world_id
+    out_bvh_lowers[bvh_index_local] = lower
+    out_bvh_uppers[bvh_index_local] = upper
+    out_bvh_groups[bvh_index_local] = world_index
 
 
 @wp.kernel(enable_backward=False)

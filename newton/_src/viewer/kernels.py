@@ -47,29 +47,35 @@ def compute_pick_state_kernel(
     # store body index
     pick_body[0] = body_index
 
-    # store target world (current position)
-    pick_state[3] = hit_point_world[0]
-    pick_state[4] = hit_point_world[1]
-    pick_state[5] = hit_point_world[2]
-
-    # store original mouse cursor target (same as initial target)
-    pick_state[8] = hit_point_world[0]
-    pick_state[9] = hit_point_world[1]
-    pick_state[10] = hit_point_world[2]
-
-    # compute and store local space attachment point
+    # Get body transform
     X_wb = body_q[body_index]
     X_bw = wp.transform_inverse(X_wb)
+
+    # Compute local space attachment point from the hit point
     pick_pos_local = wp.transform_point(X_bw, hit_point_world)
 
     pick_state[0] = pick_pos_local[0]
     pick_state[1] = pick_pos_local[1]
     pick_state[2] = pick_pos_local[2]
 
-    # store current world space picked point on geometry (initially same as hit point)
-    pick_state[11] = hit_point_world[0]
-    pick_state[12] = hit_point_world[1]
-    pick_state[13] = hit_point_world[2]
+    # IMPORTANT: Initialize target to current attachment point position, not hit point
+    # This prevents jumps if the body moved between raycast and first force application
+    pick_pos_world = wp.transform_point(X_wb, pick_pos_local)
+
+    # store target world (current attachment point position)
+    pick_state[3] = pick_pos_world[0]
+    pick_state[4] = pick_pos_world[1]
+    pick_state[5] = pick_pos_world[2]
+
+    # store original mouse cursor target (where user clicked)
+    pick_state[8] = hit_point_world[0]
+    pick_state[9] = hit_point_world[1]
+    pick_state[10] = hit_point_world[2]
+
+    # store current world space picked point on geometry (for visualization)
+    pick_state[11] = pick_pos_world[0]
+    pick_state[12] = pick_pos_world[1]
+    pick_state[13] = pick_pos_world[2]
 
 
 @wp.kernel
@@ -147,34 +153,20 @@ def apply_picking_force_kernel(
     if force_magnitude > max_force:
         f = f * (max_force / force_magnitude)
 
-    # compute torque (no angular damping)
-    t = wp.cross(pick_pos_world - com, f)
-
-    # Add velocity damping forces (separate from spring constraint damping)
+    # Add velocity damping to linear motion only
     velocity_damping_factor = 50.0 * mass  # Mass-dependent velocity damping
-    angular_velocity_damping_factor = 5.0 * mass  # Mass-dependent angular velocity damping
-
     linear_vel = wp.spatial_top(body_qd[pick_body])
-    angular_vel = wp.spatial_bottom(body_qd[pick_body])
-
-    # Apply velocity damping forces
     velocity_damping_force = -velocity_damping_factor * linear_vel
-    angular_velocity_damping_torque = -angular_velocity_damping_factor * angular_vel
-
-    # Torque limiting for stability
-    max_torque = mass * 5.0  # Simple torque limit based on mass
-    torque_magnitude = wp.length(t)
-    if torque_magnitude > max_torque:
-        t = t * (max_torque / torque_magnitude)
-
-    # Combine spring torque with angular velocity damping
-    total_torque = t + angular_velocity_damping_torque
 
     # Combine spring force with velocity damping
     total_force = f + velocity_damping_force
 
-    # apply force and torque
-    wp.atomic_add(body_f, pick_body, wp.spatial_vector(total_force, total_torque))
+    # Compute natural torque from off-center force application
+    # When pick point != COM, this creates a torque that rotates the object
+    t = wp.cross(pick_pos_world - com, total_force)
+
+    # Apply force at pick point with natural torque
+    wp.atomic_add(body_f, pick_body, wp.spatial_vector(total_force, t))
 
 
 @wp.kernel

@@ -60,6 +60,7 @@ def parse_mjcf(
     collapse_fixed_joints: bool = False,
     verbose: bool = False,
     skip_equality_constraints: bool = False,
+    convert_3d_hinge_to_ball_joints: bool = False,
     mesh_maxhullvert: int = MESH_MAXHULLVERT,
 ):
     """
@@ -92,6 +93,7 @@ def parse_mjcf(
         collapse_fixed_joints (bool): If True, fixed joints are removed and the respective bodies are merged.
         verbose (bool): If True, print additional information about parsing the MJCF.
         skip_equality_constraints (bool): Whether <equality> tags should be parsed. If True, equality constraints are ignored.
+        convert_3d_hinge_to_ball_joints (bool): If True, series of three hinge joints are converted to a single ball joint. Default is False.
         mesh_maxhullvert (int): Maximum vertices for convex hull approximation of meshes.
     """
     if xform is None:
@@ -117,6 +119,7 @@ def parse_mjcf(
     default_joint_target_ke = builder.default_joint_cfg.target_ke
     default_joint_target_kd = builder.default_joint_cfg.target_kd
     default_joint_armature = builder.default_joint_cfg.armature
+    default_joint_effort_limit = builder.default_joint_cfg.effort_limit
 
     # load shape defaults
     default_shape_density = builder.default_shape_cfg.density
@@ -133,6 +136,9 @@ def parse_mjcf(
     )
     builder_custom_attr_dof: list[ModelBuilder.CustomAttribute] = builder.get_custom_attributes_by_frequency(
         [ModelAttributeFrequency.JOINT_DOF]
+    )
+    builder_custom_attr_eq: list[ModelBuilder.CustomAttribute] = builder.get_custom_attributes_by_frequency(
+        [ModelAttributeFrequency.EQUALITY_CONSTRAINT]
     )
 
     compiler = root.find("compiler")
@@ -200,6 +206,15 @@ def parse_mjcf(
             else:
                 attrib[key] = value
         return attrib
+
+    def resolve_defaults(class_name):
+        if class_name in class_children:
+            for child_name in class_children[class_name]:
+                if class_name in class_defaults and child_name in class_defaults:
+                    class_defaults[child_name] = merge_attrib(class_defaults[class_name], class_defaults[child_name])
+                resolve_defaults(child_name)
+
+    resolve_defaults("__all__")
 
     axis_xform = wp.transform(wp.vec3(0.0), quat_between_axes(up_axis, builder.up_axis))
     xform = xform * axis_xform
@@ -640,6 +655,19 @@ def parse_mjcf(
                 if limit_kd is None:
                     limit_kd = 100.0  # From MuJoCo's default solref (0.02, 1.0)
 
+                effort_limit = default_joint_effort_limit
+                if "actuatorfrcrange" in joint_attrib:
+                    actuatorfrcrange = parse_vec(joint_attrib, "actuatorfrcrange", None)
+                    if actuatorfrcrange is not None and len(actuatorfrcrange) == 2:
+                        actuatorfrclimited = joint_attrib.get("actuatorfrclimited", "auto").lower()
+                        if actuatorfrclimited in ("true", "auto"):
+                            effort_limit = max(abs(actuatorfrcrange[0]), abs(actuatorfrcrange[1]))
+                        elif verbose:
+                            print(
+                                f"Warning: Joint '{joint_attrib.get('name', 'unnamed')}' has actuatorfrcrange "
+                                f"but actuatorfrclimited='{actuatorfrclimited}'. Force clamping will be disabled."
+                            )
+
                 ax = ModelBuilder.JointDofConfig(
                     axis=axis_vec,
                     limit_lower=limit_lower,
@@ -649,6 +677,7 @@ def parse_mjcf(
                     target_ke=default_joint_target_ke,
                     target_kd=default_joint_target_kd,
                     armature=joint_armature[-1],
+                    effort_limit=effort_limit,
                 )
                 if is_angular:
                     angular_axes.append(ax)
@@ -679,6 +708,8 @@ def parse_mjcf(
                     joint_type = JointType.FIXED
                 elif len(angular_axes) == 1:
                     joint_type = JointType.REVOLUTE
+                elif convert_3d_hinge_to_ball_joints and len(angular_axes) == 3:
+                    joint_type = JointType.BALL
             elif len(linear_axes) == 1 and len(angular_axes) == 0:
                 joint_type = JointType.PRISMATIC
 
@@ -935,12 +966,11 @@ def parse_mjcf(
             return {
                 "name": element.attrib.get("name"),
                 "active": element.attrib.get("active", "true").lower() == "true",
-                "solref": element.attrib.get("solref"),
-                "solimp": element.attrib.get("solimp"),
             }
 
         for connect in equality.findall("connect"):
             common = parse_common_attributes(connect)
+            custom_attrs = parse_custom_attributes(connect.attrib, builder_custom_attr_eq, parsing_mode="mjcf")
             body1_name = connect.attrib.get("body1", "").replace("-", "_") if connect.attrib.get("body1") else None
             body2_name = (
                 connect.attrib.get("body2", "worldbody").replace("-", "_") if connect.attrib.get("body2") else None
@@ -964,6 +994,7 @@ def parse_mjcf(
                     anchor=anchor_vec,
                     key=common["name"],
                     enabled=common["active"],
+                    custom_attributes=custom_attrs,
                 )
 
             if site1:  # Implement site-based connect after Newton supports sites
@@ -971,6 +1002,7 @@ def parse_mjcf(
 
         for weld in equality.findall("weld"):
             common = parse_common_attributes(weld)
+            custom_attrs = parse_custom_attributes(weld.attrib, builder_custom_attr_eq, parsing_mode="mjcf")
             body1_name = weld.attrib.get("body1", "").replace("-", "_") if weld.attrib.get("body1") else None
             body2_name = weld.attrib.get("body2", "worldbody").replace("-", "_") if weld.attrib.get("body2") else None
             anchor = weld.attrib.get("anchor", "0 0 0")
@@ -1002,6 +1034,7 @@ def parse_mjcf(
                     torquescale=torquescale,
                     key=common["name"],
                     enabled=common["active"],
+                    custom_attributes=custom_attrs,
                 )
 
             if site1:  # Implement site-based weld after Newton supports sites
@@ -1009,6 +1042,7 @@ def parse_mjcf(
 
         for joint in equality.findall("joint"):
             common = parse_common_attributes(joint)
+            custom_attrs = parse_custom_attributes(joint.attrib, builder_custom_attr_eq, parsing_mode="mjcf")
             joint1_name = joint.attrib.get("joint1")
             joint2_name = joint.attrib.get("joint2")
             polycoef = joint.attrib.get("polycoef", "0 1 0 0 0")
@@ -1030,6 +1064,7 @@ def parse_mjcf(
                     polycoef=[float(x) for x in polycoef.split()],
                     key=common["name"],
                     enabled=common["active"],
+                    custom_attributes=custom_attrs,
                 )
 
         # add support for types "tendon" and "flex" once Newton supports them

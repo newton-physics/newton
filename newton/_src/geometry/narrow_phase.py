@@ -829,7 +829,7 @@ class NarrowPhase:
         shape_aabb_lower: wp.array(dtype=wp.vec3) | None = None,
         shape_aabb_upper: wp.array(dtype=wp.vec3) | None = None,
         contact_writer_warp_func: Any | None = None,
-        betas: tuple = (1000000.0, 0.0),
+        contact_reduction_betas: tuple = (1000000.0, 0.0001),
     ):
         """
         Initialize NarrowPhase with pre-allocated buffers.
@@ -844,22 +844,36 @@ class NarrowPhase:
             shape_aabb_lower: Optional external AABB lower bounds array (if provided, AABBs won't be computed internally)
             shape_aabb_upper: Optional external AABB upper bounds array (if provided, AABBs won't be computed internally)
             contact_writer_warp_func: Optional custom contact writer function (first arg: ContactData, second arg: custom struct type)
-            betas: Tuple of depth thresholds for contact reduction. Contacts are filtered by
-                depth < beta, then compete with pure spatial score. Default is (1000000.0, 0.0)
-                which keeps both all spatial extremes and penetrating-only spatial extremes.
-                The number of reduction slots is 20 * (6 * len(betas) + 1).
+            contact_reduction_betas: Tuple of depth thresholds for contact reduction. When colliding complex meshes,
+                thousands of triangle pairs may generate contacts. Contact reduction efficiently reduces them to a
+                manageable set while preserving contacts that are important for stable simulation.
+
+                Contacts are binned by normal direction (20 bins) and compete for slots using a scoring function.
+                Contacts are filtered by depth threshold, then compete with pure spatial score:
+                ``score = dot(position, scan_direction)`` when ``depth < beta``.
+
+                The ``beta`` parameter controls which contacts participate:
+
+                - ``beta = inf`` (or large value like 1000000): All contacts participate
+                - ``beta = 0``: Only penetrating contacts (depth < 0) participate
+                - ``beta = -0.01``: Only contacts with at least 1cm penetration participate
+
+                Multiple betas can be specified to keep contacts at different depth thresholds.
+                Each beta adds 6 slots per normal bin (one per spatial direction).
+                Default is ``(1000000.0, 0.0001)`` which keeps both all spatial extremes and
+                near-penetrating spatial extremes. The number of reduction slots is ``20 * (6 * len(betas) + 1)``.
         """
         self.max_candidate_pairs = max_candidate_pairs
         self.max_triangle_pairs = max_triangle_pairs
         self.device = device
-        self.betas_tuple = betas
+        self.betas_tuple = contact_reduction_betas
         self.reduce_contacts = reduce_contacts
 
         # Create contact reduction functions only when reduce_contacts is enabled and running on GPU
         # Contact reduction requires GPU for shared memory operations
         is_gpu_device = wp.get_device(device).is_cuda
         if reduce_contacts and is_gpu_device:
-            self.contact_reduction_funcs = ContactReductionFunctions(betas)
+            self.contact_reduction_funcs = ContactReductionFunctions(contact_reduction_betas)
             self.num_reduction_slots = self.contact_reduction_funcs.num_reduction_slots
         else:
             self.contact_reduction_funcs = None
@@ -933,7 +947,7 @@ class NarrowPhase:
             # Empty contact_key array for when contact key collection is disabled
             self.empty_contact_key = wp.zeros(0, dtype=wp.uint32, device=device)
 
-            # Betas array for contact reduction (using the configured betas tuple)
+            # Betas array for contact reduction (using the configured contact_reduction_betas tuple)
             self.betas = create_betas_array(betas=self.betas_tuple, device=device)
 
         # Fixed thread count for kernel launches

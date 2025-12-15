@@ -184,9 +184,24 @@ class ModelBuilder:
         is_site: bool = False
         """Indicates whether the shape is a site (non-colliding reference point). Directly setting this to True will NOT enforce site invariants. Use `mark_as_site()` or set via the `flags` property to ensure invariants. Defaults to False."""
         sdf_narrow_band_range: tuple[float, float] = (-0.1, 0.1)
-        """The narrow band distance range (inner, outer) for SDF computation. Only used for mesh shapes."""
+        """The narrow band distance range (inner, outer) for SDF computation. Only used for mesh shapes when SDF is enabled."""
         sdf_target_voxel_size: float | None = None
-        """Target voxel size for sparse SDF grid. If None, computed as max_extent/64. Only used for mesh shapes."""
+        """Target voxel size for sparse SDF grid.
+        If provided, enables SDF generation and takes precedence over sdf_max_resolution.
+        Requires GPU since wp.Volume only supports CUDA. Only used for mesh shapes."""
+        sdf_max_resolution: int | None = None
+        """Maximum dimension for sparse SDF grid (must be divisible by 8).
+        If provided (and sdf_target_voxel_size is None), enables SDF-based mesh-mesh collision.
+        Set to None (default) to disable SDF generation for this shape (uses BVH-based collision for mesh-mesh instead).
+        Requires GPU since wp.Volume only supports CUDA. Only used for mesh shapes."""
+
+        def __post_init__(self) -> None:
+            """Validate ShapeConfig parameters after initialization."""
+            if self.sdf_max_resolution is not None and self.sdf_max_resolution % 8 != 0:
+                raise ValueError(
+                    f"sdf_max_resolution must be divisible by 8 (got {self.sdf_max_resolution}). "
+                    "This is required because SDF volumes are allocated in 8x8x8 tiles."
+                )
 
         def mark_as_site(self) -> None:
             """Marks this shape as a site and enforces all site invariants.
@@ -461,13 +476,6 @@ class ModelBuilder:
         When True, uses a CPU implementation that reports specific issues for each body and updates
         the ModelBuilder's internal state.
         Default: False."""
-
-        self.enable_mesh_sdf_collision = False
-        """Whether to enable SDF-based mesh-mesh collision detection.
-        When enabled, signed distance fields (SDFs) are computed for mesh shapes to enable
-        mesh-mesh collision detection. Requires a CUDA-capable GPU device since wp.Volume only
-        supports CUDA. If enabled but the model is finalized on a CPU device, a ValueError is raised.
-        Default: False."""
         # endregion
 
         # particles
@@ -510,6 +518,7 @@ class ModelBuilder:
         # SDF parameters per shape
         self.shape_sdf_narrow_band_range = []
         self.shape_sdf_target_voxel_size = []
+        self.shape_sdf_max_resolution = []
 
         # Mesh SDF storage (volumes kept for reference counting, SDFData array created at finalize)
 
@@ -1354,6 +1363,7 @@ class ModelBuilder:
         collapse_fixed_joints: bool = False,
         verbose: bool = False,
         skip_equality_constraints: bool = False,
+        convert_3d_hinge_to_ball_joints: bool = False,
         mesh_maxhullvert: int = MESH_MAXHULLVERT,
     ):
         """
@@ -1385,6 +1395,7 @@ class ModelBuilder:
             collapse_fixed_joints (bool): If True, fixed joints are removed and the respective bodies are merged.
             verbose (bool): If True, print additional information about parsing the MJCF.
             skip_equality_constraints (bool): Whether <equality> tags should be parsed. If True, equality constraints are ignored.
+            convert_3d_hinge_to_ball_joints (bool): If True, series of three hinge joints are converted to a single ball joint. Default is False.
             mesh_maxhullvert (int): Maximum vertices for convex hull approximation of meshes.
         """
         from ..utils.import_mjcf import parse_mjcf  # noqa: PLC0415
@@ -1416,6 +1427,7 @@ class ModelBuilder:
             collapse_fixed_joints,
             verbose,
             skip_equality_constraints,
+            convert_3d_hinge_to_ball_joints,
             mesh_maxhullvert,
         )
 
@@ -1584,6 +1596,7 @@ class ModelBuilder:
         start_joint_dof_idx = self.joint_dof_count
         start_joint_coord_idx = self.joint_coord_count
         start_articulation_idx = self.articulation_count
+        start_equality_constraint_idx = len(self.equality_constraint_type)
 
         if builder.particle_count:
             self.particle_max_velocity = builder.particle_max_velocity
@@ -1775,6 +1788,7 @@ class ModelBuilder:
             "shape_collision_radius",
             "shape_contact_margin",
             "shape_sdf_narrow_band_range",
+            "shape_sdf_max_resolution",
             "shape_sdf_target_voxel_size",
             "particle_qd",
             "particle_mass",
@@ -1819,6 +1833,8 @@ class ModelBuilder:
                 offset = start_joint_coord_idx
             elif attr.frequency == ModelAttributeFrequency.ARTICULATION:
                 offset = start_articulation_idx
+            elif attr.frequency == ModelAttributeFrequency.EQUALITY_CONSTRAINT:
+                offset = start_equality_constraint_idx
             else:
                 continue
 
@@ -2329,6 +2345,8 @@ class ModelBuilder:
         child: int,
         parent_xform: Transform | None = None,
         child_xform: Transform | None = None,
+        armature: float | None = None,
+        friction: float | None = None,
         key: str | None = None,
         collision_filter_parent: bool = True,
         enabled: bool = True,
@@ -2341,6 +2359,8 @@ class ModelBuilder:
             child: The index of the child body.
             parent_xform (Transform): The transform of the joint in the parent body's local frame.
             child_xform (Transform): The transform of the joint in the child body's local frame.
+            armature: Artificial inertia added around the joint axes. If None, the default value from :attr:`default_joint_armature` is used.
+            friction: Friction coefficient for the joint axes. If None, the default value from :attr:`default_joint_cfg.friction` is used.
             key: The key of the joint.
             collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies.
             enabled: Whether the joint is enabled.
@@ -2349,7 +2369,30 @@ class ModelBuilder:
         Returns:
             The index of the added joint.
 
+        .. note:: Target position and velocity control for ball joints is currently only supported in :class:`newton.solvers.SolverMuJoCo`.
+
         """
+
+        if armature is None:
+            armature = self.default_joint_cfg.armature
+        if friction is None:
+            friction = self.default_joint_cfg.friction
+
+        x = ModelBuilder.JointDofConfig(
+            axis=Axis.X,
+            armature=armature,
+            friction=friction,
+        )
+        y = ModelBuilder.JointDofConfig(
+            axis=Axis.Y,
+            armature=armature,
+            friction=friction,
+        )
+        z = ModelBuilder.JointDofConfig(
+            axis=Axis.Z,
+            armature=armature,
+            friction=friction,
+        )
 
         return self.add_joint(
             JointType.BALL,
@@ -2357,6 +2400,7 @@ class ModelBuilder:
             child,
             parent_xform=parent_xform,
             child_xform=child_xform,
+            angular_axes=[x, y, z],
             key=key,
             collision_filter_parent=collision_filter_parent,
             enabled=enabled,
@@ -2494,7 +2538,7 @@ class ModelBuilder:
         Returns:
             The index of the added joint.
 
-        .. note:: Distance joints are currently only supported in the :class:`newton.solvers.SolverXPBD`.
+        .. note:: Distance joints are currently only supported in :class:`newton.solvers.SolverXPBD`.
 
         """
 
@@ -2663,6 +2707,7 @@ class ModelBuilder:
         polycoef: list[float] | None = None,
         key: str | None = None,
         enabled: bool = True,
+        custom_attributes: dict[str, Any] | None = None,
     ) -> int:
         """Generic method to add any type of equality constraint to this ModelBuilder.
 
@@ -2678,6 +2723,7 @@ class ModelBuilder:
             polycoef (list[float]): Polynomial coefficients for joint coupling
             key (str): Optional constraint name
             enabled (bool): Whether constraint is active
+            custom_attributes (dict): Custom attributes to set on the constraint
 
         Returns:
             Constraint index
@@ -2696,7 +2742,17 @@ class ModelBuilder:
         self.equality_constraint_enabled.append(enabled)
         self.equality_constraint_world.append(self.current_world)
 
-        return len(self.equality_constraint_type) - 1
+        constraint_idx = len(self.equality_constraint_type) - 1
+
+        # Process custom attributes
+        if custom_attributes:
+            self._process_custom_attributes(
+                entity_index=constraint_idx,
+                custom_attrs=custom_attributes,
+                expected_frequency=ModelAttributeFrequency.EQUALITY_CONSTRAINT,
+            )
+
+        return constraint_idx
 
     def add_equality_constraint_connect(
         self,
@@ -2705,6 +2761,7 @@ class ModelBuilder:
         anchor: Vec3 | None = None,
         key: str | None = None,
         enabled: bool = True,
+        custom_attributes: dict[str, Any] | None = None,
     ) -> int:
         """Adds a connect equality constraint to the model.
         This constraint connects two bodies at a point. It effectively defines a ball joint outside the kinematic tree.
@@ -2715,6 +2772,7 @@ class ModelBuilder:
             anchor: Anchor point on body1
             key: Optional constraint name
             enabled: Whether constraint is active
+            custom_attributes: Custom attributes to set on the constraint
 
         Returns:
             Constraint index
@@ -2727,6 +2785,7 @@ class ModelBuilder:
             anchor=anchor,
             key=key,
             enabled=enabled,
+            custom_attributes=custom_attributes,
         )
 
     def add_equality_constraint_joint(
@@ -2736,6 +2795,7 @@ class ModelBuilder:
         polycoef: list[float] | None = None,
         key: str | None = None,
         enabled: bool = True,
+        custom_attributes: dict[str, Any] | None = None,
     ) -> int:
         """Adds a joint equality constraint to the model.
         Constrains the position or angle of one joint to be a quartic polynomial of another joint. Only scalar joint types (prismatic and revolute) can be used.
@@ -2746,6 +2806,7 @@ class ModelBuilder:
             polycoef: Polynomial coefficients for joint coupling
             key: Optional constraint name
             enabled: Whether constraint is active
+            custom_attributes: Custom attributes to set on the constraint
 
         Returns:
             Constraint index
@@ -2758,6 +2819,7 @@ class ModelBuilder:
             polycoef=polycoef,
             key=key,
             enabled=enabled,
+            custom_attributes=custom_attributes,
         )
 
     def add_equality_constraint_weld(
@@ -2769,6 +2831,7 @@ class ModelBuilder:
         relpose: Transform | None = None,
         key: str | None = None,
         enabled: bool = True,
+        custom_attributes: dict[str, Any] | None = None,
     ) -> int:
         """Adds a weld equality constraint to the model.
         Attaches two bodies to each other, removing all relative degrees of freedom between them (softly).
@@ -2781,6 +2844,7 @@ class ModelBuilder:
             relpose (Transform): Relative pose of body2 relative to body1. If None, the identity transform is used
             key: Optional constraint name
             enabled: Whether constraint is active
+            custom_attributes: Custom attributes to set on the constraint
 
         Returns:
             Constraint index
@@ -2793,6 +2857,7 @@ class ModelBuilder:
             anchor=anchor,
             torquescale=torquescale,
             relpose=relpose,
+            custom_attributes=custom_attributes,
             key=key,
             enabled=enabled,
         )
@@ -3370,6 +3435,7 @@ class ModelBuilder:
         self.shape_world.append(self.current_world)
         self.shape_sdf_narrow_band_range.append(cfg.sdf_narrow_band_range)
         self.shape_sdf_target_voxel_size.append(cfg.sdf_target_voxel_size)
+        self.shape_sdf_max_resolution.append(cfg.sdf_max_resolution)
         if cfg.has_shape_collision and cfg.collision_filter_parent and body > -1 and body in self.joint_parents:
             for parent_body in self.joint_parents[body]:
                 if parent_body > -1:
@@ -5705,32 +5771,40 @@ class ModelBuilder:
             m.shape_collision_group = wp.array(self.shape_collision_group, dtype=wp.int32)
 
             # ---------------------
-            # Compute SDFs for mesh shapes (opt-in feature via enable_mesh_sdf_collision)
+            # Compute SDFs for mesh shapes (per-shape opt-in via sdf_max_resolution)
             from ..geometry.sdf_utils import SDFData, compute_sdf, create_empty_sdf_data  # noqa: PLC0415
-            from ..geometry.types import GeoType  # noqa: PLC0415
 
             # Check if we're running on GPU - wp.Volume only supports CUDA
             current_device = wp.get_device(device)
             is_gpu = current_device.is_cuda
 
-            # Check if mesh SDF collision was requested but we're on CPU
-            if self.enable_mesh_sdf_collision and not is_gpu:
-                raise ValueError(
-                    "enable_mesh_sdf_collision requires a CUDA-capable GPU device. "
-                    "wp.Volume (used for SDF generation) only supports CUDA. "
-                    "Either set enable_mesh_sdf_collision=False or use a CUDA device."
+            # Check if there are any mesh shapes with collision enabled that request SDF generation
+            # SDF is enabled if either sdf_max_resolution or sdf_target_voxel_size is set
+            has_sdf_meshes = any(
+                stype == GeoType.MESH
+                and ssrc is not None
+                and sflags & ShapeFlags.COLLIDE_SHAPES
+                and (sdf_max_resolution is not None or sdf_target_voxel_size is not None)
+                for stype, ssrc, sflags, sdf_max_resolution, sdf_target_voxel_size in zip(
+                    self.shape_type,
+                    self.shape_source,
+                    self.shape_flags,
+                    self.shape_sdf_max_resolution,
+                    self.shape_sdf_target_voxel_size,
+                    strict=True,
                 )
-
-            # Check if there are any mesh shapes with collision enabled
-            has_colliding_meshes = any(
-                stype == GeoType.MESH and ssrc is not None and sflags & ShapeFlags.COLLIDE_SHAPES
-                for stype, ssrc, sflags in zip(self.shape_type, self.shape_source, self.shape_flags, strict=False)
             )
 
-            # Enable mesh-mesh collision only if explicitly enabled, on GPU, and there are colliding meshes
-            m.mesh_mesh_collision_enabled = self.enable_mesh_sdf_collision and has_colliding_meshes and is_gpu
+            # Check if SDF generation was requested but we're on CPU
+            if has_sdf_meshes and not is_gpu:
+                raise ValueError(
+                    "SDF generation for mesh shapes requires a CUDA-capable GPU device. "
+                    "wp.Volume (used for SDF generation) only supports CUDA. "
+                    "Either disable SDF (set both sdf_max_resolution=None and sdf_target_voxel_size=None) "
+                    "for all mesh shapes or use a CUDA device."
+                )
 
-            if self.enable_mesh_sdf_collision and has_colliding_meshes:
+            if has_sdf_meshes:
                 sdf_data_list = []
                 # Keep volume objects alive for reference counting
                 sdf_volumes = []
@@ -5743,43 +5817,53 @@ class ModelBuilder:
                     shape_type,
                     shape_src,
                     shape_flags,
-                    shape_scale,
                     shape_thickness,
                     shape_contact_margin,
                     sdf_narrow_band_range,
                     sdf_target_voxel_size,
+                    sdf_max_resolution,
                 ) in zip(
                     self.shape_type,
                     self.shape_source,
                     self.shape_flags,
-                    self.shape_scale,
                     self.shape_thickness,
                     self.shape_contact_margin,
                     self.shape_sdf_narrow_band_range,
                     self.shape_sdf_target_voxel_size,
-                    strict=False,
+                    self.shape_sdf_max_resolution,
+                    strict=True,
                 ):
-                    # Compute SDF only for mesh shapes with collision enabled
-                    if shape_type == GeoType.MESH and shape_src is not None and shape_flags & ShapeFlags.COLLIDE_SHAPES:
+                    # Compute SDF only for mesh shapes with collision enabled and SDF enabled
+                    # SDF is enabled if either sdf_max_resolution or sdf_target_voxel_size is set
+                    if (
+                        shape_type == GeoType.MESH
+                        and shape_src is not None
+                        and shape_flags & ShapeFlags.COLLIDE_SHAPES
+                        and (sdf_max_resolution is not None or sdf_target_voxel_size is not None)
+                    ):
+                        # Cache key does not include shape_scale because the SDF is always
+                        # computed in unscaled mesh local space. Scale is applied at collision
+                        # time, not during SDF generation, ensuring consistency.
                         cache_key = (
                             hash(shape_src),
                             shape_thickness,
-                            tuple(shape_scale),
                             shape_contact_margin,
                             tuple(sdf_narrow_band_range),
                             sdf_target_voxel_size,
+                            sdf_max_resolution,
                         )
                         if cache_key in sdf_cache:
                             sdf_data, sparse_volume, coarse_volume = sdf_cache[cache_key]
                         else:
-                            # Compute SDF for this mesh shape (returns SDFData struct and volume objects)
+                            # Compute SDF for this mesh shape in unscaled local space.
+                            # Scale is handled at collision time to ensure SDF and mesh are consistent.
                             sdf_data, sparse_volume, coarse_volume = compute_sdf(
                                 mesh_src=shape_src,
-                                shape_scale=shape_scale,
                                 shape_thickness=shape_thickness,
                                 narrow_band_distance=sdf_narrow_band_range,
                                 margin=shape_contact_margin,
                                 target_voxel_size=sdf_target_voxel_size,
+                                max_resolution=sdf_max_resolution,
                             )
                             sdf_cache[cache_key] = (sdf_data, sparse_volume, coarse_volume)
                         sdf_volumes.append(sparse_volume)
@@ -5798,9 +5882,11 @@ class ModelBuilder:
                 m.shape_sdf_coarse_volume = sdf_coarse_volumes
             else:
                 # SDF mesh-mesh collision not enabled or no colliding meshes
-                m.shape_sdf_data = wp.empty(0, dtype=SDFData, device=device)
-                m.shape_sdf_volume = []
-                m.shape_sdf_coarse_volume = []
+                # Still need one SDFData per shape (all empty) so narrow phase can safely access shape_sdf_data[shape_idx]
+                empty_sdf_data = create_empty_sdf_data()
+                m.shape_sdf_data = wp.array([empty_sdf_data] * len(self.shape_type), dtype=SDFData, device=device)
+                m.shape_sdf_volume = [None] * len(self.shape_type)
+                m.shape_sdf_coarse_volume = [None] * len(self.shape_type)
 
             # ---------------------
             # springs
@@ -6081,6 +6167,8 @@ class ModelBuilder:
                     count = m.joint_coord_count
                 elif frequency == ModelAttributeFrequency.ARTICULATION:
                     count = m.articulation_count
+                elif frequency == ModelAttributeFrequency.EQUALITY_CONSTRAINT:
+                    count = m.equality_constraint_count
                 else:
                     continue
 
