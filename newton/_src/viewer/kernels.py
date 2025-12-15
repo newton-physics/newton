@@ -491,7 +491,7 @@ def compute_isosurface_lines(
 
     # Apply world offset if available
     offset = wp.vec3(0.0, 0.0, 0.0)
-    if shape_world:
+    if shape_world and world_offsets:
         shape_pair = face_shape_pairs[tid]
         world_a = shape_world[shape_pair[0]]
         world_b = shape_world[shape_pair[1]]
