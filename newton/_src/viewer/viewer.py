@@ -379,10 +379,21 @@ class ViewerBase:
 
         # Convert triangles to line segments with depth-based colors
         vertices = isosurface_data.iso_vertex_point
+        shape_pairs = isosurface_data.iso_vertex_shape_pair
         wp.launch(
             compute_isosurface_lines,
             dim=num_contacts,
-            inputs=[vertices, depths, num_contacts, 0.0, 0.0005, penetrating_only],
+            inputs=[
+                vertices,
+                depths,
+                shape_pairs,
+                self.model.shape_world,
+                self.world_offsets,
+                num_contacts,
+                0.0,
+                0.0005,
+                penetrating_only,
+            ],
             outputs=[self._iso_line_starts, self._iso_line_ends, self._iso_line_colors],
             device=self.device,
         )

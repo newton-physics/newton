@@ -451,6 +451,9 @@ def depth_to_color(depth: float, min_depth: float, max_depth: float) -> wp.vec3:
 def compute_isosurface_lines(
     triangle_vertices: wp.array(dtype=wp.vec3),
     face_depths: wp.array(dtype=wp.float32),
+    face_shape_pairs: wp.array(dtype=wp.vec2i),
+    shape_world: wp.array(dtype=int),
+    world_offsets: wp.array(dtype=wp.vec3),
     num_faces: int,
     min_depth: float,
     max_depth: float,
@@ -485,6 +488,19 @@ def compute_isosurface_lines(
         line_ends[tid * 3 + 2] = zero
         line_colors[tid * 3 + 2] = zero
         return
+
+    # Apply world offset if available
+    offset = wp.vec3(0.0, 0.0, 0.0)
+    if shape_world:
+        shape_pair = face_shape_pairs[tid]
+        world_a = shape_world[shape_pair[0]]
+        world_b = shape_world[shape_pair[1]]
+        if world_a >= 0 or world_b >= 0:
+            offset = world_offsets[world_a if world_a >= 0 else world_b]
+
+    v0 = v0 + offset
+    v1 = v1 + offset
+    v2 = v2 + offset
 
     if depth > 0.0:
         color = depth_to_color(depth, min_depth, max_depth)
