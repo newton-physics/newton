@@ -423,6 +423,29 @@ def get_slot(normal: wp.vec3) -> int:
     return best_slot
 
 
+@wp.func
+def get_slot_flat(normal: wp.vec3) -> int:
+    """Returns the index of the icosahedron face that best matches the normal.
+
+    Unlike get_slot, this function searches all bins without early termination.
+
+    Args:
+        normal: Normal vector to match
+
+    Returns:
+        Index of the best matching icosahedron face (0-19)
+    """
+    max_dot_product = wp.float32(-1e10)
+    bin_normal_idx = wp.int32(-1)
+    for n_idx in range(20):
+        dp = wp.dot(normal, ICOSAHEDRON_FACE_NORMALS[n_idx])
+        dp -= float(n_idx) * 1e-6  # for breaking ties in symmetric shapes
+        if dp > max_dot_product:
+            max_dot_product = dp
+            bin_normal_idx = n_idx
+    return bin_normal_idx
+
+
 NUM_SPATIAL_DIRECTIONS = 6  # Triangle edge directions
 NUM_NORMAL_BINS = 20  # Icosahedron faces
 
