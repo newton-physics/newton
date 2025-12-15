@@ -139,11 +139,16 @@ class SolverMuJoCo(SolverBase):
         """Import the MuJoCo Warp dependencies and cache them as class variables."""
         if cls._mujoco is None or cls._mujoco_warp is None:
             try:
-                import mujoco  # noqa: PLC0415
-                import mujoco_warp  # noqa: PLC0415
+                with warnings.catch_warnings():
+                    # Set a filter to make all ImportWarnings "always" appear
+                    # This is useful to debug import errors on Windows, for example
+                    warnings.simplefilter("always", category=ImportWarning)
 
-                cls._mujoco = mujoco
-                cls._mujoco_warp = mujoco_warp
+                    import mujoco  # noqa: PLC0415
+                    import mujoco_warp  # noqa: PLC0415
+
+                    cls._mujoco = mujoco
+                    cls._mujoco_warp = mujoco_warp
             except ImportError as e:
                 raise ImportError(
                     "MuJoCo backend not installed. Please refer to https://github.com/google-deepmind/mujoco_warp for installation instructions."
