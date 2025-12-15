@@ -949,7 +949,7 @@ class SolverMuJoCo(SolverBase):
         default_actuator_gear: float | None = None,
         actuator_gears: dict[str, float] | None = None,
         actuated_axes: list[int] | None = None,
-        skip_visual_only_geoms: bool = False,
+        skip_visual_only_geoms: bool = True,
         include_sites: bool = True,
         add_axes: bool = False,
         mesh_maxhullvert: int = MESH_MAXHULLVERT,
