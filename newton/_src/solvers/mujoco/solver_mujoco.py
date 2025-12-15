@@ -2354,7 +2354,15 @@ class SolverMuJoCo(SolverBase):
                 )
 
     def update_eq_properties(self):
-        """Update equality constraint properties including solref in the MuJoCo model."""
+        """Update equality constraint properties including solref in the MuJoCo model.
+
+        .. note::
+
+            Note this update only affects the equality constraints explicitly defined in Newton,
+            not the equality constraints defined for joints that are excluded from articulations
+            (i.e. joints that have joint_articulation == -1, for example loop-closing joints).
+            Equality constraints for these joints are defined after the regular equality constraints
+            in the MuJoCo model."""
         if self.model.equality_constraint_count == 0:
             return
 
