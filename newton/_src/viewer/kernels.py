@@ -401,7 +401,7 @@ def compute_joint_basis_lines(
         world_rot = wp.mul(wp.transform_get_rotation(parent_tf), joint_rot)
         # Apply world offset
         parent_body_world = body_world[parent_body]
-        if parent_body_world >= 0:
+        if world_offsets and parent_body_world >= 0:
             world_pos += world_offsets[parent_body_world]
     else:
         world_pos = joint_pos
