@@ -547,28 +547,21 @@ class Model:
             requires_grad = self.requires_grad
 
         # particles
-        if "particle_q" in requested:
+        if self.particle_count:
             s.particle_q = wp.clone(self.particle_q, requires_grad=requires_grad)
-        if "particle_qd" in requested:
             s.particle_qd = wp.clone(self.particle_qd, requires_grad=requires_grad)
-        if "particle_f" in requested:
             s.particle_f = wp.zeros_like(self.particle_qd, requires_grad=requires_grad)
 
         # rigid bodies
         if self.body_count:
-            if "body_q" in requested:
-                s.body_q = wp.clone(self.body_q, requires_grad=requires_grad)
-            if "body_qd" in requested:
-                s.body_qd = wp.clone(self.body_qd, requires_grad=requires_grad)
-            if "body_f" in requested:
-                s.body_f = wp.zeros_like(self.body_qd, requires_grad=requires_grad)
+            s.body_q = wp.clone(self.body_q, requires_grad=requires_grad)
+            s.body_qd = wp.clone(self.body_qd, requires_grad=requires_grad)
+            s.body_f = wp.zeros_like(self.body_qd, requires_grad=requires_grad)
 
         # joints
         if self.joint_count:
-            if "joint_q" in requested:
-                s.joint_q = wp.clone(self.joint_q, requires_grad=requires_grad)
-            if "joint_qd" in requested:
-                s.joint_qd = wp.clone(self.joint_qd, requires_grad=requires_grad)
+            s.joint_q = wp.clone(self.joint_q, requires_grad=requires_grad)
+            s.joint_qd = wp.clone(self.joint_qd, requires_grad=requires_grad)
 
         if "body_qdd" in requested:
             s.body_qdd = wp.zeros_like(self.body_qd, requires_grad=requires_grad)

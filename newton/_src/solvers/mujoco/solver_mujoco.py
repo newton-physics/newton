@@ -499,7 +499,7 @@ class SolverMuJoCo(SolverBase):
         m = self.mjw_model
         if m.sensor_rne_postconstraint:
             return
-        if any(hasattr(state_out, field) for field in rne_postconstraint_fields):
+        if any(getattr(state_out, field) is not None for field in rne_postconstraint_fields):
             if wp.config.verbose:
                 print("Setting model.sensor_rne_postconstraint True")
             m.sensor_rne_postconstraint = True
