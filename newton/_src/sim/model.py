@@ -68,6 +68,8 @@ class ModelAttributeFrequency(IntEnum):
     """Attribute frequency follows the number of shapes (see :attr:`~newton.Model.shape_count`)."""
     ARTICULATION = 6
     """Attribute frequency follows the number of articulations (see :attr:`~newton.Model.articulation_count`)."""
+    EQUALITY_CONSTRAINT = 7
+    """Attribute frequency follows the number of equality constraints (see :attr:`~newton.Model.equality_constraint_count`)."""
 
 
 class AttributeNamespace:
@@ -126,7 +128,7 @@ class Model:
         self.requires_grad = False
         """Whether the model was finalized (see :meth:`ModelBuilder.finalize`) with gradient computation enabled."""
         self.num_worlds = 0
-        """Number of articulation worlds added to the ModelBuilder via `add_builder`."""
+        """Number of worlds added to the ModelBuilder."""
 
         self.particle_q = None
         """Particle positions, shape [particle_count, 3], float."""
@@ -185,6 +187,10 @@ class Model:
         """Shape coefficient of friction, shape [shape_count], float."""
         self.shape_material_restitution = None
         """Shape coefficient of restitution, shape [shape_count], float."""
+        self.shape_material_torsional_friction = None
+        """Shape torsional friction coefficient (resistance to spinning at contact point), shape [shape_count], float."""
+        self.shape_material_rolling_friction = None
+        """Shape rolling friction coefficient (resistance to rolling motion), shape [shape_count], float."""
         self.shape_contact_margin = None
         """Shape contact margin for collision detection, shape [shape_count], float."""
 
@@ -216,6 +222,14 @@ class Model:
         """Number of shape contact pairs."""
         self.shape_world = None
         """World index for each shape, shape [shape_count], int. -1 for global."""
+
+        # Mesh SDF storage
+        self.shape_sdf_data = None
+        """Array of SDFData structs for mesh shapes, shape [shape_count]. Contains sparse and coarse SDF pointers, extents, and voxel sizes. Empty array if there are no colliding meshes."""
+        self.shape_sdf_volume = []
+        """List of sparse SDF volume references for mesh shapes, shape [shape_count]. None for non-mesh shapes. Empty if there are no colliding meshes. Kept for reference counting."""
+        self.shape_sdf_coarse_volume = []
+        """List of coarse SDF volume references for mesh shapes, shape [shape_count]. None for non-mesh shapes. Empty if there are no colliding meshes. Kept for reference counting."""
 
         self.spring_indices = None
         """Particle spring indices, shape [spring_count*2], int."""
@@ -373,10 +387,6 @@ class Model:
 
         self.rigid_contact_max = 0
         """Number of potential contact points between rigid bodies."""
-        self.rigid_contact_torsional_friction = 0.0
-        """Torsional friction coefficient for rigid body contacts (used by :class:`SolverXPBD`)."""
-        self.rigid_contact_rolling_friction = 0.0
-        """Rolling friction coefficient for rigid body contacts (used by :class:`SolverXPBD`)."""
 
         self.up_vector = np.array((0.0, 0.0, 1.0))
         """Up vector of the world, shape [3], float."""
@@ -505,6 +515,8 @@ class Model:
         self.attribute_frequency["shape_material_ka"] = ModelAttributeFrequency.SHAPE
         self.attribute_frequency["shape_material_mu"] = ModelAttributeFrequency.SHAPE
         self.attribute_frequency["shape_material_restitution"] = ModelAttributeFrequency.SHAPE
+        self.attribute_frequency["shape_material_torsional_friction"] = ModelAttributeFrequency.SHAPE
+        self.attribute_frequency["shape_material_rolling_friction"] = ModelAttributeFrequency.SHAPE
         self.attribute_frequency["shape_type"] = ModelAttributeFrequency.SHAPE
         self.attribute_frequency["shape_is_solid"] = ModelAttributeFrequency.SHAPE
         self.attribute_frequency["shape_thickness"] = ModelAttributeFrequency.SHAPE

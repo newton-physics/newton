@@ -30,10 +30,11 @@ import os
 import numpy as np
 import warp as wp
 import warp.examples
-from pxr import Usd, UsdGeom
+from pxr import Usd
 
 import newton
 import newton.examples
+import newton.usd
 from newton import ParticleFlags
 
 
@@ -146,10 +147,11 @@ class Example:
         self.viewer = viewer
 
         usd_stage = Usd.Stage.Open(os.path.join(warp.examples.get_asset_directory(), "square_cloth.usd"))
-        usd_geom = UsdGeom.Mesh(usd_stage.GetPrimAtPath("/root/cloth/cloth"))
+        usd_prim = usd_stage.GetPrimAtPath("/root/cloth/cloth")
 
-        mesh_points = np.array(usd_geom.GetPointsAttr().Get())
-        mesh_indices = np.array(usd_geom.GetFaceVertexIndicesAttr().Get())
+        cloth_mesh = newton.usd.get_mesh(usd_prim)
+        mesh_points = cloth_mesh.vertices
+        mesh_indices = cloth_mesh.indices
 
         vertices = [wp.vec3(v) for v in mesh_points]
         self.faces = mesh_indices.reshape(-1, 3)
@@ -289,7 +291,7 @@ class Example:
         self.viewer.log_state(self.state_0)
         self.viewer.end_frame()
 
-    def test(self):
+    def test_final(self):
         p_lower = wp.vec3(-0.6, -0.9, -0.6)
         p_upper = wp.vec3(0.6, 0.9, 0.6)
         newton.examples.test_particle_state(

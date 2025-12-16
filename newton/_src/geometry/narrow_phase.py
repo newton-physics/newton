@@ -27,12 +27,19 @@ from ..geometry.collision_core import (
     compute_tight_aabb_from_support,
     create_compute_gjk_mpr_contacts,
     create_find_contacts,
-    find_pair_from_cumulative_index,
     get_triangle_shape_from_mesh,
     mesh_vs_convex_midphase,
     pre_contact_check,
 )
 from ..geometry.contact_data import ContactData
+from ..geometry.contact_reduction import (
+    ContactReductionFunctions,
+    ContactStruct,
+    create_betas_array,
+    synchronize,
+)
+from ..geometry.sdf_contact import create_narrow_phase_process_mesh_mesh_contacts_kernel
+from ..geometry.sdf_utils import SDFData
 from ..geometry.support_function import (
     GenericShapeData,
     SupportMapDataProvider,
@@ -188,6 +195,9 @@ def create_narrow_phase_kernel_gjk_mpr(external_aabb: bool, writer_func: Any):
         shape_pairs_mesh_plane_cumsum: wp.array(dtype=int),
         shape_pairs_mesh_plane_count: wp.array(dtype=int),
         mesh_plane_vertex_total_count: wp.array(dtype=int),
+        # mesh-mesh collision outputs
+        shape_pairs_mesh_mesh: wp.array(dtype=wp.vec2i),
+        shape_pairs_mesh_mesh_count: wp.array(dtype=int),
     ):
         """
         Narrow phase collision detection kernel using GJK/MPR.
@@ -315,6 +325,8 @@ def create_narrow_phase_kernel_gjk_mpr(external_aabb: bool, writer_func: Any):
                 shape_pairs_mesh_plane_cumsum,
                 shape_pairs_mesh_plane_count,
                 mesh_plane_vertex_total_count,
+                shape_pairs_mesh_mesh,
+                shape_pairs_mesh_mesh_count,
             )
             if skip_pair:
                 continue
@@ -367,7 +379,7 @@ def narrow_phase_find_mesh_triangle_overlaps_kernel(
     Outputs triples of (shape_a, shape_b, triangle_idx) for further processing.
     Uses tiled mesh query for improved performance.
     """
-    tid, _j = wp.tid()
+    tid, j = wp.tid()
 
     num_mesh_pairs = shape_pairs_mesh_count[0]
 
@@ -413,6 +425,7 @@ def narrow_phase_find_mesh_triangle_overlaps_kernel(
 
         # Call mesh_vs_convex_midphase with the shape_data and margin
         mesh_vs_convex_midphase(
+            j,
             mesh_shape,
             non_mesh_shape,
             X_mesh_ws,
@@ -514,43 +527,44 @@ def create_narrow_phase_process_mesh_triangle_contacts_kernel(writer_func: Any):
     return narrow_phase_process_mesh_triangle_contacts_kernel
 
 
-def create_narrow_phase_process_mesh_plane_contacts_kernel(writer_func: Any):
+def create_narrow_phase_process_mesh_plane_contacts_kernel(
+    writer_func: Any,
+    contact_reduction_funcs: ContactReductionFunctions | None = None,
+):
+    """
+    Create a mesh-plane collision kernel.
+
+    Args:
+        writer_func: Contact writer function (e.g., write_contact_simple)
+        contact_reduction_funcs: ContactReductionFunctions instance. If None, no contact reduction is used.
+
+    Returns:
+        A warp kernel that processes mesh-plane collisions
+    """
+
     @wp.kernel(enable_backward=False)
     def narrow_phase_process_mesh_plane_contacts_kernel(
-        shape_types: wp.array(dtype=int),
         shape_data: wp.array(dtype=wp.vec4),
         shape_transform: wp.array(dtype=wp.transform),
         shape_source: wp.array(dtype=wp.uint64),
-        shape_contact_margin: wp.array(dtype=float),  # Per-shape contact margins
+        shape_contact_margin: wp.array(dtype=float),
         shape_pairs_mesh_plane: wp.array(dtype=wp.vec2i),
-        shape_pairs_mesh_plane_cumsum: wp.array(dtype=int),
         shape_pairs_mesh_plane_count: wp.array(dtype=int),
-        mesh_plane_vertex_total_count: wp.array(dtype=int),
+        _betas: wp.array(dtype=wp.float32),  # Unused but kept for API compatibility
         writer_data: Any,
-        total_num_threads: int,
+        total_num_blocks: int,
     ):
         """
-        Process mesh-plane collisions by checking each mesh vertex against the infinite plane.
-        Uses binary search to map thread index to (mesh-plane pair, vertex index).
-        Fixed thread count with strided loop over vertices.
+        Process mesh-plane collisions without contact reduction.
+
+        Each thread processes vertices in a strided manner and writes contacts directly.
         """
         tid = wp.tid()
 
-        total_vertices = mesh_plane_vertex_total_count[0]
         num_pairs = shape_pairs_mesh_plane_count[0]
 
-        if num_pairs == 0:
-            return
-
-        # Process vertices in a strided loop
-        for task_id in range(tid, total_vertices, total_num_threads):
-            if task_id >= total_vertices:
-                break
-
-            # Use binary search helper to find which mesh-plane pair this vertex belongs to
-            pair_idx, vertex_idx = find_pair_from_cumulative_index(task_id, shape_pairs_mesh_plane_cumsum, num_pairs)
-
-            # Get the mesh-plane pair
+        # Iterate over all mesh-plane pairs
+        for pair_idx in range(num_pairs):
             pair = shape_pairs_mesh_plane[pair_idx]
             mesh_shape = pair[0]
             plane_shape = pair[1]
@@ -561,33 +575,21 @@ def create_narrow_phase_process_mesh_plane_contacts_kernel(writer_func: Any):
                 continue
 
             mesh_obj = wp.mesh_get(mesh_id)
-            if vertex_idx >= mesh_obj.points.shape[0]:
-                continue
+            num_vertices = mesh_obj.points.shape[0]
 
             # Get mesh world transform
             X_mesh_ws = shape_transform[mesh_shape]
 
             # Get plane world transform
             X_plane_ws = shape_transform[plane_shape]
-
-            # Get vertex position in mesh local space and transform to world space
-            scale_data = shape_data[mesh_shape]
-            mesh_scale = wp.vec3(scale_data[0], scale_data[1], scale_data[2])
-            vertex_local = wp.cw_mul(mesh_obj.points[vertex_idx], mesh_scale)
-            vertex_world = wp.transform_point(X_mesh_ws, vertex_local)
+            X_plane_sw = wp.transform_inverse(X_plane_ws)
 
             # Get plane normal in world space (plane normal is along local +Z, pointing upward)
             plane_normal = wp.transform_vector(X_plane_ws, wp.vec3(0.0, 0.0, 1.0))
 
-            # Project vertex onto plane to get closest point
-            X_plane_sw = wp.transform_inverse(X_plane_ws)
-            vertex_in_plane_space = wp.transform_point(X_plane_sw, vertex_world)
-            point_on_plane_local = wp.vec3(vertex_in_plane_space[0], vertex_in_plane_space[1], 0.0)
-            point_on_plane = wp.transform_point(X_plane_ws, point_on_plane_local)
-
-            # Compute distance and normal
-            diff = vertex_world - point_on_plane
-            distance = wp.dot(diff, plane_normal)
+            # Get mesh scale
+            scale_data = shape_data[mesh_shape]
+            mesh_scale = wp.vec3(scale_data[0], scale_data[1], scale_data[2])
 
             # Extract thickness values
             thickness_mesh = shape_data[mesh_shape][3]
@@ -599,31 +601,222 @@ def create_narrow_phase_process_mesh_plane_contacts_kernel(writer_func: Any):
             margin_plane = shape_contact_margin[plane_shape]
             margin = wp.max(margin_mesh, margin_plane)
 
-            # Treat plane as a half-space: generate contact for all vertices on or below the plane
-            # (distance < margin means vertex is close to or penetrating the plane)
-            if distance < margin + total_thickness:
-                # Write contact
-                # Note: write_contact_simple expects contact_normal_a_to_b pointing FROM mesh TO plane (downward)
-                # plane_normal points upward, so we need to negate it
-                pair_key = build_pair_key2(wp.uint32(mesh_shape), wp.uint32(plane_shape))
+            # Build pair key for this mesh-plane pair
+            pair_key = build_pair_key2(wp.uint32(mesh_shape), wp.uint32(plane_shape))
 
+            # Strided loop over vertices across all threads in the launch
+            total_num_threads = total_num_blocks * wp.block_dim()
+            for vertex_idx in range(tid, num_vertices, total_num_threads):
+                # Get vertex position in mesh local space and transform to world space
+                vertex_local = wp.cw_mul(mesh_obj.points[vertex_idx], mesh_scale)
+                vertex_world = wp.transform_point(X_mesh_ws, vertex_local)
+
+                # Project vertex onto plane to get closest point
+                vertex_in_plane_space = wp.transform_point(X_plane_sw, vertex_world)
+                point_on_plane_local = wp.vec3(vertex_in_plane_space[0], vertex_in_plane_space[1], 0.0)
+                point_on_plane = wp.transform_point(X_plane_ws, point_on_plane_local)
+
+                # Compute distance
+                diff = vertex_world - point_on_plane
+                distance = wp.dot(diff, plane_normal)
+
+                # Check if this vertex generates a contact
+                if distance < margin + total_thickness:
+                    # Contact position is the midpoint
+                    contact_pos = (vertex_world + point_on_plane) * 0.5
+
+                    # Normal points from mesh to plane (negate plane normal since plane normal points up/away from plane)
+                    contact_normal = -plane_normal
+
+                    # Create contact data - contacts are already in world space
+                    contact_data = ContactData()
+                    contact_data.contact_point_center = contact_pos
+                    contact_data.contact_normal_a_to_b = contact_normal
+                    contact_data.contact_distance = distance
+                    contact_data.radius_eff_a = 0.0
+                    contact_data.radius_eff_b = 0.0
+                    contact_data.thickness_a = thickness_mesh
+                    contact_data.thickness_b = thickness_plane
+                    contact_data.shape_a = mesh_shape
+                    contact_data.shape_b = plane_shape
+                    contact_data.margin = margin
+                    contact_data.feature = wp.uint32(vertex_idx + 1)
+                    contact_data.feature_pair_key = pair_key
+
+                    writer_func(contact_data, writer_data)
+
+    # Return early if contact reduction is disabled
+    if contact_reduction_funcs is None:
+        return narrow_phase_process_mesh_plane_contacts_kernel
+
+    # Extract functions and constants from the contact reduction configuration
+
+    num_reduction_slots = contact_reduction_funcs.num_reduction_slots
+    store_reduced_contact_func = contact_reduction_funcs.store_reduced_contact
+    get_smem_slots_plus_1 = contact_reduction_funcs.get_smem_slots_plus_1
+    get_smem_slots_contacts = contact_reduction_funcs.get_smem_slots_contacts
+
+    @wp.kernel(enable_backward=False)
+    def narrow_phase_process_mesh_plane_contacts_reduce_kernel(
+        shape_data: wp.array(dtype=wp.vec4),
+        shape_transform: wp.array(dtype=wp.transform),
+        shape_source: wp.array(dtype=wp.uint64),
+        shape_contact_margin: wp.array(dtype=float),
+        shape_pairs_mesh_plane: wp.array(dtype=wp.vec2i),
+        shape_pairs_mesh_plane_count: wp.array(dtype=int),
+        betas: wp.array(dtype=wp.float32),
+        writer_data: Any,
+        total_num_blocks: int,
+    ):
+        """
+        Process mesh-plane collisions with contact reduction.
+
+        Each thread block handles one mesh-plane pair. Threads cooperatively iterate
+        over all vertices of the mesh, generate contacts, and reduce them using
+        shared memory contact reduction. Uses grid stride loop to handle more pairs
+        than available blocks.
+        """
+        block_id, t = wp.tid()
+
+        num_pairs = shape_pairs_mesh_plane_count[0]
+
+        # Initialize shared memory buffers for contact reduction (reused across pairs)
+        empty_marker = -1000000000.0
+        active_contacts_shared_mem = wp.array(
+            ptr=wp.static(get_smem_slots_plus_1)(),
+            shape=(wp.static(num_reduction_slots) + 1,),
+            dtype=wp.int32,
+        )
+        contacts_shared_mem = wp.array(
+            ptr=wp.static(get_smem_slots_contacts)(),
+            shape=(wp.static(num_reduction_slots),),
+            dtype=ContactStruct,
+        )
+
+        # Grid stride loop over mesh-plane pairs
+        for pair_idx in range(block_id, num_pairs, total_num_blocks):
+            # Get the mesh-plane pair
+            pair = shape_pairs_mesh_plane[pair_idx]
+            mesh_shape = pair[0]
+            plane_shape = pair[1]
+
+            # Get mesh
+            mesh_id = shape_source[mesh_shape]
+            if mesh_id == wp.uint64(0):
+                continue
+
+            mesh_obj = wp.mesh_get(mesh_id)
+            num_vertices = mesh_obj.points.shape[0]
+
+            # Get mesh world transform
+            X_mesh_ws = shape_transform[mesh_shape]
+
+            # Get plane world transform
+            X_plane_ws = shape_transform[plane_shape]
+            X_plane_sw = wp.transform_inverse(X_plane_ws)
+
+            # Get plane normal in world space (plane normal is along local +Z, pointing upward)
+            plane_normal = wp.transform_vector(X_plane_ws, wp.vec3(0.0, 0.0, 1.0))
+
+            # Get mesh scale
+            scale_data = shape_data[mesh_shape]
+            mesh_scale = wp.vec3(scale_data[0], scale_data[1], scale_data[2])
+
+            # Extract thickness values
+            thickness_mesh = shape_data[mesh_shape][3]
+            thickness_plane = shape_data[plane_shape][3]
+            total_thickness = thickness_mesh + thickness_plane
+
+            # Use per-shape contact margin for contact detection
+            margin_mesh = shape_contact_margin[mesh_shape]
+            margin_plane = shape_contact_margin[plane_shape]
+            margin = wp.max(margin_mesh, margin_plane)
+
+            # Build pair key for this mesh-plane pair
+            pair_key = build_pair_key2(wp.uint32(mesh_shape), wp.uint32(plane_shape))
+
+            # Reset contact buffer for this pair
+            for i in range(t, wp.static(num_reduction_slots), wp.block_dim()):
+                contacts_shared_mem[i].projection = empty_marker
+
+            if t == 0:
+                active_contacts_shared_mem[wp.static(num_reduction_slots)] = 0
+
+            synchronize()
+
+            # Process vertices in batches using strided loop
+
+            num_iterations = (num_vertices + wp.block_dim() - 1) // wp.block_dim()
+            for i in range(num_iterations):
+                vertex_idx = i * wp.block_dim() + t
+                has_contact = wp.bool(False)
+                c = ContactStruct()
+
+                if vertex_idx < num_vertices:
+                    # Get vertex position in mesh local space and transform to world space
+                    vertex_local = wp.cw_mul(mesh_obj.points[vertex_idx], mesh_scale)
+                    vertex_world = wp.transform_point(X_mesh_ws, vertex_local)
+
+                    # Project vertex onto plane to get closest point
+                    vertex_in_plane_space = wp.transform_point(X_plane_sw, vertex_world)
+                    point_on_plane_local = wp.vec3(vertex_in_plane_space[0], vertex_in_plane_space[1], 0.0)
+                    point_on_plane = wp.transform_point(X_plane_ws, point_on_plane_local)
+
+                    # Compute distance
+                    diff = vertex_world - point_on_plane
+                    distance = wp.dot(diff, plane_normal)
+
+                    # Check if this vertex generates a contact
+                    if distance < margin + total_thickness:
+                        has_contact = True
+
+                        # Contact position is the midpoint
+                        contact_pos = (vertex_world + point_on_plane) * 0.5
+
+                        # Normal points from mesh to plane (negate plane normal since plane normal points up/away from plane)
+                        contact_normal = -plane_normal
+
+                        c.position = contact_pos
+                        c.normal = contact_normal
+                        c.depth = distance
+                        c.feature = vertex_idx
+                        c.projection = empty_marker
+
+                # Apply contact reduction
+                store_reduced_contact_func(
+                    t, has_contact, c, contacts_shared_mem, active_contacts_shared_mem, betas, empty_marker
+                )
+
+            # Write reduced contacts to output (store_reduced_contact ends with sync)
+            num_contacts_to_keep = wp.min(
+                active_contacts_shared_mem[wp.static(num_reduction_slots)], wp.static(num_reduction_slots)
+            )
+
+            for i in range(t, num_contacts_to_keep, wp.block_dim()):
+                contact_id = active_contacts_shared_mem[i]
+                contact = contacts_shared_mem[contact_id]
+
+                # Create contact data - contacts are already in world space
                 contact_data = ContactData()
-                contact_data.contact_point_center = (vertex_world + point_on_plane) * 0.5
-                contact_data.contact_normal_a_to_b = -plane_normal
-                contact_data.contact_distance = distance
-                contact_data.radius_eff_a = 0.0  # mesh has no effective radius
-                contact_data.radius_eff_b = 0.0  # plane has no effective radius
+                contact_data.contact_point_center = contact.position
+                contact_data.contact_normal_a_to_b = contact.normal
+                contact_data.contact_distance = contact.depth
+                contact_data.radius_eff_a = 0.0
+                contact_data.radius_eff_b = 0.0
                 contact_data.thickness_a = thickness_mesh
                 contact_data.thickness_b = thickness_plane
                 contact_data.shape_a = mesh_shape
                 contact_data.shape_b = plane_shape
                 contact_data.margin = margin
-                contact_data.feature = wp.uint32(vertex_idx + 1)
+                contact_data.feature = wp.uint32(contact.feature + 1)
                 contact_data.feature_pair_key = pair_key
 
                 writer_func(contact_data, writer_data)
 
-    return narrow_phase_process_mesh_plane_contacts_kernel
+            # Ensure all threads complete before processing next pair
+            synchronize()
+
+    return narrow_phase_process_mesh_plane_contacts_reduce_kernel
 
 
 class NarrowPhase:
@@ -631,10 +824,12 @@ class NarrowPhase:
         self,
         max_candidate_pairs: int,
         max_triangle_pairs: int = 1000000,
+        reduce_contacts: bool = True,
         device=None,
         shape_aabb_lower: wp.array(dtype=wp.vec3) | None = None,
         shape_aabb_upper: wp.array(dtype=wp.vec3) | None = None,
         contact_writer_warp_func: Any | None = None,
+        contact_reduction_betas: tuple = (1000000.0, 0.0001),
     ):
         """
         Initialize NarrowPhase with pre-allocated buffers.
@@ -642,14 +837,48 @@ class NarrowPhase:
         Args:
             max_candidate_pairs: Maximum number of candidate pairs from broad phase
             max_triangle_pairs: Maximum number of mesh triangle pairs (conservative estimate)
+            reduce_contacts: Whether to reduce contacts for mesh-mesh and mesh-plane collisions.
+                When True, uses shared memory contact reduction to select representative contacts.
+                This improves performance and stability for meshes with many vertices. Defaults to True.
             device: Device to allocate buffers on
             shape_aabb_lower: Optional external AABB lower bounds array (if provided, AABBs won't be computed internally)
             shape_aabb_upper: Optional external AABB upper bounds array (if provided, AABBs won't be computed internally)
             contact_writer_warp_func: Optional custom contact writer function (first arg: ContactData, second arg: custom struct type)
+            contact_reduction_betas: Tuple of depth thresholds for contact reduction. When colliding complex meshes,
+                thousands of triangle pairs may generate contacts. Contact reduction efficiently reduces them to a
+                manageable set while preserving contacts that are important for stable simulation.
+
+                Contacts are binned by normal direction (20 bins) and compete for slots using a scoring function.
+                Contacts are filtered by depth threshold, then compete with pure spatial score:
+                ``score = dot(position, scan_direction)`` when ``depth < beta``.
+
+                The ``beta`` parameter controls which contacts participate:
+
+                - ``beta = inf`` (or large value like 1000000): All contacts participate
+                - ``beta = 0``: Only penetrating contacts (depth < 0) participate
+                - ``beta = -0.01``: Only contacts with at least 1cm penetration participate
+
+                Multiple betas can be specified to keep contacts at different depth thresholds.
+                Each beta adds 6 slots per normal bin (one per spatial direction).
+                Default is ``(1000000.0, 0.0001)`` which keeps both all spatial extremes and
+                near-penetrating spatial extremes. The number of reduction slots is ``20 * (6 * len(betas) + 1)``.
         """
         self.max_candidate_pairs = max_candidate_pairs
         self.max_triangle_pairs = max_triangle_pairs
         self.device = device
+        self.betas_tuple = contact_reduction_betas
+        self.reduce_contacts = reduce_contacts
+
+        # Create contact reduction functions only when reduce_contacts is enabled and running on GPU
+        # Contact reduction requires GPU for shared memory operations
+        is_gpu_device = wp.get_device(device).is_cuda
+        if reduce_contacts and is_gpu_device:
+            self.contact_reduction_funcs = ContactReductionFunctions(contact_reduction_betas)
+            self.num_reduction_slots = self.contact_reduction_funcs.num_reduction_slots
+        else:
+            self.contact_reduction_funcs = None
+            self.num_reduction_slots = 0
+            self.reduce_contacts = False
 
         # Determine if we're using external AABBs
         self.external_aabb = shape_aabb_lower is not None and shape_aabb_upper is not None
@@ -670,10 +899,24 @@ class NarrowPhase:
         else:
             writer_func = contact_writer_warp_func
 
+        self.tile_size_mesh_convex = 128
+        self.tile_size_mesh_mesh = 256
+        self.tile_size_mesh_plane = 512
+        self.block_dim = 128
+
         # Create the appropriate kernel variants
         self.narrow_phase_kernel = create_narrow_phase_kernel_gjk_mpr(self.external_aabb, writer_func)
         self.mesh_triangle_contacts_kernel = create_narrow_phase_process_mesh_triangle_contacts_kernel(writer_func)
-        self.mesh_plane_contacts_kernel = create_narrow_phase_process_mesh_plane_contacts_kernel(writer_func)
+
+        # Create mesh-plane and mesh-mesh kernels (contact_reduction_funcs=None disables reduction)
+        self.mesh_plane_contacts_kernel = create_narrow_phase_process_mesh_plane_contacts_kernel(
+            writer_func,
+            contact_reduction_funcs=self.contact_reduction_funcs,
+        )
+        self.mesh_mesh_contacts_kernel = create_narrow_phase_process_mesh_mesh_contacts_kernel(
+            writer_func,
+            contact_reduction_funcs=self.contact_reduction_funcs,
+        )
 
         # Pre-allocate all intermediate buffers
         with wp.ScopedDevice(device):
@@ -691,6 +934,10 @@ class NarrowPhase:
             self.shape_pairs_mesh_plane_cumsum = wp.zeros(max_candidate_pairs, dtype=wp.int32, device=device)
             self.mesh_plane_vertex_total_count = wp.zeros(1, dtype=wp.int32, device=device)
 
+            # Buffers for mesh-mesh collision handling
+            self.shape_pairs_mesh_mesh = wp.zeros(max_candidate_pairs, dtype=wp.vec2i, device=device)
+            self.shape_pairs_mesh_mesh_count = wp.zeros(1, dtype=wp.int32, device=device)
+
             # Empty tangent array for when tangent computation is disabled
             self.empty_tangent = wp.zeros(0, dtype=wp.vec3, device=device)
 
@@ -700,15 +947,16 @@ class NarrowPhase:
             # Empty contact_key array for when contact key collection is disabled
             self.empty_contact_key = wp.zeros(0, dtype=wp.uint32, device=device)
 
+            # Betas array for contact reduction (using the configured contact_reduction_betas tuple)
+            self.betas = create_betas_array(betas=self.betas_tuple, device=device)
+
         # Fixed thread count for kernel launches
-        self.block_dim = 128
         gpu_thread_limit = 1024 * 1024 * 4
         max_blocks_limit = gpu_thread_limit // self.block_dim
         candidate_blocks = (max_candidate_pairs + self.block_dim - 1) // self.block_dim
         num_blocks = max(1024, min(candidate_blocks, max_blocks_limit))
         self.total_num_threads = self.block_dim * num_blocks
         self.num_tile_blocks = num_blocks
-        self.tile_size = 128
 
     def launch_custom_write(
         self,
@@ -718,6 +966,7 @@ class NarrowPhase:
         shape_data: wp.array(dtype=wp.vec4, ndim=1),  # Shape data (scale xyz, thickness w)
         shape_transform: wp.array(dtype=wp.transform, ndim=1),  # In world space
         shape_source: wp.array(dtype=wp.uint64, ndim=1),  # The index into the source array, type define by shape_types
+        shape_sdf_data: wp.array(dtype=SDFData, ndim=1),  # SDF data structs for mesh shapes
         shape_contact_margin: wp.array(dtype=wp.float32, ndim=1),  # per-shape contact margin
         shape_collision_radius: wp.array(dtype=wp.float32, ndim=1),  # per-shape collision radius for AABB fallback
         writer_data: Any,
@@ -733,6 +982,7 @@ class NarrowPhase:
             shape_data: Array of vec4 containing scale (xyz) and thickness (w) for each shape
             shape_transform: Array of world-space transforms for each shape
             shape_source: Array of source pointers (mesh IDs, etc.) for each shape
+            shape_sdf_data: Array of SDFData structs for mesh shapes
             shape_contact_margin: Array of contact margins for each shape
             shape_collision_radius: Array of collision radii for each shape (for AABB fallback for planes/meshes)
             writer_data: Custom struct instance for contact writing (type must match the custom writer function)
@@ -746,6 +996,7 @@ class NarrowPhase:
         self.triangle_pairs_count.zero_()
         self.shape_pairs_mesh_plane_count.zero_()
         self.mesh_plane_vertex_total_count.zero_()
+        self.shape_pairs_mesh_mesh_count.zero_()
 
         # Launch main narrow phase kernel (using the appropriate kernel variant)
         wp.launch(
@@ -772,34 +1023,46 @@ class NarrowPhase:
                 self.shape_pairs_mesh_plane_cumsum,
                 self.shape_pairs_mesh_plane_count,
                 self.mesh_plane_vertex_total_count,
+                self.shape_pairs_mesh_mesh,
+                self.shape_pairs_mesh_mesh_count,
             ],
             device=device,
             block_dim=self.block_dim,
         )
 
         # Launch mesh-plane contact processing kernel
-        wp.launch(
-            kernel=self.mesh_plane_contacts_kernel,
-            dim=self.total_num_threads,
-            inputs=[
-                shape_types,
-                shape_data,
-                shape_transform,
-                shape_source,
-                shape_contact_margin,
-                self.shape_pairs_mesh_plane,
-                self.shape_pairs_mesh_plane_cumsum,
-                self.shape_pairs_mesh_plane_count,
-                self.mesh_plane_vertex_total_count,
-                writer_data,
-                self.total_num_threads,
-            ],
-            device=device,
-            block_dim=self.block_dim,
-        )
+        packaged_mesh_plane_inputs = [
+            shape_data,
+            shape_transform,
+            shape_source,
+            shape_contact_margin,
+            self.shape_pairs_mesh_plane,
+            self.shape_pairs_mesh_plane_count,
+            self.betas,
+            writer_data,
+            self.num_tile_blocks,
+        ]
+        if self.reduce_contacts:
+            # With contact reduction - use tiled launch
+            wp.launch_tiled(
+                kernel=self.mesh_plane_contacts_kernel,
+                dim=(self.num_tile_blocks,),
+                inputs=packaged_mesh_plane_inputs,
+                device=device,
+                block_dim=self.tile_size_mesh_plane,
+            )
+        else:
+            # Without contact reduction - use regular launch
+            wp.launch(
+                kernel=self.mesh_plane_contacts_kernel,
+                dim=self.total_num_threads,
+                inputs=packaged_mesh_plane_inputs,
+                device=device,
+                block_dim=self.block_dim,
+            )
 
         # Launch mesh triangle overlap detection kernel
-        second_dim = self.tile_size if ENABLE_TILE_BVH_QUERY else 1
+        second_dim = self.tile_size_mesh_convex if ENABLE_TILE_BVH_QUERY else 1
         wp.launch(
             kernel=narrow_phase_find_mesh_triangle_overlaps_kernel,
             dim=[self.num_tile_blocks, second_dim],
@@ -818,7 +1081,7 @@ class NarrowPhase:
                 self.triangle_pairs_count,
             ],
             device=device,
-            block_dim=self.tile_size,
+            block_dim=self.tile_size_mesh_convex,
         )
 
         # Launch mesh triangle contact processing kernel
@@ -840,6 +1103,28 @@ class NarrowPhase:
             block_dim=self.block_dim,
         )
 
+        # Launch mesh-mesh contact processing kernel (only if SDF data is available)
+        # SDF-based mesh-mesh collision requires GPU (wp.Volume only supports CUDA)
+        if shape_sdf_data.shape[0] > 0:
+            wp.launch_tiled(
+                kernel=self.mesh_mesh_contacts_kernel,
+                dim=(self.num_tile_blocks,),
+                inputs=[
+                    shape_data,
+                    shape_transform,
+                    shape_source,
+                    shape_sdf_data,
+                    shape_contact_margin,
+                    self.shape_pairs_mesh_mesh,
+                    self.shape_pairs_mesh_mesh_count,
+                    self.betas,
+                    writer_data,
+                    self.num_tile_blocks,
+                ],
+                device=device,
+                block_dim=self.tile_size_mesh_mesh,
+            )
+
     def launch(
         self,
         candidate_pair: wp.array(dtype=wp.vec2i, ndim=1),  # Maybe colliding pairs
@@ -848,6 +1133,7 @@ class NarrowPhase:
         shape_data: wp.array(dtype=wp.vec4, ndim=1),  # Shape data (scale xyz, thickness w)
         shape_transform: wp.array(dtype=wp.transform, ndim=1),  # In world space
         shape_source: wp.array(dtype=wp.uint64, ndim=1),  # The index into the source array, type define by shape_types
+        shape_sdf_data: wp.array(dtype=SDFData, ndim=1),  # SDF data structs for mesh shapes
         shape_contact_margin: wp.array(dtype=wp.float32, ndim=1),  # per-shape contact margin
         shape_collision_radius: wp.array(dtype=wp.float32, ndim=1),  # per-shape collision radius for AABB fallback
         # Outputs
@@ -874,6 +1160,7 @@ class NarrowPhase:
             shape_data: Array of vec4 containing scale (xyz) and thickness (w) for each shape
             shape_transform: Array of world-space transforms for each shape
             shape_source: Array of source pointers (mesh IDs, etc.) for each shape
+            shape_sdf_data: Array of SDFData structs for mesh shapes
             shape_contact_margin: Array of contact margins for each shape
             shape_collision_radius: Array of collision radii for each shape (for AABB fallback for planes/meshes)
             contact_pair: Output array for contact shape pairs
@@ -908,6 +1195,7 @@ class NarrowPhase:
         self.triangle_pairs_count.zero_()
         self.shape_pairs_mesh_plane_count.zero_()
         self.mesh_plane_vertex_total_count.zero_()
+        self.shape_pairs_mesh_mesh_count.zero_()
 
         # Create ContactWriterData struct
         writer_data = ContactWriterData()
@@ -929,6 +1217,7 @@ class NarrowPhase:
             shape_data,
             shape_transform,
             shape_source,
+            shape_sdf_data,
             shape_contact_margin,
             shape_collision_radius,
             writer_data,

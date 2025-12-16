@@ -324,7 +324,7 @@ class Example:
             f"Max Lambda Grad: {np.max(x_grad[:, 1])}, Min Lambda Grad: {np.min(x_grad[:, 1])}"
         )
 
-    def test(self):
+    def test_final(self):
         assert all(np.array(self.loss_history) < 0.8)
         assert most(np.diff(self.loss_history) < -0.0, min_ratio=0.8)
 

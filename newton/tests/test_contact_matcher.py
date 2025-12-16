@@ -151,7 +151,7 @@ def test_contact_matcher_stacked_cubes(test: TestContactMatcher, device):
                 rotation = wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), rotation_angle)
 
                 # Create cube
-                cube = builder.add_body(xform=wp.transform([x_base, y_base, z_pos], rotation))
+                cube = builder.add_link(xform=wp.transform([x_base, y_base, z_pos], rotation))
                 builder.add_shape_box(
                     body=cube,
                     hx=cube_size / 2,
@@ -160,7 +160,6 @@ def test_contact_matcher_stacked_cubes(test: TestContactMatcher, device):
                 )
 
     model = builder.finalize(device=device)
-    model.ground = True
 
     # Create states
     state_0 = model.state()

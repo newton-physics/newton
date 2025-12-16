@@ -577,6 +577,46 @@ def corner_angles(face_pos: np.ndarray) -> np.ndarray:
     return angles
 
 
+def fan_triangulate_faces(counts: nparray, indices: nparray) -> nparray:
+    """
+    Perform fan triangulation on polygonal faces.
+
+    Args:
+        counts: Array of vertex counts per face
+        indices: Flattened array of vertex indices
+
+    Returns:
+        Array of shape (num_triangles, 3) containing triangle indices (dtype=np.int32)
+    """
+    counts = np.asarray(counts, dtype=np.int32)
+    indices = np.asarray(indices, dtype=np.int32)
+
+    num_tris = int(np.sum(counts - 2))
+
+    if num_tris == 0:
+        return np.zeros((0, 3), dtype=np.int32)
+
+    # Vectorized approach: build all triangle indices at once
+    # For each face with n vertices, we create (n-2) triangles
+    # Each triangle uses: [base, base+i+1, base+i+2] for i in range(n-2)
+
+    # Array to track which face each triangle belongs to
+    tri_face_ids = np.repeat(np.arange(len(counts), dtype=np.int32), counts - 2)
+
+    # Array for triangle index within each face (0 to n-3)
+    tri_local_ids = np.concatenate([np.arange(n - 2, dtype=np.int32) for n in counts])
+
+    # Base index for each face
+    face_bases = np.concatenate([[0], np.cumsum(counts[:-1], dtype=np.int32)])
+
+    out = np.empty((num_tris, 3), dtype=np.int32)
+    out[:, 0] = indices[face_bases[tri_face_ids]]  # First vertex (anchor)
+    out[:, 1] = indices[face_bases[tri_face_ids] + tri_local_ids + 1]  # Second vertex
+    out[:, 2] = indices[face_bases[tri_face_ids] + tri_local_ids + 2]  # Third vertex
+
+    return out
+
+
 def get_mesh(
     prim: Usd.Prim,
     load_normals: bool = False,
@@ -586,7 +626,6 @@ def get_mesh(
         "vertex_averaging", "angle_weighted", "vertex_splitting"
     ] = "vertex_averaging",
     vertex_splitting_angle_threshold_deg: float = 25.0,
-    verbose: bool = False,
 ) -> Mesh:
     """
     Load a triangle mesh from a USD prim that has the ``UsdGeom.Mesh`` schema.
@@ -636,7 +675,6 @@ def get_mesh(
 
         vertex_splitting_angle_threshold_deg (float): The threshold angle in degrees for splitting vertices based on the face normals in case of faceVarying normals and ``face_varying_normal_conversion`` is "vertex_splitting". Corners whose normals differ by more than angle_deg will be split
             into different vertex clusters. Lower = more splits (sharper), higher = fewer splits (smoother).
-        verbose (bool): Whether to print verbose output for debugging.
 
     Returns:
         newton.Mesh: The loaded mesh.
@@ -647,9 +685,18 @@ def get_mesh(
     points = np.array(mesh.GetPointsAttr().Get(), dtype=np.float64)
     indices = np.array(mesh.GetFaceVertexIndicesAttr().Get(), dtype=np.int32)
     counts = mesh.GetFaceVertexCountsAttr().Get()
-    normals = mesh.GetNormalsAttr().Get() if load_normals else None
 
-    uvs = mesh.GetPrimvarsAttr("st").Get() if load_uvs else None
+    uvs = None
+    if load_uvs:
+        uv_primvar = UsdGeom.PrimvarsAPI(prim).GetPrimvar("st")
+        if uv_primvar:
+            uvs = uv_primvar.Get()
+
+    normals = None
+    if load_normals:
+        normals_attr = mesh.GetNormalsAttr()
+        if normals_attr:
+            normals = normals_attr.Get()
 
     if normals is not None:
         normals = np.array(normals, dtype=np.float64)
@@ -657,7 +704,7 @@ def get_mesh(
             # compute vertex normals
             # try to read primvars:normals:indices (the primvar indexer)
             normals_index_attr = prim.GetAttribute("primvars:normals:indices")
-            if normals_index_attr and normals_index_attr.HasValue():
+            if normals_index_attr:
                 normal_indices = np.array(normals_index_attr.Get(), dtype=np.int64)
                 normals_fv = normals[normal_indices]  # (C,3) expanded
             else:
@@ -692,7 +739,7 @@ def get_mesh(
                 new_points = []
                 new_norm_sums = []  # accumulate directions per new vertex id
                 new_indices = np.empty_like(indices)
-                new_uvs = []
+                new_uvs = [] if uvs is not None else None
 
                 # Helper to create a new vertex clone from original v
                 def _new_vertex_from(v, n_dir):
@@ -700,7 +747,7 @@ def get_mesh(
                     new_points.append(points[v])
                     new_norm_sums.append(n_dir.copy())
                     clusters_per_v[v].append([n_dir.copy(), 1, new_vid])
-                    if uvs:
+                    if new_uvs is not None:
                         new_uvs.append(uvs[v])
                     return new_vid
 
@@ -768,31 +815,18 @@ def get_mesh(
             else:
                 raise ValueError(f"Invalid face_varying_normal_conversion: {face_varying_normal_conversion}")
 
-    faces = []
-    face_id = 0
-    for count in counts:
-        if count == 3:
-            faces.append(indices[face_id : face_id + 3])
-        elif count == 4:
-            faces.append(indices[face_id : face_id + 3])
-            faces.append(indices[[face_id, face_id + 2, face_id + 3]])
-        elif verbose:
-            print(
-                f"Error while parsing USD mesh {prim.GetPath()}: encountered polygon with {count} vertices, but only triangles and quads are supported."
-            )
-            continue
-        face_id += count
-
-    faces = np.array(faces, dtype=np.int32)
+    faces = fan_triangulate_faces(counts, indices)
 
     flip_winding = False
-    handedness = mesh.GetOrientationAttr().Get()
-    if handedness.lower() == "lefthanded":
-        flip_winding = True
+    orientation_attr = mesh.GetOrientationAttr()
+    if orientation_attr:
+        handedness = orientation_attr.Get()
+        if handedness and handedness.lower() == "lefthanded":
+            flip_winding = True
     if flip_winding:
         faces = faces[:, ::-1]
 
-    if uvs:
+    if uvs is not None:
         uvs = np.array(uvs, dtype=np.float32)
 
     return Mesh(points, faces.flatten(), normals=normals, uvs=uvs, maxhullvert=maxhullvert)

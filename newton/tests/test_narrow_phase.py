@@ -36,6 +36,7 @@ import warp as wp
 
 from newton._src.geometry.narrow_phase import NarrowPhase
 from newton._src.geometry.types import GeoType
+from newton.geometry import SDFData
 
 
 def check_normal_direction(pos_a, pos_b, normal, tolerance=1e-5):
@@ -261,6 +262,7 @@ class TestNarrowPhase(unittest.TestCase):
             wp.array(geom_source, dtype=wp.uint64),
             wp.array(shape_contact_margin, dtype=wp.float32),
             wp.array(geom_collision_radius, dtype=wp.float32),
+            wp.zeros(len(geom_list), dtype=SDFData),  # shape_sdf_data - empty for non-mesh tests
         )
 
     def _run_narrow_phase(self, geom_list, pairs):
@@ -273,9 +275,15 @@ class TestNarrowPhase(unittest.TestCase):
         Returns:
             Tuple of (contact_count, contact_pairs, positions, normals, penetrations, tangents)
         """
-        geom_types, geom_data, geom_transform, geom_source, shape_contact_margin, geom_collision_radius = (
-            self._create_geometry_arrays(geom_list)
-        )
+        (
+            geom_types,
+            geom_data,
+            geom_transform,
+            geom_source,
+            shape_contact_margin,
+            geom_collision_radius,
+            shape_sdf_data,
+        ) = self._create_geometry_arrays(geom_list)
 
         # Create candidate pairs
         candidate_pair = wp.array(np.array(pairs, dtype=np.int32).reshape(-1, 2), dtype=wp.vec2i)
@@ -298,6 +306,7 @@ class TestNarrowPhase(unittest.TestCase):
             shape_data=geom_data,
             shape_transform=geom_transform,
             shape_source=geom_source,
+            shape_sdf_data=shape_sdf_data,
             shape_contact_margin=shape_contact_margin,
             shape_collision_radius=geom_collision_radius,
             contact_pair=contact_pair,
@@ -1264,6 +1273,7 @@ class TestNarrowPhase(unittest.TestCase):
             dtype=wp.vec4,
         )
         geom_source = wp.zeros(3, dtype=wp.uint64)
+        shape_sdf_data = wp.zeros(3, dtype=SDFData)  # SDF data (not used in this test)
         geom_collision_radius = wp.array([1e6, 0.2, 0.2], dtype=wp.float32)
 
         # Contact margins: plane=0.01, sphereA=0.02, sphereB=0.06
@@ -1298,6 +1308,7 @@ class TestNarrowPhase(unittest.TestCase):
             geom_data,
             geom_transform,
             geom_source,
+            shape_sdf_data,
             shape_contact_margin,
             geom_collision_radius,
             contact_pair,
@@ -1328,6 +1339,7 @@ class TestNarrowPhase(unittest.TestCase):
             geom_data,
             geom_transform,
             geom_source,
+            shape_sdf_data,
             shape_contact_margin,
             geom_collision_radius,
             contact_pair,
@@ -1359,6 +1371,7 @@ class TestNarrowPhase(unittest.TestCase):
             geom_data,
             geom_transform,
             geom_source,
+            shape_sdf_data,
             shape_contact_margin,
             geom_collision_radius,
             contact_pair,
