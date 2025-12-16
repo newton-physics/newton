@@ -624,7 +624,7 @@ def get_mesh(
     maxhullvert: int = MESH_MAXHULLVERT,
     face_varying_normal_conversion: Literal[
         "vertex_averaging", "angle_weighted", "vertex_splitting"
-    ] = "vertex_averaging",
+    ] = "vertex_splitting",
     vertex_splitting_angle_threshold_deg: float = 25.0,
 ) -> Mesh:
     """

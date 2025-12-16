@@ -871,8 +871,11 @@ def broadphase_collision_pairs_scatter(
 
     block_start = block_start_prefix[tid]
 
-    if block_start + num_blocks > max_num_blocks_broad:
+    remaining = max_num_blocks_broad - block_start
+    if remaining <= 0:
         return
+    num_blocks = wp.min(num_blocks, remaining)
+
     pair = wp.vec2i(shape_a, shape_b)
     for i in range(num_blocks):
         block_broad_collide_shape_pair[block_start + i] = pair
@@ -1346,18 +1349,26 @@ def get_decode_contacts_kernel(margin_contact_area: float = 1e-4, writer_func: A
         # Single atomic to reserve all slots for this thread
         my_base_index = wp.atomic_add(writer_data.contact_count, 0, my_contact_count)
 
-        # Early exit if all reserved slots are beyond buffer
-        if my_base_index >= writer_data.contact_max:
+        # Calculate how many slots we can actually write
+        remaining_capacity = writer_data.contact_max - my_base_index
+        if remaining_capacity <= 0:
+            # Roll back the entire reservation since we can't write anything
+            wp.atomic_sub(writer_data.contact_count, 0, my_contact_count)
             return
+
+        writable = wp.min(my_contact_count, remaining_capacity)
+        if writable < my_contact_count:
+            # Roll back the excess reservation
+            wp.atomic_sub(writer_data.contact_count, 0, my_contact_count - writable)
 
         # Write contacts using reserved range
         local_idx = int(0)
         for tid in range(offset, num_contacts, grid_size):
+            if local_idx >= writable:
+                return  # Already wrote all we can
+
             output_index = my_base_index + local_idx
             local_idx += 1
-
-            if output_index >= writer_data.contact_max:
-                return  # Remaining slots exceed buffer
 
             pair = contact_pair[tid]
             shape_a = pair[0]

@@ -269,11 +269,18 @@ def cylinder_sdf_grad(radius: float, half_height: float, p: wp.vec3):
 def ellipsoid_sdf(radii: wp.vec3, p: wp.vec3):
     # Approximate SDF for ellipsoid with radii (rx, ry, rz)
     # Using the approximation: k0 * (k0 - 1) / k1
-    k0 = wp.length(wp.cw_div(p, radii))
-    k1 = wp.length(wp.cw_div(p, wp.cw_mul(radii, radii)))
+    # Guard against zero/near-zero radii to avoid inf/NaN from division
+    eps = 1.0e-8
+    safe_r = wp.vec3(
+        wp.max(wp.abs(radii[0]), eps),
+        wp.max(wp.abs(radii[1]), eps),
+        wp.max(wp.abs(radii[2]), eps),
+    )
+    k0 = wp.length(wp.cw_div(p, safe_r))
+    k1 = wp.length(wp.cw_div(p, wp.cw_mul(safe_r, safe_r)))
     if k1 > 0.0:
         return k0 * (k0 - 1.0) / k1
-    return -wp.min(wp.min(radii[0], radii[1]), radii[2])
+    return -wp.min(wp.min(safe_r[0], safe_r[1]), safe_r[2])
 
 
 @wp.func

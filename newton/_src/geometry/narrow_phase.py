@@ -231,7 +231,8 @@ def create_narrow_phase_kernel_gjk_mpr(external_aabb: bool, writer_func: Any):
                 type_a, type_b = type_b, type_a
 
             # Check if both shapes are hydroelastic - if so, route to SDF-SDF pipeline
-            if shape_is_hydroelastic[shape_a] and shape_is_hydroelastic[shape_b]:
+            # Only route if the pipeline is enabled (array has capacity)
+            if shape_is_hydroelastic[shape_a] and shape_is_hydroelastic[shape_b] and shape_pairs_sdf_sdf.shape[0] > 0:
                 idx = wp.atomic_add(shape_pairs_sdf_sdf_count, 0, 1)
                 if idx < shape_pairs_sdf_sdf.shape[0]:
                     shape_pairs_sdf_sdf[idx] = wp.vec2i(shape_a, shape_b)
