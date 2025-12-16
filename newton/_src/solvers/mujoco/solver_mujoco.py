@@ -1179,11 +1179,11 @@ class SolverMuJoCo(SolverBase):
 
         if separate_worlds:
             # determine which shapes, bodies and joints belong to the first world
-            # based on the shape world: we pick objects from the first world and global shapes
-            non_negatives = shape_world[shape_world >= 0]
+            # based on the body world indices: we pick objects from the first world and global shapes
+            non_negatives = body_world[body_world >= 0]
             if len(non_negatives) > 0:
                 first_group = np.min(non_negatives)
-                shape_range_len = len(np.where(shape_world == first_group)[0])
+                shape_range_len = len(np.where(body_world == first_group)[0])
             else:
                 first_group = -1
                 shape_range_len = model.shape_count
