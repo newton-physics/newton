@@ -1737,6 +1737,7 @@ dev = [
     { name = "pycollada" },
     { name = "pyglet" },
     { name = "pyyaml" },
+    { name = "resolve-robotics-uri-py" },
     { name = "scipy", version = "1.15.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "scipy", version = "1.16.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
     { name = "tqdm" },
@@ -1751,6 +1752,7 @@ docs = [
     { name = "myst-parser" },
     { name = "pycollada" },
     { name = "pydata-sphinx-theme" },
+    { name = "resolve-robotics-uri-py" },
     { name = "scipy", version = "1.15.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "scipy", version = "1.16.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
     { name = "sphinx", version = "8.1.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
@@ -1775,6 +1777,7 @@ examples = [
     { name = "pycollada" },
     { name = "pyglet" },
     { name = "pyyaml" },
+    { name = "resolve-robotics-uri-py" },
     { name = "scipy", version = "1.15.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "scipy", version = "1.16.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
     { name = "trimesh" },
@@ -1786,6 +1789,7 @@ importers = [
     { name = "coacd" },
     { name = "fast-simplification" },
     { name = "pycollada" },
+    { name = "resolve-robotics-uri-py" },
     { name = "scipy", version = "1.15.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "scipy", version = "1.16.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
     { name = "trimesh" },
@@ -1806,6 +1810,7 @@ notebook = [
     { name = "pyglet" },
     { name = "pyyaml" },
     { name = "rerun-sdk", extra = ["notebook"] },
+    { name = "resolve-robotics-uri-py" },
     { name = "scipy", version = "1.15.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "scipy", version = "1.16.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
     { name = "tqdm" },
@@ -1830,6 +1835,7 @@ torch-cu12 = [
     { name = "pycollada" },
     { name = "pyglet" },
     { name = "pyyaml" },
+    { name = "resolve-robotics-uri-py" },
     { name = "scipy", version = "1.15.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "scipy", version = "1.16.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
     { name = "torch" },
@@ -1905,6 +1911,12 @@ requires-dist = [
     { name = "pyyaml", marker = "extra == 'notebook'", specifier = ">=6.0.2" },
     { name = "pyyaml", marker = "extra == 'torch-cu12'", specifier = ">=6.0.2" },
     { name = "rerun-sdk", extras = ["notebook"], marker = "extra == 'notebook'", specifier = ">=0.27.1" },
+    { name = "resolve-robotics-uri-py", marker = "extra == 'dev'", specifier = ">=0.4.0" },
+    { name = "resolve-robotics-uri-py", marker = "extra == 'docs'", specifier = ">=0.4.0" },
+    { name = "resolve-robotics-uri-py", marker = "extra == 'examples'", specifier = ">=0.4.0" },
+    { name = "resolve-robotics-uri-py", marker = "extra == 'importers'", specifier = ">=0.4.0" },
+    { name = "resolve-robotics-uri-py", marker = "extra == 'notebook'", specifier = ">=0.4.0" },
+    { name = "resolve-robotics-uri-py", marker = "extra == 'torch-cu12'", specifier = ">=0.4.0" },
     { name = "scipy", marker = "extra == 'dev'" },
     { name = "scipy", marker = "extra == 'docs'" },
     { name = "scipy", marker = "extra == 'examples'" },
@@ -2916,6 +2928,15 @@ wheels = [
 [package.optional-dependencies]
 notebook = [
     { name = "rerun-notebook" },
+]
+
+[[package]]
+name = "resolve-robotics-uri-py"
+version = "0.4.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/19/f9/3fa642ad656bfd24b74aedc93db203eb8faded6f19f6cf5166c4948c181d/resolve_robotics_uri_py-0.4.1.tar.gz", hash = "sha256:7010a9fdab10e059a61695dd565da9739d4d8aa92319bb24210e750c689e6663", size = 11997, upload-time = "2025-10-31T08:34:31.227Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/7a/5d/b1bc2f3fac573174350634731d2c366fce9e0ad9b5d9763c726efd546669/resolve_robotics_uri_py-0.4.1-py3-none-any.whl", hash = "sha256:b3c65acd02dce73f580a22d8911b3231466325f93ec784c8a11af4012c1f0b1b", size = 7326, upload-time = "2025-10-31T08:34:30.129Z" },
 ]
 
 [[package]]

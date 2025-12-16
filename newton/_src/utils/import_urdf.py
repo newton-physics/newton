@@ -33,6 +33,12 @@ from ..sim.model import ModelAttributeFrequency
 from .import_utils import parse_custom_attributes, sanitize_xml_content
 from .topology import topological_sort
 
+# Optional dependency for robust URI resolution
+try:
+    from resolve_robotics_uri_py import resolve_robotics_uri
+except ImportError:
+    resolve_robotics_uri = None
+
 
 def _download_file(dst, url: str) -> None:
     import requests  # noqa: PLC0415
@@ -213,19 +219,48 @@ def parse_urdf(
                 filename = mesh.get("filename")
                 if filename is None:
                     continue
-                if filename.startswith("package://"):
-                    fn = filename.replace("package://", "")
-                    package_name = fn.split("/")[0]
-                    urdf_folder = os.path.dirname(source)
-                    # resolve file path from package name, i.e. find
-                    # the package folder from the URDF folder
-                    if package_name in urdf_folder:
-                        filename = os.path.join(urdf_folder[: urdf_folder.rindex(package_name)], fn)
+
+                if filename.startswith(("package://", "model://")):
+                    # Try to resolve package:// or model:// URIs
+                    if resolve_robotics_uri is not None:
+                        # Use the robust resolve-robotics-uri-py library
+                        try:
+                            filename = resolve_robotics_uri(filename)
+                        except FileNotFoundError:
+                            warnings.warn(
+                                f'Warning: could not resolve URI "{filename}". '
+                                f"Check that the package is installed and that relevant environment variables "
+                                f"(ROS_PACKAGE_PATH, AMENT_PREFIX_PATH, GZ_SIM_RESOURCE_PATH, etc.) are set correctly. "
+                                f"See https://github.com/ami-iit/resolve-robotics-uri-py for details.",
+                                stacklevel=2,
+                            )
+                            continue
                     else:
-                        warnings.warn(
-                            f'Warning: package "{package_name}" not found in URDF folder while loading mesh at "{filename}"',
-                            stacklevel=2,
-                        )
+                        # Fallback: basic resolution relative to URDF folder
+                        if filename.startswith("package://"):
+                            fn = filename.replace("package://", "")
+                            package_name = fn.split("/")[0]
+                            urdf_folder = os.path.dirname(source)
+                            # resolve file path from package name, i.e. find
+                            # the package folder from the URDF folder
+                            if package_name in urdf_folder:
+                                filename = os.path.join(urdf_folder[: urdf_folder.rindex(package_name)], fn)
+                            else:
+                                warnings.warn(
+                                    f'Warning: could not resolve package "{package_name}" in URI "{filename}". '
+                                    f"For robust URI resolution, install resolve-robotics-uri-py: "
+                                    f"pip install resolve-robotics-uri-py",
+                                    stacklevel=2,
+                                )
+                                continue
+                        else:
+                            # model:// URIs require the external library
+                            warnings.warn(
+                                f'Warning: cannot resolve model:// URI "{filename}" without resolve-robotics-uri-py. '
+                                f"Install it with: pip install resolve-robotics-uri-py",
+                                stacklevel=2,
+                            )
+                            continue
                 elif filename.startswith(("http://", "https://")):
                     # download mesh
                     # note that the file must be deleted after use
