@@ -2590,7 +2590,6 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
                 )
 
 
-
 class TestMuJoCoSolverNewtonContacts(unittest.TestCase):
     def setUp(self):
         """Set up a simple model with a sphere and a plane."""

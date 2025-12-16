@@ -1370,7 +1370,10 @@ def parse_usd(
                             prim_and_scene, "newton:contact_thickness", builder.default_shape_cfg.thickness
                         ),
                         contact_margin=R.get_value(
-                            prim, prim_type=PrimType.SHAPE, key="rigid_contact_margin", default=builder.rigid_contact_margin
+                            prim,
+                            prim_type=PrimType.SHAPE,
+                            key="rigid_contact_margin",
+                            default=builder.rigid_contact_margin,
                         ),
                         mu=material.dynamicFriction,
                         restitution=material.restitution,

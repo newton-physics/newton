@@ -1092,7 +1092,6 @@ class SolverMuJoCo(SolverBase):
         shape_rolling_friction = model.shape_material_rolling_friction.numpy()
         shape_contact_margin = model.shape_contact_margin.numpy()
 
-
         # retrieve MuJoCo-specific attributes
         mujoco_attrs = getattr(model, "mujoco", None)
 
@@ -1346,7 +1345,7 @@ class SolverMuJoCo(SolverBase):
                 if shape_geom_solmix is not None:
                     geom_params["solmix"] = shape_geom_solmix[shape]
                 if shape_contact_margin is not None:
-                    geom_params["margin"] = shape_contact_margin[shape]            
+                    geom_params["margin"] = shape_contact_margin[shape]
 
                 body.add_geom(**geom_params)
                 # store the geom name instead of assuming index
