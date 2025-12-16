@@ -71,7 +71,7 @@ def set_target_pose_kernel(
     ee_pos_target_interpolated: wp.array(dtype=wp.vec3),
     ee_rot_target: wp.array(dtype=wp.vec4),
     ee_rot_target_interpolated: wp.array(dtype=wp.vec4),
-    gripper_target: wp.array(dtype=wp.vec2),
+    gripper_target: wp.array2d(dtype=wp.float32),
 ):
     tid = wp.tid()
 
@@ -139,7 +139,8 @@ def set_target_pose_kernel(
 
     # Set the gripper target position
     gripper_pos = 0.06 * (1.0 - t_gripper)
-    gripper_target[tid] = wp.vec2(gripper_pos)
+    gripper_target[tid, 0] = gripper_pos
+    gripper_target[tid, 1] = gripper_pos
 
 
 @wp.kernel(enable_backward=False)
@@ -579,7 +580,7 @@ class Example:
         self.ee_rot_target = wp.zeros(self.num_worlds, dtype=wp.vec4)
         self.ee_rot_target_interpolated = wp.zeros(self.num_worlds, dtype=wp.vec4)
 
-        self.gripper_target_interpolated = wp.zeros(self.num_worlds, dtype=wp.vec2)
+        self.gripper_target_interpolated = wp.zeros(shape=(self.num_worlds, 2), dtype=wp.float32)
 
     def set_joint_targets(self):
         wp.launch(
@@ -627,7 +628,7 @@ class Example:
         # Set the joint target positions
         joint_target_pos_view = self.control.joint_target_pos.reshape((self.num_worlds, -1))
         wp.copy(dest=joint_target_pos_view[:, :7], src=self.joint_q_ik[:, :7])
-        wp.copy(dest=joint_target_pos_view[:, 7:9], src=wp.array(self.gripper_target_interpolated, dtype=wp.float32))
+        wp.copy(dest=joint_target_pos_view[:, 7:9], src=self.gripper_target_interpolated[:, :2])
 
         wp.launch(
             advance_task_kernel,
