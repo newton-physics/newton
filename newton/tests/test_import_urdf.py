@@ -609,7 +609,7 @@ class TestUrdfUriResolution(unittest.TestCase):
             self.assertEqual(builder.shape_count, 1)
             self.assertEqual(builder.shape_type[0], GeoType.MESH)
 
-    @unittest.skipIf(resolve_robotics_uri is None, "resolve-robotics-uri-py not installed")
+    @unittest.skipUnless(resolve_robotics_uri, "resolve-robotics-uri-py not installed")
     def test_source_uri_resolution(self):
         """Test package:// URI in source parameter works."""
         pkg = self._create_package("my_robot", with_mesh=False)
@@ -648,7 +648,7 @@ class TestUrdfUriResolution(unittest.TestCase):
         self.assertIn("could not resolve", str(cm.warning).lower())
         self.assertEqual(builder.shape_count, 0)
 
-    @unittest.skipIf(resolve_robotics_uri is None, "resolve-robotics-uri-py not installed")
+    @unittest.skipUnless(resolve_robotics_uri, "resolve-robotics-uri-py not installed")
     def test_automatic_vs_manual_resolution(self):
         """Test automatic resolution matches manual workaround from original ticket."""
         pkg = self._create_package("pkg")
