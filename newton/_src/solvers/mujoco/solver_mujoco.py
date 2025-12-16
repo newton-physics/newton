@@ -951,7 +951,6 @@ class SolverMuJoCo(SolverBase):
         actuated_axes: list[int] | None = None,
         skip_visual_only_geoms: bool = True,
         include_sites: bool = True,
-        add_axes: bool = False,
         mesh_maxhullvert: int = MESH_MAXHULLVERT,
         ls_parallel: bool = False,
     ) -> tuple[MjWarpModel, MjWarpData, MjModel, MjData]:
@@ -1060,36 +1059,6 @@ class SolverMuJoCo(SolverBase):
         spec.option.jacobian = mujoco.mjtJacobian.mjJAC_AUTO
 
         spec.compiler.inertiafromgeom = mujoco.mjtInertiaFromGeom.mjINERTIAFROMGEOM_AUTO
-
-        if add_axes:
-            # add axes for debug visualization in MuJoCo viewer when loading the generated XML
-            spec.worldbody.add_geom(
-                type=mujoco.mjtGeom.mjGEOM_CYLINDER,
-                name="axis_x",
-                fromto=[0.0, 0.0, 0.0, 1.0, 0.0, 0.0],
-                rgba=[1.0, 0.0, 0.0, 1.0],
-                size=[0.01, 0.01, 0.01],
-                contype=0,
-                conaffinity=0,
-            )
-            spec.worldbody.add_geom(
-                type=mujoco.mjtGeom.mjGEOM_CYLINDER,
-                name="axis_y",
-                fromto=[0.0, 0.0, 0.0, 0.0, 1.0, 0.0],
-                rgba=[0.0, 1.0, 0.0, 1.0],
-                size=[0.01, 0.01, 0.01],
-                contype=0,
-                conaffinity=0,
-            )
-            spec.worldbody.add_geom(
-                type=mujoco.mjtGeom.mjGEOM_CYLINDER,
-                name="axis_z",
-                fromto=[0.0, 0.0, 0.0, 0.0, 0.0, 1.0],
-                rgba=[0.0, 0.0, 1.0, 1.0],
-                size=[0.01, 0.01, 0.01],
-                contype=0,
-                conaffinity=0,
-            )
 
         joint_parent = model.joint_parent.numpy()
         joint_child = model.joint_child.numpy()
