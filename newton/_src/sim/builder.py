@@ -455,21 +455,21 @@ class ModelBuilder:
         # endregion
 
         # region compiler settings (similar to MuJoCo)
-        self.balance_inertia = True
+        self.balance_inertia: bool = True
         """Whether to automatically correct rigid body inertia tensors that violate the triangle inequality.
         When True, adds a scalar multiple of the identity matrix to preserve rotation structure while
         ensuring physical validity (I1 + I2 >= I3 for principal moments). Default: True."""
 
-        self.bound_mass = None
+        self.bound_mass: float | None = None
         """Minimum allowed mass value for rigid bodies. If set, any body mass below this value will be
         clamped to this minimum. Set to None to disable mass clamping. Default: None."""
 
-        self.bound_inertia = None
+        self.bound_inertia: float | None = None
         """Minimum allowed eigenvalue for rigid body inertia tensors. If set, ensures all principal
         moments of inertia are at least this value. Set to None to disable inertia eigenvalue
         clamping. Default: None."""
 
-        self.validate_inertia_detailed = False
+        self.validate_inertia_detailed: bool = False
         """Whether to use detailed (slower) inertia validation that provides per-body warnings.
         When False, uses a fast GPU kernel that reports only the total number of corrected bodies
         and directly assigns the corrected arrays to the Model (ModelBuilder state is not updated).

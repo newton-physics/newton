@@ -408,6 +408,23 @@ class SolverMuJoCo(SolverBase):
         Shape [nworld, nu], dtype int32."""
         self.mjc_mocap_to_newton_jnt: wp.array(dtype=wp.int32, ndim=2) | None = None
         """Mapping from MuJoCo [world, mocap] to Newton joint index. Shape [nworld, nmocap], dtype int32."""
+        self.mjc_eq_to_newton_eq: wp.array(dtype=wp.int32, ndim=2) | None = None
+        """Mapping from MuJoCo [world, eq] to Newton equality constraint index.
+
+        Corresponds to the equality constraints that are created in MuJoCo from Newton's equality constraints.
+        A value of -1 indicates that the MuJoCo equality constraint has been created from a Newton joint, see :attr:`mjc_eq_to_newton_jnt`
+        for the corresponding joint index.
+
+        Shape [nworld, neq], dtype int32."""
+        self.mjc_eq_to_newton_jnt: wp.array(dtype=wp.int32, ndim=2) | None = None
+        """Mapping from MuJoCo [world, eq] to Newton joint index.
+
+        Corresponds to the equality constraints that are created in MuJoCo from Newton joints that have no associated articulation,
+        i.e. where :attr:`newton.Model.joint_articulation` is -1 for the joint which results in 2 equality constraints being created in MuJoCo.
+        A value of -1 indicates that the MuJoCo equality constraint is not associated with a Newton joint but an explicitly created Newton equality constraint, 
+        see :attr:`mjc_eq_to_newton_eq` for the corresponding equality constraint index.
+
+        Shape [nworld, neq], dtype int32."""
 
         # --- Conditional/lazy mappings ---
         self.newton_shape_to_mjc_geom: wp.array(dtype=wp.int32) | None = None
@@ -1697,6 +1714,7 @@ class SolverMuJoCo(SolverBase):
 
         # add connect constraints for joints that are excluded from the articulation
         # (the UsdPhysics way of defining loop closures)
+        mjc_eq_to_newton_jnt = {}
         for j in joints_loop:
             eq = spec.add_equality(objtype=mujoco.mjtObj.mjOBJ_BODY)
             eq.type = mujoco.mjtEq.mjEQ_CONNECT
@@ -1704,6 +1722,7 @@ class SolverMuJoCo(SolverBase):
             eq.name1 = model.body_key[joint_parent[j]]
             eq.name2 = model.body_key[joint_child[j]]
             eq.data[0:3] = joint_parent_xform[j][:3]
+            mjc_eq_to_newton_jnt[eq.id] = j
 
             eq = spec.add_equality(objtype=mujoco.mjtObj.mjOBJ_BODY)
             eq.type = mujoco.mjtEq.mjEQ_CONNECT
@@ -1711,6 +1730,7 @@ class SolverMuJoCo(SolverBase):
             eq.name1 = model.body_key[joint_parent[j]]
             eq.name2 = model.body_key[joint_child[j]]
             eq.data[0:3] = joint_child_xform[j][:3]
+            mjc_eq_to_newton_jnt[eq.id] = j
 
         if skip_visual_only_geoms and len(spec.geoms) != colliding_shapes_per_world:
             raise ValueError(
@@ -1917,14 +1937,21 @@ class SolverMuJoCo(SolverBase):
             # selected_constraints[idx] is the Newton template constraint index
             neq = self.mj_model.neq
             eq_constraints_per_world = (
-                model.equality_constraint_count // model.num_worlds if model.equality_constraint_count > 0 else 0
+                # need to account for the 2 equality constraints per loop joint
+                # that are added after the regular Newton equality constraints
+                model.equality_constraint_count // model.num_worlds + len(joints_loop) * 2
             )
             mjc_eq_to_newton_eq_np = np.full((nworld, neq), -1, dtype=np.int32)
+            mjc_eq_to_newton_jnt_np = np.full((nworld, neq), -1, dtype=np.int32)
             for mjc_eq, newton_eq in enumerate(selected_constraints):
                 template_eq = newton_eq % eq_constraints_per_world if eq_constraints_per_world > 0 else newton_eq
                 for w in range(nworld):
                     mjc_eq_to_newton_eq_np[w, mjc_eq] = w * eq_constraints_per_world + template_eq
+            for mjc_eq, newton_jnt in mjc_eq_to_newton_jnt.items():
+                for w in range(nworld):
+                    mjc_eq_to_newton_jnt_np[w, mjc_eq] = w * joints_per_world + newton_jnt
             self.mjc_eq_to_newton_eq = wp.array(mjc_eq_to_newton_eq_np, dtype=wp.int32)
+            self.mjc_eq_to_newton_jnt = wp.array(mjc_eq_to_newton_jnt_np, dtype=wp.int32)
 
             # set mjwarp-only settings
             self.mjw_model.opt.ls_parallel = ls_parallel
