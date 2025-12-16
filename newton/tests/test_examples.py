@@ -459,6 +459,13 @@ add_example_test(
     use_viewer=True,
 )
 
+add_example_test(
+    TestIKExamples,
+    name="ik.example_ik_cube_stacking",
+    test_options_cuda={"num-worlds": 16, "cube-count": 2, "num-frames": 1400},  # "cube-count": 3, "num-frames": 2000
+    devices=cuda_test_devices,
+    use_viewer=True,
+)
 
 class TestSelectionAPIExamples(unittest.TestCase):
     pass
