@@ -683,6 +683,3 @@ if __name__ == "__main__":
     example = Example(viewer, num_worlds=args.num_worlds, headless=args.headless, args=args)
 
     newton.examples.run(example, args)
-
-    # example.test_final()
-    # print("number of steps: ", example.episode_steps)
