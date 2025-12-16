@@ -1308,11 +1308,11 @@ def PhysicsRevoluteJoint "Joint2"
         self.assertTrue(found_default, f"Expected default solmix {expected_default} not found in model")
         self.assertTrue(found_explicit_2, f"Expected solmix {expected_explicit_2} not found in model")
 
-
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
-    def test_geom_margin_parsing (self):
+    def test_geom_margin_parsing(self):
         """Test that geom_margin attribute is parsed correctly from USD."""
         from pxr import Usd  # noqa: PLC0415
+
         from newton._src.usd.schemas import SchemaResolverMjc  # noqa: PLC0415
 
         usd_content = """#usda 1.0

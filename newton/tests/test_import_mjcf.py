@@ -1428,7 +1428,6 @@ class TestImportMjcf(unittest.TestCase):
             actual = geom_solmix[shape_idx].tolist()
             self.assertAlmostEqual(actual, expected, places=4)
 
-
     def test_geom_margin_parsing(self):
         """Test that geom_margin attribute is parsed correctly from MJCF."""
         mjcf = """<?xml version="1.0" ?>
@@ -1451,13 +1450,13 @@ class TestImportMjcf(unittest.TestCase):
 """
 
         builder = newton.ModelBuilder()
-        builder.rigid_contact_margin = 0.17 #Note: we need to set this before calling add_mjcf()
+        builder.rigid_contact_margin = 0.17  # Note: we need to set this before calling add_mjcf()
         builder.add_mjcf(mjcf)
         model = builder.finalize()
 
         # shape_contact_margin is a built-in Newton attribute, not a custom mujoco attribute
         self.assertTrue(hasattr(model, "shape_contact_margin"), "Model should have shape_contact_margin attribute")
-        
+
         geom_margin = model.shape_contact_margin.numpy()
         self.assertEqual(model.shape_count, 3, "Should have 3 shapes")
 
