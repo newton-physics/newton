@@ -736,9 +736,6 @@ class Model:
             if self.attribute_assignment.get(full_name, ModelAttributeAssignment.MODEL) != assignment:
                 continue
 
-            if assignment == ModelAttributeAssignment.STATE:
-                continue
-
             # Parse namespace from full_name (format: "namespace:attr_name" or "attr_name")
             if ":" in full_name:
                 namespace, attr_name = full_name.split(":", 1)
@@ -845,7 +842,7 @@ class Model:
             raise AttributeError(f"Attribute frequency of '{name}' is not known")
         return frequency
 
-    def get_requested_state_attributes(self) -> List[str]:
+    def get_requested_state_attributes(self) -> list[str]:
         attributes = []
 
         if self.particle_count:
