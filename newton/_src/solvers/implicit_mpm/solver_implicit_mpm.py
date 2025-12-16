@@ -2302,6 +2302,7 @@ class SolverImplicitMPM(SolverBase):
                 scratch.collider_friction,
                 scratch.collider_adhesion,
                 state_out.collider_ids,
+                temporary_store=self.temporary_store,
             )
 
             # normal interpolation
@@ -2310,6 +2311,7 @@ class SolverImplicitMPM(SolverBase):
                     scratch.collider_fraction_test.space_restriction,
                     scratch.collider_distance_field,
                     scratch.collider_normal_field,
+                    temporary_store=self.temporary_store,
                 )
 
             # Subgrid collisions
