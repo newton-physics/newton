@@ -1405,16 +1405,13 @@ class SolverMuJoCo(SolverBase):
         num_mjc_joints = 0
 
         # add joints, bodies and geoms
-        for ji in joint_order:
-            parent, child = joints_simple[ji]
+        for j in joint_order:
+            parent, child = joint_parent[j], joint_child[j]
             if child in body_mapping:
                 raise ValueError(f"Body {child} already exists in the mapping")
 
             # add body
             body_mapping[child] = len(mj_bodies)
-
-            # use the correct global joint index
-            j = selected_joints[ji]
 
             # check if fixed-base articulation
             fixed_base = False
@@ -1423,11 +1420,11 @@ class SolverMuJoCo(SolverBase):
 
             # this assumes that the joint position is 0
             tf = wp.transform(*joint_parent_xform[j])
-            tf = tf * wp.transform_inverse(wp.transform(*joint_child_xform[j]))
+            child_xform = wp.transform(*joint_child_xform[j])
+            tf = tf * wp.transform_inverse(child_xform)
 
-            jc_xform = wp.transform(*joint_child_xform[j])
-            joint_pos = jc_xform.p
-            joint_rot = jc_xform.q
+            joint_pos = child_xform.p
+            joint_rot = child_xform.q
 
             # ensure unique body name
             name = model.body_key[child]
@@ -1465,7 +1462,7 @@ class SolverMuJoCo(SolverBase):
                     joint_names[name] += 1
                     name = f"{name}_{joint_names[name]}"
 
-            joint_mjc_dof_start[ji] = num_dofs
+            joint_mjc_dof_start[num_mjc_joints] = num_dofs
 
             if j_type == JointType.FREE:
                 body.add_joint(
