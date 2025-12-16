@@ -62,6 +62,93 @@ def make_frame(a: wp.vec3):
 
 
 @wp.func
+def convert_up_axis_pos(pos: wp.vec3, up_axis: int):
+    """
+    Convert position coordinates based on the up-axis convention.
+
+    Args:
+        pos: Input position vector
+        up_axis: Integer representing the up-axis (0 for X, 1 for Y, 2 for Z)
+
+    Returns:
+        Converted position vector
+    """
+    if up_axis == 0:  # X-up to Z-up: (x, y, z) -> (-z, y, x)
+        return wp.vec3(-pos[2], pos[1], pos[0])
+    elif up_axis == 1:  # Y-up to Z-up: (x, y, z) -> (x, -z, y)
+        return wp.vec3(pos[0], -pos[2], pos[1])
+    else:  # Z-up: no conversion needed
+        return pos
+
+
+# Precomputed rotation quaternions for axis conversion
+# X-up to Z-up: Rotate -90 degrees around Y-axis to match position conversion (x, y, z) -> (-z, y, x)
+CONVERT_ROT_X2Z = wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), -wp.pi * 0.5)
+# Y-up to Z-up: Rotate 90 degrees around X-axis to match position conversion (x, y, z) -> (x, -z, y)
+CONVERT_ROT_Y2Z = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), wp.pi * 0.5)
+
+
+@wp.func
+def convert_up_axis_quat(rot: wp.quat, up_axis: int):
+    """
+    Convert quaternion rotation from up_axis to Z-up (MuJoCo convention).
+
+    Args:
+        rot: Input rotation quaternion (xyzw format)
+        up_axis: Integer representing the up-axis (0 for X, 1 for Y, 2 for Z)
+
+    Returns:
+        Converted rotation quaternion
+    """
+    if up_axis == 0:  # X-up to Z-up: Rotate -90 degrees around Y-axis
+        return CONVERT_ROT_X2Z * rot
+    elif up_axis == 1:  # Y-up to Z-up: Rotate 90 degrees around X-axis
+        return CONVERT_ROT_Y2Z * rot
+    else:  # Z-up: no conversion needed
+        return rot
+
+
+@wp.func
+def convert_up_axis_pos_inv(pos: wp.vec3, up_axis: int):
+    """
+    Convert position coordinates from Z-up (MuJoCo) to up_axis (Newton).
+
+    Args:
+        pos: Input position vector in Z-up coordinates
+        up_axis: Integer representing the target up-axis (0 for X, 1 for Y, 2 for Z)
+
+    Returns:
+        Converted position vector in target up-axis coordinates
+    """
+    if up_axis == 0:  # Z-up to X-up: (x, y, z) -> (z, y, -x)
+        return wp.vec3(pos[2], pos[1], -pos[0])
+    elif up_axis == 1:  # Z-up to Y-up: (x, y, z) -> (x, z, -y)
+        return wp.vec3(pos[0], pos[2], -pos[1])
+    else:  # Z-up: no conversion needed
+        return pos
+
+
+@wp.func
+def convert_up_axis_quat_inv(rot: wp.quat, up_axis: int):
+    """
+    Convert quaternion rotation from Z-up (MuJoCo) to up_axis (Newton).
+
+    Args:
+        rot: Input rotation quaternion in Z-up coordinates (xyzw format)
+        up_axis: Integer representing the target up-axis (0 for X, 1 for Y, 2 for Z)
+
+    Returns:
+        Converted rotation quaternion in target up-axis coordinates
+    """
+    if up_axis == 0:  # Z-up to X-up: Rotate +90 degrees around Y-axis (inverse of X2Z)
+        return wp.quat_inverse(CONVERT_ROT_X2Z) * rot
+    elif up_axis == 1:  # Z-up to Y-up: Rotate -90 degrees around X-axis (inverse of Y2Z)
+        return wp.quat_inverse(CONVERT_ROT_Y2Z) * rot
+    else:  # Z-up: no conversion needed
+        return rot
+
+
+@wp.func
 def write_contact(
     # Data in:
     # In:
@@ -343,34 +430,51 @@ def convert_mj_coords_to_warp_kernel(
     wqd_i = joint_qd_start[joints_per_world * worldid + jntid]
 
     if type == JointType.FREE:
-        # convert position components
-        for i in range(3):
-            joint_q[wq_i + i] = qpos[worldid, q_i + i]
+        # Read position from MuJoCo (Z-up)
+        pos_mj = wp.vec3(qpos[worldid, q_i + 0], qpos[worldid, q_i + 1], qpos[worldid, q_i + 2])
+        # Convert from Z-up (MuJoCo) to target up_axis (Newton)
+        pos_newton = convert_up_axis_pos_inv(pos_mj, up_axis)
+        # Write to Newton joint_q
+        joint_q[wq_i + 0] = pos_newton[0]
+        joint_q[wq_i + 1] = pos_newton[1]
+        joint_q[wq_i + 2] = pos_newton[2]
 
-        # change quaternion order from wxyz to xyzw
-        rot = wp.quat(
+        # Read quaternion from MuJoCo (wxyz format) and convert to xyzw
+        rot_mj = wp.quat(
             qpos[worldid, q_i + 4],
             qpos[worldid, q_i + 5],
             qpos[worldid, q_i + 6],
             qpos[worldid, q_i + 3],
         )
-        joint_q[wq_i + 3] = rot[0]
-        joint_q[wq_i + 4] = rot[1]
-        joint_q[wq_i + 5] = rot[2]
-        joint_q[wq_i + 6] = rot[3]
-        # for i in range(6):
-        #     # convert velocity components
-        #     joint_qd[wqd_i + i] = qvel[worldid, qd_i + i]
+        # Convert from Z-up (MuJoCo) to target up_axis (Newton)
+        rot_newton = convert_up_axis_quat_inv(rot_mj, up_axis)
+        # Write to Newton joint_q
+        joint_q[wq_i + 3] = rot_newton[0]
+        joint_q[wq_i + 4] = rot_newton[1]
+        joint_q[wq_i + 5] = rot_newton[2]
+        joint_q[wq_i + 6] = rot_newton[3]
 
-        joint_qd[wqd_i + 0] = qvel[worldid, qd_i + 0]
-        joint_qd[wqd_i + 1] = qvel[worldid, qd_i + 1]
-        joint_qd[wqd_i + 2] = qvel[worldid, qd_i + 2]
+        # Read linear velocity from MuJoCo (Z-up)
+        v_mj = wp.vec3(qvel[worldid, qd_i + 0], qvel[worldid, qd_i + 1], qvel[worldid, qd_i + 2])
+        # Convert from Z-up (MuJoCo) to target up_axis (Newton)
+        v_newton = convert_up_axis_pos_inv(v_mj, up_axis)
+        # Write to Newton joint_qd
+        joint_qd[wqd_i + 0] = v_newton[0]
+        joint_qd[wqd_i + 1] = v_newton[1]
+        joint_qd[wqd_i + 2] = v_newton[2]
 
-        w = wp.vec3(qvel[worldid, qd_i + 3], qvel[worldid, qd_i + 4], qvel[worldid, qd_i + 5])
-        w = wp.quat_rotate(rot, w)
-        joint_qd[wqd_i + 3] = w[0]
-        joint_qd[wqd_i + 4] = w[1]
-        joint_qd[wqd_i + 5] = w[2]
+        # Read angular velocity from MuJoCo (in body frame)
+        w_body = wp.vec3(qvel[worldid, qd_i + 3], qvel[worldid, qd_i + 4], qvel[worldid, qd_i + 5])
+        # Transform to world frame using MuJoCo quaternion
+        w_world_mj = wp.quat_rotate(rot_mj, w_body)
+        # Convert from Z-up (MuJoCo) to target up_axis (Newton)
+        w_world_newton = convert_up_axis_pos_inv(w_world_mj, up_axis)
+        # Transform back to body frame using Newton quaternion
+        w_body_newton = wp.quat_rotate_inv(rot_newton, w_world_newton)
+        # Write to Newton joint_qd
+        joint_qd[wqd_i + 3] = w_body_newton[0]
+        joint_qd[wqd_i + 4] = w_body_newton[1]
+        joint_qd[wqd_i + 5] = w_body_newton[2]
     elif type == JointType.BALL:
         # change quaternion order from wxyz to xyzw
         rot = wp.quat(
@@ -419,34 +523,51 @@ def convert_warp_coords_to_mj_kernel(
     wqd_i = joint_qd_start[joints_per_world * worldid + jntid]
 
     if type == JointType.FREE:
-        # convert position components
-        for i in range(3):
-            qpos[worldid, q_i + i] = joint_q[wq_i + i]
+        # Read position from Newton (in up_axis)
+        pos_newton = wp.vec3(joint_q[wq_i + 0], joint_q[wq_i + 1], joint_q[wq_i + 2])
+        # Convert from up_axis (Newton) to Z-up (MuJoCo)
+        pos_mj = convert_up_axis_pos(pos_newton, up_axis)
+        # Write to MuJoCo qpos
+        qpos[worldid, q_i + 0] = pos_mj[0]
+        qpos[worldid, q_i + 1] = pos_mj[1]
+        qpos[worldid, q_i + 2] = pos_mj[2]
 
-        rot = wp.quat(
+        # Read quaternion from Newton (xyzw format)
+        rot_newton = wp.quat(
             joint_q[wq_i + 3],
             joint_q[wq_i + 4],
             joint_q[wq_i + 5],
             joint_q[wq_i + 6],
         )
-        # change quaternion order from xyzw to wxyz
-        qpos[worldid, q_i + 3] = rot[3]
-        qpos[worldid, q_i + 4] = rot[0]
-        qpos[worldid, q_i + 5] = rot[1]
-        qpos[worldid, q_i + 6] = rot[2]
-        # for i in range(6):
-        #     # convert velocity components
-        #     qvel[worldid, qd_i + i] = joint_qd[qd_i + i]
+        # Convert from up_axis (Newton) to Z-up (MuJoCo)
+        rot_mj = convert_up_axis_quat(rot_newton, up_axis)
+        # Write to MuJoCo qpos (wxyz format)
+        qpos[worldid, q_i + 3] = rot_mj[3]
+        qpos[worldid, q_i + 4] = rot_mj[0]
+        qpos[worldid, q_i + 5] = rot_mj[1]
+        qpos[worldid, q_i + 6] = rot_mj[2]
 
-        qvel[worldid, qd_i + 0] = joint_qd[wqd_i + 0]
-        qvel[worldid, qd_i + 1] = joint_qd[wqd_i + 1]
-        qvel[worldid, qd_i + 2] = joint_qd[wqd_i + 2]
+        # Read linear velocity from Newton (in up_axis)
+        v_newton = wp.vec3(joint_qd[wqd_i + 0], joint_qd[wqd_i + 1], joint_qd[wqd_i + 2])
+        # Convert from up_axis (Newton) to Z-up (MuJoCo)
+        v_mj = convert_up_axis_pos(v_newton, up_axis)
+        # Write to MuJoCo qvel
+        qvel[worldid, qd_i + 0] = v_mj[0]
+        qvel[worldid, qd_i + 1] = v_mj[1]
+        qvel[worldid, qd_i + 2] = v_mj[2]
 
-        w = wp.vec3(joint_qd[wqd_i + 3], joint_qd[wqd_i + 4], joint_qd[wqd_i + 5])
-        w = wp.quat_rotate_inv(rot, w)
-        qvel[worldid, qd_i + 3] = w[0]
-        qvel[worldid, qd_i + 4] = w[1]
-        qvel[worldid, qd_i + 5] = w[2]
+        # Read angular velocity from Newton (in body frame)
+        w_body_newton = wp.vec3(joint_qd[wqd_i + 3], joint_qd[wqd_i + 4], joint_qd[wqd_i + 5])
+        # Transform to world frame using Newton quaternion
+        w_world_newton = wp.quat_rotate(rot_newton, w_body_newton)
+        # Convert from up_axis (Newton) to Z-up (MuJoCo)
+        w_world_mj = convert_up_axis_pos(w_world_newton, up_axis)
+        # Transform back to body frame using MuJoCo quaternion
+        w_body_mj = wp.quat_rotate_inv(rot_mj, w_world_mj)
+        # Write to MuJoCo qvel
+        qvel[worldid, qd_i + 3] = w_body_mj[0]
+        qvel[worldid, qd_i + 4] = w_body_mj[1]
+        qvel[worldid, qd_i + 5] = w_body_mj[2]
 
     elif type == JointType.BALL:
         # change quaternion order from xyzw to wxyz
