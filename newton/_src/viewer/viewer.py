@@ -903,11 +903,17 @@ class ViewerBase:
             parent = shape_body[s]
             static = parent == -1
 
-            # For collision shapes with SDF volumes, treat the original mesh as visual geometry
-            # (the SDF isomesh will be rendered separately for collision visualization)
+            # For collision shapes that ALSO have the VISIBLE flag AND have SDF volumes,
+            # treat the original mesh as visual geometry (the SDF isomesh will be rendered
+            # separately for collision visualization).
+            #
+            # Shapes that only have COLLIDE_SHAPES (no VISIBLE) should remain as collision
+            # shapes - these are typically convex hull approximations where a separate
+            # visual-only copy exists.
             is_collision_shape = flags & int(newton.ShapeFlags.COLLIDE_SHAPES)
+            is_visible = flags & int(newton.ShapeFlags.VISIBLE)
             has_sdf = self._get_shape_isomesh(s) is not None
-            if is_collision_shape and has_sdf:
+            if is_collision_shape and is_visible and has_sdf:
                 # Remove COLLIDE_SHAPES flag so this is treated as a visual shape
                 flags = flags & ~int(newton.ShapeFlags.COLLIDE_SHAPES)
 
