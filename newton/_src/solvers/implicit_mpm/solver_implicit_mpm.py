@@ -2730,7 +2730,9 @@ class SolverImplicitMPM(SolverBase):
         if state_out.ws_stress_field is None or state_out.ws_stress_field.geometry != sym_strain_space.geometry:
             state_out.ws_stress_field = sym_strain_space.make_field()
 
-    def _warmstart_fields(self, prev_impulse_field: fem.Field, prev_stress_field: fem.Field, scratch: _ImplicitMPMScratchpad):
+    def _warmstart_fields(
+        self, prev_impulse_field: fem.Field, prev_stress_field: fem.Field, scratch: _ImplicitMPMScratchpad
+    ):
         """Interpolate previous grid fields into the current grid layout.
 
         Transfers impulse and stress fields from the previous grid to the new
