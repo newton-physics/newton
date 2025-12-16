@@ -30,7 +30,7 @@ def acc_to_color(
 ):
     """Kernel mapping an acceleration to a color, with exponential smoothing."""
     idx = wp.tid()
-    if idx > len(imu_acc):
+    if idx >= len(imu_acc):
         return
 
     stored = buffer[idx]
@@ -62,7 +62,7 @@ class Example:
         builder.add_ground_plane()
 
         # pendulum
-        usd_stage = Usd.Stage.Open(newton.examples.get_asset("/home/chris/Documents/AxisCube.usda"))
+        usd_stage = Usd.Stage.Open(newton.examples.get_asset("axis_cube.usda"))
         axis_cube_mesh = newton.usd.get_mesh(usd_stage.GetPrimAtPath("/AxisCube/VisualCube"))
 
         body = builder.add_body(key="mesh", xform=wp.transform(wp.vec3(0, 0, 1)))
