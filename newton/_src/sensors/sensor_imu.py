@@ -60,7 +60,10 @@ def compute_sensor_imu_kernel(
     vel_ang = wp.spatial_bottom(body_qd[body_idx])
 
     acc_lin = (
-        wp.spatial_top(body_acc) - gravity[0] + wp.cross(wp.spatial_bottom(body_acc), r) + wp.cross(vel_ang, wp.cross(vel_ang, r))
+        wp.spatial_top(body_acc)
+        - gravity[0]
+        + wp.cross(wp.spatial_bottom(body_acc), r)
+        + wp.cross(vel_ang, wp.cross(vel_ang, r))
     )
 
     q = body_quat * site_transform.q

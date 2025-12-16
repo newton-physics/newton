@@ -13,7 +13,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import numpy as np
 import warp as wp
 from pxr import Usd
 
@@ -42,7 +41,7 @@ def acc_to_color(
     smoothed = (1.0 - alpha) * stored + alpha * acc
     buffer[idx] = smoothed
 
-    c = wp.vec3(0.5) + 0.5 * (0.1*wp.min(wp.abs(smoothed), wp.vec3(10.0)) - wp.vec3(0.5))
+    c = wp.vec3(0.5) + 0.5 * (0.1 * wp.min(wp.abs(smoothed), wp.vec3(10.0)) - wp.vec3(0.5))
     color[idx] = wp.max(wp.min(c, wp.vec3(1.0)), wp.vec3(0.0))
 
 
@@ -138,11 +137,7 @@ class Example:
             # read IMU acceleration
             self.imu.update(self.state_0)
             # average and compute color
-            wp.launch(
-                acc_to_color,
-                dim=1,
-                inputs=[0.01, self.imu.accelerometer, self.buffer, self.colors]
-            )
+            wp.launch(acc_to_color, dim=1, inputs=[0.01, self.imu.accelerometer, self.buffer, self.colors])
 
     def step(self):
         if self.graph:

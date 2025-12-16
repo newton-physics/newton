@@ -25,15 +25,15 @@ from ._src.sensors.frame_transform_sensor import (
     FrameTransformSensor,
 )
 
-# IMU sensors
-from ._src.sensors.sensor_imu import (
-    SensorIMU,
-)
-
 # Raycast sensors
 # Raycast sensors
 from ._src.sensors.raycast_sensor import (
     RaycastSensor,
+)
+
+# IMU sensors
+from ._src.sensors.sensor_imu import (
+    SensorIMU,
 )
 from ._src.sensors.tiled_camera_sensor import (
     TiledCameraSensor,

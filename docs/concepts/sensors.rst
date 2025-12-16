@@ -9,7 +9,7 @@ Overview
 Newton sensors follow a consistent pattern:
 
 1. **Initialization**: Configure the sensor with the model and specify what to measure
-2. **Update**: Call ``sensor.update(model, state)`` during the simulation loop to compute measurements
+2. **Update**: Call ``sensor.update(...)`` during the simulation loop to compute measurements
 3. **Access**: Read results from sensor attributes (typically as Warp arrays)
 
 Sensors are designed to be efficient and GPU-friendly, computing results in parallel where possible.
@@ -17,11 +17,12 @@ Sensors are designed to be efficient and GPU-friendly, computing results in para
 Available Sensors
 -----------------
 
-Newton currently provides three sensor types:
+Newton currently provides five sensor types:
 
 * **ContactSensor** - Detects and reports contact information between bodies (TODO: document)
 * **RaycastSensor** - Performs ray casting for distance measurements and collision detection (TODO: document)
 * **FrameTransformSensor** - Computes relative transforms between reference frames
+* **SensorIMU** - Measures linear acceleration and angular velocity at site frames
 
 FrameTransformSensor
 --------------------
@@ -160,10 +161,58 @@ The sensor is optimized for GPU execution:
 
 For best performance, create the sensor once during initialization and reuse it throughout the simulation, rather than recreating it each frame.
 
+.. _sensorimu:
+
+SensorIMU
+---------
+
+:class:`~newton.sensors.SensorIMU` measures inertial quantities at one or more sites; each site defines the IMU frame. Outputs are stored in two arrays:
+
+- accelerometer: linear acceleration (specific force)
+- gyroscope: angular velocity
+
+Basic Usage
+~~~~~~~~~~~
+
+``SensorIMU`` takes a list of site indices and computes IMU readings at each site. It requires rigid-body accelerations via the extended state attribute
+``body_qdd`` on :class:`~newton.State`.
+
+By default, the sensor requests ``body_qdd`` from the model during construction, so that subsequent calls to :meth:`newton.Model.state()` allocate it.
+If you allocate the State first, you must request/allocate ``body_qdd`` yourself (see :doc:`extended_state_attributes`).
+
+
+.. testcode:: sensors-imu-basic
+
+   from newton.sensors import SensorIMU
+   import newton
+
+   builder = newton.ModelBuilder()
+   body = builder.add_body(mass=1.0, I_m=wp.mat33(np.eye(3)))
+   s1 = builder.add_site(body, key="imu1")
+   s2 = builder.add_site(body, key="imu2")
+   model = builder.finalize()
+
+   imu = SensorIMU(model, sites=[s1, s2])
+   state = model.state()
+
+   imu.update(state)
+   acc = imu.accelerometer.numpy()  # shape: (2, 3)
+   gyro = imu.gyroscope.numpy()      # shape: (2, 3)
+
+State / Solver Requirements
+~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+``SensorIMU`` depends on body accelerations computed by the solver and stored in ``state.body_qdd``:
+
+- Allocate: ensure ``body_qdd`` is allocated on the State (typically by constructing ``SensorIMU`` before calling :meth:`newton.Model.state`).
+- Populate: use a solver that actually fills ``state.body_qdd`` (for example, :class:`~newton.solvers.SolverMuJoCo` computes body accelerations).
+
 See Also
 --------
 
 * :doc:`sites` — Using sites as reference frames
 * :doc:`../api/newton_sensors` — Full sensor API reference
+* :doc:`extended_state_attributes` — Optional on-demand State arrays (e.g., ``body_qdd``)
 * ``newton.examples.sensors.example_sensor_contact`` — ContactSensor example
+* ``newton.examples.sensors.example_sensor_imu`` — SensorIMU example
 
