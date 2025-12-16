@@ -3001,6 +3001,16 @@ class ModelBuilder:
         for children in body_children.values():
             children.sort(key=lambda x: body_data[x]["original_id"])
 
+        # Find bodies referenced in equality constraints that shouldn't be merged into world
+        bodies_in_constraints = set()
+        for i in range(len(self.equality_constraint_body1)):
+            body1 = self.equality_constraint_body1[i]
+            body2 = self.equality_constraint_body2[i]
+            if body1 >= 0:
+                bodies_in_constraints.add(body1)
+            if body2 >= 0:
+                bodies_in_constraints.add(body2)
+
         retained_joints = []
         retained_bodies = []
         body_remap = {-1: -1}
@@ -3015,7 +3025,21 @@ class ModelBuilder:
             nonlocal body_data
 
             joint = joint_data[(parent_body, child_body)]
-            if joint["type"] == JointType.FIXED:
+            # Don't merge fixed joints if the child body is referenced in an equality constraint
+            # and would be merged into world (last_dynamic_body == -1)
+            should_skip_merge = child_body in bodies_in_constraints and last_dynamic_body == -1
+
+            if should_skip_merge and joint["type"] == JointType.FIXED:
+                # Skip merging this fixed joint because the body is referenced in an equality constraint
+                if verbose:
+                    parent_key = self.body_key[parent_body] if parent_body > -1 else "world"
+                    child_key = self.body_key[child_body]
+                    print(
+                        f"Skipping collapse of fixed joint {joint['key']} between {parent_key} and {child_key}: "
+                        f"{child_key} is referenced in an equality constraint and cannot be merged into world"
+                    )
+
+            if joint["type"] == JointType.FIXED and not should_skip_merge:
                 joint_xform = joint["parent_xform"] * wp.transform_inverse(joint["child_xform"])
                 incoming_xform = incoming_xform * joint_xform
                 parent_key = self.body_key[parent_body] if parent_body > -1 else "world"
@@ -3214,6 +3238,61 @@ class ModelBuilder:
                 self.joint_target_pos.append(axis["target_pos"])
                 self.joint_target_vel.append(axis["target_vel"])
                 self.joint_effort_limit.append(axis["effort_limit"])
+
+        # Remap equality constraint body/joint indices and transform anchors for merged bodies
+        for i in range(len(self.equality_constraint_body1)):
+            old_body1 = self.equality_constraint_body1[i]
+            old_body2 = self.equality_constraint_body2[i]
+            body1_was_merged = False
+            body2_was_merged = False
+
+            if old_body1 in body_remap:
+                self.equality_constraint_body1[i] = body_remap[old_body1]
+            elif old_body1 in body_merged_parent:
+                self.equality_constraint_body1[i] = body_remap[body_merged_parent[old_body1]]
+                body1_was_merged = True
+
+            if old_body2 in body_remap:
+                self.equality_constraint_body2[i] = body_remap[old_body2]
+            elif old_body2 in body_merged_parent:
+                self.equality_constraint_body2[i] = body_remap[body_merged_parent[old_body2]]
+                body2_was_merged = True
+
+            constraint_type = self.equality_constraint_type[i]
+
+            # Transform anchor/relpose from merged body's frame to parent body's frame
+            if body1_was_merged:
+                merge_xform = body_merged_transform[old_body1]
+                if constraint_type == EqType.CONNECT:
+                    self.equality_constraint_anchor[i] = wp.transform_point(
+                        merge_xform, self.equality_constraint_anchor[i]
+                    )
+                if constraint_type == EqType.WELD:
+                    self.equality_constraint_relpose[i] = merge_xform * self.equality_constraint_relpose[i]
+
+            if body2_was_merged and constraint_type == EqType.WELD:
+                merge_xform = body_merged_transform[old_body2]
+                self.equality_constraint_anchor[i] = wp.transform_point(merge_xform, self.equality_constraint_anchor[i])
+                self.equality_constraint_relpose[i] = self.equality_constraint_relpose[i] * wp.transform_inverse(
+                    merge_xform
+                )
+
+            old_joint1 = self.equality_constraint_joint1[i]
+            old_joint2 = self.equality_constraint_joint2[i]
+
+            if old_joint1 in joint_remap:
+                self.equality_constraint_joint1[i] = joint_remap[old_joint1]
+            elif old_joint1 != -1:
+                if verbose:
+                    print(f"Warning: Equality constraint references removed joint {old_joint1}, disabling constraint")
+                self.equality_constraint_enabled[i] = False
+
+            if old_joint2 in joint_remap:
+                self.equality_constraint_joint2[i] = joint_remap[old_joint2]
+            elif old_joint2 != -1:
+                if verbose:
+                    print(f"Warning: Equality constraint references removed joint {old_joint2}, disabling constraint")
+                self.equality_constraint_enabled[i] = False
 
         return {
             "body_remap": body_remap,
