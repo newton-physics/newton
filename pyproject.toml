@@ -113,7 +113,7 @@ explicit = true
 mujoco-warp = { git = "https://github.com/google-deepmind/mujoco_warp" }
 warp-lang = { index = "nvidia" }
 mujoco = { index = "mujoco" }
-torch = [{ index = "pytorch-cu129", extra = "torch-cu12" }]
+torch = [{ index = "pytorch-cu128", extra = "torch-cu12" }]
 
 [dependency-groups]
 dev = ["asv>=0.6.4"]
@@ -125,8 +125,8 @@ indent-width = 4
 exclude = []
 
 [[tool.uv.index]]
-name = "pytorch-cu129"
-url = "https://download.pytorch.org/whl/cu129"
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
 explicit = true
 
 [tool.ruff.lint]
