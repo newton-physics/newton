@@ -246,7 +246,7 @@ def color_graph(
             particle_colors.__ctype__(),
         )
 
-        if max_min_ratio > target_max_min_color_ratio:
+        if max_min_ratio > target_max_min_color_ratio and wp.config.verbose:
             warnings.warn(
                 f"Color balancing terminated early: max/min ratio {max_min_ratio:.3f} "
                 f"exceeds target {target_max_min_color_ratio:.3f}. "

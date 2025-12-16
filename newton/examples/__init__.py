@@ -15,12 +15,23 @@
 
 import os
 from collections.abc import Callable
+from contextlib import contextmanager
 
 import numpy as np
 import warp as wp
 
 import newton
 from newton.tests.unittest_utils import find_nan_members
+
+
+@contextmanager
+def _quiet_warp_context():
+    original_quiet = wp.config.quiet
+    try:
+        wp.config.quiet = True
+        yield
+    finally:
+        wp.config.quiet = original_quiet
 
 
 def get_source_directory() -> str:
@@ -509,7 +520,8 @@ def main():
     sys.argv = [target_module, *sys.argv[2:]]
 
     # Run the target example module
-    runpy.run_module(target_module, run_name="__main__")
+    with _quiet_warp_context():
+        runpy.run_module(target_module, run_name="__main__")
 
 
 if __name__ == "__main__":

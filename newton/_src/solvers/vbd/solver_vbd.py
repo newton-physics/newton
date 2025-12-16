@@ -2330,7 +2330,7 @@ class SolverVBD(SolverBase):
         self.self_contact_radius = self_contact_radius
         self.self_contact_margin = self_contact_margin
 
-        if model.device.is_cpu and use_tile_solve:
+        if model.device.is_cpu and use_tile_solve and wp.config.verbose:
             warnings.warn("Tiled solve requires model.device='cuda'. Tiled solve is disabled.", stacklevel=2)
 
         self.use_tile_solve = use_tile_solve and model.device.is_cuda
