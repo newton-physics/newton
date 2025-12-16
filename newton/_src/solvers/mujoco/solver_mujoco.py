@@ -51,6 +51,7 @@ from .kernels import (
     convert_mj_coords_to_warp_kernel,
     convert_mjw_contact_to_warp_kernel,
     convert_newton_contacts_to_mjwarp_kernel,
+    convert_up_axis_pos,
     convert_warp_coords_to_mj_kernel,
     eval_articulation_fk,
     repeat_array_kernel,
@@ -76,192 +77,6 @@ else:
     MjData = object
     MjWarpModel = object
     MjWarpData = object
-
-
-@wp.func
-def orthogonals(a: wp.vec3):
-    y = wp.vec3(0.0, 1.0, 0.0)
-    z = wp.vec3(0.0, 0.0, 1.0)
-    b = wp.where((-0.5 < a[1]) and (a[1] < 0.5), y, z)
-    b = b - a * wp.dot(a, b)
-    b = wp.normalize(b)
-    if wp.length(a) == 0.0:
-        b = wp.vec3(0.0, 0.0, 0.0)
-    c = wp.cross(a, b)
-
-    return b, c
-
-
-@wp.func
-def make_frame(a: wp.vec3):
-    a = wp.normalize(a)
-    b, c = orthogonals(a)
-
-    # fmt: off
-    return wp.mat33(
-    a.x, a.y, a.z,
-    b.x, b.y, b.z,
-    c.x, c.y, c.z
-  )
-    # fmt: on
-
-
-@wp.func
-def convert_up_axis_pos(pos: wp.vec3, up_axis: int):
-    """
-    Convert position coordinates based on the up-axis convention.
-
-    Args:
-        pos: Input position vector
-        up_axis: Integer representing the up-axis (0 for X, 1 for Y, 2 for Z)
-
-    Returns:
-        Converted position vector
-    """
-    if up_axis == 0:  # X-up to Z-up: (x, y, z) -> (-z, y, x)
-        return wp.vec3(-pos[2], pos[1], pos[0])
-    elif up_axis == 1:  # Y-up to Z-up: (x, y, z) -> (x, -z, y)
-        return wp.vec3(pos[0], -pos[2], pos[1])
-    else:  # Z-up: no conversion needed
-        return pos
-
-
-# Precomputed rotation quaternions for axis conversion
-# X-up to Z-up: Rotate -90 degrees around Y-axis to match position conversion (x, y, z) -> (-z, y, x)
-CONVERT_ROT_X2Z = wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), -wp.pi * 0.5)
-# Y-up to Z-up: Rotate 90 degrees around X-axis to match position conversion (x, y, z) -> (x, -z, y)
-CONVERT_ROT_Y2Z = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), wp.pi * 0.5)
-
-
-@wp.func
-def convert_up_axis_quat(rot: wp.quat, up_axis: int):
-    """
-    Convert quaternion rotation based on the up-axis convention.
-
-    Args:
-        rot: Input rotation quaternion (xyzw format)
-        up_axis: Integer representing the up-axis (0 for X, 1 for Y, 2 for Z)
-
-    Returns:
-        Converted rotation quaternion
-    """
-    if up_axis == 0:  # X-up to Z-up: Rotate 90 degrees around Y-axis
-        return CONVERT_ROT_X2Z * rot
-    elif up_axis == 1:  # Y-up to Z-up: Rotate 90 degrees around X-axis
-        return CONVERT_ROT_Y2Z * rot
-    else:  # Z-up: no conversion needed
-        return rot
-
-
-# Define vec5 as a 5-element vector of float32, matching MuJoCo's convention
-vec5 = wp.types.vector(length=5, dtype=wp.float32)
-
-
-@wp.func
-def write_contact(
-    # Data in:
-    # In:
-    dist_in: float,
-    pos_in: wp.vec3,
-    frame_in: wp.mat33,
-    margin_in: float,
-    gap_in: float,
-    condim_in: int,
-    friction_in: vec5,
-    solref_in: wp.vec2f,
-    solreffriction_in: wp.vec2f,
-    solimp_in: vec5,
-    geoms_in: wp.vec2i,
-    worldid_in: int,
-    contact_id_in: int,
-    # Data out:
-    contact_dist_out: wp.array(dtype=float),
-    contact_pos_out: wp.array(dtype=wp.vec3),
-    contact_frame_out: wp.array(dtype=wp.mat33),
-    contact_includemargin_out: wp.array(dtype=float),
-    contact_friction_out: wp.array(dtype=vec5),
-    contact_solref_out: wp.array(dtype=wp.vec2),
-    contact_solreffriction_out: wp.array(dtype=wp.vec2),
-    contact_solimp_out: wp.array(dtype=vec5),
-    contact_dim_out: wp.array(dtype=int),
-    contact_geom_out: wp.array(dtype=wp.vec2i),
-    contact_worldid_out: wp.array(dtype=int),
-):
-    # See function write_contact in mujoco_warp, file collision_primitive.py
-
-    cid = contact_id_in
-    contact_dist_out[cid] = dist_in
-    contact_pos_out[cid] = pos_in
-    contact_frame_out[cid] = frame_in
-    contact_geom_out[cid] = geoms_in
-    contact_worldid_out[cid] = worldid_in
-    contact_includemargin_out[cid] = margin_in - gap_in
-    contact_dim_out[cid] = condim_in
-    contact_friction_out[cid] = friction_in
-    contact_solref_out[cid] = solref_in
-    contact_solreffriction_out[cid] = solreffriction_in
-    contact_solimp_out[cid] = solimp_in
-
-
-MJ_MINVAL = 2.220446049250313e-16
-
-
-@wp.func
-def contact_params(
-    geom_condim: wp.array(dtype=int),
-    geom_priority: wp.array(dtype=int),
-    geom_solmix: wp.array2d(dtype=float),
-    geom_solref: wp.array2d(dtype=wp.vec2),
-    geom_solimp: wp.array2d(dtype=vec5),
-    geom_friction: wp.array2d(dtype=wp.vec3),
-    geom_margin: wp.array2d(dtype=float),
-    geom_gap: wp.array2d(dtype=float),
-    geoms: wp.vec2i,
-    worldid: int,
-):
-    # See function contact_params in mujoco_warp, file collision_primitive.py
-
-    g1 = geoms[0]
-    g2 = geoms[1]
-
-    p1 = geom_priority[g1]
-    p2 = geom_priority[g2]
-
-    solmix1 = geom_solmix[worldid, g1]
-    solmix2 = geom_solmix[worldid, g2]
-
-    mix = solmix1 / (solmix1 + solmix2)
-    mix = wp.where((solmix1 < MJ_MINVAL) and (solmix2 < MJ_MINVAL), 0.5, mix)
-    mix = wp.where((solmix1 < MJ_MINVAL) and (solmix2 >= MJ_MINVAL), 0.0, mix)
-    mix = wp.where((solmix1 >= MJ_MINVAL) and (solmix2 < MJ_MINVAL), 1.0, mix)
-    mix = wp.where(p1 == p2, mix, wp.where(p1 > p2, 1.0, 0.0))
-
-    margin = wp.max(geom_margin[worldid, g1], geom_margin[worldid, g2])
-    gap = wp.max(geom_gap[worldid, g1], geom_gap[worldid, g2])
-
-    condim1 = geom_condim[g1]
-    condim2 = geom_condim[g2]
-    condim = wp.where(p1 == p2, wp.max(condim1, condim2), wp.where(p1 > p2, condim1, condim2))
-
-    max_geom_friction = wp.max(geom_friction[worldid, g1], geom_friction[worldid, g2])
-    friction = vec5(
-        max_geom_friction[0],
-        max_geom_friction[0],
-        max_geom_friction[1],
-        max_geom_friction[2],
-        max_geom_friction[2],
-    )
-
-    if geom_solref[worldid, g1].x > 0.0 and geom_solref[worldid, g2].x > 0.0:
-        solref = mix * geom_solref[worldid, g1] + (1.0 - mix) * geom_solref[worldid, g2]
-    else:
-        solref = wp.min(geom_solref[worldid, g1], geom_solref[worldid, g2])
-
-    solreffriction = wp.vec2(0.0, 0.0)
-
-    solimp = mix * geom_solimp[worldid, g1] + (1.0 - mix) * geom_solimp[worldid, g2]
-
-    return margin, gap, condim, friction, solref, solreffriction, solimp
 
 
 class SolverMuJoCo(SolverBase):
@@ -2456,12 +2271,6 @@ class SolverMuJoCo(SolverBase):
             return
 
         num_worlds = self.mjc_geom_to_newton_shape.shape[0]
-
-        # Get custom attribute for geom_solimp and geom_solmix
-        mujoco_attrs = getattr(self.model, "mujoco", None)
-        shape_geom_solimp = getattr(mujoco_attrs, "geom_solimp", None) if mujoco_attrs is not None else None
-        shape_geom_solmix = getattr(mujoco_attrs, "geom_solmix", None) if mujoco_attrs is not None else None
-        shape_geom_gap = getattr(mujoco_attrs, "geom_gap", None) if mujoco_attrs is not None else None
 
         wp.launch(
             update_geom_properties_kernel,
