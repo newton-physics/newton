@@ -1431,7 +1431,7 @@ class SolverMuJoCo(SolverBase):
                     joint_names[name] += 1
                     name = f"{name}_{joint_names[name]}"
 
-            joint_mjc_dof_start[num_mjc_joints] = num_dofs
+            joint_mjc_dof_start[j] = num_dofs
 
             if j_type == JointType.FREE:
                 body.add_joint(
@@ -1881,9 +1881,8 @@ class SolverMuJoCo(SolverBase):
             nv = self.mj_model.nv  # Number of DOFs in MuJoCo
             mjc_dof_to_newton_dof_np = np.full((nworld, nv), -1, dtype=np.int32)
             # joint_mjc_dof_start tells us where each Newton template joint's DOFs start in MuJoCo
-            for ji, mjc_dof_start in enumerate(joint_mjc_dof_start):
-                if mjc_dof_start >= 0 and ji < len(selected_joints):
-                    j = selected_joints[ji]
+            for j, mjc_dof_start in enumerate(joint_mjc_dof_start):
+                if mjc_dof_start >= 0:
                     newton_dof_start = joint_qd_start[j]
                     lin_count, ang_count = joint_dof_dim[j]
                     total_dofs = lin_count + ang_count
