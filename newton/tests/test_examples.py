@@ -467,6 +467,7 @@ add_example_test(
     use_viewer=True,
 )
 
+
 class TestSelectionAPIExamples(unittest.TestCase):
     pass
 
