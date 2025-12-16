@@ -586,7 +586,7 @@ class TestUrdfUriResolution(unittest.TestCase):
 
     def test_package_uri_with_library(self):
         """Test package:// URI resolution works (with library or fallback)."""
-        package_dir, urdf_dir, _ = self._create_package_structure("my_robot")
+        _, urdf_dir, _ = self._create_package_structure("my_robot")
 
         urdf_content = """
 <robot name="test_robot">
@@ -612,7 +612,7 @@ class TestUrdfUriResolution(unittest.TestCase):
 
     def test_package_uri_fallback_without_library(self):
         """Test package:// URI fallback when resolve-robotics-uri-py is not available."""
-        package_dir, urdf_dir, _ = self._create_package_structure("my_robot")
+        _, urdf_dir, _ = self._create_package_structure("my_robot")
 
         urdf_content = """
 <robot name="test_robot">
@@ -678,9 +678,10 @@ class TestUrdfUriResolution(unittest.TestCase):
 
         builder = newton.ModelBuilder()
 
-        with self.assertWarns(UserWarning):
+        with self.assertWarns(UserWarning) as cm:
             builder.add_urdf(str(urdf_file), up_axis="Z")
 
+        self.assertIn("could not resolve", str(cm.warning).lower())
         self.assertEqual(builder.shape_count, 0)
 
 
