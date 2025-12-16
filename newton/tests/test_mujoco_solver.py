@@ -2597,7 +2597,8 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
     def test_geom_margin_conversion_and_update(self):
         """Test per-shape geom_margin conversion to MuJoCo and dynamic updates across multiple worlds."""
 
-        # Create a model with custom attributes registered
+        # Note: shape_contact_margin is a standard Newton Model attribute, not a MuJoCo custom attribute,
+        # so no register_custom_attributes() call is needed (unlike geom_gap, geom_solmix, etc.)
         num_worlds = 2
         template_builder = newton.ModelBuilder()
         shape_cfg = newton.ModelBuilder.ShapeConfig(density=1000.0)
