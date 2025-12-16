@@ -768,29 +768,23 @@ class ViewerBase:
     def _should_show_shape(self, flags: int, is_static: bool) -> bool:
         """Determine if a shape should be visible based on current settings."""
 
-        is_collider = bool(flags & int(newton.ShapeFlags.COLLIDE_SHAPES))
-        is_visual = not is_collider  # todo: should we consider a separate flag for this?
+        has_collide_flag = bool(flags & int(newton.ShapeFlags.COLLIDE_SHAPES))
+        has_visible_flag = bool(flags & int(newton.ShapeFlags.VISIBLE))
 
+        # Static shapes override (e.g., for debugging)
         if is_static and self.show_static:
             return True
 
-        # if show_collision is True, then collider shapes are always visible
-        if is_collider and self.show_collision:
+        # Shapes can be both collision AND visual (e.g., ground plane).
+        # Show if either relevant toggle is enabled.
+        if has_collide_flag and self.show_collision:
             return True
 
-        # hide collision shapes when show_collision is False
-        if is_collider and not self.show_collision:
-            return False
-
-        if is_visual and self.show_visual:
+        if has_visible_flag and self.show_visual:
             return True
 
-        # allow hiding all visual shapes with the toggle
-        if is_visual and not self.show_visual:
-            return False
-
-        # if no overrides set then revert to shape visibility
-        return bool(flags & int(newton.ShapeFlags.VISIBLE))
+        # Hide if shape has no enabled flags
+        return False
 
     def _populate_geometry(
         self,
