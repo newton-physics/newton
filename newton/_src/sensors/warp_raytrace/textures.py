@@ -15,7 +15,7 @@
 
 import warp as wp
 
-from .types import GeomType
+from .types import RenderShapeType
 
 
 @wp.func
@@ -35,15 +35,15 @@ def sample_texture_2d(
 @wp.func
 def sample_texture_plane(
     hit_point: wp.vec3f,
-    geom_pos: wp.vec3f,
-    geom_rot: wp.mat33f,
+    shape_transform: wp.transformf,
     material_texture_repeat: wp.vec2f,
     texture_offsets: wp.int32,
     texture_data: wp.array(dtype=wp.uint32),
     texture_height: wp.int32,
     texture_width: wp.int32,
 ) -> wp.vec3f:
-    local = wp.transpose(geom_rot) @ (hit_point - geom_pos)
+    inv_transform = wp.transform_inverse(shape_transform)
+    local = wp.transform_point(inv_transform, hit_point)
     u = local[0] * material_texture_repeat[0]
     v = local[1] * material_texture_repeat[1]
     u = u - wp.floor(u)
@@ -86,18 +86,15 @@ def sample_texture_mesh(
 
 @wp.func
 def sample_texture(
-    world_id: wp.int32,
-    geom_id: wp.int32,
-    geom_type: wp.array(dtype=wp.int32),
-    geom_material_id: wp.int32,
-    material_texture_id: wp.int32,
+    shape_type: wp.int32,
+    shape_transform: wp.transformf,
+    material_index: wp.int32,
+    texture_index: wp.int32,
     material_texture_repeat: wp.vec2f,
     texture_offsets: wp.int32,
     texture_data: wp.array(dtype=wp.uint32),
     texture_height: wp.int32,
     texture_width: wp.int32,
-    geom_position: wp.vec3f,
-    geom_orientation: wp.mat33f,
     mesh_face_offsets: wp.array(dtype=wp.int32),
     mesh_face_vertices: wp.array(dtype=wp.vec3i),
     mesh_texcoord: wp.array(dtype=wp.vec2f),
@@ -110,14 +107,13 @@ def sample_texture(
 ) -> wp.vec3f:
     tex_color = wp.vec3f(1.0, 1.0, 1.0)
 
-    if geom_material_id == -1 or material_texture_id == -1:
+    if material_index == -1 or texture_index == -1:
         return tex_color
 
-    if geom_type[geom_id] == GeomType.PLANE:
+    if shape_type == RenderShapeType.PLANE:
         tex_color = sample_texture_plane(
             hit_point,
-            geom_position,
-            geom_orientation,
+            shape_transform,
             material_texture_repeat,
             texture_offsets,
             texture_data,
@@ -125,7 +121,7 @@ def sample_texture(
             texture_width,
         )
 
-    if geom_type[geom_id] == GeomType.MESH:
+    if shape_type == RenderShapeType.MESH:
         if f < 0 or mesh_id < 0 or not mesh_texcoord_offsets.shape[0]:
             return tex_color
 
