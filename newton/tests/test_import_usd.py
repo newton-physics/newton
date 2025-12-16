@@ -1428,9 +1428,9 @@ def PhysicsRevoluteJoint "Joint2"
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_geom_margin_parsing(self):
         """Test that geom_margin attribute is parsed correctly from USD."""
-        from pxr import Usd
+        from pxr import Usd  # noqa: PLC0415
 
-        from newton._src.usd.schemas import SchemaResolverMjc
+        from newton._src.usd.schemas import SchemaResolverMjc  # noqa: PLC0415
 
         usd_content = """#usda 1.0
 (
