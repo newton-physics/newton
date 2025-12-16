@@ -72,7 +72,7 @@ class Example:
             body,
             scale=wp.vec3(scale),
             mesh=axis_cube_mesh,
-            cfg=newton.ModelBuilder.ShapeConfig(has_shape_collision=False),
+            cfg=newton.ModelBuilder.ShapeConfig(has_shape_collision=False, density=0),
         )
 
         scale_filler = scale * 0.98
@@ -82,10 +82,10 @@ class Example:
             hx=scale_filler,
             hy=scale_filler,
             hz=scale_filler,
-            cfg=newton.ModelBuilder.ShapeConfig(has_shape_collision=False),
+            cfg=newton.ModelBuilder.ShapeConfig(has_shape_collision=False, density=0),
         )
         builder.add_shape_box(
-            body, hx=scale, hy=scale, hz=scale, cfg=newton.ModelBuilder.ShapeConfig(is_visible=False, density=0.1)
+            body, hx=scale, hy=scale, hz=scale, cfg=newton.ModelBuilder.ShapeConfig(is_visible=False, density=200)
         )
         imu_site = builder.add_site(body, key="imu_site")
 
