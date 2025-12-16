@@ -36,6 +36,7 @@ import warp as wp
 
 from newton._src.geometry.narrow_phase import NarrowPhase
 from newton._src.geometry.types import GeoType
+from newton.geometry import SDFData
 
 
 def check_normal_direction(pos_a, pos_b, normal, tolerance=1e-5):
@@ -117,6 +118,33 @@ def distance_point_to_plane(point, plane_pos, plane_normal):
     return np.dot(point - plane_pos, plane_normal)
 
 
+def distance_point_to_ellipsoid(point, ellipsoid_pos, ellipsoid_rot, semi_axes):
+    """Calculate approximate distance from a point to an ellipsoid surface.
+
+    Args:
+        point: Point to check (world space)
+        ellipsoid_pos: Ellipsoid center position
+        ellipsoid_rot: Ellipsoid rotation matrix (3x3)
+        semi_axes: Semi-axes (a, b, c) along local x, y, z
+
+    Returns:
+        Approximate distance to ellipsoid surface
+    """
+    # Transform point to ellipsoid local coordinates
+    local_point = np.dot(ellipsoid_rot.T, point - ellipsoid_pos)
+
+    # Scale to unit sphere
+    a, b, c = semi_axes
+    scaled_point = local_point / np.array([a, b, c])
+
+    # Distance from unit sphere surface
+    dist_to_unit_sphere = np.linalg.norm(scaled_point) - 1.0
+
+    # Approximate distance (this is not exact but good enough for tests)
+    avg_scale = (a + b + c) / 3.0
+    return dist_to_unit_sphere * avg_scale
+
+
 def check_surface_reconstruction(contact_pos, normal, penetration_depth, dist_func_a, dist_func_b, tolerance=0.08):
     """Verify that contact position is at midpoint between surfaces.
 
@@ -169,10 +197,10 @@ class TestNarrowPhase(unittest.TestCase):
             - transform: (position, quaternion) tuple
             - data: scale/size as vec3, thickness as float
             - source: mesh pointer (default 0)
-            - cutoff: cutoff distance (default 0.0)
+            - cutoff: contact margin (default 0.0)
 
         Returns:
-            Tuple of (geom_types, geom_data, geom_transform, geom_source, geom_cutoff, geom_collision_radius)
+            Tuple of (geom_types, geom_data, geom_transform, geom_source, shape_contact_margin, geom_collision_radius)
         """
         n = len(geom_list)
 
@@ -180,7 +208,7 @@ class TestNarrowPhase(unittest.TestCase):
         geom_data = np.zeros(n, dtype=wp.vec4)
         geom_transforms = []
         geom_source = np.zeros(n, dtype=np.uint64)
-        geom_cutoff = np.zeros(n, dtype=np.float32)
+        shape_contact_margin = np.zeros(n, dtype=np.float32)
         geom_collision_radius = np.zeros(n, dtype=np.float32)
 
         for i, geom in enumerate(geom_list):
@@ -202,7 +230,7 @@ class TestNarrowPhase(unittest.TestCase):
             )
 
             geom_source[i] = geom.get("source", 0)
-            geom_cutoff[i] = geom.get("cutoff", 0.0)
+            shape_contact_margin[i] = geom.get("cutoff", 0.0)
 
             # Compute collision radius for AABB fallback (used for planes/meshes)
             geo_type = geom_types[i]
@@ -213,6 +241,9 @@ class TestNarrowPhase(unittest.TestCase):
                 geom_collision_radius[i] = np.linalg.norm(scale_array)
             elif geo_type == int(GeoType.CAPSULE) or geo_type == int(GeoType.CYLINDER) or geo_type == int(GeoType.CONE):
                 geom_collision_radius[i] = scale_array[0] + scale_array[1]
+            elif geo_type == int(GeoType.ELLIPSOID):
+                # Bounding sphere radius is the largest semi-axis
+                geom_collision_radius[i] = max(scale_array[0], scale_array[1], scale_array[2])
             elif geo_type == int(GeoType.PLANE):
                 if scale_array[0] > 0.0 and scale_array[1] > 0.0:
                     # finite plane
@@ -229,8 +260,9 @@ class TestNarrowPhase(unittest.TestCase):
             wp.array(geom_data, dtype=wp.vec4),
             wp.array(geom_transforms, dtype=wp.transform),
             wp.array(geom_source, dtype=wp.uint64),
-            wp.array(geom_cutoff, dtype=wp.float32),
+            wp.array(shape_contact_margin, dtype=wp.float32),
             wp.array(geom_collision_radius, dtype=wp.float32),
+            wp.zeros(len(geom_list), dtype=SDFData),  # shape_sdf_data - empty for non-mesh tests
         )
 
     def _run_narrow_phase(self, geom_list, pairs):
@@ -243,9 +275,15 @@ class TestNarrowPhase(unittest.TestCase):
         Returns:
             Tuple of (contact_count, contact_pairs, positions, normals, penetrations, tangents)
         """
-        geom_types, geom_data, geom_transform, geom_source, geom_cutoff, geom_collision_radius = (
-            self._create_geometry_arrays(geom_list)
-        )
+        (
+            geom_types,
+            geom_data,
+            geom_transform,
+            geom_source,
+            shape_contact_margin,
+            geom_collision_radius,
+            shape_sdf_data,
+        ) = self._create_geometry_arrays(geom_list)
 
         # Create candidate pairs
         candidate_pair = wp.array(np.array(pairs, dtype=np.int32).reshape(-1, 2), dtype=wp.vec2i)
@@ -264,12 +302,13 @@ class TestNarrowPhase(unittest.TestCase):
         self.narrow_phase.launch(
             candidate_pair=candidate_pair,
             num_candidate_pair=num_candidate_pair,
-            geom_types=geom_types,
-            geom_data=geom_data,
-            geom_transform=geom_transform,
-            geom_source=geom_source,
-            geom_cutoff=geom_cutoff,
-            geom_collision_radius=geom_collision_radius,
+            shape_types=geom_types,
+            shape_data=geom_data,
+            shape_transform=geom_transform,
+            shape_source=geom_source,
+            shape_sdf_data=shape_sdf_data,
+            shape_contact_margin=shape_contact_margin,
+            shape_collision_radius=geom_collision_radius,
             contact_pair=contact_pair,
             contact_position=contact_position,
             contact_normal=contact_normal,
@@ -1215,7 +1254,415 @@ class TestNarrowPhase(unittest.TestCase):
                 msg=f"Contact {i} tangent should be perpendicular to normal, dot product = {dot_product}",
             )
 
+    def test_per_shape_contact_margin(self):
+        """
+        Test that per-shape contact margins work correctly by testing two spheres
+        with different margins approaching a plane.
+        """
+        # Create geometries: plane + 2 spheres with different margins
+        geom_types = wp.array(
+            [int(GeoType.PLANE), int(GeoType.SPHERE), int(GeoType.SPHERE)],
+            dtype=wp.int32,
+        )
+        geom_data = wp.array(
+            [
+                wp.vec4(0.0, 0.0, 1.0, 0.0),  # Plane (infinite)
+                wp.vec4(0.2, 0.2, 0.2, 0.0),  # Sphere A radius=0.2
+                wp.vec4(0.2, 0.2, 0.2, 0.0),  # Sphere B radius=0.2
+            ],
+            dtype=wp.vec4,
+        )
+        geom_source = wp.zeros(3, dtype=wp.uint64)
+        shape_sdf_data = wp.zeros(3, dtype=SDFData)  # SDF data (not used in this test)
+        geom_collision_radius = wp.array([1e6, 0.2, 0.2], dtype=wp.float32)
+
+        # Contact margins: plane=0.01, sphereA=0.02, sphereB=0.06
+        shape_contact_margin = wp.array([0.01, 0.02, 0.06], dtype=wp.float32)
+
+        # Allocate output arrays
+        max_contacts = 10
+        contact_pair = wp.zeros(max_contacts, dtype=wp.vec2i)
+        contact_position = wp.zeros(max_contacts, dtype=wp.vec3)
+        contact_normal = wp.zeros(max_contacts, dtype=wp.vec3)
+        contact_penetration = wp.zeros(max_contacts, dtype=float)
+        contact_tangent = wp.zeros(max_contacts, dtype=wp.vec3)
+        contact_count = wp.zeros(1, dtype=int)
+
+        # Test 1: Sphere A at z=0.25 (outside combined margin 0.03) - no contact
+        geom_transform = wp.array(
+            [
+                wp.transform((0.0, 0.0, 0.0), (0.0, 0.0, 0.0, 1.0)),
+                wp.transform((0.0, 0.0, 0.25), (0.0, 0.0, 0.0, 1.0)),
+                wp.transform((10.0, 0.0, 1.0), (0.0, 0.0, 0.0, 1.0)),
+            ],
+            dtype=wp.transform,
+        )
+        pairs = wp.array([wp.vec2i(0, 1)], dtype=wp.vec2i)
+        num_pairs = wp.array([1], dtype=wp.int32)
+
+        contact_count.zero_()
+        self.narrow_phase.launch(
+            pairs,
+            num_pairs,
+            geom_types,
+            geom_data,
+            geom_transform,
+            geom_source,
+            shape_sdf_data,
+            shape_contact_margin,
+            geom_collision_radius,
+            contact_pair,
+            contact_position,
+            contact_normal,
+            contact_penetration,
+            contact_count,  # contact_count comes BEFORE contact_tangent
+            contact_tangent,
+        )
+        wp.synchronize()
+        self.assertEqual(contact_count.numpy()[0], 0, "Sphere A outside margin should have no contact")
+
+        # Test 2: Sphere A at z=0.15 (inside margin) - contact!
+        geom_transform = wp.array(
+            [
+                wp.transform((0.0, 0.0, 0.0), (0.0, 0.0, 0.0, 1.0)),
+                wp.transform((0.0, 0.0, 0.15), (0.0, 0.0, 0.0, 1.0)),
+                wp.transform((10.0, 0.0, 1.0), (0.0, 0.0, 0.0, 1.0)),
+            ],
+            dtype=wp.transform,
+        )
+
+        contact_count.zero_()
+        self.narrow_phase.launch(
+            pairs,
+            num_pairs,
+            geom_types,
+            geom_data,
+            geom_transform,
+            geom_source,
+            shape_sdf_data,
+            shape_contact_margin,
+            geom_collision_radius,
+            contact_pair,
+            contact_position,
+            contact_normal,
+            contact_penetration,
+            contact_count,
+            contact_tangent,
+        )
+        wp.synchronize()
+        self.assertGreater(contact_count.numpy()[0], 0, "Sphere A inside margin should have contact")
+
+        # Test 3: Sphere B at z=0.23 (inside its larger margin 0.07) - contact!
+        geom_transform = wp.array(
+            [
+                wp.transform((0.0, 0.0, 0.0), (0.0, 0.0, 0.0, 1.0)),
+                wp.transform((10.0, 0.0, 1.0), (0.0, 0.0, 0.0, 1.0)),
+                wp.transform((0.0, 0.0, 0.23), (0.0, 0.0, 0.0, 1.0)),
+            ],
+            dtype=wp.transform,
+        )
+        pairs = wp.array([wp.vec2i(0, 2)], dtype=wp.vec2i)
+
+        contact_count.zero_()
+        self.narrow_phase.launch(
+            pairs,
+            num_pairs,
+            geom_types,
+            geom_data,
+            geom_transform,
+            geom_source,
+            shape_sdf_data,
+            shape_contact_margin,
+            geom_collision_radius,
+            contact_pair,
+            contact_position,
+            contact_normal,
+            contact_penetration,
+            contact_count,
+            contact_tangent,
+        )
+        wp.synchronize()
+        self.assertGreater(contact_count.numpy()[0], 0, "Sphere B with larger margin should have contact")
+
+    # ================================================================================
+    # Ellipsoid collision tests
+    # ================================================================================
+
+    def test_ellipsoid_ellipsoid_separated(self):
+        """Test ellipsoid-ellipsoid collision when separated."""
+        # Two ellipsoids separated along X axis
+        geom_list = [
+            {
+                "type": GeoType.ELLIPSOID,
+                "transform": ([0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0]),
+                "data": ([1.0, 0.5, 0.3], 0.0),  # semi-axes a=1.0, b=0.5, c=0.3
+            },
+            {
+                "type": GeoType.ELLIPSOID,
+                "transform": ([3.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0]),
+                "data": ([1.0, 0.5, 0.3], 0.0),
+            },
+        ]
+
+        count, _pairs, _positions, normals, penetrations, _tangents = self._run_narrow_phase(geom_list, [(0, 1)])
+
+        # Separated ellipsoids should produce no contacts (or contacts with positive separation)
+        if count > 0:
+            # If contact is generated, penetration should be positive (separation)
+            self.assertGreater(
+                penetrations[0], 0.0, "Separated ellipsoids should have positive penetration (separation)"
+            )
+
+            # Normal should be unit length
+            normal_length = np.linalg.norm(normals[0])
+            self.assertAlmostEqual(normal_length, 1.0, places=5, msg="Normal should be unit length")
+
+    def test_ellipsoid_ellipsoid_penetrating(self):
+        """Test ellipsoid-ellipsoid collision with penetration."""
+        # Two ellipsoids with overlap along X axis
+        # Ellipsoid A centered at origin with a=1.0 extends to x=1.0
+        # Ellipsoid B centered at x=1.8 with a=1.0 extends to x=0.8
+        # Overlap region from x=0.8 to x=1.0 = 0.2 overlap
+        pos_a = np.array([0.0, 0.0, 0.0])
+        pos_b = np.array([1.8, 0.0, 0.0])
+
+        geom_list = [
+            {
+                "type": GeoType.ELLIPSOID,
+                "transform": (pos_a.tolist(), [0.0, 0.0, 0.0, 1.0]),
+                "data": ([1.0, 0.5, 0.3], 0.0),
+            },
+            {
+                "type": GeoType.ELLIPSOID,
+                "transform": (pos_b.tolist(), [0.0, 0.0, 0.0, 1.0]),
+                "data": ([1.0, 0.5, 0.3], 0.0),
+            },
+        ]
+
+        count, _pairs, _positions, normals, penetrations, _tangents = self._run_narrow_phase(geom_list, [(0, 1)])
+
+        self.assertGreater(count, 0, "Penetrating ellipsoids should generate contact")
+        self.assertLess(penetrations[0], 0.0, "Should have negative penetration (overlap)")
+
+        # Normal should be unit length
+        normal_length = np.linalg.norm(normals[0])
+        self.assertAlmostEqual(normal_length, 1.0, places=5, msg="Normal should be unit length")
+
+        # Normal should point from ellipsoid 0 toward ellipsoid 1 (approximately +X)
+        self.assertTrue(
+            check_normal_direction(pos_a, pos_b, normals[0]),
+            msg="Normal should point from ellipsoid 0 toward ellipsoid 1",
+        )
+
+    def test_ellipsoid_sphere_penetrating(self):
+        """Test ellipsoid-sphere collision with penetration."""
+        # Ellipsoid at origin, sphere approaching from +X
+        # Note: Narrow phase may swap shapes to ensure consistent ordering (lower type first)
+        # SPHERE=2 < ELLIPSOID=4, so sphere becomes shape A
+        ellipsoid_pos = np.array([0.0, 0.0, 0.0])
+        sphere_pos = np.array([1.4, 0.0, 0.0])
+        sphere_radius = 0.5
+
+        geom_list = [
+            {
+                "type": GeoType.ELLIPSOID,
+                "transform": (ellipsoid_pos.tolist(), [0.0, 0.0, 0.0, 1.0]),
+                "data": ([1.0, 0.5, 0.3], 0.0),
+            },
+            {
+                "type": GeoType.SPHERE,
+                "transform": (sphere_pos.tolist(), [0.0, 0.0, 0.0, 1.0]),
+                "data": ([sphere_radius, sphere_radius, sphere_radius], 0.0),
+            },
+        ]
+
+        count, pairs, _positions, normals, _penetrations, _tangents = self._run_narrow_phase(geom_list, [(0, 1)])
+
+        self.assertGreater(count, 0, "Ellipsoid-sphere should generate contact")
+
+        # Normal should be unit length
+        normal_length = np.linalg.norm(normals[0])
+        self.assertAlmostEqual(normal_length, 1.0, places=5, msg="Normal should be unit length")
+
+        # Get actual pair to determine shape order (narrow phase may swap)
+        pair = pairs[0]
+        shape_a_idx = pair[0]
+        if shape_a_idx == 0:
+            # Ellipsoid is shape A, normal points toward sphere (+X)
+            pos_a, pos_b = ellipsoid_pos, sphere_pos
+        else:
+            # Sphere is shape A, normal points toward ellipsoid (-X)
+            pos_a, pos_b = sphere_pos, ellipsoid_pos
+
+        # Normal should point from shape A toward shape B
+        self.assertTrue(
+            check_normal_direction(pos_a, pos_b, normals[0]),
+            msg="Normal should point from shape A toward shape B",
+        )
+
+    def test_ellipsoid_box_penetrating(self):
+        """Test ellipsoid-box collision with penetration."""
+        # Ellipsoid at origin, box approaching from +X
+        ellipsoid_pos = np.array([0.0, 0.0, 0.0])
+        box_pos = np.array([1.4, 0.0, 0.0])
+        box_size = np.array([0.5, 0.5, 0.5])
+
+        geom_list = [
+            {
+                "type": GeoType.ELLIPSOID,
+                "transform": (ellipsoid_pos.tolist(), [0.0, 0.0, 0.0, 1.0]),
+                "data": ([1.0, 0.5, 0.3], 0.0),
+            },
+            {
+                "type": GeoType.BOX,
+                "transform": (box_pos.tolist(), [0.0, 0.0, 0.0, 1.0]),
+                "data": (box_size.tolist(), 0.0),
+            },
+        ]
+
+        count, _pairs, _positions, normals, _penetrations, _tangents = self._run_narrow_phase(geom_list, [(0, 1)])
+
+        self.assertGreater(count, 0, "Ellipsoid-box should generate contact")
+
+        # Normal should be unit length
+        normal_length = np.linalg.norm(normals[0])
+        self.assertAlmostEqual(normal_length, 1.0, places=5, msg="Normal should be unit length")
+
+        # Normal should point from ellipsoid toward box
+        self.assertTrue(
+            check_normal_direction(ellipsoid_pos, box_pos, normals[0]),
+            msg="Normal should point from ellipsoid toward box",
+        )
+
+    def test_ellipsoid_plane_penetrating(self):
+        """Test ellipsoid-plane collision with penetration."""
+        # Infinite plane at z=0, ellipsoid resting on plane with small penetration
+        # Ellipsoid with c=0.3 semi-axis along Z, positioned so bottom just penetrates
+        plane_pos = np.array([0.0, 0.0, 0.0])
+        ellipsoid_pos = np.array([0.0, 0.0, 0.29])  # Bottom at z=-0.01 (small penetration)
+
+        geom_list = [
+            {
+                "type": GeoType.PLANE,
+                "transform": (plane_pos.tolist(), [0.0, 0.0, 0.0, 1.0]),
+                "data": ([0.0, 0.0, 0.0], 0.0),  # infinite plane
+            },
+            {
+                "type": GeoType.ELLIPSOID,
+                "transform": (ellipsoid_pos.tolist(), [0.0, 0.0, 0.0, 1.0]),
+                "data": ([1.0, 0.5, 0.3], 0.0),
+            },
+        ]
+
+        count, _pairs, _positions, normals, penetrations, _tangents = self._run_narrow_phase(geom_list, [(0, 1)])
+
+        self.assertGreater(count, 0, "Ellipsoid-plane should generate contact")
+        self.assertLess(penetrations[0], 0.0, "Should have negative penetration (overlap)")
+
+        # Normal should be unit length
+        normal_length = np.linalg.norm(normals[0])
+        self.assertAlmostEqual(normal_length, 1.0, places=5, msg="Normal should be unit length")
+
+        # Normal should point in plane normal direction (+Z)
+        self.assertGreater(abs(normals[0][2]), 0.9, msg="Normal should be along Z axis")
+
+    def test_ellipsoid_capsule_penetrating(self):
+        """Test ellipsoid-capsule collision with penetration."""
+        # Ellipsoid at origin, capsule approaching from +Y
+        ellipsoid_pos = np.array([0.0, 0.0, 0.0])
+        capsule_pos = np.array([0.0, 0.9, 0.0])
+
+        geom_list = [
+            {
+                "type": GeoType.ELLIPSOID,
+                "transform": (ellipsoid_pos.tolist(), [0.0, 0.0, 0.0, 1.0]),
+                "data": ([1.0, 0.5, 0.3], 0.0),
+            },
+            {
+                "type": GeoType.CAPSULE,
+                "transform": (capsule_pos.tolist(), [0.0, 0.0, 0.0, 1.0]),
+                "data": ([0.5, 1.0, 0.0], 0.0),  # radius=0.5, half_length=1.0
+            },
+        ]
+
+        count, _pairs, _positions, normals, _penetrations, _tangents = self._run_narrow_phase(geom_list, [(0, 1)])
+
+        self.assertGreater(count, 0, "Ellipsoid-capsule should generate contact")
+
+        # Normal should be unit length
+        normal_length = np.linalg.norm(normals[0])
+        self.assertAlmostEqual(normal_length, 1.0, places=5, msg="Normal should be unit length")
+
+    def test_ellipsoid_different_orientations(self):
+        """Test ellipsoid collision with rotated ellipsoids."""
+        # Two ellipsoids, one rotated 90 degrees around Z axis
+        angle = np.pi / 2.0
+        quat = [0.0, 0.0, np.sin(angle / 2.0), np.cos(angle / 2.0)]
+
+        pos_a = np.array([0.0, 0.0, 0.0])
+        pos_b = np.array([1.3, 0.0, 0.0])
+
+        geom_list = [
+            {
+                "type": GeoType.ELLIPSOID,
+                "transform": (pos_a.tolist(), [0.0, 0.0, 0.0, 1.0]),
+                "data": ([1.0, 0.3, 0.3], 0.0),  # elongated along X
+            },
+            {
+                "type": GeoType.ELLIPSOID,
+                "transform": (pos_b.tolist(), quat),  # rotated, now elongated along Y
+                "data": ([1.0, 0.3, 0.3], 0.0),
+            },
+        ]
+
+        count, _pairs, _positions, normals, _penetrations, _tangents = self._run_narrow_phase(geom_list, [(0, 1)])
+
+        # Ellipsoid A extends to x=1.0, ellipsoid B after rotation has semi-axis 0.3 along X
+        # Starting at x=1.3, B extends from x=1.0 to x=1.6, so they just touch
+        if count > 0:
+            # Normal should be unit length
+            normal_length = np.linalg.norm(normals[0])
+            self.assertAlmostEqual(normal_length, 1.0, places=5, msg="Normal should be unit length")
+
+    def test_ellipsoid_sphere_equivalent(self):
+        """Test that an ellipsoid with equal semi-axes behaves like a sphere."""
+        # Two ellipsoids with a=b=c should behave like spheres
+        # Sphere 1 at origin with radius 1.0, sphere 2 at x=1.8 with radius 1.0
+        # Expected: same behavior as sphere-sphere with penetration ~-0.2
+        pos_a = np.array([0.0, 0.0, 0.0])
+        pos_b = np.array([1.8, 0.0, 0.0])
+        radius = 1.0
+
+        geom_list = [
+            {
+                "type": GeoType.ELLIPSOID,
+                "transform": (pos_a.tolist(), [0.0, 0.0, 0.0, 1.0]),
+                "data": ([radius, radius, radius], 0.0),  # sphere-like ellipsoid
+            },
+            {
+                "type": GeoType.ELLIPSOID,
+                "transform": (pos_b.tolist(), [0.0, 0.0, 0.0, 1.0]),
+                "data": ([radius, radius, radius], 0.0),
+            },
+        ]
+
+        count, _pairs, _positions, normals, penetrations, _tangents = self._run_narrow_phase(geom_list, [(0, 1)])
+
+        self.assertGreater(count, 0, "Sphere-like ellipsoids should generate contact")
+        self.assertLess(penetrations[0], 0.0, "Should have negative penetration")
+
+        # Expected penetration for sphere-sphere: distance - 2*radius = 1.8 - 2.0 = -0.2
+        self.assertAlmostEqual(
+            penetrations[0], -0.2, places=1, msg=f"Expected penetration ~-0.2, got {penetrations[0]}"
+        )
+
+        # Normal should be unit length
+        normal_length = np.linalg.norm(normals[0])
+        self.assertAlmostEqual(normal_length, 1.0, places=5, msg="Normal should be unit length")
+
+        # Normal should point along +X
+        self.assertAlmostEqual(normals[0][0], 1.0, places=1, msg="Normal should point along +X")
+
 
 if __name__ == "__main__":
-    wp.clear_kernel_cache()
     unittest.main(verbosity=2, failfast=True)

@@ -76,7 +76,8 @@ def test_body_state(
     ):
         world_id = wp.tid()
         index = indices[world_id]
-        failures[world_id] = not warp_test_fn(body_q[index], body_qd[index])
+        result = warp_test_fn(body_q[index], body_qd[index])
+        failures[world_id] = not wp.bool(result)
 
     body_q = state.body_q
     body_qd = state.body_qd
@@ -147,7 +148,8 @@ def test_particle_state(
     ):
         world_id = wp.tid()
         index = indices[world_id]
-        failures[world_id] = not warp_test_fn(particle_q[index], particle_qd[index])
+        result = warp_test_fn(particle_q[index], particle_qd[index])
+        failures[world_id] = not wp.bool(result)
 
     particle_q = state.particle_q
     particle_qd = state.particle_qd
@@ -172,22 +174,29 @@ def run(example, args):
     if hasattr(example, "gui") and hasattr(example.viewer, "register_ui_callback"):
         example.viewer.register_ui_callback(lambda ui: example.gui(ui), position="side")
 
+    perform_test = args is not None and args.test
+    test_post_step = perform_test and hasattr(example, "test_post_step")
+    test_final = perform_test and hasattr(example, "test_final")
+
     while example.viewer.is_running():
         if not example.viewer.is_paused():
             with wp.ScopedTimer("step", active=False):
                 example.step()
+        if test_post_step:
+            example.test_post_step()
 
         with wp.ScopedTimer("render", active=False):
             example.render()
 
-    if args is not None and args.test:
-        if not hasattr(example, "test"):
-            raise NotImplementedError("Example does not have a test method")
-        example.test()
+    if perform_test:
+        if test_final:
+            example.test_final()
+        elif not (test_post_step or test_final):
+            raise NotImplementedError("Example does not have a test_final or test_post_step method")
 
     example.viewer.close()
 
-    if args is not None and args.test:
+    if perform_test:
         # generic tests for finiteness of Newton objects
         if hasattr(example, "state_0"):
             nan_members = find_nan_members(example.state_0)
@@ -287,6 +296,12 @@ def create_parser():
         help="Viewer to use (gl, usd, rerun, or null).",
     )
     parser.add_argument(
+        "--rerun-address",
+        type=str,
+        default=None,
+        help="Connect to an external Rerun server. (e.g., 'rerun+http://127.0.0.1:9876/proxy').",
+    )
+    parser.add_argument(
         "--output-path", type=str, default="output.usd", help="Path to the output USD file (required for usd viewer)."
     )
     parser.add_argument("--num-frames", type=int, default=100, help="Total number of frames.")
@@ -301,6 +316,26 @@ def create_parser():
         action=argparse.BooleanOptionalAction,
         default=False,
         help="Whether to run the example in test mode.",
+    )
+    parser.add_argument(
+        "--collision-pipeline",
+        type=str,
+        default="unified",
+        choices=["unified", "standard"],
+        help="Collision pipeline to use. 'unified' uses CollisionPipelineUnified (default), 'standard' uses CollisionPipeline.",
+    )
+    parser.add_argument(
+        "--broad-phase-mode",
+        type=str,
+        default="explicit",
+        choices=["nxn", "sap", "explicit"],
+        help="Broad phase mode for CollisionPipelineUnified. Only used when --collision-pipeline=unified.",
+    )
+    parser.add_argument(
+        "--use-mujoco-contacts",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Use MuJoCo's native contact solver instead of Newton contacts (default: use Newton contacts).",
     )
 
     return parser
@@ -343,13 +378,99 @@ def init(parser=None):
             raise ValueError("--output-path is required when using usd viewer")
         viewer = newton.viewer.ViewerUSD(output_path=args.output_path, num_frames=args.num_frames)
     elif args.viewer == "rerun":
-        viewer = newton.viewer.ViewerRerun()
+        viewer = newton.viewer.ViewerRerun(address=args.rerun_address)
     elif args.viewer == "null":
         viewer = newton.viewer.ViewerNull(num_frames=args.num_frames)
     else:
         raise ValueError(f"Invalid viewer: {args.viewer}")
 
     return viewer, args
+
+
+def create_collision_pipeline(
+    model,
+    args=None,
+    collision_pipeline_type=None,
+    broad_phase_mode=None,
+    rigid_contact_max_per_pair=None,
+):
+    """Create a collision pipeline based on command-line arguments or explicit parameters.
+
+    This helper function creates either a CollisionPipelineUnified or returns None for the
+    standard CollisionPipeline (which is created implicitly by model.collide()).
+
+    Args:
+        model: The Newton model to create the pipeline for
+        args: Parsed arguments from create_parser() (optional if explicit parameters provided)
+        collision_pipeline_type: Explicit pipeline type ("unified" or "standard"), overrides args
+        broad_phase_mode: Explicit broad phase mode ("nxn", "sap", "explicit"), overrides args
+        rigid_contact_max_per_pair: Maximum number of contact points per shape pair (default: 10)
+
+    Returns:
+        CollisionPipelineUnified instance if unified pipeline is selected, None for standard pipeline
+
+    Note:
+        Contact margins for rigid contacts are read from ``model.shape_contact_margin`` array.
+
+    Examples:
+        # Using command-line args
+        viewer, args = newton.examples.init()
+        model = builder.finalize()
+        pipeline = newton.examples.create_collision_pipeline(model, args)
+        contacts = model.collide(state, collision_pipeline=pipeline)
+
+        # Using explicit parameters
+        pipeline = newton.examples.create_collision_pipeline(
+            model,
+            collision_pipeline_type="unified",
+            broad_phase_mode="nxn"
+        )
+
+        # Override contact parameters for complex meshes
+        pipeline = newton.examples.create_collision_pipeline(
+            model,
+            args,
+            rigid_contact_max_per_pair=100
+        )
+    """
+    import newton  # noqa: PLC0415
+
+    # Determine collision pipeline type
+    if collision_pipeline_type is None:
+        if args is not None and hasattr(args, "collision_pipeline"):
+            collision_pipeline_type = args.collision_pipeline
+        else:
+            collision_pipeline_type = "unified"  # Default
+
+    # If standard pipeline requested, return None (model.collide will create it implicitly)
+    if collision_pipeline_type == "standard":
+        return None
+
+    # Determine broad phase mode for unified pipeline
+    if broad_phase_mode is None:
+        if args is not None and hasattr(args, "broad_phase_mode"):
+            broad_phase_mode = args.broad_phase_mode
+        else:
+            broad_phase_mode = "explicit"  # Default
+
+    # Map string to BroadPhaseMode enum
+    broad_phase_map = {
+        "nxn": newton.BroadPhaseMode.NXN,
+        "sap": newton.BroadPhaseMode.SAP,
+        "explicit": newton.BroadPhaseMode.EXPLICIT,
+    }
+    broad_phase_enum = broad_phase_map.get(broad_phase_mode.lower(), newton.BroadPhaseMode.NXN)
+
+    # Use provided values or defaults
+    if rigid_contact_max_per_pair is None:
+        rigid_contact_max_per_pair = 10
+
+    # Create and return CollisionPipelineUnified
+    return newton.CollisionPipelineUnified.from_model(
+        model,
+        rigid_contact_max_per_pair=rigid_contact_max_per_pair,
+        broad_phase_mode=broad_phase_enum,
+    )
 
 
 def main():
@@ -395,4 +516,4 @@ if __name__ == "__main__":
     main()
 
 
-__all__ = ["create_parser", "init", "run", "test_body_state", "test_particle_state"]
+__all__ = ["create_collision_pipeline", "create_parser", "init", "run", "test_body_state", "test_particle_state"]

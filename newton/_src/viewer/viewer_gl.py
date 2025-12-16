@@ -46,7 +46,7 @@ class ViewerGL(ViewerBase):
 
     Key Features:
         - Real-time 3D rendering of Newton models and simulation states.
-        - Camera navigation with WASD and mouse controls.
+        - Camera navigation with WASD/QE and mouse controls.
         - Object picking and manipulation via mouse.
         - Visualization toggles for joints, contacts, particles, springs, etc.
         - Wind force controls and visualization.
@@ -116,6 +116,7 @@ class ViewerGL(ViewerBase):
             self.ui = UI(self.renderer.window)
         else:
             self.ui = None
+        self._gizmo_log = None
 
         # Performance tracking
         self._fps_history = []
@@ -170,7 +171,7 @@ class ViewerGL(ViewerBase):
         points = wp.array(vertices[:, 0:3], dtype=wp.vec3, device=self.device)
         normals = wp.array(vertices[:, 3:6], dtype=wp.vec3, device=self.device)
         uvs = wp.array(vertices[:, 6:8], dtype=wp.vec2, device=self.device)
-        indices = wp.array(indices, dtype=wp.uint32, device=self.device)
+        indices = wp.array(indices, dtype=wp.int32, device=self.device)
 
         self._point_mesh.update(points, indices, normals, uvs)
 
@@ -213,6 +214,14 @@ class ViewerGL(ViewerBase):
 
     @override
     def set_camera(self, pos: wp.vec3, pitch: float, yaw: float):
+        """
+        Set the camera position, pitch, and yaw.
+
+        Args:
+            pos: The camera position.
+            pitch: The camera pitch.
+            yaw: The camera yaw.
+        """
         self.camera.pos = pos
         self.camera.pitch = pitch
         self.camera.yaw = yaw
@@ -275,11 +284,22 @@ class ViewerGL(ViewerBase):
         if not isinstance(self.objects[mesh], MeshGL):
             raise RuntimeError(f"Path {mesh} is not a Mesh object")
 
-        needs_update = not hidden
-        if name not in self.objects:
-            self.objects[name] = MeshInstancerGL(len(xforms), self.objects[mesh])
-            needs_update = True
+        instancer = self.objects.get(name, None)
+        transform_count = len(xforms) if xforms is not None else 0
+        resized = False
 
+        if instancer is None:
+            capacity = max(transform_count, 1)
+            instancer = MeshInstancerGL(capacity, self.objects[mesh])
+            self.objects[name] = instancer
+            resized = True
+        elif transform_count > instancer.num_instances:
+            new_capacity = max(transform_count, instancer.num_instances * 2)
+            instancer = MeshInstancerGL(new_capacity, self.objects[mesh])
+            self.objects[name] = instancer
+            resized = True
+
+        needs_update = resized or not hidden
         if needs_update:
             self.objects[name].update_from_transforms(xforms, scales, colors, materials)
 
@@ -358,8 +378,15 @@ class ViewerGL(ViewerBase):
         if self._point_mesh is None:
             self._create_point_mesh()
 
+        num_points = len(points)
         if name not in self.objects:
-            self.objects[name] = MeshInstancerGL(len(points), self._point_mesh)
+            # Start with a reasonable default.
+            initial_capacity = max(num_points, 256)
+            self.objects[name] = MeshInstancerGL(initial_capacity, self._point_mesh)
+        elif num_points > self.objects[name].num_instances:
+            old = self.objects[name]
+            new_capacity = max(num_points, old.num_instances * 2)
+            self.objects[name] = MeshInstancerGL(new_capacity, self._point_mesh)
 
         self.objects[name].update_from_points(points, radii, colors)
         self.objects[name].hidden = hidden
@@ -508,7 +535,7 @@ class ViewerGL(ViewerBase):
 
         self.renderer.present()
 
-    def get_frame(self, target_image: wp.array | None = None) -> wp.array:
+    def get_frame(self, target_image: wp.array | None = None, render_ui: bool = False) -> wp.array:
         """
         Retrieve the last rendered frame.
 
@@ -519,6 +546,7 @@ class ViewerGL(ViewerBase):
             target_image (wp.array, optional):
                 Optional pre-allocated Warp array with shape `(height, width, 3)`
                 and dtype `wp.uint8`. If `None`, a new array will be created.
+            render_ui (bool): Whether to render the UI.
 
         Returns:
             wp.array: GPU array containing RGB image data with shape `(height, width, 3)`
@@ -553,6 +581,13 @@ class ViewerGL(ViewerBase):
         assert self.renderer._frame_fbo is not None
         gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, self.renderer._frame_fbo)
         gl.glBindBuffer(gl.GL_PIXEL_PACK_BUFFER, self._pbo)
+
+        if render_ui and self.ui:
+            self.ui.begin_frame()
+            self._render_ui()
+            self.ui.end_frame()
+            self.ui.render()
+
         gl.glReadPixels(0, 0, w, h, gl.GL_RGB, gl.GL_UNSIGNED_BYTE, ctypes.c_void_p(0))
         gl.glBindBuffer(gl.GL_PIXEL_PACK_BUFFER, 0)
         gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, 0)
@@ -799,8 +834,8 @@ class ViewerGL(ViewerBase):
         elif symbol == pyglet.window.key.F:
             # Frame camera around model bounds
             self._frame_camera_on_model()
-        elif symbol == pyglet.window.key.ESCAPE or symbol == pyglet.window.key.Q:
-            # Exit with Escape or Q key
+        elif symbol == pyglet.window.key.ESCAPE:
+            # Exit with Escape key
             self.renderer.close()
 
     def on_key_release(self, symbol, modifiers):
@@ -901,6 +936,10 @@ class ViewerGL(ViewerBase):
             desired -= right  # strafe left
         if self.renderer.is_key_down(pyglet.window.key.D) or self.renderer.is_key_down(pyglet.window.key.RIGHT):
             desired += right  # strafe right
+        if self.renderer.is_key_down(pyglet.window.key.Q):
+            desired -= up  # pan down
+        if self.renderer.is_key_down(pyglet.window.key.E):
+            desired += up  # pan up
 
         dn = float(np.linalg.norm(desired))
         if dn > 1.0e-6:
@@ -1085,6 +1124,10 @@ class ViewerGL(ViewerBase):
                     show_visual = self.show_visual
                     changed, self.show_visual = imgui.checkbox("Show Visual", show_visual)
 
+                    # Inertia boxes toggle
+                    show_inertia_boxes = self.show_inertia_boxes
+                    changed, self.show_inertia_boxes = imgui.checkbox("Show Inertia Boxes", show_inertia_boxes)
+
             imgui.set_next_item_open(True, imgui.Cond_.appearing)
             if imgui.collapsing_header("Example Options"):
                 # Render UI callbacks for side panel
@@ -1161,6 +1204,7 @@ class ViewerGL(ViewerBase):
                 imgui.text("Controls:")
                 imgui.pop_style_color()
                 imgui.text("WASD - Move camera")
+                imgui.text("QE - Pan up/down")
                 imgui.text("Left Click - Look around")
                 imgui.text("Right Click - Pick objects")
                 imgui.text("Scroll - Zoom")

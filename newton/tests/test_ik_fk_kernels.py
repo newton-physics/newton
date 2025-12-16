@@ -46,20 +46,18 @@ class _NoopObjective(ik.IKObjective):
     def residual_dim(self):
         return 1
 
-    def compute_residuals(self, state, model, residuals, start_idx):
-        # write a single zero residual per world so nothing influences FK
-        world = 0  # only 1 world used here
-        residuals[world, start_idx] = 0.0
+    def compute_residuals(self, body_q, joint_q, model, residuals, start_idx, problem_idx):
+        return
 
-    def compute_jacobian_autodiff(self, tape, model, jacobian, start_idx):
-        pass
+    def compute_jacobian_autodiff(self, tape, model, jacobian, start_idx, dq_dof):
+        return
 
     # keep analytic path trivial too
     def supports_analytic(self):
         return True
 
-    def compute_jacobian_analytic(self, state, model, jacobian, joint_S_s, start_idx):
-        pass
+    def compute_jacobian_analytic(self, body_q, joint_q, model, jacobian, joint_S_s, start_idx):
+        return
 
 
 # -----------------------------------------------------------------------------
@@ -78,7 +76,7 @@ def _add_single_joint(builder: newton.ModelBuilder, jt: int) -> None:
     child_xf = wp.transform((-0.05, 0.0, 0.0), wp.quat_from_axis_angle(wp.vec3(1, 0, 0), 0.5))
 
     # a 0.1-kg cube just so the body exists
-    child = builder.add_body(
+    child = builder.add_link(
         xform=wp.transform_identity(),
         mass=0.1,
         key=f"body_{jt}",
@@ -90,6 +88,8 @@ def _add_single_joint(builder: newton.ModelBuilder, jt: int) -> None:
         hy=0.05,
         hz=0.05,
     )
+
+    ji = builder.joint_count
 
     if jt == JointType.REVOLUTE:
         builder.add_joint_revolute(
@@ -145,6 +145,9 @@ def _add_single_joint(builder: newton.ModelBuilder, jt: int) -> None:
 
     else:
         raise ValueError(f"Unhandled joint type {jt}")
+
+    if ji == builder.joint_count - 1:
+        builder.add_articulation([ji])
 
 
 def _build_model_for_joint(jt: int, device):
@@ -218,8 +221,13 @@ def _fk_parity_for_joint(test, device, jt):
 
         # two-pass FK (via IKSolver helper)
         joint_q = model.joint_q.reshape((1, model.joint_coord_count))
-        ik_solver = ik.IKSolver(model, joint_q, objectives=[_NoopObjective()], jacobian_mode=ik.IKJacobianMode.AUTODIFF)
-        ik_solver._fk_two_pass(model, ik_solver.joint_q, ik_solver.body_q, ik_solver.X_local, ik_solver.n_problems)
+        ik_solver = ik.IKSolver(
+            model,
+            1,
+            objectives=[_NoopObjective()],
+            jacobian_mode=ik.IKJacobianMode.AUTODIFF,
+        )
+        ik_solver._fk_two_pass(model, joint_q, ik_solver.body_q, ik_solver.X_local, ik_solver.n_problems)
 
         assert_np_equal(state_ref.body_q.numpy(), ik_solver.body_q.numpy(), tol=1e-6)
 
@@ -243,5 +251,4 @@ class TestIKFKKernels(unittest.TestCase):
 add_function_test(TestIKFKKernels, "test_fk_two_pass_parity", test_fk_two_pass_parity, devices)
 
 if __name__ == "__main__":
-    wp.clear_kernel_cache()
     unittest.main(verbosity=2, failfast=True)

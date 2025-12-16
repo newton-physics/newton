@@ -21,18 +21,17 @@ import warp as wp
 import newton
 from newton._src.core import quat_between_axes
 from newton._src.geometry.utils import create_box_mesh
-from newton.tests.unittest_utils import add_function_test, assert_np_equal, get_test_devices
-
-wp.config.quiet = True
-
-
-class TestRigidContact(unittest.TestCase):
-    pass
+from newton.tests.unittest_utils import (
+    add_function_test,
+    assert_np_equal,
+    get_selected_cuda_test_devices,
+    get_test_devices,
+)
 
 
 def simulate(solver, model, state_0, state_1, control, sim_dt, substeps):
     if not isinstance(solver, newton.solvers.SolverMuJoCo):
-        contacts = model.collide(state_0, rigid_contact_margin=100.0)
+        contacts = model.collide(state_0)
     else:
         contacts = None
     for _ in range(substeps):
@@ -41,7 +40,7 @@ def simulate(solver, model, state_0, state_1, control, sim_dt, substeps):
         state_0, state_1 = state_1, state_0
 
 
-def test_shapes_on_plane(test: TestRigidContact, device, solver_fn):
+def test_shapes_on_plane(test, device, solver_fn):
     builder = newton.ModelBuilder()
     builder.default_shape_cfg.ke = 1e4
     builder.default_shape_cfg.kd = 500.0
@@ -102,24 +101,23 @@ def test_shapes_on_plane(test: TestRigidContact, device, solver_fn):
     builder.default_shape_cfg.kd = 500.0
     # !!! disable friction for SemiImplicit integrators
     builder.default_shape_cfg.kf = 0.0
+    # Set large contact margin to ensure all contacts are detected
+    # Must be set BEFORE adding shapes
+    builder.rigid_contact_margin = 100.0
 
     expected_end_positions = []
 
     for i, scale in enumerate([0.5, 1.0]):
         y_pos = i * 1.5
 
-        builder.add_articulation()
         b = builder.add_body(xform=wp.transform(wp.vec3(0.0, y_pos, 1.0), wp.quat_identity()))
-        builder.add_joint_free(b)
         builder.add_shape_sphere(
             body=b,
             radius=0.1 * scale,
         )
         expected_end_positions.append(wp.vec3(0.0, y_pos, 0.1 * scale))
 
-        builder.add_articulation()
         b = builder.add_body(xform=wp.transform(wp.vec3(2.0, y_pos, 1.0), wp.quat_identity()))
-        builder.add_joint_free(b)
         # Apply Y-axis rotation to capsule
         xform = wp.transform(wp.vec3(), quat_between_axes(newton.Axis.Z, newton.Axis.Y))
         builder.add_shape_capsule(
@@ -130,9 +128,7 @@ def test_shapes_on_plane(test: TestRigidContact, device, solver_fn):
         )
         expected_end_positions.append(wp.vec3(2.0, y_pos, 0.1 * scale))
 
-        builder.add_articulation()
         b = builder.add_body(xform=wp.transform(wp.vec3(4.0, y_pos, 1.0), wp.quat_identity()))
-        builder.add_joint_free(b)
         builder.add_shape_box(
             body=b,
             hx=0.2 * scale,
@@ -141,9 +137,7 @@ def test_shapes_on_plane(test: TestRigidContact, device, solver_fn):
         )
         expected_end_positions.append(wp.vec3(4.0, y_pos, 0.3 * scale))
 
-        builder.add_articulation()
         b = builder.add_body(xform=wp.transform(wp.vec3(5.0, y_pos, 1.0), wp.quat_identity()))
-        builder.add_joint_free(b)
         builder.add_shape_cylinder(
             body=b,
             radius=0.1 * scale,
@@ -151,9 +145,7 @@ def test_shapes_on_plane(test: TestRigidContact, device, solver_fn):
         )
         expected_end_positions.append(wp.vec3(5.0, y_pos, 0.3 * scale))
 
-        builder.add_articulation()
         b = builder.add_body(xform=wp.transform(wp.vec3(7.0, y_pos, 1.0), wp.quat_identity()))
-        builder.add_joint_free(b)
         builder.add_shape_mesh(
             body=b,
             mesh=cube_mesh,
@@ -193,7 +185,7 @@ def test_shapes_on_plane(test: TestRigidContact, device, solver_fn):
     assert_np_equal(body_q[:, 3:], expected_quats, tol=1e-1)
 
 
-def test_shape_collisions_gjk_mpr_multicontact(test: TestRigidContact, device, verbose=False):
+def test_shape_collisions_gjk_mpr_multicontact(test, device, verbose=False):
     """Test that objects on a ramp with end wall remain stable (don't move or rotate significantly)"""
 
     # Scene Configuration (from example_basic_shapes2.py)
@@ -280,12 +272,10 @@ def test_shape_collisions_gjk_mpr_multicontact(test: TestRigidContact, device, v
 
     # Cube 1 (left side)
     body_cube1 = builder.add_body(xform=wp.transform(p=ramp_center_surface + offset_a, q=cube_quat))
-    builder.add_joint_free(body_cube1)
     builder.add_shape_box(body=body_cube1, hx=CUBE_SIZE / 2, hy=CUBE_SIZE / 2, hz=CUBE_SIZE / 2)
 
     # Cube 2 (right side)
     body_cube2 = builder.add_body(xform=wp.transform(p=ramp_center_surface + offset_b, q=cube_quat))
-    builder.add_joint_free(body_cube2)
     builder.add_shape_box(body=body_cube2, hx=CUBE_SIZE / 2, hy=CUBE_SIZE / 2, hz=CUBE_SIZE / 2)
 
     # Spheres
@@ -294,11 +284,9 @@ def test_shape_collisions_gjk_mpr_multicontact(test: TestRigidContact, device, v
 
     sphere_radius = CUBE_SIZE / 2
     body_sphere1 = builder.add_body(xform=wp.transform(p=ramp_center_surface + offset_a, q=cube_quat))
-    builder.add_joint_free(body_sphere1)
     builder.add_shape_sphere(body=body_sphere1, radius=sphere_radius)
 
     body_sphere2 = builder.add_body(xform=wp.transform(p=ramp_center_surface + offset_b, q=cube_quat))
-    builder.add_joint_free(body_sphere2)
     builder.add_shape_sphere(body=body_sphere2, radius=sphere_radius)
 
     # Capsule
@@ -310,7 +298,6 @@ def test_shape_collisions_gjk_mpr_multicontact(test: TestRigidContact, device, v
     capsule_quat = cube_quat * capsule_local_quat
 
     body_capsule = builder.add_body(xform=wp.transform(p=ramp_center_surface + offset_capsule, q=capsule_quat))
-    builder.add_joint_free(body_capsule)
     builder.add_shape_capsule(body=body_capsule, radius=capsule_radius, half_height=capsule_height / 2)
 
     # Cylinder
@@ -322,7 +309,6 @@ def test_shape_collisions_gjk_mpr_multicontact(test: TestRigidContact, device, v
     cylinder_quat = cube_quat * cylinder_local_quat
 
     body_cylinder = builder.add_body(xform=wp.transform(p=ramp_center_surface + offset_cylinder, q=cylinder_quat))
-    builder.add_joint_free(body_cylinder)
     builder.add_shape_cylinder(body=body_cylinder, radius=cylinder_radius, half_height=cylinder_height / 2)
 
     # Two more cubes after the cylinder
@@ -331,12 +317,10 @@ def test_shape_collisions_gjk_mpr_multicontact(test: TestRigidContact, device, v
 
     # Cube 3 (left side)
     body_cube3 = builder.add_body(xform=wp.transform(p=ramp_center_surface + offset_a, q=cube_quat))
-    builder.add_joint_free(body_cube3)
     builder.add_shape_box(body=body_cube3, hx=CUBE_SIZE / 2, hy=CUBE_SIZE / 2, hz=CUBE_SIZE / 2)
 
     # Cube 4 (right side)
     body_cube4 = builder.add_body(xform=wp.transform(p=ramp_center_surface + offset_b, q=cube_quat))
-    builder.add_joint_free(body_cube4)
     builder.add_shape_box(body=body_cube4, hx=CUBE_SIZE / 2, hy=CUBE_SIZE / 2, hz=CUBE_SIZE / 2)
 
     # Two cones after the cubes (z-axis aligned with ramp_up)
@@ -349,12 +333,10 @@ def test_shape_collisions_gjk_mpr_multicontact(test: TestRigidContact, device, v
 
     # Cone 1 (left side)
     body_cone1 = builder.add_body(xform=wp.transform(p=ramp_center_surface + offset_a, q=cone_quat))
-    builder.add_joint_free(body_cone1)
     builder.add_shape_cone(body=body_cone1, radius=cone_radius, half_height=cone_height / 2)
 
     # Cone 2 (right side)
     body_cone2 = builder.add_body(xform=wp.transform(p=ramp_center_surface + offset_b, q=cone_quat))
-    builder.add_joint_free(body_cone2)
     builder.add_shape_cone(body=body_cone2, radius=cone_radius, half_height=cone_height / 2)
 
     # Two more cubes after the cones
@@ -363,12 +345,10 @@ def test_shape_collisions_gjk_mpr_multicontact(test: TestRigidContact, device, v
 
     # Cube 5 (left side)
     body_cube5 = builder.add_body(xform=wp.transform(p=ramp_center_surface + offset_a, q=cube_quat))
-    builder.add_joint_free(body_cube5)
     builder.add_shape_box(body=body_cube5, hx=CUBE_SIZE / 2, hy=CUBE_SIZE / 2, hz=CUBE_SIZE / 2)
 
     # Cube 6 (right side)
     body_cube6 = builder.add_body(xform=wp.transform(p=ramp_center_surface + offset_b, q=cube_quat))
-    builder.add_joint_free(body_cube6)
     builder.add_shape_box(body=body_cube6, hx=CUBE_SIZE / 2, hy=CUBE_SIZE / 2, hz=CUBE_SIZE / 2)
 
     # Two cubes using convex hull representation (8 corner points)
@@ -384,12 +364,10 @@ def test_shape_collisions_gjk_mpr_multicontact(test: TestRigidContact, device, v
 
     # Convex Hull Cube 1 (left side)
     body_convex_cube1 = builder.add_body(xform=wp.transform(p=ramp_center_surface + offset_a, q=convex_cube_quat))
-    builder.add_joint_free(body_convex_cube1)
     builder.add_shape_convex_hull(body=body_convex_cube1, mesh=cube_mesh, scale=(1.0, 1.0, 1.0))
 
     # Convex Hull Cube 2 (right side)
     body_convex_cube2 = builder.add_body(xform=wp.transform(p=ramp_center_surface + offset_b, q=convex_cube_quat))
-    builder.add_joint_free(body_convex_cube2)
     builder.add_shape_convex_hull(body=body_convex_cube2, mesh=cube_mesh, scale=(1.0, 1.0, 1.0))
 
     # Add ground plane
@@ -402,7 +380,6 @@ def test_shape_collisions_gjk_mpr_multicontact(test: TestRigidContact, device, v
     collision_pipeline = newton.CollisionPipelineUnified.from_model(
         model,
         rigid_contact_max_per_pair=10,
-        rigid_contact_margin=0.01,
         broad_phase_mode=newton.BroadPhaseMode.EXPLICIT,
     )
 
@@ -485,39 +462,7 @@ def test_shape_collisions_gjk_mpr_multicontact(test: TestRigidContact, device, v
         )
 
 
-devices = get_test_devices()
-solvers = {
-    "featherstone": lambda model: newton.solvers.SolverFeatherstone(model),
-    "mujoco_cpu": lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=True),
-    "mujoco_warp": lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=False, njmax=150),
-    "xpbd": lambda model: newton.solvers.SolverXPBD(model, iterations=2),
-    "semi_implicit": lambda model: newton.solvers.SolverSemiImplicit(model),
-}
-for device in devices:
-    for solver_name, solver_fn in solvers.items():
-        if device.is_cpu and solver_name == "mujoco_warp":
-            continue
-        if device.is_cuda and solver_name == "mujoco_cpu":
-            continue
-        add_function_test(
-            TestRigidContact,
-            f"test_shapes_on_plane_{solver_name}",
-            test_shapes_on_plane,
-            devices=[device],
-            solver_fn=solver_fn,
-        )
-
-# Add test for ramp scene stability with XPBD solver
-for device in devices:
-    add_function_test(
-        TestRigidContact,
-        "test_shape_collisions_gjk_mpr_multicontact",
-        test_shape_collisions_gjk_mpr_multicontact,
-        devices=[device],
-    )
-
-
-def test_mesh_box_on_ground(test: TestRigidContact, device):
+def test_mesh_box_on_ground(test, device):
     """Test that a mesh box (created with create_box_mesh) rests stably on a ground plane.
 
     This test verifies that mesh collision works correctly by ensuring a box mesh
@@ -538,7 +483,6 @@ def test_mesh_box_on_ground(test: TestRigidContact, device):
 
     # Add mesh box body, positioned so bottom face is at z=0 (center at z=box_half)
     body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, box_half), wp.quat_identity()))
-    builder.add_joint_free(body)
     builder.add_shape_mesh(body=body, mesh=box_mesh)
 
     # Finalize model
@@ -548,7 +492,6 @@ def test_mesh_box_on_ground(test: TestRigidContact, device):
     collision_pipeline = newton.CollisionPipelineUnified.from_model(
         model,
         rigid_contact_max_per_pair=20,
-        rigid_contact_margin=0.01,
         broad_phase_mode=newton.BroadPhaseMode.EXPLICIT,
     )
 
@@ -609,17 +552,7 @@ def test_mesh_box_on_ground(test: TestRigidContact, device):
         )
 
 
-# Add test for mesh box on ground with unified pipeline
-for device in devices:
-    add_function_test(
-        TestRigidContact,
-        "test_mesh_box_on_ground",
-        test_mesh_box_on_ground,
-        devices=[device],
-    )
-
-
-def test_mujoco_warp_newton_contacts(test: TestRigidContact, device):
+def test_mujoco_warp_newton_contacts(test, device):
     """Test that MuJoCo Warp solver correctly handles contact transfer from Newton's unified collision pipeline.
 
     This test creates 4 environments, each with a single cube on the ground, and verifies that the cubes
@@ -635,7 +568,6 @@ def test_mujoco_warp_newton_contacts(test: TestRigidContact, device):
     # Add a single cube body
     cube_size = 0.5
     body = cube_builder.add_body(xform=wp.transform(wp.vec3(0, 0, cube_size), wp.quat_identity()))
-    cube_builder.add_joint_free(body)
     cube_builder.add_shape_box(body=body, hx=cube_size / 2, hy=cube_size / 2, hz=cube_size / 2)
 
     # Replicate the cube across 4 environments
@@ -653,7 +585,6 @@ def test_mujoco_warp_newton_contacts(test: TestRigidContact, device):
     collision_pipeline = newton.CollisionPipelineUnified.from_model(
         model,
         rigid_contact_max_per_pair=10,
-        rigid_contact_margin=0.01,
         broad_phase_mode=newton.BroadPhaseMode.EXPLICIT,
     )
 
@@ -725,18 +656,7 @@ def test_mujoco_warp_newton_contacts(test: TestRigidContact, device):
         )
 
 
-# Add test for MuJoCo Warp with Newton contacts (only for CUDA devices)
-for device in devices:
-    if device.is_cuda:
-        add_function_test(
-            TestRigidContact,
-            "test_mujoco_warp_newton_contacts",
-            test_mujoco_warp_newton_contacts,
-            devices=[device],
-        )
-
-
-def test_mujoco_convex_on_convex(test: TestRigidContact, device, solver_fn):
+def test_mujoco_convex_on_convex(test, device, solver_fn):
     """Test that MuJoCo can handle CONVEX_MESH geometry type by simulating a simple drop."""
     builder = newton.ModelBuilder()
     builder.default_shape_cfg.ke = 1.0e5
@@ -759,7 +679,6 @@ def test_mujoco_convex_on_convex(test: TestRigidContact, device, solver_fn):
 
     # Dynamic convex cube, start slightly above ground
     top_body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.5), wp.quat_identity()))
-    builder.add_joint_free(top_body)
     builder.add_shape_convex_hull(
         body=top_body,
         xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
@@ -802,6 +721,62 @@ def test_mujoco_convex_on_convex(test: TestRigidContact, device, solver_fn):
     test.assertLess(abs(final_vel_z), 0.5)
 
 
+devices = get_test_devices()
+cuda_devices = get_selected_cuda_test_devices()
+
+solvers = {
+    "featherstone": lambda model: newton.solvers.SolverFeatherstone(model),
+    "mujoco_cpu": lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=True),
+    "mujoco_warp": lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=False, njmax=150),
+    "xpbd": lambda model: newton.solvers.SolverXPBD(model, iterations=2),
+    "semi_implicit": lambda model: newton.solvers.SolverSemiImplicit(model),
+}
+
+
+class TestRigidContact(unittest.TestCase):
+    pass
+
+
+for device in devices:
+    for solver_name, solver_fn in solvers.items():
+        if device.is_cpu and solver_name == "mujoco_warp":
+            continue
+        if device.is_cuda and solver_name == "mujoco_cpu":
+            continue
+        add_function_test(
+            TestRigidContact,
+            f"test_shapes_on_plane_{solver_name}",
+            test_shapes_on_plane,
+            devices=[device],
+            solver_fn=solver_fn,
+        )
+
+# Add test for ramp scene stability with XPBD solver
+add_function_test(
+    TestRigidContact,
+    "test_shape_collisions_gjk_mpr_multicontact",
+    test_shape_collisions_gjk_mpr_multicontact,
+    devices=devices,
+)
+
+# Add test for mesh box on ground with unified pipeline
+add_function_test(
+    TestRigidContact,
+    "test_mesh_box_on_ground",
+    test_mesh_box_on_ground,
+    devices=devices,
+)
+
+
+# Add test for MuJoCo Warp with Newton contacts (only for CUDA devices)
+add_function_test(
+    TestRigidContact,
+    "test_mujoco_warp_newton_contacts",
+    test_mujoco_warp_newton_contacts,
+    devices=cuda_devices,
+)
+
+
 # Register MuJoCo convex<>convex tests for appropriate backends
 for device in devices:
     for solver_name, solver_fn in solvers.items():
@@ -820,5 +795,4 @@ for device in devices:
         )
 
 if __name__ == "__main__":
-    # wp.clear_kernel_cache()
     unittest.main(verbosity=2, failfast=True)

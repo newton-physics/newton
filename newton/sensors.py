@@ -20,14 +20,24 @@ from ._src.sensors.contact_sensor import (
     populate_contacts,
 )
 
+# Frame transform sensors
+from ._src.sensors.frame_transform_sensor import (
+    FrameTransformSensor,
+)
+
 # Raycast sensors
 from ._src.sensors.raycast_sensor import (
     RaycastSensor,
 )
+from ._src.sensors.tiled_camera_sensor import (
+    TiledCameraSensor,
+)
 
 __all__ = [
     "ContactSensor",
+    "FrameTransformSensor",
     "MatchKind",
     "RaycastSensor",
+    "TiledCameraSensor",
     "populate_contacts",
 ]

@@ -27,8 +27,6 @@ import newton.utils
 from newton._src.utils.recorder import RingBuffer
 from newton.tests.unittest_utils import add_function_test, get_test_devices
 
-wp.config.quiet = True
-
 
 class TestRecorder(unittest.TestCase):
     pass
@@ -162,7 +160,6 @@ def test_recorder_ringbuffer_save_load(test: TestRecorder, device):
     builder = newton.ModelBuilder()
     body = builder.add_body()
     builder.add_shape_capsule(body)
-    builder.add_joint_free(body)
     model = builder.finalize(device=device)
 
     # Create recorder with ring buffer (capacity 3)
@@ -276,7 +273,6 @@ def _test_model_and_state_recorder_with_format(test: TestRecorder, device, file_
     builder = newton.ModelBuilder()
     body = builder.add_body()
     builder.add_shape_capsule(body)
-    builder.add_joint_free(body)
     model = builder.finalize(device=device)
 
     states = []
@@ -408,5 +404,4 @@ add_function_test(
 )
 
 if __name__ == "__main__":
-    wp.clear_kernel_cache()
     unittest.main(verbosity=2)

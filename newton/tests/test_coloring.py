@@ -297,8 +297,8 @@ def test_combine_coloring(test, device):
             color_lattice_grid(50, 100),
         )
 
-        builder1.add_builder(builder2)
-        builder1.add_builder(builder3)
+        builder1.add_world(builder2)
+        builder1.add_world(builder3)
 
         model = builder2.finalize()
 
@@ -331,5 +331,4 @@ add_function_test(TestColoring, "test_coloring_trimesh", test_coloring_trimesh, 
 add_function_test(TestColoring, "test_combine_coloring", test_combine_coloring, devices=devices)
 
 if __name__ == "__main__":
-    wp.clear_kernel_cache()
     unittest.main(verbosity=2, failfast=True)

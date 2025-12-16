@@ -29,6 +29,8 @@ from ..core import Axis, AxisType, quat_between_axes
 from ..core.types import Transform
 from ..geometry import MESH_MAXHULLVERT, Mesh
 from ..sim import ModelBuilder
+from ..sim.model import ModelAttributeFrequency
+from .import_utils import parse_custom_attributes, sanitize_xml_content
 from .topology import topological_sort
 
 
@@ -77,7 +79,7 @@ def parse_urdf(
 
     Args:
         builder (ModelBuilder): The :class:`ModelBuilder` to add the bodies and joints to.
-        source (str): The filename of the URDF file to parse.
+        source (str): The filename of the URDF file to parse, or the URDF XML string content.
         xform (Transform): The transform to apply to the root body. If None, the transform is set to identity.
         floating (bool): If True, the root body is a free joint. If False, the root body is connected via a fixed joint to the world, unless a `base_joint` is defined.
         base_joint (Union[str, dict]): The joint by which the root body is connected to the world. This can be either a string defining the joint axes of a D6 joint with comma-separated positional and angular axis names (e.g. "px,py,rz" for a D6 joint with linear axes in x, y and an angular axis in z) or a dict with joint parameters (see :meth:`ModelBuilder.add_joint`).
@@ -101,8 +103,12 @@ def parse_urdf(
     else:
         xform = wp.transform(*xform) * axis_xform
 
-    file = ET.parse(source)
-    root = file.getroot()
+    if os.path.isfile(source):
+        file = ET.parse(source)
+        urdf_root = file.getroot()
+    else:
+        xml_content = sanitize_xml_content(source)
+        urdf_root = ET.fromstring(xml_content)
 
     # load joint defaults
     default_joint_limit_lower = builder.default_joint_cfg.limit_lower
@@ -111,6 +117,20 @@ def parse_urdf(
 
     # load shape defaults
     default_shape_density = builder.default_shape_cfg.density
+
+    # Process custom attributes defined for different kinds of shapes, bodies, joints, etc.
+    builder_custom_attr_shape: list[ModelBuilder.CustomAttribute] = builder.get_custom_attributes_by_frequency(
+        [ModelAttributeFrequency.SHAPE]
+    )
+    builder_custom_attr_body: list[ModelBuilder.CustomAttribute] = builder.get_custom_attributes_by_frequency(
+        [ModelAttributeFrequency.BODY]
+    )
+    builder_custom_attr_joint: list[ModelBuilder.CustomAttribute] = builder.get_custom_attributes_by_frequency(
+        [ModelAttributeFrequency.JOINT]
+    )
+    builder_custom_attr_articulation: list[ModelBuilder.CustomAttribute] = builder.get_custom_attributes_by_frequency(
+        [ModelAttributeFrequency.ARTICULATION]
+    )
 
     def parse_transform(element):
         if element is None or element.find("origin") is None:
@@ -122,18 +142,25 @@ def parse_urdf(
         rpy = [float(x) for x in rpy.split()]
         return wp.transform(xyz, wp.quat_rpy(*rpy))
 
-    def parse_shapes(link, geoms, density, incoming_xform=None, visible=True, just_visual=False):
+    def parse_shapes(link: int, geoms, density, incoming_xform=None, visible=True, just_visual=False):
         shape_cfg = builder.default_shape_cfg.copy()
         shape_cfg.density = density
         shape_cfg.is_visible = visible
         shape_cfg.has_shape_collision = not just_visual
         shape_cfg.has_particle_collision = not just_visual
+        shape_kwargs = {
+            "body": link,
+            "cfg": shape_cfg,
+            "custom_attributes": {},
+        }
         shapes = []
         # add geometry
         for geom_group in geoms:
             geo = geom_group.find("geometry")
             if geo is None:
                 continue
+            custom_attributes = parse_custom_attributes(geo.attrib, builder_custom_attr_shape, parsing_mode="urdf")
+            shape_kwargs["custom_attributes"] = custom_attributes
 
             tf = parse_transform(geom_group)
             if incoming_xform is not None:
@@ -143,21 +170,19 @@ def parse_urdf(
                 size = box.get("size") or "1 1 1"
                 size = [float(x) for x in size.split()]
                 s = builder.add_shape_box(
-                    body=link,
                     xform=tf,
                     hx=size[0] * 0.5 * scale,
                     hy=size[1] * 0.5 * scale,
                     hz=size[2] * 0.5 * scale,
-                    cfg=shape_cfg,
+                    **shape_kwargs,
                 )
                 shapes.append(s)
 
             for sphere in geo.findall("sphere"):
                 s = builder.add_shape_sphere(
-                    body=link,
                     xform=tf,
                     radius=float(sphere.get("radius") or "1") * scale,
-                    cfg=shape_cfg,
+                    **shape_kwargs,
                 )
                 shapes.append(s)
 
@@ -165,11 +190,10 @@ def parse_urdf(
                 # Apply axis rotation to transform
                 xform = wp.transform(tf.p, tf.q * quat_between_axes(Axis.Z, up_axis))
                 s = builder.add_shape_cylinder(
-                    body=link,
                     xform=xform,
                     radius=float(cylinder.get("radius") or "1") * scale,
                     half_height=float(cylinder.get("length") or "1") * 0.5 * scale,
-                    cfg=shape_cfg,
+                    **shape_kwargs,
                 )
                 shapes.append(s)
 
@@ -177,11 +201,10 @@ def parse_urdf(
                 # Apply axis rotation to transform
                 xform = wp.transform(tf.p, tf.q * quat_between_axes(Axis.Z, up_axis))
                 s = builder.add_shape_capsule(
-                    body=link,
                     xform=xform,
                     radius=float(capsule.get("radius") or "1") * scale,
                     half_height=float(capsule.get("height") or "1") * 0.5 * scale,
-                    cfg=shape_cfg,
+                    **shape_kwargs,
                 )
                 shapes.append(s)
 
@@ -228,10 +251,9 @@ def parse_urdf(
                         m_faces = np.array(m_geom.faces.flatten(), dtype=np.int32)
                         m_mesh = Mesh(m_vertices, m_faces, maxhullvert=mesh_maxhullvert)
                         s = builder.add_shape_mesh(
-                            body=link,
                             xform=tf,
                             mesh=m_mesh,
-                            cfg=shape_cfg,
+                            **shape_kwargs,
                         )
                         shapes.append(s)
                 else:
@@ -240,10 +262,9 @@ def parse_urdf(
                     m_faces = np.array(m.faces.flatten(), dtype=np.int32)
                     m_mesh = Mesh(m_vertices, m_faces, maxhullvert=mesh_maxhullvert)
                     s = builder.add_shape_mesh(
-                        body=link,
                         xform=tf,
                         mesh=m_mesh,
-                        cfg=shape_cfg,
+                        **shape_kwargs,
                     )
                     shapes.append(s)
                 if file_tmp is not None:
@@ -252,7 +273,7 @@ def parse_urdf(
 
         return shapes
 
-    builder.add_articulation(key=root.attrib.get("name"))
+    joint_indices = []  # Collect joint indices as we create them
 
     # add joints
 
@@ -260,9 +281,10 @@ def parse_urdf(
     parent_child_joint = {}
 
     joints = []
-    for joint in root.findall("joint"):
+    for joint in urdf_root.findall("joint"):
         parent = joint.find("parent").get("link")
         child = joint.find("child").get("link")
+        joint_custom_attributes = parse_custom_attributes(joint.attrib, builder_custom_attr_joint, parsing_mode="urdf")
         joint_data = {
             "name": joint.get("name"),
             "parent": parent,
@@ -274,6 +296,7 @@ def parse_urdf(
             "axis": wp.vec3(1.0, 0.0, 0.0),
             "limit_lower": default_joint_limit_lower,
             "limit_upper": default_joint_limit_upper,
+            "custom_attributes": joint_custom_attributes,
         }
         el_axis = joint.find("axis")
         if el_axis is not None:
@@ -311,12 +334,12 @@ def parse_urdf(
         if bodies_follow_joint_ordering:
             body_order: list[str] = [sorted_joints[0]["parent"]] + [joint["child"] for joint in sorted_joints]
             for body in body_order:
-                urdf_link = root.find(f"link[@name='{body}']")
+                urdf_link = urdf_root.find(f"link[@name='{body}']")
                 if urdf_link is None:
                     raise ValueError(f"Link {body} not found in URDF")
                 urdf_links.append(urdf_link)
     if len(urdf_links) == 0:
-        urdf_links = root.findall("link")
+        urdf_links = urdf_root.findall("link")
 
     # add links and shapes
 
@@ -329,7 +352,10 @@ def parse_urdf(
         name = urdf_link.get("name")
         if name is None:
             raise ValueError("Link has no name")
-        link = builder.add_body(key=name)
+        link = builder.add_link(
+            key=name,
+            custom_attributes=parse_custom_attributes(urdf_link.attrib, builder_custom_attr_body, parsing_mode="urdf"),
+        )
 
         # add ourselves to the index
         link_index[name] = link
@@ -416,14 +442,16 @@ def parse_urdf(
                 "y": [0.0, 1.0, 0.0],
                 "z": [0.0, 0.0, 1.0],
             }
-            builder.add_joint_d6(
-                linear_axes=[ModelBuilder.JointDofConfig(axes[a]) for a in linear_axes],
-                angular_axes=[ModelBuilder.JointDofConfig(axes[a]) for a in angular_axes],
-                parent_xform=base_parent_xform,
-                child_xform=base_child_xform,
-                parent=-1,
-                child=root,
-                key="base_joint",
+            joint_indices.append(
+                builder.add_joint_d6(
+                    linear_axes=[ModelBuilder.JointDofConfig(axes[a]) for a in linear_axes],
+                    angular_axes=[ModelBuilder.JointDofConfig(axes[a]) for a in angular_axes],
+                    parent_xform=base_parent_xform,
+                    child_xform=base_child_xform,
+                    parent=-1,
+                    child=root,
+                    key="base_joint",
+                )
             )
         elif isinstance(base_joint, dict):
             base_joint["parent"] = -1
@@ -431,16 +459,17 @@ def parse_urdf(
             base_joint["parent_xform"] = base_parent_xform
             base_joint["child_xform"] = base_child_xform
             base_joint["key"] = "base_joint"
-            builder.add_joint(**base_joint)
+            joint_indices.append(builder.add_joint(**base_joint))
         else:
             raise ValueError(
                 "base_joint must be a comma-separated string of joint axes or a dict with joint parameters"
             )
     elif floating:
-        builder.add_joint_free(root, key="floating_base")
+        floating_joint_id = builder.add_joint_free(root, key="floating_base")
+        joint_indices.append(floating_joint_id)
 
-        # set dofs to transform
-        start = builder.joint_q_start[root]
+        # set dofs to transform for the floating base joint
+        start = builder.joint_q_start[floating_joint_id]
 
         builder.joint_q[start + 0] = xform.p[0]
         builder.joint_q[start + 1] = xform.p[1]
@@ -451,7 +480,7 @@ def parse_urdf(
         builder.joint_q[start + 5] = xform.q[2]
         builder.joint_q[start + 6] = xform.q[3]
     else:
-        builder.add_joint_fixed(-1, root, parent_xform=xform, key="fixed_base")
+        joint_indices.append(builder.add_joint_fixed(-1, root, parent_xform=xform, key="fixed_base"))
 
     # add joints, in the desired order starting from root body
     for joint in sorted_joints:
@@ -472,28 +501,33 @@ def parse_urdf(
             "child": child,
             "parent_xform": parent_xform,
             "key": joint["name"],
+            "custom_attributes": joint["custom_attributes"],
         }
 
         if joint["type"] == "revolute" or joint["type"] == "continuous":
-            builder.add_joint_revolute(
-                axis=joint["axis"],
-                target_kd=joint_damping,
-                limit_lower=lower,
-                limit_upper=upper,
-                **joint_params,
+            joint_indices.append(
+                builder.add_joint_revolute(
+                    axis=joint["axis"],
+                    target_kd=joint_damping,
+                    limit_lower=lower,
+                    limit_upper=upper,
+                    **joint_params,
+                )
             )
         elif joint["type"] == "prismatic":
-            builder.add_joint_prismatic(
-                axis=joint["axis"],
-                target_kd=joint_damping,
-                limit_lower=lower * scale,
-                limit_upper=upper * scale,
-                **joint_params,
+            joint_indices.append(
+                builder.add_joint_prismatic(
+                    axis=joint["axis"],
+                    target_kd=joint_damping,
+                    limit_lower=lower * scale,
+                    limit_upper=upper * scale,
+                    **joint_params,
+                )
             )
         elif joint["type"] == "fixed":
-            builder.add_joint_fixed(**joint_params)
+            joint_indices.append(builder.add_joint_fixed(**joint_params))
         elif joint["type"] == "floating":
-            builder.add_joint_free(**joint_params)
+            joint_indices.append(builder.add_joint_free(**joint_params))
         elif joint["type"] == "planar":
             # find plane vectors perpendicular to axis
             axis = np.array(joint["axis"])
@@ -508,25 +542,39 @@ def parse_urdf(
             v = np.cross(axis, u)
             v /= np.linalg.norm(v)
 
-            builder.add_joint_d6(
-                linear_axes=[
-                    ModelBuilder.JointDofConfig(
-                        u,
-                        limit_lower=lower * scale,
-                        limit_upper=upper * scale,
-                        target_kd=joint_damping,
-                    ),
-                    ModelBuilder.JointDofConfig(
-                        v,
-                        limit_lower=lower * scale,
-                        limit_upper=upper * scale,
-                        target_kd=joint_damping,
-                    ),
-                ],
-                **joint_params,
+            joint_indices.append(
+                builder.add_joint_d6(
+                    linear_axes=[
+                        ModelBuilder.JointDofConfig(
+                            u,
+                            limit_lower=lower * scale,
+                            limit_upper=upper * scale,
+                            target_kd=joint_damping,
+                        ),
+                        ModelBuilder.JointDofConfig(
+                            v,
+                            limit_lower=lower * scale,
+                            limit_upper=upper * scale,
+                            target_kd=joint_damping,
+                        ),
+                    ],
+                    **joint_params,
+                )
             )
         else:
             raise Exception("Unsupported joint type: " + joint["type"])
+
+    # Create articulation from all collected joints
+    if joint_indices:
+        articulation_key = urdf_root.attrib.get("name")
+        articulation_custom_attrs = parse_custom_attributes(
+            urdf_root.attrib, builder_custom_attr_articulation, parsing_mode="urdf"
+        )
+        builder.add_articulation(
+            joints=joint_indices,
+            key=articulation_key,
+            custom_attributes=articulation_custom_attrs,
+        )
 
     for i in range(start_shape_count, end_shape_count):
         for j in visual_shapes:

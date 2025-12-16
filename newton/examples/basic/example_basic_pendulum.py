@@ -30,7 +30,7 @@ import newton.examples
 
 
 class Example:
-    def __init__(self, viewer):
+    def __init__(self, viewer, args=None):
         # setup simulation parameters first
         self.fps = 100
         self.frame_dt = 1.0 / self.fps
@@ -39,25 +39,24 @@ class Example:
         self.sim_dt = self.frame_dt / self.sim_substeps
 
         self.viewer = viewer
+        self.args = args
 
         builder = newton.ModelBuilder()
-
-        builder.add_articulation(key="pendulum")
 
         hx = 1.0
         hy = 0.1
         hz = 0.1
 
         # create first link
-        link_0 = builder.add_body()
+        link_0 = builder.add_link()
         builder.add_shape_box(link_0, hx=hx, hy=hy, hz=hz)
 
-        link_1 = builder.add_body()
+        link_1 = builder.add_link()
         builder.add_shape_box(link_1, hx=hx, hy=hy, hz=hz)
 
         # add joints
         rot = wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), -wp.pi * 0.5)
-        builder.add_joint_revolute(
+        j0 = builder.add_joint_revolute(
             parent=-1,
             child=link_0,
             axis=wp.vec3(0.0, 1.0, 0.0),
@@ -65,13 +64,16 @@ class Example:
             parent_xform=wp.transform(p=wp.vec3(0.0, 0.0, 5.0), q=rot),
             child_xform=wp.transform(p=wp.vec3(-hx, 0.0, 0.0), q=wp.quat_identity()),
         )
-        builder.add_joint_revolute(
+        j1 = builder.add_joint_revolute(
             parent=link_0,
             child=link_1,
             axis=wp.vec3(0.0, 1.0, 0.0),
             parent_xform=wp.transform(p=wp.vec3(hx, 0.0, 0.0), q=wp.quat_identity()),
             child_xform=wp.transform(p=wp.vec3(-hx, 0.0, 0.0), q=wp.quat_identity()),
         )
+
+        # Create articulation from joints
+        builder.add_articulation([j0, j1], key="pendulum")
 
         # add ground plane
         builder.add_ground_plane()
@@ -84,12 +86,15 @@ class Example:
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.control = self.model.control()
-        self.contacts = self.model.collide(self.state_0)
-
-        self.viewer.set_model(self.model)
 
         # not required for MuJoCo, but required for other solvers
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
+
+        # Create collision pipeline from command-line args (default: CollisionPipelineUnified with EXPLICIT)
+        self.collision_pipeline = newton.examples.create_collision_pipeline(self.model, self.args)
+        self.contacts = self.model.collide(self.state_0, collision_pipeline=self.collision_pipeline)
+
+        self.viewer.set_model(self.model)
 
         self.capture()
 
@@ -108,7 +113,7 @@ class Example:
             # apply forces to the model
             self.viewer.apply_forces(self.state_0)
 
-            self.contacts = self.model.collide(self.state_0)
+            self.contacts = self.model.collide(self.state_0, collision_pipeline=self.collision_pipeline)
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
 
             # swap states
@@ -122,7 +127,7 @@ class Example:
 
         self.sim_time += self.frame_dt
 
-    def test(self):
+    def test_final(self):
         # rough check that the pendulum links are in the correct area
         newton.examples.test_body_state(
             self.model,
@@ -159,6 +164,6 @@ if __name__ == "__main__":
     viewer, args = newton.examples.init()
 
     # Create viewer and run
-    example = Example(viewer)
+    example = Example(viewer, args)
 
     newton.examples.run(example, args)

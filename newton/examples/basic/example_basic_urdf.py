@@ -34,7 +34,7 @@ import newton.examples
 
 
 class Example:
-    def __init__(self, viewer, num_worlds):
+    def __init__(self, viewer, num_worlds, args=None):
         # setup simulation parameters first
         self.fps = 100
         self.frame_dt = 1.0 / self.fps
@@ -51,7 +51,6 @@ class Example:
         # set default parameters for the quadruped
         quadruped.default_body_armature = 0.01
         quadruped.default_joint_cfg.armature = 0.01
-        quadruped.default_joint_cfg.mode = newton.JointMode.TARGET_POSITION
         quadruped.default_joint_cfg.target_ke = 2000.0
         quadruped.default_joint_cfg.target_kd = 1.0
         quadruped.default_shape_cfg.ke = 1.0e4
@@ -69,7 +68,7 @@ class Example:
 
         # set initial joint positions
         quadruped.joint_q[-12:] = [0.2, 0.4, -0.6, -0.2, -0.4, 0.6, -0.2, 0.4, -0.6, 0.2, -0.4, 0.6]
-        quadruped.joint_target[-12:] = quadruped.joint_q[-12:]
+        quadruped.joint_target_pos[-12:] = quadruped.joint_q[-12:]
 
         # use "scene" for the entire set of worlds
         scene = newton.ModelBuilder()
@@ -86,12 +85,23 @@ class Example:
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.control = self.model.control()
-        self.contacts = self.model.collide(self.state_0)
-
-        self.viewer.set_model(self.model)
 
         # not required for MuJoCo, but required for other solvers
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
+
+        # Create collision pipeline from command-line args
+        # This example uses the standard pipeline by default (unlike other examples that default to unified)
+        # Users can override with --collision-pipeline unified if desired
+        # If no args provided or no collision_pipeline arg, defaults to "standard" for this example
+        if args is None or not hasattr(args, "collision_pipeline"):
+            self.collision_pipeline = newton.examples.create_collision_pipeline(
+                self.model, collision_pipeline_type="standard"
+            )
+        else:
+            self.collision_pipeline = newton.examples.create_collision_pipeline(self.model, args)
+        self.contacts = self.model.collide(self.state_0, collision_pipeline=self.collision_pipeline)
+
+        self.viewer.set_model(self.model)
 
         # put graph capture into it's own function
         self.capture()
@@ -111,7 +121,7 @@ class Example:
             # apply forces to the model
             self.viewer.apply_forces(self.state_0)
 
-            self.contacts = self.model.collide(self.state_0)
+            self.contacts = self.model.collide(self.state_0, collision_pipeline=self.collision_pipeline)
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
 
             # swap states
@@ -125,7 +135,7 @@ class Example:
 
         self.sim_time += self.frame_dt
 
-    def test(self):
+    def test_final(self):
         newton.examples.test_body_state(
             self.model,
             self.state_0,
@@ -159,6 +169,6 @@ if __name__ == "__main__":
     viewer, args = newton.examples.init(parser)
 
     # Create viewer and run
-    example = Example(viewer, args.num_worlds)
+    example = Example(viewer, args.num_worlds, args)
 
     newton.examples.run(example, args)

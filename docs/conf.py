@@ -143,7 +143,7 @@ autodoc_default_options = {
 autodoc_inherit_docstrings = False
 
 # Mock imports for modules that are not installed by default
-autodoc_mock_imports = ["jax", "torch", "paddle", "pxr"]
+autodoc_mock_imports = ["jax", "torch", "paddle"]
 
 autosummary_generate = True
 autosummary_ignore_module_all = False

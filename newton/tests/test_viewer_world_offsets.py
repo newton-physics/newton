@@ -22,8 +22,6 @@ import newton
 from newton.tests.unittest_utils import add_function_test, assert_np_equal, get_test_devices
 from newton.viewer import ViewerNull
 
-wp.config.quiet = True
-
 
 class TestViewerWorldOffsets(unittest.TestCase):
     def test_compute_world_offsets_function(self):
@@ -415,7 +413,6 @@ class TestViewerWorldOffsets(unittest.TestCase):
         builder = newton.ModelBuilder()
 
         # Add global ground plane (world -1)
-        builder.current_world = -1
         builder.add_ground_plane()
 
         # Add world-specific bodies
@@ -532,13 +529,7 @@ def test_visual_separation(test: TestViewerWorldOffsets, device):
 
 # Add device-specific tests
 devices = get_test_devices()
-for device in devices:
-    add_function_test(
-        TestViewerWorldOffsets,
-        f"test_visual_separation_{device.alias}",
-        test_visual_separation,
-        devices=[device],
-    )
+add_function_test(TestViewerWorldOffsets, "test_visual_separation", test_visual_separation, devices=devices)
 
 
 if __name__ == "__main__":

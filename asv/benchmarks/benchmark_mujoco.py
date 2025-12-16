@@ -87,7 +87,7 @@ ROBOT_CONFIGS = {
         "solver": "newton",
         "integrator": "implicitfast",
         "njmax": 60,
-        "nconmax": 35,
+        "nconmax": 40,
         "ls_parallel": True,
         "cone": "elliptic",
     },
@@ -95,6 +95,11 @@ ROBOT_CONFIGS = {
         "setup_builder": lambda x: _setup_kitchen(x),
         "njmax": 3800,
         "nconmax": 900,
+    },
+    "tabletop": {
+        "setup_builder": lambda x: _setup_tabletop(x),
+        "njmax": 100,
+        "nconmax": 20,
     },
 }
 
@@ -104,6 +109,7 @@ def _setup_humanoid(articulation_builder):
         newton.examples.get_asset("nv_humanoid.xml"),
         ignore_names=["floor", "ground"],
         up_axis="Z",
+        parse_sites=False,  # AD: remove once asset is fixed
     )
 
     # Setting root pose
@@ -160,14 +166,12 @@ def _setup_h1(articulation_builder):
         ignore_paths=["/GroundPlane"],
         collapse_fixed_joints=False,
         enable_self_collisions=False,
-        load_non_physics_prims=True,
         hide_collision_shapes=True,
     )
     # approximate meshes for faster collision detection
     articulation_builder.approximate_meshes("bounding_box")
 
-    for i in range(len(articulation_builder.joint_dof_mode)):
-        articulation_builder.joint_dof_mode[i] = newton.JointMode.TARGET_POSITION
+    for i in range(articulation_builder.joint_dof_count):
         articulation_builder.joint_target_ke[i] = 150
         articulation_builder.joint_target_kd[i] = 5
 
@@ -235,15 +239,13 @@ def _setup_allegro(articulation_builder):
         xform=wp.transform(wp.vec3(0, 0, 0.5)),
         enable_self_collisions=True,
         ignore_paths=[".*Dummy", ".*CollisionPlane", ".*goal", ".*DexCube/visuals"],
-        load_non_physics_prims=True,
     )
 
     # set joint targets and joint drive gains
-    for i in range(len(articulation_builder.joint_dof_mode)):
-        articulation_builder.joint_dof_mode[i] = newton.JointMode.TARGET_POSITION
+    for i in range(articulation_builder.joint_dof_count):
         articulation_builder.joint_target_ke[i] = 150
         articulation_builder.joint_target_kd[i] = 5
-        articulation_builder.joint_target[i] = 0.0
+        articulation_builder.joint_target_pos[i] = 0.0
     root_dofs = 1
 
     return root_dofs
@@ -259,6 +261,14 @@ def _setup_kitchen(articulation_builder):
 
     # Change pose of the robot to minimize overlap
     articulation_builder.joint_q[:2] = [1.5, -1.5]
+
+
+def _setup_tabletop(articulation_builder):
+    articulation_builder.add_mjcf(
+        newton.examples.get_asset("tabletop.xml"),
+        collapse_fixed_joints=True,
+        enable_self_collisions=True,
+    )
 
 
 class Example:
@@ -353,8 +363,8 @@ class Example:
 
     def step(self):
         if self.actuation == "random":
-            joint_target = wp.array(self.rng.uniform(-1.0, 1.0, size=self.model.joint_dof_count), dtype=float)
-            wp.copy(self.control.joint_target, joint_target)
+            joint_target = wp.array(self.rng.uniform(-1.0, 1.0, size=self.model.joint_dof_count), dtype=wp.float32)
+            wp.copy(self.control.joint_target_pos, joint_target)
 
         wp.synchronize_device()
         start_time = time.time()
@@ -381,6 +391,9 @@ class Example:
         rng = np.random.default_rng(seed)
 
         articulation_builder = newton.ModelBuilder()
+        articulation_builder.default_shape_cfg.ke = 1.0e3
+        articulation_builder.default_shape_cfg.kd = 1.0e2
+        newton.solvers.SolverMuJoCo.register_custom_attributes(articulation_builder)
         if robot == "humanoid":
             root_dofs = _setup_humanoid(articulation_builder)
         elif robot == "g1":
@@ -411,6 +424,8 @@ class Example:
                 builder.joint_q[istart + root_dofs : istart + njoint] = rng.uniform(
                     -1.0, 1.0, size=(njoint - root_dofs)
                 ).tolist()
+        builder.default_shape_cfg.ke = 1.0e3
+        builder.default_shape_cfg.kd = 1.0e2
         builder.add_ground_plane()
         return builder
 

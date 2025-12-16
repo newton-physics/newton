@@ -23,7 +23,7 @@ and MuJoCo physics solvers when importing USD files. Tests cover:
 1. **Basic USD Import** - Validates successful import with Newton-PhysX priority
 2. **Schema Priority Handling** - Tests that plugin priority order affects attribute resolution
 3. **Solver-Specific Attribute Collection** - Verifies collection and storage of solver attributes
-4. **Direct _ResolverManager Testing** - Tests _ResolverManager class directly with USD stage manipulation
+4. **Direct SchemaResolverManager Testing** - Tests SchemaResolverManager class directly with USD stage manipulation
 
 ## Attribute Resolution & Transformation Mapping:
 5. **PhysX Joint Armature** - Tests PhysX joint armature values are correctly resolved
@@ -50,15 +50,15 @@ from typing import Any
 
 import warp as wp
 
-from newton import ModelBuilder
-from newton._src.sim.model import ModelAttributeFrequency
-from newton._src.utils.import_usd import parse_usd
-from newton._src.utils.schema_resolver import (
+from newton import ModelAttributeFrequency, ModelBuilder
+from newton._src.usd.schema_resolver import (
     PrimType,
+    SchemaResolverManager,
+)
+from newton._src.usd.schemas import (
     SchemaResolverMjc,
     SchemaResolverNewton,
     SchemaResolverPhysx,
-    _ResolverManager,
 )
 from newton.tests.unittest_utils import USD_AVAILABLE
 
@@ -95,11 +95,9 @@ class TestSchemaResolver(unittest.TestCase):
         builder = ModelBuilder()
 
         # Import with Newton-PhysX priority
-        result = parse_usd(
-            builder=builder,
+        result = builder.add_usd(
             source=str(self.ant_usda_path),
             schema_resolvers=[SchemaResolverNewton(), SchemaResolverPhysx()],
-            collect_solver_specific_attrs=True,
             verbose=False,
         )
 
@@ -112,8 +110,8 @@ class TestSchemaResolver(unittest.TestCase):
         self.assertGreater(len(result["path_shape_map"]), 0)
 
         # Validate solver attributes were collected
-        solver_specific_attrs = result.get("solver_specific_attrs", {})
-        self.assertIsInstance(solver_specific_attrs, dict)
+        schema_attrs = result.get("schema_attrs", {})
+        self.assertIsInstance(schema_attrs, dict)
 
         return result, builder
 
@@ -132,11 +130,9 @@ class TestSchemaResolver(unittest.TestCase):
         self.assertTrue(ant_mixed_path.exists(), f"Missing mixed USD: {ant_mixed_path}")
 
         builder = ModelBuilder()
-        parse_usd(
-            builder=builder,
+        builder.add_usd(
             source=str(ant_mixed_path),
             schema_resolvers=[SchemaResolverPhysx()],  # PhysX first
-            collect_solver_specific_attrs=True,
             verbose=False,
         )
         armature_values_found = []
@@ -148,11 +144,9 @@ class TestSchemaResolver(unittest.TestCase):
             self.assertAlmostEqual(armature, 0.02, places=3)
 
         builder = ModelBuilder()
-        parse_usd(
-            builder=builder,
+        builder.add_usd(
             source=str(ant_mixed_path),
             schema_resolvers=[SchemaResolverNewton(), SchemaResolverMjc()],  # nothing should be found
-            collect_solver_specific_attrs=True,
             verbose=False,
         )
         armature_values_found = []
@@ -163,7 +157,7 @@ class TestSchemaResolver(unittest.TestCase):
         for _i, armature in enumerate(armature_values_found):
             self.assertAlmostEqual(armature, 0.01, places=3)
 
-    def test_solver_specific_attrs_collection(self):
+    def test_schema_attrs_collection(self):
         """
         Test solver-specific attribute collection from USD files.
 
@@ -175,19 +169,17 @@ class TestSchemaResolver(unittest.TestCase):
         builder = ModelBuilder()
 
         # Import with solver attribute collection enabled
-        result = parse_usd(
-            builder=builder,
+        result = builder.add_usd(
             source=str(self.ant_usda_path),
             schema_resolvers=[SchemaResolverNewton(), SchemaResolverPhysx()],
-            collect_solver_specific_attrs=True,
             verbose=False,
         )
 
-        solver_specific_attrs = result.get("solver_specific_attrs", {})
+        schema_attrs = result.get("schema_attrs", {})
 
         # We should have collected PhysX attributes
-        if "physx" in solver_specific_attrs:
-            physx_attrs = solver_specific_attrs["physx"]
+        if "physx" in schema_attrs:
+            physx_attrs = schema_attrs["physx"]
 
             # Look for specific attributes we expect from ant.usda
             joint_armature_prims = []
@@ -231,20 +223,16 @@ class TestSchemaResolver(unittest.TestCase):
         builder2 = ModelBuilder()
 
         # Import with Newton first
-        result1 = parse_usd(
-            builder=builder1,
+        result1 = builder1.add_usd(
             source=str(self.ant_usda_path),
             schema_resolvers=[SchemaResolverNewton(), SchemaResolverPhysx()],
-            collect_solver_specific_attrs=True,
             verbose=False,
         )
 
         # Import with PhysX first
-        result2 = parse_usd(
-            builder=builder2,
+        result2 = builder2.add_usd(
             source=str(self.ant_usda_path),
             schema_resolvers=[SchemaResolverPhysx(), SchemaResolverNewton()],
-            collect_solver_specific_attrs=True,
             verbose=False,
         )
 
@@ -259,9 +247,9 @@ class TestSchemaResolver(unittest.TestCase):
 
     def test_resolver(self):
         """
-        Test direct _ResolverManager class functionality with USD stage manipulation.
+        Test direct SchemaResolverManager class functionality with USD stage manipulation.
 
-        Opens a USD stage directly and tests the _ResolverManager class methods for attribute resolution
+        Opens a USD stage directly and tests the SchemaResolverManager class methods for attribute resolution
         and engine-specific attribute collection. Validates that individual prim attribute queries
         work correctly and that the resolver can accumulate attributes from multiple prims during
         direct stage traversal.
@@ -272,7 +260,7 @@ class TestSchemaResolver(unittest.TestCase):
         self.assertIsNotNone(stage)
 
         # Create resolver
-        resolver = _ResolverManager([SchemaResolverNewton(), SchemaResolverPhysx()])
+        resolver = SchemaResolverManager([SchemaResolverNewton(), SchemaResolverPhysx()])
 
         # Find prims with PhysX joint attributes
         joint_prims = []
@@ -289,12 +277,12 @@ class TestSchemaResolver(unittest.TestCase):
             self.assertAlmostEqual(armature, phsyx_armature, places=6)  # Expected value from ant.usda
 
             # Collect solver attributes for this prim
-            resolver.collect_prim_solver_attrs(prim)
+            resolver.collect_prim_attrs(prim)
 
         # Check accumulated solver attributes
-        solver_specific_attrs = resolver.get_solver_specific_attrs()
-        if "physx" in solver_specific_attrs:
-            physx_attrs = solver_specific_attrs["physx"]
+        schema_attrs = resolver.schema_attrs
+        if "physx" in schema_attrs:
+            physx_attrs = schema_attrs["physx"]
 
             # Verify we collected the expected attributes
             for _prim_path, attrs in list(physx_attrs.items())[:2]:  # Check first 2
@@ -325,7 +313,7 @@ class TestSchemaResolver(unittest.TestCase):
             self.skipTest("No physics scene found in ant.usda")
 
         # Create resolver
-        resolver = _ResolverManager([SchemaResolverNewton(), SchemaResolverPhysx()])
+        resolver = SchemaResolverManager([SchemaResolverNewton(), SchemaResolverPhysx()])
 
         # Test time step resolution
         time_step = resolver.get_value(physics_scene_prim, PrimType.SCENE, "time_step", default=0.01)
@@ -353,29 +341,25 @@ class TestSchemaResolver(unittest.TestCase):
 
         # Import with two different schema priorities
         builder_newton = ModelBuilder()
-        parse_usd(
-            builder=builder_newton,
+        builder_newton.add_usd(
             source=str(dst),
             schema_resolvers=[SchemaResolverNewton(), SchemaResolverPhysx(), SchemaResolverMjc()],
-            collect_solver_specific_attrs=True,
             verbose=False,
         )
 
         builder_mjc = ModelBuilder()
-        parse_usd(
-            builder=builder_mjc,
+        builder_mjc.add_usd(
             source=str(dst),
             schema_resolvers=[SchemaResolverMjc(), SchemaResolverNewton(), SchemaResolverPhysx()],
-            collect_solver_specific_attrs=True,
             verbose=False,
         )
         # With mjc priority and solref chosen as (0.5, 0.05):
-        # Stiffness: k = 1/(timeconst^2) = 1/0.25 = 4.0 (2x physx/newton value of 2.0)
-        # Damping: b = 2*dampratio/timeconst = 2*0.05/0.5 = 0.2
+        # Stiffness: k = 1/(timeconst^2 * dampratio^2) = 1/0.000625 = 1600.0 (800x physx/newton value of 2.0)
+        # Damping: b = 2/timeconst = 2/0.5 = 4.0
         self.assertEqual(len(builder_newton.joint_limit_ke), len(builder_mjc.joint_limit_ke))
         self.assertEqual(len(builder_newton.joint_limit_kd), len(builder_mjc.joint_limit_kd))
         for physx_ke, mjc_ke in zip(builder_newton.joint_limit_ke, builder_mjc.joint_limit_ke, strict=False):
-            self.assertAlmostEqual(mjc_ke, 2.0 * physx_ke, places=5)
+            self.assertAlmostEqual(mjc_ke / 800.0, physx_ke, places=5)
 
     def test_newton_custom_attributes(self):
         """
@@ -394,15 +378,13 @@ class TestSchemaResolver(unittest.TestCase):
         self.assertTrue(dst.exists(), f"Missing mixed USD: {dst}")
 
         builder = ModelBuilder()
-        result = parse_usd(
-            builder=builder,
+        result = builder.add_usd(
             source=str(dst),
             schema_resolvers=[SchemaResolverNewton(), SchemaResolverPhysx(), SchemaResolverMjc()],
-            collect_solver_specific_attrs=True,
             verbose=False,
         )
 
-        solver_attrs = result.get("solver_specific_attrs", {})
+        solver_attrs = result.get("schema_attrs", {})
         self.assertIn("newton", solver_attrs)
 
         # Body property checks
@@ -545,7 +527,7 @@ class TestSchemaResolver(unittest.TestCase):
         self.assertEqual(int(control_joint_int[joint_idx]), 3)
         self.assertEqual(int(control_joint_int[other_joint_idx]), 0)
 
-    def test_physx_solver_specific_attrs(self):
+    def test_physx_schema_attrs(self):
         """
         Test PhysX solver-specific attribute collection and validation.
 
@@ -560,15 +542,13 @@ class TestSchemaResolver(unittest.TestCase):
         self.assertTrue(usd_path.exists(), f"Missing mixed USD: {usd_path}")
 
         builder = ModelBuilder()
-        result = parse_usd(
-            builder=builder,
+        result = builder.add_usd(
             source=str(usd_path),
             schema_resolvers=[SchemaResolverNewton(), SchemaResolverPhysx(), SchemaResolverMjc()],
-            collect_solver_specific_attrs=True,
             verbose=False,
         )
 
-        solver_attrs = result.get("solver_specific_attrs", {})
+        solver_attrs = result.get("schema_attrs", {})
         self.assertIn("physx", solver_attrs, "PhysX solver attributes should be collected")
         physx_attrs = solver_attrs["physx"]
         self.assertIsInstance(physx_attrs, dict)
@@ -634,7 +614,7 @@ class TestSchemaResolver(unittest.TestCase):
         self.assertIsNotNone(joint_without_armature)
         self.assertIsNotNone(scene_prim)
 
-        resolver = _ResolverManager([SchemaResolverNewton(), SchemaResolverPhysx()])
+        resolver = SchemaResolverManager([SchemaResolverNewton(), SchemaResolverPhysx()])
 
         # Test 1: Authored PhysX value takes precedence over explicit default
         # physxJoint:armature = 0.02 should be returned even with explicit default
@@ -642,7 +622,7 @@ class TestSchemaResolver(unittest.TestCase):
         self.assertAlmostEqual(val1, 0.02, places=6)
 
         # Test 2: No Newton authored value, explicit default used
-        resolver_newton_only = _ResolverManager([SchemaResolverNewton()])
+        resolver_newton_only = SchemaResolverManager([SchemaResolverNewton()])
         val2 = resolver_newton_only.get_value(joint_with_physx_armature, PrimType.JOINT, "armature", default=0.99)
         self.assertAlmostEqual(val2, 0.99, places=6)
 
@@ -651,17 +631,17 @@ class TestSchemaResolver(unittest.TestCase):
         self.assertAlmostEqual(val3, 1.0e-2, places=6)
 
         # Test 3b: Use SchemaResolverMjc only - should return SchemaResolverMjc armature default (0.0)
-        resolver_mjc_only = _ResolverManager([SchemaResolverMjc()])
+        resolver_mjc_only = SchemaResolverManager([SchemaResolverMjc()])
         val3b = resolver_mjc_only.get_value(joint_with_physx_armature, PrimType.JOINT, "armature", default=None)
         self.assertAlmostEqual(val3b, 0.0, places=6)
 
         # Test 4: Test priority order - PhysX first should use PhysX mapping default when no authored value
-        resolver_physx_first = _ResolverManager([SchemaResolverPhysx(), SchemaResolverNewton()])
+        resolver_physx_first = SchemaResolverManager([SchemaResolverPhysx(), SchemaResolverNewton()])
         val4 = resolver_physx_first.get_value(scene_prim, PrimType.SCENE, "max_solver_iterations", default=None)
         self.assertAlmostEqual(val4, 255, places=6)
 
         # Test same attribute with Newton first priority
-        resolver_newton_first = _ResolverManager([SchemaResolverNewton(), SchemaResolverPhysx()])
+        resolver_newton_first = SchemaResolverManager([SchemaResolverNewton(), SchemaResolverPhysx()])
         val5 = resolver_newton_first.get_value(scene_prim, PrimType.SCENE, "max_solver_iterations", default=None)
         self.assertAlmostEqual(val5, 5, places=6)
 
@@ -684,11 +664,9 @@ class TestSchemaResolver(unittest.TestCase):
         self.assertTrue(usd_path.exists(), f"Missing mixed USD: {usd_path}")
 
         builder = ModelBuilder()
-        parse_usd(
-            builder=builder,
+        builder.add_usd(
             source=str(usd_path),
             schema_resolvers=[SchemaResolverNewton(), SchemaResolverPhysx(), SchemaResolverMjc()],
-            collect_solver_specific_attrs=True,
             verbose=False,
         )
 
@@ -769,11 +747,9 @@ class TestSchemaResolver(unittest.TestCase):
             self.skipTest(f"Missing humanoid USD: {humanoid_path}")
 
         builder = ModelBuilder()
-        parse_usd(
-            builder=builder,
+        builder.add_usd(
             source=str(humanoid_path),
             schema_resolvers=[SchemaResolverNewton(), SchemaResolverPhysx(), SchemaResolverMjc()],
-            collect_solver_specific_attrs=True,
             verbose=False,
         )
 
@@ -899,11 +875,9 @@ class TestSchemaResolver(unittest.TestCase):
         # Test the specific case that would trigger the bug:
         # Find a D6 joint and verify its DOF mapping behavior
         builder = ModelBuilder()
-        parse_usd(
-            builder=builder,
+        builder.add_usd(
             source=str(humanoid_path),
             schema_resolvers=[SchemaResolverNewton(), SchemaResolverPhysx(), SchemaResolverMjc()],
-            collect_solver_specific_attrs=True,
             verbose=False,
         )
 
@@ -1027,15 +1001,13 @@ class TestSchemaResolver(unittest.TestCase):
 
         # Test with all three plugins to ensure attribute collection works
         builder = ModelBuilder()
-        result = parse_usd(
-            builder=builder,
+        result = builder.add_usd(
             source=str(ant_mixed_path),
             schema_resolvers=[SchemaResolverNewton(), SchemaResolverPhysx(), SchemaResolverMjc()],
-            collect_solver_specific_attrs=True,
             verbose=False,
         )
 
-        solver_attrs = result.get("solver_specific_attrs", {})
+        solver_attrs = result.get("schema_attrs", {})
 
         # Verify Newton attributes are collected
         self.assertIn("newton", solver_attrs, "Newton solver attributes should be collected")
@@ -1080,11 +1052,9 @@ class TestSchemaResolver(unittest.TestCase):
         self.assertTrue(ant_mixed_path.exists(), f"Missing mixed USD: {ant_mixed_path}")
 
         builder = ModelBuilder()
-        result = parse_usd(
-            builder=builder,
+        result = builder.add_usd(
             source=str(ant_mixed_path),
             schema_resolvers=[SchemaResolverNewton(), SchemaResolverPhysx(), SchemaResolverMjc()],
-            collect_solver_specific_attrs=True,
             verbose=False,
         )
 
@@ -1201,11 +1171,9 @@ class TestSchemaResolver(unittest.TestCase):
 
         # Import the ant USD file
         builder = ModelBuilder()
-        parse_usd(
-            builder=builder,
+        builder.add_usd(
             source=str(ant_usd_path),
             schema_resolvers=[SchemaResolverNewton(), SchemaResolverPhysx()],
-            collect_solver_specific_attrs=True,
             verbose=False,
         )
 
@@ -1247,24 +1215,5 @@ class TestSchemaResolver(unittest.TestCase):
         self.assertAlmostEqual(pd_gains[0][1], 0.2, places=5)
 
 
-def run_tests():
-    """Run all tests."""
-    loader = unittest.TestLoader()
-    suite = unittest.TestSuite()
-
-    suite.addTests(loader.loadTestsFromTestCase(TestSchemaResolver))
-
-    runner = unittest.TextTestRunner(verbosity=2)
-    result = runner.run(suite)
-
-    return result.wasSuccessful()
-
-
 if __name__ == "__main__":
-    print("Running USD Schema _ResolverManager Tests")
-    print("=" * 60)
-    print("Testing with actual ant.usda file and USD import functionality")
-    print("Priority: ['newton', 'physx']")
-    print("=" * 60)
-
-    success = run_tests()
+    unittest.main(verbosity=2)

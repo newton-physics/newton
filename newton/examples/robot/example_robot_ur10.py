@@ -74,6 +74,7 @@ class Example:
         self.device = wp.get_device()
 
         ur10 = newton.ModelBuilder()
+        newton.solvers.SolverMuJoCo.register_custom_attributes(ur10)
 
         asset_path = newton.utils.download_asset("universal_robots_ur10")
         asset_file = str(asset_path / "usd" / "ur10_instanceable.usda")
@@ -83,14 +84,12 @@ class Example:
             xform=wp.transform(wp.vec3(0.0, 0.0, height)),
             collapse_fixed_joints=False,
             enable_self_collisions=False,
-            load_non_physics_prims=True,
             hide_collision_shapes=True,
         )
         # create a pedestal
         ur10.add_shape_cylinder(-1, xform=wp.transform(wp.vec3(0, 0, height / 2)), half_height=height / 2, radius=0.08)
 
-        for i in range(len(ur10.joint_dof_mode)):
-            ur10.joint_dof_mode[i] = newton.JointMode.TARGET_POSITION
+        for i in range(len(ur10.joint_target_ke)):
             ur10.joint_target_ke[i] = 500
             ur10.joint_target_kd[i] = 50
 
@@ -151,7 +150,7 @@ class Example:
         self.joint_target_trajectory = wp.array(joint_target_trajectory, dtype=wp.float32, device=self.device)
         self.time_step = wp.zeros(self.num_worlds, dtype=wp.float32, device=self.device)
 
-        self.ctrl = self.articulation_view.get_attribute("joint_target", self.control)
+        self.ctrl = self.articulation_view.get_attribute("joint_target_pos", self.control)
 
         self.solver = newton.solvers.SolverMuJoCo(
             self.model,
@@ -183,7 +182,7 @@ class Example:
                 outputs=[self.ctrl],
                 device=self.device,
             )
-            self.articulation_view.set_attribute("joint_target", self.control, self.ctrl)
+            self.articulation_view.set_attribute("joint_target_pos", self.control, self.ctrl)
 
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
 
@@ -203,7 +202,7 @@ class Example:
         self.viewer.log_state(self.state_0)
         self.viewer.end_frame()
 
-    def test(self):
+    def test_final(self):
         pass
 
 

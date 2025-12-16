@@ -42,6 +42,7 @@ class Example:
         self.viewer = viewer
 
         cartpole = newton.ModelBuilder()
+        newton.solvers.SolverMuJoCo.register_custom_attributes(cartpole)
         cartpole.default_shape_cfg.density = 100.0
         cartpole.default_joint_cfg.armature = 0.1
         cartpole.default_body_armature = 0.1
@@ -109,7 +110,7 @@ class Example:
         self.viewer.log_state(self.state_0)
         self.viewer.end_frame()
 
-    def test(self):
+    def test_final(self):
         num_bodies_per_world = self.model.body_count // self.num_worlds
         newton.examples.test_body_state(
             self.model,

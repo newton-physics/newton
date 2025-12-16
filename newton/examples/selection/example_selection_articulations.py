@@ -95,6 +95,7 @@ class Example:
         self.num_worlds = num_worlds
 
         world = newton.ModelBuilder()
+        newton.solvers.SolverMuJoCo.register_custom_attributes(world)
         world.add_mjcf(
             newton.examples.get_asset("nv_ant.xml"),
             ignore_names=["floor", "ground"],
@@ -106,6 +107,7 @@ class Example:
             ignore_names=["floor", "ground"],
             xform=wp.transform((0.0, 0.0, 3.5), wp.quat_identity()),
             collapse_fixed_joints=COLLAPSE_FIXED_JOINTS,
+            parse_sites=False,  # AD: remove once asset is fixed
         )
 
         scene = newton.ModelBuilder()
@@ -284,7 +286,7 @@ class Example:
         self.viewer.log_state(self.state_0)
         self.viewer.end_frame()
 
-    def test(self):
+    def test_final(self):
         newton.examples.test_body_state(
             self.model,
             self.state_0,

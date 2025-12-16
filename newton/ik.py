@@ -16,17 +16,25 @@
 from ._src.sim.ik import (
     IKJacobianMode,
     IKJointLimitObjective,
+    IKLBFGSOptimizer,
+    IKLMOptimizer,
     IKObjective,
+    IKOptimizer,
     IKPositionObjective,
     IKRotationObjective,
+    IKSampler,
     IKSolver,
 )
 
 __all__ = [
     "IKJacobianMode",
     "IKJointLimitObjective",
+    "IKLBFGSOptimizer",
+    "IKLMOptimizer",
     "IKObjective",
+    "IKOptimizer",
     "IKPositionObjective",
     "IKRotationObjective",
+    "IKSampler",
     "IKSolver",
 ]

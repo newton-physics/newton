@@ -29,10 +29,11 @@ from __future__ import annotations
 
 import numpy as np
 import warp as wp
-from pxr import Usd, UsdGeom
+from pxr import Usd
 
 import newton
 import newton.examples
+import newton.usd
 import newton.utils
 from newton import Model, ModelBuilder, State, eval_fk
 from newton.solvers import SolverFeatherstone, SolverVBD
@@ -173,7 +174,7 @@ class Example:
             franka = ModelBuilder()
             self.create_articulation(franka)
 
-            self.scene.add_builder(franka)
+            self.scene.add_world(franka)
             self.bodies_per_world = franka.body_count
             self.dof_q_per_world = franka.joint_coord_count
             self.dof_qd_per_world = franka.joint_dof_count
@@ -192,9 +193,11 @@ class Example:
 
         # add the T-shirt
         usd_stage = Usd.Stage.Open(newton.examples.get_asset("unisex_shirt.usd"))
-        usd_geom = UsdGeom.Mesh(usd_stage.GetPrimAtPath("/root/shirt"))
-        mesh_points = np.array(usd_geom.GetPointsAttr().Get())
-        mesh_indices = np.array(usd_geom.GetFaceVertexIndicesAttr().Get())
+        usd_prim = usd_stage.GetPrimAtPath("/root/shirt")
+
+        shirt_mesh = newton.usd.get_mesh(usd_prim)
+        mesh_points = shirt_mesh.vertices
+        mesh_indices = shirt_mesh.indices
         vertices = [wp.vec3(v) for v in mesh_points]
 
         if self.add_cloth:
@@ -538,7 +541,7 @@ class Example:
         self.viewer.log_state(self.state_0)
         self.viewer.end_frame()
 
-    def test(self):
+    def test_final(self):
         p_lower = wp.vec3(-0.34, -0.9, 0.0)
         p_upper = wp.vec3(0.34, 0.0, 0.51)
         newton.examples.test_particle_state(

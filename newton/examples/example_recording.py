@@ -57,7 +57,7 @@ class Example:
         mjcf_filename = newton.examples.get_asset("nv_humanoid.xml")
 
         articulation_builder = newton.ModelBuilder()
-
+        newton.solvers.SolverMuJoCo.register_custom_attributes(articulation_builder)
         newton.utils.parse_mjcf(
             mjcf_filename,
             articulation_builder,
@@ -77,7 +77,7 @@ class Example:
             articulation_builder.joint_q[7:] = self.rng.uniform(
                 -1.0, 1.0, size=(len(articulation_builder.joint_q) - 7,)
             ).tolist()
-            builder.add_builder(articulation_builder, xform=wp.transform(pos, wp.quat_identity()))
+            builder.add_world(articulation_builder, xform=wp.transform(pos, wp.quat_identity()))
         builder.add_ground_plane()
 
         # Finalize model
@@ -124,7 +124,7 @@ class Example:
         self.viewer.log_state(self.state_0)  # ViewerFile automatically records this
         self.viewer.end_frame()
 
-    def test(self):
+    def test_final(self):
         pass
 
 

@@ -1,7 +1,7 @@
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 ![GitHub commit activity](https://img.shields.io/github/commit-activity/m/newton-physics/newton/main)
 [![codecov](https://codecov.io/gh/newton-physics/newton/graph/badge.svg?token=V6ZXNPAWVG)](https://codecov.io/gh/newton-physics/newton)
-[![Push Events - AWS GPU Tests](https://github.com/newton-physics/newton/actions/workflows/push_aws_gpu_tests.yml/badge.svg)](https://github.com/newton-physics/newton/actions/workflows/push_aws_gpu_tests.yml)
+[![Push - AWS GPU](https://github.com/newton-physics/newton/actions/workflows/push_aws_gpu.yml/badge.svg)](https://github.com/newton-physics/newton/actions/workflows/push_aws_gpu.yml)
 
 **This project is in active beta development.** This means the API is unstable, features may be added or removed, and breaking changes are likely to occur frequently and without notice as the design is refined.
 
@@ -16,7 +16,7 @@ Newton is a [Linux Foundation](https://www.linuxfoundation.org/) project that is
 
 Newton was initiated by [Disney Research](https://www.disneyresearch.com/), [Google DeepMind](https://deepmind.google/), and [NVIDIA](https://www.nvidia.com/).
 
-# Quickstart
+## Quickstart
 
 During the alpha development phase, we recommend using the [uv](https://docs.astral.sh/uv/) Python package and project manager. You may find uv installation instructions in the [Newton Installation Guide](https://newton-physics.github.io/newton/guide/installation.html#method-1-using-uv-recommended).
 
@@ -36,7 +36,7 @@ uv run -m newton.examples basic_pendulum
 
 See the [installation guide](https://newton-physics.github.io/newton/guide/installation.html) for detailed instructions that include steps for setting up a Python environment for use with Newton.
 
-# Examples
+## Examples
 
 Before running the examples below, set up the uv environment with:
 
@@ -44,7 +44,7 @@ Before running the examples below, set up the uv environment with:
 uv sync --extra examples
 ```
 
-## Basic Examples
+### Basic Examples
 
 <table>
   <tr>
@@ -105,7 +105,7 @@ uv sync --extra examples
   </tr>
 </table>
 
-## Robot Examples
+### Robot Examples
 
 <table>
   <tr>
@@ -180,7 +180,7 @@ uv sync --extra examples
   </tr>
   <tr>
     <td align="center">
-      <code>uv run -m newton.examples robot_policy</code>
+      <code>uv run --extra torch-cu12 -m newton.examples robot_policy</code>
     </td>
     <td align="center">
       <code>uv run -m newton.examples robot_ur10</code>
@@ -190,7 +190,7 @@ uv sync --extra examples
   </tr>
 </table>
 
-## Cloth Examples
+### Cloth Examples
 
 <table>
   <tr>
@@ -235,7 +235,7 @@ uv sync --extra examples
  </tr>
 </table>
 
-## Inverse Kinematics Examples
+### Inverse Kinematics Examples
 
 <table>
   <tr>
@@ -269,6 +269,11 @@ uv sync --extra examples
   </tr>
   <tr>
     <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/ik/example_ik_custom.py">
+        <img src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_ik_custom.jpg" alt="IK Custom">
+      </a>
+    </td>
+    <td align="center" width="33%">
       <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/cloth/example_cloth_franka.py">
         <img src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_cloth_franka.jpg" alt="Cloth Franka">
       </a>
@@ -281,6 +286,9 @@ uv sync --extra examples
   </tr>
   <tr>
     <td align="center">
+      <code>uv run -m newton.examples ik_custom</code>
+    </td>
+    <td align="center">
       <code>uv run -m newton.examples cloth_franka</code>
     </td>
     <td align="center">
@@ -290,7 +298,7 @@ uv sync --extra examples
 
 </table>
 
-## MPM Examples
+### MPM Examples
 
 <table>
   <tr>
@@ -323,7 +331,38 @@ uv sync --extra examples
   </tr>
 </table>
 
-## Selection Examples
+### Sensor Examples
+
+<table>
+  <tr>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/sensors/example_sensor_contact.py">
+        <img src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_sensor_contact.jpg" alt="Sensor Contact">
+      </a>
+    </td>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/sensors/example_sensor_tiled_camera.py">
+        <img src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_sensor_tiled_camera.jpg" alt="Sensor Contact">
+      </a>
+    </td>
+    <td align="center" width="33%">
+      <!-- Future Sensor example -->
+    </td>
+  </tr>
+  <tr>
+    <td align="center">
+      <code>uv run -m newton.examples sensor_contact</code>
+    </td>
+    <td align="center">
+      <code>uv run -m newton.examples sensor_tiled_camera</code>
+    </td>
+    <td align="center">
+      <!-- Future Sensor example -->
+    </td>
+  </tr>
+</table>
+
+### Selection Examples
 
 <table>
   <tr>
@@ -356,7 +395,7 @@ uv sync --extra examples
   </tr>
 </table>
 
-## DiffSim Examples
+### DiffSim Examples
 
 <table>
   <tr>
@@ -417,7 +456,7 @@ uv sync --extra examples
   </tr>
 </table>
 
-## Example Options
+### Example Options
 
 The examples support the following command-line arguments:
 
@@ -430,7 +469,7 @@ The examples support the following command-line arguments:
 
 Some examples may add additional arguments (see their respective source files for details).
 
-## Example Usage
+### Example Usage
 
 ```bash
 # List available examples
@@ -446,18 +485,18 @@ uv run -m newton.examples basic_urdf --device cuda:0
 uv run -m newton.examples basic_viewer --viewer gl --num-frames 500 --device cpu
 ```
 
-# Contributing and Development
+## Contributing and Development
 
 See the [contribution guidelines](https://github.com/newton-physics/newton-governance/blob/main/CONTRIBUTING.md) and the [development guide](https://newton-physics.github.io/newton/guide/development.html) for instructions on how to contribute to Newton.
 
-# Support and Community Discussion
+## Support and Community Discussion
 
 For questions, please consult the [Newton documentation](https://newton-physics.github.io/newton/guide/overview.html) first before creating [a discussion in the main repository](https://github.com/newton-physics/newton/discussions).
 
-# Code of Conduct
+## Code of Conduct
 
 By participating in this community, you agree to abide by the Linux Foundation [Code of Conduct](https://lfprojects.org/policies/code-of-conduct/).
 
-# Project Governance, Legal, and Members
+## Project Governance, Legal, and Members
 
 Please see the [newton-governance repository](https://github.com/newton-physics/newton-governance) for more information about project governance.

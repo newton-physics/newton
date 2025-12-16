@@ -277,6 +277,7 @@ class Example:
         if self.verbose:
             print(f"Iteration {self.train_iter}: {loss}")
         self.loss_history.append(loss[0])
+        self.viewer.log_scalar("/loss", loss[0])
 
         # reset sim
         self.sim_time = 0.0
@@ -301,7 +302,7 @@ class Example:
 
             self.frame += 1
 
-    def test(self):
+    def test_final(self):
         assert most(np.diff(self.loss_history) < -0.0, min_ratio=0.8)
 
 

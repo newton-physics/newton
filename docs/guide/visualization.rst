@@ -9,7 +9,7 @@ Real-time Viewers
 OpenGL Viewer
 ~~~~~~~~~~~~~
 
-Newton provides a simple OpenGL viewer for interactive real-time visualization of simulations.
+Newton provides :class:`~newton.viewer.ViewerGL`, a simple OpenGL viewer for interactive real-time visualization of simulations.
 The viewer requires pyglet (version >= 2.1.6) and imgui_bundle (version >= 1.92.0) to be installed.
 
 .. code-block:: python
@@ -64,7 +64,7 @@ Recording and Offline Viewers
 Recording to File (ViewerFile)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-The ViewerFile backend records simulation data to JSON or binary files for later replay or analysis. 
+The :class:`~newton.viewer.ViewerFile` backend records simulation data to JSON or binary files for later replay or analysis. 
 This is useful for capturing simulations for debugging, sharing results, or post-processing.
 
 **File formats:**
@@ -132,7 +132,7 @@ Key parameters:
 Rendering to USD
 ~~~~~~~~~~~~~~~~
 
-Instead of rendering in real-time, you can also render the simulation as a time-sampled USD stage to be visualized in Omniverse or other USD-compatible tools.
+Instead of rendering in real-time, you can also render the simulation as a time-sampled USD stage to be visualized in Omniverse or other USD-compatible tools using the :class:`~newton.viewer.ViewerUSD` backend.
 
 .. code-block:: python
 
@@ -154,7 +154,7 @@ External Integrations
 Rerun Viewer
 ~~~~~~~~~~~~
 
-The ViewerRerun backend integrates with the `rerun <https://rerun.io>`_ visualization library, 
+The :class:`~newton.viewer.ViewerRerun` backend integrates with the `rerun <https://rerun.io>`_ visualization library, 
 enabling real-time or offline visualization with advanced features like time scrubbing and data inspection.
 
 **Installation**: Requires the rerun-sdk package:
@@ -167,11 +167,15 @@ enabling real-time or offline visualization with advanced features like time scr
 
 .. code-block:: python
 
+    # Default usage: spawns a local viewer
     viewer = newton.viewer.ViewerRerun(
-        server=True,                    # Start in server mode
-        address="127.0.0.1:9876",      # Server address
-        launch_viewer=True,            # Auto-launch web viewer
-        app_id="newton-simulation"     # Application identifier
+        app_id="newton-simulation" # Optional application identifier to differentiate multiple parallel instances.
+    )
+
+    # Or specify a custom server address for remote viewing
+    viewer = newton.viewer.ViewerRerun(
+        address="rerun+http://127.0.0.1:9876/proxy", # Optional server address to connect to a remote rerun server.
+        app_id="newton-simulation"
     )
 
     viewer.set_model(model)
@@ -181,6 +185,10 @@ enabling real-time or offline visualization with advanced features like time scr
     viewer.log_state(state)
     viewer.end_frame()
 
+By default, the viewer will run without keeping historical state data in the viewer to keep the memory usage constant when sending transform updates via :meth:`ViewerRerun.log_state`.
+This is useful for visualizing long and complex simulations that would quickly fill up the web viewer's memory if the historical data was kept.
+If you want to keep the historical state data in the viewer, you can set the ``keep_historical_data`` flag to ``True``.
+
 The rerun viewer provides a web-based interface with features like:
 
 - Time scrubbing and playback controls
@@ -188,13 +196,55 @@ The rerun viewer provides a web-based interface with features like:
 - Data inspection and filtering
 - Recording and export capabilities
 
+**Jupyter notebook support**
+
+The ViewerRerun backend automatically detects if it is running inside a Jupyter notebook environment and automatically generates an output widget for the viewer
+during the construction of :class:`~newton.viewer.ViewerRerun`.
+
+The rerun SDK provides a Jupyter notebook extension that allows you to visualize rerun data in a Jupyter notebook.
+
+You can use ``uv`` to start Jupyter lab with the required dependencies (or install the extension manually with ``pip install rerun-sdk[notebook]``):
+
+.. code-block:: bash
+
+  uv run --extra notebook jupyter lab
+
+Then, you can use the rerun SDK in a Jupyter notebook by importing the :mod:`rerun` module and creating a viewer instance.
+
+.. code-block:: python
+
+  viewer = newton.viewer.ViewerRerun(keep_historical_data=True)
+  viewer.set_model(model)
+
+  frame_dt = 1 / 60.0
+  sim_time = 0.0
+
+  for frame in range(500):
+      # simulate, step the solver, etc.
+      solver.step(...)
+
+      # visualize
+      viewer.begin_frame(sim_time)
+      viewer.log_state(state)
+      viewer.end_frame()
+
+      sim_time += frame_dt
+
+  viewer.show_notebook()  # or simply `viewer` to display the viewer in the notebook
+  
+.. image:: /images/rerun_notebook_example.png
+   :width: 1000
+   :align: left
+
+The history of states will be available in the viewer to scrub through the simulation timeline.
+
 Utility Viewers
 ---------------
 
 Null Viewer
 ~~~~~~~~~~~
 
-The ViewerNull provides a no-operation viewer for headless environments or automated testing where visualization is not required.
+The :class:`~newton.viewer.ViewerNull` provides a no-operation viewer for headless environments or automated testing where visualization is not required.
 It simply counts frames and provides stub implementations for all viewer methods.
 
 .. code-block:: python
@@ -226,23 +276,23 @@ Choosing the Right Viewer
       - Use Case
       - Output
       - Dependencies
-    * - ViewerGL
+    * - :class:`~newton.viewer.ViewerGL`
       - Interactive development and debugging
       - Real-time display
       - pyglet, imgui_bundle
-    * - ViewerFile
+    * - :class:`~newton.viewer.ViewerFile`
       - Recording for replay/sharing
       - .json or .bin files
       - None
-    * - ViewerUSD
+    * - :class:`~newton.viewer.ViewerUSD`
       - Integration with 3D pipelines
       - .usd files
       - usd-core
-    * - ViewerRerun
+    * - :class:`~newton.viewer.ViewerRerun`
       - Advanced visualization and analysis
       - Web interface
       - rerun-sdk
-    * - ViewerNull
+    * - :class:`~newton.viewer.ViewerNull`
       - Headless/automated environments
       - None
       - None

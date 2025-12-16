@@ -24,19 +24,26 @@ from .solve_rheology import solve_coulomb_isotropic
 __all__ = [
     "Collider",
     "allot_collider_mass",
-    "build_rigidity_matrix",
+    "build_rigidity_operator",
+    "interpolate_collider_normals",
     "project_outside_collider",
     "rasterize_collider",
 ]
 
-_COLLIDER_EXTRAPOLATION_DISTANCE = wp.constant(0.5)
-"""Distance to extrapolate collider sdf, as a fraction of the voxel size"""
+_COLLIDER_ACTIVATION_DISTANCE = wp.constant(0.5)
+"""Distance below which to activate the collider"""
 
 _INFINITY = wp.constant(1.0e12)
-"""Mass over which colliders are considered kinematic"""
+"""Threshold over which values are considered infinite"""
 
 _CLOSEST_POINT_NORMAL_EPSILON = wp.constant(1.0e-3)
 """Epsilon for closest point normal calculation"""
+
+_SDF_SIGN_FROM_AVERAGE_NORMAL = True
+"""If true, determine the sign of the sdf from the average normal of the faces around the closest point.
+Otherwise, use Warp's default sign determination strategy (raycasts).
+"""
+
 
 _NULL_COLLIDER_ID = -2
 _GROUND_COLLIDER_ID = -1
@@ -85,6 +92,43 @@ class Collider:
 
 
 @wp.func
+def get_average_face_normal(
+    mesh_id: wp.uint64,
+    point: wp.vec3,
+):
+    """Computes the average face normal at a point on a mesh.
+    (average of face normals within an epsilon-distance of the point)
+
+    Args:
+        mesh_id: The mesh to query.
+        point: The point to query.
+
+    Returns:
+        The average face normal at the point.
+    """
+
+    face_normal = wp.vec3(0.0)
+
+    vidx = wp.mesh_get(mesh_id).indices
+    points = wp.mesh_get(mesh_id).points
+    eps_sq = _CLOSEST_POINT_NORMAL_EPSILON * _CLOSEST_POINT_NORMAL_EPSILON
+
+    epsilon = wp.vec3(_CLOSEST_POINT_NORMAL_EPSILON)
+    aabb_query = wp.mesh_query_aabb(mesh_id, point - epsilon, point + epsilon)
+    face_index = wp.int32(0)
+    while wp.mesh_query_aabb_next(aabb_query, face_index):
+        V0 = points[vidx[face_index * 3 + 0]]
+        V1 = points[vidx[face_index * 3 + 1]]
+        V2 = points[vidx[face_index * 3 + 2]]
+
+        sq_dist, _coords = fem.geometry.closest_point.project_on_tri_at_origin(point - V0, V1 - V0, V2 - V0)
+        if sq_dist < eps_sq:
+            face_normal += wp.mesh_eval_face_normal(mesh_id, face_index)
+
+    return wp.normalize(face_normal)
+
+
+@wp.func
 def collision_sdf(
     x: wp.vec3, collider: Collider, body_q: wp.array(dtype=wp.transform), body_qd: wp.array(dtype=wp.spatial_vector)
 ):
@@ -116,24 +160,35 @@ def collision_sdf(
             x_local = x
 
         max_dist = collider.query_max_dist + thickness
-        query = wp.mesh_query_point_sign_normal(mesh, x_local, max_dist)
+
+        if wp.static(_SDF_SIGN_FROM_AVERAGE_NORMAL):
+            query = wp.mesh_query_point_no_sign(mesh, x_local, max_dist)
+        else:
+            query = wp.mesh_query_point(mesh, x_local, max_dist)
 
         if query.result:
             cp = wp.mesh_eval_position(mesh, query.face, query.u, query.v)
-            mesh_material_id = collider.face_material_index[global_face_id + query.face]
 
+            if wp.static(_SDF_SIGN_FROM_AVERAGE_NORMAL):
+                face_normal = get_average_face_normal(mesh, cp)
+                sign = wp.where(wp.dot(face_normal, x_local - cp) > 0.0, 1.0, -1.0)
+            else:
+                face_normal = wp.mesh_eval_face_normal(mesh, query.face)
+                sign = query.sign
+
+            mesh_material_id = collider.face_material_index[global_face_id + query.face]
             thickness = collider.material_thickness[mesh_material_id]
 
             offset = x_local - cp
-            d = wp.length(offset) * query.sign
+            d = wp.length(offset) * sign
             sdf = d - thickness
 
             if sdf < min_sdf:
                 min_sdf = sdf
                 if wp.abs(d) < _CLOSEST_POINT_NORMAL_EPSILON:
-                    sdf_grad = wp.mesh_eval_face_normal(mesh, query.face)
+                    sdf_grad = face_normal
                 else:
-                    sdf_grad = wp.normalize(offset) * query.sign
+                    sdf_grad = wp.normalize(offset) * sign
 
                 sdf_vel = wp.mesh_eval_velocity(mesh, query.face, query.u, query.v)
                 closest_point = cp
@@ -159,11 +214,6 @@ def collision_sdf(
             sdf_vel = b_v + wp.cross(b_w, wp.quat_rotate(b_rot, closest_point - collider.body_com[body_id]))
 
     return min_sdf, sdf_grad, sdf_vel, collider_id, material_id
-
-
-@wp.func
-def collision_is_active(sdf: float, voxel_size: float):
-    return sdf < _COLLIDER_EXTRAPOLATION_DISTANCE * voxel_size
 
 
 @wp.kernel
@@ -272,13 +322,15 @@ def project_outside_collider(
 
 
 @wp.kernel
-def rasterize_collider(
+def rasterize_collider_kernel(
     collider: Collider,
     body_q: wp.array(dtype=wp.transform),
     body_qd: wp.array(dtype=wp.spatial_vector),
     voxel_size: float,
+    activation_distance: float,
     dt: float,
     node_positions: wp.array(dtype=wp.vec3),
+    node_volumes: wp.array(dtype=float),
     collider_sdf: wp.array(dtype=float),
     collider_velocity: wp.array(dtype=wp.vec3),
     collider_normals: wp.array(dtype=wp.vec3),
@@ -298,7 +350,7 @@ def rasterize_collider(
         collider: Collider description and geometry.
         body_q: Rigid body transforms.
         body_qd: Rigid body velocities.
-        voxel_size: Grid voxel edge length (sets query/extrapolation band).
+        activation_distance: Distance below which to activate the collider.
         dt: Timestep length (used to scale adhesion).
         node_positions: Grid node positions to sample at.
         collider_sdf: Output signed distance per node.
@@ -313,10 +365,10 @@ def rasterize_collider(
 
     if x[0] == fem.OUTSIDE:
         bc_active = False
-        sdf = fem.OUTSIDE
+        sdf = _INFINITY
     else:
         sdf, sdf_gradient, sdf_vel, collider_id, material_id = collision_sdf(x, collider, body_q, body_qd)
-        bc_active = collision_is_active(sdf, voxel_size)
+        bc_active = sdf < activation_distance * voxel_size
 
     collider_sdf[i] = sdf
 
@@ -332,7 +384,7 @@ def rasterize_collider(
     collider_normals[i] = sdf_gradient
 
     collider_friction[i] = collider.material_friction[material_id]
-    collider_adhesion[i] = collider.material_adhesion[material_id] * dt * voxel_size
+    collider_adhesion[i] = collider.material_adhesion[material_id] * dt * node_volumes[i] / voxel_size
 
     collider_velocity[i] = sdf_vel
 
@@ -415,6 +467,129 @@ def fill_collider_rigidity_matrices(
         non_rigid_diagonal[i] = wp.mat33(0.0)
 
 
+@fem.integrand
+def world_position(
+    s: fem.Sample,
+    domain: fem.Domain,
+):
+    return domain(s)
+
+
+@fem.integrand
+def collider_gradient_field(s: fem.Sample, domain: fem.Domain, distance: fem.Field, normal: fem.Field):
+    min_sdf = float(_INFINITY)
+    min_pos = wp.vec3(0.0)
+    min_grad = wp.vec3(0.0)
+
+    # min sdf over all nodes in the element
+    elem_count = fem.node_count(distance, s)
+    for k in range(elem_count):
+        s_node = fem.at_node(distance, s, k)
+        sdf = distance(s_node, k)
+        if sdf < min_sdf:
+            min_sdf = sdf
+            min_pos = domain(s_node)
+            min_grad = normal(s_node, k)
+
+    if min_sdf == _INFINITY:
+        return wp.vec3(0.0)
+
+    # compute gradient, filtering invalid values
+    sdf_gradient = wp.vec3(0.0)
+    for k in range(elem_count):
+        s_node = fem.at_node(distance, s, k)
+        sdf = distance(s_node, k)
+        pos = domain(s_node)
+
+        # if the sdf value is not acceptable (larger than min_sdf + distance between nodes),
+        # replace with linearized approximation
+        if sdf >= min_sdf + wp.length(pos - min_pos):
+            sdf = wp.min(sdf, min_sdf + wp.dot(min_grad, pos - min_pos))
+
+        sdf_gradient += sdf * fem.node_inner_weight_gradient(distance, s, k)
+
+    return sdf_gradient
+
+
+@wp.kernel
+def normalize_gradient(
+    gradient: wp.array(dtype=wp.vec3),
+    normal: wp.array(dtype=wp.vec3),
+):
+    i = wp.tid()
+    normal[i] = wp.normalize(gradient[i])
+
+
+def rasterize_collider(
+    collider: Collider,
+    body_q: wp.array(dtype=wp.transform),
+    body_qd: wp.array(dtype=wp.spatial_vector),
+    voxel_size: float,
+    dt: float,
+    collider_space_restriction: fem.SpaceRestriction,
+    collider_node_volume: wp.array(dtype=float),
+    collider_position_field: fem.DiscreteField,
+    collider_distance_field: fem.DiscreteField,
+    collider_normal_field: fem.DiscreteField,
+    collider_velocity: wp.array(dtype=wp.vec3),
+    collider_friction: wp.array(dtype=float),
+    collider_adhesion: wp.array(dtype=float),
+    collider_ids: wp.array(dtype=int),
+):
+    collision_node_count = collider_position_field.dof_values.shape[0]
+
+    collider_position_field.dof_values.fill_(wp.vec3(fem.OUTSIDE))
+    fem.interpolate(world_position, dest=collider_position_field, at=collider_space_restriction, reduction="first")
+
+    activation_distance = (
+        0.0 if collider_position_field.degree == 0 else _COLLIDER_ACTIVATION_DISTANCE / collider_position_field.degree
+    )
+
+    wp.launch(
+        rasterize_collider_kernel,
+        dim=collision_node_count,
+        inputs=[
+            collider,
+            body_q,
+            body_qd,
+            voxel_size,
+            activation_distance,
+            dt,
+            collider_position_field.dof_values,
+            collider_node_volume,
+            collider_distance_field.dof_values,
+            collider_velocity,
+            collider_normal_field.dof_values,
+            collider_friction,
+            collider_adhesion,
+            collider_ids,
+        ],
+    )
+
+
+def interpolate_collider_normals(
+    collider_space_restriction: fem.SpaceRestriction,
+    collider_distance_field: fem.DiscreteField,
+    collider_normal_field: fem.DiscreteField,
+):
+    # collider_distance_field.dof_values = corrected_distance
+    corrected_normal = wp.empty_like(collider_normal_field.dof_values)
+    fem.interpolate(
+        collider_gradient_field,
+        dest=corrected_normal,
+        dest_space=collider_normal_field.space,
+        at=collider_space_restriction,
+        fields={"distance": collider_distance_field, "normal": collider_normal_field},
+        reduction="mean",
+    )
+
+    wp.launch(
+        normalize_gradient,
+        dim=collider_normal_field.dof_values.shape,
+        inputs=[corrected_normal, collider_normal_field.dof_values],
+    )
+
+
 def allot_collider_mass(
     cell_volume: float,
     node_volumes: wp.array(dtype=float),
@@ -473,7 +648,7 @@ def allot_collider_mass(
     )
 
 
-def build_rigidity_matrix(
+def build_rigidity_operator(
     cell_volume: float,
     node_volumes: wp.array(dtype=float),
     node_positions: wp.array(dtype=wp.vec3),
@@ -484,7 +659,7 @@ def build_rigidity_matrix(
     collider_ids: wp.array(dtype=int),
     collider_total_volumes: wp.array(dtype=float),
 ) -> tuple[wps.BsrMatrix, wps.BsrMatrix, wps.BsrMatrix]:
-    """Assemble the collider rigidity matrix that couples node motion to rigid DOFs.
+    """Build the collider rigidity operator that couples node motion to rigid DOFs.
 
     Builds a block-sparse matrix of size (3 N_vel_nodes) x (3 N_vel_nodes) that
     maps nodal velocity corrections to rigid-body displacements. Only nodes
@@ -504,13 +679,14 @@ def build_rigidity_matrix(
         node_volumes: Per-velocity-node volume fractions.
         node_positions: World-space node positions (3D).
         collider: Packed collider parameters and geometry handles.
+        body_q: Rigid body transforms.
+        body_mass: Rigid body masses.
+        body_inv_inertia: Rigid body inverse inertia tensors.
         collider_ids: Per-velocity-node collider id, or -2 when not active.
-        collider_coms: Per-collider centers of mass in world space.
-        collider_inv_inertia: Per-collider inverse inertia tensors in world space.
         collider_total_volumes: Per-collider integrated volumes used to derive densities.
 
     Returns:
-        A tuple of ``warp.sparse.BsrMatrix`` (D, J, IJtm) representing the rigidity coupling operator (D + J @ IJtm)
+        A tuple of ``warp.sparse.BsrMatrix`` (D, J, IJtm) representing the rigidity coupling operator ``D + J @ IJtm``
     """
 
     vel_node_count = node_volumes.shape[0]

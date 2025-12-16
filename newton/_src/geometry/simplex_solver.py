@@ -47,7 +47,7 @@ from typing import Any
 
 import warp as wp
 
-from .mpr import Vert, create_support_map_function, vert_v
+from .mpr import Vert, create_support_map_function
 
 EPSILON = 1e-8
 
@@ -57,6 +57,17 @@ Mat83f = wp.types.matrix(shape=(8, 3), dtype=wp.float32)
 def create_solve_closest_distance(support_func: Any):
     """
     Factory function to create GJK distance solver with specific support and center functions.
+
+    Storage Convention for Simplex Vertices (Mat83f):
+    ------------------------------------------------
+    The simplex stores up to 4 vertices in a flat array where each vertex uses 2 consecutive vec3 slots:
+    - v[2*i]     stores B (point on shape B)
+    - v[2*i + 1] stores BtoA (vector from B to A, i.e., the Minkowski difference A - B)
+
+    This storage scheme allows:
+    - Direct access to the Minkowski difference (BtoA) which is used in most GJK operations
+    - Efficient reconstruction of point A when needed: A = B + BtoA
+    - Reduced function call overhead compared to wrapping field access in functions
 
     Args:
         support_func: Support mapping function for shapes
@@ -68,16 +79,17 @@ def create_solve_closest_distance(support_func: Any):
     _support_map_b, minkowski_support, geometric_center = create_support_map_function(support_func)
 
     @wp.func
-    def vert_diff(v: Mat83f, i: int) -> wp.vec3:
-        """Get the Minkowski difference vector (A - B) for vertex i."""
-        return v[2 * i] - v[2 * i + 1]
-
-    @wp.func
     def simplex_get_vertex(v: Mat83f, i: int) -> Vert:
-        """Get vertex by index from the simplex."""
+        """
+        Get vertex by index from the simplex.
+
+        Storage convention:
+        - v[2*i]     stores B (point on shape B)
+        - v[2*i + 1] stores BtoA (vector from B to A)
+        """
         result = Vert()
-        result.A = v[2 * i]
-        result.B = v[2 * i + 1]
+        result.B = v[2 * i]
+        result.BtoA = v[2 * i + 1]
         return result
 
     @wp.func
@@ -88,8 +100,9 @@ def create_solve_closest_distance(support_func: Any):
     ) -> tuple[wp.vec3, wp.vec4, wp.uint32]:
         """Find closest point on line segment."""
 
-        a = vert_diff(v, i0)
-        b = vert_diff(v, i1)
+        # Get Minkowski difference vectors (BtoA) directly
+        a = v[2 * i0 + 1]
+        b = v[2 * i1 + 1]
 
         edge = b - a
         vsq = wp.length_sq(edge)
@@ -131,9 +144,10 @@ def create_solve_closest_distance(support_func: Any):
     ) -> tuple[wp.vec3, wp.vec4, wp.uint32]:
         """Find closest point on triangle."""
 
-        a = vert_diff(v, i0)
-        b = vert_diff(v, i1)
-        c = vert_diff(v, i2)
+        # Get Minkowski difference vectors (BtoA) directly
+        a = v[2 * i0 + 1]
+        b = v[2 * i1 + 1]
+        c = v[2 * i2 + 1]
 
         u = a - b
         w = a - c
@@ -208,10 +222,11 @@ def create_solve_closest_distance(support_func: Any):
     ) -> tuple[wp.vec3, wp.vec4, wp.uint32]:
         """Find closest point on tetrahedron."""
 
-        v0 = vert_diff(v, 0)
-        v1 = vert_diff(v, 1)
-        v2 = vert_diff(v, 2)
-        v3 = vert_diff(v, 3)
+        # Get Minkowski difference vectors (BtoA) directly
+        v0 = v[2 * 0 + 1]
+        v1 = v[2 * 1 + 1]
+        v2 = v[2 * 2 + 1]
+        v3 = v[2 * 3 + 1]
 
         det_t = determinant(v0, v1, v2, v3)
         degenerate = wp.abs(det_t) < EPSILON
@@ -291,7 +306,8 @@ def create_solve_closest_distance(support_func: Any):
 
             vertex = simplex_get_vertex(v, i)
             bc_val = barycentric[i]
-            point_a = point_a + bc_val * vertex.A
+            # Reconstruct point A from B and BtoA
+            point_a = point_a + bc_val * (vertex.B + vertex.BtoA)
             point_b = point_b + bc_val * vertex.B
 
         return point_a, point_b
@@ -306,7 +322,7 @@ def create_solve_closest_distance(support_func: Any):
         data_provider: Any,
         MAX_ITER: int = 30,
         COLLIDE_EPSILON: float = 1e-4,
-    ) -> tuple[bool, wp.vec3, wp.vec3, wp.vec3, float, int, int]:
+    ) -> tuple[bool, wp.vec3, wp.vec3, wp.vec3, float]:
         """
         Core GJK distance algorithm implementation.
 
@@ -334,13 +350,9 @@ def create_solve_closest_distance(support_func: Any):
                 point_b (wp.vec3): Witness point on shape B (in A's local frame)
                 normal (wp.vec3): Contact normal from A to B (in A's local frame)
                 distance (float): Minimum distance between shapes (0 if overlapping)
-                feature_a_id (int): Feature ID for shape A at witness point
-                feature_b_id (int): Feature ID for shape B at witness point
         """
         # Initialize variables
         distance = float(0.0)
-        feature_a_id = int(0)
-        feature_b_id = int(0)
         point_a = wp.vec3(0.0, 0.0, 0.0)
         point_b = wp.vec3(0.0, 0.0, 0.0)
         normal = wp.vec3(0.0, 0.0, 0.0)
@@ -355,7 +367,8 @@ def create_solve_closest_distance(support_func: Any):
         # Get geometric center
         center = geometric_center(geom_a, geom_b, orientation_b, position_b, data_provider)
 
-        v = vert_v(center)
+        # Use BtoA directly (Minkowski difference)
+        v = center.BtoA
         dist_sq = wp.length_sq(v)
 
         last_search_dir = wp.vec3(1.0, 0.0, 0.0)
@@ -368,7 +381,7 @@ def create_solve_closest_distance(support_func: Any):
                 distance = 0.0
                 normal = wp.vec3(0.0, 0.0, 0.0)
                 point_a, point_b = simplex_get_closest(simplex_v, simplex_barycentric, simplex_usage_mask)
-                return False, point_a, point_b, normal, distance, feature_a_id, feature_b_id
+                return False, point_a, point_b, normal, distance
 
             # Determine search direction with fallback for near-zero cases
             used_fallback = bool(False)
@@ -381,13 +394,14 @@ def create_solve_closest_distance(support_func: Any):
             last_search_dir = search_dir
 
             # Get support point in search direction
-            w, feature_a_id, feature_b_id = minkowski_support(
+            w, _feature_a_id, _feature_b_id = minkowski_support(
                 geom_a, geom_b, search_dir, orientation_b, position_b, extend, data_provider
             )
 
             # Check for convergence using Frank-Wolfe duality gap
             # Skip check when using fallback direction to avoid premature exit
-            w_v = vert_v(w)
+            # Use BtoA directly (Minkowski difference)
+            w_v = w.BtoA
             if not used_fallback:
                 delta_dist = wp.dot(v, v - w_v)
                 if delta_dist < COLLIDE_EPSILON * wp.sqrt(dist_sq):
@@ -397,7 +411,8 @@ def create_solve_closest_distance(support_func: Any):
             is_duplicate = bool(False)
             for i in range(4):
                 if (simplex_usage_mask & (wp.uint32(1) << wp.uint32(i))) != wp.uint32(0):
-                    if wp.length_sq(vert_diff(simplex_v, i) - w_v) < COLLIDE_EPSILON * COLLIDE_EPSILON:
+                    # Compare BtoA vectors directly
+                    if wp.length_sq(simplex_v[2 * i + 1] - w_v) < COLLIDE_EPSILON * COLLIDE_EPSILON:
                         is_duplicate = bool(True)
                         break
             if is_duplicate:
@@ -418,16 +433,17 @@ def create_solve_closest_distance(support_func: Any):
 
             indices[use_count] = free_slot
             use_count += 1
-            # Set vertex in simplex
-            simplex_v[2 * free_slot] = w.A
-            simplex_v[2 * free_slot + 1] = w.B
+            # Set vertex in simplex using new storage convention: B, then BtoA
+            simplex_v[2 * free_slot] = w.B
+            simplex_v[2 * free_slot + 1] = w.BtoA
 
             closest = wp.vec3(0.0, 0.0, 0.0)
             success = True
 
             if use_count == 1:
                 i0 = indices[0]
-                closest = vert_diff(simplex_v, i0)
+                # Get BtoA directly (Minkowski difference)
+                closest = simplex_v[2 * i0 + 1]
                 simplex_usage_mask = wp.uint32(1) << wp.uint32(i0)
                 simplex_barycentric[i0] = 1.0
             elif use_count == 2:
@@ -461,7 +477,7 @@ def create_solve_closest_distance(support_func: Any):
                 distance = 0.0
                 normal = wp.vec3(0.0, 0.0, 0.0)
                 point_a, point_b = simplex_get_closest(simplex_v, simplex_barycentric, simplex_usage_mask)
-                return False, point_a, point_b, normal, distance, feature_a_id, feature_b_id
+                return False, point_a, point_b, normal, distance
 
             v = new_v
             dist_sq = wp.length_sq(v)
@@ -486,7 +502,7 @@ def create_solve_closest_distance(support_func: Any):
             else:
                 normal = wp.vec3(1.0, 0.0, 0.0)
 
-        return True, point_a, point_b, normal, distance, feature_a_id, feature_b_id
+        return True, point_a, point_b, normal, distance
 
     @wp.func
     def solve_closest_distance(
@@ -500,7 +516,7 @@ def create_solve_closest_distance(support_func: Any):
         data_provider: Any,
         MAX_ITER: int = 30,
         COLLIDE_EPSILON: float = 1e-4,
-    ) -> tuple[bool, float, wp.vec3, wp.vec3, int, int]:
+    ) -> tuple[bool, float, wp.vec3, wp.vec3]:
         """
         Solve GJK distance computation between two shapes.
 
@@ -516,7 +532,7 @@ def create_solve_closest_distance(support_func: Any):
             MAX_ITER: Maximum number of iterations for GJK algorithm
             COLLIDE_EPSILON: Small number for numerical comparisons
         Returns:
-            Tuple of (collision, distance, contact point center, normal, feature A ID, feature B ID)
+            Tuple of (collision, distance, contact point center, normal)
         """
         # Transform into reference frame of body A
         relative_orientation_b = wp.quat_inverse(orientation_a) * orientation_b
@@ -534,7 +550,7 @@ def create_solve_closest_distance(support_func: Any):
             COLLIDE_EPSILON,
         )
 
-        separated, point_a, point_b, normal, distance, feature_a_id, feature_b_id = result
+        separated, point_a, point_b, normal, distance = result
 
         point = 0.5 * (point_a + point_b)
 
@@ -545,6 +561,6 @@ def create_solve_closest_distance(support_func: Any):
         # Align semantics with MPR: return collision flag
         collision = not separated
 
-        return collision, distance, point, normal, feature_a_id, feature_b_id
+        return collision, distance, point, normal
 
     return solve_closest_distance

@@ -86,7 +86,7 @@ class Example:
         self.simulate()
         self.sim_time += self.frame_dt
 
-    def test(self):
+    def test_final(self):
         newton.examples.test_particle_state(
             self.state_0,
             "all particles are above the ground",

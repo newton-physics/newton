@@ -34,6 +34,7 @@ from ._src.utils.mesh import (
     create_capsule_mesh,
     create_cone_mesh,
     create_cylinder_mesh,
+    create_ellipsoid_mesh,
     create_plane_mesh,
     create_sphere_mesh,
 )
@@ -43,6 +44,7 @@ __all__ += [
     "create_capsule_mesh",
     "create_cone_mesh",
     "create_cylinder_mesh",
+    "create_ellipsoid_mesh",
     "create_plane_mesh",
     "create_sphere_mesh",
 ]
@@ -142,4 +144,14 @@ __all__ += [
     "EventTracer",
     "event_scope",
     "run_benchmark",
+]
+
+# ==================================================================================
+# import utils
+# ==================================================================================
+
+from ._src.utils.import_utils import parse_warp_value_from_string  # noqa: E402
+
+__all__ += [
+    "parse_warp_value_from_string",
 ]

@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# Some ray intersection functions are adapted from https://iquilezles.org/articles/intersectors/
 
 import warp as wp
 
@@ -79,6 +80,100 @@ def ray_intersect_sphere(geom_to_world: wp.transform, ray_origin: wp.vec3, ray_d
             if t2 >= 0.0:
                 t_hit = t2 * inv_d_len
     return t_hit
+
+
+@wp.func
+def ray_intersect_particle_sphere(ray_origin: wp.vec3, ray_direction: wp.vec3, center: wp.vec3, radius: float):
+    """Compute the closest hit along a (unit-length) ray against a sphere defined directly in world space.
+
+    Args:
+        ray_origin: The origin of the ray in world space.
+        ray_direction: The direction of the ray in world space (should be normalized).
+        center: The center of the sphere in world space.
+        radius: The radius of the sphere.
+
+    Returns:
+        The distance along the ray to the closest intersection point, or -1.0 if there is no intersection.
+    """
+    oc = ray_origin - center
+    proj = wp.dot(ray_direction, oc)
+    c = wp.dot(oc, oc) - radius * radius
+    disc = proj * proj - c
+
+    if disc < 0.0:
+        return -1.0
+
+    sqrt_disc = wp.sqrt(disc)
+    t_hit = -proj - sqrt_disc
+    if t_hit < 0.0:
+        # hit behind ray origin, try other root
+        t_hit = -proj + sqrt_disc
+
+    if t_hit < 0.0:
+        return -1.0
+
+    return t_hit
+
+
+@wp.func
+def ray_intersect_ellipsoid(
+    geom_to_world: wp.transform, ray_origin: wp.vec3, ray_direction: wp.vec3, semi_axes: wp.vec3
+):
+    """Computes ray-ellipsoid intersection.
+
+    The ellipsoid is defined by semi-axes (a, b, c) along the local X, Y, Z axes respectively.
+    Based on Inigo Quilez's ellipsoid intersection algorithm.
+
+    Args:
+        geom_to_world: The world transform of the ellipsoid.
+        ray_origin: The origin of the ray in world space.
+        ray_direction: The direction of the ray in world space.
+        semi_axes: The semi-axes (a, b, c) of the ellipsoid.
+
+    Returns:
+        The distance along the ray to the closest intersection point, or -1.0 if there is no intersection.
+    """
+    # Transform ray to local frame
+    world_to_geom = wp.transform_inverse(geom_to_world)
+    ro = wp.transform_point(world_to_geom, ray_origin)
+    rd = wp.transform_vector(world_to_geom, ray_direction)
+
+    # Reject degenerate rays (matching sphere/capsule pattern)
+    d_len_sq = wp.dot(rd, rd)
+    if d_len_sq < MINVAL:
+        return -1.0
+
+    ra = semi_axes
+
+    # Ensure semi-axes are valid
+    if ra[0] < MINVAL or ra[1] < MINVAL or ra[2] < MINVAL:
+        return -1.0
+
+    # Scale by inverse semi-axes (transforms ellipsoid to unit sphere)
+    ocn = wp.cw_div(ro, ra)
+    rdn = wp.cw_div(rd, ra)
+
+    a = wp.dot(rdn, rdn)
+    b = wp.dot(ocn, rdn)
+    c = wp.dot(ocn, ocn)
+
+    h = b * b - a * (c - 1.0)
+    if h < 0.0:
+        return -1.0  # No intersection
+
+    h = wp.sqrt(h)
+
+    # Two intersection points: (-b - h) / a and (-b + h) / a
+    t1 = (-b - h) / a
+    t2 = (-b + h) / a
+
+    # Return nearest positive intersection
+    if t1 >= 0.0:
+        return t1
+    if t2 >= 0.0:
+        return t2
+
+    return -1.0
 
 
 @wp.func
@@ -480,6 +575,9 @@ def ray_intersect_geom(
         h = size[1]
         t_hit = ray_intersect_cone(geom_to_world, ray_origin, ray_direction, r, h)
 
+    elif geomtype == GeoType.ELLIPSOID:
+        t_hit = ray_intersect_ellipsoid(geom_to_world, ray_origin, ray_direction, size)
+
     elif geomtype == GeoType.MESH or geomtype == GeoType.CONVEX_MESH:
         t_hit = ray_intersect_mesh(geom_to_world, ray_origin, ray_direction, size, mesh_id)
 
@@ -595,7 +693,7 @@ def ray_for_pixel(
         pixel_y: Pixel y coordinate (0 to height-1)
 
     Returns:
-        Tuple of (ray_origin, ray_direction) in world space
+        Tuple of (ray_origin, ray_direction) in world space. With the direction normalized.
     """
     width = resolution[0]
     height = resolution[1]
@@ -703,3 +801,96 @@ def raycast_sensor_kernel(
 
     if t >= 0.0:
         wp.atomic_min(hit_distances, pixel_y, pixel_x, t)
+
+
+@wp.kernel
+def raycast_sensor_particles_kernel(
+    grid: wp.uint64,
+    particle_positions: wp.array(dtype=wp.vec3),
+    particle_radius: wp.array(dtype=float),
+    search_radius: float,
+    march_step: float,
+    max_steps: wp.int32,
+    camera_position: wp.vec3,
+    camera_direction: wp.vec3,
+    camera_up: wp.vec3,
+    camera_right: wp.vec3,
+    fov_scale: float,
+    camera_aspect_ratio: float,
+    resolution: wp.vec2,
+    max_distance: float,
+    hit_distances: wp.array2d(dtype=float),
+):
+    """March rays against particles stored in a hash grid and record the nearest hit if found before max_distance.
+
+    Args:
+        grid: The hash grid containing the particles.
+        particle_positions: Array of particle positions.
+        particle_radius: Array of particle radii.
+        search_radius: The radius around each sample point to search for nearby particles.
+        march_step: The step size for ray marching.
+        max_steps: Maximum number of ray-march iterations allowed for a pixel.
+        camera_position: Camera position in world space.
+        camera_direction: Camera forward direction (normalized); rays travel along this vector.
+        camera_up: Camera up direction (normalized).
+        camera_right: Camera right direction (normalized).
+        fov_scale: Scale factor for field of view, computed as tan(fov_radians/2) where fov_radians is the vertical field of view angle in radians.
+        camera_aspect_ratio: Width/height aspect ratio.
+        resolution: Image resolution as (width, height).
+        max_distance: Maximum distance to march along the ray.
+        hit_distances: Output array of hit distances per pixel.
+    """
+    pixel_x, pixel_y = wp.tid()
+
+    if pixel_x >= resolution[0] or pixel_y >= resolution[1]:
+        return
+
+    ray_origin, ray_direction = ray_for_pixel(
+        camera_position,
+        camera_direction,
+        camera_up,
+        camera_right,
+        fov_scale,
+        camera_aspect_ratio,
+        resolution,
+        pixel_x,
+        pixel_y,
+    )
+
+    best = hit_distances[pixel_y, pixel_x]
+    if best < 0.0:
+        best = max_distance
+
+    search_radius_local = search_radius
+    step = march_step
+
+    s = wp.int32(0)
+    t = float(0.0)
+
+    while s < max_steps and t <= max_distance and t <= best:
+        sample_pos = ray_origin + ray_direction * t
+
+        query = wp.hash_grid_query(grid, sample_pos, search_radius_local)
+        candidate = int(0)
+
+        while wp.hash_grid_query_next(query, candidate):
+            # Intersect ray with particle sphere
+            radius = particle_radius[candidate]
+            if radius <= 0.0:
+                continue
+
+            center = particle_positions[candidate]
+            t_hit = ray_intersect_particle_sphere(ray_origin, ray_direction, center, radius)
+
+            if t_hit < 0.0:
+                continue
+
+            if t_hit > max_distance:
+                continue
+
+            if t_hit < best:
+                hit_distances[pixel_y, pixel_x] = t_hit
+                best = t_hit
+
+        s += 1
+        t += step

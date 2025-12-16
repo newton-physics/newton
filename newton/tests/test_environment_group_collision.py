@@ -38,21 +38,22 @@ class TestEnvironmentGroupCollision(unittest.TestCase):
         body2 = builder.add_body(xform=wp.transform_identity())
 
         # World 0: Box at origin
-        builder.current_world = 0
+        builder.begin_world()
         cfg0 = ModelBuilder.ShapeConfig(collision_group=1)
         builder.add_shape_box(
             body=body0, xform=wp.transform(wp.vec3(0, 0, 0), wp.quat_identity()), hx=0.5, hy=0.5, hz=0.5, cfg=cfg0
         )
+        builder.end_world()
 
         # World 1: Box slightly overlapping (would collide without world groups)
-        builder.current_world = 1
+        builder.begin_world()
         cfg1 = ModelBuilder.ShapeConfig(collision_group=1)
         builder.add_shape_box(
             body=body1, xform=wp.transform(wp.vec3(0.8, 0, 0), wp.quat_identity()), hx=0.5, hy=0.5, hz=0.5, cfg=cfg1
         )
+        builder.end_world()
 
         # Global box that should collide with both
-        builder.current_world = -1
         cfg_global = ModelBuilder.ShapeConfig(collision_group=-1)  # Use -1 to collide with everything
         builder.add_shape_box(
             body=body2,
@@ -89,15 +90,16 @@ class TestEnvironmentGroupCollision(unittest.TestCase):
         builder = ModelBuilder()
 
         # World 0: Particle
-        builder.current_world = 0
+        builder.begin_world()
         builder.add_particle(pos=(0, 0, 0), vel=(0, 0, 0), mass=1.0, radius=0.1)
+        builder.end_world()
 
         # World 1: Shape that overlaps with particle
-        builder.current_world = 1
+        builder.begin_world()
         builder.add_shape_sphere(body=-1, xform=wp.transform(wp.vec3(0, 0, 0), wp.quat_identity()), radius=0.2)
+        builder.end_world()
 
         # Global shape that should collide with particle
-        builder.current_world = -1
         builder.add_shape_box(
             body=-1, xform=wp.transform(wp.vec3(0, 0.2, 0), wp.quat_identity()), hx=0.5, hy=0.1, hz=0.5
         )
@@ -120,8 +122,8 @@ class TestEnvironmentGroupCollision(unittest.TestCase):
             contact_shape = int(contacts.soft_contact_shape.numpy()[0])
             self.assertEqual(contact_shape, 1, "Contact should be with global box shape")
 
-    def test_add_builder_world_groups(self):
-        """Test that add_builder correctly assigns world groups."""
+    def test_add_world_groups(self):
+        """Test that add_world correctly assigns world groups."""
         # Create a robot builder
         robot_builder = ModelBuilder()
         robot_builder.add_body(key="base")
@@ -135,15 +137,14 @@ class TestEnvironmentGroupCollision(unittest.TestCase):
         main_builder = ModelBuilder()
 
         # Add global ground plane
-        main_builder.current_world = -1
         cfg_ground = ModelBuilder.ShapeConfig(collision_group=-1)  # Collides with everything
         main_builder.add_shape_box(
             body=-1, xform=wp.transform(wp.vec3(0, -1, 0), wp.quat_identity()), hx=10, hy=0.1, hz=10, cfg=cfg_ground
         )
 
         # Add two robot instances in different worlds
-        main_builder.add_builder(robot_builder, world=0)
-        main_builder.add_builder(robot_builder, world=1)
+        main_builder.add_world(robot_builder)  # World 0
+        main_builder.add_world(robot_builder)  # World 1
 
         model = main_builder.finalize(device=self.device)
 
@@ -190,7 +191,7 @@ class TestEnvironmentGroupCollision(unittest.TestCase):
         body_g = builder.add_body(xform=wp.transform_identity())
 
         # World 0
-        builder.current_world = 0
+        builder.begin_world()
         # Shape A: collision group 1 (only collides with group 1)
         cfg_a = ModelBuilder.ShapeConfig(collision_group=1)
         builder.add_shape_sphere(
@@ -206,9 +207,10 @@ class TestEnvironmentGroupCollision(unittest.TestCase):
         builder.add_shape_sphere(
             body=body_c, xform=wp.transform(wp.vec3(1, 0, 0), wp.quat_identity()), radius=0.5, cfg=cfg_c
         )
+        builder.end_world()
 
         # World 1
-        builder.current_world = 1
+        builder.begin_world()
         # Shape D: collision group 1
         cfg_d = ModelBuilder.ShapeConfig(collision_group=1)
         builder.add_shape_sphere(
@@ -219,9 +221,9 @@ class TestEnvironmentGroupCollision(unittest.TestCase):
         builder.add_shape_sphere(
             body=body_e, xform=wp.transform(wp.vec3(0, 2, 0), wp.quat_identity()), radius=0.5, cfg=cfg_e
         )
+        builder.end_world()
 
         # Global world
-        builder.current_world = -1
         # Shape F: collision group 2, not a colliding shape
         cfg_f = ModelBuilder.ShapeConfig(collision_group=2, has_shape_collision=False)
         builder.add_shape_sphere(
@@ -272,19 +274,19 @@ class TestEnvironmentGroupCollision(unittest.TestCase):
         builder = ModelBuilder()
 
         # Create child body with shapes first
-        child_body = builder.add_body(xform=wp.transform_identity())
+        child_body = builder.add_link(xform=wp.transform_identity())
         builder.add_shape_box(body=child_body, hx=0.5, hy=0.5, hz=0.5)  # index 0
         builder.add_shape_box(body=child_body, hx=0.5, hy=0.5, hz=0.5)  # index 1
 
         # Create parent body with shapes after
-        parent_body = builder.add_body(xform=wp.transform((2.0, 0, 0), wp.quat_identity()))
+        parent_body = builder.add_link(xform=wp.transform((2.0, 0, 0), wp.quat_identity()))
         builder.add_shape_box(body=parent_body, hx=0.5, hy=0.5, hz=0.5)  # index 2
         builder.add_shape_box(body=parent_body, hx=0.5, hy=0.5, hz=0.5)  # index 3
 
         # Connect with joint - this will naturally create non-canonical pairs!
         # Without canonicalization, this would add pairs like (2,0), (2,1), (3,0), (3,1)
         # where parent shapes (2,3) > child shapes (0,1)
-        builder.add_joint_revolute(
+        joint = builder.add_joint_revolute(
             parent=parent_body,
             child=child_body,
             parent_xform=wp.transform_identity(),
@@ -292,6 +294,7 @@ class TestEnvironmentGroupCollision(unittest.TestCase):
             axis=(0, 0, 1),
             collision_filter_parent=True,  # This triggers parent-child shape filtering
         )
+        builder.add_articulation([joint])
 
         # Also test merging builders
         sub_builder = ModelBuilder()
@@ -361,5 +364,4 @@ class TestWorldGroupBroadphaseKernels(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    wp.clear_kernel_cache()
     unittest.main(verbosity=2)

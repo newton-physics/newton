@@ -755,6 +755,11 @@ def test_mesh_ground_collision_index(test, device):
     )
     mesh = Mesh(vertices=vertices, indices=[0, 1, 2])
     builder = newton.ModelBuilder(up_axis=newton.Axis.Y)
+
+    # Set large contact margin to ensure all mesh vertices will be within the contact margin
+    # Must be set BEFORE adding shapes
+    builder.rigid_contact_margin = 2.0
+
     # create body with nonzero mass to ensure it is not static
     # and contact points will be computed
     b = builder.add_body(mass=1.0)
@@ -769,11 +774,11 @@ def test_mesh_ground_collision_index(test, device):
         mesh=mesh,
     )
     builder.add_ground_plane()
+
     model = builder.finalize(device=device)
     test.assertEqual(model.shape_contact_pair_count, 3)
     state = model.state()
-    # ensure all the mesh vertices will be within the contact margin
-    contacts = model.collide(state, rigid_contact_margin=2.0)
+    contacts = model.collide(state)
     test.assertEqual(contacts.rigid_contact_max, 12)
     test.assertEqual(contacts.rigid_contact_count.numpy()[0], 3)
     tids = contacts.rigid_contact_tids.list()
@@ -808,5 +813,4 @@ add_function_test(TestCollision, "test_particle_collision", test_particle_collis
 add_function_test(TestCollision, "test_mesh_ground_collision_index", test_mesh_ground_collision_index, devices=devices)
 
 if __name__ == "__main__":
-    wp.clear_kernel_cache()
     unittest.main(verbosity=2, failfast=True)

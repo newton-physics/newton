@@ -825,7 +825,7 @@ class ClothSim:
 
     def finalize(self, handle_self_contact=False, ground=True, use_gravity=True):
         builder = newton.ModelBuilder(up_axis="Y")
-        builder.add_builder(self.builder)
+        builder.add_world(self.builder)
         if ground:
             builder.add_ground_plane()
         builder.color(include_bending=True)
@@ -1223,5 +1223,4 @@ for solver, tests in tests_to_run.items():
 
 
 if __name__ == "__main__":
-    wp.clear_kernel_cache()
     unittest.main(verbosity=2, failfast=True)

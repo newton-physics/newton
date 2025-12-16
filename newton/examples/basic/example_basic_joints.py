@@ -30,7 +30,7 @@ import newton.examples
 
 
 class Example:
-    def __init__(self, viewer):
+    def __init__(self, viewer, args=None):
         # setup simulation parameters first
         self.fps = 100
         self.frame_dt = 1.0 / self.fps
@@ -39,6 +39,7 @@ class Example:
         self.sim_dt = self.frame_dt / self.sim_substeps
 
         self.viewer = viewer
+        self.args = args
 
         builder = newton.ModelBuilder()
 
@@ -60,23 +61,24 @@ class Example:
         # -----------------------------
         y = rows[0]
 
-        a_rev = builder.add_body(xform=wp.transform(p=wp.vec3(0.0, y, drop_z + upper_hz), q=wp.quat_identity()))
-        b_rev = builder.add_body(
+        a_rev = builder.add_link(xform=wp.transform(p=wp.vec3(0.0, y, drop_z + upper_hz), q=wp.quat_identity()))
+        b_rev = builder.add_link(
             xform=wp.transform(
                 p=wp.vec3(0.0, y, drop_z - cuboid_hz), q=wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), 0.15)
-            )
+            ),
+            key="b_rev",
         )
         builder.add_shape_box(a_rev, hx=cuboid_hx, hy=cuboid_hy, hz=upper_hz)
         builder.add_shape_box(b_rev, hx=cuboid_hx, hy=cuboid_hy, hz=cuboid_hz)
 
-        builder.add_joint_fixed(
+        j_fixed_rev = builder.add_joint_fixed(
             parent=-1,
             child=a_rev,
             parent_xform=wp.transform(p=wp.vec3(0.0, y, drop_z + upper_hz), q=wp.quat_identity()),
             child_xform=wp.transform(p=wp.vec3(0.0, 0.0, 0.0), q=wp.quat_identity()),
             key="fixed_revolute_anchor",
         )
-        builder.add_joint_revolute(
+        j_revolute = builder.add_joint_revolute(
             parent=a_rev,
             child=b_rev,
             axis=wp.vec3(1.0, 0.0, 0.0),
@@ -84,6 +86,9 @@ class Example:
             child_xform=wp.transform(p=wp.vec3(0.0, 0.0, +cuboid_hz), q=wp.quat_identity()),
             key="revolute_a_b",
         )
+        # Create articulation from joints
+        builder.add_articulation([j_fixed_rev, j_revolute], key="revolute_articulation")
+
         # set initial joint angle
         builder.joint_q[-1] = wp.pi * 0.5
 
@@ -91,23 +96,24 @@ class Example:
         # PRISMATIC (slider) joint demo
         # -----------------------------
         y = rows[1]
-        a_pri = builder.add_body(xform=wp.transform(p=wp.vec3(0.0, y, drop_z + upper_hz), q=wp.quat_identity()))
-        b_pri = builder.add_body(
+        a_pri = builder.add_link(xform=wp.transform(p=wp.vec3(0.0, y, drop_z + upper_hz), q=wp.quat_identity()))
+        b_pri = builder.add_link(
             xform=wp.transform(
                 p=wp.vec3(0.0, y, drop_z - cuboid_hz), q=wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), 0.12)
-            )
+            ),
+            key="b_prismatic",
         )
         builder.add_shape_box(a_pri, hx=cuboid_hx, hy=cuboid_hy, hz=upper_hz)
         builder.add_shape_box(b_pri, hx=cuboid_hx, hy=cuboid_hy, hz=cuboid_hz)
 
-        builder.add_joint_fixed(
+        j_fixed_pri = builder.add_joint_fixed(
             parent=-1,
             child=a_pri,
             parent_xform=wp.transform(p=wp.vec3(0.0, y, drop_z + upper_hz), q=wp.quat_identity()),
             child_xform=wp.transform(p=wp.vec3(0.0, 0.0, 0.0), q=wp.quat_identity()),
             key="fixed_prismatic_anchor",
         )
-        builder.add_joint_prismatic(
+        j_prismatic = builder.add_joint_prismatic(
             parent=a_pri,
             child=b_pri,
             axis=wp.vec3(0.0, 0.0, 1.0),  # slide along Z
@@ -117,6 +123,8 @@ class Example:
             limit_upper=0.3,
             key="prismatic_a_b",
         )
+        # Create articulation from joints
+        builder.add_articulation([j_fixed_pri, j_prismatic], key="prismatic_articulation")
 
         # -----------------------------
         # BALL joint demo (sphere + cuboid)
@@ -126,13 +134,14 @@ class Example:
         z_offset = -1.0  # Shift down by 2 units
 
         # kinematic (massless) sphere as the parent anchor
-        a_ball = builder.add_body(
+        a_ball = builder.add_link(
             xform=wp.transform(p=wp.vec3(0.0, y, drop_z + radius + cuboid_hz + z_offset), q=wp.quat_identity())
         )
-        b_ball = builder.add_body(
+        b_ball = builder.add_link(
             xform=wp.transform(
                 p=wp.vec3(0.0, y, drop_z + radius + z_offset), q=wp.quat_from_axis_angle(wp.vec3(1.0, 1.0, 0.0), 0.1)
-            )
+            ),
+            key="b_ball",
         )
 
         rigid_cfg = newton.ModelBuilder.ShapeConfig()
@@ -140,13 +149,25 @@ class Example:
         builder.add_shape_sphere(a_ball, radius=radius, cfg=rigid_cfg)
         builder.add_shape_box(b_ball, hx=cuboid_hx, hy=cuboid_hy, hz=cuboid_hz)
 
-        builder.add_joint_ball(
+        # Connect parent to world
+        j_fixed_ball = builder.add_joint_fixed(
+            parent=-1,
+            child=a_ball,
+            parent_xform=wp.transform(p=wp.vec3(0.0, y, drop_z + radius + cuboid_hz + z_offset), q=wp.quat_identity()),
+            child_xform=wp.transform(p=wp.vec3(0.0, 0.0, 0.0), q=wp.quat_identity()),
+            key="fixed_ball_anchor",
+        )
+        j_ball = builder.add_joint_ball(
             parent=a_ball,
             child=b_ball,
             parent_xform=wp.transform(p=wp.vec3(0.0, 0.0, 0.0), q=wp.quat_identity()),
             child_xform=wp.transform(p=wp.vec3(0.0, 0.0, +cuboid_hz), q=wp.quat_identity()),
             key="ball_a_b",
         )
+
+        # Create articulation from joints
+        builder.add_articulation([j_fixed_ball, j_ball], key="ball_articulation")
+
         # set initial joint angle
         builder.joint_q[-4:] = wp.quat_rpy(0.5, 0.6, 0.7)
 
@@ -158,12 +179,15 @@ class Example:
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.control = self.model.control()
-        self.contacts = self.model.collide(self.state_0)
-
-        self.viewer.set_model(self.model)
 
         # not required for MuJoCo, but required for other solvers
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
+
+        # Create collision pipeline from command-line args (default: CollisionPipelineUnified with EXPLICIT)
+        self.collision_pipeline = newton.examples.create_collision_pipeline(self.model, self.args)
+        self.contacts = self.model.collide(self.state_0, collision_pipeline=self.collision_pipeline)
+
+        self.viewer.set_model(self.model)
 
         self.capture()
 
@@ -182,7 +206,7 @@ class Example:
             # apply forces to the model
             self.viewer.apply_forces(self.state_0)
 
-            self.contacts = self.model.collide(self.state_0)
+            self.contacts = self.model.collide(self.state_0, collision_pipeline=self.collision_pipeline)
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
 
             # swap states
@@ -196,7 +220,33 @@ class Example:
 
         self.sim_time += self.frame_dt
 
-    def test(self):
+    def test_post_step(self):
+        newton.examples.test_body_state(
+            self.model,
+            self.state_0,
+            "revolute motion in plane",
+            lambda q, qd: wp.length(abs(wp.cross(wp.spatial_bottom(qd), wp.vec3(1.0, 0.0, 0.0)))) < 1e-5,
+            indices=[self.model.body_key.index("b_rev")],
+        )
+
+        newton.examples.test_body_state(
+            self.model,
+            self.state_0,
+            "linear motion on axis",
+            lambda q, qd: wp.length(abs(wp.cross(wp.spatial_top(qd), wp.vec3(0.0, 0.0, 1.0)))) < 1e-5
+            and wp.length(wp.spatial_bottom(qd)) < 1e-5,
+            indices=[self.model.body_key.index("b_prismatic")],
+        )
+
+        newton.examples.test_body_state(
+            self.model,
+            self.state_0,
+            "ball motion on sphere",
+            lambda q, qd: abs(wp.dot(wp.spatial_bottom(qd), wp.vec3(0.0, 0.0, 1.0))) < 1e-3,
+            indices=[self.model.body_key.index("b_ball")],
+        )
+
+    def test_final(self):
         newton.examples.test_body_state(
             self.model,
             self.state_0,
@@ -238,6 +288,6 @@ if __name__ == "__main__":
     viewer, args = newton.examples.init()
 
     # Create viewer and run
-    example = Example(viewer)
+    example = Example(viewer, args)
 
     newton.examples.run(example, args)

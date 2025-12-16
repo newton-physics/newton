@@ -25,14 +25,14 @@ classifiers = [
 description = "A GPU-accelerated physics engine for robotics simulation"
 readme = "README.md"
 requires-python = ">=3.10"
-dependencies = ["warp-lang>=1.7.0.dev20250823"]
+dependencies = ["warp-lang>=1.11.0.dev20251205"]
 
 [project.optional-dependencies]
 # Core simulation dependencies
 sim = [
     # MuJoCo simulation
     "mujoco-warp>=0.0.1",         # MuJoCo, warp-accelerated
-    "mujoco>=3.3.6.dev802089588", # MuJoCo physics engine
+    "mujoco>=3.4.0.dev839962392", # MuJoCo physics engine
     "cbor2>=5.7.0",
 ]
 
@@ -77,6 +77,7 @@ dev = [
 
 # Documentation dependencies
 docs = [
+    "newton[importers]",    # include import dependencies
     "myst-parser>=3.0.1",
     "sphinx>=7.4.7",
     "pydata_sphinx_theme>=0.16.1",
@@ -84,6 +85,14 @@ docs = [
     "sphinx-copybutton>=0.5.0",
     "sphinx-design<=0.6.1",
     "sphinx-tabs>=3.3.0",
+]
+
+# Dependencies for Jupyter notebook compatibility
+notebook = [
+    "newton[examples]",
+    "rerun-sdk[notebook]>=0.27.1",
+    "tqdm>=4.67.1",
+    "jupyterlab>=4.4.10",
 ]
 
 [tool.hatch.version]
