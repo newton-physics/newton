@@ -920,6 +920,15 @@ def validate_edge_collisions_distance_filter(
 
 @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
 def test_collision_filtering(test, device):
+    """Ensure filtering lists include requested exclusions and respect n-ring topology.
+
+    The test builds a cloth model, applies both vertex-triangle and edge-edge
+    exclusion maps, then queries the solver's precomputed filter lists.
+    It verifies:
+      1. The filter arrays remain sorted (to allow binary search in downstream code).
+      2. External filter entries we requested are present.
+      3. Remaining entries lie within the configured topological `ring` distance.
+    """
     vertices, faces = get_data()
 
     model, _collision_detector = init_model(vertices, faces, device, False, True)
@@ -1067,6 +1076,7 @@ def test_collision_filtering(test, device):
         ],
         device=device,
     )
+    wp.synchronize_device(device)
 
 
 devices = get_test_devices(mode="basic")

@@ -1829,10 +1829,22 @@ def accumulate_contact_force_and_hessian(
 
 
 def _csr_row(vals: np.ndarray, offs: np.ndarray, i: int) -> np.ndarray:
+    """Extract CSR row `i` from the flattened adjacency arrays."""
     return vals[offs[i] : offs[i + 1]]
 
 
 def _set_to_csr(list_of_sets, dtype=np.int32, sort=True):
+    """
+    Convert a list of integer sets into CSR (Compressed Sparse Row) structure.
+
+    Args:
+        list_of_sets: Iterable where each entry is a set of ints.
+        dtype: Output dtype for the flattened arrays.
+        sort: Whether to sort each row when writing into `flat`.
+
+    Returns:
+        A tuple `(flat, offsets)` representing the CSR values and offsets.
+    """
     offsets = np.zeros(len(list_of_sets) + 1, dtype=dtype)
     sizes = np.fromiter((len(s) for s in list_of_sets), count=len(list_of_sets), dtype=dtype)
     np.cumsum(sizes, out=offsets[1:])
@@ -1852,6 +1864,18 @@ def _set_to_csr(list_of_sets, dtype=np.int32, sort=True):
 def one_ring_vertices(
     v: int, edge_indices: np.ndarray, v_adj_edges: np.ndarray, v_adj_edges_offsets: np.ndarray
 ) -> np.ndarray:
+    """
+    Find immediate neighboring vertices that share an edge with vertex `v`.
+
+    Args:
+        v: Vertex index whose neighborhood is queried.
+        edge_indices: Array of shape [num_edges, 4] storing edge endpoint indices.
+        v_adj_edges: Flattened CSR adjacency array listing edge ids and local order.
+        v_adj_edges_offsets: CSR offsets indexing into `v_adj_edges`.
+
+    Returns:
+        Sorted array of neighboring vertex indices, excluding `v`.
+    """
     e_u = edge_indices[:, 2]
     e_v = edge_indices[:, 3]
     # preserve only the adjacent edge information, remove the order information
@@ -1870,6 +1894,19 @@ def one_ring_vertices(
 def leq_n_ring_vertices(
     v: int, edge_indices: np.ndarray, n: int, v_adj_edges: np.ndarray, v_adj_edges_offsets: np.ndarray
 ) -> np.ndarray:
+    """
+    Find all vertices within n-ring distance of vertex v using BFS.
+
+    Args:
+        v: Starting vertex index
+        edge_indices: Edge connectivity array
+        n: Maximum ring distance
+        v_adj_edges: CSR values for vertex-edge adjacency
+        v_adj_edges_offsets: CSR offsets for vertex-edge adjacency
+
+    Returns:
+        Array of all vertices within n-ring distance, including v itself
+    """
     visited = {v}
     frontier = {v}
     for _ in range(n):

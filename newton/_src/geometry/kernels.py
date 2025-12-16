@@ -2284,7 +2284,7 @@ def vertex_triangle_collision_detection_kernel(
         certain element in resized_flag to be true. The user can reallocate the buffer based on vertex_colliding_triangles_count
         and vertex_colliding_triangles_count.
 
-    Attributes:
+    Args:
         bvh_id (int): the bvh id you want to collide with
         max_query_radius (float): the upper bound of collision distance.
         min_query_radius (float): the lower bound of collision distance. This distance is evaluated based on min_distance_filtering_ref_pos
