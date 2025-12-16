@@ -109,7 +109,7 @@ def parse_urdf(
     else:
         xform = wp.transform(*xform) * axis_xform
 
-    source = str(source) if hasattr(source, "__fspath__") else source
+    source = os.fspath(source) if hasattr(source, "__fspath__") else source
 
     if source.startswith(("package://", "model://")):
         if resolve_robotics_uri is not None:
