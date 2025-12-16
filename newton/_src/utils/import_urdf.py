@@ -109,6 +109,27 @@ def parse_urdf(
     else:
         xform = wp.transform(*xform) * axis_xform
 
+    # Convert Path objects to string
+    source = str(source) if hasattr(source, "__fspath__") else source
+
+    # Resolve package:// or model:// URIs in source path
+    if source.startswith(("package://", "model://")):
+        if resolve_robotics_uri is not None:
+            try:
+                source = resolve_robotics_uri(source)
+            except FileNotFoundError:
+                raise FileNotFoundError(
+                    f'Could not resolve URDF source URI "{source}". '
+                    f"Check that the package is installed and that relevant environment variables "
+                    f"(ROS_PACKAGE_PATH, AMENT_PREFIX_PATH, GZ_SIM_RESOURCE_PATH, etc.) are set correctly. "
+                    f"See https://github.com/ami-iit/resolve-robotics-uri-py for details."
+                ) from None
+        else:
+            raise ImportError(
+                f'Cannot resolve URDF source URI "{source}" without resolve-robotics-uri-py. '
+                f"Install it with: pip install resolve-robotics-uri-py"
+            )
+
     if os.path.isfile(source):
         file = ET.parse(source)
         urdf_root = file.getroot()
