@@ -294,15 +294,9 @@ def parse_urdf(
                     # note that the file must be deleted after use
                     file_tmp = download_asset_tmpfile(filename)
                     filename = file_tmp.name
-                elif os.path.isfile(source):
-                    filename = os.path.join(os.path.dirname(source), filename)
                 else:
-                    warnings.warn(
-                        f'Warning: cannot resolve relative mesh path "{filename}" when URDF is loaded from XML string. '
-                        f"Load URDF from a file path instead.",
-                        stacklevel=2,
-                    )
-                    continue
+                    filename = os.path.join(os.path.dirname(source), filename)
+
                 if not os.path.exists(filename):
                     warnings.warn(f"Warning: mesh file {filename} does not exist", stacklevel=2)
                     continue
