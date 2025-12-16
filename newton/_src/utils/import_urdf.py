@@ -256,6 +256,15 @@ def parse_urdf(
                             continue
                     else:
                         # Fallback: basic resolution relative to URDF folder
+                        # Only works if source is a file path (not XML content)
+                        if not os.path.isfile(source):
+                            warnings.warn(
+                                f'Warning: cannot resolve URI "{filename}" when URDF is loaded from XML string. '
+                                f"Load URDF from a file path, or install resolve-robotics-uri-py: "
+                                f"pip install resolve-robotics-uri-py",
+                                stacklevel=2,
+                            )
+                            continue
                         if filename.startswith("package://"):
                             fn = filename.replace("package://", "")
                             package_name = fn.split("/")[0]
@@ -285,8 +294,15 @@ def parse_urdf(
                     # note that the file must be deleted after use
                     file_tmp = download_asset_tmpfile(filename)
                     filename = file_tmp.name
-                else:
+                elif os.path.isfile(source):
                     filename = os.path.join(os.path.dirname(source), filename)
+                else:
+                    warnings.warn(
+                        f'Warning: cannot resolve relative mesh path "{filename}" when URDF is loaded from XML string. '
+                        f"Load URDF from a file path instead.",
+                        stacklevel=2,
+                    )
+                    continue
                 if not os.path.exists(filename):
                     warnings.warn(f"Warning: mesh file {filename} does not exist", stacklevel=2)
                     continue
