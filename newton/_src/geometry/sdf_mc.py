@@ -13,13 +13,36 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""Marching Cubes utilities for SDF isosurface extraction.
+
+Provides lookup tables and GPU functions for extracting triangular faces
+from voxels that contain the zero-isosurface of an SDF. Used by hydroelastic
+contact generation to find the contact surface between two colliding SDFs.
+
+The marching cubes algorithm classifies each voxel by which of its 8 corners
+are inside (negative SDF) vs outside (positive SDF), producing up to 5
+triangles per voxel along the zero-crossing.
+"""
+
 import numpy as np
 import warp as wp
 
+#: Corner values for a single voxel (8 corners)
 vec8f = wp.types.vector(length=8, dtype=wp.float32)
 
 
 def get_mc_tables(device):
+    """Create marching cubes lookup tables on the specified device.
+
+    Returns:
+        Tuple of 5 warp arrays:
+        - tri_range_table: Start/end indices into triangle list per cube case (256 cases)
+        - tri_local_inds_table: Edge indices for each triangle vertex
+        - edge_to_verts_table: Corner vertex pairs for each of 12 edges
+        - corner_offsets_table: 3D offsets for 8 cube corners
+        - flat_edge_verts_table: Pre-flattened edge→vertex mapping for efficiency
+    """
+    # 12 edges of a cube, each connecting two corner vertices
     edge_to_verts = np.array(
         [
             [0, 1],  # 0
@@ -65,12 +88,18 @@ def get_mc_tables(device):
 
 @wp.func
 def int_to_vec3f(x: wp.int32, y: wp.int32, z: wp.int32):
+    """Convert integer voxel coordinates to float vector."""
     return wp.vec3f(float(x), float(y), float(z))
 
 
 @wp.func
 def get_triangle_fraction(vert_depths: wp.vec3f, num_inside: wp.int32) -> wp.float32:
-    """Compute the fraction of a triangle that lies inside the object based on vertex depths."""
+    """Compute the fraction of a triangle's area that lies inside the object.
+
+    Uses linear interpolation along edges to estimate where the zero-crossing
+    occurs, then computes the area ratio. Returns 1.0 if all vertices inside,
+    0.0 if all outside, or a proportional fraction for partial intersections.
+    """
     if num_inside == 3:
         return 1.0
 
@@ -119,7 +148,19 @@ def mc_calc_face(
     y_id: wp.int32,
     z_id: wp.int32,
 ) -> tuple[float, wp.vec3, wp.vec3, float, wp.mat33f]:
-    """Calculate a marching cubes triangle face with area, normal, center, and penetration depth."""
+    """Extract a triangle face from a marching cubes voxel.
+
+    Interpolates vertex positions along cube edges where the SDF crosses zero,
+    then computes face properties for contact generation.
+
+    Returns:
+        Tuple of (area, normal, center, penetration_depth, vertices):
+        - area: Triangle area scaled by fraction inside the object
+        - normal: Outward-facing unit normal
+        - center: Triangle centroid in world space
+        - penetration_depth: Average depth of vertices below surface
+        - vertices: 3x3 matrix with vertex positions as rows
+    """
     face_verts = wp.mat33f()
     vert_depths = wp.vec3f()
     num_inside = wp.int32(0)
