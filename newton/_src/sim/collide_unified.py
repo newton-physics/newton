@@ -673,12 +673,12 @@ class CollisionPipelineUnified:
 
         return contacts
 
-    def get_isosurface_data(self):
-        """Get isosurface data from hydroelastic collision detection, if available.
+    def get_hydro_contact_surface(self):
+        """Get hydroelastic contact surface data for visualization, if available.
 
         Returns:
-            IsosurfaceData if sdf_hydroelastic is configured, None otherwise.
+            HydroelasticContactSurfaceData if sdf_hydroelastic is configured, None otherwise.
         """
         if self.sdf_hydroelastic is not None:
-            return self.sdf_hydroelastic.get_isosurface_data()
+            return self.sdf_hydroelastic.get_hydro_contact_surface()
         return None

@@ -44,19 +44,19 @@ def int_to_vec3f(x: wp.int32, y: wp.int32, z: wp.int32):
 
 
 @dataclass
-class IsosurfaceData:
+class HydroelasticContactSurfaceData:
     """
-    Data container for contact isosurface.
+    Data container for hydroelastic contact surface visualization.
 
     Contains the vertex arrays and metadata needed for rendering
-    the isosurface triangles from hydroelastic collision detection.
+    the contact surface triangles from hydroelastic collision detection.
     """
 
-    iso_vertex_point: wp.array
-    """World-space positions of isosurface triangle vertices (3 per face)."""
-    iso_vertex_depth: wp.array
+    contact_surface_point: wp.array
+    """World-space positions of contact surface triangle vertices (3 per face)."""
+    contact_surface_depth: wp.array
     """Penetration depth at each face centroid."""
-    iso_vertex_shape_pair: wp.array
+    contact_surface_shape_pair: wp.array
     """Shape pair indices (shape_a, shape_b) for each face."""
     face_contact_count: wp.array
     """Array containing the number of face contacts."""
@@ -80,8 +80,8 @@ class SDFHydroelasticConfig:
     """Multiplier for buffer size for contact handling."""
     grid_size: int = 256 * 8 * 128
     """Grid size for contact handling. Can be tuned for performance."""
-    output_iso_vertices: bool = False
-    """Whether to output iso vertices of isosurfaces."""
+    output_contact_surface: bool = False
+    """Whether to output hydroelastic contact surface vertices for visualization."""
     betas: tuple[float, float] = (10.0, -0.5)
     """Penetration beta values."""
     sticky_contacts: float = 0.0
@@ -218,8 +218,8 @@ class SDFHydroelastic:
             self.face_contact_area = wp.empty((self.max_num_face_contacts,), dtype=wp.float32)
             self.contact_normal_bin_idx = wp.empty((self.max_num_face_contacts,), dtype=wp.int32)
 
-            if self.config.output_iso_vertices:
-                # stores the point and depth of the iso vertex
+            if self.config.output_contact_surface:
+                # stores the point and depth of the contact surface vertex
                 self.iso_vertex_point = wp.empty((3 * self.max_num_face_contacts,), dtype=wp.vec3f)
                 self.iso_vertex_depth = wp.empty((self.max_num_face_contacts,), dtype=wp.float32)
                 self.iso_vertex_shape_pair = wp.empty((self.max_num_face_contacts,), dtype=wp.vec2i)
@@ -231,7 +231,7 @@ class SDFHydroelastic:
             self.mc_tables = get_mc_tables(device)
 
             self.count_faces_kernel, self.scatter_faces_kernel = get_generate_contacts_kernel(
-                self.config.output_iso_vertices,
+                self.config.output_contact_surface,
             )
 
             if self.config.reduce_contacts:
@@ -354,19 +354,19 @@ class SDFHydroelastic:
             writer_func=writer_func,
         )
 
-    def get_isosurface_data(self) -> IsosurfaceData | None:
-        """Get the isosurface data for visualization.
+    def get_hydro_contact_surface(self) -> HydroelasticContactSurfaceData | None:
+        """Get the hydroelastic contact surface data for visualization.
 
         Returns:
-            IsosurfaceData containing vertex arrays and metadata for rendering,
-            or None if `output_iso_vertices` is False in the config.
+            HydroelasticContactSurfaceData containing vertex arrays and metadata for rendering,
+            or None if `output_contact_surface` is False in the config.
         """
-        if not self.config.output_iso_vertices:
+        if not self.config.output_contact_surface:
             return None
-        return IsosurfaceData(
-            iso_vertex_point=self.iso_vertex_point,
-            iso_vertex_depth=self.iso_vertex_depth,
-            iso_vertex_shape_pair=self.iso_vertex_shape_pair,
+        return HydroelasticContactSurfaceData(
+            contact_surface_point=self.iso_vertex_point,
+            contact_surface_depth=self.iso_vertex_depth,
+            contact_surface_shape_pair=self.iso_vertex_shape_pair,
             face_contact_count=self.face_contact_count,
             max_num_face_contacts=self.max_num_face_contacts,
         )

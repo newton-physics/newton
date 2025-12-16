@@ -1128,10 +1128,6 @@ class ViewerGL(ViewerBase):
                     show_inertia_boxes = self.show_inertia_boxes
                     changed, self.show_inertia_boxes = imgui.checkbox("Show Inertia Boxes", show_inertia_boxes)
 
-                    # Isosurface visualization toggle
-                    show_isosurface = self.show_isosurface
-                    changed, self.show_isosurface = imgui.checkbox("Show Isosurface", show_isosurface)
-
             imgui.set_next_item_open(True, imgui.Cond_.appearing)
             if imgui.collapsing_header("Example Options"):
                 # Render UI callbacks for side panel

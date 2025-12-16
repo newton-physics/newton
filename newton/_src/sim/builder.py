@@ -481,10 +481,6 @@ class ModelBuilder:
         the ModelBuilder's internal state.
         Default: False."""
 
-        self.show_isomeshes = False
-        """Whether to compute isomeshes (isosurface meshes) for each SDF Volume at finalize time.
-        When True, isomeshes are computed using marching cubes and stored in Model.shape_isomesh.
-        Useful for visualization of SDF volumes. Default: False."""
         # endregion
 
         # particles
@@ -5518,7 +5514,6 @@ class ModelBuilder:
             # Compute SDFs for mesh shapes (per-shape opt-in via sdf_max_resolution, sdf_target_voxel_size or is_hydroelastic)
             from ..geometry.sdf_utils import (  # noqa: PLC0415
                 SDFData,
-                compute_isomesh,
                 compute_sdf,
                 create_empty_sdf_data,
             )
@@ -5587,14 +5582,12 @@ class ModelBuilder:
 
             if has_sdf_meshes or has_hydroelastic_shapes:
                 sdf_data_list = []
-                # Keep volume/isomesh objects alive for reference counting
+                # Keep volume objects alive for reference counting
                 sdf_volumes = []
                 sdf_coarse_volumes = []
-                isomeshes = []
 
                 # caches
                 sdf_cache = {}
-                isomesh_cache = {}
 
                 sdf_block_coords = []  # flat array of coordinates of active SDF tiles
                 sdf_shape2blocks = []  # array indexing into sdf_block_coords for each shape. Multiple shapes can index into the same block range.
@@ -5664,27 +5657,16 @@ class ModelBuilder:
                             num_blocks = len(block_coords)
                             shape2blocks = [block_start_idx, block_start_idx + num_blocks]
                             sdf_block_coords.extend(block_coords)
-
-                        # Compute isomesh if show_isomeshes is enabled
-                        isomesh = None
-                        if self.show_isomeshes and sparse_volume is not None:
-                            if cache_key in isomesh_cache:
-                                isomesh = isomesh_cache[cache_key]
-                            else:
-                                isomesh = compute_isomesh(sparse_volume)
-                                isomesh_cache[cache_key] = isomesh
                     else:
                         # Non-SDF shapes get empty SDFData
                         sdf_data = empty_sdf_data
                         sparse_volume = None
                         coarse_volume = None
-                        isomesh = None
                         shape2blocks = [0, 0]
 
                     sdf_data_list.append(sdf_data)
                     sdf_volumes.append(sparse_volume)
                     sdf_coarse_volumes.append(coarse_volume)
-                    isomeshes.append(isomesh)
                     sdf_shape2blocks.append(shape2blocks)
 
                 # Create array of SDFData structs
@@ -5692,7 +5674,6 @@ class ModelBuilder:
                 # Keep volume objects alive for reference counting
                 m.shape_sdf_volume = sdf_volumes
                 m.shape_sdf_coarse_volume = sdf_coarse_volumes
-                m.shape_isomesh = isomeshes
                 m.shape_sdf_block_coords = wp.array(sdf_block_coords, dtype=wp.vec3us)
                 m.shape_sdf_shape2blocks = wp.array(sdf_shape2blocks, dtype=wp.vec2i)
             else:
@@ -5702,7 +5683,6 @@ class ModelBuilder:
                 m.shape_sdf_data = wp.array([empty_sdf_data] * len(self.shape_type), dtype=SDFData, device=device)
                 m.shape_sdf_volume = [None] * len(self.shape_type)
                 m.shape_sdf_coarse_volume = [None] * len(self.shape_type)
-                m.shape_isomesh = [None] * len(self.shape_type)
                 m.shape_sdf_block_coords = wp.array([], dtype=wp.vec3us)
                 m.shape_sdf_shape2blocks = wp.array([], dtype=wp.vec2i)
 

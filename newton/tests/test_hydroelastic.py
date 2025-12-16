@@ -127,7 +127,7 @@ def build_stacked_cubes_scene(
 
     newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
 
-    sdf_hydroelastic_config = SDFHydroelasticConfig(output_iso_vertices=True, reduce_contacts=reduce_contacts)
+    sdf_hydroelastic_config = SDFHydroelasticConfig(output_contact_surface=True, reduce_contacts=reduce_contacts)
 
     rigid_contact_max_per_pair = 5000 if not reduce_contacts else 100
 
@@ -326,7 +326,7 @@ def test_mujoco_hydroelastic_penetration_depth(test, device):
 
     newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
 
-    sdf_config = SDFHydroelasticConfig(output_iso_vertices=True)
+    sdf_config = SDFHydroelasticConfig(output_contact_surface=True)
     collision_pipeline = newton.CollisionPipelineUnified.from_model(
         model,
         rigid_contact_max_per_pair=100,
@@ -369,15 +369,15 @@ def test_mujoco_hydroelastic_penetration_depth(test, device):
             f"Case {i}: Upper cube moved {displacement:.4f}m from initial position, exceeds {position_tolerance}m tolerance",
         )
 
-    # Measure penetration from iso_vertex_depth
-    iso_data = collision_pipeline.get_isosurface_data()
-    test.assertIsNotNone(iso_data, "Isosurface data should be available")
+    # Measure penetration from contact surface depth
+    surface_data = collision_pipeline.get_hydro_contact_surface()
+    test.assertIsNotNone(surface_data, "Hydroelastic contact surface data should be available")
 
-    num_faces = int(iso_data.face_contact_count.numpy()[0])
+    num_faces = int(surface_data.face_contact_count.numpy()[0])
     test.assertGreater(num_faces, 0, "Should have face contacts")
 
-    depths = iso_data.iso_vertex_depth.numpy()[:num_faces]
-    shape_pairs = iso_data.iso_vertex_shape_pair.numpy()[:num_faces]
+    depths = surface_data.contact_surface_depth.numpy()[:num_faces]
+    shape_pairs = surface_data.contact_surface_shape_pair.numpy()[:num_faces]
 
     # Calculate expected and measured penetration for each case
     total_force = gravity * mass_upper + external_force
@@ -457,7 +457,7 @@ class TestHydroelastic(unittest.TestCase):
                 viewer.begin_frame(sim_time)
                 viewer.log_state(state_0)
                 viewer.log_contacts(contacts, state_0)
-                viewer.log_isosurface(collision_pipeline.get_isosurface_data(), penetrating_only=False)
+                viewer.log_hydro_contact_surface(collision_pipeline.get_hydro_contact_surface(), penetrating_only=False)
                 viewer.end_frame()
 
                 state_0, state_1 = simulate(

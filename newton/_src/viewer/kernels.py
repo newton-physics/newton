@@ -448,7 +448,7 @@ def depth_to_color(depth: float, min_depth: float, max_depth: float) -> wp.vec3:
 
 
 @wp.kernel
-def compute_isosurface_lines(
+def compute_hydro_contact_surface_lines(
     triangle_vertices: wp.array(dtype=wp.vec3),
     face_depths: wp.array(dtype=wp.float32),
     face_shape_pairs: wp.array(dtype=wp.vec2i),
@@ -462,7 +462,7 @@ def compute_isosurface_lines(
     line_ends: wp.array(dtype=wp.vec3),
     line_colors: wp.array(dtype=wp.vec3),
 ):
-    """Convert triangle vertices to line segments for wireframe rendering."""
+    """Convert hydroelastic contact surface triangle vertices to line segments for wireframe rendering."""
     tid = wp.tid()
     if tid >= num_faces:
         return

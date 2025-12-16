@@ -33,7 +33,7 @@ from newton.utils import (
 )
 
 from ..core.types import nparray
-from .kernels import compute_isosurface_lines, estimate_world_extents
+from .kernels import compute_hydro_contact_surface_lines, estimate_world_extents
 
 
 class ViewerBase:
@@ -77,12 +77,12 @@ class ViewerBase:
         self.show_visual = True  # show visual shapes (non collider)
         self.show_static = False  # force static shapes to be visible
         self.show_inertia_boxes = False
-        self.show_isosurface = False  # show isosurface wireframe
+        self.show_hydro_contact_surface = False  # show hydroelastic contact surface wireframe
 
-        # cache for isosurface line rendering (lazily allocated)
-        self._iso_line_starts: wp.array | None = None
-        self._iso_line_ends: wp.array | None = None
-        self._iso_line_colors: wp.array | None = None
+        # cache for hydroelastic contact surface line rendering (lazily allocated)
+        self._hydro_surface_line_starts: wp.array | None = None
+        self._hydro_surface_line_ends: wp.array | None = None
+        self._hydro_surface_line_colors: wp.array | None = None
 
         self.model_shape_color: wp.array(dtype=wp.vec3) = None
         """Color of shapes created from ``self.model``, shape (model.shape_count,)"""
@@ -90,6 +90,12 @@ class ViewerBase:
         self._shape_to_slot: nparray | None = None
         # map from shape index -> Instances
         self._shape_to_batch: list[ViewerBase.ShapeInstances | None] | None = None
+
+        # cache for isomeshes (computed on demand for collision shapes with SDF volumes)
+        self._shape_isomesh: list | None = None
+
+        # SDF isomesh instances -- created on-demand for collision visualization
+        self._sdf_isomesh_instances: dict[int, ViewerBase.ShapeInstances] = {}
 
     def is_running(self) -> bool:
         return True
@@ -121,6 +127,41 @@ class ViewerBase:
             # Auto-compute world offsets if not already set
             if self.world_offsets is None:
                 self._auto_compute_world_offsets()
+
+    def _get_shape_isomesh(self, shape_idx: int):
+        """Get the isomesh for a collision shape with an SDF volume.
+
+        Computes the marching-cubes isosurface from the SDF volume and caches it.
+
+        Args:
+            shape_idx: Index of the shape.
+
+        Returns:
+            Mesh object for the isomesh, or None if shape has no SDF volume.
+        """
+        if self.model is None:
+            return None
+
+        # Check if this shape has an SDF volume
+        sdf_volume = self.model.shape_sdf_volume[shape_idx] if self.model.shape_sdf_volume else None
+        if sdf_volume is None:
+            return None
+
+        # Lazy initialization of cache
+        if self._shape_isomesh is None:
+            self._shape_isomesh = [None] * self.model.shape_count
+
+        # Check if already computed (use False as sentinel for "computed but no mesh")
+        cached = self._shape_isomesh[shape_idx]
+        if cached is not None:
+            return cached if cached is not False else None
+
+        # Compute isomesh from SDF volume
+        from ..geometry.sdf_utils import compute_isomesh  # noqa: PLC0415
+
+        isomesh = compute_isomesh(sdf_volume)
+        self._shape_isomesh[shape_idx] = isomesh if isomesh is not None else False
+        return isomesh
 
     def set_camera(self, pos: wp.vec3, pitch: float, yaw: float):
         pass
@@ -251,6 +292,23 @@ class ViewerBase:
 
             shapes.colors_changed = False
 
+        # render SDF isomesh instances for collision visualization
+        for shapes in self._sdf_isomesh_instances.values():
+            visible = self.show_collision
+
+            if visible:
+                shapes.update(state, world_offsets=self.world_offsets)
+
+            self.log_instances(
+                shapes.name,
+                shapes.mesh,
+                shapes.world_xforms,
+                shapes.scales,
+                shapes.colors if self.model_changed else None,
+                shapes.materials if self.model_changed else None,
+                hidden=not visible,
+            )
+
         # update inertia box transforms if visible
         if self.show_inertia_boxes:
             if self._inertia_box_instances is None:
@@ -340,48 +398,44 @@ class ViewerBase:
 
         self.log_lines("/contacts", starts, ends, colors)
 
-    def log_isosurface(self, isosurface_data, penetrating_only: bool = True):
+    def log_hydro_contact_surface(self, contact_surface_data, penetrating_only: bool = True):
         """
-        Render the isosurface triangles as wireframe lines from SDFHydroelastic collision detection.
+        Render the hydroelastic contact surface triangles as wireframe lines.
 
         Args:
-            isosurface_data: An IsosurfaceData instance containing vertex arrays for visualization,
-                or None if hydroelastic collision is not enabled.
+            contact_surface_data: A HydroelasticContactSurfaceData instance containing vertex arrays
+                for visualization, or None if hydroelastic collision is not enabled.
             penetrating_only: If True, only render penetrating contacts (depth > 0).
         """
-        if isosurface_data is None or not self.show_isosurface:
-            self.log_lines("/isosurface", None, None, None)
+        if contact_surface_data is None or not self.show_hydro_contact_surface:
+            self.log_lines("/hydro_contact_surface", None, None, None)
             return
 
         # Get the number of face contacts (triangles)
-        num_contacts = int(isosurface_data.face_contact_count.numpy()[0])
+        num_contacts = int(contact_surface_data.face_contact_count.numpy()[0])
 
         if num_contacts == 0:
-            self.log_lines("/isosurface", None, None, None)
+            self.log_lines("/hydro_contact_surface", None, None, None)
             return
 
         # Each triangle has 3 edges -> 3 line segments per contact
         num_lines = 3 * num_contacts
-        max_lines = 3 * isosurface_data.max_num_face_contacts
+        max_lines = 3 * contact_surface_data.max_num_face_contacts
 
         # Pre-allocate line buffers (only once, to max capacity)
-        if (
-            not hasattr(self, "_iso_line_starts")
-            or self._iso_line_starts is None
-            or len(self._iso_line_starts) < max_lines
-        ):
-            self._iso_line_starts = wp.zeros(max_lines, dtype=wp.vec3, device=self.device)
-            self._iso_line_ends = wp.zeros(max_lines, dtype=wp.vec3, device=self.device)
-            self._iso_line_colors = wp.zeros(max_lines, dtype=wp.vec3, device=self.device)
+        if self._hydro_surface_line_starts is None or len(self._hydro_surface_line_starts) < max_lines:
+            self._hydro_surface_line_starts = wp.zeros(max_lines, dtype=wp.vec3, device=self.device)
+            self._hydro_surface_line_ends = wp.zeros(max_lines, dtype=wp.vec3, device=self.device)
+            self._hydro_surface_line_colors = wp.zeros(max_lines, dtype=wp.vec3, device=self.device)
 
         # Get depth range for colormap
-        depths = isosurface_data.iso_vertex_depth[:num_contacts]
+        depths = contact_surface_data.contact_surface_depth[:num_contacts]
 
         # Convert triangles to line segments with depth-based colors
-        vertices = isosurface_data.iso_vertex_point
-        shape_pairs = isosurface_data.iso_vertex_shape_pair
+        vertices = contact_surface_data.contact_surface_point
+        shape_pairs = contact_surface_data.contact_surface_shape_pair
         wp.launch(
-            compute_isosurface_lines,
+            compute_hydro_contact_surface_lines,
             dim=num_contacts,
             inputs=[
                 vertices,
@@ -394,16 +448,16 @@ class ViewerBase:
                 0.0005,
                 penetrating_only,
             ],
-            outputs=[self._iso_line_starts, self._iso_line_ends, self._iso_line_colors],
+            outputs=[self._hydro_surface_line_starts, self._hydro_surface_line_ends, self._hydro_surface_line_colors],
             device=self.device,
         )
 
         # Render as lines
         self.log_lines(
-            "/isosurface",
-            self._iso_line_starts[:num_lines],
-            self._iso_line_ends[:num_lines],
-            self._iso_line_colors[:num_lines],
+            "/hydro_contact_surface",
+            self._hydro_surface_line_starts[:num_lines],
+            self._hydro_surface_line_ends[:num_lines],
+            self._hydro_surface_line_colors[:num_lines],
         )
 
     def log_shapes(
@@ -724,6 +778,10 @@ class ViewerBase:
         if is_collider and self.show_collision:
             return True
 
+        # hide collision shapes when show_collision is False
+        if is_collider and not self.show_collision:
+            return False
+
         if is_visual and self.show_visual:
             return True
 
@@ -805,7 +863,6 @@ class ViewerBase:
         shape_transform = self.model.shape_transform.numpy()
         shape_flags = self.model.shape_flags.numpy()
         shape_world = self.model.shape_world.numpy()
-        shape_isomesh = self.model.shape_isomesh
         shape_count = len(shape_body)
 
         # loop over shapes
@@ -815,16 +872,6 @@ class ViewerBase:
             geo_thickness = float(shape_geo_thickness[s])
             geo_is_solid = bool(shape_geo_is_solid[s])
             geo_src = shape_geo_src[s]
-
-            # Check if this collision shape has an isomesh to visualize instead
-            isomesh = shape_isomesh[s] if shape_isomesh else None
-            is_collision_shape = shape_flags[s] & int(newton.ShapeFlags.COLLIDE_SHAPES)
-            if isomesh is not None and is_collision_shape:
-                # Use isomesh as geometry source
-                geo_type = newton.GeoType.MESH
-                geo_src = isomesh
-                geo_scale = [1.0, 1.0, 1.0]  # scale is baked into isomesh
-                geo_is_solid = True
 
             # skip unsupported
             if geo_type == newton.GeoType.SDF:
@@ -856,6 +903,14 @@ class ViewerBase:
             parent = shape_body[s]
             static = parent == -1
 
+            # For collision shapes with SDF volumes, treat the original mesh as visual geometry
+            # (the SDF isomesh will be rendered separately for collision visualization)
+            is_collision_shape = flags & int(newton.ShapeFlags.COLLIDE_SHAPES)
+            has_sdf = self._get_shape_isomesh(s) is not None
+            if is_collision_shape and has_sdf:
+                # Remove COLLIDE_SHAPES flag so this is treated as a visual shape
+                flags = flags & ~int(newton.ShapeFlags.COLLIDE_SHAPES)
+
             shape_hash = self._hash_shape(geo_hash, static, flags)
 
             # ensure batch exists
@@ -872,7 +927,8 @@ class ViewerBase:
             if (shape_flags[s] & int(newton.ShapeFlags.COLLIDE_SHAPES)) == 0:
                 color = wp.vec3(0.5, 0.5, 0.5)
             else:
-                color = wp.vec3(self._shape_color_map(shape_hash))
+                # Use shape index for color to ensure each collision shape has a different color
+                color = wp.vec3(self._shape_color_map(s))
 
             material = wp.vec4(0.5, 0.0, 0.0, 0.0)  # roughness, metallic, checker, unused
 
@@ -920,6 +976,86 @@ class ViewerBase:
             for s_idx in batch.model_shapes:
                 shape_to_batch[s_idx] = batch
         self._shape_to_batch = shape_to_batch
+
+        # Populate SDF isomesh instances for collision visualization
+        self._populate_sdf_isomesh_instances()
+
+    def _populate_sdf_isomesh_instances(self):
+        """Create shape instances for SDF isomeshes (marching cubes visualization).
+
+        These are rendered separately based on the show_collision flag to allow
+        independent control of visual mesh and SDF collision visualization.
+        """
+        if self.model is None:
+            return
+
+        shape_body = self.model.shape_body.numpy()
+        shape_transform = self.model.shape_transform.numpy()
+        shape_flags = self.model.shape_flags.numpy()
+        shape_world = self.model.shape_world.numpy()
+        shape_count = len(shape_body)
+
+        for s in range(shape_count):
+            # Only process collision shapes with SDF volumes
+            is_collision_shape = shape_flags[s] & int(newton.ShapeFlags.COLLIDE_SHAPES)
+            if not is_collision_shape:
+                continue
+
+            isomesh = self._get_shape_isomesh(s)
+            if isomesh is None:
+                continue
+
+            # Create isomesh geometry
+            geo_type = newton.GeoType.MESH
+            geo_scale = (1.0, 1.0, 1.0)  # scale is baked into isomesh
+            geo_thickness = 0.0
+            geo_is_solid = True
+
+            geo_hash = self._hash_geometry(
+                int(geo_type),
+                geo_scale,
+                geo_thickness,
+                geo_is_solid,
+                isomesh,
+            )
+
+            # Ensure geometry exists and get mesh path
+            if geo_hash not in self._geometry_cache:
+                mesh_name = self._populate_geometry(
+                    int(geo_type),
+                    geo_scale,
+                    geo_thickness,
+                    geo_is_solid,
+                    geo_src=isomesh,
+                )
+            else:
+                mesh_name = self._geometry_cache[geo_hash]
+
+            # Shape options
+            flags = shape_flags[s]
+            parent = shape_body[s]
+            static = parent == -1
+
+            # Use the geo_hash as the batch key for SDF isomesh instances
+            if geo_hash not in self._sdf_isomesh_instances:
+                shape_name = f"/model/sdf_isomesh/isomesh_{len(self._sdf_isomesh_instances)}"
+                batch = ViewerBase.ShapeInstances(shape_name, static, flags, mesh_name, self.device)
+                self._sdf_isomesh_instances[geo_hash] = batch
+            else:
+                batch = self._sdf_isomesh_instances[geo_hash]
+
+            xform = wp.transform_expand(shape_transform[s])
+            scale = np.array([1.0, 1.0, 1.0])
+
+            # Use different color for each SDF isomesh (based on shape index)
+            color = wp.vec3(self._shape_color_map(s))
+            material = wp.vec4(0.3, 0.0, 0.0, 0.0)  # roughness, metallic, checker, unused
+
+            batch.add(parent, xform, scale, color, material, s, shape_world[s])
+
+        # Finalize all SDF isomesh batches
+        for batch in self._sdf_isomesh_instances.values():
+            batch.finalize()
 
     def update_shape_colors(self, shape_colors: dict[int, wp.vec3 | tuple[float, float, float]]):
         """

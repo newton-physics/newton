@@ -234,8 +234,6 @@ class Model:
         """List of sparse SDF volume references for mesh shapes, shape [shape_count]. None for non-mesh shapes. Empty if there are no colliding meshes. Kept for reference counting."""
         self.shape_sdf_coarse_volume = []
         """List of coarse SDF volume references for mesh shapes, shape [shape_count]. None for non-mesh shapes. Empty if there are no colliding meshes. Kept for reference counting."""
-        self.shape_isomesh = []
-        """List of isosurface meshes (Mesh objects) for shapes with SDF volumes, shape [shape_count]. None for shapes without SDF. Computed at finalize when ModelBuilder.show_isomeshes=True."""
 
         self.spring_indices = None
         """Particle spring indices, shape [spring_count*2], int."""
