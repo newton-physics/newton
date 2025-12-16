@@ -335,7 +335,7 @@ def parse_mjcf(
 
             # Parse MJCF margin (contact margin for collision detection)
             if "margin" in geom_attrib:
-                shape_cfg.contact_margin = parse_float(geom_attrib, "margin", 0.0)
+                shape_cfg.contact_margin = float(geom_attrib["margin"])
 
             custom_attributes = parse_custom_attributes(geom_attrib, builder_custom_attr_shape, parsing_mode="mjcf")
             shape_kwargs = {
