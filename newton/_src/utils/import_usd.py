@@ -1369,6 +1369,9 @@ def parse_usd(
                         thickness=usd.get_float_with_fallback(
                             prim_and_scene, "newton:contact_thickness", builder.default_shape_cfg.thickness
                         ),
+                        contact_margin=R.get_value(
+                            prim, prim_type=PrimType.SHAPE, key="rigid_contact_margin", default=builder.rigid_contact_margin
+                        ),
                         mu=material.dynamicFriction,
                         restitution=material.restitution,
                         density=body_density.get(body_path, default_shape_density),

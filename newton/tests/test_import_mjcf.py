@@ -1428,6 +1428,50 @@ class TestImportMjcf(unittest.TestCase):
             actual = geom_solmix[shape_idx].tolist()
             self.assertAlmostEqual(actual, expected, places=4)
 
+
+    def test_geom_margin_parsing(self):
+        """Test that geom_margin attribute is parsed correctly from MJCF."""
+        mjcf = """<?xml version="1.0" ?>
+<mujoco>
+    <worldbody>
+        <body name="body1">
+            <freejoint/>
+            <geom type="box" size="0.1 0.1 0.1" margin="0.5"/>
+        </body>
+        <body name="body2">
+            <freejoint/>
+            <geom type="sphere" size="0.05"/>
+        </body>
+        <body name="body3">
+            <freejoint/>
+            <geom type="capsule" size="0.05 0.1" margin="0.8"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+
+        builder = newton.ModelBuilder()
+        builder.rigid_contact_margin = 0.17 #Note: we need to set this before calling add_mjcf()
+        builder.add_mjcf(mjcf)
+        model = builder.finalize()
+
+        # shape_contact_margin is a built-in Newton attribute, not a custom mujoco attribute
+        self.assertTrue(hasattr(model, "shape_contact_margin"), "Model should have shape_contact_margin attribute")
+        
+        geom_margin = model.shape_contact_margin.numpy()
+        self.assertEqual(model.shape_count, 3, "Should have 3 shapes")
+
+        # Expected values: shape 0 has margin=0.5, shape 1 has default margin=0.1 (builder.rigid_contact_margin), shape 2 has margin=0.8
+        expected_values = {
+            0: 0.5,
+            1: 0.17,  # default taken from builder.rigid_contact_margin. Note that Mujoco defaults to 0 but we don't adopt that convention.
+            2: 0.8,
+        }
+
+        for shape_idx, expected in expected_values.items():
+            actual = geom_margin[shape_idx]
+            self.assertAlmostEqual(actual, expected, places=4)
+
     def test_default_inheritance(self):
         """Test nested default class inheritanc."""
         mjcf_content = """<?xml version="1.0" ?>
