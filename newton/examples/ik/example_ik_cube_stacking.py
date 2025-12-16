@@ -64,6 +64,7 @@ def set_target_pose_kernel(
     task_init_body_q: wp.array(dtype=wp.transform),
     body_q: wp.array(dtype=wp.transform),
     ee_index: int,
+    robot_body_count: int,
     num_bodies_per_world: int,
     # outputs
     ee_pos_target: wp.array(dtype=wp.vec3),
@@ -78,7 +79,7 @@ def set_target_pose_kernel(
     task = task_schedule[idx]
     task_time_soft_limit = task_time_soft_limits[idx]
     cube_body_index = task_object[idx]
-    cube_index = cube_body_index - 14
+    cube_index = cube_body_index - robot_body_count
 
     task_time_elapsed[tid] += task_dt
 
@@ -224,6 +225,7 @@ class Example:
         # Build scene
         franka_with_table = self.build_franka_with_table()
         scene = self.build_scene(franka_with_table)
+        self.robot_body_count = franka_with_table.body_count
 
         self.model_single = franka_with_table.finalize()
         self.model = scene.finalize()
@@ -463,10 +465,14 @@ class Example:
             if len(cube_pos) > 0:
                 # Check if the new cube is too close to the existing cubes.
                 l2_dists_too_close = [wp.norm_l2(new_pos - pos) < min_distance for pos in cube_pos]
+                max_attempts = 1000
+                attempts = 0
                 while any(l2_dists_too_close):
                     new_pos = get_random_pos()
                     l2_dists_too_close = [wp.norm_l2(new_pos - pos) < min_distance for pos in cube_pos]
-                    print("Generating new random position...")
+                    attempts += 1
+                    if attempts >= max_attempts:
+                        raise RuntimeError(f"Failed to place cube {i} after {max_attempts} attempts")
 
             cube_pos.append(new_pos)
 
@@ -557,7 +563,7 @@ class Example:
 
         task_object = []
         for i in range(self.cube_count):
-            task_object.extend([14 + i] * task_per_object)
+            task_object.extend([self.robot_body_count + i] * task_per_object)
         self.task_object = wp.array(task_object, shape=(self.task_counter), dtype=wp.int32)
 
         self.task_init_body_q = wp.clone(self.state_0.body_q)
@@ -566,16 +572,16 @@ class Example:
         self.task_dt = self.frame_dt
         self.task_time_elapsed = wp.zeros(self.num_worlds, dtype=wp.float32)
 
-    def set_joint_targets(self):
         # Initialize the target positions and rotations
-        ee_pos_target = wp.zeros(self.num_worlds, dtype=wp.vec3)
-        ee_pos_target_interpolated = wp.zeros(self.num_worlds, dtype=wp.vec3)
+        self.ee_pos_target = wp.zeros(self.num_worlds, dtype=wp.vec3)
+        self.ee_pos_target_interpolated = wp.zeros(self.num_worlds, dtype=wp.vec3)
 
-        ee_rot_target = wp.zeros(self.num_worlds, dtype=wp.vec4)
-        ee_rot_target_interpolated = wp.zeros(self.num_worlds, dtype=wp.vec4)
+        self.ee_rot_target = wp.zeros(self.num_worlds, dtype=wp.vec4)
+        self.ee_rot_target_interpolated = wp.zeros(self.num_worlds, dtype=wp.vec4)
 
-        gripper_target = wp.zeros(self.num_worlds, dtype=wp.vec2)
+        self.gripper_target_interpolated = wp.zeros(self.num_worlds, dtype=wp.vec2)
 
+    def set_joint_targets(self):
         wp.launch(
             set_target_pose_kernel,
             dim=self.num_worlds,
@@ -595,21 +601,22 @@ class Example:
                 self.task_init_body_q,
                 self.state_0.body_q,
                 self.ee_index,
+                self.robot_body_count,
                 self.num_bodies_per_world,
             ],
             outputs=[
-                ee_pos_target,
-                ee_pos_target_interpolated,
-                ee_rot_target,
-                ee_rot_target_interpolated,
-                gripper_target,
+                self.ee_pos_target,
+                self.ee_pos_target_interpolated,
+                self.ee_rot_target,
+                self.ee_rot_target_interpolated,
+                self.gripper_target_interpolated,
             ],
         )
 
         # Set the target position
-        self.pos_obj.set_target_positions(ee_pos_target_interpolated)
+        self.pos_obj.set_target_positions(self.ee_pos_target_interpolated)
         # Set the target rotation
-        self.rot_obj.set_target_rotations(ee_rot_target_interpolated)
+        self.rot_obj.set_target_rotations(self.ee_rot_target_interpolated)
 
         # Step the IK solver
         if self.graph_ik is not None:
@@ -620,15 +627,15 @@ class Example:
         # Set the joint target positions
         joint_target_pos_view = self.control.joint_target_pos.reshape((self.num_worlds, -1))
         wp.copy(dest=joint_target_pos_view[:, :7], src=self.joint_q_ik[:, :7])
-        wp.copy(dest=joint_target_pos_view[:, 7:9], src=wp.array(gripper_target, dtype=wp.float32))
+        wp.copy(dest=joint_target_pos_view[:, 7:9], src=wp.array(self.gripper_target_interpolated, dtype=wp.float32))
 
         wp.launch(
             advance_task_kernel,
             dim=self.num_worlds,
             inputs=[
                 self.task_time_soft_limits,
-                ee_pos_target,
-                ee_rot_target,
+                self.ee_pos_target,
+                self.ee_rot_target,
                 self.state_0.body_q,
                 self.num_bodies_per_world,
                 self.ee_index,
@@ -649,7 +656,7 @@ class Example:
         for world_id in range(self.num_worlds):
             for cube_id in range(self.cube_count):
                 drop_off_pos = np.array(self.task_drop_off_pos) + np.array([0.0, 0.0, self.cube_size * cube_id])
-                cube_body_id = world_id * self.num_bodies_per_world + 14 + cube_id
+                cube_body_id = world_id * self.num_bodies_per_world + self.robot_body_count + cube_id
                 cube_pos = body_q[cube_body_id][:3]
                 cube_rot = body_q[cube_body_id][3:]
 

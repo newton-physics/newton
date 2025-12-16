@@ -300,7 +300,7 @@ uv sync --extra examples
       <code>uv run -m newton.examples cloth_franka</code>
     </td>
     <td align="center">
-      <code>uv run -m newton.examples ik_stack_cubes</code>
+      <code>uv run -m newton.examples ik_cube_stacking</code>
     </td>
   </tr>
 
