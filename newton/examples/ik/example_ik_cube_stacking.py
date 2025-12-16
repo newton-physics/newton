@@ -383,9 +383,9 @@ class Example:
         ]
 
         builder.joint_target_ke[:9] = [4500, 4500, 3500, 3500, 2000, 2000, 2000, 100, 100]
-        builder.joint_target_kd[:9] = [45, 45, 35, 35, 20, 20, 20, 10, 10]
+        builder.joint_target_kd[:9] = [450, 450, 350, 350, 200, 200, 200, 10, 10]
         builder.joint_effort_limit[:9] = [87, 87, 87, 87, 12, 12, 12, 100, 100]
-        builder.joint_armature[:9] = [0.1] * 7 + [0.5] * 2
+        builder.joint_armature[:9] = [0.195] * 4 + [0.074] * 3 + [0.1] * 2
 
         shape_cfg = newton.ModelBuilder.ShapeConfig(thickness=1e-3, density=1000.0)
         shape_cfg.ke = 5.0e4
