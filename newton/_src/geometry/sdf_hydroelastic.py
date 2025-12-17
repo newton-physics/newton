@@ -26,7 +26,7 @@ from .contact_data import ContactData
 from .contact_reduction import (
     NUM_NORMAL_BINS,
     NUM_SPATIAL_DIRECTIONS,
-    get_slot_flat,
+    get_slot,
     get_spatial_direction_2d,
     project_point_to_plane,
 )
@@ -127,6 +127,10 @@ class SDFHydroelastic:
     Note:
         Use :meth:`_from_model` to construct from a simulation :class:`Model`,
         which automatically extracts the required SDF data and shape information.
+
+        Contact IDs are packed into 32-bit integers using 9 bits per voxel axis coordinate.
+        For SDF grids larger than 512 voxels per axis, contact ID collisions may occur,
+        which can affect contact matching accuracy for warm-starting physics solvers.
 
     See Also:
         :class:`SDFHydroelasticConfig`: Configuration options for this class.
@@ -1143,7 +1147,9 @@ def mc_iterate_voxel_vertices(
 
 @wp.func
 def get_face_id(x_id: wp.int32, y_id: wp.int32, z_id: wp.int32, fi: wp.int32) -> wp.int32:
-    # generate a unique contact id based on the voxel coordinates and face index (assumes max 512 voxels per axis)
+    # Pack voxel coordinates and face index into a unique 32-bit contact ID for contact matching.
+    # Layout: x (9 bits) | y (9 bits) | z (9 bits) | face_idx (3 bits) = 30 bits total.
+    # Supports up to 512 voxels per axis; larger grids may cause ID collisions.
     return x_id & 0x1FF | (y_id & 0x1FF) << 9 | (z_id & 0x1FF) << 18 | (fi & 0x07) << 27
 
 
@@ -1508,7 +1514,7 @@ def get_binning_kernels(
             area = contact_area[tid]
             id = contact_id[tid]
             # find the normal bin which is closest to the face normal (in body frame of b)
-            bin_normal_idx = get_slot_flat(normal)
+            bin_normal_idx = get_slot(normal)
 
             bin_to_shape_pair[bin_idx_0] = sparse_idx
             bin_occupied[bin_idx_0, bin_normal_idx] = True
