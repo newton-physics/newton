@@ -216,10 +216,10 @@ def test_mujoco_hydroelastic_penetration_depth(test, device):
     """Test that hydroelastic penetration depth matches expectation.
 
     Creates 4 box pairs with different k_hydro and area combinations:
-    - Case 0: k=1e6, area=0.01 (small stiffness, small area)
-    - Case 1: k=1e7, area=0.01 (large stiffness, small area)
-    - Case 2: k=1e6, area=0.0225 (small stiffness, large area)
-    - Case 3: k=1e7, area=0.0225 (large stiffness, large area)
+    - Case 0: k=1e8, area=0.01 (small stiffness, small area)
+    - Case 1: k=1e9, area=0.01 (large stiffness, small area)
+    - Case 2: k=1e8, area=0.0225 (small stiffness, large area)
+    - Case 3: k=1e9, area=0.0225 (large stiffness, large area)
     """
     # Test parameters
     box_size_lower = 0.2
@@ -231,10 +231,10 @@ def test_mujoco_hydroelastic_penetration_depth(test, device):
 
     # 4 test cases: (k_hydro, upper_box_size)
     test_cases = [
-        (1e6, 0.1),
-        (1e7, 0.1),
-        (1e6, 0.15),
-        (1e7, 0.15),
+        (1e8, 0.1),
+        (1e9, 0.1),
+        (1e8, 0.15),
+        (1e9, 0.15),
     ]
 
     # Inertia for lower box
@@ -400,11 +400,10 @@ def test_mujoco_hydroelastic_penetration_depth(test, device):
 
         measured = 2.0 * np.mean(instance_depths)  # x2 because this is the distance to the isosurface
 
-        imp = 0.99  # mujoco impedance set in geom_solimp # TODO: read this from the contact buffer instead
         # Expected: depth = F / (k_eff * A_eff) / mujoco_scaling
         effective_area = area * 0.9  # scale factor to account for non-uniform pressure distribution
         expected = total_force / (k_hydro * effective_area)
-        expected /= effective_mass / (1.0 - imp)
+        expected /= effective_mass
         ratio = measured / expected
 
         test.assertGreater(

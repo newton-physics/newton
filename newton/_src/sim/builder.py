@@ -196,7 +196,7 @@ class ModelBuilder:
         Requires GPU since wp.Volume only supports CUDA. Only used for mesh shapes."""
         is_hydroelastic: bool = False
         """Whether the shape collides using SDF-based hydroelastics. For hydroelastic collisions, both participating shapes must have is_hydroelastic set to True. Defaults to False."""
-        k_hydro: float = 1.0e9
+        k_hydro: float = 1.0e11
         """Contact stiffness coefficient for hydroelastic collisions. Used by MuJoCo, Featherstone, SemiImplicit when is_hydroelastic is True."""
 
         def __post_init__(self) -> None:
