@@ -1204,10 +1204,10 @@ class SolverMuJoCo(SolverBase):
             else:
                 first_group = -1
                 shape_range_len = model.shape_count
-            selected_shapes = np.where((shape_world == first_group) | (shape_world < 0))[0]
-            selected_bodies = np.where((body_world == first_group) | (body_world < 0))[0]
-            selected_joints = np.where((joint_world == first_group) | (joint_world < 0))[0]
-            selected_constraints = np.where((eq_constraint_world == first_group) | (eq_constraint_world < 0))[0]
+            selected_shapes = np.where((shape_world == first_group) | (shape_world < 0))[0].astype(np.int32)
+            selected_bodies = np.where((body_world == first_group) | (body_world < 0))[0].astype(np.int32)
+            selected_joints = np.where((joint_world == first_group) | (joint_world < 0))[0].astype(np.int32)
+            selected_constraints = np.where((eq_constraint_world == first_group) | (eq_constraint_world < 0))[0].astype(np.int32)
         else:
             # if we are not separating environments to worlds, we use all shapes, bodies, joints
             first_group = 0
@@ -1392,7 +1392,7 @@ class SolverMuJoCo(SolverBase):
 
         # add joints, bodies and geoms
         for j in joint_order:
-            parent, child = joint_parent[j], joint_child[j]
+            parent, child = int(joint_parent[j]), int(joint_child[j])
             if child in body_mapping:
                 raise ValueError(f"Body {child} already exists in the mapping")
 
@@ -1727,14 +1727,20 @@ class SolverMuJoCo(SolverBase):
             eq = spec.add_equality(objtype=mujoco.mjtObj.mjOBJ_BODY)
             eq.type = mujoco.mjtEq.mjEQ_CONNECT
             eq.active = True
-            eq.name1 = model.body_key[joint_parent[j]]
-            eq.name2 = model.body_key[joint_child[j]]
+            eq.name1 = model.body_key[joint_child[j]]
+            eq.name2 = model.body_key[joint_parent[j]]
             eq.data[0:3] = joint_child_xform[j][:3]
             mjc_eq_to_newton_jnt[eq.id] = j
 
         if skip_visual_only_geoms and len(spec.geoms) != colliding_shapes_per_world:
             raise ValueError(
                 "The number of geoms in the MuJoCo model does not match the number of colliding shapes in the Newton model."
+            )
+
+        if len(spec.bodies) != len(selected_bodies) + 1:  # +1 for the world body
+            raise ValueError(
+                "The number of bodies in the MuJoCo model does not match the number of selected bodies in the Newton model. "
+                "Make sure that each body has an incoming joint and that the joints are part of an articulation."
             )
 
         # add contact exclusions between bodies to ensure parent <> child collisions are ignored
