@@ -37,6 +37,10 @@ from .utils import scan_with_total
 
 vec8f = wp.types.vector(length=8, dtype=wp.float32)
 
+MIN_FRICTION = 1e-4
+EPS_LARGE = 1e-8
+EPS_SMALL = 1e-20
+
 
 @wp.func
 def int_to_vec3f(x: wp.int32, y: wp.int32, z: wp.int32):
@@ -284,8 +288,6 @@ class SDFHydroelastic:
                 )
             else:
                 self.decode_contacts_kernel = get_decode_contacts_kernel(self.config.margin_contact_area, writer_func)
-
-            self.max_depth = wp.zeros((1,), dtype=wp.float32)
 
         self.grid_size = min(self.config.grid_size, self.max_num_face_contacts)
 
@@ -1037,7 +1039,7 @@ def count_iso_voxels_block(
         k_b = shape_material_k_hydro[shape_b]
 
         k_eff_a, k_eff_b = get_rel_stiffness(k_a, k_b)
-        the = r * (k_eff_a + k_eff_b)
+        r_eff = r * (k_eff_a + k_eff_b)
 
         # get global voxel coordinates
         bc = in_buffer_collide_coords[tid]
@@ -1057,7 +1059,7 @@ def count_iso_voxels_block(
                     )
 
                     # check if bounding sphere contains the isosurface and the distance is within contact margin
-                    if wp.abs(diff_val) > the or va > r + margin_a or vb > r + margin_b or not is_valid:
+                    if wp.abs(diff_val) > r_eff or va > r + margin_a or vb > r + margin_b or not is_valid:
                         continue
                     num_iso_subblocks += 1
                     subblock_idx |= encode_coords_8(x_local, y_local, z_local)
@@ -1708,13 +1710,13 @@ def get_binning_kernels(
         weight_sum = binned_weight_sum[tid, normal_bin_idx]
         anchor_pos = wp.vec3f(0.0, 0.0, 0.0)
         add_anchor_contact = wp.int32(0)
-        if wp.static(moment_matching) and max_depth > 1e-6 and weight_sum > 1e-20:
+        if wp.static(moment_matching) and max_depth > 1e-6 and weight_sum > EPS_SMALL:
             anchor_pos = binned_weighted_pos_sum[tid, normal_bin_idx] / weight_sum
             add_anchor_contact = 1
 
         # Total depth includes anchor contribution if anchor will be added
         total_depth = agg_depth + wp.float32(add_anchor_contact) * max_depth
-        c_stiffness = k_eff * agg_force_mag / (total_depth + 1e-8)
+        c_stiffness = k_eff * agg_force_mag / (total_depth + EPS_LARGE)
 
         rotation_q = wp.quat_identity()
         if wp.static(normal_matching):
@@ -1727,13 +1729,13 @@ def get_binning_kernels(
                     selected_sum_normals += depth * binned_normals[tid, normal_bin_idx, dir_idx]
 
             # Add anchor's contribution to the weighted sum (anchor normal = agg_force direction)
-            if add_anchor_contact == 1 and agg_force_mag > 1e-8:
+            if add_anchor_contact == 1 and agg_force_mag > EPS_LARGE:
                 anchor_normal_contribution = max_depth * (agg_force / agg_force_mag)
                 selected_sum_normals += anchor_normal_contribution
 
             # Compute rotation that aligns selected_sum with agg_force
             selected_mag = wp.length(selected_sum_normals)
-            if selected_mag > 1e-8 and agg_force_mag > 1e-8:
+            if selected_mag > EPS_LARGE and agg_force_mag > EPS_LARGE:
                 selected_dir = selected_sum_normals / selected_mag
                 agg_dir = agg_force / agg_force_mag
 
@@ -1741,7 +1743,7 @@ def get_binning_kernels(
                 cross_mag = wp.length(cross)
                 dot_val = wp.dot(selected_dir, agg_dir)
 
-                if cross_mag > 1e-8:
+                if cross_mag > EPS_LARGE:
                     # Normal case: compute rotation around cross product axis
                     axis = cross / cross_mag
                     angle = wp.acos(wp.clamp(dot_val, -1.0, 1.0))
@@ -1770,7 +1772,7 @@ def get_binning_kernels(
                     selected_moment += depth * wp.length(wp.cross(pos - anchor_pos, normal))
 
             # Scale unique friction to match moments:
-            denom = wp.max(agg_force_mag * selected_moment, 1e-20)
+            denom = wp.max(agg_force_mag * selected_moment, EPS_SMALL)
             unique_friction = (ref_moment * total_depth) / denom
 
             # Compute anchor friction to preserve tangential friction invariant:
@@ -1778,11 +1780,11 @@ def get_binning_kernels(
             anchor_friction = (total_depth - unique_friction * agg_depth) / max_depth
 
             # Joint clamping: if one friction hits lower bound, adjust the other
-            min_friction = wp.float32(1e-4)
+            min_friction = wp.float32(MIN_FRICTION)
 
             if anchor_friction < min_friction:
                 anchor_friction = min_friction
-                unique_friction = (total_depth - min_friction * max_depth) / wp.max(agg_depth, 1e-20)
+                unique_friction = (total_depth - min_friction * max_depth) / wp.max(agg_depth, EPS_SMALL)
 
             if unique_friction < min_friction:
                 unique_friction = min_friction
