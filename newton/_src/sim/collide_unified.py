@@ -94,7 +94,7 @@ def write_contact(
     Args:
         contact_data: ContactData struct containing contact information (includes feature and feature_pair_key)
         writer_data: UnifiedContactWriterData struct containing body info and output arrays (includes contact_pair_key and contact_key)
-        output_index: If >= 0, use this index directly. If -1, use atomic_add to get the next available index.
+        output_index: If -1, use atomic_add to get the next available index if contact distance is less than margin. If >= 0, use this index directly and skip margin check.
     """
     total_separation_needed = (
         contact_data.radius_eff_a + contact_data.radius_eff_b + contact_data.thickness_a + contact_data.thickness_b
