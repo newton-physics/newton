@@ -27,9 +27,13 @@ from .particle_vbd_kernels import (
     NUM_THREADS_PER_COLLISION_PRIMITIVE,
     TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE,
     ParticleForceElementAdjacencyInfo,
+    # Topological filtering helper functions
+    _set_to_csr,
     accumulate_contact_force_and_hessian,
     accumulate_contact_force_and_hessian_no_self_contact,
     accumulate_spring_force_and_hessian,
+    build_edge_n_ring_edge_collision_filter,
+    build_vertex_n_ring_tris_collision_filter,
     compute_particle_conservative_bound,
     copy_particle_positions_back,
     # Adjacency building kernels
@@ -145,6 +149,10 @@ class SolverVBD(SolverBase):
         particle_collision_detection_interval: int = 0,
         particle_edge_parallel_epsilon: float = 1e-5,
         particle_enable_tile_solve: bool = True,
+        particle_topological_contact_filter_threshold: int = 2,
+        particle_rest_shape_contact_exclusion_radius: float = 0.0,
+        particle_external_vertex_contact_filtering_map: dict | None = None,
+        particle_external_edge_contact_filtering_map: dict | None = None,
         # Rigid body parameters
         rigid_avbd_beta: float = 1.0e5,
         rigid_avbd_gamma: float = 0.99,
@@ -188,6 +196,19 @@ class SolverVBD(SolverBase):
                 iterations.
             particle_edge_parallel_epsilon: Threshold to detect near-parallel edges in edge-edge collision handling.
             particle_enable_tile_solve: Whether to accelerate the particle solver using tile API.
+            particle_topological_contact_filter_threshold: Maximum topological distance (measured in rings) under which candidate
+                self-contacts are discarded. Set to a higher value to tolerate contacts between more closely connected mesh
+                elements. Only used when `particle_enable_self_contact` is `True`. Note that setting this to a value larger than 3 will
+                result in a significant increase in computation time.
+            particle_rest_shape_contact_exclusion_radius: Additional world-space distance threshold for filtering topologically close
+                primitives. Candidate contacts with a rest separation shorter than this value are ignored. The distance is
+                evaluated in the rest configuration conveyed by `model.particle_q`. Only used when `particle_enable_self_contact` is `True`.
+            particle_external_vertex_contact_filtering_map: Optional dictionary used to exclude additional vertex-triangle pairs during
+                contact generation. Keys must be vertex primitive ids (integers), and each value must be a `list` or
+                `set` containing the triangle primitives to be filtered out. Only used when `particle_enable_self_contact` is `True`.
+            particle_external_edge_contact_filtering_map: Optional dictionary used to exclude additional edge-edge pairs during contact
+                generation. Keys must be edge primitive ids (integers), and each value must be a `list` or `set`
+                containing the edges to be filtered out. Only used when `particle_enable_self_contact` is `True`.
 
             Rigid body parameters:
 
@@ -244,6 +265,10 @@ class SolverVBD(SolverBase):
             particle_collision_detection_interval,
             particle_edge_parallel_epsilon,
             particle_enable_tile_solve,
+            particle_topological_contact_filter_threshold,
+            particle_rest_shape_contact_exclusion_radius,
+            particle_external_vertex_contact_filtering_map,
+            particle_external_edge_contact_filtering_map,
         )
 
         # Initialize rigid body system and rigid-particle (body-particle) interaction state
@@ -282,13 +307,19 @@ class SolverVBD(SolverBase):
         particle_collision_detection_interval: int,
         particle_edge_parallel_epsilon: float,
         particle_enable_tile_solve: bool,
+        particle_topological_contact_filter_threshold: int,
+        particle_rest_shape_contact_exclusion_radius: float,
+        particle_external_vertex_contact_filtering_map: dict | None,
+        particle_external_edge_contact_filtering_map: dict | None,
     ):
         """Initialize particle-specific data structures and settings."""
         # Early exit if no particles
         if model.particle_count == 0:
             return
 
-        self.collision_detection_interval = particle_collision_detection_interval
+        self.particle_collision_detection_interval = particle_collision_detection_interval
+        self.particle_topological_contact_filter_threshold = particle_topological_contact_filter_threshold
+        self.particle_rest_shape_contact_exclusion_radius = particle_rest_shape_contact_exclusion_radius
 
         # Particle state storage
         self.particle_q_prev = wp.zeros_like(
@@ -303,6 +334,7 @@ class SolverVBD(SolverBase):
         self.particle_enable_self_contact = particle_enable_self_contact
         self.particle_self_contact_radius = particle_self_contact_radius
         self.particle_self_contact_margin = particle_self_contact_margin
+        self.particle_q_rest = model.particle_q
 
         # Tile solve settings
         if model.device.is_cpu and particle_enable_tile_solve:
@@ -327,6 +359,17 @@ class SolverVBD(SolverBase):
                 vertex_collision_buffer_pre_alloc=particle_vertex_contact_buffer_size,
                 edge_collision_buffer_pre_alloc=particle_edge_contact_buffer_size,
                 edge_edge_parallel_epsilon=particle_edge_parallel_epsilon,
+            )
+
+            self.compute_particle_contact_filtering_list(
+                particle_external_vertex_contact_filtering_map, particle_external_edge_contact_filtering_map
+            )
+
+            self.trimesh_collision_detector.set_collision_filter_list(
+                self.particle_vertex_triangle_contact_filtering_list,
+                self.particle_vertex_triangle_contact_filtering_list_offsets,
+                self.particle_edge_edge_contact_filtering_list,
+                self.particle_edge_edge_contact_filtering_list_offsets,
             )
 
             self.trimesh_collision_info = wp.array(
@@ -696,6 +739,73 @@ class SolverVBD(SolverBase):
 
         return adjacency
 
+    def compute_particle_contact_filtering_list(
+        self, external_vertex_contact_filtering_map, external_edge_contact_filtering_map
+    ):
+        if self.model.tri_count:
+            v_tri_filter_sets = None
+            edge_edge_filter_sets = None
+            if self.particle_topological_contact_filter_threshold >= 2:
+                if self.particle_adjacency.v_adj_faces_offsets.size > 0:
+                    v_tri_filter_sets = build_vertex_n_ring_tris_collision_filter(
+                        self.particle_topological_contact_filter_threshold,
+                        self.model.particle_count,
+                        self.model.edge_indices.numpy(),
+                        self.particle_adjacency.v_adj_edges.numpy(),
+                        self.particle_adjacency.v_adj_edges_offsets.numpy(),
+                        self.particle_adjacency.v_adj_faces.numpy(),
+                        self.particle_adjacency.v_adj_faces_offsets.numpy(),
+                    )
+                if self.particle_adjacency.v_adj_edges_offsets.size > 0:
+                    edge_edge_filter_sets = build_edge_n_ring_edge_collision_filter(
+                        self.particle_topological_contact_filter_threshold,
+                        self.model.edge_indices.numpy(),
+                        self.particle_adjacency.v_adj_edges.numpy(),
+                        self.particle_adjacency.v_adj_edges_offsets.numpy(),
+                    )
+
+            if external_vertex_contact_filtering_map is not None:
+                if v_tri_filter_sets is None:
+                    v_tri_filter_sets = [set() for _ in range(self.model.particle_count)]
+                for vertex_id, filter_set in external_vertex_contact_filtering_map.items():
+                    v_tri_filter_sets[vertex_id].update(filter_set)
+
+            if external_edge_contact_filtering_map is not None:
+                if edge_edge_filter_sets is None:
+                    edge_edge_filter_sets = [set() for _ in range(self.model.edge_indices.shape[0])]
+                for edge_id, filter_set in external_edge_contact_filtering_map.items():
+                    edge_edge_filter_sets[edge_id].update(filter_set)
+
+            if v_tri_filter_sets is None:
+                self.particle_vertex_triangle_contact_filtering_list = None
+                self.particle_vertex_triangle_contact_filtering_list_offsets = None
+            else:
+                (
+                    self.particle_vertex_triangle_contact_filtering_list,
+                    self.particle_vertex_triangle_contact_filtering_list_offsets,
+                ) = _set_to_csr(v_tri_filter_sets)
+                self.particle_vertex_triangle_contact_filtering_list = wp.array(
+                    self.particle_vertex_triangle_contact_filtering_list, dtype=int, device=self.device
+                )
+                self.particle_vertex_triangle_contact_filtering_list_offsets = wp.array(
+                    self.particle_vertex_triangle_contact_filtering_list_offsets, dtype=int, device=self.device
+                )
+
+            if edge_edge_filter_sets is None:
+                self.particle_edge_edge_contact_filtering_list = None
+                self.particle_edge_edge_contact_filtering_list_offsets = None
+            else:
+                (
+                    self.particle_edge_edge_contact_filtering_list,
+                    self.particle_edge_edge_contact_filtering_list_offsets,
+                ) = _set_to_csr(edge_edge_filter_sets)
+                self.particle_edge_edge_contact_filtering_list = wp.array(
+                    self.particle_edge_edge_contact_filtering_list, dtype=int, device=self.device
+                )
+                self.particle_edge_edge_contact_filtering_list_offsets = wp.array(
+                    self.particle_edge_edge_contact_filtering_list_offsets, dtype=int, device=self.device
+                )
+
     def compute_rigid_force_element_adjacency(self, model):
         """
         Build CSR adjacency between rigid bodies and joints.
@@ -1060,8 +1170,9 @@ class SolverVBD(SolverBase):
 
         # Update collision detection if needed (penetration-free mode only)
         if self.particle_enable_self_contact:
-            if (self.collision_detection_interval == 0 and iter_num == 0) or (
-                self.collision_detection_interval >= 1 and iter_num % self.collision_detection_interval == 0
+            if (self.particle_collision_detection_interval == 0 and iter_num == 0) or (
+                self.particle_collision_detection_interval >= 1
+                and iter_num % self.particle_collision_detection_interval == 0
             ):
                 self.collision_detection_penetration_free(state_in)
 
@@ -1633,8 +1744,16 @@ class SolverVBD(SolverBase):
 
     def collision_detection_penetration_free(self, current_state: State):
         self.trimesh_collision_detector.refit(current_state.particle_q)
-        self.trimesh_collision_detector.vertex_triangle_collision_detection(self.particle_self_contact_margin)
-        self.trimesh_collision_detector.edge_edge_collision_detection(self.particle_self_contact_margin)
+        self.trimesh_collision_detector.vertex_triangle_collision_detection(
+            self.particle_self_contact_margin,
+            min_query_radius=self.particle_rest_shape_contact_exclusion_radius,
+            min_distance_filtering_ref_pos=self.particle_q_rest,
+        )
+        self.trimesh_collision_detector.edge_edge_collision_detection(
+            self.particle_self_contact_margin,
+            min_query_radius=self.particle_rest_shape_contact_exclusion_radius,
+            min_distance_filtering_ref_pos=self.particle_q_rest,
+        )
 
         self.pos_prev_collision_detection.assign(current_state.particle_q)
         wp.launch(

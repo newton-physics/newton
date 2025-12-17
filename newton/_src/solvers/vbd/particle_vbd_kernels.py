@@ -24,6 +24,7 @@ The high-level :class:`SolverVBD` interface should remain in
 
 from __future__ import annotations
 
+import numpy as np
 import warp as wp
 from warp.types import float32, matrix
 
@@ -1888,6 +1889,188 @@ def accumulate_contact_force_and_hessian(
             )
             wp.atomic_add(particle_forces, particle_idx, body_contact_force)
             wp.atomic_add(particle_hessians, particle_idx, body_contact_hessian)
+
+
+def _csr_row(vals: np.ndarray, offs: np.ndarray, i: int) -> np.ndarray:
+    """Extract CSR row `i` from the flattened adjacency arrays."""
+    return vals[offs[i] : offs[i + 1]]
+
+
+def _set_to_csr(list_of_sets, dtype=np.int32, sort=True):
+    """
+    Convert a list of integer sets into CSR (Compressed Sparse Row) structure.
+    Args:
+        list_of_sets: Iterable where each entry is a set of ints.
+        dtype: Output dtype for the flattened arrays.
+        sort: Whether to sort each row when writing into `flat`.
+    Returns:
+        A tuple `(flat, offsets)` representing the CSR values and offsets.
+    """
+    offsets = np.zeros(len(list_of_sets) + 1, dtype=dtype)
+    sizes = np.fromiter((len(s) for s in list_of_sets), count=len(list_of_sets), dtype=dtype)
+    np.cumsum(sizes, out=offsets[1:])
+    flat = np.empty(offsets[-1], dtype=dtype)
+    idx = 0
+    for s in list_of_sets:
+        if sort:
+            arr = np.fromiter(sorted(s), count=len(s), dtype=dtype)
+        else:
+            arr = np.fromiter(s, count=len(s), dtype=dtype)
+
+        flat[idx : idx + len(arr)] = arr
+        idx += len(arr)
+    return flat, offsets
+
+
+def one_ring_vertices(
+    v: int, edge_indices: np.ndarray, v_adj_edges: np.ndarray, v_adj_edges_offsets: np.ndarray
+) -> np.ndarray:
+    """
+    Find immediate neighboring vertices that share an edge with vertex `v`.
+    Args:
+        v: Vertex index whose neighborhood is queried.
+        edge_indices: Array of shape [num_edges, 4] storing edge endpoint indices.
+        v_adj_edges: Flattened CSR adjacency array listing edge ids and local order.
+        v_adj_edges_offsets: CSR offsets indexing into `v_adj_edges`.
+    Returns:
+        Sorted array of neighboring vertex indices, excluding `v`.
+    """
+    e_u = edge_indices[:, 2]
+    e_v = edge_indices[:, 3]
+    # preserve only the adjacent edge information, remove the order information
+    inc_edges = _csr_row(v_adj_edges, v_adj_edges_offsets, v)[::2]
+    inc_edges_order = _csr_row(v_adj_edges, v_adj_edges_offsets, v)[1::2]
+    if inc_edges.size == 0:
+        return np.empty(0)
+    us = e_u[inc_edges[np.where(inc_edges_order >= 2)]]
+    vs = e_v[inc_edges[np.where(inc_edges_order >= 2)]]
+
+    assert (np.logical_or(us == v, vs == v)).all()
+    nbrs = np.unique(np.concatenate([us, vs]))
+    return nbrs[nbrs != v]
+
+
+def leq_n_ring_vertices(
+    v: int, edge_indices: np.ndarray, n: int, v_adj_edges: np.ndarray, v_adj_edges_offsets: np.ndarray
+) -> np.ndarray:
+    """
+    Find all vertices within n-ring distance of vertex v using BFS.
+    Args:
+        v: Starting vertex index
+        edge_indices: Edge connectivity array
+        n: Maximum ring distance
+        v_adj_edges: CSR values for vertex-edge adjacency
+        v_adj_edges_offsets: CSR offsets for vertex-edge adjacency
+    Returns:
+        Array of all vertices within n-ring distance, including v itself
+    """
+    visited = {v}
+    frontier = {v}
+    for _ in range(n):
+        next_frontier = set()
+        for u in frontier:
+            for w in one_ring_vertices(u, edge_indices, v_adj_edges, v_adj_edges_offsets):  # iterable of neighbors of u
+                if w not in visited:
+                    visited.add(w)
+                    next_frontier.add(w)
+        if not next_frontier:
+            break
+        frontier = next_frontier
+    return np.fromiter(visited, dtype=int)
+
+
+def build_vertex_n_ring_tris_collision_filter(
+    n: int,
+    num_vertices: int,
+    edge_indices: np.ndarray,
+    v_adj_edges: np.ndarray,
+    v_adj_edges_offsets: np.ndarray,
+    v_adj_faces: np.ndarray,
+    v_adj_faces_offsets: np.ndarray,
+):
+    """
+    For each vertex v, return ONLY triangles adjacent to v's one ring neighbor vertices.
+    Excludes triangles incident to v itself (dist 0).
+    Returns:
+      v_two_flat, v_two_offs: CSR of strict-2-ring triangle ids per vertex
+    """
+
+    if n <= 1:
+        return None, None
+
+    v_nei_tri_sets = [set() for _ in range(num_vertices)]
+
+    for v in range(num_vertices):
+        # distance-1 vertices
+
+        if n == 2:
+            ring_n_minus_1 = one_ring_vertices(v, edge_indices, v_adj_edges, v_adj_edges_offsets)
+        else:
+            ring_n_minus_1 = leq_n_ring_vertices(v, edge_indices, n - 1, v_adj_edges, v_adj_edges_offsets)
+
+        ring_1_tri_set = set(_csr_row(v_adj_faces, v_adj_faces_offsets, v)[::2])
+
+        nei_tri_set = v_nei_tri_sets[v]
+        for w in ring_n_minus_1:
+            if w != v:
+                # preserve only the adjacent edge information, remove the order information
+                nei_tri_set.update(_csr_row(v_adj_faces, v_adj_faces_offsets, w)[::2])
+
+        nei_tri_set.difference_update(ring_1_tri_set)
+
+    return v_nei_tri_sets
+
+
+def build_edge_n_ring_edge_collision_filter(
+    n: int,
+    edge_indices: np.ndarray,
+    v_adj_edges: np.ndarray,
+    v_adj_edges_offsets: np.ndarray,
+):
+    """
+    For each vertex v, return ONLY triangles adjacent to v's one ring neighbor vertices.
+    Excludes triangles incident to v itself (dist 0).
+    Returns:
+      v_two_flat, v_two_offs: CSR of strict-2-ring triangle ids per vertex
+    """
+
+    if n <= 1:
+        return None, None
+
+    edge_nei_edge_sets = [set() for _ in range(edge_indices.shape[0])]
+
+    for e_idx in range(edge_indices.shape[0]):
+        # distance-1 vertices
+        v1 = edge_indices[e_idx, 2]
+        v2 = edge_indices[e_idx, 3]
+
+        if n == 2:
+            ring_n_minus_1_v1 = one_ring_vertices(v1, edge_indices, v_adj_edges, v_adj_edges_offsets)
+            ring_n_minus_1_v2 = one_ring_vertices(v2, edge_indices, v_adj_edges, v_adj_edges_offsets)
+        else:
+            ring_n_minus_1_v1 = leq_n_ring_vertices(v1, edge_indices, n - 1, v_adj_edges, v_adj_edges_offsets)
+            ring_n_minus_1_v2 = leq_n_ring_vertices(v2, edge_indices, n - 1, v_adj_edges, v_adj_edges_offsets)
+
+        all_neighbors = set(ring_n_minus_1_v1)
+        all_neighbors.update(ring_n_minus_1_v2)
+
+        ring_1_edge_set = set(_csr_row(v_adj_edges, v_adj_edges_offsets, v1)[::2])
+        ring_2_edge_set = set(_csr_row(v_adj_edges, v_adj_edges_offsets, v2)[::2])
+
+        nei_edge_set = edge_nei_edge_sets[e_idx]
+        for w in all_neighbors:
+            if w != v1 and w != v2:
+                # preserve only the adjacent edge information, remove the order information
+                # nei_tri_set.update(_csr_row(v_adj_faces, v_adj_faces_offsets, w)[::2])
+                adj_edges = _csr_row(v_adj_edges, v_adj_edges_offsets, w)[::2]
+                adj_edges_order = _csr_row(v_adj_edges, v_adj_edges_offsets, w)[1::2]
+                adj_collision_edges = adj_edges[np.where(adj_edges_order >= 2)]
+                nei_edge_set.update(adj_collision_edges)
+
+        nei_edge_set.difference_update(ring_1_edge_set)
+        nei_edge_set.difference_update(ring_2_edge_set)
+
+    return edge_nei_edge_sets
 
 
 @wp.func
