@@ -78,22 +78,14 @@ world frame, though details vary:
 Newton Conventions
 ~~~~~~~~~~~~~~~~~~
 
-**Newton** follows the standard physics engine convention for most solvers, 
-aligning with Isaac Lab's approach, but with one important exception:
+**Newton** follows the standard physics engine convention for most solvers,
+aligning with Isaac Lab's approach.
+Newton's :attr:`State.body_qd` stores **both** linear and angular velocities
+in the world frame. The linear velocity represents the COM velocity in world
+coordinates, while the angular velocity is also expressed in world coordinates.
+This matches the Isaac Lab convention exactly. Note that Newton will automatically
+convert from this convention to MuJoCo's mixed-frame format when using the SolverMuJoCo.
 
-* **Standard Newton solvers** (XPBD, SemiImplicit, SolverMuJoCo etc.)  
-  Newton's :attr:`State.body_qd` stores **both** linear and angular velocities 
-  in the world frame. The linear velocity represents the COM velocity in world 
-  coordinates, while the angular velocity is also expressed in world coordinates.
-  This matches the Isaac Lab convention exactly. Note that Newton will automatically
-  convert from this convention to MuJoCo's mixed-frame format when using the SolverMuJoCo.
-
-* **Featherstone solver**  
-  Newton's Featherstone implementation uses the **spatial twist** convention 
-  from *Modern Robotics*. Here :attr:`State.body_qd` represents a spatial 
-  twist :math:`V_s = (v_s, \omega_s)` where :math:`v_s` is the linear 
-  velocity of a hypothetical point on the moving body that is instantaneously 
-  at the world origin, **not** the COM velocity.
 
 Summary of Conventions
 ~~~~~~~~~~~~~~~~~~~~~~
@@ -126,14 +118,10 @@ Summary of Conventions
      - COM, **world frame**
      - **World frame**
      - "Root" linear / angular velocity
-   * - **Newton** (standard solvers)
+   * - **Newton**
      - COM, **world frame**
      - **World frame**
      - Physics engine convention
-   * - **Newton** (Featherstone)
-     - World origin, **world frame**
-     - **World frame**
-     - Spatial twist :math:`V_s`
 
 Mapping Between Representations
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
