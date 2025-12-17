@@ -2507,7 +2507,7 @@ def Xform "World"
 {
     def PhysicsScene "PhysicsScene"
     {
-        float mjc:impratio = 99.0
+        float mjc:option:impratio = 99.0
     }
 
     def Xform "Articulation" (
