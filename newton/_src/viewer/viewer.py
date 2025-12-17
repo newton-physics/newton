@@ -96,6 +96,7 @@ class ViewerBase:
 
         # SDF isomesh instances -- created on-demand for collision visualization
         self._sdf_isomesh_instances: dict[int, ViewerBase.ShapeInstances] = {}
+        self._sdf_isomesh_populated: bool = False  # lazy flag for SDF isomesh population
 
     def is_running(self) -> bool:
         return True
@@ -292,20 +293,28 @@ class ViewerBase:
 
             shapes.colors_changed = False
 
-        # render SDF isomesh instances for collision visualization
+        # render SDF isomesh instances for collision visualization (lazily populated)
+        sdf_isomesh_just_populated = False
+        if self.show_collision and not self._sdf_isomesh_populated:
+            self._populate_sdf_isomesh_instances()
+            self._sdf_isomesh_populated = True
+            sdf_isomesh_just_populated = True
+
         for shapes in self._sdf_isomesh_instances.values():
             visible = self.show_collision
 
             if visible:
                 shapes.update(state, world_offsets=self.world_offsets)
 
+            # Send colors/materials on model change OR when isomeshes were just populated
+            send_appearance = self.model_changed or sdf_isomesh_just_populated
             self.log_instances(
                 shapes.name,
                 shapes.mesh,
                 shapes.world_xforms,
                 shapes.scales,
-                shapes.colors if self.model_changed else None,
-                shapes.materials if self.model_changed else None,
+                shapes.colors if send_appearance else None,
+                shapes.materials if send_appearance else None,
                 hidden=not visible,
             )
 
@@ -906,7 +915,8 @@ class ViewerBase:
             # visual-only copy exists.
             is_collision_shape = flags & int(newton.ShapeFlags.COLLIDE_SHAPES)
             is_visible = flags & int(newton.ShapeFlags.VISIBLE)
-            has_sdf = self._get_shape_isomesh(s) is not None
+            # Check for SDF volume existence without computing the isomesh (lazy evaluation)
+            has_sdf = self.model.shape_sdf_volume and self.model.shape_sdf_volume[s] is not None
             if is_collision_shape and is_visible and has_sdf:
                 # Remove COLLIDE_SHAPES flag so this is treated as a visual shape
                 flags = flags & ~int(newton.ShapeFlags.COLLIDE_SHAPES)
@@ -977,8 +987,8 @@ class ViewerBase:
                 shape_to_batch[s_idx] = batch
         self._shape_to_batch = shape_to_batch
 
-        # Populate SDF isomesh instances for collision visualization
-        self._populate_sdf_isomesh_instances()
+        # Note: SDF isomesh instances are populated lazily when show_collision is True
+        # to avoid GPU memory allocation until actually needed for visualization
 
     def _populate_sdf_isomesh_instances(self):
         """Create shape instances for SDF isomeshes (marching cubes visualization).
@@ -1056,8 +1066,8 @@ class ViewerBase:
             else:
                 scale = np.asarray(shape_geo_scale[s], dtype=np.float32)
 
-            # Use different color for each SDF isomesh (based on shape index)
-            color = wp.vec3(self._shape_color_map(s))
+            # Use distinct collision color palette (different from visual shapes)
+            color = wp.vec3(self._collision_color_map(s))
             material = wp.vec4(0.3, 0.0, 0.0, 0.0)  # roughness, metallic, checker, unused
 
             batch.add(parent, xform, scale, color, material, s, shape_world[s])
@@ -1238,6 +1248,25 @@ class ViewerBase:
             [187, 187, 187],  # grey
             [238, 153, 51],  # orange
             [0, 153, 136],  # teal
+        ]
+
+        num_colors = len(colors)
+        return [c / 255.0 for c in colors[i % num_colors]]
+
+    @staticmethod
+    def _collision_color_map(i: int) -> list[float]:
+        # Distinct palette for collision shapes (semi-transparent wireframe look)
+        # Uses cooler, more desaturated tones to contrast with bright visual colors
+        colors = [
+            [180, 120, 200],  # lavender
+            [120, 180, 160],  # sage
+            [200, 160, 120],  # tan
+            [140, 160, 200],  # steel blue
+            [200, 140, 160],  # dusty rose
+            [160, 200, 140],  # moss
+            [180, 180, 140],  # khaki
+            [140, 180, 180],  # slate
+            [200, 180, 200],  # mauve
         ]
 
         num_colors = len(colors)

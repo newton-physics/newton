@@ -448,42 +448,105 @@ def compute_sdf(
 def compute_isomesh(volume: wp.Volume) -> Mesh | None:
     """Compute an isosurface mesh from an SDFData struct.
 
+    Uses a two-pass approach to minimize memory allocation:
+    1. First pass: count actual triangles produced
+    2. Allocate exact memory needed
+    3. Second pass: generate vertices
+
     Args:
         volume: The SDF volume.
 
     Returns:
         Mesh object containing the isosurface mesh.
     """
-    vc = volume.get_voxel_count()
-    max_faces = 5 * vc
-    max_verts = 3 * max_faces
-    verts = wp.empty((max_verts,), dtype=wp.vec3)
-    face_normals = wp.empty((max_faces,), dtype=wp.vec3)
-
-    face_count = wp.zeros((1,), dtype=int)
-    mc_tables = get_mc_tables(verts.device)
+    device = wp.get_device()
+    mc_tables = get_mc_tables(device)
 
     # Get allocated tile points from the sparse volume
     tile_points = volume.get_tiles()
-    tile_points_wp = wp.array(tile_points, dtype=wp.vec3i)
+    tile_points_wp = wp.array(tile_points, dtype=wp.vec3i, device=device)
     num_tiles = tile_points.shape[0]
 
+    if num_tiles == 0:
+        return None
+
+    # Pass 1: Count faces (no vertex allocation needed)
+    face_count = wp.zeros((1,), dtype=int, device=device)
+    wp.launch(
+        count_isomesh_faces_kernel,
+        dim=(num_tiles, 8, 8, 8),
+        inputs=[volume.id, tile_points_wp, mc_tables[0], mc_tables[3]],
+        outputs=[face_count],
+        device=device,
+    )
+
+    num_faces = int(face_count.numpy()[0])
+    if num_faces == 0:
+        return None
+
+    # Allocate exact memory needed (not worst-case 5*voxels)
+    max_verts = 3 * num_faces
+    verts = wp.empty((max_verts,), dtype=wp.vec3, device=device)
+    face_normals = wp.empty((num_faces,), dtype=wp.vec3, device=device)
+
+    # Pass 2: Generate vertices with exact allocation
+    face_count.zero_()
     wp.launch(
         generate_isomesh_kernel,
         dim=(num_tiles, 8, 8, 8),
         inputs=[volume.id, tile_points_wp, mc_tables[0], mc_tables[4], mc_tables[3]],
         outputs=[face_count, verts, face_normals],
+        device=device,
     )
-    num_faces = face_count.numpy()[0]
-    isomesh = None
-    if num_faces > 0:
-        verts_np = verts.numpy()[: 3 * num_faces]
-        faces_np = np.arange(3 * num_faces).reshape(-1, 3)
 
-        # reverse order of triangles indices for correctly displayed normals
-        faces_np = faces_np[:, ::-1]
-        isomesh = Mesh(verts_np, faces_np)
-    return isomesh
+    verts_np = verts.numpy()
+    faces_np = np.arange(3 * num_faces).reshape(-1, 3)
+
+    # reverse order of triangles indices for correctly displayed normals
+    faces_np = faces_np[:, ::-1]
+    return Mesh(verts_np, faces_np)
+
+
+@wp.kernel(enable_backward=False)
+def count_isomesh_faces_kernel(
+    sdf: wp.uint64,
+    tile_points: wp.array(dtype=wp.vec3i),
+    tri_range_table: wp.array(dtype=wp.int32),
+    corner_offsets_table: wp.array(dtype=wp.vec3ub),
+    face_count: wp.array(dtype=int),
+):
+    """Count isosurface faces without generating vertices (first pass of two-pass approach).
+    Only processes specified tiles. Launch with dim=(num_tiles, 8, 8, 8).
+    """
+    tile_idx, local_x, local_y, local_z = wp.tid()
+
+    # Get the tile origin and compute global voxel coordinates
+    tile_origin = tile_points[tile_idx]
+    x_id = tile_origin[0] + local_x
+    y_id = tile_origin[1] + local_y
+    z_id = tile_origin[2] + local_z
+
+    isovalue = 0.0
+    cube_idx = wp.int32(0)
+    for i in range(8):
+        corner_offset = wp.vec3i(corner_offsets_table[i])
+        x = x_id + corner_offset.x
+        y = y_id + corner_offset.y
+        z = z_id + corner_offset.z
+        v = wp.volume_lookup_f(sdf, x, y, z)
+        if wp.isnan(v) or wp.isinf(v):
+            return
+        if v < isovalue:
+            cube_idx |= 1 << i
+
+    # look up the tri range for the cube index
+    tri_range_start = tri_range_table[cube_idx]
+    tri_range_end = tri_range_table[cube_idx + 1]
+    num_verts = tri_range_end - tri_range_start
+
+    num_faces = num_verts // 3
+    if num_faces > 0:
+        wp.atomic_add(face_count, 0, num_faces)
 
 
 @wp.kernel(enable_backward=False)
