@@ -172,7 +172,7 @@ def get_spatial_direction_2d(dir_idx: int) -> wp.vec2f:
     Returns:
         Unit 2D vector at angle (dir_idx * 2π / NUM_SPATIAL_DIRECTIONS)
     """
-    angle = float(dir_idx) * (2.0 * wp.pi / float(NUM_SPATIAL_DIRECTIONS))
+    angle = float(dir_idx) * wp.static(2.0 * wp.pi / NUM_SPATIAL_DIRECTIONS)
     return wp.vec2f(wp.cos(angle), wp.sin(angle))
 
 

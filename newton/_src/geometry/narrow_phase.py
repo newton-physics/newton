@@ -38,6 +38,7 @@ from ..geometry.contact_reduction import (
     create_betas_array,
     synchronize,
 )
+from ..geometry.flags import ShapeFlags
 from ..geometry.sdf_contact import create_narrow_phase_process_mesh_mesh_contacts_kernel
 from ..geometry.sdf_hydroelastic import SDFHydroelastic
 from ..geometry.sdf_utils import SDFData
@@ -180,7 +181,7 @@ def create_narrow_phase_kernel_gjk_mpr(external_aabb: bool, writer_func: Any):
         shape_collision_radius: wp.array(dtype=float),
         shape_aabb_lower: wp.array(dtype=wp.vec3),
         shape_aabb_upper: wp.array(dtype=wp.vec3),
-        shape_is_hydroelastic: wp.array(dtype=wp.bool),
+        shape_flags: wp.array(dtype=wp.int32),
         writer_data: Any,
         total_num_threads: int,
         # mesh collision outputs (for mesh processing)
@@ -232,7 +233,9 @@ def create_narrow_phase_kernel_gjk_mpr(external_aabb: bool, writer_func: Any):
 
             # Check if both shapes are hydroelastic - if so, route to SDF-SDF pipeline
             # Only route if the pipeline is enabled (array has capacity)
-            if shape_is_hydroelastic[shape_a] and shape_is_hydroelastic[shape_b] and shape_pairs_sdf_sdf.shape[0] > 0:
+            is_hydro_a = (shape_flags[shape_a] & int(ShapeFlags.HYDROELASTIC)) != 0
+            is_hydro_b = (shape_flags[shape_b] & int(ShapeFlags.HYDROELASTIC)) != 0
+            if is_hydro_a and is_hydro_b and shape_pairs_sdf_sdf.shape[0] > 0:
                 idx = wp.atomic_add(shape_pairs_sdf_sdf_count, 0, 1)
                 if idx < shape_pairs_sdf_sdf.shape[0]:
                     shape_pairs_sdf_sdf[idx] = wp.vec2i(shape_a, shape_b)
@@ -949,17 +952,10 @@ class NarrowPhase:
             self.shape_pairs_mesh_mesh = wp.zeros(max_candidate_pairs, dtype=wp.vec2i, device=device)
             self.shape_pairs_mesh_mesh_count = wp.zeros(1, dtype=wp.int32, device=device)
 
-            # Empty tangent array for when tangent computation is disabled
-            self.empty_tangent = wp.zeros(0, dtype=wp.vec3, device=device)
-
-            # Empty contact_pair_key array for when contact pair key collection is disabled
-            self.empty_contact_pair_key = wp.zeros(0, dtype=wp.uint64, device=device)
-
-            # Empty contact_key array for when contact key collection is disabled
-            self.empty_contact_key = wp.zeros(0, dtype=wp.uint32, device=device)
-
-            # Empty stiffness array for when per-contact stiffness is disabled
-            self.empty_stiffness = wp.zeros(0, dtype=wp.float32, device=device)
+            # None values for when optional features are disabled
+            self.empty_tangent = None
+            self.empty_contact_pair_key = None
+            self.empty_contact_key = None
 
             # Betas array for contact reduction (using the configured contact_reduction_betas tuple)
             self.betas = create_betas_array(betas=self.betas_tuple, device=device)
@@ -991,7 +987,7 @@ class NarrowPhase:
         shape_sdf_data: wp.array(dtype=SDFData, ndim=1),  # SDF data structs for mesh shapes
         shape_contact_margin: wp.array(dtype=wp.float32, ndim=1),  # per-shape contact margin
         shape_collision_radius: wp.array(dtype=wp.float32, ndim=1),  # per-shape collision radius for AABB fallback
-        shape_is_hydroelastic: wp.array(dtype=wp.bool, ndim=1),  # per-shape hydroelastic flag
+        shape_flags: wp.array(dtype=wp.int32, ndim=1),  # per-shape flags (includes ShapeFlags.HYDROELASTIC)
         writer_data: Any,
         device=None,  # Device to launch on
     ):
@@ -1008,6 +1004,7 @@ class NarrowPhase:
             shape_sdf_data: Array of SDFData structs for mesh shapes
             shape_contact_margin: Array of contact margins for each shape
             shape_collision_radius: Array of collision radii for each shape (for AABB fallback for planes/meshes)
+            shape_flags: Array of shape flags for each shape (includes ShapeFlags.HYDROELASTIC)
             writer_data: Custom struct instance for contact writing (type must match the custom writer function)
             device: Device to launch on
         """
@@ -1038,7 +1035,7 @@ class NarrowPhase:
                 shape_collision_radius,
                 self.shape_aabb_lower,
                 self.shape_aabb_upper,
-                shape_is_hydroelastic,
+                shape_flags,
                 writer_data,
                 self.total_num_threads,
             ],
@@ -1174,7 +1171,7 @@ class NarrowPhase:
         shape_sdf_data: wp.array(dtype=SDFData, ndim=1),  # SDF data structs for mesh shapes
         shape_contact_margin: wp.array(dtype=wp.float32, ndim=1),  # per-shape contact margin
         shape_collision_radius: wp.array(dtype=wp.float32, ndim=1),  # per-shape collision radius for AABB fallback
-        shape_is_hydroelastic: wp.array(dtype=wp.bool, ndim=1),  # per-shape hydroelastic flag
+        shape_flags: wp.array(dtype=wp.int32, ndim=1),  # per-shape flags (includes ShapeFlags.HYDROELASTIC)
         # Outputs
         contact_pair: wp.array(dtype=wp.vec2i),
         contact_position: wp.array(dtype=wp.vec3),
@@ -1259,7 +1256,7 @@ class NarrowPhase:
             shape_sdf_data,
             shape_contact_margin,
             shape_collision_radius,
-            shape_is_hydroelastic,
+            shape_flags,
             writer_data,
             device,
         )

@@ -231,6 +231,7 @@ class ModelBuilder:
             shape_flags |= ShapeFlags.COLLIDE_SHAPES if self.has_shape_collision else 0
             shape_flags |= ShapeFlags.COLLIDE_PARTICLES if self.has_particle_collision else 0
             shape_flags |= ShapeFlags.SITE if self.is_site else 0
+            shape_flags |= ShapeFlags.HYDROELASTIC if self.is_hydroelastic else 0
             return shape_flags
 
         @flags.setter
@@ -238,6 +239,7 @@ class ModelBuilder:
             """Sets the flags for the shape."""
 
             self.is_visible = bool(value & ShapeFlags.VISIBLE)
+            self.is_hydroelastic = bool(value & ShapeFlags.HYDROELASTIC)
 
             # Check if SITE flag is being set
             is_site_flag = bool(value & ShapeFlags.SITE)
@@ -525,7 +527,6 @@ class ModelBuilder:
         self.shape_sdf_narrow_band_range = []
         self.shape_sdf_target_voxel_size = []
         self.shape_sdf_max_resolution = []
-        self.shape_is_hydroelastic = []
 
         # Mesh SDF storage (volumes kept for reference counting, SDFData array created at finalize)
 
@@ -1797,7 +1798,6 @@ class ModelBuilder:
             "shape_sdf_narrow_band_range",
             "shape_sdf_max_resolution",
             "shape_sdf_target_voxel_size",
-            "shape_is_hydroelastic",
             "particle_qd",
             "particle_mass",
             "particle_radius",
@@ -3425,7 +3425,13 @@ class ModelBuilder:
         self.body_shapes[body].append(shape)
         self.shape_key.append(key or f"shape_{shape}")
         self.shape_transform.append(xform)
-        self.shape_flags.append(cfg.flags)
+        # Get flags and clear HYDROELASTIC for unsupported shape types (PLANE, HFIELD)
+        shape_flags = cfg.flags
+        if (shape_flags & ShapeFlags.HYDROELASTIC) and (type == GeoType.PLANE or type == GeoType.HFIELD):
+            shape_flags &= (
+                ~ShapeFlags.HYDROELASTIC
+            )  # Falling back to mesh/primitive collisions for plane and hfield shapes
+        self.shape_flags.append(shape_flags)
         self.shape_type.append(type)
         self.shape_scale.append((scale[0], scale[1], scale[2]))
         self.shape_source.append(src)
@@ -3449,11 +3455,6 @@ class ModelBuilder:
         self.shape_sdf_narrow_band_range.append(cfg.sdf_narrow_band_range)
         self.shape_sdf_target_voxel_size.append(cfg.sdf_target_voxel_size)
         self.shape_sdf_max_resolution.append(cfg.sdf_max_resolution)
-
-        is_hydroelastic = cfg.is_hydroelastic
-        if is_hydroelastic and (type == GeoType.PLANE or type == GeoType.HFIELD):
-            is_hydroelastic = False  # Falling back to mesh/primitive collisions for plane and hfield shapes
-        self.shape_is_hydroelastic.append(is_hydroelastic)
 
         if cfg.has_shape_collision and cfg.collision_filter_parent and body > -1 and body in self.joint_parents:
             for parent_body in self.joint_parents[body]:
@@ -5587,7 +5588,6 @@ class ModelBuilder:
 
             m.shape_collision_filter_pairs = set(self.shape_collision_filter_pairs)
             m.shape_collision_group = wp.array(self.shape_collision_group, dtype=wp.int32)
-            m.shape_is_hydroelastic = wp.array(self.shape_is_hydroelastic, dtype=wp.bool)
 
             # ---------------------
             # Compute SDFs for mesh shapes (per-shape opt-in via sdf_max_resolution, sdf_target_voxel_size or is_hydroelastic)
@@ -5619,14 +5619,13 @@ class ModelBuilder:
 
             # Check if there are any shapes with hydroelastic collision enabled
             has_hydroelastic_shapes = any(
-                is_hydro and sflags & ShapeFlags.COLLIDE_SHAPES
-                for is_hydro, sflags in zip(self.shape_is_hydroelastic, self.shape_flags, strict=True)
+                (sflags & ShapeFlags.HYDROELASTIC) and (sflags & ShapeFlags.COLLIDE_SHAPES)
+                for sflags in self.shape_flags
             )
 
             # Validate that hydroelastic shapes have sdf_max_resolution or sdf_target_voxel_size set
-            for shape_idx, (is_hydro, sflags, sdf_max_resolution, sdf_target_voxel_size, shape_key) in enumerate(
+            for shape_idx, (sflags, sdf_max_resolution, sdf_target_voxel_size, shape_key) in enumerate(
                 zip(
-                    self.shape_is_hydroelastic,
                     self.shape_flags,
                     self.shape_sdf_max_resolution,
                     self.shape_sdf_target_voxel_size,
@@ -5635,8 +5634,8 @@ class ModelBuilder:
                 )
             ):
                 if (
-                    is_hydro
-                    and sflags & ShapeFlags.COLLIDE_SHAPES
+                    (sflags & ShapeFlags.HYDROELASTIC)
+                    and (sflags & ShapeFlags.COLLIDE_SHAPES)
                     and sdf_max_resolution is None
                     and sdf_target_voxel_size is None
                 ):
@@ -5684,7 +5683,7 @@ class ModelBuilder:
                     sdf_narrow_band_range = self.shape_sdf_narrow_band_range[i]
                     sdf_target_voxel_size = self.shape_sdf_target_voxel_size[i]
                     sdf_max_resolution = self.shape_sdf_max_resolution[i]
-                    is_hydroelastic = self.shape_is_hydroelastic[i]
+                    is_hydroelastic = bool(shape_flags & ShapeFlags.HYDROELASTIC)
 
                     # Determine if this shape needs SDF:
                     # - Mesh shapes with sdf_max_resolution/sdf_target_voxel_size set, OR

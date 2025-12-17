@@ -21,8 +21,8 @@ import numpy as np
 import warp as wp
 
 import newton
-from newton._src.geometry.sdf_hydroelastic import SDFHydroelasticConfig
 from newton._src.geometry.utils import create_box_mesh
+from newton.geometry import SDFHydroelasticConfig
 from newton.tests.unittest_utils import (
     add_function_test,
     get_selected_cuda_test_devices,

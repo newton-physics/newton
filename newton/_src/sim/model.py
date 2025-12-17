@@ -195,8 +195,6 @@ class Model:
         """Shape hydroelastic stiffness coefficient, shape [shape_count], float."""
         self.shape_contact_margin = None
         """Shape contact margin for collision detection, shape [shape_count], float."""
-        self.shape_is_hydroelastic = None
-        """Whether each shape uses hydroelastic collisions, shape [shape_count], bool."""
 
         # Shape geometry properties
         self.shape_type = None
@@ -522,7 +520,6 @@ class Model:
         self.attribute_frequency["shape_material_torsional_friction"] = ModelAttributeFrequency.SHAPE
         self.attribute_frequency["shape_material_rolling_friction"] = ModelAttributeFrequency.SHAPE
         self.attribute_frequency["shape_material_k_hydro"] = ModelAttributeFrequency.SHAPE
-        self.attribute_frequency["shape_is_hydroelastic"] = ModelAttributeFrequency.SHAPE
         self.attribute_frequency["shape_type"] = ModelAttributeFrequency.SHAPE
         self.attribute_frequency["shape_is_solid"] = ModelAttributeFrequency.SHAPE
         self.attribute_frequency["shape_thickness"] = ModelAttributeFrequency.SHAPE

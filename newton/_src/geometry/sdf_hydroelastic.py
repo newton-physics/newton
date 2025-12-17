@@ -300,30 +300,31 @@ class SDFHydroelastic:
             SDFHydroelastic instance, or None if no hydroelastic shape pairs exist.
         """
 
-        shape_is_hydroelastic = model.shape_is_hydroelastic.numpy()
+        from ..sim.builder import ShapeFlags  # noqa: PLC0415
 
-        if not shape_is_hydroelastic.any():
+        shape_flags = model.shape_flags.numpy()
+
+        # Check if any shapes have hydroelastic flag
+        has_hydroelastic = any((flags & ShapeFlags.HYDROELASTIC) for flags in shape_flags)
+        if not has_hydroelastic:
             return None
 
         shape_pairs = model.shape_contact_pairs.numpy()
         num_hydroelastic_pairs = 0
         for shape_a, shape_b in shape_pairs:
-            if shape_is_hydroelastic[shape_a] and shape_is_hydroelastic[shape_b]:
+            if (shape_flags[shape_a] & ShapeFlags.HYDROELASTIC) and (shape_flags[shape_b] & ShapeFlags.HYDROELASTIC):
                 num_hydroelastic_pairs += 1
 
         if num_hydroelastic_pairs == 0:
             return None
 
-        shape_flags = model.shape_flags.numpy()
         shape_sdf_shape2blocks = model.shape_sdf_shape2blocks.numpy()
-
-        from ..sim.builder import ShapeFlags  # noqa: PLC0415
 
         # Get indices of shapes that can collide and are hydroelastic
         hydroelastic_indices = [
             i
             for i in range(model.shape_count)
-            if (shape_flags[i] & ShapeFlags.COLLIDE_SHAPES) and shape_is_hydroelastic[i]
+            if (shape_flags[i] & ShapeFlags.COLLIDE_SHAPES) and (shape_flags[i] & ShapeFlags.HYDROELASTIC)
         ]
 
         # Verify all hydroelastic shapes have scale baked into their SDF
