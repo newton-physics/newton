@@ -718,7 +718,7 @@ def transform_points(points: nparray, transform: wp.transform, scale: Vec3 | Non
     return points @ np.array(wp.quat_to_matrix(transform.q)).reshape(3, 3) + transform.p
 
 
-@wp.kernel
+@wp.kernel(enable_backward=False)
 def get_total_kernel(
     counts: wp.array(dtype=int),
     prefix_sums: wp.array(dtype=int),

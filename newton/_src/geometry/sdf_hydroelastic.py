@@ -52,13 +52,13 @@ class HydroelasticContactSurfaceData:
     the contact surface triangles from hydroelastic collision detection.
     """
 
-    contact_surface_point: wp.array
+    contact_surface_point: wp.array(dtype=wp.vec3f)
     """World-space positions of contact surface triangle vertices (3 per face)."""
-    contact_surface_depth: wp.array
+    contact_surface_depth: wp.array(dtype=wp.float32)
     """Penetration depth at each face centroid."""
-    contact_surface_shape_pair: wp.array
+    contact_surface_shape_pair: wp.array(dtype=wp.vec2i)
     """Shape pair indices (shape_a, shape_b) for each face."""
-    face_contact_count: wp.array
+    face_contact_count: wp.array(dtype=wp.int32)
     """Array containing the number of face contacts."""
     max_num_face_contacts: int
     """Maximum number of face contacts (buffer size)."""
@@ -783,7 +783,7 @@ class SDFHydroelastic:
         )
 
 
-@wp.kernel
+@wp.kernel(enable_backward=False)
 def broadphase_collision_pairs_count(
     shape_transform: wp.array(dtype=wp.transform),
     shape_sdf_data: wp.array(dtype=SDFData),
@@ -833,7 +833,7 @@ def broadphase_collision_pairs_count(
         thread_num_blocks[tid] = 0
 
 
-@wp.kernel
+@wp.kernel(enable_backward=False)
 def broadphase_collision_pairs_scatter(
     thread_num_blocks: wp.array(dtype=wp.int32),
     shape_sdf_data: wp.array(dtype=SDFData),
@@ -882,7 +882,7 @@ def broadphase_collision_pairs_scatter(
         block_broad_idx[block_start + i] = shape_b_block_start + i
 
 
-@wp.kernel
+@wp.kernel(enable_backward=False)
 def broadphase_get_block_coords(
     grid_size: int,
     block_count: wp.array(dtype=wp.int32),
@@ -990,7 +990,7 @@ def sdf_diff_sdf(
     return diff, valA, valB, is_valid
 
 
-@wp.kernel
+@wp.kernel(enable_backward=False)
 def count_iso_voxels_block(
     grid_size: int,
     in_buffer_collide_count: wp.array(dtype=int),
@@ -1061,7 +1061,7 @@ def count_iso_voxels_block(
         iso_subblock_idx[tid] = subblock_idx
 
 
-@wp.kernel
+@wp.kernel(enable_backward=False)
 def scatter_iso_subblock(
     grid_size: int,
     in_iso_subblock_count: wp.array(dtype=int),
@@ -1319,7 +1319,7 @@ def compute_score(spatial_dot_product: wp.float32, pen_depth: wp.float32, beta: 
 
 
 def get_decode_contacts_kernel(margin_contact_area: float = 1e-4, writer_func: Any = None):
-    @wp.kernel
+    @wp.kernel(enable_backward=False)
     def decode_contacts_kernel(
         grid_size: int,
         contact_count: wp.array(dtype=int),
@@ -1419,7 +1419,7 @@ def get_decode_contacts_kernel(margin_contact_area: float = 1e-4, writer_func: A
     return decode_contacts_kernel
 
 
-@wp.kernel
+@wp.kernel(enable_backward=False)
 def iso_shape_pair_mask(
     iso_voxel_shape_pair: wp.array(dtype=wp.int32),
     iso_voxel_count: wp.array(dtype=int),
@@ -1432,7 +1432,7 @@ def iso_shape_pair_mask(
     shape_pairs_mask[shape_pair_idx] = 1
 
 
-@wp.kernel
+@wp.kernel(enable_backward=False)
 def mark_active_shape_pairs(
     face_contact_pair: wp.array(dtype=wp.vec2i),
     face_contact_count: wp.array(dtype=wp.int32),
@@ -1472,7 +1472,7 @@ def get_binning_kernels(
         writer_func: Function to write contact data.
     """
 
-    @wp.kernel
+    @wp.kernel(enable_backward=False)
     def compute_bin_scores(
         grid_size: int,
         contact_count: wp.array(dtype=int),
@@ -1543,7 +1543,7 @@ def get_binning_kernels(
 
                     wp.atomic_max(binned_dot_product, bin_idx_0, bin_normal_idx, idx_dir, dp)
 
-    @wp.kernel
+    @wp.kernel(enable_backward=False)
     def assign_contacts_to_bins(
         grid_size: int,
         contact_count: wp.array(dtype=int),
@@ -1859,7 +1859,7 @@ def get_binning_kernels(
     return compute_bin_scores, assign_contacts_to_bins, generate_contacts_from_bins
 
 
-@wp.kernel
+@wp.kernel(enable_backward=False)
 def verify_collision_step(
     num_broad_collide: wp.array(dtype=int),
     max_num_broad_collide: int,

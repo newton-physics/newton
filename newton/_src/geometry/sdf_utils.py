@@ -111,7 +111,7 @@ def sdf_from_mesh_kernel(
     wp.volume_store(sdf, x_id, y_id, z_id, signed_distance)
 
 
-@wp.kernel
+@wp.kernel(enable_backward=False)
 def sdf_from_primitive_kernel(
     shape_type: wp.int32,
     shape_scale: wp.vec3,
@@ -167,7 +167,7 @@ def check_tile_occupied_mesh_kernel(
     tile_occupied[tid] = is_occupied
 
 
-@wp.kernel
+@wp.kernel(enable_backward=False)
 def check_tile_occupied_primitive_kernel(
     shape_type: wp.int32,
     shape_scale: wp.vec3,
@@ -486,7 +486,7 @@ def compute_isomesh(volume: wp.Volume) -> Mesh | None:
     return isomesh
 
 
-@wp.kernel
+@wp.kernel(enable_backward=False)
 def generate_isomesh_kernel(
     sdf: wp.uint64,
     tile_points: wp.array(dtype=wp.vec3i),

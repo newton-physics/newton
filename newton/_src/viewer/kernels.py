@@ -447,7 +447,7 @@ def depth_to_color(depth: float, min_depth: float, max_depth: float) -> wp.vec3:
         return wp.vec3(1.0, 1.0 - s, 0.0)
 
 
-@wp.kernel
+@wp.kernel(enable_backward=False)
 def compute_hydro_contact_surface_lines(
     triangle_vertices: wp.array(dtype=wp.vec3),
     face_depths: wp.array(dtype=wp.float32),
