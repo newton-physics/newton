@@ -13,11 +13,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from .render_context import RenderContext
-from .types import GeomType, LightType
+from .render_context import ClearData, RenderContext
+from .types import RenderLightType, RenderShapeType
 
 __all__ = [
-    "GeomType",
-    "LightType",
+    "ClearData",
     "RenderContext",
+    "RenderLightType",
+    "RenderShapeType",
 ]

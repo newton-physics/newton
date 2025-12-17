@@ -60,6 +60,7 @@ def parse_mjcf(
     collapse_fixed_joints: bool = False,
     verbose: bool = False,
     skip_equality_constraints: bool = False,
+    convert_3d_hinge_to_ball_joints: bool = False,
     mesh_maxhullvert: int = MESH_MAXHULLVERT,
 ):
     """
@@ -92,6 +93,7 @@ def parse_mjcf(
         collapse_fixed_joints (bool): If True, fixed joints are removed and the respective bodies are merged.
         verbose (bool): If True, print additional information about parsing the MJCF.
         skip_equality_constraints (bool): Whether <equality> tags should be parsed. If True, equality constraints are ignored.
+        convert_3d_hinge_to_ball_joints (bool): If True, series of three hinge joints are converted to a single ball joint. Default is False.
         mesh_maxhullvert (int): Maximum vertices for convex hull approximation of meshes.
     """
     if xform is None:
@@ -134,6 +136,9 @@ def parse_mjcf(
     )
     builder_custom_attr_dof: list[ModelBuilder.CustomAttribute] = builder.get_custom_attributes_by_frequency(
         [ModelAttributeFrequency.JOINT_DOF]
+    )
+    builder_custom_attr_eq: list[ModelBuilder.CustomAttribute] = builder.get_custom_attributes_by_frequency(
+        [ModelAttributeFrequency.EQUALITY_CONSTRAINT]
     )
 
     compiler = root.find("compiler")
@@ -715,6 +720,8 @@ def parse_mjcf(
                     joint_type = JointType.FIXED
                 elif len(angular_axes) == 1:
                     joint_type = JointType.REVOLUTE
+                elif convert_3d_hinge_to_ball_joints and len(angular_axes) == 3:
+                    joint_type = JointType.BALL
             elif len(linear_axes) == 1 and len(angular_axes) == 0:
                 joint_type = JointType.PRISMATIC
 
@@ -971,12 +978,11 @@ def parse_mjcf(
             return {
                 "name": element.attrib.get("name"),
                 "active": element.attrib.get("active", "true").lower() == "true",
-                "solref": element.attrib.get("solref"),
-                "solimp": element.attrib.get("solimp"),
             }
 
         for connect in equality.findall("connect"):
             common = parse_common_attributes(connect)
+            custom_attrs = parse_custom_attributes(connect.attrib, builder_custom_attr_eq, parsing_mode="mjcf")
             body1_name = connect.attrib.get("body1", "").replace("-", "_") if connect.attrib.get("body1") else None
             body2_name = (
                 connect.attrib.get("body2", "worldbody").replace("-", "_") if connect.attrib.get("body2") else None
@@ -1000,6 +1006,7 @@ def parse_mjcf(
                     anchor=anchor_vec,
                     key=common["name"],
                     enabled=common["active"],
+                    custom_attributes=custom_attrs,
                 )
 
             if site1:  # Implement site-based connect after Newton supports sites
@@ -1007,6 +1014,7 @@ def parse_mjcf(
 
         for weld in equality.findall("weld"):
             common = parse_common_attributes(weld)
+            custom_attrs = parse_custom_attributes(weld.attrib, builder_custom_attr_eq, parsing_mode="mjcf")
             body1_name = weld.attrib.get("body1", "").replace("-", "_") if weld.attrib.get("body1") else None
             body2_name = weld.attrib.get("body2", "worldbody").replace("-", "_") if weld.attrib.get("body2") else None
             anchor = weld.attrib.get("anchor", "0 0 0")
@@ -1038,6 +1046,7 @@ def parse_mjcf(
                     torquescale=torquescale,
                     key=common["name"],
                     enabled=common["active"],
+                    custom_attributes=custom_attrs,
                 )
 
             if site1:  # Implement site-based weld after Newton supports sites
@@ -1045,6 +1054,7 @@ def parse_mjcf(
 
         for joint in equality.findall("joint"):
             common = parse_common_attributes(joint)
+            custom_attrs = parse_custom_attributes(joint.attrib, builder_custom_attr_eq, parsing_mode="mjcf")
             joint1_name = joint.attrib.get("joint1")
             joint2_name = joint.attrib.get("joint2")
             polycoef = joint.attrib.get("polycoef", "0 1 0 0 0")
@@ -1066,6 +1076,7 @@ def parse_mjcf(
                     polycoef=[float(x) for x in polycoef.split()],
                     key=common["name"],
                     enabled=common["active"],
+                    custom_attributes=custom_attrs,
                 )
 
         # add support for types "tendon" and "flex" once Newton supports them

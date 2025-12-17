@@ -58,6 +58,7 @@ from .kernels import (
     update_body_inertia_kernel,
     update_body_mass_ipos_kernel,
     update_dof_properties_kernel,
+    update_eq_properties_kernel,
     update_geom_properties_kernel,
     update_jnt_properties_kernel,
     update_joint_transforms_kernel,
@@ -310,6 +311,18 @@ class SolverMuJoCo(SolverBase):
                 mjcf_attribute_name="actuatorgravcomp",
             )
         )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="eq_solref",
+                frequency=ModelAttributeFrequency.EQUALITY_CONSTRAINT,
+                assignment=ModelAttributeAssignment.MODEL,
+                dtype=wp.vec2,
+                default=wp.vec2(0.02, 1.0),
+                namespace="mujoco",
+                usd_attribute_name="mjc:solref",
+                mjcf_attribute_name="solref",
+            )
+        )
         # Solver options (frequency WORLD for per-world values)
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
@@ -552,6 +565,8 @@ class SolverMuJoCo(SolverBase):
             self.update_geom_properties()
         if flags & SolverNotifyFlags.MODEL_PROPERTIES:
             self.update_model_properties()
+        if flags & SolverNotifyFlags.EQUALITY_CONSTRAINT_PROPERTIES:
+            self.update_eq_properties()
 
     def _create_inverse_shape_mapping(self):
         """
@@ -1160,6 +1175,7 @@ class SolverMuJoCo(SolverBase):
         eq_constraint_polycoef = model.equality_constraint_polycoef.numpy()
         eq_constraint_enabled = model.equality_constraint_enabled.numpy()
         eq_constraint_world = model.equality_constraint_world.numpy()
+        eq_constraint_solref = get_custom_attribute("eq_solref")
 
         INT32_MAX = np.iinfo(np.int32).max
         collision_mask_everything = INT32_MAX
@@ -1698,6 +1714,8 @@ class SolverMuJoCo(SolverBase):
                 eq.name1 = model.body_key[eq_constraint_body1[i]]
                 eq.name2 = model.body_key[eq_constraint_body2[i]]
                 eq.data[0:3] = eq_constraint_anchor[i]
+                if eq_constraint_solref is not None:
+                    eq.solref = eq_constraint_solref[i]
 
             elif constraint_type == EqType.JOINT:
                 eq = spec.add_equality(objtype=mujoco.mjtObj.mjOBJ_JOINT)
@@ -1706,6 +1724,8 @@ class SolverMuJoCo(SolverBase):
                 eq.name1 = model.joint_key[eq_constraint_joint1[i]]
                 eq.name2 = model.joint_key[eq_constraint_joint2[i]]
                 eq.data[0:5] = eq_constraint_polycoef[i]
+                if eq_constraint_solref is not None:
+                    eq.solref = eq_constraint_solref[i]
 
             elif constraint_type == EqType.WELD:
                 eq = spec.add_equality(objtype=mujoco.mjtObj.mjOBJ_BODY)
@@ -1718,6 +1738,8 @@ class SolverMuJoCo(SolverBase):
                 eq.data[3:6] = wp.transform_get_translation(cns_relpose)
                 eq.data[6:10] = wp.transform_get_rotation(cns_relpose)
                 eq.data[10] = eq_constraint_torquescale[i]
+                if eq_constraint_solref is not None:
+                    eq.solref = eq_constraint_solref[i]
 
         assert len(spec.geoms) == colliding_shapes_per_world, (
             "The number of geoms in the MuJoCo model does not match the number of colliding shapes in the Newton model."
@@ -1920,6 +1942,19 @@ class SolverMuJoCo(SolverBase):
                                 mjc_actuator_to_newton_axis_np[w, mjc_act] = -(world_newton_axis + 2)
             self.mjc_actuator_to_newton_axis = wp.array(mjc_actuator_to_newton_axis_np, dtype=wp.int32)
 
+            # Create mjc_eq_to_newton_eq: MuJoCo[world, eq] -> Newton equality constraint
+            # selected_constraints[idx] is the Newton template constraint index
+            neq = self.mj_model.neq
+            eq_constraints_per_world = (
+                model.equality_constraint_count // model.num_worlds if model.equality_constraint_count > 0 else 0
+            )
+            mjc_eq_to_newton_eq_np = np.full((nworld, neq), -1, dtype=np.int32)
+            for mjc_eq, newton_eq in enumerate(selected_constraints):
+                template_eq = newton_eq % eq_constraints_per_world if eq_constraints_per_world > 0 else newton_eq
+                for w in range(nworld):
+                    mjc_eq_to_newton_eq_np[w, mjc_eq] = w * eq_constraints_per_world + template_eq
+            self.mjc_eq_to_newton_eq = wp.array(mjc_eq_to_newton_eq_np, dtype=wp.int32)
+
             # set mjwarp-only settings
             self.mjw_model.opt.ls_parallel = ls_parallel
 
@@ -2020,7 +2055,7 @@ class SolverMuJoCo(SolverBase):
             # "light_dir",
             # "light_poscom0",
             # "light_pos0",
-            # "eq_solref",
+            "eq_solref",
             # "eq_solimp",
             # "eq_data",
             # "actuator_dynprm",
@@ -2367,6 +2402,35 @@ class SolverMuJoCo(SolverBase):
                     ],
                     device=self.model.device,
                 )
+
+    def update_eq_properties(self):
+        """Update equality constraint properties including solref in the MuJoCo model."""
+        if self.model.equality_constraint_count == 0:
+            return
+
+        neq = self.mj_model.neq
+        if neq == 0:
+            return
+
+        num_worlds = self.mjc_eq_to_newton_eq.shape[0]
+
+        # Get custom attribute for eq_solref
+        mujoco_attrs = getattr(self.model, "mujoco", None)
+        eq_solref = getattr(mujoco_attrs, "eq_solref", None) if mujoco_attrs is not None else None
+
+        if eq_solref is not None:
+            wp.launch(
+                update_eq_properties_kernel,
+                dim=(num_worlds, neq),
+                inputs=[
+                    self.mjc_eq_to_newton_eq,
+                    eq_solref,
+                ],
+                outputs=[
+                    self.mjw_model.eq_solref,
+                ],
+                device=self.model.device,
+            )
 
     def _validate_model_for_separate_worlds(self, model: Model) -> None:
         """Validate that the Newton model is compatible with MuJoCo's separate_worlds mode.

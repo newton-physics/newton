@@ -98,8 +98,7 @@ class TiledCameraSensorBenchmark:
                     self.color_image,
                     self.depth_image,
                     refit_bvh=False,
-                    clear_color=None,
-                    clear_depth=None,
+                    clear_data=None,
                 )
         self.timings["render_pixel"] = timer.elapsed
 
@@ -116,8 +115,7 @@ class TiledCameraSensorBenchmark:
                     self.color_image,
                     self.depth_image,
                     refit_bvh=False,
-                    clear_color=None,
-                    clear_depth=None,
+                    clear_data=None,
                 )
         self.timings["render_tiled"] = timer.elapsed
 

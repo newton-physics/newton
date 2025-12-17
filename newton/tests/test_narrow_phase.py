@@ -35,8 +35,8 @@ import numpy as np
 import warp as wp
 
 from newton._src.geometry.narrow_phase import NarrowPhase
-from newton._src.geometry.sdf_utils import SDFData
 from newton._src.geometry.types import GeoType
+from newton.geometry import SDFData
 
 
 def check_normal_direction(pos_a, pos_b, normal, tolerance=1e-5):

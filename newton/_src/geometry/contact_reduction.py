@@ -551,11 +551,11 @@ class ContactReductionFunctions:
     Each beta adds 6 slots per normal bin (one per spatial direction).
 
     Args:
-        betas: Tuple of depth thresholds. Default ``(1000000.0, 0.0)`` keeps both
-               all spatial extremes and penetrating-only spatial extremes.
+        betas: Tuple of depth thresholds. Default ``(1000000.0, 0.0001)`` keeps both
+               all spatial extremes and near-penetrating spatial extremes.
     """
 
-    def __init__(self, betas: tuple = (1000000.0, 0.0)):
+    def __init__(self, betas: tuple = (1000000.0, 0.0001)):
         self.betas = betas
         self.num_betas = len(betas)
         self.num_reduction_slots = compute_num_reduction_slots(self.num_betas)

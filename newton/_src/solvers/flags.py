@@ -45,6 +45,9 @@ class SolverNotifyFlags(IntEnum):
     MODEL_PROPERTIES = 1 << 5
     """Indicates model property updates: gravity and other global parameters."""
 
+    EQUALITY_CONSTRAINT_PROPERTIES = 1 << 6
+    """Indicates equality constraint property updates: eq_solref."""
+
     ALL = (
         JOINT_PROPERTIES
         | JOINT_DOF_PROPERTIES
@@ -52,6 +55,7 @@ class SolverNotifyFlags(IntEnum):
         | BODY_INERTIAL_PROPERTIES
         | SHAPE_PROPERTIES
         | MODEL_PROPERTIES
+        | EQUALITY_CONSTRAINT_PROPERTIES
     )
     """Indicates all property updates."""
 

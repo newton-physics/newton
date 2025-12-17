@@ -19,7 +19,7 @@ import warnings
 
 import numpy as np
 import warp as wp
-from warp.types import float32, matrix
+from warp.types import matrix
 
 from ...core.types import override
 from ...geometry import ParticleFlags
@@ -49,7 +49,7 @@ NUM_THREADS_PER_COLLISION_PRIMITIVE = 4
 TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE = 16
 
 
-class mat32(matrix(shape=(3, 2), dtype=float32)):
+class mat32(matrix(shape=(3, 2), dtype=wp.float32)):
     pass
 
 
