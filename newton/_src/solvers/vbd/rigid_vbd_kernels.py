@@ -849,7 +849,7 @@ def evaluate_joint_force_hessian(
     body_index: int,
     joint_index: int,
     body_q: wp.array(dtype=wp.transform),
-    body_q_anchor: wp.array(dtype=wp.transform),
+    body_q_prev: wp.array(dtype=wp.transform),
     body_q_rest: wp.array(dtype=wp.transform),
     body_com: wp.array(dtype=wp.vec3),
     joint_type: wp.array(dtype=int),
@@ -866,10 +866,10 @@ def evaluate_joint_force_hessian(
 ):
     """Compute AVBD joint force and Hessian contributions for a specific body (cable joints).
 
-    Uses ``body_q_anchor`` as the previous pose when estimating joint damping
-    over the long-range window ``dt``, while ``body_q`` and
-    ``body_q_rest`` provide current and rest configurations. Returns
-    (force, torque, H_ll, H_al, H_aa) in world frame.
+    Uses ``body_q_prev`` as the previous pose when estimating joint damping
+    over timestep ``dt``, while ``body_q`` and ``body_q_rest`` provide
+    current and rest configurations. Returns (force, torque, H_ll, H_al, H_aa)
+    in world frame.
     """
     if joint_type[joint_index] != JointType.CABLE:
         return wp.vec3(0.0), wp.vec3(0.0), wp.mat33(0.0), wp.mat33(0.0), wp.mat33(0.0)
@@ -886,8 +886,8 @@ def evaluate_joint_force_hessian(
 
     parent_pose = body_q[parent_index]
     child_pose = body_q[child_index]
-    parent_pose_prev = body_q_anchor[parent_index]
-    child_pose_prev = body_q_anchor[child_index]
+    parent_pose_prev = body_q_prev[parent_index]
+    child_pose_prev = body_q_prev[child_index]
     parent_pose_rest = body_q_rest[parent_index]
     child_pose_rest = body_q_rest[child_index]
     parent_com = body_com[parent_index]
@@ -1024,7 +1024,6 @@ def fill_adjacent_joints(
 def forward_step_rigid_bodies(
     # Inputs
     dt: float,
-    update_rigid_history: bool,
     gravity: wp.array(dtype=wp.vec3),
     body_f: wp.array(dtype=wp.spatial_vector),
     body_com: wp.array(dtype=wp.vec3),
@@ -1034,7 +1033,6 @@ def forward_step_rigid_bodies(
     body_q: wp.array(dtype=wp.transform),
     body_qd: wp.array(dtype=wp.spatial_vector),
     body_q_prev: wp.array(dtype=wp.transform),
-    body_q_anchor: wp.array(dtype=wp.transform),
     body_inertia_q: wp.array(dtype=wp.transform),
 ):
     """
@@ -1042,8 +1040,6 @@ def forward_step_rigid_bodies(
 
     Args:
         dt: Time step [s].
-        update_rigid_history: If True, updates ``body_q_anchor`` with the current pose
-            at the start of the macro-step (joint-damping anchor).
         gravity: Gravity vector array (world frame).
         body_f: External forces on bodies (spatial wrenches, world frame).
         body_com: Centers of mass (local body frame).
@@ -1052,10 +1048,8 @@ def forward_step_rigid_bodies(
         body_inv_inertia: Inverse inertia tensors (local body frame).
         body_q: Body transforms (input: start-of-step pose, output: integrated pose).
         body_qd: Body velocities (input: start-of-step velocity, output: integrated velocity).
-        body_q_prev: Previous body transforms (output, snapshot of ``body_q`` before integration,
-            used for BDF1 velocity update).
-        body_q_anchor: Anchor body transforms (output, updated only when
-            ``update_rigid_history`` is True, used as a long-range joint-damping anchor).
+        body_q_prev: Previous body transforms (output, world frame, snapshot of ``body_q``
+            before integration for velocity update, damping, and friction).
         body_inertia_q: Inertial target body transforms for the AVBD solve (output).
     """
     tid = wp.tid()
@@ -1065,10 +1059,6 @@ def forward_step_rigid_bodies(
 
     # Store previous transform for velocity computation
     body_q_prev[tid] = q_current
-
-    # Update history buffer if this is the start of a frame
-    if update_rigid_history:
-        body_q_anchor[tid] = q_current
 
     # Early exit for kinematic bodies (inv_mass == 0)
     inv_m = body_inv_mass[tid]
@@ -1230,7 +1220,7 @@ def warmstart_body_body_contacts(
     contact_material_mu: wp.array(dtype=float),
 ):
     """
-    Warm-start contact penalties and cache material properties (once per macro-step).
+    Warm-start contact penalties and cache material properties.
 
     Computes averaged material properties for each rigid contact and resets the
     AVBD penalty to a bounded initial value based on `k_start_body_contact` and the
@@ -1277,7 +1267,7 @@ def warmstart_body_particle_contacts(
 ):
     """
     Warm-start body-particle (particle-rigid) contact penalties and cache material
-    properties (once per macro-step).
+    properties.
 
     The scalar inputs `soft_contact_ke/kd/mu` are the particle-side soft-contact
     material parameters (from `model.soft_contact_*`). For each body-particle
@@ -1739,10 +1729,9 @@ def accumulate_body_particle_contacts_per_body(
 @wp.kernel
 def solve_rigid_body(
     dt: float,
-    dt_joint_damping: float,
     body_ids_in_color: wp.array(dtype=wp.int32),
     body_q: wp.array(dtype=wp.transform),
-    body_q_anchor: wp.array(dtype=wp.transform),
+    body_q_prev: wp.array(dtype=wp.transform),
     body_q_rest: wp.array(dtype=wp.transform),
     body_mass: wp.array(dtype=float),
     body_inv_mass: wp.array(dtype=float),
@@ -1787,9 +1776,8 @@ def solve_rigid_body(
 
     Args:
         dt: Time step.
-        dt_joint_damping: Long-range joint-damping history window (accumulated time since last rigid history update).
         body_ids_in_color: Body indices in current color group (for parallel coloring).
-        body_q_anchor: Previous body transforms (damping anchor).
+        body_q_prev: Previous body transforms (for damping and friction).
         body_q_rest: Rest transforms (for joint targets).
         body_mass: Body masses.
         body_inv_mass: Inverse masses (0 for kinematic bodies).
@@ -1899,7 +1887,7 @@ def solve_rigid_body(
             body_index,
             joint_idx,
             body_q,
-            body_q_anchor,
+            body_q_prev,
             body_q_rest,
             body_com,
             joint_type,
@@ -1912,7 +1900,7 @@ def solve_rigid_body(
             joint_penalty_k,
             joint_sigma_start,
             joint_C_fric,
-            dt_joint_damping,
+            dt,
         )
 
         f_force = f_force + joint_force

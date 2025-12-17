@@ -261,17 +261,13 @@ class SolverVBD(SolverBase):
             rigid_dahl_tau,
         )
 
-        # Track accumulated time since the last rigid history update (anchor/warmstart update).
-        # This is used to build the long-range time window for rigid joint damping.
-        self.time_since_anchor = 0.0
-
         # Rigid-only flag to control whether to update cross-step history
-        # (rigid anchors + rigid warmstart state such as contact/joint history).
+        # (rigid warmstart state such as contact/joint history).
         # Defaults to True. This setting applies only to the next call to :meth:`step` and is then
         # reset to ``True``. This is useful for substepping, where history update frequency might
         # differ from the simulation step frequency (e.g. updating only on the first substep).
         # This flag is automatically reset to True after each step().
-        # Rigid warmstart/anchor update flag (contacts/joints).
+        # Rigid warmstart update flag (contacts/joints).
         self.update_rigid_history = True
 
     def _init_particle_system(
@@ -391,9 +387,6 @@ class SolverVBD(SolverBase):
             self.body_q_prev = wp.zeros_like(
                 model.body_q, device=self.device
             )  # per-substep previous body pose (for velocity)
-            self.body_q_anchor = wp.zeros_like(
-                model.body_q, device=self.device
-            )  # macro-step anchor pose (for damping/friction)
             self.body_inertia_q = wp.zeros_like(model.body_q, device=self.device)  # inertial target poses for AVBD
 
             # Adjacency and dimensions
@@ -762,14 +755,14 @@ class SolverVBD(SolverBase):
     # =====================================================
 
     def set_rigid_history_update(self, update: bool):
-        """Set whether the next step() should update rigid solver history (anchors, warmstarts).
+        """Set whether the next step() should update rigid solver history (warmstarts).
 
         This setting applies only to the next call to :meth:`step` and is then reset to ``True``.
         This is useful for substepping, where history update frequency might differ from the
         simulation step frequency (e.g. updating only on the first substep).
 
         Args:
-            update: If True, update rigid anchors and warmstart state. If False, reuse previous.
+            update: If True, update rigid warmstart state. If False, reuse previous.
         """
         self.update_rigid_history = update
 
@@ -789,7 +782,7 @@ class SolverVBD(SolverBase):
         2. Iterate: Interleave particle VBD iterations and rigid body AVBD iterations
         3. Finalize: Update velocities and persistent state (Dahl friction)
 
-        To control rigid substepping behavior (anchors and warmstart history), call
+        To control rigid substepping behavior (warmstart history), call
         :meth:`set_rigid_history_update`
         before calling this method. It defaults to ``True`` and is reset to ``True`` after each call.
 
@@ -800,29 +793,15 @@ class SolverVBD(SolverBase):
             contacts: Collision contacts.
             dt: Time step size.
         """
-        # Use and reset the rigid history update flag (anchors, warmstarts).
+        # Use and reset the rigid history update flag (warmstarts).
         update_rigid_history = self.update_rigid_history
         self.update_rigid_history = True
-
-        # Determine the long-range time window used for rigid joint damping (and related rigid history).
-        if update_rigid_history:
-            # We are updating anchor state to current state_in.
-            # New window starts with this step's duration.
-            self.time_since_anchor = dt
-        else:
-            # We keep old anchor state.
-            # Extend the window by this step's duration.
-            self.time_since_anchor += dt
-
-        # Accumulated physical time since the last rigid history/anchor update. This "long-range"
-        # window is used for rigid joint damping.
-        dt_joint_damping = self.time_since_anchor
 
         self.initialize_rigid_bodies(state_in, contacts, dt, update_rigid_history)
         self.initialize_particles(state_in, dt)
 
         for iter_num in range(self.iterations):
-            self.solve_rigid_body_iteration(state_in, state_out, contacts, dt, dt_joint_damping)
+            self.solve_rigid_body_iteration(state_in, state_out, contacts, dt)
             self.solve_particle_iteration(state_in, state_out, contacts, dt, iter_num)
 
         self.finalize_rigid_bodies(state_out, dt)
@@ -898,19 +877,17 @@ class SolverVBD(SolverBase):
                 kernel=forward_step_rigid_bodies,
                 inputs=[
                     dt,
-                    update_rigid_history,
                     model.gravity,
                     state_in.body_f,
                     model.body_com,
                     model.body_inertia,
                     model.body_inv_mass,
                     model.body_inv_inertia,
-                    state_in.body_q,
-                    state_in.body_qd,
+                    state_in.body_q,  # input/output
+                    state_in.body_qd,  # input/output
                 ],
                 outputs=[
                     self.body_q_prev,
-                    self.body_q_anchor,
                     self.body_inertia_q,
                 ],
                 dim=model.body_count,
@@ -964,7 +941,7 @@ class SolverVBD(SolverBase):
                 )
 
                 # Warmstart AVBD penalty parameters for joints using the same cadence
-                # as contact history updates (macro-step history flag).
+                # as contact history updates.
                 if model.joint_count > 0:
                     wp.launch(
                         kernel=warmstart_joints,
@@ -1332,9 +1309,7 @@ class SolverVBD(SolverBase):
                 device=self.device,
             )
 
-    def solve_rigid_body_iteration(
-        self, state_in: State, state_out: State, contacts: Contacts, dt: float, dt_joint_damping: float
-    ):
+    def solve_rigid_body_iteration(self, state_in: State, state_out: State, contacts: Contacts, dt: float):
         """Solve one AVBD iteration for rigid bodies (per-iteration phase).
 
         Accumulates contact and joint forces/hessians, solves 6x6 rigid body systems per color,
@@ -1485,10 +1460,9 @@ class SolverVBD(SolverBase):
                 kernel=solve_rigid_body,
                 inputs=[
                     dt,
-                    dt_joint_damping,
                     color_group,
                     state_in.body_q,
-                    self.body_q_anchor,
+                    self.body_q_prev,
                     model.body_q,
                     model.body_mass,
                     model.body_inv_mass,
