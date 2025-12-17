@@ -24,7 +24,7 @@
 # Note: This example uses standard VBD iterations.
 # If you prefer to use more substeps rather than iterations for better convergence
 # (and maintain smooth damping even with fewer iterations), see `example_cable_bend_damping.py`.
-# It demonstrates how to use `solver.set_step_history_update()` to control the
+# It demonstrates how to use `solver.set_rigid_history_update()` to control the
 # history update frequency across substeps for stable damping even when
 # iteration count is low.
 #

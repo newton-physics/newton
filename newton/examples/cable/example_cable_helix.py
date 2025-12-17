@@ -232,7 +232,7 @@ class Example:
             if update_step_history:
                 self.contacts = self.model.collide(self.state_0)
 
-            self.solver.set_step_history_update(update_step_history)
+            self.solver.set_rigid_history_update(update_step_history)
             self.solver.step(
                 self.state_0,
                 self.state_1,

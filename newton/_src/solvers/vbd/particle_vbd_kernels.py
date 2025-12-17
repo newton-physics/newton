@@ -1253,10 +1253,8 @@ def compute_friction(mu: float, normal_contact_force: float, T: mat32, u: wp.vec
 @wp.kernel
 def forward_step(
     dt: float,
-    update_step_history: bool,
     gravity: wp.array(dtype=wp.vec3),
     pos_prev: wp.array(dtype=wp.vec3),
-    pos_anchor: wp.array(dtype=wp.vec3),
     pos: wp.array(dtype=wp.vec3),
     vel: wp.array(dtype=wp.vec3),
     inv_mass: wp.array(dtype=float),
@@ -1266,9 +1264,6 @@ def forward_step(
 ):
     particle = wp.tid()
     pos_prev[particle] = pos[particle]
-
-    if update_step_history:
-        pos_anchor[particle] = pos[particle]
 
     if not particle_flags[particle] & ParticleFlags.ACTIVE:
         inertia[particle] = pos[particle]
@@ -1281,10 +1276,8 @@ def forward_step(
 @wp.kernel
 def forward_step_penetration_free(
     dt: float,
-    update_step_history: bool,
     gravity: wp.array(dtype=wp.vec3),
     pos_prev: wp.array(dtype=wp.vec3),
-    pos_anchor: wp.array(dtype=wp.vec3),
     pos: wp.array(dtype=wp.vec3),
     vel: wp.array(dtype=wp.vec3),
     inv_mass: wp.array(dtype=float),
@@ -1299,9 +1292,6 @@ def forward_step_penetration_free(
     """
     particle_index = wp.tid()
     pos_prev[particle_index] = pos[particle_index]
-
-    if update_step_history:
-        pos_anchor[particle_index] = pos[particle_index]
 
     if not particle_flags[particle_index] & ParticleFlags.ACTIVE:
         inertia[particle_index] = pos[particle_index]
@@ -1409,7 +1399,6 @@ def apply_conservative_bound_truncation(
 @wp.kernel
 def solve_trimesh_no_self_contact_tile(
     dt: float,
-    dt_damping: float,
     particle_ids_in_color: wp.array(dtype=wp.int32),
     pos_anchor: wp.array(dtype=wp.vec3),
     pos: wp.array(dtype=wp.vec3),
@@ -1475,7 +1464,7 @@ def solve_trimesh_no_self_contact_tile(
             tri_materials[tri_index, 0],
             tri_materials[tri_index, 1],
             tri_materials[tri_index, 2],
-            dt_damping,
+            dt,
         )
         # compute damping
 
@@ -1513,7 +1502,7 @@ def solve_trimesh_no_self_contact_tile(
                 edge_rest_length,
                 edge_bending_properties[nei_edge_index, 0],
                 edge_bending_properties[nei_edge_index, 1],
-                dt_damping,
+                dt,
             )
 
             f += f_edge
@@ -1545,7 +1534,6 @@ def solve_trimesh_no_self_contact_tile(
 @wp.kernel
 def solve_trimesh_no_self_contact(
     dt: float,
-    dt_damping: float,
     particle_ids_in_color: wp.array(dtype=wp.int32),
     pos_anchor: wp.array(dtype=wp.vec3),
     pos: wp.array(dtype=wp.vec3),
@@ -1615,7 +1603,7 @@ def solve_trimesh_no_self_contact(
             tri_materials[tri_id, 0],
             tri_materials[tri_id, 1],
             tri_materials[tri_id, 2],
-            dt_damping,
+            dt,
         )
 
         f = f + f_tri
@@ -1645,7 +1633,7 @@ def solve_trimesh_no_self_contact(
                 edge_rest_length,
                 edge_bending_properties[nei_edge_index, 0],
                 edge_bending_properties[nei_edge_index, 1],
-                dt_damping,
+                dt,
             )
 
             f += f_edge
@@ -1706,7 +1694,7 @@ def convert_body_particle_contact_data_kernel(
 @wp.kernel
 def accumulate_contact_force_and_hessian(
     # inputs
-    dt_damping: float,
+    dt: float,
     current_color: int,
     pos_anchor: wp.array(dtype=wp.vec3),
     pos: wp.array(dtype=wp.vec3),
@@ -1733,7 +1721,7 @@ def accumulate_contact_force_and_hessian(
     shape_material_mu: wp.array(dtype=float),
     shape_body: wp.array(dtype=int),
     body_q: wp.array(dtype=wp.transform),
-    body_q_anchor: wp.array(dtype=wp.transform),
+    body_q_prev: wp.array(dtype=wp.transform),
     body_qd: wp.array(dtype=wp.spatial_vector),
     body_com: wp.array(dtype=wp.vec3),
     contact_shape: wp.array(dtype=int),
@@ -1778,7 +1766,7 @@ def accumulate_contact_force_and_hessian(
                             soft_contact_kd,
                             friction_mu,
                             friction_epsilon,
-                            dt_damping,
+                            dt,
                             edge_edge_parallel_epsilon,
                         )
                     )
@@ -1840,7 +1828,7 @@ def accumulate_contact_force_and_hessian(
                         soft_contact_kd,
                         friction_mu,
                         friction_epsilon,
-                        dt_damping,
+                        dt,
                     )
 
                     if has_contact:
@@ -1889,14 +1877,14 @@ def accumulate_contact_force_and_hessian(
                 shape_material_mu,
                 shape_body,
                 body_q,
-                body_q_anchor,
+                body_q_prev,
                 body_qd,
                 body_com,
                 contact_shape,
                 contact_body_pos,
                 contact_body_vel,
                 contact_normal,
-                dt_damping,
+                dt,
             )
             wp.atomic_add(particle_forces, particle_idx, body_contact_force)
             wp.atomic_add(particle_hessians, particle_idx, body_contact_hessian)
@@ -1942,7 +1930,7 @@ def evaluate_spring_force_and_hessian(
 @wp.kernel
 def accumulate_spring_force_and_hessian(
     # inputs
-    dt_damping: float,
+    dt: float,
     pos_anchor: wp.array(dtype=wp.vec3),
     pos: wp.array(dtype=wp.vec3),
     particle_ids_in_color: wp.array(dtype=int),
@@ -1966,7 +1954,7 @@ def accumulate_spring_force_and_hessian(
         spring_force, spring_hessian = evaluate_spring_force_and_hessian(
             particle_index,
             spring_index,
-            dt_damping,
+            dt,
             pos,
             pos_anchor,
             spring_indices,
@@ -1982,7 +1970,7 @@ def accumulate_spring_force_and_hessian(
 @wp.kernel
 def accumulate_contact_force_and_hessian_no_self_contact(
     # inputs
-    dt_damping: float,
+    dt: float,
     current_color: int,
     pos_anchor: wp.array(dtype=wp.vec3),
     pos: wp.array(dtype=wp.vec3),
@@ -2000,7 +1988,7 @@ def accumulate_contact_force_and_hessian_no_self_contact(
     shape_material_mu: wp.array(dtype=float),
     shape_body: wp.array(dtype=int),
     body_q: wp.array(dtype=wp.transform),
-    body_q_anchor: wp.array(dtype=wp.transform),
+    body_q_prev: wp.array(dtype=wp.transform),
     body_qd: wp.array(dtype=wp.spatial_vector),
     body_com: wp.array(dtype=wp.vec3),
     contact_shape: wp.array(dtype=int),
@@ -2037,14 +2025,14 @@ def accumulate_contact_force_and_hessian_no_self_contact(
                 shape_material_mu,
                 shape_body,
                 body_q,
-                body_q_anchor,
+                body_q_prev,
                 body_qd,
                 body_com,
                 contact_shape,
                 contact_body_pos,
                 contact_body_vel,
                 contact_normal,
-                dt_damping,
+                dt,
             )
             wp.atomic_add(particle_forces, particle_idx, body_contact_force)
             wp.atomic_add(particle_hessians, particle_idx, body_contact_hessian)
@@ -2053,7 +2041,6 @@ def accumulate_contact_force_and_hessian_no_self_contact(
 @wp.kernel
 def solve_trimesh_with_self_contact_penetration_free(
     dt: float,
-    dt_damping: float,
     particle_ids_in_color: wp.array(dtype=wp.int32),
     pos_anchor: wp.array(dtype=wp.vec3),
     pos: wp.array(dtype=wp.vec3),
@@ -2131,7 +2118,7 @@ def solve_trimesh_with_self_contact_penetration_free(
             tri_materials[tri_index, 0],
             tri_materials[tri_index, 1],
             tri_materials[tri_index, 2],
-            dt_damping,
+            dt,
         )
 
         f = f + f_tri
@@ -2144,7 +2131,9 @@ def solve_trimesh_with_self_contact_penetration_free(
         if edge_bending_properties[nei_edge_index, 0] != 0.0:
             f_edge, h_edge = evaluate_dihedral_angle_based_bending_force_hessian(
                 nei_edge_index, vertex_order_on_edge, pos, pos_anchor, edge_indices, edge_rest_angles, edge_rest_length,
-                edge_bending_properties[nei_edge_index, 0], edge_bending_properties[nei_edge_index, 1], dt_damping
+                edge_bending_properties[nei_edge_index, 0],
+                edge_bending_properties[nei_edge_index, 1],
+                dt,
             )
 
             f = f + f_edge
@@ -2174,7 +2163,6 @@ def solve_trimesh_with_self_contact_penetration_free(
 @wp.kernel
 def solve_trimesh_with_self_contact_penetration_free_tile(
     dt: float,
-    dt_damping: float,
     particle_ids_in_color: wp.array(dtype=wp.int32),
     pos_anchor: wp.array(dtype=wp.vec3),
     pos: wp.array(dtype=wp.vec3),
@@ -2254,7 +2242,7 @@ def solve_trimesh_with_self_contact_penetration_free_tile(
             tri_materials[tri_index, 0],
             tri_materials[tri_index, 1],
             tri_materials[tri_index, 2],
-            dt_damping,
+            dt,
         )
 
         f += f_tri
@@ -2279,7 +2267,7 @@ def solve_trimesh_with_self_contact_penetration_free_tile(
                 edge_rest_length,
                 edge_bending_properties[nei_edge_index, 0],
                 edge_bending_properties[nei_edge_index, 1],
-                dt_damping,
+                dt,
             )
 
             f += f_edge

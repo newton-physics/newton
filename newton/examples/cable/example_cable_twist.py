@@ -170,7 +170,7 @@ class Example:
         self.frame_dt = 1.0 / self.fps
         self.sim_time = 0.0
         self.sim_substeps = 10
-        self.sim_iterations = 1
+        self.sim_iterations = 2
         self.update_step_interval = 5
         self.sim_dt = self.frame_dt / self.sim_substeps
 
@@ -298,7 +298,7 @@ class Example:
             if update_step_history:
                 self.contacts = self.model.collide(self.state_0)
 
-            self.solver.set_step_history_update(update_step_history)
+            self.solver.set_rigid_history_update(update_step_history)
             self.solver.step(
                 self.state_0,
                 self.state_1,

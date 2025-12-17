@@ -375,7 +375,7 @@ class Example:
                 device=self.solver.device,
             )
 
-            # Decide whether to refresh solver history (anchors used for long-range damping)
+            # Decide whether to refresh rigid solver history (anchors used for long-range joint damping)
             # and recompute contacts on this substep, using a configurable cadence.
             update_step_history = (substep % self.update_step_interval) == 0
 
@@ -383,7 +383,7 @@ class Example:
             if update_step_history:
                 self.contacts = self.model.collide(self.state_0)
 
-            self.solver.set_step_history_update(update_step_history)
+            self.solver.set_rigid_history_update(update_step_history)
             self.solver.step(
                 self.state_0,
                 self.state_1,
