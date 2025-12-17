@@ -50,20 +50,19 @@ class State:
         """Previous rigid body transforms for finite-difference velocity computation."""
 
         self.body_qdd: wp.array | None = None
-        """Rigid body accelerations (spatial), shape (body_count,), dtype :class:`spatial_vector`."""
+        """Rigid body accelerations (spatial), shape (body_count,), dtype :class:`spatial_vector`.
+        First three entries: linear acceleration; last three: angular acceleration. Extended state attribute.
+        """
 
         self.body_f: wp.array | None = None
         """Rigid body forces (spatial), shape (body_count,), dtype :class:`spatial_vector`.
         First three entries: linear force; last three: torque.
-
-        Note:
-            :attr:`body_f` represents external wrenches in world frame, measured at the body's center of mass (COM).
-            The linear force component is applied at the COM, and the torque is about the COM.
-            This convention is consistent across all solvers (XPBD, SemiImplicit, Featherstone, MuJoCo, VBD).
         """
 
         self.body_parent_f: wp.array | None = None
-        """Parent interaction forces, shape (body_count,), dtype :class:`spatial_vector`."""
+        """Parent interaction forces, shape (body_count,), dtype :class:`spatial_vector`.
+        First three entries: linear force; last three: torque. Extended state attribute.
+        """
 
         self.joint_q: wp.array | None = None
         """Generalized joint position coordinates, shape (joint_coord_count,), dtype float."""

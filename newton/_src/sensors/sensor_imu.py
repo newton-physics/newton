@@ -74,7 +74,7 @@ def compute_sensor_imu_kernel(
 class SensorIMU:
     """Inertial Measurement Unit Sensor.
 
-    This sensor measures the acceleration and angular velocity at any number of sites.
+    This sensor measures the acceleration and angular velocity at the sites given.
 
     Body Accelerations Attribute:
     This sensor requires the extended state attribute ``body_qdd`` to be computed by the solver.  This requires
@@ -92,7 +92,7 @@ class SensorIMU:
             state = model.state()
 
             # Update after step()
-            sensor.update(model, state)
+            sensor.update(state)
     """
 
     accelerometer: wp.array(dtype=wp.vec3)

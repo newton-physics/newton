@@ -26,7 +26,6 @@ from ._src.sensors.frame_transform_sensor import (
 )
 
 # Raycast sensors
-# Raycast sensors
 from ._src.sensors.raycast_sensor import (
     RaycastSensor,
 )
