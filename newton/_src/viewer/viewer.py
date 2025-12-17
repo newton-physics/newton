@@ -993,6 +993,8 @@ class ViewerBase:
         shape_transform = self.model.shape_transform.numpy()
         shape_flags = self.model.shape_flags.numpy()
         shape_world = self.model.shape_world.numpy()
+        shape_geo_scale = self.model.shape_scale.numpy()
+        shape_sdf_data = self.model.shape_sdf_data.numpy() if self.model.shape_sdf_data is not None else None
         shape_count = len(shape_body)
 
         for s in range(shape_count):
@@ -1005,9 +1007,12 @@ class ViewerBase:
             if isomesh is None:
                 continue
 
-            # Create isomesh geometry
+            # Check if scale was baked into the SDF
+            scale_baked = shape_sdf_data[s]["scale_baked"] if shape_sdf_data is not None else True
+
+            # Create isomesh geometry (always use (1,1,1) for geometry since isomesh is in SDF space)
             geo_type = newton.GeoType.MESH
-            geo_scale = (1.0, 1.0, 1.0)  # scale is baked into isomesh
+            geo_scale = (1.0, 1.0, 1.0)
             geo_thickness = 0.0
             geo_is_solid = True
 
@@ -1045,7 +1050,11 @@ class ViewerBase:
                 batch = self._sdf_isomesh_instances[geo_hash]
 
             xform = wp.transform_expand(shape_transform[s])
-            scale = np.array([1.0, 1.0, 1.0])
+            # Apply shape scale if not baked into SDF, otherwise use (1,1,1)
+            if scale_baked:
+                scale = np.array([1.0, 1.0, 1.0])
+            else:
+                scale = np.asarray(shape_geo_scale[s], dtype=np.float32)
 
             # Use different color for each SDF isomesh (based on shape index)
             color = wp.vec3(self._shape_color_map(s))
