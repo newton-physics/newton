@@ -91,10 +91,10 @@ class SolverVBD(SolverBase):
     For rigid bodies, the AVBD algorithm uses **soft constraints** with adaptive penalty parameters
     for joints and contacts. Hard constraints are not currently enforced.
 
+
     References:
         - Anka He Chen, Ziheng Liu, Yin Yang, and Cem Yuksel. 2024. Vertex Block Descent. ACM Trans. Graph. 43, 4, Article 116 (July 2024), 16 pages.
           https://doi.org/10.1145/3658179
-
     Note:
         `SolverVBD` requires coloring information for both particles and rigid bodies:
 
