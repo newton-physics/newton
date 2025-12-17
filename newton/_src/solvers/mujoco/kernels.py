@@ -914,19 +914,20 @@ def repeat_array_kernel(
 def update_solver_options_kernel(
     newton_impratio: wp.array(dtype=float),
     # outputs
-    opt_impratio: wp.array(dtype=float),
+    opt_impratio_invsqrt: wp.array(dtype=float),
 ):
     """Update per-world solver options from Newton model.
 
     Args:
         newton_impratio: Per-world impratio values from Newton model (None if overridden)
-        opt_impratio: MuJoCo Warp opt.impratio array to update (shape: nworld)
+        opt_impratio_invsqrt: MuJoCo Warp opt.impratio_invsqrt array to update (shape: nworld)
     """
     worldid = wp.tid()
 
     # Only update if Newton array exists (None means overridden or not available)
     if newton_impratio:
-        opt_impratio[worldid] = newton_impratio[worldid]
+        # MuJoCo stores impratio as inverse square root
+        opt_impratio_invsqrt[worldid] = 1.0 / wp.sqrt(newton_impratio[worldid])
 
 
 @wp.kernel
