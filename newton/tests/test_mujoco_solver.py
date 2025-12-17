@@ -4137,13 +4137,12 @@ class TestMuJoCoOptions(unittest.TestCase):
         solver = SolverMuJoCo(model, impratio=3.0, iterations=1, disable_contacts=True)
 
         # Verify MuJoCo model uses the constructor-provided value
-        # mj_model stores impratio_invsqrt = 1/sqrt(impratio)
-        expected_invsqrt = 1.0 / np.sqrt(3.0)
+        # mj_model (regular MuJoCo) stores impratio directly
         self.assertAlmostEqual(
-            solver.mj_model.opt.impratio_invsqrt,
-            expected_invsqrt,
+            solver.mj_model.opt.impratio,
+            3.0,
             places=4,
-            msg=f"Constructor impratio=3.0 should result in impratio_invsqrt={expected_invsqrt}",
+            msg="Constructor impratio=3.0 should override custom attribute value 1.5",
         )
 
         # Verify that mjw_model (mujoco_warp) also has the correct value
