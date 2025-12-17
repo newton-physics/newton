@@ -2491,6 +2491,57 @@ def Xform "World"
         self.assertEqual(len(impratio), 1)
         self.assertAlmostEqual(impratio[0], 1.5, places=4)
 
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_parse_mujoco_options_disabled(self):
+        """Test that MuJoCo options from PhysicsScene are not parsed when parse_mujoco_options=False."""
+        from pxr import Usd  # noqa: PLC0415
+
+        usd_content = """
+#usda 1.0
+(
+    defaultPrim = "World"
+    metersPerUnit = 1.0
+    upAxis = "Z"
+)
+def Xform "World"
+{
+    def PhysicsScene "PhysicsScene"
+    {
+        float mjc:impratio = 99.0
+    }
+
+    def Xform "Articulation" (
+        prepend apiSchemas = ["PhysicsArticulationRootAPI"]
+    )
+    {
+        def Xform "Body1" (
+            prepend apiSchemas = ["PhysicsRigidBodyAPI"]
+        )
+        {
+            double3 xformOp:translate = (0, 0, 1)
+            uniform token[] xformOpOrder = ["xformOp:translate"]
+
+            def Sphere "Collision" (
+                prepend apiSchemas = ["PhysicsCollisionAPI"]
+            )
+            {
+                double radius = 0.1
+            }
+        }
+    }
+}
+"""
+        stage = Usd.Stage.CreateInMemory()
+        stage.GetRootLayer().ImportFromString(usd_content)
+
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_usd(stage, parse_mujoco_options=False)
+        model = builder.finalize()
+
+        # impratio should remain at default (1.0), not the USD value (99.0)
+        self.assertAlmostEqual(model.mujoco.impratio.numpy()[0], 1.0, places=4)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2, failfast=True)
