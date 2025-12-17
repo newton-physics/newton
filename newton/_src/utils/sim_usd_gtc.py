@@ -460,6 +460,7 @@ class Simulator:
         use_unified_collision_pipeline: bool = True,
         use_coacd: bool = False,
         enable_timers: bool = False,
+        load_visual_shapes: bool = False,
     ):
         def create_stage_from_path(input_path) -> Usd.Stage:
             stage = Usd.Stage.Open(input_path, Usd.Stage.LoadAll)
@@ -1193,6 +1194,12 @@ if __name__ == "__main__":
         help="Enable timers",
         type=bool,
         default=True,
+    )
+    parser.add_argument(
+        "--load_visual_shapes",
+        help="Load visual shapes",
+        type=bool,
+        default=False,
     )
 
     args = parser.parse_known_args()[0]
