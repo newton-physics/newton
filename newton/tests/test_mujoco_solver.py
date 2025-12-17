@@ -4082,21 +4082,22 @@ class TestMuJoCoOptions(unittest.TestCase):
         # Create solver without constructor override
         solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
 
-        # Verify MuJoCo Warp model has per-world impratio values
-        mjw_impratio = solver.mjw_model.opt.impratio.numpy()
+        # Verify MuJoCo Warp model has per-world impratio_invsqrt values
+        mjw_impratio_invsqrt = solver.mjw_model.opt.impratio_invsqrt.numpy()
         self.assertEqual(
-            len(mjw_impratio),
+            len(mjw_impratio_invsqrt),
             num_worlds,
-            f"MuJoCo Warp opt.impratio should have {num_worlds} values (one per world)",
+            f"MuJoCo Warp opt.impratio_invsqrt should have {num_worlds} values (one per world)",
         )
 
-        # Verify each world has the correct impratio value
+        # Verify each world has the correct impratio_invsqrt value (1/sqrt(impratio))
         for world_idx in range(num_worlds):
+            expected_invsqrt = 1.0 / np.sqrt(initial_impratio[world_idx])
             self.assertAlmostEqual(
-                mjw_impratio[world_idx],
-                initial_impratio[world_idx],
+                mjw_impratio_invsqrt[world_idx],
+                expected_invsqrt,
                 places=4,
-                msg=f"MuJoCo Warp impratio[{world_idx}] should be {initial_impratio[world_idx]}",
+                msg=f"MuJoCo Warp impratio_invsqrt[{world_idx}] should be {expected_invsqrt}",
             )
 
     def test_impratio_constructor_override(self):
@@ -4136,21 +4137,23 @@ class TestMuJoCoOptions(unittest.TestCase):
         solver = SolverMuJoCo(model, impratio=3.0, iterations=1, disable_contacts=True)
 
         # Verify MuJoCo model uses the constructor-provided value
+        # mj_model stores impratio_invsqrt = 1/sqrt(impratio)
+        expected_invsqrt = 1.0 / np.sqrt(3.0)
         self.assertAlmostEqual(
-            solver.mj_model.opt.impratio,
-            3.0,
+            solver.mj_model.opt.impratio_invsqrt,
+            expected_invsqrt,
             places=4,
-            msg="Constructor impratio=3.0 should override custom attribute value 1.5",
+            msg=f"Constructor impratio=3.0 should result in impratio_invsqrt={expected_invsqrt}",
         )
 
         # Verify that mjw_model (mujoco_warp) also has the correct value
-        # Note: opt.impratio is a scalar option, not expanded per-world like model arrays
-        mjw_impratio = solver.mjw_model.opt.impratio.numpy()
+        # Note: opt.impratio_invsqrt is a scalar option, not expanded per-world like model arrays
+        mjw_impratio_invsqrt = solver.mjw_model.opt.impratio_invsqrt.numpy()
         self.assertAlmostEqual(
-            float(mjw_impratio.flat[0]),
-            3.0,
+            float(mjw_impratio_invsqrt.flat[0]),
+            expected_invsqrt,
             places=4,
-            msg="MuJoCo Warp impratio should be 3.0",
+            msg=f"MuJoCo Warp impratio_invsqrt should be {expected_invsqrt}",
         )
 
 
