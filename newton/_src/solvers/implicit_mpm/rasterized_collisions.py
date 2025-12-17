@@ -563,11 +563,18 @@ def rasterize_collider(
     collider_friction: wp.array(dtype=float),
     collider_adhesion: wp.array(dtype=float),
     collider_ids: wp.array(dtype=int),
+    temporary_store: fem.TemporaryStore,
 ):
     collision_node_count = collider_position_field.dof_values.shape[0]
 
     collider_position_field.dof_values.fill_(wp.vec3(fem.OUTSIDE))
-    fem.interpolate(world_position, dest=collider_position_field, at=collider_space_restriction, reduction="first")
+    fem.interpolate(
+        world_position,
+        dest=collider_position_field,
+        at=collider_space_restriction,
+        reduction="first",
+        temporary_store=temporary_store,
+    )
 
     activation_distance = (
         0.0 if collider_position_field.degree == 0 else _COLLIDER_ACTIVATION_DISTANCE / collider_position_field.degree
@@ -600,6 +607,7 @@ def interpolate_collider_normals(
     collider_space_restriction: fem.SpaceRestriction,
     collider_distance_field: fem.DiscreteField,
     collider_normal_field: fem.DiscreteField,
+    temporary_store: fem.TemporaryStore,
 ):
     # collider_distance_field.dof_values = corrected_distance
     corrected_normal = wp.empty_like(collider_normal_field.dof_values)
@@ -610,6 +618,7 @@ def interpolate_collider_normals(
         at=collider_space_restriction,
         fields={"distance": collider_distance_field, "normal": collider_normal_field},
         reduction="mean",
+        temporary_store=temporary_store,
     )
 
     wp.launch(
