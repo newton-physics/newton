@@ -466,7 +466,7 @@ def eval_body_contact(
         mu /= float(mat_nonzero)
 
     # per-contact stiffness/damping/friction
-    if rigid_contact_stiffness.shape[0] > 0:
+    if rigid_contact_stiffness:
         contact_ke = rigid_contact_stiffness[tid]
         ke = contact_ke if contact_ke > 0.0 else ke
         contact_kd = rigid_contact_damping[tid]

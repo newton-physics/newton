@@ -66,9 +66,9 @@ class Contacts:
                 self.rigid_contact_damping = wp.zeros(rigid_contact_max, dtype=wp.float32, requires_grad=requires_grad)
                 self.rigid_contact_friction = wp.zeros(rigid_contact_max, dtype=wp.float32, requires_grad=requires_grad)
             else:
-                self.rigid_contact_stiffness = wp.zeros(0, dtype=wp.float32)
-                self.rigid_contact_damping = wp.zeros(0, dtype=wp.float32)
-                self.rigid_contact_friction = wp.zeros(0, dtype=wp.float32)
+                self.rigid_contact_stiffness = None
+                self.rigid_contact_damping = None
+                self.rigid_contact_friction = None
 
             # soft contacts
             self.soft_contact_count = wp.zeros(1, dtype=wp.int32)

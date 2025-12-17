@@ -294,7 +294,7 @@ def convert_newton_contacts_to_mjwarp_kernel(
         worldid,
     )
 
-    if rigid_contact_stiffness.shape[0] > 0:
+    if rigid_contact_stiffness:
         # Use per-contact stiffness/damping parameters
         contact_ke = rigid_contact_stiffness[tid]
         if contact_ke > 0.0:
