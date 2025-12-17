@@ -1996,7 +1996,7 @@ class SolverMuJoCo(SolverBase):
             self.expand_model_fields(self.mjw_model, nworld)
 
             # update solver options from Newton model (only if not overridden by constructor)
-            self.update_solver_options(impratio_overridden=impratio_overridden)
+            self._update_solver_options(impratio_overridden=impratio_overridden)
 
             # so far we have only defined the first world,
             # now complete the data from the Newton model
@@ -2126,7 +2126,7 @@ class SolverMuJoCo(SolverBase):
                 array = getattr(mj_model.opt, field)
                 setattr(mj_model.opt, field, tile(array))
 
-    def update_solver_options(self, impratio_overridden: bool = False):
+    def _update_solver_options(self, impratio_overridden: bool = False):
         """Update solver options from Newton model to MuJoCo Warp.
 
         Copies per-world values from Newton custom attributes to the MuJoCo Warp model.
