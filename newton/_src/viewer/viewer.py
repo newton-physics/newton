@@ -92,7 +92,8 @@ class ViewerBase:
         self._shape_to_batch: list[ViewerBase.ShapeInstances | None] | None = None
 
         # cache for isomeshes (computed on demand for collision shapes with SDF volumes)
-        self._shape_isomesh: list | None = None
+        # keyed by volume.id (uint64) to deduplicate when multiple shapes share the same SDF volume
+        self._isomesh_cache: dict[int, object] = {}
 
         # SDF isomesh instances -- created on-demand for collision visualization
         self._sdf_isomesh_instances: dict[int, ViewerBase.ShapeInstances] = {}
@@ -133,6 +134,8 @@ class ViewerBase:
         """Get the isomesh for a collision shape with an SDF volume.
 
         Computes the marching-cubes isosurface from the SDF volume and caches it.
+        Uses the volume.id (uint64) as cache key, so shapes sharing the same SDF
+        volume will reuse the same isomesh.
 
         Args:
             shape_idx: Index of the shape.
@@ -148,20 +151,19 @@ class ViewerBase:
         if sdf_volume is None:
             return None
 
-        # Lazy initialization of cache
-        if self._shape_isomesh is None:
-            self._shape_isomesh = [None] * self.model.shape_count
+        # Use volume.id as cache key - this is a unique uint64 pointer
+        volume_id = sdf_volume.id
 
         # Check if already computed (use False as sentinel for "computed but no mesh")
-        cached = self._shape_isomesh[shape_idx]
-        if cached is not None:
+        if volume_id in self._isomesh_cache:
+            cached = self._isomesh_cache[volume_id]
             return cached if cached is not False else None
 
         # Compute isomesh from SDF volume
         from ..geometry.sdf_utils import compute_isomesh  # noqa: PLC0415
 
         isomesh = compute_isomesh(sdf_volume)
-        self._shape_isomesh[shape_idx] = isomesh if isomesh is not None else False
+        self._isomesh_cache[volume_id] = isomesh if isomesh is not None else False
         return isomesh
 
     def set_camera(self, pos: wp.vec3, pitch: float, yaw: float):
