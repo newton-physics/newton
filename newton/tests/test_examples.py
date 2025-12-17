@@ -361,6 +361,13 @@ add_example_test(
     test_options={"usd_required": True, "num-frames": 500},
     use_viewer=True,
 )
+add_example_test(
+    TestRobotExamples,
+    name="robot.example_panda_hydro",
+    devices=cuda_test_devices,
+    test_options={"usd_required": True, "num-frames": 600},
+    use_viewer=True,
+)
 
 
 class TestRobotPolicyExamples(unittest.TestCase):
