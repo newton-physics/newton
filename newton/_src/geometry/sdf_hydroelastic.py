@@ -1782,10 +1782,16 @@ def get_binning_kernels(
                 anchor_friction = (total_depth - min_friction * agg_depth) / max_depth
                 anchor_friction = wp.max(anchor_friction, min_friction)
 
-        # single atomic_add per bin
-        contact_idx = wp.atomic_add(writer_data.contact_count, 0, num_unique_contacts + add_anchor_contact)
+        # single atomic_add per bin; drop this bin if we can't fit all its contacts
+        total_contacts = num_unique_contacts + add_anchor_contact
+        if total_contacts == 0:
+            return
 
-        if contact_idx + num_unique_contacts + add_anchor_contact >= writer_data.contact_max:
+        contact_idx = wp.atomic_add(writer_data.contact_count, 0, total_contacts)
+
+        if contact_idx + total_contacts > writer_data.contact_max:
+            # Roll back reservation and skip this bin to keep counts and writes consistent
+            wp.atomic_sub(writer_data.contact_count, 0, total_contacts)
             return
 
         pair_key = build_pair_key2(wp.uint32(shape_a), wp.uint32(shape_b))
