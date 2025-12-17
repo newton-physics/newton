@@ -44,7 +44,6 @@ def move_obstacles_triwave(
     t: wp.array(dtype=float),
     stop_time: float,
     release_time: float,
-    dt: float,
     body_q0: wp.array(dtype=wp.transform),
     body_q1: wp.array(dtype=wp.transform),
 ):
@@ -92,9 +91,13 @@ def move_obstacles_triwave(
     body_q0[b] = T
     body_q1[b] = T
 
-    # Update time (only thread 0)
+
+@wp.kernel
+def advance_time(t: wp.array(dtype=float), dt: float):
+    """Advance a device-side time accumulator (single-threaded, graph-capture friendly)."""
+    i = wp.tid()
     if i == 0:
-        t[0] = cur_t + dt
+        t[0] = t[0] + dt
 
 
 class Example:
@@ -195,7 +198,7 @@ class Example:
         # Set default material properties for cables (cable-to-cable contact)
         builder.default_shape_cfg.ke = 1.0e6  # Contact stiffness
         builder.default_shape_cfg.kd = 1.0e-2  # Contact damping
-        builder.default_shape_cfg.mu = 0.5  # Friction coefficient
+        builder.default_shape_cfg.mu = 0.6  # Friction coefficient
 
         # Bundle layout: align cable center with obstacle center
         # Obstacles span x in [0.5, 2.5], center at x=1.5
@@ -285,7 +288,7 @@ class Example:
             kd=1.0e-1,
             kf=builder.default_shape_cfg.kf,
             ka=builder.default_shape_cfg.ka,
-            mu=2.0,  # High friction ground
+            mu=2.5,
             restitution=builder.default_shape_cfg.restitution,
         )
         builder.add_ground_plane(cfg=ground_cfg)
@@ -368,9 +371,18 @@ class Example:
                     self.sim_time_array,
                     float(self.obstacle_stop_time),
                     float(self.obstacle_release_time),
-                    float(self.sim_dt),
                     self.state_0.body_q,
                     self.state_1.body_q,
+                ],
+                device=self.solver.device,
+            )
+            # Advance time in a separate 1-thread kernel to avoid races in move_obstacles_triwave().
+            wp.launch(
+                advance_time,
+                dim=1,
+                inputs=[
+                    self.sim_time_array,
+                    self.sim_dt,
                 ],
                 device=self.solver.device,
             )
