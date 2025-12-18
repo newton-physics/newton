@@ -827,7 +827,7 @@ def get_total_kernel(
     """
     Get the total of an array of counts and prefix sums.
     """
-    if num_elements[0] <= 0:
+    if num_elements[0] <= 0 or max_elements <= 0:
         total[0] = 0
         return
 
