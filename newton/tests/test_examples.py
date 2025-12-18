@@ -404,7 +404,7 @@ add_example_test(
 )
 add_example_test(
     TestRobotExamples,
-    name="robot.example_panda_hydro",
+    name="robot.example_robot_panda_hydro",
     devices=cuda_test_devices,
     test_options={"usd_required": True, "num-frames": 600},
     use_viewer=True,
