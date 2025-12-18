@@ -36,6 +36,7 @@ class TestAnymalReset(unittest.TestCase):
 
     def _setup_simulation(self, cone_type):
         builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        builder.rigid_contact_margin = 0.0
         builder.default_joint_cfg = newton.ModelBuilder.JointDofConfig(
             armature=0.06,
             limit_ke=1.0e2,
