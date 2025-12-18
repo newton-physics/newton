@@ -416,15 +416,14 @@ class ModelBuilder:
             arr = [self.values.get(i, self.default) for i in range(count)]
             return wp.array(arr, dtype=self.dtype, requires_grad=requires_grad, device=device)
 
-    def __init__(self, up_axis: AxisType = Axis.Z, gravity: float = -9.81):
+    def __init__(self, up_axis: AxisType = Axis.Z, gravity: Vec3 | None = None):
         """
         Initializes a new ModelBuilder instance for constructing simulation models.
 
         Args:
             up_axis (AxisType, optional): The axis to use as the "up" direction in the simulation.
                 Defaults to Axis.Z.
-            gravity (float, optional): The magnitude of gravity to apply along the up axis.
-                Defaults to -9.81.
+            gravity (Vec3, optional): Gravity vector (x, y, z). If None, defaults to -9.81 along the up axis.
         """
         self.num_worlds = 0
 
@@ -619,7 +618,15 @@ class ModelBuilder:
         self.current_world = -1
 
         self.up_axis: Axis = Axis.from_any(up_axis)
-        self.gravity: float = gravity
+        if gravity is None:
+            # Default gravity: -9.81 along the up axis
+            self.gravity: tuple[float, float, float] = tuple(g * -9.81 for g in self.up_vector)
+        else:
+            self.gravity: tuple[float, float, float] = tuple(gravity)
+        """Default gravity vector (x, y, z) for new worlds."""
+
+        self.world_gravity: list[tuple] = []
+        """Per-world gravity vectors (x, y, z). Populated when worlds are created via begin_world/add_world."""
 
         # contacts to be generated within the given distance margin to be generated at
         # every simulation substep (can be 0 if only one PBD solver iteration is used)
@@ -1434,7 +1441,12 @@ class ModelBuilder:
 
     # region World management methods
 
-    def begin_world(self, key: str | None = None, attributes: dict[str, Any] | None = None):
+    def begin_world(
+        self,
+        key: str | None = None,
+        attributes: dict[str, Any] | None = None,
+        gravity: Vec3 | None = None,
+    ):
         """Begin a new world context for adding entities.
 
         This method starts a new world scope where all subsequently added entities
@@ -1449,6 +1461,8 @@ class ModelBuilder:
                 a default key "world_{index}" will be generated.
             attributes (dict[str, Any] | None): Optional custom attributes to associate
                 with this world for later use.
+            gravity (Vec3 | None): Gravity vector (x, y, z) for this world.
+                If None, uses builder's default gravity.
 
         Raises:
             RuntimeError: If called when already inside a world context (current_world != -1).
@@ -1460,16 +1474,14 @@ class ModelBuilder:
             # Add global ground plane
             builder.add_ground_plane()  # Added to world -1 (global)
 
-            # Create world 0
+            # Create world 0 with default gravity
             builder.begin_world(key="robot_0")
             builder.add_body(...)  # Added to world 0
-            builder.add_shape_box(...)  # Added to world 0
             builder.end_world()
 
-            # Create world 1
-            builder.begin_world(key="robot_1")
+            # Create world 1 with custom gravity (e.g., Moon)
+            builder.begin_world(key="robot_1", gravity=(0, 0, -1.62))
             builder.add_body(...)  # Added to world 1
-            builder.add_shape_box(...)  # Added to world 1
             builder.end_world()
         """
         if self.current_world != -1:
@@ -1482,9 +1494,12 @@ class ModelBuilder:
         self.current_world = self.num_worlds
         self.num_worlds += 1
 
-        # Store world metadata if needed (for future use)
-        # Note: We might want to add world_key and world_attributes lists in __init__ if needed
-        # For now, we just track the world index
+        # Store per-world gravity
+        if gravity is None:
+            gravity_vec = self.gravity
+        else:
+            gravity_vec = tuple(gravity)
+        self.world_gravity.append(gravity_vec)
 
     def end_world(self):
         """End the current world context and return to global scope.
@@ -1509,7 +1524,12 @@ class ModelBuilder:
         # Reset to global world
         self.current_world = -1
 
-    def add_world(self, builder: ModelBuilder, xform: Transform | None = None):
+    def add_world(
+        self,
+        builder: ModelBuilder,
+        xform: Transform | None = None,
+        gravity: Vec3 | None = None,
+    ):
         """Add a builder as a new world.
 
         This is a convenience method that combines :meth:`begin_world`,
@@ -1521,6 +1541,8 @@ class ModelBuilder:
             builder (ModelBuilder): The builder containing entities to add as a new world.
             xform (Transform | None): Optional transform to apply to all root bodies
                 in the builder. Useful for spacing out worlds visually.
+            gravity (Vec3 | None): Gravity vector (x, y, z) for this world.
+                If None, uses the source builder's gravity.
 
         Raises:
             RuntimeError: If called when already in a world context (via begin_world).
@@ -1536,11 +1558,15 @@ class ModelBuilder:
             scene = ModelBuilder()
             scene.add_ground_plane()  # Global ground plane
 
-            # Add multiple robot worlds
-            for i in range(3):
-                scene.add_world(robot)  # Each robot is a separate world
+            # Add multiple robot worlds with different gravity
+            scene.add_world(robot, gravity=(0, 0, -9.81))  # Earth gravity
+            scene.add_world(robot, gravity=(0, 0, -1.62))  # Moon gravity
+            scene.add_world(robot, gravity=(0, 0, -3.72))  # Mars gravity
         """
-        self.begin_world()
+        # Use source builder's gravity if not overridden
+        if gravity is None:
+            gravity = builder.gravity
+        self.begin_world(gravity=gravity)
         self.add_builder(builder, xform=xform)
         self.end_world()
 
@@ -5927,9 +5953,14 @@ class ModelBuilder:
             m.up_vector = np.array(self.up_vector, dtype=wp.float32)
 
             # set gravity (per-world)
-            gravity_vec = wp.vec3(*(g * self.gravity for g in self.up_vector))
+            if self.world_gravity:
+                # Use per-world gravity from begin_world/add_world calls
+                gravity_vecs = [wp.vec3(*g) for g in self.world_gravity]
+            else:
+                # No worlds defined, use default gravity for the single implicit world
+                gravity_vecs = [wp.vec3(*self.gravity)]
             m.gravity = wp.array(
-                [gravity_vec] * self.num_worlds,
+                gravity_vecs,
                 dtype=wp.vec3,
                 device=device,
                 requires_grad=requires_grad,
