@@ -25,6 +25,7 @@ import inspect
 import itertools
 import os
 from enum import Enum
+from pathlib import Path
 from typing import ClassVar, Optional
 
 import numpy as np
@@ -456,6 +457,7 @@ class Simulator:
         sim_time: float = 0.0,
         sim_frame: int = 0,
         record_path: str = "",
+        render_folder: str = "",
         usd_offset: wp.vec3 = wp.vec3(0.0, 0.0, 0.0),
         use_unified_collision_pipeline: bool = True,
         use_coacd: bool = False,
@@ -637,6 +639,7 @@ class Simulator:
 
         # TODO: has an option to configure Newton viewer?? Have a flag to turn on/off the viewer and to support USD Camera.
         self.show_viewer = True
+        self.render_folder = ""
         if self.show_viewer:
             self.viewer = newton.viewer.ViewerGL()
 
@@ -656,6 +659,37 @@ class Simulator:
 
             if self.record_path:
                 self.viewer.start_recording(self.record_path)
+
+            # Setup frame rendering to PNG if render_folder is specified
+            self.render_folder = render_folder
+            if self.render_folder:
+                self.render_folder_path = Path(self.render_folder)
+                self.render_folder_path.mkdir(parents=True, exist_ok=True)
+                print(f"Saving rendered frames to: {self.render_folder_path}")
+
+                # Pre-allocate frame buffer for efficiency
+                h, w = self.viewer.renderer._screen_height, self.viewer.renderer._screen_width
+                self.frame_buffer = wp.empty(shape=(h, w, 3), dtype=wp.uint8, device=self.viewer.device)
+
+                # Try to import PIL/Pillow
+                try:
+                    from PIL import Image
+
+                    self.image_module = Image
+                    self.use_pil = True
+                except ImportError:
+                    print("Warning: PIL/Pillow not available. Trying imageio...")
+                    try:
+                        import imageio.v3 as iio
+
+                        self.image_module = iio
+                        self.use_pil = False
+                    except ImportError:
+                        print("Error: Neither PIL nor imageio available. Frame saving will be disabled.")
+                        print("Install with: pip install Pillow")
+                        self.render_folder = ""  # Disable frame saving
+            else:
+                self.render_folder = ""
 
         self.use_cuda_graph = wp.get_device().is_cuda
         self.is_mujoco_cpu_mode = self.integrator_type == IntegratorType.MJWARP and self.integrator.use_mujoco_cpu
@@ -1068,6 +1102,33 @@ class Simulator:
                     )
                 self.viewer.end_frame()
 
+                # Save frame as PNG if render_folder is specified
+                if self.render_folder:
+                    self._save_frame_as_png()
+
+                # Increment frame counter after rendering
+                self.current_frame += 1
+
+    def _save_frame_as_png(self):
+        """Save the current viewer frame as a PNG file."""
+        try:
+            # Capture frame from viewer
+            self.viewer.get_frame(target_image=self.frame_buffer, render_ui=False)
+            frame_np = self.frame_buffer.numpy()
+
+            # Generate filename with zero-padded frame number
+            filename = self.render_folder_path / f"frame_{self.current_frame:04d}.png"
+
+            # Save using PIL or imageio
+            if self.use_pil:
+                img = self.image_module.fromarray(frame_np, mode="RGB")
+                img.save(filename)
+            else:
+                self.image_module.imwrite(filename, frame_np)
+
+        except Exception as e:
+            print(f"Warning: Failed to save frame {self.current_frame}: {e}")
+
     def save(self):
         if self.usd_updater is not None:
             self.usd_updater.close()
@@ -1232,6 +1293,7 @@ if __name__ == "__main__":
             sim_time=args.sim_time,
             sim_frame=args.sim_frame,
             record_path=args.record,
+            render_folder=args.render_folder,
             usd_offset=usd_offset,
             use_unified_collision_pipeline=args.use_unified_collision_pipeline,
             use_coacd=args.use_coacd,
