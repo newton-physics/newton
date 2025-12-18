@@ -1724,11 +1724,6 @@ def get_binning_kernels(
                 if depth > 0.0:
                     selected_sum_normals += depth * binned_normals[tid, normal_bin_idx, dir_idx]
 
-            # Add anchor's contribution to the weighted sum (anchor normal = agg_force direction)
-            if add_anchor_contact == 1 and agg_force_mag > EPS_LARGE:
-                anchor_normal_contribution = max_depth * (agg_force / agg_force_mag)
-                selected_sum_normals += anchor_normal_contribution
-
             # Compute rotation that aligns selected_sum with agg_force
             selected_mag = wp.length(selected_sum_normals)
             if selected_mag > EPS_LARGE and agg_force_mag > EPS_LARGE:
