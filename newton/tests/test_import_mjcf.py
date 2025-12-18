@@ -1529,7 +1529,7 @@ class TestImportMjcf(unittest.TestCase):
         geom_margin = model.shape_contact_margin.numpy()
         self.assertEqual(model.shape_count, 3, "Should have 3 shapes")
 
-        # Expected values: shape 0 has margin=0.5, shape 1 has default margin=0.1 (builder.rigid_contact_margin), shape 2 has margin=0.8
+        # Expected values: shape 0 has margin=0.5, shape 1 has default margin=0.17 (builder.rigid_contact_margin), shape 2 has margin=0.8
         expected_values = {
             0: 0.5,
             1: 0.17,  # default taken from builder.rigid_contact_margin. Note that Mujoco defaults to 0 but we don't adopt that convention.
