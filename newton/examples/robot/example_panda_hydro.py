@@ -158,7 +158,7 @@ class Example:
         # Table
         box_size = 0.05
         table_half_extents = (box_size * 2, box_size * 2, box_size)  # half-extents
-        table_vertices, table_indices = create_box_mesh(table_half_extents)
+        table_vertices, table_indices = create_box_mesh(table_half_extents, duplicate_vertices=True)
         table_mesh = newton.Mesh(table_vertices, table_indices)
         builder.add_shape_mesh(
             body=-1,
