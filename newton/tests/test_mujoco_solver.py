@@ -4044,7 +4044,7 @@ class TestMuJoCoAttributes(unittest.TestCase):
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_custom_attributes_from_usd(self):
-        from pxr import Sdf, Usd, UsdGeom, UsdPhysics
+        from pxr import Sdf, Usd, UsdGeom, UsdPhysics  # noqa: PLC0415
 
         stage = Usd.Stage.CreateInMemory()
         UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)

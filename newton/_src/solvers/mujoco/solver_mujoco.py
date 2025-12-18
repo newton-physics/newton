@@ -421,7 +421,7 @@ class SolverMuJoCo(SolverBase):
 
         Corresponds to the equality constraints that are created in MuJoCo from Newton joints that have no associated articulation,
         i.e. where :attr:`newton.Model.joint_articulation` is -1 for the joint which results in 2 equality constraints being created in MuJoCo.
-        A value of -1 indicates that the MuJoCo equality constraint is not associated with a Newton joint but an explicitly created Newton equality constraint, 
+        A value of -1 indicates that the MuJoCo equality constraint is not associated with a Newton joint but an explicitly created Newton equality constraint,
         see :attr:`mjc_eq_to_newton_eq` for the corresponding equality constraint index.
 
         Shape [nworld, neq], dtype int32."""
