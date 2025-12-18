@@ -4101,7 +4101,7 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
         world_builder.bound_mass = 0.01
         world_builder.replicate(builder, num_worlds=num_worlds)
         model = world_builder.finalize()
-        solver = SolverMuJoCo(model, separate_worlds=True, save_to_mjcf="test_loop_joints_only.xml")
+        solver = SolverMuJoCo(model, separate_worlds=True)
         self.assertEqual(solver.mj_model.nv, 2)
         # 2 equality constraints per loop joint
         self.assertEqual(solver.mj_model.neq, 2)
@@ -4146,7 +4146,7 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
         world_builder.bound_mass = 0.01
         world_builder.replicate(builder, num_worlds=num_worlds)
         model = world_builder.finalize()
-        solver = SolverMuJoCo(model, separate_worlds=True, save_to_mjcf="test_loop_joints_only.xml")
+        solver = SolverMuJoCo(model, separate_worlds=True)
         self.assertEqual(model.joint_count, 4 * num_worlds)
         self.assertEqual(model.equality_constraint_count, 2 * num_worlds)
         self.assertEqual(solver.mj_model.nv, 3)
