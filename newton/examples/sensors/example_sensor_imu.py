@@ -35,13 +35,13 @@ def acc_to_color(
 
     stored = buffer[idx]
 
-    limit = wp.vec3(40.0)
+    limit = wp.vec3(80.0)
     acc = wp.max(wp.min(imu_acc[idx], limit), -limit)
 
     smoothed = (1.0 - alpha) * stored + alpha * acc
     buffer[idx] = smoothed
 
-    c = wp.vec3(0.5) + 0.5 * (0.1 * wp.min(wp.abs(smoothed), wp.vec3(10.0)) - wp.vec3(0.5))
+    c = wp.vec3(0.5) + 0.5 * (0.1 * wp.min(wp.abs(smoothed), wp.vec3(20.0)) - wp.vec3(0.5))
     color[idx] = wp.max(wp.min(c, wp.vec3(1.0)), wp.vec3(0.0))
 
 
@@ -65,34 +65,52 @@ class Example:
         usd_stage = Usd.Stage.Open(newton.examples.get_asset("axis_cube.usda"))
         axis_cube_mesh = newton.usd.get_mesh(usd_stage.GetPrimAtPath("/AxisCube/VisualCube"))
 
-        body = builder.add_body(key="mesh", xform=wp.transform(wp.vec3(0, 0, 1)))
-        scale = 0.2
+        self.visual_cubes = []
+        self.visual_fillers = []
+        self.imu_sites = []
 
-        self.visual_cube = builder.add_shape_mesh(
-            body,
-            scale=wp.vec3(scale),
-            mesh=axis_cube_mesh,
-            cfg=newton.ModelBuilder.ShapeConfig(has_shape_collision=False, density=0),
-        )
+        self.n_cubes = 3
 
-        scale_filler = scale * 0.98
+        for cube_idx in range(self.n_cubes):
+            scale = 0.2
+            body = builder.add_body(
+                xform=wp.transform(
+                    wp.vec3(0, 0.7 * (cube_idx - 1), 1),
+                    wp.quat_from_axis_angle(
+                        wp.vec3(cube_idx % 3 == 0, cube_idx % 3 == 1, cube_idx % 3 == 2), wp.pi / 2
+                    ),
+                )
+            )
 
-        visual_cube_filler = builder.add_shape_box(
-            body,
-            hx=scale_filler,
-            hy=scale_filler,
-            hz=scale_filler,
-            cfg=newton.ModelBuilder.ShapeConfig(has_shape_collision=False, density=0),
-        )
-        builder.add_shape_box(
-            body, hx=scale, hy=scale, hz=scale, cfg=newton.ModelBuilder.ShapeConfig(is_visible=False, density=200)
-        )
-        imu_site = builder.add_site(body, key="imu_site")
+            visual_cube = builder.add_shape_mesh(
+                body,
+                scale=wp.vec3(scale),
+                mesh=axis_cube_mesh,
+                cfg=newton.ModelBuilder.ShapeConfig(has_shape_collision=False, density=0, ke=1e3, kd=1e2),
+            )
+
+            scale_filler = scale * 0.98
+
+            visual_filler = builder.add_shape_box(
+                body,
+                hx=scale_filler,
+                hy=scale_filler,
+                hz=scale_filler,
+                cfg=newton.ModelBuilder.ShapeConfig(has_shape_collision=False, density=0),
+            )
+            builder.add_shape_box(
+                body, hx=scale, hy=scale, hz=scale, cfg=newton.ModelBuilder.ShapeConfig(is_visible=False, density=200)
+            )
+            imu_site = builder.add_site(body, key=f"imu_site_{cube_idx}")
+
+            self.visual_cubes.append(visual_cube)
+            self.visual_fillers.append(visual_filler)
+            self.imu_sites.append(imu_site)
 
         # finalize model
         self.model = builder.finalize()
 
-        self.imu = newton.sensors.SensorIMU(self.model, [imu_site])
+        self.imu = newton.sensors.SensorIMU(self.model, self.imu_sites)
 
         self.solver = newton.solvers.SolverMuJoCo(self.model, njmax=100)
 
@@ -100,8 +118,8 @@ class Example:
         self.state_1 = self.model.state()
         self.control = self.model.control()
 
-        self.buffer = wp.zeros(1, dtype=wp.vec3)
-        self.colors = wp.zeros(1, dtype=wp.vec3)
+        self.buffer = wp.zeros(self.n_cubes, dtype=wp.vec3)
+        self.colors = wp.zeros(self.n_cubes, dtype=wp.vec3)
 
         self.viewer.set_model(self.model)
 
@@ -109,7 +127,7 @@ class Example:
             self.viewer.camera.pos = type(self.viewer.camera.pos)(3.0, 0.0, 2.0)
             self.viewer.camera.pitch = type(self.viewer.camera.pitch)(-20)
 
-        self.viewer.update_shape_colors({visual_cube_filler: (0.1, 0.1, 0.1)})
+        self.viewer.update_shape_colors({cube: (0.1, 0.1, 0.1) for i, cube in enumerate(self.visual_fillers)})
 
         self.capture()
 
@@ -137,7 +155,7 @@ class Example:
             # read IMU acceleration
             self.imu.update(self.state_0)
             # average and compute color
-            wp.launch(acc_to_color, dim=1, inputs=[0.01, self.imu.accelerometer, self.buffer, self.colors])
+            wp.launch(acc_to_color, dim=self.n_cubes, inputs=[0.025, self.imu.accelerometer, self.buffer, self.colors])
 
     def step(self):
         if self.graph:
@@ -146,7 +164,7 @@ class Example:
             self.simulate()
 
         self.sim_time += self.frame_dt
-        self.viewer.update_shape_colors({self.visual_cube: self.colors.numpy()[0]})
+        self.viewer.update_shape_colors({cube: self.colors.numpy()[i] for i, cube in enumerate(self.visual_cubes)})
 
     def test(self):
         pass
