@@ -254,7 +254,9 @@ def parse_usd(
         has_particle_collision=False,
     )
 
-    def _load_visual_shapes_impl(parent_body_id: int, prim: Usd.Prim, incoming_xform: wp.transform, incoming_scale: wp.vec3):
+    def _load_visual_shapes_impl(
+        parent_body_id: int, prim: Usd.Prim, incoming_xform: wp.transform, incoming_scale: wp.vec3
+    ):
         """Load visual-only shapes (no collision shapes, no rigid body or mass API schemas applied) for a given prim and its children."""
         if (
             prim.HasAPI(UsdPhysics.RigidBodyAPI)
