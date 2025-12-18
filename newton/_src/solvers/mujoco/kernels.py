@@ -1163,13 +1163,13 @@ def update_shape_mappings_kernel(
 
 @wp.kernel
 def update_model_properties_kernel(
-    # Newton model properties
+    # Newton model properties (per-world)
     gravity_src: wp.array(dtype=wp.vec3),
     # MuJoCo model properties
     gravity_dst: wp.array(dtype=wp.vec3f),
 ):
     world_idx = wp.tid()
-    gravity_dst[world_idx] = gravity_src[0]
+    gravity_dst[world_idx] = gravity_src[world_idx]
 
 
 @wp.kernel

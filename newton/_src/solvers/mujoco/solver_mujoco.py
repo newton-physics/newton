@@ -2314,6 +2314,7 @@ class SolverMuJoCo(SolverBase):
     def update_model_properties(self):
         """Update model properties including gravity in the MuJoCo model."""
         if self.use_mujoco_cpu:
+            # CPU path only supports single world, use first world's gravity
             self.mj_model.opt.gravity[:] = np.array([*self.model.gravity.numpy()[0]])
         else:
             if hasattr(self, "mjw_data"):

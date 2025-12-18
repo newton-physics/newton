@@ -393,7 +393,7 @@ class Model:
         self.up_axis = 2
         """Up axis: 0 for x, 1 for y, 2 for z."""
         self.gravity = None
-        """Gravity vector, shape [1], dtype vec3."""
+        """Gravity vector, shape [num_worlds], dtype vec3."""
 
         self.equality_constraint_type = None
         """Type of equality constraint, shape [equality_constraint_count], int."""
@@ -604,13 +604,18 @@ class Model:
         )
         return c
 
-    def set_gravity(self, gravity: tuple[float, float, float] | list[float] | wp.vec3) -> None:
+    def set_gravity(
+        self,
+        gravity: tuple[float, float, float] | list[float] | wp.vec3,
+        world_idx: int | None = None,
+    ) -> None:
         """
         Set gravity for runtime modification.
 
         Args:
             gravity: Gravity vector as a tuple, list, or wp.vec3.
                     Common values: (0, 0, -9.81) for Z-up, (0, -9.81, 0) for Y-up.
+            world_idx: World index to set gravity for. If None, sets gravity for all worlds.
 
         Note:
             After calling this method, you should notify solvers via
@@ -622,9 +627,20 @@ class Model:
             )
 
         if isinstance(gravity, tuple | list):
-            self.gravity.assign([wp.vec3(gravity[0], gravity[1], gravity[2])])
+            gravity_vec = wp.vec3(gravity[0], gravity[1], gravity[2])
         else:
-            self.gravity.assign([gravity])
+            gravity_vec = gravity
+
+        if world_idx is None:
+            # Set gravity for all worlds
+            self.gravity.assign([gravity_vec] * self.num_worlds)
+        else:
+            # Set gravity for a specific world
+            if world_idx < 0 or world_idx >= self.num_worlds:
+                raise ValueError(f"world_idx {world_idx} out of range [0, {self.num_worlds})")
+            gravity_data = self.gravity.numpy()
+            gravity_data[world_idx] = [gravity_vec[0], gravity_vec[1], gravity_vec[2]]
+            self.gravity.assign(gravity_data)
 
     def collide(
         self: Model,
