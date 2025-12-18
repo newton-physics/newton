@@ -227,10 +227,18 @@ uv sync --extra examples
         <img src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_cloth_h1.jpg" alt="Cloth H1">
       </a>
     </td>
+        <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/cloth/example_cloth_twist.py">
+        <img src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_cloth_twist.jpg" alt="Cloth Twist">
+      </a>
+    </td>
   </tr>
  <tr>
     <td align="center">
       <code>uv run -m newton.examples cloth_h1</code>
+    </td>
+    <td align="center">
+      <code>uv run -m newton.examples cloth_twist</code>
     </td>
  </tr>
 </table>
@@ -279,8 +287,8 @@ uv sync --extra examples
       </a>
     </td>
     <td align="center" width="33%">
-      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/cloth/example_cloth_twist.py">
-        <img src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_cloth_twist.jpg" alt="Cloth Twist">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/ik/example_ik_cube_stacking.py">
+        <img src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_ik_cube_stacking.jpg" alt="Stack Cubes">
       </a>
     </td>
   </tr>
@@ -292,7 +300,7 @@ uv sync --extra examples
       <code>uv run -m newton.examples cloth_franka</code>
     </td>
     <td align="center">
-      <code>uv run -m newton.examples cloth_twist</code>
+      <code>uv run -m newton.examples ik_cube_stacking</code>
     </td>
   </tr>
 
