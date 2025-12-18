@@ -235,7 +235,7 @@ def create_narrow_phase_kernel_gjk_mpr(external_aabb: bool, writer_func: Any):
             # Only route if the pipeline is enabled (array has capacity)
             is_hydro_a = (shape_flags[shape_a] & int(ShapeFlags.HYDROELASTIC)) != 0
             is_hydro_b = (shape_flags[shape_b] & int(ShapeFlags.HYDROELASTIC)) != 0
-            if is_hydro_a and is_hydro_b and shape_pairs_sdf_sdf.shape[0] > 0:
+            if is_hydro_a and is_hydro_b and shape_pairs_sdf_sdf:
                 idx = wp.atomic_add(shape_pairs_sdf_sdf_count, 0, 1)
                 if idx < shape_pairs_sdf_sdf.shape[0]:
                     shape_pairs_sdf_sdf[idx] = wp.vec2i(shape_a, shape_b)
@@ -965,7 +965,7 @@ class NarrowPhase:
                 self.shape_pairs_sdf_sdf_count = wp.zeros(1, dtype=wp.int32, device=device)
             else:
                 # Empty arrays for when hydroelastic is disabled
-                self.shape_pairs_sdf_sdf = wp.zeros(0, dtype=wp.vec2i, device=device)
+                self.shape_pairs_sdf_sdf = None
                 self.shape_pairs_sdf_sdf_count = wp.zeros(1, dtype=wp.int32, device=device)
 
         # Fixed thread count for kernel launches
