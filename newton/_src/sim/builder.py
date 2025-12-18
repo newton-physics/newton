@@ -718,6 +718,57 @@ class ModelBuilder:
         """
         return [attr for attr in self.custom_attributes.values() if attr.frequency in frequencies]
 
+    def add_custom_values(self, **kwargs: Any) -> dict[str, int]:
+        """Append values to variable-length custom attributes.
+
+        Adds values to custom attributes with ``frequency=None``. Each keyword argument
+        specifies an attribute key and the value to append. The value is added at the
+        next available index for that attribute.
+
+        This is useful for custom entity types that aren't built into the model,
+        such as MuJoCo contact pairs or user-defined groupings.
+
+        Args:
+            **kwargs: Mapping of attribute keys to values. Keys should be the full
+                attribute key (e.g., ``"mujoco:pair_geom1"`` or just ``"my_attr"`` if no namespace).
+
+        Returns:
+            Dict mapping attribute keys to the index where each value was added.
+            If all attributes had the same count before the call, all indices will be equal.
+
+        Raises:
+            AttributeError: If an attribute key is not defined.
+            ValueError: If an attribute has a non-None frequency (must be variable-length).
+
+        Example:
+            >>> builder.add_custom_values(
+            ...     **{
+            ...         "mujoco:pair_geom1": geom1_idx,
+            ...         "mujoco:pair_geom2": geom2_idx,
+            ...         "mujoco:pair_world": builder.current_world,
+            ...     }
+            ... )
+            {'mujoco:pair_geom1': 0, 'mujoco:pair_geom2': 0, 'mujoco:pair_world': 0}
+        """
+        indices: dict[str, int] = {}
+        for key, value in kwargs.items():
+            attr = self.custom_attributes.get(key)
+            if attr is None:
+                raise AttributeError(
+                    f"Custom attribute '{key}' is not defined. Please declare it first using add_custom_attribute()."
+                )
+            if attr.frequency is not None:
+                raise ValueError(
+                    f"Custom attribute '{key}' has frequency={attr.frequency.name}, "
+                    f"but add_custom_values() only works with variable-length attributes (frequency=None)."
+                )
+            if attr.values is None:
+                attr.values = {}
+            idx = len(attr.values)
+            attr.values[idx] = value
+            indices[key] = idx
+        return indices
+
     def _process_custom_attributes(
         self,
         entity_index: int,
