@@ -44,9 +44,6 @@ class SceneType(Enum):
     CUBE = "cube"
 
 
-SHOW_ISOSURFACE = True
-
-
 def quat_to_vec4(q: wp.quat) -> wp.vec4:
     """Convert a quaternion to a vec4."""
     return wp.vec4(q[0], q[1], q[2], q[3])
@@ -68,6 +65,7 @@ def broadcast_ik_solution_kernel(
 class Example:
     def __init__(self, viewer, scene=SceneType.PEN, num_worlds=1):
         self.scene = SceneType(scene)
+        self.show_isosurface = hasattr(viewer, "renderer")
         self.fps = 60
         self.frame_dt = 1.0 / self.fps
         self.sim_time = 0.0
@@ -225,7 +223,7 @@ class Example:
 
         # Create collision pipeline with SDF hydroelastic config
         sdf_hydroelastic_config = SDFHydroelasticConfig(
-            output_contact_surface=SHOW_ISOSURFACE,
+            output_contact_surface=self.show_isosurface,
         )
         self.collision_pipeline = newton.CollisionPipelineUnified.from_model(
             self.model,
@@ -255,7 +253,8 @@ class Example:
         if hasattr(self.viewer, "renderer"):
             self.viewer.set_camera(wp.vec3(0.5, 0.0, 0.5), -15, -140)
             self.viewer.set_world_offsets(wp.vec3(1.0, 1.0, 0.0))
-            self.viewer.show_hydro_contact_surface = SHOW_ISOSURFACE
+            self.viewer.show_hydro_contact_surface = self.show_isosurface
+            self.viewer.register_ui_callback(self.render_ui, position="side")
 
         # Initialize state for IK setup
         self.state = self.model.state()
@@ -342,11 +341,16 @@ class Example:
         self.viewer.begin_frame(self.sim_time)
         self.viewer.log_state(self.state_0)
         self.viewer.log_contacts(self.contacts, self.state_0)
-        if SHOW_ISOSURFACE:
+        if self.show_isosurface:
             self.viewer.log_hydro_contact_surface(
                 self.collision_pipeline.get_hydro_contact_surface(), penetrating_only=True
             )
         self.viewer.end_frame()
+
+    def render_ui(self, imgui):
+        changed, self.show_isosurface = imgui.checkbox("Show Isosurface", self.show_isosurface)
+        if changed:
+            self.viewer.show_hydro_contact_surface = self.show_isosurface
 
     def test_final(self):
         if not self.put_in_cup:
