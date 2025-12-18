@@ -46,13 +46,17 @@ class State:
         """Rigid body velocities (spatial), shape (body_count,), dtype :class:`spatial_vector`.
         First three entries: linear velocity; last three: angular velocity."""
 
+        self.body_q_prev: wp.array | None = None
+        """Previous rigid body transforms for finite-difference velocity computation."""
+
         self.body_f: wp.array | None = None
         """Rigid body forces (spatial), shape (body_count,), dtype :class:`spatial_vector`.
         First three entries: linear force; last three: torque.
 
         Note:
-            :attr:`body_f` represents external wrenches in world frame, measured at the body's center of mass
-            for all solvers except :class:`~newton.solvers.SolverFeatherstone`, which expects wrenches at the world origin.
+            :attr:`body_f` represents external wrenches in world frame, measured at the body's center of mass (COM).
+            The linear force component is applied at the COM, and the torque is about the COM.
+            This convention is consistent across all solvers (XPBD, SemiImplicit, Featherstone, MuJoCo, VBD).
         """
 
         self.joint_q: wp.array | None = None

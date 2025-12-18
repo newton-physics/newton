@@ -36,9 +36,12 @@ except ImportError:
             return func
 
 
+warp_int_types = (wp.int8, wp.uint8, wp.int16, wp.uint16, wp.int32, wp.uint32, wp.int64, wp.uint64)
+
+
 def flag_to_int(flag):
     """Converts a flag (Warp constant) to an integer."""
-    if type(flag) in wp.types.int_types:
+    if type(flag) in warp_int_types:
         return flag.value
     return int(flag)
 
