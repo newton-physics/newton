@@ -1191,33 +1191,32 @@ class SolverMuJoCo(SolverBase):
         body_name_counts = {}
         joint_names = {}
 
-        # number of shapes which are replicated per world (excludes singular static shapes from a negative group)
-        shape_range_len = 0
-
         if separate_worlds:
             # determine which shapes, bodies and joints belong to the first world
             # based on the body world indices: we pick objects from the first world and global shapes
             non_negatives = body_world[body_world >= 0]
             if len(non_negatives) > 0:
-                first_group = np.min(non_negatives)
-                shape_range_len = len(np.where(body_world == first_group)[0])
+                first_world = np.min(non_negatives)
             else:
-                first_group = -1
-                shape_range_len = model.shape_count
-            selected_shapes = np.where((shape_world == first_group) | (shape_world < 0))[0].astype(np.int32)
-            selected_bodies = np.where((body_world == first_group) | (body_world < 0))[0].astype(np.int32)
-            selected_joints = np.where((joint_world == first_group) | (joint_world < 0))[0].astype(np.int32)
-            selected_constraints = np.where((eq_constraint_world == first_group) | (eq_constraint_world < 0))[0].astype(np.int32)
+                first_world = -1
+            selected_shapes = np.where((shape_world == first_world) | (shape_world < 0))[0].astype(np.int32)
+            selected_bodies = np.where((body_world == first_world) | (body_world < 0))[0].astype(np.int32)
+            selected_joints = np.where((joint_world == first_world) | (joint_world < 0))[0].astype(np.int32)
+            selected_constraints = np.where((eq_constraint_world == first_world) | (eq_constraint_world < 0))[0].astype(
+                np.int32
+            )
         else:
             # if we are not separating environments to worlds, we use all shapes, bodies, joints
-            first_group = 0
-            shape_range_len = model.shape_count
+            first_world = 0
 
             # if we are not separating worlds, we use all shapes, bodies, joints, constraints
             selected_shapes = np.arange(model.shape_count, dtype=np.int32)
             selected_bodies = np.arange(model.body_count, dtype=np.int32)
             selected_joints = np.arange(model.joint_count, dtype=np.int32)
             selected_constraints = np.arange(model.equality_constraint_count, dtype=np.int32)
+
+        # get the shapes for the first environment
+        first_env_shapes = np.where(shape_world == first_world)[0]
 
         # split joints into loop and non-loop joints (loop joints will be instantiated separately as equality constraints)
         joints_loop = selected_joints[joint_articulation[selected_joints] == -1]
@@ -1794,11 +1793,10 @@ class SolverMuJoCo(SolverBase):
             geom_to_shape_idx_np = np.full((self.mj_model.ngeom,), -1, dtype=np.int32)
 
             # Find the minimum shape index for the first non-static group to use as the base
-            first_env_shapes = np.where(shape_world == first_group)[0]
             first_env_shape_base = int(np.min(first_env_shapes)) if len(first_env_shapes) > 0 else 0
 
             # Store for lazy inverse creation
-            self._shapes_per_world = shape_range_len
+            self._shapes_per_world = len(first_env_shapes)
             self._first_env_shape_base = first_env_shape_base
 
             # Per-geom static mask (True if static, False otherwise)
@@ -1826,7 +1824,7 @@ class SolverMuJoCo(SolverBase):
                     inputs=[
                         geom_to_shape_idx_wp,
                         geom_is_static_wp,
-                        shape_range_len,
+                        self._shapes_per_world,
                         first_env_shape_base,
                     ],
                     outputs=[
@@ -1942,11 +1940,7 @@ class SolverMuJoCo(SolverBase):
             # Create mjc_eq_to_newton_eq: MuJoCo[world, eq] -> Newton equality constraint
             # selected_constraints[idx] is the Newton template constraint index
             neq = self.mj_model.neq
-            eq_constraints_per_world = (
-                # need to account for the 2 equality constraints per loop joint
-                # that are added after the regular Newton equality constraints
-                model.equality_constraint_count // model.num_worlds + len(joints_loop) * 2
-            )
+            eq_constraints_per_world = model.equality_constraint_count // model.num_worlds
             mjc_eq_to_newton_eq_np = np.full((nworld, neq), -1, dtype=np.int32)
             mjc_eq_to_newton_jnt_np = np.full((nworld, neq), -1, dtype=np.int32)
             for mjc_eq, newton_eq in enumerate(selected_constraints):
