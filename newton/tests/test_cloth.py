@@ -308,8 +308,8 @@ class ClothSim:
         # controls particle-shape contact
         self.soft_contact_margin = 1.0
         # controls self-contact of trimesh
-        self.self_contact_radius = 0.1
-        self.self_contact_margin = 0.1
+        self.particle_self_contact_radius = 0.1
+        self.particle_self_contact_margin = 0.1
 
         if solver != "semi_implicit":
             self.num_substeps = 10
@@ -481,7 +481,7 @@ class ClothSim:
 
         self.fixed_particles = range(0, 4)
 
-        self.finalize(handle_self_contact=True, ground=False)
+        self.finalize(particle_enable_self_contact=True, ground=False)
         self.model.soft_contact_ke = 1e4
         self.model.soft_contact_kd = 1e-3
         self.model.soft_contact_mu = 0.2
@@ -553,7 +553,7 @@ class ClothSim:
         )
         self.fixed_particles = [0, 1]
 
-        self.finalize(handle_self_contact=False, ground=False)
+        self.finalize(particle_enable_self_contact=False, ground=False)
 
     def set_up_complex_rest_angle_bending_experiment(
         self, tri_ke=1e4, tri_kd=1e-6, edge_ke=1e3, edge_kd=0.0, fixed_particles=None, use_gravity=True
@@ -613,7 +613,7 @@ class ClothSim:
         self.fixed_particles = fixed_particles if fixed_particles is not None else []
         self.renderer_scale_factor = 1
 
-        self.finalize(handle_self_contact=False, ground=False, use_gravity=use_gravity)
+        self.finalize(particle_enable_self_contact=False, ground=False, use_gravity=use_gravity)
 
     def set_free_falling_experiment(self):
         self.input_scale_factor = 1.0
@@ -698,7 +698,7 @@ class ClothSim:
 
         self.renderer_scale_factor = 0.1
 
-        self.finalize(handle_self_contact=False, ground=False, use_gravity=True)
+        self.finalize(particle_enable_self_contact=False, ground=False, use_gravity=True)
         self.soft_contact_margin = particle_radius * 1.1
         self.model.soft_contact_ke = stretching_stiffness
 
@@ -765,10 +765,10 @@ class ClothSim:
         self.renderer_scale_factor = 1
         self.fixed_particles = [1]
 
-        self.self_contact_radius = 0.1
-        self.self_contact_margin = 0.1
+        self.particle_self_contact_radius = 0.1
+        self.particle_self_contact_margin = 0.1
 
-        self.finalize(handle_self_contact=True, ground=False, use_gravity=True)
+        self.finalize(particle_enable_self_contact=True, ground=False, use_gravity=True)
 
     def set_up_enable_tri_contact_experiment(self):
         # fmt: off
@@ -823,7 +823,7 @@ class ClothSim:
         self.soft_contact_margin = particle_radius * 1.1
         self.model.soft_contact_ke = 1e5
 
-    def finalize(self, handle_self_contact=False, ground=True, use_gravity=True):
+    def finalize(self, particle_enable_self_contact=False, ground=True, use_gravity=True):
         builder = newton.ModelBuilder(up_axis="Y")
         builder.add_world(self.builder)
         if ground:
@@ -841,9 +841,9 @@ class ClothSim:
             self.solver = newton.solvers.SolverVBD(
                 model=self.model,
                 iterations=self.iterations,
-                handle_self_contact=handle_self_contact,
-                self_contact_radius=self.self_contact_radius,
-                self_contact_margin=self.self_contact_margin,
+                particle_enable_self_contact=particle_enable_self_contact,
+                particle_self_contact_radius=self.particle_self_contact_radius,
+                particle_self_contact_margin=self.particle_self_contact_margin,
             )
         elif self.solver_name == "xpbd":
             self.solver = newton.solvers.SolverXPBD(
