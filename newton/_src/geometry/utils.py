@@ -821,6 +821,7 @@ def get_total_kernel(
     counts: wp.array(dtype=int),
     prefix_sums: wp.array(dtype=int),
     num_elements: wp.array(dtype=int),
+    max_elements: int,
     total: wp.array(dtype=int),
 ):
     """
@@ -830,7 +831,9 @@ def get_total_kernel(
         total[0] = 0
         return
 
-    final_idx = num_elements[0] - 1
+    # Clip to array bounds to avoid out-of-bounds access
+    n = wp.min(num_elements[0], max_elements)
+    final_idx = n - 1
     total[0] = prefix_sums[final_idx] + counts[final_idx]
 
 
@@ -850,7 +853,7 @@ def scan_with_total(
         total: Single-element output array that will contain the sum of all counts.
     """
     wp.utils.array_scan(counts, prefix_sums, inclusive=False)
-    wp.launch(get_total_kernel, dim=[1], inputs=[counts, prefix_sums, num_elements, total])
+    wp.launch(get_total_kernel, dim=[1], inputs=[counts, prefix_sums, num_elements, counts.shape[0], total])
 
 
 __all__ = ["compute_shape_radius", "load_mesh", "visualize_meshes"]

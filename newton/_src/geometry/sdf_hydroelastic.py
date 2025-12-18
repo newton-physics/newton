@@ -78,10 +78,10 @@ class SDFHydroelasticConfig:
     """Whether to reduce contacts."""
     buffer_mult_broad: int = 1
     """Multiplier for buffer size for broadphase."""
-    buffer_mult_iso: int = 2
+    buffer_mult_iso: int = 1
     """Multiplier for buffer size for iso voxel traversal."""
     buffer_mult_contact: int = 1
-    """Multiplier for buffer size for contact handling."""
+    """Multiplier for buffer size for face contacts."""
     grid_size: int = 256 * 8 * 128
     """Grid size for contact handling. Can be tuned for performance."""
     output_contact_surface: bool = False
@@ -217,7 +217,7 @@ class SDFHydroelastic:
             self.voxel_corner_vals = wp.zeros((self.max_num_iso_voxels,), dtype=vec8f)
 
             # Face contact buffers
-            self.max_num_face_contacts = 2 * self.max_num_iso_voxels
+            self.max_num_face_contacts = int(config.buffer_mult_contact * self.max_num_iso_voxels)
             self.face_contact_pair = wp.empty((self.max_num_face_contacts,), dtype=wp.vec2i)
             self.face_contact_pos = wp.empty((self.max_num_face_contacts,), dtype=wp.vec3)
             self.face_contact_normal = wp.empty((self.max_num_face_contacts,), dtype=wp.vec3)
@@ -559,7 +559,6 @@ class SDFHydroelastic:
                     self.iso_buffer_counts[i],
                     self.iso_buffer_prefix[i],
                     self.iso_subblock_idx[i],
-                    self.iso_buffer_num[i],
                     self.iso_buffer_shape_pairs[i],
                     self.iso_buffer_coords[i],
                     subblock_size,
@@ -692,6 +691,7 @@ class SDFHydroelastic:
             inputs=[
                 self.face_contact_pair,
                 self.face_contact_count,
+                self.max_num_face_contacts,
                 self.n_shapes,
             ],
             outputs=[self.shape_pairs_mask],
@@ -714,6 +714,7 @@ class SDFHydroelastic:
                 self.face_contact_id,
                 self.face_contact_pair,
                 self.n_shapes,
+                self.max_num_face_contacts,
                 self.shape_pairs_to_bin,
                 self.penetration_betas,
                 self.binned_id_prev,
@@ -744,6 +745,7 @@ class SDFHydroelastic:
                 self.face_contact_area,
                 self.face_contact_pair,
                 self.n_shapes,
+                self.max_num_face_contacts,
                 self.face_contact_id,
                 self.shape_pairs_to_bin,
                 self.penetration_betas,
@@ -1074,7 +1076,6 @@ def scatter_iso_subblock(
     in_iso_subblock_count: wp.array(dtype=int),
     in_iso_subblock_prefix: wp.array(dtype=int),
     in_iso_subblock_idx: wp.array(dtype=wp.uint8),
-    in_iso_subblock_num: wp.array(dtype=int),
     in_iso_subblock_shape_pair: wp.array(dtype=wp.vec2i),
     in_buffer_collide_coords: wp.array(dtype=wp.vec3us),
     subblock_size: int,
@@ -1090,9 +1091,8 @@ def scatter_iso_subblock(
         write_idx = in_iso_subblock_prefix[tid]
         subblock_idx = in_iso_subblock_idx[tid]
         pair = in_iso_subblock_shape_pair[tid]
-        num = in_iso_subblock_num[tid]
         bc = in_buffer_collide_coords[tid]
-        if write_idx + num > max_num_iso_subblocks:
+        if write_idx >= max_num_iso_subblocks:
             continue
         for i in range(8):
             bit_pos = wp.uint8(i)
@@ -1345,7 +1345,6 @@ def get_decode_contacts_kernel(margin_contact_area: float = 1e-4, writer_func: A
         writer_data: Any,
     ):
         offset = wp.tid()
-
         num_contacts = wp.min(contact_count[0], max_num_face_contacts)
 
         # Calculate how many contacts this thread will process
@@ -1355,29 +1354,18 @@ def get_decode_contacts_kernel(margin_contact_area: float = 1e-4, writer_func: A
 
         if my_contact_count == 0:
             return
-        # Single atomic to reserve all slots for this thread
+
+        # Single atomic to reserve all slots for this thread (no rollback)
         my_base_index = wp.atomic_add(writer_data.contact_count, 0, my_contact_count)
-
-        # Calculate how many slots we can actually write
-        remaining_capacity = writer_data.contact_max - my_base_index
-        if remaining_capacity <= 0:
-            # Roll back the entire reservation since we can't write anything
-            wp.atomic_sub(writer_data.contact_count, 0, my_contact_count)
-            return
-
-        writable = wp.min(my_contact_count, remaining_capacity)
-        if writable < my_contact_count:
-            # Roll back the excess reservation
-            wp.atomic_sub(writer_data.contact_count, 0, my_contact_count - writable)
 
         # Write contacts using reserved range
         local_idx = int(0)
         for tid in range(offset, num_contacts, grid_size):
-            if local_idx >= writable:
-                return  # Already wrote all we can
-
             output_index = my_base_index + local_idx
             local_idx += 1
+
+            if output_index >= writer_data.contact_max:
+                continue
 
             pair = contact_pair[tid]
             shape_a = pair[0]
@@ -1432,10 +1420,12 @@ def get_decode_contacts_kernel(margin_contact_area: float = 1e-4, writer_func: A
 def iso_shape_pair_mask(
     iso_voxel_shape_pair: wp.array(dtype=wp.int32),
     iso_voxel_count: wp.array(dtype=int),
+    max_num_iso_voxels: int,
     shape_pairs_mask: wp.array(dtype=wp.int32),
 ):
     tid = wp.tid()
-    if tid >= iso_voxel_count[0]:
+    num_voxels = wp.min(iso_voxel_count[0], max_num_iso_voxels)
+    if tid >= num_voxels:
         return
     shape_pair_idx = iso_voxel_shape_pair[tid]
     shape_pairs_mask[shape_pair_idx] = 1
@@ -1445,11 +1435,13 @@ def iso_shape_pair_mask(
 def mark_active_shape_pairs(
     face_contact_pair: wp.array(dtype=wp.vec2i),
     face_contact_count: wp.array(dtype=wp.int32),
+    max_num_face_contacts: int,
     n_shapes: int,
     shape_pairs_mask: wp.array(dtype=wp.int32),
 ):
     tid = wp.tid()
-    if tid >= face_contact_count[0]:
+    num_contacts = wp.min(face_contact_count[0], max_num_face_contacts)
+    if tid >= num_contacts:
         return
     pair = face_contact_pair[tid]
     sparse_idx = pair[0] * n_shapes + pair[1]
@@ -1492,6 +1484,7 @@ def get_binning_kernels(
         contact_id: wp.array(dtype=wp.int32),
         contact_pair: wp.array(dtype=wp.vec2i),
         n_shapes: int,
+        max_num_face_contacts: int,
         shape_pairs_to_bin: wp.array(dtype=wp.int32),
         penetration_betas: wp.array(dtype=wp.float32),
         binned_id_prev: wp.array(dtype=wp.int32, ndim=3),
@@ -1506,7 +1499,8 @@ def get_binning_kernels(
         binned_weight_sum: wp.array(dtype=wp.float32, ndim=2),
     ):
         offset = wp.tid()
-        for tid in range(offset, contact_count[0], grid_size):
+        num_contacts = wp.min(contact_count[0], max_num_face_contacts)
+        for tid in range(offset, num_contacts, grid_size):
             pair = contact_pair[tid]
             sparse_idx = pair[0] * n_shapes + pair[1]
             bin_idx_0 = shape_pairs_to_bin[sparse_idx]
@@ -1563,6 +1557,7 @@ def get_binning_kernels(
         contact_area: wp.array(dtype=wp.float32),
         contact_pair: wp.array(dtype=wp.vec2i),
         n_shapes: int,
+        max_num_face_contacts: int,
         contact_id: wp.array(dtype=wp.int32),
         shape_pairs_to_bin: wp.array(dtype=wp.int32),
         penetration_betas: wp.array(dtype=wp.float32),
@@ -1579,7 +1574,8 @@ def get_binning_kernels(
         binned_moment: wp.array(dtype=wp.float32, ndim=2),
     ):
         offset = wp.tid()
-        for tid in range(offset, contact_count[0], grid_size):
+        num_contacts = wp.min(contact_count[0], max_num_face_contacts)
+        for tid in range(offset, num_contacts, grid_size):
             pair = contact_pair[tid]
             sparse_idx = pair[0] * n_shapes + pair[1]
             bin_idx_0 = shape_pairs_to_bin[sparse_idx]
@@ -1799,8 +1795,6 @@ def get_binning_kernels(
         contact_idx = wp.atomic_add(writer_data.contact_count, 0, total_contacts)
 
         if contact_idx + total_contacts > writer_data.contact_max:
-            # Roll back reservation and skip this bin to keep counts and writes consistent
-            wp.atomic_sub(writer_data.contact_count, 0, total_contacts)
             return
 
         pair_key = build_pair_key2(wp.uint32(shape_a), wp.uint32(shape_b))
@@ -1893,22 +1887,44 @@ def verify_collision_step(
 ):
     # Checks if any buffer overflowed in any stage of the collision pipeline and print a warning
     if num_broad_collide[0] > max_num_broad_collide:
-        wp.printf("Warning: Broad phase buffer overflowed %u > %u\n", num_broad_collide[0], max_num_broad_collide)
+        wp.printf(
+            "Warning: Broad phase buffer overflowed %d > %d. Increase buffer_mult_broad.\n",
+            num_broad_collide[0],
+            max_num_broad_collide,
+        )
     if num_iso_subblocks_0[0] > max_num_iso_subblocks_0:
         wp.printf(
-            "Warning: Iso subblock 0 buffer overflowed %u > %u\n", num_iso_subblocks_0[0], max_num_iso_subblocks_0
+            "Warning: Iso subblock 0 buffer overflowed %d > %d. Increase buffer_mult_iso.\n",
+            num_iso_subblocks_0[0],
+            max_num_iso_subblocks_0,
         )
     if num_iso_subblocks_1[0] > max_num_iso_subblocks_1:
         wp.printf(
-            "Warning: Iso subblock 1 buffer overflowed %u > %u\n", num_iso_subblocks_1[0], max_num_iso_subblocks_1
+            "Warning: Iso subblock 1 buffer overflowed %d > %d. Increase buffer_mult_iso.\n",
+            num_iso_subblocks_1[0],
+            max_num_iso_subblocks_1,
         )
     if num_iso_subblocks_2[0] > max_num_iso_subblocks_2:
         wp.printf(
-            "Warning: Iso subblock 2 buffer overflowed %u > %u\n", num_iso_subblocks_2[0], max_num_iso_subblocks_2
+            "Warning: Iso subblock 2 buffer overflowed %d > %d. Increase buffer_mult_iso.\n",
+            num_iso_subblocks_2[0],
+            max_num_iso_subblocks_2,
         )
     if num_iso_voxels[0] > max_num_iso_voxels:
-        wp.printf("Warning: Iso voxel buffer overflowed %u > %u\n", num_iso_voxels[0], max_num_iso_voxels)
+        wp.printf(
+            "Warning: Iso voxel buffer overflowed %d > %d. Increase buffer_mult_iso.\n",
+            num_iso_voxels[0],
+            max_num_iso_voxels,
+        )
     if face_contact_count[0] > max_face_contact_count:
-        wp.printf("Warning: Face contact buffer overflowed %u > %u\n", face_contact_count[0], max_face_contact_count)
+        wp.printf(
+            "Warning: Face contact buffer overflowed %d > %d. Increase buffer_mult_contact.\n",
+            face_contact_count[0],
+            max_face_contact_count,
+        )
     if contact_count[0] > max_contact_count:
-        wp.printf("Warning: Contact buffer overflowed %u > %u\n", contact_count[0], max_contact_count)
+        wp.printf(
+            "Warning: Contact buffer overflowed %d > %d. Increase contact buffer size.\n",
+            contact_count[0],
+            max_contact_count,
+        )
