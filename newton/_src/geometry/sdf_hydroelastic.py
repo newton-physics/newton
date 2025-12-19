@@ -1096,7 +1096,7 @@ def scatter_iso_subblock(
             continue
         for i in range(8):
             bit_pos = wp.uint8(i)
-            if (subblock_idx >> bit_pos) & wp.uint8(1):
+            if (subblock_idx >> bit_pos) & wp.uint8(1) and not write_idx >= max_num_iso_subblocks:
                 local_coords = wp.vec3us(decode_coords_8(bit_pos))
                 global_coords = bc + local_coords * wp.uint16(subblock_size)
                 out_iso_subblock_coords[write_idx] = global_coords
