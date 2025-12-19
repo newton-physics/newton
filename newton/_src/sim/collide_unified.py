@@ -344,6 +344,8 @@ class CollisionPipelineUnified:
             enable_contact_matching (bool, optional): Whether to enable contact matching data generation.
                 If True, allocates buffers for contact_pair_key and contact_key arrays that can be used
                 with ContactMatcher for warm-starting physics solvers. Defaults to False.
+            sdf_hydroelastic (SDFHydroelastic | None, optional): Pre-configured SDF hydroelastic collision handler.
+                If provided, enables hydroelastic contact computation for SDF-based shape pairs. Defaults to None.
         """
         self.contacts = None
         self.shape_count = shape_count
