@@ -209,8 +209,8 @@ class ModelBuilder:
             Users should choose k_hydro to match their desired force-to-penetration ratio.
         """
 
-        def __post_init__(self) -> None:
-            """Validate ShapeConfig parameters after initialization."""
+        def validate(self) -> None:
+            """Validate ShapeConfig parameters."""
             if self.sdf_max_resolution is not None and self.sdf_max_resolution % 8 != 0:
                 raise ValueError(
                     f"sdf_max_resolution must be divisible by 8 (got {self.sdf_max_resolution}). "
@@ -3474,6 +3474,7 @@ class ModelBuilder:
             xform = wp.transform(*xform)
         if cfg is None:
             cfg = self.default_shape_cfg
+        cfg.validate()
         if scale is None:
             scale = (1.0, 1.0, 1.0)
 
