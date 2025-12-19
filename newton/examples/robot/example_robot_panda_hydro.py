@@ -220,6 +220,7 @@ class Example:
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
+        newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
 
         # Create collision pipeline with SDF hydroelastic config
         sdf_hydroelastic_config = SDFHydroelasticConfig(
@@ -258,16 +259,14 @@ class Example:
             self.viewer.register_ui_callback(self.render_ui, position="side")
 
         # Initialize state for IK setup
-        self.state = self.model.state()
-        newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state)
+        self.state = self.model_single.state()
+        newton.eval_fk(self.model_single, self.model.joint_q, self.model.joint_qd, self.state)
 
         self.setup_ik()
         self.control = self.model.control()
         self.joint_target_shape = self.control.joint_target_pos.reshape((self.num_worlds, -1)).shape
         self.joint_targets_2d = wp.zeros(self.joint_target_shape, dtype=wp.float32)
         wp.copy(self.control.joint_target_pos[:9], self.model.joint_q[:9])
-
-        newton.eval_fk(self.model, self.state_0.joint_q, self.state_0.joint_qd, self.state_0)
 
         self.capture()
         self.capture_ik()
