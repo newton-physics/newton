@@ -247,7 +247,9 @@ def parse_urdf(
                             if filename.startswith("package://"):
                                 fn = filename.replace("package://", "")
                                 package_name = fn.split("/")[0]
-                                parent_urdf_folder = os.path.abspath(os.path.join(os.path.abspath(source), os.pardir, os.pardir, os.pardir))
+                                parent_urdf_folder = os.path.abspath(
+                                    os.path.join(os.path.abspath(source), os.pardir, os.pardir, os.pardir)
+                                )
                                 package_dirs = [parent_urdf_folder]
                             else:
                                 package_dirs = []
