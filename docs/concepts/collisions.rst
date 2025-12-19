@@ -381,11 +381,45 @@ Shape contact material properties control how contacts are resolved by different
    * - :attr:`~newton.Model.shape_material_rolling_friction`
      - Coefficient of rolling friction (resistance to rolling motion)
      - XPBD, MuJoCo
+   * - :attr:`~newton.Model.shape_material_k_hydro`
+     - Contact stiffness for hydroelastic collisions (requires ``is_hydroelastic=True``)
+     - SemiImplicit, Featherstone, MuJoCo
 
 For solvers SemiImplicit and Featherstone, contact forces are computed using the ``ke``, ``kd``, ``kf``, and ``ka`` parameters. 
 For position-based solvers (XPBD), the ``restitution`` parameter controls velocity reflection at contacts. To take effect, enable restitution in solver constructor via ``enable_restitution=True``.
 
 The MuJoCo solver converts ``ke`` and ``kd`` to MuJoCo's ``solref`` parameters (timeconst and dampratio) for its constraint-based contact model.
+
+.. _Hydroelastic Contacts:
+
+**Hydroelastic contacts**
+
+Hydroelastic contact modeling generates areas of contact between colliding shapes using SDF-based collision detection. 
+
+To enable hydroelastic contacts, set ``is_hydroelastic=True`` on shapes that should participate:
+
+.. code-block:: python
+
+    builder = newton.ModelBuilder()
+    
+    # Create a body with hydroelastic collision enabled
+    body = builder.add_body()
+    cfg = builder.ShapeConfig(
+        is_hydroelastic=True,
+        sdf_max_resolution=64, # Maximum dimension for SDF grid
+        k_hydro=1.0e11,  # Contact stiffness
+    )
+    builder.add_shape_box(body, hx=0.5, hy=0.5, hz=0.5, cfg=cfg)
+
+For hydroelastic contacts to be generated, **both** shapes in a colliding pair must have ``is_hydroelastic=True``.
+By default, ``reduce_contacts=True`` is used, which produces fast, discrete approximation of the contact surface.
+
+.. note::
+    Hydroelastic contacts require volumetric shapes. Planes, heightfields, and non-watertight meshes
+    (e.g., cloth, shells, open surfaces) are not supported. For planes and heightfields, the flag
+    is automatically set to ``False``.
+
+The ``k_hydro`` parameter controls contact stiffness and should be tuned to achieve the desired, area-dependent penetration behavior for your simulation. Note that ``k_hydro`` is a simulation parameter and should not be expected to correspond directly to physical material properties such as Young's modulus.
 
 **USD collision attributes**
 
