@@ -248,7 +248,10 @@ def parse_urdf(
                                 fn = filename.replace("package://", "")
                                 package_name = fn.split("/")[0]
                                 parent_urdf_folder = os.path.abspath(os.path.join(os.path.abspath(source), os.pardir, os.pardir, os.pardir))
-                            filename = resolve_robotics_uri(filename, package_dirs=[parent_urdf_folder])
+                                package_dirs = [parent_urdf_folder]
+                            else:
+                                package_dirs = []
+                            filename = resolve_robotics_uri(filename, package_dirs=package_dirs)
                         except FileNotFoundError:
                             warnings.warn(
                                 f'Warning: could not resolve URI "{filename}". '
