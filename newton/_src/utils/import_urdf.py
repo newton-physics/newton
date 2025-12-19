@@ -244,7 +244,11 @@ def parse_urdf(
                     if resolve_robotics_uri is not None:
                         # Use the robust resolve-robotics-uri-py library
                         try:
-                            filename = resolve_robotics_uri(filename)
+                            if filename.startswith("package://"):
+                                fn = filename.replace("package://", "")
+                                package_name = fn.split("/")[0]
+                                parent_urdf_folder = os.path.abspath(os.path.join(os.path.abspath(source), os.pardir, os.pardir, os.pardir))
+                            filename = resolve_robotics_uri(filename, package_dirs=[parent_urdf_folder])
                         except FileNotFoundError:
                             warnings.warn(
                                 f'Warning: could not resolve URI "{filename}". '
