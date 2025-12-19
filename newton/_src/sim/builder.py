@@ -216,7 +216,12 @@ class ModelBuilder:
                     f"sdf_max_resolution must be divisible by 8 (got {self.sdf_max_resolution}). "
                     "This is required because SDF volumes are allocated in 8x8x8 tiles."
                 )
-            if self.is_hydroelastic and self.sdf_max_resolution is None and self.sdf_target_voxel_size is None:
+            if (
+                self.is_hydroelastic
+                and self.has_shape_collision
+                and self.sdf_max_resolution is None
+                and self.sdf_target_voxel_size is None
+            ):
                 raise ValueError(
                     "Hydroelastic shapes require an SDF. Set either sdf_max_resolution or sdf_target_voxel_size."
                 )
@@ -5933,27 +5938,6 @@ class ModelBuilder:
                 (sflags & ShapeFlags.HYDROELASTIC) and (sflags & ShapeFlags.COLLIDE_SHAPES)
                 for sflags in self.shape_flags
             )
-
-            # Validate that hydroelastic shapes have sdf_max_resolution or sdf_target_voxel_size set
-            for shape_idx, (sflags, sdf_max_resolution, sdf_target_voxel_size, shape_key) in enumerate(
-                zip(
-                    self.shape_flags,
-                    self.shape_sdf_max_resolution,
-                    self.shape_sdf_target_voxel_size,
-                    self.shape_key,
-                    strict=True,
-                )
-            ):
-                if (
-                    (sflags & ShapeFlags.HYDROELASTIC)
-                    and (sflags & ShapeFlags.COLLIDE_SHAPES)
-                    and sdf_max_resolution is None
-                    and sdf_target_voxel_size is None
-                ):
-                    raise ValueError(
-                        f"Shape '{shape_key}' (index {shape_idx}) has is_hydroelastic=True but neither sdf_max_resolution nor sdf_target_voxel_size is set. "
-                        "Hydroelastic collision requires SDF generation. Please set sdf_max_resolution (e.g., 64) or sdf_target_voxel_size."
-                    )
 
             if has_sdf_meshes and not is_gpu:
                 raise ValueError(
