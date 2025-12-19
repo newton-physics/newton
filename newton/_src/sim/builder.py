@@ -198,8 +198,8 @@ class ModelBuilder:
         """Whether the shape collides using SDF-based hydroelastics. For hydroelastic collisions, both participating shapes must have is_hydroelastic set to True. Defaults to False.
 
         .. note::
-            Hydroelastic collision handling only works with volumetric shapes.
-            This flag will be set to False for planes and heightfields in :meth:`ModelBuilder.add_shape`.
+            Hydroelastic collision handling only works with volumetric shapes and in particular will not work for shapes like flat meshes or cloth.
+            This flag will be automatically set to False for planes and heightfields in :meth:`ModelBuilder.add_shape`.
         """
         k_hydro: float = 1.0e10
         """Contact stiffness coefficient for hydroelastic collisions. Used by MuJoCo, Featherstone, SemiImplicit when is_hydroelastic is True.
@@ -215,6 +215,10 @@ class ModelBuilder:
                 raise ValueError(
                     f"sdf_max_resolution must be divisible by 8 (got {self.sdf_max_resolution}). "
                     "This is required because SDF volumes are allocated in 8x8x8 tiles."
+                )
+            if self.is_hydroelastic and self.sdf_max_resolution is None and self.sdf_target_voxel_size is None:
+                raise ValueError(
+                    "Hydroelastic shapes require an SDF. Set either sdf_max_resolution or sdf_target_voxel_size."
                 )
 
         def mark_as_site(self) -> None:
