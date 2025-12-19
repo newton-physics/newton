@@ -176,6 +176,9 @@ uv sync --extra examples
       </a>
     </td>
     <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/robot/example_robot_panda_hydro.py">
+        <img src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_robot_panda_hydro.jpg" alt="Panda Hydro">
+      </a>
     </td>
   </tr>
   <tr>
@@ -186,6 +189,7 @@ uv sync --extra examples
       <code>uv run -m newton.examples robot_ur10</code>
     </td>
     <td align="center">
+      <code>uv run -m newton.examples robot_panda_hydro</code>
     </td>
   </tr>
 </table>

@@ -188,6 +188,9 @@ def convert_newton_contacts_to_mjwarp_kernel(
     rigid_contact_normal: wp.array(dtype=wp.vec3),
     rigid_contact_thickness0: wp.array(dtype=wp.float32),
     rigid_contact_thickness1: wp.array(dtype=wp.float32),
+    rigid_contact_stiffness: wp.array(dtype=wp.float32),
+    rigid_contact_damping: wp.array(dtype=wp.float32),
+    rigid_contact_friction_scale: wp.array(dtype=wp.float32),
     bodies_per_world: int,
     newton_shape_to_mjc_geom: wp.array(dtype=wp.int32),
     # Mujoco warp contacts
@@ -290,6 +293,37 @@ def convert_newton_contacts_to_mjwarp_kernel(
         geoms,
         worldid,
     )
+
+    if rigid_contact_stiffness:
+        # Use per-contact stiffness/damping parameters
+        contact_ke = rigid_contact_stiffness[tid]
+        if contact_ke > 0.0:
+            # set solimp to approximate linear force-to-displacement relationship at rest
+            # see https://mujoco.readthedocs.io/en/latest/modeling.html#solver-parameters
+            imp = solimp[1]
+            solimp = vec5(imp, imp, 0.001, 1.0, 0.5)
+            contact_ke = contact_ke * (1.0 - imp)  # compensate for impedance scaling
+            kd = rigid_contact_damping[tid]
+            # convert from stiffness/damping to MuJoCo's solref timeconst and dampratio
+            if kd > 0.0:
+                timeconst = 2.0 / kd
+                dampratio = wp.sqrt(1.0 / (timeconst * timeconst * contact_ke))
+            else:
+                # if no damping was set, use default damping ratio
+                timeconst = wp.sqrt(1.0 / contact_ke)
+                dampratio = 1.0
+
+            solref = wp.vec2(timeconst, dampratio)
+
+        friction_scale = rigid_contact_friction_scale[tid]
+        if friction_scale > 0.0:
+            friction = vec5(
+                friction[0] * friction_scale,
+                friction[1] * friction_scale,
+                friction[2],
+                friction[3],
+                friction[4],
+            )
 
     # Use the write_contact function to write all the data
     write_contact(
