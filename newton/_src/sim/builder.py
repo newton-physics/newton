@@ -195,9 +195,19 @@ class ModelBuilder:
         Set to None (default) to disable SDF generation for this shape (uses BVH-based collision for mesh-mesh instead).
         Requires GPU since wp.Volume only supports CUDA. Only used for mesh shapes."""
         is_hydroelastic: bool = False
-        """Whether the shape collides using SDF-based hydroelastics. For hydroelastic collisions, both participating shapes must have is_hydroelastic set to True. Defaults to False."""
-        k_hydro: float = 1.0e11
-        """Contact stiffness coefficient for hydroelastic collisions. Used by MuJoCo, Featherstone, SemiImplicit when is_hydroelastic is True."""
+        """Whether the shape collides using SDF-based hydroelastics. For hydroelastic collisions, both participating shapes must have is_hydroelastic set to True. Defaults to False.
+
+        .. note::
+            Hydroelastic collision handling only works with volumetric shapes.
+            This flag will be set to False for planes and heightfields in :meth:`ModelBuilder.add_shape`.
+        """
+        k_hydro: float = 1.0e10
+        """Contact stiffness coefficient for hydroelastic collisions. Used by MuJoCo, Featherstone, SemiImplicit when is_hydroelastic is True.
+
+        .. note::
+            For MuJoCo, stiffness values will internally be scaled by masses.
+            Users should choose k_hydro to match their desired force-to-penetration ratio.
+        """
 
         def __post_init__(self) -> None:
             """Validate ShapeConfig parameters after initialization."""
