@@ -75,25 +75,30 @@ class SDFHydroelasticConfig:
     """
 
     reduce_contacts: bool = True
-    """Whether to reduce contacts."""
+    """Whether to reduce contacts to a smaller representative set per shape pair."""
     buffer_mult_broad: int = 1
-    """Multiplier for buffer size for broadphase."""
+    """Multiplier for the preallocated broadphase buffer that stores overlapping
+    block pairs. Increase only if a broadphase overflow warning is issued."""
     buffer_mult_iso: int = 1
-    """Multiplier for buffer size for iso voxel traversal."""
+    """Multiplier for preallocated iso-surface extraction buffers used during
+    hierarchical octree refinement (subblocks and voxels). Increase only if an iso buffer overflow warning is issued."""
     buffer_mult_contact: int = 1
-    """Multiplier for buffer size for face contacts."""
+    """Multiplier for the preallocated face contact buffer that stores contact
+    positions, normals, depths, and areas. Increase only if a face contact overflow warning is issued."""
     grid_size: int = 256 * 8 * 128
     """Grid size for contact handling. Can be tuned for performance."""
     output_contact_surface: bool = False
     """Whether to output hydroelastic contact surface vertices for visualization."""
     betas: tuple[float, float] = (10.0, -0.5)
-    """Penetration beta values."""
+    """Penetration beta values for contact reduction heuristics. See :meth:`compute_score` for more details."""
     sticky_contacts: float = 0.0
-    """Stickiness factor for temporal contact persistence."""
+    """Stickiness factor for temporal contact persistence. Setting it to a small positive value (e.g. 1e-6) can prevent jittering contacts in certain scenarios. Default is 0.0 (no stickiness)."""
     normal_matching: bool = True
-    """Whether to match the aggregated force direction."""
+    """Whether to adjust reduced contacts normals so their net force direction matches
+    that of the reference given by unreduced contacts. Only active when `reduce_contacts` is True."""
     moment_matching: bool = False
-    """Whether to match the reference torque from all contacts."""
+    """Whether to attempt adjusting reduced contacts friction coefficients so their net maximum moment matches
+    that of the reference given by unreduced contacts. Only active when `reduce_contacts` is True."""
     margin_contact_area: float = 1e-2
     """Contact area used for non-penetrating contacts at the margin."""
 
