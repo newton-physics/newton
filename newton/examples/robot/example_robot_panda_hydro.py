@@ -250,6 +250,7 @@ class Example:
         )
 
         self.viewer.set_model(self.model)
+        self.viewer.picking_enabled = False  # Disable interactive picking for this example
         if hasattr(self.viewer, "renderer"):
             self.viewer.set_camera(wp.vec3(0.5, 0.0, 0.5), -15, -140)
             self.viewer.set_world_offsets(wp.vec3(1.0, 1.0, 0.0))

@@ -78,6 +78,7 @@ class ViewerBase:
         self.show_static = False  # force static shapes to be visible
         self.show_inertia_boxes = False
         self.show_hydro_contact_surface = False  # show hydroelastic contact surface wireframe
+        self.picking_enabled = True  # enable interactive picking via mouse
 
         # cache for hydroelastic contact surface line rendering (lazily allocated)
         self._hydro_surface_line_starts: wp.array | None = None
