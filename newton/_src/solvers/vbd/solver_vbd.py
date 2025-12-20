@@ -16,12 +16,22 @@
 from __future__ import annotations
 
 import warnings
+from typing import Any
 
 import numpy as np
 import warp as wp
 
 from ...core.types import override
-from ...sim import Contacts, Control, JointType, Model, State
+from ...sim import (
+    Contacts,
+    Control,
+    JointType,
+    Model,
+    ModelAttributeAssignment,
+    ModelAttributeFrequency,
+    ModelBuilder,
+    State,
+)
 from ..solver import SolverBase
 from .particle_vbd_kernels import (
     NUM_THREADS_PER_COLLISION_PRIMITIVE,
@@ -162,8 +172,6 @@ class SolverVBD(SolverBase):
         rigid_body_contact_buffer_size: int = 64,
         rigid_body_particle_contact_buffer_size: int = 256,
         rigid_enable_dahl_friction: bool = False,  # Cable bending plasticity/hysteresis
-        rigid_dahl_eps_max: float | wp.array = 0.5,  # Dahl: max persistent strain
-        rigid_dahl_tau: float | wp.array = 1.0,  # Dahl: memory decay length
     ):
         """
         Args:
@@ -223,12 +231,8 @@ class SolverVBD(SolverBase):
             rigid_body_contact_buffer_size: Max body-body (rigid-rigid) contacts per rigid body for per-body contact lists (tune based on expected body-body contact density).
             rigid_body_particle_contact_buffer_size: Max body-particle (rigid-particle) contacts per rigid body for per-body soft-contact lists (tune based on expected body-particle contact density).
             rigid_enable_dahl_friction: Enable Dahl hysteresis friction model for cable bending (default: False).
-            rigid_dahl_eps_max: Maximum persistent strain (curvature) [rad] for Dahl friction model. Can be:
-                - float: Same value for all joints
-                - array: Per-joint values for heterogeneous cables
-            rigid_dahl_tau: Memory decay length [rad] for Dahl friction model. Controls plasticity. Can be:
-                - float: Same value for all joints
-                - array: Per-joint values
+                Configure per-joint Dahl parameters via the solver-registered custom model attributes
+                ``model.vbd.dahl_eps_max`` and ``model.vbd.dahl_tau`` (JOINT frequency).
 
         Note:
             - The `integrate_with_external_rigid_solver` argument enables one-way coupling between rigid body and soft body
@@ -282,8 +286,6 @@ class SolverVBD(SolverBase):
             rigid_body_contact_buffer_size,
             rigid_body_particle_contact_buffer_size,
             rigid_enable_dahl_friction,
-            rigid_dahl_eps_max,
-            rigid_dahl_tau,
         )
 
         # Rigid-only flag to control whether to update cross-step history
@@ -406,8 +408,6 @@ class SolverVBD(SolverBase):
         rigid_body_contact_buffer_size: int,
         rigid_body_particle_contact_buffer_size: int,
         rigid_enable_dahl_friction: bool,
-        rigid_dahl_eps_max: float | wp.array,
-        rigid_dahl_tau: float | wp.array,
     ):
         """Initialize rigid body-specific AVBD data structures and settings.
 
@@ -501,7 +501,14 @@ class SolverVBD(SolverBase):
                 if model.joint_count == 0:
                     self.enable_dahl_friction = False
                 else:
-                    self._init_dahl_params(rigid_dahl_eps_max, rigid_dahl_tau, model)
+                    # Read per-joint Dahl parameters from model.vbd if present; otherwise use defaults (eps_max=0.5, tau=1.0).
+                    # Recommended: call SolverVBD.register_custom_attributes(builder) before finalize() to allocate these arrays.
+                    vbd_attrs: Any = getattr(model, "vbd", None)
+                    if vbd_attrs is not None and hasattr(vbd_attrs, "dahl_eps_max") and hasattr(vbd_attrs, "dahl_tau"):
+                        self.joint_dahl_eps_max = vbd_attrs.dahl_eps_max
+                        self.joint_dahl_tau = vbd_attrs.dahl_tau
+                    else:
+                        self._init_dahl_params(0.5, 1.0, model)
 
         # -------------------------------------------------------------
         # Body-particle interaction - shared state
@@ -619,6 +626,37 @@ class SolverVBD(SolverBase):
                 raise ValueError(f"dahl_tau length {tau_np.shape[0]} != joint_count {n}")
             # Direct host-to-device copy
             self.joint_dahl_tau = wp.array(tau_np, dtype=float, device=self.device)
+
+    @override
+    @classmethod
+    def register_custom_attributes(cls, builder: ModelBuilder) -> None:
+        """Register solver-specific custom Model attributes for SolverVBD.
+
+        Currently used for cable bending plasticity/hysteresis (Dahl friction model).
+
+        Attributes are declared in the ``vbd`` namespace so they can be authored in scenes
+        and (optionally) in USD as ``newton:vbd:<attr>``.
+        """
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="dahl_eps_max",
+                frequency=ModelAttributeFrequency.JOINT,
+                assignment=ModelAttributeAssignment.MODEL,
+                dtype=wp.float32,
+                default=0.5,
+                namespace="vbd",
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="dahl_tau",
+                frequency=ModelAttributeFrequency.JOINT,
+                assignment=ModelAttributeAssignment.MODEL,
+                dtype=wp.float32,
+                default=1.0,
+                namespace="vbd",
+            )
+        )
 
     # =====================================================
     # Adjacency Building Methods

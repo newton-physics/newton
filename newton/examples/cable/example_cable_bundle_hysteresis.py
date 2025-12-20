@@ -193,6 +193,8 @@ class Example:
         stretch_damping = 0.0
 
         builder = newton.ModelBuilder()
+        # Register solver-specific custom attributes (Dahl plasticity parameters live on the Model)
+        newton.solvers.SolverVBD.register_custom_attributes(builder)
         builder.gravity = -9.81
 
         # Set default material properties for cables (cable-to-cable contact)
@@ -299,14 +301,18 @@ class Example:
         # Finalize model
         self.model = builder.finalize()
 
+        # Author Dahl friction parameters (per-joint) via custom model attributes.
+        # These are read by SolverVBD when rigid_enable_dahl_friction=True.
+        if hasattr(self.model, "vbd"):
+            self.model.vbd.dahl_eps_max.fill_(float(eps_max))
+            self.model.vbd.dahl_tau.fill_(float(tau))
+
         # Create VBD solver with Dahl friction (cable bending hysteresis)
         self.solver = newton.solvers.SolverVBD(
             self.model,
             iterations=self.sim_iterations,
             friction_epsilon=0.1,
             rigid_enable_dahl_friction=with_dahl,
-            rigid_dahl_eps_max=eps_max,
-            rigid_dahl_tau=tau,
         )
 
         # Initialize states and contacts
