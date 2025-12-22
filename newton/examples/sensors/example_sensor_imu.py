@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import numpy as np
 import warp as wp
 from pxr import Usd
 
@@ -168,6 +169,17 @@ class Example:
 
     def test(self):
         pass
+
+    def test_final(self):
+        acc = self.imu.accelerometer.numpy()
+        gravity_mag = np.linalg.norm(self.model.gravity.numpy()[0])
+
+        # Cubes settle with different faces up: cube 0 → Y, cube 1 → X, cube 2 → Z
+        expected_axes = [1, 0, 2]
+
+        for i, expected_axis in enumerate(expected_axes):
+            np.testing.assert_allclose(np.linalg.norm(acc[i]), gravity_mag, rtol=0.05)
+            assert abs(acc[i][expected_axis]) > gravity_mag * 0.95
 
     def render(self):
         self.viewer.begin_frame(self.sim_time)
