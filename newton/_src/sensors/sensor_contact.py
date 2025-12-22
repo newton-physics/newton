@@ -124,6 +124,8 @@ def populate_contacts(
     from the provided `solver`. It is typically called after a simulation step to refresh
     the contact data for use in sensors or analysis.
 
+    This function will be removed once contact forces are implemented as extended state attributes.
+
     Args:
         contacts (Contacts): The Contacts object to be populated or updated.
         solver (SolverBase): The solver instance containing the latest contact results.
