@@ -22,10 +22,10 @@ import warp as wp
 from pxr import Usd, UsdGeom
 
 import newton
-from newton.sensors import TiledCameraSensor
+from newton.sensors import SensorTiledCamera
 
 
-class TestTiledCameraSensor(unittest.TestCase):
+class TestSensorTiledCamera(unittest.TestCase):
     def __build_scene(self):
         builder = newton.ModelBuilder()
 
@@ -101,12 +101,12 @@ class TestTiledCameraSensor(unittest.TestCase):
             [[wp.transformf(wp.vec3f(10.0, 0.0, 2.0), wp.quatf(0.5, 0.5, 0.5, 0.5))]], dtype=wp.transformf
         )
 
-        tiled_camera_sensor = TiledCameraSensor(
+        tiled_camera_sensor = SensorTiledCamera(
             model=model,
             num_cameras=1,
             width=320,
             height=240,
-            options=TiledCameraSensor.Options(
+            options=SensorTiledCamera.Options(
                 default_light=True, default_light_shadows=True, colors_per_shape=True, checkerboard_texture=True
             ),
         )
@@ -117,10 +117,10 @@ class TestTiledCameraSensor(unittest.TestCase):
         tiled_camera_sensor.render(model.state(), camera_transforms, camera_rays, color_image, depth_image)
 
         golden_color_data = np.load(
-            os.path.join(os.path.dirname(__file__), "golden_data", "test_tiled_camera_sensor", "color.npy")
+            os.path.join(os.path.dirname(__file__), "golden_data", "test_sensor_tiled_camera", "color.npy")
         )
         golden_depth_data = np.load(
-            os.path.join(os.path.dirname(__file__), "golden_data", "test_tiled_camera_sensor", "depth.npy")
+            os.path.join(os.path.dirname(__file__), "golden_data", "test_sensor_tiled_camera", "depth.npy")
         )
 
         self.__compare_images(color_image.numpy(), golden_color_data, allowed_difference=0.1)
@@ -134,7 +134,7 @@ class TestTiledCameraSensor(unittest.TestCase):
             [[wp.transformf(wp.vec3f(10.0, 0.0, 2.0), wp.quatf(0.5, 0.5, 0.5, 0.5))]], dtype=wp.transformf
         )
 
-        tiled_camera_sensor = TiledCameraSensor(model=model, num_cameras=1, width=640, height=460)
+        tiled_camera_sensor = SensorTiledCamera(model=model, num_cameras=1, width=640, height=460)
         camera_rays = tiled_camera_sensor.compute_pinhole_camera_rays(math.radians(45.0))
 
         color_image = tiled_camera_sensor.create_color_image_output()
