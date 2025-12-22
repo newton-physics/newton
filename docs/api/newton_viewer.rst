@@ -14,4 +14,3 @@ newton.viewer
    ViewerNull
    ViewerRerun
    ViewerUSD
-   ViewerViser
