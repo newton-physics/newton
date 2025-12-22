@@ -12,7 +12,7 @@ newton.sensors
    SensorContact
    SensorFrameTransform
    MatchKind
-   RaycastSensor
+   SensorRaycast
    TiledCameraSensor
 
 .. rubric:: Functions

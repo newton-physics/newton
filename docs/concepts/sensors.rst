@@ -20,7 +20,7 @@ Available Sensors
 Newton currently provides three sensor types:
 
 * **SensorContact** - Detects and reports contact information between bodies (TODO: document)
-* **RaycastSensor** - Performs ray casting for distance measurements and collision detection (TODO: document)
+* **SensorRaycast** - Performs ray casting for distance measurements and collision detection (TODO: document)
 * **SensorFrameTransform** - Computes relative transforms between reference frames
 
 SensorFrameTransform
