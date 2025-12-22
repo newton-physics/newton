@@ -1887,7 +1887,8 @@ def solve_body_joints(
             damping = 0.0
 
             target_vel = axis_target_vel[dim]
-            derr_rel = derr - target_vel
+            angular_c_len = wp.length(angular_c)
+            derr_rel = derr - target_vel * angular_c_len
 
             # consider joint limits irrespective of mode
             lower = axis_limits_lower[dim]
