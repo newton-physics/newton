@@ -413,6 +413,9 @@ def eval_body_contact(
     contact_shape1: wp.array(dtype=int),
     contact_thickness0: wp.array(dtype=float),
     contact_thickness1: wp.array(dtype=float),
+    rigid_contact_stiffness: wp.array(dtype=float),
+    rigid_contact_damping: wp.array(dtype=float),
+    rigid_contact_friction_scale: wp.array(dtype=float),
     force_in_world_frame: bool,
     friction_smoothing: float,
     # outputs
@@ -461,6 +464,15 @@ def eval_body_contact(
         kf /= float(mat_nonzero)
         ka /= float(mat_nonzero)
         mu /= float(mat_nonzero)
+
+    # per-contact stiffness/damping/friction
+    if rigid_contact_stiffness:
+        contact_ke = rigid_contact_stiffness[tid]
+        ke = contact_ke if contact_ke > 0.0 else ke
+        contact_kd = rigid_contact_damping[tid]
+        kd = contact_kd if contact_kd > 0.0 else kd
+        contact_mu = rigid_contact_friction_scale[tid]
+        mu = mu * contact_mu if contact_mu > 0.0 else mu
 
     # contact normal in world space
     n = contact_normal[tid]
@@ -633,6 +645,9 @@ def eval_body_contact_forces(
                 contacts.rigid_contact_shape1,
                 contacts.rigid_contact_thickness0,
                 contacts.rigid_contact_thickness1,
+                contacts.rigid_contact_stiffness,
+                contacts.rigid_contact_damping,
+                contacts.rigid_contact_friction,
                 force_in_world_frame,
                 friction_smoothing,
             ],

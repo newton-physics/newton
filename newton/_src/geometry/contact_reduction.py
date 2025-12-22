@@ -134,216 +134,46 @@ ICOSAHEDRON_FACE_NORMALS = _mat20x3(
     0.0,
 )
 
-_mat60x3 = wp.types.matrix(shape=(60, 3), dtype=wp.float32)
 
-# Triangle vertices ordered: top cap (0-14), equatorial (15-44), bottom cap (45-59)
-# Each face has 3 consecutive vertices. Layout matches ICOSAHEDRON_FACE_NORMALS.
-ICOSAHEDRON_TRIANGLES = _mat60x3(
-    # Top cap faces 0-4 (rows 0-14)
-    0.0,
-    1.0,
-    0.0,
-    0.27639318,
-    0.4472136,
-    0.85065085,
-    0.8944273,
-    0.44721365,
-    0.0,
-    0.0,
-    1.0,
-    0.0,
-    -0.7236069,
-    0.44721365,
-    0.5257311,
-    0.27639318,
-    0.4472136,
-    0.85065085,
-    0.0,
-    1.0,
-    0.0,
-    -0.72360677,
-    0.4472136,
-    -0.5257312,
-    -0.7236069,
-    0.44721365,
-    0.5257311,
-    0.0,
-    1.0,
-    0.0,
-    0.27639332,
-    0.4472136,
-    -0.8506508,
-    -0.72360677,
-    0.4472136,
-    -0.5257312,
-    0.0,
-    1.0,
-    0.0,
-    0.8944273,
-    0.44721365,
-    0.0,
-    0.27639332,
-    0.4472136,
-    -0.8506508,
-    # Equatorial band faces 5-14 (rows 15-44)
-    0.8944273,
-    0.44721365,
-    0.0,
-    0.7236068,
-    -0.4472136,
-    0.5257311,
-    0.72360677,
-    -0.4472136,
-    -0.52573115,
-    0.8944273,
-    0.44721365,
-    0.0,
-    0.72360677,
-    -0.4472136,
-    -0.52573115,
-    0.27639332,
-    0.4472136,
-    -0.8506508,
-    0.27639318,
-    0.4472136,
-    0.85065085,
-    -0.27639323,
-    -0.4472136,
-    0.8506508,
-    0.7236068,
-    -0.4472136,
-    0.5257311,
-    0.27639318,
-    0.4472136,
-    0.85065085,
-    0.7236068,
-    -0.4472136,
-    0.5257311,
-    0.8944273,
-    0.44721365,
-    0.0,
-    -0.7236069,
-    0.44721365,
-    0.5257311,
-    -0.8944273,
-    -0.44721365,
-    0.0,
-    -0.27639323,
-    -0.4472136,
-    0.8506508,
-    -0.7236069,
-    0.44721365,
-    0.5257311,
-    -0.27639323,
-    -0.4472136,
-    0.8506508,
-    0.27639318,
-    0.4472136,
-    0.85065085,
-    -0.72360677,
-    0.4472136,
-    -0.5257312,
-    -0.2763933,
-    -0.4472136,
-    -0.8506508,
-    -0.8944273,
-    -0.44721365,
-    0.0,
-    -0.72360677,
-    0.4472136,
-    -0.5257312,
-    -0.8944273,
-    -0.44721365,
-    0.0,
-    -0.7236069,
-    0.44721365,
-    0.5257311,
-    0.27639332,
-    0.4472136,
-    -0.8506508,
-    0.72360677,
-    -0.4472136,
-    -0.52573115,
-    -0.2763933,
-    -0.4472136,
-    -0.8506508,
-    0.27639332,
-    0.4472136,
-    -0.8506508,
-    -0.2763933,
-    -0.4472136,
-    -0.8506508,
-    -0.72360677,
-    0.4472136,
-    -0.5257312,
-    # Bottom cap faces 15-19 (rows 45-59)
-    0.0,
-    -1.0,
-    0.0,
-    0.7236068,
-    -0.4472136,
-    0.5257311,
-    -0.27639323,
-    -0.4472136,
-    0.8506508,
-    0.0,
-    -1.0,
-    0.0,
-    -0.27639323,
-    -0.4472136,
-    0.8506508,
-    -0.8944273,
-    -0.44721365,
-    0.0,
-    0.0,
-    -1.0,
-    0.0,
-    -0.8944273,
-    -0.44721365,
-    0.0,
-    -0.2763933,
-    -0.4472136,
-    -0.8506508,
-    0.0,
-    -1.0,
-    0.0,
-    -0.2763933,
-    -0.4472136,
-    -0.8506508,
-    0.72360677,
-    -0.4472136,
-    -0.52573115,
-    0.0,
-    -1.0,
-    0.0,
-    0.72360677,
-    -0.4472136,
-    -0.52573115,
-    0.7236068,
-    -0.4472136,
-    0.5257311,
-)
+@wp.func
+def project_point_to_plane(bin_normal_idx: wp.int32, face_center: wp.vec3f) -> wp.vec2f:
+    """Projects a 3D point onto the 2D plane defined by an icosahedron face normal.
+
+    Args:
+        bin_normal_idx: Index of the icosahedron face (0-19) defining the plane normal.
+        face_center: 3D point to project.
+
+    Returns:
+        2D coordinates of the projected point in the plane's local basis.
+    """
+    bin_normal_dir = ICOSAHEDRON_FACE_NORMALS[bin_normal_idx]
+    # Project face center to the plane corresponding to the bin normal
+    temp_vec = wp.vec3f(0.0, 1.0, 0.0)
+    if wp.abs(wp.dot(bin_normal_dir, temp_vec)) > 0.95:
+        temp_vec = wp.vec3f(0.0, 0.0, 1.0)
+
+    # Create orthogonal basis vectors in the plane
+    plane_u = wp.normalize(wp.cross(bin_normal_dir, temp_vec))
+    plane_v = wp.normalize(wp.cross(bin_normal_dir, plane_u))
+
+    # Convert face_center to 2D coordinates in the plane basis
+    face_center_2d = wp.vec2f(wp.dot(face_center, plane_u), wp.dot(face_center, plane_v))
+
+    return face_center_2d
 
 
 @wp.func
-def get_scan_dir(icosahedron_face_id: int, i: int) -> wp.vec3:
-    """Get scan direction for contact reduction.
+def get_spatial_direction_2d(dir_idx: int) -> wp.vec2f:
+    """Get evenly-spaced 2D direction for spatial binning.
 
     Args:
-        icosahedron_face_id: ID of the icosahedron face
-        i: Index in the range 0...5
+        dir_idx: Direction index in the range 0..NUM_SPATIAL_DIRECTIONS-1
 
     Returns:
-        Edge of the triangle (not normalized).
-        Indices 3, 4, 5 return the edges with negated direction.
+        Unit 2D vector at angle (dir_idx * 2π / NUM_SPATIAL_DIRECTIONS)
     """
-    face_base = 3 * icosahedron_face_id
-    v0 = ICOSAHEDRON_TRIANGLES[face_base + (i + 1) % 3]
-    v1 = ICOSAHEDRON_TRIANGLES[face_base + i % 3]
-    result = v0 - v1
-    if i >= 3:
-        result = -result
-    return result
+    angle = float(dir_idx) * wp.static(2.0 * wp.pi / NUM_SPATIAL_DIRECTIONS)
+    return wp.vec2f(wp.cos(angle), wp.sin(angle))
 
 
 @wp.func
@@ -620,15 +450,18 @@ class ContactReductionFunctions:
             synchronize()
 
             bin_id = 0
+            pos_2d = wp.vec2f(0.0, 0.0)
             if active:
                 bin_id = get_slot(c.normal)
+                # Project position to 2D plane once, reuse for all directions
+                pos_2d = project_point_to_plane(bin_id, c.position)
 
             if active:
                 base_key = bin_id * slots_per_bin
                 # Compete for spatial direction + beta slots
                 for dir_i in range(wp.static(NUM_SPATIAL_DIRECTIONS)):
-                    scan_dir = get_scan_dir(bin_id, dir_i)
-                    spatial_dp = wp.dot(scan_dir, c.position)
+                    dir_2d = get_spatial_direction_2d(dir_i)
+                    spatial_dp = wp.dot(pos_2d, dir_2d)
                     for beta_i in range(num_betas):
                         if c.depth < betas_arr[beta_i]:
                             score = spatial_dp  # - betas_arr[beta_i] * c.depth
@@ -644,8 +477,8 @@ class ContactReductionFunctions:
                 base_key = bin_id * slots_per_bin
                 # Check spatial direction + beta slots
                 for dir_i in range(wp.static(NUM_SPATIAL_DIRECTIONS)):
-                    scan_dir = get_scan_dir(bin_id, dir_i)
-                    spatial_dp = wp.dot(scan_dir, c.position)
+                    dir_2d = get_spatial_direction_2d(dir_i)
+                    spatial_dp = wp.dot(pos_2d, dir_2d)
                     for beta_i in range(num_betas):
                         if c.depth < betas_arr[beta_i]:
                             key = base_key + dir_i * wp.static(num_betas) + beta_i

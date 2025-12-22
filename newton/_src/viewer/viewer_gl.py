@@ -427,7 +427,7 @@ class ViewerGL(ViewerBase):
         Args:
             state: The current simulation state.
         """
-        if not self.picking.is_picking():
+        if not self.picking_enabled or not self.picking.is_picking():
             # Clear the picking line if not picking
             self.log_lines("picking_line", None, None, None)
             return
@@ -495,7 +495,8 @@ class ViewerGL(ViewerBase):
         Args:
             state: The current simulation state.
         """
-        self.picking._apply_picking_force(state)
+        if self.picking_enabled:
+            self.picking._apply_picking_force(state)
 
         # Apply wind forces
         self.wind._apply_wind_force(state)
@@ -757,7 +758,7 @@ class ViewerGL(ViewerBase):
         import pyglet  # noqa: PLC0415
 
         # Handle right-click for picking
-        if button == pyglet.window.mouse.RIGHT:
+        if button == pyglet.window.mouse.RIGHT and self.picking_enabled:
             ray_start, ray_dir = self.camera.get_world_ray(x, y)
             if self._last_state is not None:
                 self.picking.pick(self._last_state, ray_start, ray_dir)
@@ -798,7 +799,7 @@ class ViewerGL(ViewerBase):
             self.camera.yaw -= dx
             self.camera.pitch += dy
 
-        if buttons & pyglet.window.mouse.RIGHT:
+        if buttons & pyglet.window.mouse.RIGHT and self.picking_enabled:
             ray_start, ray_dir = self.camera.get_world_ray(x, y)
 
             if self.picking.is_picking():
