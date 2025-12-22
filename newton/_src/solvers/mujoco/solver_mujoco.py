@@ -51,6 +51,7 @@ from .kernels import (
     convert_mj_coords_to_warp_kernel,
     convert_mjw_contact_to_warp_kernel,
     convert_newton_contacts_to_mjwarp_kernel,
+    convert_solref,
     convert_warp_coords_to_mj_kernel,
     eval_articulation_fk,
     repeat_array_kernel,
@@ -1118,6 +1119,8 @@ class SolverMuJoCo(SolverBase):
         shape_flags = model.shape_flags.numpy()
         shape_world = model.shape_world.numpy()
         shape_mu = model.shape_material_mu.numpy()
+        shape_ke = model.shape_material_ke.numpy()
+        shape_kd = model.shape_material_kd.numpy()
         shape_torsional_friction = model.shape_material_torsional_friction.numpy()
         shape_rolling_friction = model.shape_material_rolling_friction.numpy()
 
@@ -1136,6 +1139,7 @@ class SolverMuJoCo(SolverBase):
         shape_priority = get_custom_attribute("geom_priority")
         shape_geom_solimp = get_custom_attribute("geom_solimp")
         shape_geom_solmix = get_custom_attribute("geom_solmix")
+        shape_geom_solref = get_custom_attribute("geom_solref")
         shape_geom_gap = get_custom_attribute("geom_gap")
         joint_dof_limit_margin = get_custom_attribute("limit_margin")
         joint_solimp_limit = get_custom_attribute("solimplimit")
@@ -1367,6 +1371,10 @@ class SolverMuJoCo(SolverBase):
                     torsional,
                     rolling,
                 ]
+
+                # set solref from shape stiffness and damping
+                geom_params["solref"] = convert_solref(float(shape_ke[shape]), float(shape_kd[shape]), 1.0, 1.0)
+
                 if shape_condim is not None:
                     geom_params["condim"] = shape_condim[shape]
                 if shape_priority is not None:
@@ -1377,6 +1385,8 @@ class SolverMuJoCo(SolverBase):
                     geom_params["solmix"] = shape_geom_solmix[shape]
                 if shape_geom_gap is not None:
                     geom_params["gap"] = shape_geom_gap[shape]
+                if shape_geom_solref is not None:
+                    geom_params["solref"] = convert_solref(ke, kd, 1.0, 1.0)
 
                 body.add_geom(**geom_params)
                 # store the geom name instead of assuming index
