@@ -358,7 +358,7 @@ uv sync --extra examples
       </a>
     </td>
     <td align="center" width="33%">
-      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/sensors/example_sensor_contact.py">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/sensors/example_sensor_imu.py">
         <img src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_sensor_imu.jpg" alt="Sensor IMU">
       </a>
     </td>
@@ -371,7 +371,7 @@ uv sync --extra examples
       <code>uv run -m newton.examples sensor_tiled_camera</code>
     </td>
     <td align="center">
-      <!-- Future Sensor example -->
+      <code>uv run -m newton.examples sensor_imu</code>
     </td>
   </tr>
 </table>
