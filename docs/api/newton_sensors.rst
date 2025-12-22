@@ -10,7 +10,7 @@ newton.sensors
    :nosignatures:
 
    SensorContact
-   FrameTransformSensor
+   SensorFrameTransform
    MatchKind
    RaycastSensor
    TiledCameraSensor
