@@ -19,7 +19,7 @@ Available Sensors
 
 Newton currently provides three sensor types:
 
-* **ContactSensor** - Detects and reports contact information between bodies (TODO: document)
+* **SensorContact** - Detects and reports contact information between bodies (TODO: document)
 * **RaycastSensor** - Performs ray casting for distance measurements and collision detection (TODO: document)
 * **FrameTransformSensor** - Computes relative transforms between reference frames
 
@@ -165,5 +165,5 @@ See Also
 
 * :doc:`sites` — Using sites as reference frames
 * :doc:`../api/newton_sensors` — Full sensor API reference
-* ``newton.examples.sensors.example_sensor_contact`` — ContactSensor example
+* ``newton.examples.sensors.example_sensor_contact`` — SensorContact example
 

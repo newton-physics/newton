@@ -9,7 +9,7 @@ newton.sensors
    :toctree: _generated
    :nosignatures:
 
-   ContactSensor
+   SensorContact
    FrameTransformSensor
    MatchKind
    RaycastSensor

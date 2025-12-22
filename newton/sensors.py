@@ -15,8 +15,8 @@
 
 # Contact sensors
 from ._src.sensors.contact_sensor import (
-    ContactSensor,
     MatchKind,
+    SensorContact,
     populate_contacts,
 )
 
@@ -34,10 +34,10 @@ from ._src.sensors.tiled_camera_sensor import (
 )
 
 __all__ = [
-    "ContactSensor",
     "FrameTransformSensor",
     "MatchKind",
     "RaycastSensor",
+    "SensorContact",
     "TiledCameraSensor",
     "populate_contacts",
 ]
