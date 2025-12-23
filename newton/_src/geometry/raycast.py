@@ -719,7 +719,7 @@ def ray_for_pixel(
 
 
 @wp.kernel
-def raycast_sensor_kernel(
+def sensor_raycast_kernel(
     # Model
     body_q: wp.array(dtype=wp.transform),
     shape_body: wp.array(dtype=int),
@@ -804,7 +804,7 @@ def raycast_sensor_kernel(
 
 
 @wp.kernel
-def raycast_sensor_particles_kernel(
+def sensor_raycast_particles_kernel(
     grid: wp.uint64,
     particle_positions: wp.array(dtype=wp.vec3),
     particle_radius: wp.array(dtype=float),
