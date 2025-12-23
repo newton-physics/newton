@@ -1689,7 +1689,7 @@ class TestMJCFRefAttribute(unittest.TestCase):
 </mujoco>"""
 
         builder = newton.ModelBuilder()
-        newton.solvers.SolverMuJoCo.register_custom_attributes(builder)
+        SolverMuJoCo.register_custom_attributes(builder)
         builder.add_mjcf(mjcf_content)
         model = builder.finalize()
 

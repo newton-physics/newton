@@ -2524,30 +2524,48 @@ class TestUSDSpringRefAttribute(unittest.TestCase):
 
         usd_content = """#usda 1.0
 (
-    metersPerUnit = 1.0
     upAxis = "Z"
 )
 
-def Cube "parent" (
-    prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsCollisionAPI"]
-)
-{
-    bool physics:kinematicEnabled = true
-}
-
-def Cube "child" (
-    prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsArticulationRootAPI", "PhysicsCollisionAPI"]
-)
+def PhysicsScene "physicsScene"
 {
 }
 
-def PhysicsRevoluteJoint "joint"
+def Xform "Articulation" (
+    prepend apiSchemas = ["PhysicsArticulationRootAPI"]
+)
 {
-    token physics:axis = "Z"
-    rel physics:body0 = </parent>
-    rel physics:body1 = </child>
-    float mjc:springref = 30.0
-    float mjc:stiffness = 100.0
+    def Xform "Body1" (
+        prepend apiSchemas = ["PhysicsRigidBodyAPI"]
+    )
+    {
+        double3 xformOp:translate = (0, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+
+        def Cube "Collision1" (
+            prepend apiSchemas = ["PhysicsCollisionAPI"]
+        )
+        {
+            double size = 0.2
+        }
+    }
+
+    def PhysicsRevoluteJoint "Joint1" (
+        prepend apiSchemas = ["PhysicsDriveAPI:angular"]
+    )
+    {
+        rel physics:body0 = </Articulation/Body1>
+        point3f physics:localPos0 = (0, 0, 0)
+        point3f physics:localPos1 = (0, 0, 0)
+        quatf physics:localRot0 = (1, 0, 0, 0)
+        quatf physics:localRot1 = (1, 0, 0, 0)
+        token physics:axis = "Z"
+        float physics:lowerLimit = -90
+        float physics:upperLimit = 90
+
+        float mjc:springref = 30.0
+        float mjc:stiffness = 100.0
+    }
 }
 """
         stage = Usd.Stage.CreateInMemory()
@@ -2558,21 +2576,24 @@ def PhysicsRevoluteJoint "joint"
         builder.add_usd(stage)
         model = builder.finalize()
 
-        # Find the revolute joint
+        # springref is stored as custom attribute dof_springref in mujoco namespace
+        self.assertTrue(hasattr(model, "mujoco"))
+        self.assertTrue(hasattr(model.mujoco, "dof_springref"))
+        springref = model.mujoco.dof_springref.numpy()
+        qd_start = model.joint_qd_start.numpy()
+
+        # Find the first revolute joint that has non-zero dof_springref
         revolute_joint_idx = None
         for i, jt in enumerate(model.joint_type.numpy()):
             if jt == JointType.REVOLUTE:
-                revolute_joint_idx = i
-                break
-        self.assertIsNotNone(revolute_joint_idx, "No revolute joint found")
+                dof_idx = qd_start[i]
+                if springref[dof_idx] != 0.0:
+                    revolute_joint_idx = i
+                    break
+        self.assertIsNotNone(revolute_joint_idx, "No revolute joint with springref found")
 
-        # springref is stored as custom attribute dof_springref in mujoco namespace
-        # For revolute joints, it's stored in degrees (as parsed from USD)
-        self.assertTrue(hasattr(model, "mujoco"))
-        self.assertTrue(hasattr(model.mujoco, "dof_springref"))
-        qd_start = model.joint_qd_start.numpy()[revolute_joint_idx]
-        springref = model.mujoco.dof_springref.numpy()
-        self.assertAlmostEqual(springref[qd_start], 30.0, places=4)
+        # For revolute joints, springref is stored in degrees (as parsed from USD)
+        self.assertAlmostEqual(springref[qd_start[revolute_joint_idx]], 30.0, places=4)
 
 
 if __name__ == "__main__":
