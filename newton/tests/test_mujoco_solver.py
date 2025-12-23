@@ -3927,15 +3927,15 @@ class TestMuJoCoAttributes(unittest.TestCase):
         <mujoco>
             <worldbody>
                 <body>
-                    <joint type="revolute" axis="0 0 1" />
+                    <joint type="hinge" axis="0 0 1" springref="30" />
                     <geom type="box" size="0.1 0.1 0.1" condim="6" />
                 </body>
                 <body>
-                    <joint type="revolute" axis="0 0 1" />
+                    <joint type="hinge" axis="0 0 1" />
                     <geom type="box" size="0.1 0.1 0.1" condim="4" />
                 </body>
                 <body>
-                    <joint type="revolute" axis="0 0 1" />
+                    <joint type="hinge" axis="0 0 1" />
                     <geom type="box" size="0.1 0.1 0.1" />
                 </body>
             </worldbody>
@@ -3950,6 +3950,10 @@ class TestMuJoCoAttributes(unittest.TestCase):
         assert hasattr(model.mujoco, "condim")
         assert np.allclose(model.mujoco.condim.numpy(), [6, 4, 3])
         assert np.allclose(solver.mjw_model.geom_condim.numpy(), [6, 4, 3])
+        # Test springref (stored in degrees from MJCF, MuJoCo stores in radians)
+        assert hasattr(model.mujoco, "dof_springref")
+        assert np.allclose(model.mujoco.dof_springref.numpy(), [30, 0, 0])
+        assert np.allclose(solver.mj_model.qpos_spring, [np.deg2rad(30), 0, 0], atol=1e-4)
 
     def test_custom_attributes_from_urdf(self):
         urdf = """

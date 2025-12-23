@@ -1666,5 +1666,79 @@ class TestImportMjcf(unittest.TestCase):
                 self.assertAlmostEqual(a, e, places=4, msg=f"eq_solref[{eq_idx}][{i}] should be {e}, got {a}")
 
 
+class TestMJCFRefAttribute(unittest.TestCase):
+    """Test that MJCF 'ref' attribute is correctly parsed to set joint_q."""
+
+    def test_ref_attribute_parsed(self):
+        """Test that 'ref' attribute for hinge and slide joints IS parsed and sets joint_q."""
+        mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test">
+    <worldbody>
+        <body name="base">
+            <geom type="box" size="0.1 0.1 0.1"/>
+            <body name="child1" pos="0 0 1">
+                <joint name="hinge" type="hinge" axis="0 0 1" ref="45"/>
+                <geom type="box" size="0.1 0.1 0.1"/>
+                <body name="child2" pos="0 0 1">
+                    <joint name="slide" type="slide" axis="0 0 1" ref="0.5"/>
+                    <geom type="box" size="0.1 0.1 0.1"/>
+                </body>
+            </body>
+        </body>
+    </worldbody>
+</mujoco>"""
+
+        builder = newton.ModelBuilder()
+        newton.solvers.SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_mjcf(mjcf_content)
+        model = builder.finalize()
+
+        joint_q = model.joint_q.numpy()
+        q_start = model.joint_q_start.numpy()
+
+        # Test hinge joint: ref=45 degrees should be converted to radians
+        hinge_idx = model.joint_key.index("hinge")
+        expected_hinge_rad = np.deg2rad(45)
+        self.assertAlmostEqual(joint_q[q_start[hinge_idx]], expected_hinge_rad, places=4)
+
+        # Test slide joint: ref=0.5 meters (no conversion needed)
+        slide_idx = model.joint_key.index("slide")
+        self.assertAlmostEqual(joint_q[q_start[slide_idx]], 0.5, places=4)
+
+
+class TestMJCFSpringRefAttribute(unittest.TestCase):
+    """Test that MJCF 'springref' attribute is correctly parsed.
+
+    NOTE: 'springref' sets the position where spring force is zero.
+    It is stored as a custom attribute dof_springref in the mujoco namespace.
+    """
+
+    def test_springref_attribute_parsed(self):
+        """Test that 'springref' attribute IS parsed as custom attribute."""
+        mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test">
+    <worldbody>
+        <body name="base">
+            <geom type="box" size="0.1 0.1 0.1"/>
+            <body name="child" pos="0 0 1">
+                <joint name="hinge" type="hinge" axis="0 0 1" stiffness="100" springref="30"/>
+                <geom type="box" size="0.1 0.1 0.1"/>
+            </body>
+        </body>
+    </worldbody>
+</mujoco>"""
+
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_mjcf(mjcf_content)
+        model = builder.finalize()
+
+        # springref is stored as custom attribute dof_springref in mujoco namespace
+        # For hinge joints, it's stored in degrees (as parsed from MJCF)
+        # MuJoCo spec converts to radians internally
+        springref = model.mujoco.dof_springref.numpy()
+        self.assertAlmostEqual(springref[0], 30.0, places=4)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

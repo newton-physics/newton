@@ -615,6 +615,8 @@ def parse_mjcf(
         else:
             # DOF index relative to the joint being created (multiple MJCF joints in a body are combined into one Newton joint)
             current_dof_index = 0
+            # Track which DOFs are angular (for degree-to-radian conversion when setting joint_q from dof_ref)
+            dof_is_angular: dict[int, bool] = {}
             joints = body.findall("joint")
             for i, joint in enumerate(joints):
                 joint_defaults = defaults
@@ -645,6 +647,9 @@ def parse_mjcf(
                 axis_vec = parse_vec(joint_attrib, "axis", (0.0, 0.0, 0.0))
                 limit_lower = np.deg2rad(joint_range[0]) if is_angular and use_degrees else joint_range[0]
                 limit_upper = np.deg2rad(joint_range[1]) if is_angular and use_degrees else joint_range[1]
+
+                # Track if this DOF is angular (for degree-to-radian conversion of dof_ref → joint_q)
+                dof_is_angular[current_dof_index] = is_angular and use_degrees
 
                 # Parse solreflimit for joint limit stiffness and damping
                 solreflimit = parse_vec(joint_attrib, "solreflimit", (0.02, 1.0))
@@ -773,15 +778,13 @@ def parse_mjcf(
                     )
                 )
             else:
-                # TODO parse ref, springref values from joint_attrib
                 # When parent is world (-1), use world_xform to respect the xform argument
                 if parent == -1:
                     parent_xform_for_joint = world_xform * wp.transform(joint_pos, wp.quat_identity())
                 else:
                     parent_xform_for_joint = wp.transform(body_pos_for_joints + joint_pos, body_ori_for_joints)
 
-                joint_indices.append(
-                    builder.add_joint(
+                new_joint_idx = builder.add_joint(
                         joint_type,
                         parent=parent,
                         child=link,
@@ -792,7 +795,19 @@ def parse_mjcf(
                         child_xform=wp.transform(joint_pos, wp.quat_identity()),
                         custom_attributes=joint_custom_attributes | dof_custom_attributes,
                     )
-                )
+                joint_indices.append(new_joint_idx)
+
+                # Set initial joint positions from dof_ref custom attribute (if registered)
+                # dof_ref stores values in degrees (for angular DOFs), convert to radians for joint_q
+                dof_ref_values = dof_custom_attributes.get("mujoco:dof_ref", {})
+                if dof_ref_values:
+                    q_start = builder.joint_q_start[new_joint_idx]
+                    for dof_idx, ref_deg in dof_ref_values.items():
+                        if ref_deg != 0.0:
+                            # Convert degrees to radians for angular DOFs
+                            ref_val = float(ref_deg)
+                            ref_rad = np.deg2rad(ref_val) if dof_is_angular.get(dof_idx, False) else ref_val
+                            builder.joint_q[q_start + dof_idx] = ref_rad
 
         # -----------------
         # add shapes

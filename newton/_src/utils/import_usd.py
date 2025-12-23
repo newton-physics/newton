@@ -826,6 +826,17 @@ def parse_usd(
                     print(
                         f"Set {joint_type_str} joint {joint_index} position to {initial_position} ({'rad' if key == UsdPhysics.ObjectType.RevoluteJoint else 'm'})"
                     )
+            # Set joint_q from dof_ref custom attribute (if present and initial_position not set)
+            # dof_ref stores values in degrees for revolute, meters for prismatic
+            dof_ref_key = "mujoco:dof_ref"
+            if initial_position is None and dof_ref_key in joint_custom_attrs:
+                dof_ref_val = float(joint_custom_attrs[dof_ref_key])
+                if dof_ref_val != 0.0:
+                    q_start = builder.joint_q_start[joint_index]
+                    if key == UsdPhysics.ObjectType.RevoluteJoint:
+                        builder.joint_q[q_start] = np.deg2rad(dof_ref_val)
+                    else:
+                        builder.joint_q[q_start] = dof_ref_val
             if initial_velocity is not None:
                 qd_start = builder.joint_qd_start[joint_index]
                 if key == UsdPhysics.ObjectType.RevoluteJoint:
