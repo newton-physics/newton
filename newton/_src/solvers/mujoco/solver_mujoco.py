@@ -51,6 +51,7 @@ from .kernels import (
     convert_mj_coords_to_warp_kernel,
     convert_mjw_contact_to_warp_kernel,
     convert_newton_contacts_to_mjwarp_kernel,
+    convert_up_axis_pos,
     convert_warp_coords_to_mj_kernel,
     eval_articulation_fk,
     repeat_array_kernel,
@@ -1045,7 +1046,9 @@ class SolverMuJoCo(SolverBase):
 
         spec = mujoco.MjSpec()
         spec.option.disableflags = disableflags
-        spec.option.gravity = np.array([*model.gravity.numpy()[0]])
+        original_gravity = model.gravity.numpy()[0]
+        converted_gravity = np.array(convert_up_axis_pos(wp.vec3(*original_gravity), int(model.up_axis)))
+        spec.option.gravity = converted_gravity
         spec.option.solver = solver
         spec.option.integrator = integrator
         spec.option.iterations = iterations
@@ -2272,12 +2275,6 @@ class SolverMuJoCo(SolverBase):
 
         num_worlds = self.mjc_geom_to_newton_shape.shape[0]
 
-        # Get custom attribute for geom_solimp and geom_solmix
-        mujoco_attrs = getattr(self.model, "mujoco", None)
-        shape_geom_solimp = getattr(mujoco_attrs, "geom_solimp", None) if mujoco_attrs is not None else None
-        shape_geom_solmix = getattr(mujoco_attrs, "geom_solmix", None) if mujoco_attrs is not None else None
-        shape_geom_gap = getattr(mujoco_attrs, "geom_gap", None) if mujoco_attrs is not None else None
-
         wp.launch(
             update_geom_properties_kernel,
             dim=(num_worlds, num_geoms),
@@ -2294,11 +2291,11 @@ class SolverMuJoCo(SolverBase):
                 self.mjw_model.geom_dataid,
                 self.mjw_model.mesh_pos,
                 self.mjw_model.mesh_quat,
-                self.model.shape_material_torsional_friction,
-                self.model.shape_material_rolling_friction,
-                shape_geom_solimp,
-                shape_geom_solmix,
-                shape_geom_gap,
+                self.model.rigid_contact_torsional_friction,
+                self.model.rigid_contact_rolling_friction,
+                self.contact_stiffness_time_const,
+                self.model.up_axis,  # Add up_axis parameter
+                self.model.shape_body,  # Add shape_body parameter
             ],
             outputs=[
                 self.mjw_model.geom_rbound,
@@ -2316,15 +2313,22 @@ class SolverMuJoCo(SolverBase):
 
     def update_model_properties(self):
         """Update model properties including gravity in the MuJoCo model."""
+        # Convert gravity vector from Newton coordinate system to MuJoCo coordinate system (Z-up)
+        original_gravity = self.model.gravity.numpy()[0]
+        converted_gravity = np.array(convert_up_axis_pos(wp.vec3(*original_gravity), int(self.model.up_axis)))
+
         if self.use_mujoco_cpu:
-            self.mj_model.opt.gravity[:] = np.array([*self.model.gravity.numpy()[0]])
+            self.mj_model.opt.gravity[:] = converted_gravity
         else:
             if hasattr(self, "mjw_data"):
+                # For GPU, we need to update the kernel that handles gravity to perform the conversion
+                # Create a temporary array with the converted gravity
+                temp_gravity = wp.array([converted_gravity], dtype=wp.vec3, device=self.model.device)
                 wp.launch(
                     kernel=update_model_properties_kernel,
                     dim=self.mjw_data.nworld,
                     inputs=[
-                        self.model.gravity,
+                        temp_gravity,
                     ],
                     outputs=[
                         self.mjw_model.opt.gravity,
