@@ -785,16 +785,16 @@ def parse_mjcf(
                     parent_xform_for_joint = wp.transform(body_pos_for_joints + joint_pos, body_ori_for_joints)
 
                 new_joint_idx = builder.add_joint(
-                        joint_type,
-                        parent=parent,
-                        child=link,
-                        linear_axes=linear_axes,
-                        angular_axes=angular_axes,
-                        key="_".join(joint_name),
-                        parent_xform=parent_xform_for_joint,
-                        child_xform=wp.transform(joint_pos, wp.quat_identity()),
-                        custom_attributes=joint_custom_attributes | dof_custom_attributes,
-                    )
+                    joint_type,
+                    parent=parent,
+                    child=link,
+                    linear_axes=linear_axes,
+                    angular_axes=angular_axes,
+                    key="_".join(joint_name),
+                    parent_xform=parent_xform_for_joint,
+                    child_xform=wp.transform(joint_pos, wp.quat_identity()),
+                    custom_attributes=joint_custom_attributes | dof_custom_attributes,
+                )
                 joint_indices.append(new_joint_idx)
 
                 # Set initial joint positions from dof_ref custom attribute (if registered)

@@ -2535,36 +2535,31 @@ def Xform "Articulation" (
     prepend apiSchemas = ["PhysicsArticulationRootAPI"]
 )
 {
-    def Xform "Body1" (
+    def Xform "Body0" (
         prepend apiSchemas = ["PhysicsRigidBodyAPI"]
     )
     {
         double3 xformOp:translate = (0, 0, 0)
         uniform token[] xformOpOrder = ["xformOp:translate"]
 
-        def Cube "Collision1" (
-            prepend apiSchemas = ["PhysicsCollisionAPI"]
-        )
-        {
-            double size = 0.2
-        }
+    }
+
+    def Xform "Body1" (
+        prepend apiSchemas = ["PhysicsRigidBodyAPI"]
+    )
+    {
+        double3 xformOp:translate = (1, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
     }
 
     def PhysicsRevoluteJoint "Joint1" (
         prepend apiSchemas = ["PhysicsDriveAPI:angular"]
     )
     {
-        rel physics:body0 = </Articulation/Body1>
-        point3f physics:localPos0 = (0, 0, 0)
-        point3f physics:localPos1 = (0, 0, 0)
-        quatf physics:localRot0 = (1, 0, 0, 0)
-        quatf physics:localRot1 = (1, 0, 0, 0)
-        token physics:axis = "Z"
-        float physics:lowerLimit = -90
-        float physics:upperLimit = 90
+        rel physics:body0 = </Articulation/Body0>
+        rel physics:body1 = </Articulation/Body1>
 
         float mjc:springref = 30.0
-        float mjc:stiffness = 100.0
     }
 }
 """
