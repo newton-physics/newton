@@ -1587,7 +1587,7 @@ class SolverMuJoCo(SolverBase):
                         joint_params["actfrclimited"] = True
                         joint_params["actfrcrange"] = (-effort_limit, effort_limit)
 
-                    if joint_springref is not None and joint_springref[ai] != 0.0:
+                    if joint_springref is not None:
                         joint_params["springref"] = joint_springref[ai]
                     if joint_ref is not None and joint_ref[ai] != 0.0:
                         joint_params["ref"] = joint_ref[ai]
@@ -1673,7 +1673,7 @@ class SolverMuJoCo(SolverBase):
                         joint_params["actfrclimited"] = True
                         joint_params["actfrcrange"] = (-effort_limit, effort_limit)
 
-                    if joint_springref is not None and joint_springref[ai] != 0.0:
+                    if joint_springref is not None:
                         joint_params["springref"] = joint_springref[ai]
                     if joint_ref is not None and joint_ref[ai] != 0.0:
                         joint_params["ref"] = joint_ref[ai]

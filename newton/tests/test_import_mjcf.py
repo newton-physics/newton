@@ -1695,15 +1695,21 @@ class TestMJCFRefAttribute(unittest.TestCase):
 
         joint_q = model.joint_q.numpy()
         q_start = model.joint_q_start.numpy()
+        qd_start = model.joint_qd_start.numpy()
+        dof_ref = model.mujoco.dof_ref.numpy()
 
-        # Test hinge joint: ref=45 degrees should be converted to radians
         hinge_idx = model.joint_key.index("hinge")
-        expected_hinge_rad = np.deg2rad(45)
-        self.assertAlmostEqual(joint_q[q_start[hinge_idx]], expected_hinge_rad, places=4)
+        self.assertAlmostEqual(dof_ref[qd_start[hinge_idx]], 45.0, places=4)
+        self.assertAlmostEqual(joint_q[q_start[hinge_idx]], np.deg2rad(45), places=4)
 
-        # Test slide joint: ref=0.5 meters (no conversion needed)
         slide_idx = model.joint_key.index("slide")
+        self.assertAlmostEqual(dof_ref[qd_start[slide_idx]], 0.5, places=4)
         self.assertAlmostEqual(joint_q[q_start[slide_idx]], 0.5, places=4)
+
+        solver = SolverMuJoCo(model)
+        qpos0 = solver.mj_model.qpos0
+        self.assertAlmostEqual(qpos0[qd_start[hinge_idx]], np.deg2rad(45), places=4)
+        self.assertAlmostEqual(qpos0[qd_start[slide_idx]], 0.5, places=4)
 
 
 class TestMJCFSpringRefAttribute(unittest.TestCase):
@@ -1714,15 +1720,19 @@ class TestMJCFSpringRefAttribute(unittest.TestCase):
     """
 
     def test_springref_attribute_parsed(self):
-        """Test that 'springref' attribute IS parsed as custom attribute."""
+        """Test that 'springref' attribute IS parsed as custom attribute for hinge and slide joints."""
         mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
 <mujoco model="test">
     <worldbody>
         <body name="base">
             <geom type="box" size="0.1 0.1 0.1"/>
-            <body name="child" pos="0 0 1">
+            <body name="child1" pos="0 0 1">
                 <joint name="hinge" type="hinge" axis="0 0 1" stiffness="100" springref="30"/>
                 <geom type="box" size="0.1 0.1 0.1"/>
+                <body name="child2" pos="0 0 1">
+                    <joint name="slide" type="slide" axis="0 0 1" stiffness="50" springref="0.25"/>
+                    <geom type="box" size="0.1 0.1 0.1"/>
+                </body>
             </body>
         </body>
     </worldbody>
@@ -1732,12 +1742,19 @@ class TestMJCFSpringRefAttribute(unittest.TestCase):
         SolverMuJoCo.register_custom_attributes(builder)
         builder.add_mjcf(mjcf_content)
         model = builder.finalize()
-
-        # springref is stored as custom attribute dof_springref in mujoco namespace
-        # For hinge joints, it's stored in degrees (as parsed from MJCF)
-        # MuJoCo spec converts to radians internally
         springref = model.mujoco.dof_springref.numpy()
-        self.assertAlmostEqual(springref[0], 30.0, places=4)
+        qd_start = model.joint_qd_start.numpy()
+
+        hinge_idx = model.joint_key.index("hinge")
+        self.assertAlmostEqual(springref[qd_start[hinge_idx]], 30.0, places=4)
+        slide_idx = model.joint_key.index("slide")
+        self.assertAlmostEqual(springref[qd_start[slide_idx]], 0.25, places=4)
+
+        # Verify MuJoCo model qpos_spring (radians for angular, meters for linear)
+        solver = SolverMuJoCo(model)
+        qpos_spring = solver.mj_model.qpos_spring
+        self.assertAlmostEqual(qpos_spring[qd_start[hinge_idx]], np.deg2rad(30), places=4)
+        self.assertAlmostEqual(qpos_spring[qd_start[slide_idx]], 0.25, places=4)
 
 
 if __name__ == "__main__":

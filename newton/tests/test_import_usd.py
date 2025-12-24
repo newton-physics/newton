@@ -2509,6 +2509,11 @@ def PhysicsPrismaticJoint "prismatic_joint"
         self.assertAlmostEqual(dof_ref[qd_start[prismatic_joint_idx]], 0.5, places=4)
         self.assertAlmostEqual(joint_q[q_start[prismatic_joint_idx]], 0.5, places=4)
 
+        solver = SolverMuJoCo(model)
+        qpos0 = solver.mj_model.qpos0
+        self.assertAlmostEqual(qpos0[qd_start[revolute_joint_idx]], np.deg2rad(45), places=4)
+        self.assertAlmostEqual(qpos0[qd_start[prismatic_joint_idx]], 0.5, places=4)
+
 
 class TestUSDSpringRefAttribute(unittest.TestCase):
     """Test that USD 'mjc:springref' attribute is correctly parsed.
@@ -2519,7 +2524,7 @@ class TestUSDSpringRefAttribute(unittest.TestCase):
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_springref_attribute_parsed(self):
-        """Test that 'mjc:springref' attribute IS parsed as custom attribute."""
+        """Test that 'mjc:springref' attribute IS parsed as custom attribute for revolute and prismatic joints."""
         from pxr import Usd  # noqa: PLC0415
 
         usd_content = """#usda 1.0
@@ -2541,7 +2546,6 @@ def Xform "Articulation" (
     {
         double3 xformOp:translate = (0, 0, 0)
         uniform token[] xformOpOrder = ["xformOp:translate"]
-
     }
 
     def Xform "Body1" (
@@ -2552,14 +2556,29 @@ def Xform "Articulation" (
         uniform token[] xformOpOrder = ["xformOp:translate"]
     }
 
-    def PhysicsRevoluteJoint "Joint1" (
+    def Xform "Body2" (
+        prepend apiSchemas = ["PhysicsRigidBodyAPI"]
+    )
+    {
+        double3 xformOp:translate = (2, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+
+    def PhysicsRevoluteJoint "revolute_joint" (
         prepend apiSchemas = ["PhysicsDriveAPI:angular"]
     )
     {
         rel physics:body0 = </Articulation/Body0>
         rel physics:body1 = </Articulation/Body1>
-
         float mjc:springref = 30.0
+    }
+
+    def PhysicsPrismaticJoint "prismatic_joint"
+    {
+        token physics:axis = "Z"
+        rel physics:body0 = </Articulation/Body1>
+        rel physics:body1 = </Articulation/Body2>
+        float mjc:springref = 0.25
     }
 }
 """
@@ -2571,24 +2590,34 @@ def Xform "Articulation" (
         builder.add_usd(stage)
         model = builder.finalize()
 
-        # springref is stored as custom attribute dof_springref in mujoco namespace
         self.assertTrue(hasattr(model, "mujoco"))
         self.assertTrue(hasattr(model.mujoco, "dof_springref"))
         springref = model.mujoco.dof_springref.numpy()
         qd_start = model.joint_qd_start.numpy()
 
-        # Find the first revolute joint that has non-zero dof_springref
+        # Find and test revolute joint
         revolute_joint_idx = None
         for i, jt in enumerate(model.joint_type.numpy()):
             if jt == JointType.REVOLUTE:
-                dof_idx = qd_start[i]
-                if springref[dof_idx] != 0.0:
-                    revolute_joint_idx = i
-                    break
-        self.assertIsNotNone(revolute_joint_idx, "No revolute joint with springref found")
-
-        # For revolute joints, springref is stored in degrees (as parsed from USD)
+                revolute_joint_idx = i
+                break
+        self.assertIsNotNone(revolute_joint_idx, "No revolute joint found")
         self.assertAlmostEqual(springref[qd_start[revolute_joint_idx]], 30.0, places=4)
+
+        # Find and test prismatic joint
+        prismatic_joint_idx = None
+        for i, jt in enumerate(model.joint_type.numpy()):
+            if jt == JointType.PRISMATIC:
+                prismatic_joint_idx = i
+                break
+        self.assertIsNotNone(prismatic_joint_idx, "No prismatic joint found")
+        self.assertAlmostEqual(springref[qd_start[prismatic_joint_idx]], 0.25, places=4)
+
+        # Verify MuJoCo model qpos_spring (radians for angular, meters for linear)
+        solver = SolverMuJoCo(model)
+        qpos_spring = solver.mj_model.qpos_spring
+        self.assertAlmostEqual(qpos_spring[qd_start[revolute_joint_idx]], np.deg2rad(30), places=4)
+        self.assertAlmostEqual(qpos_spring[qd_start[prismatic_joint_idx]], 0.25, places=4)
 
 
 if __name__ == "__main__":

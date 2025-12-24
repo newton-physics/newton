@@ -804,7 +804,6 @@ def parse_mjcf(
                     q_start = builder.joint_q_start[new_joint_idx]
                     for dof_idx, ref_deg in dof_ref_values.items():
                         if ref_deg != 0.0:
-                            # Convert degrees to radians for angular DOFs
                             ref_val = float(ref_deg)
                             ref_rad = np.deg2rad(ref_val) if dof_is_angular.get(dof_idx, False) else ref_val
                             builder.joint_q[q_start + dof_idx] = ref_rad
