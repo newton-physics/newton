@@ -1013,7 +1013,9 @@ def parse_mjcf(
                         )
 
                     if verbose:
-                        print(f"Connect constraint (site-based): site '{site1}' on body {body1_idx} to body {body2_idx}")
+                        print(
+                            f"Connect constraint (site-based): site '{site1}' on body {body1_idx} to body {body2_idx}"
+                        )
                     builder.add_equality_constraint_connect(
                         body1=body1_idx,
                         body2=body2_idx,
@@ -1052,27 +1054,28 @@ def parse_mjcf(
             site2 = weld.attrib.get("site2")
 
             if site1 or site2:
-                # Site-based weld: site1/site2 specify body and anchor for each side
+                # Site-based weld: site1/site2 specify body for each side
+                # For weld, anchor is in body2's frame (from site2's local position)
                 if site1:
                     site1_info = get_site_body_and_anchor(site1)
                     if site1_info is None:
                         continue
-                    body1_idx, anchor_vec = site1_info
+                    body1_idx, _ = site1_info
                 else:
                     body1_idx = (
                         builder.body_key.index(body1_name) if body1_name and body1_name in builder.body_key else -1
                     )
-                    anchor_vec = wp.vec3(*[float(x) * scale for x in anchor.split()])
 
                 if site2:
                     site2_info = get_site_body_and_anchor(site2)
                     if site2_info is None:
                         continue
-                    body2_idx, _ = site2_info
+                    body2_idx, anchor_vec = site2_info
                 else:
                     body2_idx = (
                         builder.body_key.index(body2_name) if body2_name and body2_name in builder.body_key else -1
                     )
+                    anchor_vec = wp.vec3(*[float(x) * scale for x in anchor.split()])
 
                 relpose_list = [float(x) for x in relpose.split()]
                 relpose_transform = wp.transform(
