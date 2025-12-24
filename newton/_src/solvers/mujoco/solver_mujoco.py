@@ -1589,7 +1589,7 @@ class SolverMuJoCo(SolverBase):
 
                     if joint_springref is not None:
                         joint_params["springref"] = joint_springref[ai]
-                    if joint_ref is not None and joint_ref[ai] != 0.0:
+                    if joint_ref is not None:
                         joint_params["ref"] = joint_ref[ai]
 
                     axname = name
@@ -1675,7 +1675,7 @@ class SolverMuJoCo(SolverBase):
 
                     if joint_springref is not None:
                         joint_params["springref"] = joint_springref[ai]
-                    if joint_ref is not None and joint_ref[ai] != 0.0:
+                    if joint_ref is not None:
                         joint_params["ref"] = joint_ref[ai]
 
                     axname = name

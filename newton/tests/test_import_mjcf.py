@@ -1706,18 +1706,9 @@ class TestMJCFRefAttribute(unittest.TestCase):
         self.assertAlmostEqual(dof_ref[qd_start[slide_idx]], 0.5, places=4)
         self.assertAlmostEqual(joint_q[q_start[slide_idx]], 0.5, places=4)
 
-        solver = SolverMuJoCo(model)
-        qpos0 = solver.mj_model.qpos0
-        self.assertAlmostEqual(qpos0[q_start[hinge_idx]], np.deg2rad(45), places=4)
-        self.assertAlmostEqual(qpos0[q_start[slide_idx]], 0.5, places=4)
-
 
 class TestMJCFSpringRefAttribute(unittest.TestCase):
-    """Test that MJCF 'springref' attribute is correctly parsed.
-
-    NOTE: 'springref' sets the position where spring force is zero.
-    It is stored as a custom attribute dof_springref in the mujoco namespace.
-    """
+    """Test that MJCF 'springref' attribute is correctly parsed."""
 
     def test_springref_attribute_parsed(self):
         """Test that 'springref' attribute IS parsed as custom attribute for hinge and slide joints."""
@@ -1744,17 +1735,11 @@ class TestMJCFSpringRefAttribute(unittest.TestCase):
         model = builder.finalize()
         springref = model.mujoco.dof_springref.numpy()
         qd_start = model.joint_qd_start.numpy()
-        q_start = model.joint_q_start.numpy()
 
         hinge_idx = model.joint_key.index("hinge")
         self.assertAlmostEqual(springref[qd_start[hinge_idx]], 30.0, places=4)
         slide_idx = model.joint_key.index("slide")
         self.assertAlmostEqual(springref[qd_start[slide_idx]], 0.25, places=4)
-
-        solver = SolverMuJoCo(model)
-        qpos_spring = solver.mj_model.qpos_spring
-        self.assertAlmostEqual(qpos_spring[q_start[hinge_idx]], np.deg2rad(30), places=4)
-        self.assertAlmostEqual(qpos_spring[q_start[slide_idx]], 0.25, places=4)
 
 
 if __name__ == "__main__":

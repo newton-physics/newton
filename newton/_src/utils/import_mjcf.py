@@ -648,7 +648,6 @@ def parse_mjcf(
                 limit_lower = np.deg2rad(joint_range[0]) if is_angular and use_degrees else joint_range[0]
                 limit_upper = np.deg2rad(joint_range[1]) if is_angular and use_degrees else joint_range[1]
 
-                # Track if this DOF is angular (for degree-to-radian conversion of dof_ref → joint_q)
                 dof_is_angular[current_dof_index] = is_angular and use_degrees
 
                 # Parse solreflimit for joint limit stiffness and damping

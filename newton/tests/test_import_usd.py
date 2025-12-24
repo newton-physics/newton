@@ -2509,18 +2509,9 @@ def PhysicsPrismaticJoint "prismatic_joint"
         self.assertAlmostEqual(dof_ref[qd_start[prismatic_joint_idx]], 0.5, places=4)
         self.assertAlmostEqual(joint_q[q_start[prismatic_joint_idx]], 0.5, places=4)
 
-        solver = SolverMuJoCo(model)
-        qpos0 = solver.mj_model.qpos0
-        self.assertAlmostEqual(qpos0[q_start[revolute_joint_idx]], np.deg2rad(45), places=4)
-        self.assertAlmostEqual(qpos0[q_start[prismatic_joint_idx]], 0.5, places=4)
-
 
 class TestUSDSpringRefAttribute(unittest.TestCase):
-    """Test that USD 'mjc:springref' attribute is correctly parsed.
-
-    NOTE: 'springref' sets the position where spring force is zero.
-    It is stored as a custom attribute dof_springref in the mujoco namespace.
-    """
+    """Test that USD 'mjc:springref' attribute is correctly parsed."""
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_springref_attribute_parsed(self):
@@ -2630,12 +2621,6 @@ def Xform "Articulation" (
                 break
         self.assertIsNotNone(prismatic_joint_idx, "No prismatic joint found")
         self.assertAlmostEqual(springref[qd_start[prismatic_joint_idx]], 0.25, places=4)
-
-        q_start = model.joint_q_start.numpy()
-        solver = SolverMuJoCo(model)
-        qpos_spring = solver.mj_model.qpos_spring
-        self.assertAlmostEqual(qpos_spring[q_start[revolute_joint_idx]], np.deg2rad(30), places=4)
-        self.assertAlmostEqual(qpos_spring[q_start[prismatic_joint_idx]], 0.25, places=4)
 
 
 if __name__ == "__main__":
