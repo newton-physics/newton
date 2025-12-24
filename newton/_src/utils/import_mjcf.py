@@ -968,6 +968,22 @@ def parse_mjcf(
                 "active": element.attrib.get("active", "true").lower() == "true",
             }
 
+        def get_site_body_and_anchor(site_name: str) -> tuple[int, wp.vec3] | None:
+            """Look up a site by name and return its body index and position (anchor).
+
+            Returns:
+                Tuple of (body_idx, anchor_position) or None if site not found.
+            """
+            if site_name not in builder.shape_key:
+                if verbose:
+                    print(f"Warning: Site '{site_name}' not found")
+                return None
+            site_idx = builder.shape_key.index(site_name)
+            body_idx = builder.shape_body[site_idx]
+            site_xform = builder.shape_transform[site_idx]
+            anchor = wp.vec3(site_xform[0], site_xform[1], site_xform[2])
+            return (body_idx, anchor)
+
         for connect in equality.findall("connect"):
             common = parse_common_attributes(connect)
             custom_attrs = parse_custom_attributes(connect.attrib, builder_custom_attr_eq, parsing_mode="mjcf")
@@ -976,10 +992,37 @@ def parse_mjcf(
                 connect.attrib.get("body2", "worldbody").replace("-", "_") if connect.attrib.get("body2") else None
             )
             anchor = connect.attrib.get("anchor")
-
             site1 = connect.attrib.get("site1")
+            site2 = connect.attrib.get("site2")
 
-            if body1_name and anchor:
+            if site1:
+                # Site-based connect: site1 specifies body1 and anchor
+                site1_info = get_site_body_and_anchor(site1)
+                if site1_info is not None:
+                    body1_idx, anchor_vec = site1_info
+
+                    # site2 optionally specifies body2
+                    if site2:
+                        site2_info = get_site_body_and_anchor(site2)
+                        if site2_info is None:
+                            continue
+                        body2_idx, _ = site2_info
+                    else:
+                        body2_idx = (
+                            builder.body_key.index(body2_name) if body2_name and body2_name in builder.body_key else -1
+                        )
+
+                    if verbose:
+                        print(f"Connect constraint (site-based): site '{site1}' on body {body1_idx} to body {body2_idx}")
+                    builder.add_equality_constraint_connect(
+                        body1=body1_idx,
+                        body2=body2_idx,
+                        anchor=anchor_vec,
+                        key=common["name"],
+                        enabled=common["active"],
+                        custom_attributes=custom_attrs,
+                    )
+            elif body1_name and anchor:
                 if verbose:
                     print(f"Connect constraint: {body1_name} to {body2_name} at anchor {anchor}")
 
@@ -997,9 +1040,6 @@ def parse_mjcf(
                     custom_attributes=custom_attrs,
                 )
 
-            if site1:  # Implement site-based connect after Newton supports sites
-                print("Warning: MuJoCo sites are not yet supported in Newton.")
-
         for weld in equality.findall("weld"):
             common = parse_common_attributes(weld)
             custom_attrs = parse_custom_attributes(weld.attrib, builder_custom_attr_eq, parsing_mode="mjcf")
@@ -1008,10 +1048,52 @@ def parse_mjcf(
             anchor = weld.attrib.get("anchor", "0 0 0")
             relpose = weld.attrib.get("relpose", "0 1 0 0 0 0 0")
             torquescale = weld.attrib.get("torquescale")
-
             site1 = weld.attrib.get("site1")
+            site2 = weld.attrib.get("site2")
 
-            if body1_name:
+            if site1 or site2:
+                # Site-based weld: site1/site2 specify body and anchor for each side
+                if site1:
+                    site1_info = get_site_body_and_anchor(site1)
+                    if site1_info is None:
+                        continue
+                    body1_idx, anchor_vec = site1_info
+                else:
+                    body1_idx = (
+                        builder.body_key.index(body1_name) if body1_name and body1_name in builder.body_key else -1
+                    )
+                    anchor_vec = wp.vec3(*[float(x) * scale for x in anchor.split()])
+
+                if site2:
+                    site2_info = get_site_body_and_anchor(site2)
+                    if site2_info is None:
+                        continue
+                    body2_idx, _ = site2_info
+                else:
+                    body2_idx = (
+                        builder.body_key.index(body2_name) if body2_name and body2_name in builder.body_key else -1
+                    )
+
+                relpose_list = [float(x) for x in relpose.split()]
+                relpose_transform = wp.transform(
+                    wp.vec3(relpose_list[0], relpose_list[1], relpose_list[2]),
+                    wp.quat(relpose_list[4], relpose_list[5], relpose_list[6], relpose_list[3]),
+                )
+
+                if verbose:
+                    print(f"Weld constraint (site-based): body {body1_idx} to body {body2_idx}")
+
+                builder.add_equality_constraint_weld(
+                    body1=body1_idx,
+                    body2=body2_idx,
+                    anchor=anchor_vec,
+                    relpose=relpose_transform,
+                    torquescale=torquescale,
+                    key=common["name"],
+                    enabled=common["active"],
+                    custom_attributes=custom_attrs,
+                )
+            elif body1_name:
                 if verbose:
                     print(f"Weld constraint: {body1_name} to {body2_name}")
 
@@ -1036,9 +1118,6 @@ def parse_mjcf(
                     enabled=common["active"],
                     custom_attributes=custom_attrs,
                 )
-
-            if site1:  # Implement site-based weld after Newton supports sites
-                print("Warning: MuJoCo sites are not yet supported in Newton.")
 
         for joint in equality.findall("joint"):
             common = parse_common_attributes(joint)
