@@ -333,6 +333,9 @@ def parse_mjcf(
                 if len(friction_values) >= 3:
                     shape_cfg.rolling_friction = float(friction_values[2])
 
+            # Parse MJCF margin (contact margin for collision detection)
+            shape_cfg.contact_margin = parse_float(geom_attrib, "margin", shape_cfg.contact_margin)
+
             custom_attributes = parse_custom_attributes(geom_attrib, builder_custom_attr_shape, parsing_mode="mjcf")
             shape_kwargs = {
                 "key": geom_name,

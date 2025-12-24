@@ -1214,6 +1214,7 @@ def update_geom_properties_kernel(
     shape_kd: wp.array(dtype=float),
     shape_size: wp.array(dtype=wp.vec3f),
     shape_transform: wp.array(dtype=wp.transform),
+    shape_contact_margin: wp.array(dtype=float),
     mjc_geom_to_newton_shape: wp.array2d(dtype=wp.int32),
     geom_type: wp.array(dtype=int),
     GEOM_TYPE_MESH: int,
@@ -1235,6 +1236,7 @@ def update_geom_properties_kernel(
     geom_solimp: wp.array2d(dtype=vec5),
     geom_solmix: wp.array2d(dtype=float),
     geom_gap: wp.array2d(dtype=float),
+    geom_margin: wp.array2d(dtype=float),
 ):
     """Update MuJoCo geom properties from Newton shape properties.
 
@@ -1280,6 +1282,9 @@ def update_geom_properties_kernel(
     # update geom_gap from custom attribute
     if shape_geom_gap:
         geom_gap[world, geom_idx] = shape_geom_gap[shape_idx]
+
+    # update geom margin
+    geom_margin[world, geom_idx] = shape_contact_margin[shape_idx]
 
     # update size
     geom_size[world, geom_idx] = shape_size[shape_idx]

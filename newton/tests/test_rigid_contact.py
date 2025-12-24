@@ -28,6 +28,29 @@ from newton.tests.unittest_utils import (
     get_test_devices,
 )
 
+solvers = {
+    "featherstone": lambda model: newton.solvers.SolverFeatherstone(model),
+    "mujoco_cpu": lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=True),
+    "mujoco_warp": lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=False, njmax=150),
+    "xpbd": lambda model: newton.solvers.SolverXPBD(model, iterations=2),
+    "semi_implicit": lambda model: newton.solvers.SolverSemiImplicit(model),
+}
+
+
+def get_contact_margin(solver_name):
+    if solver_name == "featherstone":
+        return 100.0
+    elif solver_name == "mujoco_cpu":
+        return 0.0
+    elif solver_name == "mujoco_warp":
+        return 0.0
+    elif solver_name == "xpbd":
+        return 100.0
+    elif solver_name == "semi_implicit":
+        return 100.0
+    else:
+        return 0.0
+
 
 def simulate(solver, model, state_0, state_1, control, sim_dt, substeps):
     if not isinstance(solver, newton.solvers.SolverMuJoCo):
@@ -40,7 +63,7 @@ def simulate(solver, model, state_0, state_1, control, sim_dt, substeps):
         state_0, state_1 = state_1, state_0
 
 
-def test_shapes_on_plane(test, device, solver_fn):
+def test_shapes_on_plane(test, device, solver_fn, solver_name):
     builder = newton.ModelBuilder()
     builder.default_shape_cfg.ke = 1e4
     builder.default_shape_cfg.kd = 500.0
@@ -101,9 +124,8 @@ def test_shapes_on_plane(test, device, solver_fn):
     builder.default_shape_cfg.kd = 500.0
     # !!! disable friction for SemiImplicit integrators
     builder.default_shape_cfg.kf = 0.0
-    # Set large contact margin to ensure all contacts are detected
     # Must be set BEFORE adding shapes
-    builder.rigid_contact_margin = 100.0
+    builder.rigid_contact_margin = get_contact_margin(solver_name)
 
     expected_end_positions = []
 
@@ -724,14 +746,6 @@ def test_mujoco_convex_on_convex(test, device, solver_fn):
 devices = get_test_devices()
 cuda_devices = get_selected_cuda_test_devices()
 
-solvers = {
-    "featherstone": lambda model: newton.solvers.SolverFeatherstone(model),
-    "mujoco_cpu": lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=True),
-    "mujoco_warp": lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=False, njmax=150),
-    "xpbd": lambda model: newton.solvers.SolverXPBD(model, iterations=2),
-    "semi_implicit": lambda model: newton.solvers.SolverSemiImplicit(model),
-}
-
 
 class TestRigidContact(unittest.TestCase):
     pass
@@ -749,6 +763,7 @@ for device in devices:
             test_shapes_on_plane,
             devices=[device],
             solver_fn=solver_fn,
+            solver_name=solver_name,
         )
 
 # Add test for ramp scene stability with XPBD solver
