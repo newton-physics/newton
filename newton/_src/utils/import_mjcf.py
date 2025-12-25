@@ -1111,11 +1111,11 @@ def parse_mjcf(
                         custom_attributes=custom_attrs,
                     )
                 else:
-                    # Invalid: site1 without site2
-                    print(
-                        f"Warning: Weld constraint '{common['name']}' has site1 but no site2. "
-                        "When using sites, both site1 and site2 must be specified. Skipping."
-                    )
+                    if verbose:
+                        print(
+                            f"Warning: Weld constraint '{common['name']}' has site1 but no site2. "
+                            "When using sites, both site1 and site2 must be specified. Skipping."
+                        )
 
         for joint in equality.findall("joint"):
             common = parse_common_attributes(joint)
