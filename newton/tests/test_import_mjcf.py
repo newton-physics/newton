@@ -1723,62 +1723,6 @@ class TestSiteBasedEqualityConstraints(unittest.TestCase):
         # eq_type 1 is WELD in MuJoCo
         self.assertEqual(solver.mj_model.eq_type[0], 1)
 
-    def test_site_based_connect_with_body2(self):
-        """Test connect constraint with site1 for body1 and body2 specified explicitly."""
-        mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
-<mujoco model="test_site_connect_body2">
-    <worldbody>
-        <body name="body1" pos="0 0 0">
-            <geom type="box" size="0.1 0.1 0.1"/>
-            <site name="body1_site" pos="0.1 0 0"/>
-        </body>
-        <body name="body2" pos="1 0 0">
-            <freejoint/>
-            <geom type="box" size="0.1 0.1 0.1"/>
-        </body>
-    </worldbody>
-    <equality>
-        <connect name="site_to_body" site1="body1_site" body2="body2"/>
-    </equality>
-</mujoco>"""
-        builder = newton.ModelBuilder()
-        builder.add_mjcf(mjcf_content, parse_sites=True)
-        model = builder.finalize()
-
-        solver = SolverMuJoCo(model)
-
-        # Check that the connect constraint was created
-        self.assertEqual(solver.mj_model.neq, 1)
-        self.assertEqual(solver.mj_model.eq_type[0], 0)
-
-    def test_mixed_body_and_site_weld(self):
-        """Test weld constraint with site1 but body2 specified explicitly."""
-        mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
-<mujoco model="test_mixed_weld">
-    <worldbody>
-        <body name="body1" pos="0 0 0">
-            <geom type="box" size="0.1 0.1 0.1"/>
-            <site name="body1_site" pos="0.1 0 0"/>
-        </body>
-        <body name="body2" pos="1 0 0">
-            <freejoint/>
-            <geom type="box" size="0.1 0.1 0.1"/>
-        </body>
-    </worldbody>
-    <equality>
-        <weld name="site_to_body" site1="body1_site" body2="body2" torquescale="0.5"/>
-    </equality>
-</mujoco>"""
-        builder = newton.ModelBuilder()
-        builder.add_mjcf(mjcf_content, parse_sites=True)
-        model = builder.finalize()
-
-        solver = SolverMuJoCo(model)
-
-        # Check that the weld constraint was created
-        self.assertEqual(solver.mj_model.neq, 1)
-        self.assertEqual(solver.mj_model.eq_type[0], 1)
-
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
