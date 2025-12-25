@@ -19,16 +19,16 @@ Available Sensors
 
 Newton currently provides five sensor types:
 
-* :class:`~newton.sensors.ContactSensor` -- Detects and reports contact information between bodies (TODO: document)
-* :class:`~newton.sensors.RaycastSensor` -- Performs ray casting for distance measurements and collision detection (TODO: document)
-* :class:`~newton.sensors.FrameTransformSensor` -- Computes relative transforms between reference frames
+* :class:`~newton.sensors.SensorContact` -- Detects and reports contact information between bodies (TODO: document)
+* :class:`~newton.sensors.SensorFrameTransform` -- Computes relative transforms between reference frames
 * :class:`~newton.sensors.SensorIMU` -- Measures linear acceleration and angular velocity at site frames
-* :class:`~newton.sensors.TiledCameraSensor` -- Raytraced rendering across multiple worlds
+* :class:`~newton.sensors.SensorRaycast` -- Performs ray casting for distance measurements and collision detection (TODO: document)
+* :class:`~newton.sensors.SensorTiledCamera` -- Raytraced rendering across multiple worlds
 
-FrameTransformSensor
+SensorFrameTransform
 --------------------
 
-The ``FrameTransformSensor`` computes the relative pose (position and orientation) of objects with respect to reference frames. This is essential for:
+The ``SensorFrameTransform`` computes the relative pose (position and orientation) of objects with respect to reference frames. This is essential for:
 
 * End-effector pose tracking in robotics
 * Sensor pose computation (cameras, IMUs relative to world or body frames)
@@ -42,7 +42,7 @@ The sensor takes shape indices (which can include sites or regular shapes) and c
 
 .. testcode:: sensors-basic
 
-   from newton.sensors import FrameTransformSensor
+   from newton.sensors import SensorFrameTransform
    import newton
    
    # Create model with sites
@@ -69,7 +69,7 @@ The sensor takes shape indices (which can include sites or regular shapes) and c
    state = model.state()
    
    # Create sensor
-   sensor = FrameTransformSensor(
+   sensor = SensorFrameTransform(
        model,
        shapes=[ee_site],              # What to measure
        reference_sites=[ref_site]     # Reference frame(s)
@@ -99,7 +99,7 @@ The sensor supports measuring multiple objects, optionally with different refere
 
 .. testcode:: sensors-multiple
 
-   from newton.sensors import FrameTransformSensor
+   from newton.sensors import SensorFrameTransform
    
    # Setup model with multiple sites
    builder = newton.ModelBuilder()
@@ -121,13 +121,13 @@ The sensor supports measuring multiple objects, optionally with different refere
    state = model.state()
    
    # Multiple objects, single reference
-   sensor1 = FrameTransformSensor(
+   sensor1 = SensorFrameTransform(
        model,
        shapes=[site1, site2, site3],
        reference_sites=[ref_site]  # Broadcasts to all objects
    )
    
-   sensor2 = FrameTransformSensor(
+   sensor2 = SensorFrameTransform(
        model,
        shapes=[site1, site2, site3],
        reference_sites=[ref1, ref2, ref3]  # One per object
@@ -213,7 +213,6 @@ See Also
 * :doc:`sites` — Using sites as reference frames
 * :doc:`../api/newton_sensors` — Full sensor API reference
 * :doc:`extended_state_attributes` — Optional State arrays (e.g., ``body_qdd``) required by some sensors.
-* ``newton.examples.sensors.example_sensor_contact`` — ContactSensor example
+* ``newton.examples.sensors.example_sensor_contact`` — SensorContact example
 * ``newton.examples.sensors.example_sensor_imu`` — SensorIMU example
-* ``newton.examples.sensors.example_sensor_tiled_camera.py`` — TiledCameraSensor example
-
+* ``newton.examples.sensors.example_sensor_tiled_camera.py`` — SensorTiledCamera example
