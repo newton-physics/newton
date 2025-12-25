@@ -215,4 +215,4 @@ See Also
 * :doc:`extended_state_attributes` — Optional State arrays (e.g., ``body_qdd``) required by some sensors.
 * ``newton.examples.sensors.example_sensor_contact`` — SensorContact example
 * ``newton.examples.sensors.example_sensor_imu`` — SensorIMU example
-* ``newton.examples.sensors.example_sensor_tiled_camera.py`` — SensorTiledCamera example
+* ``newton.examples.sensors.example_sensor_tiled_camera`` — SensorTiledCamera example
