@@ -1139,7 +1139,6 @@ class SolverMuJoCo(SolverBase):
         shape_priority = get_custom_attribute("geom_priority")
         shape_geom_solimp = get_custom_attribute("geom_solimp")
         shape_geom_solmix = get_custom_attribute("geom_solmix")
-        shape_geom_solref = get_custom_attribute("geom_solref")
         shape_geom_gap = get_custom_attribute("geom_gap")
         joint_dof_limit_margin = get_custom_attribute("limit_margin")
         joint_solimp_limit = get_custom_attribute("solimplimit")
@@ -1385,8 +1384,6 @@ class SolverMuJoCo(SolverBase):
                     geom_params["solmix"] = shape_geom_solmix[shape]
                 if shape_geom_gap is not None:
                     geom_params["gap"] = shape_geom_gap[shape]
-                if shape_geom_solref is not None:
-                    geom_params["solref"] = convert_solref(ke, kd, 1.0, 1.0)
 
                 body.add_geom(**geom_params)
                 # store the geom name instead of assuming index
