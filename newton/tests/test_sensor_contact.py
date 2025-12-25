@@ -18,12 +18,12 @@ import unittest
 import warp as wp
 
 import newton
-from newton.sensors import ContactSensor
+from newton.sensors import SensorContact
 from newton.tests.unittest_utils import assert_np_equal
 
 
 class MockModel:
-    """Minimal mock model for testing ContactSensor"""
+    """Minimal mock model for testing SensorContact"""
 
     def __init__(self, device=None):
         self.device = device or wp.get_device()
@@ -63,7 +63,7 @@ def create_contacts(device, pairs, naconmax, positions=None, normals=None, separ
     return contacts
 
 
-class TestContactSensor(unittest.TestCase):
+class TestSensorContact(unittest.TestCase):
     def test_net_force_aggregation(self):
         """Test net force aggregation across different contact subsets"""
         device = wp.get_device()
@@ -76,7 +76,7 @@ class TestContactSensor(unittest.TestCase):
         model.body_key = ["A", "B"]
         model.body_shapes = [entity_A, entity_B]
 
-        contact_sensor = ContactSensor(model, sensing_obj_bodies="*", counterpart_bodies="*")
+        contact_sensor = SensorContact(model, sensing_obj_bodies="*", counterpart_bodies="*")
 
         test_contacts = [
             {
