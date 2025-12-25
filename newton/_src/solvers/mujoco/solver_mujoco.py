@@ -518,6 +518,9 @@ class SolverMuJoCo(SolverBase):
                 contacts.rigid_contact_normal,
                 contacts.rigid_contact_thickness0,
                 contacts.rigid_contact_thickness1,
+                contacts.rigid_contact_stiffness,
+                contacts.rigid_contact_damping,
+                contacts.rigid_contact_friction,
                 bodies_per_world,
                 self.newton_shape_to_mjc_geom,
                 # Mujoco warp contacts

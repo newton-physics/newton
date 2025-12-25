@@ -219,7 +219,7 @@ def flatten_depth_image(
     buffer[py, px, 3] = value
 
 
-class TiledCameraSensor:
+class SensorTiledCamera:
     """
     A Warp-based tiled camera sensor for raytraced rendering across multiple worlds.
 

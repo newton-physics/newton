@@ -30,3 +30,4 @@ repos:
     rev: v1.38.1
     hooks:
       - id: typos
+        args: []
