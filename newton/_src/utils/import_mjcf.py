@@ -26,7 +26,7 @@ import warp as wp
 
 from ..core import quat_between_axes, quat_from_euler
 from ..core.types import Axis, AxisType, Sequence, Transform
-from ..geometry import MESH_MAXHULLVERT, Mesh
+from ..geometry import MESH_MAXHULLVERT, Mesh, ShapeFlags
 from ..sim import JointType, ModelBuilder
 from ..sim.model import ModelAttributeFrequency
 from ..usd.schemas import solref_to_stiffness_damping
@@ -972,13 +972,17 @@ def parse_mjcf(
             """Look up a site by name and return its body index and position (anchor).
 
             Returns:
-                Tuple of (body_idx, anchor_position) or None if site not found.
+                Tuple of (body_idx, anchor_position) or None if site not found or not a site.
             """
             if site_name not in builder.shape_key:
                 if verbose:
                     print(f"Warning: Site '{site_name}' not found")
                 return None
             site_idx = builder.shape_key.index(site_name)
+            if not (builder.shape_flags[site_idx] & ShapeFlags.SITE):
+                if verbose:
+                    print(f"Warning: Shape '{site_name}' is not a site")
+                return None
             body_idx = builder.shape_body[site_idx]
             site_xform = builder.shape_transform[site_idx]
             anchor = wp.vec3(site_xform[0], site_xform[1], site_xform[2])

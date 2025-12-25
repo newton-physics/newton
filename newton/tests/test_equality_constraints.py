@@ -79,12 +79,10 @@ class TestEqualityConstraints(unittest.TestCase):
             max_force = np.max(np.abs(efc_force))
             self.assertLess(max_force, 1000.0, f"Maximum constraint force {max_force} seems unreasonably large")
 
-    def test_equality_constraints_not_duplicated_per_world(self):
-        """Test that equality constraints are not duplicated for each world when using separate_worlds=True"""
-        # Create a simple robot builder with equality constraints
+    def _create_robot_body_based(self):
+        """Create a robot with body-based equality constraints using programmatic API."""
         robot = newton.ModelBuilder()
 
-        # Add bodies with shapes
         base = robot.add_link(xform=wp.transform((0, 0, 0)), mass=1.0, key="base")
         robot.add_shape_box(base, hx=0.5, hy=0.5, hz=0.5)
 
@@ -94,9 +92,8 @@ class TestEqualityConstraints(unittest.TestCase):
         link2 = robot.add_link(xform=wp.transform((2, 0, 0)), mass=1.0, key="link2")
         robot.add_shape_box(link2, hx=0.5, hy=0.5, hz=0.5)
 
-        # Add joints - connect base to world (-1) first
         joint1 = robot.add_joint_fixed(
-            parent=-1,  # world
+            parent=-1,
             child=base,
             parent_xform=wp.transform((0, 0, 0)),
             child_xform=wp.transform((0, 0, 0)),
@@ -119,100 +116,122 @@ class TestEqualityConstraints(unittest.TestCase):
             key="joint2",
         )
 
-        # Add articulation
         robot.add_articulation([joint1, joint2, joint3], key="articulation")
 
-        # Add 2 equality constraints
         robot.add_equality_constraint_connect(
             body1=base, body2=link2, anchor=wp.vec3(0.5, 0, 0), key="connect_constraint"
         )
-        robot.add_equality_constraint_joint(
-            joint1=1,  # joint1 (base to link1)
-            joint2=2,  # joint2 (link1 to link2)
-            polycoef=[1.0, -1.0, 0, 0, 0],
-            key="joint_constraint",
-        )
+        robot.add_equality_constraint_weld(body1=link1, body2=link2, anchor=wp.vec3(0.5, 0, 0), key="weld_constraint")
+        return robot
 
-        # Build main model with multiple worlds
-        main_builder = newton.ModelBuilder()
+    def _create_robot_site_based(self):
+        """Create a robot with site-based equality constraints from MJCF."""
+        mjcf = """<?xml version="1.0"?>
+<mujoco>
+    <worldbody>
+        <body name="base" pos="0 0 0">
+            <geom type="box" size="0.5 0.5 0.5"/>
+            <site name="base_site" pos="0.5 0 0"/>
+            <body name="link1" pos="1 0 0">
+                <joint name="joint1" type="hinge" axis="0 0 1"/>
+                <geom type="box" size="0.5 0.5 0.5"/>
+                <site name="link1_site" pos="0.5 0 0"/>
+                <body name="link2" pos="1 0 0">
+                    <joint name="joint2" type="hinge" axis="0 0 1"/>
+                    <geom type="box" size="0.5 0.5 0.5"/>
+                    <site name="link2_site" pos="0.5 0 0"/>
+                </body>
+            </body>
+        </body>
+    </worldbody>
+    <equality>
+        <connect name="site_connect" site1="base_site" site2="link2_site"/>
+        <weld name="site_weld" site1="link1_site" site2="link2_site"/>
+    </equality>
+</mujoco>"""
+        robot = newton.ModelBuilder()
+        robot.add_mjcf(mjcf, parse_sites=True)
+        return robot
 
-        # Add ground plane (global, world -1)
-        main_builder.add_ground_plane()
+    def test_equality_constraints_not_duplicated_per_world(self):
+        """Test that equality constraints are not duplicated for each world when using separate_worlds=True.
 
-        # Add multiple robot instances
-        num_worlds = 3
-        for i in range(num_worlds):
-            main_builder.add_world(robot, xform=wp.transform((i * 5, 0, 0)))
+        Tests both body-based (programmatic API) and site-based (MJCF) constraint definitions.
+        """
+        scenarios = [
+            ("body_based", self._create_robot_body_based),
+            ("site_based", self._create_robot_site_based),
+        ]
 
-        # Finalize the model
-        model = main_builder.finalize()
+        for scenario_name, create_robot_fn in scenarios:
+            with self.subTest(constraint_type=scenario_name):
+                robot = create_robot_fn()
 
-        # Check that equality constraints count is correct in the Newton model
-        # Should be 2 constraints per world * 3 worlds = 6 total
-        self.assertEqual(model.equality_constraint_count, 2 * num_worlds)
+                main_builder = newton.ModelBuilder()
+                main_builder.add_ground_plane()
 
-        # Create MuJoCo solver with separate_worlds=True
-        solver = newton.solvers.SolverMuJoCo(
-            model,
-            use_mujoco_cpu=True,
-            separate_worlds=True,
-            njmax=100,  # Should be enough for 2 constraints, not 6
-            nconmax=50,
-        )
+                num_worlds = 3
+                for i in range(num_worlds):
+                    main_builder.add_world(robot, xform=wp.transform((i * 5, 0, 0)))
 
-        # Check that the MuJoCo model has the correct number of equality constraints
-        # With separate_worlds=True, it should only have constraints from one world (2)
-        self.assertEqual(
-            solver.mj_model.neq, 2, f"Expected 2 equality constraints in MuJoCo model, got {solver.mj_model.neq}"
-        )
+                model = main_builder.finalize()
 
-        print(f"Test passed: MuJoCo model has {solver.mj_model.neq} equality constraints (expected 2)")
-        print(f"Newton model has {model.equality_constraint_count} total constraints across {num_worlds} worlds")
+                # Should be 2 constraints per world * 3 worlds = 6 total
+                self.assertEqual(model.equality_constraint_count, 2 * num_worlds)
 
-        # Verify that indices are correctly remapped for each world
-        # Each world adds 3 bodies, so body indices should be offset by 3 * world_index
-        # The first world's base body should be at index 0, second at 3, third at 6
-        eq_body1 = model.equality_constraint_body1.numpy()
-        eq_body2 = model.equality_constraint_body2.numpy()
-        eq_joint1 = model.equality_constraint_joint1.numpy()
-        eq_joint2 = model.equality_constraint_joint2.numpy()
+                solver = newton.solvers.SolverMuJoCo(
+                    model,
+                    use_mujoco_cpu=True,
+                    separate_worlds=True,
+                    njmax=100,
+                    nconmax=50,
+                )
 
-        for world_idx in range(num_worlds):
-            # Each world has 2 constraints
-            constraint_idx = world_idx * 2
+                # With separate_worlds=True, should only have constraints from one world (2)
+                self.assertEqual(
+                    solver.mj_model.neq,
+                    2,
+                    f"[{scenario_name}] Expected 2 equality constraints in MuJoCo model, got {solver.mj_model.neq}",
+                )
 
-            # For connect constraint: body1 should be base (offset by 3 * world_idx)
-            # body2 should be link2 (offset by 3 * world_idx + 2)
-            expected_body1 = world_idx * 3 + 0  # base body
-            expected_body2 = world_idx * 3 + 2  # link2 body
-            self.assertEqual(
-                eq_body1[constraint_idx], expected_body1, f"World {world_idx} connect constraint body1 index incorrect"
-            )
-            self.assertEqual(
-                eq_body2[constraint_idx], expected_body2, f"World {world_idx} connect constraint body2 index incorrect"
-            )
+                # Verify body indices are correctly remapped for each world
+                eq_body1 = model.equality_constraint_body1.numpy()
+                eq_body2 = model.equality_constraint_body2.numpy()
 
-            # For joint constraint: joint1 and joint2 should be offset by 3 * world_idx
-            # (each robot has 3 joints: fixed, revolute1, revolute2)
-            expected_joint1 = world_idx * 3 + 1  # joint1 (base to link1)
-            expected_joint2 = world_idx * 3 + 2  # joint2 (link1 to link2)
-            self.assertEqual(
-                eq_joint1[constraint_idx + 1],
-                expected_joint1,
-                f"World {world_idx} joint constraint joint1 index incorrect",
-            )
-            self.assertEqual(
-                eq_joint2[constraint_idx + 1],
-                expected_joint2,
-                f"World {world_idx} joint constraint joint2 index incorrect",
-            )
+                for world_idx in range(num_worlds):
+                    constraint_idx = world_idx * 2
+                    expected_base = world_idx * 3 + 0
+                    expected_link1 = world_idx * 3 + 1
+                    expected_link2 = world_idx * 3 + 2
 
-    def test_collapse_fixed_joints_with_equality_constraints(self):
-        """Test that equality constraints are properly remapped after collapse_fixed_joints,
-        including correct transformation of anchor points and relpose."""
+                    # Connect constraint: base -> link2
+                    self.assertEqual(
+                        eq_body1[constraint_idx],
+                        expected_base,
+                        f"[{scenario_name}] World {world_idx} connect body1 incorrect",
+                    )
+                    self.assertEqual(
+                        eq_body2[constraint_idx],
+                        expected_link2,
+                        f"[{scenario_name}] World {world_idx} connect body2 incorrect",
+                    )
+
+                    # Weld constraint: link1 -> link2
+                    self.assertEqual(
+                        eq_body1[constraint_idx + 1],
+                        expected_link1,
+                        f"[{scenario_name}] World {world_idx} weld body1 incorrect",
+                    )
+                    self.assertEqual(
+                        eq_body2[constraint_idx + 1],
+                        expected_link2,
+                        f"[{scenario_name}] World {world_idx} weld body2 incorrect",
+                    )
+
+    def _create_chain_body_based(self):
+        """Create a chain with fixed joints and body-based constraints using programmatic API."""
         builder = newton.ModelBuilder()
 
-        # Create chain: world -> base (fixed) -> link1 (revolute) -> link2 (fixed) -> link3
         base = builder.add_link(xform=wp.transform((0, 0, 0)), mass=1.0, key="base")
         builder.add_shape_box(base, hx=0.5, hy=0.5, hz=0.5)
 
@@ -225,7 +244,6 @@ class TestEqualityConstraints(unittest.TestCase):
         link3 = builder.add_link(xform=wp.transform((3, 0, 0)), mass=1.0, key="link3")
         builder.add_shape_box(link3, hx=0.3, hy=0.3, hz=0.3)
 
-        # Fixed joint between link1 and link2 - defines the merge transform
         fixed_parent_xform = wp.transform((0.5, 0.1, 0.0), wp.quat_identity())
         fixed_child_xform = wp.transform((-0.3, 0.0, 0.0), wp.quat_identity())
 
@@ -265,13 +283,13 @@ class TestEqualityConstraints(unittest.TestCase):
         original_anchor = wp.vec3(0.1, 0.2, 0.3)
         original_relpose = wp.transform((0.5, 0.1, -0.2), wp.quat_from_axis_angle(wp.vec3(0, 0, 1), 0.3))
 
-        eq_connect = builder.add_equality_constraint_connect(
+        builder.add_equality_constraint_connect(
             body1=base, body2=link3, anchor=wp.vec3(0.5, 0, 0), key="connect_base_link3"
         )
-        eq_joint = builder.add_equality_constraint_joint(
+        builder.add_equality_constraint_joint(
             joint1=joint1, joint2=joint3, polycoef=[1.0, -1.0, 0, 0, 0], key="couple_j1_j3"
         )
-        eq_weld = builder.add_equality_constraint_weld(
+        builder.add_equality_constraint_weld(
             body1=link2,
             body2=link3,
             anchor=original_anchor,
@@ -279,78 +297,159 @@ class TestEqualityConstraints(unittest.TestCase):
             key="weld_link2_link3",
         )
 
-        # Compute expected merge transform: parent_xform * inverse(child_xform)
-        merge_xform = fixed_parent_xform * wp.transform_inverse(fixed_child_xform)
-        expected_anchor = original_anchor
-        expected_relpose = merge_xform * original_relpose
+        return builder, {
+            "base": base,
+            "link1": link1,
+            "link2": link2,
+            "link3": link3,
+            "joint1": joint1,
+            "joint3": joint3,
+            "fixed_parent_xform": fixed_parent_xform,
+            "fixed_child_xform": fixed_child_xform,
+            "original_anchor": original_anchor,
+            "original_relpose": original_relpose,
+        }
 
-        # Verify initial state
-        self.assertEqual(builder.body_count, 4)
-        self.assertEqual(builder.joint_count, 4)
-        self.assertEqual(len(builder.equality_constraint_type), 3)
+    def _create_chain_site_based(self):
+        """Create a chain with fixed joints and site-based constraints from MJCF."""
+        mjcf = """<?xml version="1.0"?>
+<mujoco>
+    <worldbody>
+        <body name="base" pos="0 0 0">
+            <geom type="box" size="0.5 0.5 0.5"/>
+            <site name="base_site" pos="0.5 0 0"/>
+            <body name="link1" pos="1 0 0">
+                <joint name="joint1" type="hinge" axis="0 0 1"/>
+                <geom type="box" size="0.3 0.3 0.3"/>
+                <site name="link1_site" pos="0.3 0.1 0"/>
+                <body name="link2" pos="1 0 0">
+                    <!-- No joint = fixed joint, will be collapsed -->
+                    <geom type="box" size="0.3 0.3 0.3"/>
+                    <site name="link2_site" pos="0.2 0 0"/>
+                    <body name="link3" pos="1 0 0">
+                        <joint name="joint3" type="hinge" axis="0 0 1"/>
+                        <geom type="box" size="0.3 0.3 0.3"/>
+                        <site name="link3_site" pos="0.3 0 0"/>
+                    </body>
+                </body>
+            </body>
+        </body>
+    </worldbody>
+    <equality>
+        <connect name="site_connect" site1="base_site" site2="link3_site"/>
+        <weld name="site_weld" site1="link2_site" site2="link3_site" relpose="0.1 0 0 1 0 0 0"/>
+    </equality>
+</mujoco>"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf, parse_sites=True)
+        return builder, None  # No detailed info needed for site-based
 
-        # Collapse fixed joints
-        result = builder.collapse_fixed_joints(verbose=False)
-        body_remap = result["body_remap"]
-        joint_remap = result["joint_remap"]
+    def test_collapse_fixed_joints_with_equality_constraints(self):
+        """Test that equality constraints are properly remapped after collapse_fixed_joints.
 
-        self.assertEqual(builder.body_count, 3)
-        self.assertEqual(builder.joint_count, 3)
+        Tests both body-based (programmatic API) and site-based (MJCF) constraint definitions.
+        """
+        scenarios = [
+            ("body_based", self._create_chain_body_based, 4, 4, 3),  # initial: 4 bodies, 4 joints, 3 constraints
+            ("site_based", self._create_chain_site_based, 4, 3, 2),  # initial: 4 bodies, 3 joints, 2 constraints
+        ]
 
-        # Verify link2 was merged into link1
-        self.assertIn(link2, result["body_merged_parent"])
-        self.assertEqual(result["body_merged_parent"][link2], link1)
+        for scenario_name, create_chain_fn, init_bodies, init_joints, init_constraints in scenarios:
+            with self.subTest(constraint_type=scenario_name):
+                builder, info = create_chain_fn()
 
-        # Check index remapping
-        new_base = body_remap.get(base, base)
-        new_link1 = body_remap.get(link1, link1)
-        new_link3 = body_remap.get(link3, link3)
-        new_joint1 = joint_remap.get(joint1, -1)
-        new_joint3 = joint_remap.get(joint3, -1)
+                # Verify initial state
+                self.assertEqual(builder.body_count, init_bodies, f"[{scenario_name}] Initial body count wrong")
+                self.assertEqual(builder.joint_count, init_joints, f"[{scenario_name}] Initial joint count wrong")
+                self.assertEqual(
+                    len(builder.equality_constraint_type),
+                    init_constraints,
+                    f"[{scenario_name}] Initial constraint count wrong",
+                )
 
-        self.assertNotEqual(new_joint1, -1)
-        self.assertNotEqual(new_joint3, -1)
-        self.assertEqual(builder.equality_constraint_joint1[eq_joint], new_joint1)
-        self.assertEqual(builder.equality_constraint_joint2[eq_joint], new_joint3)
-        self.assertEqual(builder.equality_constraint_body1[eq_connect], new_base)
-        self.assertEqual(builder.equality_constraint_body2[eq_connect], new_link3)
-        self.assertEqual(builder.equality_constraint_body1[eq_weld], new_link1)
-        self.assertEqual(builder.equality_constraint_body2[eq_weld], new_link3)
+                # Collapse fixed joints
+                result = builder.collapse_fixed_joints(verbose=False)
 
-        # Verify anchor was transformed correctly
-        actual_anchor = builder.equality_constraint_anchor[eq_weld]
-        np.testing.assert_allclose(
-            [actual_anchor[0], actual_anchor[1], actual_anchor[2]],
-            [expected_anchor[0], expected_anchor[1], expected_anchor[2]],
-            rtol=1e-5,
-            err_msg="Anchor not correctly transformed after body merge",
-        )
+                # After collapse: one body merged, one joint removed
+                self.assertEqual(
+                    builder.body_count, init_bodies - 1, f"[{scenario_name}] Body count after collapse wrong"
+                )
+                self.assertEqual(
+                    len(builder.equality_constraint_type),
+                    init_constraints,
+                    f"[{scenario_name}] Constraint count should remain unchanged",
+                )
 
-        # Verify relpose was transformed correctly
-        actual_relpose = builder.equality_constraint_relpose[eq_weld]
-        expected_p = wp.transform_get_translation(expected_relpose)
-        expected_q = wp.transform_get_rotation(expected_relpose)
-        actual_p = wp.transform_get_translation(actual_relpose)
-        actual_q = wp.transform_get_rotation(actual_relpose)
+                # Verify all constraint body indices are valid
+                for i, (body1, body2) in enumerate(
+                    zip(builder.equality_constraint_body1, builder.equality_constraint_body2, strict=False)
+                ):
+                    self.assertGreaterEqual(body1, -1, f"[{scenario_name}] Constraint {i} body1 invalid")
+                    self.assertLess(body1, builder.body_count, f"[{scenario_name}] Constraint {i} body1 out of range")
+                    self.assertGreaterEqual(body2, -1, f"[{scenario_name}] Constraint {i} body2 invalid")
+                    self.assertLess(body2, builder.body_count, f"[{scenario_name}] Constraint {i} body2 out of range")
 
-        np.testing.assert_allclose(
-            [actual_p[0], actual_p[1], actual_p[2]],
-            [expected_p[0], expected_p[1], expected_p[2]],
-            rtol=1e-5,
-            err_msg="Relpose translation not correctly transformed after body merge",
-        )
-        np.testing.assert_allclose(
-            [actual_q[0], actual_q[1], actual_q[2], actual_q[3]],
-            [expected_q[0], expected_q[1], expected_q[2], expected_q[3]],
-            rtol=1e-5,
-            err_msg="Relpose rotation not correctly transformed after body merge",
-        )
+                # Finalize and verify model is valid
+                model = builder.finalize()
+                self.assertEqual(model.body_count, init_bodies - 1, f"[{scenario_name}] Finalized body count wrong")
+                self.assertEqual(
+                    model.equality_constraint_count,
+                    init_constraints,
+                    f"[{scenario_name}] Finalized constraint count wrong",
+                )
 
-        # Finalize and verify
-        model = builder.finalize()
-        self.assertEqual(model.body_count, 3)
-        self.assertEqual(model.joint_count, 3)
-        self.assertEqual(model.equality_constraint_count, 3)
+                # Create solver to verify constraints work
+                solver = newton.solvers.SolverMuJoCo(
+                    model,
+                    use_mujoco_cpu=True,
+                    iterations=100,
+                    ls_iterations=50,
+                    njmax=50,
+                    nconmax=50,
+                )
+                self.assertEqual(
+                    solver.mj_model.neq,
+                    init_constraints,
+                    f"[{scenario_name}] MuJoCo model should have {init_constraints} constraints",
+                )
+
+                # Additional detailed checks for body-based scenario
+                if info is not None:
+                    body_remap = result["body_remap"]
+                    joint_remap = result["joint_remap"]
+
+                    # Verify link2 was merged into link1
+                    self.assertIn(info["link2"], result["body_merged_parent"])
+                    self.assertEqual(result["body_merged_parent"][info["link2"]], info["link1"])
+
+                    # Check index remapping
+                    new_joint1 = joint_remap.get(info["joint1"], -1)
+                    new_joint3 = joint_remap.get(info["joint3"], -1)
+                    self.assertNotEqual(new_joint1, -1)
+                    self.assertNotEqual(new_joint3, -1)
+
+                    # Verify relpose was transformed correctly for weld constraint
+                    merge_xform = info["fixed_parent_xform"] * wp.transform_inverse(info["fixed_child_xform"])
+                    expected_relpose = merge_xform * info["original_relpose"]
+
+                    actual_relpose = builder.equality_constraint_relpose[2]  # weld is constraint index 2
+                    expected_p = wp.transform_get_translation(expected_relpose)
+                    expected_q = wp.transform_get_rotation(expected_relpose)
+                    actual_p = wp.transform_get_translation(actual_relpose)
+                    actual_q = wp.transform_get_rotation(actual_relpose)
+
+                    np.testing.assert_allclose(
+                        [actual_p[0], actual_p[1], actual_p[2]],
+                        [expected_p[0], expected_p[1], expected_p[2]],
+                        rtol=1e-5,
+                        err_msg=f"[{scenario_name}] Relpose translation not correctly transformed",
+                    )
+                    np.testing.assert_allclose(
+                        [actual_q[0], actual_q[1], actual_q[2], actual_q[3]],
+                        [expected_q[0], expected_q[1], expected_q[2], expected_q[3]],
+                        rtol=1e-5,
+                        err_msg=f"[{scenario_name}] Relpose rotation not correctly transformed",
+                    )
 
 
 if __name__ == "__main__":
