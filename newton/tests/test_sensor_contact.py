@@ -18,12 +18,13 @@ import unittest
 import warp as wp
 
 import newton
-from newton.sensors import ContactSensor
+from newton.sensors import SensorContact, populate_contacts
+from newton.solvers import SolverMuJoCo
 from newton.tests.unittest_utils import assert_np_equal
 
 
 class MockModel:
-    """Minimal mock model for testing ContactSensor"""
+    """Minimal mock model for testing SensorContact"""
 
     def __init__(self, device=None):
         self.device = device or wp.get_device()
@@ -63,7 +64,7 @@ def create_contacts(device, pairs, naconmax, positions=None, normals=None, separ
     return contacts
 
 
-class TestContactSensor(unittest.TestCase):
+class TestSensorContact(unittest.TestCase):
     def test_net_force_aggregation(self):
         """Test net force aggregation across different contact subsets"""
         device = wp.get_device()
@@ -76,7 +77,7 @@ class TestContactSensor(unittest.TestCase):
         model.body_key = ["A", "B"]
         model.body_shapes = [entity_A, entity_B]
 
-        contact_sensor = ContactSensor(model, sensing_obj_bodies="*", counterpart_bodies="*")
+        contact_sensor = SensorContact(model, sensing_obj_bodies="*", counterpart_bodies="*")
 
         test_contacts = [
             {
@@ -203,6 +204,92 @@ class TestContactSensor(unittest.TestCase):
                 assert_np_equal(net_forces[1, 1], scenario["force_B_vs_A"])
                 assert_np_equal(net_forces[0, 0], scenario["force_A_vs_All"])
                 assert_np_equal(net_forces[1, 0], scenario["force_B_vs_All"])
+
+
+class TestSensorContactMuJoCo(unittest.TestCase):
+    """End-to-end tests for contact sensors using MuJoCo solver."""
+
+    def test_stacking_scenario(self):
+        """Test contact forces with b stacked on a on base."""
+        builder = newton.ModelBuilder()
+        builder.default_shape_cfg.ke = 1e4
+        builder.default_shape_cfg.kd = 1000.0
+        builder.default_shape_cfg.density = 1000.0
+
+        builder.add_shape_box(body=-1, hx=1.0, hy=1.0, hz=0.25, key="base")
+        body_a = builder.add_body(xform=wp.transform(wp.vec3(0, 0, 0.8), wp.quat_identity()), key="a")
+        builder.add_shape_box(body_a, hx=0.15, hy=0.15, hz=0.25)
+        body_b = builder.add_body(xform=wp.transform(wp.vec3(0, 0, 1.15), wp.quat_identity()), key="b")
+        builder.add_shape_box(body_b, hx=0.1, hy=0.1, hz=0.05)
+
+        model = builder.finalize()
+        mass_a, mass_b = 45.0, 4.0  # kg (from density * volume)
+
+        try:
+            solver = SolverMuJoCo(model, njmax=200)
+        except ImportError as e:
+            self.skipTest(f"MuJoCo not available: {e}")
+
+        sensor = SensorContact(model, sensing_obj_bodies=["a", "b"])
+        contacts = newton.Contacts(0, 0)
+
+        # Simulate 2s
+        state_in, state_out, control = model.state(), model.state(), model.control()
+        for _ in range(240 * 2):
+            solver.step(state_in, state_out, control, contacts, 1.0 / 240.0)
+            state_in, state_out = state_out, state_in
+        populate_contacts(contacts, solver)
+        sensor.eval(contacts)
+
+        forces = sensor.net_force.numpy()
+        g = 9.81
+        self.assertAlmostEqual(forces[0, 0, 2], mass_a * g, delta=mass_a * g * 0.01)
+        self.assertAlmostEqual(forces[1, 0, 2], mass_b * g, delta=mass_b * g * 0.01)
+
+    def test_parallel_scenario(self):
+        """Test contact forces with a, b, c side-by-side on base."""
+        builder = newton.ModelBuilder()
+        builder.default_shape_cfg.ke = 1e4
+        builder.default_shape_cfg.kd = 1000.0
+        builder.default_shape_cfg.density = 1000.0
+
+        builder.add_shape_box(body=-1, hx=2.0, hy=2.0, hz=0.25, key="base")
+        body_a = builder.add_body(xform=wp.transform(wp.vec3(-0.5, 0, 0.8), wp.quat_identity()), key="a")
+        builder.add_shape_box(body_a, hx=0.15, hy=0.15, hz=0.25)
+        body_b = builder.add_body(xform=wp.transform(wp.vec3(0, 0, 0.6), wp.quat_identity()), key="b")
+        builder.add_shape_box(body_b, hx=0.1, hy=0.1, hz=0.05)
+        body_c = builder.add_body(xform=wp.transform(wp.vec3(0.5, 0, 0.8), wp.quat_identity()), key="c")
+        builder.add_shape_box(body_c, hx=0.1, hy=0.1, hz=0.25)
+
+        model = builder.finalize()
+        mass_a, mass_b, mass_c = 45.0, 4.0, 20.0  # kg
+
+        try:
+            solver = SolverMuJoCo(model, njmax=200)
+        except ImportError as e:
+            self.skipTest(f"MuJoCo not available: {e}")
+
+        sensor_abc = SensorContact(model, sensing_obj_bodies=["a", "b", "c"])
+        sensor_base = SensorContact(model, sensing_obj_shapes=["base"])
+        contacts = newton.Contacts(0, 0)
+
+        # Simulate 2s
+        state_in, state_out, control = model.state(), model.state(), model.control()
+        for _ in range(240 * 2):
+            solver.step(state_in, state_out, control, contacts, 1.0 / 240.0)
+            state_in, state_out = state_out, state_in
+        populate_contacts(contacts, solver)
+        sensor_abc.eval(contacts)
+        sensor_base.eval(contacts)
+
+        forces = sensor_abc.net_force.numpy()
+        g = 9.81
+        self.assertAlmostEqual(forces[0, 0, 2], mass_a * g, delta=mass_a * g * 0.01)
+        self.assertAlmostEqual(forces[1, 0, 2], mass_b * g, delta=mass_b * g * 0.01)
+        self.assertAlmostEqual(forces[2, 0, 2], mass_c * g, delta=mass_c * g * 0.01)
+
+        total_weight = (mass_a + mass_b + mass_c) * g
+        self.assertAlmostEqual(sensor_base.net_force.numpy()[0, 0, 2], -total_weight, delta=total_weight * 0.01)
 
 
 if __name__ == "__main__":

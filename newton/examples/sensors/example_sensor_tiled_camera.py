@@ -16,7 +16,7 @@
 ###########################################################################
 # Example Tiled Camera Sensor
 #
-# Shows how to use the TiledCameraSensor class.
+# Shows how to use the SensorTiledCamera class.
 # The current view will be rendered using the Tiled Camera Sensor
 # upon pressing ENTER and displayed in the side panel.
 #
@@ -35,7 +35,7 @@ from pxr import Usd
 import newton
 import newton.examples
 import newton.usd
-from newton.sensors import TiledCameraSensor
+from newton.sensors import SensorTiledCamera
 from newton.viewer import ViewerGL
 
 SEMANTIC_COLOR_CYLINDER = 0xFFFF0000
@@ -190,12 +190,12 @@ class Example:
             sensor_render_height = int(display_height // self.num_worlds_per_col)
 
         # Setup Tiled Camera Sensor
-        self.tiled_camera_sensor = TiledCameraSensor(
+        self.tiled_camera_sensor = SensorTiledCamera(
             model=self.model,
             num_cameras=1,
             width=sensor_render_width,
             height=sensor_render_height,
-            options=TiledCameraSensor.Options(
+            options=SensorTiledCamera.Options(
                 default_light=True, default_light_shadows=True, colors_per_shape=True, checkerboard_texture=True
             ),
         )
