@@ -22,11 +22,6 @@ from newton.utils import create_plane_mesh
 from ..core.types import override
 from .viewer import ViewerBase
 
-try:
-    import viser
-except ImportError:
-    viser = None
-
 
 class ViewerViser(ViewerBase):
     """
@@ -42,6 +37,22 @@ class ViewerViser(ViewerBase):
         - Static HTML export for sharing visualizations
         - Interactive camera controls
     """
+
+    _viser_module = None
+
+    @classmethod
+    def _get_viser(cls):
+        """Lazily import and return the viser module."""
+        if cls._viser_module is None:
+            try:
+                import viser  # noqa: PLC0415
+
+                cls._viser_module = viser
+            except ImportError as e:
+                raise ImportError(
+                    "viser package is required for ViewerViser. Install with: pip install viser"
+                ) from e
+        return cls._viser_module
 
     @staticmethod
     def _to_numpy(x) -> np.ndarray | None:
@@ -72,8 +83,7 @@ class ViewerViser(ViewerBase):
             verbose (bool): If True, print the server URL when starting. Defaults to True.
             share (bool): If True, create a publicly accessible URL via viser's share feature.
         """
-        if viser is None:
-            raise ImportError("viser package is required for ViewerViser. Install with: pip install viser")
+        viser = self._get_viser()
 
         super().__init__()
 
