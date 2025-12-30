@@ -43,6 +43,7 @@ from .viewer_gl import ViewerGL
 from .viewer_null import ViewerNull
 from .viewer_rerun import ViewerRerun
 from .viewer_usd import ViewerUSD
+from .viewer_viser import ViewerViser
 
 __all__ = [
     "ViewerFile",
@@ -50,4 +51,5 @@ __all__ = [
     "ViewerNull",
     "ViewerRerun",
     "ViewerUSD",
+    "ViewerViser",
 ]
