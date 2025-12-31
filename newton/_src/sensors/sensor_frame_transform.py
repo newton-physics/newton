@@ -87,7 +87,7 @@ def compute_relative_transforms_kernel(
     relative_transforms[tid] = X_ro
 
 
-class FrameTransformSensor:
+class SensorFrameTransform:
     """Sensor that measures transforms of shapes/sites relative to reference sites.
 
     This sensor computes the transform from a reference frame (site) to target shapes
@@ -103,7 +103,7 @@ class FrameTransformSensor:
             shape_indices = [0, 1, 2]  # indices of shapes to measure
             reference_site_idx = 5  # index of reference site
 
-            sensor = FrameTransformSensor(
+            sensor = SensorFrameTransform(
                 model,
                 shape_indices=shape_indices,
                 reference_site_indices=[reference_site_idx],
@@ -123,7 +123,7 @@ class FrameTransformSensor:
         reference_sites: list[int],
         verbose: bool | None = None,
     ):
-        """Initialize the FrameTransformSensor.
+        """Initialize the SensorFrameTransform.
 
         Args:
             model: The model to measure.
@@ -193,7 +193,7 @@ class FrameTransformSensor:
         self._reference_indices_arr = wp.array(reference_sites_matched, dtype=int, device=model.device)
 
         if self.verbose:
-            print("FrameTransformSensor initialized:")
+            print("SensorFrameTransform initialized:")
             print(f"  Shapes: {len(shapes)}")
             print(f"  Reference sites: {len(set(reference_sites_matched))} unique")
             print(

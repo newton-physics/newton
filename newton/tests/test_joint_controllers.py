@@ -310,21 +310,19 @@ for device in devices:
             target_ke=2000.0,
             target_kd=500.0,
         )
-        # TODO: XPBD velocity control is not working correctly
-        if solver_name != "xpbd":
-            add_function_test(
-                TestJointController,
-                f"test_revolute_joint_controller_velocity_target_{solver_name}",
-                test_revolute_controller,
-                devices=[device],
-                solver_fn=solver_fn,
-                pos_target_val=0.0,
-                vel_target_val=wp.pi / 2.0,
-                expected_pos=None,
-                expected_vel=wp.pi / 2.0,
-                target_ke=0.0,
-                target_kd=500.0,
-            )
+        add_function_test(
+            TestJointController,
+            f"test_revolute_joint_controller_velocity_target_{solver_name}",
+            test_revolute_controller,
+            devices=[device],
+            solver_fn=solver_fn,
+            pos_target_val=0.0,
+            vel_target_val=wp.pi / 2.0,
+            expected_pos=None,
+            expected_vel=wp.pi / 2.0,
+            target_ke=0.0,
+            target_kd=500.0,
+        )
 
         if solver_name == "mujoco_cpu" or solver_name == "mujoco_warp":
             # Ball joint tests
