@@ -34,6 +34,8 @@ def test_gravity(test: TestControlForce, device, solver_fn, up_axis: newton.Axis
     xform = wp.transform(wp.vec3(), quat_between_axes(newton.Axis.Z, up_axis))
     builder.add_shape_capsule(b, xform=xform)
 
+    # SolverVBD requires rigid-body coloring.
+    builder.color()
     model = builder.finalize(device=device)
 
     solver = solver_fn(model)
@@ -59,6 +61,7 @@ solvers = {
     ),
     "xpbd": lambda model: newton.solvers.SolverXPBD(model, angular_damping=0.0),
     "semi_implicit": lambda model: newton.solvers.SolverSemiImplicit(model, angular_damping=0.0),
+    "vbd": lambda model: newton.solvers.SolverVBD(model),
 }
 for device in devices:
     for solver_name, solver_fn in solvers.items():
