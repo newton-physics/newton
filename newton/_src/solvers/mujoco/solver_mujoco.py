@@ -1947,18 +1947,14 @@ class SolverMuJoCo(SolverBase):
             # TODO find better heuristics to determine nconmax and njmax
             if disable_contacts:
                 nconmax = 0
-            elif nconmax is None:
-                nconmax = self.mj_data.ncon
-            elif nconmax < self.mj_data.ncon:
+            elif nconmax is not None and nconmax < self.mj_data.ncon:
                 warnings.warn(
                     f"[WARNING] Value for nconmax is changed from {nconmax} to {self.mj_data.ncon} following an MjWarp requirement.",
                     stacklevel=2,
                 )
                 nconmax = self.mj_data.ncon
 
-            if njmax is None:
-                njmax = self.mj_data.nefc
-            elif njmax < self.mj_data.nefc:
+            if njmax is not None and njmax < self.mj_data.nefc:
                 warnings.warn(
                     f"[WARNING] Value for njmax is changed from {njmax} to {self.mj_data.nefc} following an MjWarp requirement.",
                     stacklevel=2,
