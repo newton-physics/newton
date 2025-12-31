@@ -300,6 +300,30 @@ class SolverMuJoCo(SolverBase):
         )
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
+                name="dof_springref",
+                frequency=ModelAttributeFrequency.JOINT_DOF,
+                assignment=ModelAttributeAssignment.MODEL,
+                dtype=wp.float32,
+                default=0.0,
+                namespace="mujoco",
+                usd_attribute_name="mjc:springref",
+                mjcf_attribute_name="springref",
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="dof_ref",
+                frequency=ModelAttributeFrequency.JOINT_DOF,
+                assignment=ModelAttributeAssignment.MODEL,
+                dtype=wp.float32,
+                default=0.0,
+                namespace="mujoco",
+                usd_attribute_name="mjc:ref",
+                mjcf_attribute_name="ref",
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
                 name="jnt_actgravcomp",
                 frequency=ModelAttributeFrequency.JOINT_DOF,
                 assignment=ModelAttributeAssignment.MODEL,
@@ -1144,6 +1168,8 @@ class SolverMuJoCo(SolverBase):
         joint_stiffness = get_custom_attribute("dof_passive_stiffness")
         joint_damping = get_custom_attribute("dof_passive_damping")
         joint_actgravcomp = get_custom_attribute("jnt_actgravcomp")
+        joint_springref = get_custom_attribute("dof_springref")
+        joint_ref = get_custom_attribute("dof_ref")
 
         eq_constraint_type = model.equality_constraint_type.numpy()
         eq_constraint_body1 = model.equality_constraint_body1.numpy()
@@ -1563,6 +1589,12 @@ class SolverMuJoCo(SolverBase):
                         effort_limit = joint_effort_limit[ai]
                         joint_params["actfrclimited"] = True
                         joint_params["actfrcrange"] = (-effort_limit, effort_limit)
+
+                    if joint_springref is not None:
+                        joint_params["springref"] = joint_springref[ai]
+                    if joint_ref is not None:
+                        joint_params["ref"] = joint_ref[ai]
+
                     axname = name
                     if lin_axis_count > 1 or ang_axis_count > 1:
                         axname += "_lin"
@@ -1643,6 +1675,11 @@ class SolverMuJoCo(SolverBase):
                         effort_limit = joint_effort_limit[ai]
                         joint_params["actfrclimited"] = True
                         joint_params["actfrcrange"] = (-effort_limit, effort_limit)
+
+                    if joint_springref is not None:
+                        joint_params["springref"] = joint_springref[ai]
+                    if joint_ref is not None:
+                        joint_params["ref"] = joint_ref[ai]
 
                     axname = name
                     if lin_axis_count > 1 or ang_axis_count > 1:
