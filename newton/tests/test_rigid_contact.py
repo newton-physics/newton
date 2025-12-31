@@ -721,6 +721,73 @@ def test_mujoco_convex_on_convex(test, device, solver_fn):
     test.assertLess(abs(final_vel_z), 0.5)
 
 
+def test_box_drop(test, device, solver_fn):
+    """Test that dropping boxes are properly constrained by contacts.
+    Verifies velocity never exceeds what's possible from the system's potential energy.
+    """
+    builder = newton.ModelBuilder()
+    builder.add_ground_plane()
+
+    box_size = 0.5
+    body_1 = builder.add_body(xform=wp.transform(p=wp.vec3(0, 0, box_size * 1.2), q=wp.quat_identity()))
+    builder.add_shape_box(body=body_1, hx=box_size, hy=box_size, hz=box_size)
+
+    body_2 = builder.add_body(
+        xform=wp.transform(p=wp.vec3(0, 0, box_size * 4.2), q=wp.quat_from_axis_angle(wp.vec3(1, 0, 0), 0.5))
+    )
+    builder.add_shape_box(body=body_2, hx=box_size, hy=box_size, hz=box_size)
+
+    model = builder.finalize(device=device)
+    solver = solver_fn(model)
+
+    state_0 = model.state()
+    state_1 = model.state()
+    newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
+
+    # Max velocity: box 2 dropping to ground (z=4.2*box_size to z=box_size)
+    g = 9.81
+    max_drop = box_size * 3.2
+    v_max = np.sqrt(2 * g * max_drop)
+
+    substeps = 8
+    sim_dt = 1.0 / 60.0
+    max_frames = 60
+    max_observed_vel = 0.0
+
+    for _ in range(max_frames):
+        for _ in range(substeps):
+            state_0.clear_forces()
+            if not isinstance(solver, newton.solvers.SolverMuJoCo):
+                contacts = model.collide(state_0)
+            else:
+                contacts = None
+            solver.step(state_0, state_1, None, contacts, sim_dt / substeps)
+            state_0, state_1 = state_1, state_0
+
+            vel_z = np.abs(state_0.body_qd.numpy()[:, 2])
+            max_observed_vel = max(max_observed_vel, vel_z.max())
+
+    test.assertLess(
+        max_observed_vel,
+        v_max,
+        f"Box velocity {max_observed_vel:.3f} exceeded expected max {v_max:.3f} from free fall",
+    )
+
+    # Check boxes end up near origin and at rest
+    final_q = state_0.body_q.numpy()
+    final_qd = state_0.body_qd.numpy()
+
+    for i in range(model.body_count):
+        # Position: close to origin in x/y, above ground in z
+        test.assertLess(abs(final_q[i, 0]), 1.0, f"Body {i} drifted too far in x")
+        test.assertLess(abs(final_q[i, 1]), 1.0, f"Body {i} drifted too far in y")
+        test.assertGreater(final_q[i, 2], box_size * 0.5, f"Body {i} fell through ground")
+
+        # Velocity: approximately at rest
+        vel_magnitude = np.linalg.norm(final_qd[i, :3])
+        test.assertLess(vel_magnitude, 1.0, f"Body {i} not at rest (v={vel_magnitude:.3f})")
+
+
 devices = get_test_devices()
 cuda_devices = get_selected_cuda_test_devices()
 
@@ -775,6 +842,23 @@ add_function_test(
     test_mujoco_warp_newton_contacts,
     devices=cuda_devices,
 )
+
+# Register box drop tests for MuJoCo and XPBD solvers
+for device in devices:
+    for solver_name, solver_fn in solvers.items():
+        if solver_name not in ("mujoco_cpu", "mujoco_warp", "xpbd"):
+            continue
+        if device.is_cpu and solver_name == "mujoco_warp":
+            continue
+        if device.is_cuda and solver_name == "mujoco_cpu":
+            continue
+        add_function_test(
+            TestRigidContact,
+            f"test_box_drop_{solver_name}",
+            test_box_drop,
+            devices=[device],
+            solver_fn=solver_fn,
+        )
 
 
 # Register MuJoCo convex<>convex tests for appropriate backends

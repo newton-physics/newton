@@ -301,6 +301,9 @@ class ClothSim:
         self.device = device
         self.use_cuda_graph = self.device.is_cuda and use_cuda_graph
         self.builder = newton.ModelBuilder(up_axis="Y")
+        self.builder.default_shape_cfg.ke = 1.0e5
+        self.builder.default_shape_cfg.kd = 1.0e3
+
         self.solver_name = solver
         self.do_rendering = do_rendering
         self.fixed_particles = []
