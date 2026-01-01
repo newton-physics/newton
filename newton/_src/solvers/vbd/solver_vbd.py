@@ -485,7 +485,8 @@ class SolverVBD(SolverBase):
             )
 
             # AVBD constraint penalties
-            # Joint penalties (per-DOF adaptive penalties seeded from joint-wide linear/angular stiffness)
+            # Joint constraint layout + penalties (solver constraint scalars)
+            self._init_joint_constraint_layout()
             self.joint_penalty_k = self._init_joint_penalty_k(rigid_joint_linear_k_start, rigid_joint_angular_k_start)
 
             # Contact penalties (adaptive penalties for body-body contacts)
@@ -565,91 +566,177 @@ class SolverVBD(SolverBase):
     # Initialization Helper Methods
     # =====================================================
 
+    def _init_joint_constraint_layout(self) -> None:
+        """Initialize VBD-owned joint constraint indexing.
+
+        VBD stores and adapts penalty stiffness values for *scalar constraint components*:
+          - ``JointType.CABLE``: 2 scalars (stretch, bend)
+          - ``JointType.BALL``: 1 scalar (isotropic linear anchor-coincidence)
+          - ``JointType.FIXED``: 2 scalars (isotropic linear anchor-coincidence + isotropic angular)
+          - ``JointType.FREE``: 0 scalars (not a constraint)
+
+        Any other joint type will raise ``NotImplementedError``.
+        """
+        n_j = self.model.joint_count
+        with wp.ScopedDevice("cpu"):
+            jt_cpu = self.model.joint_type.to("cpu")
+            jt = jt_cpu.numpy() if hasattr(jt_cpu, "numpy") else np.asarray(jt_cpu, dtype=int)
+
+            dim_np = np.zeros((n_j,), dtype=np.int32)
+            for j in range(n_j):
+                if jt[j] == JointType.CABLE:
+                    dim_np[j] = 2
+                elif jt[j] == JointType.BALL:
+                    dim_np[j] = 1
+                elif jt[j] == JointType.FIXED:
+                    dim_np[j] = 2
+                else:
+                    if jt[j] != JointType.FREE:
+                        raise NotImplementedError(
+                            f"SolverVBD rigid joints: JointType.{JointType(jt[j]).name} is not implemented yet "
+                            "(only CABLE, BALL, and FIXED are supported)."
+                        )
+                    dim_np[j] = 0
+
+            start_np = np.zeros((n_j,), dtype=np.int32)
+            c = np.int32(0)
+            for j in range(n_j):
+                start_np[j] = c
+                c = np.int32(c + dim_np[j])
+
+            self.joint_constraint_count = int(c)
+            self.joint_constraint_dim = wp.array(dim_np, dtype=wp.int32, device=self.device)
+            self.joint_constraint_start = wp.array(start_np, dtype=wp.int32, device=self.device)
+
     def _init_joint_penalty_k(self, k_start_joint_linear: float, k_start_joint_angular: float):
         """
-        Build initial per-DOF joint penalty state on CPU and upload to solver device.
+        Build initial joint penalty state on CPU and upload to solver device.
 
-        This initializes the solver-owned per-DOF penalty stiffness arrays:
-          - ``k0``: initial penalty stiffness for each DOF (stored as ``self.joint_penalty_k``)
-          - ``k_min``: warmstart floor for each DOF (stored as ``self.joint_penalty_k_min``)
-          - ``k_max``: stiffness cap for each DOF (stored as ``self.joint_penalty_k_max``)
+        This initializes the solver-owned joint constraint parameter arrays used by VBD.
+        The arrays are sized by ``self.joint_constraint_count`` and indexed using
+        ``self.joint_constraint_start`` (solver constraint indexing), not by model DOF indexing.
+
+        Arrays:
+          - ``k0``: initial penalty stiffness for each solver constraint scalar (stored as ``self.joint_penalty_k``)
+          - ``k_min``: warmstart floor for each solver constraint scalar (stored as ``self.joint_penalty_k_min``)
+          - ``k_max``: stiffness cap for each solver constraint scalar (stored as ``self.joint_penalty_k_max``)
+          - ``kd``: damping coefficient for each solver constraint scalar (stored as ``self.joint_penalty_kd``)
 
         Supported rigid joint constraint types in SolverVBD:
-          - ``JointType.CABLE`` (2 DOFs: stretch + bend)
-          - ``JointType.BALL`` (implemented as 3 linear attachment constraints)
+          - ``JointType.CABLE`` (2 scalars: stretch + bend)
+          - ``JointType.BALL`` (1 scalar: isotropic linear anchor-coincidence)
+          - ``JointType.FIXED`` (2 scalars: isotropic linear anchor-coincidence + isotropic angular)
 
         ``JointType.FREE`` joints (created by :meth:`ModelBuilder.add_body`) are not constraints and are ignored.
         Any other joint types will raise ``NotImplementedError``.
         """
-        dof_count = self.model.joint_dof_count
+        if (
+            not hasattr(self, "joint_constraint_start")
+            or not hasattr(self, "joint_constraint_dim")
+            or not hasattr(self, "joint_constraint_count")
+        ):
+            raise RuntimeError(
+                "SolverVBD joint constraint layout is not initialized. "
+                "Call SolverVBD._init_joint_constraint_layout() before _init_joint_penalty_k()."
+            )
+
+        if self.joint_constraint_count < 0:
+            raise RuntimeError(
+                f"SolverVBD joint constraint layout is invalid: joint_constraint_count={self.joint_constraint_count!r}"
+            )
+
+        constraint_count = self.joint_constraint_count
         with wp.ScopedDevice("cpu"):
-            # Per-DOF AVBD penalty state:
-            # - k0: initial penalty stiffness for this DOF
+            # Per-constraint AVBD penalty state:
+            # - k0: initial penalty stiffness for this scalar constraint
             # - k_min: warmstart floor (so k doesn't decay below this across steps)
-            # - k_max: stiffness cap (so k never exceeds the chosen target for this DOF)
+            # - k_max: stiffness cap (so k never exceeds the chosen target for this constraint)
             #
             # We start from solver-level seeds (k_start_*), but clamp to the per-DOF cap (k_max) so we always
             # satisfy k_min <= k0 <= k_max.
             stretch_k = max(0.0, k_start_joint_linear)
             bend_k = max(0.0, k_start_joint_angular)
-            joint_k_min_np = np.zeros((dof_count,), dtype=float)
-            joint_k0_np = np.zeros((dof_count,), dtype=float)
-            # Per-DOF stiffness caps used for AVBD warmstart clamping and penalty growth limiting.
-            # - Cable DOFs: use model.joint_target_ke (cable material/constraint tuning)
-            # - Non-cable joints: use solver-level caps (rigid_joint_linear_ke / rigid_joint_angular_ke)
+            joint_k_min_np = np.zeros((constraint_count,), dtype=float)
+            joint_k0_np = np.zeros((constraint_count,), dtype=float)
+            # Per-constraint stiffness caps used for AVBD warmstart clamping and penalty growth limiting.
+            # - Cable constraints: use model.joint_target_ke (cable material/constraint tuning; still model-DOF indexed)
+            # - Ball constraints: use solver-level caps (rigid_joint_linear_ke)
             # Start from zeros and explicitly fill per joint/DOF below for clarity.
-            joint_k_max_np = np.zeros((dof_count,), dtype=float)
+            joint_k_max_np = np.zeros((constraint_count,), dtype=float)
+            joint_kd_np = np.zeros((constraint_count,), dtype=float)
 
             jt_cpu = self.model.joint_type.to("cpu")
             jdofs_cpu = self.model.joint_qd_start.to("cpu")
             jtarget_ke_cpu = self.model.joint_target_ke.to("cpu")
+            jtarget_kd_cpu = self.model.joint_target_kd.to("cpu")
+            jc_start_cpu = self.joint_constraint_start.to("cpu")
 
             jt = jt_cpu.numpy() if hasattr(jt_cpu, "numpy") else np.asarray(jt_cpu, dtype=int)
             jdofs = jdofs_cpu.numpy() if hasattr(jdofs_cpu, "numpy") else np.asarray(jdofs_cpu, dtype=int)
+            jc_start = (
+                jc_start_cpu.numpy() if hasattr(jc_start_cpu, "numpy") else np.asarray(jc_start_cpu, dtype=np.int32)
+            )
             jtarget_ke = (
                 jtarget_ke_cpu.numpy() if hasattr(jtarget_ke_cpu, "numpy") else np.asarray(jtarget_ke_cpu, dtype=float)
+            )
+            jtarget_kd = (
+                jtarget_kd_cpu.numpy() if hasattr(jtarget_kd_cpu, "numpy") else np.asarray(jtarget_kd_cpu, dtype=float)
             )
 
             n_j = self.model.joint_count
             for j in range(n_j):
                 if jt[j] == JointType.CABLE:
-                    dof0 = jdofs[j]
-                    # DOF 0: cable stretch; DOF 1: cable bend
-                    # Cable caps come from model.joint_target_ke
-                    joint_k_max_np[dof0] = jtarget_ke[dof0]
-                    joint_k_max_np[dof0 + 1] = jtarget_ke[dof0 + 1]
+                    c0 = int(jc_start[j])
+                    dof0 = int(jdofs[j])
+                    # Constraint 0: cable stretch; constraint 1: cable bend
+                    # Caps come from model.joint_target_ke (still model DOF indexed for cable material tuning).
+                    joint_k_max_np[c0] = jtarget_ke[dof0]
+                    joint_k_max_np[c0 + 1] = jtarget_ke[dof0 + 1]
                     # Per-DOF warmstart lower bounds:
                     # - Use k_start_* as the floor, but clamp to the cap so k_min <= k_max always.
-                    joint_k_min_np[dof0] = min(stretch_k, joint_k_max_np[dof0])
-                    joint_k_min_np[dof0 + 1] = min(bend_k, joint_k_max_np[dof0 + 1])
+                    joint_k_min_np[c0] = min(stretch_k, joint_k_max_np[c0])
+                    joint_k_min_np[c0 + 1] = min(bend_k, joint_k_max_np[c0 + 1])
                     # Initial seed: clamp to cap so k0 <= k_max
-                    joint_k0_np[dof0] = min(stretch_k, joint_k_max_np[dof0])
-                    joint_k0_np[dof0 + 1] = min(bend_k, joint_k_max_np[dof0 + 1])
+                    joint_k0_np[c0] = min(stretch_k, joint_k_max_np[c0])
+                    joint_k0_np[c0 + 1] = min(bend_k, joint_k_max_np[c0 + 1])
+                    # Damping comes from model.joint_target_kd (still model DOF indexed for cable tuning).
+                    joint_kd_np[c0] = jtarget_kd[dof0]
+                    joint_kd_np[c0 + 1] = jtarget_kd[dof0 + 1]
                 elif jt[j] == JointType.BALL:
-                    # BALL joints are enforced as 3 linear attachment constraints in VBD/AVBD.
-                    dof0 = jdofs[j]
-                    joint_k_max_np[dof0 + 0] = self.rigid_joint_linear_ke
-                    joint_k_max_np[dof0 + 1] = self.rigid_joint_linear_ke
-                    joint_k_max_np[dof0 + 2] = self.rigid_joint_linear_ke
-                    # Warmstart floor for BALL constraints: k_start_joint_linear, clamped to solver cap.
+                    # BALL joints: isotropic linear anchor-coincidence constraint stored as a single scalar.
+                    c0 = int(jc_start[j])
+                    joint_k_max_np[c0] = self.rigid_joint_linear_ke
                     k_floor = min(stretch_k, self.rigid_joint_linear_ke)
-                    joint_k_min_np[dof0 + 0] = k_floor
-                    joint_k_min_np[dof0 + 1] = k_floor
-                    joint_k_min_np[dof0 + 2] = k_floor
-                    joint_k0_np[dof0 + 0] = k_floor
-                    joint_k0_np[dof0 + 1] = k_floor
-                    joint_k0_np[dof0 + 2] = k_floor
+                    joint_k_min_np[c0] = k_floor
+                    joint_k0_np[c0] = k_floor
+                    joint_kd_np[c0] = self.rigid_joint_linear_kd
+                elif jt[j] == JointType.FIXED:
+                    # FIXED joints are enforced as:
+                    #   - 1 isotropic linear anchor-coincidence constraint (vector error, scalar penalty)
+                    #   - 1 isotropic angular constraint (rotation-vector error, scalar penalty)
+                    c0 = int(jc_start[j])
+
+                    # Linear cap + floor (isotropic)
+                    joint_k_max_np[c0 + 0] = self.rigid_joint_linear_ke
+                    k_lin_floor = min(stretch_k, self.rigid_joint_linear_ke)
+                    joint_k_min_np[c0 + 0] = k_lin_floor
+                    joint_k0_np[c0 + 0] = k_lin_floor
+                    joint_kd_np[c0 + 0] = self.rigid_joint_linear_kd
+
+                    # Angular cap + floor (isotropic)
+                    joint_k_max_np[c0 + 1] = self.rigid_joint_angular_ke
+                    k_ang_floor = min(bend_k, self.rigid_joint_angular_ke)
+                    joint_k_min_np[c0 + 1] = k_ang_floor
+                    joint_k0_np[c0 + 1] = k_ang_floor
+                    joint_kd_np[c0 + 1] = self.rigid_joint_angular_kd
                 else:
-                    # VBD joint constraints are currently only implemented for CABLE and BALL.
-                    if jt[j] != JointType.FREE:
-                        raise NotImplementedError(
-                            f"SolverVBD rigid joints: JointType.{JointType(jt[j]).name} is not implemented yet "
-                            "(only CABLE and BALL are supported)."
-                        )
+                    # Layout builder already validated supported types; nothing to do for FREE.
+                    pass
 
             # Upload to device: initial penalties, per-DOF caps, and (optional) warmstart lower bounds
             self.joint_penalty_k_min = wp.array(joint_k_min_np, dtype=float, device=self.device)
             self.joint_penalty_k_max = wp.array(joint_k_max_np, dtype=float, device=self.device)
+            self.joint_penalty_kd = wp.array(joint_kd_np, dtype=float, device=self.device)
             return wp.array(joint_k0_np, dtype=float, device=self.device)
 
     def _init_dahl_params(self, eps_max_input, tau_input, model):
@@ -1177,7 +1264,7 @@ class SolverVBD(SolverBase):
                             self.avbd_gamma,
                             self.joint_penalty_k,  # input/output
                         ],
-                        dim=model.joint_dof_count,
+                        dim=self.joint_constraint_count,
                         device=self.device,
                     )
 
@@ -1191,8 +1278,8 @@ class SolverVBD(SolverBase):
                         model.joint_child,
                         model.joint_X_p,
                         model.joint_X_c,
-                        model.joint_qd_start,
-                        model.joint_target_ke,
+                        self.joint_constraint_start,
+                        self.joint_penalty_k_max,
                         self.body_q_prev,  # Use previous body transforms (start of step) for linearization
                         model.body_q,  # rest body transforms
                         model.body_com,
@@ -1700,11 +1787,9 @@ class SolverVBD(SolverBase):
                     model.joint_child,
                     model.joint_X_p,
                     model.joint_X_c,
-                    model.joint_qd_start,
-                    model.joint_target_kd,
-                    self.rigid_joint_linear_kd,
-                    self.rigid_joint_angular_kd,
+                    self.joint_constraint_start,
                     self.joint_penalty_k,
+                    self.joint_penalty_kd,
                     self.joint_sigma_start,
                     self.joint_C_fric,
                     self.body_forces,
@@ -1788,8 +1873,7 @@ class SolverVBD(SolverBase):
                 model.joint_child,
                 model.joint_X_p,
                 model.joint_X_c,
-                model.joint_qd_start,
-                model.joint_dof_dim,
+                self.joint_constraint_start,
                 self.joint_penalty_k_max,
                 state_out.body_q,
                 model.body_q,
@@ -1843,8 +1927,8 @@ class SolverVBD(SolverBase):
                     model.joint_child,
                     model.joint_X_p,
                     model.joint_X_c,
-                    model.joint_qd_start,
-                    model.joint_target_ke,
+                    self.joint_constraint_start,
+                    self.joint_penalty_k_max,
                     state_out.body_q,
                     model.body_q,
                     model.body_com,

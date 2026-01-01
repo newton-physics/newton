@@ -85,6 +85,36 @@ def _assert_capsule_attachments(
         )
 
 
+def _assert_surface_attachment(
+    test: unittest.TestCase,
+    body_q: np.ndarray,
+    anchor_body: int,
+    child_body: int,
+    context: str,
+    parent_anchor_local: wp.vec3,
+    tol: float = 1.0e-3,
+) -> None:
+    """Assert that the child body origin lies on the anchor-frame attachment point.
+
+    Intended attach point (world):
+        x_expected = x_anchor + R_anchor * parent_anchor_local
+    """
+    with wp.ScopedDevice("cpu"):
+        x_anchor = wp.vec3(body_q[anchor_body][0], body_q[anchor_body][1], body_q[anchor_body][2])
+        q_anchor = wp.quat(
+            body_q[anchor_body][3], body_q[anchor_body][4], body_q[anchor_body][5], body_q[anchor_body][6]
+        )
+        x_expected = x_anchor + wp.quat_rotate(q_anchor, parent_anchor_local)
+
+        x_child = wp.vec3(body_q[child_body][0], body_q[child_body][1], body_q[child_body][2])
+        err = float(wp.length(x_child - x_expected))
+        test.assertLess(
+            err,
+            tol,
+            msg=f"{context}: surface-attachment error is {err:.6e} (tol={tol:.1e})",
+        )
+
+
 # -----------------------------------------------------------------------------
 # Warp kernels
 # -----------------------------------------------------------------------------
@@ -273,6 +303,48 @@ def _compute_ball_joint_anchor_error(model: newton.Model, body_q: wp.array, join
         x_p = wp.transform_get_translation(X_wp)
         x_c = wp.transform_get_translation(X_wc)
         return float(wp.length(x_c - x_p))
+
+
+def _compute_fixed_joint_frame_error(model: newton.Model, body_q: wp.array, joint_id: int) -> tuple[float, float]:
+    """Compute FIXED joint world-space frame error (CPU floats).
+
+    Returns:
+        (pos_err, ang_err)
+
+        - pos_err: |x_c - x_p| where x_p/x_c are the parent/child joint-frame translations in world space.
+        - ang_err: relative rotation angle between joint-frame orientations in world space [rad].
+    """
+    with wp.ScopedDevice("cpu"):
+        jp = model.joint_parent.numpy()[joint_id].item()
+        jc = model.joint_child.numpy()[joint_id].item()
+        X_p = model.joint_X_p.numpy()[joint_id]
+        X_c = model.joint_X_c.numpy()[joint_id]
+
+        # wp.transform is [p(3), q(4)] in xyzw order
+        X_pj = wp.transform(wp.vec3(X_p[0], X_p[1], X_p[2]), wp.quat(X_p[3], X_p[4], X_p[5], X_p[6]))
+        X_cj = wp.transform(wp.vec3(X_c[0], X_c[1], X_c[2]), wp.quat(X_c[3], X_c[4], X_c[5], X_c[6]))
+
+        bq = body_q.to("cpu").numpy()
+        q_p = bq[jp]
+        q_c = bq[jc]
+        T_p = wp.transform(wp.vec3(q_p[0], q_p[1], q_p[2]), wp.quat(q_p[3], q_p[4], q_p[5], q_p[6]))
+        T_c = wp.transform(wp.vec3(q_c[0], q_c[1], q_c[2]), wp.quat(q_c[3], q_c[4], q_c[5], q_c[6]))
+
+        X_wp = T_p * X_pj
+        X_wc = T_c * X_cj
+
+        x_p = wp.transform_get_translation(X_wp)
+        x_c = wp.transform_get_translation(X_wc)
+        pos_err = float(wp.length(x_c - x_p))
+
+        q_wp = wp.transform_get_rotation(X_wp)
+        q_wc = wp.transform_get_rotation(X_wc)
+        q_rel = wp.mul(wp.quat_inverse(q_wp), q_wc)
+        q_rel = wp.normalize(q_rel)
+        w = wp.clamp(q_rel[3], -1.0, 1.0)
+        ang_err = float(2.0 * wp.acos(w))
+
+        return pos_err, ang_err
 
 
 # -----------------------------------------------------------------------------
@@ -838,22 +910,31 @@ def _cable_ball_joint_attaches_rod_endpoint_impl(test: unittest.TestCase, device
     anchor = builder.add_body(xform=wp.transform(anchor_pos, wp.quat_identity()))
     builder.body_mass[anchor] = 0.0
     builder.body_inv_mass[anchor] = 0.0
-    builder.add_shape_sphere(anchor, radius=0.1)
+    # Anchor marker sphere.
+    anchor_radius = 0.1
+    builder.add_shape_sphere(anchor, radius=anchor_radius)
 
     # Build a straight cable (rod) and attach its start endpoint to the anchor with a BALL joint.
     num_elements = 20
     segment_length = 0.05
     points, edge_q = _make_straight_cable_along_x(num_elements, segment_length, z_height=anchor_pos[2])
-    # Reposition the generated cable so its first point coincides with the anchor body's origin.
+    rod_radius = 0.01
+    # Attach the cable endpoint to the sphere surface (not the center), accounting for cable radius so the
+    # capsule endcap surface and the sphere surface are coincident along the rod axis (+X).
+    attach_offset = wp.float32(anchor_radius + rod_radius)
+    parent_anchor_local = wp.vec3(attach_offset, 0.0, 0.0)  # parent local == world (identity rotation)
+    anchor_world_attach = anchor_pos + wp.vec3(attach_offset, 0.0, 0.0)
+
+    # Reposition the generated cable so its first point coincides with the sphere-surface attach point.
     # (The helper builds a cable centered about x=0.)
     p0 = points[0]
-    offset = anchor_pos - p0
+    offset = anchor_world_attach - p0
     points = [p + offset for p in points]
 
     rod_bodies, rod_joints = builder.add_rod(
         positions=points,
         quaternions=edge_q,
-        radius=0.01,
+        radius=rod_radius,
         bend_stiffness=1.0e-1,
         bend_damping=1.0e-2,
         stretch_stiffness=1.0e9,
@@ -867,7 +948,7 @@ def _cable_ball_joint_attaches_rod_endpoint_impl(test: unittest.TestCase, device
     j_ball = builder.add_joint_ball(
         parent=anchor,
         child=rod_bodies[0],
-        parent_xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
+        parent_xform=wp.transform(parent_anchor_local, wp.quat_identity()),
         child_xform=wp.transform(child_anchor_local, wp.quat_identity()),
     )
     builder.add_articulation([*rod_joints, j_ball])
@@ -895,7 +976,7 @@ def _cable_ball_joint_attaches_rod_endpoint_impl(test: unittest.TestCase, device
     for _step in range(num_steps):
         for _substep in range(sim_substeps):
             t = (_step * sim_substeps + _substep) * sim_dt
-            dx = 0.05 * np.sin(1.5 * t)
+            dx = wp.float32(0.05 * np.sin(1.5 * t))
 
             pose = wp.transform(wp.vec3(dx, 0.0, anchor_pos[2]), wp.quat_identity())
             wp.launch(
@@ -914,6 +995,16 @@ def _cable_ball_joint_attaches_rod_endpoint_impl(test: unittest.TestCase, device
 
     # Also verify the rod joints remained well-attached along the chain.
     final_q = state0.body_q.numpy()
+    test.assertTrue(np.isfinite(final_q).all(), "Non-finite body transforms detected in BALL joint test")
+    _assert_surface_attachment(
+        test,
+        body_q=final_q,
+        anchor_body=anchor,
+        child_body=rod_bodies[0],
+        context="Cable BALL joint attachment",
+        parent_anchor_local=parent_anchor_local,
+    )
+
     _assert_bodies_above_ground(
         test,
         body_q=final_q,
@@ -927,6 +1018,139 @@ def _cable_ball_joint_attaches_rod_endpoint_impl(test: unittest.TestCase, device
         body_ids=rod_bodies,
         segment_length=segment_length,
         context="Cable BALL joint attachment",
+    )
+
+
+def _cable_fixed_joint_attaches_rod_endpoint_impl(test: unittest.TestCase, device):
+    """Cable VBD: FIXED joint should keep rod start frame welded to a kinematic anchor."""
+    builder = newton.ModelBuilder()
+    builder.default_shape_cfg.ke = 1.0e2
+    builder.default_shape_cfg.kd = 1.0e1
+    builder.default_shape_cfg.mu = 1.0
+
+    anchor_pos = wp.vec3(0.0, 0.0, 3.0)
+
+    # Build a straight cable along +X and use its segment orientation for the kinematic anchor.
+    num_elements = 20
+    segment_length = 0.05
+    points, edge_q = _make_straight_cable_along_x(num_elements, segment_length, z_height=anchor_pos[2])
+    anchor_rot = edge_q[0]
+
+    # Kinematic anchor body at the rod start point (match rod orientation).
+    anchor = builder.add_body(xform=wp.transform(anchor_pos, anchor_rot))
+    builder.body_mass[anchor] = 0.0
+    builder.body_inv_mass[anchor] = 0.0
+    # Anchor marker sphere.
+    anchor_radius = 0.1
+    builder.add_shape_sphere(anchor, radius=anchor_radius)
+
+    rod_radius = 0.01
+    # Attach the cable endpoint to the sphere surface (not the center), accounting for cable radius so the
+    # capsule endcap surface and the sphere surface are coincident along the rod axis (+X).
+    # The rod axis is world +X, and anchor_rot maps parent-local +Z -> world +X, so use +Z in parent local.
+    attach_offset = wp.float32(anchor_radius + rod_radius)
+    parent_anchor_local = wp.vec3(0.0, 0.0, attach_offset)
+    anchor_world_attach = anchor_pos + wp.quat_rotate(anchor_rot, parent_anchor_local)
+
+    # Reposition the generated cable so its first point coincides with the sphere-surface attach point.
+    p0 = points[0]
+    offset = anchor_world_attach - p0
+    points = [p + offset for p in points]
+
+    rod_bodies, rod_joints = builder.add_rod(
+        positions=points,
+        quaternions=edge_q,
+        radius=rod_radius,
+        bend_stiffness=1.0e-1,
+        bend_damping=1.0e-2,
+        stretch_stiffness=1.0e9,
+        stretch_damping=0.0,
+        wrap_in_articulation=False,
+        key="test_cable_fixed_joint_attach",
+    )
+
+    child_anchor_local = wp.vec3(0.0, 0.0, 0.0)
+    j_fixed = builder.add_joint_fixed(
+        parent=anchor,
+        child=rod_bodies[0],
+        parent_xform=wp.transform(parent_anchor_local, wp.quat_identity()),
+        child_xform=wp.transform(child_anchor_local, wp.quat_identity()),
+    )
+    builder.add_articulation([*rod_joints, j_fixed])
+
+    builder.add_ground_plane()
+    builder.color()
+    model = builder.finalize(device=device)
+    model.set_gravity((0.0, 0.0, -9.81))
+
+    state0 = model.state()
+    state1 = model.state()
+    control = model.control()
+
+    # Stiffen both linear and angular caps for non-cable joints so FIXED behaves near-hard.
+    solver = newton.solvers.SolverVBD(
+        model,
+        iterations=10,
+        rigid_joint_linear_ke=1.0e9,
+        rigid_joint_angular_ke=1.0e9,
+        rigid_joint_linear_k_start=1.0e7,
+        rigid_joint_angular_k_start=1.0e7,
+    )
+
+    frame_dt = 1.0 / 60.0
+    sim_substeps = 10
+    sim_dt = frame_dt / sim_substeps
+    num_steps = 20
+
+    for _step in range(num_steps):
+        for _substep in range(sim_substeps):
+            t = (_step * sim_substeps + _substep) * sim_dt
+            # Use wp.float32 so Warp builtins match expected scalar types (avoid numpy.float64).
+            dx = wp.float32(0.05 * np.sin(1.5 * t))
+            ang = wp.float32(0.4 * np.sin(1.5 * t + 0.7))
+            q_drive = wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), ang)
+            q = wp.mul(q_drive, anchor_rot)
+
+            pose = wp.transform(wp.vec3(dx, 0.0, anchor_pos[2]), q)
+            wp.launch(
+                _set_kinematic_body_pose,
+                dim=1,
+                inputs=[wp.int32(anchor), pose, state0.body_q, state0.body_qd],
+                device=device,
+            )
+
+            contacts = model.collide(state0)
+            solver.step(state0, state1, control, contacts, dt=sim_dt)
+            state0, state1 = state1, state0
+
+            pos_err, ang_err = _compute_fixed_joint_frame_error(model, state0.body_q, j_fixed)
+            test.assertLess(pos_err, 1.0e-3)
+            test.assertLess(ang_err, 2.0e-2)
+
+    final_q = state0.body_q.numpy()
+    test.assertTrue(np.isfinite(final_q).all(), "Non-finite body transforms detected in FIXED joint test")
+    _assert_surface_attachment(
+        test,
+        body_q=final_q,
+        anchor_body=anchor,
+        child_body=rod_bodies[0],
+        context="Cable FIXED joint attachment",
+        parent_anchor_local=parent_anchor_local,
+    )
+
+    _assert_bodies_above_ground(
+        test,
+        body_q=final_q,
+        body_ids=rod_bodies,
+        margin=0.25 * segment_length,
+        context="Cable FIXED joint attachment",
+    )
+    _assert_capsule_attachments(
+        test,
+        body_q=final_q,
+        body_ids=rod_bodies,
+        segment_length=segment_length,
+        context="Cable FIXED joint attachment",
     )
 
 
@@ -974,6 +1198,12 @@ add_function_test(
     TestCable,
     "test_cable_ball_joint_attaches_rod_endpoint",
     _cable_ball_joint_attaches_rod_endpoint_impl,
+    devices=devices,
+)
+add_function_test(
+    TestCable,
+    "test_cable_fixed_joint_attaches_rod_endpoint",
+    _cable_fixed_joint_attaches_rod_endpoint_impl,
     devices=devices,
 )
 

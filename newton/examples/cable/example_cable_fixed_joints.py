@@ -14,11 +14,11 @@
 # limitations under the License.
 
 ###########################################################################
-# Example Cable Ball Joints
+# Example Cable Fixed Joints
 #
-# Visual test for VBD BALL joints with kinematic anchors:
+# Visual test for VBD FIXED joints with kinematic anchors:
 # - Create multiple kinematic anchor bodies (sphere, capsule, box, bear mesh)
-# - Attach a cable (rod) to each anchor via a BALL joint
+# - Attach a cable (rod) to each anchor via a FIXED joint
 # - Drive anchors kinematically (translation or rotation) and verify cables follow
 #
 ###########################################################################
@@ -35,25 +35,25 @@ import newton.usd
 
 
 @wp.kernel
-def compute_ball_anchor_error(
+def compute_fixed_joint_error(
     parent_ids: wp.array(dtype=wp.int32),
     child_ids: wp.array(dtype=wp.int32),
     parent_local: wp.array(dtype=wp.vec3),
     child_local: wp.array(dtype=wp.vec3),
     body_q: wp.array(dtype=wp.transform),
-    out_err: wp.array(dtype=float),
+    out_err_pos: wp.array(dtype=float),
+    out_err_ang: wp.array(dtype=float),
 ):
-    """Test-only: compute BALL joint anchor coincidence error.
+    """Test-only: compute FIXED joint error (position + angle) for identity-rotation joint frames.
 
-    For each i, this computes the world-space distance between:
-      - parent anchor point:  x_p = p_parent + R_parent * parent_local[i]
-      - child anchor point:   x_c = p_child  + R_child  * child_local[i]
+    For each i:
+      - Position error: ||x_p - x_c||
+      - Angular error: angle(q_p^{-1} * q_c)  [rad]
 
     Notes:
     - This is a *verification helper* used by `Example.test_final()`, not part of the solver.
-    - We record only the *translation* part of the joint frames (local anchor positions). In this
-      example, `parent_xform` / `child_xform` are created with identity rotations, so this matches
-      the joint definition.
+    - This example constructs joint frames with identity rotations (`parent_xform.q == child_xform.q == I`),
+      so the joint-frame rotations are just the body rotations.
     """
     i = wp.tid()
     pb = parent_ids[i]
@@ -69,8 +69,13 @@ def compute_ball_anchor_error(
 
     p_anchor = pp + wp.quat_rotate(qp, parent_local[i])
     c_anchor = pc + wp.quat_rotate(qc, child_local[i])
+    out_err_pos[i] = wp.length(p_anchor - c_anchor)
 
-    out_err[i] = wp.length(p_anchor - c_anchor)
+    # Angular difference: dq = q_p^{-1} * q_c
+    dq = wp.mul(wp.quat_inverse(qp), qc)
+    dq = wp.normalize(dq)
+    w = wp.clamp(dq[3], -1.0, 1.0)
+    out_err_ang[i] = 2.0 * wp.acos(w)
 
 
 @wp.kernel
@@ -140,13 +145,13 @@ def _make_straight_cable_down(anchor_world: wp.vec3, num_segments: int, segment_
 
 
 class Example:
-    """Visual test for VBD BALL joints with kinematic anchors.
+    """Visual test for VBD FIXED joints with kinematic anchors.
 
     High-level structure:
     - Build several kinematic "driver" bodies (sphere/capsule/box/bear mesh).
     - For each driver, create a straight cable (rod) hanging down in world -Z.
-    - Attach the first rod segment to the driver using a BALL joint (point-to-point attachment).
-    - Kinematically animate the drivers and verify the BALL joint keeps the two anchor points coincident.
+    - Attach the first rod segment to the driver using a FIXED joint (welded pose at the attachment).
+    - Kinematically animate the drivers and verify the FIXED joint keeps the joint frames coincident.
     """
 
     def __init__(self, viewer, args=None):
@@ -207,11 +212,11 @@ class Example:
         anchor_phase: list[float] = []
         anchor_mode: list[int] = []
 
-        # Test mode: record BALL joint anchor definitions so we can verify constraint satisfaction.
-        ball_parent_ids: list[int] = []
-        ball_child_ids: list[int] = []
-        ball_parent_local: list[wp.vec3] = []
-        ball_child_local: list[wp.vec3] = []
+        # Test mode: record FIXED joint anchor definitions so we can verify constraint satisfaction.
+        fixed_parent_ids: list[int] = []
+        fixed_child_ids: list[int] = []
+        fixed_parent_local: list[wp.vec3] = []
+        fixed_child_local: list[wp.vec3] = []
 
         # Spread the anchor+cable sets along Y (not X).
         y0 = -1.2
@@ -319,6 +324,7 @@ class Example:
                     parent_anchor_local = wp.vec3(x_local, 0.0, z_local)
                     # Use the actual body pose (x,y,z), not the uniform z0, so the cable touches the shape.
                     anchor_world = wp.vec3(x + x_local, y, z + z_local)
+
                 rod_points, rod_quats = _make_straight_cable_down(anchor_world, num_segments, segment_length)
 
                 rod_bodies, rod_joints = builder.add_rod(
@@ -330,34 +336,34 @@ class Example:
                     stretch_stiffness=stretch_stiffness,
                     stretch_damping=stretch_damping,
                     key=f"cable_{key_prefix}",
-                    # Build one articulation including both the ball joint and all rod joints.
+                    # Build one articulation including both the fixed joint and all rod joints.
                     wrap_in_articulation=False,
                 )
 
-                # Attach cable start point to driver with a ball joint.
+                # Attach cable start point to driver with a fixed joint.
                 # `add_rod()` convention:
                 # - rod body i has its *body origin* at `positions[i]` (segment start)
                 # - the capsule shape (and COM) are offset by +half_height along the body's local +Z
                 #
                 # Therefore, the cable "start endpoint" is located at body-local z=0 for `rod_bodies[0]`.
                 child_anchor_local = wp.vec3(0.0, 0.0, 0.0)
-                j_ball = builder.add_joint_ball(
+                j_fixed = builder.add_joint_fixed(
                     parent=body,
                     child=rod_bodies[0],
                     parent_xform=wp.transform(parent_anchor_local, wp.quat_identity()),
                     child_xform=wp.transform(child_anchor_local, wp.quat_identity()),
                     key=f"attach_{key_prefix}",
                 )
-                # Put all joints (rod cable joints + the ball attachment) into one articulation.
+                # Put all joints (rod cable joints + the fixed attachment) into one articulation.
                 # Builder requires joint indices be monotonically increasing and contiguous.
-                # We create rod joints first, then the ball joint, so the correct order is:
-                builder.add_articulation([*rod_joints, j_ball])
+                # We create rod joints first, then the fixed joint, so the correct order is:
+                builder.add_articulation([*rod_joints, j_fixed])
 
-                # Record anchor point definitions for testing (world-space error should be near-zero).
-                ball_parent_ids.append(int(body))
-                ball_child_ids.append(int(rod_bodies[0]))
-                ball_parent_local.append(parent_anchor_local)
-                ball_child_local.append(child_anchor_local)
+                # Record anchor point definitions for testing (world-space errors should be near-zero).
+                fixed_parent_ids.append(int(body))
+                fixed_child_ids.append(int(rod_bodies[0]))
+                fixed_parent_local.append(parent_anchor_local)
+                fixed_child_local.append(child_anchor_local)
 
                 self.anchor_bodies.append(body)
                 anchor_base_pos.append(wp.vec3(x, y, z))
@@ -383,12 +389,13 @@ class Example:
         self.model.body_inv_mass.assign(wp.array(body_inv_mass_np, dtype=wp.float32, device=device))
         self.model.body_inv_inertia.assign(wp.array(body_inv_inertia_np, dtype=wp.mat33, device=device))
 
-        # Stiffen ball constraint caps (non-cable joints) so the attachment behaves near-hard.
+        # Stiffen fixed constraint caps (non-cable joints) so the attachment behaves near-hard.
         self.solver = newton.solvers.SolverVBD(
             self.model,
             iterations=self.sim_iterations,
             friction_epsilon=0.1,
             rigid_joint_linear_ke=1.0e9,
+            rigid_joint_angular_ke=1.0e9,
             rigid_joint_linear_k_start=1.0e5,
         )
 
@@ -407,11 +414,11 @@ class Example:
         self.anchor_mode_wp = wp.array(anchor_mode, dtype=wp.int32, device=self.device)
         self.sim_time_array = wp.zeros(1, dtype=float, device=self.device)
 
-        # Test buffers (ball joint constraint satisfaction)
-        self._ball_parent_ids = wp.array(ball_parent_ids, dtype=wp.int32, device=self.device)
-        self._ball_child_ids = wp.array(ball_child_ids, dtype=wp.int32, device=self.device)
-        self._ball_parent_local = wp.array(ball_parent_local, dtype=wp.vec3, device=self.device)
-        self._ball_child_local = wp.array(ball_child_local, dtype=wp.vec3, device=self.device)
+        # Test buffers (fixed joint constraint satisfaction)
+        self._fixed_parent_ids = wp.array(fixed_parent_ids, dtype=wp.int32, device=self.device)
+        self._fixed_child_ids = wp.array(fixed_child_ids, dtype=wp.int32, device=self.device)
+        self._fixed_parent_local = wp.array(fixed_parent_local, dtype=wp.vec3, device=self.device)
+        self._fixed_child_local = wp.array(fixed_child_local, dtype=wp.vec3, device=self.device)
 
         self.capture()
 
@@ -472,29 +479,38 @@ class Example:
         self.viewer.end_frame()
 
     def test_final(self):
-        # Verify ball joint anchor points are coincident (within tolerance) at the final state.
-        # Loose tolerance: these are stiff but not perfectly rigid constraints.
-        if self._ball_parent_ids.shape[0] == 0:
+        # Verify fixed joint frames are coincident (within tolerance) at the final state.
+        # Loose tolerances: these are stiff but not perfectly rigid constraints.
+        if self._fixed_parent_ids.shape[0] == 0:
             return
 
-        ball_err = wp.zeros(self._ball_parent_ids.shape[0], dtype=float, device=self.device)
+        err_pos = wp.zeros(self._fixed_parent_ids.shape[0], dtype=float, device=self.device)
+        err_ang = wp.zeros(self._fixed_parent_ids.shape[0], dtype=float, device=self.device)
         wp.launch(
-            kernel=compute_ball_anchor_error,
-            dim=ball_err.shape[0],
+            kernel=compute_fixed_joint_error,
+            dim=err_pos.shape[0],
             inputs=[
-                self._ball_parent_ids,
-                self._ball_child_ids,
-                self._ball_parent_local,
-                self._ball_child_local,
+                self._fixed_parent_ids,
+                self._fixed_child_ids,
+                self._fixed_parent_local,
+                self._fixed_child_local,
                 self.state_0.body_q,
-                ball_err,
+                err_pos,
+                err_ang,
             ],
             device=self.device,
         )
-        err_max = float(np.max(ball_err.numpy()))
-        tol = 5.0e-3
-        if err_max > tol:
-            raise AssertionError(f"BALL joint anchor error too large: max={err_max:.6g} > tol={tol}")
+        err_pos_max = float(np.max(err_pos.numpy()))
+        err_ang_max = float(np.max(err_ang.numpy()))
+
+        tol_pos = 5.0e-3
+        tol_ang = 2.0e-2
+        if err_pos_max > tol_pos or err_ang_max > tol_ang:
+            raise AssertionError(
+                "FIXED joint error too large: "
+                f"pos_max={err_pos_max:.6g} (tol={tol_pos}), "
+                f"ang_max={err_ang_max:.6g} (tol={tol_ang})"
+            )
 
 
 if __name__ == "__main__":

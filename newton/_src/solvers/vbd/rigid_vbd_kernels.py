@@ -259,7 +259,7 @@ def compute_kappa_dot_analytic(
 
 
 @wp.func
-def evaluate_cable_bend_force_hessian(
+def evaluate_angular_constraint_force_hessian_isotropic(
     q_wp: wp.quat,
     q_wc: wp.quat,
     q_wp_rest: wp.quat,
@@ -274,7 +274,7 @@ def evaluate_cable_bend_force_hessian(
     dt: float,
 ):
     """
-    AVBD cable bend (component-wise Dahl): generalized torque and angular Hessian.
+    Isotropic angular constraint force/Hessian using a 3D rotation-vector error (kappa) in the parent frame.
 
     Summary:
       - Curvature kappa from rest-aligned relative rotation
@@ -368,7 +368,7 @@ def evaluate_cable_bend_force_hessian(
 
 
 @wp.func
-def evaluate_cable_stretch_force_hessian(
+def evaluate_linear_constraint_force_hessian_isotropic(
     X_wp: wp.transform,
     X_wc: wp.transform,
     X_wp_prev: wp.transform,
@@ -383,7 +383,7 @@ def evaluate_cable_stretch_force_hessian(
     dt: float,
 ):
     """
-    AVBD cable stretch: point-to-point pinning (C = x_c - x_p).
+    Isotropic linear point-to-point constraint: anchor coincidence (C = x_c - x_p).
 
     Summary:
       - Force at attachment point: f_attachment = k*C + (damping*k)*dC/dt
@@ -983,16 +983,14 @@ def evaluate_joint_force_hessian(
     joint_child: wp.array(dtype=int),
     joint_X_p: wp.array(dtype=wp.transform),
     joint_X_c: wp.array(dtype=wp.transform),
-    joint_qd_start: wp.array(dtype=int),
-    joint_target_kd: wp.array(dtype=float),
-    joint_linear_kd: float,
-    joint_angular_kd: float,
+    joint_constraint_start: wp.array(dtype=int),
     joint_penalty_k: wp.array(dtype=float),
+    joint_penalty_kd: wp.array(dtype=float),
     joint_sigma_start: wp.array(dtype=wp.vec3),
     joint_C_fric: wp.array(dtype=wp.vec3),
     dt: float,
 ):
-    """Compute AVBD joint force and Hessian contributions for a specific body (cable + ball joints).
+    """Compute AVBD joint force and Hessian contributions for a specific body (cable + ball + fixed joints).
 
     Uses ``body_q_prev`` as the previous pose when estimating joint damping
     over timestep ``dt``, while ``body_q`` and ``body_q_rest`` provide
@@ -1000,7 +998,7 @@ def evaluate_joint_force_hessian(
     in world frame.
     """
     jt = joint_type[joint_index]
-    if jt != JointType.CABLE and jt != JointType.BALL:
+    if jt != JointType.CABLE and jt != JointType.BALL and jt != JointType.FIXED:
         return wp.vec3(0.0), wp.vec3(0.0), wp.mat33(0.0), wp.mat33(0.0), wp.mat33(0.0)
 
     parent_index = joint_parent[joint_index]
@@ -1029,13 +1027,13 @@ def evaluate_joint_force_hessian(
     X_wp_rest = parent_pose_rest * X_pj
     X_wc_rest = child_pose_rest * X_cj
 
-    dof_start = joint_qd_start[joint_index]
+    c_start = joint_constraint_start[joint_index]
 
     if jt == JointType.CABLE:
-        stretch_penalty_k = joint_penalty_k[dof_start]
-        bend_penalty_k = joint_penalty_k[dof_start + 1]
-        stretch_damping = joint_target_kd[dof_start]
-        bend_damping = joint_target_kd[dof_start + 1]
+        stretch_penalty_k = joint_penalty_k[c_start]
+        bend_penalty_k = joint_penalty_k[c_start + 1]
+        stretch_damping = joint_penalty_kd[c_start]
+        bend_damping = joint_penalty_kd[c_start + 1]
 
         # Cable segment convention: parent_com[2] stores half-length in local frame
         rest_length = 2.0 * parent_com[2]
@@ -1058,7 +1056,7 @@ def evaluate_joint_force_hessian(
             bend_k_eff = bend_penalty_k / rest_length
             sigma0 = joint_sigma_start[joint_index]
             C_fric = joint_C_fric[joint_index]
-            bend_torque, bend_H_aa = evaluate_cable_bend_force_hessian(
+            bend_torque, bend_H_aa = evaluate_angular_constraint_force_hessian_isotropic(
                 q_wp,
                 q_wc,
                 q_wp_rest,
@@ -1076,7 +1074,7 @@ def evaluate_joint_force_hessian(
             total_H_aa = total_H_aa + bend_H_aa
 
         if stretch_penalty_k > 0.0:
-            f_s, t_s, Hll_s, Hal_s, Haa_s = evaluate_cable_stretch_force_hessian(
+            f_s, t_s, Hll_s, Hal_s, Haa_s = evaluate_linear_constraint_force_hessian_isotropic(
                 X_wp,
                 X_wc,
                 X_wp_prev,
@@ -1099,10 +1097,10 @@ def evaluate_joint_force_hessian(
         return total_force, total_torque, total_H_ll, total_H_al, total_H_aa
 
     elif jt == JointType.BALL:
-        k0 = joint_penalty_k[dof_start + 0]
-        k1 = joint_penalty_k[dof_start + 1]
-        k2 = joint_penalty_k[dof_start + 2]
-        return evaluate_ball_joint_force_hessian(
+        # BALL: isotropic linear anchor-coincidence stored as a single scalar.
+        k = joint_penalty_k[c_start]
+        damping = joint_penalty_kd[c_start]
+        return evaluate_linear_constraint_force_hessian_isotropic(
             X_wp,
             X_wc,
             X_wp_prev,
@@ -1112,12 +1110,63 @@ def evaluate_joint_force_hessian(
             parent_com,
             child_com,
             is_parent_body,
-            k0,
-            k1,
-            k2,
-            joint_linear_kd,
+            k,
+            damping,
             dt,
         )
+
+    elif jt == JointType.FIXED:
+        # FIXED: isotropic linear anchor-coincidence + isotropic angular constraint.
+        # Linear part
+        k_lin = joint_penalty_k[c_start + 0]
+        kd_lin = joint_penalty_kd[c_start + 0]
+        f_lin, t_lin, Hll_lin, Hal_lin, Haa_lin = evaluate_linear_constraint_force_hessian_isotropic(
+            X_wp,
+            X_wc,
+            X_wp_prev,
+            X_wc_prev,
+            parent_pose,
+            child_pose,
+            parent_com,
+            child_com,
+            is_parent_body,
+            k_lin,
+            kd_lin,
+            dt,
+        )
+
+        # Angular part: reuse kappa-based isotropic angular constraint.
+        k_ang = joint_penalty_k[c_start + 1]
+        kd_ang = joint_penalty_kd[c_start + 1]
+        if k_ang > 0.0:
+            q_wp = wp.transform_get_rotation(X_wp)
+            q_wc = wp.transform_get_rotation(X_wc)
+            q_wp_rest = wp.transform_get_rotation(X_wp_rest)
+            q_wc_rest = wp.transform_get_rotation(X_wc_rest)
+            q_wp_prev = wp.transform_get_rotation(X_wp_prev)
+            q_wc_prev = wp.transform_get_rotation(X_wc_prev)
+            sigma0 = wp.vec3(0.0)
+            C_fric = wp.vec3(0.0)
+            t_ang, Haa_ang = evaluate_angular_constraint_force_hessian_isotropic(
+                q_wp,
+                q_wc,
+                q_wp_rest,
+                q_wc_rest,
+                q_wp_prev,
+                q_wc_prev,
+                is_parent_body,
+                # Note: unlike cable bending (which uses EI/L), FIXED uses k_ang directly as an effective stiffness.
+                k_ang,
+                sigma0,
+                C_fric,
+                kd_ang,
+                dt,
+            )
+        else:
+            t_ang = wp.vec3(0.0)
+            Haa_ang = wp.mat33(0.0)
+
+        return f_lin, t_lin + t_ang, Hll_lin, Hal_lin, Haa_lin + Haa_ang
 
     return wp.vec3(0.0), wp.vec3(0.0), wp.mat33(0.0), wp.mat33(0.0), wp.mat33(0.0)
 
@@ -1458,8 +1507,8 @@ def compute_cable_dahl_parameters(
     joint_child: wp.array(dtype=int),
     joint_X_p: wp.array(dtype=wp.transform),
     joint_X_c: wp.array(dtype=wp.transform),
-    joint_qd_start: wp.array(dtype=int),
-    joint_target_ke: wp.array(dtype=float),
+    joint_constraint_start: wp.array(dtype=int),
+    joint_penalty_k_max: wp.array(dtype=float),
     body_q: wp.array(dtype=wp.transform),
     body_q_rest: wp.array(dtype=wp.transform),
     body_com: wp.array(dtype=wp.vec3),
@@ -1521,10 +1570,9 @@ def compute_cable_dahl_parameters(
     eps_max = joint_eps_max[j]
     tau = joint_tau[j]
 
-    # Get bend stiffness and segment length for this joint
-    dof_start = joint_qd_start[j]
-    bend_dof_index = dof_start + 1
-    k_bend_material = joint_target_ke[bend_dof_index]
+    # Get bend stiffness (material EI) from the bend constraint cap (constraint slot 1 for cables).
+    c_start = joint_constraint_start[j]
+    k_bend_material = joint_penalty_k_max[c_start + 1]
 
     # Compute segment length (Cosserat rod discretization)
     parent_com = body_com[parent]
@@ -1899,12 +1947,10 @@ def solve_rigid_body(
     joint_child: wp.array(dtype=int),
     joint_X_p: wp.array(dtype=wp.transform),
     joint_X_c: wp.array(dtype=wp.transform),
-    joint_qd_start: wp.array(dtype=int),
-    joint_target_kd: wp.array(dtype=float),
-    joint_linear_kd: float,
-    joint_angular_kd: float,
+    joint_constraint_start: wp.array(dtype=int),
     # AVBD per-DOF penalty state
     joint_penalty_k: wp.array(dtype=float),
+    joint_penalty_kd: wp.array(dtype=float),
     # Dahl hysteresis parameters (frozen for this timestep, component-wise vec3 per joint)
     joint_sigma_start: wp.array(dtype=wp.vec3),
     joint_C_fric: wp.array(dtype=wp.vec3),
@@ -2051,11 +2097,9 @@ def solve_rigid_body(
             joint_child,
             joint_X_p,
             joint_X_c,
-            joint_qd_start,
-            joint_target_kd,
-            joint_linear_kd,
-            joint_angular_kd,
+            joint_constraint_start,
             joint_penalty_k,
+            joint_penalty_kd,
             joint_sigma_start,
             joint_C_fric,
             dt,
@@ -2162,8 +2206,7 @@ def update_duals_joint(
     joint_child: wp.array(dtype=int),
     joint_X_p: wp.array(dtype=wp.transform),
     joint_X_c: wp.array(dtype=wp.transform),
-    joint_qd_start: wp.array(dtype=int),
-    joint_dof_dim: wp.array(dtype=int, ndim=2),
+    joint_constraint_start: wp.array(dtype=int),
     joint_penalty_k_max: wp.array(dtype=float),
     body_q: wp.array(dtype=wp.transform),
     body_q_rest: wp.array(dtype=wp.transform),
@@ -2174,12 +2217,12 @@ def update_duals_joint(
     """
     Update AVBD penalty parameters for joint constraints (per-iteration).
 
-    Increases per-DOF penalties based on current constraint violation magnitudes,
-    clamped by the per-DOF stiffness cap ``joint_penalty_k_max``.
+    Increases per-constraint penalties based on current constraint violation magnitudes,
+    clamped by the per-constraint stiffness cap ``joint_penalty_k_max``.
 
     Notes:
       - For ``JointType.CABLE``, ``joint_penalty_k_max`` is populated from ``model.joint_target_ke`` (material/constraint tuning).
-      - For non-cable rigid constraints like ``JointType.BALL``, ``joint_penalty_k_max`` is populated from solver-level caps
+      - For rigid constraints like ``JointType.BALL``, ``joint_penalty_k_max`` is populated from solver-level caps
         (e.g. ``rigid_joint_linear_ke``).
 
     Args:
@@ -2188,14 +2231,13 @@ def update_duals_joint(
         joint_child: Child body indices
         joint_X_p: Parent joint frames (local)
         joint_X_c: Child joint frames (local)
-        joint_qd_start: Start DOF index per joint
-        joint_dof_dim: [num_lin, num_ang] DOF per joint
-        joint_penalty_k_max: Per-DOF stiffness cap (used for penalty clamping)
+        joint_constraint_start: Start index per joint in the solver constraint layout
+        joint_penalty_k_max: Per-constraint stiffness cap (used for penalty clamping)
         body_q: Current body transforms (world)
         body_q_rest: Rest body transforms (world)
         body_com: Body COM offsets (local) used to infer segment length
         beta: Adaptation rate
-        joint_penalty_k: In/out per-DOF adaptive penalties
+        joint_penalty_k: In/out per-constraint adaptive penalties
     """
     j = wp.tid()
     parent = joint_parent[j]
@@ -2205,9 +2247,8 @@ def update_duals_joint(
     if parent < 0 or child < 0:
         return
 
-    # Read DOF configuration
-    dof_start = joint_qd_start[j]
-    lin_dof_count = joint_dof_dim[j, 0]
+    # Read solver constraint start index
+    c_start = joint_constraint_start[j]
 
     # Compute joint frames in world space
     X_wp = body_q[parent] * joint_X_p[j]
@@ -2231,8 +2272,8 @@ def update_duals_joint(
         if rest_length < _SMALL_LENGTH_EPS:
             return
 
-        # Compute stretch constraint violation (simple pinning)
-        # C = ||x_c - x_p|| (distance between attachment points)
+        # Compute scalar violation magnitude used for penalty growth (simple pinning).
+        # The force/Hessian uses the vector constraint C_vec = x_c - x_p; here we use ||C_vec|| to update a single scalar k.
         x_p = wp.transform_get_translation(X_wp)
         x_c = wp.transform_get_translation(X_wc)
         C_stretch = wp.length(x_c - x_p)
@@ -2242,47 +2283,54 @@ def update_duals_joint(
         C_bend = wp.length(kappa)
 
         # Update stretch penalty (DOF 0)
-        stretch_idx = dof_start
+        stretch_idx = c_start
         stiffness_stretch = joint_penalty_k_max[stretch_idx]
         k_stretch = joint_penalty_k[stretch_idx]
         k_stretch_new = wp.min(k_stretch + beta * C_stretch, stiffness_stretch)
         joint_penalty_k[stretch_idx] = k_stretch_new
 
         # Update bend penalty (DOF 1)
-        bend_idx = dof_start + lin_dof_count
+        bend_idx = c_start + 1
         stiffness_bend = joint_penalty_k_max[bend_idx]
         k_bend = joint_penalty_k[bend_idx]
         k_bend_new = wp.min(k_bend + beta * C_bend, stiffness_bend)
         joint_penalty_k[bend_idx] = k_bend_new
         return
 
-    # BALL joint: update 3 linear attachment penalties in the parent joint frame
+    # BALL joint: update isotropic linear anchor-coincidence penalty (single scalar).
     if joint_type[j] == JointType.BALL:
-        # Parent joint frame basis in world
-        R_wp = wp.quat_to_matrix(wp.transform_get_rotation(X_wp))
-        e0 = wp.vec3(R_wp[0, 0], R_wp[1, 0], R_wp[2, 0])
-        e1 = wp.vec3(R_wp[0, 1], R_wp[1, 1], R_wp[2, 1])
-        e2 = wp.vec3(R_wp[0, 2], R_wp[1, 2], R_wp[2, 2])
-
-        # Constraint violation (world) and per-axis components in the parent joint frame
+        # Scalar violation magnitude used for penalty growth; force/Hessian uses C_vec directly.
         x_p = wp.transform_get_translation(X_wp)
         x_c = wp.transform_get_translation(X_wc)
         C_vec = x_c - x_p
-        c0 = wp.abs(wp.dot(e0, C_vec))
-        c1 = wp.abs(wp.dot(e1, C_vec))
-        c2 = wp.abs(wp.dot(e2, C_vec))
+        C_lin = wp.length(C_vec)
 
-        i0 = dof_start + 0
-        i1 = dof_start + 1
-        i2 = dof_start + 2
-
+        i0 = c_start
         k0 = joint_penalty_k[i0]
-        k1 = joint_penalty_k[i1]
-        k2 = joint_penalty_k[i2]
+        joint_penalty_k[i0] = wp.min(k0 + beta * C_lin, joint_penalty_k_max[i0])
+        return
 
-        joint_penalty_k[i0] = wp.min(k0 + beta * c0, joint_penalty_k_max[i0])
-        joint_penalty_k[i1] = wp.min(k1 + beta * c1, joint_penalty_k_max[i1])
-        joint_penalty_k[i2] = wp.min(k2 + beta * c2, joint_penalty_k_max[i2])
+    # FIXED joint: update isotropic linear + isotropic angular penalties (2 scalars).
+    if joint_type[j] == JointType.FIXED:
+        i_lin = c_start + 0
+        i_ang = c_start + 1
+
+        # Linear violation magnitude
+        x_p = wp.transform_get_translation(X_wp)
+        x_c = wp.transform_get_translation(X_wc)
+        C_lin = wp.length(x_c - x_p)
+        k_lin = joint_penalty_k[i_lin]
+        joint_penalty_k[i_lin] = wp.min(k_lin + beta * C_lin, joint_penalty_k_max[i_lin])
+
+        # Angular violation magnitude from kappa
+        q_wp = wp.transform_get_rotation(X_wp)
+        q_wc = wp.transform_get_rotation(X_wc)
+        q_wp_rest = wp.transform_get_rotation(X_wp_rest)
+        q_wc_rest = wp.transform_get_rotation(X_wc_rest)
+        kappa = cable_get_kappa(q_wp, q_wc, q_wp_rest, q_wc_rest)
+        C_ang = wp.length(kappa)
+        k_ang = joint_penalty_k[i_ang]
+        joint_penalty_k[i_ang] = wp.min(k_ang + beta * C_ang, joint_penalty_k_max[i_ang])
         return
 
 
@@ -2492,8 +2540,8 @@ def update_cable_dahl_state(
     joint_child: wp.array(dtype=int),
     joint_X_p: wp.array(dtype=wp.transform),
     joint_X_c: wp.array(dtype=wp.transform),
-    joint_qd_start: wp.array(dtype=int),
-    joint_target_ke: wp.array(dtype=float),
+    joint_constraint_start: wp.array(dtype=int),
+    joint_penalty_k_max: wp.array(dtype=float),
     # Body states (final, after solver convergence)
     body_q: wp.array(dtype=wp.transform),
     body_q_rest: wp.array(dtype=wp.transform),
@@ -2516,8 +2564,8 @@ def update_cable_dahl_state(
         joint_type: Joint type (only updates for cable joints)
         joint_parent, joint_child: Parent/child body indices
         joint_X_p, joint_X_c: Joint frames in parent/child
-        joint_qd_start: DOF start index per joint
-        joint_target_ke: Target stiffness per DOF [N*m^2] (material EI for bending)
+        joint_constraint_start: Start index per joint in the solver constraint layout
+        joint_penalty_k_max: Per-constraint stiffness cap; for cables, bend cap stores material EI [N*m^2]
         body_q: Final body transforms (after convergence)
         body_q_rest: Rest body transforms
         body_com: Body COM in local frame (used to compute segment length for Cosserat discretization)
@@ -2564,11 +2612,9 @@ def update_cable_dahl_state(
     eps_max = joint_eps_max[j]  # Maximum persistent strain [rad]
     tau = joint_tau[j]  # Memory decay length [rad]
 
-    # Get bend stiffness and segment length for this joint
-    # Cable joint DOFs: DOF 0 = stretch (linear), DOF 1 = bend (angular)
-    dof_start = joint_qd_start[j]
-    bend_dof_index = dof_start + 1
-    k_bend_material = joint_target_ke[bend_dof_index]  # Material stiffness EI [N*m^2]
+    # Get bend stiffness (material EI) from the bend constraint cap.
+    c_start = joint_constraint_start[j]
+    k_bend_material = joint_penalty_k_max[c_start + 1]  # Material stiffness EI [N*m^2]
 
     # Compute segment length (Cosserat rod discretization)
     parent_com = body_com[parent]
