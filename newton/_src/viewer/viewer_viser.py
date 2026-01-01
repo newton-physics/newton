@@ -167,15 +167,13 @@ class ViewerViser(ViewerBase):
             name (str): Entity path for the mesh.
             points (wp.array): Vertex positions (wp.vec3).
             indices (wp.array): Triangle indices (wp.uint32).
-            normals (wp.array, optional): Vertex normals (wp.vec3).
-            uvs (wp.array, optional): UV coordinates (wp.vec2).
+            normals (wp.array, optional): Vertex normals, unused in viser (wp.vec3).
+            uvs (wp.array, optional): UV coordinates, unused in viser (wp.vec2).
             hidden (bool): Whether the mesh is hidden.
             backface_culling (bool): Whether to enable backface culling.
         """
         assert isinstance(points, wp.array)
         assert isinstance(indices, wp.array)
-        assert normals is None or isinstance(normals, wp.array)
-        assert uvs is None or isinstance(uvs, wp.array)
 
         # Convert to numpy arrays
         points_np = self._to_numpy(points).astype(np.float32)
@@ -185,21 +183,10 @@ class ViewerViser(ViewerBase):
         if indices_np.ndim == 1:
             indices_np = indices_np.reshape(-1, 3)
 
-        # Compute normals if not provided
-        if normals is None:
-            normals_wp = wp.zeros_like(points)
-            wp.launch(_compute_normals, dim=len(indices_np), inputs=[points, indices, normals_wp], device=self.device)
-            wp.map(wp.normalize, normals_wp, out=normals_wp)
-            normals_np = normals_wp.numpy()
-        else:
-            normals_np = self._to_numpy(normals)
-
         # Store mesh data for instancing
         self._meshes[name] = {
             "points": points_np,
             "indices": indices_np,
-            "normals": normals_np,
-            "uvs": self._to_numpy(uvs).astype(np.float32) if uvs is not None else None,
         }
 
         # Remove existing mesh if present
@@ -884,24 +871,3 @@ def _is_jupyter_notebook():
             return False
     except NameError:
         return False
-
-
-@wp.kernel
-def _compute_normals(
-    points: wp.array(dtype=wp.vec3),
-    indices: wp.array(dtype=wp.int32),
-    # output
-    normals: wp.array(dtype=wp.vec3),
-):
-    """Compute vertex normals from mesh faces."""
-    face = wp.tid()
-    i0 = indices[face * 3]
-    i1 = indices[face * 3 + 1]
-    i2 = indices[face * 3 + 2]
-    v0 = points[i0]
-    v1 = points[i1]
-    v2 = points[i2]
-    normal = wp.normalize(wp.cross(v1 - v0, v2 - v0))
-    wp.atomic_add(normals, i0, normal)
-    wp.atomic_add(normals, i1, normal)
-    wp.atomic_add(normals, i2, normal)
