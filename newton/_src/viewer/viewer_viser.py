@@ -292,8 +292,7 @@ class ViewerViser(ViewerBase):
         if colors_np is not None:
             batched_colors = (colors_np * 255).astype(np.uint8)
         else:
-            # Default gray color
-            batched_colors = np.full((num_instances, 3), 180, dtype=np.uint8)
+            batched_colors = None  # Will use cached colors or default gray
 
         # Check if we already have a batched mesh handle for this name
         if name in self._instances and name in self._scene_handles:
@@ -315,7 +314,11 @@ class ViewerViser(ViewerBase):
                     handle.batched_positions = positions
                     handle.batched_wxyzs = quats_wxyz
                     handle.batched_scales = batched_scales
-                    handle.batched_colors = batched_colors
+                    # Only update colors if they were explicitly provided
+                    if batched_colors is not None:
+                        handle.batched_colors = batched_colors
+                        # Cache the colors for future reference
+                        self._instances[name]["colors"] = batched_colors
                     return
                 except Exception:
                     # If update fails, recreate the mesh
@@ -325,6 +328,10 @@ class ViewerViser(ViewerBase):
                         pass
                     del self._scene_handles[name]
                     del self._instances[name]
+
+        # For new instances, use provided colors or default gray
+        if batched_colors is None:
+            batched_colors = np.full((num_instances, 3), 180, dtype=np.uint8)
 
         # Create new batched mesh
         handle = self._server.scene.add_batched_meshes_simple(
@@ -342,6 +349,7 @@ class ViewerViser(ViewerBase):
         self._instances[name] = {
             "mesh": mesh,
             "count": num_instances,
+            "colors": batched_colors,  # Cache the colors
         }
 
     @override
