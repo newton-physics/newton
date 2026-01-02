@@ -128,7 +128,7 @@ dev = ["asv>=0.6.4"]
 cache-dir = ".cache/ruff"
 line-length = 120
 indent-width = 4
-exclude = []
+exclude = ["*.js"]
 
 [[tool.uv.index]]
 name = "pytorch-cu128"
@@ -216,7 +216,7 @@ reportOptionalOperand = false
 reportUnusedCallResult = false
 
 [tool.typos]
-files.extend-exclude = ["/examples/assets", "*.urdf", "*.usd", "*.usda", "*.mjcf"]
+files.extend-exclude = ["/examples/assets", "*.urdf", "*.usd", "*.usda", "*.mjcf", "*.js"]
 
 [tool.typos.default.extend-words]
 arange = "arange"

@@ -35,6 +35,7 @@ import mimetypes
 import os
 import sys
 from pathlib import Path
+from typing import ClassVar
 
 # Add/override MIME types for proper module loading
 mimetypes.add_type("application/wasm", ".wasm")
@@ -48,7 +49,7 @@ class CORSHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
     """HTTP handler with proper MIME type support and CORS headers."""
 
     # Explicit extensions map for strict MIME type checking
-    extensions_map = {
+    extensions_map: ClassVar[dict[str, str]] = {  # pyright: ignore[reportIncompatibleVariableOverride]
         ".wasm": "application/wasm",
         ".js": "application/javascript",
         ".css": "text/css",
@@ -94,12 +95,8 @@ class CORSHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="Serve the built Sphinx documentation with proper MIME types."
-    )
-    parser.add_argument(
-        "--port", "-p", type=int, default=8000, help="Port to serve on (default: 8000)"
-    )
+    parser = argparse.ArgumentParser(description="Serve the built Sphinx documentation with proper MIME types.")
+    parser.add_argument("--port", "-p", type=int, default=8000, help="Port to serve on (default: 8000)")
     parser.add_argument(
         "--directory",
         "-d",
@@ -138,4 +135,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
