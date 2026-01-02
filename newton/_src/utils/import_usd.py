@@ -254,7 +254,10 @@ def parse_usd(
         has_particle_collision=False,
     )
 
-    def _load_visual_shapes_impl(parent_body_id, prim, incoming_xform: wp.transform, incoming_scale: wp.vec3):
+    def _load_visual_shapes_impl(
+        parent_body_id: int, prim: Usd.Prim, incoming_xform: wp.transform, incoming_scale: wp.vec3
+    ):
+        """Load visual-only shapes (no collision shapes, no rigid body or mass API schemas applied) for a given prim and its children."""
         if (
             prim.HasAPI(UsdPhysics.RigidBodyAPI)
             or prim.HasAPI(UsdPhysics.MassAPI)
@@ -432,7 +435,8 @@ def parse_usd(
         for child in prim.GetChildren():
             _load_visual_shapes_impl(parent_body_id, child, xform, scale)
 
-    def add_body(prim, xform, key, armature):
+    def add_body(prim: Usd.Prim, xform: wp.transform, key: str, armature: float) -> int:
+        """Add a rigid body to the builder and optionally load its visual shapes and sites among the body prim's children. Returns the resulting body index."""
         # Extract custom attributes for this body
         body_custom_attrs = usd.get_custom_attribute_values(prim, builder_custom_attr_body)
 
@@ -448,7 +452,14 @@ def parse_usd(
                 _load_visual_shapes_impl(b, child, wp.transform_identity(), wp.vec3(1.0))
         return b
 
-    def parse_body(rigid_body_desc, prim, incoming_xform=None, add_body_to_builder=True):
+    def parse_body(
+        rigid_body_desc: UsdPhysics.RigidBodyDesc,
+        prim: Usd.Prim,
+        incoming_xform: wp.transform | None = None,
+        add_body_to_builder: bool = True,
+    ) -> int | dict[str, Any]:
+        """Parse a rigid body description and add it to the builder. Returns the resulting body index if add_body_to_builder is True,
+        a dictionary of body data that can be passed to ModelBuilder.add_body() otherwise."""
         nonlocal path_body_map
         nonlocal physics_scene_prim
 
@@ -475,7 +486,10 @@ def parse_usd(
                 "armature": body_armature,
             }
 
-    def resolve_joint_parent_child(joint_desc, body_index_map: dict[str, int], get_transforms: bool = True):
+    def resolve_joint_parent_child(
+        joint_desc: UsdPhysics.JointDesc, body_index_map: dict[str, int], get_transforms: bool = True
+    ):
+        """Resolve the parent and child of a joint and return their parent + child transforms if requested."""
         if get_transforms:
             parent_tf = wp.transform(joint_desc.localPose0Position, usd.from_gfquat(joint_desc.localPose0Orientation))
             child_tf = wp.transform(joint_desc.localPose1Position, usd.from_gfquat(joint_desc.localPose1Orientation))
@@ -490,8 +504,7 @@ def parse_usd(
         # If child_id is -1, swap parent and child
         if child_id == -1:
             if parent_id == -1:
-                warnings.warn(f"Skipping joint {joint_desc.primPath}: both bodies unresolved", stacklevel=2)
-                return
+                raise ValueError(f"Unable to parse joint {joint_desc.primPath}: both bodies unresolved")
             parent_id, child_id = child_id, parent_id
             if get_transforms:
                 parent_tf, child_tf = child_tf, parent_tf
@@ -502,19 +515,21 @@ def parse_usd(
         else:
             return parent_id, child_id
 
-    def parse_joint(joint_desc, joint_path, incoming_xform=None):
+    def parse_joint(joint_desc: UsdPhysics.JointDesc, incoming_xform: wp.transform | None = None) -> int | None:
+        """Parse a joint description and add it to the builder. Returns the resulting joint index if successful, None otherwise."""
         if not joint_desc.jointEnabled and only_load_enabled_joints:
             return None
         key = joint_desc.type
+        joint_path = str(joint_desc.primPath)
         joint_prim = stage.GetPrimAtPath(joint_desc.primPath)
         # collect engine-specific attributes on the joint prim if requested
         if collect_schema_attrs:
             R.collect_prim_attrs(joint_prim)
-        parent_id, child_id, parent_tf, child_tf = resolve_joint_parent_child(
+        parent_id, child_id, parent_tf, child_tf = resolve_joint_parent_child(  # pyright: ignore[reportAssignmentType]
             joint_desc, path_body_map, get_transforms=True
         )
         if incoming_xform is not None:
-            parent_tf = wp.mul(incoming_xform, parent_tf)
+            parent_tf = incoming_xform * parent_tf
 
         joint_armature = R.get_value(
             joint_prim, prim_type=PrimType.JOINT, key="armature", default=default_joint_armature, verbose=verbose
@@ -530,16 +545,14 @@ def parse_usd(
             "child": child_id,
             "parent_xform": parent_tf,
             "child_xform": child_tf,
-            "key": str(joint_path),
+            "key": joint_path,
             "enabled": joint_desc.jointEnabled,
             "custom_attributes": joint_custom_attrs,
         }
 
-        # joint index before insertion
-        joint_index = builder.joint_count
-
+        joint_index: int | None = None
         if key == UsdPhysics.ObjectType.FixedJoint:
-            builder.add_joint_fixed(**joint_params)
+            joint_index = builder.add_joint_fixed(**joint_params)
         elif key == UsdPhysics.ObjectType.RevoluteJoint or key == UsdPhysics.ObjectType.PrismaticJoint:
             # we need to scale the builder defaults for the joint limits to degrees for revolute joints
             if key == UsdPhysics.ObjectType.RevoluteJoint:
@@ -603,7 +616,7 @@ def parse_usd(
             # joint_prim.CreateAttribute(f"state:{dof_type}:physics:velocity", Sdf.ValueTypeNames.Float).Set(0)
 
             if key == UsdPhysics.ObjectType.PrismaticJoint:
-                builder.add_joint_prismatic(**joint_params)
+                joint_index = builder.add_joint_prismatic(**joint_params)
             else:
                 if joint_desc.drive.enabled:
                     joint_params["target_pos"] *= DegreesToRadian
@@ -616,9 +629,9 @@ def parse_usd(
                 joint_params["limit_ke"] /= DegreesToRadian
                 joint_params["limit_kd"] /= DegreesToRadian
 
-                builder.add_joint_revolute(**joint_params)
+                joint_index = builder.add_joint_revolute(**joint_params)
         elif key == UsdPhysics.ObjectType.SphericalJoint:
-            builder.add_joint_ball(**joint_params)
+            joint_index = builder.add_joint_ball(**joint_params)
         elif key == UsdPhysics.ObjectType.D6Joint:
             linear_axes = []
             angular_axes = []
@@ -800,7 +813,7 @@ def parse_usd(
                     # ).Set(0)
                     num_dofs += 1
 
-            builder.add_joint_d6(**joint_params, linear_axes=linear_axes, angular_axes=angular_axes)
+            joint_index = builder.add_joint_d6(**joint_params, linear_axes=linear_axes, angular_axes=angular_axes)
         elif key == UsdPhysics.ObjectType.DistanceJoint:
             if joint_desc.limit.enabled and joint_desc.minEnabled:
                 min_dist = joint_desc.limit.lower
@@ -810,12 +823,15 @@ def parse_usd(
                 max_dist = joint_desc.limit.upper
             else:
                 max_dist = -1.0
-            builder.add_joint_distance(**joint_params, min_distance=min_dist, max_distance=max_dist)
+            joint_index = builder.add_joint_distance(**joint_params, min_distance=min_dist, max_distance=max_dist)
         else:
             raise NotImplementedError(f"Unsupported joint type {key}")
 
+        if joint_index is None:
+            raise ValueError(f"Failed to add joint {joint_path}")
+
         # map the joint path to the index at insertion time
-        path_joint_map[str(joint_path)] = joint_index
+        path_joint_map[joint_path] = joint_index
 
         # Apply saved initial joint state after joint creation
         if key in (UsdPhysics.ObjectType.RevoluteJoint, UsdPhysics.ObjectType.PrismaticJoint):
@@ -1140,13 +1156,13 @@ def parse_usd(
                         )
                     else:
                         # look up description and add body to builder
-                        body_id = parse_body(
+                        bid: int = parse_body(  # pyright: ignore[reportAssignmentType]
                             body_specs[key],
                             stage.GetPrimAtPath(p),
                             add_body_to_builder=True,
                         )
-                        if body_id >= 0:
-                            art_bodies.append(body_id)
+                        if bid >= 0:
+                            art_bodies.append(bid)
                     # remove body spec once we inserted it
                     del body_specs[key]
 
@@ -1159,8 +1175,10 @@ def parse_usd(
                 continue
 
             # determine the joint graph for this articulation
-            joint_names = []
+            joint_names: list[str] = []
             joint_edges: list[tuple[int, int]] = []
+            # keys of joints that are excluded from the articulation (loop joints)
+            joint_excluded: set[str] = set()
             for p in desc.articulatedJoints:
                 joint_key = str(p)
                 joint_desc = joint_descriptions[joint_key]
@@ -1173,9 +1191,12 @@ def parse_usd(
                     continue
                 if str(joint_desc.body1) in ignored_body_paths:
                     continue
-                joint_names.append(joint_key)
-                parent_id, child_id = resolve_joint_parent_child(joint_desc, body_ids, get_transforms=False)
-                joint_edges.append((parent_id, child_id))
+                parent_id, child_id = resolve_joint_parent_child(joint_desc, body_ids, get_transforms=False)  # pyright: ignore[reportAssignmentType]
+                if joint_desc.excludeFromArticulation:
+                    joint_excluded.add(joint_key)
+                else:
+                    joint_edges.append((parent_id, child_id))
+                    joint_names.append(joint_key)
 
             articulation_xform = wp.mul(incoming_world_xform, usd.get_transform(articulation_prim))
             articulation_joint_indices = []
@@ -1209,10 +1230,13 @@ def parse_usd(
                 if joint_ordering is not None:
                     if verbose:
                         print(f"Sorting joints using {joint_ordering} ordering...")
-                    sorted_joints = topological_sort(joint_edges, use_dfs=joint_ordering == "dfs")
+                    sorted_joints = topological_sort(
+                        joint_edges, use_dfs=joint_ordering == "dfs", ensure_single_root=True
+                    )
                     if verbose:
                         print("Joint ordering:", sorted_joints)
                 else:
+                    # we keep the original order of the joints
                     sorted_joints = np.arange(len(joint_names))
 
             if len(sorted_joints) > 0:
@@ -1236,7 +1260,7 @@ def parse_usd(
                 if first_joint_parent != -1:
                     # the mechanism is floating since there is no joint connecting it to the world
                     # we explicitly add a free joint connecting the first body in the articulation to the world
-                    # to make sure Featherstone and MuJoCo can simulate it
+                    # to make sure generalized-coordinate solvers can simulate it
                     if bodies_follow_joint_ordering:
                         child_body = body_data[first_joint_parent]
                         child_body_id = path_body_map[child_body["key"]]
@@ -1256,21 +1280,28 @@ def parse_usd(
                         # except if we already inserted a floating-base joint
                         joint = parse_joint(
                             joint_descriptions[joint_names[i]],
-                            joint_path=joint_names[i],
                             incoming_xform=articulation_xform,
                         )
                     else:
                         joint = parse_joint(
                             joint_descriptions[joint_names[i]],
-                            joint_path=joint_names[i],
                         )
                     if joint is not None:
                         articulation_joint_indices.append(joint)
 
+                # insert loop joints
+                for joint_key in joint_excluded:
+                    joint = parse_joint(
+                        joint_descriptions[joint_key],
+                        incoming_xform=articulation_xform,
+                    )
+
             # Create the articulation from all collected joints
             if articulation_joint_indices:
                 builder.add_articulation(
-                    articulation_joint_indices, key=articulation_path, custom_attributes=articulation_custom_attrs
+                    articulation_joint_indices,
+                    key=articulation_path,
+                    custom_attributes=articulation_custom_attrs,
                 )
 
             articulation_bodies[articulation_id] = art_bodies
@@ -1285,7 +1316,7 @@ def parse_usd(
     # insert remaining bodies that were not part of any articulation so far
     for path, rigid_body_desc in body_specs.items():
         key = str(path)
-        body_id = parse_body(
+        body_id: int = parse_body(  # pyright: ignore[reportAssignmentType]
             rigid_body_desc,
             stage.GetPrimAtPath(path),
             incoming_xform=incoming_world_xform,

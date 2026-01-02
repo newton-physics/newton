@@ -181,6 +181,7 @@ def invert_3d_rotational_dofs(
 def eval_single_articulation_fk(
     joint_start: int,
     joint_end: int,
+    joint_articulation: wp.array(dtype=int),
     joint_q: wp.array(dtype=float),
     joint_qd: wp.array(dtype=float),
     joint_q_start: wp.array(dtype=int),
@@ -198,6 +199,10 @@ def eval_single_articulation_fk(
     body_qd: wp.array(dtype=wp.spatial_vector),
 ):
     for i in range(joint_start, joint_end):
+        articulation = joint_articulation[i]
+        if articulation == -1:
+            continue
+
         parent = joint_parent[i]
         child = joint_child[i]
 
@@ -345,6 +350,7 @@ def eval_articulation_fk(
         dtype=bool
     ),  # used to enable / disable FK for an articulation, if None then treat all as enabled
     articulation_indices: wp.array(dtype=int),  # can be None, articulation indices to process
+    joint_articulation: wp.array(dtype=int),
     joint_q: wp.array(dtype=float),
     joint_qd: wp.array(dtype=float),
     joint_q_start: wp.array(dtype=int),
@@ -386,6 +392,7 @@ def eval_articulation_fk(
     eval_single_articulation_fk(
         joint_start,
         joint_end,
+        joint_articulation,
         joint_q,
         joint_qd,
         joint_q_start,
@@ -442,6 +449,7 @@ def eval_fk(
             model.articulation_count,
             mask,
             indices,
+            model.joint_articulation,
             joint_q,
             joint_qd,
             model.joint_q_start,
