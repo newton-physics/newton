@@ -25,6 +25,10 @@ import os
 import sys
 from pathlib import Path
 
+# Set environment variable to indicate we're in a Sphinx build.
+# This is inherited by subprocesses (e.g., Jupyter kernels run by nbsphinx).
+os.environ["NEWTON_SPHINX_BUILD"] = "1"
+
 # Determine the Git version/tag from CI environment variables.
 # 1. Check for GitHub Actions' variable.
 # 2. Check for GitLab CI's variable.
@@ -68,6 +72,7 @@ if str(_ext_path) not in sys.path:
 
 extensions = [
     "myst_parser",  # Parse markdown files
+    "nbsphinx",  # Process Jupyter notebooks
     "sphinx.ext.autodoc",
     "sphinx.ext.napoleon",  # Convert docstrings to reStructuredText
     "sphinx.ext.intersphinx",
@@ -84,6 +89,18 @@ extensions = [
     "autodoc_filter",
     "autodoc_wpfunc",
 ]
+
+# -- nbsphinx configuration ---------------------------------------------------
+
+# Don't execute notebooks during build (they should be pre-executed with outputs)
+nbsphinx_execute = "auto"
+
+# Timeout for notebook execution (in seconds)
+nbsphinx_timeout = 600
+
+# Allow errors in notebook execution (useful for development)
+nbsphinx_allow_errors = False
+
 
 templates_path = ["_templates"]
 exclude_patterns = ["_build", "Thumbs.db", ".DS_Store"]
