@@ -1035,11 +1035,6 @@ def evaluate_joint_force_hessian(
         stretch_damping = joint_penalty_kd[c_start]
         bend_damping = joint_penalty_kd[c_start + 1]
 
-        # Cable segment convention: parent_com[2] stores half-length in local frame
-        rest_length = 2.0 * parent_com[2]
-        if rest_length < _SMALL_LENGTH_EPS:
-            return wp.vec3(0.0), wp.vec3(0.0), wp.mat33(0.0), wp.mat33(0.0), wp.mat33(0.0)
-
         total_force = wp.vec3(0.0)
         total_torque = wp.vec3(0.0)
         total_H_ll = wp.mat33(0.0)
@@ -1053,7 +1048,6 @@ def evaluate_joint_force_hessian(
             q_wc_rest = wp.transform_get_rotation(X_wc_rest)
             q_wp_prev = wp.transform_get_rotation(X_wp_prev)
             q_wc_prev = wp.transform_get_rotation(X_wc_prev)
-            bend_k_eff = bend_penalty_k / rest_length
             sigma0 = joint_sigma_start[joint_index]
             C_fric = joint_C_fric[joint_index]
             bend_torque, bend_H_aa = evaluate_angular_constraint_force_hessian_isotropic(
@@ -1064,7 +1058,7 @@ def evaluate_joint_force_hessian(
                 q_wp_prev,
                 q_wc_prev,
                 is_parent_body,
-                bend_k_eff,
+                bend_penalty_k,  # effective per-joint bend stiffness (pre-scaled for rods)
                 sigma0,
                 C_fric,
                 bend_damping,
@@ -1074,6 +1068,9 @@ def evaluate_joint_force_hessian(
             total_H_aa = total_H_aa + bend_H_aa
 
         if stretch_penalty_k > 0.0:
+            # Stretch: meters residual C = x_c - x_p, using effective point stiffness [N/m].
+            # For rods created by `ModelBuilder.add_rod()`, this stiffness is pre-scaled by segment length.
+            k_eff = stretch_penalty_k
             f_s, t_s, Hll_s, Hal_s, Haa_s = evaluate_linear_constraint_force_hessian_isotropic(
                 X_wp,
                 X_wc,
@@ -1084,7 +1081,7 @@ def evaluate_joint_force_hessian(
                 parent_com,
                 child_com,
                 is_parent_body,
-                stretch_penalty_k,
+                k_eff,
                 stretch_damping,
                 dt,
             )
@@ -1155,7 +1152,7 @@ def evaluate_joint_force_hessian(
                 q_wp_prev,
                 q_wc_prev,
                 is_parent_body,
-                # Note: unlike cable bending (which uses EI/L), FIXED uses k_ang directly as an effective stiffness.
+                # Note: FIXED uses k_ang directly as an effective stiffness.
                 k_ang,
                 sigma0,
                 C_fric,
@@ -1570,22 +1567,12 @@ def compute_cable_dahl_parameters(
     eps_max = joint_eps_max[j]
     tau = joint_tau[j]
 
-    # Get bend stiffness (material EI) from the bend constraint cap (constraint slot 1 for cables).
+    # Get per-joint bend stiffness cap from the bend constraint cap (constraint slot 1 for cables).
     c_start = joint_constraint_start[j]
     k_bend_material = joint_penalty_k_max[c_start + 1]
 
-    # Compute segment length (Cosserat rod discretization)
-    parent_com = body_com[parent]
-    rest_length = 2.0 * parent_com[2]
-
-    # Skip degenerate segments
-    if rest_length < _SMALL_LENGTH_EPS:
-        joint_sigma_start[j] = wp.vec3(0.0)
-        joint_C_fric[j] = wp.vec3(0.0)
-        return
-
     # Effective stiffness and friction envelope
-    k_bend = k_bend_material / rest_length
+    k_bend = k_bend_material
     sigma_max = k_bend * eps_max
     if sigma_max <= 0.0 or tau <= 0.0:
         joint_sigma_start[j] = wp.vec3(0.0)
@@ -2264,16 +2251,8 @@ def update_duals_joint(
         q_wp_rest = wp.transform_get_rotation(X_wp_rest)
         q_wc_rest = wp.transform_get_rotation(X_wc_rest)
 
-        # Compute segment rest length (capsule length) - shared by both modes
-        parent_com_local = body_com[parent]
-        rest_length = 2.0 * parent_com_local[2]
-
-        # Skip degenerate segments
-        if rest_length < _SMALL_LENGTH_EPS:
-            return
-
-        # Compute scalar violation magnitude used for penalty growth (simple pinning).
-        # The force/Hessian uses the vector constraint C_vec = x_c - x_p; here we use ||C_vec|| to update a single scalar k.
+        # Compute scalar violation magnitudes used for penalty growth.
+        # Stretch uses meters residual magnitude ||x_c - x_p|| to update an effective [N/m] stiffness.
         x_p = wp.transform_get_translation(X_wp)
         x_c = wp.transform_get_translation(X_wc)
         C_stretch = wp.length(x_c - x_p)
@@ -2565,7 +2544,7 @@ def update_cable_dahl_state(
         joint_parent, joint_child: Parent/child body indices
         joint_X_p, joint_X_c: Joint frames in parent/child
         joint_constraint_start: Start index per joint in the solver constraint layout
-        joint_penalty_k_max: Per-constraint stiffness cap; for cables, bend cap stores material EI [N*m^2]
+        joint_penalty_k_max: Per-constraint stiffness cap; for cables, bend cap stores effective per-joint stiffness [N*m]
         body_q: Final body transforms (after convergence)
         body_q_rest: Rest body transforms
         body_com: Body COM in local frame (used to compute segment length for Cosserat discretization)
@@ -2612,20 +2591,12 @@ def update_cable_dahl_state(
     eps_max = joint_eps_max[j]  # Maximum persistent strain [rad]
     tau = joint_tau[j]  # Memory decay length [rad]
 
-    # Get bend stiffness (material EI) from the bend constraint cap.
+    # Get per-joint bend stiffness cap from the bend constraint cap.
     c_start = joint_constraint_start[j]
-    k_bend_material = joint_penalty_k_max[c_start + 1]  # Material stiffness EI [N*m^2]
+    k_bend_material = joint_penalty_k_max[c_start + 1]  # per-joint bend stiffness cap [N*m]
 
-    # Compute segment length (Cosserat rod discretization)
-    parent_com = body_com[parent]
-    rest_length = 2.0 * parent_com[2]  # Capsule segment length [m]
-
-    # Skip degenerate segments
-    if rest_length < _SMALL_LENGTH_EPS:
-        return
-
-    # Effective stiffness (same scaling as elastic force): k_eff = EI / L
-    k_bend = k_bend_material / rest_length  # [N*m^2] / [m] = [N*m]
+    # Effective stiffness used for the elastic torque and friction envelope.
+    k_bend = k_bend_material  # [N*m]
 
     # Compute maximum friction stress from strain (paper's approach: sigma_max = k_eff * eps_max)
     # Note: Must use k_eff (not k_material) to match elastic force scaling.
