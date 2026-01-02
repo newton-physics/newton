@@ -29,6 +29,7 @@ Newton Physics
    Conventions <concepts/conventions>
    USD Parsing <concepts/usd_parsing>
    Custom Attributes <concepts/custom_attributes>
+   Extended State Attributes <concepts/extended_state_attributes>
    Collisions and Contacts <concepts/collisions>
    
 .. toctree::

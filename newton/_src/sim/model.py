@@ -470,6 +470,8 @@ class Model:
         """Assignment for custom attributes using ModelAttributeAssignment enum values.
         If an attribute is not in this dictionary, it is assumed to be a Model attribute (assignment=ModelAttributeAssignment.MODEL)."""
 
+        self._requested_state_attributes: set[str] = set()
+
         # attributes per body
         self.attribute_frequency["body_q"] = ModelAttributeFrequency.BODY
         self.attribute_frequency["body_qd"] = ModelAttributeFrequency.BODY
@@ -546,6 +548,9 @@ class Model:
         Returns:
             State: The state object
         """
+
+        requested = self.get_requested_state_attributes()
+
         s = State()
         if requires_grad is None:
             requires_grad = self.requires_grad
@@ -566,6 +571,12 @@ class Model:
         if self.joint_count:
             s.joint_q = wp.clone(self.joint_q, requires_grad=requires_grad)
             s.joint_qd = wp.clone(self.joint_qd, requires_grad=requires_grad)
+
+        if "body_qdd" in requested:
+            s.body_qdd = wp.zeros_like(self.body_qd, requires_grad=requires_grad)
+
+        if "body_parent_f" in requested:
+            s.body_parent_f = wp.zeros_like(self.body_qd, requires_grad=requires_grad)
 
         # attach custom attributes with assignment==STATE
         self._add_custom_attributes(s, ModelAttributeAssignment.STATE, requires_grad=requires_grad)
@@ -698,6 +709,15 @@ class Model:
         self._add_custom_attributes(contacts, ModelAttributeAssignment.CONTACT, requires_grad=requires_grad)
         return contacts
 
+    def request_state_attributes(self, *attributes: str) -> None:
+        """
+        Request that specific state attributes be allocated when creating a State object.
+
+        Args:
+            *attributes: Variable number of attribute names (strings).
+        """
+        self._requested_state_attributes.update(attributes)
+
     def _add_custom_attributes(
         self,
         destination: object,
@@ -823,3 +843,28 @@ class Model:
         if frequency is None:
             raise AttributeError(f"Attribute frequency of '{name}' is not known")
         return frequency
+
+    def get_requested_state_attributes(self) -> list[str]:
+        attributes = []
+
+        if self.particle_count:
+            attributes.extend(
+                (
+                    "particle_q",
+                    "particle_qd",
+                    "particle_f",
+                )
+            )
+        if self.body_count:
+            attributes.extend(
+                (
+                    "body_q",
+                    "body_qd",
+                    "body_f",
+                )
+            )
+        if self.joint_count:
+            attributes.extend(("joint_q", "joint_qd"))
+
+        attributes.extend(self._requested_state_attributes.difference(attributes))
+        return attributes
