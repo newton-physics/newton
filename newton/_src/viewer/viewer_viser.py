@@ -20,7 +20,7 @@ import newton
 from newton.utils import create_plane_mesh
 
 from ..core.types import override
-from .viewer import ViewerBase, is_jupyter_notebook, is_sphinx_build
+from .viewer import ViewerBase, is_jupyter_notebook
 
 
 class ViewerViser(ViewerBase):
@@ -581,72 +581,60 @@ class ViewerViser(ViewerBase):
         """
         Show the viewer in a Jupyter notebook.
 
-        In a regular Jupyter notebook session, this displays the interactive Viser viewer.
-        In a Sphinx documentation build, this displays an embedded iframe player that
-        loads a pre-recorded .viser file.
+        If recording is active, saves the recording and displays using the static HTML
+        viewer with timeline controls. Otherwise, displays the live server in an IFrame.
 
         Args:
             width: Width of the embedded player in pixels.
             height: Height of the embedded player in pixels.
 
         Returns:
-            The display object (viewer for Jupyter, HTML for Sphinx).
+            The display object.
 
         Example:
             >>> viewer = newton.viewer.ViewerViser(record_to_viser="my_sim.viser")
             >>> viewer.set_model(model)
             >>> # ... run simulation ...
-            >>> viewer.save_recording()
+            >>> viewer.show_notebook()  # Saves recording and displays with timeline
         """
         from pathlib import Path  # noqa: PLC0415
 
         from IPython.display import HTML, IFrame, display  # noqa: PLC0415
 
-        if is_sphinx_build():
-            # Sphinx build - save recording and display iframe
-            if self._serializer is not None and self._record_to_viser is not None:
-                recording_path = Path(self._record_to_viser)
-                recording_path.parent.mkdir(parents=True, exist_ok=True)
-                self.save_recording()
+        from .viewer import is_sphinx_build  # noqa: PLC0415
 
-            # Generate iframe HTML that uses the shared viser-player.js
-            # The data-recording path should be relative to the docs root
-            if self._record_to_viser:
-                # Convert to a path relative to _static if needed
+        if self._serializer is not None and self._record_to_viser is not None:
+            # Recording is active - save it first
+            recording_path = Path(self._record_to_viser)
+            recording_path.parent.mkdir(parents=True, exist_ok=True)
+            self.save_recording()
+
+            if is_sphinx_build():
+                # Sphinx build - use static HTML with viser-player.js
+                # The recording path should be relative to the built docs
                 recording_str = str(self._record_to_viser)
                 if not recording_str.startswith("_static"):
-                    # Assume it's a relative path from the notebook location
-                    # For Sphinx, we need to reference from the page location
                     recording_str = recording_str.lstrip("./").lstrip("../")
+
+                embed_html = f"""
+<div class="viser-player-container" style="margin: 20px 0;">
+    <iframe
+        src="../_static/viser/index.html?playbackPath=../{recording_str}"
+        width="{width}"
+        height="{height}"
+        frameborder="0"
+        style="border: 1px solid #ccc; border-radius: 8px;">
+    </iframe>
+</div>
+"""
+                return display(HTML(embed_html))
             else:
-                recording_str = ""
+                # Regular Jupyter - use local HTTP server with viser client
+                from .notebook_utils import display_viser_recording  # noqa: PLC0415
 
-            embed_html = f"""
-    <div class="viser-player-container" style="margin: 20px 0;">
-        <p><strong>Interactive 3D Simulation Playback:</strong></p>
-        <iframe
-            class="viser-player"
-            data-recording="{recording_str}"
-            width="100%"
-            height="{height}"
-            frameborder="0"
-            style="border: 1px solid #ccc; border-radius: 8px;">
-        </iframe>
-        <p style="font-size: 0.9em; color: #666; margin-top: 8px;">
-            Use mouse to rotate, scroll to zoom, and right-click to pan.
-        </p>
-    </div>
-    <script src="../_static/viser-player.js"></script>
-    """
-            return display(HTML(embed_html))
+                return display_viser_recording(self._record_to_viser, width=width, height=height)
         else:
-            # Regular Jupyter session - save recording if active, then display
-            if self._serializer is not None and self._record_to_viser is not None:
-                recording_path = Path(self._record_to_viser)
-                recording_path.parent.mkdir(parents=True, exist_ok=True)
-                self.save_recording()
-
-            # Display the interactive viewer via IFrame
+            # No recording - display the live server via IFrame
             return display(IFrame(src=self.url, width=width, height=height))
 
     def _ipython_display_(self):
