@@ -224,6 +224,42 @@ To build the documentation locally, ensure you have the documentation dependenci
 
 The built documentation will be available in ``docs/_build/html``.
 
+Serving the documentation locally
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+After building the documentation, you can serve it locally using the ``docs/serve.py`` script.
+This is particularly useful for testing interactive features like the Viser 3D visualizations
+in the tutorial notebooks, which require proper MIME types for WebAssembly and JavaScript modules.
+
+.. tab-set::
+    :sync-group: env
+
+    .. tab-item:: uv
+        :sync: uv
+
+        .. code-block:: console
+
+            uv run docs/serve.py
+
+    .. tab-item:: venv
+        :sync: venv
+
+        .. code:: console
+
+            python docs/serve.py
+
+Then open http://localhost:8000 in your browser. You can specify a custom port with ``--port``:
+
+.. code-block:: console
+
+    python docs/serve.py --port 8080
+
+.. note::
+
+    Using Python's built-in ``http.server`` or simply opening the HTML files directly
+    will not work correctly for the interactive Viser visualizations, as they require
+    specific CORS headers and MIME types that ``serve.py`` provides.
+
 Testing documentation code snippets
 -----------------------------------
 
