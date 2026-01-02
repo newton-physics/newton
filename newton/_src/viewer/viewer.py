@@ -1274,3 +1274,51 @@ class ViewerBase:
 
         num_colors = len(colors)
         return [c / 255.0 for c in colors[i % num_colors]]
+
+def is_jupyter_notebook():
+    try:
+        # Check if get_ipython is defined (available in IPython environments)
+        shell = get_ipython().__class__.__name__
+        if shell == "ZMQInteractiveShell":
+            # This indicates a Jupyter Notebook or JupyterLab environment
+            return True
+        elif shell == "TerminalInteractiveShell":
+            # This indicates a standard IPython terminal
+            return False
+        else:
+            # Other IPython-like environments
+            return False
+    except NameError:
+        # get_ipython is not defined, so it's likely a standard Python script
+        return False
+
+def is_sphinx_build() -> bool:
+    """
+    Detect if we're running inside a Sphinx documentation build (via nbsphinx).
+
+    Returns:
+        True if running in Sphinx/nbsphinx, False if in regular Jupyter session.
+    """
+    import os
+
+    # nbsphinx sets SPHINXBUILD or we can check for sphinx in the call stack
+    if os.environ.get("SPHINXBUILD"):
+        return True
+
+    # Check if sphinx is in the module list (imported during doc build)
+    import sys
+
+    if "sphinx" in sys.modules or "nbsphinx" in sys.modules:
+        return True
+
+    # Check call stack for sphinx-related frames
+    try:
+        import traceback
+
+        for frame_info in traceback.extract_stack():
+            if "sphinx" in frame_info.filename.lower() or "nbsphinx" in frame_info.filename.lower():
+                return True
+    except Exception:
+        pass
+
+    return False

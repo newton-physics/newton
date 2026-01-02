@@ -20,7 +20,7 @@ import newton
 from newton.utils import create_plane_mesh
 
 from ..core.types import override
-from .viewer import ViewerBase
+from .viewer import ViewerBase, is_jupyter_notebook, is_sphinx_build
 
 
 class ViewerViser(ViewerBase):
@@ -70,6 +70,7 @@ class ViewerViser(ViewerBase):
         label: str | None = None,
         verbose: bool = True,
         share: bool = False,
+        record_to_viser: str | None = None,
     ):
         """
         Initialize the ViewerViser backend for Newton using the viser visualization library.
@@ -82,6 +83,8 @@ class ViewerViser(ViewerBase):
             label (str | None): Optional label for the viser server window title.
             verbose (bool): If True, print the server URL when starting. Defaults to True.
             share (bool): If True, create a publicly accessible URL via viser's share feature.
+            record_to_viser (str | None): Path to record the viewer to a ``*.viser`` recording file
+                (e.g. "my_recording.viser"). If None, the viewer will not record to a file.
         """
         viser = self._get_viser()
 
@@ -94,9 +97,6 @@ class ViewerViser(ViewerBase):
         self._meshes = {}
         self._instances = {}
         self._scene_handles = {}  # Track viser scene node handles
-
-        # Store scalar data for logging
-        self._scalars = {}
 
         # Initialize viser server
         self._server = viser.ViserServer(port=port, label=label or "Newton Viewer")
@@ -115,16 +115,18 @@ class ViewerViser(ViewerBase):
         self._port = port
 
         # Track if running in Jupyter
-        self.is_jupyter_notebook = _is_jupyter_notebook()
+        self.is_jupyter_notebook = is_jupyter_notebook()
 
         # Recording state
-        self._recording = False
-        self._serializer = None
-        self._last_frame_time = None
-        self._record_fps = 30.0
+        self._frame_dt = 0.0
+        self._record_to_viser = record_to_viser
+        self._serializer = self._server.get_scene_serializer() if record_to_viser else None
 
         # Set up default scene
         self._setup_scene()
+
+        if self._serializer is not None and verbose:
+            print(f"Recording to: {record_to_viser}")
 
     def _setup_scene(self):
         """Set up the default scene configuration."""
@@ -347,6 +349,7 @@ class ViewerViser(ViewerBase):
         Args:
             time (float): The current simulation time.
         """
+        self._frame_dt = time - self.time
         self.time = time
 
     @override
@@ -356,10 +359,9 @@ class ViewerViser(ViewerBase):
 
         If recording is active, inserts a sleep command for playback timing.
         """
-        if self._recording and self._serializer is not None:
+        if self._serializer is not None:
             # Insert sleep for frame timing during recording
-            frame_dt = 1.0 / self._record_fps
-            self._serializer.insert_sleep(frame_dt)
+            self._serializer.insert_sleep(self._frame_dt)
 
     @override
     def is_running(self) -> bool:
@@ -379,172 +381,38 @@ class ViewerViser(ViewerBase):
         self._running = False
         try:
             self._server.stop()
+            if self._serializer is not None:
+                self.save_recording()
         except Exception:
             pass
 
-    # =========================================================================
-    # Recording functionality for embedding visualizations
-    # =========================================================================
-
-    def start_recording(self, fps: float = 30.0):
-        """
-        Start recording the scene for later playback.
-
-        This captures all scene updates and can be saved to a .viser file
-        for embedding in static HTML pages.
-
-        Args:
-            fps (float): Target frames per second for playback. Defaults to 30.0.
-
-        Example:
-            >>> viewer.start_recording(fps=30)
-            >>> for i in range(100):
-            ...     viewer.begin_frame(i * dt)
-            ...     viewer.log_state(state)
-            ...     viewer.end_frame()
-            >>> viewer.save_recording("simulation.viser")
-        """
-        self._recording = True
-        self._record_fps = fps
-        self._serializer = self._server.get_scene_serializer()
-        if self.verbose:
-            print(f"Started recording at {fps} FPS")
-
-    def stop_recording(self):
-        """
-        Stop recording without saving.
-
-        Use save_recording() instead if you want to save the recording.
-        """
-        self._recording = False
-        self._serializer = None
-        if self.verbose:
-            print("Recording stopped")
-
-    def save_recording(self, filepath: str):
+    def save_recording(self):
         """
         Save the current recording to a .viser file.
 
         The recording can be played back in a static HTML viewer.
         See build_static_viewer() for creating the HTML player.
 
-        Args:
-            filepath (str): Path to save the recording (should end in .viser).
+        Note:
+            Recording must be enabled by passing ``record_to_viser`` to the constructor.
 
         Example:
-            >>> viewer.start_recording()
+            >>> viewer = ViewerViser(record_to_viser="my_simulation.viser")
             >>> # ... run simulation ...
-            >>> viewer.save_recording("my_simulation.viser")
+            >>> viewer.save_recording()
         """
-        if self._serializer is None:
-            raise RuntimeError("No recording in progress. Call start_recording() first.")
+        if self._serializer is None or self._record_to_viser is None:
+            raise RuntimeError("No recording in progress. Pass record_to_viser to the constructor.")
 
         from pathlib import Path  # noqa: PLC0415
 
         data = self._serializer.serialize()
-        Path(filepath).write_bytes(data)
+        Path(self._record_to_viser).write_bytes(data)
 
-        self._recording = False
         self._serializer = None
 
         if self.verbose:
-            print(f"Recording saved to: {filepath}")
-
-    def add_save_button(self, label: str = "Save Recording"):
-        """
-        Add a GUI button that triggers a download of the current scene state.
-
-        When clicked in the browser, downloads a .viser file that can be
-        embedded in static HTML pages.
-
-        Args:
-            label (str): Label for the button. Defaults to "Save Recording".
-
-        Returns:
-            The button handle from viser.
-        """
-        save_button = self._server.gui.add_button(label)
-
-        @save_button.on_click
-        def _(event):
-            if event.client is not None:
-                serializer = self._server.get_scene_serializer()
-                event.client.send_file_download("recording.viser", serializer.serialize())
-
-        return save_button
-
-    @staticmethod
-    def build_static_viewer(output_dir: str):
-        """
-        Build the static viser client for embedding visualizations.
-
-        This creates the HTML/JS/CSS files needed to host recorded .viser files.
-        Requires the viser package to be installed.
-
-        Args:
-            output_dir (str): Directory to output the client files.
-
-        Example:
-            >>> ViewerViser.build_static_viewer("./viser-client")
-            >>> # Then host with: python -m http.server 8000
-            >>> # Open: http://localhost:8000/viser-client/?playbackPath=http://localhost:8000/recording.viser
-        """
-        import subprocess  # noqa: PLC0415
-        import sys  # noqa: PLC0415
-
-        result = subprocess.run(
-            [sys.executable, "-m", "viser.scripts.build_client", "--out-dir", output_dir],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-
-        if result.returncode != 0:
-            # Try alternative command
-            result = subprocess.run(
-                ["viser-build-client", "--out-dir", output_dir],
-                capture_output=True,
-                text=True,
-                check=False,
-            )
-
-        if result.returncode == 0:
-            print(f"Static viewer built in: {output_dir}")
-            print("\nTo use:")
-            print("  1. Place your .viser recording in a 'recordings/' folder")
-            print("  2. Start a local server: python -m http.server 8000")
-            print(
-                f"  3. Open: http://localhost:8000/{output_dir}/?playbackPath=http://localhost:8000/recordings/your_recording.viser"
-            )
-        else:
-            raise RuntimeError(f"Failed to build static viewer: {result.stderr}")
-
-    def get_embed_html(
-        self,
-        recording_url: str,
-        width: int = 800,
-        height: int = 600,
-        client_url: str = "viser-client",
-    ) -> str:
-        """
-        Get HTML for embedding a recorded visualization.
-
-        Args:
-            recording_url (str): URL to the .viser recording file.
-            width (int): Width of the embedded viewer in pixels.
-            height (int): Height of the embedded viewer in pixels.
-            client_url (str): URL/path to the viser client files.
-
-        Returns:
-            str: HTML string with embedded iframe.
-
-        Example:
-            >>> html = viewer.get_embed_html(
-            ...     recording_url="https://example.com/recording.viser", client_url="https://example.com/viser-client"
-            ... )
-        """
-        full_url = f"{client_url}/?playbackPath={recording_url}"
-        return f'<iframe src="{full_url}" width="{width}" height="{height}" frameborder="0"></iframe>'
+            print(f"Recording saved to: {self._record_to_viser}")
 
     @override
     def log_lines(self, name, starts, ends, colors, width: float = 0.01, hidden=False):
@@ -608,39 +476,6 @@ class ViewerViser(ViewerBase):
             line_width=width * 100,  # Scale for visibility
         )
         self._scene_handles[name] = handle
-
-    @override
-    def log_array(self, name, array):
-        """
-        Log a generic array for visualization.
-
-        Args:
-            name (str): Name of the array.
-            array: The array data (can be a wp.array or a numpy array).
-        """
-        if array is None:
-            return
-        # Viser doesn't have direct array visualization, store for potential future use
-        self._scalars[name] = self._to_numpy(array)
-
-    @override
-    def log_scalar(self, name, value):
-        """
-        Log a scalar value for visualization.
-
-        Args:
-            name (str): Name of the scalar.
-            value: The scalar value.
-        """
-        if name is None:
-            return
-
-        if hasattr(value, "item"):
-            val = value.item()
-        else:
-            val = value
-
-        self._scalars[name] = val
 
     @override
     def log_geo(
@@ -746,111 +581,73 @@ class ViewerViser(ViewerBase):
         """
         Show the viewer in a Jupyter notebook.
 
-        This displays an iframe containing the viser visualization.
+        In a regular Jupyter notebook session, this displays the interactive Viser viewer.
+        In a Sphinx documentation build, this displays an embedded iframe player that
+        loads a pre-recorded .viser file.
 
         Args:
-            width (int): Width of the viewer in pixels.
-            height (int): Height of the viewer in pixels.
-        """
-        from IPython.display import IFrame, display  # noqa: PLC0415
-
-        # Use share URL if available, otherwise use localhost
-        if self._share_url:
-            url = self._share_url
-        else:
-            url = f"http://localhost:{self._port}"
-
-        display(IFrame(src=url, width=width, height=height))
-
-    def save_html(self, filepath: str, width: int = 800, height: int = 600):
-        """
-        Save the current visualization as a static HTML file.
-
-        This creates an HTML file with an embedded iframe pointing to the viewer.
-        Note: The viewer server must be running for the HTML to work.
-
-        For a fully self-contained static export, consider using the viewer's
-        screenshot functionality or exporting mesh data separately.
-
-        Args:
-            filepath (str): Path to save the HTML file.
-            width (int): Width of the embedded viewer in pixels.
-            height (int): Height of the embedded viewer in pixels.
-        """
-        if self._share_url:
-            url = self._share_url
-        else:
-            url = f"http://localhost:{self._port}"
-
-        html_content = f"""<!DOCTYPE html>
-<html>
-<head>
-    <meta charset="utf-8">
-    <title>Newton Viewer - Viser</title>
-    <style>
-        body {{
-            margin: 0;
-            padding: 0;
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            min-height: 100vh;
-            background-color: #1a1a2e;
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-        }}
-        .container {{
-            text-align: center;
-        }}
-        h1 {{
-            color: #eee;
-            margin-bottom: 20px;
-        }}
-        iframe {{
-            border: 2px solid #4a4a6a;
-            border-radius: 8px;
-            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
-        }}
-        .note {{
-            color: #888;
-            margin-top: 15px;
-            font-size: 14px;
-        }}
-    </style>
-</head>
-<body>
-    <div class="container">
-        <h1>Newton Physics Viewer</h1>
-        <iframe src="{url}" width="{width}" height="{height}" frameborder="0"></iframe>
-        <p class="note">Note: The Newton viewer server must be running for this visualization to work.</p>
-    </div>
-</body>
-</html>
-"""
-        with open(filepath, "w", encoding="utf-8") as f:
-            f.write(html_content)
-
-        if self.verbose:
-            print(f"HTML saved to: {filepath}")
-
-    def get_notebook_html(self, width: int = 800, height: int = 600) -> str:
-        """
-        Get HTML string for embedding in a Jupyter notebook.
-
-        This can be used with IPython.display.HTML to embed the viewer.
-
-        Args:
-            width (int): Width of the viewer in pixels.
-            height (int): Height of the viewer in pixels.
+            width: Width of the embedded player in pixels.
+            height: Height of the embedded player in pixels.
 
         Returns:
-            str: HTML string with embedded iframe.
-        """
-        if self._share_url:
-            url = self._share_url
-        else:
-            url = f"http://localhost:{self._port}"
+            The display object (viewer for Jupyter, HTML for Sphinx).
 
-        return f'<iframe src="{url}" width="{width}" height="{height}" frameborder="0"></iframe>'
+        Example:
+            >>> viewer = newton.viewer.ViewerViser(record_to_viser="my_sim.viser")
+            >>> viewer.set_model(model)
+            >>> # ... run simulation ...
+            >>> viewer.save_recording()
+        """
+        from pathlib import Path  # noqa: PLC0415
+
+        from IPython.display import HTML, IFrame, display  # noqa: PLC0415
+
+        if is_sphinx_build():
+            # Sphinx build - save recording and display iframe
+            if self._serializer is not None and self._record_to_viser is not None:
+                recording_path = Path(self._record_to_viser)
+                recording_path.parent.mkdir(parents=True, exist_ok=True)
+                self.save_recording()
+
+            # Generate iframe HTML that uses the shared viser-player.js
+            # The data-recording path should be relative to the docs root
+            if self._record_to_viser:
+                # Convert to a path relative to _static if needed
+                recording_str = str(self._record_to_viser)
+                if not recording_str.startswith("_static"):
+                    # Assume it's a relative path from the notebook location
+                    # For Sphinx, we need to reference from the page location
+                    recording_str = recording_str.lstrip("./").lstrip("../")
+            else:
+                recording_str = ""
+
+            embed_html = f"""
+    <div class="viser-player-container" style="margin: 20px 0;">
+        <p><strong>Interactive 3D Simulation Playback:</strong></p>
+        <iframe
+            class="viser-player"
+            data-recording="{recording_str}"
+            width="100%"
+            height="{height}"
+            frameborder="0"
+            style="border: 1px solid #ccc; border-radius: 8px;">
+        </iframe>
+        <p style="font-size: 0.9em; color: #666; margin-top: 8px;">
+            Use mouse to rotate, scroll to zoom, and right-click to pan.
+        </p>
+    </div>
+    <script src="../_static/viser-player.js"></script>
+    """
+            return display(HTML(embed_html))
+        else:
+            # Regular Jupyter session - save recording if active, then display
+            if self._serializer is not None and self._record_to_viser is not None:
+                recording_path = Path(self._record_to_viser)
+                recording_path.parent.mkdir(parents=True, exist_ok=True)
+                self.save_recording()
+
+            # Display the interactive viewer via IFrame
+            return display(IFrame(src=self.url, width=width, height=height))
 
     def _ipython_display_(self):
         """
@@ -858,16 +655,3 @@ class ViewerViser(ViewerBase):
         """
         self.show_notebook()
 
-
-def _is_jupyter_notebook():
-    """Check if running in a Jupyter notebook environment."""
-    try:
-        shell = get_ipython().__class__.__name__
-        if shell == "ZMQInteractiveShell":
-            return True
-        elif shell == "TerminalInteractiveShell":
-            return False
-        else:
-            return False
-    except NameError:
-        return False
