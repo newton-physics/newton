@@ -27,6 +27,8 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version-file: ".python-version"
+      - name: Install pandoc
+        run: sudo apt-get update && sudo apt-get install -y pandoc
       - name: Build Sphinx documentation
         run: uv run --extra docs --extra sim sphinx-build -b html docs docs/_build/html
       - name: Upload artifacts
