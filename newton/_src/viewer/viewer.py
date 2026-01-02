@@ -1275,6 +1275,7 @@ class ViewerBase:
         num_colors = len(colors)
         return [c / 255.0 for c in colors[i % num_colors]]
 
+
 def is_jupyter_notebook():
     try:
         # Check if get_ipython is defined (available in IPython environments)
@@ -1292,6 +1293,7 @@ def is_jupyter_notebook():
         # get_ipython is not defined, so it's likely a standard Python script
         return False
 
+
 def is_sphinx_build() -> bool:
     """
     Detect if we're running inside a Sphinx documentation build (via nbsphinx).
@@ -1300,6 +1302,10 @@ def is_sphinx_build() -> bool:
         True if running in Sphinx/nbsphinx, False if in regular Jupyter session.
     """
     import os
+
+    # Check for Newton's custom env var (set in docs/conf.py, inherited by nbsphinx subprocesses)
+    if os.environ.get("NEWTON_SPHINX_BUILD"):
+        return True
 
     # nbsphinx sets SPHINXBUILD or we can check for sphinx in the call stack
     if os.environ.get("SPHINXBUILD"):

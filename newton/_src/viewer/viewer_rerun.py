@@ -551,7 +551,6 @@ class ViewerRerun(ViewerBase):
         self.show_notebook()
 
 
-
 @wp.kernel
 def _compute_normals(
     points: wp.array(dtype=wp.vec3),

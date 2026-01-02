@@ -13,6 +13,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from pathlib import Path
+
 import numpy as np
 import warp as wp
 
@@ -49,9 +51,7 @@ class ViewerViser(ViewerBase):
 
                 cls._viser_module = viser
             except ImportError as e:
-                raise ImportError(
-                    "viser package is required for ViewerViser. Install with: pip install viser"
-                ) from e
+                raise ImportError("viser package is required for ViewerViser. Install with: pip install viser") from e
         return cls._viser_module
 
     @staticmethod
@@ -597,45 +597,59 @@ class ViewerViser(ViewerBase):
             >>> # ... run simulation ...
             >>> viewer.show_notebook()  # Saves recording and displays with timeline
         """
-        from pathlib import Path  # noqa: PLC0415
 
         from IPython.display import HTML, IFrame, display  # noqa: PLC0415
 
         from .viewer import is_sphinx_build  # noqa: PLC0415
 
-        if self._serializer is not None and self._record_to_viser is not None:
+        if self._record_to_viser is None:
+            # No recording - display the live server via IFrame
+            return display(IFrame(src=self.url, width=width, height=height))
+
+        if self._serializer is not None:
             # Recording is active - save it first
             recording_path = Path(self._record_to_viser)
             recording_path.parent.mkdir(parents=True, exist_ok=True)
             self.save_recording()
 
-            if is_sphinx_build():
-                # Sphinx build - use static HTML with viser-player.js
-                # The recording path should be relative to the built docs
-                recording_str = str(self._record_to_viser)
-                if not recording_str.startswith("_static"):
-                    recording_str = recording_str.lstrip("./").lstrip("../")
+        # Check if recording path contains _static - indicates Sphinx docs build
+        recording_str = str(self._record_to_viser).replace("\\", "/")
 
-                embed_html = f"""
+        if is_sphinx_build():
+            # Sphinx build - use static HTML with viser player
+            # The recording path needs to be relative to the viser index.html location
+            # which is at _static/viser/index.html
+
+            # Find the _static portion of the path
+            static_idx = recording_str.find("_static/")
+            if static_idx == -1:
+                raise ValueError(
+                    f"Recordings that are supposed to appear in the Sphinx documentation must be stored in docs/_static/, but the path {recording_str} does not contain _static/"
+                )
+            else:
+                # Extract path from _static onwards (e.g., "_static/recordings/foo.viser")
+                static_relative = recording_str[static_idx:]
+                # The viser index.html is at _static/viser/index.html
+                # So from there, we need "../recordings/foo.viser"
+                # Remove the "_static/" prefix and prepend "../"
+                playback_path = "../" + static_relative[len("_static/") :]
+
+            embed_html = f"""
 <div class="viser-player-container" style="margin: 20px 0;">
-    <iframe
-        src="../_static/viser/index.html?playbackPath=../{recording_str}"
-        width="{width}"
-        height="{height}"
-        frameborder="0"
-        style="border: 1px solid #ccc; border-radius: 8px;">
-    </iframe>
+<iframe
+    src="../_static/viser/index.html?playbackPath={playback_path}"
+    width="{width}"
+    height="{height}"
+    frameborder="0"
+    style="border: 1px solid #ccc; border-radius: 8px;">
+</iframe>
 </div>
 """
-                return display(HTML(embed_html))
-            else:
-                # Regular Jupyter - use local HTTP server with viser client
-                from .notebook_utils import display_viser_recording  # noqa: PLC0415
-
-                return display_viser_recording(self._record_to_viser, width=width, height=height)
+            return display(HTML(embed_html))
         else:
-            # No recording - display the live server via IFrame
-            return display(IFrame(src=self.url, width=width, height=height))
+            # Regular Jupyter - use local HTTP server with viser client
+            player_url = self._serve_viser_recording(self._record_to_viser)
+            return display(IFrame(src=player_url, width=width, height=height))
 
     def _ipython_display_(self):
         """
@@ -643,3 +657,108 @@ class ViewerViser(ViewerBase):
         """
         self.show_notebook()
 
+    @staticmethod
+    def _serve_viser_recording(recording_path: str) -> str:
+        """
+        Hosts a simple HTTP server to serve the viser recording file with the viser client
+        and returns the URL of the player.
+
+        Args:
+            recording_path: Path to the .viser recording file.
+
+        Returns:
+            URL of the player.
+        """
+        import socket  # noqa: PLC0415
+        import threading  # noqa: PLC0415
+        from http.server import HTTPServer, SimpleHTTPRequestHandler  # noqa: PLC0415
+
+        # Get viser client directory from docs/_static/viser
+        # This is a curated version of the viser client for notebook playback
+        import newton  # noqa: PLC0415
+
+        recording_path = Path(recording_path).resolve()
+        if not recording_path.exists():
+            raise FileNotFoundError(f"Recording file not found: {recording_path}")
+
+        newton_root = Path(newton.__file__).parent.parent
+        viser_client_dir = newton_root / "docs" / "_static" / "viser"
+
+        if not viser_client_dir.exists():
+            raise FileNotFoundError(
+                f"Viser client not found at {viser_client_dir}. "
+                "Please ensure docs/_static/viser contains the viser client files."
+            )
+
+        # Read the recording file content
+        recording_bytes = recording_path.read_bytes()
+
+        # Find an available port
+        def find_free_port():
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.bind(("", 0))
+                return s.getsockname()[1]
+
+        port = find_free_port()
+
+        # Create a custom HTTP handler factory that serves both viser client and the recording
+        def make_handler(recording_data: bytes, client_dir: str):
+            class RecordingHandler(SimpleHTTPRequestHandler):
+                # Fix MIME types for JavaScript and other files (Windows often has wrong mappings)
+                extensions_map = {
+                    ".html": "text/html",
+                    ".htm": "text/html",
+                    ".css": "text/css",
+                    ".js": "application/javascript",
+                    ".json": "application/json",
+                    ".wasm": "application/wasm",
+                    ".svg": "image/svg+xml",
+                    ".png": "image/png",
+                    ".jpg": "image/jpeg",
+                    ".jpeg": "image/jpeg",
+                    ".ico": "image/x-icon",
+                    ".ttf": "font/ttf",
+                    ".hdr": "application/octet-stream",
+                    ".viser": "application/octet-stream",
+                    "": "application/octet-stream",
+                }
+
+                def __init__(self, *args, **kwargs):
+                    self.recording_data = recording_data
+                    super().__init__(*args, directory=client_dir, **kwargs)
+
+                def do_GET(self):
+                    # Parse path without query string
+                    path = self.path.split("?")[0]
+
+                    # Serve the recording file at /recording.viser
+                    if path == "/recording.viser":
+                        self.send_response(200)
+                        self.send_header("Content-Type", "application/octet-stream")
+                        self.send_header("Content-Length", str(len(self.recording_data)))
+                        self.send_header("Access-Control-Allow-Origin", "*")
+                        self.end_headers()
+                        self.wfile.write(self.recording_data)
+                    else:
+                        # Serve viser client files
+                        super().do_GET()
+
+                def log_message(self, format, *args):
+                    pass  # Suppress log messages
+
+            return RecordingHandler
+
+        handler_class = make_handler(recording_bytes, str(viser_client_dir))
+        # Bind to all interfaces so IFrame can access it
+        server = HTTPServer(("", port), handler_class)
+
+        # Start server in background thread
+        server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+        server_thread.start()
+
+        base_url = f"http://127.0.0.1:{port}"
+
+        # Create URL with playback path pointing to the served recording
+        player_url = f"{base_url}/?playbackPath=/recording.viser"
+
+        return player_url
