@@ -92,7 +92,7 @@ extensions = [
 
 # -- nbsphinx configuration ---------------------------------------------------
 
-# Don't execute notebooks during build (they should be pre-executed with outputs)
+# Configure notebook execution mode for nbsphinx
 nbsphinx_execute = "auto"
 
 # Timeout for notebook execution (in seconds)
