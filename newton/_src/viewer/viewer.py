@@ -15,6 +15,8 @@
 
 from __future__ import annotations
 
+import os
+import sys
 from abc import abstractmethod
 
 import numpy as np
@@ -1301,7 +1303,6 @@ def is_sphinx_build() -> bool:
     Returns:
         True if running in Sphinx/nbsphinx, False if in regular Jupyter session.
     """
-    import os
 
     # Check for Newton's custom env var (set in docs/conf.py, inherited by nbsphinx subprocesses)
     if os.environ.get("NEWTON_SPHINX_BUILD"):
@@ -1312,14 +1313,12 @@ def is_sphinx_build() -> bool:
         return True
 
     # Check if sphinx is in the module list (imported during doc build)
-    import sys
-
     if "sphinx" in sys.modules or "nbsphinx" in sys.modules:
         return True
 
     # Check call stack for sphinx-related frames
     try:
-        import traceback
+        import traceback  # noqa: PLC0415
 
         for frame_info in traceback.extract_stack():
             if "sphinx" in frame_info.filename.lower() or "nbsphinx" in frame_info.filename.lower():

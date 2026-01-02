@@ -14,6 +14,7 @@
 # limitations under the License.
 
 from pathlib import Path
+from typing import ClassVar
 
 import numpy as np
 import warp as wp
@@ -705,7 +706,8 @@ class ViewerViser(ViewerBase):
         def make_handler(recording_data: bytes, client_dir: str):
             class RecordingHandler(SimpleHTTPRequestHandler):
                 # Fix MIME types for JavaScript and other files (Windows often has wrong mappings)
-                extensions_map = {
+                extensions_map: ClassVar = {  # pyright: ignore[reportIncompatibleVariableOverride]
+                    **SimpleHTTPRequestHandler.extensions_map,
                     ".html": "text/html",
                     ".htm": "text/html",
                     ".css": "text/css",
