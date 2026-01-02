@@ -70,6 +70,8 @@ class ModelAttributeFrequency(IntEnum):
     """Attribute frequency follows the number of articulations (see :attr:`~newton.Model.articulation_count`)."""
     EQUALITY_CONSTRAINT = 7
     """Attribute frequency follows the number of equality constraints (see :attr:`~newton.Model.equality_constraint_count`)."""
+    WORLD = 8
+    """Attribute frequency follows the number of worlds (see :attr:`~newton.Model.num_worlds`)."""
 
 
 class AttributeNamespace:

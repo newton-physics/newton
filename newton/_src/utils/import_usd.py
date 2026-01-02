@@ -55,6 +55,7 @@ def parse_usd(
     load_sites: bool = True,
     load_visual_shapes: bool = True,
     hide_collision_shapes: bool = False,
+    parse_mujoco_options: bool = True,
     mesh_maxhullvert: int = MESH_MAXHULLVERT,
     schema_resolvers: list[SchemaResolver] | None = None,
 ) -> dict[str, Any]:
@@ -84,6 +85,7 @@ def parse_usd(
         load_sites (bool): If True, sites (prims with MjcSiteAPI) are loaded as non-colliding reference points. If False, sites are ignored. Default is True.
         load_visual_shapes (bool): If True, non-physics visual geometry is loaded. If False, visual-only shapes are ignored (sites are still controlled by ``load_sites``). Default is True.
         hide_collision_shapes (bool): If True, collision shapes are hidden. Default is False.
+        parse_mujoco_options (bool): Whether MuJoCo solver options from the PhysicsScene should be parsed. If False, solver options are not loaded and custom attributes retain their default values. Default is True.
         mesh_maxhullvert (int): Maximum vertices for convex hull approximation of meshes.
         schema_resolvers (list[SchemaResolver]): Resolver instances in priority order. Default is no schema resolution.
             Schema resolvers collect per-prim "solver-specific" attributes, see :ref:`schema_resolvers` for more information.
@@ -961,12 +963,25 @@ def parse_usd(
     )
 
     if physics_scene_prim is not None:
-        # Extract custom attributes for model (ONCE) frequency from the PhysicsScene prim
+        # Extract custom attributes for model (ONCE and WORLD frequency) from the PhysicsScene prim
+        # WORLD frequency attributes use index 0 here; they get remapped during add_world()
         builder_custom_attr_model: list[ModelBuilder.CustomAttribute] = [
-            attr for attr in builder.custom_attributes.values() if attr.frequency == ModelAttributeFrequency.ONCE
+            attr
+            for attr in builder.custom_attributes.values()
+            if attr.frequency in (ModelAttributeFrequency.ONCE, ModelAttributeFrequency.WORLD)
         ]
+
+        # Filter out MuJoCo attributes if parse_mujoco_options is False
+        if not parse_mujoco_options:
+            builder_custom_attr_model = [attr for attr in builder_custom_attr_model if attr.namespace != "mujoco"]
+
         scene_custom_attrs = usd.get_custom_attribute_values(physics_scene_prim, builder_custom_attr_model)
         scene_attributes.update(scene_custom_attrs)
+
+        # Set values on builder's custom attributes (similar to MJCF parsing)
+        for key, value in scene_custom_attrs.items():
+            if key in builder.custom_attributes:
+                builder.custom_attributes[key].values[0] = value
 
     joint_descriptions = {}
     # maps from joint prim path to joint index in builder
