@@ -2683,7 +2683,7 @@ class ModelBuilder:
                 translation is the attachment point.
             child_xform (Transform): The transform of the joint in the child body's local frame; its
                 translation is the attachment point.
-            stretch_stiffness: Linear stretch stiffness (effective point stiffness) [N/m]. If None, defaults to 1.0e9.
+            stretch_stiffness: Linear stretch stiffness (effective per-joint spring stiffness) [N/m]. If None, defaults to 1.0e9.
             stretch_damping: Linear stretch damping. If None, defaults to 0.0.
             bend_stiffness: Angular bend/twist stiffness (effective per-joint stiffness) [N*m]. If None, defaults to 0.0.
             bend_damping: Angular bend/twist damping. If None, defaults to 0.0.
@@ -4539,10 +4539,14 @@ class ModelBuilder:
             # Joint key: numbered 1 through num_joints
             joint_key = f"{key}_cable_{i + 1}" if key else None
 
-            # We pre-scale rod stiffnesses here so solver kernels do not need per-segment length normalization.
-            # For stretch, we treat the user input as a material-like stiffness (e.g., \tilde{k}_{ss} ~ EA) [N]
-            # and store the effective point stiffness k_eff = \tilde{k}_{ss} / L [N/m].
-            seg_len = segment_lengths[parent_idx] if segment_lengths[parent_idx] > 0.0 else 1.0
+            # Pre-scale rod stiffnesses here so solver kernels do not need per-segment length normalization.
+            # Use the parent segment length L.
+            #
+            # - Stretch: treat the user input as a material-like axial/shear stiffness (commonly EA) [N]
+            #   and store an effective per-joint (point-to-point) spring stiffness k_eff = EA / L [N/m].
+            # - Bend/twist: treat the user input as a material-like bending/twist stiffness (commonly EI) [N*m^2]
+            #   and store an effective per-joint angular stiffness k_eff = EI / L [N*m].
+            seg_len = segment_lengths[parent_idx]
             stretch_ke_eff = stretch_stiffness / seg_len
             bend_ke_eff = bend_stiffness / seg_len
 
