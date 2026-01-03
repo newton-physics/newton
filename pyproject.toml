@@ -32,7 +32,7 @@ dependencies = ["warp-lang>=1.11.0.dev20251205"]
 sim = [
     # MuJoCo simulation
     "mujoco-warp>=0.0.1",         # MuJoCo, warp-accelerated
-    "mujoco>=3.4.0.dev839962392", # MuJoCo physics engine
+    "mujoco>=3.4.1.dev851315742", # MuJoCo physics engine
     "cbor2>=5.7.0",
 ]
 
