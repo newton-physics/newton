@@ -341,7 +341,8 @@ def _compute_fixed_joint_frame_error(model: newton.Model, body_q: wp.array, join
         q_wc = wp.transform_get_rotation(X_wc)
         q_rel = wp.mul(wp.quat_inverse(q_wp), q_wc)
         q_rel = wp.normalize(q_rel)
-        w = wp.clamp(q_rel[3], -1.0, 1.0)
+        # Quaternion sign is arbitrary; enforce shortest-path angle for robustness.
+        w = wp.clamp(wp.abs(q_rel[3]), 0.0, 1.0)
         ang_err = float(2.0 * wp.acos(w))
 
         return pos_err, ang_err
