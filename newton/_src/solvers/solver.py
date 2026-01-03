@@ -96,6 +96,7 @@ def integrate_rigid_body(
 
     # angular damping
     w1 *= 1.0 - angular_damping * dt
+    v1 *= 1.0 - angular_damping * dt
 
     q_new = wp.transform(x1 - wp.quat_rotate(r1, com), r1)
     qd_new = wp.spatial_vector(v1, w1)
