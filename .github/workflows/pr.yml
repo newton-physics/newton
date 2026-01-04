@@ -13,13 +13,73 @@ concurrency:
   group: ${{ github.workflow }}-on-${{ github.event_name }}-from-${{ github.ref_name }}
   cancel-in-progress: true
 
+env:
+  AWS_REGION: us-east-2
+  AWS_INSTANCE_TYPE: g6e.2xlarge
+  AWS_VOLUME_SIZE: 92
+  AWS_VOLUME_TYPE: gp3
+  AWS_SECURITY_GROUP_IDS: sg-07807c44e7f2a368a
+  AWS_ROLE_ARN: arn:aws:iam::968945269301:role/newton-physics-newton-ec2-github-runner-role
+  AWS_ROLE_DURATION: 7200
+  HOME: /actions-runner
+
 jobs:
   run-newton-tests:
     uses: ./.github/workflows/ci.yml
     secrets: inherit
 
-  pull-request-docs:
+  start-runner-docs:
+    name: Start self-hosted EC2 runner for docs
+    if: github.repository == 'newton-physics/newton'
     runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    outputs:
+      label: ${{ steps.start-ec2-runner.outputs.label }}
+      ec2-instance-id: ${{ steps.start-ec2-runner.outputs.ec2-instance-id }}
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@b47578312673ae6fa5b5096b330d9fbac3d116df
+        with:
+          aws-region: ${{ env.AWS_REGION }}
+          role-to-assume: ${{ env.AWS_ROLE_ARN }}
+          role-duration-seconds: ${{ env.AWS_ROLE_DURATION }}
+      - name: Get the latest AWS Deep Learning Base GPU AMI
+        run: |
+          echo "Finding the latest AWS Deep Learning Base GPU AMI..."
+          LATEST_AMI_ID=$(aws ec2 describe-images --region ${{ env.AWS_REGION }} \
+            --owners amazon \
+            --filters 'Name=name,Values=Deep Learning Base AMI with Single CUDA (Ubuntu 22.04) ????????' 'Name=state,Values=available' \
+            --query 'reverse(sort_by(Images, &CreationDate))[:1].ImageId' \
+            --output text)
+          if [[ -z "$LATEST_AMI_ID" ]]; then
+            echo "❌ No AMI ID found. Exiting."
+            exit 1
+          fi
+          echo "Latest AMI ID found: $LATEST_AMI_ID"
+          echo "LATEST_AMI_ID=$LATEST_AMI_ID" >> "$GITHUB_ENV"
+      - name: Start EC2 runner
+        id: start-ec2-runner
+        uses: machulav/ec2-github-runner@a6dbcefcf8a31a861f5e078bb153ed332130c512
+        with:
+          mode: start
+          github-token: ${{ secrets.GH_PERSONAL_ACCESS_TOKEN }}
+          ec2-image-id: ${{ env.LATEST_AMI_ID }}
+          ec2-instance-type: ${{ env.AWS_INSTANCE_TYPE }}
+          subnet-id: subnet-051b9d2e71acf8047
+          security-group-id: ${{ env.AWS_SECURITY_GROUP_IDS }}
+          aws-resource-tags: >
+            [
+              {"Key": "Name", "Value": "ec2-github-runner-docs"},
+              {"Key": "created-by", "Value": "github-actions-newton-role"},
+              {"Key": "GitHub-Repository", "Value": "${{ github.repository }}"}
+            ]
+
+  pull-request-docs:
+    name: Build Sphinx documentation on AWS EC2
+    needs: start-runner-docs
+    runs-on: ${{ needs.start-runner-docs.outputs.label }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -27,12 +87,38 @@ jobs:
         uses: astral-sh/setup-uv@6b9c6063abd6010835644d4c2e1bef4cf5cd0fca
         with:
           version: "0.9.0"
-      - name: "Set up Python"
-        uses: actions/setup-python@v5
-        with:
-          python-version-file: ".python-version"
+      - name: Set up Python
+        run: uv python install
+      - name: Install pandoc
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pandoc
       - name: Build Sphinx documentation
         run: uv run --extra docs --extra sim sphinx-build -W -b html docs docs/_build/html
-
       - name: Run Sphinx doctests
         run: uv run --extra docs --extra sim sphinx-build -W -b doctest docs docs/_build/doctest
+
+  stop-runner-docs:
+    name: Stop self-hosted EC2 runner for docs
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    needs:
+      - start-runner-docs
+      - pull-request-docs
+    if: always() && github.repository == 'newton-physics/newton'
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@b47578312673ae6fa5b5096b330d9fbac3d116df
+        with:
+          aws-region: ${{ env.AWS_REGION }}
+          role-to-assume: ${{ env.AWS_ROLE_ARN }}
+          role-duration-seconds: ${{ env.AWS_ROLE_DURATION }}
+      - name: Stop EC2 runner
+        uses: machulav/ec2-github-runner@a6dbcefcf8a31a861f5e078bb153ed332130c512
+        with:
+          mode: stop
+          github-token: ${{ secrets.GH_PERSONAL_ACCESS_TOKEN }}
+          label: ${{ needs.start-runner-docs.outputs.label }}
+          ec2-instance-id: ${{ needs.start-runner-docs.outputs.ec2-instance-id }}

@@ -45,7 +45,7 @@ class TestViewerRerunInitArgs(unittest.TestCase):
         """Test that ViewerRerun() with no arguments servers a web viewer."""
         with patch("newton._src.viewer.viewer_rerun.rr", self.mock_rr):
             with patch("newton._src.viewer.viewer_rerun.rrb", self.mock_rrb):
-                with patch("newton._src.viewer.viewer_rerun._is_jupyter_notebook", return_value=False):
+                with patch("newton._src.viewer.viewer_rerun.is_jupyter_notebook", return_value=False):
                     from newton._src.viewer.viewer_rerun import ViewerRerun
 
                     # Suppress deprecation warnings for cleaner test output
@@ -72,7 +72,7 @@ class TestViewerRerunInitArgs(unittest.TestCase):
         """Test that ViewerRerun() with no arguments spawns a viewer."""
         with patch("newton._src.viewer.viewer_rerun.rr", self.mock_rr):
             with patch("newton._src.viewer.viewer_rerun.rrb", self.mock_rrb):
-                with patch("newton._src.viewer.viewer_rerun._is_jupyter_notebook", return_value=False):
+                with patch("newton._src.viewer.viewer_rerun.is_jupyter_notebook", return_value=False):
                     from newton._src.viewer.viewer_rerun import ViewerRerun
 
                     # Suppress deprecation warnings for cleaner test output
@@ -95,7 +95,7 @@ class TestViewerRerunInitArgs(unittest.TestCase):
         """Test that ViewerRerun(address='...') connects via gRPC."""
         with patch("newton._src.viewer.viewer_rerun.rr", self.mock_rr):
             with patch("newton._src.viewer.viewer_rerun.rrb", self.mock_rrb):
-                with patch("newton._src.viewer.viewer_rerun._is_jupyter_notebook", return_value=False):
+                with patch("newton._src.viewer.viewer_rerun.is_jupyter_notebook", return_value=False):
                     from newton._src.viewer.viewer_rerun import ViewerRerun
 
                     test_address = "localhost:9876"
@@ -118,7 +118,7 @@ class TestViewerRerunInitArgs(unittest.TestCase):
         """Test that ViewerRerun(address='...') connects via gRPC even in Jupyter notebooks."""
         with patch("newton._src.viewer.viewer_rerun.rr", self.mock_rr):
             with patch("newton._src.viewer.viewer_rerun.rrb", self.mock_rrb):
-                with patch("newton._src.viewer.viewer_rerun._is_jupyter_notebook", return_value=True):
+                with patch("newton._src.viewer.viewer_rerun.is_jupyter_notebook", return_value=True):
                     from newton._src.viewer.viewer_rerun import ViewerRerun
 
                     test_address = "localhost:9876"
@@ -139,7 +139,7 @@ class TestViewerRerunInitArgs(unittest.TestCase):
         """Test that custom app_id is passed to rr.init."""
         with patch("newton._src.viewer.viewer_rerun.rr", self.mock_rr):
             with patch("newton._src.viewer.viewer_rerun.rrb", self.mock_rrb):
-                with patch("newton._src.viewer.viewer_rerun._is_jupyter_notebook", return_value=False):
+                with patch("newton._src.viewer.viewer_rerun.is_jupyter_notebook", return_value=False):
                     from newton._src.viewer.viewer_rerun import ViewerRerun
 
                     custom_app_id = "my-simulation-123"
@@ -159,7 +159,7 @@ class TestViewerRerunInitArgs(unittest.TestCase):
         """Test that blueprint is created and passed to rr.init()."""
         with patch("newton._src.viewer.viewer_rerun.rr", self.mock_rr):
             with patch("newton._src.viewer.viewer_rerun.rrb", self.mock_rrb):
-                with patch("newton._src.viewer.viewer_rerun._is_jupyter_notebook", return_value=False):
+                with patch("newton._src.viewer.viewer_rerun.is_jupyter_notebook", return_value=False):
                     from newton._src.viewer.viewer_rerun import ViewerRerun
 
                     with warnings.catch_warnings():
@@ -180,7 +180,7 @@ class TestViewerRerunInitArgs(unittest.TestCase):
         """Test that providing record_to_rrd calls rr.save() with blueprint."""
         with patch("newton._src.viewer.viewer_rerun.rr", self.mock_rr):
             with patch("newton._src.viewer.viewer_rerun.rrb", self.mock_rrb):
-                with patch("newton._src.viewer.viewer_rerun._is_jupyter_notebook", return_value=False):
+                with patch("newton._src.viewer.viewer_rerun.is_jupyter_notebook", return_value=False):
                     from newton._src.viewer.viewer_rerun import ViewerRerun
 
                     test_path = "test_recording.rrd"
@@ -199,7 +199,7 @@ class TestViewerRerunInitArgs(unittest.TestCase):
         """Test that viewer is not spawned in Jupyter notebook environment."""
         with patch("newton._src.viewer.viewer_rerun.rr", self.mock_rr):
             with patch("newton._src.viewer.viewer_rerun.rrb", self.mock_rrb):
-                with patch("newton._src.viewer.viewer_rerun._is_jupyter_notebook", return_value=True):
+                with patch("newton._src.viewer.viewer_rerun.is_jupyter_notebook", return_value=True):
                     from newton._src.viewer.viewer_rerun import ViewerRerun
 
                     with warnings.catch_warnings():
@@ -219,7 +219,7 @@ class TestViewerRerunInitArgs(unittest.TestCase):
         """Test that viewer serves web viewer in non-Jupyter environment."""
         with patch("newton._src.viewer.viewer_rerun.rr", self.mock_rr):
             with patch("newton._src.viewer.viewer_rerun.rrb", self.mock_rrb):
-                with patch("newton._src.viewer.viewer_rerun._is_jupyter_notebook", return_value=False):
+                with patch("newton._src.viewer.viewer_rerun.is_jupyter_notebook", return_value=False):
                     from newton._src.viewer.viewer_rerun import ViewerRerun
 
                     with warnings.catch_warnings():
@@ -238,7 +238,7 @@ class TestViewerRerunInitArgs(unittest.TestCase):
         """Test that keep_historical_data parameter is stored correctly."""
         with patch("newton._src.viewer.viewer_rerun.rr", self.mock_rr):
             with patch("newton._src.viewer.viewer_rerun.rrb", self.mock_rrb):
-                with patch("newton._src.viewer.viewer_rerun._is_jupyter_notebook", return_value=False):
+                with patch("newton._src.viewer.viewer_rerun.is_jupyter_notebook", return_value=False):
                     from newton._src.viewer.viewer_rerun import ViewerRerun
 
                     with warnings.catch_warnings():
@@ -254,7 +254,7 @@ class TestViewerRerunInitArgs(unittest.TestCase):
         """Test that keep_scalar_history parameter is stored correctly."""
         with patch("newton._src.viewer.viewer_rerun.rr", self.mock_rr):
             with patch("newton._src.viewer.viewer_rerun.rrb", self.mock_rrb):
-                with patch("newton._src.viewer.viewer_rerun._is_jupyter_notebook", return_value=False):
+                with patch("newton._src.viewer.viewer_rerun.is_jupyter_notebook", return_value=False):
                     from newton._src.viewer.viewer_rerun import ViewerRerun
 
                     with warnings.catch_warnings():
