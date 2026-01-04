@@ -46,7 +46,7 @@ jobs:
       ec2-instance-id: ${{ steps.start-ec2-runner.outputs.ec2-instance-id }}
     steps:
       - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@b47578312673ae6fa5b5096b330d9fbac3d116df
+        uses: aws-actions/configure-aws-credentials@61815dcd50bd041e203e49132bacad1fd04d2708  # v5.1.1
         with:
           aws-region: ${{ env.AWS_REGION }}
           role-to-assume: ${{ env.AWS_ROLE_ARN }}
@@ -67,7 +67,7 @@ jobs:
           echo "LATEST_AMI_ID=$LATEST_AMI_ID" >> "$GITHUB_ENV"
       - name: Start EC2 runner
         id: start-ec2-runner
-        uses: machulav/ec2-github-runner@a6dbcefcf8a31a861f5e078bb153ed332130c512
+        uses: machulav/ec2-github-runner@a6dbcefcf8a31a861f5e078bb153ed332130c512  # v2.4.3
         with:
           mode: start
           github-token: ${{ secrets.GH_PERSONAL_ACCESS_TOKEN }}
@@ -88,7 +88,7 @@ jobs:
     runs-on: ${{ needs.start-runner.outputs.label }} # run the job on the newly created runner
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8  # v6.0.1
         with:
           ref: ${{ inputs.ref }}
           fetch-depth: 0
@@ -102,7 +102,7 @@ jobs:
           sudo apt-get clean
 
       - name: Install uv
-        uses: astral-sh/setup-uv@6b9c6063abd6010835644d4c2e1bef4cf5cd0fca
+        uses: astral-sh/setup-uv@681c641aba71e4a1c380be3ab5e12ad51f415867  # v7.1.6
         with:
           version: "0.9.0"
 
@@ -143,14 +143,14 @@ jobs:
     if: always() && github.repository == 'newton-physics/newton'
     steps:
       - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@b47578312673ae6fa5b5096b330d9fbac3d116df
+        uses: aws-actions/configure-aws-credentials@61815dcd50bd041e203e49132bacad1fd04d2708  # v5.1.1
         with:
           aws-region: ${{ env.AWS_REGION }}
           role-to-assume: ${{ env.AWS_ROLE_ARN }}
           role-duration-seconds: ${{ env.AWS_ROLE_DURATION }}
 
       - name: Stop EC2 runner
-        uses: machulav/ec2-github-runner@a6dbcefcf8a31a861f5e078bb153ed332130c512
+        uses: machulav/ec2-github-runner@a6dbcefcf8a31a861f5e078bb153ed332130c512  # v2.4.3
         with:
           mode: stop
           github-token: ${{ secrets.GH_PERSONAL_ACCESS_TOKEN }}
