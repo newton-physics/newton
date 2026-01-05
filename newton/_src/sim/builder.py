@@ -194,13 +194,36 @@ class ModelBuilder:
         If provided (and sdf_target_voxel_size is None), enables SDF-based mesh-mesh collision.
         Set to None (default) to disable SDF generation for this shape (uses BVH-based collision for mesh-mesh instead).
         Requires GPU since wp.Volume only supports CUDA. Only used for mesh shapes."""
+        is_hydroelastic: bool = False
+        """Whether the shape collides using SDF-based hydroelastics. For hydroelastic collisions, both participating shapes must have is_hydroelastic set to True. Defaults to False.
 
-        def __post_init__(self) -> None:
-            """Validate ShapeConfig parameters after initialization."""
+        .. note::
+            Hydroelastic collision handling only works with volumetric shapes and in particular will not work for shapes like flat meshes or cloth.
+            This flag will be automatically set to False for planes and heightfields in :meth:`ModelBuilder.add_shape`.
+        """
+        k_hydro: float = 1.0e10
+        """Contact stiffness coefficient for hydroelastic collisions. Used by MuJoCo, Featherstone, SemiImplicit when is_hydroelastic is True.
+
+        .. note::
+            For MuJoCo, stiffness values will internally be scaled by masses.
+            Users should choose k_hydro to match their desired force-to-penetration ratio.
+        """
+
+        def validate(self) -> None:
+            """Validate ShapeConfig parameters."""
             if self.sdf_max_resolution is not None and self.sdf_max_resolution % 8 != 0:
                 raise ValueError(
                     f"sdf_max_resolution must be divisible by 8 (got {self.sdf_max_resolution}). "
                     "This is required because SDF volumes are allocated in 8x8x8 tiles."
+                )
+            if (
+                self.is_hydroelastic
+                and self.has_shape_collision
+                and self.sdf_max_resolution is None
+                and self.sdf_target_voxel_size is None
+            ):
+                raise ValueError(
+                    "Hydroelastic shapes require an SDF. Set either sdf_max_resolution or sdf_target_voxel_size."
                 )
 
         def mark_as_site(self) -> None:
@@ -227,6 +250,7 @@ class ModelBuilder:
             shape_flags |= ShapeFlags.COLLIDE_SHAPES if self.has_shape_collision else 0
             shape_flags |= ShapeFlags.COLLIDE_PARTICLES if self.has_particle_collision else 0
             shape_flags |= ShapeFlags.SITE if self.is_site else 0
+            shape_flags |= ShapeFlags.HYDROELASTIC if self.is_hydroelastic else 0
             return shape_flags
 
         @flags.setter
@@ -234,6 +258,7 @@ class ModelBuilder:
             """Sets the flags for the shape."""
 
             self.is_visible = bool(value & ShapeFlags.VISIBLE)
+            self.is_hydroelastic = bool(value & ShapeFlags.HYDROELASTIC)
 
             # Check if SITE flag is being set
             is_site_flag = bool(value & ShapeFlags.SITE)
@@ -476,6 +501,7 @@ class ModelBuilder:
         When True, uses a CPU implementation that reports specific issues for each body and updates
         the ModelBuilder's internal state.
         Default: False."""
+
         # endregion
 
         # particles
@@ -508,6 +534,7 @@ class ModelBuilder:
         self.shape_material_restitution = []
         self.shape_material_torsional_friction = []
         self.shape_material_rolling_friction = []
+        self.shape_material_k_hydro = []
         self.shape_contact_margin = []
         # collision groups within collisions are handled
         self.shape_collision_group = []
@@ -1785,6 +1812,7 @@ class ModelBuilder:
             "shape_material_restitution",
             "shape_material_torsional_friction",
             "shape_material_rolling_friction",
+            "shape_material_k_hydro",
             "shape_collision_radius",
             "shape_contact_margin",
             "shape_sdf_narrow_band_range",
@@ -3451,6 +3479,7 @@ class ModelBuilder:
             xform = wp.transform(*xform)
         if cfg is None:
             cfg = self.default_shape_cfg
+        cfg.validate()
         if scale is None:
             scale = (1.0, 1.0, 1.0)
 
@@ -3492,7 +3521,13 @@ class ModelBuilder:
         self.body_shapes[body].append(shape)
         self.shape_key.append(key or f"shape_{shape}")
         self.shape_transform.append(xform)
-        self.shape_flags.append(cfg.flags)
+        # Get flags and clear HYDROELASTIC for unsupported shape types (PLANE, HFIELD)
+        shape_flags = cfg.flags
+        if (shape_flags & ShapeFlags.HYDROELASTIC) and (type == GeoType.PLANE or type == GeoType.HFIELD):
+            shape_flags &= (
+                ~ShapeFlags.HYDROELASTIC
+            )  # Falling back to mesh/primitive collisions for plane and hfield shapes
+        self.shape_flags.append(shape_flags)
         self.shape_type.append(type)
         self.shape_scale.append((scale[0], scale[1], scale[2]))
         self.shape_source.append(src)
@@ -3506,6 +3541,7 @@ class ModelBuilder:
         self.shape_material_restitution.append(cfg.restitution)
         self.shape_material_torsional_friction.append(cfg.torsional_friction)
         self.shape_material_rolling_friction.append(cfg.rolling_friction)
+        self.shape_material_k_hydro.append(cfg.k_hydro)
         self.shape_contact_margin.append(
             cfg.contact_margin if cfg.contact_margin is not None else self.rigid_contact_margin
         )
@@ -3515,6 +3551,7 @@ class ModelBuilder:
         self.shape_sdf_narrow_band_range.append(cfg.sdf_narrow_band_range)
         self.shape_sdf_target_voxel_size.append(cfg.sdf_target_voxel_size)
         self.shape_sdf_max_resolution.append(cfg.sdf_max_resolution)
+
         if cfg.has_shape_collision and cfg.collision_filter_parent and body > -1 and body in self.joint_parents:
             for parent_body in self.joint_parents[body]:
                 if parent_body > -1:
@@ -5860,21 +5897,27 @@ class ModelBuilder:
             m.shape_material_rolling_friction = wp.array(
                 self.shape_material_rolling_friction, dtype=wp.float32, requires_grad=requires_grad
             )
+            m.shape_material_k_hydro = wp.array(
+                self.shape_material_k_hydro, dtype=wp.float32, requires_grad=requires_grad
+            )
             m.shape_contact_margin = wp.array(self.shape_contact_margin, dtype=wp.float32, requires_grad=requires_grad)
 
             m.shape_collision_filter_pairs = set(self.shape_collision_filter_pairs)
             m.shape_collision_group = wp.array(self.shape_collision_group, dtype=wp.int32)
 
             # ---------------------
-            # Compute SDFs for mesh shapes (per-shape opt-in via sdf_max_resolution)
-            from ..geometry.sdf_utils import SDFData, compute_sdf, create_empty_sdf_data  # noqa: PLC0415
+            # Compute SDFs for mesh shapes (per-shape opt-in via sdf_max_resolution, sdf_target_voxel_size or is_hydroelastic)
+            from ..geometry.sdf_utils import (  # noqa: PLC0415
+                SDFData,
+                compute_sdf,
+                create_empty_sdf_data,
+            )
 
             # Check if we're running on GPU - wp.Volume only supports CUDA
             current_device = wp.get_device(device)
             is_gpu = current_device.is_cuda
 
             # Check if there are any mesh shapes with collision enabled that request SDF generation
-            # SDF is enabled if either sdf_max_resolution or sdf_target_voxel_size is set
             has_sdf_meshes = any(
                 stype == GeoType.MESH
                 and ssrc is not None
@@ -5890,98 +5933,131 @@ class ModelBuilder:
                 )
             )
 
-            # Check if SDF generation was requested but we're on CPU
+            # Check if there are any shapes with hydroelastic collision enabled
+            has_hydroelastic_shapes = any(
+                (sflags & ShapeFlags.HYDROELASTIC) and (sflags & ShapeFlags.COLLIDE_SHAPES)
+                for sflags in self.shape_flags
+            )
+
             if has_sdf_meshes and not is_gpu:
                 raise ValueError(
-                    "SDF generation for mesh shapes requires a CUDA-capable GPU device. "
+                    "SDF generation for mesh shapes (sdf_max_resolution != None) requires a CUDA-capable GPU device. "
                     "wp.Volume (used for SDF generation) only supports CUDA. "
-                    "Either disable SDF (set both sdf_max_resolution=None and sdf_target_voxel_size=None) "
-                    "for all mesh shapes or use a CUDA device."
+                    "Either set sdf_max_resolution=None for all mesh shapes or use a CUDA device."
                 )
 
-            if has_sdf_meshes:
+            if has_hydroelastic_shapes and not is_gpu:
+                raise ValueError(
+                    "Hydroelastic collision (is_hydroelastic=True) requires a CUDA-capable GPU device. "
+                    "wp.Volume (used for SDF generation) only supports CUDA. "
+                    "Either set is_hydroelastic=False for all shapes or use a CUDA device."
+                )
+
+            if has_sdf_meshes or has_hydroelastic_shapes:
                 sdf_data_list = []
                 # Keep volume objects alive for reference counting
                 sdf_volumes = []
                 sdf_coarse_volumes = []
+
+                # caches
                 sdf_cache = {}
-                # Create empty SDF data once for reuse by non-mesh shapes
+
+                sdf_block_coords = []  # flat array of coordinates of active SDF tiles
+                sdf_shape2blocks = []  # array indexing into sdf_block_coords for each shape. Multiple shapes can index into the same block range.
+
+                # Create empty SDF data once for reuse by non-SDF shapes
                 empty_sdf_data = create_empty_sdf_data()
 
-                for (
-                    shape_type,
-                    shape_src,
-                    shape_flags,
-                    shape_thickness,
-                    shape_contact_margin,
-                    sdf_narrow_band_range,
-                    sdf_target_voxel_size,
-                    sdf_max_resolution,
-                ) in zip(
-                    self.shape_type,
-                    self.shape_source,
-                    self.shape_flags,
-                    self.shape_thickness,
-                    self.shape_contact_margin,
-                    self.shape_sdf_narrow_band_range,
-                    self.shape_sdf_target_voxel_size,
-                    self.shape_sdf_max_resolution,
-                    strict=True,
-                ):
-                    # Compute SDF only for mesh shapes with collision enabled and SDF enabled
-                    # SDF is enabled if either sdf_max_resolution or sdf_target_voxel_size is set
-                    if (
+                for i in range(len(self.shape_type)):
+                    shape_type = self.shape_type[i]
+                    shape_src = self.shape_source[i]
+                    shape_flags = self.shape_flags[i]
+                    shape_scale = self.shape_scale[i]
+                    shape_thickness = self.shape_thickness[i]
+                    shape_contact_margin = self.shape_contact_margin[i]
+                    sdf_narrow_band_range = self.shape_sdf_narrow_band_range[i]
+                    sdf_target_voxel_size = self.shape_sdf_target_voxel_size[i]
+                    sdf_max_resolution = self.shape_sdf_max_resolution[i]
+                    is_hydroelastic = bool(shape_flags & ShapeFlags.HYDROELASTIC)
+
+                    # Determine if this shape needs SDF:
+                    # - Mesh shapes with sdf_max_resolution/sdf_target_voxel_size set, OR
+                    # - Any colliding shape with is_hydroelastic=True
+                    needs_sdf = (
                         shape_type == GeoType.MESH
                         and shape_src is not None
                         and shape_flags & ShapeFlags.COLLIDE_SHAPES
                         and (sdf_max_resolution is not None or sdf_target_voxel_size is not None)
-                    ):
-                        # Cache key does not include shape_scale because the SDF is always
-                        # computed in unscaled mesh local space. Scale is applied at collision
-                        # time, not during SDF generation, ensuring consistency.
+                    ) or (is_hydroelastic and shape_flags & ShapeFlags.COLLIDE_SHAPES)
+
+                    if needs_sdf:
+                        # Mesh-sdf collisions handle shape scaling at collision time,
+                        # in which case we can compute SDF for this mesh shape in unscaled local space here.
+                        # For hydrelastic collisions this impact of this approximation has yet to be quantified
+                        # so we will bake scale into the SDF data here for now.
+                        bake_scale = is_hydroelastic
+
                         cache_key = (
                             hash(shape_src),
+                            shape_type,
                             shape_thickness,
                             shape_contact_margin,
                             tuple(sdf_narrow_band_range),
                             sdf_target_voxel_size,
                             sdf_max_resolution,
+                            tuple(shape_scale) if bake_scale else None,
                         )
                         if cache_key in sdf_cache:
-                            sdf_data, sparse_volume, coarse_volume = sdf_cache[cache_key]
+                            idx = sdf_cache[cache_key]
+                            sdf_data = sdf_data_list[idx]
+                            sparse_volume = sdf_volumes[idx]
+                            coarse_volume = sdf_coarse_volumes[idx]
+                            shape2blocks = [sdf_shape2blocks[idx][0], sdf_shape2blocks[idx][1]]
                         else:
-                            # Compute SDF for this mesh shape in unscaled local space.
-                            # Scale is handled at collision time to ensure SDF and mesh are consistent.
-                            sdf_data, sparse_volume, coarse_volume = compute_sdf(
+                            sdf_data, sparse_volume, coarse_volume, block_coords = compute_sdf(
                                 mesh_src=shape_src,
+                                shape_type=shape_type,
+                                shape_scale=shape_scale,
                                 shape_thickness=shape_thickness,
                                 narrow_band_distance=sdf_narrow_band_range,
                                 margin=shape_contact_margin,
                                 target_voxel_size=sdf_target_voxel_size,
                                 max_resolution=sdf_max_resolution,
+                                bake_scale=bake_scale,
                             )
-                            sdf_cache[cache_key] = (sdf_data, sparse_volume, coarse_volume)
-                        sdf_volumes.append(sparse_volume)
-                        sdf_coarse_volumes.append(coarse_volume)
+                            sdf_cache[cache_key] = i
+                            block_start_idx = len(sdf_block_coords)
+                            num_blocks = len(block_coords)
+                            shape2blocks = [block_start_idx, block_start_idx + num_blocks]
+                            sdf_block_coords.extend(block_coords)
                     else:
-                        # Non-mesh shapes or non-colliding shapes get empty SDFData
+                        # Non-SDF shapes get empty SDFData
                         sdf_data = empty_sdf_data
-                        sdf_volumes.append(None)
-                        sdf_coarse_volumes.append(None)
+                        sparse_volume = None
+                        coarse_volume = None
+                        shape2blocks = [0, 0]
+
                     sdf_data_list.append(sdf_data)
+                    sdf_volumes.append(sparse_volume)
+                    sdf_coarse_volumes.append(coarse_volume)
+                    sdf_shape2blocks.append(shape2blocks)
 
                 # Create array of SDFData structs
                 m.shape_sdf_data = wp.array(sdf_data_list, dtype=SDFData, device=device)
                 # Keep volume objects alive for reference counting
                 m.shape_sdf_volume = sdf_volumes
                 m.shape_sdf_coarse_volume = sdf_coarse_volumes
+                m.shape_sdf_block_coords = wp.array(sdf_block_coords, dtype=wp.vec3us)
+                m.shape_sdf_shape2blocks = wp.array(sdf_shape2blocks, dtype=wp.vec2i)
             else:
-                # SDF mesh-mesh collision not enabled or no colliding meshes
+                # SDF mesh-mesh collision and hydroelastics not enabled or no colliding meshes/shapes
                 # Still need one SDFData per shape (all empty) so narrow phase can safely access shape_sdf_data[shape_idx]
                 empty_sdf_data = create_empty_sdf_data()
                 m.shape_sdf_data = wp.array([empty_sdf_data] * len(self.shape_type), dtype=SDFData, device=device)
                 m.shape_sdf_volume = [None] * len(self.shape_type)
                 m.shape_sdf_coarse_volume = [None] * len(self.shape_type)
+                m.shape_sdf_block_coords = wp.array([], dtype=wp.vec3us)
+                m.shape_sdf_shape2blocks = wp.array([], dtype=wp.vec2i)
 
             # ---------------------
             # springs

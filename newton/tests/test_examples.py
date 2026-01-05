@@ -402,6 +402,13 @@ add_example_test(
     test_options={"usd_required": True, "num-frames": 500},
     use_viewer=True,
 )
+add_example_test(
+    TestRobotExamples,
+    name="robot.example_robot_panda_hydro",
+    devices=cuda_test_devices,
+    test_options={"usd_required": True, "num-frames": 600},
+    use_viewer=True,
+)
 
 
 class TestRobotPolicyExamples(unittest.TestCase):
@@ -497,6 +504,14 @@ add_example_test(
     name="ik.example_ik_benchmark",
     devices=test_devices,
     test_options_cpu={"batch_sizes": [1, 10]},
+    use_viewer=True,
+)
+
+add_example_test(
+    TestIKExamples,
+    name="ik.example_ik_cube_stacking",
+    test_options_cuda={"num-worlds": 16, "cube-count": 2, "num-frames": 1400},  # "cube-count": 3, "num-frames": 2000
+    devices=cuda_test_devices,
     use_viewer=True,
 )
 

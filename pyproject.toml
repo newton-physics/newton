@@ -45,6 +45,7 @@ importers = [
     "coacd>=1.0.7",                # for convex decomposition
     "trimesh>=4.6.8",              # for mesh operations and V-HACD
     "pycollada>=0.9",              # for loading mesh data with trimesh
+    "resolve-robotics-uri-py>=0.4.0",  # for resolving ROS/Gazebo-style URIs
 
     # USD core libraries
     "usd-core>=25.5 ; platform_machine != 'aarch64'",
