@@ -28,9 +28,9 @@ from newton.tests.unittest_utils import (
     get_test_devices,
 )
 
+
 def simulate(solver, model, state_0, state_1, control, sim_dt, substeps):
     for _ in range(substeps):
-
         if not isinstance(solver, newton.solvers.SolverMuJoCo):
             contacts = model.collide(state_0)
         else:
@@ -731,6 +731,7 @@ solvers = {
     "xpbd": lambda model: newton.solvers.SolverXPBD(model, iterations=2),
     "semi_implicit": lambda model: newton.solvers.SolverSemiImplicit(model),
 }
+
 
 class TestRigidContact(unittest.TestCase):
     pass
