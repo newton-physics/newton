@@ -67,6 +67,15 @@ from .joints import (
 from .model import Model, ModelAttributeAssignment, ModelAttributeFrequency
 
 
+@dataclass
+class ActuatorEntry:
+    """Stores accumulated indices and arguments for one actuator type."""
+
+    input_indices: list[int]
+    output_indices: list[int]
+    args: list[dict]
+
+
 class ModelBuilder:
     """A helper class for building simulation models at runtime.
 
@@ -674,6 +683,9 @@ class ModelBuilder:
         # Custom attributes (user-defined per-frequency arrays)
         self.custom_attributes: dict[str, ModelBuilder.CustomAttribute] = {}
 
+        # Actuator entries (accumulated during add_actuator calls)
+        self.actuator_entries: dict[type, ActuatorEntry] = {}
+
     def add_custom_attribute(self, attribute: CustomAttribute) -> None:
         """
         Define a custom per-entity attribute to be added to the Model.
@@ -926,6 +938,65 @@ class ModelBuilder:
                 raise ValueError(
                     f"Custom attribute '{attr_key}' has unsupported frequency {custom_attr.frequency} for joints"
                 )
+
+    def add_actuator(
+        self,
+        actuator_class: type,
+        input_indices: list[int],
+        output_indices: list[int] | None = None,
+        **kwargs,
+    ) -> None:
+        """Add an actuator for one or more DOFs.
+
+        Multiple calls with the same actuator_class accumulate into one ActuatorEntry.
+        The actuator instance is created during finalize().
+
+        For multi-target actuators, each output_index is paired with the corresponding
+        input_index (i.e., output_indices[i] reads from input_indices[i]).
+
+        Args:
+            actuator_class: The actuator class (e.g., PDActuator).
+            input_indices: List of DOF indices for reading state/targets.
+            output_indices: List of DOF indices for writing output. Defaults to input_indices.
+            **kwargs: Actuator parameters (e.g., kp, kd, max_force). Shared across all DOFs.
+        """
+        if output_indices is None:
+            output_indices = input_indices.copy()
+
+        entry = self.actuator_entries.setdefault(
+            actuator_class,
+            ActuatorEntry(input_indices=[], output_indices=[], args=[]),
+        )
+
+        resolved = actuator_class.resolve_arguments(kwargs)
+
+        # Each output gets the same resolved parameters
+        entry.input_indices.extend(input_indices)
+        entry.output_indices.extend(output_indices)
+        for _ in output_indices:
+            entry.args.append(resolved)
+
+    def _stack_args_to_arrays(self, args_list: list[dict], device=None) -> dict:
+        """Convert list of per-index arg dicts into dict of warp arrays.
+
+        Args:
+            args_list: List of dicts, one per index. Each dict has same keys.
+            device: Device for warp arrays.
+
+        Returns:
+            Dict mapping param names to warp arrays.
+        """
+        if not args_list:
+            return {}
+
+        result = {}
+        keys = args_list[0].keys()
+
+        for key in keys:
+            values = [args[key] for args in args_list]
+            result[key] = wp.array(values, dtype=wp.float32, device=device)
+
+        return result
 
     @property
     def default_site_cfg(self) -> ShapeConfig:
@@ -1261,6 +1332,7 @@ class ModelBuilder:
         hide_collision_shapes: bool = False,
         mesh_maxhullvert: int = MESH_MAXHULLVERT,
         schema_resolvers: list[SchemaResolver] | None = None,
+        parse_actuator_fn=None,
     ) -> dict[str, Any]:
         """
         Parses a Universal Scene Description (USD) stage containing UsdPhysics schema definitions for rigid-body articulations and adds the bodies, shapes and joints to the given ModelBuilder.
@@ -1361,6 +1433,7 @@ class ModelBuilder:
             hide_collision_shapes,
             mesh_maxhullvert,
             schema_resolvers,
+            parse_actuator_fn,
         )
 
     def add_mjcf(
@@ -1898,6 +1971,17 @@ class ModelBuilder:
             if merged.values is None:
                 merged.values = {}
             merged.values.update({offset + idx: value for idx, value in attr.values.items()})
+
+        # Merge actuator entries from the sub-builder with offset DOF indices
+        for actuator_class, sub_entry in builder.actuator_entries.items():
+            entry = self.actuator_entries.setdefault(
+                actuator_class,
+                ActuatorEntry(input_indices=[], output_indices=[], args=[]),
+            )
+            # Offset indices by the starting DOF index
+            entry.input_indices.extend([idx + start_joint_dof_idx for idx in sub_entry.input_indices])
+            entry.output_indices.extend([idx + start_joint_dof_idx for idx in sub_entry.output_indices])
+            entry.args.extend(sub_entry.args)
 
     def add_link(
         self,
@@ -6313,6 +6397,19 @@ class ModelBuilder:
                 device=device,
                 requires_grad=requires_grad,
             )
+
+            # Create actuators from accumulated entries
+            m.actuators = []
+            for actuator_class, entry in self.actuator_entries.items():
+                input_indices = wp.array(entry.input_indices, dtype=wp.uint32, device=device)
+                output_indices = wp.array(entry.output_indices, dtype=wp.uint32, device=device)
+                param_arrays = self._stack_args_to_arrays(entry.args, device=device)
+                actuator = actuator_class(
+                    input_indices=input_indices,
+                    output_indices=output_indices,
+                    **param_arrays,
+                )
+                m.actuators.append(actuator)
 
             # Add custom attributes onto the model (with lazy evaluation)
             # Early return if no custom attributes exist to avoid overhead

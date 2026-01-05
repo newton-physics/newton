@@ -1,0 +1,118 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+    metersPerUnit = 1.0
+    upAxis = "Z"
+)
+
+def Xform "World"
+{
+    def PhysicsScene "PhysicsScene"
+    {
+    }
+
+    def Xform "Robot" (
+        prepend apiSchemas = ["PhysicsArticulationRootAPI"]
+    )
+    {
+        # Base body (fixed to world)
+        def Xform "Base" (
+            prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI"]
+        )
+        {
+            float physics:mass = 1.0
+            bool physics:kinematicEnabled = true
+
+            def Cube "BaseShape" (
+                prepend apiSchemas = ["PhysicsCollisionAPI"]
+            )
+            {
+                float3 xformOp:scale = (0.1, 0.1, 0.1)
+                uniform token[] xformOpOrder = ["xformOp:scale"]
+            }
+        }
+
+        # Link 1
+        def Xform "Link1" (
+            prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI"]
+        )
+        {
+            float3 xformOp:translate = (0, 0, 0.5)
+            uniform token[] xformOpOrder = ["xformOp:translate"]
+            float physics:mass = 0.5
+
+            def Cube "Link1Shape" (
+                prepend apiSchemas = ["PhysicsCollisionAPI"]
+            )
+            {
+                float3 xformOp:scale = (0.05, 0.05, 0.2)
+                uniform token[] xformOpOrder = ["xformOp:scale"]
+            }
+        }
+
+        # Link 2
+        def Xform "Link2" (
+            prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI"]
+        )
+        {
+            float3 xformOp:translate = (0, 0, 1.0)
+            uniform token[] xformOpOrder = ["xformOp:translate"]
+            float physics:mass = 0.5
+
+            def Cube "Link2Shape" (
+                prepend apiSchemas = ["PhysicsCollisionAPI"]
+            )
+            {
+                float3 xformOp:scale = (0.05, 0.05, 0.2)
+                uniform token[] xformOpOrder = ["xformOp:scale"]
+            }
+        }
+
+        # Joint 1: Base to Link1
+        def PhysicsRevoluteJoint "Joint1" (
+            prepend apiSchemas = ["PhysicsDriveAPI:angular"]
+        )
+        {
+            rel physics:body0 = </World/Robot/Base>
+            rel physics:body1 = </World/Robot/Link1>
+            float3 physics:localPos0 = (0, 0, 0.1)
+            float3 physics:localPos1 = (0, 0, -0.2)
+            uniform token physics:axis = "Z"
+        }
+
+        # Joint 2: Link1 to Link2
+        def PhysicsRevoluteJoint "Joint2" (
+            prepend apiSchemas = ["PhysicsDriveAPI:angular"]
+        )
+        {
+            rel physics:body0 = </World/Robot/Link1>
+            rel physics:body1 = </World/Robot/Link2>
+            float3 physics:localPos0 = (0, 0, 0.2)
+            float3 physics:localPos1 = (0, 0, -0.2)
+            uniform token physics:axis = "Y"
+        }
+
+        # Actuator for Joint 1 (PD Controller)
+        def Actuator "Joint1Actuator" (
+            prepend apiSchemas = ["PDControllerAPI"]
+        )
+        {
+            rel target = </World/Robot/Joint1>
+            float pdcontroller:kp = 100.0
+            float pdcontroller:kd = 10.0
+            float pdcontroller:maxForce = 50.0
+        }
+
+        # Actuator for Joint 2 (PD Controller with Delay)
+        def Actuator "Joint2Actuator" (
+            prepend apiSchemas = ["PDControllerAPI", "DelayAPI"]
+        )
+        {
+            rel target = </World/Robot/Joint2>
+            float pdcontroller:kp = 200.0
+            float pdcontroller:kd = 20.0
+            int delay:delay = 5
+        }
+    }
+}
+

@@ -57,6 +57,7 @@ def parse_usd(
     hide_collision_shapes: bool = False,
     mesh_maxhullvert: int = MESH_MAXHULLVERT,
     schema_resolvers: list[SchemaResolver] | None = None,
+    parse_actuator_fn=None,
 ) -> dict[str, Any]:
     """Parses a Universal Scene Description (USD) stage containing UsdPhysics schema definitions for rigid-body articulations and adds the bodies, shapes and joints to the given ModelBuilder.
 
@@ -1609,6 +1610,32 @@ def parse_usd(
         # Joint indices may have shifted after collapsing fixed joints; refresh the joint path map accordingly.
         path_joint_map = {key: idx for idx, key in enumerate(builder.joint_key)}
 
+    actuator_count = 0
+    if parse_actuator_fn is not None:
+        path_to_dof_map = {
+            path: builder.joint_qd_start[idx]
+            for path, idx in path_joint_map.items()
+            if idx < len(builder.joint_qd_start)
+        }
+        root_prim = stage.GetPrimAtPath(root_path)
+        if root_prim:
+            for prim in Usd.PrimRange(root_prim):
+                parsed = parse_actuator_fn(prim)
+                if parsed is None:
+                    continue
+                # Collect all valid DOF indices for this actuator
+                dof_indices = []
+                for target_path in parsed.target_paths:
+                    dof_index = path_to_dof_map.get(target_path)
+                    if dof_index is not None:
+                        dof_indices.append(dof_index)
+                if dof_indices:
+                    builder.add_actuator(parsed.actuator_class, input_indices=dof_indices, **parsed.kwargs)
+                    actuator_count += 1
+
+        if verbose and actuator_count > 0:
+            print(f"Added {actuator_count} actuator(s) from USD")
+
     path_original_body_map = path_body_map.copy()
     if cloned_world is not None:
         with wp.ScopedTimer("replicating worlds"):
@@ -1684,6 +1711,7 @@ def parse_usd(
         "path_body_relative_transform": path_body_relative_transform,
         "max_solver_iterations": max_solver_iters,
         "path_original_body_map": path_original_body_map,
+        "actuator_count": actuator_count,
     }
 
 
