@@ -26,6 +26,7 @@ newton.utils
    create_capsule_mesh
    create_cone_mesh
    create_cylinder_mesh
+   create_ellipsoid_mesh
    create_plane_mesh
    create_sphere_mesh
    download_asset

@@ -17,10 +17,8 @@
 
 This test suite validates:
 1. Icosahedron face normals are unit vectors
-2. Icosahedron triangle vertices are unit vectors on the sphere
-3. get_slot returns correct face indices for different normals
-4. get_scan_dir returns correct edge directions with proper indexing
-5. Contact reduction utility functions work correctly
+2. get_slot returns correct face indices for different normals
+3. Contact reduction utility functions work correctly
 
 Note: Tests that use shared memory (ContactReductionFunctions) require CUDA.
 """
@@ -32,14 +30,12 @@ import warp as wp
 
 from newton._src.geometry.contact_reduction import (
     ICOSAHEDRON_FACE_NORMALS,
-    ICOSAHEDRON_TRIANGLES,
     NUM_NORMAL_BINS,
     NUM_SPATIAL_DIRECTIONS,
     ContactReductionFunctions,
     ContactStruct,
     compute_num_reduction_slots,
     create_betas_array,
-    get_scan_dir,
     get_slot,
     synchronize,
 )
@@ -54,17 +50,6 @@ def _get_slot_kernel(
     """Kernel to test get_slot function."""
     tid = wp.tid()
     slots[tid] = get_slot(normals[tid])
-
-
-@wp.kernel
-def _get_scan_dir_kernel(
-    face_ids: wp.array(dtype=int),
-    direction_indices: wp.array(dtype=int),
-    scan_dirs: wp.array(dtype=wp.vec3),
-):
-    """Kernel to test get_scan_dir function."""
-    tid = wp.tid()
-    scan_dirs[tid] = get_scan_dir(face_ids[tid], direction_indices[tid])
 
 
 class TestContactReduction(unittest.TestCase):
@@ -92,20 +77,6 @@ def test_face_normals_are_unit_vectors(test, device):
         test.assertAlmostEqual(length, 1.0, places=5, msg=f"Face normal {i} is not a unit vector")
 
 
-def test_triangle_vertices_are_unit_vectors(test, device):
-    """Verify all 60 triangle vertices lie on the unit sphere."""
-    for i in range(60):
-        vertex = np.array(
-            [
-                ICOSAHEDRON_TRIANGLES[i, 0],
-                ICOSAHEDRON_TRIANGLES[i, 1],
-                ICOSAHEDRON_TRIANGLES[i, 2],
-            ]
-        )
-        length = np.linalg.norm(vertex)
-        test.assertAlmostEqual(length, 1.0, places=5, msg=f"Triangle vertex {i} is not on unit sphere")
-
-
 def test_face_normals_cover_sphere(test, device):
     """Test that face normals roughly cover the sphere (no hemisphere is empty)."""
     normals = []
@@ -126,16 +97,6 @@ def test_face_normals_cover_sphere(test, device):
     test.assertTrue(np.any(normals[:, 1] < -0.3), "No face normals point in -Y direction")
     test.assertTrue(np.any(normals[:, 2] > 0.3), "No face normals point in +Z direction")
     test.assertTrue(np.any(normals[:, 2] < -0.3), "No face normals point in -Z direction")
-
-
-def test_triangle_faces_have_three_vertices_each(test, device):
-    """Verify each of the 20 faces has exactly 3 vertices (60 total rows)."""
-    # ICOSAHEDRON_TRIANGLES is a Warp matrix type (mat_t), verify structure via constants
-    # 20 faces * 3 vertices per face = 60 rows, each with 3 components (x, y, z)
-    test.assertEqual(NUM_NORMAL_BINS, 20)
-    # Verify we can access the last valid element (row 59, column 2)
-    last_vertex_z = ICOSAHEDRON_TRIANGLES[59, 2]
-    test.assertIsNotNone(last_vertex_z)
 
 
 def test_constants(test, device):
@@ -241,124 +202,6 @@ def test_get_slot_matches_best_face_normal(test, device):
         test.assertEqual(
             result_slot, cpu_best_slot, f"Normal {i}: result slot {result_slot} != expected slot {cpu_best_slot}"
         )
-
-
-# =============================================================================
-# Tests for get_scan_dir function (works on CPU and GPU)
-# =============================================================================
-
-
-def test_get_scan_dir_all_faces(test, device):
-    """Test that get_scan_dir returns valid edge vectors for all faces."""
-    # Test all 20 faces with all 6 direction indices
-    face_ids = []
-    direction_indices = []
-    for face_id in range(NUM_NORMAL_BINS):
-        for dir_idx in range(NUM_SPATIAL_DIRECTIONS):
-            face_ids.append(face_id)
-            direction_indices.append(dir_idx)
-
-    face_ids_arr = wp.array(face_ids, dtype=int, device=device)
-    direction_indices_arr = wp.array(direction_indices, dtype=int, device=device)
-    scan_dirs = wp.zeros(len(face_ids), dtype=wp.vec3, device=device)
-
-    wp.launch(
-        _get_scan_dir_kernel,
-        dim=len(face_ids),
-        inputs=[face_ids_arr, direction_indices_arr, scan_dirs],
-        device=device,
-    )
-
-    scan_dirs_np = scan_dirs.numpy()
-
-    # Verify all scan directions are non-zero
-    for i, scan_dir in enumerate(scan_dirs_np):
-        length = np.linalg.norm(scan_dir)
-        test.assertGreater(length, 0.01, f"Scan direction for face {face_ids[i]}, dir {direction_indices[i]} is zero")
-
-
-def test_get_scan_dir_indexing_correctness(test, device):
-    """Test that get_scan_dir uses correct face-based indexing (3*face_id)."""
-    # For each face, verify the scan directions match the expected triangle edges
-    for face_id in range(NUM_NORMAL_BINS):
-        face_base = 3 * face_id
-
-        # Get the 3 vertices of this face
-        v0 = np.array([ICOSAHEDRON_TRIANGLES[face_base, j] for j in range(3)])
-        v1 = np.array([ICOSAHEDRON_TRIANGLES[face_base + 1, j] for j in range(3)])
-        v2 = np.array([ICOSAHEDRON_TRIANGLES[face_base + 2, j] for j in range(3)])
-
-        # Expected edges for i=0,1,2: (v1-v0), (v2-v1), (v0-v2)
-        expected_edges = [
-            v1 - v0,  # i=0: vertex[1] - vertex[0]
-            v2 - v1,  # i=1: vertex[2] - vertex[1]
-            v0 - v2,  # i=2: vertex[0] - vertex[2]
-        ]
-
-        # Test direction indices 0, 1, 2 (positive edges)
-        for dir_idx in range(3):
-            face_ids_arr = wp.array([face_id], dtype=int, device=device)
-            dir_indices_arr = wp.array([dir_idx], dtype=int, device=device)
-            scan_dirs = wp.zeros(1, dtype=wp.vec3, device=device)
-
-            wp.launch(
-                _get_scan_dir_kernel,
-                dim=1,
-                inputs=[face_ids_arr, dir_indices_arr, scan_dirs],
-                device=device,
-            )
-
-            result = scan_dirs.numpy()[0]
-            expected = expected_edges[dir_idx]
-
-            np.testing.assert_array_almost_equal(
-                result, expected, decimal=5, err_msg=f"Face {face_id}, dir {dir_idx}: mismatch"
-            )
-
-        # Test direction indices 3, 4, 5 (negated edges)
-        for dir_idx in range(3, 6):
-            face_ids_arr = wp.array([face_id], dtype=int, device=device)
-            dir_indices_arr = wp.array([dir_idx], dtype=int, device=device)
-            scan_dirs = wp.zeros(1, dtype=wp.vec3, device=device)
-
-            wp.launch(
-                _get_scan_dir_kernel,
-                dim=1,
-                inputs=[face_ids_arr, dir_indices_arr, scan_dirs],
-                device=device,
-            )
-
-            result = scan_dirs.numpy()[0]
-            expected = -expected_edges[dir_idx - 3]
-
-            np.testing.assert_array_almost_equal(
-                result, expected, decimal=5, err_msg=f"Face {face_id}, dir {dir_idx}: mismatch (negated)"
-            )
-
-
-def test_get_scan_dir_opposite_directions_negated(test, device):
-    """Test that directions 3,4,5 are negations of 0,1,2."""
-    for face_id in [0, 5, 10, 15, 19]:  # Test a few faces
-        for base_dir in range(3):
-            # Get direction i and direction i+3
-            face_ids_arr = wp.array([face_id, face_id], dtype=int, device=device)
-            dir_indices_arr = wp.array([base_dir, base_dir + 3], dtype=int, device=device)
-            scan_dirs = wp.zeros(2, dtype=wp.vec3, device=device)
-
-            wp.launch(
-                _get_scan_dir_kernel,
-                dim=2,
-                inputs=[face_ids_arr, dir_indices_arr, scan_dirs],
-                device=device,
-            )
-
-            result = scan_dirs.numpy()
-            np.testing.assert_array_almost_equal(
-                result[0],
-                -result[1],
-                decimal=5,
-                err_msg=f"Face {face_id}: dir {base_dir} should be -dir {base_dir + 3}",
-            )
 
 
 # =============================================================================
@@ -536,19 +379,7 @@ for device in devices:
         TestContactReduction, "test_face_normals_are_unit_vectors", test_face_normals_are_unit_vectors, devices=[device]
     )
     add_function_test(
-        TestContactReduction,
-        "test_triangle_vertices_are_unit_vectors",
-        test_triangle_vertices_are_unit_vectors,
-        devices=[device],
-    )
-    add_function_test(
         TestContactReduction, "test_face_normals_cover_sphere", test_face_normals_cover_sphere, devices=[device]
-    )
-    add_function_test(
-        TestContactReduction,
-        "test_triangle_faces_have_three_vertices_each",
-        test_triangle_faces_have_three_vertices_each,
-        devices=[device],
     )
     add_function_test(TestContactReduction, "test_constants", test_constants, devices=[device])
     add_function_test(
@@ -565,23 +396,6 @@ for device in devices:
         TestContactReduction,
         "test_get_slot_matches_best_face_normal",
         test_get_slot_matches_best_face_normal,
-        devices=[device],
-    )
-
-    # get_scan_dir tests
-    add_function_test(
-        TestContactReduction, "test_get_scan_dir_all_faces", test_get_scan_dir_all_faces, devices=[device]
-    )
-    add_function_test(
-        TestContactReduction,
-        "test_get_scan_dir_indexing_correctness",
-        test_get_scan_dir_indexing_correctness,
-        devices=[device],
-    )
-    add_function_test(
-        TestContactReduction,
-        "test_get_scan_dir_opposite_directions_negated",
-        test_get_scan_dir_opposite_directions_negated,
         devices=[device],
     )
 

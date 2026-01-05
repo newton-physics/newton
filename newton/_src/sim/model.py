@@ -68,7 +68,9 @@ class ModelAttributeFrequency(IntEnum):
     """Attribute frequency follows the number of shapes (see :attr:`~newton.Model.shape_count`)."""
     ARTICULATION = 6
     """Attribute frequency follows the number of articulations (see :attr:`~newton.Model.articulation_count`)."""
-    WORLD = 7
+    EQUALITY_CONSTRAINT = 7
+    """Attribute frequency follows the number of equality constraints (see :attr:`~newton.Model.equality_constraint_count`)."""
+    WORLD = 8
     """Attribute frequency follows the number of worlds (see :attr:`~newton.Model.num_worlds`)."""
 
 
@@ -191,6 +193,8 @@ class Model:
         """Shape torsional friction coefficient (resistance to spinning at contact point), shape [shape_count], float."""
         self.shape_material_rolling_friction = None
         """Shape rolling friction coefficient (resistance to rolling motion), shape [shape_count], float."""
+        self.shape_material_k_hydro = None
+        """Shape hydroelastic stiffness coefficient, shape [shape_count], float."""
         self.shape_contact_margin = None
         """Shape contact margin for collision detection, shape [shape_count], float."""
 
@@ -230,9 +234,6 @@ class Model:
         """List of sparse SDF volume references for mesh shapes, shape [shape_count]. None for non-mesh shapes. Empty if there are no colliding meshes. Kept for reference counting."""
         self.shape_sdf_coarse_volume = []
         """List of coarse SDF volume references for mesh shapes, shape [shape_count]. None for non-mesh shapes. Empty if there are no colliding meshes. Kept for reference counting."""
-        self.mesh_mesh_collision_enabled = False
-        """Whether SDF-based mesh-mesh collision is enabled. Requires GPU device since wp.Volume only supports CUDA.
-        Controlled by the enable_mesh_sdf_collision parameter in ModelBuilder. Set during model finalization."""
 
         self.spring_indices = None
         """Particle spring indices, shape [spring_count*2], int."""
@@ -456,6 +457,11 @@ class Model:
         self.particle_colors = None
         """Color assignment for every particle."""
 
+        self.body_color_groups = []
+        """Coloring of all rigid bodies for Gauss-Seidel iteration (see :class:`~newton.solvers.SolverVBD`). Each array contains indices of bodies sharing the same color."""
+        self.body_colors = None
+        """Color assignment for every rigid body."""
+
         self.device = wp.get_device(device)
         """Device on which the Model was allocated."""
 
@@ -520,6 +526,8 @@ class Model:
         self.attribute_frequency["shape_material_restitution"] = ModelAttributeFrequency.SHAPE
         self.attribute_frequency["shape_material_torsional_friction"] = ModelAttributeFrequency.SHAPE
         self.attribute_frequency["shape_material_rolling_friction"] = ModelAttributeFrequency.SHAPE
+        self.attribute_frequency["shape_material_k_hydro"] = ModelAttributeFrequency.SHAPE
+        self.attribute_frequency["shape_contact_margin"] = ModelAttributeFrequency.SHAPE
         self.attribute_frequency["shape_type"] = ModelAttributeFrequency.SHAPE
         self.attribute_frequency["shape_is_solid"] = ModelAttributeFrequency.SHAPE
         self.attribute_frequency["shape_thickness"] = ModelAttributeFrequency.SHAPE

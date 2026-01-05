@@ -22,7 +22,7 @@ import warp as wp
 from . import lighting, ray_cast, textures
 
 if TYPE_CHECKING:
-    from .render_context import RenderContext
+    from .render_context import ClearData, RenderContext
 
 
 @wp.func
@@ -34,8 +34,8 @@ def tid_to_tile_coord(tid: wp.int32, num_worlds: wp.int32, num_cameras: wp.int32
     pixel_idx = tid // num_views_per_pixel
     view_idx = tid % num_views_per_pixel
 
-    world_id = view_idx % num_worlds
-    camera_id = view_idx // num_worlds
+    world_index = view_idx % num_worlds
+    camera_index = view_idx // num_worlds
 
     tile_local = pixel_idx % num_pixels_per_tile
     tile_offset = pixel_idx // num_pixels_per_tile
@@ -46,7 +46,7 @@ def tid_to_tile_coord(tid: wp.int32, num_worlds: wp.int32, num_cameras: wp.int32
     py = tile_local % tile_size + tile_offset_y * tile_size
     px = tile_local // tile_size + tile_offset_x * tile_size
 
-    return world_id, camera_id, py, px
+    return world_index, camera_index, py, px
 
 
 @wp.func
@@ -56,13 +56,13 @@ def tid_to_pixel_coord(tid: wp.int32, num_worlds: wp.int32, num_cameras: wp.int3
     pixel_idx = tid // num_views_per_pixel
     view_idx = tid % num_views_per_pixel
 
-    world_id = view_idx % num_worlds
-    camera_id = view_idx // num_worlds
+    world_index = view_idx % num_worlds
+    camera_index = view_idx // num_worlds
 
     py = pixel_idx // width
     px = pixel_idx % width
 
-    return world_id, camera_id, py, px
+    return world_index, camera_index, py, px
 
 
 @wp.func
@@ -94,25 +94,26 @@ def _render_megakernel(
     max_distance: wp.float32,
     # Camera
     camera_rays: wp.array(dtype=wp.vec3f, ndim=4),
-    camera_positions: wp.array(dtype=wp.vec3f, ndim=2),
-    camera_orientations: wp.array(dtype=wp.mat33f, ndim=2),
-    # Geometry BVH
-    bvh_geom_size: wp.int32,
-    bvh_geom_id: wp.uint64,
-    bvh_geom_group_roots: wp.array(dtype=wp.int32),
-    # Geometry
-    geom_enabled: wp.array(dtype=wp.int32),
-    geom_types: wp.array(dtype=wp.int32),
-    geom_mesh_indices: wp.array(dtype=wp.int32),
-    geom_materials: wp.array(dtype=wp.int32),
-    geom_sizes: wp.array(dtype=wp.vec3f),
-    geom_colors: wp.array(dtype=wp.vec4f),
+    camera_transforms: wp.array(dtype=wp.transformf, ndim=2),
+    # Shapes BVH
+    bvh_shapes_size: wp.int32,
+    bvh_shapes_id: wp.uint64,
+    bvh_shapes_group_roots: wp.array(dtype=wp.int32),
+    # Shapes
+    shape_enabled: wp.array(dtype=wp.uint32),
+    shape_types: wp.array(dtype=wp.int32),
+    shape_mesh_indices: wp.array(dtype=wp.int32),
+    shape_materials: wp.array(dtype=wp.int32),
+    shape_sizes: wp.array(dtype=wp.vec3f),
+    shape_colors: wp.array(dtype=wp.vec4f),
+    shape_transforms: wp.array(dtype=wp.transformf),
+    # Meshes
     mesh_ids: wp.array(dtype=wp.uint64),
     mesh_face_offsets: wp.array(dtype=wp.int32),
     mesh_face_vertices: wp.array(dtype=wp.vec3i),
     mesh_texcoord: wp.array(dtype=wp.vec2f),
     mesh_texcoord_offsets: wp.array(dtype=wp.int32),
-    # Geometry BVH
+    # Particle BVH
     bvh_particles_size: wp.int32,
     bvh_particles_id: wp.uint64,
     bvh_particles_group_roots: wp.array(dtype=wp.int32),
@@ -136,48 +137,53 @@ def _render_megakernel(
     light_cast_shadow: wp.array(dtype=wp.bool),
     light_positions: wp.array(dtype=wp.vec3f),
     light_orientations: wp.array(dtype=wp.vec3f),
-    # Data
-    geom_positions: wp.array(dtype=wp.vec3f),
-    geom_orientations: wp.array(dtype=wp.mat33f),
-    # Output
+    # Enabled Output
     render_color: wp.bool,
     render_depth: wp.bool,
+    render_shape_index: wp.bool,
+    render_normal: wp.bool,
+    # Outputs
     out_pixels: wp.array3d(dtype=wp.uint32),
     out_depth: wp.array3d(dtype=wp.float32),
+    out_shape_index: wp.array3d(dtype=wp.uint32),
+    out_normal: wp.array3d(dtype=wp.vec3f),
 ):
     tid = wp.tid()
 
     if tile_rendering:
-        world_id, camera_id, py, px = tid_to_tile_coord(tid, num_worlds, num_cameras, tile_size, img_width)
+        world_index, camera_index, py, px = tid_to_tile_coord(tid, num_worlds, num_cameras, tile_size, img_width)
     else:
-        world_id, camera_id, py, px = tid_to_pixel_coord(tid, num_worlds, num_cameras, img_width)
+        world_index, camera_index, py, px = tid_to_pixel_coord(tid, num_worlds, num_cameras, img_width)
 
     if px >= img_width or py >= img_height:
         return
 
     out_index = py * img_width + px
 
-    ray_origin_world = camera_positions[camera_id, world_id] + camera_rays[camera_id, py, px, 0]
-    ray_dir_world = camera_orientations[camera_id, world_id] @ camera_rays[camera_id, py, px, 1]
+    ray_origin_world = wp.transform_point(
+        camera_transforms[camera_index, world_index], camera_rays[camera_index, py, px, 0]
+    )
+    ray_dir_world = wp.transform_vector(
+        camera_transforms[camera_index, world_index], camera_rays[camera_index, py, px, 1]
+    )
 
     closest_hit = ray_cast.closest_hit(
-        bvh_geom_size,
-        bvh_geom_id,
-        bvh_geom_group_roots,
+        bvh_shapes_size,
+        bvh_shapes_id,
+        bvh_shapes_group_roots,
         bvh_particles_size,
         bvh_particles_id,
         bvh_particles_group_roots,
-        world_id,
+        world_index,
         has_global_world,
         enable_particles,
         max_distance,
-        geom_enabled,
-        geom_types,
-        geom_mesh_indices,
-        geom_sizes,
+        shape_enabled,
+        shape_types,
+        shape_mesh_indices,
+        shape_sizes,
+        shape_transforms,
         mesh_ids,
-        geom_positions,
-        geom_orientations,
         particles_position,
         particles_radius,
         triangle_mesh_id,
@@ -186,11 +192,17 @@ def _render_megakernel(
     )
 
     # Early Out
-    if closest_hit.geom_id == -1:
+    if closest_hit.shape_index == ray_cast.NO_HIT_SHAPE_ID:
         return
 
     if render_depth:
-        out_depth[world_id, camera_id, out_index] = closest_hit.distance
+        out_depth[world_index, camera_index, out_index] = closest_hit.distance
+
+    if render_normal:
+        out_normal[world_index, camera_index, out_index] = closest_hit.normal
+
+    if render_shape_index:
+        out_shape_index[world_index, camera_index, out_index] = closest_hit.shape_index
 
     if not render_color:
         return
@@ -199,32 +211,29 @@ def _render_megakernel(
     hit_point = ray_origin_world + ray_dir_world * closest_hit.distance
 
     color = wp.vec4f(1.0)
-    if closest_hit.geom_id > -1:
-        color = geom_colors[closest_hit.geom_id]
-        if geom_materials[closest_hit.geom_id] > -1:
-            color = wp.cw_mul(color, material_rgba[geom_materials[closest_hit.geom_id]])
+    if closest_hit.shape_index < ray_cast.MAX_SHAPE_ID:
+        color = shape_colors[closest_hit.shape_index]
+        if shape_materials[closest_hit.shape_index] > -1:
+            color = wp.cw_mul(color, material_rgba[shape_materials[closest_hit.shape_index]])
 
     base_color = wp.vec3f(color[0], color[1], color[2])
     out_color = wp.vec3f(0.0)
 
-    if enable_textures and closest_hit.geom_id > -1:
-        mat_id = geom_materials[closest_hit.geom_id]
-        if mat_id > -1:
-            tex_id = material_texture_ids[mat_id]
-            if tex_id > -1:
+    if enable_textures and closest_hit.shape_index < ray_cast.MAX_SHAPE_ID:
+        material_index = shape_materials[closest_hit.shape_index]
+        if material_index > -1:
+            texture_index = material_texture_ids[material_index]
+            if texture_index > -1:
                 tex_color = textures.sample_texture(
-                    world_id,
-                    closest_hit.geom_id,
-                    geom_types,
-                    mat_id,
-                    tex_id,
-                    material_texture_repeat[mat_id],
-                    texture_offsets[tex_id],
+                    shape_types[closest_hit.shape_index],
+                    shape_transforms[closest_hit.shape_index],
+                    material_index,
+                    texture_index,
+                    material_texture_repeat[material_index],
+                    texture_offsets[texture_index],
                     texture_data,
-                    texture_height[tex_id],
-                    texture_width[tex_id],
-                    geom_positions[closest_hit.geom_id],
-                    geom_orientations[closest_hit.geom_id],
+                    texture_height[texture_index],
+                    texture_width[texture_index],
                     mesh_face_offsets,
                     mesh_face_vertices,
                     mesh_texcoord,
@@ -233,7 +242,7 @@ def _render_megakernel(
                     closest_hit.bary_u,
                     closest_hit.bary_v,
                     closest_hit.face_idx,
-                    closest_hit.geom_mesh_id,
+                    closest_hit.shape_mesh_index,
                 )
 
                 base_color = wp.vec3f(
@@ -259,41 +268,40 @@ def _render_megakernel(
         )
 
     # Apply lighting and shadows
-    for light_idx in range(num_lights):
+    for light_index in range(num_lights):
         light_contribution = lighting.compute_lighting(
             enable_shadows,
-            bvh_geom_size,
-            bvh_geom_id,
-            bvh_geom_group_roots,
+            enable_particles,
+            world_index,
+            has_global_world,
+            bvh_shapes_size,
+            bvh_shapes_id,
+            bvh_shapes_group_roots,
             bvh_particles_size,
             bvh_particles_id,
             bvh_particles_group_roots,
-            geom_enabled,
-            world_id,
-            has_global_world,
-            enable_particles,
-            light_active[light_idx],
-            light_type[light_idx],
-            light_cast_shadow[light_idx],
-            light_positions[light_idx],
-            light_orientations[light_idx],
-            closest_hit.normal,
-            geom_types,
-            geom_mesh_indices,
-            geom_sizes,
+            shape_enabled,
+            shape_types,
+            shape_mesh_indices,
+            shape_sizes,
+            shape_transforms,
             mesh_ids,
-            geom_positions,
-            geom_orientations,
+            light_active[light_index],
+            light_type[light_index],
+            light_cast_shadow[light_index],
+            light_positions[light_index],
+            light_orientations[light_index],
             particles_position,
             particles_radius,
             triangle_mesh_id,
+            closest_hit.normal,
             hit_point,
         )
         out_color = out_color + base_color * light_contribution
 
     out_color = wp.min(wp.max(out_color, wp.vec3f(0.0)), wp.vec3f(1.0))
 
-    out_pixels[world_id, camera_id, out_index] = pack_rgba_to_uint32(
+    out_pixels[world_index, camera_index, out_index] = pack_rgba_to_uint32(
         out_color[0] * 255.0,
         out_color[1] * 255.0,
         out_color[2] * 255.0,
@@ -303,23 +311,29 @@ def _render_megakernel(
 
 def render_megakernel(
     rc: RenderContext,
-    camera_positions: wp.array(dtype=wp.vec3f, ndim=2),
-    camera_orientations: wp.array(dtype=wp.mat33f, ndim=2),
+    camera_transforms: wp.array(dtype=wp.transformf, ndim=2),
     camera_rays: wp.array(dtype=wp.vec3f, ndim=4),
-    color_image: wp.array(dtype=wp.uint32, ndim=3) | None = None,
-    depth_image: wp.array(dtype=wp.float32, ndim=3) | None = None,
-    clear_color: int | None = 0,
-    clear_depth: float | None = 0.0,
+    color_image: wp.array(dtype=wp.uint32, ndim=3) | None,
+    depth_image: wp.array(dtype=wp.float32, ndim=3) | None,
+    shape_index_image: wp.array(dtype=wp.uint32, ndim=3) | None,
+    normal_image: wp.array(dtype=wp.vec3f, ndim=3) | None,
+    clear_data: ClearData | None,
 ):
     if rc.tile_rendering:
         assert rc.width % rc.tile_size == 0, "render width must be a multiple of tile_size"
         assert rc.height % rc.tile_size == 0, "render height must be a multiple of tile_size"
 
-    if clear_color is not None and color_image is not None:
-        color_image.fill_(wp.uint32(clear_color))
+    if clear_data is not None and clear_data.clear_color is not None and color_image is not None:
+        color_image.fill_(wp.uint32(clear_data.clear_color))
 
-    if clear_depth is not None and depth_image is not None:
-        depth_image.fill_(wp.float32(clear_depth))
+    if clear_data is not None and clear_data.clear_depth is not None and depth_image is not None:
+        depth_image.fill_(wp.float32(clear_data.clear_depth))
+
+    if clear_data is not None and clear_data.clear_shape_index is not None and shape_index_image is not None:
+        shape_index_image.fill_(wp.uint32(clear_data.clear_shape_index))
+
+    if clear_data is not None and clear_data.clear_normal is not None and normal_image is not None:
+        normal_image.fill_(clear_data.clear_normal)
 
     wp.launch(
         kernel=_render_megakernel,
@@ -341,19 +355,20 @@ def render_megakernel(
             rc.max_distance,
             # Camera
             camera_rays,
-            camera_positions,
-            camera_orientations,
-            # Geometry BVH
-            rc.num_geoms,
-            rc.bvh_geom.id if rc.bvh_geom else 0,
-            rc.bvh_geom_group_roots,
-            # Geometry
-            rc.geom_enabled,
-            rc.geom_types,
-            rc.geom_mesh_indices,
-            rc.geom_materials,
-            rc.geom_sizes,
-            rc.geom_colors,
+            camera_transforms,
+            # Shape BVH
+            rc.num_shapes,
+            rc.bvh_shapes.id if rc.bvh_shapes else 0,
+            rc.bvh_shapes_group_roots,
+            # Shapes
+            rc.shape_enabled,
+            rc.shape_types,
+            rc.shape_mesh_indices,
+            rc.shape_materials,
+            rc.shape_sizes,
+            rc.shape_colors,
+            rc.shape_transforms,
+            # Meshes
             rc.mesh_ids,
             rc.mesh_face_offsets,
             rc.mesh_face_vertices,
@@ -382,13 +397,14 @@ def render_megakernel(
             rc.lights_cast_shadow,
             rc.lights_position,
             rc.lights_orientation,
-            # Data
-            rc.geom_positions,
-            rc.geom_orientations,
             # Outputs
             color_image is not None,
             depth_image is not None,
+            shape_index_image is not None,
+            normal_image is not None,
             color_image,
             depth_image,
+            shape_index_image,
+            normal_image,
         ],
     )

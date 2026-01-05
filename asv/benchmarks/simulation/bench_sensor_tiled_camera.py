@@ -22,10 +22,10 @@ import math
 import os
 
 import newton
-from newton.sensors import TiledCameraSensor
+from newton.sensors import SensorTiledCamera
 
 
-class TiledCameraSensorBenchmark:
+class SensorTiledCameraBenchmark:
     param_names = ["resolution", "num_worlds", "iterations"]
     params = ([64], [4096], [50])
 
@@ -46,33 +46,25 @@ class TiledCameraSensorBenchmark:
         self.state = self.model.state()
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state)
 
-        self.camera_positions = wp.array([[wp.vec3f(2.4, 0.0, 0.8)] * num_worlds], dtype=wp.vec3f)
-        self.camera_orientations = wp.array(
+        self.camera_transforms = wp.array(
             [
                 [
-                    wp.mat33f(
-                        -0.008726535,
-                        -0.29236057,
-                        0.95626837,
-                        0.9999619,
-                        -0.002551392,
-                        0.008345228,
-                        1.3010426e-18,
-                        0.9563047,
-                        0.2923717,
+                    wp.transformf(
+                        wp.vec3f(2.4, 0.0, 0.8),
+                        wp.quatf(0.4187639653682709, 0.4224344491958618, 0.5708873867988586, 0.5659270882606506),
                     )
                 ]
                 * num_worlds
             ],
-            dtype=wp.mat33f,
+            dtype=wp.transformf,
         )
 
-        self.tiled_camera_sensor = TiledCameraSensor(
+        self.tiled_camera_sensor = SensorTiledCamera(
             model=self.model,
             num_cameras=1,
             width=resolution,
             height=resolution,
-            options=TiledCameraSensor.Options(default_light=True, colors_per_shape=True, checkerboard_texture=True),
+            options=SensorTiledCamera.Options(default_light=True, colors_per_shape=True, checkerboard_texture=True),
         )
         self.camera_rays = self.tiled_camera_sensor.compute_pinhole_camera_rays(math.radians(45.0))
         self.color_image = self.tiled_camera_sensor.create_color_image_output()
@@ -87,8 +79,7 @@ class TiledCameraSensorBenchmark:
         for _ in range(iterations):
             self.tiled_camera_sensor.render(
                 None,
-                self.camera_positions,
-                self.camera_orientations,
+                self.camera_transforms,
                 self.camera_rays,
                 self.color_image,
                 self.depth_image,
@@ -102,14 +93,12 @@ class TiledCameraSensorBenchmark:
             for _ in range(iterations):
                 self.tiled_camera_sensor.render(
                     None,
-                    self.camera_positions,
-                    self.camera_orientations,
+                    self.camera_transforms,
                     self.camera_rays,
                     self.color_image,
                     self.depth_image,
                     refit_bvh=False,
-                    clear_color=None,
-                    clear_depth=None,
+                    clear_data=None,
                 )
         self.timings["render_pixel"] = timer.elapsed
 
@@ -121,14 +110,12 @@ class TiledCameraSensorBenchmark:
             for _ in range(iterations):
                 self.tiled_camera_sensor.render(
                     None,
-                    self.camera_positions,
-                    self.camera_orientations,
+                    self.camera_transforms,
                     self.camera_rays,
                     self.color_image,
                     self.depth_image,
                     refit_bvh=False,
-                    clear_color=None,
-                    clear_depth=None,
+                    clear_data=None,
                 )
         self.timings["render_tiled"] = timer.elapsed
 
@@ -150,7 +137,7 @@ class TiledCameraSensorBenchmark:
             Image.fromarray(color_image.numpy()).save("benchmark_color.png")
             Image.fromarray(depth_image.numpy()).save("benchmark_depth.png")
 
-    def __print_timer(self, name: str, elapsed: float, iterations: int, sensor: TiledCameraSensor):
+    def __print_timer(self, name: str, elapsed: float, iterations: int, sensor: SensorTiledCamera):
         title = f"{name}"
         if iterations > 1:
             title += " average"
@@ -166,7 +153,7 @@ if __name__ == "__main__":
     from newton.utils import run_benchmark
 
     benchmark_list = {
-        "TiledCameraSensor": TiledCameraSensorBenchmark,
+        "SensorTiledCamera": SensorTiledCameraBenchmark,
     }
 
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)

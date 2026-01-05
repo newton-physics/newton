@@ -20,7 +20,7 @@ import numpy as np
 import warp as wp
 
 import newton
-from newton.sensors import RaycastSensor
+from newton.sensors import SensorRaycast
 from newton.tests.unittest_utils import add_function_test, get_test_devices
 
 EXPORT_IMAGES = False
@@ -126,7 +126,7 @@ def create_cubemap_scene(device="cpu"):
     return model
 
 
-def test_raycast_sensor_cubemap(test: unittest.TestCase, device, export_images: bool = False):
+def test_sensor_raycast_cubemap(test: unittest.TestCase, device, export_images: bool = False):
     """Test raycast sensor by creating cube map views from origin."""
 
     # Create scene with 6 different objects (one for each cube map face)
@@ -147,7 +147,7 @@ def test_raycast_sensor_cubemap(test: unittest.TestCase, device, export_images: 
     ]
 
     # Create raycast sensor (we'll update camera parameters for each view)
-    sensor = RaycastSensor(
+    sensor = SensorRaycast(
         model=model,
         camera_position=(0.0, 0.0, 0.0),  # At origin
         camera_direction=(1.0, 0.0, 0.0),  # Initial direction (will be updated)
@@ -180,7 +180,7 @@ def test_raycast_sensor_cubemap(test: unittest.TestCase, device, export_images: 
             save_depth_image_as_grayscale(depth_image, f"cubemap_{view_name}")
 
 
-def test_raycast_sensor_particles_hit(test: unittest.TestCase, device: str):
+def test_sensor_raycast_particles_hit(test: unittest.TestCase, device: str):
     """Ensure particle raycasts contribute depth hits when requested."""
     builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
     builder.add_particle(pos=(0.0, 0.0, 2.0), vel=(0.0, 0.0, 0.0), mass=0.0, radius=0.5)
@@ -190,7 +190,7 @@ def test_raycast_sensor_particles_hit(test: unittest.TestCase, device: str):
 
     state = model.state()
 
-    sensor = RaycastSensor(
+    sensor = SensorRaycast(
         model=model,
         camera_position=(0.0, 0.0, 0.0),
         camera_direction=(0.0, 0.0, 1.0),  # Camera looks toward +Z where the particle sits
@@ -209,7 +209,7 @@ def test_raycast_sensor_particles_hit(test: unittest.TestCase, device: str):
     test.assertAlmostEqual(depth[0, 0], 1.5, delta=1e-3)
 
 
-def test_raycast_sensor_particles_requires_positive_step(test: unittest.TestCase, device: str):
+def test_sensor_raycast_particles_requires_positive_step(test: unittest.TestCase, device: str):
     """Providing a non-positive march step should raise a validation error."""
     builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
     builder.add_particle(pos=(0.0, 0.0, 2.0), vel=(0.0, 0.0, 0.0), mass=0.0, radius=0.5)
@@ -219,7 +219,7 @@ def test_raycast_sensor_particles_requires_positive_step(test: unittest.TestCase
 
     state = model.state()
 
-    sensor = RaycastSensor(
+    sensor = SensorRaycast(
         model=model,
         camera_position=(0.0, 0.0, 0.0),
         camera_direction=(0.0, 0.0, 1.0),
@@ -234,7 +234,7 @@ def test_raycast_sensor_particles_requires_positive_step(test: unittest.TestCase
         sensor.eval(state, include_particles=True, particle_march_step=0.0)
 
 
-def test_raycast_sensor_include_particles_without_particles(test: unittest.TestCase, device: str):
+def test_sensor_raycast_include_particles_without_particles(test: unittest.TestCase, device: str):
     """Including particles when none exist should leave the depth image empty."""
     builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
 
@@ -243,7 +243,7 @@ def test_raycast_sensor_include_particles_without_particles(test: unittest.TestC
 
     state = model.state()
 
-    sensor = RaycastSensor(
+    sensor = SensorRaycast(
         model=model,
         camera_position=(0.0, 0.0, 0.0),
         camera_direction=(0.0, 0.0, 1.0),
@@ -261,7 +261,7 @@ def test_raycast_sensor_include_particles_without_particles(test: unittest.TestC
     test.assertEqual(depth[0, 0], -1.0)  # -1 indicates no hit
 
 
-def test_raycast_sensor_mixed_hits_prefers_closest_shape(test: unittest.TestCase, device: str):
+def test_sensor_raycast_mixed_hits_prefers_closest_shape(test: unittest.TestCase, device: str):
     """When both a shape and a particle are along the view ray, the closest surface should win."""
     builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
     body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 3.0), wp.quat_identity()))
@@ -275,7 +275,7 @@ def test_raycast_sensor_mixed_hits_prefers_closest_shape(test: unittest.TestCase
     # Update body transforms (important for raycast operations)
     newton.eval_fk(model, state.joint_q, state.joint_qd, state)
 
-    sensor = RaycastSensor(
+    sensor = SensorRaycast(
         model=model,
         camera_position=(0.0, 0.0, 0.0),
         camera_direction=(0.0, 0.0, 1.0),
@@ -293,7 +293,7 @@ def test_raycast_sensor_mixed_hits_prefers_closest_shape(test: unittest.TestCase
     test.assertAlmostEqual(depth[0, 0], 2.5, delta=1e-3)
 
 
-def test_raycast_sensor_mixed_hits_prefers_closest_particle(test: unittest.TestCase, device: str):
+def test_sensor_raycast_mixed_hits_prefers_closest_particle(test: unittest.TestCase, device: str):
     """Particles that are closer than shapes along the same ray should override the depth."""
     builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
     body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 6.0), wp.quat_identity()))
@@ -307,7 +307,7 @@ def test_raycast_sensor_mixed_hits_prefers_closest_particle(test: unittest.TestC
     # Update body transforms (important for raycast operations)
     newton.eval_fk(model, state.joint_q, state.joint_qd, state)
 
-    sensor = RaycastSensor(
+    sensor = SensorRaycast(
         model=model,
         camera_position=(0.0, 0.0, 0.0),
         camera_direction=(0.0, 0.0, 1.0),
@@ -328,7 +328,7 @@ def test_raycast_sensor_mixed_hits_prefers_closest_particle(test: unittest.TestC
     test.assertAlmostEqual(depth[0, 0], 2.5, delta=1e-3)
 
 
-def test_raycast_sensor_particle_step_truncation_warns(test: unittest.TestCase, device: str):
+def test_sensor_raycast_particle_step_truncation_warns(test: unittest.TestCase, device: str):
     """Extremely small march steps should trigger a warning when step count exceeds int32 limits."""
     builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
     builder.add_particle(pos=(0.0, 0.0, 2.0), vel=(0.0, 0.0, 0.0), mass=0.0, radius=0.1)
@@ -338,7 +338,7 @@ def test_raycast_sensor_particle_step_truncation_warns(test: unittest.TestCase, 
 
     state = model.state()
 
-    sensor = RaycastSensor(
+    sensor = SensorRaycast(
         model=model,
         camera_position=(0.0, 0.0, 0.0),
         camera_direction=(0.0, 0.0, 1.0),
@@ -353,7 +353,7 @@ def test_raycast_sensor_particle_step_truncation_warns(test: unittest.TestCase, 
         sensor.eval(state, include_particles=True, particle_march_step=1.0e-9)
 
 
-def test_raycast_sensor_single_pixel_hit(test: unittest.TestCase, device):
+def test_sensor_raycast_single_pixel_hit(test: unittest.TestCase, device):
     """Test that an asymmetric scene that should produce only a single hit for an intended pixel."""
 
     camera_position = (0.0, 0.0, 0.0)
@@ -375,7 +375,7 @@ def test_raycast_sensor_single_pixel_hit(test: unittest.TestCase, device):
     state = model.state()
     newton.eval_fk(model, state.joint_q, state.joint_qd, state)
 
-    sensor = RaycastSensor(
+    sensor = SensorRaycast(
         model=model,
         camera_position=camera_position,
         camera_direction=camera_direction,
@@ -405,53 +405,53 @@ def test_raycast_sensor_single_pixel_hit(test: unittest.TestCase, device):
     test.assertTrue(np.all(depth_image[no_hit_mask] < 0.0), "Non-target pixels should report no hit (-1).")
 
 
-class TestRaycastSensor(unittest.TestCase):
+class TestSensorRaycast(unittest.TestCase):
     pass
 
 
 # Register test for all available devices
 devices = get_test_devices()
-add_function_test(TestRaycastSensor, "test_raycast_sensor_cubemap", test_raycast_sensor_cubemap, devices=devices)
+add_function_test(TestSensorRaycast, "test_sensor_raycast_cubemap", test_sensor_raycast_cubemap, devices=devices)
 add_function_test(
-    TestRaycastSensor,
-    "test_raycast_sensor_particles_hit",
-    test_raycast_sensor_particles_hit,
+    TestSensorRaycast,
+    "test_sensor_raycast_particles_hit",
+    test_sensor_raycast_particles_hit,
     devices=devices,
 )
 add_function_test(
-    TestRaycastSensor,
-    "test_raycast_sensor_particles_requires_positive_step",
-    test_raycast_sensor_particles_requires_positive_step,
+    TestSensorRaycast,
+    "test_sensor_raycast_particles_requires_positive_step",
+    test_sensor_raycast_particles_requires_positive_step,
     devices=devices,
 )
 add_function_test(
-    TestRaycastSensor,
-    "test_raycast_sensor_include_particles_without_particles",
-    test_raycast_sensor_include_particles_without_particles,
+    TestSensorRaycast,
+    "test_sensor_raycast_include_particles_without_particles",
+    test_sensor_raycast_include_particles_without_particles,
     devices=devices,
 )
 add_function_test(
-    TestRaycastSensor,
-    "test_raycast_sensor_mixed_hits_prefers_closest_shape",
-    test_raycast_sensor_mixed_hits_prefers_closest_shape,
+    TestSensorRaycast,
+    "test_sensor_raycast_mixed_hits_prefers_closest_shape",
+    test_sensor_raycast_mixed_hits_prefers_closest_shape,
     devices=devices,
 )
 add_function_test(
-    TestRaycastSensor,
-    "test_raycast_sensor_mixed_hits_prefers_closest_particle",
-    test_raycast_sensor_mixed_hits_prefers_closest_particle,
+    TestSensorRaycast,
+    "test_sensor_raycast_mixed_hits_prefers_closest_particle",
+    test_sensor_raycast_mixed_hits_prefers_closest_particle,
     devices=devices,
 )
 add_function_test(
-    TestRaycastSensor,
-    "test_raycast_sensor_particle_step_truncation_warns",
-    test_raycast_sensor_particle_step_truncation_warns,
+    TestSensorRaycast,
+    "test_sensor_raycast_particle_step_truncation_warns",
+    test_sensor_raycast_particle_step_truncation_warns,
     devices=devices,
 )
 add_function_test(
-    TestRaycastSensor,
-    "test_raycast_sensor_single_pixel_hit",
-    test_raycast_sensor_single_pixel_hit,
+    TestSensorRaycast,
+    "test_sensor_raycast_single_pixel_hit",
+    test_sensor_raycast_single_pixel_hit,
     devices=devices,
 )
 

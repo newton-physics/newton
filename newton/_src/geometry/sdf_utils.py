@@ -18,7 +18,9 @@ from collections.abc import Sequence
 import numpy as np
 import warp as wp
 
-from .types import Mesh
+from ..geometry.kernels import box_sdf, capsule_sdf, cone_sdf, cylinder_sdf, ellipsoid_sdf, sphere_sdf
+from .sdf_mc import get_mc_tables, int_to_vec3f, mc_calc_face, vec8f
+from .types import GeoType, Mesh
 
 
 @wp.struct
@@ -32,6 +34,7 @@ class SDFData:
     # Sparse (narrow band) SDF - high resolution near surface
     sparse_sdf_ptr: wp.uint64
     sparse_voxel_size: wp.vec3
+    sparse_voxel_radius: wp.float32
 
     # Coarse (background) SDF - 8x8x8 covering entire volume
     coarse_sdf_ptr: wp.uint64
@@ -44,9 +47,14 @@ class SDFData:
     # Background value used for unallocated voxels in the sparse SDF
     background_value: wp.float32
 
+    # Whether shape_scale was baked into the SDF
+    scale_baked: wp.bool
 
-# Default background value for unallocated voxels in sparse SDF
-SDF_BACKGROUND_VALUE = 1000.0
+
+# Default background value for unallocated voxels in sparse SDF.
+# Using inf ensures any trilinear interpolation with unallocated voxels produces inf or NaN,
+# allowing detection of unallocated voxels.
+SDF_BACKGROUND_VALUE = wp.inf
 
 
 def create_empty_sdf_data() -> SDFData:
@@ -58,17 +66,14 @@ def create_empty_sdf_data() -> SDFData:
     sdf_data = SDFData()
     sdf_data.sparse_sdf_ptr = wp.uint64(0)
     sdf_data.sparse_voxel_size = wp.vec3(0.0, 0.0, 0.0)
+    sdf_data.sparse_voxel_radius = 0.0
     sdf_data.coarse_sdf_ptr = wp.uint64(0)
     sdf_data.coarse_voxel_size = wp.vec3(0.0, 0.0, 0.0)
     sdf_data.center = wp.vec3(0.0, 0.0, 0.0)
     sdf_data.half_extents = wp.vec3(0.0, 0.0, 0.0)
     sdf_data.background_value = SDF_BACKGROUND_VALUE
+    sdf_data.scale_baked = False
     return sdf_data
-
-
-@wp.func
-def int_to_vec3f(x: wp.int32, y: wp.int32, z: wp.int32):
-    return wp.vec3f(float(x), float(y), float(z))
 
 
 @wp.func
@@ -106,6 +111,43 @@ def sdf_from_mesh_kernel(
     wp.volume_store(sdf, x_id, y_id, z_id, signed_distance)
 
 
+@wp.kernel(enable_backward=False)
+def sdf_from_primitive_kernel(
+    shape_type: wp.int32,
+    shape_scale: wp.vec3,
+    sdf: wp.uint64,
+    tile_points: wp.array(dtype=wp.vec3i),
+    thickness: wp.float32,
+):
+    """
+    Populate SDF grid from primitive shape.
+    Only processes specified tiles. Launch with dim=(num_tiles, 8, 8, 8).
+    """
+    tile_idx, local_x, local_y, local_z = wp.tid()
+
+    tile_origin = tile_points[tile_idx]
+    x_id = tile_origin[0] + local_x
+    y_id = tile_origin[1] + local_y
+    z_id = tile_origin[2] + local_z
+
+    sample_pos = wp.volume_index_to_world(sdf, int_to_vec3f(x_id, y_id, z_id))
+    signed_distance = float(1.0e6)
+    if shape_type == GeoType.SPHERE:
+        signed_distance = sphere_sdf(wp.vec3(0.0, 0.0, 0.0), shape_scale[0], sample_pos)
+    elif shape_type == GeoType.BOX:
+        signed_distance = box_sdf(shape_scale, sample_pos)
+    elif shape_type == GeoType.CAPSULE:
+        signed_distance = capsule_sdf(shape_scale[0], shape_scale[1], sample_pos)
+    elif shape_type == GeoType.CYLINDER:
+        signed_distance = cylinder_sdf(shape_scale[0], shape_scale[1], sample_pos)
+    elif shape_type == GeoType.ELLIPSOID:
+        signed_distance = ellipsoid_sdf(shape_scale, sample_pos)
+    elif shape_type == GeoType.CONE:
+        signed_distance = cone_sdf(shape_scale[0], shape_scale[1], sample_pos)
+    signed_distance -= thickness
+    wp.volume_store(sdf, x_id, y_id, z_id, signed_distance)
+
+
 @wp.kernel
 def check_tile_occupied_mesh_kernel(
     mesh: wp.uint64,
@@ -125,39 +167,121 @@ def check_tile_occupied_mesh_kernel(
     tile_occupied[tid] = is_occupied
 
 
+@wp.kernel(enable_backward=False)
+def check_tile_occupied_primitive_kernel(
+    shape_type: wp.int32,
+    shape_scale: wp.vec3,
+    tile_points: wp.array(dtype=wp.vec3f),
+    threshold: wp.vec2f,
+    tile_occupied: wp.array(dtype=bool),
+):
+    tid = wp.tid()
+    sample_pos = tile_points[tid]
+
+    signed_distance = float(1.0e6)
+    if shape_type == GeoType.SPHERE:
+        signed_distance = sphere_sdf(wp.vec3(0.0, 0.0, 0.0), shape_scale[0], sample_pos)
+    elif shape_type == GeoType.BOX:
+        signed_distance = box_sdf(shape_scale, sample_pos)
+    elif shape_type == GeoType.CAPSULE:
+        signed_distance = capsule_sdf(shape_scale[0], shape_scale[1], sample_pos)
+    elif shape_type == GeoType.CYLINDER:
+        signed_distance = cylinder_sdf(shape_scale[0], shape_scale[1], sample_pos)
+    elif shape_type == GeoType.ELLIPSOID:
+        signed_distance = ellipsoid_sdf(shape_scale, sample_pos)
+    elif shape_type == GeoType.CONE:
+        signed_distance = cone_sdf(shape_scale[0], shape_scale[1], sample_pos)
+
+    is_occupied = wp.bool(False)
+    if wp.sign(signed_distance) > 0.0:
+        is_occupied = signed_distance < threshold[1]
+    else:
+        is_occupied = signed_distance > threshold[0]
+    tile_occupied[tid] = is_occupied
+
+
+def get_primitive_extents(shape_type: int, shape_scale: Sequence[float]) -> tuple[list[float], list[float]]:
+    """Get the bounding box extents for a primitive shape.
+
+    Args:
+        shape_type: Type of the primitive shape (from GeoType).
+        shape_scale: Scale factors for the shape.
+
+    Returns:
+        Tuple of (min_ext, max_ext) as lists of [x, y, z] coordinates.
+
+    Raises:
+        NotImplementedError: If shape_type is not a supported primitive.
+    """
+    if shape_type == GeoType.SPHERE:
+        min_ext = [-shape_scale[0], -shape_scale[0], -shape_scale[0]]
+        max_ext = [shape_scale[0], shape_scale[0], shape_scale[0]]
+    elif shape_type == GeoType.BOX:
+        min_ext = [-shape_scale[0], -shape_scale[1], -shape_scale[2]]
+        max_ext = [shape_scale[0], shape_scale[1], shape_scale[2]]
+    elif shape_type == GeoType.CAPSULE:
+        min_ext = [-shape_scale[0], -shape_scale[0], -shape_scale[1] - shape_scale[0]]
+        max_ext = [shape_scale[0], shape_scale[0], shape_scale[1] + shape_scale[0]]
+    elif shape_type == GeoType.CYLINDER:
+        min_ext = [-shape_scale[0], -shape_scale[0], -shape_scale[1]]
+        max_ext = [shape_scale[0], shape_scale[0], shape_scale[1]]
+    elif shape_type == GeoType.ELLIPSOID:
+        min_ext = [-shape_scale[0], -shape_scale[1], -shape_scale[2]]
+        max_ext = [shape_scale[0], shape_scale[1], shape_scale[2]]
+    elif shape_type == GeoType.CONE:
+        min_ext = [-shape_scale[0], -shape_scale[0], -shape_scale[1]]
+        max_ext = [shape_scale[0], shape_scale[0], shape_scale[1]]
+    else:
+        raise NotImplementedError(f"Extents not implemented for shape type: {shape_type}")
+    return min_ext, max_ext
+
+
 def compute_sdf(
     mesh_src: Mesh,
+    shape_type: int,
     shape_scale: Sequence[float] = (1.0, 1.0, 1.0),
     shape_thickness: float = 0.0,
     narrow_band_distance: Sequence[float] = (-0.1, 0.1),
     margin: float = 0.05,
     target_voxel_size: float | None = None,
-    max_dims: int = 64,
+    max_resolution: int = 64,
+    bake_scale: bool = False,
     verbose: bool = False,
-) -> tuple[SDFData, wp.Volume | None, wp.Volume | None]:
+) -> tuple[SDFData, wp.Volume | None, wp.Volume | None, Sequence[wp.vec3us]]:
     """Compute sparse and coarse SDF volumes for a mesh.
+
+    The SDF is computed in the mesh's unscaled local space. Scale is intentionally
+    NOT a parameter - the collision system handles scaling at runtime, ensuring
+    the SDF and mesh BVH stay consistent and allowing dynamic scale changes.
 
     Args:
         mesh_src: Mesh source with vertices and indices.
-        shape_scale: Scale factors for the mesh. Default (1.0, 1.0, 1.0).
+        shape_type: Type of the shape.
+        shape_scale: Scale factors for the mesh. Applied before SDF generation if bake_scale is True.
         shape_thickness: Thickness offset to subtract from SDF values.
         narrow_band_distance: Tuple of (inner, outer) distances for narrow band.
-        margin: Margin to add to bounding box.
-        target_voxel_size: Target voxel size for sparse SDF grid. If None, computed as max_extent/max_dims.
-        max_dims: Maximum dimension for sparse SDF grid when target_voxel_size is None. Default 64.
+        margin: Margin to add to bounding box. Must be > 0.
+        target_voxel_size: Target voxel size for sparse SDF grid. If None, computed as max_extent/max_resolution.
+        max_resolution: Maximum dimension for sparse SDF grid when target_voxel_size is None. Must be divisible by 8.
+        bake_scale: If True, bake shape_scale into the SDF. If False, use (1,1,1) scale.
         verbose: Print debug info.
 
     Returns:
-        Tuple of (sdf_data, sparse_volume, coarse_volume) where:
+        Tuple of (sdf_data, sparse_volume, coarse_volume, block_coords) where:
         - sdf_data: SDFData struct with pointers and extents
         - sparse_volume: wp.Volume object for sparse SDF (keep alive for reference counting)
         - coarse_volume: wp.Volume object for coarse SDF (keep alive for reference counting)
+        - block_coords: List of wp.vec3us tile coordinates for allocated blocks in the sparse volume
 
     Raises:
         RuntimeError: If CUDA is not available.
     """
     if not wp.is_cuda_available():
         raise RuntimeError("compute_sdf requires CUDA but no CUDA device is available")
+
+    if shape_type == GeoType.PLANE or shape_type == GeoType.HFIELD:
+        # SDF collisions are not supported for Plane or HField shapes, falling back to mesh collisions
+        return create_empty_sdf_data(), None, None, []
 
     assert isinstance(narrow_band_distance, Sequence), "narrow_band_distance must be a tuple of two floats"
     assert len(narrow_band_distance) == 2, "narrow_band_distance must be a tuple of two floats"
@@ -166,17 +290,23 @@ def compute_sdf(
     )
     assert margin > 0, "margin must be > 0"
 
+    # Determine effective scale based on bake_scale flag
+    effective_scale = tuple(shape_scale) if bake_scale else (1.0, 1.0, 1.0)
+
     offset = margin + shape_thickness
-    # bake scale into SDF
-    verts = mesh_src.vertices * np.array(shape_scale)[None, :]
-    pos = wp.array(verts, dtype=wp.vec3)
-    indices = wp.array(mesh_src.indices, dtype=wp.int32)
 
-    mesh = wp.Mesh(points=pos, indices=indices, support_winding_number=True)
-    m_id = mesh.id
+    if shape_type == GeoType.MESH:
+        verts = mesh_src.vertices * np.array(effective_scale)[None, :]
+        pos = wp.array(verts, dtype=wp.vec3)
+        indices = wp.array(mesh_src.indices, dtype=wp.int32)
 
-    min_ext = np.min(verts, axis=0).tolist()
-    max_ext = np.max(verts, axis=0).tolist()
+        mesh = wp.Mesh(points=pos, indices=indices, support_winding_number=True)
+        m_id = mesh.id
+
+        min_ext = np.min(verts, axis=0).tolist()
+        max_ext = np.max(verts, axis=0).tolist()
+    else:
+        min_ext, max_ext = get_primitive_extents(shape_type, effective_scale)
 
     min_ext = np.array(min_ext) - offset
     max_ext = np.array(max_ext) + offset
@@ -188,13 +318,13 @@ def compute_sdf(
 
     # Calculate uniform voxel size based on the longest dimension
     max_extent = np.max(ext)
-    # If target_voxel_size not specified, compute from max_dims
+    # If target_voxel_size not specified, compute from max_resolution
     if target_voxel_size is None:
         # Warp volumes are allocated in tiles of 8 voxels
-        assert max_dims % 8 == 0, "max_dims must be divisible by 8 for SDF volume allocation"
+        assert max_resolution % 8 == 0, "max_resolution must be divisible by 8 for SDF volume allocation"
         # we store coords as uint16
-        assert max_dims < 1 << 16, f"max_dims must be less than {1 << 16}"
-        target_voxel_size = max_extent / max_dims
+        assert max_resolution < 1 << 16, f"max_resolution must be less than {1 << 16}"
+        target_voxel_size = max_extent / max_resolution
     voxel_size_max_ext = target_voxel_size
     grid_tile_nums = (ext / voxel_size_max_ext).astype(int) // 8
     grid_tile_nums = np.maximum(grid_tile_nums, 1)
@@ -223,12 +353,20 @@ def compute_sdf(
     tile_radius = np.linalg.norm(4 * actual_voxel_size)
     threshold = wp.vec2f(narrow_band_distance[0] - tile_radius, narrow_band_distance[1] + tile_radius)
 
-    wp.launch(
-        check_tile_occupied_mesh_kernel,
-        dim=(len(tile_points)),
-        inputs=[m_id, tile_center_points_world, threshold],
-        outputs=[tile_occupied],
-    )
+    if shape_type == GeoType.MESH:
+        wp.launch(
+            check_tile_occupied_mesh_kernel,
+            dim=(len(tile_points)),
+            inputs=[m_id, tile_center_points_world, threshold],
+            outputs=[tile_occupied],
+        )
+    else:
+        wp.launch(
+            check_tile_occupied_primitive_kernel,
+            dim=(len(tile_points)),
+            inputs=[shape_type, effective_scale, tile_center_points_world, threshold],
+            outputs=[tile_occupied],
+        )
 
     if verbose:
         print("Occupancy: ", tile_occupied.numpy().sum() / len(tile_points))
@@ -246,11 +384,21 @@ def compute_sdf(
     # populate the sparse volume with the sdf values
     # Only process allocated tiles (num_tiles x 8x8x8)
     num_allocated_tiles = len(tile_points)
-    wp.launch(
-        sdf_from_mesh_kernel,
-        dim=(num_allocated_tiles, 8, 8, 8),
-        inputs=[m_id, sparse_volume.id, tile_points_wp, shape_thickness],
-    )
+    if shape_type == GeoType.MESH:
+        wp.launch(
+            sdf_from_mesh_kernel,
+            dim=(num_allocated_tiles, 8, 8, 8),
+            inputs=[m_id, sparse_volume.id, tile_points_wp, shape_thickness],
+        )
+    else:
+        wp.launch(
+            sdf_from_primitive_kernel,
+            dim=(num_allocated_tiles, 8, 8, 8),
+            inputs=[shape_type, effective_scale, sparse_volume.id, tile_points_wp, shape_thickness],
+        )
+
+    tiles = sparse_volume.get_tiles().numpy()
+    block_coords = [wp.vec3us(t_coords) for t_coords in tiles]
 
     # Create coarse background SDF (8x8x8 voxels = one tile) with same extents
     coarse_dims = 8
@@ -266,11 +414,18 @@ def compute_sdf(
     )
 
     # Populate the coarse volume with SDF values (single tile)
-    wp.launch(
-        sdf_from_mesh_kernel,
-        dim=(1, 8, 8, 8),
-        inputs=[m_id, coarse_volume.id, coarse_tile_points_wp, shape_thickness],
-    )
+    if shape_type == GeoType.MESH:
+        wp.launch(
+            sdf_from_mesh_kernel,
+            dim=(1, 8, 8, 8),
+            inputs=[m_id, coarse_volume.id, coarse_tile_points_wp, shape_thickness],
+        )
+    else:
+        wp.launch(
+            sdf_from_primitive_kernel,
+            dim=(1, 8, 8, 8),
+            inputs=[shape_type, effective_scale, coarse_volume.id, coarse_tile_points_wp, shape_thickness],
+        )
 
     if verbose:
         print(f"Coarse SDF: dims={coarse_dims}x{coarse_dims}x{coarse_dims}, voxel size: {coarse_voxel_size}")
@@ -279,10 +434,184 @@ def compute_sdf(
     sdf_data = SDFData()
     sdf_data.sparse_sdf_ptr = sparse_volume.id
     sdf_data.sparse_voxel_size = wp.vec3(actual_voxel_size)
+    sdf_data.sparse_voxel_radius = 0.5 * float(np.linalg.norm(actual_voxel_size))
     sdf_data.coarse_sdf_ptr = coarse_volume.id
     sdf_data.coarse_voxel_size = wp.vec3(coarse_voxel_size)
     sdf_data.center = wp.vec3(center)
     sdf_data.half_extents = wp.vec3(half_extents)
     sdf_data.background_value = SDF_BACKGROUND_VALUE
+    sdf_data.scale_baked = bake_scale
 
-    return sdf_data, sparse_volume, coarse_volume
+    return sdf_data, sparse_volume, coarse_volume, block_coords
+
+
+def compute_isomesh(volume: wp.Volume) -> Mesh | None:
+    """Compute an isosurface mesh from an SDFData struct.
+
+    Uses a two-pass approach to minimize memory allocation:
+    1. First pass: count actual triangles produced
+    2. Allocate exact memory needed
+    3. Second pass: generate vertices
+
+    Args:
+        volume: The SDF volume.
+
+    Returns:
+        Mesh object containing the isosurface mesh.
+    """
+    device = wp.get_device()
+    mc_tables = get_mc_tables(device)
+
+    # Get allocated tile points from the sparse volume
+    tile_points = volume.get_tiles()
+    tile_points_wp = wp.array(tile_points, dtype=wp.vec3i, device=device)
+    num_tiles = tile_points.shape[0]
+
+    if num_tiles == 0:
+        return None
+
+    # Pass 1: Count faces (no vertex allocation needed)
+    face_count = wp.zeros((1,), dtype=int, device=device)
+    wp.launch(
+        count_isomesh_faces_kernel,
+        dim=(num_tiles, 8, 8, 8),
+        inputs=[volume.id, tile_points_wp, mc_tables[0], mc_tables[3]],
+        outputs=[face_count],
+        device=device,
+    )
+
+    num_faces = int(face_count.numpy()[0])
+    if num_faces == 0:
+        return None
+
+    # Allocate exact memory needed (not worst-case 5*voxels)
+    max_verts = 3 * num_faces
+    verts = wp.empty((max_verts,), dtype=wp.vec3, device=device)
+    face_normals = wp.empty((num_faces,), dtype=wp.vec3, device=device)
+
+    # Pass 2: Generate vertices with exact allocation
+    face_count.zero_()
+    wp.launch(
+        generate_isomesh_kernel,
+        dim=(num_tiles, 8, 8, 8),
+        inputs=[volume.id, tile_points_wp, mc_tables[0], mc_tables[4], mc_tables[3]],
+        outputs=[face_count, verts, face_normals],
+        device=device,
+    )
+
+    verts_np = verts.numpy()
+    faces_np = np.arange(3 * num_faces).reshape(-1, 3)
+
+    # reverse order of triangles indices for correctly displayed normals
+    faces_np = faces_np[:, ::-1]
+    return Mesh(verts_np, faces_np)
+
+
+@wp.kernel(enable_backward=False)
+def count_isomesh_faces_kernel(
+    sdf: wp.uint64,
+    tile_points: wp.array(dtype=wp.vec3i),
+    tri_range_table: wp.array(dtype=wp.int32),
+    corner_offsets_table: wp.array(dtype=wp.vec3ub),
+    face_count: wp.array(dtype=int),
+):
+    """Count isosurface faces without generating vertices (first pass of two-pass approach).
+    Only processes specified tiles. Launch with dim=(num_tiles, 8, 8, 8).
+    """
+    tile_idx, local_x, local_y, local_z = wp.tid()
+
+    # Get the tile origin and compute global voxel coordinates
+    tile_origin = tile_points[tile_idx]
+    x_id = tile_origin[0] + local_x
+    y_id = tile_origin[1] + local_y
+    z_id = tile_origin[2] + local_z
+
+    isovalue = 0.0
+    cube_idx = wp.int32(0)
+    for i in range(8):
+        corner_offset = wp.vec3i(corner_offsets_table[i])
+        x = x_id + corner_offset.x
+        y = y_id + corner_offset.y
+        z = z_id + corner_offset.z
+        v = wp.volume_lookup_f(sdf, x, y, z)
+        if wp.isnan(v) or wp.isinf(v):
+            return
+        if v < isovalue:
+            cube_idx |= 1 << i
+
+    # look up the tri range for the cube index
+    tri_range_start = tri_range_table[cube_idx]
+    tri_range_end = tri_range_table[cube_idx + 1]
+    num_verts = tri_range_end - tri_range_start
+
+    num_faces = num_verts // 3
+    if num_faces > 0:
+        wp.atomic_add(face_count, 0, num_faces)
+
+
+@wp.kernel(enable_backward=False)
+def generate_isomesh_kernel(
+    sdf: wp.uint64,
+    tile_points: wp.array(dtype=wp.vec3i),
+    tri_range_table: wp.array(dtype=wp.int32),
+    flat_edge_verts_table: wp.array(dtype=wp.vec2ub),
+    corner_offsets_table: wp.array(dtype=wp.vec3ub),
+    face_count: wp.array(dtype=int),
+    vertices: wp.array(dtype=wp.vec3),
+    face_normals: wp.array(dtype=wp.vec3),
+):
+    """Generate isosurface mesh vertices and normals using marching cubes.
+    Only processes specified tiles. Launch with dim=(num_tiles, 8, 8, 8).
+    """
+    tile_idx, local_x, local_y, local_z = wp.tid()
+
+    # Get the tile origin and compute global voxel coordinates
+    tile_origin = tile_points[tile_idx]
+    x_id = tile_origin[0] + local_x
+    y_id = tile_origin[1] + local_y
+    z_id = tile_origin[2] + local_z
+
+    isovalue = 0.0
+    cube_idx = wp.int32(0)
+    corner_vals = vec8f()
+    for i in range(8):
+        corner_offset = wp.vec3i(corner_offsets_table[i])
+        x = x_id + corner_offset.x
+        y = y_id + corner_offset.y
+        z = z_id + corner_offset.z
+        v = wp.volume_lookup_f(sdf, x, y, z)
+        if wp.isnan(v) or wp.isinf(v):
+            return
+        corner_vals[i] = v
+
+        if v < isovalue:
+            cube_idx |= 1 << i
+
+    # look up the tri range for the cube index
+    tri_range_start = tri_range_table[cube_idx]
+    tri_range_end = tri_range_table[cube_idx + 1]
+    num_verts = tri_range_end - tri_range_start  # number of intersected edges
+
+    num_faces = num_verts // 3
+    out_idx_faces = wp.atomic_add(face_count, 0, num_faces)
+
+    if num_verts == 0:
+        return
+
+    for fi in range(5):
+        if fi >= num_faces:
+            return
+        _area, normal, _face_center, _pen_depth, face_verts = mc_calc_face(
+            flat_edge_verts_table,
+            corner_offsets_table,
+            tri_range_start + 3 * fi,
+            corner_vals,
+            sdf,
+            x_id,
+            y_id,
+            z_id,
+        )
+        vertices[3 * out_idx_faces + 3 * fi + 0] = wp.vec3(face_verts[0])
+        vertices[3 * out_idx_faces + 3 * fi + 1] = wp.vec3(face_verts[1])
+        vertices[3 * out_idx_faces + 3 * fi + 2] = wp.vec3(face_verts[2])
+        face_normals[out_idx_faces + fi] = normal

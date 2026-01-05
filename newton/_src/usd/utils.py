@@ -259,14 +259,34 @@ def get_gprim_axis(prim: Usd.Prim, name: str = "axis", default: AxisType = "Z") 
     return Axis.from_string(axis_str)
 
 
-def get_transform(prim: Usd.Prim, local: bool = True, invert_rotation: bool = True) -> wp.transform:
+def get_transform_matrix(prim: Usd.Prim, local: bool = True) -> wp.mat44:
+    """
+    Extract the full transformation matrix from a USD Xform prim.
+
+    Args:
+        prim: The USD prim to query.
+        local: If True, get the local transformation; if False, get the world transformation.
+
+    Returns:
+        A Warp 4x4 transform matrix.
+    """
+    xform = UsdGeom.Xformable(prim)
+
+    if local:
+        mat = np.array(xform.GetLocalTransformation(), dtype=np.float32)
+    else:
+        time = Usd.TimeCode.Default()
+        mat = np.array(xform.ComputeLocalToWorldTransform(time), dtype=np.float32)
+    return wp.mat44(mat.T)
+
+
+def get_transform(prim: Usd.Prim, local: bool = True) -> wp.transform:
     """
     Extract the transform (position and rotation) from a USD Xform prim.
 
     Args:
         prim: The USD prim to query.
         local: If True, get the local transformation; if False, get the world transformation.
-        invert_rotation: If True, transpose the rotation matrix before converting to quaternion.
 
     Returns:
         A Warp transform containing the position and rotation extracted from the prim.
@@ -275,11 +295,9 @@ def get_transform(prim: Usd.Prim, local: bool = True, invert_rotation: bool = Tr
     if local:
         mat = np.array(xform.GetLocalTransformation(), dtype=np.float32)
     else:
-        mat = np.array(xform.GetWorldTransformation(), dtype=np.float32)
-    if invert_rotation:
-        rot = wp.quat_from_matrix(wp.mat33(mat[:3, :3].T.flatten()))
-    else:
-        rot = wp.quat_from_matrix(wp.mat33(mat[:3, :3].flatten()))
+        time = Usd.TimeCode.Default()
+        mat = np.array(xform.ComputeLocalToWorldTransform(time), dtype=np.float32)
+    rot = wp.quat_from_matrix(wp.mat33(mat[:3, :3].T.flatten()))
     pos = mat[3, :3]
     return wp.transform(pos, rot)
 
@@ -624,7 +642,7 @@ def get_mesh(
     maxhullvert: int = MESH_MAXHULLVERT,
     face_varying_normal_conversion: Literal[
         "vertex_averaging", "angle_weighted", "vertex_splitting"
-    ] = "vertex_averaging",
+    ] = "vertex_splitting",
     vertex_splitting_angle_threshold_deg: float = 25.0,
 ) -> Mesh:
     """
@@ -689,13 +707,13 @@ def get_mesh(
     uvs = None
     if load_uvs:
         uv_primvar = UsdGeom.PrimvarsAPI(prim).GetPrimvar("st")
-        if uv_primvar and uv_primvar.HasValue():
+        if uv_primvar:
             uvs = uv_primvar.Get()
 
     normals = None
     if load_normals:
         normals_attr = mesh.GetNormalsAttr()
-        if normals_attr and normals_attr.HasValue():
+        if normals_attr:
             normals = normals_attr.Get()
 
     if normals is not None:
@@ -704,7 +722,7 @@ def get_mesh(
             # compute vertex normals
             # try to read primvars:normals:indices (the primvar indexer)
             normals_index_attr = prim.GetAttribute("primvars:normals:indices")
-            if normals_index_attr and normals_index_attr.HasValue():
+            if normals_index_attr:
                 normal_indices = np.array(normals_index_attr.Get(), dtype=np.int64)
                 normals_fv = normals[normal_indices]  # (C,3) expanded
             else:
@@ -819,7 +837,7 @@ def get_mesh(
 
     flip_winding = False
     orientation_attr = mesh.GetOrientationAttr()
-    if orientation_attr and orientation_attr.HasValue():
+    if orientation_attr:
         handedness = orientation_attr.Get()
         if handedness and handedness.lower() == "lefthanded":
             flip_winding = True
