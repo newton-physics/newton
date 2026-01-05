@@ -13,37 +13,33 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Any
-
-import numpy as np
-import warp as wp
 
 from ._src.math import (
     boltzmann,
-    smooth_max,
-    smooth_min,
     leaky_max,
     leaky_min,
-    vec_min,
-    vec_max,
-    vec_leaky_min,
-    vec_leaky_max,
+    smooth_max,
+    smooth_min,
     vec_abs,
     vec_allclose,
     vec_inside_limits,
+    vec_leaky_max,
+    vec_leaky_min,
+    vec_max,
+    vec_min,
 )
 
 __all__ = [
     "boltzmann",
-    "smooth_max",
-    "smooth_min",
     "leaky_max",
     "leaky_min",
-    "vec_min",
-    "vec_max",
-    "vec_leaky_min",
-    "vec_leaky_max",
+    "smooth_max",
+    "smooth_min",
     "vec_abs",
     "vec_allclose",
     "vec_inside_limits",
+    "vec_leaky_max",
+    "vec_leaky_min",
+    "vec_max",
+    "vec_min",
 ]

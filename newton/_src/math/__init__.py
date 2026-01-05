@@ -216,15 +216,15 @@ def vec_inside_limits(a: Any, lower: Any, upper: Any) -> bool:
 
 __all__ = [
     "boltzmann",
-    "smooth_max",
-    "smooth_min",
     "leaky_max",
     "leaky_min",
-    "vec_min",
-    "vec_max",
-    "vec_leaky_min",
-    "vec_leaky_max",
+    "smooth_max",
+    "smooth_min",
     "vec_abs",
     "vec_allclose",
     "vec_inside_limits",
+    "vec_leaky_max",
+    "vec_leaky_min",
+    "vec_max",
+    "vec_min",
 ]

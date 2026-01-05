@@ -180,7 +180,7 @@ class Example:
             self.model,
             self.state_0,
             "cart is at ground level and has correct orientation",
-            lambda q, qd: q[2] == 0.0 and newton.utils.vec_allclose(q.q, wp.quat_identity()),
+            lambda q, qd: q[2] == 0.0 and newton.math.vec_allclose(q.q, wp.quat_identity()),
             indices=[i * num_bodies_per_world for i in range(self.num_worlds)],
         )
         newton.examples.test_body_state(
