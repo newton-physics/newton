@@ -165,6 +165,12 @@ class Axis(IntEnum):
         """
         return wp.vec3(*self.to_vector())
 
+    def quat_between_axes(self, other: Axis) -> wp.quat:
+        """
+        Return the quaternion between two axes.
+        """
+        return wp.quat_between_vectors(self.to_vec3(), other.to_vec3())
+
 
 AxisType = Axis | Literal["X", "Y", "Z"] | Literal[0, 1, 2] | int | str
 """Type that can be used to represent an axis, including the enum, string, and integer representations."""
