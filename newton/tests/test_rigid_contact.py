@@ -37,27 +37,16 @@ solvers = {
 }
 
 
-def get_contact_margin(solver_name):
-    if solver_name == "featherstone":
-        return 100.0
-    elif solver_name == "mujoco_cpu":
-        return 0.0
-    elif solver_name == "mujoco_warp":
-        return 0.0
-    elif solver_name == "xpbd":
-        return 100.0
-    elif solver_name == "semi_implicit":
-        return 100.0
-    else:
-        return 0.0
 
 
 def simulate(solver, model, state_0, state_1, control, sim_dt, substeps):
-    if not isinstance(solver, newton.solvers.SolverMuJoCo):
-        contacts = model.collide(state_0)
-    else:
-        contacts = None
     for _ in range(substeps):
+
+        if not isinstance(solver, newton.solvers.SolverMuJoCo):
+            contacts = model.collide(state_0)
+        else:
+            contacts = None
+
         state_0.clear_forces()
         solver.step(state_0, state_1, control, contacts, sim_dt / substeps)
         state_0, state_1 = state_1, state_0
@@ -125,7 +114,7 @@ def test_shapes_on_plane(test, device, solver_fn, solver_name):
     # !!! disable friction for SemiImplicit integrators
     builder.default_shape_cfg.kf = 0.0
     # Must be set BEFORE adding shapes
-    builder.rigid_contact_margin = get_contact_margin(solver_name)
+    builder.rigid_contact_margin = 0.0
 
     expected_end_positions = []
 
