@@ -28,7 +28,7 @@
 ###########################################################################
 import numpy as np
 import warp as wp
-from warp.render import bourke_color_map
+from warp._src.render.utils import bourke_color_map
 
 import newton
 import newton.examples

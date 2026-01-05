@@ -17,7 +17,6 @@ from typing import Any
 
 import numpy as np
 import warp as wp
-from warp.context import assert_conditional_graph_support
 
 from ..core.types import Axis
 from .download_assets import clear_git_cache, download_asset
@@ -227,11 +226,7 @@ def check_conditional_graph_support():
     Returns:
         bool: True if conditional graph support is available, False otherwise.
     """
-    try:
-        assert_conditional_graph_support()
-    except Exception:
-        return False
-    return True
+    return wp.is_conditional_graph_supported()
 
 
 def compute_world_offsets(num_worlds: int, spacing: tuple[float, float, float], up_axis: Any = None):

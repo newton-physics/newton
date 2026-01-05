@@ -29,7 +29,7 @@ import os
 import numpy as np
 import warp as wp
 import warp.optim
-import warp.render
+from warp._src.render.utils import bourke_color_map
 
 import newton
 import newton.examples
@@ -783,7 +783,7 @@ class Example:
             max_cost = np.max(costs)
             for i in range(self.rollout_count):
                 # Flip colors, so red means best trajectory, blue worst.
-                color = wp.render.bourke_color_map(-max_cost, -min_cost, -costs[i])
+                color = bourke_color_map(-max_cost, -min_cost, -costs[i])
                 self.viewer.log_lines(
                     f"/rollout_{i}",
                     wp.array(positions[0:-1, i], dtype=wp.vec3),

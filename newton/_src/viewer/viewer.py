@@ -616,7 +616,7 @@ class ViewerBase:
                 raise ValueError(f"log_geo requires geo_src for MESH or CONVEX_MESH (name={name})")
 
             # resolve points/indices from source, solidify if requested
-            from warp.render.utils import solidify_mesh  # noqa: PLC0415
+            from warp._src.render.utils import solidify_mesh  # noqa: PLC0415
 
             if not geo_is_solid:
                 indices, points = solidify_mesh(geo_src.indices, geo_src.vertices, geo_thickness)

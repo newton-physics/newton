@@ -30,7 +30,6 @@ Organization:
 """
 
 import warp as wp
-from warp.types import float32, vector
 
 from newton._src.core.spatial import quat_velocity
 from newton._src.sim import JointType
@@ -66,7 +65,7 @@ _NUM_CONTACT_THREADS_PER_BODY = 16
 # ---------------------------------
 
 
-class vec6(vector(length=6, dtype=float32)):
+class vec6(wp.types.vector(length=6, dtype=wp.float32)):
     """Packed lower-triangular 3x3 matrix storage: [L00, L10, L11, L20, L21, L22]."""
 
     pass

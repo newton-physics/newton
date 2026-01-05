@@ -30,7 +30,7 @@
 import numpy as np
 import warp as wp
 import warp.optim
-import warp.render
+from warp._src.render.utils import bourke_color_map
 
 import newton
 import newton.examples
@@ -353,7 +353,7 @@ class Example:
                 f"/traj_{self.train_iter - 1}",
                 wp.array(traj_verts[0:-1], dtype=wp.vec3),
                 wp.array(traj_verts[1:], dtype=wp.vec3),
-                wp.render.bourke_color_map(0.0, self.loss_history[0], self.loss_history[-1]),
+                bourke_color_map(0.0, self.loss_history[0], self.loss_history[-1]),
             )
             self.viewer.end_frame()
 

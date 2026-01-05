@@ -20,7 +20,6 @@ import time
 
 import numpy as np
 import warp as wp
-import warp.render.render_opengl
 
 import newton as nt
 from newton.selection import ArticulationView
@@ -610,7 +609,7 @@ class ViewerGL(ViewerBase):
 
         # Launch the RGB kernel.
         wp.launch(
-            warp.render.render_opengl.copy_rgb_frame_uint8,
+            warp._src.render.render_opengl.copy_rgb_frame_uint8,
             dim=(w, h),
             inputs=[buf, w, h],
             outputs=[target_image],

@@ -26,7 +26,7 @@
 ###########################################################################
 import numpy as np
 import warp as wp
-import warp.render
+from warp._src.render.utils import bourke_color_map
 
 import newton
 import newton.examples
@@ -265,7 +265,7 @@ class Example:
             min_length = min(half_lengths)
             max_length = max(half_lengths)
             for l in range(len(half_lengths)):
-                color = wp.render.bourke_color_map(min_length, max_length, half_lengths[l])
+                color = bourke_color_map(min_length, max_length, half_lengths[l])
                 colors.append(color)
 
             # Draw line as sanity check
