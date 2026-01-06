@@ -143,11 +143,8 @@ class ViewerViser(ViewerBase):
 
         self._server.scene.add_light_ambient("ambient_light")
 
-        # Set background color
-        # self._server.scene.set_background_image(
-        #     media_type="image/png",
-        #     base64_data="",  # Empty for solid color
-        # )
+        # remove HDR map
+        self._server.scene.configure_environment_map(hdri=None)
 
     @property
     def url(self) -> str:
