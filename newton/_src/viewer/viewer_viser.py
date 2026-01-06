@@ -397,9 +397,12 @@ class ViewerViser(ViewerBase):
             Recording must be enabled by passing ``record_to_viser`` to the constructor.
 
         Example:
-            >>> viewer = ViewerViser(record_to_viser="my_simulation.viser")
-            >>> # ... run simulation ...
-            >>> viewer.save_recording()
+
+            .. code-block:: python
+
+                viewer = ViewerViser(record_to_viser="my_simulation.viser")
+                # ... run simulation ...
+                viewer.save_recording()
         """
         if self._serializer is None or self._record_to_viser is None:
             raise RuntimeError("No recording in progress. Pass record_to_viser to the constructor.")
@@ -592,10 +595,13 @@ class ViewerViser(ViewerBase):
             The display object.
 
         Example:
-            >>> viewer = newton.viewer.ViewerViser(record_to_viser="my_sim.viser")
-            >>> viewer.set_model(model)
-            >>> # ... run simulation ...
-            >>> viewer.show_notebook()  # Saves recording and displays with timeline
+
+            .. code-block:: python
+
+                viewer = newton.viewer.ViewerViser(record_to_viser="my_sim.viser")
+                viewer.set_model(model)
+                # ... run simulation ...
+                viewer.show_notebook()  # Saves recording and displays with timeline
         """
 
         from IPython.display import HTML, IFrame, display  # noqa: PLC0415
