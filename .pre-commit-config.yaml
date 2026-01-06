@@ -26,3 +26,9 @@ repos:
     hooks:
       # Update the uv lockfile
       - id: uv-lock
+  - repo: https://github.com/crate-ci/typos
+    rev: v1.38.1
+    hooks:
+      - id: typos
+        args: []
+        exclude: \.(js|css)$
