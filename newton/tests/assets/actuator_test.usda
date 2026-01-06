@@ -97,10 +97,10 @@ def Xform "World"
             prepend apiSchemas = ["PDControllerAPI"]
         )
         {
-            rel target = </World/Robot/Joint1>
-            float pdcontroller:kp = 100.0
-            float pdcontroller:kd = 10.0
-            float pdcontroller:maxForce = 50.0
+            rel newton:actuator:target = </World/Robot/Joint1>
+            float newton:actuator:kp = 100.0
+            float newton:actuator:kd = 10.0
+            float newton:actuator:maxForce = 50.0
         }
 
         # Actuator for Joint 2 (PD Controller with Delay)
@@ -108,10 +108,10 @@ def Xform "World"
             prepend apiSchemas = ["PDControllerAPI", "DelayAPI"]
         )
         {
-            rel target = </World/Robot/Joint2>
-            float pdcontroller:kp = 200.0
-            float pdcontroller:kd = 20.0
-            int delay:delay = 5
+            rel newton:actuator:target = </World/Robot/Joint2>
+            float newton:actuator:kp = 200.0
+            float newton:actuator:kd = 20.0
+            int newton:actuator:delay = 5
         }
     }
 }
