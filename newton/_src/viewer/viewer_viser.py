@@ -141,6 +141,8 @@ class ViewerViser(ViewerBase):
             show_axes=False,
         )
 
+        self._server.scene.add_light_ambient("ambient_light")
+
         # Set background color
         # self._server.scene.set_background_image(
         #     media_type="image/png",
