@@ -8,4 +8,4 @@ You can also explore the examples in the ``newton/examples/`` directory for more
    :maxdepth: 2
    :caption: Tutorial Notebooks
 
-   ../tutorials/00_introduction
+   /tutorials/00_introduction
