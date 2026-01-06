@@ -46,3 +46,7 @@ newton/tests/outputs/
 
 # Viser recordings
 docs/_static/recordings/
+*.viser
+
+# Notebook checkpoints
+**/*.ipynb_checkpoints/
