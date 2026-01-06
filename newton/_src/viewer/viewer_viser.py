@@ -577,7 +577,7 @@ class ViewerViser(ViewerBase):
         )
         self._scene_handles[name] = handle
 
-    def show_notebook(self, width: int = 800, height: int = 600):
+    def show_notebook(self, width: int | str = "100%", height: int | str = 400):
         """
         Show the viewer in a Jupyter notebook.
 
