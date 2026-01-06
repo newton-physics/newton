@@ -1612,27 +1612,19 @@ def parse_usd(
 
     actuator_count = 0
     if parse_actuator_fn is not None:
-        path_to_dof_map = {
+        path_to_dof = {
             path: builder.joint_qd_start[idx]
             for path, idx in path_joint_map.items()
             if idx < len(builder.joint_qd_start)
         }
-        root_prim = stage.GetPrimAtPath(root_path)
-        if root_prim:
-            for prim in Usd.PrimRange(root_prim):
-                parsed = parse_actuator_fn(prim)
-                if parsed is None:
-                    continue
-                # Collect all valid DOF indices for this actuator
-                dof_indices = []
-                for target_path in parsed.target_paths:
-                    dof_index = path_to_dof_map.get(target_path)
-                    if dof_index is not None:
-                        dof_indices.append(dof_index)
-                if dof_indices:
-                    builder.add_actuator(parsed.actuator_class, input_indices=dof_indices, **parsed.kwargs)
-                    actuator_count += 1
-
+        for prim in Usd.PrimRange(stage.GetPrimAtPath(root_path)):
+            parsed = parse_actuator_fn(prim)
+            if parsed is None:
+                continue
+            dof_indices = [path_to_dof[p] for p in parsed.target_paths if p in path_to_dof]
+            if dof_indices:
+                builder.add_actuator(parsed.actuator_class, input_indices=dof_indices, **parsed.kwargs)
+                actuator_count += 1
         if verbose and actuator_count > 0:
             print(f"Added {actuator_count} actuator(s) from USD")
 

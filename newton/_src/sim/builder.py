@@ -69,11 +69,11 @@ from .model import Model, ModelAttributeAssignment, ModelAttributeFrequency
 
 @dataclass
 class ActuatorEntry:
-    """Stores accumulated indices and arguments for one actuator type."""
+    """Stores accumulated indices and arguments for one actuator type + scalar params combo."""
 
     input_indices: list[int]
     output_indices: list[int]
-    args: list[dict]
+    args: list[dict]  # Only array params, scalar params are in the dict key
 
 
 class ModelBuilder:
@@ -684,7 +684,8 @@ class ModelBuilder:
         self.custom_attributes: dict[str, ModelBuilder.CustomAttribute] = {}
 
         # Actuator entries (accumulated during add_actuator calls)
-        self.actuator_entries: dict[type, ActuatorEntry] = {}
+        # Key is (actuator_class, scalar_params_tuple) to separate instances with different scalar params
+        self.actuator_entries: dict[tuple[type, tuple], ActuatorEntry] = {}
 
     def add_custom_attribute(self, attribute: CustomAttribute) -> None:
         """
@@ -948,7 +949,8 @@ class ModelBuilder:
     ) -> None:
         """Add an actuator for one or more DOFs.
 
-        Multiple calls with the same actuator_class accumulate into one ActuatorEntry.
+        Multiple calls with the same actuator_class and scalar params accumulate into one ActuatorEntry.
+        Different scalar param values (e.g., different delay) create separate actuator instances.
         The actuator instance is created during finalize().
 
         For multi-target actuators, each output_index is paired with the corresponding
@@ -963,18 +965,26 @@ class ModelBuilder:
         if output_indices is None:
             output_indices = input_indices.copy()
 
+        resolved = actuator_class.resolve_arguments(kwargs)
+
+        # Extract scalar params to form the entry key
+        scalar_param_names = getattr(actuator_class, "SCALAR_PARAMS", set())
+        scalar_key = tuple(sorted((k, resolved[k]) for k in scalar_param_names if k in resolved))
+
+        # Key is (class, scalar_params) so different scalar values create separate entries
+        entry_key = (actuator_class, scalar_key)
         entry = self.actuator_entries.setdefault(
-            actuator_class,
+            entry_key,
             ActuatorEntry(input_indices=[], output_indices=[], args=[]),
         )
 
-        resolved = actuator_class.resolve_arguments(kwargs)
+        # Filter out scalar params from args (they're already in the key)
+        array_params = {k: v for k, v in resolved.items() if k not in scalar_param_names}
 
-        # Each output gets the same resolved parameters
         entry.input_indices.extend(input_indices)
         entry.output_indices.extend(output_indices)
         for _ in output_indices:
-            entry.args.append(resolved)
+            entry.args.append(array_params)
 
     def _stack_args_to_arrays(self, args_list: list[dict], device=None) -> dict:
         """Convert list of per-index arg dicts into dict of warp arrays.
@@ -990,9 +1000,7 @@ class ModelBuilder:
             return {}
 
         result = {}
-        keys = args_list[0].keys()
-
-        for key in keys:
+        for key in args_list[0].keys():
             values = [args[key] for args in args_list]
             result[key] = wp.array(values, dtype=wp.float32, device=device)
 
@@ -1973,9 +1981,9 @@ class ModelBuilder:
             merged.values.update({offset + idx: value for idx, value in attr.values.items()})
 
         # Merge actuator entries from the sub-builder with offset DOF indices
-        for actuator_class, sub_entry in builder.actuator_entries.items():
+        for entry_key, sub_entry in builder.actuator_entries.items():
             entry = self.actuator_entries.setdefault(
-                actuator_class,
+                entry_key,
                 ActuatorEntry(input_indices=[], output_indices=[], args=[]),
             )
             # Offset indices by the starting DOF index
@@ -6400,14 +6408,17 @@ class ModelBuilder:
 
             # Create actuators from accumulated entries
             m.actuators = []
-            for actuator_class, entry in self.actuator_entries.items():
+            for (actuator_class, scalar_key), entry in self.actuator_entries.items():
                 input_indices = wp.array(entry.input_indices, dtype=wp.uint32, device=device)
                 output_indices = wp.array(entry.output_indices, dtype=wp.uint32, device=device)
                 param_arrays = self._stack_args_to_arrays(entry.args, device=device)
+                # Scalar params are stored in the key as tuple of (name, value) pairs
+                scalar_params = dict(scalar_key)
                 actuator = actuator_class(
                     input_indices=input_indices,
                     output_indices=output_indices,
                     **param_arrays,
+                    **scalar_params,
                 )
                 m.actuators.append(actuator)
 
