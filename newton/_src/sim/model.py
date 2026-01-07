@@ -825,11 +825,11 @@ class Model:
                 Either a ModelAttributeFrequency enum value or a string for custom frequencies.
 
         Raises:
-            AttributeError: If the attribute frequency is not known.
+            KeyError: If the attribute frequency is not known.
         """
         frequency = self.attribute_frequency.get(name)
         if frequency is None:
-            raise AttributeError(f"Attribute frequency of '{name}' is not known")
+            raise KeyError(f"Attribute frequency of '{name}' is not known")
         return frequency
 
     def get_custom_frequency_count(self, frequency: str) -> int:
