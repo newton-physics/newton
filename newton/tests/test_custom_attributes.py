@@ -1264,7 +1264,7 @@ class TestCustomFrequencyAttributes(unittest.TestCase):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="pair_world",
-                frequency="test:pair",
+                frequency="pair",
                 dtype=wp.int32,
                 default=0,
                 namespace="test",
@@ -1273,7 +1273,7 @@ class TestCustomFrequencyAttributes(unittest.TestCase):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="pair_value",
-                frequency="test:pair",
+                frequency="pair",
                 dtype=wp.float32,
                 default=1.0,
                 namespace="test",
@@ -1323,7 +1323,7 @@ class TestCustomFrequencyAttributes(unittest.TestCase):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="pair_a",
-                frequency="test:pair",
+                frequency="pair",
                 dtype=wp.int32,
                 namespace="test",
             )
@@ -1331,7 +1331,7 @@ class TestCustomFrequencyAttributes(unittest.TestCase):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="pair_b",
-                frequency="test:pair",
+                frequency="pair",
                 dtype=wp.int32,
                 namespace="test",
             )
@@ -1371,7 +1371,7 @@ class TestCustomFrequencyAttributes(unittest.TestCase):
         sub_builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="item_id",
-                frequency="test:item",
+                frequency="item",
                 dtype=wp.int32,
                 namespace="test",
             )
@@ -1379,7 +1379,7 @@ class TestCustomFrequencyAttributes(unittest.TestCase):
         sub_builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="item_value",
-                frequency="test:item",
+                frequency="item",
                 dtype=wp.float32,
                 namespace="test",
             )
@@ -1427,7 +1427,7 @@ class TestCustomFrequencyAttributes(unittest.TestCase):
         sub_builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="entity_data",
-                frequency="test:entity",
+                frequency="entity",
                 dtype=wp.int32,
                 namespace="test",
             )
@@ -1437,7 +1437,7 @@ class TestCustomFrequencyAttributes(unittest.TestCase):
         sub_builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="ref_to_entity",
-                frequency="test:ref",
+                frequency="ref",
                 dtype=wp.int32,
                 namespace="test",
                 references="test:entity",  # Reference to custom frequency
@@ -1477,7 +1477,7 @@ class TestCustomFrequencyAttributes(unittest.TestCase):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="type_a_data",
-                frequency="test:type_a",
+                frequency="type_a",
                 dtype=wp.int32,
                 namespace="test",
             )
@@ -1485,7 +1485,7 @@ class TestCustomFrequencyAttributes(unittest.TestCase):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="type_b_data",
-                frequency="test:type_b",
+                frequency="type_b",
                 dtype=wp.int32,
                 namespace="test",
             )
@@ -1517,7 +1517,7 @@ class TestCustomFrequencyAttributes(unittest.TestCase):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="empty_attr",
-                frequency="test:empty",
+                frequency="empty",
                 dtype=wp.int32,
                 namespace="test",
             )

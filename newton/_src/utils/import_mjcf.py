@@ -1122,7 +1122,7 @@ def parse_mjcf(
     builder_custom_attr_pair: list[ModelBuilder.CustomAttribute] = [
         attr
         for attr in builder.custom_attributes.values()
-        if isinstance(attr.frequency, str)
+        if isinstance(attr.frequency_key, str)
         and attr.name.startswith("pair_")
         and attr.name not in ("pair_geom1", "pair_geom2", "pair_world")
     ]

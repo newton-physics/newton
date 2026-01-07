@@ -18,7 +18,7 @@ The existing system couldn't handle this because:
 
 ### 1. Custom Frequencies for Custom Entity Types
 
-`CustomAttribute.frequency` now accepts either a `ModelAttributeFrequency` enum value OR a string for custom entity types. Custom frequencies (e.g., `"mujoco:pair"`) enable:
+`CustomAttribute.frequency` now accepts either a `ModelAttributeFrequency` enum value OR a string for custom entity types. Custom frequencies enable:
 - Custom entity types with independent counts
 - Validation that all attributes with the same custom frequency have consistent counts
 - Proper index offsetting during multi-world merging
@@ -32,12 +32,16 @@ CustomAttribute(
 )
 
 # Custom frequency for solver-specific entity types
+# The frequency is auto-namespaced: "pair" becomes "mujoco:pair"
 CustomAttribute(
     name="pair_geom1",
-    frequency="mujoco:pair",  # Custom entity type
+    frequency="pair",  # Resolves to "mujoco:pair" via namespace
     dtype=wp.int32,
+    namespace="mujoco",
 )
 ```
+
+**Namespace resolution:** The `frequency_key` property automatically prepends the namespace to string frequencies if no `:` is present. For example, `frequency="pair"` with `namespace="mujoco"` resolves to `"mujoco:pair"`. This avoids redundancy and ensures consistency with the namespace hierarchy. Fully qualified frequencies (containing `:`) are used as-is, allowing cross-namespace references when needed.
 
 **Key benefit:** All attributes sharing the same custom frequency are validated at `finalize()` time to have the same count, preventing subtle bugs from mismatched array sizes.
 
@@ -48,8 +52,9 @@ The `references` field specifies how attribute values should be transformed duri
 ```python
 CustomAttribute(
     name="pair_geom1",
-    frequency="mujoco:pair",
+    frequency="pair",  # Resolves to "mujoco:pair"
     dtype=wp.int32,
+    namespace="mujoco",
     references="shape",  # Values are shape indices, offset during merge
 )
 ```
@@ -116,7 +121,7 @@ if isinstance(frequency, str):
 
 ### `newton/_src/solvers/mujoco/solver_mujoco.py`
 
-1. **`register_custom_attributes()`**: 10 pair attributes with `frequency="mujoco:pair"`:
+1. **`register_custom_attributes()`**: 10 pair attributes with `frequency="pair"` (resolves to `"mujoco:pair"` via namespace):
    - `pair_world`, `pair_geom1`, `pair_geom2` (with appropriate `references`)
    - `pair_condim`, `pair_solref`, `pair_solreffriction`, `pair_solimp`
    - `pair_margin`, `pair_gap`, `pair_friction`
@@ -145,7 +150,7 @@ if isinstance(frequency, str):
 builder.add_custom_attribute(
     ModelBuilder.CustomAttribute(
         name="pair_world",
-        frequency="mujoco:pair",  # Custom frequency
+        frequency="pair",  # Resolves to "mujoco:pair" via namespace
         dtype=wp.int32,
         default=0,
         namespace="mujoco",
@@ -155,7 +160,7 @@ builder.add_custom_attribute(
 builder.add_custom_attribute(
     ModelBuilder.CustomAttribute(
         name="pair_geom1",
-        frequency="mujoco:pair",
+        frequency="pair",
         dtype=wp.int32,
         default=-1,
         namespace="mujoco",
@@ -165,7 +170,7 @@ builder.add_custom_attribute(
 builder.add_custom_attribute(
     ModelBuilder.CustomAttribute(
         name="pair_geom2",
-        frequency="mujoco:pair",
+        frequency="pair",
         dtype=wp.int32,
         default=-1,
         namespace="mujoco",
@@ -173,7 +178,7 @@ builder.add_custom_attribute(
     )
 )
 # ... additional pair attributes (condim, margin, friction, etc.)
-# All must use frequency="mujoco:pair" for validation
+# All must use the same frequency for validation (resolves to "mujoco:pair")
 ```
 
 ### MJCF Parsing

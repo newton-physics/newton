@@ -326,11 +326,11 @@ class SolverMuJoCo(SolverBase):
         # --- Pair attributes (from MJCF <pair> tag) ---
         # Explicit contact pairs with custom properties. Only pairs from the template world are used.
         # These are parsed automatically from MJCF <contact><pair> elements.
-        # All pair attributes share the "mujoco:pair" frequency - count is validated at finalize time.
+        # All pair attributes share the "pair" custom frequency (resolves to "mujoco:pair" via namespace).
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="pair_world",
-                frequency="mujoco:pair",
+                frequency="pair",  # Resolves to "mujoco:pair" via namespace
                 dtype=wp.int32,
                 default=0,
                 namespace="mujoco",
@@ -341,7 +341,7 @@ class SolverMuJoCo(SolverBase):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="pair_geom1",
-                frequency="mujoco:pair",
+                frequency="pair",
                 dtype=wp.int32,
                 default=-1,
                 namespace="mujoco",
@@ -352,7 +352,7 @@ class SolverMuJoCo(SolverBase):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="pair_geom2",
-                frequency="mujoco:pair",
+                frequency="pair",
                 dtype=wp.int32,
                 default=-1,
                 namespace="mujoco",
@@ -363,7 +363,7 @@ class SolverMuJoCo(SolverBase):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="pair_condim",
-                frequency="mujoco:pair",
+                frequency="pair",
                 dtype=wp.int32,
                 default=3,
                 namespace="mujoco",
@@ -373,7 +373,7 @@ class SolverMuJoCo(SolverBase):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="pair_solref",
-                frequency="mujoco:pair",
+                frequency="pair",
                 dtype=wp.vec2,
                 default=wp.vec2(0.02, 1.0),
                 namespace="mujoco",
@@ -383,7 +383,7 @@ class SolverMuJoCo(SolverBase):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="pair_solreffriction",
-                frequency="mujoco:pair",
+                frequency="pair",
                 dtype=wp.vec2,
                 default=wp.vec2(0.02, 1.0),
                 namespace="mujoco",
@@ -393,7 +393,7 @@ class SolverMuJoCo(SolverBase):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="pair_solimp",
-                frequency="mujoco:pair",
+                frequency="pair",
                 dtype=vec5,
                 default=vec5(0.9, 0.95, 0.001, 0.5, 2.0),
                 namespace="mujoco",
@@ -403,7 +403,7 @@ class SolverMuJoCo(SolverBase):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="pair_margin",
-                frequency="mujoco:pair",
+                frequency="pair",
                 dtype=wp.float32,
                 default=0.0,
                 namespace="mujoco",
@@ -413,7 +413,7 @@ class SolverMuJoCo(SolverBase):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="pair_gap",
-                frequency="mujoco:pair",
+                frequency="pair",
                 dtype=wp.float32,
                 default=0.0,
                 namespace="mujoco",
@@ -423,7 +423,7 @@ class SolverMuJoCo(SolverBase):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="pair_friction",
-                frequency="mujoco:pair",
+                frequency="pair",
                 dtype=vec5,
                 default=vec5(1.0, 1.0, 0.005, 0.0001, 0.0001),
                 namespace="mujoco",
