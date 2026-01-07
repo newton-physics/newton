@@ -773,14 +773,14 @@ class ModelBuilder:
         return [attr for attr in self.custom_attributes.values() if attr.frequency in frequencies]
 
     def add_custom_values(self, **kwargs: Any) -> dict[str, int]:
-        """Append values to custom attributes with custom frequencies.
+        """Append values to custom attributes with custom string frequencies.
 
-        Adds values to custom attributes that have a custom frequency (e.g., ``"mujoco:pair"``).
         Each keyword argument specifies an attribute key and the value to append. The value
-        is added at the next available index for that attribute.
+        is added at the next available index for that attribute. Only works with attributes
+        that have a custom string frequency (not built-in enum frequencies).
 
         This is useful for custom entity types that aren't built into the model,
-        such as MuJoCo contact pairs or user-defined groupings.
+        such as user-defined groupings or solver-specific data.
 
         Args:
             **kwargs: Mapping of attribute keys to values. Keys should be the full
