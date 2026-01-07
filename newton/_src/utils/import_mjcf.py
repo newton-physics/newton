@@ -1117,12 +1117,12 @@ def parse_mjcf(
     # -----------------
     # parse contact pairs
 
-    # Get variable-length custom attributes for pair parsing (frequency=None)
+    # Get custom attributes with string frequency for pair parsing
     # Exclude pair_geom1/pair_geom2/pair_world as they're handled specially (geom name lookup, world assignment)
     builder_custom_attr_pair: list[ModelBuilder.CustomAttribute] = [
         attr
         for attr in builder.custom_attributes.values()
-        if attr.frequency is None
+        if isinstance(attr.frequency, str)
         and attr.name.startswith("pair_")
         and attr.name not in ("pair_geom1", "pair_geom2", "pair_world")
     ]

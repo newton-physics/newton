@@ -323,13 +323,14 @@ class SolverMuJoCo(SolverBase):
             )
         )
 
-        # --- Pair attributes (variable-length, from MJCF <pair> tag) ---
+        # --- Pair attributes (from MJCF <pair> tag) ---
         # Explicit contact pairs with custom properties. Only pairs from the template world are used.
         # These are parsed automatically from MJCF <contact><pair> elements.
+        # All pair attributes share the "mujoco:pair" frequency - count is validated at finalize time.
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="pair_world",
-                frequency=None,
+                frequency="mujoco:pair",
                 dtype=wp.int32,
                 default=0,
                 namespace="mujoco",
@@ -340,7 +341,7 @@ class SolverMuJoCo(SolverBase):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="pair_geom1",
-                frequency=None,
+                frequency="mujoco:pair",
                 dtype=wp.int32,
                 default=-1,
                 namespace="mujoco",
@@ -351,7 +352,7 @@ class SolverMuJoCo(SolverBase):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="pair_geom2",
-                frequency=None,
+                frequency="mujoco:pair",
                 dtype=wp.int32,
                 default=-1,
                 namespace="mujoco",
@@ -362,7 +363,7 @@ class SolverMuJoCo(SolverBase):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="pair_condim",
-                frequency=None,
+                frequency="mujoco:pair",
                 dtype=wp.int32,
                 default=3,
                 namespace="mujoco",
@@ -372,7 +373,7 @@ class SolverMuJoCo(SolverBase):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="pair_solref",
-                frequency=None,
+                frequency="mujoco:pair",
                 dtype=wp.vec2,
                 default=wp.vec2(0.02, 1.0),
                 namespace="mujoco",
@@ -382,7 +383,7 @@ class SolverMuJoCo(SolverBase):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="pair_solreffriction",
-                frequency=None,
+                frequency="mujoco:pair",
                 dtype=wp.vec2,
                 default=wp.vec2(0.02, 1.0),
                 namespace="mujoco",
@@ -392,7 +393,7 @@ class SolverMuJoCo(SolverBase):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="pair_solimp",
-                frequency=None,
+                frequency="mujoco:pair",
                 dtype=vec5,
                 default=vec5(0.9, 0.95, 0.001, 0.5, 2.0),
                 namespace="mujoco",
@@ -402,7 +403,7 @@ class SolverMuJoCo(SolverBase):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="pair_margin",
-                frequency=None,
+                frequency="mujoco:pair",
                 dtype=wp.float32,
                 default=0.0,
                 namespace="mujoco",
@@ -412,7 +413,7 @@ class SolverMuJoCo(SolverBase):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="pair_gap",
-                frequency=None,
+                frequency="mujoco:pair",
                 dtype=wp.float32,
                 default=0.0,
                 namespace="mujoco",
@@ -422,7 +423,7 @@ class SolverMuJoCo(SolverBase):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="pair_friction",
-                frequency=None,
+                frequency="mujoco:pair",
                 dtype=vec5,
                 default=vec5(1.0, 1.0, 0.005, 0.0001, 0.0001),
                 namespace="mujoco",
@@ -433,52 +434,19 @@ class SolverMuJoCo(SolverBase):
     @staticmethod
     def _validate_pair_attributes(model: Model) -> int:
         """
-        Validate that all pair attributes have consistent lengths.
+        Get the number of pair attributes defined.
+
+        Consistency validation is now performed at finalize() time via the string frequency
+        mechanism. This method simply returns the count from the model.
 
         Args:
-            model: The Newton model to validate.
+            model: The Newton model to query.
 
         Returns:
             int: The number of pairs defined (0 if no pairs).
-
-        Raises:
-            ValueError: If pair attributes have inconsistent lengths.
         """
-        mujoco_attrs = getattr(model, "mujoco", None)
-        if mujoco_attrs is None:
-            return 0
-
-        pair_attr_names = [
-            "pair_world",
-            "pair_geom1",
-            "pair_geom2",
-            "pair_condim",
-            "pair_solref",
-            "pair_solreffriction",
-            "pair_solimp",
-            "pair_margin",
-            "pair_gap",
-            "pair_friction",
-        ]
-
-        lengths: dict[str, int] = {}
-        for name in pair_attr_names:
-            attr = getattr(mujoco_attrs, name, None)
-            if attr is not None:
-                lengths[name] = len(attr)
-
-        if not lengths:
-            return 0
-
-        # Check all lengths are the same
-        unique_lengths = set(lengths.values())
-        if len(unique_lengths) > 1:
-            raise ValueError(
-                f"MuJoCo pair attributes have inconsistent lengths: {lengths}. "
-                "All pair attributes must have the same number of elements."
-            )
-
-        return next(iter(unique_lengths))
+        # Use the custom frequency count - validation was done at finalize time
+        return model.get_custom_frequency_count("mujoco:pair")
 
     def _init_pairs(self, model: Model, spec, shape_mapping: dict[int, str], template_world: int) -> None:
         """

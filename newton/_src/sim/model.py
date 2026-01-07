@@ -465,10 +465,14 @@ class Model:
         self.device = wp.get_device(device)
         """Device on which the Model was allocated."""
 
-        self.attribute_frequency = {}
-        """Classifies each attribute using ModelAttributeFrequency enum values (per body, per joint, per DOF, etc.)."""
+        self.attribute_frequency: dict[str, ModelAttributeFrequency | str] = {}
+        """Classifies each attribute using ModelAttributeFrequency enum values (per body, per joint, per DOF, etc.)
+        or string frequencies for custom entity types (e.g., ``"mujoco:pair"``)."""
 
-        self.attribute_assignment = {}
+        self.custom_frequency_counts: dict[str, int] = {}
+        """Counts for custom string frequencies (e.g., ``{"mujoco:pair": 5}``). Set during finalize()."""
+
+        self.attribute_assignment: dict[str, ModelAttributeAssignment] = {}
         """Assignment for custom attributes using ModelAttributeAssignment enum values.
         If an attribute is not in this dictionary, it is assumed to be a Model attribute (assignment=ModelAttributeAssignment.MODEL)."""
 
@@ -759,7 +763,7 @@ class Model:
         self,
         name: str,
         attrib: wp.array,
-        frequency: ModelAttributeFrequency,
+        frequency: ModelAttributeFrequency | str,
         assignment: ModelAttributeAssignment | None = None,
         namespace: str | None = None,
     ):
@@ -769,7 +773,8 @@ class Model:
         Args:
             name (str): Name of the attribute.
             attrib (wp.array): The array to add as an attribute.
-            frequency (ModelAttributeFrequency): The frequency of the attribute using ModelAttributeFrequency enum.
+            frequency (ModelAttributeFrequency | str): The frequency of the attribute.
+                Can be a ModelAttributeFrequency enum value or a string for custom frequencies.
             assignment (ModelAttributeAssignment, optional): The assignment category using ModelAttributeAssignment enum.
                 Determines which object will hold the attribute.
             namespace (str, optional): Namespace for the attribute.
@@ -808,7 +813,7 @@ class Model:
         if assignment is not None:
             self.attribute_assignment[full_name] = assignment
 
-    def get_attribute_frequency(self, name: str) -> ModelAttributeFrequency:
+    def get_attribute_frequency(self, name: str) -> ModelAttributeFrequency | str:
         """
         Get the frequency of an attribute.
 
@@ -816,7 +821,8 @@ class Model:
             name (str): Name of the attribute.
 
         Returns:
-            ModelAttributeFrequency: The frequency of the attribute as an enum value.
+            ModelAttributeFrequency | str: The frequency of the attribute.
+                Either a ModelAttributeFrequency enum value or a string for custom frequencies.
 
         Raises:
             AttributeError: If the attribute frequency is not known.
@@ -825,3 +831,15 @@ class Model:
         if frequency is None:
             raise AttributeError(f"Attribute frequency of '{name}' is not known")
         return frequency
+
+    def get_custom_frequency_count(self, frequency: str) -> int:
+        """
+        Get the count for a custom string frequency.
+
+        Args:
+            frequency (str): The custom frequency string (e.g., ``"mujoco:pair"``).
+
+        Returns:
+            int: The count of elements with this frequency, or 0 if not found.
+        """
+        return self.custom_frequency_counts.get(frequency, 0)

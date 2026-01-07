@@ -365,9 +365,14 @@ class ModelBuilder:
         dtype: type
         """Warp dtype (e.g., wp.float32, wp.int32, wp.bool, wp.vec3) that is compatible with Warp arrays."""
 
-        frequency: ModelAttributeFrequency | None = None
-        """Frequency category (see :class:`ModelAttributeFrequency`) that determines how the attribute is indexed in the Model.
-        If None, the attribute has variable length determined by the number of values defined."""
+        frequency: ModelAttributeFrequency | str
+        """Frequency category that determines how the attribute is indexed in the Model.
+
+        Can be either:
+            - A :class:`ModelAttributeFrequency` enum value for built-in frequencies (BODY, SHAPE, JOINT, etc.)
+            - A string for custom frequencies (e.g., ``"mujoco:pair"``). All attributes sharing the same
+              string frequency must have the same count, validated at finalize time. The count is determined
+              by the number of values added via :meth:`add_custom_values`."""
 
         assignment: ModelAttributeAssignment = ModelAttributeAssignment.MODEL
         """Assignment category (see :class:`ModelAttributeAssignment`), defaults to :attr:`ModelAttributeAssignment.MODEL`"""
@@ -384,7 +389,8 @@ class ModelBuilder:
         Special handling:
             - ``"world"``: Values are replaced with ``current_world`` (not offset)
 
-        Custom attribute references (values are offset by that attribute's value count):
+        Custom frequency references (values are offset by that frequency's count):
+            - Any string frequency, e.g., ``"mujoco:pair"``
             - Any custom attribute key, e.g., ``"mujoco:pair_geom1"``
         """
 
@@ -756,11 +762,11 @@ class ModelBuilder:
         return [attr for attr in self.custom_attributes.values() if attr.frequency in frequencies]
 
     def add_custom_values(self, **kwargs: Any) -> dict[str, int]:
-        """Append values to variable-length custom attributes.
+        """Append values to custom attributes with string frequencies.
 
-        Adds values to custom attributes with ``frequency=None``. Each keyword argument
-        specifies an attribute key and the value to append. The value is added at the
-        next available index for that attribute.
+        Adds values to custom attributes that have a string frequency (e.g., ``"mujoco:pair"``).
+        Each keyword argument specifies an attribute key and the value to append. The value
+        is added at the next available index for that attribute.
 
         This is useful for custom entity types that aren't built into the model,
         such as MuJoCo contact pairs or user-defined groupings.
@@ -775,7 +781,7 @@ class ModelBuilder:
 
         Raises:
             AttributeError: If an attribute key is not defined.
-            ValueError: If an attribute has a non-None frequency (must be variable-length).
+            ValueError: If an attribute has an enum frequency (must have string frequency).
 
         Example:
             >>> builder.add_custom_values(
@@ -794,10 +800,10 @@ class ModelBuilder:
                 raise AttributeError(
                     f"Custom attribute '{key}' is not defined. Please declare it first using add_custom_attribute()."
                 )
-            if attr.frequency is not None:
+            if not isinstance(attr.frequency, str):
                 raise ValueError(
-                    f"Custom attribute '{key}' has frequency={attr.frequency.name}, "
-                    f"but add_custom_values() only works with variable-length attributes (frequency=None)."
+                    f"Custom attribute '{key}' has frequency={attr.frequency}, "
+                    f"but add_custom_values() only works with string-frequency attributes."
                 )
             if attr.values is None:
                 attr.values = {}
@@ -1923,21 +1929,41 @@ class ModelBuilder:
             "equality_constraint": start_equality_constraint_idx,
         }
 
-        # Pre-merge counts for variable-length custom attributes
+        # Pre-merge counts for custom attributes (by attribute key)
         pre_merge_counts: dict[str, int] = {
             key: len(attr.values) if attr.values else 0 for key, attr in self.custom_attributes.items()
         }
 
+        # Pre-merge counts for custom frequencies (by frequency string)
+        # All attributes with the same string frequency should have the same count
+        custom_frequency_counts: dict[str, int] = {}
+        for _, attr in self.custom_attributes.items():
+            if isinstance(attr.frequency, str):
+                count = len(attr.values) if attr.values else 0
+                if attr.frequency in custom_frequency_counts:
+                    # Validation will happen at finalize() time, just use max for merge
+                    custom_frequency_counts[attr.frequency] = max(custom_frequency_counts[attr.frequency], count)
+                else:
+                    custom_frequency_counts[attr.frequency] = count
+
         def get_offset(entity_or_key: str | None) -> int:
-            """Get offset for an entity type or custom attribute key."""
+            """Get offset for an entity type, custom frequency, or custom attribute key."""
             if entity_or_key is None:
                 return 0
-            return entity_offsets.get(entity_or_key, pre_merge_counts.get(entity_or_key, 0))
+            # Check built-in entity offsets first
+            if entity_or_key in entity_offsets:
+                return entity_offsets[entity_or_key]
+            # Check custom frequency strings
+            if entity_or_key in custom_frequency_counts:
+                return custom_frequency_counts[entity_or_key]
+            # Check custom attribute keys
+            return pre_merge_counts.get(entity_or_key, 0)
 
         for full_key, attr in builder.custom_attributes.items():
             # Index offset based on frequency
-            if attr.frequency is None:
-                index_offset = pre_merge_counts.get(full_key, 0)
+            if isinstance(attr.frequency, str):
+                # String frequency: offset by that frequency's count
+                index_offset = custom_frequency_counts.get(attr.frequency, 0)
             elif attr.frequency == ModelAttributeFrequency.ONCE:
                 index_offset = 0
             else:
@@ -6413,14 +6439,37 @@ class ModelBuilder:
             if not self.custom_attributes:
                 return m
 
+            # Validate and compute counts for string frequencies
+            # Group attributes by their string frequency and validate consistent counts
+            string_frequency_counts: dict[str, int] = {}
+            string_frequency_attrs: dict[str, list[str]] = {}  # frequency -> list of attr keys
+            for full_key, custom_attr in self.custom_attributes.items():
+                if isinstance(custom_attr.frequency, str):
+                    freq_str = custom_attr.frequency
+                    attr_count = len(custom_attr.values) if custom_attr.values else 0
+                    if freq_str not in string_frequency_counts:
+                        string_frequency_counts[freq_str] = attr_count
+                        string_frequency_attrs[freq_str] = [full_key]
+                    else:
+                        string_frequency_attrs[freq_str].append(full_key)
+                        if string_frequency_counts[freq_str] != attr_count:
+                            raise ValueError(
+                                f"Custom attributes with frequency '{freq_str}' have inconsistent counts: "
+                                f"expected {string_frequency_counts[freq_str]} (from {string_frequency_attrs[freq_str][0]}), "
+                                f"but '{full_key}' has {attr_count} values."
+                            )
+
+            # Store custom frequency counts on the model for selection.py and other consumers
+            m.custom_frequency_counts = string_frequency_counts
+
             # Process custom attributes
             for _full_key, custom_attr in self.custom_attributes.items():
                 frequency = custom_attr.frequency
 
                 # determine count by frequency
-                if frequency is None:
-                    # Variable-length: count determined by number of values
-                    count = len(custom_attr.values) if custom_attr.values else 0
+                if isinstance(frequency, str):
+                    # String frequency: count determined by validated frequency count
+                    count = string_frequency_counts.get(frequency, 0)
                 elif frequency == ModelAttributeFrequency.ONCE:
                     count = 1
                 elif frequency == ModelAttributeFrequency.BODY:
@@ -6442,7 +6491,7 @@ class ModelBuilder:
                 else:
                     continue
 
-                # Skip empty variable-length attributes
+                # Skip empty string-frequency attributes
                 if count == 0:
                     continue
 

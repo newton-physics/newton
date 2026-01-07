@@ -1249,5 +1249,286 @@ class TestCustomAttributes(unittest.TestCase):
         self.assertAlmostEqual(arctic_stiff[1], 150.0, places=5)
 
 
+class TestStringFrequencyAttributes(unittest.TestCase):
+    """Test custom attributes with string frequencies."""
+
+    def setUp(self):
+        """Set up test fixtures."""
+        self.device = wp.get_device()
+
+    def test_string_frequency_basic(self):
+        """Test basic string frequency attributes with add_custom_values()."""
+        builder = ModelBuilder()
+
+        # Declare attributes with string frequency
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="pair_world",
+                frequency="test:pair",
+                dtype=wp.int32,
+                default=0,
+                namespace="test",
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="pair_value",
+                frequency="test:pair",
+                dtype=wp.float32,
+                default=1.0,
+                namespace="test",
+            )
+        )
+
+        # Add values using add_custom_values()
+        indices = builder.add_custom_values(
+            **{
+                "test:pair_world": 0,
+                "test:pair_value": 10.5,
+            }
+        )
+        self.assertEqual(indices["test:pair_world"], 0)
+        self.assertEqual(indices["test:pair_value"], 0)
+
+        indices = builder.add_custom_values(
+            **{
+                "test:pair_world": 0,
+                "test:pair_value": 20.5,
+            }
+        )
+        self.assertEqual(indices["test:pair_world"], 1)
+        self.assertEqual(indices["test:pair_value"], 1)
+
+        model = builder.finalize(device=self.device)
+
+        # Verify values
+        world_arr = model.test.pair_world.numpy()
+        value_arr = model.test.pair_value.numpy()
+
+        self.assertEqual(len(world_arr), 2)
+        self.assertEqual(len(value_arr), 2)
+        self.assertEqual(world_arr[0], 0)
+        self.assertEqual(world_arr[1], 0)
+        self.assertAlmostEqual(value_arr[0], 10.5, places=5)
+        self.assertAlmostEqual(value_arr[1], 20.5, places=5)
+
+        # Verify custom frequency count is stored
+        self.assertEqual(model.get_custom_frequency_count("test:pair"), 2)
+
+    def test_string_frequency_validation_inconsistent_counts(self):
+        """Test that inconsistent counts for same string frequency raises error at finalize()."""
+        builder = ModelBuilder()
+
+        # Declare attributes with same string frequency
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="pair_a",
+                frequency="test:pair",
+                dtype=wp.int32,
+                namespace="test",
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="pair_b",
+                frequency="test:pair",
+                dtype=wp.int32,
+                namespace="test",
+            )
+        )
+
+        # Add different counts (this should fail at finalize)
+        builder.add_custom_values(**{"test:pair_a": 1})
+        builder.add_custom_values(**{"test:pair_a": 2})
+        builder.add_custom_values(**{"test:pair_b": 10})  # Only 1 value for pair_b
+
+        with self.assertRaises(ValueError) as context:
+            builder.finalize(device=self.device)
+        self.assertIn("inconsistent counts", str(context.exception).lower())
+        self.assertIn("test:pair", str(context.exception))
+
+    def test_string_frequency_add_custom_values_rejects_enum_frequency(self):
+        """Test that add_custom_values() rejects enum frequency attributes."""
+        builder = ModelBuilder()
+
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="body_attr",
+                frequency=newton.ModelAttributeFrequency.BODY,
+                dtype=wp.float32,
+            )
+        )
+
+        with self.assertRaises(ValueError) as context:
+            builder.add_custom_values(**{"body_attr": 1.0})
+        self.assertIn("string-frequency", str(context.exception).lower())
+
+    def test_string_frequency_multi_world_merging(self):
+        """Test string frequency attributes are correctly offset during add_world() merging."""
+        # Create sub-builder with string frequency attributes
+        sub_builder = ModelBuilder()
+
+        sub_builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="item_id",
+                frequency="test:item",
+                dtype=wp.int32,
+                namespace="test",
+            )
+        )
+        sub_builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="item_value",
+                frequency="test:item",
+                dtype=wp.float32,
+                namespace="test",
+            )
+        )
+
+        # Add items to sub-builder
+        sub_builder.add_custom_values(
+            **{
+                "test:item_id": 100,
+                "test:item_value": 1.0,
+            }
+        )
+        sub_builder.add_custom_values(
+            **{
+                "test:item_id": 200,
+                "test:item_value": 2.0,
+            }
+        )
+
+        # Create main builder and merge sub-builder twice
+        main_builder = ModelBuilder()
+        main_builder.add_world(sub_builder)  # World 0: items 0, 1
+        main_builder.add_world(sub_builder)  # World 1: items 2, 3
+
+        model = main_builder.finalize(device=self.device)
+
+        # Verify merged values
+        item_ids = model.test.item_id.numpy()
+        item_values = model.test.item_value.numpy()
+
+        self.assertEqual(len(item_ids), 4)
+        # Values should be replicated (not offset, since item_id doesn't have references)
+        np.testing.assert_array_equal(item_ids, [100, 200, 100, 200])
+        np.testing.assert_array_almost_equal(item_values, [1.0, 2.0, 1.0, 2.0], decimal=5)
+
+        # Verify custom frequency count
+        self.assertEqual(model.get_custom_frequency_count("test:item"), 4)
+
+    def test_string_frequency_references_offset(self):
+        """Test that string frequency can be used as references for offsetting."""
+        # Create sub-builder
+        sub_builder = ModelBuilder()
+
+        # Entity attributes
+        sub_builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="entity_data",
+                frequency="test:entity",
+                dtype=wp.int32,
+                namespace="test",
+            )
+        )
+
+        # Reference attribute that references the entity frequency
+        sub_builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="ref_to_entity",
+                frequency="test:ref",
+                dtype=wp.int32,
+                namespace="test",
+                references="test:entity",  # Reference to custom frequency
+            )
+        )
+
+        # Add entities
+        sub_builder.add_custom_values(**{"test:entity_data": 100})
+        sub_builder.add_custom_values(**{"test:entity_data": 200})
+
+        # Add references (index into entity array)
+        sub_builder.add_custom_values(**{"test:ref_to_entity": 0})  # References entity 0
+        sub_builder.add_custom_values(**{"test:ref_to_entity": 1})  # References entity 1
+
+        # Merge twice
+        main_builder = ModelBuilder()
+        main_builder.add_world(sub_builder)  # World 0
+        main_builder.add_world(sub_builder)  # World 1
+
+        model = main_builder.finalize(device=self.device)
+
+        # Verify entity data is replicated
+        entity_data = model.test.entity_data.numpy()
+        np.testing.assert_array_equal(entity_data, [100, 200, 100, 200])
+
+        # Verify references are offset by entity count
+        refs = model.test.ref_to_entity.numpy()
+        # World 0: refs point to 0, 1
+        # World 1: refs should be offset by 2 (entity count from world 0), so 2, 3
+        np.testing.assert_array_equal(refs, [0, 1, 2, 3])
+
+    def test_string_frequency_different_frequencies_independent(self):
+        """Test that different string frequencies are independent."""
+        builder = ModelBuilder()
+
+        # Two different string frequencies
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="type_a_data",
+                frequency="test:type_a",
+                dtype=wp.int32,
+                namespace="test",
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="type_b_data",
+                frequency="test:type_b",
+                dtype=wp.int32,
+                namespace="test",
+            )
+        )
+
+        # Add different counts for each frequency
+        builder.add_custom_values(**{"test:type_a_data": 1})
+        builder.add_custom_values(**{"test:type_a_data": 2})
+        builder.add_custom_values(**{"test:type_a_data": 3})
+
+        builder.add_custom_values(**{"test:type_b_data": 10})
+
+        model = builder.finalize(device=self.device)
+
+        # Verify independent counts
+        type_a = model.test.type_a_data.numpy()
+        type_b = model.test.type_b_data.numpy()
+
+        self.assertEqual(len(type_a), 3)
+        self.assertEqual(len(type_b), 1)
+
+        self.assertEqual(model.get_custom_frequency_count("test:type_a"), 3)
+        self.assertEqual(model.get_custom_frequency_count("test:type_b"), 1)
+
+    def test_string_frequency_empty(self):
+        """Test that empty string frequency attributes don't create arrays."""
+        builder = ModelBuilder()
+
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="empty_attr",
+                frequency="test:empty",
+                dtype=wp.int32,
+                namespace="test",
+            )
+        )
+
+        model = builder.finalize(device=self.device)
+
+        # Empty frequency shouldn't create a namespace or attribute
+        self.assertFalse(hasattr(model, "test"))
+        self.assertEqual(model.get_custom_frequency_count("test:empty"), 0)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
