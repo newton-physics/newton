@@ -1192,7 +1192,7 @@ def parse_usd(
                 parent_id, child_id = resolve_joint_parent_child(joint_desc, body_ids, get_transforms=False)
                 joint_edges.append((parent_id, child_id))
 
-            articulation_xform = wp.mul(incoming_world_xform, usd.get_transform(articulation_prim, local=False))
+            articulation_xform = wp.mul(incoming_world_xform, usd.get_transform(articulation_prim))
             articulation_joint_indices = []
 
             if len(joint_edges) == 0:

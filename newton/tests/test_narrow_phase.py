@@ -34,6 +34,7 @@ import unittest
 import numpy as np
 import warp as wp
 
+from newton._src.geometry.flags import ShapeFlags
 from newton._src.geometry.narrow_phase import NarrowPhase
 from newton._src.geometry.types import GeoType
 from newton.geometry import SDFData
@@ -263,6 +264,9 @@ class TestNarrowPhase(unittest.TestCase):
             wp.array(shape_contact_margin, dtype=wp.float32),
             wp.array(geom_collision_radius, dtype=wp.float32),
             wp.zeros(len(geom_list), dtype=SDFData),  # shape_sdf_data - empty for non-mesh tests
+            wp.full(
+                len(geom_list), ShapeFlags.COLLIDE_SHAPES, dtype=wp.int32
+            ),  # shape_flags - collision enabled, no hydroelastic
         )
 
     def _run_narrow_phase(self, geom_list, pairs):
@@ -283,6 +287,7 @@ class TestNarrowPhase(unittest.TestCase):
             shape_contact_margin,
             geom_collision_radius,
             shape_sdf_data,
+            shape_flags,
         ) = self._create_geometry_arrays(geom_list)
 
         # Create candidate pairs
@@ -309,6 +314,7 @@ class TestNarrowPhase(unittest.TestCase):
             shape_sdf_data=shape_sdf_data,
             shape_contact_margin=shape_contact_margin,
             shape_collision_radius=geom_collision_radius,
+            shape_flags=shape_flags,
             contact_pair=contact_pair,
             contact_position=contact_position,
             contact_normal=contact_normal,
@@ -1275,6 +1281,7 @@ class TestNarrowPhase(unittest.TestCase):
         geom_source = wp.zeros(3, dtype=wp.uint64)
         shape_sdf_data = wp.zeros(3, dtype=SDFData)  # SDF data (not used in this test)
         geom_collision_radius = wp.array([1e6, 0.2, 0.2], dtype=wp.float32)
+        shape_flags = wp.full(3, ShapeFlags.COLLIDE_SHAPES, dtype=wp.int32)  # Collision enabled, no hydroelastic
 
         # Contact margins: plane=0.01, sphereA=0.02, sphereB=0.06
         shape_contact_margin = wp.array([0.01, 0.02, 0.06], dtype=wp.float32)
@@ -1311,6 +1318,7 @@ class TestNarrowPhase(unittest.TestCase):
             shape_sdf_data,
             shape_contact_margin,
             geom_collision_radius,
+            shape_flags,
             contact_pair,
             contact_position,
             contact_normal,
@@ -1342,6 +1350,7 @@ class TestNarrowPhase(unittest.TestCase):
             shape_sdf_data,
             shape_contact_margin,
             geom_collision_radius,
+            shape_flags,
             contact_pair,
             contact_position,
             contact_normal,
@@ -1374,6 +1383,7 @@ class TestNarrowPhase(unittest.TestCase):
             shape_sdf_data,
             shape_contact_margin,
             geom_collision_radius,
+            shape_flags,
             contact_pair,
             contact_position,
             contact_normal,

@@ -28,7 +28,7 @@ from newton._src.geometry.kernels import (
     triangle_closest_point_barycentric,
     vertex_adjacent_to_triangle,
 )
-from newton._src.solvers.vbd.solver_vbd import leq_n_ring_vertices
+from newton._src.solvers.vbd.particle_vbd_kernels import leq_n_ring_vertices
 from newton._src.solvers.vbd.tri_mesh_collision import TriMeshCollisionDetector
 from newton.solvers import SolverVBD
 from newton.tests.unittest_utils import USD_AVAILABLE, add_function_test, assert_np_equal, get_test_devices
@@ -950,18 +950,18 @@ def test_collision_filtering(test, device):
 
         vbd = SolverVBD(
             model,
-            handle_self_contact=True,
-            topological_contact_filter_threshold=ring,
-            rest_shape_contact_exclusion_radius=0.0,
-            external_vertex_contact_filtering_map=v_t_collision_filtering_map,
-            external_edge_contact_filtering_map=e_e_collision_filtering_map,
+            particle_enable_self_contact=True,
+            particle_topological_contact_filter_threshold=ring,
+            particle_rest_shape_contact_exclusion_radius=0.0,
+            particle_external_vertex_contact_filtering_map=v_t_collision_filtering_map,
+            particle_external_edge_contact_filtering_map=e_e_collision_filtering_map,
         )
 
-        v_adj_edges = vbd.adjacency.v_adj_edges.numpy()
-        v_adj_edges_offsets = vbd.adjacency.v_adj_edges_offsets.numpy()
+        v_adj_edges = vbd.particle_adjacency.v_adj_edges.numpy()
+        v_adj_edges_offsets = vbd.particle_adjacency.v_adj_edges_offsets.numpy()
 
-        vertex_triangle_filtering_list = vbd.vertex_triangle_contact_filtering_list.numpy()
-        vertex_triangle_filtering_list_offsets = vbd.vertex_triangle_contact_filtering_list_offsets.numpy()
+        vertex_triangle_filtering_list = vbd.particle_vertex_triangle_contact_filtering_list.numpy()
+        vertex_triangle_filtering_list_offsets = vbd.particle_vertex_triangle_contact_filtering_list_offsets.numpy()
 
         def is_sorted(a):
             return np.all(a[:-1] <= a[1:])
@@ -989,8 +989,8 @@ def test_collision_filtering(test, device):
 
                     test.assertTrue(tv in v_n_ring)
 
-        edge_edge_filtering_list = vbd.edge_edge_contact_filtering_list.numpy()
-        edge_edge_filtering_list_offsets = vbd.edge_edge_contact_filtering_list_offsets.numpy()
+        edge_edge_filtering_list = vbd.particle_edge_edge_contact_filtering_list.numpy()
+        edge_edge_filtering_list_offsets = vbd.particle_edge_edge_contact_filtering_list_offsets.numpy()
         for e_idx in range(0, model.edge_count):
             # slice this edge's filter list
             filter_array = edge_edge_filtering_list[
@@ -1023,13 +1023,13 @@ def test_collision_filtering(test, device):
 
     vbd = SolverVBD(
         model,
-        handle_self_contact=True,
-        topological_contact_filter_threshold=1,
-        rest_shape_contact_exclusion_radius=0.05,
-        external_vertex_contact_filtering_map=None,
-        external_edge_contact_filtering_map=None,
-        vertex_collision_buffer_pre_alloc=512,
-        edge_collision_buffer_pre_alloc=512,
+        particle_enable_self_contact=True,
+        particle_topological_contact_filter_threshold=1,
+        particle_rest_shape_contact_exclusion_radius=0.05,
+        particle_external_vertex_contact_filtering_map=None,
+        particle_external_edge_contact_filtering_map=None,
+        particle_vertex_contact_buffer_size=512,
+        particle_edge_contact_buffer_size=512,
     )
     max_query_radius = 0.15
     min_query_radius = 0.05
@@ -1037,7 +1037,7 @@ def test_collision_filtering(test, device):
     particle_q_new = wp.array(model.particle_q.numpy() * 1.5, dtype=wp.vec3, device=device)
     vbd.trimesh_collision_detector.refit(particle_q_new)
     vbd.trimesh_collision_detector.vertex_triangle_collision_detection(
-        max_query_radius, min_query_radius, vbd.rest_shape
+        max_query_radius, min_query_radius, vbd.particle_q_rest
     )
 
     wp.launch(
@@ -1047,7 +1047,7 @@ def test_collision_filtering(test, device):
             max_query_radius,
             min_query_radius,
             particle_q_new,
-            vbd.rest_shape,
+            vbd.particle_q_rest,
             model.tri_indices,
             vbd.trimesh_collision_detector.collision_info.vertex_colliding_triangles,
             vbd.trimesh_collision_detector.collision_info.vertex_colliding_triangles_count,
@@ -1057,7 +1057,9 @@ def test_collision_filtering(test, device):
         device=device,
     )
 
-    vbd.trimesh_collision_detector.edge_edge_collision_detection(max_query_radius, min_query_radius, vbd.rest_shape)
+    vbd.trimesh_collision_detector.edge_edge_collision_detection(
+        max_query_radius, min_query_radius, vbd.particle_q_rest
+    )
     wp.launch(
         kernel=validate_edge_collisions_distance_filter,
         dim=model.edge_count,
@@ -1065,7 +1067,7 @@ def test_collision_filtering(test, device):
             max_query_radius,
             min_query_radius,
             particle_q_new,
-            vbd.rest_shape,
+            vbd.particle_q_rest,
             model.edge_indices,
             vbd.trimesh_collision_detector.collision_info.edge_colliding_edges_offsets,
             vbd.trimesh_collision_detector.collision_info.edge_colliding_edges_buffer_sizes,

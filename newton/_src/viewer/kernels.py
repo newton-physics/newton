@@ -425,3 +425,100 @@ def compute_joint_basis_lines(
     line_starts[tid] = world_pos
     line_ends[tid] = world_pos + axis_vec * scale_factor
     line_colors[tid] = color
+
+
+@wp.func
+def depth_to_color(depth: float, min_depth: float, max_depth: float) -> wp.vec3:
+    """Convert depth value to a color using a blue-to-red colormap."""
+    # Normalize depth to [0, 1]
+    t = wp.clamp((depth - min_depth) / (max_depth - min_depth + 1e-8), 0.0, 1.0)
+    # Blue (0,0,1) -> Cyan (0,1,1) -> Green (0,1,0) -> Yellow (1,1,0) -> Red (1,0,0)
+    if t < 0.25:
+        s = t / 0.25
+        return wp.vec3(0.0, s, 1.0)
+    elif t < 0.5:
+        s = (t - 0.25) / 0.25
+        return wp.vec3(0.0, 1.0, 1.0 - s)
+    elif t < 0.75:
+        s = (t - 0.5) / 0.25
+        return wp.vec3(s, 1.0, 0.0)
+    else:
+        s = (t - 0.75) / 0.25
+        return wp.vec3(1.0, 1.0 - s, 0.0)
+
+
+@wp.kernel(enable_backward=False)
+def compute_hydro_contact_surface_lines(
+    triangle_vertices: wp.array(dtype=wp.vec3),
+    face_depths: wp.array(dtype=wp.float32),
+    face_shape_pairs: wp.array(dtype=wp.vec2i),
+    shape_world: wp.array(dtype=int),
+    world_offsets: wp.array(dtype=wp.vec3),
+    num_faces: int,
+    min_depth: float,
+    max_depth: float,
+    penetrating_only: bool,
+    line_starts: wp.array(dtype=wp.vec3),
+    line_ends: wp.array(dtype=wp.vec3),
+    line_colors: wp.array(dtype=wp.vec3),
+):
+    """Convert hydroelastic contact surface triangle vertices to line segments for wireframe rendering."""
+    tid = wp.tid()
+    if tid >= num_faces:
+        return
+
+    # Get the 3 vertices of this triangle
+    v0 = triangle_vertices[tid * 3 + 0]
+    v1 = triangle_vertices[tid * 3 + 1]
+    v2 = triangle_vertices[tid * 3 + 2]
+
+    # Compute color from depth
+    depth = face_depths[tid]
+
+    # Skip non-penetrating contacts if requested (only render depth > 0)
+    if penetrating_only and depth <= 0.0:
+        zero = wp.vec3(0.0, 0.0, 0.0)
+        line_starts[tid * 3 + 0] = zero
+        line_ends[tid * 3 + 0] = zero
+        line_colors[tid * 3 + 0] = zero
+        line_starts[tid * 3 + 1] = zero
+        line_ends[tid * 3 + 1] = zero
+        line_colors[tid * 3 + 1] = zero
+        line_starts[tid * 3 + 2] = zero
+        line_ends[tid * 3 + 2] = zero
+        line_colors[tid * 3 + 2] = zero
+        return
+
+    # Apply world offset if available
+    offset = wp.vec3(0.0, 0.0, 0.0)
+    if shape_world and world_offsets:
+        shape_pair = face_shape_pairs[tid]
+        world_a = shape_world[shape_pair[0]]
+        world_b = shape_world[shape_pair[1]]
+        if world_a >= 0 or world_b >= 0:
+            offset = world_offsets[world_a if world_a >= 0 else world_b]
+
+    v0 = v0 + offset
+    v1 = v1 + offset
+    v2 = v2 + offset
+
+    if depth > 0.0:
+        color = depth_to_color(depth, min_depth, max_depth)
+    else:
+        color = wp.vec3(0.0, 0.0, 0.0)
+
+    # Each triangle produces 3 line segments (edges)
+    # Edge 0: v0 -> v1
+    line_starts[tid * 3 + 0] = v0
+    line_ends[tid * 3 + 0] = v1
+    line_colors[tid * 3 + 0] = color
+
+    # Edge 1: v1 -> v2
+    line_starts[tid * 3 + 1] = v1
+    line_ends[tid * 3 + 1] = v2
+    line_colors[tid * 3 + 1] = color
+
+    # Edge 2: v2 -> v0
+    line_starts[tid * 3 + 2] = v2
+    line_ends[tid * 3 + 2] = v0
+    line_colors[tid * 3 + 2] = color
