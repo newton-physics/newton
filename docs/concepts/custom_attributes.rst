@@ -15,6 +15,7 @@ Custom attributes enable a wide range of simulation extensions:
 * **Visualization**: Attach colors, labels, rendering properties, or UI metadata to simulation entities
 * **Multi-physics coupling**: Store quantities like surface stress, temperature fields, or electromagnetic properties
 * **Reinforcement learning**: Store observation buffers, reward weights, optimization parameters, or policy-specific data directly on entities
+* **Solver-specific data**: Store contact pair parameters, tendon properties, or other solver-specific entity types
 
 Custom attributes follow Newton's flat array indexing scheme, enabling efficient GPU-parallel access while maintaining flexibility for domain-specific extensions.
 
@@ -33,17 +34,17 @@ Custom attributes extend these objects with user-defined arrays that follow the 
 Declaring Custom Attributes
 ----------------------------
 
-Custom attributes must be declared before use via the :meth:`newton.ModelBuilder.add_custom_attribute` method. Each declaration specifies the following properties:
+Custom attributes must be declared before use via the :meth:`newton.ModelBuilder.add_custom_attribute` method. Each declaration specifies:
 
-* **frequency**: Array size and indexing pattern (``BODY``, ``SHAPE``, ``JOINT``, ``JOINT_DOF``, ``JOINT_COORD``, or ``ARTICULATION``)
-* **assignment**: Which simulation object owns the attribute (``MODEL``, ``STATE``, ``CONTROL``, ``CONTACT``)  
+* **name**: Attribute name
+* **frequency**: Determines array size and indexing—either a :class:`~newton.ModelAttributeFrequency` enum value (``BODY``, ``SHAPE``, ``JOINT``, ``JOINT_DOF``, ``JOINT_COORD``, ``ARTICULATION``) or a string for custom frequencies
 * **dtype**: Warp data type (``wp.float32``, ``wp.vec3``, ``wp.quat``, etc.)
-* **default** (optional): Default value for entities that don't explicitly specify values. If not specified, dtype-specific defaults are used: 0.0 for floats, 0 for integers, False for booleans, and zero vectors for vector types.
+* **assignment**: Which simulation object owns the attribute (``MODEL``, ``STATE``, ``CONTROL``, ``CONTACT``)
+* **default** (optional): Default value for unspecified entities
 * **namespace** (optional): Hierarchical organization for grouping related attributes
+* **references** (optional): For multi-world merging, specifies how values are transformed (e.g., ``"body"``, ``"shape"``, ``"world"``, or a custom frequency key)
 
-When **no namespace** is specified, attributes are added directly to their assignment object (e.g., ``model.temperature``). When a **namespace** is provided, Newton creates a namespace container to organize related attributes hierarchically (e.g., ``model.namespace_a.float_attr``).
-
-The following example demonstrates declaring attributes with and without namespaces, and with explicit default values:
+When **no namespace** is specified, attributes are added directly to their assignment object (e.g., ``model.temperature``). When a **namespace** is provided, Newton creates a namespace container (e.g., ``model.mujoco.damping``).
 
 .. testcode::
 
@@ -104,10 +105,10 @@ The following example demonstrates declaring attributes with and without namespa
    builder.add_custom_attribute(
        ModelBuilder.CustomAttribute(
            name="articulation_stiffness",
-            frequency=ModelAttributeFrequency.ARTICULATION,
-            dtype=wp.float32,
-            default=100.0,
-            assignment=ModelAttributeAssignment.MODEL
+           frequency=ModelAttributeFrequency.ARTICULATION,
+           dtype=wp.float32,
+           default=100.0,
+           assignment=ModelAttributeAssignment.MODEL
        )
    )
    # → Accessible as: model.articulation_stiffness
@@ -162,44 +163,32 @@ When entities don't explicitly specify custom attribute values, the default valu
    - ``model.float_attr`` (key: ``"float_attr"``) and ``state.namespace_a.float_attr`` (key: ``"namespace_a:float_attr"``) can coexist
    - ``model.float_attr`` (key: ``"float_attr"``) and ``state.float_attr`` (key: ``"float_attr"``) cannot coexist - same key
    - ``model.namespace_a.float_attr`` and ``state.namespace_a.float_attr`` cannot coexist - same key ``"namespace_a:float_attr"``
-   
-**Registering Custom Attributes for a Solver:**
 
-Before setting up the scene and loading assets, make sure to allow the solver you are using to register its custom attributes
-in the :class:`newton.ModelBuilder` via the :meth:`newton.solvers.SolverBase.register_custom_attributes` method.
+**Registering Solver Attributes:**
 
-For example, to allow the MuJoCo solver to register its custom attributes, you can do:
+Before loading assets, register solver-specific attributes:
 
 .. testcode::
 
    from newton.solvers import SolverMuJoCo
 
    builder_mujoco = ModelBuilder()
-
-   # First register the custom attributes for the MuJoCo solver
    SolverMuJoCo.register_custom_attributes(builder_mujoco)
-
-   # Build a scene with a body and a shape
+   
+   # Now build your scene...
    body = builder_mujoco.add_link()
    joint = builder_mujoco.add_joint_free(body)
    builder_mujoco.add_articulation([joint])
    shape = builder_mujoco.add_shape_box(body=body, hx=0.1, hy=0.1, hz=0.1)
-
-   # Finalize the model and allocate arrays for the custom attributes
+   
    model_mujoco = builder_mujoco.finalize()
-
-   # Now the model has the custom attributes registered by the MuJoCo solver
-   # in the "mujoco" namespace.
    assert hasattr(model_mujoco, "mujoco")
    assert hasattr(model_mujoco.mujoco, "condim")
-   assert np.allclose(model_mujoco.mujoco.condim.numpy(), [3])
 
 Authoring Custom Attributes
 ----------------------------
 
 After declaration, values are assigned through the standard entity creation API (``add_body``, ``add_shape``, ``add_joint``). For default namespace attributes, use the attribute name directly. For namespaced attributes, use the format ``"namespace:attr_name"``.
-
-The following example creates bodies and shapes with custom attribute values:
 
 .. testcode::
 
@@ -222,7 +211,9 @@ The following example creates bodies and shapes with custom attribute values:
        }
    )
 
-For joints, Newton provides three frequency types to store different granularities of data. The system determines how to process attribute values based on the declared frequency:
+**Joint Frequency Types:**
+
+For joints, Newton provides three frequency types to store different granularities of data:
 
 * **JOINT frequency** → One value per joint
 * **JOINT_DOF frequency** → Values per degree of freedom (list, dict, or scalar for single-DOF joints)
@@ -233,8 +224,6 @@ For ``JOINT_DOF`` and ``JOINT_COORD`` frequencies, values can be provided in thr
 1. **List format**: Explicit values for all DOFs/coordinates (e.g., ``[100.0, 200.0]`` for 2-DOF joint)
 2. **Dict format**: Sparse specification mapping indices to values (e.g., ``{0: 100.0, 2: 300.0}`` sets only DOF 0 and 2)
 3. **Scalar format**: Single value for single-DOF/single-coordinate joints, automatically expanded to a list
-
-The following example demonstrates declaring and authoring attributes for each joint frequency type:
 
 .. testcode::
 
@@ -312,8 +301,6 @@ Accessing Custom Attributes
 
 After finalization, custom attributes become accessible as Warp arrays. Default namespace attributes are accessed directly on their assignment object, while namespaced attributes are accessed through their namespace container.
 
-The following example shows how to access all the attributes we declared and authored above:
-
 .. testcode::
 
    # Finalize the model
@@ -347,11 +334,6 @@ USD Integration
 ---------------
 
 Custom attributes can be authored in USD files using a declaration-first pattern, similar to the Python API. Declarations are placed on the PhysicsScene prim, and individual prims can then assign values to these attributes.
-
-**USD Declaration Pattern:**
-
-1. **Declare on PhysicsScene**: Define custom attributes with metadata specifying assignment and frequency
-2. **Assign on Prims**: Override default values using the attribute name
 
 **Declaration Format (on PhysicsScene prim):**
 
@@ -447,85 +429,50 @@ The custom attribute system enforces several constraints to ensure correctness:
 * Attributes must be declared via ``add_custom_attribute()`` before use (raises ``AttributeError`` otherwise)
 * Each attribute must be used with entities matching its declared frequency (raises ``ValueError`` otherwise)
 * Each full attribute identifier (namespace + name) can only be declared once with a specific assignment, frequency, and dtype
-* The same attribute name can exist in different namespaces because they create different full identifiers (e.g., ``model.float_attr`` uses key ``"float_attr"`` while ``state.namespace_a.float_attr`` uses key ``"namespace_a:float_attr"``)
+* The same attribute name can exist in different namespaces because they create different full identifiers
 
-Custom String Frequencies
-=========================
+Custom Frequencies
+==================
 
-While enum frequencies (``BODY``, ``SHAPE``, ``JOINT``, etc.) cover most use cases, some solver-specific or user-defined data structures have counts that are independent of built-in entity types. Custom string frequencies enable these use cases.
+While enum frequencies (``BODY``, ``SHAPE``, ``JOINT``, etc.) cover most use cases, some data structures have counts independent of built-in entity types. Custom frequencies address this by allowing a string instead of an enum for the ``frequency`` parameter.
 
-Motivation
-----------
+**Example use case:** MuJoCo's ``<contact><pair>`` elements define contact pairs between geometries. These pairs have their own count independent of bodies or shapes, and their indices must be remapped when merging worlds.
 
-Consider MuJoCo's ``<contact><pair>`` elements, which define explicit contact pairs between geometries with custom solver parameters. These pairs:
+Declaring Custom Frequencies
+----------------------------
 
-* Have their own count independent of bodies, shapes, or joints
-* Reference shapes by index (which must be remapped when merging worlds)
-* Need world assignment for multi-world simulations
-
-A custom string frequency like ``"mujoco:pair"`` allows all pair-related attributes to share the same indexing scheme, with validation ensuring they stay synchronized.
-
-Declaring Custom String Frequencies
------------------------------------
-
-To use a custom string frequency, pass a string instead of an enum value for the ``frequency`` parameter:
+Pass a string instead of an enum for the ``frequency`` parameter:
 
 .. code-block:: python
 
-   from newton import ModelBuilder, ModelAttributeFrequency
-   import warp as wp
-   
-   builder = ModelBuilder()
-   
-   # Built-in enum frequency (standard pattern)
    builder.add_custom_attribute(
        ModelBuilder.CustomAttribute(
-           name="body_temp",
-           frequency=ModelAttributeFrequency.BODY,  # Enum: one per body
-           dtype=wp.float32,
-       )
-   )
-   
-   # Custom string frequency (for custom entity types)
-   builder.add_custom_attribute(
-       ModelBuilder.CustomAttribute(
-           name="item_value",
-           frequency="item",  # String: custom entity type
-           dtype=wp.float32,
-           namespace="myns",  # Recommended for organization
-       )
-   )
-   # → Frequency resolves to "myns:item" via namespace
-
-**Namespace Resolution:** When a string frequency is used with a namespace, the ``frequency_key`` property automatically prepends the namespace, matching how attribute keys work. For example, ``frequency="item"`` with ``namespace="myns"`` resolves to ``"myns:item"``. This avoids redundancy and ensures consistency.
-
-Adding Values with ``add_custom_values()``
-------------------------------------------
-
-Unlike enum frequencies where values are assigned during entity creation (``add_body``, ``add_shape``, etc.), custom string frequency values are appended using the :meth:`~newton.ModelBuilder.add_custom_values` method:
-
-.. code-block:: python
-
-   # Declare related attributes sharing the same frequency
-   builder.add_custom_attribute(
-       ModelBuilder.CustomAttribute(
-           name="item_id",
-           frequency="item",
+           name="pair_geom1",
+           frequency="pair",  # Custom frequency (string)
            dtype=wp.int32,
-           namespace="myns",
+           namespace="mujoco",
        )
+   )
+   # → Frequency resolves to "mujoco:pair" via namespace
+
+When a namespace is provided, it is automatically prepended to the frequency string, matching how attribute keys work.
+
+Adding Values
+-------------
+
+Custom frequency values are appended using :meth:`~newton.ModelBuilder.add_custom_values`:
+
+.. code-block:: python
+
+   # Declare attributes sharing a frequency
+   builder.add_custom_attribute(
+       ModelBuilder.CustomAttribute(name="item_id", frequency="item", dtype=wp.int32, namespace="myns")
    )
    builder.add_custom_attribute(
-       ModelBuilder.CustomAttribute(
-           name="item_value",
-           frequency="item",
-           dtype=wp.float32,
-           default=1.0,
-           namespace="myns",
-       )
+       ModelBuilder.CustomAttribute(name="item_value", frequency="item", dtype=wp.float32, namespace="myns")
    )
    
-   # Append values (all attributes with same frequency should be added together)
+   # Append values together
    builder.add_custom_values(**{
        "myns:item_id": 100,
        "myns:item_value": 2.5,
@@ -539,37 +486,12 @@ Unlike enum frequencies where values are assigned during entity creation (``add_
    print(model.myns.item_id.numpy())    # [100, 101]
    print(model.myns.item_value.numpy()) # [2.5, 3.0]
 
-The method returns a dict mapping attribute keys to the indices where values were added, which can be useful for building cross-references.
+**Validation:** All attributes sharing a custom frequency must have the same count at ``finalize()`` time. This catches synchronization bugs early.
 
-Validation at Finalize Time
----------------------------
+Multi-World Merging
+-------------------
 
-A key benefit of custom string frequencies is automatic validation: all attributes sharing the same frequency must have the same count at ``finalize()`` time.
-
-.. code-block:: python
-
-   builder.add_custom_attribute(
-       ModelBuilder.CustomAttribute(name="pair_a", frequency="pair", dtype=wp.int32, namespace="test")
-   )
-   builder.add_custom_attribute(
-       ModelBuilder.CustomAttribute(name="pair_b", frequency="pair", dtype=wp.int32, namespace="test")
-   )
-   
-   # Add values to pair_a but not pair_b
-   builder.add_custom_values(**{"test:pair_a": 1})
-   builder.add_custom_values(**{"test:pair_a": 2})
-   
-   # This will raise ValueError at finalize():
-   # "Custom attributes with frequency 'test:pair' have inconsistent counts:
-   #  expected 2 (from test:pair_a), but 'test:pair_b' has 0 values."
-   model = builder.finalize()  # Raises!
-
-This validation prevents subtle bugs from mismatched array sizes, which would otherwise cause indexing errors or incorrect simulation behavior.
-
-Multi-World Merging with ``references``
----------------------------------------
-
-When using ``add_world()`` to create multi-world simulations, entity indices must be remapped. The ``references`` field specifies how attribute values should be transformed during merging.
+When using ``add_world()`` to create multi-world simulations, the ``references`` field specifies how attribute values should be transformed:
 
 .. code-block:: python
 
@@ -584,7 +506,7 @@ When using ``add_world()`` to create multi-world simulations, entity indices mus
    )
    builder.add_custom_attribute(
        ModelBuilder.CustomAttribute(
-           name="pair_shape1",
+           name="pair_geom1",
            frequency="pair",
            dtype=wp.int32,
            namespace="mujoco",
@@ -592,110 +514,23 @@ When using ``add_world()`` to create multi-world simulations, entity indices mus
        )
    )
 
-**Supported reference types:**
+Supported reference types:
 
-* **Built-in entities**: ``"body"``, ``"shape"``, ``"joint"``, ``"joint_dof"``, ``"joint_coord"``, ``"articulation"`` — values are offset by the corresponding entity count
-* **Special handling**: ``"world"`` — values are replaced with ``current_world`` (not offset)
-* **Custom frequencies**: Any custom frequency key (e.g., ``"mujoco:pair"``) — values are offset by that frequency's count
-* **Custom attributes**: Any attribute key (e.g., ``"mujoco:pair_data"``) — values are offset by that attribute's value count
+* ``"body"``, ``"shape"``, ``"joint"``, ``"joint_dof"``, ``"joint_coord"``, ``"articulation"`` — offset by entity count
+* ``"world"`` — replaced with ``current_world``
+* Custom frequency keys (e.g., ``"mujoco:pair"``) — offset by that frequency's count
 
-**Example: Multi-world merging with contact pairs:**
+Querying Counts
+---------------
 
-.. code-block:: python
-
-   # Template builder with one contact pair
-   template = ModelBuilder()
-   SolverMuJoCo.register_custom_attributes(template)
-   template.add_mjcf("robot.xml")  # Has shapes 0,1 and pair(geom1=0, geom2=1)
-   
-   # Main builder merges two copies
-   main = ModelBuilder()
-   SolverMuJoCo.register_custom_attributes(main)
-   main.add_world(template)  # world 0: shapes 0,1; pair(0,1)
-   main.add_world(template)  # world 1: shapes 2,3; pair(2,3) <- indices offset!
-   
-   model = main.finalize()
-   print(model.mujoco.pair_world.numpy())   # [0, 1]
-   print(model.mujoco.pair_geom1.numpy())   # [0, 2]  <- offset by shape count
-   print(model.mujoco.pair_geom2.numpy())   # [1, 3]  <- offset by shape count
-
-Querying Custom Frequency Counts
---------------------------------
-
-After finalization, use :meth:`~newton.Model.get_custom_frequency_count` to query the count for a custom frequency:
+Use :meth:`~newton.Model.get_custom_frequency_count` to get the count for a custom frequency:
 
 .. code-block:: python
 
    model = builder.finalize()
    pair_count = model.get_custom_frequency_count("mujoco:pair")
-   print(f"Number of contact pairs: {pair_count}")
 
-Selection and ArticulationView
-------------------------------
+ArticulationView Limitations
+----------------------------
 
-Custom string frequency attributes are **not accessible** via :class:`~newton.ArticulationView`. This is by design: custom frequencies represent entity types that aren't inherently tied to articulation structure.
-
-For example, contact pairs can span multiple articulations or involve non-articulated bodies, so there's no sensible way to slice them per-articulation. Attempting to access a custom frequency attribute through ArticulationView raises ``AttributeError`` with a clear message.
-
-If you need per-articulation custom data, use a built-in enum frequency like ``ARTICULATION``, ``JOINT``, or ``BODY``.
-
-Design Rationale
-----------------
-
-**Why strings instead of extending the enum?**
-
-Using strings for custom frequencies provides several benefits:
-
-1. **No core changes needed**: Solvers and users can define custom entity types without modifying Newton's core enums
-2. **Namespacing**: The ``"namespace:entity"`` pattern naturally prevents conflicts between solvers
-3. **Validation**: String frequencies enable the same-count validation that catches synchronization bugs
-4. **Flexibility**: Any number of custom entity types can be defined without coordination
-
-**Why require explicit ``add_custom_values()`` calls?**
-
-Custom entity types don't map to existing builder methods (``add_body``, ``add_joint``, etc.), so a dedicated API is needed. The explicit call pattern ensures:
-
-1. All related attributes are added together (reducing synchronization bugs)
-2. The caller controls the indexing (important for building cross-references)
-3. Clear separation from entity-based attribute assignment
-
-**Why validate at ``finalize()`` time?**
-
-Validating at finalize time rather than during ``add_custom_values()`` calls:
-
-1. Allows flexible ordering (attributes can be added in any order)
-2. Catches all synchronization bugs in one place
-3. Provides clear error messages with full context
-
-Summary: Enum vs String Frequencies
------------------------------------
-
-.. list-table::
-   :header-rows: 1
-   :widths: 25 35 40
-
-   * - Aspect
-     - Enum Frequency (``BODY``, ``SHAPE``, etc.)
-     - String Frequency (``"mujoco:pair"``, etc.)
-   * - Array size
-     - Entity count (e.g., ``body_count``)
-     - Number of ``add_custom_values()`` calls
-   * - Index assignment
-     - Implicit (entity creation order)
-     - Explicit (append order)
-   * - Value assignment
-     - Via ``add_body(..., custom_attributes={})``, etc.
-     - Via ``add_custom_values()``
-   * - Multi-world merging
-     - Automatic (entity offsets)
-     - Via ``references`` field
-   * - Validation
-     - N/A (tied to entity count)
-     - All same-frequency attrs must have same count
-   * - ArticulationView
-     - Supported
-     - Not supported (not per-articulation)
-   * - Use case
-     - Per-entity properties
-     - Custom entity types with independent counts
-
+Custom frequency attributes are not accessible via :class:`~newton.ArticulationView` because they represent entity types that aren't tied to articulation structure. For per-articulation data, use enum frequencies like ``ARTICULATION``, ``JOINT``, or ``BODY``.
