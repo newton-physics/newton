@@ -745,6 +745,7 @@ class ModelBuilder:
                 or existing.dtype != attribute.dtype
                 or existing.assignment != attribute.assignment
                 or existing.namespace != attribute.namespace
+                or existing.references != attribute.references
             ):
                 raise ValueError(f"Custom attribute '{key}' already exists with incompatible spec")
             return

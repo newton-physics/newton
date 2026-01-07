@@ -1123,6 +1123,30 @@ class TestCustomAttributes(unittest.TestCase):
         self.assertIn("already exists", str(context.exception))
         self.assertIn("incompatible spec", str(context.exception))
 
+        # Test 7: Same key with different references - SHOULD FAIL
+        builder7 = ModelBuilder()
+        builder7.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="ref_attr",
+                frequency="item",
+                dtype=wp.int32,
+                namespace="test",
+                references="body",
+            )
+        )
+        with self.assertRaises(ValueError) as context:
+            builder7.add_custom_attribute(
+                ModelBuilder.CustomAttribute(
+                    name="ref_attr",
+                    frequency="item",
+                    dtype=wp.int32,
+                    namespace="test",
+                    references="shape",  # Different references
+                )
+            )
+        self.assertIn("already exists", str(context.exception))
+        self.assertIn("incompatible spec", str(context.exception))
+
     def test_mixed_free_and_articulated_bodies(self):
         """Test BODY and ARTICULATION frequency custom attributes with mixed free and articulated bodies."""
         builder = ModelBuilder()
