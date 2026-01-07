@@ -517,12 +517,12 @@ class ArticulationView:
 
         frequency = self.model.get_attribute_frequency(name)
 
-        # String frequencies (custom entity types) are not supported in ArticulationView
+        # Custom frequencies (custom entity types) are not supported in ArticulationView
         # They represent solver-specific data that is not per-articulation
         if isinstance(frequency, str):
             raise AttributeError(
-                f"Attribute '{name}' has custom string frequency '{frequency}' which is not "
-                f"supported by ArticulationView. String frequencies are for custom entity types "
+                f"Attribute '{name}' has custom frequency '{frequency}' which is not "
+                f"supported by ArticulationView. Custom frequencies are for custom entity types "
                 f"that are not part of articulations."
             )
 

@@ -436,7 +436,7 @@ class SolverMuJoCo(SolverBase):
         """
         Get the number of pair attributes defined.
 
-        Consistency validation is now performed at finalize() time via the string frequency
+        Consistency validation is now performed at finalize() time via the custom frequency
         mechanism. This method simply returns the count from the model.
 
         Args:

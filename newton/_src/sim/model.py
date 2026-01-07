@@ -467,10 +467,10 @@ class Model:
 
         self.attribute_frequency: dict[str, ModelAttributeFrequency | str] = {}
         """Classifies each attribute using ModelAttributeFrequency enum values (per body, per joint, per DOF, etc.)
-        or string frequencies for custom entity types (e.g., ``"mujoco:pair"``)."""
+        or custom frequencies for custom entity types (e.g., ``"mujoco:pair"``)."""
 
         self.custom_frequency_counts: dict[str, int] = {}
-        """Counts for custom string frequencies (e.g., ``{"mujoco:pair": 5}``). Set during finalize()."""
+        """Counts for custom frequencies (e.g., ``{"mujoco:pair": 5}``). Set during finalize()."""
 
         self.attribute_assignment: dict[str, ModelAttributeAssignment] = {}
         """Assignment for custom attributes using ModelAttributeAssignment enum values.
@@ -834,10 +834,10 @@ class Model:
 
     def get_custom_frequency_count(self, frequency: str) -> int:
         """
-        Get the count for a custom string frequency.
+        Get the count for a custom frequency.
 
         Args:
-            frequency (str): The custom frequency string (e.g., ``"mujoco:pair"``).
+            frequency (str): The custom frequency (e.g., ``"mujoco:pair"``).
 
         Returns:
             int: The count of elements with this frequency, or 0 if not found.

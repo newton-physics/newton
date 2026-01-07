@@ -371,7 +371,7 @@ class ModelBuilder:
         Can be either:
             - A :class:`ModelAttributeFrequency` enum value for built-in frequencies (BODY, SHAPE, JOINT, etc.)
             - A string for custom frequencies (e.g., ``"mujoco:pair"``). All attributes sharing the same
-              string frequency must have the same count, validated at finalize time. The count is determined
+              custom frequency must have the same count, validated at finalize time. The count is determined
               by the number of values added via :meth:`add_custom_values`."""
 
         assignment: ModelAttributeAssignment = ModelAttributeAssignment.MODEL
@@ -390,7 +390,7 @@ class ModelBuilder:
             - ``"world"``: Values are replaced with ``current_world`` (not offset)
 
         Custom frequency references (values are offset by that frequency's count):
-            - Any string frequency, e.g., ``"mujoco:pair"``
+            - Any custom frequency string, e.g., ``"mujoco:pair"``
             - Any custom attribute key, e.g., ``"mujoco:pair_geom1"``
         """
 
@@ -762,9 +762,9 @@ class ModelBuilder:
         return [attr for attr in self.custom_attributes.values() if attr.frequency in frequencies]
 
     def add_custom_values(self, **kwargs: Any) -> dict[str, int]:
-        """Append values to custom attributes with string frequencies.
+        """Append values to custom attributes with custom frequencies.
 
-        Adds values to custom attributes that have a string frequency (e.g., ``"mujoco:pair"``).
+        Adds values to custom attributes that have a custom frequency (e.g., ``"mujoco:pair"``).
         Each keyword argument specifies an attribute key and the value to append. The value
         is added at the next available index for that attribute.
 
@@ -781,7 +781,7 @@ class ModelBuilder:
 
         Raises:
             AttributeError: If an attribute key is not defined.
-            ValueError: If an attribute has an enum frequency (must have string frequency).
+            ValueError: If an attribute has an enum frequency (must have custom frequency).
 
         Example:
             >>> builder.add_custom_values(
@@ -803,7 +803,7 @@ class ModelBuilder:
             if not isinstance(attr.frequency, str):
                 raise ValueError(
                     f"Custom attribute '{key}' has frequency={attr.frequency}, "
-                    f"but add_custom_values() only works with string-frequency attributes."
+                    f"but add_custom_values() only works with custom frequency attributes."
                 )
             if attr.values is None:
                 attr.values = {}
@@ -1935,7 +1935,7 @@ class ModelBuilder:
         }
 
         # Pre-merge counts for custom frequencies (by frequency string)
-        # All attributes with the same string frequency should have the same count
+        # All attributes with the same custom frequency should have the same count
         custom_frequency_counts: dict[str, int] = {}
         for _, attr in self.custom_attributes.items():
             if isinstance(attr.frequency, str):
@@ -1962,7 +1962,7 @@ class ModelBuilder:
         for full_key, attr in builder.custom_attributes.items():
             # Index offset based on frequency
             if isinstance(attr.frequency, str):
-                # String frequency: offset by that frequency's count
+                # Custom frequency: offset by that frequency's count
                 index_offset = custom_frequency_counts.get(attr.frequency, 0)
             elif attr.frequency == ModelAttributeFrequency.ONCE:
                 index_offset = 0
@@ -6439,28 +6439,28 @@ class ModelBuilder:
             if not self.custom_attributes:
                 return m
 
-            # Validate and compute counts for string frequencies
-            # Group attributes by their string frequency and validate consistent counts
-            string_frequency_counts: dict[str, int] = {}
-            string_frequency_attrs: dict[str, list[str]] = {}  # frequency -> list of attr keys
+            # Validate and compute counts for custom frequencies
+            # Group attributes by their custom frequency and validate consistent counts
+            custom_frequency_counts: dict[str, int] = {}
+            custom_frequency_attrs: dict[str, list[str]] = {}  # frequency -> list of attr keys
             for full_key, custom_attr in self.custom_attributes.items():
                 if isinstance(custom_attr.frequency, str):
                     freq_str = custom_attr.frequency
                     attr_count = len(custom_attr.values) if custom_attr.values else 0
-                    if freq_str not in string_frequency_counts:
-                        string_frequency_counts[freq_str] = attr_count
-                        string_frequency_attrs[freq_str] = [full_key]
+                    if freq_str not in custom_frequency_counts:
+                        custom_frequency_counts[freq_str] = attr_count
+                        custom_frequency_attrs[freq_str] = [full_key]
                     else:
-                        string_frequency_attrs[freq_str].append(full_key)
-                        if string_frequency_counts[freq_str] != attr_count:
+                        custom_frequency_attrs[freq_str].append(full_key)
+                        if custom_frequency_counts[freq_str] != attr_count:
                             raise ValueError(
                                 f"Custom attributes with frequency '{freq_str}' have inconsistent counts: "
-                                f"expected {string_frequency_counts[freq_str]} (from {string_frequency_attrs[freq_str][0]}), "
+                                f"expected {custom_frequency_counts[freq_str]} (from {custom_frequency_attrs[freq_str][0]}), "
                                 f"but '{full_key}' has {attr_count} values."
                             )
 
             # Store custom frequency counts on the model for selection.py and other consumers
-            m.custom_frequency_counts = string_frequency_counts
+            m.custom_frequency_counts = custom_frequency_counts
 
             # Process custom attributes
             for _full_key, custom_attr in self.custom_attributes.items():
@@ -6468,8 +6468,8 @@ class ModelBuilder:
 
                 # determine count by frequency
                 if isinstance(frequency, str):
-                    # String frequency: count determined by validated frequency count
-                    count = string_frequency_counts.get(frequency, 0)
+                    # Custom frequency: count determined by validated frequency count
+                    count = custom_frequency_counts.get(frequency, 0)
                 elif frequency == ModelAttributeFrequency.ONCE:
                     count = 1
                 elif frequency == ModelAttributeFrequency.BODY:
@@ -6491,7 +6491,7 @@ class ModelBuilder:
                 else:
                     continue
 
-                # Skip empty string-frequency attributes
+                # Skip empty custom frequency attributes
                 if count == 0:
                     continue
 

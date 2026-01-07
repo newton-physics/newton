@@ -16,11 +16,11 @@ The existing system couldn't handle this because:
 
 ## Solution Overview
 
-### 1. String Frequencies for Custom Entity Types
+### 1. Custom Frequencies for Custom Entity Types
 
-`CustomAttribute.frequency` now accepts either a `ModelAttributeFrequency` enum value OR a string for custom entity types. String frequencies (e.g., `"mujoco:pair"`) enable:
+`CustomAttribute.frequency` now accepts either a `ModelAttributeFrequency` enum value OR a string for custom entity types. Custom frequencies (e.g., `"mujoco:pair"`) enable:
 - Custom entity types with independent counts
-- Validation that all attributes with the same string frequency have consistent counts
+- Validation that all attributes with the same custom frequency have consistent counts
 - Proper index offsetting during multi-world merging
 
 ```python
@@ -31,7 +31,7 @@ CustomAttribute(
     dtype=wp.float32,
 )
 
-# Custom string frequency for solver-specific entity types
+# Custom frequency for solver-specific entity types
 CustomAttribute(
     name="pair_geom1",
     frequency="mujoco:pair",  # Custom entity type
@@ -39,7 +39,7 @@ CustomAttribute(
 )
 ```
 
-**Key benefit:** All attributes sharing the same string frequency are validated at `finalize()` time to have the same count, preventing subtle bugs from mismatched array sizes.
+**Key benefit:** All attributes sharing the same custom frequency are validated at `finalize()` time to have the same count, preventing subtle bugs from mismatched array sizes.
 
 ### 2. Reference Transformation (`references` field)
 
@@ -57,12 +57,12 @@ CustomAttribute(
 Supported reference types:
 - **Built-in entities**: `"body"`, `"shape"`, `"joint"`, `"joint_dof"`, `"joint_coord"`, `"articulation"` — values are offset by entity count
 - **Special**: `"world"` — values are replaced with `current_world` (not offset)
-- **Custom string frequencies**: Any string frequency (e.g., `"mujoco:pair"`) — values are offset by that frequency's count
+- **Custom frequencies**: Any custom frequency (e.g., `"mujoco:pair"`) — values are offset by that frequency's count
 - **Custom attributes**: Any attribute key (e.g., `"mujoco:pair_geom1"`) — values are offset by that attribute's value count
 
 ### 3. Value Appending API (`add_custom_values()`)
 
-Method to append values to attributes with string frequencies:
+Method to append values to attributes with custom frequencies:
 
 ```python
 builder.add_custom_values(**{
@@ -79,13 +79,13 @@ Returns a dict mapping attribute keys to the indices where values were added.
 ### 4. Finalization Changes
 
 During `finalize()`:
-1. **Validation**: All attributes with the same string frequency are validated to have consistent counts
-2. **Array sizing**: String frequency attributes create arrays sized by `len(attr.values)`
+1. **Validation**: All attributes with the same custom frequency are validated to have consistent counts
+2. **Array sizing**: Custom frequency attributes create arrays sized by `len(attr.values)`
 
 ```python
 # Validation ensures all "mujoco:pair" attributes have same count
 if isinstance(frequency, str):
-    count = string_frequency_counts.get(frequency, 0)
+    count = custom_frequency_counts.get(frequency, 0)
 ```
 
 ## Changes Made
@@ -94,23 +94,23 @@ if isinstance(frequency, str):
 
 1. **`CustomAttribute` dataclass**:
    - `frequency` is now `ModelAttributeFrequency | str` (string for custom entity types)
-   - `references` field supports string frequencies for offsetting
+   - `references` field supports custom frequencies for offsetting
 
-2. **`add_custom_values()` method**: Appends values to attributes with string frequencies
+2. **`add_custom_values()` method**: Appends values to attributes with custom frequencies
 
 3. **`add_builder()` merging logic**:
-   - Handles string frequencies by offsetting indices by pre-merge frequency count
-   - Applies `references` transformation (supports string frequencies)
+   - Handles custom frequencies by offsetting indices by pre-merge frequency count
+   - Applies `references` transformation (supports custom frequencies)
    - Supports custom attribute and frequency cross-references
 
 4. **`finalize()`**: 
-   - Validates all attributes with same string frequency have consistent counts
+   - Validates all attributes with same custom frequency have consistent counts
    - Stores `custom_frequency_counts` on the Model
 
 ### `newton/_src/sim/model.py`
 
 1. **`attribute_frequency`**: Now `dict[str, ModelAttributeFrequency | str]`
-2. **`custom_frequency_counts`**: New dict storing counts per string frequency
+2. **`custom_frequency_counts`**: New dict storing counts per custom frequency
 3. **`get_custom_frequency_count()`**: New method to query custom frequency counts
 4. **`get_attribute_frequency()`**: Returns `ModelAttributeFrequency | str`
 
@@ -131,7 +131,7 @@ if isinstance(frequency, str):
 
 ### `newton/_src/utils/selection.py`
 
-1. **`ArticulationView`**: Raises clear error for string frequency attributes (not per-articulation)
+1. **`ArticulationView`**: Raises clear error for custom frequency attributes (not per-articulation)
 
 ---
 
@@ -145,7 +145,7 @@ if isinstance(frequency, str):
 builder.add_custom_attribute(
     ModelBuilder.CustomAttribute(
         name="pair_world",
-        frequency="mujoco:pair",  # Custom string frequency
+        frequency="mujoco:pair",  # Custom frequency
         dtype=wp.int32,
         default=0,
         namespace="mujoco",
@@ -245,17 +245,17 @@ for i in range(pair_count):
 
 ## Design Decisions
 
-### Why string frequencies instead of `frequency=None`?
+### Why custom frequencies instead of `frequency=None`?
 
-String frequencies provide:
-1. **Validation**: All attributes with the same string frequency are validated at finalize time to have consistent counts
+Custom frequencies provide:
+1. **Validation**: All attributes with the same custom frequency are validated at finalize time to have consistent counts
 2. **Semantics**: The string clearly identifies the entity type (e.g., `"mujoco:pair"`)
 3. **Selection support**: Future compatibility with the ArticulationView selection mechanism
 4. **Namespacing**: Following the `namespace:name` pattern avoids conflicts between solvers
 
 ### Why `references` as a string instead of an enum?
 
-The `references` field needs to support both built-in entity types, custom string frequencies, AND custom attribute keys (for cross-referencing). A string provides this flexibility without a complex union type.
+The `references` field needs to support both built-in entity types, custom frequencies, AND custom attribute keys (for cross-referencing). A string provides this flexibility without a complex union type.
 
 ### Why return indices from `add_custom_values()`?
 
@@ -347,7 +347,7 @@ You can combine automated and manual parsing:
 
 ---
 
-## Implementing New Custom Entity Types with String Frequencies
+## Implementing New Custom Entity Types with Custom Frequencies
 
 ### Checklist
 
@@ -357,7 +357,7 @@ When adding a new custom entity type (like contact pairs), you need:
 
 ```python
 def register_custom_attributes(builder: ModelBuilder):
-    # Define a unique string frequency for your entity type
+    # Define a unique custom frequency for your entity type
     ENTITY_FREQ = "myns:entity"  # Recommended format: "namespace:entity_type"
     
     # World tracking (almost always needed for multi-world support)
@@ -403,7 +403,7 @@ def register_custom_attributes(builder: ModelBuilder):
 - `mjcf_attribute_name`: What's the XML attribute name? (for automated parsing)
 - `mjcf_value_transformer`: Need special string parsing? (e.g., "true"→1, "auto"→2)
 
-**Important:** All attributes with the same string frequency MUST have the same count at finalize time.
+**Important:** All attributes with the same custom frequency MUST have the same count at finalize time.
 
 #### 2. MJCF Parsing (import_mjcf.py)
 
@@ -411,7 +411,7 @@ def register_custom_attributes(builder: ModelBuilder):
 # Filter attributes for automated parsing (exclude manually-handled ones)
 builder_custom_attr_myentity = [
     attr for attr in builder.custom_attributes.values()
-    if isinstance(attr.frequency, str)  # String frequencies
+    if isinstance(attr.frequency, str)  # Custom frequencies
     and attr.name.startswith("myentity_")
     and attr.name not in ("myentity_world", "myentity_body_idx")  # Manual
 ]
@@ -454,14 +454,14 @@ if myentity_section is not None and has_myentity_attrs:
 
 #### 3. Validation (solver)
 
-Validation is now handled automatically at `finalize()` time via the string frequency mechanism.
+Validation is now handled automatically at `finalize()` time via the custom frequency mechanism.
 Your solver can simply query the count:
 
 ```python
 @staticmethod
 def _get_myentity_count(model: Model) -> int:
     """Get the number of myentity elements."""
-    # Validation was done at finalize time via string frequency mechanism
+    # Validation was done at finalize time via custom frequency mechanism
     return model.get_custom_frequency_count("myns:entity")
 ```
 
@@ -498,9 +498,9 @@ def _init_myentities(self, model: Model, spec, body_mapping, template_world):
 
 ---
 
-## Summary: Enum vs String Frequencies
+## Summary: Enum vs Custom Frequencies
 
-| Aspect | Enum Frequency (`BODY`, `SHAPE`, etc.) | String Frequency (`"mujoco:pair"`, etc.) |
+| Aspect | Enum Frequency (`BODY`, `SHAPE`, etc.) | Custom Frequency (`"mujoco:pair"`, etc.) |
 |--------|----------------------------------------|------------------------------------------|
 | **Array size** | Entity count (e.g., `body_count`) | Number of `add_custom_values()` calls |
 | **Index** | Implicit (entity creation order) | Explicit (append order) |

@@ -1249,18 +1249,18 @@ class TestCustomAttributes(unittest.TestCase):
         self.assertAlmostEqual(arctic_stiff[1], 150.0, places=5)
 
 
-class TestStringFrequencyAttributes(unittest.TestCase):
-    """Test custom attributes with string frequencies."""
+class TestCustomFrequencyAttributes(unittest.TestCase):
+    """Test custom attributes with custom frequencies."""
 
     def setUp(self):
         """Set up test fixtures."""
         self.device = wp.get_device()
 
-    def test_string_frequency_basic(self):
-        """Test basic string frequency attributes with add_custom_values()."""
+    def test_custom_frequency_basic(self):
+        """Test basic custom frequency attributes with add_custom_values()."""
         builder = ModelBuilder()
 
-        # Declare attributes with string frequency
+        # Declare attributes with custom frequency
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="pair_world",
@@ -1315,11 +1315,11 @@ class TestStringFrequencyAttributes(unittest.TestCase):
         # Verify custom frequency count is stored
         self.assertEqual(model.get_custom_frequency_count("test:pair"), 2)
 
-    def test_string_frequency_validation_inconsistent_counts(self):
-        """Test that inconsistent counts for same string frequency raises error at finalize()."""
+    def test_custom_frequency_validation_inconsistent_counts(self):
+        """Test that inconsistent counts for same custom frequency raises error at finalize()."""
         builder = ModelBuilder()
 
-        # Declare attributes with same string frequency
+        # Declare attributes with same custom frequency
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="pair_a",
@@ -1347,7 +1347,7 @@ class TestStringFrequencyAttributes(unittest.TestCase):
         self.assertIn("inconsistent counts", str(context.exception).lower())
         self.assertIn("test:pair", str(context.exception))
 
-    def test_string_frequency_add_custom_values_rejects_enum_frequency(self):
+    def test_custom_frequency_add_custom_values_rejects_enum_frequency(self):
         """Test that add_custom_values() rejects enum frequency attributes."""
         builder = ModelBuilder()
 
@@ -1361,11 +1361,11 @@ class TestStringFrequencyAttributes(unittest.TestCase):
 
         with self.assertRaises(ValueError) as context:
             builder.add_custom_values(**{"body_attr": 1.0})
-        self.assertIn("string-frequency", str(context.exception).lower())
+        self.assertIn("custom frequency", str(context.exception).lower())
 
-    def test_string_frequency_multi_world_merging(self):
-        """Test string frequency attributes are correctly offset during add_world() merging."""
-        # Create sub-builder with string frequency attributes
+    def test_custom_frequency_multi_world_merging(self):
+        """Test custom frequency attributes are correctly offset during add_world() merging."""
+        # Create sub-builder with custom frequency attributes
         sub_builder = ModelBuilder()
 
         sub_builder.add_custom_attribute(
@@ -1418,8 +1418,8 @@ class TestStringFrequencyAttributes(unittest.TestCase):
         # Verify custom frequency count
         self.assertEqual(model.get_custom_frequency_count("test:item"), 4)
 
-    def test_string_frequency_references_offset(self):
-        """Test that string frequency can be used as references for offsetting."""
+    def test_custom_frequency_references_offset(self):
+        """Test that custom frequency can be used as references for offsetting."""
         # Create sub-builder
         sub_builder = ModelBuilder()
 
@@ -1469,11 +1469,11 @@ class TestStringFrequencyAttributes(unittest.TestCase):
         # World 1: refs should be offset by 2 (entity count from world 0), so 2, 3
         np.testing.assert_array_equal(refs, [0, 1, 2, 3])
 
-    def test_string_frequency_different_frequencies_independent(self):
-        """Test that different string frequencies are independent."""
+    def test_custom_frequency_different_frequencies_independent(self):
+        """Test that different custom frequencies are independent."""
         builder = ModelBuilder()
 
-        # Two different string frequencies
+        # Two different custom frequencies
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="type_a_data",
@@ -1510,8 +1510,8 @@ class TestStringFrequencyAttributes(unittest.TestCase):
         self.assertEqual(model.get_custom_frequency_count("test:type_a"), 3)
         self.assertEqual(model.get_custom_frequency_count("test:type_b"), 1)
 
-    def test_string_frequency_empty(self):
-        """Test that empty string frequency attributes don't create arrays."""
+    def test_custom_frequency_empty(self):
+        """Test that empty custom frequency attributes don't create arrays."""
         builder = ModelBuilder()
 
         builder.add_custom_attribute(
