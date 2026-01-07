@@ -146,8 +146,10 @@ When entities don't explicitly specify custom attribute values, the default valu
    
    print(f"Body 1: {temps[body1]}")  # 20.0 (default)
    print(f"Body 2: {temps[body2]}")  # 37.5 (authored)
-   print(f"Articulation 2: {arctic_stiff[2]}")  # 100.0
-   print(f"Articulation 4: {arctic_stiff[4]}")  # 200.0
+   # Note: body1 and body2 create implicit single-body articulations (indices 0, 1)
+   # The loop creates articulations at indices 2, 3, 4 with stiffness 100, 150, 200
+   print(f"Articulation 2: {arctic_stiff[2]}")  # 100.0 (first loop iteration)
+   print(f"Articulation 4: {arctic_stiff[4]}")  # 200.0 (third loop iteration)
 
 .. testoutput::
 
