@@ -840,6 +840,11 @@ class Model:
             frequency (str): The custom frequency (e.g., ``"mujoco:pair"``).
 
         Returns:
-            int: The count of elements with this frequency, or 0 if not found.
+            int: The count of elements with this frequency.
+
+        Raises:
+            KeyError: If the frequency is not known.
         """
-        return self.custom_frequency_counts.get(frequency, 0)
+        if frequency not in self.custom_frequency_counts:
+            raise KeyError(f"Custom frequency '{frequency}' is not known")
+        return self.custom_frequency_counts[frequency]

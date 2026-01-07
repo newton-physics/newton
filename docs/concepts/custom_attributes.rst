@@ -523,12 +523,15 @@ Supported reference types:
 Querying Counts
 ---------------
 
-Use :meth:`~newton.Model.get_custom_frequency_count` to get the count for a custom frequency:
+Use :meth:`~newton.Model.get_custom_frequency_count` to get the count for a custom frequency (raises ``KeyError`` if unknown):
 
 .. code-block:: python
 
    model = builder.finalize()
    pair_count = model.get_custom_frequency_count("mujoco:pair")
+   
+   # Or check directly without raising:
+   pair_count = model.custom_frequency_counts.get("mujoco:pair", 0)
 
 ArticulationView Limitations
 ----------------------------

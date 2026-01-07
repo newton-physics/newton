@@ -444,7 +444,7 @@ class SolverMuJoCo(SolverBase):
             shape_mapping: Mapping from Newton shape index to MuJoCo geom name.
             template_world: The world index to use as the template (typically first_group).
         """
-        pair_count = model.get_custom_frequency_count("mujoco:pair")
+        pair_count = model.custom_frequency_counts.get("mujoco:pair", 0)
         if pair_count == 0:
             return
 
