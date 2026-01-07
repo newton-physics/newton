@@ -458,17 +458,13 @@ class ModelBuilder:
 
         @property
         def frequency_key(self) -> ModelAttributeFrequency | str:
-            """Return the resolved frequency, with namespace prepended for custom frequencies if needed.
+            """Return the resolved frequency, with namespace prepended for custom string frequencies.
 
-            For custom frequencies (strings):
-                - If frequency contains ":", use as-is (already namespaced or cross-namespace reference)
-                - If frequency has no ":" and namespace is set, prepend namespace (e.g., "pair" -> "mujoco:pair")
-                - If frequency has no ":" and no namespace, use as-is
-
-            For enum frequencies, returns the enum value unchanged.
+            For string frequencies: returns "namespace:frequency" if namespace is set, otherwise just "frequency".
+            For enum frequencies: returns the enum value unchanged.
             """
-            if isinstance(self.frequency, str) and ":" not in self.frequency and self.namespace:
-                return f"{self.namespace}:{self.frequency}"
+            if isinstance(self.frequency, str):
+                return f"{self.namespace}:{self.frequency}" if self.namespace else self.frequency
             return self.frequency
 
         def build_array(self, count: int, device: Devicelike | None = None, requires_grad: bool = False) -> wp.array:

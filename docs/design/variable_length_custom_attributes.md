@@ -41,7 +41,7 @@ CustomAttribute(
 )
 ```
 
-**Namespace resolution:** The `frequency_key` property automatically prepends the namespace to string frequencies if no `:` is present. For example, `frequency="pair"` with `namespace="mujoco"` resolves to `"mujoco:pair"`. This avoids redundancy and ensures consistency with the namespace hierarchy. Fully qualified frequencies (containing `:`) are used as-is, allowing cross-namespace references when needed.
+**Namespace resolution:** The `frequency_key` property automatically prepends the namespace to string frequencies, matching how attribute `key` works. For example, `frequency="pair"` with `namespace="mujoco"` resolves to `"mujoco:pair"`. This avoids redundancy and ensures consistency with the namespace hierarchy.
 
 **Key benefit:** All attributes sharing the same custom frequency are validated at `finalize()` time to have the same count, preventing subtle bugs from mismatched array sizes.
 
