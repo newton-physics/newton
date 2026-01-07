@@ -27,6 +27,7 @@ import warp as wp
 
 import newton
 from newton import ModelAttributeAssignment, ModelBuilder
+from newton._src.utils.selection import ArticulationView
 
 
 class TestCustomAttributes(unittest.TestCase):
@@ -1528,6 +1529,58 @@ class TestCustomFrequencyAttributes(unittest.TestCase):
         # Empty frequency shouldn't create a namespace or attribute
         self.assertFalse(hasattr(model, "test"))
         self.assertEqual(model.get_custom_frequency_count("test:empty"), 0)
+
+    def test_custom_frequency_unknown_raises_keyerror(self):
+        """Test that get_custom_frequency_count raises KeyError for unknown frequencies."""
+        builder = ModelBuilder()
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="item",
+                frequency="known",
+                dtype=wp.int32,
+                namespace="test",
+            )
+        )
+        model = builder.finalize(device=self.device)
+
+        # Known frequency works
+        self.assertEqual(model.get_custom_frequency_count("test:known"), 0)
+
+        # Unknown frequency raises KeyError
+        with self.assertRaisesRegex(KeyError, "unknown"):
+            model.get_custom_frequency_count("test:unknown")
+
+    def test_custom_frequency_articulation_view_rejection(self):
+        """Test that ArticulationView raises error for custom string frequency attributes."""
+
+        builder = ModelBuilder()
+
+        # Create an articulation
+        body = builder.add_link(mass=1.0)
+        joint = builder.add_joint_free(child=body)
+        builder.add_articulation([joint], key="robot")
+
+        # Add a custom string frequency attribute (no namespace for simpler access)
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="item_data",
+                frequency="item",  # Custom string frequency
+                dtype=wp.int32,
+            )
+        )
+        builder.add_custom_values(**{"item_data": 42})
+
+        model = builder.finalize(device=self.device)
+
+        # Create ArticulationView
+        view = ArticulationView(model, "robot")
+
+        # Accessing a custom string frequency attribute should raise AttributeError
+        with self.assertRaises(AttributeError) as context:
+            view._get_attribute_array("item_data", model)
+
+        self.assertIn("custom frequency", str(context.exception).lower())
+        self.assertIn("item", str(context.exception))
 
 
 if __name__ == "__main__":
