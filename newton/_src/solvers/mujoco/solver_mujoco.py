@@ -431,23 +431,6 @@ class SolverMuJoCo(SolverBase):
             )
         )
 
-    @staticmethod
-    def _validate_pair_attributes(model: Model) -> int:
-        """
-        Get the number of pair attributes defined.
-
-        Consistency validation is now performed at finalize() time via the custom frequency
-        mechanism. This method simply returns the count from the model.
-
-        Args:
-            model: The Newton model to query.
-
-        Returns:
-            int: The number of pairs defined (0 if no pairs).
-        """
-        # Use the custom frequency count - validation was done at finalize time
-        return model.get_custom_frequency_count("mujoco:pair")
-
     def _init_pairs(self, model: Model, spec, shape_mapping: dict[int, str], template_world: int) -> None:
         """
         Initialize MuJoCo contact pairs from custom attributes.
@@ -461,7 +444,7 @@ class SolverMuJoCo(SolverBase):
             shape_mapping: Mapping from Newton shape index to MuJoCo geom name.
             template_world: The world index to use as the template (typically first_group).
         """
-        pair_count = self._validate_pair_attributes(model)
+        pair_count = model.get_custom_frequency_count("mujoco:pair")
         if pair_count == 0:
             return
 
