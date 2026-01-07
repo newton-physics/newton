@@ -449,3 +449,253 @@ The custom attribute system enforces several constraints to ensure correctness:
 * Each full attribute identifier (namespace + name) can only be declared once with a specific assignment, frequency, and dtype
 * The same attribute name can exist in different namespaces because they create different full identifiers (e.g., ``model.float_attr`` uses key ``"float_attr"`` while ``state.namespace_a.float_attr`` uses key ``"namespace_a:float_attr"``)
 
+Custom String Frequencies
+=========================
+
+While enum frequencies (``BODY``, ``SHAPE``, ``JOINT``, etc.) cover most use cases, some solver-specific or user-defined data structures have counts that are independent of built-in entity types. Custom string frequencies enable these use cases.
+
+Motivation
+----------
+
+Consider MuJoCo's ``<contact><pair>`` elements, which define explicit contact pairs between geometries with custom solver parameters. These pairs:
+
+* Have their own count independent of bodies, shapes, or joints
+* Reference shapes by index (which must be remapped when merging worlds)
+* Need world assignment for multi-world simulations
+
+A custom string frequency like ``"mujoco:pair"`` allows all pair-related attributes to share the same indexing scheme, with validation ensuring they stay synchronized.
+
+Declaring Custom String Frequencies
+-----------------------------------
+
+To use a custom string frequency, pass a string instead of an enum value for the ``frequency`` parameter:
+
+.. code-block:: python
+
+   from newton import ModelBuilder, ModelAttributeFrequency
+   import warp as wp
+   
+   builder = ModelBuilder()
+   
+   # Built-in enum frequency (standard pattern)
+   builder.add_custom_attribute(
+       ModelBuilder.CustomAttribute(
+           name="body_temp",
+           frequency=ModelAttributeFrequency.BODY,  # Enum: one per body
+           dtype=wp.float32,
+       )
+   )
+   
+   # Custom string frequency (for custom entity types)
+   builder.add_custom_attribute(
+       ModelBuilder.CustomAttribute(
+           name="item_value",
+           frequency="item",  # String: custom entity type
+           dtype=wp.float32,
+           namespace="myns",  # Recommended for organization
+       )
+   )
+   # → Frequency resolves to "myns:item" via namespace
+
+**Namespace Resolution:** When a string frequency is used with a namespace, the ``frequency_key`` property automatically prepends the namespace, matching how attribute keys work. For example, ``frequency="item"`` with ``namespace="myns"`` resolves to ``"myns:item"``. This avoids redundancy and ensures consistency.
+
+Adding Values with ``add_custom_values()``
+------------------------------------------
+
+Unlike enum frequencies where values are assigned during entity creation (``add_body``, ``add_shape``, etc.), custom string frequency values are appended using the :meth:`~newton.ModelBuilder.add_custom_values` method:
+
+.. code-block:: python
+
+   # Declare related attributes sharing the same frequency
+   builder.add_custom_attribute(
+       ModelBuilder.CustomAttribute(
+           name="item_id",
+           frequency="item",
+           dtype=wp.int32,
+           namespace="myns",
+       )
+   )
+   builder.add_custom_attribute(
+       ModelBuilder.CustomAttribute(
+           name="item_value",
+           frequency="item",
+           dtype=wp.float32,
+           default=1.0,
+           namespace="myns",
+       )
+   )
+   
+   # Append values (all attributes with same frequency should be added together)
+   builder.add_custom_values(**{
+       "myns:item_id": 100,
+       "myns:item_value": 2.5,
+   })
+   builder.add_custom_values(**{
+       "myns:item_id": 101,
+       "myns:item_value": 3.0,
+   })
+   
+   model = builder.finalize()
+   print(model.myns.item_id.numpy())    # [100, 101]
+   print(model.myns.item_value.numpy()) # [2.5, 3.0]
+
+The method returns a dict mapping attribute keys to the indices where values were added, which can be useful for building cross-references.
+
+Validation at Finalize Time
+---------------------------
+
+A key benefit of custom string frequencies is automatic validation: all attributes sharing the same frequency must have the same count at ``finalize()`` time.
+
+.. code-block:: python
+
+   builder.add_custom_attribute(
+       ModelBuilder.CustomAttribute(name="pair_a", frequency="pair", dtype=wp.int32, namespace="test")
+   )
+   builder.add_custom_attribute(
+       ModelBuilder.CustomAttribute(name="pair_b", frequency="pair", dtype=wp.int32, namespace="test")
+   )
+   
+   # Add values to pair_a but not pair_b
+   builder.add_custom_values(**{"test:pair_a": 1})
+   builder.add_custom_values(**{"test:pair_a": 2})
+   
+   # This will raise ValueError at finalize():
+   # "Custom attributes with frequency 'test:pair' have inconsistent counts:
+   #  expected 2 (from test:pair_a), but 'test:pair_b' has 0 values."
+   model = builder.finalize()  # Raises!
+
+This validation prevents subtle bugs from mismatched array sizes, which would otherwise cause indexing errors or incorrect simulation behavior.
+
+Multi-World Merging with ``references``
+---------------------------------------
+
+When using ``add_world()`` to create multi-world simulations, entity indices must be remapped. The ``references`` field specifies how attribute values should be transformed during merging.
+
+.. code-block:: python
+
+   builder.add_custom_attribute(
+       ModelBuilder.CustomAttribute(
+           name="pair_world",
+           frequency="pair",
+           dtype=wp.int32,
+           namespace="mujoco",
+           references="world",  # Replaced with current_world during merge
+       )
+   )
+   builder.add_custom_attribute(
+       ModelBuilder.CustomAttribute(
+           name="pair_shape1",
+           frequency="pair",
+           dtype=wp.int32,
+           namespace="mujoco",
+           references="shape",  # Offset by shape count during merge
+       )
+   )
+
+**Supported reference types:**
+
+* **Built-in entities**: ``"body"``, ``"shape"``, ``"joint"``, ``"joint_dof"``, ``"joint_coord"``, ``"articulation"`` — values are offset by the corresponding entity count
+* **Special handling**: ``"world"`` — values are replaced with ``current_world`` (not offset)
+* **Custom frequencies**: Any custom frequency key (e.g., ``"mujoco:pair"``) — values are offset by that frequency's count
+* **Custom attributes**: Any attribute key (e.g., ``"mujoco:pair_data"``) — values are offset by that attribute's value count
+
+**Example: Multi-world merging with contact pairs:**
+
+.. code-block:: python
+
+   # Template builder with one contact pair
+   template = ModelBuilder()
+   SolverMuJoCo.register_custom_attributes(template)
+   template.add_mjcf("robot.xml")  # Has shapes 0,1 and pair(geom1=0, geom2=1)
+   
+   # Main builder merges two copies
+   main = ModelBuilder()
+   SolverMuJoCo.register_custom_attributes(main)
+   main.add_world(template)  # world 0: shapes 0,1; pair(0,1)
+   main.add_world(template)  # world 1: shapes 2,3; pair(2,3) <- indices offset!
+   
+   model = main.finalize()
+   print(model.mujoco.pair_world.numpy())   # [0, 1]
+   print(model.mujoco.pair_geom1.numpy())   # [0, 2]  <- offset by shape count
+   print(model.mujoco.pair_geom2.numpy())   # [1, 3]  <- offset by shape count
+
+Querying Custom Frequency Counts
+--------------------------------
+
+After finalization, use :meth:`~newton.Model.get_custom_frequency_count` to query the count for a custom frequency:
+
+.. code-block:: python
+
+   model = builder.finalize()
+   pair_count = model.get_custom_frequency_count("mujoco:pair")
+   print(f"Number of contact pairs: {pair_count}")
+
+Selection and ArticulationView
+------------------------------
+
+Custom string frequency attributes are **not accessible** via :class:`~newton.ArticulationView`. This is by design: custom frequencies represent entity types that aren't inherently tied to articulation structure.
+
+For example, contact pairs can span multiple articulations or involve non-articulated bodies, so there's no sensible way to slice them per-articulation. Attempting to access a custom frequency attribute through ArticulationView raises ``AttributeError`` with a clear message.
+
+If you need per-articulation custom data, use a built-in enum frequency like ``ARTICULATION``, ``JOINT``, or ``BODY``.
+
+Design Rationale
+----------------
+
+**Why strings instead of extending the enum?**
+
+Using strings for custom frequencies provides several benefits:
+
+1. **No core changes needed**: Solvers and users can define custom entity types without modifying Newton's core enums
+2. **Namespacing**: The ``"namespace:entity"`` pattern naturally prevents conflicts between solvers
+3. **Validation**: String frequencies enable the same-count validation that catches synchronization bugs
+4. **Flexibility**: Any number of custom entity types can be defined without coordination
+
+**Why require explicit ``add_custom_values()`` calls?**
+
+Custom entity types don't map to existing builder methods (``add_body``, ``add_joint``, etc.), so a dedicated API is needed. The explicit call pattern ensures:
+
+1. All related attributes are added together (reducing synchronization bugs)
+2. The caller controls the indexing (important for building cross-references)
+3. Clear separation from entity-based attribute assignment
+
+**Why validate at ``finalize()`` time?**
+
+Validating at finalize time rather than during ``add_custom_values()`` calls:
+
+1. Allows flexible ordering (attributes can be added in any order)
+2. Catches all synchronization bugs in one place
+3. Provides clear error messages with full context
+
+Summary: Enum vs String Frequencies
+-----------------------------------
+
+.. list-table::
+   :header-rows: 1
+   :widths: 25 35 40
+
+   * - Aspect
+     - Enum Frequency (``BODY``, ``SHAPE``, etc.)
+     - String Frequency (``"mujoco:pair"``, etc.)
+   * - Array size
+     - Entity count (e.g., ``body_count``)
+     - Number of ``add_custom_values()`` calls
+   * - Index assignment
+     - Implicit (entity creation order)
+     - Explicit (append order)
+   * - Value assignment
+     - Via ``add_body(..., custom_attributes={})``, etc.
+     - Via ``add_custom_values()``
+   * - Multi-world merging
+     - Automatic (entity offsets)
+     - Via ``references`` field
+   * - Validation
+     - N/A (tied to entity count)
+     - All same-frequency attrs must have same count
+   * - ArticulationView
+     - Supported
+     - Not supported (not per-articulation)
+   * - Use case
+     - Per-entity properties
+     - Custom entity types with independent counts
+
