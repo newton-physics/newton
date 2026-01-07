@@ -25,7 +25,7 @@ classifiers = [
 description = "A GPU-accelerated physics engine for robotics simulation"
 readme = "README.md"
 requires-python = ">=3.10"
-dependencies = ["warp-lang>=1.11.0.dev20251205", "control"]
+dependencies = ["warp-lang>=1.11.0.dev20251205", "newton-actuators"]
 
 [project.optional-dependencies]
 # Core simulation dependencies
@@ -115,7 +115,7 @@ mujoco-warp = { git = "https://github.com/google-deepmind/mujoco_warp" }
 warp-lang = { index = "nvidia" }
 mujoco = { index = "mujoco" }
 torch = [{ index = "pytorch-cu128", extra = "torch-cu12" }]
-control = { path = "control", editable = true }
+newton-actuators = { path = "newton-actuators", editable = true }
 
 [dependency-groups]
 dev = ["asv>=0.6.4"]

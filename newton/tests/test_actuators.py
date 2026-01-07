@@ -21,7 +21,7 @@ import unittest
 import numpy as np
 
 import newton
-from control import DelayedPDActuator, PDActuator, PIDActuator
+from newton_actuators import DelayedPDActuator, PDActuator, PIDActuator
 
 
 class TestActuatorBuilder(unittest.TestCase):
@@ -151,7 +151,7 @@ class TestActuatorUSDParsing(unittest.TestCase):
         """Test USD parsing with and without actuator parse function, verify parameters."""
         import os
 
-        from control import parse_actuator_prim
+        from newton_actuators import parse_actuator_prim
         from newton._src.utils.import_usd import parse_usd
         from pxr import Usd
 
