@@ -384,14 +384,13 @@ class ModelBuilder:
         """For attributes containing entity indices, specifies how values are transformed during add_world/add_builder merging.
 
         Built-in entity types (values are offset by entity count):
-            - ``"body"``, ``"shape"``, ``"joint"``, ``"joint_dof"``, ``"joint_coord"``, ``"articulation"``
+            - ``"body"``, ``"shape"``, ``"joint"``, ``"joint_dof"``, ``"joint_coord"``, ``"articulation"``, ``"equality_constraint"``
 
         Special handling:
             - ``"world"``: Values are replaced with ``current_world`` (not offset)
 
-        Custom frequency references (values are offset by that frequency's count):
+        Custom frequencies (values are offset by that frequency's count):
             - Any custom frequency string, e.g., ``"mujoco:pair"``
-            - Any custom attribute key, e.g., ``"mujoco:pair_geom1"``
         """
 
         default: Any = None
@@ -1940,11 +1939,6 @@ class ModelBuilder:
             "equality_constraint": start_equality_constraint_idx,
         }
 
-        # Pre-merge counts for custom attributes (by attribute key)
-        pre_merge_counts: dict[str, int] = {
-            key: len(attr.values) if attr.values else 0 for key, attr in self.custom_attributes.items()
-        }
-
         # Pre-merge counts for custom frequencies (by resolved frequency key)
         # All attributes with the same custom frequency should have the same count
         custom_frequency_counts: dict[str, int] = {}
@@ -1958,18 +1952,28 @@ class ModelBuilder:
                 else:
                     custom_frequency_counts[freq_key] = count
 
+        # Collect custom frequencies from sub-builder for validation (not for offset calculation)
+        builder_custom_frequencies: set[str] = {
+            attr.frequency_key for attr in builder.custom_attributes.values() if isinstance(attr.frequency_key, str)
+        }
+
         def get_offset(entity_or_key: str | None) -> int:
-            """Get offset for an entity type, custom frequency, or custom attribute key."""
+            """Get offset for an entity type or custom frequency."""
             if entity_or_key is None:
                 return 0
             # Check built-in entity offsets first
             if entity_or_key in entity_offsets:
                 return entity_offsets[entity_or_key]
-            # Check custom frequency strings
+            # Check custom frequency strings (from main builder - these have offsets)
             if entity_or_key in custom_frequency_counts:
                 return custom_frequency_counts[entity_or_key]
-            # Check custom attribute keys
-            return pre_merge_counts.get(entity_or_key, 0)
+            # Check custom frequencies from sub-builder (offset is 0 since main builder doesn't have them yet)
+            if entity_or_key in builder_custom_frequencies:
+                return 0
+            raise ValueError(
+                f"Unknown references value '{entity_or_key}'. "
+                f"Valid values are: {list(entity_offsets.keys())} or custom frequencies."
+            )
 
         for full_key, attr in builder.custom_attributes.items():
             # Index offset based on frequency

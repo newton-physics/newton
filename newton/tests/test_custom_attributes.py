@@ -1470,6 +1470,24 @@ class TestCustomFrequencyAttributes(unittest.TestCase):
         # World 1: refs should be offset by 2 (entity count from world 0), so 2, 3
         np.testing.assert_array_equal(refs, [0, 1, 2, 3])
 
+    def test_custom_frequency_unknown_references_raises_error(self):
+        """Test that unknown references value raises ValueError during add_world."""
+        sub_builder = ModelBuilder()
+        sub_builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="bad_ref",
+                frequency="item",
+                dtype=wp.int32,
+                namespace="test",
+                references="shapes",  # Typo: should be "shape"
+            )
+        )
+        sub_builder.add_custom_values(**{"test:bad_ref": 0})
+
+        main_builder = ModelBuilder()
+        with self.assertRaisesRegex(ValueError, "Unknown references value 'shapes'"):
+            main_builder.add_world(sub_builder)
+
     def test_custom_frequency_different_frequencies_independent(self):
         """Test that different custom frequencies are independent."""
         builder = ModelBuilder()
