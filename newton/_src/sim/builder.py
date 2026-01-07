@@ -795,14 +795,16 @@ class ModelBuilder:
             ValueError: If an attribute has an enum frequency (must have custom frequency).
 
         Example:
-            >>> builder.add_custom_values(
-            ...     **{
-            ...         "mujoco:pair_geom1": geom1_idx,
-            ...         "mujoco:pair_geom2": geom2_idx,
-            ...         "mujoco:pair_world": builder.current_world,
-            ...     }
-            ... )
-            {'mujoco:pair_geom1': 0, 'mujoco:pair_geom2': 0, 'mujoco:pair_world': 0}
+            .. code-block:: python
+
+                builder.add_custom_values(
+                    **{
+                        "mujoco:pair_geom1": 0,
+                        "mujoco:pair_geom2": 1,
+                        "mujoco:pair_world": builder.current_world,
+                    }
+                )
+                # Returns: {'mujoco:pair_geom1': 0, 'mujoco:pair_geom2': 0, 'mujoco:pair_world': 0}
         """
         indices: dict[str, int] = {}
         for key, value in kwargs.items():
