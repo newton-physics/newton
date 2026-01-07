@@ -533,6 +533,9 @@ Use :meth:`~newton.Model.get_custom_frequency_count` to get the count for a cust
    # Or check directly without raising:
    pair_count = model.custom_frequency_counts.get("mujoco:pair", 0)
 
+.. note::
+   When querying, use the **resolved** frequency key with namespace prefix (e.g., ``"mujoco:pair"``), not the raw string used in the declaration (``"pair"``). This matches how attribute keys work: ``model.get_attribute_frequency("mujoco:condim")`` for a namespaced attribute.
+
 ArticulationView Limitations
 ----------------------------
 
