@@ -291,9 +291,26 @@ If airspeed velocity has not been previously run on the machine, it will need to
 
 To run the benchmarks, run the following command from the root of the repository:
 
-.. code-block:: console
+.. tab-set::
+    :sync-group: shell
 
-    asv run --launch-method spawn main^!
+    .. tab-item:: Unix
+        :sync: unix
+
+        .. code-block:: console
+
+            asv run --launch-method spawn main^!
+
+    .. tab-item:: Windows
+        :sync: windows
+
+        .. code-block:: console
+
+            asv run --launch-method spawn main^^!
+
+.. note::
+
+    On Windows CMD, the ``^`` character is an escape character, so it must be doubled (``^^``) to be interpreted literally.
 
 The benchmarks discovered by airspeed velocity are in the ``asv/benchmarks`` directory. This command runs the
 benchmark code from the ``asv/benchmarks`` directory against the code state of the ``main`` branch. Note that
@@ -306,18 +323,44 @@ Tips for writing benchmarks
 Rather than running the entire benchmark suite, use the ``--bench BENCH, -b BENCH`` flag to filter the benchmarks
 to just the ones under development:
 
-.. code-block:: console
+.. tab-set::
+    :sync-group: shell
 
-    asv run --launch-method spawn main^! --bench example_anymal.PretrainedSimulate
+    .. tab-item:: Unix
+        :sync: unix
+
+        .. code-block:: console
+
+            asv run --launch-method spawn main^! --bench example_anymal.PretrainedSimulate
+
+    .. tab-item:: Windows
+        :sync: windows
+
+        .. code-block:: console
+
+            asv run --launch-method spawn main^^! --bench example_anymal.PretrainedSimulate
 
 The most time-consuming benchmarks are those that measure the time it takes to load and run one frame of the example
 starting from an empty kernel cache.
 These benchmarks have names ending with ``time_load``. It is sometimes convenient to exclude these benchmarks
 from running by using the following command:
 
-.. code-block:: console
+.. tab-set::
+    :sync-group: shell
 
-    asv run --launch-method spawn main^! -b '^(?!.*time_load$).*'
+    .. tab-item:: Unix
+        :sync: unix
+
+        .. code-block:: console
+
+            asv run --launch-method spawn main^! -b '^(?!.*time_load$).*'
+
+    .. tab-item:: Windows
+        :sync: windows
+
+        .. code-block:: console
+
+            asv run --launch-method spawn main^^! -b "^(?!.*time_load$).*"
 
 While airspeed velocity has built-in mechanisms to determine automatically how to collect measurements,
 it is often useful to manually specify benchmark attributes like ``repeat`` and ``number`` to control the
