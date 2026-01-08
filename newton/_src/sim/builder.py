@@ -703,6 +703,8 @@ class ModelBuilder:
 
         # Custom attributes (user-defined per-frequency arrays)
         self.custom_attributes: dict[str, ModelBuilder.CustomAttribute] = {}
+        # Incrementally maintained counts for custom string frequencies
+        self._custom_frequency_counts: dict[str, int] = {}
 
     def add_custom_attribute(self, attribute: CustomAttribute) -> None:
         """
@@ -751,9 +753,13 @@ class ModelBuilder:
             return
 
         self.custom_attributes[key] = attribute
-        # Invalidate cache
+        # Invalidate frequency keys cache
         if hasattr(self, "_custom_frequency_keys_cache"):
             del self._custom_frequency_keys_cache
+        # Initialize frequency count for string frequencies
+        freq_key = attribute.frequency_key
+        if isinstance(freq_key, str) and freq_key not in self._custom_frequency_counts:
+            self._custom_frequency_counts[freq_key] = 0
 
     def has_custom_attribute(self, key: str) -> bool:
         """Check if a custom attribute is defined."""
@@ -838,6 +844,11 @@ class ModelBuilder:
             idx = len(attr.values)
             attr.values[idx] = value
             indices[key] = idx
+            # Update frequency count (track max across all attributes with this frequency)
+            freq_key = attr.frequency_key
+            new_count = len(attr.values)
+            if new_count > self._custom_frequency_counts.get(freq_key, 0):
+                self._custom_frequency_counts[freq_key] = new_count
         return indices
 
     def _process_custom_attributes(
@@ -1956,25 +1967,11 @@ class ModelBuilder:
             "equality_constraint": start_equality_constraint_idx,
         }
 
-        # Lazily compute custom frequency counts only when needed
-        _custom_frequency_counts: dict[str, int] | None = None
-
-        def get_custom_frequency_counts() -> dict[str, int]:
-            nonlocal _custom_frequency_counts
-            if _custom_frequency_counts is None:
-                _custom_frequency_counts = {}
-                for _, attr in self.custom_attributes.items():
-                    freq_key = attr.frequency_key
-                    if isinstance(freq_key, str):
-                        count = len(attr.values) if attr.values else 0
-                        if freq_key in _custom_frequency_counts:
-                            _custom_frequency_counts[freq_key] = max(_custom_frequency_counts[freq_key], count)
-                        else:
-                            _custom_frequency_counts[freq_key] = count
-            return _custom_frequency_counts
-
         # Get custom frequencies from sub-builder (cached on the builder object)
         builder_custom_frequencies = builder.get_custom_frequency_keys()
+
+        # Snapshot custom frequency counts BEFORE iteration (they get updated during merge)
+        custom_frequency_offsets = dict(self._custom_frequency_counts)
 
         def get_offset(entity_or_key: str | None) -> int:
             """Get offset for an entity type or custom frequency."""
@@ -1983,10 +1980,9 @@ class ModelBuilder:
             # Check built-in entity offsets first
             if entity_or_key in entity_offsets:
                 return entity_offsets[entity_or_key]
-            # Check custom frequency strings (from main builder - these have offsets)
-            custom_freq_counts = get_custom_frequency_counts()
-            if entity_or_key in custom_freq_counts:
-                return custom_freq_counts[entity_or_key]
+            # Check custom frequency strings (from main builder - use pre-merge snapshot)
+            if entity_or_key in custom_frequency_offsets:
+                return custom_frequency_offsets[entity_or_key]
             # Check custom frequencies from sub-builder (offset is 0 since main builder doesn't have them yet)
             if entity_or_key in builder_custom_frequencies:
                 return 0
@@ -1999,8 +1995,8 @@ class ModelBuilder:
             # Index offset based on frequency
             freq_key = attr.frequency_key
             if isinstance(freq_key, str):
-                # Custom frequency: offset by that frequency's count
-                index_offset = get_custom_frequency_counts().get(freq_key, 0)
+                # Custom frequency: offset by pre-merge count
+                index_offset = custom_frequency_offsets.get(freq_key, 0)
             elif attr.frequency == ModelAttributeFrequency.ONCE:
                 index_offset = 0
             elif attr.frequency == ModelAttributeFrequency.WORLD:
@@ -2035,12 +2031,18 @@ class ModelBuilder:
             # Declare the attribute if it doesn't exist in the main builder
             merged = self.custom_attributes.get(full_key)
             if merged is None:
-                self.custom_attributes[full_key] = replace(
-                    attr,
-                    values={index_offset + idx: transform_value(value) for idx, value in attr.values.items()}
+                new_values = (
+                    {index_offset + idx: transform_value(value) for idx, value in attr.values.items()}
                     if attr.values
-                    else None,
+                    else None
                 )
+                self.custom_attributes[full_key] = replace(attr, values=new_values)
+                # Update frequency count
+                if isinstance(freq_key, str) and new_values:
+                    new_count = max(new_values.keys()) + 1 if new_values else 0
+                    self._custom_frequency_counts[freq_key] = max(
+                        self._custom_frequency_counts.get(freq_key, 0), new_count
+                    )
                 continue
 
             # Prevent silent divergence if defaults differ
@@ -2065,7 +2067,12 @@ class ModelBuilder:
             # Remap indices and copy values
             if merged.values is None:
                 merged.values = {}
-            merged.values.update({index_offset + idx: transform_value(value) for idx, value in attr.values.items()})
+            new_indices = {index_offset + idx: transform_value(value) for idx, value in attr.values.items()}
+            merged.values.update(new_indices)
+            # Update frequency count
+            if isinstance(freq_key, str) and new_indices:
+                new_count = max(new_indices.keys()) + 1
+                self._custom_frequency_counts[freq_key] = max(self._custom_frequency_counts.get(freq_key, 0), new_count)
 
     def add_link(
         self,
