@@ -943,7 +943,7 @@ class ModelBuilder:
     def add_actuator(
         self,
         actuator_class: type,
-        input_indices: list[int],
+        input_indices: list[int], # todo list[int] or list[list[int]] for multiple inputs per actuator
         output_indices: list[int] | None = None,
         **kwargs,
     ) -> None:
@@ -952,9 +952,6 @@ class ModelBuilder:
         Multiple calls with the same actuator_class and scalar params accumulate into one ActuatorEntry.
         Different scalar param values (e.g., different delay) create separate actuator instances.
         The actuator instance is created during finalize().
-
-        For multi-target actuators, each output_index is paired with the corresponding
-        input_index (i.e., output_indices[i] reads from input_indices[i]).
 
         Args:
             actuator_class: The actuator class (e.g., PDActuator).
