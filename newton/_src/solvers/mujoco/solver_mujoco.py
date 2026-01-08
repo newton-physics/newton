@@ -51,6 +51,7 @@ from .kernels import (
     convert_mj_coords_to_warp_kernel,
     convert_mjw_contact_to_warp_kernel,
     convert_newton_contacts_to_mjwarp_kernel,
+    convert_solref,
     convert_warp_coords_to_mj_kernel,
     eval_articulation_fk,
     repeat_array_kernel,
@@ -1111,6 +1112,8 @@ class SolverMuJoCo(SolverBase):
         shape_flags = model.shape_flags.numpy()
         shape_world = model.shape_world.numpy()
         shape_mu = model.shape_material_mu.numpy()
+        shape_ke = model.shape_material_ke.numpy()
+        shape_kd = model.shape_material_kd.numpy()
         shape_torsional_friction = model.shape_material_torsional_friction.numpy()
         shape_rolling_friction = model.shape_material_rolling_friction.numpy()
 
@@ -1362,6 +1365,10 @@ class SolverMuJoCo(SolverBase):
                     torsional,
                     rolling,
                 ]
+
+                # set solref from shape stiffness and damping
+                geom_params["solref"] = convert_solref(float(shape_ke[shape]), float(shape_kd[shape]), 1.0, 1.0)
+
                 if shape_condim is not None:
                     geom_params["condim"] = shape_condim[shape]
                 if shape_priority is not None:
