@@ -15,13 +15,16 @@
 
 import functools
 from fnmatch import fnmatch
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import warp as wp
 from warp.types import is_array
 
 from ..sim import Control, JointType, Model, State, eval_fk
 from ..sim.model import ModelAttributeFrequency
+
+if TYPE_CHECKING:
+    from newton_actuators import Actuator
 
 
 @wp.kernel
@@ -102,6 +105,103 @@ for dtype in [float, int, wp.transform, wp.spatial_vector]:
                 set_articulation_attribute_4d_kernel,
                 {"values": src_array_type(dtype=dtype, ndim=4), "attrib": dst_array_type(dtype=dtype, ndim=4)},
             )
+
+
+# ========================================================================================
+# Actuator scatter/gather kernels
+
+
+@wp.kernel
+def build_dof_mapping_slice_kernel(
+    actuator_output_indices: wp.array(dtype=wp.uint32),
+    actuators_per_world: int,
+    slice_start: int,
+    slice_stop: int,
+    dofs_per_world: int,
+    num_worlds: int,
+    mapping: wp.array(dtype=int),
+):
+    """Build DOF-to-actuator mapping for slice-based view selection.
+    
+    Iterates over first world's actuators only, replicates pattern to all worlds.
+    output_indices[0:actuators_per_world] contains local DOFs for world 0.
+    """
+    local_idx = wp.tid()  # 0 to actuators_per_world-1
+    
+    # Get local DOF from first world's actuator entry
+    local_dof = int(actuator_output_indices[local_idx])
+    
+    if local_dof >= slice_start and local_dof < slice_stop:
+        view_local_pos = local_dof - slice_start
+        
+        # Replicate to all worlds
+        for world_idx in range(num_worlds):
+            view_pos = world_idx * dofs_per_world + view_local_pos
+            actuator_idx = world_idx * actuators_per_world + local_idx
+            mapping[view_pos] = actuator_idx
+
+
+@wp.kernel
+def build_dof_mapping_indices_kernel(
+    actuator_output_indices: wp.array(dtype=wp.uint32),
+    view_dof_indices: wp.array(dtype=int),
+    actuators_per_world: int,
+    dofs_per_world: int,
+    num_worlds: int,
+    mapping: wp.array(dtype=int),
+):
+    """Build DOF-to-actuator mapping for index-array-based view selection.
+    
+    Iterates over first world's actuators only, replicates pattern to all worlds.
+    """
+    local_idx = wp.tid()  # 0 to actuators_per_world-1
+    
+    local_dof = int(actuator_output_indices[local_idx])
+    
+    for i in range(dofs_per_world):
+        if view_dof_indices[i] == local_dof:
+            # Replicate to all worlds
+            for world_idx in range(num_worlds):
+                view_pos = world_idx * dofs_per_world + i
+                actuator_idx = world_idx * actuators_per_world + local_idx
+                mapping[view_pos] = actuator_idx
+            break
+
+
+@wp.kernel
+def gather_by_indices_kernel(
+    src: wp.array(dtype=float),
+    indices: wp.array(dtype=int),
+    dst: wp.array(dtype=float),
+):
+    """Gather values from src at specified indices into dst. Index -1 means skip (leave dst unchanged)."""
+    tid = wp.tid()
+    idx = indices[tid]
+    if idx >= 0:
+        dst[tid] = src[idx]
+
+
+@wp.kernel
+def scatter_actuator_with_mask_kernel(
+    values: wp.array2d(dtype=float),
+    mapping: wp.array(dtype=int),
+    mask: wp.array(dtype=bool),
+    dofs_per_world: int,
+    dst: wp.array(dtype=float),
+):
+    """Scatter actuator values with articulation mask support.
+    
+    values: shape (count, dofs_per_world)
+    mapping: flat array mapping DOF positions to actuator indices (-1 = not actuated)
+    mask: per-articulation mask, shape (count,)
+    dst: flat actuator parameter array
+    """
+    world_idx, local_idx = wp.tid()
+    if mask[world_idx]:
+        flat_idx = world_idx * dofs_per_world + local_idx
+        actuator_idx = mapping[flat_idx]
+        if actuator_idx >= 0:
+            dst[actuator_idx] = values[world_idx, local_idx]
 
 
 # NOTE: Python slice objects are not hashable in Python < 3.12, so we use this instead.
@@ -809,6 +909,147 @@ class ArticulationView:
             mask (array, optional): Mask of articulations in this ArticulationView (all by default).
         """
         self._set_attribute_values("joint_f", target, values, mask=mask)
+
+    # ========================================================================================
+    # Actuator parameter access
+
+    @functools.lru_cache(maxsize=None)
+    def _get_actuator_dof_mapping(self, actuator: "Actuator") -> wp.array:
+        """
+        Build mapping from view DOF positions to actuator parameter indices.
+        
+        Returns array of shape (count * dofs_per_world,) where each element is:
+        - actuator parameter index if that DOF is actuated
+        - -1 if that DOF is not actuated by this actuator
+        """
+        num_actuators = actuator.output_indices.shape[0]
+        actuators_per_world = num_actuators // self.count
+
+        # Determine view's DOF selection method and dofs_per_world
+        if ModelAttributeFrequency.JOINT_DOF in self._frequency_slices:
+            dof_slice = self._frequency_slices[ModelAttributeFrequency.JOINT_DOF]
+            dofs_per_world = dof_slice.stop - dof_slice.start
+            use_slice = True
+        elif ModelAttributeFrequency.JOINT_DOF in self._frequency_indices:
+            view_dof_indices = self._frequency_indices[ModelAttributeFrequency.JOINT_DOF]
+            dofs_per_world = view_dof_indices.shape[0]
+            use_slice = False
+        else:
+            return wp.empty(0, dtype=int, device=self.device)
+
+        if dofs_per_world == 0:
+            return wp.empty(0, dtype=int, device=self.device)
+
+        # Initialize mapping to -1 (not actuated)
+        mapping = wp.full(self.count * dofs_per_world, -1, dtype=int, device=self.device)
+
+        if use_slice:
+            wp.launch(
+                build_dof_mapping_slice_kernel,
+                dim=actuators_per_world,
+                inputs=[
+                    actuator.output_indices,
+                    actuators_per_world,
+                    dof_slice.start,
+                    dof_slice.stop,
+                    dofs_per_world,
+                    self.count,
+                ],
+                outputs=[mapping],
+                device=self.device,
+            )
+        else:
+            wp.launch(
+                build_dof_mapping_indices_kernel,
+                dim=actuators_per_world,
+                inputs=[
+                    actuator.output_indices,
+                    view_dof_indices,
+                    actuators_per_world,
+                    dofs_per_world,
+                    self.count,
+                ],
+                outputs=[mapping],
+                device=self.device,
+            )
+
+        return mapping
+
+    def _get_actuator_attribute_array(self, actuator: "Actuator", name: str) -> wp.array:
+        """Get actuator parameter array shaped (count, dofs_per_world), zeros for non-actuated DOFs."""
+        mapping = self._get_actuator_dof_mapping(actuator)
+        if len(mapping) == 0:
+            return wp.empty((self.count, 0), dtype=float, device=self.device)
+
+        src = getattr(actuator, name)
+        dofs_per_world = len(mapping) // self.count
+
+        dst = wp.zeros(len(mapping), dtype=src.dtype, device=self.device)
+        wp.launch(
+            gather_by_indices_kernel,
+            dim=len(mapping),
+            inputs=[src, mapping],
+            outputs=[dst],
+            device=self.device,
+        )
+
+        batched_shape = (self.count, dofs_per_world, *src.shape[1:])
+        return dst.reshape(batched_shape)
+
+    def get_actuator_parameter(self, actuator: "Actuator", name: str) -> wp.array:
+        """
+        Get actuator parameter values for actuators corresponding to this view's DOFs.
+
+        Args:
+            actuator: An actuator instance with output_indices and parameter arrays.
+            name (str): Parameter name (e.g., 'kp', 'kd', 'max_force', 'gear', 'constant_force').
+
+        Returns:
+            wp.array: Parameter values shaped (count, actuators_per_world).
+        """
+        return self._get_actuator_attribute_array(actuator, name)
+
+    def set_actuator_parameter(
+        self, actuator: "Actuator", name: str, values: wp.array, mask: wp.array | None = None
+    ) -> None:
+        """
+        Set actuator parameter values for actuators corresponding to this view's DOFs.
+
+        Args:
+            actuator: An actuator instance with output_indices and parameter arrays.
+            name (str): Parameter name (e.g., 'kp', 'kd', 'max_force', 'gear', 'constant_force').
+            values: New parameter values shaped (count, dofs_per_world). Non-actuated DOFs are ignored.
+            mask (array, optional): Mask of articulations in this ArticulationView (all by default).
+        """
+        mapping = self._get_actuator_dof_mapping(actuator)
+        if len(mapping) == 0:
+            return
+
+        dst = getattr(actuator, name)
+        dofs_per_world = len(mapping) // self.count
+        expected_shape = (self.count, dofs_per_world, *dst.shape[1:])
+
+        if not is_array(values):
+            values = wp.array(values, dtype=dst.dtype, shape=expected_shape, device=self.device, copy=False)
+
+        if values.shape[:2] != expected_shape[:2]:
+            raise ValueError(f"Expected values shape {expected_shape}, got {values.shape}")
+
+        if mask is None:
+            mask = self.full_mask
+        else:
+            if not isinstance(mask, wp.array):
+                mask = wp.array(mask, dtype=bool, shape=(self.count,), device=self.device, copy=False)
+            assert mask.shape == (self.count,)
+
+        wp.launch(
+            scatter_actuator_with_mask_kernel,
+            dim=(self.count, dofs_per_world),
+            inputs=[values, mapping, mask, dofs_per_world],
+            outputs=[dst],
+            device=self.device,
+        )
+
 
     # ========================================================================================
     # Utilities
