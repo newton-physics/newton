@@ -131,15 +131,6 @@ class ViewerViser(ViewerBase):
 
     def _setup_scene(self):
         """Set up the default scene configuration."""
-        # Set up world axes
-        self._server.scene.add_frame(
-            "/world",
-            wxyz=(1.0, 0.0, 0.0, 0.0),
-            position=(0.0, 0.0, 0.0),
-            axes_length=0.5,
-            axes_radius=0.01,
-            show_axes=False,
-        )
 
         self._server.scene.add_light_ambient("ambient_light")
 
@@ -510,7 +501,7 @@ class ViewerViser(ViewerBase):
             normals = wp.array(vertices[:, 3:6], dtype=wp.vec3, device=self.device)
             uvs = wp.array(vertices[:, 6:8], dtype=wp.vec2, device=self.device)
             indices = wp.array(indices, dtype=wp.int32, device=self.device)
-            self.log_mesh(name, points, indices, normals, uvs)
+            self.log_mesh(name, points, indices, normals, uvs, hidden=hidden)
         else:
             super().log_geo(name, geo_type, geo_scale, geo_thickness, geo_is_solid, geo_src, hidden)
 

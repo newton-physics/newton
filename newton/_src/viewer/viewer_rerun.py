@@ -469,7 +469,7 @@ class ViewerRerun(ViewerBase):
             normals = wp.array(vertices[:, 3:6], dtype=wp.vec3, device=self.device)
             uvs = wp.array(vertices[:, 6:8], dtype=wp.vec2, device=self.device)
             indices = wp.array(indices, dtype=wp.int32, device=self.device)
-            self.log_mesh(name, points, indices, normals, uvs)
+            self.log_mesh(name, points, indices, normals, uvs, hidden=hidden)
         else:
             super().log_geo(name, geo_type, geo_scale, geo_thickness, geo_is_solid, geo_src, hidden)
 
