@@ -753,9 +753,6 @@ class ModelBuilder:
             return
 
         self.custom_attributes[key] = attribute
-        # Invalidate frequency keys cache
-        if hasattr(self, "_custom_frequency_keys_cache"):
-            del self._custom_frequency_keys_cache
         # Initialize frequency count for string frequencies
         freq_key = attribute.frequency_key
         if isinstance(freq_key, str) and freq_key not in self._custom_frequency_counts:
@@ -782,16 +779,8 @@ class ModelBuilder:
         return [attr for attr in self.custom_attributes.values() if attr.frequency in frequencies]
 
     def get_custom_frequency_keys(self) -> set[str]:
-        """Return set of custom frequency keys (string frequencies) defined in this builder.
-
-        This is cached for performance when the same builder is used multiple times (e.g., in replicate()).
-        The cache is invalidated when custom attributes are added.
-        """
-        if not hasattr(self, "_custom_frequency_keys_cache"):
-            self._custom_frequency_keys_cache = {
-                attr.frequency_key for attr in self.custom_attributes.values() if isinstance(attr.frequency_key, str)
-            }
-        return self._custom_frequency_keys_cache
+        """Return set of custom frequency keys (string frequencies) defined in this builder."""
+        return set(self._custom_frequency_counts.keys())
 
     def add_custom_values(self, **kwargs: Any) -> dict[str, int]:
         """Append values to custom attributes with custom string frequencies.
@@ -1967,9 +1956,6 @@ class ModelBuilder:
             "equality_constraint": start_equality_constraint_idx,
         }
 
-        # Get custom frequencies from sub-builder (cached on the builder object)
-        builder_custom_frequencies = builder.get_custom_frequency_keys()
-
         # Snapshot custom frequency counts BEFORE iteration (they get updated during merge)
         custom_frequency_offsets = dict(self._custom_frequency_counts)
 
@@ -1977,14 +1963,11 @@ class ModelBuilder:
             """Get offset for an entity type or custom frequency."""
             if entity_or_key is None:
                 return 0
-            # Check built-in entity offsets first
             if entity_or_key in entity_offsets:
                 return entity_offsets[entity_or_key]
-            # Check custom frequency strings (from main builder - use pre-merge snapshot)
             if entity_or_key in custom_frequency_offsets:
                 return custom_frequency_offsets[entity_or_key]
-            # Check custom frequencies from sub-builder (offset is 0 since main builder doesn't have them yet)
-            if entity_or_key in builder_custom_frequencies:
+            if entity_or_key in builder._custom_frequency_counts:
                 return 0
             raise ValueError(
                 f"Unknown references value '{entity_or_key}'. "
@@ -2037,12 +2020,6 @@ class ModelBuilder:
                     else None
                 )
                 self.custom_attributes[full_key] = replace(attr, values=new_values)
-                # Update frequency count
-                if isinstance(freq_key, str) and new_values:
-                    new_count = max(new_values.keys()) + 1 if new_values else 0
-                    self._custom_frequency_counts[freq_key] = max(
-                        self._custom_frequency_counts.get(freq_key, 0), new_count
-                    )
                 continue
 
             # Prevent silent divergence if defaults differ
@@ -2069,10 +2046,11 @@ class ModelBuilder:
                 merged.values = {}
             new_indices = {index_offset + idx: transform_value(value) for idx, value in attr.values.items()}
             merged.values.update(new_indices)
-            # Update frequency count
-            if isinstance(freq_key, str) and new_indices:
-                new_count = max(new_indices.keys()) + 1
-                self._custom_frequency_counts[freq_key] = max(self._custom_frequency_counts.get(freq_key, 0), new_count)
+
+        # Update custom frequency counts once per unique frequency (not per attribute)
+        for freq_key, builder_count in builder._custom_frequency_counts.items():
+            offset = custom_frequency_offsets.get(freq_key, 0)
+            self._custom_frequency_counts[freq_key] = offset + builder_count
 
     def add_link(
         self,
