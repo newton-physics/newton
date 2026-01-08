@@ -128,7 +128,8 @@ When entities don't explicitly specify custom attribute values, the default valu
        custom_attributes={"temperature": 37.5}
    )
    
-   # Articulation attributes: create multiple articulations with custom values
+   # Articulation attributes: create articulations with custom values
+   # Each add_articulation creates one articulation at the next index
    for i in range(3):
        base = builder.add_link(mass=1.0)
        joint = builder.add_joint_free(child=base)
@@ -139,24 +140,24 @@ When entities don't explicitly specify custom attribute values, the default valu
            }
        )
    
-   # After finalization, access both types of attributes
+   # After finalization, access attributes
    model = builder.finalize()
    temps = model.temperature.numpy()
    arctic_stiff = model.articulation_stiffness.numpy()
    
    print(f"Body 1: {temps[body1]}")  # 20.0 (default)
    print(f"Body 2: {temps[body2]}")  # 37.5 (authored)
-   # Note: body1 and body2 create implicit single-body articulations (indices 0, 1)
-   # The loop creates articulations at indices 2, 3, 4 with stiffness 100, 150, 200
-   print(f"Articulation 2: {arctic_stiff[2]}")  # 100.0 (first loop iteration)
-   print(f"Articulation 4: {arctic_stiff[4]}")  # 200.0 (third loop iteration)
+   # Articulation indices reflect all articulations in the model
+   # (including any implicit ones from add_body)
+   print(f"Articulations: {len(arctic_stiff)}")
+   print(f"Last articulation stiffness: {arctic_stiff[-1]}")  # 200.0
 
 .. testoutput::
 
    Body 1: 20.0
    Body 2: 37.5
-   Articulation 2: 100.0
-   Articulation 4: 200.0
+   Articulations: 5
+   Last articulation stiffness: 200.0
 
 .. note::
    Uniqueness is determined by the full identifier (namespace + name):
