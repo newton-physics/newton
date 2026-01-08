@@ -1624,6 +1624,80 @@ class TestCustomFrequencyAttributes(unittest.TestCase):
         self.assertIn("custom frequency", str(context.exception).lower())
         self.assertIn("item", str(context.exception))
 
+    def test_world_frequency_merge_add_world(self):
+        """Test that WORLD-frequency attributes are correctly indexed when using add_world()."""
+        sub = ModelBuilder()
+        sub.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="world_data",
+                dtype=wp.int32,
+                frequency=newton.ModelAttributeFrequency.WORLD,
+                namespace="test",
+                default=-999,
+            )
+        )
+        # Manually set value at index 0 for the sub-builder's world
+        sub.custom_attributes["test:world_data"].values = {0: 42}
+
+        main = ModelBuilder()
+        main.add_world(sub)
+        main.add_world(sub)
+
+        model = main.finalize(device=self.device)
+        arr = model.test.world_data.numpy()
+
+        self.assertEqual(model.num_worlds, 2)
+        self.assertEqual(len(arr), 2)
+        self.assertEqual(arr[0], 42)
+        self.assertEqual(arr[1], 42)
+
+    def test_transform_value_list_and_sentinel_shape_refs(self):
+        """Test that transform_value handles lists with negative sentinel values correctly."""
+        main = ModelBuilder()
+
+        # Declare a custom frequency attribute with shape references
+        main.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="pair_geoms",
+                dtype=wp.vec2i,
+                frequency="pair",
+                namespace="test",
+                references="shape",
+            )
+        )
+
+        # Create sub-builder with a shape and pair data
+        sub = ModelBuilder()
+        sub.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="pair_geoms",
+                dtype=wp.vec2i,
+                frequency="pair",
+                namespace="test",
+                references="shape",
+            )
+        )
+        body = sub.add_body(mass=1.0)
+        sub.add_shape_sphere(body, radius=0.1)  # shape 0
+        # Add pair with value [0, -1] where -1 is sentinel for "no geom"
+        sub.add_custom_values(**{"test:pair_geoms": [0, -1]})
+
+        # Add main's own shape first
+        main_body = main.add_body(mass=1.0)
+        main.add_shape_sphere(main_body, radius=0.1)  # shape 0 in main
+
+        # Merge sub as new world - shape offset should be 1
+        main.add_world(sub)
+
+        model = main.finalize(device=self.device)
+        arr = model.test.pair_geoms.numpy()
+
+        # Should have 1 pair entry
+        self.assertEqual(len(arr), 1)
+        # First element should be offset by 1 (shape_offset), second (-1) preserved
+        self.assertEqual(arr[0][0], 1)  # 0 + 1 = 1
+        self.assertEqual(arr[0][1], -1)  # sentinel preserved
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

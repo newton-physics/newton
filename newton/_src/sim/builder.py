@@ -1707,7 +1707,6 @@ class ModelBuilder:
         start_joint_dof_idx = self.joint_dof_count
         start_joint_coord_idx = self.joint_coord_count
         start_articulation_idx = self.articulation_count
-        start_world_idx = self.num_worlds
         start_equality_constraint_idx = len(self.equality_constraint_type)
 
         if builder.particle_count:
@@ -1931,6 +1930,7 @@ class ModelBuilder:
 
         # Merge custom attributes from the sub-builder
         # Shared offset map for both frequency and references
+        # Note: "world" is NOT included here - WORLD frequency is handled specially
         entity_offsets = {
             "body": start_body_idx,
             "shape": start_shape_idx,
@@ -1938,7 +1938,6 @@ class ModelBuilder:
             "joint_dof": start_joint_dof_idx,
             "joint_coord": start_joint_coord_idx,
             "articulation": start_articulation_idx,
-            "world": start_world_idx,
             "equality_constraint": start_equality_constraint_idx,
         }
 
@@ -1986,6 +1985,10 @@ class ModelBuilder:
                 index_offset = custom_frequency_counts.get(freq_key, 0)
             elif attr.frequency == ModelAttributeFrequency.ONCE:
                 index_offset = 0
+            elif attr.frequency == ModelAttributeFrequency.WORLD:
+                # WORLD frequency: indices are keyed by world index, not by offset
+                # When called via add_world(), current_world is the world being added
+                index_offset = 0 if self.current_world == -1 else self.current_world
             else:
                 index_offset = get_offset(attr.frequency.name.lower())
 
