@@ -224,6 +224,16 @@ To build the documentation locally, ensure you have the documentation dependenci
 
 The built documentation will be available in ``docs/_build/html``.
 
+.. note::
+
+    The documentation build requires `pandoc <https://pandoc.org/>`_ for converting Jupyter notebooks.
+    While ``pypandoc_binary`` is included in the ``[docs]`` dependencies, some systems may require
+    pandoc to be installed separately:
+
+    - **Ubuntu/Debian:** ``sudo apt-get install pandoc``
+    - **macOS:** ``brew install pandoc``
+    - **Windows:** Download from https://pandoc.org/installing.html or ``choco install pandoc``
+
 Serving the documentation locally
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
