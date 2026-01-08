@@ -670,21 +670,17 @@ class ViewerViser(ViewerBase):
         import threading  # noqa: PLC0415
         from http.server import HTTPServer, SimpleHTTPRequestHandler  # noqa: PLC0415
 
-        # Get viser client directory from docs/_static/viser
-        # This is a curated version of the viser client for notebook playback
-        import newton  # noqa: PLC0415
-
+        # Get viser client directory (bundled with package at newton/_src/viewer/static/viser)
         recording_path = Path(recording_path).resolve()
         if not recording_path.exists():
             raise FileNotFoundError(f"Recording file not found: {recording_path}")
 
-        newton_root = Path(newton.__file__).parent.parent
-        viser_client_dir = newton_root / "docs" / "_static" / "viser"
+        viser_client_dir = Path(__file__).parent / "viser" / "static"
 
         if not viser_client_dir.exists():
             raise FileNotFoundError(
-                f"Viser client not found at {viser_client_dir}. "
-                "Please ensure docs/_static/viser contains the viser client files."
+                f"Viser client files not found at {viser_client_dir}. "
+                "The notebook playback feature requires the viser client assets."
             )
 
         # Read the recording file content

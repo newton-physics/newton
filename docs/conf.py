@@ -171,7 +171,7 @@ autosummary_imported_members = True
 
 html_title = "Newton Physics"
 html_theme = "pydata_sphinx_theme"
-html_static_path = ["_static"]
+html_static_path = ["_static", "../newton/_src/viewer/viser"]
 html_css_files = ["custom.css"]
 html_show_sourcelink = False
 
