@@ -450,17 +450,23 @@ class SolverMuJoCo(SolverBase):
 
         mujoco_attrs = model.mujoco
 
-        # Get pair arrays (all validated to have same length)
-        pair_world = mujoco_attrs.pair_world.numpy()
-        pair_geom1 = mujoco_attrs.pair_geom1.numpy()
-        pair_geom2 = mujoco_attrs.pair_geom2.numpy()
-        pair_condim = getattr(mujoco_attrs, "pair_condim", None)
-        pair_solref = getattr(mujoco_attrs, "pair_solref", None)
-        pair_solreffriction = getattr(mujoco_attrs, "pair_solreffriction", None)
-        pair_solimp = getattr(mujoco_attrs, "pair_solimp", None)
-        pair_margin = getattr(mujoco_attrs, "pair_margin", None)
-        pair_gap = getattr(mujoco_attrs, "pair_gap", None)
-        pair_friction = getattr(mujoco_attrs, "pair_friction", None)
+        def get_numpy(name):
+            attr = getattr(mujoco_attrs, name, None)
+            return attr.numpy() if attr is not None else None
+
+        pair_world = get_numpy("pair_world")
+        pair_geom1 = get_numpy("pair_geom1")
+        pair_geom2 = get_numpy("pair_geom2")
+        if pair_world is None or pair_geom1 is None or pair_geom2 is None:
+            return
+
+        pair_condim = get_numpy("pair_condim")
+        pair_solref = get_numpy("pair_solref")
+        pair_solreffriction = get_numpy("pair_solreffriction")
+        pair_solimp = get_numpy("pair_solimp")
+        pair_margin = get_numpy("pair_margin")
+        pair_gap = get_numpy("pair_gap")
+        pair_friction = get_numpy("pair_friction")
 
         for i in range(pair_count):
             # Only include pairs from the template world
@@ -493,19 +499,19 @@ class SolverMuJoCo(SolverBase):
             }
 
             if pair_condim is not None:
-                pair_kwargs["condim"] = int(pair_condim.numpy()[i])
+                pair_kwargs["condim"] = int(pair_condim[i])
             if pair_solref is not None:
-                pair_kwargs["solref"] = pair_solref.numpy()[i].tolist()
+                pair_kwargs["solref"] = pair_solref[i].tolist()
             if pair_solreffriction is not None:
-                pair_kwargs["solreffriction"] = pair_solreffriction.numpy()[i].tolist()
+                pair_kwargs["solreffriction"] = pair_solreffriction[i].tolist()
             if pair_solimp is not None:
-                pair_kwargs["solimp"] = pair_solimp.numpy()[i].tolist()
+                pair_kwargs["solimp"] = pair_solimp[i].tolist()
             if pair_margin is not None:
-                pair_kwargs["margin"] = float(pair_margin.numpy()[i])
+                pair_kwargs["margin"] = float(pair_margin[i])
             if pair_gap is not None:
-                pair_kwargs["gap"] = float(pair_gap.numpy()[i])
+                pair_kwargs["gap"] = float(pair_gap[i])
             if pair_friction is not None:
-                pair_kwargs["friction"] = pair_friction.numpy()[i].tolist()
+                pair_kwargs["friction"] = pair_friction[i].tolist()
 
             spec.add_pair(**pair_kwargs)
 
