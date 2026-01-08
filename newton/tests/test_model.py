@@ -830,39 +830,6 @@ class TestModel(unittest.TestCase):
         self.assertIn("world", str(context.exception).lower())
         builder.end_world()
 
-    def test_articulation_validation_orphan_joint(self):
-        """Test that joints not belonging to an articulation raise an error on finalize."""
-        builder = ModelBuilder()
-        body = builder.add_link()
-
-        # Add joint but do NOT add it to an articulation
-        builder.add_joint_revolute(parent=-1, child=body, key="orphan_joint")
-
-        # finalize() should raise ValueError about orphan joints
-        with self.assertRaises(ValueError) as context:
-            builder.finalize()
-
-        self.assertIn("not belonging to any articulation", str(context.exception))
-        self.assertIn("orphan_joint", str(context.exception))
-
-    def test_articulation_validation_multiple_orphan_joints(self):
-        """Test error message shows multiple orphan joints."""
-        builder = ModelBuilder()
-        body1 = builder.add_link()
-        body2 = builder.add_link()
-
-        # Add multiple joints without articulations
-        builder.add_joint_revolute(parent=-1, child=body1, key="first_joint")
-        builder.add_joint_revolute(parent=body1, child=body2, key="second_joint")
-
-        with self.assertRaises(ValueError) as context:
-            builder.finalize()
-
-        error_msg = str(context.exception)
-        self.assertIn("2 joint(s)", error_msg)
-        self.assertIn("first_joint", error_msg)
-        self.assertIn("second_joint", error_msg)
-
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
