@@ -1698,6 +1698,31 @@ class TestCustomFrequencyAttributes(unittest.TestCase):
         self.assertEqual(arr[0][0], 1)  # 0 + 1 = 1
         self.assertEqual(arr[0][1], -1)  # sentinel preserved
 
+    def test_merge_custom_attribute_default_only_no_crash(self):
+        """Test add_builder does not crash when sub-builder has default-only attribute (no overrides)."""
+        # Sub-builder declares a BODY-frequency custom attribute with default but no overrides
+        sub = ModelBuilder()
+        sub.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="foo",
+                frequency=newton.ModelAttributeFrequency.BODY,
+                dtype=wp.int32,
+                default=7,
+                namespace="ns",
+            )
+        )
+        sub.add_body()  # no custom override for 'ns:foo'
+
+        # Main builder merges sub-builder as a new world
+        main = ModelBuilder()
+        main.add_world(sub)
+
+        # Should not raise; should build an array of size == body_count with default 7
+        model = main.finalize(device=self.device)
+        arr = model.ns.foo.numpy().tolist()
+        self.assertEqual(len(arr), model.body_count)
+        self.assertTrue(all(v == 7 for v in arr))
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

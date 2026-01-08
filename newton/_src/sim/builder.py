@@ -468,7 +468,8 @@ class ModelBuilder:
 
         def build_array(self, count: int, device: Devicelike | None = None, requires_grad: bool = False) -> wp.array:
             """Build wp.array from count, dtype, default and overrides."""
-            arr = [self.values.get(i, self.default) for i in range(count)]
+            vals = self.values or {}  # values may be None if produced via dataclasses.replace
+            arr = [vals.get(i, self.default) for i in range(count)]
             return wp.array(arr, dtype=self.dtype, requires_grad=requires_grad, device=device)
 
     def __init__(self, up_axis: AxisType = Axis.Z, gravity: float = -9.81):
@@ -2014,12 +2015,11 @@ class ModelBuilder:
             # Declare the attribute if it doesn't exist in the main builder
             merged = self.custom_attributes.get(full_key)
             if merged is None:
-                new_values = (
-                    {index_offset + idx: transform_value(value) for idx, value in attr.values.items()}
-                    if attr.values
-                    else None
-                )
-                self.custom_attributes[full_key] = replace(attr, values=new_values)
+                if attr.values:
+                    mapped_values = {index_offset + idx: transform_value(value) for idx, value in attr.values.items()}
+                else:
+                    mapped_values = {}
+                self.custom_attributes[full_key] = replace(attr, values=mapped_values)
                 continue
 
             # Prevent silent divergence if defaults differ
