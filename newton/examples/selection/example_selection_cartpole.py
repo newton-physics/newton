@@ -55,7 +55,7 @@ def apply_forces_kernel(joint_q: wp.array2d(dtype=float), joint_f: wp.array2d(dt
 
 
 class Example:
-    def __init__(self, viewer, num_worlds=16, verbose=True):
+    def __init__(self, viewer, num_worlds=16, max_worlds=None, verbose=True):
         self.fps = 60
         self.frame_dt = 1.0 / self.fps
 
@@ -110,7 +110,7 @@ class Example:
         if not isinstance(self.solver, newton.solvers.SolverMuJoCo):
             self.cartpoles.eval_fk(self.state_0)
 
-        self.viewer.set_model(self.model)
+        self.viewer.set_model(self.model, max_worlds=max_worlds)
         self.viewer.set_world_offsets((2.0, 0.0, 0.0))
 
         # Ensure FK evaluation (for non-MuJoCo solvers):
@@ -235,6 +235,6 @@ if __name__ == "__main__":
 
         torch.set_device(args.device)
 
-    example = Example(viewer, num_worlds=args.num_worlds)
+    example = Example(viewer, num_worlds=args.num_worlds, max_worlds=args.max_worlds)
 
     newton.examples.run(example, args)
