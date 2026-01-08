@@ -63,6 +63,10 @@ class ViewerBase:
         self._joint_points1 = None
         self._joint_colors = None
 
+        self._com_positions = None
+        self._com_colors = None
+        self._com_radii = None
+
         # World offset support
         self.world_offsets = None  # Array of vec3 offsets per world
 
@@ -342,6 +346,7 @@ class ViewerBase:
         self._log_triangles(state)
         self._log_particles(state)
         self._log_joints(state)
+        self._log_com(state)
 
         self.model_changed = False
 
@@ -1211,6 +1216,33 @@ class ViewerBase:
 
         # Log all joint lines in a single call
         self.log_lines("/model/joints", self._joint_points0, self._joint_points1, self._joint_colors)
+
+    def _log_com(self, state):
+        num_bodies = self.model.body_count
+        if num_bodies == 0:
+            return
+
+        if self._com_positions is None or len(self._com_positions) < num_bodies:
+            self._com_positions = wp.zeros(num_bodies, dtype=wp.vec3, device=self.device)
+            self._com_colors = wp.full(num_bodies, wp.vec3(1.0, 0.8, 0.0), device=self.device)
+            self._com_radii = wp.full(num_bodies, 0.05, dtype=float, device=self.device)
+
+        from .kernels import compute_com_positions  # noqa: PLC0415
+
+        wp.launch(
+            kernel=compute_com_positions,
+            dim=num_bodies,
+            inputs=[
+                state.body_q,
+                self.model.body_com,
+                self.model.body_world,
+                self.world_offsets,
+            ],
+            outputs=[self._com_positions],
+            device=self.device,
+        )
+
+        self.log_points("/model/com", self._com_positions, self._com_radii, self._com_colors, hidden=not self.show_com)
 
     def _log_triangles(self, state):
         if self.model.tri_count:
