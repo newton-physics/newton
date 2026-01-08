@@ -1998,11 +1998,18 @@ class ModelBuilder:
                     return self.current_world
                 if offset == 0:
                     return v
+                # Handle integers, preserving negative sentinels (e.g., -1 means "invalid")
                 if isinstance(v, int):
+                    return v + offset if v >= 0 else v
+                # Handle list/tuple explicitly, preserving negative sentinels in elements
+                if isinstance(v, (list, tuple)):
+                    transformed = [x + offset if isinstance(x, int) and x >= 0 else x for x in v]
+                    return type(v)(transformed)
+                # For other types (numpy, warp, etc.), try arithmetic offset
+                try:
                     return v + offset
-                if hasattr(v, "__len__"):
-                    return type(v)(*[x + offset for x in v])
-                return v
+                except TypeError:
+                    return v
 
             # Declare the attribute if it doesn't exist in the main builder
             merged = self.custom_attributes.get(full_key)
