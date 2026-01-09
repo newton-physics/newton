@@ -463,7 +463,11 @@ class ModelBuilder:
             For enum frequencies: returns the enum value unchanged.
             """
             if isinstance(self.frequency, str):
-                return f"{self.namespace}:{self.frequency}" if self.namespace else self.frequency
+                return (
+                    f"{self.namespace}:{self.frequency}"
+                    if self.namespace and ":" not in self.frequency
+                    else self.frequency
+                )
             return self.frequency
 
         def build_array(self, count: int, device: Devicelike | None = None, requires_grad: bool = False) -> wp.array:
