@@ -847,6 +847,8 @@ class ModelBuilder:
                 # Returns: {'mujoco:pair_geom1': 0, 'mujoco:pair_geom2': 0, 'mujoco:pair_world': 0}
         """
         indices: dict[str, int] = {}
+        frequency_indices: dict[str, int] = {}  # Track indices assigned per frequency in this call
+
         for key, value in kwargs.items():
             attr = self.custom_attributes.get(key)
             if attr is None:
@@ -858,16 +860,31 @@ class ModelBuilder:
                     f"Custom attribute '{key}' has frequency={attr.frequency}, "
                     f"but add_custom_values() only works with custom frequency attributes."
                 )
+
+            # Ensure attr.values is initialized
             if attr.values is None:
                 attr.values = []
-            attr.values.append(value)
-            idx = len(attr.values) - 1
-            indices[key] = idx
-            # Update frequency count (track max across all attributes with this frequency)
+
             freq_key = attr.frequency_key
-            new_count = len(attr.values)
-            if new_count > self._custom_frequency_counts.get(freq_key, 0):
-                self._custom_frequency_counts[freq_key] = new_count
+
+            # Determine index for this frequency (same index for all attrs with same frequency in this call)
+            if freq_key not in frequency_indices:
+                # First attribute with this frequency - use authoritative counter
+                current_count = self._custom_frequency_counts.get(freq_key, 0)
+                frequency_indices[freq_key] = current_count
+
+                # Update authoritative counter for this frequency
+                self._custom_frequency_counts[freq_key] = current_count + 1
+
+            idx = frequency_indices[freq_key]
+
+            # Pad attr.values with None up to idx if needed
+            while len(attr.values) < idx:
+                attr.values.append(None)
+
+            # Append new value at the correct index
+            attr.values.append(value)
+            indices[key] = idx
         return indices
 
     def _process_custom_attributes(
