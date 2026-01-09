@@ -360,7 +360,7 @@ from running by using the following command:
 
         .. code-block:: console
 
-            asv run --launch-method spawn main^^! -b "^(?!.*time_load$).*"
+            asv run --launch-method spawn main^^! -b "^^(?!.*time_load$).*"
 
 While airspeed velocity has built-in mechanisms to determine automatically how to collect measurements,
 it is often useful to manually specify benchmark attributes like ``repeat`` and ``number`` to control the
