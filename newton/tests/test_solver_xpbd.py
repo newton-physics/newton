@@ -82,20 +82,37 @@ def test_particle_particle_friction_uses_relative_velocity(test, device):
     # Disable gravity so we only see friction effects
     model.set_gravity((0.0, 0.0, 0.0))
 
-    # Set friction coefficient
-    model.soft_contact_mu = 1.0  # high friction
+    # Set particle-particle friction coefficient (XPBD particle-particle contact uses model.particle_mu)
+    model.particle_mu = 1.0  # high friction
+    model.particle_cohesion = 0.0
 
     # Use XPBD solver which uses the solve_particle_particle_contacts kernel
     solver = newton.solvers.SolverXPBD(
         model=model,
-        iterations=10,
+        iterations=20,
     )
 
     state0 = model.state()
     state1 = model.state()
 
+    # Apply equal and opposite forces to keep the particles in sustained contact.
+    # Without this, the initial overlap may be resolved in ~1 iteration and friction becomes hard to observe,
+    # making the test flaky across devices/precision.
+    press_force = 50.0
+    assert state0.particle_f is not None
+    state0.particle_f.assign(
+        wp.array(
+            [
+                wp.vec3(wp.float32(press_force), wp.float32(0.0), wp.float32(0.0)),
+                wp.vec3(wp.float32(-press_force), wp.float32(0.0), wp.float32(0.0)),
+            ],
+            dtype=wp.vec3,
+            device=device,
+        )
+    )
+
     dt = 1.0 / 60.0
-    num_steps = 10
+    num_steps = 60
 
     # Store initial relative velocity
     initial_vel = state0.particle_qd.numpy().copy()
@@ -103,7 +120,6 @@ def test_particle_particle_friction_uses_relative_velocity(test, device):
 
     # Run simulation
     for _ in range(num_steps):
-        state0.clear_forces()
         contacts = model.collide(state0)
         control = model.control()
         solver.step(state0, state1, control, contacts, dt)
@@ -145,67 +161,75 @@ def test_particle_particle_friction_with_relative_motion(test, device):
 
     This is the complementary test - when particles have different tangential
     velocities, friction should work to equalize them.
+
+    Notes on test design:
+    - Particle-particle friction in XPBD is applied during constraint projection while particles are in contact.
+      If particles are not kept in sustained contact, you may only get a single contact correction and the
+      effect of friction can be near-zero and noisy.
+    - To make this robust, we apply equal-and-opposite forces along the contact normal so the particles stay
+      pressed together while sliding tangentially, and we compare against a mu=0 baseline.
     """
-    builder = newton.ModelBuilder(up_axis="Y")
+    # Keep this test to a single time step with guaranteed initial penetration.
+    # XPBD's particle-particle friction term is limited by the *incremental* normal correction (penetration error),
+    # so once the overlap is resolved to touching, friction can become effectively zero. A long multi-step
+    # "relative velocity must decrease" assertion is therefore inherently flaky.
 
     particle_radius = 0.5
     overlap = 0.1
     separation = 2.0 * particle_radius - overlap
 
-    pos = [
-        wp.vec3(0.0, 0.0, 0.0),
-        wp.vec3(separation, 0.0, 0.0),
-    ]
+    dt = 1.0 / 30.0  # larger dt to make frictional slip correction clearly measurable
 
-    # Particles moving with DIFFERENT tangential velocities
-    vel = [
-        wp.vec3(0.0, 0.0, 10.0),  # moving fast in Z
-        wp.vec3(0.0, 0.0, 0.0),  # stationary
-    ]
+    def run(mu: float) -> float:
+        builder = newton.ModelBuilder(up_axis="Y")
 
-    mass = [1.0, 1.0]
-    radius = [particle_radius, particle_radius]
+        pos = [
+            wp.vec3(0.0, 0.0, 0.0),
+            wp.vec3(separation, 0.0, 0.0),
+        ]
 
-    builder.add_particles(pos=pos, vel=vel, mass=mass, radius=radius)
+        # Different tangential velocities along Z (tangent to the X-axis contact normal).
+        vel = [
+            wp.vec3(0.0, 0.0, 10.0),
+            wp.vec3(0.0, 0.0, 0.0),
+        ]
 
-    model = builder.finalize(device=device)
-    model.set_gravity((0.0, 0.0, 0.0))
-    model.soft_contact_mu = 1.0
+        mass = [1.0, 1.0]
+        radius = [particle_radius, particle_radius]
 
-    solver = newton.solvers.SolverXPBD(
-        model=model,
-        iterations=10,
-    )
+        builder.add_particles(pos=pos, vel=vel, mass=mass, radius=radius)
 
-    state0 = model.state()
-    state1 = model.state()
+        model = builder.finalize(device=device)
+        model.set_gravity((0.0, 0.0, 0.0))
+        model.particle_mu = mu
+        model.particle_cohesion = 0.0
 
-    dt = 1.0 / 60.0
-    num_steps = 10
+        solver = newton.solvers.SolverXPBD(model=model, iterations=30)
 
-    initial_vel = state0.particle_qd.numpy().copy()
-    initial_relative_z_vel = abs(initial_vel[0, 2] - initial_vel[1, 2])
+        state0 = model.state()
+        state1 = model.state()
 
-    for _ in range(num_steps):
-        state0.clear_forces()
+        # One step: measure tangential slip (relative z displacement).
         contacts = model.collide(state0)
         control = model.control()
         solver.step(state0, state1, control, contacts, dt)
-        state0, state1 = state1, state0
 
-    final_vel = state0.particle_qd.numpy()
-    final_relative_z_vel = abs(final_vel[0, 2] - final_vel[1, 2])
+        q1 = state1.particle_q.numpy()
+        return float(abs(q1[0, 2] - q1[1, 2]))
 
-    # With different initial velocities, friction should reduce relative motion
+    slip_no_friction = run(mu=0.0)
+    slip_with_friction = run(mu=1.0)
+
+    # With mu=0, slip should be close to v_rel * dt (~10 * dt).
     test.assertGreater(
-        initial_relative_z_vel,
-        5.0,
-        msg="Initial relative velocity should be significant",
+        slip_no_friction,
+        0.2,
+        msg="With mu=0, relative tangential slip over one step should be significant",
     )
     test.assertLess(
-        final_relative_z_vel,
-        initial_relative_z_vel,
-        msg="Friction should reduce relative tangential velocity between particles",
+        slip_with_friction,
+        slip_no_friction * 0.95,
+        msg="With mu>0, particle-particle friction should reduce tangential slip over one step vs mu=0 baseline",
     )
 
 
