@@ -441,12 +441,7 @@ class ModelBuilder:
 
             # Initialize values with correct container type based on frequency
             if self.values is None:
-                if isinstance(self.frequency, str):
-                    # String frequency: use list for sequential data
-                    self.values = []
-                else:
-                    # Enum frequency: use dict for entity indexing
-                    self.values = {}
+                self.values = self._create_empty_values_container()
             if self.usd_attribute_name is None:
                 self.usd_attribute_name = f"newton:{self.key}"
             if self.mjcf_attribute_name is None:
@@ -485,21 +480,39 @@ class ModelBuilder:
                 )
             return self.frequency
 
+        @property
+        def is_custom_frequency(self) -> bool:
+            """Check if this attribute uses a custom (string) frequency.
+
+            Returns:
+                True if the frequency is a string (custom frequency), False if it's a
+                ModelAttributeFrequency enum (built-in frequency like BODY, SHAPE, etc.).
+            """
+            return isinstance(self.frequency, str)
+
+        def _create_empty_values_container(self) -> list | dict:
+            """Create appropriate empty container based on frequency type."""
+            return [] if self.is_custom_frequency else {}
+
+        def _get_values_count(self) -> int:
+            """Get current count of values in this attribute."""
+            if self.values is None:
+                return 0
+            return len(self.values)
+
         def build_array(self, count: int, device: Devicelike | None = None, requires_grad: bool = False) -> wp.array:
             """Build wp.array from count, dtype, default and overrides."""
-            vals = self.values
-            if vals is None:
+            if self.values is None or len(self.values) == 0:
                 # No values provided, use default for all
-                arr = [self.default for _ in range(count)]
-            elif isinstance(vals, list):
-                # String frequency: vals is a list, replace None with defaults and extend if needed
-                arr = [val if val is not None else self.default for val in vals]
+                arr = [self.default] * count
+            elif self.is_custom_frequency:
+                # Custom frequency: vals is a list, replace None with defaults and pad/truncate as needed
+                arr = [val if val is not None else self.default for val in self.values]
                 arr = arr + [self.default] * max(0, count - len(arr))
-                # Truncate if list is longer than count (shouldn't happen but be safe)
-                arr = arr[:count]
+                arr = arr[:count]  # Truncate if needed
             else:
                 # Enum frequency: vals is a dict, use get() to fill gaps with defaults
-                arr = [vals.get(i, self.default) for i in range(count)]
+                arr = [self.values.get(i, self.default) for i in range(count)]
             return wp.array(arr, dtype=self.dtype, requires_grad=requires_grad, device=device)
 
     def __init__(self, up_axis: AxisType = Axis.Z, gravity: float = -9.81):
@@ -785,9 +798,10 @@ class ModelBuilder:
 
         self.custom_attributes[key] = attribute
         # Initialize frequency count for string frequencies
-        freq_key = attribute.frequency_key
-        if isinstance(freq_key, str) and freq_key not in self._custom_frequency_counts:
-            self._custom_frequency_counts[freq_key] = 0
+        if attribute.is_custom_frequency:
+            freq_key = attribute.frequency_key
+            if freq_key not in self._custom_frequency_counts:
+                self._custom_frequency_counts[freq_key] = 0
 
     def has_custom_attribute(self, key: str) -> bool:
         """Check if a custom attribute is defined."""
@@ -856,7 +870,7 @@ class ModelBuilder:
                 raise AttributeError(
                     f"Custom attribute '{key}' is not defined. Please declare it first using add_custom_attribute()."
                 )
-            if not isinstance(attr.frequency_key, str):
+            if not attr.is_custom_frequency:
                 raise TypeError(
                     f"Custom attribute '{key}' has frequency={attr.frequency}, "
                     f"but add_custom_values() only works with custom frequency attributes."
@@ -2024,7 +2038,7 @@ class ModelBuilder:
         for full_key, attr in builder.custom_attributes.items():
             # Index offset based on frequency
             freq_key = attr.frequency_key
-            if isinstance(freq_key, str):
+            if attr.is_custom_frequency:
                 # Custom frequency: offset by pre-merge count
                 index_offset = custom_frequency_offsets.get(freq_key, 0)
             elif attr.frequency == ModelAttributeFrequency.ONCE:
@@ -2062,7 +2076,7 @@ class ModelBuilder:
             merged = self.custom_attributes.get(full_key)
             if merged is None:
                 if attr.values:
-                    if isinstance(freq_key, str):
+                    if attr.is_custom_frequency:
                         # String frequency: copy list as-is (no offset for sequential data)
                         mapped_values = [transform_value(value) for value in attr.values]
                     else:
@@ -2072,7 +2086,7 @@ class ModelBuilder:
                         }
                 else:
                     # Initialize empty container based on frequency type
-                    mapped_values = [] if isinstance(freq_key, str) else {}
+                    mapped_values = attr._create_empty_values_container()
                 self.custom_attributes[full_key] = replace(attr, values=mapped_values)
                 continue
 
@@ -2097,9 +2111,9 @@ class ModelBuilder:
 
             # Remap indices and copy values
             if merged.values is None:
-                merged.values = [] if isinstance(freq_key, str) else {}
+                merged.values = merged._create_empty_values_container()
 
-            if isinstance(freq_key, str):
+            if attr.is_custom_frequency:
                 # String frequency: extend list with transformed values
                 new_values = [transform_value(value) for value in attr.values]
                 merged.values.extend(new_values)
@@ -6537,9 +6551,9 @@ class ModelBuilder:
 
             # First pass: collect max len(values) per frequency as fallback
             for _full_key, custom_attr in self.custom_attributes.items():
-                freq_key = custom_attr.frequency_key
-                if isinstance(freq_key, str):
-                    attr_len = len(custom_attr.values) if custom_attr.values else 0
+                if custom_attr.is_custom_frequency:
+                    freq_key = custom_attr.frequency_key
+                    attr_len = custom_attr._get_values_count()
                     frequency_max_lens[freq_key] = max(frequency_max_lens.get(freq_key, 0), attr_len)
 
             # Determine authoritative counts: prefer _custom_frequency_counts, fallback to max lens
@@ -6553,9 +6567,9 @@ class ModelBuilder:
 
             # Relaxed validation: warn about attributes with fewer values than frequency count
             for full_key, custom_attr in self.custom_attributes.items():
-                freq_key = custom_attr.frequency_key
-                if isinstance(freq_key, str):
-                    attr_count = len(custom_attr.values) if custom_attr.values else 0
+                if custom_attr.is_custom_frequency:
+                    freq_key = custom_attr.frequency_key
+                    attr_count = custom_attr._get_values_count()
                     expected_count = custom_frequency_counts[freq_key]
                     if attr_count < expected_count:
                         warnings.warn(
@@ -6573,7 +6587,7 @@ class ModelBuilder:
                 freq_key = custom_attr.frequency_key
 
                 # determine count by frequency
-                if isinstance(freq_key, str):
+                if custom_attr.is_custom_frequency:
                     # Custom frequency: count determined by validated frequency count
                     count = custom_frequency_counts.get(freq_key, 0)
                 elif freq_key == ModelAttributeFrequency.ONCE:
