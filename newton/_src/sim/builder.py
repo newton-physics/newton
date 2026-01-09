@@ -893,12 +893,12 @@ class ModelBuilder:
 
             idx = frequency_indices[freq_key]
 
-            # Pad attr.values with None up to idx if needed
-            while len(attr.values) < idx:
+            # Ensure attr.values has length at least idx+1, padding with None as needed
+            while len(attr.values) <= idx:
                 attr.values.append(None)
 
-            # Append new value at the correct index
-            attr.values.append(value)
+            # Assign value at the correct index
+            attr.values[idx] = value
             indices[key] = idx
         return indices
 
