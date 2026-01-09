@@ -1384,7 +1384,7 @@ class TestCustomFrequencyAttributes(unittest.TestCase):
             )
         )
 
-        with self.assertRaises(ValueError) as context:
+        with self.assertRaises(TypeError) as context:
             builder.add_custom_values(**{"body_attr": 1.0})
         self.assertIn("custom frequency", str(context.exception).lower())
 

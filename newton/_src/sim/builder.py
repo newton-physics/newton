@@ -438,8 +438,15 @@ class ModelBuilder:
             # Set dtype-specific default value if none was provided
             if self.default is None:
                 self.default = self._default_for_dtype(self.dtype)
+
+            # Initialize values with correct container type based on frequency
             if self.values is None:
-                self.values = {}
+                if isinstance(self.frequency, str):
+                    # String frequency: use list for sequential data
+                    self.values = []
+                else:
+                    # Enum frequency: use dict for entity indexing
+                    self.values = {}
             if self.usd_attribute_name is None:
                 self.usd_attribute_name = f"newton:{self.key}"
             if self.mjcf_attribute_name is None:
