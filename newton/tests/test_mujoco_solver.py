@@ -3914,6 +3914,8 @@ class TestMuJoCoAttributes(unittest.TestCase):
         builder.add_shape_box(body=b2, hx=0.1, hy=0.1, hz=0.1)
         builder.add_articulation([j0, j1, j2])
         model = builder.finalize()
+
+        # Should work fine with single world
         solver = SolverMuJoCo(model, separate_worlds=False)
 
         assert hasattr(model, "mujoco")
@@ -4007,6 +4009,8 @@ class TestMuJoCoAttributes(unittest.TestCase):
         stage = Usd.Stage.CreateInMemory()
         UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
         UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+        self.assertTrue(stage)
+
         body_path = "/body"
         shape = UsdGeom.Cube.Define(stage, body_path)
         prim = shape.GetPrim()
@@ -4014,10 +4018,12 @@ class TestMuJoCoAttributes(unittest.TestCase):
         UsdPhysics.ArticulationRootAPI.Apply(prim)
         UsdPhysics.CollisionAPI.Apply(prim)
         prim.CreateAttribute("mjc:condim", Sdf.ValueTypeNames.Int, True).Set(6)
+
         joint_path = "/joint"
         joint = UsdPhysics.RevoluteJoint.Define(stage, joint_path)
         joint.CreateAxisAttr().Set("Z")
         joint.CreateBody0Rel().SetTargets([body_path])
+
         builder = newton.ModelBuilder()
         newton.solvers.SolverMuJoCo.register_custom_attributes(builder)
         builder.add_usd(stage)
