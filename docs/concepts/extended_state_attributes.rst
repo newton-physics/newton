@@ -18,8 +18,6 @@ Example:
 
 .. code-block:: python
 
-  import newton
-
   builder = newton.ModelBuilder()
   # build/import model ...
   builder.request_state_attributes("body_qdd")  # can request on the builder
@@ -32,10 +30,20 @@ Example:
 List of extended state attributes
 ---------------------------------
 
+The canonical list of requestable extended state attribute *names* is :attr:`State.EXTENDED_STATE_ATTRIBUTES <newton.State.EXTENDED_STATE_ATTRIBUTES>`.
+
 The following optional State attributes can currently be requested and allocated by :meth:`Model.state() <newton.Model.state>`:
 
-- :attr:`body_qdd <newton.State.body_qdd>`: rigid-body spatial accelerations (used by :class:`~newton.sensors.SensorIMU`)
-- :attr:`body_parent_f <newton.State.body_parent_f>`: rigid-body parent interaction wrenches
+.. list-table::
+   :header-rows: 1
+   :widths: 22 78
+
+   * - Attribute name
+     - Description
+   * - :attr:`body_qdd <newton.State.body_qdd>`
+     - Rigid-body spatial accelerations (used by :class:`~newton.sensors.SensorIMU`)
+   * - :attr:`body_parent_f <newton.State.body_parent_f>`
+     - Rigid-body parent interaction wrenches
 
 Notes
 -----

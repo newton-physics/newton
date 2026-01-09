@@ -716,9 +716,12 @@ class Model:
         """
         Request that specific state attributes be allocated when creating a State object.
 
+        See :ref:`extended_state_attributes` for details and usage.
+
         Args:
             *attributes: Variable number of attribute names (strings).
         """
+        State.validate_extended_state_attributes(attributes)
         self._requested_state_attributes.update(attributes)
 
     def _add_custom_attributes(

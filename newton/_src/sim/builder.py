@@ -5603,9 +5603,15 @@ class ModelBuilder:
         """
         Request that specific state attributes be allocated when creating a State object from the finalized Model.
 
+        See :ref:`extended_state_attributes` for details and usage.
+
         Args:
             *attributes: Variable number of attribute names (strings).
         """
+        # Local import to avoid adding more module-level dependencies in this large file.
+        from .state import State  # noqa: PLC0415
+
+        State.validate_extended_state_attributes(attributes)
         self._requested_state_attributes.update(attributes)
 
     def set_coloring(self, particle_color_groups):
