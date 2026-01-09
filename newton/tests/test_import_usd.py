@@ -2582,20 +2582,10 @@ def PhysicsPrismaticJoint "prismatic_joint"
         dof_ref = model.mujoco.dof_ref.numpy()
         qd_start = model.joint_qd_start.numpy()
 
-        revolute_joint_idx = None
-        for i, jt in enumerate(model.joint_type.numpy()):
-            if jt == JointType.REVOLUTE:
-                revolute_joint_idx = i
-                break
-        self.assertIsNotNone(revolute_joint_idx, "No revolute joint found")
+        revolute_joint_idx = model.joint_key.index("/revolute_joint")
         self.assertAlmostEqual(dof_ref[qd_start[revolute_joint_idx]], 45.0, places=4)
 
-        prismatic_joint_idx = None
-        for i, jt in enumerate(model.joint_type.numpy()):
-            if jt == JointType.PRISMATIC:
-                prismatic_joint_idx = i
-                break
-        self.assertIsNotNone(prismatic_joint_idx, "No prismatic joint found")
+        prismatic_joint_idx = model.joint_key.index("/prismatic_joint")
         self.assertAlmostEqual(dof_ref[qd_start[prismatic_joint_idx]], 0.5, places=4)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
@@ -2689,20 +2679,10 @@ def Xform "Articulation" (
         springref = model.mujoco.dof_springref.numpy()
         qd_start = model.joint_qd_start.numpy()
 
-        revolute_joint_idx = None
-        for i, jt in enumerate(model.joint_type.numpy()):
-            if jt == JointType.REVOLUTE:
-                revolute_joint_idx = i
-                break
-        self.assertIsNotNone(revolute_joint_idx, "No revolute joint found")
+        revolute_joint_idx = model.joint_key.index("/Articulation/revolute_joint")
         self.assertAlmostEqual(springref[qd_start[revolute_joint_idx]], 30.0, places=4)
 
-        prismatic_joint_idx = None
-        for i, jt in enumerate(model.joint_type.numpy()):
-            if jt == JointType.PRISMATIC:
-                prismatic_joint_idx = i
-                break
-        self.assertIsNotNone(prismatic_joint_idx, "No prismatic joint found")
+        prismatic_joint_idx = model.joint_key.index("/Articulation/prismatic_joint")
         self.assertAlmostEqual(springref[qd_start[prismatic_joint_idx]], 0.25, places=4)
 
 
