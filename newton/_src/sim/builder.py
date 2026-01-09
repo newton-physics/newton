@@ -370,9 +370,10 @@ class ModelBuilder:
 
         Can be either:
             - A :class:`ModelAttributeFrequency` enum value for built-in frequencies (BODY, SHAPE, JOINT, etc.)
-            - A string for custom frequencies (e.g., ``"mujoco:pair"``). All attributes sharing the same
-              custom frequency must have the same count, validated at finalize time. The count is determined
-              by the number of values added via :meth:`add_custom_values`."""
+              Uses dict-based storage where keys are entity indices, allowing sparse assignment.
+            - A string for custom frequencies (e.g., ``"mujoco:pair"``). Uses list-based storage for
+              sequential data appended via :meth:`add_custom_values`. All attributes sharing the same
+              custom frequency must have the same count, validated at finalize time."""
 
         assignment: ModelAttributeAssignment = ModelAttributeAssignment.MODEL
         """Assignment category (see :class:`ModelAttributeAssignment`), defaults to :attr:`ModelAttributeAssignment.MODEL`"""
@@ -396,8 +397,15 @@ class ModelBuilder:
         default: Any = None
         """Default value for the attribute. If None, the default value is determined based on the dtype."""
 
-        values: dict[int, Any] | None = None
-        """Dictionary mapping indices to specific values (overrides). If None, the attribute is not initialized with any values. Values can be assigned in subsequent ``ModelBuilder.add_*(..., custom_attributes={...})`` method calls for specific entities after the CustomAttribute has been added through the :meth:`ModelBuilder.add_custom_attribute` method."""
+        values: dict[int, Any] | list[Any] | None = None
+        """Storage for specific values (overrides).
+
+        For enum frequencies (BODY, SHAPE, etc.): dict[int, Any] mapping entity indices to values.
+        For string frequencies ("mujoco:pair", etc.): list[Any] for sequential custom data.
+
+        If None, the attribute is not initialized with any values. Values can be assigned in subsequent
+        ``ModelBuilder.add_*(..., custom_attributes={...})`` method calls for specific entities after
+        the CustomAttribute has been added through the :meth:`ModelBuilder.add_custom_attribute` method."""
 
         usd_attribute_name: str | None = None
         """Name of the corresponding USD attribute. If None, the USD attribute name ``"newton:<namespace>:<name>"`` is used."""
@@ -418,7 +426,7 @@ class ModelBuilder:
         """Transformer function that converts a URDF attribute value string to a valid Warp dtype. If undefined, the generic converter from :func:`newton.utils.parse_warp_value_from_string` is used."""
 
         def __post_init__(self):
-            """Initialize default values and ensure values dict exists."""
+            """Initialize default values and validate dtype compatibility."""
             # ensure dtype is a valid Warp dtype
             try:
                 _size = wp.types.type_size_in_bytes(self.dtype)
@@ -800,9 +808,9 @@ class ModelBuilder:
     def add_custom_values(self, **kwargs: Any) -> dict[str, int]:
         """Append values to custom attributes with custom string frequencies.
 
-        Each keyword argument specifies an attribute key and the value to append. The value
-        is added at the next available index for that attribute. Only works with attributes
-        that have a custom string frequency (not built-in enum frequencies).
+        Each keyword argument specifies an attribute key and the value to append. Values are
+        stored in a list and appended sequentially for robust indexing. Only works with
+        attributes that have a custom string frequency (not built-in enum frequencies).
 
         This is useful for custom entity types that aren't built into the model,
         such as user-defined groupings or solver-specific data.
@@ -817,7 +825,7 @@ class ModelBuilder:
 
         Raises:
             AttributeError: If an attribute key is not defined.
-            ValueError: If an attribute has an enum frequency (must have custom frequency).
+            TypeError: If an attribute has an enum frequency (must have custom frequency).
 
         Example:
             .. code-block:: python
