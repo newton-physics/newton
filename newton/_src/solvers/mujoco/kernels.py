@@ -669,6 +669,7 @@ def apply_mjc_qfrc_kernel(
 def eval_single_articulation_fk(
     joint_start: int,
     joint_end: int,
+    joint_articulation: wp.array(dtype=int),
     joint_q: wp.array(dtype=float),
     joint_qd: wp.array(dtype=float),
     joint_q_start: wp.array(dtype=int),
@@ -686,6 +687,10 @@ def eval_single_articulation_fk(
     body_qd: wp.array(dtype=wp.spatial_vector),
 ):
     for i in range(joint_start, joint_end):
+        articulation = joint_articulation[i]
+        if articulation == -1:
+            continue
+
         parent = joint_parent[i]
         child = joint_child[i]
 
@@ -796,6 +801,7 @@ def eval_single_articulation_fk(
 @wp.kernel
 def eval_articulation_fk(
     articulation_start: wp.array(dtype=int),
+    joint_articulation: wp.array(dtype=int),
     joint_q: wp.array(dtype=float),
     joint_qd: wp.array(dtype=float),
     joint_q_start: wp.array(dtype=int),
@@ -820,6 +826,7 @@ def eval_articulation_fk(
     eval_single_articulation_fk(
         joint_start,
         joint_end,
+        joint_articulation,
         joint_q,
         joint_qd,
         joint_q_start,
