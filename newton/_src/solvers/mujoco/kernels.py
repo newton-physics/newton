@@ -165,6 +165,24 @@ def contact_params(
     return margin, gap, condim, friction, solref, solreffriction, solimp
 
 
+@wp.func
+def convert_solref(ke: float, kd: float, d_width: float, d_r: float) -> wp.vec2:
+    """Convert from stiffness and damping to time constant and damp ratio
+    based on d(r) and d(width)."""
+
+    if ke > 0.0 and kd > 0.0:
+        # ke = d(r) / (d_width^2 * timeconst^2 * dampratio^2)
+        # kd = 2 / (d_width * timeconst)
+        timeconst = 2.0 / (kd * d_width)
+        dampratio = kd / 2.0 * wp.sqrt(d_r / ke)
+    else:
+        timeconst = 0.02
+        dampratio = 1.0
+    # see https://mujoco.readthedocs.io/en/latest/modeling.html#solver-parameters
+
+    return wp.vec2(timeconst, dampratio)
+
+
 # Kernel functions
 @wp.kernel
 def convert_newton_contacts_to_mjwarp_kernel(
@@ -651,6 +669,7 @@ def apply_mjc_qfrc_kernel(
 def eval_single_articulation_fk(
     joint_start: int,
     joint_end: int,
+    joint_articulation: wp.array(dtype=int),
     joint_q: wp.array(dtype=float),
     joint_qd: wp.array(dtype=float),
     joint_q_start: wp.array(dtype=int),
@@ -668,6 +687,10 @@ def eval_single_articulation_fk(
     body_qd: wp.array(dtype=wp.spatial_vector),
 ):
     for i in range(joint_start, joint_end):
+        articulation = joint_articulation[i]
+        if articulation == -1:
+            continue
+
         parent = joint_parent[i]
         child = joint_child[i]
 
@@ -778,6 +801,7 @@ def eval_single_articulation_fk(
 @wp.kernel
 def eval_articulation_fk(
     articulation_start: wp.array(dtype=int),
+    joint_articulation: wp.array(dtype=int),
     joint_q: wp.array(dtype=float),
     joint_qd: wp.array(dtype=float),
     joint_q_start: wp.array(dtype=int),
@@ -802,6 +826,7 @@ def eval_articulation_fk(
     eval_single_articulation_fk(
         joint_start,
         joint_end,
+        joint_articulation,
         joint_q,
         joint_qd,
         joint_q_start,
@@ -1257,17 +1282,9 @@ def update_geom_properties_kernel(
     geom_friction[world, geom_idx] = wp.vec3f(mu, torsional, rolling)
 
     # update geom_solref (timeconst, dampratio) using stiffness and damping
-    # we don't use negative convention for geom_solref because MJWarp's code
-    # combining geoms' negative solrefs looks suspicious
-    ke, kd = shape_ke[shape_idx], shape_kd[shape_idx]
-    if ke > 0.0 and kd > 0.0:
-        # kd = 2 / timeconst -> timeconst = 2 / kd
-        # ke = 1 / (timeconst^2 * dampratio^2) -> dampratio = sqrt(1 / (timeconst^2 * ke))
-        timeconst = 2.0 / kd
-        dampratio = wp.sqrt(1.0 / (timeconst * timeconst * ke))
-        geom_solref[world, geom_idx] = wp.vec2f(timeconst, dampratio)
-    else:
-        geom_solref[world, geom_idx] = wp.vec2f(0.02, 1.0)
+    # we don't use the negative convention to support controlling the mixing of shapes' stiffnesses via solmix
+    # use approximation of d(0) = d(width) = 1
+    geom_solref[world, geom_idx] = convert_solref(shape_ke[shape_idx], shape_kd[shape_idx], 1.0, 1.0)
 
     # update geom_solimp from custom attribute
     if shape_geom_solimp:
