@@ -1951,7 +1951,7 @@ class SolverMuJoCo(SolverBase):
             spec.add_exclude(bodyname1=spec.bodies[mb1].name, bodyname2=spec.bodies[mb2].name)
 
         # add explicit contact pairs from custom attributes
-        self._init_pairs(model, spec, shape_mapping, first_group)
+        self._init_pairs(model, spec, shape_mapping, first_world)
 
         self.mj_model = spec.compile()
         self.mj_data = mujoco.MjData(self.mj_model)
