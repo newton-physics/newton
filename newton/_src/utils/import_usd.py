@@ -560,6 +560,22 @@ def parse_usd(
             else:
                 limit_gains_scaling = 1.0
 
+            # Read mjc:ref attribute and bake into child_xform
+            # ref defines the physical orientation at qpos=0
+            ref_attr = joint_prim.GetAttribute("mjc:ref")
+            ref_value = ref_attr.Get() if ref_attr and ref_attr.HasValue() else 0.0
+            if ref_value != 0.0:
+                axis_enum = usd_axis_to_axis[joint_desc.axis]
+                axis_vectors = {Axis.X: wp.vec3(1, 0, 0), Axis.Y: wp.vec3(0, 1, 0), Axis.Z: wp.vec3(0, 0, 1)}
+                axis_vec = axis_vectors[axis_enum]
+                if key == UsdPhysics.ObjectType.RevoluteJoint:
+                    ref_rad = float(ref_value) * DegreesToRadian
+                    ref_quat = wp.quat_from_axis_angle(axis_vec, ref_rad)
+                    child_tf = wp.transform(child_tf.p, child_tf.q * ref_quat)
+                else:
+                    child_tf = wp.transform(child_tf.p + float(ref_value) * axis_vec, child_tf.q)
+                joint_params["child_xform"] = child_tf
+
             # Resolve limit gains with precedence, fallback to builder defaults when missing
             current_joint_limit_ke = R.get_value(
                 joint_prim,

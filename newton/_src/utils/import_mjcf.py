@@ -599,6 +599,7 @@ def parse_mjcf(
         joint_pos = []
         joint_custom_attributes: dict[str, Any] = {}
         dof_custom_attributes: dict[str, dict[int, Any]] = {}
+        dof_ref: float = 0.0
 
         linear_axes = []
         angular_axes = []
@@ -645,6 +646,11 @@ def parse_mjcf(
                 axis_vec = parse_vec(joint_attrib, "axis", (0.0, 0.0, 0.0))
                 limit_lower = np.deg2rad(joint_range[0]) if is_angular and use_degrees else joint_range[0]
                 limit_upper = np.deg2rad(joint_range[1]) if is_angular and use_degrees else joint_range[1]
+
+                # Parse ref for baking into child_xform
+                dof_ref = parse_float(joint_attrib, "ref", 0.0)
+                if is_angular and use_degrees:
+                    dof_ref = np.deg2rad(dof_ref)
 
                 # Parse solreflimit for joint limit stiffness and damping
                 solreflimit = parse_vec(joint_attrib, "solreflimit", (0.02, 1.0))
@@ -779,6 +785,17 @@ def parse_mjcf(
                 else:
                     parent_xform_for_joint = wp.transform(body_pos_for_joints + joint_pos, body_ori_for_joints)
 
+                # Compute child_xform with ref baked in for single-DOF joints
+                child_xform_pos = joint_pos
+                child_xform_rot = wp.quat_identity()
+                if dof_ref != 0.0:
+                    if joint_type == JointType.REVOLUTE:
+                        axis = wp.normalize(angular_axes[0].axis)
+                        child_xform_rot = wp.quat_from_axis_angle(axis, float(dof_ref))
+                    elif joint_type == JointType.PRISMATIC:
+                        axis = wp.normalize(linear_axes[0].axis)
+                        child_xform_pos = joint_pos + float(dof_ref) * axis
+
                 joint_indices.append(
                     builder.add_joint(
                         joint_type,
@@ -788,7 +805,7 @@ def parse_mjcf(
                         angular_axes=angular_axes,
                         key="_".join(joint_name),
                         parent_xform=parent_xform_for_joint,
-                        child_xform=wp.transform(joint_pos, wp.quat_identity()),
+                        child_xform=wp.transform(child_xform_pos, child_xform_rot),
                         custom_attributes=joint_custom_attributes | dof_custom_attributes,
                     )
                 )

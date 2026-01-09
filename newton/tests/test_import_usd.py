@@ -2525,7 +2525,7 @@ def Xform "Articulation" (
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_ref_attribute_parsing(self):
-        """Test that 'mjc:ref' attribute for revolute and prismatic joints is parsed."""
+        """Test that 'mjc:ref' attribute is parsed and baked into FK."""
         from pxr import Usd  # noqa: PLC0415
 
         usd_content = """#usda 1.0
@@ -2534,39 +2534,33 @@ def Xform "Articulation" (
     upAxis = "Z"
 )
 
-def Cube "parent" (
-    prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsCollisionAPI"]
+def Xform "Articulation" (
+    prepend apiSchemas = ["PhysicsArticulationRootAPI"]
 )
 {
-    bool physics:kinematicEnabled = true
-}
+    def Cube "base" (
+        prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsCollisionAPI"]
+    )
+    {
+        double3 xformOp:translate = (0, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
 
-def Cube "child1" (
-    prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsArticulationRootAPI", "PhysicsCollisionAPI"]
-)
-{
-}
+    def Cube "child1" (
+        prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsCollisionAPI"]
+    )
+    {
+        double3 xformOp:translate = (0, 0, 1)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
 
-def Cube "child2" (
-    prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsCollisionAPI"]
-)
-{
-}
-
-def PhysicsRevoluteJoint "revolute_joint"
-{
-    token physics:axis = "Z"
-    rel physics:body0 = </parent>
-    rel physics:body1 = </child1>
-    float mjc:ref = 45.0
-}
-
-def PhysicsPrismaticJoint "prismatic_joint"
-{
-    token physics:axis = "Z"
-    rel physics:body0 = </child1>
-    rel physics:body1 = </child2>
-    float mjc:ref = 0.5
+    def PhysicsRevoluteJoint "revolute_joint"
+    {
+        token physics:axis = "Y"
+        rel physics:body0 = </Articulation/base>
+        rel physics:body1 = </Articulation/child1>
+        float mjc:ref = 90.0
+    }
 }
 """
         stage = Usd.Stage.CreateInMemory()
@@ -2577,16 +2571,23 @@ def PhysicsPrismaticJoint "prismatic_joint"
         builder.add_usd(stage)
         model = builder.finalize()
 
+        # Verify custom attribute parsing
         self.assertTrue(hasattr(model, "mujoco"))
         self.assertTrue(hasattr(model.mujoco, "dof_ref"))
         dof_ref = model.mujoco.dof_ref.numpy()
         qd_start = model.joint_qd_start.numpy()
 
-        revolute_joint_idx = model.joint_key.index("/revolute_joint")
-        self.assertAlmostEqual(dof_ref[qd_start[revolute_joint_idx]], 45.0, places=4)
+        revolute_joint_idx = model.joint_key.index("/Articulation/revolute_joint")
+        self.assertAlmostEqual(dof_ref[qd_start[revolute_joint_idx]], 90.0, places=4)
 
-        prismatic_joint_idx = model.joint_key.index("/prismatic_joint")
-        self.assertAlmostEqual(dof_ref[qd_start[prismatic_joint_idx]], 0.5, places=4)
+        # Verify joint_X_c has ref baked in (quaternion should not be identity for ref=90)
+        joint_X_c = model.joint_X_c.numpy()
+        joint_idx = model.joint_key.index("/Articulation/revolute_joint")
+        joint_quat = joint_X_c[joint_idx, 3:7]
+
+        # 90° rotation around Y axis: [0, sin(45°), 0, cos(45°)]
+        expected = np.array([0.0, np.sin(np.pi / 4), 0.0, np.cos(np.pi / 4)])
+        np.testing.assert_allclose(joint_quat, expected, atol=0.01)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_springref_attribute_parsing(self):
