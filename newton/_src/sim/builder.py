@@ -472,8 +472,18 @@ class ModelBuilder:
 
         def build_array(self, count: int, device: Devicelike | None = None, requires_grad: bool = False) -> wp.array:
             """Build wp.array from count, dtype, default and overrides."""
-            vals = self.values or {}  # values may be None if produced via dataclasses.replace
-            arr = [vals.get(i, self.default) for i in range(count)]
+            vals = self.values
+            if vals is None:
+                # No values provided, use default for all
+                arr = [self.default for _ in range(count)]
+            elif isinstance(vals, list):
+                # String frequency: vals is a list, extend with defaults if needed
+                arr = vals + [self.default] * max(0, count - len(vals))
+                # Truncate if list is longer than count (shouldn't happen but be safe)
+                arr = arr[:count]
+            else:
+                # Enum frequency: vals is a dict, use get() to fill gaps with defaults
+                arr = [vals.get(i, self.default) for i in range(count)]
             return wp.array(arr, dtype=self.dtype, requires_grad=requires_grad, device=device)
 
     def __init__(self, up_axis: AxisType = Axis.Z, gravity: float = -9.81):
@@ -829,14 +839,14 @@ class ModelBuilder:
                     f"Custom attribute '{key}' is not defined. Please declare it first using add_custom_attribute()."
                 )
             if not isinstance(attr.frequency_key, str):
-                raise ValueError(
+                raise TypeError(
                     f"Custom attribute '{key}' has frequency={attr.frequency}, "
                     f"but add_custom_values() only works with custom frequency attributes."
                 )
             if attr.values is None:
-                attr.values = {}
-            idx = len(attr.values)
-            attr.values[idx] = value
+                attr.values = []
+            attr.values.append(value)
+            idx = len(attr.values) - 1
             indices[key] = idx
             # Update frequency count (track max across all attributes with this frequency)
             freq_key = attr.frequency_key
@@ -2019,9 +2029,17 @@ class ModelBuilder:
             merged = self.custom_attributes.get(full_key)
             if merged is None:
                 if attr.values:
-                    mapped_values = {index_offset + idx: transform_value(value) for idx, value in attr.values.items()}
+                    if isinstance(freq_key, str):
+                        # String frequency: copy list as-is (no offset for sequential data)
+                        mapped_values = [transform_value(value) for value in attr.values]
+                    else:
+                        # Enum frequency: remap dict indices with offset
+                        mapped_values = {
+                            index_offset + idx: transform_value(value) for idx, value in attr.values.items()
+                        }
                 else:
-                    mapped_values = {}
+                    # Initialize empty container based on frequency type
+                    mapped_values = [] if isinstance(freq_key, str) else {}
                 self.custom_attributes[full_key] = replace(attr, values=mapped_values)
                 continue
 
@@ -2046,9 +2064,16 @@ class ModelBuilder:
 
             # Remap indices and copy values
             if merged.values is None:
-                merged.values = {}
-            new_indices = {index_offset + idx: transform_value(value) for idx, value in attr.values.items()}
-            merged.values.update(new_indices)
+                merged.values = [] if isinstance(freq_key, str) else {}
+
+            if isinstance(freq_key, str):
+                # String frequency: extend list with transformed values
+                new_values = [transform_value(value) for value in attr.values]
+                merged.values.extend(new_values)
+            else:
+                # Enum frequency: update dict with remapped indices
+                new_indices = {index_offset + idx: transform_value(value) for idx, value in attr.values.items()}
+                merged.values.update(new_indices)
 
         # Update custom frequency counts once per unique frequency (not per attribute)
         for freq_key, builder_count in builder._custom_frequency_counts.items():
