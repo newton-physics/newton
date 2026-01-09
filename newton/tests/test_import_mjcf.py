@@ -1665,5 +1665,70 @@ class TestImportMjcf(unittest.TestCase):
             for i, (a, e) in enumerate(zip(actual, expected, strict=False)):
                 self.assertAlmostEqual(a, e, places=4, msg=f"eq_solref[{eq_idx}][{i}] should be {e}, got {a}")
 
+    def test_ref_attribute_parsing(self):
+        """Test that 'ref' attribute is parsed as custom attribute."""
+        mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test">
+    <worldbody>
+        <body name="base">
+            <geom type="box" size="0.1 0.1 0.1"/>
+            <body name="child1" pos="0 0 1">
+                <joint name="hinge" type="hinge" axis="0 0 1" ref="45"/>
+                <geom type="box" size="0.1 0.1 0.1"/>
+                <body name="child2" pos="0 0 1">
+                    <joint name="slide" type="slide" axis="0 0 1" ref="0.5"/>
+                    <geom type="box" size="0.1 0.1 0.1"/>
+                </body>
+            </body>
+        </body>
+    </worldbody>
+</mujoco>"""
+
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_mjcf(mjcf_content)
+        model = builder.finalize()
+
+        qd_start = model.joint_qd_start.numpy()
+        dof_ref = model.mujoco.dof_ref.numpy()
+
+        hinge_idx = model.joint_key.index("hinge")
+        self.assertAlmostEqual(dof_ref[qd_start[hinge_idx]], 45.0, places=4)
+
+        slide_idx = model.joint_key.index("slide")
+        self.assertAlmostEqual(dof_ref[qd_start[slide_idx]], 0.5, places=4)
+
+    def test_springref_attribute_parsing(self):
+        """Test that 'springref' attribute is parsed for hinge and slide joints."""
+        mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test">
+    <worldbody>
+        <body name="base">
+            <geom type="box" size="0.1 0.1 0.1"/>
+            <body name="child1" pos="0 0 1">
+                <joint name="hinge" type="hinge" axis="0 0 1" stiffness="100" springref="30"/>
+                <geom type="box" size="0.1 0.1 0.1"/>
+                <body name="child2" pos="0 0 1">
+                    <joint name="slide" type="slide" axis="0 0 1" stiffness="50" springref="0.25"/>
+                    <geom type="box" size="0.1 0.1 0.1"/>
+                </body>
+            </body>
+        </body>
+    </worldbody>
+</mujoco>"""
+
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_mjcf(mjcf_content)
+        model = builder.finalize()
+        springref = model.mujoco.dof_springref.numpy()
+        qd_start = model.joint_qd_start.numpy()
+
+        hinge_idx = model.joint_key.index("hinge")
+        self.assertAlmostEqual(springref[qd_start[hinge_idx]], 30.0, places=4)
+        slide_idx = model.joint_key.index("slide")
+        self.assertAlmostEqual(springref[qd_start[slide_idx]], 0.25, places=4)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
