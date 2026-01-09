@@ -51,7 +51,9 @@ class State:
 
         self.body_qdd: wp.array | None = None
         """Rigid body accelerations (spatial), shape (body_count,), dtype :class:`spatial_vector`.
-        First three entries: linear acceleration; last three: angular acceleration. Extended state attribute.
+        First three entries: linear acceleration; last three: angular acceleration.
+
+        This is an extended state attribute; see :ref:`extended_state_attributes` for more information.
         """
 
         self.body_f: wp.array | None = None
@@ -65,7 +67,9 @@ class State:
 
         self.body_parent_f: wp.array | None = None
         """Parent interaction forces, shape (body_count,), dtype :class:`spatial_vector`.
-        First three entries: linear force; last three: torque. Extended state attribute.
+        First three entries: linear force; last three: torque.
+
+        This is an extended state attribute; see :ref:`extended_state_attributes` for more information.
         """
 
         self.joint_q: wp.array | None = None
