@@ -580,6 +580,7 @@ class SolverMuJoCo(SolverBase):
                 self.mjw_data.nworld,
                 self.mjw_data.ncollision,
             ],
+            device=model.device,
         )
 
     @override
@@ -841,6 +842,7 @@ class SolverMuJoCo(SolverBase):
                     # self.mjw_data.cfrc_int,
                 ],
                 outputs=[state.body_qdd, state.body_parent_f],
+                device=model.device,
             )
 
     @staticmethod
@@ -1876,6 +1878,7 @@ class SolverMuJoCo(SolverBase):
                     outputs=[
                         self.mjc_geom_to_newton_shape,
                     ],
+                    device=model.device,
                 )
 
             # Create mjc_body_to_newton: MuJoCo[world, body] -> Newton body
