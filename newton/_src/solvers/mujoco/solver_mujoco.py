@@ -51,6 +51,7 @@ from .kernels import (
     convert_mj_coords_to_warp_kernel,
     convert_mjw_contact_to_warp_kernel,
     convert_newton_contacts_to_mjwarp_kernel,
+    convert_rigid_forces_from_mj_kernel,
     convert_solref,
     convert_warp_coords_to_mj_kernel,
     eval_articulation_fk,
@@ -576,6 +577,7 @@ class SolverMuJoCo(SolverBase):
             include_sites (bool): If ``True`` (default), Newton shapes marked with ``ShapeFlags.SITE`` are exported as MuJoCo sites. Sites are non-colliding reference points used for sensor attachment, debugging, or as frames of reference. If ``False``, sites are skipped during export. Defaults to ``True``.
         """
         super().__init__(model)
+
         # Import and cache MuJoCo modules (only happens once per class)
         mujoco, _ = self.import_mujoco()
 
@@ -689,6 +691,7 @@ class SolverMuJoCo(SolverBase):
             self._mujoco.mj_step(self.mj_model, self.mj_data)
             self.update_newton_state(self.model, state_out, self.mj_data)
         else:
+            self.enable_rne_postconstraint(state_out)
             self.apply_mjc_control(self.model, state_in, control, self.mjw_data)
             if self.update_data_interval > 0 and self._step % self.update_data_interval == 0:
                 self.update_mjc_data(self.mjw_data, self.model, state_in)
@@ -703,6 +706,19 @@ class SolverMuJoCo(SolverBase):
             self.update_newton_state(self.model, state_out, self.mjw_data)
         self._step += 1
         return state_out
+
+    def enable_rne_postconstraint(self, state_out: State):
+        """Request computation of RNE forces if required for state fields."""
+        rne_postconstraint_fields = {"body_qdd", "body_parent_f"}
+        # TODO: handle use_mujoco_cpu
+        m = self.mjw_model
+        if m.sensor_rne_postconstraint:
+            return
+        if any(getattr(state_out, field) is not None for field in rne_postconstraint_fields):
+            if wp.config.verbose:
+                print("Setting model.sensor_rne_postconstraint True")
+            m.sensor_rne_postconstraint = True
+            # required for cfrc_ext, cfrc_int, cacc
 
     def convert_contacts_to_mjwarp(self, model: Model, state_in: State, contacts: Contacts):
         # Ensure the inverse shape mapping exists (lazy creation)
@@ -756,6 +772,7 @@ class SolverMuJoCo(SolverBase):
                 self.mjw_data.nworld,
                 self.mjw_data.ncollision,
             ],
+            device=model.device,
         )
 
     @override
@@ -996,6 +1013,27 @@ class SolverMuJoCo(SolverBase):
                     xquat,
                 ],
                 outputs=[state.body_q],
+                device=model.device,
+            )
+
+        # Update rigid force fields on state.
+        if state.body_qdd is not None or state.body_parent_f is not None:
+            # Launch over MuJoCo bodies
+            nbody = self.mjc_body_to_newton.shape[1]
+            wp.launch(
+                convert_rigid_forces_from_mj_kernel,
+                (nworld, nbody),
+                inputs=[
+                    self.mjc_body_to_newton,
+                    self.mjw_model.body_rootid,
+                    self.mjw_model.opt.gravity,
+                    self.mjw_data.xipos,
+                    self.mjw_data.subtree_com,
+                    self.mjw_data.cacc,
+                    self.mjw_data.cvel,
+                    # self.mjw_data.cfrc_int,
+                ],
+                outputs=[state.body_qdd, state.body_parent_f],
                 device=model.device,
             )
 
@@ -2035,6 +2073,7 @@ class SolverMuJoCo(SolverBase):
                     outputs=[
                         self.mjc_geom_to_newton_shape,
                     ],
+                    device=model.device,
                 )
 
             # Create mjc_body_to_newton: MuJoCo[world, body] -> Newton body
