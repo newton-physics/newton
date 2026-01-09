@@ -22,6 +22,7 @@ from . import ray_cast
 def compute_lighting(
     enable_shadows: wp.bool,
     enable_particles: wp.bool,
+    enable_backface_culling: wp.bool,
     world_index: wp.int32,
     has_global_world: wp.bool,
     bvh_shapes_size: wp.int32,
@@ -99,6 +100,7 @@ def compute_lighting(
             world_index,
             has_global_world,
             enable_particles,
+            enable_backface_culling,
             shape_enabled,
             shape_types,
             shape_mesh_indices,
