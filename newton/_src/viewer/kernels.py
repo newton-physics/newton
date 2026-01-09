@@ -442,7 +442,7 @@ def compute_com_positions(
     local_com = body_com[tid]
     world_com = body_pos + wp.quat_rotate(body_rot, local_com)
     world_idx = body_world[tid]
-    if world_idx >= 0:
+    if world_offsets and world_idx >= 0 and world_idx < world_offsets.shape[0]:
         world_com = world_com + world_offsets[world_idx]
     com_positions[tid] = world_com
 
