@@ -148,9 +148,9 @@ class ModelBuilder:
 
         density: float = 1000.0
         """The density of the shape material."""
-        ke: float = 1.0e5
+        ke: float = 1.0e3
         """The contact elastic stiffness. Used by SemiImplicit, Featherstone, MuJoCo."""
-        kd: float = 1000.0
+        kd: float = 100.0
         """The contact damping coefficient. Used by SemiImplicit, Featherstone, MuJoCo."""
         kf: float = 1000.0
         """The friction damping coefficient. Used by SemiImplicit, Featherstone."""
@@ -480,21 +480,21 @@ class ModelBuilder:
         # endregion
 
         # region compiler settings (similar to MuJoCo)
-        self.balance_inertia = True
+        self.balance_inertia: bool = True
         """Whether to automatically correct rigid body inertia tensors that violate the triangle inequality.
         When True, adds a scalar multiple of the identity matrix to preserve rotation structure while
         ensuring physical validity (I1 + I2 >= I3 for principal moments). Default: True."""
 
-        self.bound_mass = None
+        self.bound_mass: float | None = None
         """Minimum allowed mass value for rigid bodies. If set, any body mass below this value will be
         clamped to this minimum. Set to None to disable mass clamping. Default: None."""
 
-        self.bound_inertia = None
+        self.bound_inertia: float | None = None
         """Minimum allowed eigenvalue for rigid body inertia tensors. If set, ensures all principal
         moments of inertia are at least this value. Set to None to disable inertia eigenvalue
         clamping. Default: None."""
 
-        self.validate_inertia_detailed = False
+        self.validate_inertia_detailed: bool = False
         """Whether to use detailed (slower) inertia validation that provides per-body warnings.
         When False, uses a fast GPU kernel that reports only the total number of corrected bodies
         and directly assigns the corrected arrays to the Model (ModelBuilder state is not updated).
@@ -1149,11 +1149,10 @@ class ModelBuilder:
         for joint_idx in joints:
             child = self.joint_child[joint_idx]
             parent = self.joint_parent[joint_idx]
-
             if child in child_to_parent and child_to_parent[child] != parent:
                 raise ValueError(
                     f"Body {child} has multiple parents in this articulation: {child_to_parent[child]} and {parent}. "
-                    f"This creates an invalid tree structure."
+                    f"This creates an invalid tree structure. Loop-closing joints must not be part of an articulation."
                 )
             child_to_parent[child] = parent
 
@@ -2979,6 +2978,7 @@ class ModelBuilder:
                 vertices.append("\n".join(shape_label))
         edges = []
         edge_labels = []
+        edge_colors = []
         for i in range(self.joint_count):
             edge = (self.joint_child[i] + 1, self.joint_parent[i] + 1)
             edges.append(edge)
@@ -2989,20 +2989,26 @@ class ModelBuilder:
             if show_joint_types:
                 joint_label += f"\n({joint_type_str(self.joint_type[i])})"
             edge_labels.append(joint_label)
+            art_id = self.joint_articulation[i]
+            if art_id == -1:
+                edge_colors.append("r")
+            else:
+                edge_colors.append("k")
 
         if plot_shapes:
             for i in range(self.shape_count):
                 edges.append((len(self.body_key) + i + 1, self.shape_body[i] + 1))
 
         # plot graph
-        G = nx.Graph()
+        G = nx.DiGraph()
         for i in range(len(vertices)):
             G.add_node(i, label=vertices[i])
         for i in range(len(edges)):
             label = edge_labels[i] if i < len(edge_labels) else ""
             G.add_edge(edges[i][0], edges[i][1], label=label)
-        pos = nx.spring_layout(G)
-        nx.draw_networkx_edges(G, pos, node_size=0, edgelist=edges[: self.joint_count])
+        pos = nx.spring_layout(G, iterations=250)
+        # pos = nx.kamada_kawai_layout(G)
+        nx.draw_networkx_edges(G, pos, node_size=100, edgelist=edges, edge_color=edge_colors, arrows=True)
         # render body vertices
         draw_args = {"node_size": 100}
         bodies = nx.subgraph(G, list(range(self.body_count + 1)))
@@ -3022,7 +3028,7 @@ class ModelBuilder:
         nx.draw_networkx_labels(G, pos, dict(enumerate(vertices)), font_size=6)
         if show_legend:
             plt.plot([], [], "s", color="orange", label="body")
-            plt.plot([], [], "k-", label="joint")
+            plt.plot([], [], "k->", label="joint (child -> parent)")
             if plot_shapes:
                 plt.plot([], [], "o", color="skyblue", label="shape")
                 plt.plot([], [], "k--", label="shape-body connection")
@@ -5814,17 +5820,6 @@ class ModelBuilder:
         # validate world ordering and contiguity
         self._validate_world_ordering()
 
-        # validate all joints belong to an articulation
-        if self.joint_count > 0:
-            orphan_joints = [i for i, art in enumerate(self.joint_articulation) if art < 0]
-            if orphan_joints:
-                joint_keys = [self.joint_key[i] for i in orphan_joints[:5]]  # Show first 5
-                raise ValueError(
-                    f"Found {len(orphan_joints)} joint(s) not belonging to any articulation. "
-                    f"Call add_articulation() for all joints. Orphan joints: {joint_keys}"
-                    + ("..." if len(orphan_joints) > 5 else "")
-                )
-
         # construct particle inv masses
         ms = np.array(self.particle_mass, dtype=np.float32)
         # static particles (with zero mass) have zero inverse mass
@@ -6241,6 +6236,7 @@ class ModelBuilder:
             for parent in self.joint_parent:
                 parent_joint.append(child_to_joint.get(parent, -1))
             m.joint_ancestor = wp.array(parent_joint, dtype=wp.int32)
+            m.joint_articulation = wp.array(self.joint_articulation, dtype=wp.int32)
 
             # dynamics properties
             m.joint_armature = wp.array(self.joint_armature, dtype=wp.float32, requires_grad=requires_grad)
@@ -6257,7 +6253,7 @@ class ModelBuilder:
             m.joint_limit_upper = wp.array(self.joint_limit_upper, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_limit_ke = wp.array(self.joint_limit_ke, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_limit_kd = wp.array(self.joint_limit_kd, dtype=wp.float32, requires_grad=requires_grad)
-            m.joint_enabled = wp.array(self.joint_enabled, dtype=wp.int32)
+            m.joint_enabled = wp.array(self.joint_enabled, dtype=wp.bool)
 
             # 'close' the start index arrays with a sentinel value
             joint_q_start = copy.copy(self.joint_q_start)

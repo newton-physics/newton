@@ -21,6 +21,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8  # v6.0.1
       - name: Check License Header
-        uses: apache/skywalking-eyes/header@5c5b974209f0de5d905f37deb69369068ebfc15c
+        uses: apache/skywalking-eyes/header@61275cc80d0798a405cb070f7d3a8aaf7cf2c2c1  # v0.8.0
