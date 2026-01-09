@@ -492,8 +492,9 @@ class ModelBuilder:
                 # No values provided, use default for all
                 arr = [self.default for _ in range(count)]
             elif isinstance(vals, list):
-                # String frequency: vals is a list, extend with defaults if needed
-                arr = vals + [self.default] * max(0, count - len(vals))
+                # String frequency: vals is a list, replace None with defaults and extend if needed
+                arr = [val if val is not None else self.default for val in vals]
+                arr = arr + [self.default] * max(0, count - len(arr))
                 # Truncate if list is longer than count (shouldn't happen but be safe)
                 arr = arr[:count]
             else:
@@ -6529,25 +6530,40 @@ class ModelBuilder:
             if not self.custom_attributes:
                 return m
 
-            # Validate and compute counts for custom frequencies
-            # Group attributes by their resolved frequency key and validate consistent counts
+            # Resolve authoritative counts for custom frequencies
+            # Use incremental _custom_frequency_counts as primary source, with safety fallback
             custom_frequency_counts: dict[str, int] = {}
-            custom_frequency_attrs: dict[str, list[str]] = {}  # frequency_key -> list of attr keys
+            frequency_max_lens: dict[str, int] = {}  # Track max len(values) per frequency as fallback
+
+            # First pass: collect max len(values) per frequency as fallback
+            for _full_key, custom_attr in self.custom_attributes.items():
+                freq_key = custom_attr.frequency_key
+                if isinstance(freq_key, str):
+                    attr_len = len(custom_attr.values) if custom_attr.values else 0
+                    frequency_max_lens[freq_key] = max(frequency_max_lens.get(freq_key, 0), attr_len)
+
+            # Determine authoritative counts: prefer _custom_frequency_counts, fallback to max lens
+            for freq_key, max_len in frequency_max_lens.items():
+                if freq_key in self._custom_frequency_counts:
+                    # Use authoritative incremental counter
+                    custom_frequency_counts[freq_key] = self._custom_frequency_counts[freq_key]
+                else:
+                    # Safety fallback: use max observed length
+                    custom_frequency_counts[freq_key] = max_len
+
+            # Relaxed validation: warn about attributes with fewer values than frequency count
             for full_key, custom_attr in self.custom_attributes.items():
                 freq_key = custom_attr.frequency_key
                 if isinstance(freq_key, str):
                     attr_count = len(custom_attr.values) if custom_attr.values else 0
-                    if freq_key not in custom_frequency_counts:
-                        custom_frequency_counts[freq_key] = attr_count
-                        custom_frequency_attrs[freq_key] = [full_key]
-                    else:
-                        custom_frequency_attrs[freq_key].append(full_key)
-                        if custom_frequency_counts[freq_key] != attr_count:
-                            raise ValueError(
-                                f"Custom attributes with frequency '{freq_key}' have inconsistent counts: "
-                                f"expected {custom_frequency_counts[freq_key]} (from {custom_frequency_attrs[freq_key][0]}), "
-                                f"but '{full_key}' has {attr_count} values."
-                            )
+                    expected_count = custom_frequency_counts[freq_key]
+                    if attr_count < expected_count:
+                        warnings.warn(
+                            f"Custom attribute '{full_key}' has {attr_count} values but frequency '{freq_key}' "
+                            f"expects {expected_count}. Missing values will be filled with defaults.",
+                            UserWarning,
+                            stacklevel=2,
+                        )
 
             # Store custom frequency counts on the model for selection.py and other consumers
             m.custom_frequency_counts = custom_frequency_counts

@@ -21,6 +21,7 @@ add_* functions (add_body, add_shape, add_joint, etc.).
 """
 
 import unittest
+import warnings
 
 import numpy as np
 import warp as wp
@@ -1341,7 +1342,7 @@ class TestCustomFrequencyAttributes(unittest.TestCase):
         self.assertEqual(model.get_custom_frequency_count("test:pair"), 2)
 
     def test_custom_frequency_validation_inconsistent_counts(self):
-        """Test that inconsistent counts for same custom frequency raises error at finalize()."""
+        """Test that inconsistent counts for same custom frequency are handled gracefully with warnings."""
         builder = ModelBuilder()
 
         # Declare attributes with same custom frequency
@@ -1362,15 +1363,27 @@ class TestCustomFrequencyAttributes(unittest.TestCase):
             )
         )
 
-        # Add different counts (this should fail at finalize)
+        # Add different counts - pair_a has 2 values, pair_b has 1 value
         builder.add_custom_values(**{"test:pair_a": 1})
         builder.add_custom_values(**{"test:pair_a": 2})
         builder.add_custom_values(**{"test:pair_b": 10})  # Only 1 value for pair_b
 
-        with self.assertRaises(ValueError) as context:
-            builder.finalize(device=self.device)
-        self.assertIn("inconsistent counts", str(context.exception).lower())
-        self.assertIn("test:pair", str(context.exception))
+        # This should now succeed with warnings and pad missing values with defaults
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            model = builder.finalize(device=self.device)
+
+            # Should have warned about pair_a having fewer values (since pair_b expanded the frequency count)
+            warning_messages = [str(warning.message) for warning in w]
+            self.assertTrue(any("pair_a" in msg and "missing values" in msg.lower() for msg in warning_messages))
+
+        # Verify that arrays were created with correct counts (authoritative count expanded to 3 by pair_b)
+        self.assertEqual(len(model.test.pair_a.numpy()), 3)
+        self.assertEqual(len(model.test.pair_b.numpy()), 3)
+
+        # Verify values: pair_a should have [1, 2, 0] (padded), pair_b should have [0, 0, 10]
+        np.testing.assert_array_equal(model.test.pair_a.numpy(), [1, 2, 0])  # 0 is default for int32
+        np.testing.assert_array_equal(model.test.pair_b.numpy(), [0, 0, 10])  # None values replaced with defaults
 
     def test_custom_frequency_add_custom_values_rejects_enum_frequency(self):
         """Test that add_custom_values() rejects enum frequency attributes."""
