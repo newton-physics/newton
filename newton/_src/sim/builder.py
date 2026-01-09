@@ -2038,7 +2038,7 @@ class ModelBuilder:
         for full_key, attr in builder.custom_attributes.items():
             # Index offset based on frequency
             freq_key = attr.frequency_key
-            if attr.is_custom_frequency:
+            if isinstance(freq_key, str):
                 # Custom frequency: offset by pre-merge count
                 index_offset = custom_frequency_offsets.get(freq_key, 0)
             elif attr.frequency == ModelAttributeFrequency.ONCE:
@@ -2076,7 +2076,7 @@ class ModelBuilder:
             merged = self.custom_attributes.get(full_key)
             if merged is None:
                 if attr.values:
-                    if attr.is_custom_frequency:
+                    if isinstance(freq_key, str):
                         # String frequency: copy list as-is (no offset for sequential data)
                         mapped_values = [transform_value(value) for value in attr.values]
                     else:
@@ -2086,7 +2086,7 @@ class ModelBuilder:
                         }
                 else:
                     # Initialize empty container based on frequency type
-                    mapped_values = attr._create_empty_values_container()
+                    mapped_values = [] if isinstance(freq_key, str) else {}
                 self.custom_attributes[full_key] = replace(attr, values=mapped_values)
                 continue
 
@@ -2111,9 +2111,9 @@ class ModelBuilder:
 
             # Remap indices and copy values
             if merged.values is None:
-                merged.values = merged._create_empty_values_container()
+                merged.values = [] if isinstance(freq_key, str) else {}
 
-            if attr.is_custom_frequency:
+            if isinstance(freq_key, str):
                 # String frequency: extend list with transformed values
                 new_values = [transform_value(value) for value in attr.values]
                 merged.values.extend(new_values)
@@ -6551,9 +6551,9 @@ class ModelBuilder:
 
             # First pass: collect max len(values) per frequency as fallback
             for _full_key, custom_attr in self.custom_attributes.items():
-                if custom_attr.is_custom_frequency:
-                    freq_key = custom_attr.frequency_key
-                    attr_len = custom_attr._get_values_count()
+                freq_key = custom_attr.frequency_key
+                if isinstance(freq_key, str):
+                    attr_len = len(custom_attr.values) if custom_attr.values else 0
                     frequency_max_lens[freq_key] = max(frequency_max_lens.get(freq_key, 0), attr_len)
 
             # Determine authoritative counts: prefer _custom_frequency_counts, fallback to max lens
@@ -6567,9 +6567,9 @@ class ModelBuilder:
 
             # Relaxed validation: warn about attributes with fewer values than frequency count
             for full_key, custom_attr in self.custom_attributes.items():
-                if custom_attr.is_custom_frequency:
-                    freq_key = custom_attr.frequency_key
-                    attr_count = custom_attr._get_values_count()
+                freq_key = custom_attr.frequency_key
+                if isinstance(freq_key, str):
+                    attr_count = len(custom_attr.values) if custom_attr.values else 0
                     expected_count = custom_frequency_counts[freq_key]
                     if attr_count < expected_count:
                         warnings.warn(
@@ -6587,7 +6587,7 @@ class ModelBuilder:
                 freq_key = custom_attr.frequency_key
 
                 # determine count by frequency
-                if custom_attr.is_custom_frequency:
+                if isinstance(freq_key, str):
                     # Custom frequency: count determined by validated frequency count
                     count = custom_frequency_counts.get(freq_key, 0)
                 elif freq_key == ModelAttributeFrequency.ONCE:
