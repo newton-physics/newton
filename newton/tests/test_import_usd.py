@@ -2424,13 +2424,9 @@ def Xform "Articulation" (
         self.assertTrue(np.any(jnt_actgravcomp))
         self.assertTrue(np.any(~jnt_actgravcomp))
 
-
-class TestUSDRefAttribute(unittest.TestCase):
-    """Test that USD 'mjc:ref' attribute is correctly parsed to set joint_q."""
-
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
-    def test_ref_attribute_parsed(self):
-        """Test that 'mjc:ref' attribute for revolute and prismatic joints IS parsed and sets joint_q."""
+    def test_ref_attribute_parsing(self):
+        """Test that 'mjc:ref' attribute for revolute and prismatic joints is parsed."""
         from pxr import Usd  # noqa: PLC0415
 
         usd_content = """#usda 1.0
@@ -2485,11 +2481,8 @@ def PhysicsPrismaticJoint "prismatic_joint"
         self.assertTrue(hasattr(model, "mujoco"))
         self.assertTrue(hasattr(model.mujoco, "dof_ref"))
         dof_ref = model.mujoco.dof_ref.numpy()
-        joint_q = model.joint_q.numpy()
-        q_start = model.joint_q_start.numpy()
         qd_start = model.joint_qd_start.numpy()
 
-        # Find and test revolute joint
         revolute_joint_idx = None
         for i, jt in enumerate(model.joint_type.numpy()):
             if jt == JointType.REVOLUTE:
@@ -2497,9 +2490,7 @@ def PhysicsPrismaticJoint "prismatic_joint"
                 break
         self.assertIsNotNone(revolute_joint_idx, "No revolute joint found")
         self.assertAlmostEqual(dof_ref[qd_start[revolute_joint_idx]], 45.0, places=4)
-        self.assertAlmostEqual(joint_q[q_start[revolute_joint_idx]], np.deg2rad(45), places=4)
 
-        # Find and test prismatic joint
         prismatic_joint_idx = None
         for i, jt in enumerate(model.joint_type.numpy()):
             if jt == JointType.PRISMATIC:
@@ -2507,15 +2498,10 @@ def PhysicsPrismaticJoint "prismatic_joint"
                 break
         self.assertIsNotNone(prismatic_joint_idx, "No prismatic joint found")
         self.assertAlmostEqual(dof_ref[qd_start[prismatic_joint_idx]], 0.5, places=4)
-        self.assertAlmostEqual(joint_q[q_start[prismatic_joint_idx]], 0.5, places=4)
-
-
-class TestUSDSpringRefAttribute(unittest.TestCase):
-    """Test that USD 'mjc:springref' attribute is correctly parsed."""
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
-    def test_springref_attribute_parsed(self):
-        """Test that 'mjc:springref' attribute IS parsed as custom attribute for revolute and prismatic joints."""
+    def test_springref_attribute_parsing(self):
+        """Test that 'mjc:springref' attribute is parsed for revolute and prismatic joints."""
         from pxr import Usd  # noqa: PLC0415
 
         usd_content = """#usda 1.0
@@ -2604,7 +2590,6 @@ def Xform "Articulation" (
         springref = model.mujoco.dof_springref.numpy()
         qd_start = model.joint_qd_start.numpy()
 
-        # Find and test revolute joint
         revolute_joint_idx = None
         for i, jt in enumerate(model.joint_type.numpy()):
             if jt == JointType.REVOLUTE:
@@ -2613,7 +2598,6 @@ def Xform "Articulation" (
         self.assertIsNotNone(revolute_joint_idx, "No revolute joint found")
         self.assertAlmostEqual(springref[qd_start[revolute_joint_idx]], 30.0, places=4)
 
-        # Find and test prismatic joint
         prismatic_joint_idx = None
         for i, jt in enumerate(model.joint_type.numpy()):
             if jt == JointType.PRISMATIC:

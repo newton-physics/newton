@@ -3899,7 +3899,8 @@ class TestMuJoCoMocapBodies(unittest.TestCase):
 
 
 class TestMuJoCoAttributes(unittest.TestCase):
-    def test_custom_attributes_from_code(self):
+    def test_condim_from_code(self):
+        """Test condim attribute parsing from code."""
         builder = newton.ModelBuilder()
         newton.solvers.SolverMuJoCo.register_custom_attributes(builder)
         b0 = builder.add_link()
@@ -3913,8 +3914,6 @@ class TestMuJoCoAttributes(unittest.TestCase):
         builder.add_shape_box(body=b2, hx=0.1, hy=0.1, hz=0.1)
         builder.add_articulation([j0, j1, j2])
         model = builder.finalize()
-
-        # Should work fine with single world
         solver = SolverMuJoCo(model, separate_worlds=False)
 
         assert hasattr(model, "mujoco")
@@ -3922,16 +3921,17 @@ class TestMuJoCoAttributes(unittest.TestCase):
         assert np.allclose(model.mujoco.condim.numpy(), [6, 4, 3])
         assert np.allclose(solver.mjw_model.geom_condim.numpy(), [6, 4, 3])
 
-    def test_custom_attributes_from_mjcf(self):
+    def test_condim_from_mjcf(self):
+        """Test condim attribute parsing from MJCF."""
         mjcf = """
         <mujoco>
             <worldbody>
                 <body>
-                    <joint type="hinge" axis="0 0 1" ref="45" springref="30" />
+                    <joint type="hinge" axis="0 0 1" />
                     <geom type="box" size="0.1 0.1 0.1" condim="6" />
                 </body>
                 <body>
-                    <joint type="slide" axis="0 0 1" ref="0.5" springref="0.25" />
+                    <joint type="hinge" axis="0 0 1" />
                     <geom type="box" size="0.1 0.1 0.1" condim="4" />
                 </body>
                 <body>
@@ -3950,14 +3950,9 @@ class TestMuJoCoAttributes(unittest.TestCase):
         assert hasattr(model.mujoco, "condim")
         assert np.allclose(model.mujoco.condim.numpy(), [6, 4, 3])
         assert np.allclose(solver.mjw_model.geom_condim.numpy(), [6, 4, 3])
-        assert hasattr(model.mujoco, "dof_springref")
-        assert np.allclose(model.mujoco.dof_springref.numpy(), [30, 0.25, 0])
-        assert np.allclose(solver.mj_model.qpos_spring, [np.deg2rad(30), 0.25, 0], atol=1e-4)
-        assert hasattr(model.mujoco, "dof_ref")
-        assert np.allclose(model.mujoco.dof_ref.numpy(), [45, 0.5, 0])
-        assert np.allclose(solver.mj_model.qpos0, [np.deg2rad(45), 0.5, 0], atol=1e-4)
 
-    def test_custom_attributes_from_urdf(self):
+    def test_condim_from_urdf(self):
+        """Test condim attribute parsing from URDF."""
         urdf = """
         <robot name="test_robot">
             <link name="body1">
@@ -4005,29 +4000,111 @@ class TestMuJoCoAttributes(unittest.TestCase):
         assert np.allclose(solver.mjw_model.geom_condim.numpy(), [6, 4, 3])
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
-    def test_custom_attributes_from_usd(self):
+    def test_condim_from_usd(self):
+        """Test condim attribute parsing from USD."""
         from pxr import Sdf, Usd, UsdGeom, UsdPhysics  # noqa: PLC0415
 
         stage = Usd.Stage.CreateInMemory()
         UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
         UsdGeom.SetStageMetersPerUnit(stage, 1.0)
-        self.assertTrue(stage)
+        body_path = "/body"
+        shape = UsdGeom.Cube.Define(stage, body_path)
+        prim = shape.GetPrim()
+        UsdPhysics.RigidBodyAPI.Apply(prim)
+        UsdPhysics.ArticulationRootAPI.Apply(prim)
+        UsdPhysics.CollisionAPI.Apply(prim)
+        prim.CreateAttribute("mjc:condim", Sdf.ValueTypeNames.Int, True).Set(6)
+        joint_path = "/joint"
+        joint = UsdPhysics.RevoluteJoint.Define(stage, joint_path)
+        joint.CreateAxisAttr().Set("Z")
+        joint.CreateBody0Rel().SetTargets([body_path])
+        builder = newton.ModelBuilder()
+        newton.solvers.SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_usd(stage)
+        model = builder.finalize()
+        solver = SolverMuJoCo(model, separate_worlds=False)
+        assert hasattr(model, "mujoco")
+        assert hasattr(model.mujoco, "condim")
+        assert np.allclose(model.mujoco.condim.numpy(), [6])
+        assert np.allclose(solver.mjw_model.geom_condim.numpy(), [6])
+
+    def test_dof_ref_from_code(self):
+        """Test dof_ref attribute parsing from code."""
+        builder = newton.ModelBuilder()
+        newton.solvers.SolverMuJoCo.register_custom_attributes(builder)
+        b0 = builder.add_link()
+        j0 = builder.add_joint_revolute(-1, b0, axis=(0.0, 0.0, 1.0), custom_attributes={"mujoco:dof_ref": {0: 45.0}})
+        builder.add_shape_box(body=b0, hx=0.1, hy=0.1, hz=0.1)
+        b1 = builder.add_link()
+        j1 = builder.add_joint_prismatic(b0, b1, axis=(0.0, 0.0, 1.0), custom_attributes={"mujoco:dof_ref": {0: 0.5}})
+        builder.add_shape_box(body=b1, hx=0.1, hy=0.1, hz=0.1)
+        b2 = builder.add_link()
+        j2 = builder.add_joint_revolute(b1, b2, axis=(0.0, 0.0, 1.0))
+        builder.add_shape_box(body=b2, hx=0.1, hy=0.1, hz=0.1)
+        builder.add_articulation([j0, j1, j2])
+        model = builder.finalize()
+        solver = SolverMuJoCo(model, separate_worlds=False)
+
+        assert hasattr(model, "mujoco")
+        assert hasattr(model.mujoco, "dof_ref")
+        assert np.allclose(model.mujoco.dof_ref.numpy(), [45.0, 0.5, 0.0])
+        assert np.allclose(solver.mj_model.qpos0, [np.deg2rad(45), 0.5, 0], atol=1e-4)
+
+    def test_dof_ref_from_mjcf(self):
+        """Test dof_ref attribute parsing from MJCF."""
+        mjcf = """
+        <mujoco>
+            <worldbody>
+                <body>
+                    <joint type="hinge" axis="0 0 1" ref="45" />
+                    <geom type="box" size="0.1 0.1 0.1" />
+                </body>
+                <body>
+                    <joint type="slide" axis="0 0 1" ref="0.5" />
+                    <geom type="box" size="0.1 0.1 0.1" />
+                </body>
+                <body>
+                    <joint type="hinge" axis="0 0 1" />
+                    <geom type="box" size="0.1 0.1 0.1" />
+                </body>
+            </worldbody>
+        </mujoco>
+        """
+        builder = newton.ModelBuilder()
+        newton.solvers.SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_mjcf(mjcf)
+        model = builder.finalize()
+        solver = SolverMuJoCo(model, separate_worlds=False)
+
+        assert hasattr(model, "mujoco")
+        assert hasattr(model.mujoco, "dof_ref")
+        assert np.allclose(model.mujoco.dof_ref.numpy(), [45, 0.5, 0])
+        assert np.allclose(solver.mj_model.qpos0, [np.deg2rad(45), 0.5, 0], atol=1e-4)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_dof_ref_from_usd(self):
+        """Test dof_ref attribute parsing from USD."""
+        from pxr import Sdf, Usd, UsdGeom, UsdPhysics  # noqa: PLC0415
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdGeom.SetStageMetersPerUnit(stage, 1.0)
 
         art_path = "/Articulation"
         art_xform = UsdGeom.Xform.Define(stage, art_path)
         UsdPhysics.ArticulationRootAPI.Apply(art_xform.GetPrim())
+
         body0_path = f"{art_path}/body0"
         body0 = UsdGeom.Cube.Define(stage, body0_path)
         body0_prim = body0.GetPrim()
         UsdPhysics.RigidBodyAPI.Apply(body0_prim)
         UsdPhysics.CollisionAPI.Apply(body0_prim)
-        body0_prim.CreateAttribute("mjc:condim", Sdf.ValueTypeNames.Int, True).Set(6)
+
         body1_path = f"{art_path}/body1"
         body1 = UsdGeom.Cube.Define(stage, body1_path)
         body1_prim = body1.GetPrim()
         UsdPhysics.RigidBodyAPI.Apply(body1_prim)
         UsdPhysics.CollisionAPI.Apply(body1_prim)
-        body1_prim.CreateAttribute("mjc:condim", Sdf.ValueTypeNames.Int, True).Set(4)
 
         body2_path = f"{art_path}/body2"
         body2 = UsdGeom.Cube.Define(stage, body2_path)
@@ -4042,7 +4119,6 @@ class TestMuJoCoAttributes(unittest.TestCase):
         joint1.CreateBody1Rel().SetTargets([body1_path])
         joint1_prim = joint1.GetPrim()
         joint1_prim.CreateAttribute("mjc:ref", Sdf.ValueTypeNames.Float, True).Set(45.0)
-        joint1_prim.CreateAttribute("mjc:springref", Sdf.ValueTypeNames.Float, True).Set(30.0)
 
         joint2_path = f"{art_path}/joint2"
         joint2 = UsdPhysics.PrismaticJoint.Define(stage, joint2_path)
@@ -4051,6 +4127,124 @@ class TestMuJoCoAttributes(unittest.TestCase):
         joint2.CreateBody1Rel().SetTargets([body2_path])
         joint2_prim = joint2.GetPrim()
         joint2_prim.CreateAttribute("mjc:ref", Sdf.ValueTypeNames.Float, True).Set(0.5)
+
+        builder = newton.ModelBuilder()
+        newton.solvers.SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_usd(stage)
+        model = builder.finalize()
+        solver = SolverMuJoCo(model, separate_worlds=False)
+
+        q_start = model.joint_q_start.numpy()
+        revolute_q_start = q_start[1]
+        prismatic_q_start = q_start[2]
+
+        assert hasattr(model, "mujoco")
+        assert hasattr(model.mujoco, "dof_ref")
+        assert np.allclose(solver.mj_model.qpos0[revolute_q_start], np.deg2rad(45), atol=1e-4)
+        assert np.allclose(solver.mj_model.qpos0[prismatic_q_start], 0.5, atol=1e-4)
+
+    def test_dof_springref_from_code(self):
+        """Test dof_springref attribute parsing from code."""
+        builder = newton.ModelBuilder()
+        newton.solvers.SolverMuJoCo.register_custom_attributes(builder)
+        b0 = builder.add_link()
+        j0 = builder.add_joint_revolute(
+            -1, b0, axis=(0.0, 0.0, 1.0), custom_attributes={"mujoco:dof_springref": {0: 30.0}}
+        )
+        builder.add_shape_box(body=b0, hx=0.1, hy=0.1, hz=0.1)
+        b1 = builder.add_link()
+        j1 = builder.add_joint_prismatic(
+            b0, b1, axis=(0.0, 0.0, 1.0), custom_attributes={"mujoco:dof_springref": {0: 0.25}}
+        )
+        builder.add_shape_box(body=b1, hx=0.1, hy=0.1, hz=0.1)
+        b2 = builder.add_link()
+        j2 = builder.add_joint_revolute(b1, b2, axis=(0.0, 0.0, 1.0))
+        builder.add_shape_box(body=b2, hx=0.1, hy=0.1, hz=0.1)
+        builder.add_articulation([j0, j1, j2])
+        model = builder.finalize()
+        solver = SolverMuJoCo(model, separate_worlds=False)
+
+        assert hasattr(model, "mujoco")
+        assert hasattr(model.mujoco, "dof_springref")
+        assert np.allclose(model.mujoco.dof_springref.numpy(), [30.0, 0.25, 0.0])
+        assert np.allclose(solver.mj_model.qpos_spring, [np.deg2rad(30), 0.25, 0], atol=1e-4)
+
+    def test_dof_springref_from_mjcf(self):
+        """Test dof_springref attribute parsing from MJCF."""
+        mjcf = """
+        <mujoco>
+            <worldbody>
+                <body>
+                    <joint type="hinge" axis="0 0 1" springref="30" />
+                    <geom type="box" size="0.1 0.1 0.1" />
+                </body>
+                <body>
+                    <joint type="slide" axis="0 0 1" springref="0.25" />
+                    <geom type="box" size="0.1 0.1 0.1" />
+                </body>
+                <body>
+                    <joint type="hinge" axis="0 0 1" />
+                    <geom type="box" size="0.1 0.1 0.1" />
+                </body>
+            </worldbody>
+        </mujoco>
+        """
+        builder = newton.ModelBuilder()
+        newton.solvers.SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_mjcf(mjcf)
+        model = builder.finalize()
+        solver = SolverMuJoCo(model, separate_worlds=False)
+
+        assert hasattr(model, "mujoco")
+        assert hasattr(model.mujoco, "dof_springref")
+        assert np.allclose(model.mujoco.dof_springref.numpy(), [30, 0.25, 0])
+        assert np.allclose(solver.mj_model.qpos_spring, [np.deg2rad(30), 0.25, 0], atol=1e-4)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_dof_springref_from_usd(self):
+        """Test dof_springref attribute parsing from USD."""
+        from pxr import Sdf, Usd, UsdGeom, UsdPhysics  # noqa: PLC0415
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+
+        art_path = "/Articulation"
+        art_xform = UsdGeom.Xform.Define(stage, art_path)
+        UsdPhysics.ArticulationRootAPI.Apply(art_xform.GetPrim())
+
+        body0_path = f"{art_path}/body0"
+        body0 = UsdGeom.Cube.Define(stage, body0_path)
+        body0_prim = body0.GetPrim()
+        UsdPhysics.RigidBodyAPI.Apply(body0_prim)
+        UsdPhysics.CollisionAPI.Apply(body0_prim)
+
+        body1_path = f"{art_path}/body1"
+        body1 = UsdGeom.Cube.Define(stage, body1_path)
+        body1_prim = body1.GetPrim()
+        UsdPhysics.RigidBodyAPI.Apply(body1_prim)
+        UsdPhysics.CollisionAPI.Apply(body1_prim)
+
+        body2_path = f"{art_path}/body2"
+        body2 = UsdGeom.Cube.Define(stage, body2_path)
+        body2_prim = body2.GetPrim()
+        UsdPhysics.RigidBodyAPI.Apply(body2_prim)
+        UsdPhysics.CollisionAPI.Apply(body2_prim)
+
+        joint1_path = f"{art_path}/joint1"
+        joint1 = UsdPhysics.RevoluteJoint.Define(stage, joint1_path)
+        joint1.CreateAxisAttr().Set("Z")
+        joint1.CreateBody0Rel().SetTargets([body0_path])
+        joint1.CreateBody1Rel().SetTargets([body1_path])
+        joint1_prim = joint1.GetPrim()
+        joint1_prim.CreateAttribute("mjc:springref", Sdf.ValueTypeNames.Float, True).Set(30.0)
+
+        joint2_path = f"{art_path}/joint2"
+        joint2 = UsdPhysics.PrismaticJoint.Define(stage, joint2_path)
+        joint2.CreateAxisAttr().Set("Z")
+        joint2.CreateBody0Rel().SetTargets([body1_path])
+        joint2.CreateBody1Rel().SetTargets([body2_path])
+        joint2_prim = joint2.GetPrim()
         joint2_prim.CreateAttribute("mjc:springref", Sdf.ValueTypeNames.Float, True).Set(0.25)
 
         builder = newton.ModelBuilder()
@@ -4058,17 +4252,12 @@ class TestMuJoCoAttributes(unittest.TestCase):
         builder.add_usd(stage)
         model = builder.finalize()
         solver = SolverMuJoCo(model, separate_worlds=False)
-        assert hasattr(model, "mujoco")
-        assert hasattr(model.mujoco, "condim")
-        assert np.allclose(model.mujoco.condim.numpy(), [6, 4, 3])
-        assert np.allclose(solver.mjw_model.geom_condim.numpy(), [6, 4, 3])
 
         q_start = model.joint_q_start.numpy()
         revolute_q_start = q_start[1]
         prismatic_q_start = q_start[2]
-        assert hasattr(model.mujoco, "dof_ref")
-        assert np.allclose(solver.mj_model.qpos0[revolute_q_start], np.deg2rad(45), atol=1e-4)
-        assert np.allclose(solver.mj_model.qpos0[prismatic_q_start], 0.5, atol=1e-4)
+
+        assert hasattr(model, "mujoco")
         assert hasattr(model.mujoco, "dof_springref")
         assert np.allclose(solver.mj_model.qpos_spring[revolute_q_start], np.deg2rad(30), atol=1e-4)
         assert np.allclose(solver.mj_model.qpos_spring[prismatic_q_start], 0.25, atol=1e-4)

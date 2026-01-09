@@ -1665,12 +1665,8 @@ class TestImportMjcf(unittest.TestCase):
             for i, (a, e) in enumerate(zip(actual, expected, strict=False)):
                 self.assertAlmostEqual(a, e, places=4, msg=f"eq_solref[{eq_idx}][{i}] should be {e}, got {a}")
 
-
-class TestMJCFRefAttribute(unittest.TestCase):
-    """Test that MJCF 'ref' attribute is correctly parsed to set joint_q."""
-
-    def test_ref_attribute_parsed(self):
-        """Test that 'ref' attribute for hinge and slide joints IS parsed and sets joint_q."""
+    def test_ref_attribute_parsing(self):
+        """Test that 'ref' attribute is parsed as custom attribute."""
         mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
 <mujoco model="test">
     <worldbody>
@@ -1693,25 +1689,17 @@ class TestMJCFRefAttribute(unittest.TestCase):
         builder.add_mjcf(mjcf_content)
         model = builder.finalize()
 
-        joint_q = model.joint_q.numpy()
-        q_start = model.joint_q_start.numpy()
         qd_start = model.joint_qd_start.numpy()
         dof_ref = model.mujoco.dof_ref.numpy()
 
         hinge_idx = model.joint_key.index("hinge")
         self.assertAlmostEqual(dof_ref[qd_start[hinge_idx]], 45.0, places=4)
-        self.assertAlmostEqual(joint_q[q_start[hinge_idx]], np.deg2rad(45), places=4)
 
         slide_idx = model.joint_key.index("slide")
         self.assertAlmostEqual(dof_ref[qd_start[slide_idx]], 0.5, places=4)
-        self.assertAlmostEqual(joint_q[q_start[slide_idx]], 0.5, places=4)
 
-
-class TestMJCFSpringRefAttribute(unittest.TestCase):
-    """Test that MJCF 'springref' attribute is correctly parsed."""
-
-    def test_springref_attribute_parsed(self):
-        """Test that 'springref' attribute IS parsed as custom attribute for hinge and slide joints."""
+    def test_springref_attribute_parsing(self):
+        """Test that 'springref' attribute is parsed for hinge and slide joints."""
         mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
 <mujoco model="test">
     <worldbody>
