@@ -240,6 +240,13 @@ class SolverXPBD(SolverBase):
 
                 self.integrate_particles(model, state_in, state_out, dt)
 
+                # Build/update the particle hash grid for particle-particle contact queries
+                if model.particle_count > 1 and model.particle_grid is not None:
+                    # Search radius must cover the maximum interaction distance used by the contact query
+                    search_radius = model.particle_max_radius * 2.0 + model.particle_cohesion
+                    with wp.ScopedDevice(model.device):
+                        model.particle_grid.build(state_out.particle_q, radius=search_radius)
+
             if model.body_count:
                 body_q = state_out.body_q
                 body_qd = state_out.body_qd
@@ -330,6 +337,7 @@ class SolverXPBD(SolverBase):
 
                         if model.particle_max_radius > 0.0 and model.particle_count > 1:
                             # assert model.particle_grid.reserved, "model.particle_grid must be built, see HashGrid.build()"
+                            assert model.particle_grid is not None
                             wp.launch(
                                 kernel=solve_particle_particle_contacts,
                                 dim=model.particle_count,
