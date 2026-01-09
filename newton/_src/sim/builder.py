@@ -6093,9 +6093,8 @@ class ModelBuilder:
             # hash-grid for particle interactions
             if self.particle_count > 1 and m.particle_max_radius > 0.0:
                 m.particle_grid = wp.HashGrid(128, 128, 128)
-                with wp.ScopedDevice(device):
-                    m.particle_grid.reserve(self.particle_count)
-                    m.particle_grid.build(m.particle_q, radius=m.particle_max_radius * 2.0 + m.particle_cohesion)
+                m.particle_grid.reserve(self.particle_count)
+                m.particle_grid.build(m.particle_q, radius=m.particle_max_radius * 2.0 + m.particle_cohesion)
             else:
                 m.particle_grid = None
 
