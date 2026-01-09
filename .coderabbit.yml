@@ -16,3 +16,6 @@ reviews:
       timeout_ms: 900000
 chat:
   auto_reply: true
+issue_enrichment:
+  auto_enrich:
+    enabled: false

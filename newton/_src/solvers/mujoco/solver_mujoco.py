@@ -51,6 +51,7 @@ from .kernels import (
     convert_mj_coords_to_warp_kernel,
     convert_mjw_contact_to_warp_kernel,
     convert_newton_contacts_to_mjwarp_kernel,
+    convert_solref,
     convert_warp_coords_to_mj_kernel,
     eval_articulation_fk,
     repeat_array_kernel,
@@ -139,11 +140,16 @@ class SolverMuJoCo(SolverBase):
         """Import the MuJoCo Warp dependencies and cache them as class variables."""
         if cls._mujoco is None or cls._mujoco_warp is None:
             try:
-                import mujoco  # noqa: PLC0415
-                import mujoco_warp  # noqa: PLC0415
+                with warnings.catch_warnings():
+                    # Set a filter to make all ImportWarnings "always" appear
+                    # This is useful to debug import errors on Windows, for example
+                    warnings.simplefilter("always", category=ImportWarning)
 
-                cls._mujoco = mujoco
-                cls._mujoco_warp = mujoco_warp
+                    import mujoco  # noqa: PLC0415
+                    import mujoco_warp  # noqa: PLC0415
+
+                    cls._mujoco = mujoco
+                    cls._mujoco_warp = mujoco_warp
             except ImportError as e:
                 raise ImportError(
                     "MuJoCo backend not installed. Please refer to https://github.com/google-deepmind/mujoco_warp for installation instructions."
@@ -403,6 +409,23 @@ class SolverMuJoCo(SolverBase):
         Shape [nworld, nu], dtype int32."""
         self.mjc_mocap_to_newton_jnt: wp.array(dtype=wp.int32, ndim=2) | None = None
         """Mapping from MuJoCo [world, mocap] to Newton joint index. Shape [nworld, nmocap], dtype int32."""
+        self.mjc_eq_to_newton_eq: wp.array(dtype=wp.int32, ndim=2) | None = None
+        """Mapping from MuJoCo [world, eq] to Newton equality constraint index.
+
+        Corresponds to the equality constraints that are created in MuJoCo from Newton's equality constraints.
+        A value of -1 indicates that the MuJoCo equality constraint has been created from a Newton joint, see :attr:`mjc_eq_to_newton_jnt`
+        for the corresponding joint index.
+
+        Shape [nworld, neq], dtype int32."""
+        self.mjc_eq_to_newton_jnt: wp.array(dtype=wp.int32, ndim=2) | None = None
+        """Mapping from MuJoCo [world, eq] to Newton joint index.
+
+        Corresponds to the equality constraints that are created in MuJoCo from Newton joints that have no associated articulation,
+        i.e. where :attr:`newton.Model.joint_articulation` is -1 for the joint which results in 2 equality constraints being created in MuJoCo.
+        A value of -1 indicates that the MuJoCo equality constraint is not associated with a Newton joint but an explicitly created Newton equality constraint,
+        see :attr:`mjc_eq_to_newton_eq` for the corresponding equality constraint index.
+
+        Shape [nworld, neq], dtype int32."""
 
         # --- Conditional/lazy mappings ---
         self.newton_shape_to_mjc_geom: wp.array(dtype=wp.int32) | None = None
@@ -749,6 +772,7 @@ class SolverMuJoCo(SolverBase):
                 dim=model.articulation_count,
                 inputs=[
                     model.articulation_start,
+                    model.joint_articulation,
                     state.joint_q,
                     state.joint_qd,
                     model.joint_q_start,
@@ -948,7 +972,6 @@ class SolverMuJoCo(SolverBase):
         actuated_axes: list[int] | None = None,
         skip_visual_only_geoms: bool = True,
         include_sites: bool = True,
-        add_axes: bool = False,
         mesh_maxhullvert: int = MESH_MAXHULLVERT,
         ls_parallel: bool = False,
     ) -> tuple[MjWarpModel, MjWarpData, MjModel, MjData]:
@@ -1058,38 +1081,9 @@ class SolverMuJoCo(SolverBase):
 
         spec.compiler.inertiafromgeom = mujoco.mjtInertiaFromGeom.mjINERTIAFROMGEOM_AUTO
 
-        if add_axes:
-            # add axes for debug visualization in MuJoCo viewer when loading the generated XML
-            spec.worldbody.add_geom(
-                type=mujoco.mjtGeom.mjGEOM_CYLINDER,
-                name="axis_x",
-                fromto=[0.0, 0.0, 0.0, 1.0, 0.0, 0.0],
-                rgba=[1.0, 0.0, 0.0, 1.0],
-                size=[0.01, 0.01, 0.01],
-                contype=0,
-                conaffinity=0,
-            )
-            spec.worldbody.add_geom(
-                type=mujoco.mjtGeom.mjGEOM_CYLINDER,
-                name="axis_y",
-                fromto=[0.0, 0.0, 0.0, 0.0, 1.0, 0.0],
-                rgba=[0.0, 1.0, 0.0, 1.0],
-                size=[0.01, 0.01, 0.01],
-                contype=0,
-                conaffinity=0,
-            )
-            spec.worldbody.add_geom(
-                type=mujoco.mjtGeom.mjGEOM_CYLINDER,
-                name="axis_z",
-                fromto=[0.0, 0.0, 0.0, 0.0, 0.0, 1.0],
-                rgba=[0.0, 0.0, 1.0, 1.0],
-                size=[0.01, 0.01, 0.01],
-                contype=0,
-                conaffinity=0,
-            )
-
         joint_parent = model.joint_parent.numpy()
         joint_child = model.joint_child.numpy()
+        joint_articulation = model.joint_articulation.numpy()
         joint_parent_xform = model.joint_X_p.numpy()
         joint_child_xform = model.joint_X_c.numpy()
         joint_limit_lower = model.joint_limit_lower.numpy()
@@ -1118,6 +1112,8 @@ class SolverMuJoCo(SolverBase):
         shape_flags = model.shape_flags.numpy()
         shape_world = model.shape_world.numpy()
         shape_mu = model.shape_material_mu.numpy()
+        shape_ke = model.shape_material_ke.numpy()
+        shape_kd = model.shape_material_kd.numpy()
         shape_torsional_friction = model.shape_material_torsional_friction.numpy()
         shape_rolling_friction = model.shape_material_rolling_friction.numpy()
 
@@ -1201,27 +1197,23 @@ class SolverMuJoCo(SolverBase):
         body_name_counts = {}
         joint_names = {}
 
-        # number of shapes which are replicated per world (excludes singular static shapes from a negative group)
-        shape_range_len = 0
-
         if separate_worlds:
             # determine which shapes, bodies and joints belong to the first world
-            # based on the shape world: we pick objects from the first world and global shapes
-            non_negatives = shape_world[shape_world >= 0]
+            # based on the body world indices: we pick objects from the first world and global shapes
+            non_negatives = body_world[body_world >= 0]
             if len(non_negatives) > 0:
-                first_group = np.min(non_negatives)
-                shape_range_len = len(np.where(shape_world == first_group)[0])
+                first_world = np.min(non_negatives)
             else:
-                first_group = -1
-                shape_range_len = model.shape_count
-            selected_shapes = np.where((shape_world == first_group) | (shape_world < 0))[0]
-            selected_bodies = np.where((body_world == first_group) | (body_world < 0))[0]
-            selected_joints = np.where((joint_world == first_group) | (joint_world < 0))[0]
-            selected_constraints = np.where((eq_constraint_world == first_group) | (eq_constraint_world < 0))[0]
+                first_world = -1
+            selected_shapes = np.where((shape_world == first_world) | (shape_world < 0))[0].astype(np.int32)
+            selected_bodies = np.where((body_world == first_world) | (body_world < 0))[0].astype(np.int32)
+            selected_joints = np.where((joint_world == first_world) | (joint_world < 0))[0].astype(np.int32)
+            selected_constraints = np.where((eq_constraint_world == first_world) | (eq_constraint_world < 0))[0].astype(
+                np.int32
+            )
         else:
             # if we are not separating environments to worlds, we use all shapes, bodies, joints
-            first_group = 0
-            shape_range_len = model.shape_count
+            first_world = 0
 
             # if we are not separating worlds, we use all shapes, bodies, joints, constraints
             selected_shapes = np.arange(model.shape_count, dtype=np.int32)
@@ -1229,11 +1221,17 @@ class SolverMuJoCo(SolverBase):
             selected_joints = np.arange(model.joint_count, dtype=np.int32)
             selected_constraints = np.arange(model.equality_constraint_count, dtype=np.int32)
 
+        # get the shapes for the first environment
+        first_env_shapes = np.where(shape_world == first_world)[0]
+
+        # split joints into loop and non-loop joints (loop joints will be instantiated separately as equality constraints)
+        joints_loop = selected_joints[joint_articulation[selected_joints] == -1]
+        joints_non_loop = selected_joints[joint_articulation[selected_joints] >= 0]
         # sort joints topologically depth-first since this is the order that will also be used
         # for placing bodies in the MuJoCo model
-        joints_simple = list(zip(joint_parent[selected_joints], joint_child[selected_joints], strict=False))
-        joint_order = topological_sort(joints_simple, use_dfs=True)
-        if any(joint_order[i] != i for i in range(len(joints_simple))):
+        joints_simple = [(joint_parent[i], joint_child[i]) for i in joints_non_loop]
+        joint_order = topological_sort(joints_simple, use_dfs=True, custom_indices=joints_non_loop)
+        if any(joint_order[i] != joints_non_loop[i] for i in range(len(joints_simple))):
             warnings.warn(
                 "Joint order is not in depth-first topological order while converting Newton model to MuJoCo, this may lead to diverging kinematics between MuJoCo and Newton.",
                 stacklevel=2,
@@ -1367,6 +1365,10 @@ class SolverMuJoCo(SolverBase):
                     torsional,
                     rolling,
                 ]
+
+                # set solref from shape stiffness and damping
+                geom_params["solref"] = convert_solref(float(shape_ke[shape]), float(shape_kd[shape]), 1.0, 1.0)
+
                 if shape_condim is not None:
                     geom_params["condim"] = shape_condim[shape]
                 if shape_priority is not None:
@@ -1398,16 +1400,13 @@ class SolverMuJoCo(SolverBase):
         num_mjc_joints = 0
 
         # add joints, bodies and geoms
-        for ji in joint_order:
-            parent, child = joints_simple[ji]
+        for j in joint_order:
+            parent, child = int(joint_parent[j]), int(joint_child[j])
             if child in body_mapping:
                 raise ValueError(f"Body {child} already exists in the mapping")
 
             # add body
             body_mapping[child] = len(mj_bodies)
-
-            # use the correct global joint index
-            j = selected_joints[ji]
 
             # check if fixed-base articulation
             fixed_base = False
@@ -1416,11 +1415,11 @@ class SolverMuJoCo(SolverBase):
 
             # this assumes that the joint position is 0
             tf = wp.transform(*joint_parent_xform[j])
-            tf = tf * wp.transform_inverse(wp.transform(*joint_child_xform[j]))
+            child_xform = wp.transform(*joint_child_xform[j])
+            tf = tf * wp.transform_inverse(child_xform)
 
-            jc_xform = wp.transform(*joint_child_xform[j])
-            joint_pos = jc_xform.p
-            joint_rot = jc_xform.q
+            joint_pos = child_xform.p
+            joint_rot = child_xform.q
 
             # ensure unique body name
             name = model.body_key[child]
@@ -1458,7 +1457,7 @@ class SolverMuJoCo(SolverBase):
                     joint_names[name] += 1
                     name = f"{name}_{joint_names[name]}"
 
-            joint_mjc_dof_start[ji] = num_dofs
+            joint_mjc_dof_start[j] = num_dofs
 
             if j_type == JointType.FREE:
                 body.add_joint(
@@ -1722,9 +1721,36 @@ class SolverMuJoCo(SolverBase):
                 if eq_constraint_solref is not None:
                     eq.solref = eq_constraint_solref[i]
 
-        assert len(spec.geoms) == colliding_shapes_per_world, (
-            "The number of geoms in the MuJoCo model does not match the number of colliding shapes in the Newton model."
-        )
+        # add connect constraints for joints that are excluded from the articulation
+        # (the UsdPhysics way of defining loop closures)
+        mjc_eq_to_newton_jnt = {}
+        for j in joints_loop:
+            eq = spec.add_equality(objtype=mujoco.mjtObj.mjOBJ_BODY)
+            eq.type = mujoco.mjtEq.mjEQ_CONNECT
+            eq.active = True
+            eq.name1 = model.body_key[joint_parent[j]]
+            eq.name2 = model.body_key[joint_child[j]]
+            eq.data[0:3] = joint_parent_xform[j][:3]
+            mjc_eq_to_newton_jnt[eq.id] = j
+
+            eq = spec.add_equality(objtype=mujoco.mjtObj.mjOBJ_BODY)
+            eq.type = mujoco.mjtEq.mjEQ_CONNECT
+            eq.active = True
+            eq.name1 = model.body_key[joint_child[j]]
+            eq.name2 = model.body_key[joint_parent[j]]
+            eq.data[0:3] = joint_child_xform[j][:3]
+            mjc_eq_to_newton_jnt[eq.id] = j
+
+        if skip_visual_only_geoms and len(spec.geoms) != colliding_shapes_per_world:
+            raise ValueError(
+                "The number of geoms in the MuJoCo model does not match the number of colliding shapes in the Newton model."
+            )
+
+        if len(spec.bodies) != len(selected_bodies) + 1:  # +1 for the world body
+            raise ValueError(
+                "The number of bodies in the MuJoCo model does not match the number of selected bodies in the Newton model. "
+                "Make sure that each body has an incoming joint and that the joints are part of an articulation."
+            )
 
         # add contact exclusions between bodies to ensure parent <> child collisions are ignored
         # even when one of the bodies is static
@@ -1777,11 +1803,10 @@ class SolverMuJoCo(SolverBase):
             geom_to_shape_idx_np = np.full((self.mj_model.ngeom,), -1, dtype=np.int32)
 
             # Find the minimum shape index for the first non-static group to use as the base
-            first_env_shapes = np.where(shape_world == first_group)[0]
             first_env_shape_base = int(np.min(first_env_shapes)) if len(first_env_shapes) > 0 else 0
 
             # Store for lazy inverse creation
-            self._shapes_per_world = shape_range_len
+            self._shapes_per_world = len(first_env_shapes)
             self._first_env_shape_base = first_env_shape_base
 
             # Per-geom static mask (True if static, False otherwise)
@@ -1809,7 +1834,7 @@ class SolverMuJoCo(SolverBase):
                     inputs=[
                         geom_to_shape_idx_wp,
                         geom_is_static_wp,
-                        shape_range_len,
+                        self._shapes_per_world,
                         first_env_shape_base,
                     ],
                     outputs=[
@@ -1890,9 +1915,8 @@ class SolverMuJoCo(SolverBase):
             nv = self.mj_model.nv  # Number of DOFs in MuJoCo
             mjc_dof_to_newton_dof_np = np.full((nworld, nv), -1, dtype=np.int32)
             # joint_mjc_dof_start tells us where each Newton template joint's DOFs start in MuJoCo
-            for ji, mjc_dof_start in enumerate(joint_mjc_dof_start):
-                if mjc_dof_start >= 0 and ji < len(selected_joints):
-                    j = selected_joints[ji]
+            for j, mjc_dof_start in enumerate(joint_mjc_dof_start):
+                if mjc_dof_start >= 0:
                     newton_dof_start = joint_qd_start[j]
                     lin_count, ang_count = joint_dof_dim[j]
                     total_dofs = lin_count + ang_count
@@ -1926,15 +1950,18 @@ class SolverMuJoCo(SolverBase):
             # Create mjc_eq_to_newton_eq: MuJoCo[world, eq] -> Newton equality constraint
             # selected_constraints[idx] is the Newton template constraint index
             neq = self.mj_model.neq
-            eq_constraints_per_world = (
-                model.equality_constraint_count // model.num_worlds if model.equality_constraint_count > 0 else 0
-            )
+            eq_constraints_per_world = model.equality_constraint_count // model.num_worlds
             mjc_eq_to_newton_eq_np = np.full((nworld, neq), -1, dtype=np.int32)
+            mjc_eq_to_newton_jnt_np = np.full((nworld, neq), -1, dtype=np.int32)
             for mjc_eq, newton_eq in enumerate(selected_constraints):
                 template_eq = newton_eq % eq_constraints_per_world if eq_constraints_per_world > 0 else newton_eq
                 for w in range(nworld):
                     mjc_eq_to_newton_eq_np[w, mjc_eq] = w * eq_constraints_per_world + template_eq
+            for mjc_eq, newton_jnt in mjc_eq_to_newton_jnt.items():
+                for w in range(nworld):
+                    mjc_eq_to_newton_jnt_np[w, mjc_eq] = w * joints_per_world + newton_jnt
             self.mjc_eq_to_newton_eq = wp.array(mjc_eq_to_newton_eq_np, dtype=wp.int32)
+            self.mjc_eq_to_newton_jnt = wp.array(mjc_eq_to_newton_jnt_np, dtype=wp.int32)
 
             # set mjwarp-only settings
             self.mjw_model.opt.ls_parallel = ls_parallel
@@ -2333,7 +2360,15 @@ class SolverMuJoCo(SolverBase):
                 )
 
     def update_eq_properties(self):
-        """Update equality constraint properties including solref in the MuJoCo model."""
+        """Update equality constraint properties including solref in the MuJoCo model.
+
+        .. note::
+
+            Note this update only affects the equality constraints explicitly defined in Newton,
+            not the equality constraints defined for joints that are excluded from articulations
+            (i.e. joints that have joint_articulation == -1, for example loop-closing joints).
+            Equality constraints for these joints are defined after the regular equality constraints
+            in the MuJoCo model."""
         if self.model.equality_constraint_count == 0:
             return
 

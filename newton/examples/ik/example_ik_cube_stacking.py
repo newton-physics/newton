@@ -237,7 +237,7 @@ class Example:
             self.model,
             solver="newton",
             integrator="implicitfast",
-            iterations=10,
+            iterations=20,
             ls_parallel=True,
             ls_iterations=100,
             nconmax=1000,
