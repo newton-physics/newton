@@ -191,6 +191,8 @@ class Model:
         """Shape torsional friction coefficient (resistance to spinning at contact point), shape [shape_count], float."""
         self.shape_material_rolling_friction = None
         """Shape rolling friction coefficient (resistance to rolling motion), shape [shape_count], float."""
+        self.shape_material_k_hydro = None
+        """Shape hydroelastic stiffness coefficient, shape [shape_count], float."""
         self.shape_contact_margin = None
         """Shape contact margin for collision detection, shape [shape_count], float."""
 
@@ -317,6 +319,8 @@ class Model:
         """Generalized joint velocity targets, shape [joint_dof_count], float."""
         self.joint_type = None
         """Joint type, shape [joint_count], int."""
+        self.joint_articulation = None
+        """Joint articulation index (-1 if not in any articulation), shape [joint_count], int."""
         self.joint_parent = None
         """Joint parent body indices, shape [joint_count], int."""
         self.joint_child = None
@@ -344,7 +348,7 @@ class Model:
         self.joint_dof_dim = None
         """Number of linear and angular dofs per joint, shape [joint_count, 2], int."""
         self.joint_enabled = None
-        """Controls which joint is simulated (bodies become disconnected if False), shape [joint_count], int."""
+        """Controls which joint is simulated (bodies become disconnected if False, only supported by :class:`~newton.solvers.SolverXPBD` and :class:`~newton.solvers.SolverSemiImplicit`), shape [joint_count], bool."""
         self.joint_limit_lower = None
         """Joint lower position limits, shape [joint_dof_count], float."""
         self.joint_limit_upper = None
@@ -453,6 +457,11 @@ class Model:
         self.particle_colors = None
         """Color assignment for every particle."""
 
+        self.body_color_groups = []
+        """Coloring of all rigid bodies for Gauss-Seidel iteration (see :class:`~newton.solvers.SolverVBD`). Each array contains indices of bodies sharing the same color."""
+        self.body_colors = None
+        """Color assignment for every rigid body."""
+
         self.device = wp.get_device(device)
         """Device on which the Model was allocated."""
 
@@ -478,6 +487,7 @@ class Model:
         self.attribute_frequency["joint_parent"] = ModelAttributeFrequency.JOINT
         self.attribute_frequency["joint_child"] = ModelAttributeFrequency.JOINT
         self.attribute_frequency["joint_ancestor"] = ModelAttributeFrequency.JOINT
+        self.attribute_frequency["joint_articulation"] = ModelAttributeFrequency.JOINT
         self.attribute_frequency["joint_X_p"] = ModelAttributeFrequency.JOINT
         self.attribute_frequency["joint_X_c"] = ModelAttributeFrequency.JOINT
         self.attribute_frequency["joint_dof_dim"] = ModelAttributeFrequency.JOINT
@@ -517,6 +527,8 @@ class Model:
         self.attribute_frequency["shape_material_restitution"] = ModelAttributeFrequency.SHAPE
         self.attribute_frequency["shape_material_torsional_friction"] = ModelAttributeFrequency.SHAPE
         self.attribute_frequency["shape_material_rolling_friction"] = ModelAttributeFrequency.SHAPE
+        self.attribute_frequency["shape_material_k_hydro"] = ModelAttributeFrequency.SHAPE
+        self.attribute_frequency["shape_contact_margin"] = ModelAttributeFrequency.SHAPE
         self.attribute_frequency["shape_type"] = ModelAttributeFrequency.SHAPE
         self.attribute_frequency["shape_is_solid"] = ModelAttributeFrequency.SHAPE
         self.attribute_frequency["shape_thickness"] = ModelAttributeFrequency.SHAPE

@@ -170,7 +170,7 @@ By default, both ``load_sites`` and ``load_visual_shapes`` are set to ``True``.
 Using Sites with Sensors
 ------------------------
 
-Sites are commonly used as reference frames for sensors, particularly the ``FrameTransformSensor`` which computes relative poses between objects and reference frames.
+Sites are commonly used as reference frames for sensors, particularly the ``SensorFrameTransform`` which computes relative poses between objects and reference frames.
 
 For detailed information on using sites with sensors, see :doc:`sensors`.
 

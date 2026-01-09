@@ -16,7 +16,7 @@
 ###########################################################################
 # Example Contact Sensor
 #
-# Shows how to use the ContactSensor class to evaluate both net contact
+# Shows how to use the SensorContact class to evaluate both net contact
 # forces and contact forces between individual objects.
 # The flap has a contact sensor registering the net contact force of the
 # objects on top. The upper and lower plates' sensors will only register
@@ -34,7 +34,7 @@ import warp as wp
 import newton
 import newton.examples
 from newton import Contacts
-from newton.sensors import ContactSensor, populate_contacts
+from newton.sensors import SensorContact, populate_contacts
 from newton.tests.unittest_utils import find_nonfinite_members
 
 
@@ -55,7 +55,7 @@ class Example:
             self.viewer.register_ui_callback(self.plot_window.render, "free")
 
         builder = newton.ModelBuilder()
-        builder.add_usd(newton.examples.get_asset("contact_sensor_scene.usda"))
+        builder.add_usd(newton.examples.get_asset("sensor_contact_scene.usda"))
         newton.solvers.SolverMuJoCo.register_custom_attributes(builder)
 
         builder.add_ground_plane()
@@ -65,9 +65,9 @@ class Example:
         # finalize model
         self.model = builder.finalize()
 
-        self.flap_contact_sensor = ContactSensor(self.model, sensing_obj_shapes="*Flap", verbose=True)
+        self.flap_contact_sensor = SensorContact(self.model, sensing_obj_shapes="*Flap", verbose=True)
 
-        self.plate_contact_sensor = ContactSensor(
+        self.plate_contact_sensor = SensorContact(
             self.model,
             sensing_obj_shapes=".*Plate.*",
             counterpart_shapes=".*Cube.*|.*Sphere.*",

@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Tests for FrameTransformSensor."""
+"""Tests for SensorFrameTransform."""
 
 import unittest
 
@@ -22,11 +22,11 @@ import warp as wp
 
 import newton
 from newton._src.sim.articulation import eval_fk
-from newton.sensors import FrameTransformSensor
+from newton.sensors import SensorFrameTransform
 
 
-class TestFrameTransformSensor(unittest.TestCase):
-    """Test FrameTransformSensor functionality."""
+class TestSensorFrameTransform(unittest.TestCase):
+    """Test SensorFrameTransform functionality."""
 
     def test_sensor_creation(self):
         """Test basic sensor creation."""
@@ -39,7 +39,7 @@ class TestFrameTransformSensor(unittest.TestCase):
         model = builder.finalize()
 
         # Create sensor
-        sensor = FrameTransformSensor(model, shapes=[site1], reference_sites=[site2])
+        sensor = SensorFrameTransform(model, shapes=[site1], reference_sites=[site2])
 
         # Both sites are at the same location (identity transform), verify they remain so
         state = model.state()
@@ -66,7 +66,7 @@ class TestFrameTransformSensor(unittest.TestCase):
         model = builder.finalize()
 
         # Create sensor with one reference for multiple shapes
-        sensor = FrameTransformSensor(
+        sensor = SensorFrameTransform(
             model,
             shapes=[site1, site2, site3],
             reference_sites=[ref_site],  # Single reference
@@ -83,7 +83,7 @@ class TestFrameTransformSensor(unittest.TestCase):
         model = builder.finalize()
 
         with self.assertRaises(ValueError):
-            FrameTransformSensor(model, shapes=[], reference_sites=[site])
+            SensorFrameTransform(model, shapes=[], reference_sites=[site])
 
     def test_sensor_validation_empty_references(self):
         """Test error when reference_sites is empty."""
@@ -93,7 +93,7 @@ class TestFrameTransformSensor(unittest.TestCase):
         model = builder.finalize()
 
         with self.assertRaises(ValueError):
-            FrameTransformSensor(model, shapes=[site], reference_sites=[])
+            SensorFrameTransform(model, shapes=[site], reference_sites=[])
 
     def test_sensor_validation_invalid_shape_index(self):
         """Test error when shape index is out of bounds."""
@@ -103,7 +103,7 @@ class TestFrameTransformSensor(unittest.TestCase):
         model = builder.finalize()
 
         with self.assertRaises(ValueError):
-            FrameTransformSensor(model, shapes=[9999], reference_sites=[site])
+            SensorFrameTransform(model, shapes=[9999], reference_sites=[site])
 
     def test_sensor_validation_invalid_reference_index(self):
         """Test error when reference index is out of bounds."""
@@ -113,7 +113,7 @@ class TestFrameTransformSensor(unittest.TestCase):
         model = builder.finalize()
 
         with self.assertRaises(ValueError):
-            FrameTransformSensor(model, shapes=[site], reference_sites=[9999])
+            SensorFrameTransform(model, shapes=[site], reference_sites=[9999])
 
     def test_sensor_validation_reference_not_site(self):
         """Test error when reference index is not a site."""
@@ -124,7 +124,7 @@ class TestFrameTransformSensor(unittest.TestCase):
         model = builder.finalize()
 
         with self.assertRaises(ValueError):
-            FrameTransformSensor(model, shapes=[site], reference_sites=[shape])
+            SensorFrameTransform(model, shapes=[site], reference_sites=[shape])
 
     def test_sensor_validation_mismatched_lengths(self):
         """Test error when reference indices don't match shape indices."""
@@ -137,7 +137,7 @@ class TestFrameTransformSensor(unittest.TestCase):
 
         # 2 shapes but 3 references (not 1 or 2)
         with self.assertRaises(ValueError):
-            FrameTransformSensor(model, shapes=[site1, site2], reference_sites=[site3, site3, site3])
+            SensorFrameTransform(model, shapes=[site1, site2], reference_sites=[site3, site3, site3])
 
     def test_sensor_site_to_site_same_body(self):
         """Test measuring site relative to another site on same body."""
@@ -167,7 +167,7 @@ class TestFrameTransformSensor(unittest.TestCase):
 
         eval_fk(model, state.joint_q, state.joint_qd, state)
 
-        sensor = FrameTransformSensor(model, shapes=[target_site], reference_sites=[ref_site])
+        sensor = SensorFrameTransform(model, shapes=[target_site], reference_sites=[ref_site])
 
         sensor.update(model, state)
         transforms = sensor.transforms.numpy()
@@ -224,7 +224,7 @@ class TestFrameTransformSensor(unittest.TestCase):
 
         eval_fk(model, state.joint_q, state.joint_qd, state)
 
-        sensor = FrameTransformSensor(model, shapes=[target_site], reference_sites=[ref_site])
+        sensor = SensorFrameTransform(model, shapes=[target_site], reference_sites=[ref_site])
 
         sensor.update(model, state)
         transforms = sensor.transforms.numpy()
@@ -280,7 +280,7 @@ class TestFrameTransformSensor(unittest.TestCase):
 
         eval_fk(model, state.joint_q, state.joint_qd, state)
 
-        sensor = FrameTransformSensor(model, shapes=[geom], reference_sites=[ref_site])
+        sensor = SensorFrameTransform(model, shapes=[geom], reference_sites=[ref_site])
 
         sensor.update(model, state)
         transforms = sensor.transforms.numpy()
@@ -306,7 +306,7 @@ class TestFrameTransformSensor(unittest.TestCase):
 
         eval_fk(model, state.joint_q, state.joint_qd, state)
 
-        sensor = FrameTransformSensor(
+        sensor = SensorFrameTransform(
             model,
             shapes=[site_a, site_b, site_c],
             reference_sites=[ref_site],  # Single reference for all
@@ -344,7 +344,7 @@ class TestFrameTransformSensor(unittest.TestCase):
 
         eval_fk(model, state.joint_q, state.joint_qd, state)
 
-        sensor = FrameTransformSensor(model, shapes=[moving_site], reference_sites=[world_site])
+        sensor = SensorFrameTransform(model, shapes=[moving_site], reference_sites=[world_site])
 
         sensor.update(model, state)
         transforms = sensor.transforms.numpy()
@@ -376,7 +376,7 @@ class TestFrameTransformSensor(unittest.TestCase):
 
         eval_fk(model, state.joint_q, state.joint_qd, state)
 
-        sensor = FrameTransformSensor(model, shapes=[target_site], reference_sites=[ref_site])
+        sensor = SensorFrameTransform(model, shapes=[target_site], reference_sites=[ref_site])
 
         sensor.update(model, state)
         transforms = sensor.transforms.numpy()
@@ -407,7 +407,7 @@ class TestFrameTransformSensor(unittest.TestCase):
         state = model.state()
         eval_fk(model, state.joint_q, state.joint_qd, state)
 
-        sensor = FrameTransformSensor(model, shapes=[target_site], reference_sites=[ref_site])
+        sensor = SensorFrameTransform(model, shapes=[target_site], reference_sites=[ref_site])
         sensor.update(model, state)
         transforms = sensor.transforms.numpy()
 
@@ -459,7 +459,7 @@ class TestFrameTransformSensor(unittest.TestCase):
         # Test with joints at zero position
         eval_fk(model, state.joint_q, state.joint_qd, state)
 
-        sensor = FrameTransformSensor(model, shapes=[site1, site2], reference_sites=[ref_site])
+        sensor = SensorFrameTransform(model, shapes=[site1, site2], reference_sites=[ref_site])
         sensor.update(model, state)
         transforms = sensor.transforms.numpy()
 
@@ -562,7 +562,7 @@ class TestFrameTransformSensor(unittest.TestCase):
             (2.2, 0, 0),  # index 6: b2_s2
         ]
 
-        sensor = FrameTransformSensor(model, shapes=sparse_indices, reference_sites=[ref_site])
+        sensor = SensorFrameTransform(model, shapes=sparse_indices, reference_sites=[ref_site])
 
         sensor.update(model, state)
         transforms = sensor.transforms.numpy()
