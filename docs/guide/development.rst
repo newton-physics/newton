@@ -92,6 +92,28 @@ Most tests run when the ``dev`` extras are installed. The tests that run example
             # run tests
             python -m newton.tests
 
+Specific Newton examples can be tested in isolation via the ``-k`` argument:
+
+.. tab-set::
+    :sync-group: env
+
+    .. tab-item:: uv
+        :sync: uv
+        
+        .. code-block:: console
+
+            # test the basic_shapes example
+            uv run --extra dev -m newton.tests.test_examples -k test_basic.example_basic_shapes
+
+    .. tab-item:: venv
+        :sync: venv
+
+        .. code-block:: console
+
+            # test the basic_shapes example
+            python -m newton.tests.test_examples -k test_basic.example_basic_shapes
+
+
 To generate a coverage report:
 
 .. tab-set::

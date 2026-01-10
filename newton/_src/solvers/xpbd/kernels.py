@@ -282,7 +282,7 @@ def solve_particle_particle_contacts(
 
                 # friction
                 vn = wp.dot(n, vrel)
-                vt = v - n * vn
+                vt = vrel - n * vn
 
                 lambda_f = wp.max(k_mu * lambda_n, -wp.length(vt) * dt)
                 delta_f = wp.normalize(vt) * lambda_f

@@ -156,13 +156,13 @@ class Model:
         """Particle cohesion strength."""
         self.particle_adhesion = 0.0
         """Particle adhesion strength."""
-        self.particle_grid = None
+        self.particle_grid: wp.HashGrid | None = None
         """HashGrid instance for accelerated simulation of particle interactions."""
-        self.particle_flags = None
+        self.particle_flags: wp.array | None = None
         """Particle enabled state, shape [particle_count], int."""
-        self.particle_max_velocity = 1e5
+        self.particle_max_velocity: float = 1e5
         """Maximum particle velocity (to prevent instability)."""
-        self.particle_world = None
+        self.particle_world: wp.array | None = None
         """World index for each particle, shape [particle_count], int. -1 for global."""
 
         self.shape_key = []
