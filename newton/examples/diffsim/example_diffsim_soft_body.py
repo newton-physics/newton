@@ -26,6 +26,7 @@
 # Command: python -m newton.examples diffsim_soft_body
 #
 ###########################################################################
+
 import numpy as np
 import warp as wp
 import warp.optim
@@ -102,6 +103,10 @@ class Example:
 
         # Create FEM model.
         self.model = self.create_model()
+
+        # ! manually disable particle-particle contact handling because the gradient computation
+        # ! involving the eval_particle_contact kernel is not correct
+        self.model.particle_grid = None
 
         self.solver = newton.solvers.SolverSemiImplicit(self.model)
 
