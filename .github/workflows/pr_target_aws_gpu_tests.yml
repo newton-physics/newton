@@ -1,4 +1,4 @@
-name: Pull Request - AWS GPU Benchmarks
+name: Pull Request - AWS GPU Tests
 
 on:
   pull_request_target:
@@ -60,14 +60,13 @@ jobs:
       - name: Approval granted
         run: echo "Manual approval granted for external PR"
 
-  run-gpu-benchmarks:
-    name: Run GPU Benchmarks
+  run-gpu-tests:
+    name: Run GPU Tests
     needs:
       - check-author-membership
       - require-approval
     if: github.repository == 'newton-physics/newton' && (!cancelled())
-    uses: ./.github/workflows/aws_gpu_benchmarks.yml
+    uses: ./.github/workflows/aws_gpu_tests.yml
     with:
       ref: ${{ github.event.pull_request.head.sha }}
-      base_ref: ${{ github.event.pull_request.base.sha }}
     secrets: inherit
