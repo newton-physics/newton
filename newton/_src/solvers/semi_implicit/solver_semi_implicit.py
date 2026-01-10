@@ -102,14 +102,14 @@ class SolverSemiImplicit(SolverBase):
         Simulate the model for a given time step using the given control input.
 
         Args:
-            state_in (State): The input state.
-            state_out (State): The output state.
-            control (Control): The control input.
+            state_in: The input state.
+            state_out: The output state.
+            control: The control input.
                 Defaults to `None` which means the control values from the
                 :class:`Model` are used.
-            contacts (Contacts): The contact information.
+            contacts: The contact information.
                 Defaults to `None` which means no contacts are used.
-            dt (float): The time step (typically in seconds).
+            dt: The time step (typically in seconds).
 
         .. warning::
             The ``eval_particle_contact`` kernel for particle-particle contact handling may corrupt the gradient computation
