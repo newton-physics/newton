@@ -112,7 +112,8 @@ class SolverSemiImplicit(SolverBase):
             dt (float): The time step (typically in seconds).
 
         .. warning::
-            The ``eval_particle_contact`` kernel for particle-particle contact handling may corrupt the gradient computation.
+            The ``eval_particle_contact`` kernel for particle-particle contact handling may corrupt the gradient computation
+            for simulations involving particle collisions.
             To disable it, set :attr:`newton.Model.particle_grid` to `None` prior to calling :meth:`step`.
         """
         with wp.ScopedTimer("simulate", False):

@@ -104,10 +104,6 @@ class Example:
         # Create FEM model.
         self.model = self.create_model()
 
-        # ! manually disable particle-particle contact handling because the gradient computation
-        # ! involving the eval_particle_contact kernel is not correct
-        self.model.particle_grid = None
-
         self.solver = newton.solvers.SolverSemiImplicit(self.model)
 
         # allocate sim states for trajectory, control and contacts

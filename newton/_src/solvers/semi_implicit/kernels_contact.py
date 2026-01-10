@@ -569,9 +569,6 @@ def eval_body_contact(
 
 def eval_particle_contact_forces(model: Model, state: State, particle_f: wp.array):
     if model.particle_count > 1 and model.particle_grid is not None:
-        model.particle_grid.build(
-            state.particle_q, radius=model.particle_max_radius * 2.0 + model.particle_cohesion + model.particle_adhesion
-        )
         wp.launch(
             kernel=eval_particle_contact,
             dim=model.particle_count,

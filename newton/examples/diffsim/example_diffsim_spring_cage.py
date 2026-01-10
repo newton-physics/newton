@@ -115,9 +115,6 @@ class Example:
         # finalize model
         # use `requires_grad=True` to create a model for differentiable simulation
         self.model = scene.finalize(requires_grad=True)
-        # ! manually disable particle-particle contact handling because the gradient computation
-        # ! involving the eval_particle_contact kernel is not correct
-        self.model.particle_grid = None
 
         # Use the SemiImplicit integrator for stepping through the simulation.
         self.solver = newton.solvers.SolverSemiImplicit(self.model)

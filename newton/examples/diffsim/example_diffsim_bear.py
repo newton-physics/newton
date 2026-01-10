@@ -159,10 +159,6 @@ class Example:
         # use `requires_grad=True` to create a model for differentiable simulation
         self.model = scene.finalize(requires_grad=True)
 
-        # ! manually disable particle-particle contact handling because the gradient computation
-        # ! involving the eval_particle_contact kernel is not correct
-        self.model.particle_grid = None
-
         self.model.soft_contact_ke = ke
         self.model.soft_contact_kf = kf
         self.model.soft_contact_kd = kd
