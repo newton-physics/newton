@@ -100,6 +100,11 @@ class SolverXPBD(SolverBase):
         self._particle_delta_counter = 0
         self._body_delta_counter = 0
 
+        if model.particle_count > 1 and model.particle_grid is not None:
+            # reserve space for the particle hash grid
+            with wp.ScopedDevice(model.device):
+                model.particle_grid.reserve(model.particle_count)
+
     def apply_particle_deltas(
         self,
         model: Model,
