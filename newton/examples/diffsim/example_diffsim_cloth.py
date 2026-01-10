@@ -111,6 +111,10 @@ class Example:
         self.solver = newton.solvers.SolverSemiImplicit(self.model)
         self.solver.enable_tri_contact = False
 
+        # ! manually disable particle-particle contact handling because the gradient computation
+        # ! involving the eval_particle_contact kernel is not correct
+        self.model.particle_grid = None
+
         # allocate sim states for trajectory (control and contacts are not used in this example)
         self.states = [self.model.state() for _ in range(self.sim_steps * self.sim_substeps + 1)]
         self.control = self.model.control()
