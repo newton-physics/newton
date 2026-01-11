@@ -13,5 +13,6 @@ on:
 
 jobs:
   run-tests:
+    if: github.repository == 'newton-physics/newton'
     uses: ./.github/workflows/aws_gpu_tests.yml
     secrets: inherit
