@@ -49,8 +49,8 @@ class Example:
 
         Returns:
             Tuple of (points, edge_indices, quaternions):
-            - points: List of capsule center positions (num_elements + 1).
-            - edge_indices: Flattened array of edge connectivity (2*num_elements).
+            - points: List of segment endpoints in world space (num_elements + 1).
+            - edge_indices: Flattened array of edge connectivity (2*num_elements). (Not used by `add_rod()`.)
             - quaternions: List of capsule orientations using parallel transport (num_elements).
         """
         if pos is None:
@@ -164,7 +164,7 @@ class Example:
 
         y_separation = 0.5
 
-        # Create 5 cables in a row along the y-axis, centered around origin
+        # Create cables in a row along the y-axis, centered around origin
         for i, bend_damping in enumerate(bend_damping_values):
             # Center cables around origin: vary by y_separation
             y_pos = (i - (self.num_cables - 1) / 2.0) * y_separation
@@ -195,6 +195,8 @@ class Example:
             first_body = rod_bodies[0]
             builder.body_mass[first_body] = 0.0
             builder.body_inv_mass[first_body] = 0.0
+            builder.body_inertia[first_body] = wp.mat33(0.0)
+            builder.body_inv_inertia[first_body] = wp.mat33(0.0)
             kinematic_body_indices.append(first_body)
 
             # Store full body index list for each cable for robust testing
@@ -224,7 +226,7 @@ class Example:
         self.capture()
 
     def capture(self):
-        if wp.get_device().is_cuda:
+        if self.solver.device.is_cuda:
             with wp.ScopedCapture() as capture:
                 self.simulate()
             self.graph = capture.graph
@@ -320,10 +322,11 @@ class Example:
             )
             assert min_z >= -ground_tolerance, f"Cable fell below ground: min_z = {min_z:.3f} < {-ground_tolerance:.3f}"
 
-            # Test 5: Basic physics check - cables should hang down due to gravity
-            # Compare first and last segment positions of first cable
-            first_segment_z = body_positions[0, 2]
-            last_segment_z = body_positions[self.num_elements - 1, 2]
+            # Test 5: Basic physics check - cables should sag under gravity.
+            # Compare the anchored end and free end of the first cable.
+            first_cable = self.cable_bodies_list[0]
+            first_segment_z = body_positions[first_cable[0], 2]
+            last_segment_z = body_positions[first_cable[-1], 2]
             assert last_segment_z < first_segment_z, (
                 f"Cable not hanging properly: last segment z={last_segment_z:.3f} should be < first segment z={first_segment_z:.3f}"
             )

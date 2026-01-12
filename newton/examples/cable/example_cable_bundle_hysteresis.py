@@ -276,9 +276,11 @@ class Example:
                 body=body, radius=obstacle_radius, half_height=obstacle_half_height, cfg=obstacle_cfg
             )
 
-            # Make obstacle kinematic (zero mass)
+            # Make obstacle kinematic
             builder.body_mass[body] = 0.0
             builder.body_inv_mass[body] = 0.0
+            builder.body_inertia[body] = wp.mat33(0.0)
+            builder.body_inv_inertia[body] = wp.mat33(0.0)
 
             self.obstacle_bodies.append(body)
             obstacle_init_z_list.append(float(z))

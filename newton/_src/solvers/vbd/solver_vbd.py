@@ -169,10 +169,10 @@ class SolverVBD(SolverBase):
         rigid_contact_k_start: float = 1.0e2,  # AVBD: initial stiffness for all body contacts (body-body + body-particle)
         rigid_joint_linear_k_start: float = 1.0e4,  # AVBD: initial stiffness seed for linear joint constraints
         rigid_joint_angular_k_start: float = 1.0e1,  # AVBD: initial stiffness seed for angular joint constraints
-        rigid_joint_linear_ke: float = 1.0e9,  # AVBD: stiffness cap for linear joint constraints (non-cable)
-        rigid_joint_angular_ke: float = 1.0e9,  # AVBD: stiffness cap for angular joint constraints (non-cable)
-        rigid_joint_linear_kd: float = 0.0,  # AVBD: Rayleigh damping coefficient for linear joint constraints (non-cable)
-        rigid_joint_angular_kd: float = 0.0,  # AVBD: Rayleigh damping coefficient for angular joint constraints (non-cable)
+        rigid_joint_linear_ke: float = 1.0e9,  # AVBD: stiffness cap for non-cable linear joint constraints (BALL/FIXED/etc.)
+        rigid_joint_angular_ke: float = 1.0e9,  # AVBD: stiffness cap for non-cable angular joint constraints (FIXED/etc.)
+        rigid_joint_linear_kd: float = 0.0,  # AVBD: Rayleigh damping coefficient for non-cable linear joint constraints
+        rigid_joint_angular_kd: float = 0.0,  # AVBD: Rayleigh damping coefficient for non-cable angular joint constraints
         rigid_body_contact_buffer_size: int = 64,
         rigid_body_particle_contact_buffer_size: int = 256,
         rigid_enable_dahl_friction: bool = False,  # Cable bending plasticity/hysteresis
@@ -228,15 +228,19 @@ class SolverVBD(SolverBase):
             rigid_avbd_gamma: Warmstart decay for penalty k (cross-step decay factor for rigid body constraints).
             rigid_contact_k_start: Initial penalty stiffness for all body contact constraints, including both body-body (rigid-rigid)
                 and body-particle (rigid-particle) contacts (AVBD).
-            rigid_joint_linear_k_start: Initial penalty seed for linear joint constraints (e.g., cable stretch).
+            rigid_joint_linear_k_start: Initial penalty seed for linear joint constraints (e.g., cable stretch, BALL linear).
                 Used to seed the per-constraint adaptive penalties for all linear joint constraints.
-            rigid_joint_angular_k_start: Initial penalty seed for angular joint constraints (e.g., cable bend).
+            rigid_joint_angular_k_start: Initial penalty seed for angular joint constraints (e.g., cable bend, FIXED angular).
                 Used to seed the per-constraint adaptive penalties for all angular joint constraints.
-            rigid_joint_linear_ke: Stiffness cap used by AVBD for non-cable joint constraints (e.g., BALL). Cable joints clamp to
+            rigid_joint_linear_ke: Stiffness cap used by AVBD for **non-cable** linear joint constraint scalars
+                (e.g., BALL and the linear part of FIXED). Cable joints use the per-joint caps in
                 ``model.joint_target_ke`` instead (cable interprets ``joint_target_ke/kd`` as constraint tuning).
-            rigid_joint_angular_ke: Stiffness cap used by AVBD for non-cable angular joint constraints (e.g., FIXED).
-            rigid_joint_linear_kd: Rayleigh damping coefficient for non-cable linear joint constraints (paired with ``rigid_joint_linear_ke``).
-            rigid_joint_angular_kd: Rayleigh damping coefficient for non-cable angular joint constraints (paired with ``rigid_joint_angular_ke``).
+            rigid_joint_angular_ke: Stiffness cap used by AVBD for **non-cable** angular joint constraint scalars
+                (e.g., FIXED).
+            rigid_joint_linear_kd: Rayleigh damping coefficient for non-cable linear joint constraints (paired with
+                ``rigid_joint_linear_ke``).
+            rigid_joint_angular_kd: Rayleigh damping coefficient for non-cable angular joint constraints (paired with
+                ``rigid_joint_angular_ke``).
             rigid_body_contact_buffer_size: Max body-body (rigid-rigid) contacts per rigid body for per-body contact lists (tune based on expected body-body contact density).
             rigid_body_particle_contact_buffer_size: Max body-particle (rigid-particle) contacts per rigid body for per-body soft-contact lists (tune based on expected body-particle contact density).
             rigid_enable_dahl_friction: Enable Dahl hysteresis friction model for cable bending (default: False).
@@ -570,13 +574,14 @@ class SolverVBD(SolverBase):
         """Initialize VBD-owned joint constraint indexing.
 
         VBD stores and adapts penalty stiffness values for *scalar constraint components*:
-          - ``JointType.CABLE``: 2 scalars (stretch, bend)
+          - ``JointType.CABLE``: 2 scalars (stretch/linear, bend/angular)
           - ``JointType.BALL``: 1 scalar (isotropic linear anchor-coincidence)
           - ``JointType.FIXED``: 2 scalars (isotropic linear anchor-coincidence + isotropic angular)
           - ``JointType.FREE``: 0 scalars (not a constraint)
 
         Ordering (must match kernel indexing via ``joint_constraint_start``):
-          - ``JointType.CABLE``: [stretch, bend]
+          - ``JointType.CABLE``: [stretch (linear), bend (angular)]
+          - ``JointType.BALL``: [linear]
           - ``JointType.FIXED``: [linear, angular]
 
         Any other joint type will raise ``NotImplementedError``.
@@ -1102,7 +1107,9 @@ class SolverVBD(SolverBase):
             state_in: Input state.
             state_out: Output state.
             control: Control inputs.
-            contacts: Collision contacts. If None, collision handling is skipped.
+            contacts: Contact data produced by :meth:`Model.collide` (rigid-rigid and rigid-particle contacts).
+                If None, rigid contact handling is skipped. Note that particle self-contact (if enabled) does not
+                depend on this argument.
             dt: Time step size.
         """
         # Use and reset the rigid history update flag (warmstarts).
@@ -1178,7 +1185,7 @@ class SolverVBD(SolverBase):
 
         Performs forward integration and initializes contact-related AVBD state when contacts are provided.
 
-        If ``contacts`` is None, all contact-related work is skipped:
+        If ``contacts`` is None, rigid contact-related work is skipped:
         no per-body contact adjacency is built, and no contact penalties are warmstarted.
         """
         model = self.model

@@ -40,20 +40,23 @@ def compute_fixed_joint_error(
     child_ids: wp.array(dtype=wp.int32),
     parent_local: wp.array(dtype=wp.vec3),
     child_local: wp.array(dtype=wp.vec3),
+    parent_frame_q: wp.array(dtype=wp.quat),
+    child_frame_q: wp.array(dtype=wp.quat),
     body_q: wp.array(dtype=wp.transform),
     out_err_pos: wp.array(dtype=float),
     out_err_ang: wp.array(dtype=float),
 ):
-    """Test-only: compute FIXED joint error (position + angle) for identity-rotation joint frames.
+    """Test-only: compute FIXED joint error (position + angle) using the joint frames.
 
     For each i:
       - Position error: ||x_p - x_c||
-      - Angular error: angle(q_p^{-1} * q_c)  [rad]
+      - Angular error: angle(q_pframe^{-1} * q_cframe)  [rad]
 
     Notes:
     - This is a *verification helper* used by `Example.test_final()`, not part of the solver.
-    - This example constructs joint frames with identity rotations (`parent_xform.q == child_xform.q == I`),
-      so the joint-frame rotations are just the body rotations.
+    - We compare the world-space joint frame rotations:
+        q_pframe = q_parent * parent_frame_q[i]
+        q_cframe = q_child  * child_frame_q[i]
     """
     i = wp.tid()
     pb = parent_ids[i]
@@ -71,10 +74,13 @@ def compute_fixed_joint_error(
     c_anchor = pc + wp.quat_rotate(qc, child_local[i])
     out_err_pos[i] = wp.length(p_anchor - c_anchor)
 
-    # Angular difference: dq = q_p^{-1} * q_c
-    dq = wp.mul(wp.quat_inverse(qp), qc)
+    # Angular difference between joint frames: dq = q_pframe^{-1} * q_cframe
+    qpf = wp.mul(qp, parent_frame_q[i])
+    qcf = wp.mul(qc, child_frame_q[i])
+    dq = wp.mul(wp.quat_inverse(qpf), qcf)
     dq = wp.normalize(dq)
-    w = wp.clamp(dq[3], -1.0, 1.0)
+    # q and -q represent the same rotation; use abs(w) to get the shortest-angle measure.
+    w = wp.clamp(wp.abs(dq[3]), 0.0, 1.0)
     out_err_ang[i] = 2.0 * wp.acos(w)
 
 
@@ -217,6 +223,8 @@ class Example:
         fixed_child_ids: list[int] = []
         fixed_parent_local: list[wp.vec3] = []
         fixed_child_local: list[wp.vec3] = []
+        fixed_parent_frame_q: list[wp.quat] = []
+        fixed_child_frame_q: list[wp.quat] = []
 
         # Spread the anchor+cable sets along Y (not X).
         y0 = -1.2
@@ -285,18 +293,23 @@ class Example:
                         key=f"drv_{key_prefix}",
                     )
 
+                # Make the driver strictly kinematic (override any mass/inertia contributed by shapes).
+                builder.body_mass[body] = 0.0
+                builder.body_inv_mass[body] = 0.0
+                builder.body_inertia[body] = wp.mat33(0.0)
+                builder.body_inv_inertia[body] = wp.mat33(0.0)
+
                 # Cable root anchor in world at the "bottom" of the driver.
-                # For the rotation-driven set, offset the cable slightly in +X so it's visually separated.
-                cable_attach_x = 0.0
-                if m == 1:
-                    cable_attach_x = 0.1
-                    if kind in ("capsule", "box"):
-                        cable_attach_x = 0.2
+                # We keep a small +X offset so the rotation-driven anchors produce visible motion of the
+                # attachment point when rotating about +Y.
+                cable_attach_x = 0.1
+                if kind in ("capsule", "box"):
+                    cable_attach_x = 0.2
                 dz_body = z0 - z
                 parent_anchor_local = wp.vec3(cable_attach_x, 0.0, -attach_offset + dz_body)
                 anchor_world = wp.vec3(x + cable_attach_x, y, z0 - attach_offset)
 
-                if m == 1 and kind in ("sphere", "capsule", "box"):
+                if kind in ("sphere", "capsule", "box"):
                     x_local = cable_attach_x
                     if kind == "sphere":
                         r = attach_offset
@@ -347,11 +360,15 @@ class Example:
                 #
                 # Therefore, the cable "start endpoint" is located at body-local z=0 for `rod_bodies[0]`.
                 child_anchor_local = wp.vec3(0.0, 0.0, 0.0)
+                # Define the FIXED joint "rest" using joint frames so the rod's natural segment
+                # orientation (pointing down) matches at t=0.
+                parent_frame_q = rod_quats[0]
+                child_frame_q = wp.quat_identity()
                 j_fixed = builder.add_joint_fixed(
                     parent=body,
                     child=rod_bodies[0],
-                    parent_xform=wp.transform(parent_anchor_local, wp.quat_identity()),
-                    child_xform=wp.transform(child_anchor_local, wp.quat_identity()),
+                    parent_xform=wp.transform(parent_anchor_local, parent_frame_q),
+                    child_xform=wp.transform(child_anchor_local, child_frame_q),
                     key=f"attach_{key_prefix}",
                 )
                 # Put all joints (rod cable joints + the fixed attachment) into one articulation.
@@ -364,6 +381,8 @@ class Example:
                 fixed_child_ids.append(int(rod_bodies[0]))
                 fixed_parent_local.append(parent_anchor_local)
                 fixed_child_local.append(child_anchor_local)
+                fixed_parent_frame_q.append(parent_frame_q)
+                fixed_child_frame_q.append(child_frame_q)
 
                 self.anchor_bodies.append(body)
                 anchor_base_pos.append(wp.vec3(x, y, z))
@@ -374,20 +393,6 @@ class Example:
         builder.add_ground_plane()
         builder.color()
         self.model = builder.finalize()
-
-        # Ensure anchors are truly kinematic on the finalized Model arrays as well.
-        # (This guards against any downstream modifications to body mass properties.)
-        device = self.model.body_inv_mass.device
-        body_mass_np = self.model.body_mass.numpy()
-        body_inv_mass_np = self.model.body_inv_mass.numpy()
-        body_inv_inertia_np = self.model.body_inv_inertia.numpy()
-        for b in self.anchor_bodies:
-            body_mass_np[b] = 0.0
-            body_inv_mass_np[b] = 0.0
-            body_inv_inertia_np[b, :, :] = 0.0
-        self.model.body_mass.assign(wp.array(body_mass_np, dtype=wp.float32, device=device))
-        self.model.body_inv_mass.assign(wp.array(body_inv_mass_np, dtype=wp.float32, device=device))
-        self.model.body_inv_inertia.assign(wp.array(body_inv_inertia_np, dtype=wp.mat33, device=device))
 
         # Stiffen fixed constraint caps (non-cable joints) so the attachment behaves near-hard.
         self.solver = newton.solvers.SolverVBD(
@@ -419,11 +424,13 @@ class Example:
         self._fixed_child_ids = wp.array(fixed_child_ids, dtype=wp.int32, device=self.device)
         self._fixed_parent_local = wp.array(fixed_parent_local, dtype=wp.vec3, device=self.device)
         self._fixed_child_local = wp.array(fixed_child_local, dtype=wp.vec3, device=self.device)
+        self._fixed_parent_frame_q = wp.array(fixed_parent_frame_q, dtype=wp.quat, device=self.device)
+        self._fixed_child_frame_q = wp.array(fixed_child_frame_q, dtype=wp.quat, device=self.device)
 
         self.capture()
 
     def capture(self):
-        if wp.get_device().is_cuda:
+        if self.solver.device.is_cuda:
             with wp.ScopedCapture() as capture:
                 self.simulate()
             self.graph = capture.graph
@@ -456,8 +463,8 @@ class Example:
 
             if update_step_history:
                 self.contacts = self.model.collide(self.state_0)
-                self.solver.set_rigid_history_update(update_step_history)
 
+            self.solver.set_rigid_history_update(update_step_history)
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
             self.state_0, self.state_1 = self.state_1, self.state_0
 
@@ -494,6 +501,8 @@ class Example:
                 self._fixed_child_ids,
                 self._fixed_parent_local,
                 self._fixed_child_local,
+                self._fixed_parent_frame_q,
+                self._fixed_child_frame_q,
                 self.state_0.body_q,
                 err_pos,
                 err_ang,
@@ -503,8 +512,8 @@ class Example:
         err_pos_max = float(np.max(err_pos.numpy()))
         err_ang_max = float(np.max(err_ang.numpy()))
 
-        tol_pos = 5.0e-3
-        tol_ang = 2.0e-2
+        tol_pos = 1.0e-3
+        tol_ang = 1.0e-2
         if err_pos_max > tol_pos or err_ang_max > tol_ang:
             raise AssertionError(
                 "FIXED joint error too large: "

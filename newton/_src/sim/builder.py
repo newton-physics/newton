@@ -2915,10 +2915,12 @@ class ModelBuilder:
                 translation is the attachment point.
             child_xform (Transform): The transform of the joint in the child body's local frame; its
                 translation is the attachment point.
-            stretch_stiffness: Linear stretch stiffness (effective per-joint spring stiffness) [N/m]. If None, defaults to 1.0e9.
-            stretch_damping: Linear stretch damping. If None, defaults to 0.0.
-            bend_stiffness: Angular bend/twist stiffness (effective per-joint stiffness) [N*m]. If None, defaults to 0.0.
-            bend_damping: Angular bend/twist damping. If None, defaults to 0.0.
+            stretch_stiffness: Cable stretch stiffness stored on the joint DOF as ``target_ke``. This is an
+                effective per-joint point-to-point stiffness [N/m]. If None, defaults to 1.0e9.
+            stretch_damping: Cable stretch damping stored on the joint DOF as ``target_kd``. If None, defaults to 0.0.
+            bend_stiffness: Cable bend/twist stiffness stored on the joint DOF as ``target_ke``. This is an effective
+                per-joint angular stiffness [N*m]. If None, defaults to 0.0.
+            bend_damping: Cable bend/twist damping stored on the joint DOF as ``target_kd``. If None, defaults to 0.0.
             key: The key of the joint.
             collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies.
             enabled: Whether the joint is enabled.
@@ -4660,8 +4662,8 @@ class ModelBuilder:
         Note:
             - Bend defaults are 0.0 (no bending resistance unless specified). Stretch defaults to a high
               stiffness (1.0e9), which keeps neighboring capsules closely coupled (approximately inextensible).
-            - Internally, stretch and bend stiffnesses are pre-scaled by segment length so solver kernels do not
-              need per-segment length normalization.
+            - Internally, stretch and bend stiffnesses are pre-scaled by dividing by segment length so solver kernels
+              do not need per-segment length normalization.
             - Each segment is implemented as a capsule primitive. The segment's body transform is
               placed at the start point ``positions[i]`` with a local center-of-mass offset of
               ``(0, 0, half_height)`` so that the COM lies at the segment midpoint. The capsule shape

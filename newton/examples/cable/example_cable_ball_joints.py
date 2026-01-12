@@ -280,18 +280,23 @@ class Example:
                         key=f"drv_{key_prefix}",
                     )
 
+                # Make the driver strictly kinematic (override any mass/inertia contributed by shapes).
+                builder.body_mass[body] = 0.0
+                builder.body_inv_mass[body] = 0.0
+                builder.body_inertia[body] = wp.mat33(0.0)
+                builder.body_inv_inertia[body] = wp.mat33(0.0)
+
                 # Cable root anchor in world at the "bottom" of the driver.
-                # For the rotation-driven set, offset the cable slightly in +X so it's visually separated.
-                cable_attach_x = 0.0
-                if m == 1:
-                    cable_attach_x = 0.1
-                    if kind in ("capsule", "box"):
-                        cable_attach_x = 0.2
+                # Keep a small +X offset so the rotation-driven anchors produce visible attachment-point
+                # motion when rotating about +Y.
+                cable_attach_x = 0.1
+                if kind in ("capsule", "box"):
+                    cable_attach_x = 0.2
                 dz_body = z0 - z
                 parent_anchor_local = wp.vec3(cable_attach_x, 0.0, -attach_offset + dz_body)
                 anchor_world = wp.vec3(x + cable_attach_x, y, z0 - attach_offset)
 
-                if m == 1 and kind in ("sphere", "capsule", "box"):
+                if kind in ("sphere", "capsule", "box"):
                     x_local = cable_attach_x
                     if kind == "sphere":
                         r = attach_offset
@@ -369,20 +374,6 @@ class Example:
         builder.color()
         self.model = builder.finalize()
 
-        # Ensure anchors are truly kinematic on the finalized Model arrays as well.
-        # (This guards against any downstream modifications to body mass properties.)
-        device = self.model.body_inv_mass.device
-        body_mass_np = self.model.body_mass.numpy()
-        body_inv_mass_np = self.model.body_inv_mass.numpy()
-        body_inv_inertia_np = self.model.body_inv_inertia.numpy()
-        for b in self.anchor_bodies:
-            body_mass_np[b] = 0.0
-            body_inv_mass_np[b] = 0.0
-            body_inv_inertia_np[b, :, :] = 0.0
-        self.model.body_mass.assign(wp.array(body_mass_np, dtype=wp.float32, device=device))
-        self.model.body_inv_mass.assign(wp.array(body_inv_mass_np, dtype=wp.float32, device=device))
-        self.model.body_inv_inertia.assign(wp.array(body_inv_inertia_np, dtype=wp.mat33, device=device))
-
         # Stiffen ball constraint caps (non-cable joints) so the attachment behaves near-hard.
         self.solver = newton.solvers.SolverVBD(
             self.model,
@@ -416,7 +407,7 @@ class Example:
         self.capture()
 
     def capture(self):
-        if wp.get_device().is_cuda:
+        if self.solver.device.is_cuda:
             with wp.ScopedCapture() as capture:
                 self.simulate()
             self.graph = capture.graph
@@ -449,8 +440,8 @@ class Example:
 
             if update_step_history:
                 self.contacts = self.model.collide(self.state_0)
-                self.solver.set_rigid_history_update(update_step_history)
 
+            self.solver.set_rigid_history_update(update_step_history)
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
             self.state_0, self.state_1 = self.state_1, self.state_0
 
@@ -492,7 +483,7 @@ class Example:
             device=self.device,
         )
         err_max = float(np.max(ball_err.numpy()))
-        tol = 5.0e-3
+        tol = 1.0e-3
         if err_max > tol:
             raise AssertionError(f"BALL joint anchor error too large: max={err_max:.6g} > tol={tol}")
 

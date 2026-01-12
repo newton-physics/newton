@@ -868,10 +868,10 @@ def evaluate_joint_force_hessian(
 
     Indexing:
         ``joint_constraint_start[j]`` is a solver-owned start offset into the per-constraint arrays
-        (``joint_penalty_k``, ``joint_penalty_kd``, ``joint_penalty_k_max``). The layout is:
-          - ``JointType.CABLE``: 2 scalars -> [stretch, bend]
-          - ``JointType.BALL``: 1 scalar  -> [translational]
-          - ``JointType.FIXED``: 2 scalars -> [translational, rotational]
+        (``joint_penalty_k``, ``joint_penalty_kd``). The layout is:
+          - ``JointType.CABLE``: 2 scalars -> [stretch (linear), bend (angular)]
+          - ``JointType.BALL``: 1 scalar  -> [linear]
+          - ``JointType.FIXED``: 2 scalars -> [linear, angular]
 
     Damping:
         ``joint_penalty_kd`` stores a dimensionless Rayleigh-style coefficient used to build a
@@ -951,8 +951,8 @@ def evaluate_joint_force_hessian(
             total_H_aa = total_H_aa + bend_H_aa
 
         if stretch_penalty_k > 0.0:
-            # Stretch: meters residual C = x_c - x_p, using effective per-joint positional stiffness [N/m].
-            # For rods created by `ModelBuilder.add_rod()`, this stiffness is pre-scaled by segment length.
+            # Stretch: meters residual C = x_c - x_p, using effective per-joint linear stiffness [N/m].
+            # For rods created by `ModelBuilder.add_rod()`, this stiffness is pre-scaled by dividing by segment length.
             k_eff = stretch_penalty_k
             f_s, t_s, Hll_s, Hal_s, Haa_s = evaluate_linear_constraint_force_hessian_isotropic(
                 X_wp,
@@ -996,7 +996,7 @@ def evaluate_joint_force_hessian(
         )
 
     elif jt == JointType.FIXED:
-        # FIXED: isotropic translational anchor-coincidence + isotropic rotational constraint.
+        # FIXED: isotropic linear anchor-coincidence + isotropic angular constraint.
         # Linear part
         k_lin = joint_penalty_k[c_start + 0]
         kd_lin = joint_penalty_kd[c_start + 0]
@@ -2152,14 +2152,14 @@ def update_duals_joint(
         kappa = cable_get_kappa(q_wp, q_wc, q_wp_rest, q_wc_rest)
         C_bend = wp.length(kappa)
 
-        # Update stretch penalty (DOF 0)
+        # Update stretch penalty (constraint slot 0)
         stretch_idx = c_start
         stiffness_stretch = joint_penalty_k_max[stretch_idx]
         k_stretch = joint_penalty_k[stretch_idx]
         k_stretch_new = wp.min(k_stretch + beta * C_stretch, stiffness_stretch)
         joint_penalty_k[stretch_idx] = k_stretch_new
 
-        # Update bend penalty (DOF 1)
+        # Update bend penalty (constraint slot 1)
         bend_idx = c_start + 1
         stiffness_bend = joint_penalty_k_max[bend_idx]
         k_bend = joint_penalty_k[bend_idx]
@@ -2167,7 +2167,7 @@ def update_duals_joint(
         joint_penalty_k[bend_idx] = k_bend_new
         return
 
-    # BALL joint: update isotropic translational anchor-coincidence penalty (single scalar).
+    # BALL joint: update isotropic linear anchor-coincidence penalty (single scalar).
     if jt == JointType.BALL:
         # Scalar violation magnitude used for penalty growth; force/Hessian uses C_vec directly.
         x_p = wp.transform_get_translation(X_wp)
@@ -2180,7 +2180,7 @@ def update_duals_joint(
         joint_penalty_k[i0] = wp.min(k0 + beta * C_lin, joint_penalty_k_max[i0])
         return
 
-    # FIXED joint: update isotropic translational + isotropic rotational penalties (2 scalars).
+    # FIXED joint: update isotropic linear + isotropic angular penalties (2 scalars).
     if jt == JointType.FIXED:
         i_lin = c_start + 0
         i_ang = c_start + 1
