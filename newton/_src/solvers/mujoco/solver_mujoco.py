@@ -502,6 +502,12 @@ class SolverMuJoCo(SolverBase):
         self.update_data_interval = update_data_interval
         self._step = 0
 
+        # Check if dof_ref is used - if so, we use MuJoCo's FK (eval_fk=False)
+        # because ref is only handled by MuJoCo via qpos0
+        mujoco_attrs = getattr(model, "mujoco", None)
+        dof_ref = getattr(mujoco_attrs, "dof_ref", None) if mujoco_attrs is not None else None
+        self._has_ref = dof_ref is not None and np.any(dof_ref.numpy() != 0.0)
+
         if self.mjw_model is not None:
             self.mjw_model.opt.run_collision_detection = use_mujoco_contacts
 
@@ -512,6 +518,9 @@ class SolverMuJoCo(SolverBase):
     @event_scope
     @override
     def step(self, state_in: State, state_out: State, control: Control, contacts: Contacts, dt: float):
+        # When ref is used, we rely on MuJoCo's FK (eval_fk=False) because ref is handled by MuJoCo via qpos0
+        eval_fk = not self._has_ref
+
         if self.use_mujoco_cpu:
             self.apply_mjc_control(self.model, state_in, control, self.mj_data)
             if self.update_data_interval > 0 and self._step % self.update_data_interval == 0:
@@ -519,7 +528,7 @@ class SolverMuJoCo(SolverBase):
                 self.update_mjc_data(self.mj_data, self.model, state_in)
             self.mj_model.opt.timestep = dt
             self._mujoco.mj_step(self.mj_model, self.mj_data)
-            self.update_newton_state(self.model, state_out, self.mj_data)
+            self.update_newton_state(self.model, state_out, self.mj_data, eval_fk=eval_fk)
         else:
             self.apply_mjc_control(self.model, state_in, control, self.mjw_data)
             if self.update_data_interval > 0 and self._step % self.update_data_interval == 0:
@@ -532,7 +541,7 @@ class SolverMuJoCo(SolverBase):
                     self.convert_contacts_to_mjwarp(self.model, state_in, contacts)
                     self.mujoco_warp_step()
 
-            self.update_newton_state(self.model, state_out, self.mjw_data)
+            self.update_newton_state(self.model, state_out, self.mjw_data, eval_fk=eval_fk)
         self._step += 1
         return state_out
 
@@ -2322,10 +2331,6 @@ class SolverMuJoCo(SolverBase):
             nworld = self.mjc_jnt_to_newton_jnt.shape[0]
             njnt = self.mjc_jnt_to_newton_jnt.shape[1]
 
-            # Get dof_ref for removing ref offset from child_xform
-            mujoco_attrs = getattr(self.model, "mujoco", None)
-            dof_ref = getattr(mujoco_attrs, "dof_ref", None) if mujoco_attrs is not None else None
-
             wp.launch(
                 update_joint_transforms_kernel,
                 dim=(nworld, njnt),
@@ -2339,7 +2344,6 @@ class SolverMuJoCo(SolverBase):
                     self.model.joint_X_c,
                     # Newton model data (DOF-indexed)
                     self.model.joint_axis,
-                    dof_ref,
                 ],
                 outputs=[
                     self.mjw_model.jnt_pos,
