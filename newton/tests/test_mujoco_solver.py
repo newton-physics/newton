@@ -4076,7 +4076,7 @@ class TestMuJoCoAttributes(unittest.TestCase):
 
     def test_ref_fk_matches_mujoco(self):
         """Test that Newton's FK matches MuJoCo's FK for joints with ref attribute."""
-        import mujoco  # noqa: PLC0415
+        import mujoco_warp  # noqa: PLC0415
 
         mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
 <mujoco model="test_ref_fk">
@@ -4094,8 +4094,6 @@ class TestMuJoCoAttributes(unittest.TestCase):
         </body>
     </worldbody>
 </mujoco>"""
-
-        import mujoco_warp  # noqa: PLC0415
 
         builder = newton.ModelBuilder()
         SolverMuJoCo.register_custom_attributes(builder)
