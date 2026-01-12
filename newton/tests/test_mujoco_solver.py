@@ -4095,38 +4095,40 @@ class TestMuJoCoAttributes(unittest.TestCase):
     </worldbody>
 </mujoco>"""
 
+        import mujoco_warp  # noqa: PLC0415
+
         builder = newton.ModelBuilder()
         SolverMuJoCo.register_custom_attributes(builder)
         builder.add_mjcf(mjcf_content)
         model = builder.finalize()
         solver = SolverMuJoCo(model)
 
-        mj_model = solver.mj_model
-        mj_data = solver.mj_data
-
-        # Set qpos=0 in MuJoCo and run forward kinematics
-        mj_data.qpos[:] = 0.0
-        mujoco.mj_kinematics(mj_model, mj_data)
-
         # Run Newton's FK with qpos=0
         state = model.state()
         state.joint_q.zero_()
         newton.eval_fk(model, state.joint_q, state.joint_qd, state)
 
-        # Compare body transforms between Newton and MuJoCo
+        # Sync Newton state to MuJoCo Warp and run FK
+        solver.update_mjc_data(solver.mjw_data, model, state)
+        mujoco_warp.kinematics(solver.mjw_model, solver.mjw_data)
+
+        # Compare body transforms between Newton and MuJoCo Warp
         newton_body_q = state.body_q.numpy()
+        mjc_body_to_newton = solver.mjc_body_to_newton.numpy()
 
         for body_name in ["child1", "child2"]:
             newton_body_idx = model.body_key.index(body_name)
-            mj_body_idx = mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_BODY, body_name)
+
+            # Find MuJoCo body index from Newton body index
+            mjc_body_idx = np.where(mjc_body_to_newton[0] == newton_body_idx)[0][0]
 
             # Get Newton body position and quaternion
             newton_pos = newton_body_q[newton_body_idx, 0:3]
             newton_quat = newton_body_q[newton_body_idx, 3:7]  # [x, y, z, w]
 
-            # Get MuJoCo body position and quaternion
-            mj_pos = mj_data.xpos[mj_body_idx]
-            mj_quat_wxyz = mj_data.xquat[mj_body_idx]  # MuJoCo uses [w, x, y, z]
+            # Get MuJoCo Warp body position and quaternion
+            mj_pos = solver.mjw_data.xpos.numpy()[0, mjc_body_idx]
+            mj_quat_wxyz = solver.mjw_data.xquat.numpy()[0, mjc_body_idx]  # MuJoCo uses [w, x, y, z]
             mj_quat = np.array([mj_quat_wxyz[1], mj_quat_wxyz[2], mj_quat_wxyz[3], mj_quat_wxyz[0]])
 
             # Compare positions

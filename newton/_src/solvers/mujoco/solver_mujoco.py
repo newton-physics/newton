@@ -2321,6 +2321,11 @@ class SolverMuJoCo(SolverBase):
         if self.mjc_jnt_to_newton_jnt is not None and self.mjc_jnt_to_newton_jnt.shape[1] > 0:
             nworld = self.mjc_jnt_to_newton_jnt.shape[0]
             njnt = self.mjc_jnt_to_newton_jnt.shape[1]
+
+            # Get dof_ref for removing ref offset from child_xform
+            mujoco_attrs = getattr(self.model, "mujoco", None)
+            dof_ref = getattr(mujoco_attrs, "dof_ref", None) if mujoco_attrs is not None else None
+
             wp.launch(
                 update_joint_transforms_kernel,
                 dim=(nworld, njnt),
@@ -2334,6 +2339,7 @@ class SolverMuJoCo(SolverBase):
                     self.model.joint_X_c,
                     # Newton model data (DOF-indexed)
                     self.model.joint_axis,
+                    dof_ref,
                 ],
                 outputs=[
                     self.mjw_model.jnt_pos,

@@ -1136,6 +1136,7 @@ def update_joint_transforms_kernel(
     newton_joint_X_c: wp.array(dtype=wp.transform),
     # Newton model data (DOF-indexed)
     newton_joint_axis: wp.array(dtype=wp.vec3),
+    newton_dof_ref: wp.array(dtype=wp.float32),
     # outputs
     jnt_pos: wp.array2d(dtype=wp.vec3),
     jnt_axis: wp.array2d(dtype=wp.vec3),
@@ -1147,6 +1148,7 @@ def update_joint_transforms_kernel(
     Iterates over MuJoCo joints [world, jnt]. For each joint:
     - Updates MuJoCo body_pos/body_quat from Newton joint transforms
     - Updates MuJoCo jnt_pos and jnt_axis
+    - Undoes ref baking from child_xform since MuJoCo handles ref via qpos0
 
     Note: Mocap bodies are handled by update_mocap_transforms_kernel.
     """
@@ -1169,8 +1171,23 @@ def update_joint_transforms_kernel(
     child_xform = newton_joint_X_c[newton_jnt]
     parent_xform = newton_joint_X_p[newton_jnt]
 
-    # Update body pos and quat from parent joint transform
-    tf = parent_xform * wp.transform_inverse(child_xform)
+    # Adjust child_xform for MuJoCo: remove ref offset since MuJoCo handles it via qpos0
+    mjc_child_xform = child_xform
+    if newton_dof_ref and newton_dof >= 0:
+        ref_value = newton_dof_ref[newton_dof]
+        if ref_value != 0.0:
+            axis = newton_joint_axis[newton_dof]
+            if jtype == 3:  # mjJNT_HINGE (revolute)
+                # Remove ref rotation (dof_ref is in degrees, convert to radians)
+                ref_rad = wp.radians(ref_value)
+                ref_quat_inv = wp.quat_from_axis_angle(axis, -ref_rad)
+                mjc_child_xform = wp.transform(child_xform.p, child_xform.q * ref_quat_inv)
+            elif jtype == 2:  # mjJNT_SLIDE (prismatic)
+                # Remove ref translation
+                mjc_child_xform = wp.transform(child_xform.p - ref_value * axis, child_xform.q)
+
+    # Compute body transform for MuJoCo
+    tf = parent_xform * wp.transform_inverse(mjc_child_xform)
 
     # Get the MuJoCo body for this joint and update its transform
     # Note: Mocap bodies don't have MuJoCo joints, so they're handled
@@ -1182,8 +1199,8 @@ def update_joint_transforms_kernel(
     # Update joint axis and position (DOF-indexed for axis)
     if newton_dof >= 0:
         axis = newton_joint_axis[newton_dof]
-        jnt_axis[world, mjc_jnt] = wp.quat_rotate(child_xform.q, axis)
-    jnt_pos[world, mjc_jnt] = child_xform.p
+        jnt_axis[world, mjc_jnt] = wp.quat_rotate(mjc_child_xform.q, axis)
+    jnt_pos[world, mjc_jnt] = mjc_child_xform.p
 
 
 @wp.kernel(enable_backward=False)
