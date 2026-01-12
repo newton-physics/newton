@@ -1961,14 +1961,20 @@ class SolverMuJoCo(SolverBase):
 
             add_geoms(child)
 
+        def get_body_name(body_idx: int) -> str:
+            """Get body name, handling world body (-1) correctly."""
+            if body_idx == -1:
+                return "world"
+            return model.body_key[body_idx]
+
         for i in selected_constraints:
             constraint_type = eq_constraint_type[i]
             if constraint_type == EqType.CONNECT:
                 eq = spec.add_equality(objtype=mujoco.mjtObj.mjOBJ_BODY)
                 eq.type = mujoco.mjtEq.mjEQ_CONNECT
                 eq.active = eq_constraint_enabled[i]
-                eq.name1 = model.body_key[eq_constraint_body1[i]]
-                eq.name2 = model.body_key[eq_constraint_body2[i]]
+                eq.name1 = get_body_name(eq_constraint_body1[i])
+                eq.name2 = get_body_name(eq_constraint_body2[i])
                 eq.data[0:3] = eq_constraint_anchor[i]
                 if eq_constraint_solref is not None:
                     eq.solref = eq_constraint_solref[i]
@@ -1987,8 +1993,8 @@ class SolverMuJoCo(SolverBase):
                 eq = spec.add_equality(objtype=mujoco.mjtObj.mjOBJ_BODY)
                 eq.type = mujoco.mjtEq.mjEQ_WELD
                 eq.active = eq_constraint_enabled[i]
-                eq.name1 = model.body_key[eq_constraint_body1[i]]
-                eq.name2 = model.body_key[eq_constraint_body2[i]]
+                eq.name1 = get_body_name(eq_constraint_body1[i])
+                eq.name2 = get_body_name(eq_constraint_body2[i])
                 cns_relpose = wp.transform(*eq_constraint_relpose[i])
                 eq.data[0:3] = eq_constraint_anchor[i]
                 eq.data[3:6] = wp.transform_get_translation(cns_relpose)
