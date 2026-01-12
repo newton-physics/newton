@@ -560,8 +560,7 @@ def parse_usd(
             else:
                 limit_gains_scaling = 1.0
 
-            # Read mjc:ref attribute and bake into child_xform
-            # ref defines the physical orientation at qpos=0
+            # Bake ref into child_xform so Newton's FK correctly applies the ref offset
             ref_attr = joint_prim.GetAttribute("mjc:ref")
             ref_value = ref_attr.Get() if ref_attr and ref_attr.HasValue() else 0.0
             if ref_value != 0.0:

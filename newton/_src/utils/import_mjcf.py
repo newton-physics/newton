@@ -780,6 +780,7 @@ def parse_mjcf(
                     parent_xform_for_joint = wp.transform(body_pos_for_joints + joint_pos, body_ori_for_joints)
 
                 # Compute child_xform with ref baked in for single-DOF joints
+                # This ensures Newton's FK correctly applies the ref offset
                 child_xform_pos = joint_pos
                 child_xform_rot = wp.quat_identity()
                 if joint_type in (JointType.REVOLUTE, JointType.PRISMATIC):

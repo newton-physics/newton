@@ -2525,7 +2525,7 @@ def Xform "Articulation" (
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_ref_attribute_parsing(self):
-        """Test that 'mjc:ref' attribute is parsed and baked into FK."""
+        """Test that 'mjc:ref' attribute is parsed."""
         from pxr import Usd  # noqa: PLC0415
 
         usd_content = """#usda 1.0
@@ -2579,16 +2579,6 @@ def Xform "Articulation" (
 
         revolute_joint_idx = model.joint_key.index("/Articulation/revolute_joint")
         self.assertAlmostEqual(dof_ref[qd_start[revolute_joint_idx]], 90.0, places=4)
-
-        # Verify joint_X_c has ref baked in (quaternion should not be identity for ref=90)
-        joint_X_c = model.joint_X_c.numpy()
-        joint_idx = model.joint_key.index("/Articulation/revolute_joint")
-        joint_quat = joint_X_c[joint_idx, 3:7]
-
-        # 90° rotation around Y axis: [0, sin(45°), 0, cos(45°)]
-        expected = np.array([0.0, np.sin(np.pi / 4), 0.0, np.cos(np.pi / 4)])
-        dist = min(np.linalg.norm(joint_quat - expected), np.linalg.norm(joint_quat + expected))
-        self.assertLess(dist, 0.01, f"Quaternion mismatch: got {joint_quat}, expected ±{expected}")
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_springref_attribute_parsing(self):

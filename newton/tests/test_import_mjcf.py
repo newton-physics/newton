@@ -1666,7 +1666,7 @@ class TestImportMjcf(unittest.TestCase):
                 self.assertAlmostEqual(a, e, places=4, msg=f"eq_solref[{eq_idx}][{i}] should be {e}, got {a}")
 
     def test_ref_attribute_parsing(self):
-        """Test that 'ref' attribute is parsed and baked into FK."""
+        """Test that 'ref' attribute is parsed"""
         mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
 <mujoco model="test">
     <worldbody>
@@ -1698,20 +1698,6 @@ class TestImportMjcf(unittest.TestCase):
 
         slide_idx = model.joint_key.index("slide")
         self.assertAlmostEqual(dof_ref[qd_start[slide_idx]], 0.5, places=4)
-
-        # Verify ref is baked into FK - body should be rotated even with qpos=0
-        state = model.state()
-        state.joint_q.zero_()
-        newton.eval_fk(model, state.joint_q, state.joint_qd, state)
-
-        body_q = state.body_q.numpy()
-        body_idx = model.body_key.index("child1")
-        quat = body_q[body_idx, 3:7]
-
-        # -90° rotation around Y axis: [0, -sin(45°), 0, cos(45°)]
-        expected = np.array([0.0, -np.sin(np.pi / 4), 0.0, np.cos(np.pi / 4)])
-        dist = min(np.linalg.norm(quat - expected), np.linalg.norm(quat + expected))
-        self.assertLess(dist, 0.01, f"Quaternion mismatch: got {quat}, expected ±{expected}")
 
     def test_springref_attribute_parsing(self):
         """Test that 'springref' attribute is parsed for hinge and slide joints."""

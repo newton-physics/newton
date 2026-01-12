@@ -4074,6 +4074,70 @@ class TestMuJoCoAttributes(unittest.TestCase):
         assert np.allclose(model.mujoco.condim.numpy(), [6])
         assert np.allclose(solver.mjw_model.geom_condim.numpy(), [6])
 
+    def test_ref_fk_matches_mujoco(self):
+        """Test that Newton's FK matches MuJoCo's FK for joints with ref attribute."""
+        import mujoco  # noqa: PLC0415
+
+        mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test_ref_fk">
+    <worldbody>
+        <body name="base">
+            <geom type="box" size="0.1 0.1 0.1"/>
+            <body name="child1" pos="0 0 1">
+                <joint name="hinge" type="hinge" axis="0 1 0" ref="90"/>
+                <geom type="box" size="0.1 0.1 0.1"/>
+                <body name="child2" pos="0 0 1">
+                    <joint name="slide" type="slide" axis="0 0 1" ref="0.5"/>
+                    <geom type="box" size="0.1 0.1 0.1"/>
+                </body>
+            </body>
+        </body>
+    </worldbody>
+</mujoco>"""
+
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_mjcf(mjcf_content)
+        model = builder.finalize()
+        solver = SolverMuJoCo(model)
+
+        mj_model = solver.mj_model
+        mj_data = solver.mj_data
+
+        # Set qpos=0 in MuJoCo and run forward kinematics
+        mj_data.qpos[:] = 0.0
+        mujoco.mj_kinematics(mj_model, mj_data)
+
+        # Run Newton's FK with qpos=0
+        state = model.state()
+        state.joint_q.zero_()
+        newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+
+        # Compare body transforms between Newton and MuJoCo
+        newton_body_q = state.body_q.numpy()
+
+        for body_name in ["child1", "child2"]:
+            newton_body_idx = model.body_key.index(body_name)
+            mj_body_idx = mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_BODY, body_name)
+
+            # Get Newton body position and quaternion
+            newton_pos = newton_body_q[newton_body_idx, 0:3]
+            newton_quat = newton_body_q[newton_body_idx, 3:7]  # [x, y, z, w]
+
+            # Get MuJoCo body position and quaternion
+            mj_pos = mj_data.xpos[mj_body_idx]
+            mj_quat_wxyz = mj_data.xquat[mj_body_idx]  # MuJoCo uses [w, x, y, z]
+            mj_quat = np.array([mj_quat_wxyz[1], mj_quat_wxyz[2], mj_quat_wxyz[3], mj_quat_wxyz[0]])
+
+            # Compare positions
+            assert np.allclose(newton_pos, mj_pos, atol=0.01), (
+                f"Position mismatch for {body_name}: Newton={newton_pos}, MuJoCo={mj_pos}"
+            )
+
+            # Compare quaternions (sign-invariant since q and -q represent the same rotation)
+            quat_dist = min(np.linalg.norm(newton_quat - mj_quat), np.linalg.norm(newton_quat + mj_quat))
+            assert quat_dist < 0.01, f"Quaternion mismatch for {body_name}: Newton={newton_quat}, MuJoCo={mj_quat}"
+
 
 class TestMuJoCoArticulationConversion(unittest.TestCase):
     def test_loop_joints_only(self):
