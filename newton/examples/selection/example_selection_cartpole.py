@@ -20,7 +20,7 @@
 # ArticulationView. This example spawns multiple cartpole robots and applies
 # simple random control policy.
 #
-# To limit the number of worlds to render use the max-worlds argument. 
+# To limit the number of worlds to render use the max-worlds argument.
 # Command: python -m newton.examples selection_cartpole --num-worlds 16 --max-worlds 8
 #
 ###########################################################################
