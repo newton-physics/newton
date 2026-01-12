@@ -21,7 +21,7 @@ from typing import Any
 import warp as wp
 
 from ..sim.model import Model
-from .collision_core import build_pair_key2, sat_box_intersection
+from .collision_core import sat_box_intersection
 from .contact_data import ContactData
 from .contact_reduction import (
     NUM_NORMAL_BINS,
@@ -1194,9 +1194,10 @@ def get_generate_contacts_kernel(output_vertices: bool):
 
             iso_coords = iso_voxel_coords[tid]
 
+            # Sum margins for consistency with thickness summing
             margin_a = shape_contact_margin[shape_a]
             margin_b = shape_contact_margin[shape_b]
-            margin = wp.max(margin_a, margin_b)
+            margin = margin_a + margin_b
 
             k_a = shape_material_k_hydro[shape_a]
             k_b = shape_material_k_hydro[shape_b]
@@ -1385,10 +1386,10 @@ def get_decode_contacts_kernel(margin_contact_area: float = 1e-4, writer_func: A
             normal_world = wp.transform_vector(transform_b, normal)
             pos_world = wp.transform_point(transform_b, pos)
 
-            # Use per-shape contact margin (max of both shapes)
+            # Sum margins for consistency with thickness summing
             margin_a = shape_contact_margin[shape_a]
             margin_b = shape_contact_margin[shape_b]
-            margin = wp.max(margin_a, margin_b)
+            margin = margin_a + margin_b
 
             k_a = shape_material_k_hydro[shape_a]
             k_b = shape_material_k_hydro[shape_b]
@@ -1412,8 +1413,6 @@ def get_decode_contacts_kernel(margin_contact_area: float = 1e-4, writer_func: A
             contact_data.shape_a = shape_a
             contact_data.shape_b = shape_b
             contact_data.margin = margin
-            contact_data.feature = wp.uint32(tid + 1)
-            contact_data.feature_pair_key = build_pair_key2(wp.uint32(shape_a), wp.uint32(shape_b))
             contact_data.contact_stiffness = c_stiffness
 
             writer_func(contact_data, writer_data, output_index)
@@ -1667,10 +1666,10 @@ def get_binning_kernels(
 
         transform_b = shape_transform[shape_b]
 
-        # Get contact margin
+        # Get contact margin (sum for consistency with thickness summing)
         margin_a = shape_contact_margin[shape_a]
         margin_b = shape_contact_margin[shape_b]
-        margin = wp.max(margin_a, margin_b)
+        margin = margin_a + margin_b
 
         # at this point, we know that each direction has a contact in it, but the same contact id can be present in multiple directions
         # here deduplicate contacts based on contact id
@@ -1797,8 +1796,6 @@ def get_binning_kernels(
         if contact_idx + total_contacts > writer_data.contact_max:
             return
 
-        pair_key = build_pair_key2(wp.uint32(shape_a), wp.uint32(shape_b))
-
         # Store contacts
         for i in range(num_unique_contacts):
             dir_idx = unique_indices[i]
@@ -1832,8 +1829,6 @@ def get_binning_kernels(
             contact_data.shape_a = shape_a
             contact_data.shape_b = shape_b
             contact_data.margin = margin
-            contact_data.feature = wp.uint32(binned_id[tid, normal_bin_idx, dir_idx] + 1)
-            contact_data.feature_pair_key = pair_key
             contact_data.contact_stiffness = c_stiffness
             contact_data.contact_friction_scale = unique_friction * wp.float32(depth > 0.0)
 
@@ -1858,8 +1853,6 @@ def get_binning_kernels(
             contact_data.shape_a = shape_a
             contact_data.shape_b = shape_b
             contact_data.margin = margin
-            contact_data.feature = wp.uint32(0)
-            contact_data.feature_pair_key = pair_key
             contact_data.contact_stiffness = c_stiffness
             contact_data.contact_friction_scale = anchor_friction
 

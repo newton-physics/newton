@@ -40,7 +40,6 @@ from newton._src.geometry.hashtable import (
 )
 
 from .collision_core import (
-    build_pair_key3,
     create_compute_gjk_mpr_contacts,
     get_triangle_shape_from_mesh,
 )
@@ -209,7 +208,7 @@ class GlobalContactReducerData:
 
     # Contact buffer arrays
     position_depth: wp.array(dtype=wp.vec4)
-    normal_feature: wp.array(dtype=wp.vec4)
+    normal: wp.array(dtype=wp.vec3)
     shape_pairs: wp.array(dtype=wp.vec2i)
     contact_count: wp.array(dtype=wp.int32)
     capacity: int
@@ -288,15 +287,15 @@ class GlobalContactReducer:
     values (one per slot = direction x beta + deepest). This allows one thread
     to process all slots for a bin and deduplicate locally.
 
-    Contact data is packed into vec4 for efficient memory access:
+    Contact data is packed for efficient memory access:
     - position_depth: vec4(position.x, position.y, position.z, depth)
-    - normal_feature: vec4(normal.x, normal.y, normal.z, float_bits(feature))
+    - normal: vec3(normal.x, normal.y, normal.z)
 
     Attributes:
         capacity: Maximum number of contacts that can be stored
         values_per_key: Number of value slots per hashtable entry (13 for 2 betas)
         position_depth: vec4 array storing position.xyz and depth
-        normal_feature: vec4 array storing normal.xyz and feature
+        normal: vec3 array storing contact normal
         shape_pairs: vec2i array storing (shape_a, shape_b) per contact
         contact_count: Atomic counter for allocated contacts
         hashtable: HashTable for tracking best contacts (keys only)
@@ -325,9 +324,9 @@ class GlobalContactReducer:
         # Values per key: 6 directions x num_betas + 1 deepest
         self.values_per_key = NUM_SPATIAL_DIRECTIONS * num_betas + 1
 
-        # Contact buffer (struct of arrays with vec4 packing)
+        # Contact buffer (struct of arrays)
         self.position_depth = wp.zeros(capacity, dtype=wp.vec4, device=device)
-        self.normal_feature = wp.zeros(capacity, dtype=wp.vec4, device=device)
+        self.normal = wp.zeros(capacity, dtype=wp.vec3, device=device)
         self.shape_pairs = wp.zeros(capacity, dtype=wp.vec2i, device=device)
 
         # Atomic counter for contact allocation
@@ -393,7 +392,7 @@ class GlobalContactReducer:
         """
         data = GlobalContactReducerData()
         data.position_depth = self.position_depth
-        data.normal_feature = self.normal_feature
+        data.normal = self.normal
         data.shape_pairs = self.shape_pairs
         data.contact_count = self.contact_count
         data.capacity = self.capacity
@@ -412,7 +411,6 @@ def export_contact_to_buffer(
     position: wp.vec3,
     normal: wp.vec3,
     depth: float,
-    feature: int,
     reducer_data: GlobalContactReducerData,
 ) -> int:
     """Store a contact in the buffer without reduction.
@@ -423,7 +421,6 @@ def export_contact_to_buffer(
         position: Contact position in world space
         normal: Contact normal
         depth: Penetration depth (negative = penetrating)
-        feature: Feature identifier for deduplication
         reducer_data: GlobalContactReducerData with all arrays
 
     Returns:
@@ -436,7 +433,7 @@ def export_contact_to_buffer(
 
     # Store contact data (packed into vec4)
     reducer_data.position_depth[contact_id] = wp.vec4(position[0], position[1], position[2], depth)
-    reducer_data.normal_feature[contact_id] = wp.vec4(normal[0], normal[1], normal[2], int_as_float(wp.int32(feature)))
+    reducer_data.normal[contact_id] = normal
     reducer_data.shape_pairs[contact_id] = wp.vec2i(shape_a, shape_b)
 
     return contact_id
@@ -459,12 +456,11 @@ def reduce_contact_in_hashtable(
     """
     # Read contact data from buffer
     pd = reducer_data.position_depth[contact_id]
-    nf = reducer_data.normal_feature[contact_id]
+    normal = reducer_data.normal[contact_id]
     pair = reducer_data.shape_pairs[contact_id]
 
     position = wp.vec3(pd[0], pd[1], pd[2])
     depth = pd[3]
-    normal = wp.vec3(nf[0], nf[1], nf[2])
     shape_a = pair[0]
     shape_b = pair[1]
 
@@ -525,13 +521,12 @@ def export_and_reduce_contact(
     position: wp.vec3,
     normal: wp.vec3,
     depth: float,
-    feature: int,
     reducer_data: GlobalContactReducerData,
     beta0: float,
     beta1: float,
 ) -> int:
     """Legacy wrapper for backward compatibility."""
-    contact_id = export_contact_to_buffer(shape_a, shape_b, position, normal, depth, feature, reducer_data)
+    contact_id = export_contact_to_buffer(shape_a, shape_b, position, normal, depth, reducer_data)
 
     if contact_id >= 0:
         reduce_contact_in_hashtable(contact_id, reducer_data, beta0, beta1)
@@ -574,27 +569,25 @@ def create_reduce_buffered_contacts_kernel(beta0: float, beta1: float):
 def unpack_contact(
     contact_id: int,
     position_depth: wp.array(dtype=wp.vec4),
-    normal_feature: wp.array(dtype=wp.vec4),
+    normal: wp.array(dtype=wp.vec3),
 ):
     """Unpack contact data from the buffer.
 
     Args:
         contact_id: Index into the contact buffer
         position_depth: Contact buffer for position.xyz + depth
-        normal_feature: Contact buffer for normal.xyz + feature
+        normal: Contact buffer for normal
 
     Returns:
-        Tuple of (position, normal, depth, feature)
+        Tuple of (position, normal, depth)
     """
     pd = position_depth[contact_id]
-    nf = normal_feature[contact_id]
+    n = normal[contact_id]
 
     position = wp.vec3(pd[0], pd[1], pd[2])
     depth = pd[3]
-    normal = wp.vec3(nf[0], nf[1], nf[2])
-    feature = float_as_int(nf[3])
 
-    return position, normal, depth, feature
+    return position, n, depth
 
 
 @wp.func
@@ -623,7 +616,6 @@ def write_contact_to_reducer(
     depth = contact_data.contact_distance
     shape_a = contact_data.shape_a
     shape_b = contact_data.shape_b
-    feature = int(contact_data.feature)
 
     # Store contact ONLY (registration to hashtable happens in a separate kernel)
     # This reduces register pressure on the contact generation kernel
@@ -633,7 +625,6 @@ def write_contact_to_reducer(
         position=position,
         normal=normal,
         depth=depth,
-        feature=feature,
         reducer_data=reducer_data,
     )
 
@@ -667,7 +658,7 @@ def create_export_reduced_contacts_kernel(writer_func: Any, values_per_key: int 
         ht_active_slots: wp.array(dtype=wp.int32),
         # Contact buffer arrays
         position_depth: wp.array(dtype=wp.vec4),
-        normal_feature: wp.array(dtype=wp.vec4),
+        normal: wp.array(dtype=wp.vec3),
         shape_pairs: wp.array(dtype=wp.vec2i),
         # Shape data for extracting thickness
         shape_data: wp.array(dtype=wp.vec4),
@@ -723,7 +714,7 @@ def create_export_reduced_contacts_kernel(writer_func: Any, values_per_key: int 
                 num_exported = num_exported + 1
 
                 # Unpack contact data
-                position, normal, depth, feature = unpack_contact(contact_id, position_depth, normal_feature)
+                position, contact_normal, depth = unpack_contact(contact_id, position_depth, normal)
 
                 # Get shape pair
                 pair = shape_pairs[contact_id]
@@ -742,7 +733,7 @@ def create_export_reduced_contacts_kernel(writer_func: Any, values_per_key: int 
                 # Create ContactData struct
                 contact_data = ContactData()
                 contact_data.contact_point_center = position
-                contact_data.contact_normal_a_to_b = normal
+                contact_data.contact_normal_a_to_b = contact_normal
                 contact_data.contact_distance = depth
                 contact_data.radius_eff_a = 0.0
                 contact_data.radius_eff_b = 0.0
@@ -751,8 +742,6 @@ def create_export_reduced_contacts_kernel(writer_func: Any, values_per_key: int 
                 contact_data.shape_a = shape_a
                 contact_data.shape_b = shape_b
                 contact_data.margin = margin
-                contact_data.feature = wp.uint32(feature)
-                contact_data.feature_pair_key = wp.uint64(0)
 
                 # Call the writer function
                 writer_func(contact_data, writer_data, -1)
@@ -848,9 +837,6 @@ def create_mesh_triangle_contacts_to_reducer_kernel(beta0: float, beta1: float):
             margin_b = shape_contact_margin[shape_b]
             margin = wp.max(margin_a, margin_b)
 
-            # Build pair key including triangle index
-            pair_key = build_pair_key3(wp.uint32(shape_a), wp.uint32(shape_b), wp.uint32(tri_idx))
-
             # Compute and write contacts using GJK/MPR
             wp.static(create_compute_gjk_mpr_contacts(write_to_reducer_with_betas))(
                 shape_data_a,
@@ -865,7 +851,6 @@ def create_mesh_triangle_contacts_to_reducer_kernel(beta0: float, beta1: float):
                 thickness_a,
                 thickness_b,
                 reducer_data,
-                pair_key,
             )
 
     return mesh_triangle_contacts_to_reducer_kernel

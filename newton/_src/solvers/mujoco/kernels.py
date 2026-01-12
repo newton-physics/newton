@@ -137,8 +137,9 @@ def contact_params(
     mix = wp.where((solmix1 >= MJ_MINVAL) and (solmix2 < MJ_MINVAL), 1.0, mix)
     mix = wp.where(p1 == p2, mix, wp.where(p1 > p2, 1.0, 0.0))
 
-    margin = wp.max(geom_margin[worldid, g1], geom_margin[worldid, g2])
-    gap = wp.max(geom_gap[worldid, g1], geom_gap[worldid, g2])
+    # Sum margins for consistency with thickness summing
+    margin = geom_margin[worldid, g1] + geom_margin[worldid, g2]
+    gap = geom_gap[worldid, g1] + geom_gap[worldid, g2]
 
     condim1 = geom_condim[g1]
     condim2 = geom_condim[g2]

@@ -2523,6 +2523,160 @@ def Xform "Articulation" (
         self.assertTrue(np.any(jnt_actgravcomp))
         self.assertTrue(np.any(~jnt_actgravcomp))
 
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_ref_attribute_parsing(self):
+        """Test that 'mjc:ref' attribute is parsed."""
+        from pxr import Usd  # noqa: PLC0415
+
+        usd_content = """#usda 1.0
+(
+    metersPerUnit = 1.0
+    upAxis = "Z"
+)
+
+def Xform "Articulation" (
+    prepend apiSchemas = ["PhysicsArticulationRootAPI"]
+)
+{
+    def Cube "base" (
+        prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsCollisionAPI"]
+    )
+    {
+        double3 xformOp:translate = (0, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+
+    def Cube "child1" (
+        prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsCollisionAPI"]
+    )
+    {
+        double3 xformOp:translate = (0, 0, 1)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+
+    def PhysicsRevoluteJoint "revolute_joint"
+    {
+        token physics:axis = "Y"
+        rel physics:body0 = </Articulation/base>
+        rel physics:body1 = </Articulation/child1>
+        float mjc:ref = 90.0
+    }
+}
+"""
+        stage = Usd.Stage.CreateInMemory()
+        stage.GetRootLayer().ImportFromString(usd_content)
+
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_usd(stage)
+        model = builder.finalize()
+
+        # Verify custom attribute parsing
+        self.assertTrue(hasattr(model, "mujoco"))
+        self.assertTrue(hasattr(model.mujoco, "dof_ref"))
+        dof_ref = model.mujoco.dof_ref.numpy()
+        qd_start = model.joint_qd_start.numpy()
+
+        revolute_joint_idx = model.joint_key.index("/Articulation/revolute_joint")
+        self.assertAlmostEqual(dof_ref[qd_start[revolute_joint_idx]], 90.0, places=4)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_springref_attribute_parsing(self):
+        """Test that 'mjc:springref' attribute is parsed for revolute and prismatic joints."""
+        from pxr import Usd  # noqa: PLC0415
+
+        usd_content = """#usda 1.0
+(
+    upAxis = "Z"
+)
+
+def PhysicsScene "physicsScene"
+{
+}
+
+def Xform "Articulation" (
+    prepend apiSchemas = ["PhysicsArticulationRootAPI"]
+)
+{
+    def Xform "Body0" (
+        prepend apiSchemas = ["PhysicsRigidBodyAPI"]
+    )
+    {
+        double3 xformOp:translate = (0, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+        def Cube "Collision0" (
+            prepend apiSchemas = ["PhysicsCollisionAPI"]
+        )
+        {
+            double size = 0.2
+        }
+    }
+
+    def Xform "Body1" (
+        prepend apiSchemas = ["PhysicsRigidBodyAPI"]
+    )
+    {
+        double3 xformOp:translate = (1, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+        def Cube "Collision1" (
+            prepend apiSchemas = ["PhysicsCollisionAPI"]
+        )
+        {
+            double size = 0.2
+        }
+    }
+
+    def Xform "Body2" (
+        prepend apiSchemas = ["PhysicsRigidBodyAPI"]
+    )
+    {
+        double3 xformOp:translate = (2, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+        def Cube "Collision2" (
+            prepend apiSchemas = ["PhysicsCollisionAPI"]
+        )
+        {
+            double size = 0.2
+        }
+    }
+
+    def PhysicsRevoluteJoint "revolute_joint" (
+        prepend apiSchemas = ["PhysicsDriveAPI:angular"]
+    )
+    {
+        rel physics:body0 = </Articulation/Body0>
+        rel physics:body1 = </Articulation/Body1>
+        float mjc:springref = 30.0
+    }
+
+    def PhysicsPrismaticJoint "prismatic_joint"
+    {
+        token physics:axis = "Z"
+        rel physics:body0 = </Articulation/Body1>
+        rel physics:body1 = </Articulation/Body2>
+        float mjc:springref = 0.25
+    }
+}
+"""
+        stage = Usd.Stage.CreateInMemory()
+        stage.GetRootLayer().ImportFromString(usd_content)
+
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_usd(stage)
+        model = builder.finalize()
+
+        self.assertTrue(hasattr(model, "mujoco"))
+        self.assertTrue(hasattr(model.mujoco, "dof_springref"))
+        springref = model.mujoco.dof_springref.numpy()
+        qd_start = model.joint_qd_start.numpy()
+
+        revolute_joint_idx = model.joint_key.index("/Articulation/revolute_joint")
+        self.assertAlmostEqual(springref[qd_start[revolute_joint_idx]], 30.0, places=4)
+
+        prismatic_joint_idx = model.joint_key.index("/Articulation/prismatic_joint")
+        self.assertAlmostEqual(springref[qd_start[prismatic_joint_idx]], 0.25, places=4)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2, failfast=True)
