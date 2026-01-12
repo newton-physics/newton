@@ -563,6 +563,12 @@ class SolverMuJoCo(SolverBase):
         include_sites: bool = True,
     ):
         """
+        Solver options (e.g., ``impratio``) follow this resolution priority:
+
+        1. **Constructor argument** - If provided, same value is used for all worlds.
+        2. **Newton model custom attribute** (``model.mujoco.<option>``) - Supports per-world values.
+        3. **MuJoCo default** - Used if neither of the above is set.
+
         Args:
             model (Model): the model to be simulated.
             mjw_model (MjWarpModel | None): Optional pre-existing MuJoCo Warp model. If provided with `mjw_data`, conversion from Newton model is skipped.
@@ -575,7 +581,7 @@ class SolverMuJoCo(SolverBase):
             solver (int | str): Solver type. Can be "cg" or "newton", or their corresponding MuJoCo integer constants.
             integrator (int | str): Integrator type. Can be "euler", "rk4", or "implicitfast", or their corresponding MuJoCo integer constants.
             cone (int | str): The type of contact friction cone. Can be "pyramidal", "elliptic", or their corresponding MuJoCo integer constants.
-            impratio (float | None): Frictional-to-normal constraint impedance ratio. If None, uses the value from model custom attribute ``mujoco:impratio`` or MuJoCo's default (1.0).
+            impratio (float | None): Frictional-to-normal constraint impedance ratio. Defaults to MuJoCo's default (1.0).
             use_mujoco_cpu (bool): If True, use the MuJoCo-C CPU backend instead of `mujoco_warp`.
             disable_contacts (bool): If True, disable contact computation in MuJoCo.
             register_collision_groups (bool): If True, register collision groups from the Newton model in MuJoCo.
@@ -1221,12 +1227,41 @@ class SolverMuJoCo(SolverBase):
         """
         Convert a Newton model and state to MuJoCo (Warp) model and data.
 
+        Solver options (e.g., ``impratio``) follow this resolution priority:
+
+        1. **Constructor argument** - If provided, same value is used for all worlds.
+        2. **Newton model custom attribute** (``model.mujoco.<option>``) - Supports per-world values.
+        3. **MuJoCo default** - Used if neither of the above is set.
+
         Args:
-            Model (newton.Model): The Newton model to convert.
-            State (newton.State): The Newton state to convert.
+            model: The Newton model to convert.
+            state: The Newton state to convert (optional).
+            separate_worlds: If True, each world is a separate MuJoCo simulation.
+            iterations: Maximum solver iterations.
+            ls_iterations: Maximum line search iterations.
+            njmax: Maximum number of constraints per world.
+            nconmax: Maximum number of contacts.
+            solver: Constraint solver type ("cg" or "newton").
+            integrator: Integration method ("euler", "rk4", "implicit", "implicitfast").
+            disableflags: MuJoCo disable flags bitmask.
+            disable_contacts: If True, disable contact computation.
+            impratio: Impedance ratio for contacts. Defaults to MuJoCo default.
+            tolerance: Solver tolerance.
+            ls_tolerance: Line search tolerance.
+            cone: Friction cone type ("pyramidal" or "elliptic").
+            target_filename: Optional path to save generated MJCF file.
+            default_actuator_args: Default actuator parameters.
+            default_actuator_gear: Default actuator gear ratio.
+            actuator_gears: Per-actuator gear ratios by name.
+            actuated_axes: List of DOF indices to actuate.
+            skip_visual_only_geoms: If True, skip geoms that are visual-only.
+            include_sites: If True, include sites in the model.
+            mesh_maxhullvert: Maximum vertices for convex hull meshes.
+            ls_parallel: If True, enable parallel line search.
 
         Returns:
-            tuple[MjWarpModel, MjWarpData, MjModel, MjData]: A tuple containing the model and data objects for ``mujoco_warp`` and MuJoCo.
+            tuple[MjWarpModel, MjWarpData, MjModel, MjData]: Model and data objects for
+                ``mujoco_warp`` and MuJoCo.
         """
 
         if not model.joint_count:
@@ -1309,8 +1344,10 @@ class SolverMuJoCo(SolverBase):
             else:
                 arr[tuple(keys.T)] = vals
 
-        # Resolve solver options: constructor arg > custom attribute > MuJoCo default
-        # Track if overridden (tile() handles expansion) vs needs per-world update from Newton model
+        # Solver option resolution priority (highest to lowest):
+        #   1. Constructor argument (e.g., impratio=5.0) - same value for all worlds
+        #   2. Newton model custom attribute (model.mujoco.<option>) - supports per-world values
+        #   3. MuJoCo default
         impratio_overridden = impratio is not None
         if impratio is None:
             mujoco_attrs = getattr(model, "mujoco", None)
