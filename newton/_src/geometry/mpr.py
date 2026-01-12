@@ -38,7 +38,6 @@ Key features:
 - Works directly with penetrating contacts (no need for EPA as a separate step)
 - More numerically stable than EPA for deep penetrations
 - Returns collision normal, signed distance, and witness points
-- Supports feature ID tracking for contact persistence
 
 The implementation uses support mapping to query shape geometry, making it applicable
 to any convex shape that provides a support function.
@@ -72,7 +71,7 @@ def create_support_map_function(support_func: Any):
 
     Args:
         support_func: Support mapping function for individual shapes that takes
-                     (geometry, direction, data_provider) and returns (point, feature_id)
+                     (geometry, direction, data_provider) and returns a support point
 
     Returns:
         Tuple of three functions:
@@ -89,7 +88,7 @@ def create_support_map_function(support_func: Any):
         orientation_b: wp.quat,
         position_b: wp.vec3,
         data_provider: Any,
-    ) -> tuple[wp.vec3, int]:
+    ) -> wp.vec3:
         """
         Support mapping for shape B with transformation.
 
@@ -101,19 +100,19 @@ def create_support_map_function(support_func: Any):
             data_provider: Support mapping data provider
 
         Returns:
-            Tuple of (support point in world space, feature ID)
+            Support point in world space
         """
         # Transform direction to local space of shape B
         tmp = wp.quat_rotate_inv(orientation_b, direction)
 
         # Get support point in local space
-        result, feature_id = support_func(geom_b, tmp, data_provider)
+        result = support_func(geom_b, tmp, data_provider)
 
         # Transform result to world space
         result = wp.quat_rotate(orientation_b, result)
         result = result + position_b
 
-        return result, feature_id
+        return result
 
     @wp.func
     def minkowski_support(
@@ -124,7 +123,7 @@ def create_support_map_function(support_func: Any):
         position_b: wp.vec3,
         extend: float,
         data_provider: Any,
-    ) -> tuple[Vert, int, int]:
+    ) -> Vert:
         """
         Compute support point on Minkowski difference A - B.
 
@@ -138,20 +137,16 @@ def create_support_map_function(support_func: Any):
             data_provider: Support mapping data provider
 
         Returns:
-            Tuple of (Vert containing support points, feature ID A, feature ID B)
+            Vert containing support points
         """
         v = Vert()
 
         # Support point on A in positive direction
-        tmp_result_a = support_func(geom_a, direction, data_provider)
-        point_a = tmp_result_a[0]
-        feature_a_id = tmp_result_a[1]
+        point_a = support_func(geom_a, direction, data_provider)
 
         # Support point on B in negative direction
         tmp_direction = -direction
-        tmp_result_b = support_map_b(geom_b, tmp_direction, orientation_b, position_b, data_provider)
-        v.B = tmp_result_b[0]
-        feature_b_id = tmp_result_b[1]
+        v.B = support_map_b(geom_b, tmp_direction, orientation_b, position_b, data_provider)
 
         # Apply contact offset extension
         d = wp.normalize(direction) * extend * 0.5
@@ -161,7 +156,7 @@ def create_support_map_function(support_func: Any):
         # Store BtoA vector
         v.BtoA = point_a - v.B
 
-        return v, feature_a_id, feature_b_id
+        return v
 
     @wp.func
     def geometric_center(
@@ -275,9 +270,7 @@ def create_solve_mpr(support_func: Any):
         normal = -v0.BtoA
 
         # First support point
-        v1, _feature_a_id, _feature_b_id = minkowski_support(
-            geom_a, geom_b, normal, orientation_b, position_b, extend, data_provider
-        )
+        v1 = minkowski_support(geom_a, geom_b, normal, orientation_b, position_b, extend, data_provider)
 
         point_a = vert_a(v1)
         point_b = v1.B
@@ -297,9 +290,7 @@ def create_solve_mpr(support_func: Any):
             return True, point_a, point_b, normal, penetration
 
         # Second support point
-        v2, _feature_a_id, _feature_b_id = minkowski_support(
-            geom_a, geom_b, normal, orientation_b, position_b, extend, data_provider
-        )
+        v2 = minkowski_support(geom_a, geom_b, normal, orientation_b, position_b, extend, data_provider)
 
         if wp.dot(v2.BtoA, normal) <= 0.0:
             return False, point_a, point_b, normal, penetration
@@ -334,9 +325,7 @@ def create_solve_mpr(support_func: Any):
 
             phase1 += 1
 
-            v3, _feature_a_id, _feature_b_id = minkowski_support(
-                geom_a, geom_b, normal, orientation_b, position_b, extend, data_provider
-            )
+            v3 = minkowski_support(geom_a, geom_b, normal, orientation_b, position_b, extend, data_provider)
 
             if wp.dot(v3.BtoA, normal) <= 0.0:
                 return False, point_a, point_b, normal, penetration
@@ -383,9 +372,7 @@ def create_solve_mpr(support_func: Any):
                 # If the origin is inside the wedge, we have a hit
                 hit = d >= 0.0
 
-            v4, _feature_a_id, _feature_b_id = minkowski_support(
-                geom_a, geom_b, normal, orientation_b, position_b, extend, data_provider
-            )
+            v4 = minkowski_support(geom_a, geom_b, normal, orientation_b, position_b, extend, data_provider)
 
             temp3 = v4.BtoA - v3.BtoA
             delta = wp.dot(temp3, normal)

@@ -59,9 +59,6 @@ class UnifiedContactWriterData:
     out_thickness0: wp.array(dtype=float)
     out_thickness1: wp.array(dtype=float)
     out_tids: wp.array(dtype=int)
-    # Contact matching arrays (optional)
-    contact_pair_key: wp.array(dtype=wp.uint64)
-    contact_key: wp.array(dtype=wp.uint32)
     # Per-contact shape properties, empty arrays if not enabled.
     # Zero-values indicate that no per-contact shape properties are set for this contact
     out_stiffness: wp.array(dtype=float)
@@ -92,8 +89,8 @@ def write_contact(
     Write a contact to the output arrays using ContactData and UnifiedContactWriterData.
 
     Args:
-        contact_data: ContactData struct containing contact information (includes feature and feature_pair_key)
-        writer_data: UnifiedContactWriterData struct containing body info and output arrays (includes contact_pair_key and contact_key)
+        contact_data: ContactData struct containing contact information
+        writer_data: UnifiedContactWriterData struct containing body info and output arrays
         output_index: If -1, use atomic_add to get the next available index if contact distance is less than margin. If >= 0, use this index directly and skip margin check.
     """
     total_separation_needed = (
@@ -163,11 +160,6 @@ def write_contact(
     writer_data.out_thickness0[index] = offset_mag_a
     writer_data.out_thickness1[index] = offset_mag_b
     writer_data.out_tids[index] = 0  # tid not available in this context
-
-    # Write contact key only if contact_key array is non-empty
-    if writer_data.contact_key.shape[0] > 0 and writer_data.contact_pair_key.shape[0] > 0:
-        writer_data.contact_key[index] = contact_data.feature
-        writer_data.contact_pair_key[index] = contact_data.feature_pair_key
 
     # Write stiffness/damping/friction only if per-contact shape properties are enabled
     if writer_data.out_stiffness.shape[0] > 0:
@@ -304,7 +296,6 @@ class CollisionPipelineUnified:
         shape_world: wp.array(dtype=int) | None = None,
         shape_flags: wp.array(dtype=int) | None = None,
         sap_sort_type=None,
-        enable_contact_matching: bool = False,
         sdf_hydroelastic: SDFHydroelastic | None = None,
     ):
         """
@@ -341,9 +332,6 @@ class CollisionPipelineUnified:
             sap_sort_type (SAPSortType | None, optional): Sorting algorithm for SAP broad phase.
                 Only used when broad_phase_mode is BroadPhaseMode.SAP. Options: SEGMENTED or TILE.
                 If None, uses default (SEGMENTED).
-            enable_contact_matching (bool, optional): Whether to enable contact matching data generation.
-                If True, allocates buffers for contact_pair_key and contact_key arrays that can be used
-                with ContactMatcher for warm-starting physics solvers. Defaults to False.
             sdf_hydroelastic (SDFHydroelastic | None, optional): Pre-configured SDF hydroelastic collision handler.
                 If provided, enables hydroelastic contact computation for SDF-based shape pairs. Defaults to None.
         """
@@ -351,7 +339,6 @@ class CollisionPipelineUnified:
         self.shape_count = shape_count
         self.broad_phase_mode = broad_phase_mode
         self.device = device
-        self.enable_contact_matching = enable_contact_matching
         self.reduce_contacts = reduce_contacts
         self.shape_pairs_max = (shape_count * (shape_count - 1)) // 2
 
@@ -420,14 +407,6 @@ class CollisionPipelineUnified:
             self.geom_data = wp.zeros(shape_count, dtype=wp.vec4, device=device)
             self.geom_transform = wp.zeros(shape_count, dtype=wp.transform, device=device)
 
-            # Contact matching arrays (optional)
-            if enable_contact_matching:
-                self.narrow_contact_pair_key = wp.zeros(self.rigid_contact_max, dtype=wp.uint64, device=device)
-                self.narrow_contact_key = wp.zeros(self.rigid_contact_max, dtype=wp.uint32, device=device)
-            else:
-                self.narrow_contact_pair_key = None
-                self.narrow_contact_key = None
-
         if soft_contact_max is None:
             soft_contact_max = shape_count * particle_count
         self.soft_contact_margin = soft_contact_margin
@@ -449,7 +428,6 @@ class CollisionPipelineUnified:
         broad_phase_mode: BroadPhaseMode = BroadPhaseMode.NXN,
         shape_pairs_filtered: wp.array(dtype=wp.vec2i) | None = None,
         sap_sort_type=None,
-        enable_contact_matching: bool = False,
         sdf_hydroelastic_config: SDFHydroelasticConfig | None = None,
     ) -> CollisionPipelineUnified:
         """
@@ -470,8 +448,6 @@ class CollisionPipelineUnified:
                 Required when broad_phase_mode is BroadPhaseMode.EXPLICIT. For NXN/SAP modes, can use model.shape_contact_pairs if available.
             sap_sort_type (SAPSortType | None, optional): Sorting algorithm for SAP broad phase.
                 Only used when broad_phase_mode is BroadPhaseMode.SAP. If None, uses default (SEGMENTED).
-            enable_contact_matching (bool, optional): Whether to enable contact matching data generation.
-                If True, allocates and populates contact_pair_key and contact_key arrays. Defaults to False.
             sdf_hydroelastic_config (SDFHydroelasticConfig | None, optional): Configuration for SDF hydroelastic collision handling. Defaults to None.
 
         Returns:
@@ -516,7 +492,6 @@ class CollisionPipelineUnified:
             shape_world=model.shape_world if hasattr(model, "shape_world") else None,
             shape_flags=model.shape_flags if hasattr(model, "shape_flags") else None,
             sap_sort_type=sap_sort_type,
-            enable_contact_matching=enable_contact_matching,
             sdf_hydroelastic=sdf_hydroelastic,
         )
 
@@ -645,13 +620,6 @@ class CollisionPipelineUnified:
         writer_data.out_thickness0 = contacts.rigid_contact_thickness0
         writer_data.out_thickness1 = contacts.rigid_contact_thickness1
         writer_data.out_tids = contacts.rigid_contact_tids
-        # Contact matching arrays (use empty arrays if not enabled)
-        if self.narrow_contact_pair_key is not None:
-            writer_data.contact_pair_key = self.narrow_contact_pair_key
-            writer_data.contact_key = self.narrow_contact_key
-        else:
-            writer_data.contact_pair_key = self.narrow_phase.empty_contact_pair_key
-            writer_data.contact_key = self.narrow_phase.empty_contact_key
 
         writer_data.out_stiffness = contacts.rigid_contact_stiffness
         writer_data.out_damping = contacts.rigid_contact_damping
