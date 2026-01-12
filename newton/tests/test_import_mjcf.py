@@ -1710,7 +1710,8 @@ class TestImportMjcf(unittest.TestCase):
 
         # -90° rotation around Y axis: [0, -sin(45°), 0, cos(45°)]
         expected = np.array([0.0, -np.sin(np.pi / 4), 0.0, np.cos(np.pi / 4)])
-        np.testing.assert_allclose(quat, expected, atol=0.01)
+        dist = min(np.linalg.norm(quat - expected), np.linalg.norm(quat + expected))
+        self.assertLess(dist, 0.01, f"Quaternion mismatch: got {quat}, expected ±{expected}")
 
     def test_springref_attribute_parsing(self):
         """Test that 'springref' attribute is parsed for hinge and slide joints."""

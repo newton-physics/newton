@@ -2587,7 +2587,8 @@ def Xform "Articulation" (
 
         # 90° rotation around Y axis: [0, sin(45°), 0, cos(45°)]
         expected = np.array([0.0, np.sin(np.pi / 4), 0.0, np.cos(np.pi / 4)])
-        np.testing.assert_allclose(joint_quat, expected, atol=0.01)
+        dist = min(np.linalg.norm(joint_quat - expected), np.linalg.norm(joint_quat + expected))
+        self.assertLess(dist, 0.01, f"Quaternion mismatch: got {joint_quat}, expected ±{expected}")
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_springref_attribute_parsing(self):
