@@ -103,7 +103,16 @@ nbsphinx_allow_errors = False
 
 
 templates_path = ["_templates"]
-exclude_patterns = ["_build", "Thumbs.db", ".DS_Store"]
+exclude_patterns = [
+    "_build",
+    "Thumbs.db",
+    ".DS_Store",
+    "sphinx-env/**",
+    "sphinx-env",
+    "**/site-packages/**",
+    "**/lib/**",
+    "tutorials/**/*.ipynb",
+]
 
 intersphinx_mapping = {
     "python": ("https://docs.python.org/3", None),
@@ -199,12 +208,6 @@ html_theme_options = {
     # "primary_sidebar_end": ["indices.html", "sidebar-ethical-ads.html"],
 }
 
-exclude_patterns = [
-    "sphinx-env/**",
-    "sphinx-env",
-    "**/site-packages/**",
-    "**/lib/**",
-]
 
 html_sidebars = {"**": ["sidebar-nav-bs.html"], "index": ["sidebar-nav-bs.html"]}
 
