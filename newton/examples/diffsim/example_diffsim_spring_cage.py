@@ -67,6 +67,7 @@ class Example:
 
         # setup training parameters
         self.train_iter = 0
+
         # Factor by which the rest lengths of the springs are adjusted after each
         # iteration, relatively to the corresponding gradients. Lower values
         # converge more slowly but have less chances to miss the local minimum.
@@ -230,7 +231,13 @@ class Example:
         self.train_iter += 1
 
     def render(self):
-        for i in range(self.sim_steps + 1):
+        # for interactive viewing, we just render the final state at every frame
+        if isinstance(self.viewer, newton.viewer.ViewerGL):
+            start_frame = self.sim_steps
+        else:
+            start_frame = 0
+
+        for i in range(start_frame, self.sim_steps + 1):
             state = self.states[i]
             self.viewer.begin_frame(self.frame * self.frame_dt)
             self.viewer.log_state(state)
@@ -281,6 +288,8 @@ if __name__ == "__main__":
 
     # Parse arguments and initialize viewer
     viewer, args = newton.examples.init(parser)
+    if isinstance(viewer, newton.viewer.ViewerGL):
+        viewer.show_particles = True
 
     # Create example
     example = Example(viewer, verbose=args.verbose)

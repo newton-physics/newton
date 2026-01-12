@@ -337,3 +337,49 @@ def support_map(
         feature_id = 0
 
     return result, feature_id
+
+
+@wp.func
+def extract_shape_data(
+    shape_idx: int,
+    shape_transform: wp.array(dtype=wp.transform),
+    shape_types: wp.array(dtype=int),
+    shape_data: wp.array(dtype=wp.vec4),  # scale (xyz), thickness (w) or other data
+    shape_source: wp.array(dtype=wp.uint64),
+):
+    """
+    Extract shape data from the narrow phase API arrays.
+
+    Args:
+        shape_idx: Index of the shape
+        shape_transform: World space transforms (already computed)
+        shape_types: Shape types
+        shape_data: Shape data (vec4 - scale xyz, thickness w)
+        shape_source: Source pointers (mesh IDs etc.)
+
+    Returns:
+        tuple: (position, orientation, shape_data, scale, thickness)
+    """
+    # Get shape's world transform (already in world space)
+    X_ws = shape_transform[shape_idx]
+
+    position = wp.transform_get_translation(X_ws)
+    orientation = wp.transform_get_rotation(X_ws)
+
+    # Extract scale and thickness from shape_data
+    # Assuming shape_data stores scale in xyz and thickness in w
+    data = shape_data[shape_idx]
+    scale = wp.vec3(data[0], data[1], data[2])
+    thickness = data[3]
+
+    # Create generic shape data
+    result = GenericShapeData()
+    result.shape_type = shape_types[shape_idx]
+    result.scale = scale
+    result.auxiliary = wp.vec3(0.0, 0.0, 0.0)
+
+    # For CONVEX_MESH, pack the mesh pointer into auxiliary
+    if shape_types[shape_idx] == int(GeoType.CONVEX_MESH):
+        result.auxiliary = pack_mesh_ptr(shape_source[shape_idx])
+
+    return position, orientation, result, scale, thickness
