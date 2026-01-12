@@ -1449,26 +1449,8 @@ class SolverMuJoCo(SolverBase):
                 fixed_base = True
 
             # this assumes that the joint position is 0
-            # Note: ref is baked into joint_child_xform during MJCF/USD parsing for Newton's FK.
-            # We need to undo it here so MuJoCo can apply ref at runtime via its own mechanism.
             tf = wp.transform(*joint_parent_xform[j])
             child_xform = wp.transform(*joint_child_xform[j])
-
-            # Undo ref from child_xform for single-DOF joints
-            j_type = joint_type[j]
-            qd_start_j = joint_qd_start[j]
-            if joint_ref is not None and j_type in (JointType.REVOLUTE, JointType.PRISMATIC):
-                ref_value = joint_ref[qd_start_j]
-                if ref_value != 0.0:
-                    axis = wp.normalize(wp.vec3(*joint_axis[qd_start_j]))
-                    if j_type == JointType.REVOLUTE:
-                        # ref is stored in degrees, undo the rotation
-                        ref_rad = float(ref_value) * np.pi / 180.0
-                        ref_quat_inv = wp.quat_from_axis_angle(axis, -ref_rad)
-                        child_xform = wp.transform(child_xform.p, child_xform.q * ref_quat_inv)
-                    else:  # PRISMATIC
-                        child_xform = wp.transform(child_xform.p - float(ref_value) * axis, child_xform.q)
-
             tf = tf * wp.transform_inverse(child_xform)
 
             joint_pos = child_xform.p

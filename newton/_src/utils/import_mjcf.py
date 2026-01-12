@@ -779,8 +779,6 @@ def parse_mjcf(
                 else:
                     parent_xform_for_joint = wp.transform(body_pos_for_joints + joint_pos, body_ori_for_joints)
 
-                # Note: ref is NOT baked into child_xform - it's stored in dof_ref custom attribute
-                # and handled by MuJoCo via qpos0. Use eval_fk=False when ref is present.
                 joint_indices.append(
                     builder.add_joint(
                         joint_type,

@@ -560,9 +560,6 @@ def parse_usd(
             else:
                 limit_gains_scaling = 1.0
 
-            # Note: ref is NOT baked into child_xform - it's stored in dof_ref custom attribute
-            # and handled by MuJoCo via qpos0. Use eval_fk=False when ref is present.
-
             # Resolve limit gains with precedence, fallback to builder defaults when missing
             current_joint_limit_ke = R.get_value(
                 joint_prim,

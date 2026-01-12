@@ -1169,7 +1169,7 @@ def update_joint_transforms_kernel(
     child_xform = newton_joint_X_c[newton_jnt]
     parent_xform = newton_joint_X_p[newton_jnt]
 
-    # Compute body transform for MuJoCo
+    # Update body pos and quat from parent joint transform
     tf = parent_xform * wp.transform_inverse(child_xform)
 
     # Get the MuJoCo body for this joint and update its transform
