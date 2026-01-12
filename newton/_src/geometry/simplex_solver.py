@@ -35,7 +35,6 @@ The algorithm works by:
 Key features:
 - Distance computation between separated shapes
 - Collision detection when shapes overlap (returns signed_distance = 0)
-- Feature ID tracking for contact persistence
 - Barycentric coordinates (stored as vec4) for witness points
 - Numerically stable simplex reduction using Johnson's distance subalgorithm
 
@@ -394,9 +393,7 @@ def create_solve_closest_distance(support_func: Any):
             last_search_dir = search_dir
 
             # Get support point in search direction
-            w, _feature_a_id, _feature_b_id = minkowski_support(
-                geom_a, geom_b, search_dir, orientation_b, position_b, extend, data_provider
-            )
+            w = minkowski_support(geom_a, geom_b, search_dir, orientation_b, position_b, extend, data_provider)
 
             # Check for convergence using Frank-Wolfe duality gap
             # Skip check when using fallback direction to avoid premature exit

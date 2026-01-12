@@ -244,12 +244,13 @@ class SensorTiledCamera:
         default_light_shadows: bool = False
         colors_per_world: bool = False
         colors_per_shape: bool = False
+        backface_culling: bool = True
 
     def __init__(self, model: Model, num_cameras: int, width: int, height: int, options: Options | None = None):
         self.model = model
 
         self.render_context = RenderContext(
-            width, height, False, False, True, True, self.model.num_worlds, num_cameras, True
+            width, height, False, False, True, True, True, self.model.num_worlds, num_cameras, True
         )
         self.render_context.mesh_ids = model.shape_source_ptr
         self.render_context.shape_mesh_indices = wp.empty(self.model.shape_count, dtype=wp.int32)
@@ -297,6 +298,7 @@ class SensorTiledCamera:
         )
 
         if options is not None:
+            self.render_context.enable_backface_culling = options.backface_culling
             if options.checkerboard_texture:
                 self.assign_checkerboard_material_to_all_shapes()
             if options.default_light:

@@ -90,6 +90,7 @@ def _render_megakernel(
     enable_textures: wp.bool,
     enable_ambient_lighting: wp.bool,
     enable_particles: wp.bool,
+    enable_backface_culling: wp.bool,
     has_global_world: wp.bool,
     max_distance: wp.float32,
     # Camera
@@ -177,6 +178,7 @@ def _render_megakernel(
         world_index,
         has_global_world,
         enable_particles,
+        enable_backface_culling,
         max_distance,
         shape_enabled,
         shape_types,
@@ -272,6 +274,7 @@ def _render_megakernel(
         light_contribution = lighting.compute_lighting(
             enable_shadows,
             enable_particles,
+            enable_backface_culling,
             world_index,
             has_global_world,
             bvh_shapes_size,
@@ -351,6 +354,7 @@ def render_megakernel(
             rc.enable_textures,
             rc.enable_ambient_lighting,
             rc.enable_particles,
+            rc.enable_backface_culling,
             rc.has_global_world,
             rc.max_distance,
             # Camera

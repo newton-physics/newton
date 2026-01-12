@@ -12,6 +12,7 @@ newton.sensors
    MatchKind
    SensorContact
    SensorFrameTransform
+   SensorIMU
    SensorRaycast
    SensorTiledCamera
 
