@@ -165,10 +165,13 @@ class ModelBuilder:
         rolling_friction: float = 0.0005
         """The coefficient of rolling friction (resistance to rolling motion). Used by XPBD, MuJoCo."""
         thickness: float = 1e-5
-        """The thickness of the shape."""
+        """Outward offset from the shape's surface for collision detection.
+        Extends the effective collision surface outward by this amount. When two shapes collide,
+        their thicknesses are summed (thickness_a + thickness_b) to determine the total separation."""
         contact_margin: float | None = None
         """The contact margin for collision detection. If None, uses builder.rigid_contact_margin as default.
-        Note: contact_margin should be >= thickness for proper collision detection."""
+        AABBs are expanded by this value for broad phase detection. Must be >= thickness to ensure
+        collisions are not missed when thickened surfaces approach each other."""
         is_solid: bool = True
         """Indicates whether the shape is solid or hollow. Defaults to True."""
         collision_group: int = 1
@@ -6054,6 +6057,65 @@ class ModelBuilder:
 
         # validate world ordering and contiguity
         self._validate_world_ordering()
+
+        # validate all joints belong to an articulation, except for "loop joints"
+        # Loop joints connect two bodies that are already reachable via articulated joints
+        # (used to create kinematic loops, converted to equality constraints by MuJoCo solver)
+        if self.joint_count > 0:
+            # First, find all bodies reachable via articulated joints
+            articulated_bodies = set()
+            articulated_bodies.add(-1)  # World is always reachable
+            for i, art in enumerate(self.joint_articulation):
+                if art >= 0:  # Joint is in an articulation
+                    child = self.joint_child[i]
+                    articulated_bodies.add(child)
+
+            # Now check for true orphan joints: non-articulated joints whose child
+            # is NOT reachable via other articulated joints
+            orphan_joints = []
+            for i, art in enumerate(self.joint_articulation):
+                if art < 0:  # Joint is not in an articulation
+                    child = self.joint_child[i]
+                    if child not in articulated_bodies:
+                        # This is a true orphan - the child body has no articulated path
+                        orphan_joints.append(i)
+                    # else: this is a loop joint - child is already reachable, so it's allowed
+
+            if orphan_joints:
+                joint_keys = [self.joint_key[i] for i in orphan_joints[:5]]  # Show first 5
+                raise ValueError(
+                    f"Found {len(orphan_joints)} joint(s) not belonging to any articulation. "
+                    f"Call add_articulation() for all joints. Orphan joints: {joint_keys}"
+                    + ("..." if len(orphan_joints) > 5 else "")
+                )
+
+        # warn if any shape has thickness > contact_margin (causes unstable contact behavior)
+        # Thickness is an outward offset from each shape's surface. AABBs are expanded by contact_margin.
+        # For proper broad phase detection, each shape must have contact_margin >= thickness.
+        # This ensures that when thickened surfaces are close (sum of thicknesses),
+        # the AABBs overlap (sum of margins >= sum of thicknesses).
+        # Only check shapes that participate in collisions (have COLLIDE_SHAPES or COLLIDE_PARTICLES flag).
+        collision_flags_mask = ShapeFlags.COLLIDE_SHAPES | ShapeFlags.COLLIDE_PARTICLES
+        shapes_with_bad_margin = []
+        for i in range(self.shape_count):
+            # Skip shapes that don't participate in any collisions (e.g., sites, visual-only)
+            if not (self.shape_flags[i] & collision_flags_mask):
+                continue
+            thickness = self.shape_thickness[i]
+            margin = self.shape_contact_margin[i]
+            if thickness > margin:
+                shapes_with_bad_margin.append(
+                    f"{self.shape_key[i] or f'shape_{i}'} (thickness={thickness:.6g}, margin={margin:.6g})"
+                )
+        if shapes_with_bad_margin:
+            example_shapes = shapes_with_bad_margin[:5]
+            warnings.warn(
+                f"Found {len(shapes_with_bad_margin)} shape(s) with thickness > contact_margin. "
+                f"This can cause missed collisions in broad phase since AABBs are only expanded by contact_margin. "
+                f"Set contact_margin >= thickness for each shape. "
+                f"Affected shapes: {example_shapes}" + ("..." if len(shapes_with_bad_margin) > 5 else ""),
+                stacklevel=2,
+            )
 
         # construct particle inv masses
         ms = np.array(self.particle_mass, dtype=np.float32)

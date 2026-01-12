@@ -1194,9 +1194,10 @@ def get_generate_contacts_kernel(output_vertices: bool):
 
             iso_coords = iso_voxel_coords[tid]
 
+            # Sum margins for consistency with thickness summing
             margin_a = shape_contact_margin[shape_a]
             margin_b = shape_contact_margin[shape_b]
-            margin = wp.max(margin_a, margin_b)
+            margin = margin_a + margin_b
 
             k_a = shape_material_k_hydro[shape_a]
             k_b = shape_material_k_hydro[shape_b]
@@ -1385,10 +1386,10 @@ def get_decode_contacts_kernel(margin_contact_area: float = 1e-4, writer_func: A
             normal_world = wp.transform_vector(transform_b, normal)
             pos_world = wp.transform_point(transform_b, pos)
 
-            # Use per-shape contact margin (max of both shapes)
+            # Sum margins for consistency with thickness summing
             margin_a = shape_contact_margin[shape_a]
             margin_b = shape_contact_margin[shape_b]
-            margin = wp.max(margin_a, margin_b)
+            margin = margin_a + margin_b
 
             k_a = shape_material_k_hydro[shape_a]
             k_b = shape_material_k_hydro[shape_b]
@@ -1665,10 +1666,10 @@ def get_binning_kernels(
 
         transform_b = shape_transform[shape_b]
 
-        # Get contact margin
+        # Get contact margin (sum for consistency with thickness summing)
         margin_a = shape_contact_margin[shape_a]
         margin_b = shape_contact_margin[shape_b]
-        margin = wp.max(margin_a, margin_b)
+        margin = margin_a + margin_b
 
         # at this point, we know that each direction has a contact in it, but the same contact id can be present in multiple directions
         # here deduplicate contacts based on contact id

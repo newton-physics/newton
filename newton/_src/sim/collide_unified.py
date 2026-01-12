@@ -114,10 +114,10 @@ def write_contact(
     distance = wp.dot(diff, contact_normal_a_to_b)
     d = distance - total_separation_needed
 
-    # Use per-shape contact margins (max of both shapes)
+    # Use per-shape contact margins (sum of both shapes, consistent with thickness)
     margin_a = writer_data.shape_contact_margin[contact_data.shape_a]
     margin_b = writer_data.shape_contact_margin[contact_data.shape_b]
-    contact_margin = wp.max(margin_a, margin_b)
+    contact_margin = margin_a + margin_b
 
     index = output_index
 

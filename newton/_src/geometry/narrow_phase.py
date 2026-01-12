@@ -293,10 +293,10 @@ def create_narrow_phase_kernel_gjk_mpr(external_aabb: bool, writer_func: Any):
                 continue
 
             # Use per-shape contact margin for contact detection
-            # find_contacts expects a scalar margin, so we use max of the two margins
+            # Sum margins for consistency with thickness summing
             margin_a = shape_contact_margin[shape_a]
             margin_b = shape_contact_margin[shape_b]
-            margin = wp.max(margin_a, margin_b)
+            margin = margin_a + margin_b
 
             # Find and write contacts using GJK/MPR
             wp.static(create_find_contacts(writer_func))(
@@ -379,10 +379,10 @@ def narrow_phase_find_mesh_triangle_overlaps_kernel(
         X_ws = shape_transform[non_mesh_shape]
 
         # Use per-shape contact margin for the non-mesh shape
-        # Note: mesh_vs_convex_midphase expects a scalar margin, so we use max of the two margins
+        # Sum margins for consistency with thickness summing
         margin_non_mesh = shape_contact_margin[non_mesh_shape]
         margin_mesh = shape_contact_margin[mesh_shape]
-        margin = wp.max(margin_non_mesh, margin_mesh)
+        margin = margin_non_mesh + margin_mesh
 
         # Call mesh_vs_convex_midphase with the shape_data and margin
         mesh_vs_convex_midphase(
@@ -461,9 +461,10 @@ def create_narrow_phase_process_mesh_triangle_contacts_kernel(writer_func: Any):
             thickness_a = shape_data[shape_a][3]
 
             # Use per-shape contact margin for contact detection
+            # Sum margins for consistency with thickness summing
             margin_a = shape_contact_margin[shape_a]
             margin_b = shape_contact_margin[shape_b]
-            margin = wp.max(margin_a, margin_b)
+            margin = margin_a + margin_b
 
             # Compute and write contacts using GJK/MPR with standard post-processing
             wp.static(create_compute_gjk_mpr_contacts(writer_func))(
@@ -554,9 +555,10 @@ def create_narrow_phase_process_mesh_plane_contacts_kernel(
             total_thickness = thickness_mesh + thickness_plane
 
             # Use per-shape contact margin for contact detection
+            # Sum margins for consistency with thickness summing
             margin_mesh = shape_contact_margin[mesh_shape]
             margin_plane = shape_contact_margin[plane_shape]
-            margin = wp.max(margin_mesh, margin_plane)
+            margin = margin_mesh + margin_plane
 
             # Strided loop over vertices across all threads in the launch
             total_num_threads = total_num_blocks * wp.block_dim()
@@ -680,9 +682,10 @@ def create_narrow_phase_process_mesh_plane_contacts_kernel(
             total_thickness = thickness_mesh + thickness_plane
 
             # Use per-shape contact margin for contact detection
+            # Sum margins for consistency with thickness summing
             margin_mesh = shape_contact_margin[mesh_shape]
             margin_plane = shape_contact_margin[plane_shape]
-            margin = wp.max(margin_mesh, margin_plane)
+            margin = margin_mesh + margin_plane
 
             # Reset contact buffer for this pair
             for i in range(t, wp.static(num_reduction_slots), wp.block_dim()):
