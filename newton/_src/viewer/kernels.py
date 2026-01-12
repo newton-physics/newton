@@ -437,10 +437,7 @@ def compute_com_positions(
 ):
     tid = wp.tid()
     body_tf = body_q[tid]
-    body_pos = wp.transform_get_translation(body_tf)
-    body_rot = wp.transform_get_rotation(body_tf)
-    local_com = body_com[tid]
-    world_com = body_pos + wp.quat_rotate(body_rot, local_com)
+    world_com = wp.transform_point(body_tf, body_com[tid])
     world_idx = body_world[tid]
     if world_offsets and world_idx >= 0 and world_idx < world_offsets.shape[0]:
         world_com = world_com + world_offsets[world_idx]
