@@ -1589,7 +1589,7 @@ wheels = [
 [[package]]
 name = "mujoco-warp"
 version = "0.0.1"
-source = { git = "https://github.com/google-deepmind/mujoco_warp#9b144f309bfe0e02b1c610530e59238c9b6a805f" }
+source = { git = "https://github.com/google-deepmind/mujoco_warp#24e07def301f3c073d8bc0f948831c5611737ff0" }
 dependencies = [
     { name = "absl-py" },
     { name = "etils", extra = ["epath"] },
