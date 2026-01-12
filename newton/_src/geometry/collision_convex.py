@@ -63,7 +63,7 @@ def create_solve_convex_multi_contact(support_func: Any, writer_func: Any, post_
 
     Args:
         support_func: Support mapping function for shapes that takes
-                     (geometry, direction, data_provider) and returns (point, feature_id)
+                     (geometry, direction, data_provider) and returns a support point
         writer_func: Function to write contact data (signature: (ContactData, writer_data) -> None)
         post_process_contact: Function to post-process contact data
 
@@ -147,7 +147,6 @@ def create_solve_convex_multi_contact(support_func: Any, writer_func: Any, post_
             contact_data.contact_point_center = point
             contact_data.contact_normal_a_to_b = normal
             contact_data.contact_distance = signed_distance
-            contact_data.feature = wp.uint32(0)
 
             contact_data = post_process_contact(
                 contact_data, geom_a, position_a, orientation_a, geom_b, position_b, orientation_b
@@ -188,7 +187,7 @@ def create_solve_convex_single_contact(support_func: Any, writer_func: Any, post
 
     Args:
         support_func: Support mapping function for shapes that takes
-                     (geometry, direction, data_provider) and returns (point, feature_id)
+                     (geometry, direction, data_provider) and returns a support point
         writer_func: Function to write contact data (signature: (ContactData, writer_data) -> None)
         post_process_contact: Function to post-process contact data
 
@@ -237,9 +236,7 @@ def create_solve_convex_single_contact(support_func: Any, writer_func: Any, post
         # Enlarge a little bit to avoid contact flickering when the signed distance is close to 0
         enlarge = 1e-4
         # Try MPR first (optimized for overlapping shapes, which is the common case)
-        collision, signed_distance, point, normal, _feature_a_id, _feature_b_id = wp.static(
-            create_solve_mpr(support_func)
-        )(
+        collision, signed_distance, point, normal = wp.static(create_solve_mpr(support_func))(
             geom_a,
             geom_b,
             orientation_a,
@@ -253,9 +250,7 @@ def create_solve_convex_single_contact(support_func: Any, writer_func: Any, post
 
         if not collision:
             # MPR reported no collision, fall back to GJK for separated shapes
-            collision, signed_distance, point, normal, _feature_a_id, _feature_b_id = wp.static(
-                create_solve_closest_distance(support_func)
-            )(
+            collision, signed_distance, point, normal = wp.static(create_solve_closest_distance(support_func))(
                 geom_a,
                 geom_b,
                 orientation_a,
@@ -271,7 +266,6 @@ def create_solve_convex_single_contact(support_func: Any, writer_func: Any, post
         contact_data.contact_point_center = point
         contact_data.contact_normal_a_to_b = normal
         contact_data.contact_distance = signed_distance
-        contact_data.feature = wp.uint32(0)
 
         contact_data = post_process_contact(
             contact_data, geom_a, position_a, orientation_a, geom_b, position_b, orientation_b

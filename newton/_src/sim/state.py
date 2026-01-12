@@ -29,7 +29,42 @@ class State:
     store and update the simulation's current configuration and derived data.
     """
 
+    EXTENDED_STATE_ATTRIBUTES: frozenset[str] = frozenset(
+        (
+            "body_qdd",
+            "body_parent_f",
+        )
+    )
+    """
+    Names of optional extended state attributes that are not allocated by default.
+
+    These can be requested via :meth:`newton.ModelBuilder.request_state_attributes` or
+    :meth:`newton.Model.request_state_attributes` before calling :meth:`newton.Model.state`.
+
+    See :ref:`extended_state_attributes` for details and usage.
+    """
+
+    @classmethod
+    def validate_extended_state_attributes(cls, attributes: tuple[str, ...]) -> None:
+        """Validate names passed to request_state_attributes().
+
+        Only extended state attributes listed in :attr:`EXTENDED_STATE_ATTRIBUTES` are accepted.
+        """
+        if not attributes:
+            return
+
+        invalid = sorted(set(attributes).difference(cls.EXTENDED_STATE_ATTRIBUTES))
+        if invalid:
+            allowed = ", ".join(sorted(cls.EXTENDED_STATE_ATTRIBUTES))
+            bad = ", ".join(invalid)
+            raise ValueError(f"Unknown extended State attribute(s): {bad}. Allowed extended attributes: {allowed}.")
+
     def __init__(self) -> None:
+        """
+        Initialize an empty State object.
+        To ensure that the attributes are properly allocated create the State object via :meth:`newton.Model.state` instead.
+        """
+
         self.particle_q: wp.array | None = None
         """3D positions of particles, shape (particle_count,), dtype :class:`vec3`."""
 
@@ -49,14 +84,27 @@ class State:
         self.body_q_prev: wp.array | None = None
         """Previous rigid body transforms for finite-difference velocity computation."""
 
+        self.body_qdd: wp.array | None = None
+        """Rigid body accelerations (spatial), shape (body_count,), dtype :class:`spatial_vector`.
+        First three entries: linear acceleration; last three: angular acceleration.
+
+        This is an extended state attribute; see :ref:`extended_state_attributes` for more information.
+        """
+
         self.body_f: wp.array | None = None
         """Rigid body forces (spatial), shape (body_count,), dtype :class:`spatial_vector`.
         First three entries: linear force; last three: torque.
 
-        Note:
+        .. note::
             :attr:`body_f` represents external wrenches in world frame, measured at the body's center of mass (COM).
             The linear force component is applied at the COM, and the torque is about the COM.
-            This convention is consistent across all solvers (XPBD, SemiImplicit, Featherstone, MuJoCo, VBD).
+        """
+
+        self.body_parent_f: wp.array | None = None
+        """Parent interaction forces, shape (body_count,), dtype :class:`spatial_vector`.
+        First three entries: linear force; last three: torque.
+
+        This is an extended state attribute; see :ref:`extended_state_attributes` for more information.
         """
 
         self.joint_q: wp.array | None = None
@@ -82,11 +130,30 @@ class State:
         """
         Copies the array attributes of another State object into this one.
 
+        This can be useful for swapping states in a simulation when using CUDA graphs.
+        If the number of substeps is odd, the last state needs to be explicitly copied for the graph to be captured correctly:
+
+        .. code-block:: python
+
+            # Assume we are capturing the following simulation loop in a CUDA graph
+            for i in range(sim_substeps):
+                state_0.clear_forces()
+
+                solver.step(state_0, state_1, control, contacts, sim_dt)
+
+                # Swap states - handle CUDA graph case specially
+                if sim_substeps % 2 == 1 and i == sim_substeps - 1:
+                    # Swap states by copying the state arrays for graph capture
+                    state_0.assign(state_1)
+                else:
+                    # We can just swap the state references
+                    state_0, state_1 = state_1, state_0
+
         Args:
             other: The source State object to copy from.
 
         Raises:
-            ValueError: If the states have mismatched attributes (one has an array where the other is None).
+            ValueError: If the states have mismatched attributes (one has an array allocated where the other is None).
         """
         attributes = set(self.__dict__).union(other.__dict__)
 

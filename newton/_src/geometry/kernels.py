@@ -1107,8 +1107,8 @@ def broadphase_collision_pairs(
     if type_a == GeoType.PLANE and type_b == GeoType.PLANE:
         return
 
-    # Use per-shape contact margins
-    margin = wp.max(shape_contact_margin[shape_a], shape_contact_margin[shape_b])
+    # Use per-shape contact margins (sum for consistency with thickness)
+    margin = shape_contact_margin[shape_a] + shape_contact_margin[shape_b]
 
     # bounding sphere check
     if type_a == GeoType.PLANE:
@@ -2003,8 +2003,8 @@ def generate_handle_contact_pairs_kernel(enable_backward: bool):
         geo_a = create_geo_data(shape_a, body_q, shape_transform, shape_body, shape_type, shape_scale, shape_thickness)
         geo_b = create_geo_data(shape_b, body_q, shape_transform, shape_body, shape_type, shape_scale, shape_thickness)
 
-        # Calculate contact margin as max of per-shape margins
-        rigid_contact_margin = wp.max(shape_contact_margin[shape_a], shape_contact_margin[shape_b])
+        # Calculate contact margin as sum of per-shape margins (consistent with thickness summing)
+        rigid_contact_margin = shape_contact_margin[shape_a] + shape_contact_margin[shape_b]
 
         distance = 1.0e6
         thickness = geo_a.thickness + geo_b.thickness

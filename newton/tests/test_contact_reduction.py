@@ -129,19 +129,6 @@ def test_create_betas_array(test, device):
     test.assertAlmostEqual(arr_np[1], 1000000.0, places=1)
 
 
-def test_contact_struct_fields(test, device):
-    """Test ContactStruct has expected fields."""
-    arr = wp.zeros(1, dtype=ContactStruct, device=device)
-    arr_np = arr.numpy()
-
-    # Check that expected fields exist
-    test.assertIn("position", arr_np.dtype.names)
-    test.assertIn("normal", arr_np.dtype.names)
-    test.assertIn("depth", arr_np.dtype.names)
-    test.assertIn("feature", arr_np.dtype.names)
-    test.assertIn("projection", arr_np.dtype.names)
-
-
 # =============================================================================
 # Tests for get_slot function (works on CPU and GPU)
 # =============================================================================
@@ -217,7 +204,7 @@ def _generate_test_contact(t: int) -> ContactStruct:
     c.position = wp.vec3(wp.sin(ft * 0.1) * ft * 0.01, 0.0, wp.cos(ft * 0.1) * ft * 0.01)
     c.normal = wp.vec3(0.0, 1.0, 0.0)
     c.depth = 0.1
-    c.feature = t % 10  # Assign features 0-9 cyclically
+    c.mode = t % 10  # Assign features 0-9 cyclically
     c.projection = 0.0
     return c
 
@@ -226,7 +213,7 @@ def _create_reduction_test_kernel(reduction_funcs: ContactReductionFunctions):
     """Create a test kernel for contact reduction with shared memory."""
     num_slots = reduction_funcs.num_reduction_slots
     store_reduced_contact = reduction_funcs.store_reduced_contact
-    filter_unique_contacts = reduction_funcs.filter_unique_contacts
+    collect_active_contacts = reduction_funcs.collect_active_contacts
 
     @wp.kernel(enable_backward=False)
     def reduction_test_kernel(
@@ -262,8 +249,8 @@ def _create_reduction_test_kernel(reduction_funcs: ContactReductionFunctions):
 
         store_reduced_contact(t, has_contact, c, buffer, active_ids, betas_arr, empty_marker)
 
-        # Filter duplicates
-        filter_unique_contacts(t, buffer, active_ids, empty_marker)
+        # Collect active contacts
+        collect_active_contacts(t, buffer, active_ids, empty_marker)
 
         # Write output
         num_contacts = active_ids[wp.static(num_slots)]
@@ -358,9 +345,7 @@ def test_contact_reduction_reduces_count(test, device):
     count = out_count.numpy()[0]
 
     # With 64 active contacts (128 threads, every other one active),
-    # reduction should produce fewer contacts due to:
-    # 1. Keeping only best contact per (bin, direction) slot
-    # 2. Filtering duplicate features within each bin
+    # reduction should produce fewer contacts due to keeping only best contact per (bin, direction) slot
     test.assertGreater(count, 0, "Should have at least one contact")
     test.assertLess(count, 64, "Reduction should reduce contact count")
 
@@ -386,7 +371,6 @@ for device in devices:
         TestContactReduction, "test_compute_num_reduction_slots", test_compute_num_reduction_slots, devices=[device]
     )
     add_function_test(TestContactReduction, "test_create_betas_array", test_create_betas_array, devices=[device])
-    add_function_test(TestContactReduction, "test_contact_struct_fields", test_contact_struct_fields, devices=[device])
 
     # get_slot tests
     add_function_test(

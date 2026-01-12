@@ -3079,10 +3079,10 @@ class TestMuJoCoValidation(unittest.TestCase):
         builder.add_articulation([j0])
         builder.end_world()
         # we forgot to add the second joint to the articulation
-        model = builder.finalize()
+        # finalize() should now catch this and raise an error about orphan joints
         with self.assertRaises(ValueError) as ctx:
-            SolverMuJoCo(model, separate_worlds=True)
-        self.assertIn("make sure that each body has an incoming joint", str(ctx.exception).lower())
+            builder.finalize()
+        self.assertIn("not belonging to any articulation", str(ctx.exception))
 
 
 class TestMuJoCoConversion(unittest.TestCase):
