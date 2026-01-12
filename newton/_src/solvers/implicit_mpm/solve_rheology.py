@@ -1123,6 +1123,7 @@ def solve_rheology(
         compliance_mat_diagonal = None
     else:
         compliance_mat_diagonal = _register_temp(fem.borrow_temporary(temporary_store, shape=stress.shape, dtype=mat66))
+        compliance_mat_diagonal.zero_()
         sp.bsr_get_diag(compliance_mat, out=compliance_mat_diagonal)
 
     # Project initial stress on yield surface
