@@ -86,7 +86,11 @@ def ray_compute_quadratic(a: wp.float32, b: wp.float32, c: wp.float32) -> tuple[
 
 @wp.func
 def ray_plane(
-    transform: wp.transformf, size: wp.vec3f, ray_origin_world: wp.vec3f, ray_direction_world: wp.vec3f
+    transform: wp.transformf,
+    size: wp.vec3f,
+    enable_backface_culling: wp.bool,
+    ray_origin_world: wp.vec3f,
+    ray_direction_world: wp.vec3f,
 ) -> wp.float32:
     """Returns the distance at which a ray intersects with a plane."""
 
@@ -94,7 +98,7 @@ def ray_plane(
     ray_origin_local, ray_direction_local = map_ray_to_local(transform, ray_origin_world, ray_direction_world)
 
     # z-vec not pointing towards front face: reject
-    if ray_direction_local[2] > -EPSILON:
+    if enable_backface_culling and ray_direction_local[2] > -EPSILON:
         return wp.inf
 
     # intersection with plane
@@ -115,10 +119,14 @@ def ray_plane(
 
 @wp.func
 def ray_plane_with_normal(
-    transform: wp.transformf, size: wp.vec3f, ray_origin_world: wp.vec3f, ray_direction_world: wp.vec3f
+    transform: wp.transformf,
+    size: wp.vec3f,
+    enable_backface_culling: wp.bool,
+    ray_origin_world: wp.vec3f,
+    ray_direction_world: wp.vec3f,
 ) -> tuple[wp.bool, wp.float32, wp.vec3f]:
     """Returns distance and normal at which a ray intersects with a plane."""
-    t_hit = ray_plane(transform, size, ray_origin_world, ray_direction_world)
+    t_hit = ray_plane(transform, size, enable_backface_culling, ray_origin_world, ray_direction_world)
     if t_hit == wp.inf:
         return False, wp.inf, wp.vec3f(0.0, 0.0, 0.0)
     # Local plane normal is +Z; rotate to world space
@@ -554,10 +562,10 @@ def ray_box_with_normal(
 @wp.func
 def ray_mesh(
     mesh_id: wp.uint64,
+    enable_backface_culling: wp.bool,
     ray_origin_world: wp.vec3f,
     ray_direction_world: wp.vec3f,
     max_t: wp.float32,
-    double_sided: wp.bool,
 ) -> tuple[wp.bool, wp.float32, wp.vec3f, wp.float32, wp.float32, wp.int32]:
     """Returns intersection information at which a ray intersects with a mesh.
 
@@ -565,15 +573,8 @@ def ray_mesh(
 
     query = wp.mesh_query_ray(mesh_id, ray_origin_world, ray_direction_world, max_t)
     if query.result:
-        return True, query.t, wp.normalize(query.normal), query.u, query.v, query.face
-
-    if double_sided:
-        if max_t == wp.inf:
-            max_t = 1000.0
-
-        query = wp.mesh_query_ray(mesh_id, ray_origin_world + ray_direction_world * max_t, -ray_direction_world, max_t)
-        if query.result:
-            return True, max_t - query.t, wp.normalize(query.normal), query.u, query.v, query.face
+        if not enable_backface_culling or wp.dot(ray_direction_world, query.normal) < 0.0:
+            return True, query.t, wp.normalize(query.normal), query.u, query.v, query.face
 
     return False, wp.inf, wp.vec3f(0.0, 0.0, 0.0), 0.0, 0.0, -1
 
@@ -584,6 +585,7 @@ def ray_mesh_with_bvh(
     mesh_shape_id: wp.int32,
     transform: wp.transformf,
     size: wp.vec3f,
+    enable_backface_culling: wp.bool,
     ray_origin_world: wp.vec3f,
     ray_direction_world: wp.vec3f,
     max_t: wp.float32,
@@ -600,9 +602,10 @@ def ray_mesh_with_bvh(
 
     query = wp.mesh_query_ray(mesh_bvh_ids[mesh_shape_id], ray_origin_local, ray_direction_local, max_t)
 
-    if query.result and wp.dot(ray_direction_local, query.normal) < 0.0:  # Backface culling in local space
-        normal = wp.transform_vector(transform, wp.cw_mul(size, query.normal))
-        normal = wp.normalize(normal)
-        return True, query.t, normal, query.u, query.v, query.face, mesh_shape_id
+    if query.result:
+        if not enable_backface_culling or wp.dot(ray_direction_local, query.normal) < 0.0:
+            normal = wp.transform_vector(transform, wp.cw_mul(size, query.normal))
+            normal = wp.normalize(normal)
+            return True, query.t, normal, query.u, query.v, query.face, mesh_shape_id
 
     return False, wp.inf, wp.vec3f(0.0, 0.0, 0.0), 0.0, 0.0, -1, -1

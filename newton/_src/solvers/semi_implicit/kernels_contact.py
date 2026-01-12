@@ -74,13 +74,11 @@ def eval_particle_contact(
     v = particle_v[i]
     radius = particle_radius[i]
 
-    f = wp.vec3()
+    f = wp.vec3(0.0)
 
     # particle contact
     query = wp.hash_grid_query(grid, x, radius + max_radius + k_cohesion)
     index = int(0)
-
-    count = int(0)
 
     while wp.hash_grid_query_next(query, index):
         if (particle_flags[index] & ParticleFlags.ACTIVE) != 0 and index != i:
@@ -89,13 +87,11 @@ def eval_particle_contact(
             d = wp.length(n)
             err = d - radius - particle_radius[index]
 
-            count += 1
-
             if err <= k_cohesion:
                 n = n / d
                 vrel = v - particle_v[index]
 
-                f = f + particle_force(n, vrel, err, k_contact, k_damp, k_friction, k_mu)
+                f += particle_force(n, vrel, err, k_contact, k_damp, k_friction, k_mu)
 
     particle_f[i] = f
 
@@ -572,7 +568,7 @@ def eval_body_contact(
 
 
 def eval_particle_contact_forces(model: Model, state: State, particle_f: wp.array):
-    if model.particle_count > 1 and model.particle_max_radius > 0.0:
+    if model.particle_count > 1 and model.particle_grid is not None:
         wp.launch(
             kernel=eval_particle_contact,
             dim=model.particle_count,

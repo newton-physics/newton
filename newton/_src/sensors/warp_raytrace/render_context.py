@@ -43,6 +43,7 @@ class RenderContext:
         enable_shadows: bool = True,
         enable_ambient_lighting: bool = True,
         enable_particles: bool = True,
+        enable_backface_culling: bool = True,
         num_worlds: int = 1,
         num_cameras: int = 1,
         has_global_world: bool = False,
@@ -56,6 +57,7 @@ class RenderContext:
         self.enable_textures = enable_textures
         self.enable_shadows = enable_shadows
         self.enable_ambient_lighting = enable_ambient_lighting
+        self.enable_backface_culling = enable_backface_culling
         self.num_worlds = num_worlds
         self.has_global_world = has_global_world
         self.enable_particles = enable_particles
