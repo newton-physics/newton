@@ -15,14 +15,14 @@
 
 """Common enums and utility kernels shared across IK components."""
 
-from enum import Enum as _Enum
+from enum import Enum
 
 import warp as wp
 
 from ..articulation import eval_single_articulation_fk
 
 
-class IKJacobianMode(_Enum):
+class IKJacobianMode(Enum):
     """
     Specifies the backend used for Jacobian computation in inverse kinematics.
     """
@@ -40,6 +40,7 @@ class IKJacobianMode(_Enum):
 @wp.kernel
 def _eval_fk_articulation_batched(
     articulation_start: wp.array1d(dtype=wp.int32),
+    joint_articulation: wp.array(dtype=int),
     joint_q: wp.array2d(dtype=wp.float32),
     joint_qd: wp.array2d(dtype=wp.float32),
     joint_q_start: wp.array1d(dtype=wp.int32),
@@ -63,6 +64,7 @@ def _eval_fk_articulation_batched(
     eval_single_articulation_fk(
         joint_start,
         joint_end,
+        joint_articulation,
         joint_q[problem_idx],
         joint_qd[problem_idx],
         joint_q_start,
@@ -88,6 +90,7 @@ def _eval_fk_batched(model, joint_q, joint_qd, body_q, body_qd):
         dim=[n_problems, model.articulation_count],
         inputs=[
             model.articulation_start,
+            model.joint_articulation,
             joint_q,
             joint_qd,
             model.joint_q_start,

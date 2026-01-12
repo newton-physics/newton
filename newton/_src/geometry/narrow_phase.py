@@ -33,19 +33,25 @@ from ..geometry.collision_core import (
 )
 from ..geometry.contact_data import ContactData
 from ..geometry.contact_reduction import (
+    NUM_SPATIAL_DIRECTIONS,
     ContactReductionFunctions,
     ContactStruct,
     create_betas_array,
     synchronize,
+)
+from ..geometry.contact_reduction_global import (
+    GlobalContactReducer,
+    create_export_reduced_contacts_kernel,
+    create_mesh_triangle_contacts_to_reducer_kernel,
+    create_reduce_buffered_contacts_kernel,
 )
 from ..geometry.flags import ShapeFlags
 from ..geometry.sdf_contact import create_narrow_phase_process_mesh_mesh_contacts_kernel
 from ..geometry.sdf_hydroelastic import SDFHydroelastic
 from ..geometry.sdf_utils import SDFData
 from ..geometry.support_function import (
-    GenericShapeData,
     SupportMapDataProvider,
-    pack_mesh_ptr,
+    extract_shape_data,
 )
 from ..geometry.types import GeoType
 
@@ -120,52 +126,6 @@ def write_contact_simple(
     if writer_data.contact_key.shape[0] > 0 and writer_data.contact_pair_key.shape[0] > 0:
         writer_data.contact_key[index] = contact_data.feature
         writer_data.contact_pair_key[index] = contact_data.feature_pair_key
-
-
-@wp.func
-def extract_shape_data(
-    shape_idx: int,
-    shape_transform: wp.array(dtype=wp.transform),
-    shape_types: wp.array(dtype=int),
-    shape_data: wp.array(dtype=wp.vec4),  # scale (xyz), thickness (w) or other data
-    shape_source: wp.array(dtype=wp.uint64),
-):
-    """
-    Extract shape data from the narrow phase API arrays.
-
-    Args:
-        shape_idx: Index of the shape
-        shape_transform: World space transforms (already computed)
-        shape_types: Shape types
-        shape_data: Shape data (vec4 - scale xyz, thickness w)
-        shape_source: Source pointers (mesh IDs etc.)
-
-    Returns:
-        tuple: (position, orientation, shape_data, scale, thickness)
-    """
-    # Get shape's world transform (already in world space)
-    X_ws = shape_transform[shape_idx]
-
-    position = wp.transform_get_translation(X_ws)
-    orientation = wp.transform_get_rotation(X_ws)
-
-    # Extract scale and thickness from shape_data
-    # Assuming shape_data stores scale in xyz and thickness in w
-    data = shape_data[shape_idx]
-    scale = wp.vec3(data[0], data[1], data[2])
-    thickness = data[3]
-
-    # Create generic shape data
-    result = GenericShapeData()
-    result.shape_type = shape_types[shape_idx]
-    result.scale = scale
-    result.auxiliary = wp.vec3(0.0, 0.0, 0.0)
-
-    # For CONVEX_MESH, pack the mesh pointer into auxiliary
-    if shape_types[shape_idx] == int(GeoType.CONVEX_MESH):
-        result.auxiliary = pack_mesh_ptr(shape_source[shape_idx])
-
-    return position, orientation, result, scale, thickness
 
 
 def create_narrow_phase_kernel_gjk_mpr(external_aabb: bool, writer_func: Any):
@@ -930,6 +890,28 @@ class NarrowPhase:
             contact_reduction_funcs=self.contact_reduction_funcs,
         )
 
+        # Create global contact reduction kernels for mesh-triangle contacts
+        if self.reduce_contacts:
+            beta0 = self.betas_tuple[0]
+            beta1 = self.betas_tuple[1]
+            num_betas = len(self.betas_tuple)
+
+            self.mesh_triangle_to_reducer_kernel = create_mesh_triangle_contacts_to_reducer_kernel(
+                beta0=beta0, beta1=beta1
+            )
+            self.reduce_buffered_contacts_kernel = create_reduce_buffered_contacts_kernel(beta0=beta0, beta1=beta1)
+            self.export_reduced_contacts_kernel = create_export_reduced_contacts_kernel(
+                writer_func, values_per_key=NUM_SPATIAL_DIRECTIONS * num_betas + 1
+            )
+            # Global contact reducer for mesh-triangle contacts
+            # Capacity is based on max_triangle_pairs since that's the max contacts we might generate
+            self.global_contact_reducer = GlobalContactReducer(max_triangle_pairs, device=device, num_betas=num_betas)
+        else:
+            self.mesh_triangle_to_reducer_kernel = None
+            self.reduce_buffered_contacts_kernel = None
+            self.export_reduced_contacts_kernel = None
+            self.global_contact_reducer = None
+
         self.sdf_hydroelastic = sdf_hydroelastic
 
         # Pre-allocate all intermediate buffers
@@ -1110,23 +1092,83 @@ class NarrowPhase:
         )
 
         # Launch mesh triangle contact processing kernel
-        wp.launch(
-            kernel=self.mesh_triangle_contacts_kernel,
-            dim=self.total_num_threads,
-            inputs=[
-                shape_types,
-                shape_data,
-                shape_transform,
-                shape_source,
-                shape_contact_margin,
-                self.triangle_pairs,
-                self.triangle_pairs_count,
-                writer_data,
-                self.total_num_threads,
-            ],
-            device=device,
-            block_dim=self.block_dim,
-        )
+        if self.reduce_contacts:
+            assert self.global_contact_reducer is not None
+            # Use global contact reduction for mesh-triangle contacts
+            # First, clear the reducer
+            self.global_contact_reducer.clear_active()
+
+            # Collect contacts into the reducer
+            reducer_data = self.global_contact_reducer.get_data_struct()
+            wp.launch(
+                kernel=self.mesh_triangle_to_reducer_kernel,
+                dim=self.total_num_threads,
+                inputs=[
+                    shape_types,
+                    shape_data,
+                    shape_transform,
+                    shape_source,
+                    shape_contact_margin,
+                    self.triangle_pairs,
+                    self.triangle_pairs_count,
+                    reducer_data,
+                    self.total_num_threads,
+                ],
+                device=device,
+                block_dim=self.block_dim,
+            )
+
+            # Register buffered contacts to hashtable
+            # This is a separate pass to reduce register pressure on the contact generation kernel
+            wp.launch(
+                kernel=self.reduce_buffered_contacts_kernel,
+                dim=self.total_num_threads,
+                inputs=[
+                    reducer_data,
+                    self.total_num_threads,
+                ],
+                device=device,
+                block_dim=self.block_dim,
+            )
+
+            # Export reduced contacts to writer
+            wp.launch(
+                kernel=self.export_reduced_contacts_kernel,
+                dim=self.total_num_threads,
+                inputs=[
+                    self.global_contact_reducer.hashtable.keys,
+                    self.global_contact_reducer.ht_values,
+                    self.global_contact_reducer.hashtable.active_slots,
+                    self.global_contact_reducer.position_depth,
+                    self.global_contact_reducer.normal_feature,
+                    self.global_contact_reducer.shape_pairs,
+                    shape_data,
+                    shape_contact_margin,
+                    writer_data,
+                    self.total_num_threads,
+                ],
+                device=device,
+                block_dim=self.block_dim,
+            )
+        else:
+            # Direct contact processing without reduction
+            wp.launch(
+                kernel=self.mesh_triangle_contacts_kernel,
+                dim=self.total_num_threads,
+                inputs=[
+                    shape_types,
+                    shape_data,
+                    shape_transform,
+                    shape_source,
+                    shape_contact_margin,
+                    self.triangle_pairs,
+                    self.triangle_pairs_count,
+                    writer_data,
+                    self.total_num_threads,
+                ],
+                device=device,
+                block_dim=self.block_dim,
+            )
 
         # Launch mesh-mesh contact processing kernel (only if SDF data is available)
         # SDF-based mesh-mesh collision requires GPU (wp.Volume only supports CUDA)

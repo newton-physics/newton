@@ -136,47 +136,6 @@ ICOSAHEDRON_FACE_NORMALS = _mat20x3(
 
 
 @wp.func
-def project_point_to_plane(bin_normal_idx: wp.int32, face_center: wp.vec3f) -> wp.vec2f:
-    """Projects a 3D point onto the 2D plane defined by an icosahedron face normal.
-
-    Args:
-        bin_normal_idx: Index of the icosahedron face (0-19) defining the plane normal.
-        face_center: 3D point to project.
-
-    Returns:
-        2D coordinates of the projected point in the plane's local basis.
-    """
-    bin_normal_dir = ICOSAHEDRON_FACE_NORMALS[bin_normal_idx]
-    # Project face center to the plane corresponding to the bin normal
-    temp_vec = wp.vec3f(0.0, 1.0, 0.0)
-    if wp.abs(wp.dot(bin_normal_dir, temp_vec)) > 0.95:
-        temp_vec = wp.vec3f(0.0, 0.0, 1.0)
-
-    # Create orthogonal basis vectors in the plane
-    plane_u = wp.normalize(wp.cross(bin_normal_dir, temp_vec))
-    plane_v = wp.normalize(wp.cross(bin_normal_dir, plane_u))
-
-    # Convert face_center to 2D coordinates in the plane basis
-    face_center_2d = wp.vec2f(wp.dot(face_center, plane_u), wp.dot(face_center, plane_v))
-
-    return face_center_2d
-
-
-@wp.func
-def get_spatial_direction_2d(dir_idx: int) -> wp.vec2f:
-    """Get evenly-spaced 2D direction for spatial binning.
-
-    Args:
-        dir_idx: Direction index in the range 0..NUM_SPATIAL_DIRECTIONS-1
-
-    Returns:
-        Unit 2D vector at angle (dir_idx * 2π / NUM_SPATIAL_DIRECTIONS)
-    """
-    angle = float(dir_idx) * wp.static(2.0 * wp.pi / NUM_SPATIAL_DIRECTIONS)
-    return wp.vec2f(wp.cos(angle), wp.sin(angle))
-
-
-@wp.func
 def get_slot(normal: wp.vec3) -> int:
     """Returns the index of the icosahedron face that best matches the normal.
 
@@ -226,7 +185,53 @@ def get_slot(normal: wp.vec3) -> int:
     return best_slot
 
 
-NUM_SPATIAL_DIRECTIONS = 6  # Triangle edge directions
+@wp.func
+def project_point_to_plane(bin_normal_idx: wp.int32, point: wp.vec3) -> wp.vec2:
+    """Project a 3D point onto the 2D plane of an icosahedron face.
+
+    Creates a local 2D coordinate system on the face plane using the face normal
+    and constructs orthonormal basis vectors u and v.
+
+    Args:
+        bin_normal_idx: Index of the icosahedron face (0-19)
+        point: 3D point to project
+
+    Returns:
+        2D coordinates of the point in the face's local coordinate system
+    """
+    face_normal = ICOSAHEDRON_FACE_NORMALS[bin_normal_idx]
+
+    # Create orthonormal basis on the plane
+    # Choose reference vector that's not parallel to normal
+    if wp.abs(face_normal[1]) < 0.9:
+        ref = wp.vec3(0.0, 1.0, 0.0)
+    else:
+        ref = wp.vec3(1.0, 0.0, 0.0)
+
+    # u = normalize(ref - dot(ref, normal) * normal)
+    u = wp.normalize(ref - wp.dot(ref, face_normal) * face_normal)
+    # v = cross(normal, u)
+    v = wp.cross(face_normal, u)
+
+    # Project point onto u and v axes
+    return wp.vec2(wp.dot(point, u), wp.dot(point, v))
+
+
+@wp.func
+def get_spatial_direction_2d(dir_idx: int) -> wp.vec2:
+    """Get evenly-spaced 2D direction for spatial binning.
+
+    Args:
+        dir_idx: Direction index in the range 0..NUM_SPATIAL_DIRECTIONS-1
+
+    Returns:
+        Unit 2D vector at angle (dir_idx * 2pi / NUM_SPATIAL_DIRECTIONS)
+    """
+    angle = float(dir_idx) * (2.0 * wp.pi / 6.0)
+    return wp.vec2(wp.cos(angle), wp.sin(angle))
+
+
+NUM_SPATIAL_DIRECTIONS = 6  # Evenly-spaced 2D directions (60 degrees apart)
 NUM_NORMAL_BINS = 20  # Icosahedron faces
 
 
@@ -450,7 +455,7 @@ class ContactReductionFunctions:
             synchronize()
 
             bin_id = 0
-            pos_2d = wp.vec2f(0.0, 0.0)
+            pos_2d = wp.vec2(0.0, 0.0)
             if active:
                 bin_id = get_slot(c.normal)
                 # Project position to 2D plane once, reuse for all directions
@@ -464,7 +469,7 @@ class ContactReductionFunctions:
                     spatial_dp = wp.dot(pos_2d, dir_2d)
                     for beta_i in range(num_betas):
                         if c.depth < betas_arr[beta_i]:
-                            score = spatial_dp  # - betas_arr[beta_i] * c.depth
+                            score = spatial_dp
                             key = base_key + dir_i * wp.static(num_betas) + beta_i
                             wp.atomic_max(winner_slots, key, pack_value_thread_id(score, thread_id))
                 # Compete for max depth slot (last slot in bin)
@@ -488,7 +493,7 @@ class ContactReductionFunctions:
                                     id = wp.atomic_add(active_ids, num_slots, 1)
                                     if id < num_slots:
                                         active_ids[id] = key
-                                score = spatial_dp  # - betas_arr[beta_i] * c.depth
+                                score = spatial_dp
                                 if score > p:
                                     c.projection = score
                                     buffer[key] = c
