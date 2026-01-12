@@ -15,6 +15,7 @@
 
 import math
 import unittest
+import warnings
 
 import numpy as np
 import warp as wp
@@ -829,6 +830,106 @@ class TestModel(unittest.TestCase):
             builder.add_joint_revolute(parent=link1, child=link2)
         self.assertIn("world", str(context.exception).lower())
         builder.end_world()
+
+    def test_articulation_validation_orphan_joint(self):
+        """Test that joints not belonging to an articulation raise an error on finalize."""
+        builder = ModelBuilder()
+        body = builder.add_link()
+
+        # Add joint but do NOT add it to an articulation
+        builder.add_joint_revolute(parent=-1, child=body, key="orphan_joint")
+
+        # finalize() should raise ValueError about orphan joints
+        with self.assertRaises(ValueError) as context:
+            builder.finalize()
+
+        self.assertIn("not belonging to any articulation", str(context.exception))
+        self.assertIn("orphan_joint", str(context.exception))
+
+    def test_articulation_validation_multiple_orphan_joints(self):
+        """Test error message shows multiple orphan joints."""
+        builder = ModelBuilder()
+        body1 = builder.add_link()
+        body2 = builder.add_link()
+
+        # Add multiple joints without articulations
+        builder.add_joint_revolute(parent=-1, child=body1, key="first_joint")
+        builder.add_joint_revolute(parent=body1, child=body2, key="second_joint")
+
+        with self.assertRaises(ValueError) as context:
+            builder.finalize()
+
+        error_msg = str(context.exception)
+        self.assertIn("2 joint(s)", error_msg)
+        self.assertIn("first_joint", error_msg)
+        self.assertIn("second_joint", error_msg)
+
+    def test_shape_thickness_exceeds_contact_margin_warning(self):
+        """Test that a warning is raised when shape thickness > contact_margin."""
+        builder = ModelBuilder()
+        body = builder.add_body(mass=1.0)
+
+        # Create a shape with thickness > contact_margin (should trigger warning)
+        cfg = ModelBuilder.ShapeConfig()
+        cfg.thickness = 0.01
+        cfg.contact_margin = 0.005  # Less than thickness
+        builder.add_shape_sphere(body=body, radius=0.5, cfg=cfg, key="bad_sphere")
+
+        # Should warn about thickness > contact_margin
+        with self.assertWarns(UserWarning) as cm:
+            builder.finalize()
+
+        warning_msg = str(cm.warning)
+        self.assertIn("thickness > contact_margin", warning_msg)
+        self.assertIn("bad_sphere", warning_msg)
+        self.assertIn("missed collisions", warning_msg)
+
+    def test_shape_thickness_within_contact_margin_no_warning(self):
+        """Test that no warning is raised when shape thickness <= contact_margin."""
+        builder = ModelBuilder()
+        body = builder.add_body(mass=1.0)
+
+        # Create a shape with thickness <= contact_margin (should not trigger warning)
+        cfg = ModelBuilder.ShapeConfig()
+        cfg.thickness = 0.005
+        cfg.contact_margin = 0.01  # Greater than thickness
+        builder.add_shape_sphere(body=body, radius=0.5, cfg=cfg)
+
+        # Should NOT warn
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            builder.finalize()
+            # Filter for our specific warning about thickness
+            thickness_warnings = [warning for warning in w if "thickness > contact_margin" in str(warning.message)]
+            self.assertEqual(len(thickness_warnings), 0, "Unexpected warning about thickness > contact_margin")
+
+    def test_shape_thickness_warning_multiple_shapes(self):
+        """Test that the warning correctly reports multiple shapes with thickness > contact_margin."""
+        builder = ModelBuilder()
+        body = builder.add_body(mass=1.0)
+
+        # Create multiple shapes with thickness > contact_margin
+        cfg_bad = ModelBuilder.ShapeConfig()
+        cfg_bad.thickness = 0.02
+        cfg_bad.contact_margin = 0.01
+
+        builder.add_shape_sphere(body=body, radius=0.5, cfg=cfg_bad, key="sphere1")
+        builder.add_shape_box(body=body, hx=0.5, hy=0.5, hz=0.5, cfg=cfg_bad, key="box1")
+
+        # One good shape that should not be in the warning
+        cfg_good = ModelBuilder.ShapeConfig()
+        cfg_good.thickness = 0.005
+        cfg_good.contact_margin = 0.01
+        builder.add_shape_capsule(body=body, radius=0.2, half_height=0.5, cfg=cfg_good, key="good_capsule")
+
+        with self.assertWarns(UserWarning) as cm:
+            builder.finalize()
+
+        warning_msg = str(cm.warning)
+        self.assertIn("2 shape(s)", warning_msg)
+        self.assertIn("sphere1", warning_msg)
+        self.assertIn("box1", warning_msg)
+        self.assertNotIn("good_capsule", warning_msg)
 
 
 if __name__ == "__main__":

@@ -59,9 +59,8 @@ def benchmark_insert_kernel(
     normal = wp.vec3(nx, ny, nz)
 
     depth = -0.01 + float(tid % 100) * 0.0001
-    feature = tid % 10
 
-    export_and_reduce_contact(shape_a, shape_b, position, normal, depth, feature, reducer_data, beta0, beta1)
+    export_and_reduce_contact(shape_a, shape_b, position, normal, depth, reducer_data, beta0, beta1)
 
 
 class FastGlobalContactReducerInsert:
