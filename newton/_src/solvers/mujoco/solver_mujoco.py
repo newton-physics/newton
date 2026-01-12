@@ -2455,6 +2455,7 @@ class SolverMuJoCo(SolverBase):
             dim=nworld,
             inputs=[newton_impratio],
             outputs=[self.mjw_model.opt.impratio_invsqrt],
+            device=self.model.device,
         )
 
     def update_model_inertial_properties(self):
