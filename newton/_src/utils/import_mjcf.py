@@ -36,6 +36,7 @@ from .import_utils import parse_custom_attributes, sanitize_xml_content
 def parse_mjcf(
     builder: ModelBuilder,
     source: str,
+    *,
     xform: Transform | None = None,
     floating: bool | None = None,
     base_joint: dict | str | None = None,
