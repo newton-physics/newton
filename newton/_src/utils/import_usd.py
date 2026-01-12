@@ -38,6 +38,7 @@ from ..usd.schema_resolver import PrimType, SchemaResolver, SchemaResolverManage
 def parse_usd(
     builder: ModelBuilder,
     source,
+    *,
     xform: Transform | None = None,
     only_load_enabled_rigid_bodies: bool = False,
     only_load_enabled_joints: bool = True,
