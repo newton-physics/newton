@@ -414,6 +414,9 @@ class SolverVBD(SolverBase):
                 "or ModelBuilder.set_coloring() before calling ModelBuilder.finalize()."
             )
 
+        # Cached empty Contacts so particle self-contact can run when step(..., contacts=None, ...).
+        self._empty_contacts = Contacts(rigid_contact_max=0, soft_contact_max=0, device=self.device)
+
     def _init_rigid_system(
         self,
         model: Model,
@@ -697,6 +700,14 @@ class SolverVBD(SolverBase):
                 if jt[j] == JointType.CABLE:
                     c0 = int(jc_start[j])
                     dof0 = int(jdofs[j])
+                    # CABLE requires 2 DOF entries in model.joint_target_ke/kd starting at joint_qd_start[j].
+                    if dof0 < 0 or (dof0 + 1) >= len(jtarget_ke) or (dof0 + 1) >= len(jtarget_kd):
+                        raise RuntimeError(
+                            "SolverVBD _init_joint_penalty_k: JointType.CABLE requires 2 DOF entries in "
+                            "model.joint_target_ke/kd starting at joint_qd_start[j]. "
+                            f"Got joint_index={j}, joint_qd_start={dof0}, "
+                            f"len(joint_target_ke)={len(jtarget_ke)}, len(joint_target_kd)={len(jtarget_kd)}."
+                        )
                     # Constraint 0: cable stretch; constraint 1: cable bend
                     # Caps come from model.joint_target_ke (still model DOF indexed for cable material tuning).
                     joint_k_max_np[c0] = jtarget_ke[dof0]
@@ -1366,6 +1377,9 @@ class SolverVBD(SolverBase):
         """Solve one VBD iteration for particles."""
         model = self.model
 
+        # Allow particle self-contact to run even when contacts=None by falling back to empty contact buffers.
+        contacts = contacts if contacts is not None else self._empty_contacts
+
         # Select rigid-body poses for particle-rigid contact evaluation
         if self.integrate_with_external_rigid_solver:
             body_q_for_particles = state_out.body_q
@@ -1376,7 +1390,7 @@ class SolverVBD(SolverBase):
             if model.body_count > 0:
                 body_q_prev_for_particles = self.body_q_prev
             else:
-                body_q_prev_for_particles = None
+                body_q_prev_for_particles = state_in.body_q
             body_qd_for_particles = state_in.body_qd
 
         # Early exit if no particles
@@ -1399,89 +1413,87 @@ class SolverVBD(SolverBase):
         for color in range(len(model.particle_color_groups)):
             # Accumulate contact forces
             if self.particle_enable_self_contact:
-                if contacts is not None:
-                    wp.launch(
-                        kernel=accumulate_contact_force_and_hessian,
-                        dim=self.collision_evaluation_kernel_launch_size,
-                        inputs=[
-                            dt,
-                            color,
-                            self.particle_q_prev,
-                            state_in.particle_q,
-                            model.particle_colors,
-                            model.tri_indices,
-                            model.edge_indices,
-                            # self-contact
-                            self.trimesh_collision_info,
-                            self.particle_self_contact_radius,
-                            model.soft_contact_ke,
-                            model.soft_contact_kd,
-                            model.soft_contact_mu,
-                            self.friction_epsilon,
-                            self.trimesh_collision_detector.edge_edge_parallel_epsilon,
-                            # body-particle contact
-                            model.particle_radius,
-                            contacts.soft_contact_particle,
-                            contacts.soft_contact_count,
-                            contacts.soft_contact_max,
-                            self.body_particle_contact_penalty_k,
-                            self.body_particle_contact_material_kd,
-                            self.body_particle_contact_material_mu,
-                            model.shape_material_mu,
-                            model.shape_body,
-                            body_q_for_particles,
-                            body_q_prev_for_particles,
-                            body_qd_for_particles,
-                            model.body_com,
-                            contacts.soft_contact_shape,
-                            contacts.soft_contact_body_pos,
-                            contacts.soft_contact_body_vel,
-                            contacts.soft_contact_normal,
-                        ],
-                        outputs=[
-                            self.particle_forces,
-                            self.particle_hessians,
-                        ],
-                        device=self.device,
-                        max_blocks=model.device.sm_count,
-                    )
+                wp.launch(
+                    kernel=accumulate_contact_force_and_hessian,
+                    dim=self.collision_evaluation_kernel_launch_size,
+                    inputs=[
+                        dt,
+                        color,
+                        self.particle_q_prev,
+                        state_in.particle_q,
+                        model.particle_colors,
+                        model.tri_indices,
+                        model.edge_indices,
+                        # self-contact
+                        self.trimesh_collision_info,
+                        self.particle_self_contact_radius,
+                        model.soft_contact_ke,
+                        model.soft_contact_kd,
+                        model.soft_contact_mu,
+                        self.friction_epsilon,
+                        self.trimesh_collision_detector.edge_edge_parallel_epsilon,
+                        # body-particle contact
+                        model.particle_radius,
+                        contacts.soft_contact_particle,
+                        contacts.soft_contact_count,
+                        contacts.soft_contact_max,
+                        self.body_particle_contact_penalty_k,
+                        self.body_particle_contact_material_kd,
+                        self.body_particle_contact_material_mu,
+                        model.shape_material_mu,
+                        model.shape_body,
+                        body_q_for_particles,
+                        body_q_prev_for_particles,
+                        body_qd_for_particles,
+                        model.body_com,
+                        contacts.soft_contact_shape,
+                        contacts.soft_contact_body_pos,
+                        contacts.soft_contact_body_vel,
+                        contacts.soft_contact_normal,
+                    ],
+                    outputs=[
+                        self.particle_forces,
+                        self.particle_hessians,
+                    ],
+                    device=self.device,
+                    max_blocks=model.device.sm_count,
+                )
             else:
-                if contacts is not None:
-                    wp.launch(
-                        kernel=accumulate_contact_force_and_hessian_no_self_contact,
-                        dim=self.collision_evaluation_kernel_launch_size,
-                        inputs=[
-                            dt,
-                            color,
-                            self.particle_q_prev,
-                            state_in.particle_q,
-                            model.particle_colors,
-                            # body-particle contact
-                            self.friction_epsilon,
-                            model.particle_radius,
-                            contacts.soft_contact_particle,
-                            contacts.soft_contact_count,
-                            contacts.soft_contact_max,
-                            self.body_particle_contact_penalty_k,
-                            self.body_particle_contact_material_kd,
-                            self.body_particle_contact_material_mu,
-                            model.shape_material_mu,
-                            model.shape_body,
-                            body_q_for_particles,
-                            body_q_prev_for_particles,
-                            body_qd_for_particles,
-                            model.body_com,
-                            contacts.soft_contact_shape,
-                            contacts.soft_contact_body_pos,
-                            contacts.soft_contact_body_vel,
-                            contacts.soft_contact_normal,
-                        ],
-                        outputs=[
-                            self.particle_forces,
-                            self.particle_hessians,
-                        ],
-                        device=self.device,
-                    )
+                wp.launch(
+                    kernel=accumulate_contact_force_and_hessian_no_self_contact,
+                    dim=self.collision_evaluation_kernel_launch_size,
+                    inputs=[
+                        dt,
+                        color,
+                        self.particle_q_prev,
+                        state_in.particle_q,
+                        model.particle_colors,
+                        # body-particle contact
+                        self.friction_epsilon,
+                        model.particle_radius,
+                        contacts.soft_contact_particle,
+                        contacts.soft_contact_count,
+                        contacts.soft_contact_max,
+                        self.body_particle_contact_penalty_k,
+                        self.body_particle_contact_material_kd,
+                        self.body_particle_contact_material_mu,
+                        model.shape_material_mu,
+                        model.shape_body,
+                        body_q_for_particles,
+                        body_q_prev_for_particles,
+                        body_qd_for_particles,
+                        model.body_com,
+                        contacts.soft_contact_shape,
+                        contacts.soft_contact_body_pos,
+                        contacts.soft_contact_body_vel,
+                        contacts.soft_contact_normal,
+                    ],
+                    outputs=[
+                        self.particle_forces,
+                        self.particle_hessians,
+                    ],
+                    device=self.device,
+                )
 
             # Accumulate spring forces
             if model.spring_count:

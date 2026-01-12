@@ -2921,12 +2921,11 @@ class ModelBuilder:
                 translation is the attachment point.
             child_xform (Transform): The transform of the joint in the child body's local frame; its
                 translation is the attachment point.
-            stretch_stiffness: Cable stretch stiffness stored on the joint DOF as ``target_ke``. This is an
-                effective per-joint point-to-point stiffness [N/m]. If None, defaults to 1.0e9.
-            stretch_damping: Cable stretch damping stored on the joint DOF as ``target_kd``. If None, defaults to 0.0.
-            bend_stiffness: Cable bend/twist stiffness stored on the joint DOF as ``target_ke``. This is an effective
-                per-joint angular stiffness [N*m]. If None, defaults to 0.0.
-            bend_damping: Cable bend/twist damping stored on the joint DOF as ``target_kd``. If None, defaults to 0.0.
+            stretch_stiffness: Cable stretch stiffness (stored as ``target_ke``) [N/m]. If None, defaults to 1.0e9.
+            stretch_damping: Cable stretch damping coefficient (stored as ``target_kd``). If None, defaults to 0.0.
+            bend_stiffness: Cable bend/twist stiffness (stored as ``target_ke``) [N*m] (torque per radian). If None,
+                defaults to 0.0.
+            bend_damping: Cable bend/twist damping coefficient (stored as ``target_kd``). If None, defaults to 0.0.
             key: The key of the joint.
             collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies.
             enabled: Whether the joint is enabled.
@@ -4642,7 +4641,8 @@ class ModelBuilder:
             stretch_damping: Stretch damping for the cable joints. If None, defaults to 0.0.
             bend_stiffness: Bend/twist stiffness for the cable joints. For rods, this is treated as a
                 material-like bending/twist stiffness (e.g., EI) with units [N*m^2] and is internally converted to
-                an effective per-joint stiffness [N*m] by dividing by segment length. If None, defaults to 0.0.
+                an effective per-joint stiffness [N*m] (torque per radian) by dividing by segment length. If None,
+                defaults to 0.0.
             bend_damping: Bend/twist damping for the cable joints. If None, defaults to 0.0.
             closed: If True, connects the last segment back to the first to form a closed loop. If False,
                 creates an open chain. Note: rods require at least 2 segments.
