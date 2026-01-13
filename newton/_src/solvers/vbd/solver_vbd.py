@@ -415,7 +415,6 @@ class SolverVBD(SolverBase):
             )
 
         # Cached empty Contacts so particle self-contact can run when step(..., contacts=None, ...).
-        self._empty_contacts = Contacts(rigid_contact_max=0, soft_contact_max=0, device=self.device)
 
     def _init_rigid_system(
         self,
@@ -1377,9 +1376,6 @@ class SolverVBD(SolverBase):
         """Solve one VBD iteration for particles."""
         model = self.model
 
-        # Allow particle self-contact to run even when contacts=None by falling back to empty contact buffers.
-        contacts = contacts if contacts is not None else self._empty_contacts
-
         # Select rigid-body poses for particle-rigid contact evaluation
         if self.integrate_with_external_rigid_solver:
             body_q_for_particles = state_out.body_q
@@ -1390,7 +1386,7 @@ class SolverVBD(SolverBase):
             if model.body_count > 0:
                 body_q_prev_for_particles = self.body_q_prev
             else:
-                body_q_prev_for_particles = state_in.body_q
+                body_q_prev_for_particles = None
             body_qd_for_particles = state_in.body_qd
 
         # Early exit if no particles
