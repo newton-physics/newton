@@ -1120,7 +1120,7 @@ class ModelBuilder:
         The actuator instance is created during finalize().
 
         Args:
-            actuator_class: The actuator class (e.g., PDActuator).
+            actuator_class: The actuator class (e.g., ActuatorPD).
             input_indices: List of DOF indices for reading state/targets.
             output_indices: List of DOF indices for writing output. Defaults to input_indices.
             **kwargs: Actuator parameters (e.g., kp, kd, max_force). Shared across all DOFs.

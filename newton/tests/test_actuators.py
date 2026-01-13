@@ -21,7 +21,7 @@ import unittest
 import numpy as np
 
 import newton
-from newton_actuators import DelayedPDActuator, PDActuator, PIDActuator
+from newton_actuators import ActuatorDelayedPD, ActuatorPD, ActuatorPID
 
 
 class TestActuatorBuilder(unittest.TestCase):
@@ -41,9 +41,9 @@ class TestActuatorBuilder(unittest.TestCase):
         dofs = [builder.joint_qd_start[j] for j in joints]
 
         # Add actuators - should accumulate into one
-        builder.add_actuator(PDActuator, input_indices=[dofs[0]], kp=50.0, gear=2.5, constant_force=1.0)
-        builder.add_actuator(PDActuator, input_indices=[dofs[1]], kp=100.0, kd=10.0)
-        builder.add_actuator(PDActuator, input_indices=[dofs[1]], output_indices=[dofs[2]], kp=150.0, max_force=50.0)
+        builder.add_actuator(ActuatorPD, input_indices=[dofs[0]], kp=50.0, gear=2.5, constant_force=1.0)
+        builder.add_actuator(ActuatorPD, input_indices=[dofs[1]], kp=100.0, kd=10.0)
+        builder.add_actuator(ActuatorPD, input_indices=[dofs[1]], output_indices=[dofs[2]], kp=150.0, max_force=50.0)
 
         model = builder.finalize()
 
@@ -77,9 +77,9 @@ class TestActuatorBuilder(unittest.TestCase):
         dof1 = template.joint_qd_start[joint1]
         dof2 = template.joint_qd_start[joint2]
 
-        template.add_actuator(PDActuator, input_indices=[dof0], kp=100.0, kd=10.0)
-        template.add_actuator(PIDActuator, input_indices=[dof1], kp=200.0, ki=5.0, kd=20.0)
-        template.add_actuator(PDActuator, input_indices=[dof1], output_indices=[dof2], kp=300.0)
+        template.add_actuator(ActuatorPD, input_indices=[dof0], kp=100.0, kd=10.0)
+        template.add_actuator(ActuatorPID, input_indices=[dof1], kp=200.0, ki=5.0, kd=20.0)
+        template.add_actuator(ActuatorPD, input_indices=[dof1], output_indices=[dof2], kp=300.0)
 
         num_worlds = 3
         builder = newton.ModelBuilder()
@@ -90,8 +90,8 @@ class TestActuatorBuilder(unittest.TestCase):
         self.assertEqual(model.num_worlds, num_worlds)
         self.assertEqual(len(model.actuators), 2)
 
-        pd_act = next(a for a in model.actuators if type(a) is PDActuator)
-        pid_act = next(a for a in model.actuators if isinstance(a, PIDActuator))
+        pd_act = next(a for a in model.actuators if type(a) is ActuatorPD)
+        pid_act = next(a for a in model.actuators if isinstance(a, ActuatorPID))
 
         self.assertEqual(pd_act.num_actuators, 2 * num_worlds)
         self.assertEqual(pid_act.num_actuators, num_worlds)
@@ -124,18 +124,18 @@ class TestActuatorBuilder(unittest.TestCase):
 
         dofs = [builder.joint_qd_start[j] for j in joints]
 
-        builder.add_actuator(PDActuator, input_indices=[dofs[0], dofs[1]], kp=100.0)
-        builder.add_actuator(DelayedPDActuator, input_indices=[dofs[2]], kp=200.0, delay=3)
-        builder.add_actuator(DelayedPDActuator, input_indices=[dofs[3]], kp=250.0, delay=3)
-        builder.add_actuator(DelayedPDActuator, input_indices=[dofs[4], dofs[5]], kp=300.0, delay=7)
+        builder.add_actuator(ActuatorPD, input_indices=[dofs[0], dofs[1]], kp=100.0)
+        builder.add_actuator(ActuatorDelayedPD, input_indices=[dofs[2]], kp=200.0, delay=3)
+        builder.add_actuator(ActuatorDelayedPD, input_indices=[dofs[3]], kp=250.0, delay=3)
+        builder.add_actuator(ActuatorDelayedPD, input_indices=[dofs[4], dofs[5]], kp=300.0, delay=7)
 
         model = builder.finalize()
 
         self.assertEqual(len(model.actuators), 3)
 
-        pd_act = next(a for a in model.actuators if type(a) is PDActuator)
-        delay3 = next(a for a in model.actuators if isinstance(a, DelayedPDActuator) and a.delay == 3)
-        delay7 = next(a for a in model.actuators if isinstance(a, DelayedPDActuator) and a.delay == 7)
+        pd_act = next(a for a in model.actuators if type(a) is ActuatorPD)
+        delay3 = next(a for a in model.actuators if isinstance(a, ActuatorDelayedPD) and a.delay == 3)
+        delay7 = next(a for a in model.actuators if isinstance(a, ActuatorDelayedPD) and a.delay == 7)
 
         self.assertEqual(pd_act.num_actuators, 2)
         self.assertEqual(delay3.num_actuators, 2)

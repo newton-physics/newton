@@ -20,7 +20,7 @@ import warp as wp
 
 import newton
 from newton.selection import ArticulationView
-from newton_actuators import PDActuator
+from newton_actuators import ActuatorPD
 
 
 class TestSelection(unittest.TestCase):
@@ -56,9 +56,9 @@ class TestActuatorSelectionAPI(unittest.TestCase):
             joints.append(builder.add_joint_revolute(parent=parent, child=body, axis=newton.Axis.Z))
         builder.add_articulation(joints, key="robot")
         dofs = [builder.joint_qd_start[j] for j in joints]
-        builder.add_actuator(PDActuator, input_indices=[dofs[0]], kp=100.0)
-        builder.add_actuator(PDActuator, input_indices=[dofs[1]], kp=200.0)
-        builder.add_actuator(PDActuator, input_indices=[dofs[2]], kp=300.0)
+        builder.add_actuator(ActuatorPD, input_indices=[dofs[0]], kp=100.0)
+        builder.add_actuator(ActuatorPD, input_indices=[dofs[1]], kp=200.0)
+        builder.add_actuator(ActuatorPD, input_indices=[dofs[2]], kp=300.0)
         return builder.finalize(), dofs
 
     def _build_multi_world_model(self, num_worlds=3):
@@ -70,9 +70,9 @@ class TestActuatorSelectionAPI(unittest.TestCase):
             joints.append(template.add_joint_revolute(parent=parent, child=body, axis=newton.Axis.Z))
         template.add_articulation(joints, key="robot")
         dofs = [template.joint_qd_start[j] for j in joints]
-        template.add_actuator(PDActuator, input_indices=[dofs[0]], kp=100.0)
-        template.add_actuator(PDActuator, input_indices=[dofs[1]], kp=200.0)
-        template.add_actuator(PDActuator, input_indices=[dofs[2]], kp=300.0)
+        template.add_actuator(ActuatorPD, input_indices=[dofs[0]], kp=100.0)
+        template.add_actuator(ActuatorPD, input_indices=[dofs[1]], kp=200.0)
+        template.add_actuator(ActuatorPD, input_indices=[dofs[2]], kp=300.0)
         builder = newton.ModelBuilder()
         builder.replicate(template, num_worlds)
         return builder.finalize(), num_worlds
@@ -168,7 +168,7 @@ class TestActuatorSelectionAPI(unittest.TestCase):
         joint1 = builder.add_joint_prismatic(parent=body0, child=body1, axis=newton.Axis.X)
         builder.add_articulation([joint0, joint1], key="robot")
         dof0 = builder.joint_qd_start[joint0]
-        builder.add_actuator(PDActuator, input_indices=[dof0], kp=100.0)
+        builder.add_actuator(ActuatorPD, input_indices=[dof0], kp=100.0)
         model = builder.finalize()
         view = ArticulationView(model, pattern="robot", include_joint_types=[newton.JointType.PRISMATIC])
         actuator = model.actuators[0]

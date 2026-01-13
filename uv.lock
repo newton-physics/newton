@@ -1720,6 +1720,7 @@ wheels = [
 name = "newton"
 source = { editable = "." }
 dependencies = [
+    { name = "newton-actuators" },
     { name = "warp-lang" },
 ]
 
@@ -1895,6 +1896,7 @@ requires-dist = [
     { name = "mujoco-warp", marker = "extra == 'sim'", git = "https://github.com/google-deepmind/mujoco_warp" },
     { name = "mujoco-warp", marker = "extra == 'torch-cu12'", git = "https://github.com/google-deepmind/mujoco_warp" },
     { name = "myst-parser", marker = "extra == 'docs'", specifier = ">=3.0.1" },
+    { name = "newton-actuators", editable = "newton-actuators" },
     { name = "pycollada", marker = "extra == 'dev'", specifier = ">=0.9" },
     { name = "pycollada", marker = "extra == 'docs'", specifier = ">=0.9" },
     { name = "pycollada", marker = "extra == 'examples'", specifier = ">=0.9" },
@@ -1955,6 +1957,16 @@ provides-extras = ["dev", "docs", "examples", "importers", "notebook", "sim", "t
 
 [package.metadata.requires-dev]
 dev = [{ name = "asv", specifier = ">=0.6.4" }]
+
+[[package]]
+name = "newton-actuators"
+source = { editable = "newton-actuators" }
+dependencies = [
+    { name = "warp-lang" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "warp-lang", specifier = ">=1.11.0.dev20251205", index = "https://pypi.nvidia.com/" }]
 
 [[package]]
 name = "notebook-shim"
