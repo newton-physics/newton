@@ -2215,10 +2215,6 @@ class ModelBuilder:
 
         # Merge actuator entries from the sub-builder with offset DOF indices
         for entry_key, sub_entry in builder.actuator_entries.items():
-            assert len(sub_entry.args) == len(sub_entry.output_indices), (
-                f"ActuatorEntry mismatch in sub-builder: len(args)={len(sub_entry.args)} != "
-                f"len(output_indices)={len(sub_entry.output_indices)} for {entry_key}"
-            )
             entry = self.actuator_entries.setdefault(
                 entry_key,
                 ActuatorEntry(input_indices=[], output_indices=[], args=[]),
@@ -2226,12 +2222,7 @@ class ModelBuilder:
             # Offset indices by start_joint_dof_idx
             entry.input_indices.extend([idx + start_joint_dof_idx for idx in sub_entry.input_indices])
             entry.output_indices.extend([idx + start_joint_dof_idx for idx in sub_entry.output_indices])
-            # Copy each arg dict to avoid aliasing between replicated worlds
-            entry.args.extend(dict(arg) for arg in sub_entry.args)
-            assert len(entry.args) == len(entry.output_indices), (
-                f"ActuatorEntry mismatch after merge: len(args)={len(entry.args)} != "
-                f"len(output_indices)={len(entry.output_indices)} for {entry_key}"
-            )
+            entry.args.extend(sub_entry.args)
 
     def add_link(
         self,
@@ -6725,9 +6716,7 @@ class ModelBuilder:
 
             # Create actuators from accumulated entries
             m.actuators = []
-            for (actuator_class, scalar_key), entry in sorted(
-                self.actuator_entries.items(), key=lambda x: (x[0][0].__name__, x[0][1])
-            ):
+            for (actuator_class, scalar_key), entry in self.actuator_entries.items():
                 input_indices = wp.array(entry.input_indices, dtype=wp.uint32, device=device)
                 output_indices = wp.array(entry.output_indices, dtype=wp.uint32, device=device)
                 param_arrays = self._stack_args_to_arrays(entry.args, device=device, requires_grad=requires_grad)
