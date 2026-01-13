@@ -984,8 +984,17 @@ class ArticulationView:
 
         return mapping
 
-    def _get_actuator_attribute_array(self, actuator: "Actuator", name: str) -> wp.array:
-        """Get actuator parameter array shaped (count, dofs_per_world), zeros for non-actuated DOFs."""
+    def get_actuator_parameter(self, actuator: "Actuator", name: str) -> wp.array:
+        """
+        Get actuator parameter values for actuators corresponding to this view's DOFs.
+
+        Args:
+            actuator: An actuator instance with output_indices and parameter arrays.
+            name (str): Parameter name (e.g., 'kp', 'kd', 'max_force', 'gear', 'constant_force').
+
+        Returns:
+            wp.array: Parameter values shaped (count, dofs_per_world). Non-actuated DOFs are zero.
+        """
         mapping = self._get_actuator_dof_mapping(actuator)
         if len(mapping) == 0:
             return wp.empty((self.count, 0), dtype=float, device=self.device)
@@ -1004,19 +1013,6 @@ class ArticulationView:
 
         batched_shape = (self.count, dofs_per_world, *src.shape[1:])
         return dst.reshape(batched_shape)
-
-    def get_actuator_parameter(self, actuator: "Actuator", name: str) -> wp.array:
-        """
-        Get actuator parameter values for actuators corresponding to this view's DOFs.
-
-        Args:
-            actuator: An actuator instance with output_indices and parameter arrays.
-            name (str): Parameter name (e.g., 'kp', 'kd', 'max_force', 'gear', 'constant_force').
-
-        Returns:
-            wp.array: Parameter values shaped (count, actuators_per_world).
-        """
-        return self._get_actuator_attribute_array(actuator, name)
 
     def set_actuator_parameter(
         self, actuator: "Actuator", name: str, values: wp.array, mask: wp.array | None = None
