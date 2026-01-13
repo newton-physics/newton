@@ -2137,6 +2137,31 @@ class ModelBuilder:
             offset = custom_frequency_offsets.get(freq_key, 0)
             self._custom_frequency_counts[freq_key] = offset + builder_count
 
+    @staticmethod
+    def _coerce_mat33(value: Any) -> wp.mat33:
+        """Coerce a mat33-like value into a wp.mat33 without triggering Warp row-vector constructor warnings."""
+        if wp.types.type_is_matrix(type(value)):
+            return value
+
+        if isinstance(value, (list, tuple)) and len(value) == 3:
+            rows = []
+            is_rows = True
+            for r in value:
+                if wp.types.type_is_vector(type(r)):
+                    rows.append(wp.vec3(*r))
+                elif isinstance(r, (list, tuple, np.ndarray)) and len(r) == 3:
+                    rows.append(wp.vec3(*r))
+                else:
+                    is_rows = False
+                    break
+            if is_rows:
+                return wp.matrix_from_rows(*rows)
+
+        if isinstance(value, np.ndarray) and value.shape == (3, 3):
+            return wp.mat33(*value.reshape(-1).tolist())
+
+        return wp.mat33(*value)
+
     def add_link(
         self,
         xform: Transform | None = None,
@@ -2178,15 +2203,19 @@ class ModelBuilder:
             xform = wp.transform(*xform)
         if com is None:
             com = wp.vec3()
+        else:
+            com = wp.vec3(*com)
         if I_m is None:
             I_m = wp.mat33()
+        else:
+            I_m = self._coerce_mat33(I_m)
 
         body_id = len(self.body_mass)
 
         # body data
         if armature is None:
             armature = self.default_body_armature
-        inertia = I_m + wp.mat33(np.eye(3)) * armature
+        inertia = I_m + wp.mat33(np.eye(3, dtype=np.float32)) * armature
         self.body_inertia.append(inertia)
         self.body_mass.append(mass)
         self.body_com.append(com)
@@ -3279,15 +3308,16 @@ class ModelBuilder:
         merged_body_data = {}
         for i in range(self.body_count):
             key = self.body_key[i]
+            inertia_i = self._coerce_mat33(self.body_inertia[i])
             body_data[i] = {
                 "shapes": self.body_shapes[i],
                 "q": self.body_q[i],
                 "qd": self.body_qd[i],
                 "mass": self.body_mass[i],
-                "inertia": wp.mat33(*self.body_inertia[i]),
+                "inertia": inertia_i,
                 "inv_mass": self.body_inv_mass[i],
                 "inv_inertia": self.body_inv_inertia[i],
-                "com": self.body_com[i],
+                "com": wp.vec3(*self.body_com[i]),
                 "key": key,
                 "original_id": i,
             }
