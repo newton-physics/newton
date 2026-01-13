@@ -185,14 +185,15 @@ class ViewerGL(ViewerBase):
         self._gizmo_log[name] = transform
 
     @override
-    def set_model(self, model):
+    def set_model(self, model, max_worlds: int | None = None):
         """
         Set the Newton model to visualize.
 
         Args:
             model: The Newton model instance.
+            max_worlds: Maximum number of worlds to render (None = all).
         """
-        super().set_model(model)
+        super().set_model(model, max_worlds=max_worlds)
 
         self.picking = Picking(model, pick_stiffness=10000.0, pick_damping=1000.0, world_offsets=self.world_offsets)
         self.wind = Wind(model)

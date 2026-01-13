@@ -313,7 +313,10 @@ class Example:
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.control = self.model.control()
-        self.contacts = self.model.collide(self.state_0)
+
+        # Create collision pipeline (default: unified)
+        self.collision_pipeline = newton.examples.create_collision_pipeline(self.model, args)
+        self.contacts = self.model.collide(self.state_0, collision_pipeline=self.collision_pipeline)
         self.viewer.set_model(self.model)
 
         # Obstacle kinematics parameters
@@ -393,7 +396,7 @@ class Example:
 
             # Collide for contact detection
             if update_step_history:
-                self.contacts = self.model.collide(self.state_0)
+                self.contacts = self.model.collide(self.state_0, collision_pipeline=self.collision_pipeline)
 
             self.solver.set_rigid_history_update(update_step_history)
             self.solver.step(

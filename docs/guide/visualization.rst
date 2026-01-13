@@ -3,6 +3,16 @@ Visualization
 
 Newton provides multiple viewer backends for different visualization needs, from real-time rendering to offline recording and external integrations.
 
+All viewer backends share a common interface with ``set_model()``, ``begin_frame()``, ``log_state()``, and ``end_frame()`` methods.
+
+**Limiting rendered worlds**: When training with many parallel environments, rendering all worlds can impact performance. 
+All viewers support the ``max_worlds`` parameter to limit visualization to a subset of environments:
+
+.. code-block:: python
+
+    # Only render the first 4 environments
+    viewer.set_model(model, max_worlds=4)
+
 Real-time Viewers
 -----------------
 
