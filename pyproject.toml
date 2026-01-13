@@ -25,9 +25,14 @@ classifiers = [
 description = "A GPU-accelerated physics engine for robotics simulation"
 readme = "README.md"
 requires-python = ">=3.10"
-dependencies = ["warp-lang>=1.11.0.dev20251205", "newton-actuators"]
+dependencies = ["warp-lang>=1.11.0.dev20251205"]
 
 [project.optional-dependencies]
+# Actuator support
+actuators = [
+    "newton-actuators",
+]
+
 # Core simulation dependencies
 sim = [
     # MuJoCo simulation

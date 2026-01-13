@@ -1720,11 +1720,13 @@ wheels = [
 name = "newton"
 source = { editable = "." }
 dependencies = [
-    { name = "newton-actuators" },
     { name = "warp-lang" },
 ]
 
 [package.optional-dependencies]
+actuators = [
+    { name = "newton-actuators" },
+]
 dev = [
     { name = "alphashape" },
     { name = "cbor2" },
@@ -1896,7 +1898,7 @@ requires-dist = [
     { name = "mujoco-warp", marker = "extra == 'sim'", git = "https://github.com/google-deepmind/mujoco_warp" },
     { name = "mujoco-warp", marker = "extra == 'torch-cu12'", git = "https://github.com/google-deepmind/mujoco_warp" },
     { name = "myst-parser", marker = "extra == 'docs'", specifier = ">=3.0.1" },
-    { name = "newton-actuators", editable = "newton-actuators" },
+    { name = "newton-actuators", marker = "extra == 'actuators'", editable = "newton-actuators" },
     { name = "pycollada", marker = "extra == 'dev'", specifier = ">=0.9" },
     { name = "pycollada", marker = "extra == 'docs'", specifier = ">=0.9" },
     { name = "pycollada", marker = "extra == 'examples'", specifier = ">=0.9" },
@@ -1953,7 +1955,7 @@ requires-dist = [
     { name = "usd-exchange", marker = "platform_machine == 'aarch64' and extra == 'torch-cu12'", specifier = ">=2.1.0a3" },
     { name = "warp-lang", specifier = ">=1.11.0.dev20251205", index = "https://pypi.nvidia.com/" },
 ]
-provides-extras = ["dev", "docs", "examples", "importers", "notebook", "sim", "torch-cu12"]
+provides-extras = ["actuators", "dev", "docs", "examples", "importers", "notebook", "sim", "torch-cu12"]
 
 [package.metadata.requires-dev]
 dev = [{ name = "asv", specifier = ">=0.6.4" }]

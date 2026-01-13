@@ -21,7 +21,16 @@ import unittest
 import numpy as np
 
 import newton
-from newton_actuators import ActuatorDelayedPD, ActuatorPD, ActuatorPID
+
+try:
+    from newton_actuators import ActuatorDelayedPD, ActuatorPD, ActuatorPID
+
+    HAS_ACTUATORS = True
+except ImportError:
+    HAS_ACTUATORS = False
+
+
+@unittest.skipUnless(HAS_ACTUATORS, "newton-actuators not installed")
 
 
 class TestActuatorBuilder(unittest.TestCase):
@@ -144,6 +153,7 @@ class TestActuatorBuilder(unittest.TestCase):
         np.testing.assert_array_almost_equal(delay3.kp.numpy(), [200.0, 250.0])
 
 
+@unittest.skipUnless(HAS_ACTUATORS, "newton-actuators not installed")
 class TestActuatorUSDParsing(unittest.TestCase):
     """Tests for parsing actuators from USD files."""
 

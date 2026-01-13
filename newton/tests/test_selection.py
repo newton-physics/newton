@@ -20,7 +20,13 @@ import warp as wp
 
 import newton
 from newton.selection import ArticulationView
-from newton_actuators import ActuatorPD
+
+try:
+    from newton_actuators import ActuatorPD
+
+    HAS_ACTUATORS = True
+except ImportError:
+    HAS_ACTUATORS = False
 
 
 class TestSelection(unittest.TestCase):
@@ -45,6 +51,7 @@ class TestSelection(unittest.TestCase):
         self.assertEqual(selection.get_dof_forces(control).shape, (1, 0))
 
 
+@unittest.skipUnless(HAS_ACTUATORS, "newton-actuators not installed")
 class TestActuatorSelectionAPI(unittest.TestCase):
 
     def _build_single_world_model(self):
