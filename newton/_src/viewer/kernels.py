@@ -427,6 +427,23 @@ def compute_joint_basis_lines(
     line_colors[tid] = color
 
 
+@wp.kernel
+def compute_com_positions(
+    body_q: wp.array(dtype=wp.transform),
+    body_com: wp.array(dtype=wp.vec3),
+    body_world: wp.array(dtype=int),
+    world_offsets: wp.array(dtype=wp.vec3),
+    com_positions: wp.array(dtype=wp.vec3),
+):
+    tid = wp.tid()
+    body_tf = body_q[tid]
+    world_com = wp.transform_point(body_tf, body_com[tid])
+    world_idx = body_world[tid]
+    if world_offsets and world_idx >= 0 and world_idx < world_offsets.shape[0]:
+        world_com = world_com + world_offsets[world_idx]
+    com_positions[tid] = world_com
+
+
 @wp.func
 def depth_to_color(depth: float, min_depth: float, max_depth: float) -> wp.vec3:
     """Convert depth value to a color using a blue-to-red colormap."""
