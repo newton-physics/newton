@@ -122,18 +122,18 @@ def build_dof_mapping_slice_kernel(
     mapping: wp.array(dtype=int),
 ):
     """Build DOF-to-actuator mapping for slice-based view selection.
-    
+
     Iterates over first world's actuators only, replicates pattern to all worlds.
     output_indices[0:actuators_per_world] contains local DOFs for world 0.
     """
     local_idx = wp.tid()  # 0 to actuators_per_world-1
-    
+
     # Get local DOF from first world's actuator entry
     local_dof = int(actuator_output_indices[local_idx])
-    
+
     if local_dof >= slice_start and local_dof < slice_stop:
         view_local_pos = local_dof - slice_start
-        
+
         # Replicate to all worlds
         for world_idx in range(num_worlds):
             view_pos = world_idx * dofs_per_world + view_local_pos
@@ -151,13 +151,13 @@ def build_dof_mapping_indices_kernel(
     mapping: wp.array(dtype=int),
 ):
     """Build DOF-to-actuator mapping for index-array-based view selection.
-    
+
     Iterates over first world's actuators only, replicates pattern to all worlds.
     """
     local_idx = wp.tid()  # 0 to actuators_per_world-1
-    
+
     local_dof = int(actuator_output_indices[local_idx])
-    
+
     for i in range(dofs_per_world):
         if view_dof_indices[i] == local_dof:
             # Replicate to all worlds
@@ -190,7 +190,7 @@ def scatter_actuator_with_mask_kernel(
     dst: wp.array(dtype=float),
 ):
     """Scatter actuator values with articulation mask support.
-    
+
     values: shape (count, dofs_per_world)
     mapping: flat array mapping DOF positions to actuator indices (-1 = not actuated)
     mask: per-articulation mask, shape (count,)
@@ -922,11 +922,11 @@ class ArticulationView:
     # ========================================================================================
     # Actuator parameter access
 
-    @functools.lru_cache(maxsize=None)
+    @functools.cache
     def _get_actuator_dof_mapping(self, actuator: "Actuator") -> wp.array:
         """
         Build mapping from view DOF positions to actuator parameter indices.
-        
+
         Returns array of shape (count * dofs_per_world,) where each element is:
         - actuator parameter index if that DOF is actuated
         - -1 if that DOF is not actuated by this actuator
@@ -984,13 +984,13 @@ class ArticulationView:
 
         return mapping
 
-    def get_actuator_parameter(self, actuator: "Actuator", name: str) -> wp.array:
+    def get_actuator_attribute(self, actuator: "Actuator", name: str) -> wp.array:
         """
-        Get actuator parameter values for actuators corresponding to this view's DOFs.
+        Get actuator attribute values for actuators corresponding to this view's DOFs.
 
         Args:
-            actuator: An actuator instance with output_indices and parameter arrays.
-            name (str): Parameter name (e.g., 'kp', 'kd', 'max_force', 'gear', 'constant_force').
+            actuator: An actuator instance with output_indices and attribute arrays.
+            name (str): Attribute name (e.g., 'kp', 'kd', 'max_force', 'gear', 'constant_force').
 
         Returns:
             wp.array: Parameter values shaped (count, dofs_per_world). Non-actuated DOFs are zero.
@@ -1014,15 +1014,15 @@ class ArticulationView:
         batched_shape = (self.count, dofs_per_world, *src.shape[1:])
         return dst.reshape(batched_shape)
 
-    def set_actuator_parameter(
+    def set_actuator_attribute(
         self, actuator: "Actuator", name: str, values: wp.array, mask: wp.array | None = None
     ) -> None:
         """
-        Set actuator parameter values for actuators corresponding to this view's DOFs.
+        Set actuator attribute values for actuators corresponding to this view's DOFs.
 
         Args:
-            actuator: An actuator instance with output_indices and parameter arrays.
-            name (str): Parameter name (e.g., 'kp', 'kd', 'max_force', 'gear', 'constant_force').
+            actuator: An actuator instance with output_indices and attribute arrays.
+            name (str): Attribute name (e.g., 'kp', 'kd', 'max_force', 'gear', 'constant_force').
             values: New parameter values shaped (count, dofs_per_world). Non-actuated DOFs are ignored.
             mask (array, optional): Mask of articulations in this ArticulationView (all by default).
         """
@@ -1054,7 +1054,6 @@ class ArticulationView:
             outputs=[dst],
             device=self.device,
         )
-
 
     # ========================================================================================
     # Utilities

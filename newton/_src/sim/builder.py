@@ -1109,7 +1109,7 @@ class ModelBuilder:
     def add_actuator(
         self,
         actuator_class: type,
-        input_indices: list[int], # len = 1 for single input actuators, todo: case for len > 1
+        input_indices: list[int],  # len = 1 for single input actuators, todo: case for len > 1
         output_indices: list[int] | None = None,
         **kwargs,
     ) -> None:

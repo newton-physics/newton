@@ -31,8 +31,6 @@ except ImportError:
 
 
 @unittest.skipUnless(HAS_ACTUATORS, "newton-actuators not installed")
-
-
 class TestActuatorBuilder(unittest.TestCase):
     """Tests for ModelBuilder.add_actuator - functionality, multi-world, and scalar params."""
 
@@ -162,8 +160,9 @@ class TestActuatorUSDParsing(unittest.TestCase):
         import os
 
         from newton_actuators import parse_actuator_prim
-        from newton._src.utils.import_usd import parse_usd
         from pxr import Usd
+
+        from newton._src.utils.import_usd import parse_usd
 
         test_dir = os.path.dirname(__file__)
         usd_path = os.path.join(test_dir, "assets", "actuator_test.usda")
