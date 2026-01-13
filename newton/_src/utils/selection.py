@@ -617,6 +617,15 @@ class ArticulationView:
 
         frequency = self.model.get_attribute_frequency(name)
 
+        # Custom frequencies (custom entity types) are not supported in ArticulationView
+        # They represent solver-specific data that is not per-articulation
+        if isinstance(frequency, str):
+            raise AttributeError(
+                f"Attribute '{name}' has custom frequency '{frequency}' which is not "
+                f"supported by ArticulationView. Custom frequencies are for custom entity types "
+                f"that are not part of articulations."
+            )
+
         # HACK: trim leading and trailing static shapes
         if frequency == ModelAttributeFrequency.SHAPE:
             attrib = attrib[self._worlds_shape_start : self._worlds_shape_end]

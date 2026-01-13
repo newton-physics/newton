@@ -26,6 +26,7 @@
 # Command: python -m newton.examples diffsim_soft_body
 #
 ###########################################################################
+
 import numpy as np
 import warp as wp
 import warp.optim

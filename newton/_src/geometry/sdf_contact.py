@@ -17,9 +17,6 @@ from typing import Any
 
 import warp as wp
 
-from ..geometry.collision_core import (
-    build_pair_key2,
-)
 from ..geometry.contact_data import ContactData
 from ..geometry.sdf_utils import SDFData
 
@@ -758,12 +755,10 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
             thickness_b = shape_data[mesh_shape_b][3]
 
             # Use per-geometry cutoff for contact detection
+            # Sum margins for consistency with thickness summing
             cutoff_a = shape_contact_margin[mesh_shape_a]
             cutoff_b = shape_contact_margin[mesh_shape_b]
-            margin = wp.max(cutoff_a, cutoff_b)
-
-            # Build pair key for this mesh-mesh pair
-            pair_key = build_pair_key2(wp.uint32(mesh_shape_a), wp.uint32(mesh_shape_b))
+            margin = cutoff_a + cutoff_b
 
             # Test both directions: mesh A against SDF B, and mesh B against SDF A
             for mode in range(2):
@@ -899,11 +894,6 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                         contact_data.shape_a = mesh_shape_a
                         contact_data.shape_b = mesh_shape_b
                         contact_data.margin = margin
-                        if mode == 0:
-                            contact_data.feature = wp.uint32(tri_idx + 1)
-                        else:
-                            contact_data.feature = wp.uint32(tri_idx + 1) | (wp.uint32(1) << wp.uint32(31))
-                        contact_data.feature_pair_key = pair_key
 
                         writer_func(contact_data, writer_data, -1)
 
@@ -914,7 +904,7 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
     # Extract functions and constants from the contact reduction configuration
     num_reduction_slots = contact_reduction_funcs.num_reduction_slots
     store_reduced_contact_func = contact_reduction_funcs.store_reduced_contact
-    filter_unique_contacts_func = contact_reduction_funcs.filter_unique_contacts
+    collect_active_contacts_func = contact_reduction_funcs.collect_active_contacts
     get_smem_slots_plus_1 = contact_reduction_funcs.get_smem_slots_plus_1
     get_smem_slots_contacts = contact_reduction_funcs.get_smem_slots_contacts
 
@@ -963,7 +953,8 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
         thickness0 = mesh0_data[3]
         thickness1 = mesh1_data[3]
 
-        margin = wp.max(shape_contact_margin[shape_idx_0], shape_contact_margin[shape_idx_1])
+        # Sum margins for consistency with thickness summing
+        margin = shape_contact_margin[shape_idx_0] + shape_contact_margin[shape_idx_1]
 
         # Initialize (shared memory) buffers for contact reduction
         empty_marker = -1000000000.0
@@ -1120,10 +1111,7 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                         c.position = point_centered  # Centered world-space position
                         c.normal = normal_world  # Normalized world-space normal pointing pair[0]->pair[1]
                         c.depth = dist
-                        # Encode mode into feature to distinguish triangles from mesh0 vs mesh1
-                        # Mode 0: positive triangle index, Mode 1: negative (-(index+1))
-                        tri_idx = selected_triangles[t]
-                        c.feature = tri_idx if mode == 0 else -(tri_idx + 1)
+                        c.mode = mode  # Track which mesh the triangle came from
                         c.projection = empty_marker
 
                 store_reduced_contact_func(
@@ -1142,8 +1130,8 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
         # normal points from pair[0] to pair[1]
         synchronize()
 
-        # Filter out duplicate contacts (same contact may have won multiple directions)
-        filter_unique_contacts_func(t, contacts_shared_mem, active_contacts_shared_mem, empty_marker)
+        # Collect all valid contacts from the reduction buffer
+        collect_active_contacts_func(t, contacts_shared_mem, active_contacts_shared_mem, empty_marker)
 
         num_contacts_to_keep = wp.min(
             active_contacts_shared_mem[wp.static(num_reduction_slots)], wp.static(num_reduction_slots)
@@ -1166,9 +1154,9 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
             contact_data.radius_eff_a = 0.0
             contact_data.radius_eff_b = 0.0
             # SDF mesh's thickness is already baked into the SDF, so set it to 0
-            # contact.feature >= 0 means mode 0: mesh0 triangles vs mesh1's SDF -> thickness1 already in SDF
-            # contact.feature < 0 means mode 1: mesh1 triangles vs mesh0's SDF -> thickness0 already in SDF
-            if contact.feature >= 0:
+            # mode == 0: mesh0 triangles vs mesh1's SDF -> thickness1 already in SDF
+            # mode == 1: mesh1 triangles vs mesh0's SDF -> thickness0 already in SDF
+            if contact.mode == 0:
                 contact_data.thickness_a = thickness0
                 contact_data.thickness_b = 0.0
             else:
@@ -1177,13 +1165,6 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
             contact_data.shape_a = pair[0]
             contact_data.shape_b = pair[1]
             contact_data.margin = margin
-            # The high bit distinguishes contacts from mesh B (mode 1) vs mesh A (mode 0)
-            if contact.feature >= 0:
-                feature_id = wp.uint32(contact.feature + 1)
-            else:
-                feature_id = wp.uint32(-contact.feature) | (wp.uint32(1) << wp.uint32(31))
-            contact_data.feature = feature_id
-            contact_data.feature_pair_key = build_pair_key2(wp.uint32(pair[0]), wp.uint32(pair[1]))
 
             writer_func(contact_data, writer_data, -1)
 

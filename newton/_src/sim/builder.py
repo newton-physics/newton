@@ -157,9 +157,9 @@ class ModelBuilder:
 
         density: float = 1000.0
         """The density of the shape material."""
-        ke: float = 1.0e5
+        ke: float = 1.0e3
         """The contact elastic stiffness. Used by SemiImplicit, Featherstone, MuJoCo."""
-        kd: float = 1000.0
+        kd: float = 100.0
         """The contact damping coefficient. Used by SemiImplicit, Featherstone, MuJoCo."""
         kf: float = 1000.0
         """The friction damping coefficient. Used by SemiImplicit, Featherstone."""
@@ -174,10 +174,13 @@ class ModelBuilder:
         rolling_friction: float = 0.0005
         """The coefficient of rolling friction (resistance to rolling motion). Used by XPBD, MuJoCo."""
         thickness: float = 1e-5
-        """The thickness of the shape."""
+        """Outward offset from the shape's surface for collision detection.
+        Extends the effective collision surface outward by this amount. When two shapes collide,
+        their thicknesses are summed (thickness_a + thickness_b) to determine the total separation."""
         contact_margin: float | None = None
         """The contact margin for collision detection. If None, uses builder.rigid_contact_margin as default.
-        Note: contact_margin should be >= thickness for proper collision detection."""
+        AABBs are expanded by this value for broad phase detection. Must be >= thickness to ensure
+        collisions are not missed when thickened surfaces approach each other."""
         is_solid: bool = True
         """Indicates whether the shape is solid or hollow. Defaults to True."""
         collision_group: int = 1
@@ -374,8 +377,15 @@ class ModelBuilder:
         dtype: type
         """Warp dtype (e.g., wp.float32, wp.int32, wp.bool, wp.vec3) that is compatible with Warp arrays."""
 
-        frequency: ModelAttributeFrequency
-        """Frequency category (see :class:`ModelAttributeFrequency`) that determines how the attribute is indexed in the Model."""
+        frequency: ModelAttributeFrequency | str
+        """Frequency category that determines how the attribute is indexed in the Model.
+
+        Can be either:
+            - A :class:`ModelAttributeFrequency` enum value for built-in frequencies (BODY, SHAPE, JOINT, etc.)
+              Uses dict-based storage where keys are entity indices, allowing sparse assignment.
+            - A string for custom frequencies (e.g., ``"mujoco:pair"``). Uses list-based storage for
+              sequential data appended via :meth:`add_custom_values`. All attributes sharing the same
+              custom frequency must have the same count, validated at finalize time."""
 
         assignment: ModelAttributeAssignment = ModelAttributeAssignment.MODEL
         """Assignment category (see :class:`ModelAttributeAssignment`), defaults to :attr:`ModelAttributeAssignment.MODEL`"""
@@ -383,11 +393,31 @@ class ModelBuilder:
         namespace: str | None = None
         """Namespace for the attribute. If None, the attribute is added directly to the assigned object without a namespace."""
 
+        references: str | None = None
+        """For attributes containing entity indices, specifies how values are transformed during add_world/add_builder merging.
+
+        Built-in entity types (values are offset by entity count):
+            - ``"body"``, ``"shape"``, ``"joint"``, ``"joint_dof"``, ``"joint_coord"``, ``"articulation"``, ``"equality_constraint"``
+
+        Special handling:
+            - ``"world"``: Values are replaced with ``current_world`` (not offset)
+
+        Custom frequencies (values are offset by that frequency's count):
+            - Any custom frequency string, e.g., ``"mujoco:pair"``
+        """
+
         default: Any = None
         """Default value for the attribute. If None, the default value is determined based on the dtype."""
 
-        values: dict[int, Any] | None = None
-        """Dictionary mapping indices to specific values (overrides). If None, the attribute is not initialized with any values. Values can be assigned in subsequent ``ModelBuilder.add_*(..., custom_attributes={...})`` method calls for specific entities after the CustomAttribute has been added through the :meth:`ModelBuilder.add_custom_attribute` method."""
+        values: dict[int, Any] | list[Any] | None = None
+        """Storage for specific values (overrides).
+
+        For enum frequencies (BODY, SHAPE, etc.): dict[int, Any] mapping entity indices to values.
+        For string frequencies ("mujoco:pair", etc.): list[Any] for sequential custom data.
+
+        If None, the attribute is not initialized with any values. Values can be assigned in subsequent
+        ``ModelBuilder.add_*(..., custom_attributes={...})`` method calls for specific entities after
+        the CustomAttribute has been added through the :meth:`ModelBuilder.add_custom_attribute` method."""
 
         usd_attribute_name: str | None = None
         """Name of the corresponding USD attribute. If None, the USD attribute name ``"newton:<namespace>:<name>"`` is used."""
@@ -408,7 +438,7 @@ class ModelBuilder:
         """Transformer function that converts a URDF attribute value string to a valid Warp dtype. If undefined, the generic converter from :func:`newton.utils.parse_warp_value_from_string` is used."""
 
         def __post_init__(self):
-            """Initialize default values and ensure values dict exists."""
+            """Initialize default values and validate dtype compatibility."""
             # ensure dtype is a valid Warp dtype
             try:
                 _size = wp.types.type_size_in_bytes(self.dtype)
@@ -420,8 +450,10 @@ class ModelBuilder:
             # Set dtype-specific default value if none was provided
             if self.default is None:
                 self.default = self._default_for_dtype(self.dtype)
+
+            # Initialize values with correct container type based on frequency
             if self.values is None:
-                self.values = {}
+                self.values = self._create_empty_values_container()
             if self.usd_attribute_name is None:
                 self.usd_attribute_name = f"newton:{self.key}"
             if self.mjcf_attribute_name is None:
@@ -445,9 +477,54 @@ class ModelBuilder:
             """Return the full name of the attribute, formatted as "namespace:name" or "name" if no namespace is specified."""
             return f"{self.namespace}:{self.name}" if self.namespace else self.name
 
+        @property
+        def frequency_key(self) -> ModelAttributeFrequency | str:
+            """Return the resolved frequency, with namespace prepended for custom string frequencies.
+
+            For string frequencies: returns "namespace:frequency" if namespace is set, otherwise just "frequency".
+            For enum frequencies: returns the enum value unchanged.
+            """
+            if isinstance(self.frequency, str):
+                return (
+                    f"{self.namespace}:{self.frequency}"
+                    if self.namespace and ":" not in self.frequency
+                    else self.frequency
+                )
+            return self.frequency
+
+        @property
+        def is_custom_frequency(self) -> bool:
+            """Check if this attribute uses a custom (string) frequency.
+
+            Returns:
+                True if the frequency is a string (custom frequency), False if it's a
+                ModelAttributeFrequency enum (built-in frequency like BODY, SHAPE, etc.).
+            """
+            return isinstance(self.frequency, str)
+
+        def _create_empty_values_container(self) -> list | dict:
+            """Create appropriate empty container based on frequency type."""
+            return [] if self.is_custom_frequency else {}
+
+        def _get_values_count(self) -> int:
+            """Get current count of values in this attribute."""
+            if self.values is None:
+                return 0
+            return len(self.values)
+
         def build_array(self, count: int, device: Devicelike | None = None, requires_grad: bool = False) -> wp.array:
             """Build wp.array from count, dtype, default and overrides."""
-            arr = [self.values.get(i, self.default) for i in range(count)]
+            if self.values is None or len(self.values) == 0:
+                # No values provided, use default for all
+                arr = [self.default] * count
+            elif self.is_custom_frequency:
+                # Custom frequency: vals is a list, replace None with defaults and pad/truncate as needed
+                arr = [val if val is not None else self.default for val in self.values]
+                arr = arr + [self.default] * max(0, count - len(arr))
+                arr = arr[:count]  # Truncate if needed
+            else:
+                # Enum frequency: vals is a dict, use get() to fill gaps with defaults
+                arr = [self.values.get(i, self.default) for i in range(count)]
             return wp.array(arr, dtype=self.dtype, requires_grad=requires_grad, device=device)
 
     def __init__(self, up_axis: AxisType = Axis.Z, gravity: float = -9.81):
@@ -489,21 +566,21 @@ class ModelBuilder:
         # endregion
 
         # region compiler settings (similar to MuJoCo)
-        self.balance_inertia = True
+        self.balance_inertia: bool = True
         """Whether to automatically correct rigid body inertia tensors that violate the triangle inequality.
         When True, adds a scalar multiple of the identity matrix to preserve rotation structure while
         ensuring physical validity (I1 + I2 >= I3 for principal moments). Default: True."""
 
-        self.bound_mass = None
+        self.bound_mass: float | None = None
         """Minimum allowed mass value for rigid bodies. If set, any body mass below this value will be
         clamped to this minimum. Set to None to disable mass clamping. Default: None."""
 
-        self.bound_inertia = None
+        self.bound_inertia: float | None = None
         """Minimum allowed eigenvalue for rigid body inertia tensors. If set, ensures all principal
         moments of inertia are at least this value. Set to None to disable inertia eigenvalue
         clamping. Default: None."""
 
-        self.validate_inertia_detailed = False
+        self.validate_inertia_detailed: bool = False
         """Whether to use detailed (slower) inertia validation that provides per-body warnings.
         When False, uses a fast GPU kernel that reports only the total number of corrected bodies
         and directly assigns the corrected arrays to the Model (ModelBuilder state is not updated).
@@ -560,6 +637,8 @@ class ModelBuilder:
 
         # filtering to ignore certain collision pairs
         self.shape_collision_filter_pairs: list[tuple[int, int]] = []
+
+        self._requested_state_attributes: set[str] = set()
 
         # springs
         self.spring_indices = []
@@ -682,6 +761,8 @@ class ModelBuilder:
 
         # Custom attributes (user-defined per-frequency arrays)
         self.custom_attributes: dict[str, ModelBuilder.CustomAttribute] = {}
+        # Incrementally maintained counts for custom string frequencies
+        self._custom_frequency_counts: dict[str, int] = {}
 
         # Actuator entries (accumulated during add_actuator calls)
         # Key is (actuator_class, scalar_params_tuple) to separate instances with different scalar params
@@ -728,11 +809,17 @@ class ModelBuilder:
                 or existing.dtype != attribute.dtype
                 or existing.assignment != attribute.assignment
                 or existing.namespace != attribute.namespace
+                or existing.references != attribute.references
             ):
                 raise ValueError(f"Custom attribute '{key}' already exists with incompatible spec")
             return
 
         self.custom_attributes[key] = attribute
+        # Initialize frequency count for string frequencies
+        if attribute.is_custom_frequency:
+            freq_key = attribute.frequency_key
+            if freq_key not in self._custom_frequency_counts:
+                self._custom_frequency_counts[freq_key] = 0
 
     def has_custom_attribute(self, key: str) -> bool:
         """Check if a custom attribute is defined."""
@@ -753,6 +840,85 @@ class ModelBuilder:
             A list of custom attributes.
         """
         return [attr for attr in self.custom_attributes.values() if attr.frequency in frequencies]
+
+    def get_custom_frequency_keys(self) -> set[str]:
+        """Return set of custom frequency keys (string frequencies) defined in this builder."""
+        return set(self._custom_frequency_counts.keys())
+
+    def add_custom_values(self, **kwargs: Any) -> dict[str, int]:
+        """Append values to custom attributes with custom string frequencies.
+
+        Each keyword argument specifies an attribute key and the value to append. Values are
+        stored in a list and appended sequentially for robust indexing. Only works with
+        attributes that have a custom string frequency (not built-in enum frequencies).
+
+        This is useful for custom entity types that aren't built into the model,
+        such as user-defined groupings or solver-specific data.
+
+        Args:
+            **kwargs: Mapping of attribute keys to values. Keys should be the full
+                attribute key (e.g., ``"mujoco:pair_geom1"`` or just ``"my_attr"`` if no namespace).
+
+        Returns:
+            Dict mapping attribute keys to the index where each value was added.
+            If all attributes had the same count before the call, all indices will be equal.
+
+        Raises:
+            AttributeError: If an attribute key is not defined.
+            TypeError: If an attribute has an enum frequency (must have custom frequency).
+
+        Example:
+            .. code-block:: python
+
+                builder.add_custom_values(
+                    **{
+                        "mujoco:pair_geom1": 0,
+                        "mujoco:pair_geom2": 1,
+                        "mujoco:pair_world": builder.current_world,
+                    }
+                )
+                # Returns: {'mujoco:pair_geom1': 0, 'mujoco:pair_geom2': 0, 'mujoco:pair_world': 0}
+        """
+        indices: dict[str, int] = {}
+        frequency_indices: dict[str, int] = {}  # Track indices assigned per frequency in this call
+
+        for key, value in kwargs.items():
+            attr = self.custom_attributes.get(key)
+            if attr is None:
+                raise AttributeError(
+                    f"Custom attribute '{key}' is not defined. Please declare it first using add_custom_attribute()."
+                )
+            if not attr.is_custom_frequency:
+                raise TypeError(
+                    f"Custom attribute '{key}' has frequency={attr.frequency}, "
+                    f"but add_custom_values() only works with custom frequency attributes."
+                )
+
+            # Ensure attr.values is initialized
+            if attr.values is None:
+                attr.values = []
+
+            freq_key = attr.frequency_key
+
+            # Determine index for this frequency (same index for all attrs with same frequency in this call)
+            if freq_key not in frequency_indices:
+                # First attribute with this frequency - use authoritative counter
+                current_count = self._custom_frequency_counts.get(freq_key, 0)
+                frequency_indices[freq_key] = current_count
+
+                # Update authoritative counter for this frequency
+                self._custom_frequency_counts[freq_key] = current_count + 1
+
+            idx = frequency_indices[freq_key]
+
+            # Ensure attr.values has length at least idx+1, padding with None as needed
+            while len(attr.values) <= idx:
+                attr.values.append(None)
+
+            # Assign value at the correct index
+            attr.values[idx] = value
+            indices[key] = idx
+        return indices
 
     def _process_custom_attributes(
         self,
@@ -1223,11 +1389,10 @@ class ModelBuilder:
         for joint_idx in joints:
             child = self.joint_child[joint_idx]
             parent = self.joint_parent[joint_idx]
-
             if child in child_to_parent and child_to_parent[child] != parent:
                 raise ValueError(
                     f"Body {child} has multiple parents in this articulation: {child_to_parent[child]} and {parent}. "
-                    f"This creates an invalid tree structure."
+                    f"This creates an invalid tree structure. Loop-closing joints must not be part of an articulation."
                 )
             child_to_parent[child] = parent
 
@@ -1684,6 +1849,8 @@ class ModelBuilder:
         if builder.up_axis != self.up_axis:
             raise ValueError("Cannot add a builder with a different up axis.")
 
+        self._requested_state_attributes.update(builder._requested_state_attributes)
+
         # explicitly resolve the transform multiplication function to avoid
         # repeatedly resolving builtin overloads during shape transformation
         transform_mul_cfunc = wp.context.runtime.core.wp_builtin_mul_transformf_transformf
@@ -1923,34 +2090,89 @@ class ModelBuilder:
         self.joint_coord_count += builder.joint_coord_count
 
         # Merge custom attributes from the sub-builder
+        # Shared offset map for both frequency and references
+        # Note: "world" is NOT included here - WORLD frequency is handled specially
+        entity_offsets = {
+            "body": start_body_idx,
+            "shape": start_shape_idx,
+            "joint": start_joint_idx,
+            "joint_dof": start_joint_dof_idx,
+            "joint_coord": start_joint_coord_idx,
+            "articulation": start_articulation_idx,
+            "equality_constraint": start_equality_constraint_idx,
+        }
+
+        # Snapshot custom frequency counts BEFORE iteration (they get updated during merge)
+        custom_frequency_offsets = dict(self._custom_frequency_counts)
+
+        def get_offset(entity_or_key: str | None) -> int:
+            """Get offset for an entity type or custom frequency."""
+            if entity_or_key is None:
+                return 0
+            if entity_or_key in entity_offsets:
+                return entity_offsets[entity_or_key]
+            if entity_or_key in custom_frequency_offsets:
+                return custom_frequency_offsets[entity_or_key]
+            if entity_or_key in builder._custom_frequency_counts:
+                return 0
+            raise ValueError(
+                f"Unknown references value '{entity_or_key}'. "
+                f"Valid values are: {list(entity_offsets.keys())} or custom frequencies."
+            )
+
         for full_key, attr in builder.custom_attributes.items():
-            # Determine the offset based on frequency
-            if attr.frequency == ModelAttributeFrequency.ONCE:
-                offset = 0
-            elif attr.frequency == ModelAttributeFrequency.BODY:
-                offset = start_body_idx
-            elif attr.frequency == ModelAttributeFrequency.SHAPE:
-                offset = start_shape_idx
-            elif attr.frequency == ModelAttributeFrequency.JOINT:
-                offset = start_joint_idx
-            elif attr.frequency == ModelAttributeFrequency.JOINT_DOF:
-                offset = start_joint_dof_idx
-            elif attr.frequency == ModelAttributeFrequency.JOINT_COORD:
-                offset = start_joint_coord_idx
-            elif attr.frequency == ModelAttributeFrequency.ARTICULATION:
-                offset = start_articulation_idx
-            elif attr.frequency == ModelAttributeFrequency.EQUALITY_CONSTRAINT:
-                offset = start_equality_constraint_idx
+            # Index offset based on frequency
+            freq_key = attr.frequency_key
+            if isinstance(freq_key, str):
+                # Custom frequency: offset by pre-merge count
+                index_offset = custom_frequency_offsets.get(freq_key, 0)
+            elif attr.frequency == ModelAttributeFrequency.ONCE:
+                index_offset = 0
+            elif attr.frequency == ModelAttributeFrequency.WORLD:
+                # WORLD frequency: indices are keyed by world index, not by offset
+                # When called via add_world(), current_world is the world being added
+                index_offset = 0 if self.current_world == -1 else self.current_world
             else:
-                continue
+                index_offset = get_offset(attr.frequency.name.lower())
+
+            # Value transformation based on references
+            use_current_world = attr.references == "world"
+            value_offset = 0 if use_current_world else get_offset(attr.references)
+
+            def transform_value(v, offset=value_offset, replace_with_world=use_current_world):
+                if replace_with_world:
+                    return self.current_world
+                if offset == 0:
+                    return v
+                # Handle integers, preserving negative sentinels (e.g., -1 means "invalid")
+                if isinstance(v, int):
+                    return v + offset if v >= 0 else v
+                # Handle list/tuple explicitly, preserving negative sentinels in elements
+                if isinstance(v, (list, tuple)):
+                    transformed = [x + offset if isinstance(x, int) and x >= 0 else x for x in v]
+                    return type(v)(transformed)
+                # For other types (numpy, warp, etc.), try arithmetic offset
+                try:
+                    return v + offset
+                except TypeError:
+                    return v
 
             # Declare the attribute if it doesn't exist in the main builder
             merged = self.custom_attributes.get(full_key)
             if merged is None:
-                self.custom_attributes[full_key] = replace(
-                    attr,
-                    values={offset + idx: value for idx, value in attr.values.items()} if attr.values else None,
-                )
+                if attr.values:
+                    if isinstance(freq_key, str):
+                        # String frequency: copy list as-is (no offset for sequential data)
+                        mapped_values = [transform_value(value) for value in attr.values]
+                    else:
+                        # Enum frequency: remap dict indices with offset
+                        mapped_values = {
+                            index_offset + idx: transform_value(value) for idx, value in attr.values.items()
+                        }
+                else:
+                    # Initialize empty container based on frequency type
+                    mapped_values = [] if isinstance(freq_key, str) else {}
+                self.custom_attributes[full_key] = replace(attr, values=mapped_values)
                 continue
 
             # Prevent silent divergence if defaults differ
@@ -1974,8 +2196,21 @@ class ModelBuilder:
 
             # Remap indices and copy values
             if merged.values is None:
-                merged.values = {}
-            merged.values.update({offset + idx: value for idx, value in attr.values.items()})
+                merged.values = [] if isinstance(freq_key, str) else {}
+
+            if isinstance(freq_key, str):
+                # String frequency: extend list with transformed values
+                new_values = [transform_value(value) for value in attr.values]
+                merged.values.extend(new_values)
+            else:
+                # Enum frequency: update dict with remapped indices
+                new_indices = {index_offset + idx: transform_value(value) for idx, value in attr.values.items()}
+                merged.values.update(new_indices)
+
+        # Update custom frequency counts once per unique frequency (not per attribute)
+        for freq_key, builder_count in builder._custom_frequency_counts.items():
+            offset = custom_frequency_offsets.get(freq_key, 0)
+            self._custom_frequency_counts[freq_key] = offset + builder_count
 
         # Merge actuator entries from the sub-builder with offset DOF indices
         for entry_key, sub_entry in builder.actuator_entries.items():
@@ -3064,6 +3299,7 @@ class ModelBuilder:
                 vertices.append("\n".join(shape_label))
         edges = []
         edge_labels = []
+        edge_colors = []
         for i in range(self.joint_count):
             edge = (self.joint_child[i] + 1, self.joint_parent[i] + 1)
             edges.append(edge)
@@ -3074,20 +3310,26 @@ class ModelBuilder:
             if show_joint_types:
                 joint_label += f"\n({joint_type_str(self.joint_type[i])})"
             edge_labels.append(joint_label)
+            art_id = self.joint_articulation[i]
+            if art_id == -1:
+                edge_colors.append("r")
+            else:
+                edge_colors.append("k")
 
         if plot_shapes:
             for i in range(self.shape_count):
                 edges.append((len(self.body_key) + i + 1, self.shape_body[i] + 1))
 
         # plot graph
-        G = nx.Graph()
+        G = nx.DiGraph()
         for i in range(len(vertices)):
             G.add_node(i, label=vertices[i])
         for i in range(len(edges)):
             label = edge_labels[i] if i < len(edge_labels) else ""
             G.add_edge(edges[i][0], edges[i][1], label=label)
-        pos = nx.spring_layout(G)
-        nx.draw_networkx_edges(G, pos, node_size=0, edgelist=edges[: self.joint_count])
+        pos = nx.spring_layout(G, iterations=250)
+        # pos = nx.kamada_kawai_layout(G)
+        nx.draw_networkx_edges(G, pos, node_size=100, edgelist=edges, edge_color=edge_colors, arrows=True)
         # render body vertices
         draw_args = {"node_size": 100}
         bodies = nx.subgraph(G, list(range(self.body_count + 1)))
@@ -3107,7 +3349,7 @@ class ModelBuilder:
         nx.draw_networkx_labels(G, pos, dict(enumerate(vertices)), font_size=6)
         if show_legend:
             plt.plot([], [], "s", color="orange", label="body")
-            plt.plot([], [], "k-", label="joint")
+            plt.plot([], [], "k->", label="joint (child -> parent)")
             if plot_shapes:
                 plt.plot([], [], "o", color="skyblue", label="shape")
                 plt.plot([], [], "k--", label="shape-body connection")
@@ -5678,6 +5920,21 @@ class ModelBuilder:
                 joint = self.add_joint_free(child=body_id)
                 self.add_articulation([joint])
 
+    def request_state_attributes(self, *attributes: str) -> None:
+        """
+        Request that specific state attributes be allocated when creating a State object from the finalized Model.
+
+        See :ref:`extended_state_attributes` for details and usage.
+
+        Args:
+            *attributes: Variable number of attribute names (strings).
+        """
+        # Local import to avoid adding more module-level dependencies in this large file.
+        from .state import State  # noqa: PLC0415
+
+        State.validate_extended_state_attributes(attributes)
+        self._requested_state_attributes.update(attributes)
+
     def set_coloring(self, particle_color_groups):
         """
         Sets coloring information with user-provided coloring.
@@ -5890,9 +6147,29 @@ class ModelBuilder:
         # validate world ordering and contiguity
         self._validate_world_ordering()
 
-        # validate all joints belong to an articulation
+        # validate all joints belong to an articulation, except for "loop joints"
+        # Loop joints connect two bodies that are already reachable via articulated joints
+        # (used to create kinematic loops, converted to equality constraints by MuJoCo solver)
         if self.joint_count > 0:
-            orphan_joints = [i for i, art in enumerate(self.joint_articulation) if art < 0]
+            # First, find all bodies reachable via articulated joints
+            articulated_bodies = set()
+            articulated_bodies.add(-1)  # World is always reachable
+            for i, art in enumerate(self.joint_articulation):
+                if art >= 0:  # Joint is in an articulation
+                    child = self.joint_child[i]
+                    articulated_bodies.add(child)
+
+            # Now check for true orphan joints: non-articulated joints whose child
+            # is NOT reachable via other articulated joints
+            orphan_joints = []
+            for i, art in enumerate(self.joint_articulation):
+                if art < 0:  # Joint is not in an articulation
+                    child = self.joint_child[i]
+                    if child not in articulated_bodies:
+                        # This is a true orphan - the child body has no articulated path
+                        orphan_joints.append(i)
+                    # else: this is a loop joint - child is already reachable, so it's allowed
+
             if orphan_joints:
                 joint_keys = [self.joint_key[i] for i in orphan_joints[:5]]  # Show first 5
                 raise ValueError(
@@ -5900,6 +6177,34 @@ class ModelBuilder:
                     f"Call add_articulation() for all joints. Orphan joints: {joint_keys}"
                     + ("..." if len(orphan_joints) > 5 else "")
                 )
+
+        # warn if any shape has thickness > contact_margin (causes unstable contact behavior)
+        # Thickness is an outward offset from each shape's surface. AABBs are expanded by contact_margin.
+        # For proper broad phase detection, each shape must have contact_margin >= thickness.
+        # This ensures that when thickened surfaces are close (sum of thicknesses),
+        # the AABBs overlap (sum of margins >= sum of thicknesses).
+        # Only check shapes that participate in collisions (have COLLIDE_SHAPES or COLLIDE_PARTICLES flag).
+        collision_flags_mask = ShapeFlags.COLLIDE_SHAPES | ShapeFlags.COLLIDE_PARTICLES
+        shapes_with_bad_margin = []
+        for i in range(self.shape_count):
+            # Skip shapes that don't participate in any collisions (e.g., sites, visual-only)
+            if not (self.shape_flags[i] & collision_flags_mask):
+                continue
+            thickness = self.shape_thickness[i]
+            margin = self.shape_contact_margin[i]
+            if thickness > margin:
+                shapes_with_bad_margin.append(
+                    f"{self.shape_key[i] or f'shape_{i}'} (thickness={thickness:.6g}, margin={margin:.6g})"
+                )
+        if shapes_with_bad_margin:
+            example_shapes = shapes_with_bad_margin[:5]
+            warnings.warn(
+                f"Found {len(shapes_with_bad_margin)} shape(s) with thickness > contact_margin. "
+                f"This can cause missed collisions in broad phase since AABBs are only expanded by contact_margin. "
+                f"Set contact_margin >= thickness for each shape. "
+                f"Affected shapes: {example_shapes}" + ("..." if len(shapes_with_bad_margin) > 5 else ""),
+                stacklevel=2,
+            )
 
         # construct particle inv masses
         ms = np.array(self.particle_mass, dtype=np.float32)
@@ -5911,6 +6216,7 @@ class ModelBuilder:
             # construct Model (non-time varying) data
 
             m = Model(device)
+            m.request_state_attributes(*self._requested_state_attributes)
             m.requires_grad = requires_grad
 
             m.num_worlds = self.num_worlds
@@ -5936,7 +6242,10 @@ class ModelBuilder:
             m.particle_color_groups = [wp.array(group, dtype=int) for group in self.particle_color_groups]
 
             # hash-grid for particle interactions
-            m.particle_grid = wp.HashGrid(128, 128, 128)
+            if self.particle_count > 1 and m.particle_max_radius > 0.0:
+                m.particle_grid = wp.HashGrid(128, 128, 128)
+            else:
+                m.particle_grid = None
 
             # ---------------------
             # collision geometry
@@ -6316,6 +6625,7 @@ class ModelBuilder:
             for parent in self.joint_parent:
                 parent_joint.append(child_to_joint.get(parent, -1))
             m.joint_ancestor = wp.array(parent_joint, dtype=wp.int32)
+            m.joint_articulation = wp.array(self.joint_articulation, dtype=wp.int32)
 
             # dynamics properties
             m.joint_armature = wp.array(self.joint_armature, dtype=wp.float32, requires_grad=requires_grad)
@@ -6332,7 +6642,7 @@ class ModelBuilder:
             m.joint_limit_upper = wp.array(self.joint_limit_upper, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_limit_ke = wp.array(self.joint_limit_ke, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_limit_kd = wp.array(self.joint_limit_kd, dtype=wp.float32, requires_grad=requires_grad)
-            m.joint_enabled = wp.array(self.joint_enabled, dtype=wp.int32)
+            m.joint_enabled = wp.array(self.joint_enabled, dtype=wp.bool)
 
             # 'close' the start index arrays with a sentinel value
             joint_q_start = copy.copy(self.joint_q_start)
@@ -6424,32 +6734,79 @@ class ModelBuilder:
             if not self.custom_attributes:
                 return m
 
+            # Resolve authoritative counts for custom frequencies
+            # Use incremental _custom_frequency_counts as primary source, with safety fallback
+            custom_frequency_counts: dict[str, int] = {}
+            frequency_max_lens: dict[str, int] = {}  # Track max len(values) per frequency as fallback
+
+            # First pass: collect max len(values) per frequency as fallback
+            for _full_key, custom_attr in self.custom_attributes.items():
+                freq_key = custom_attr.frequency_key
+                if isinstance(freq_key, str):
+                    attr_len = len(custom_attr.values) if custom_attr.values else 0
+                    frequency_max_lens[freq_key] = max(frequency_max_lens.get(freq_key, 0), attr_len)
+
+            # Determine authoritative counts: prefer _custom_frequency_counts, fallback to max lens
+            for freq_key, max_len in frequency_max_lens.items():
+                if freq_key in self._custom_frequency_counts:
+                    # Use authoritative incremental counter
+                    custom_frequency_counts[freq_key] = self._custom_frequency_counts[freq_key]
+                else:
+                    # Safety fallback: use max observed length
+                    custom_frequency_counts[freq_key] = max_len
+
+            # Relaxed validation: warn about attributes with fewer values than frequency count
+            for full_key, custom_attr in self.custom_attributes.items():
+                freq_key = custom_attr.frequency_key
+                if isinstance(freq_key, str):
+                    attr_count = len(custom_attr.values) if custom_attr.values else 0
+                    expected_count = custom_frequency_counts[freq_key]
+                    if attr_count < expected_count:
+                        warnings.warn(
+                            f"Custom attribute '{full_key}' has {attr_count} values but frequency '{freq_key}' "
+                            f"expects {expected_count}. Missing values will be filled with defaults.",
+                            UserWarning,
+                            stacklevel=2,
+                        )
+
+            # Store custom frequency counts on the model for selection.py and other consumers
+            m.custom_frequency_counts = custom_frequency_counts
+
             # Process custom attributes
             for _full_key, custom_attr in self.custom_attributes.items():
-                frequency = custom_attr.frequency
+                freq_key = custom_attr.frequency_key
 
                 # determine count by frequency
-                if frequency == ModelAttributeFrequency.ONCE:
+                if isinstance(freq_key, str):
+                    # Custom frequency: count determined by validated frequency count
+                    count = custom_frequency_counts.get(freq_key, 0)
+                elif freq_key == ModelAttributeFrequency.ONCE:
                     count = 1
-                elif frequency == ModelAttributeFrequency.BODY:
+                elif freq_key == ModelAttributeFrequency.BODY:
                     count = m.body_count
-                elif frequency == ModelAttributeFrequency.SHAPE:
+                elif freq_key == ModelAttributeFrequency.SHAPE:
                     count = m.shape_count
-                elif frequency == ModelAttributeFrequency.JOINT:
+                elif freq_key == ModelAttributeFrequency.JOINT:
                     count = m.joint_count
-                elif frequency == ModelAttributeFrequency.JOINT_DOF:
+                elif freq_key == ModelAttributeFrequency.JOINT_DOF:
                     count = m.joint_dof_count
-                elif frequency == ModelAttributeFrequency.JOINT_COORD:
+                elif freq_key == ModelAttributeFrequency.JOINT_COORD:
                     count = m.joint_coord_count
-                elif frequency == ModelAttributeFrequency.ARTICULATION:
+                elif freq_key == ModelAttributeFrequency.ARTICULATION:
                     count = m.articulation_count
-                elif frequency == ModelAttributeFrequency.EQUALITY_CONSTRAINT:
+                elif freq_key == ModelAttributeFrequency.WORLD:
+                    count = m.num_worlds
+                elif freq_key == ModelAttributeFrequency.EQUALITY_CONSTRAINT:
                     count = m.equality_constraint_count
                 else:
                     continue
 
+                # Skip empty custom frequency attributes
+                if count == 0:
+                    continue
+
                 wp_arr = custom_attr.build_array(count, device=device, requires_grad=requires_grad)
-                m.add_attribute(custom_attr.name, wp_arr, frequency, custom_attr.assignment, custom_attr.namespace)
+                m.add_attribute(custom_attr.name, wp_arr, freq_key, custom_attr.assignment, custom_attr.namespace)
 
             return m
 

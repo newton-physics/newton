@@ -1557,7 +1557,7 @@ wheels = [
 
 [[package]]
 name = "mujoco"
-version = "3.4.1.dev852634373"
+version = "3.4.1.dev851315742"
 source = { registry = "https://py.mujoco.org/" }
 dependencies = [
     { name = "absl-py" },
@@ -1568,18 +1568,22 @@ dependencies = [
     { name = "pyopengl" },
 ]
 wheels = [
-    { url = "https://py.mujoco.org/mujoco/mujoco-3.4.1.dev852634373-cp310-cp310-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl" },
-    { url = "https://py.mujoco.org/mujoco/mujoco-3.4.1.dev852634373-cp310-cp310-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl" },
-    { url = "https://py.mujoco.org/mujoco/mujoco-3.4.1.dev852634373-cp310-cp310-win_amd64.whl" },
-    { url = "https://py.mujoco.org/mujoco/mujoco-3.4.1.dev852634373-cp311-cp311-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl" },
-    { url = "https://py.mujoco.org/mujoco/mujoco-3.4.1.dev852634373-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl" },
-    { url = "https://py.mujoco.org/mujoco/mujoco-3.4.1.dev852634373-cp311-cp311-win_amd64.whl" },
-    { url = "https://py.mujoco.org/mujoco/mujoco-3.4.1.dev852634373-cp312-cp312-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl" },
-    { url = "https://py.mujoco.org/mujoco/mujoco-3.4.1.dev852634373-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl" },
-    { url = "https://py.mujoco.org/mujoco/mujoco-3.4.1.dev852634373-cp312-cp312-win_amd64.whl" },
-    { url = "https://py.mujoco.org/mujoco/mujoco-3.4.1.dev852634373-cp313-cp313-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl" },
-    { url = "https://py.mujoco.org/mujoco/mujoco-3.4.1.dev852634373-cp313-cp313-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl" },
-    { url = "https://py.mujoco.org/mujoco/mujoco-3.4.1.dev852634373-cp313-cp313-win_amd64.whl" },
+    { url = "https://py.mujoco.org/mujoco/mujoco-3.4.1.dev851315742-cp310-cp310-macosx_11_0_universal2.whl" },
+    { url = "https://py.mujoco.org/mujoco/mujoco-3.4.1.dev851315742-cp310-cp310-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl" },
+    { url = "https://py.mujoco.org/mujoco/mujoco-3.4.1.dev851315742-cp310-cp310-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl" },
+    { url = "https://py.mujoco.org/mujoco/mujoco-3.4.1.dev851315742-cp310-cp310-win_amd64.whl" },
+    { url = "https://py.mujoco.org/mujoco/mujoco-3.4.1.dev851315742-cp311-cp311-macosx_11_0_universal2.whl" },
+    { url = "https://py.mujoco.org/mujoco/mujoco-3.4.1.dev851315742-cp311-cp311-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl" },
+    { url = "https://py.mujoco.org/mujoco/mujoco-3.4.1.dev851315742-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl" },
+    { url = "https://py.mujoco.org/mujoco/mujoco-3.4.1.dev851315742-cp311-cp311-win_amd64.whl" },
+    { url = "https://py.mujoco.org/mujoco/mujoco-3.4.1.dev851315742-cp312-cp312-macosx_11_0_universal2.whl" },
+    { url = "https://py.mujoco.org/mujoco/mujoco-3.4.1.dev851315742-cp312-cp312-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl" },
+    { url = "https://py.mujoco.org/mujoco/mujoco-3.4.1.dev851315742-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl" },
+    { url = "https://py.mujoco.org/mujoco/mujoco-3.4.1.dev851315742-cp312-cp312-win_amd64.whl" },
+    { url = "https://py.mujoco.org/mujoco/mujoco-3.4.1.dev851315742-cp313-cp313-macosx_11_0_universal2.whl" },
+    { url = "https://py.mujoco.org/mujoco/mujoco-3.4.1.dev851315742-cp313-cp313-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl" },
+    { url = "https://py.mujoco.org/mujoco/mujoco-3.4.1.dev851315742-cp313-cp313-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl" },
+    { url = "https://py.mujoco.org/mujoco/mujoco-3.4.1.dev851315742-cp313-cp313-win_amd64.whl" },
 ]
 
 [[package]]
@@ -1716,7 +1720,6 @@ wheels = [
 name = "newton"
 source = { editable = "." }
 dependencies = [
-    { name = "newton-actuators" },
     { name = "warp-lang" },
 ]
 
@@ -1892,7 +1895,6 @@ requires-dist = [
     { name = "mujoco-warp", marker = "extra == 'sim'", git = "https://github.com/google-deepmind/mujoco_warp" },
     { name = "mujoco-warp", marker = "extra == 'torch-cu12'", git = "https://github.com/google-deepmind/mujoco_warp" },
     { name = "myst-parser", marker = "extra == 'docs'", specifier = ">=3.0.1" },
-    { name = "newton-actuators", editable = "newton-actuators" },
     { name = "pycollada", marker = "extra == 'dev'", specifier = ">=0.9" },
     { name = "pycollada", marker = "extra == 'docs'", specifier = ">=0.9" },
     { name = "pycollada", marker = "extra == 'examples'", specifier = ">=0.9" },
@@ -1953,16 +1955,6 @@ provides-extras = ["dev", "docs", "examples", "importers", "notebook", "sim", "t
 
 [package.metadata.requires-dev]
 dev = [{ name = "asv", specifier = ">=0.6.4" }]
-
-[[package]]
-name = "newton-actuators"
-source = { editable = "newton-actuators" }
-dependencies = [
-    { name = "warp-lang" },
-]
-
-[package.metadata]
-requires-dist = [{ name = "warp-lang", specifier = ">=1.11.0.dev20251205", index = "https://pypi.nvidia.com/" }]
 
 [[package]]
 name = "notebook-shim"
@@ -3861,12 +3853,12 @@ wheels = [
 
 [[package]]
 name = "usd-exchange"
-version = "2.1.0"
+version = "2.2.0"
 source = { registry = "https://pypi.org/simple" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/f0/29/e6e6e8c4f6cbeb9a4cca50738e628791f2e10c29ad53db82ee6e7ef20985/usd_exchange-2.1.0-cp310-cp310-manylinux_2_35_aarch64.whl", hash = "sha256:9eff55442d20d695bf8012460b16fe08b6e0bdb7e871d2b7d35cdf26c1108135", size = 20273919, upload-time = "2025-11-05T21:27:00.677Z" },
-    { url = "https://files.pythonhosted.org/packages/c3/e9/9f1fd8c731d5f2ae8f0868d8a941594c2a9ab8d0389858b651772e907501/usd_exchange-2.1.0-cp311-cp311-manylinux_2_35_aarch64.whl", hash = "sha256:55d41eebc30513bcfe23bb3de2e8da08de7a7970199eec9f4cfab31ccbf5d8e1", size = 20277384, upload-time = "2025-11-05T21:32:26.686Z" },
-    { url = "https://files.pythonhosted.org/packages/ac/f0/b0879ed80568d59c6ca018557135cb5a73f45adf9b200c287ed00e507492/usd_exchange-2.1.0-cp312-cp312-manylinux_2_35_aarch64.whl", hash = "sha256:93ee1da1811c945d22ce6e4d1b64d0851d2e0aec5962de80f061abb55fbf33ef", size = 20307461, upload-time = "2025-11-05T21:29:25.129Z" },
+    { url = "https://files.pythonhosted.org/packages/f3/ec/9b0f35da6050fe3e7344110bfb9ca7f380f1083481dec058fe914198323a/usd_exchange-2.2.0-cp310-cp310-manylinux_2_35_aarch64.whl", hash = "sha256:21dd04a4ea703470d6e5dd6d221ca9343c77238f25966f21c3746fcad1259803", size = 20416071, upload-time = "2025-12-19T19:21:44.457Z" },
+    { url = "https://files.pythonhosted.org/packages/bd/cd/96e0efd4909ec722fc15051e30bfb42ecf0594f5b4413a3f9f28832f284b/usd_exchange-2.2.0-cp311-cp311-manylinux_2_35_aarch64.whl", hash = "sha256:94118556bf60259df1442cd03d506f21bc7f1adc1d1125dfa2974041b60b28cd", size = 20420241, upload-time = "2025-12-19T19:21:51.315Z" },
+    { url = "https://files.pythonhosted.org/packages/88/e0/c09c11e0b04b5cb27c28fbbf37c375d1059cda57fc3b365d43189dbea679/usd_exchange-2.2.0-cp312-cp312-manylinux_2_35_aarch64.whl", hash = "sha256:afe766ee2ab388de0b0077cce7b8a3a53f321e5dc958138c1d39373bfb489d72", size = 20452370, upload-time = "2025-12-19T19:22:04.647Z" },
 ]
 
 [[package]]
