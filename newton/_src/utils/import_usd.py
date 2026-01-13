@@ -20,8 +20,12 @@ import itertools
 import os
 import re
 import warnings
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
+
+if TYPE_CHECKING:
+    from pxr import Usd
 
 import numpy as np
 import warp as wp
@@ -57,7 +61,7 @@ def parse_usd(
     hide_collision_shapes: bool = False,
     mesh_maxhullvert: int = MESH_MAXHULLVERT,
     schema_resolvers: list[SchemaResolver] | None = None,
-    parse_actuator_fn=None,
+    parse_actuator_fn: Callable[[Usd.Prim], Any | None] | None = None,
 ) -> dict[str, Any]:
     """Parses a Universal Scene Description (USD) stage containing UsdPhysics schema definitions for rigid-body articulations and adds the bodies, shapes and joints to the given ModelBuilder.
 
@@ -97,6 +101,17 @@ def parse_usd(
             .. note::
                 Using the ``schema_resolvers`` argument is an experimental feature that may be removed or changed significantly in the future.
 
+        parse_actuator_fn (Callable[[pxr.Usd.Prim], Any | None] | None): Optional callback for parsing actuator prims.
+            The callback accepts a single ``pxr.Usd.Prim`` and returns either ``None`` (to skip the prim) or an
+            object with the following attributes:
+
+            - ``target_paths`` (list[str]): List of joint prim paths that this actuator controls.
+            - ``actuator_class`` (type): The actuator class to instantiate (e.g., ``ActuatorPD``).
+            - ``kwargs`` (dict): Dictionary of extra keyword arguments passed to ``ModelBuilder.add_actuator()``.
+
+            This enables parsing custom actuator definitions from USD files. See ``newton_actuators.parse_actuator_prim``
+            for an example implementation.
+
     Returns:
         dict: Dictionary with the following entries:
 
@@ -133,6 +148,8 @@ def parse_usd(
               - Mapping from prim path to relative transform for bodies merged via `collapse_fixed_joints`
             * - "path_original_body_map"
               - Mapping from prim path to original body index before `collapse_fixed_joints`
+            * - "actuator_count"
+              - Number of actuators added via ``parse_actuator_fn`` (0 if ``parse_actuator_fn`` is None)
     """
     if schema_resolvers is None:
         schema_resolvers = []

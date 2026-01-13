@@ -1149,12 +1149,13 @@ class ModelBuilder:
         for _ in output_indices:
             entry.args.append(array_params)
 
-    def _stack_args_to_arrays(self, args_list: list[dict], device=None) -> dict:
+    def _stack_args_to_arrays(self, args_list: list[dict], device=None, requires_grad: bool = False) -> dict:
         """Convert list of per-index arg dicts into dict of warp arrays.
 
         Args:
             args_list: List of dicts, one per index. Each dict has same keys.
             device: Device for warp arrays.
+            requires_grad: Whether the arrays require gradients.
 
         Returns:
             Dict mapping param names to warp arrays.
@@ -1165,7 +1166,7 @@ class ModelBuilder:
         result = {}
         for key in args_list[0].keys():
             values = [args[key] for args in args_list]
-            result[key] = wp.array(values, dtype=wp.float32, device=device)
+            result[key] = wp.array(values, dtype=wp.float32, device=device, requires_grad=requires_grad)
 
         return result
 
@@ -2214,14 +2215,23 @@ class ModelBuilder:
 
         # Merge actuator entries from the sub-builder with offset DOF indices
         for entry_key, sub_entry in builder.actuator_entries.items():
+            assert len(sub_entry.args) == len(sub_entry.output_indices), (
+                f"ActuatorEntry mismatch in sub-builder: len(args)={len(sub_entry.args)} != "
+                f"len(output_indices)={len(sub_entry.output_indices)} for {entry_key}"
+            )
             entry = self.actuator_entries.setdefault(
                 entry_key,
                 ActuatorEntry(input_indices=[], output_indices=[], args=[]),
             )
-            # Offset indices by the starting DOF index
+            # Offset indices by start_joint_dof_idx
             entry.input_indices.extend([idx + start_joint_dof_idx for idx in sub_entry.input_indices])
             entry.output_indices.extend([idx + start_joint_dof_idx for idx in sub_entry.output_indices])
-            entry.args.extend(sub_entry.args)
+            # Copy each arg dict to avoid aliasing between replicated worlds
+            entry.args.extend(dict(arg) for arg in sub_entry.args)
+            assert len(entry.args) == len(entry.output_indices), (
+                f"ActuatorEntry mismatch after merge: len(args)={len(entry.args)} != "
+                f"len(output_indices)={len(entry.output_indices)} for {entry_key}"
+            )
 
     def add_link(
         self,
@@ -6715,11 +6725,12 @@ class ModelBuilder:
 
             # Create actuators from accumulated entries
             m.actuators = []
-            for (actuator_class, scalar_key), entry in self.actuator_entries.items():
+            for (actuator_class, scalar_key), entry in sorted(
+                self.actuator_entries.items(), key=lambda x: (x[0][0].__name__, x[0][1])
+            ):
                 input_indices = wp.array(entry.input_indices, dtype=wp.uint32, device=device)
                 output_indices = wp.array(entry.output_indices, dtype=wp.uint32, device=device)
-                param_arrays = self._stack_args_to_arrays(entry.args, device=device)
-                # Scalar params are stored in the key as tuple of (name, value) pairs
+                param_arrays = self._stack_args_to_arrays(entry.args, device=device, requires_grad=requires_grad)
                 scalar_params = dict(scalar_key)
                 actuator = actuator_class(
                     input_indices=input_indices,
