@@ -414,8 +414,6 @@ class SolverVBD(SolverBase):
                 "or ModelBuilder.set_coloring() before calling ModelBuilder.finalize()."
             )
 
-        # Cached empty Contacts so particle self-contact can run when step(..., contacts=None, ...).
-
     def _init_rigid_system(
         self,
         model: Model,
