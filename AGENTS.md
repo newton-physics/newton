@@ -7,7 +7,7 @@
   - Internal refactors can freely reorganize code under `_src` as long as the public API stays stable.
 - **Any user-facing class/function/object added under `_src` must be exposed via the public Newton API.**
   - Add re-exports in the appropriate public module (e.g. `newton/geometry.py`, `newton/solvers.py`, `newton/sensors.py`, etc.).
-  - Prefer a single, discoverable public import path. Example: `from newton.geometry import Shape` (not `from newton._src.geometry.shape import Shape`).
+  - Prefer a single, discoverable public import path. Example: `from newton.geometry import BroadPhaseAllPairs` (not `from newton._src.geometry.broad_phase_all_pairs import BroadPhaseAllPairs`).
 
 ## API design rules (naming + structure)
 
