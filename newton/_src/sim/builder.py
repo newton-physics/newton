@@ -4638,12 +4638,14 @@ class ModelBuilder:
                 material-like axial/shear stiffness (commonly interpreted as EA)
                 with units [N] and is internally converted to an effective point stiffness [N/m] by dividing by
                 segment length. If None, defaults to 1.0e9.
-            stretch_damping: Stretch damping for the cable joints. If None, defaults to 0.0.
+            stretch_damping: Stretch damping for the cable joints (applied per-joint; not length-normalized). If None,
+                defaults to 0.0.
             bend_stiffness: Bend/twist stiffness for the cable joints. For rods, this is treated as a
                 material-like bending/twist stiffness (e.g., EI) with units [N*m^2] and is internally converted to
                 an effective per-joint stiffness [N*m] (torque per radian) by dividing by segment length. If None,
                 defaults to 0.0.
-            bend_damping: Bend/twist damping for the cable joints. If None, defaults to 0.0.
+            bend_damping: Bend/twist damping for the cable joints (applied per-joint; not length-normalized). If None,
+                defaults to 0.0.
             closed: If True, connects the last segment back to the first to form a closed loop. If False,
                 creates an open chain. Note: rods require at least 2 segments.
             key: Optional key prefix for bodies, shapes, and joints.
@@ -4670,6 +4672,7 @@ class ModelBuilder:
               stiffness (1.0e9), which keeps neighboring capsules closely coupled (approximately inextensible).
             - Internally, stretch and bend stiffnesses are pre-scaled by dividing by segment length so solver kernels
               do not need per-segment length normalization.
+            - Damping values are passed through as provided (per joint) and are not length-normalized.
             - Each segment is implemented as a capsule primitive. The segment's body transform is
               placed at the start point ``positions[i]`` with a local center-of-mass offset of
               ``(0, 0, half_height)`` so that the COM lies at the segment midpoint. The capsule shape
