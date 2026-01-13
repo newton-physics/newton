@@ -337,6 +337,12 @@ def create_parser():
         default=False,
         help="Use MuJoCo's native contact solver instead of Newton contacts (default: use Newton contacts).",
     )
+    parser.add_argument(
+        "--max-worlds",
+        type=int,
+        default=None,
+        help="Maximum number of worlds to render (for performance with many environments).",
+    )
 
     return parser
 

@@ -63,8 +63,13 @@ class ViewerBase:
         self._joint_points1 = None
         self._joint_colors = None
 
+        self._com_positions = None
+        self._com_colors = None
+        self._com_radii = None
+
         # World offset support
         self.world_offsets = None  # Array of vec3 offsets per world
+        self.max_worlds = None  # Limit on worlds to render (None = all)
 
         # Display options as individual boolean attributes
         self.show_joints = False
@@ -117,11 +122,20 @@ class ViewerBase:
         """
         return False
 
-    def set_model(self, model):
+    def set_model(self, model, max_worlds: int | None = None):
+        """
+        Set the model to be visualized.
+
+        Args:
+            model: The Newton model to visualize.
+            max_worlds: Maximum number of worlds to render (None = all).
+                        Useful for performance when training with many environments.
+        """
         if self.model is not None:
             raise RuntimeError("Viewer set_model() can be called only once.")
 
         self.model = model
+        self.max_worlds = max_worlds
 
         if model is not None:
             self.device = model.device
@@ -130,6 +144,22 @@ class ViewerBase:
             # Auto-compute world offsets if not already set
             if self.world_offsets is None:
                 self._auto_compute_world_offsets()
+
+    def _should_render_world(self, world_idx: int) -> bool:
+        """Check if a world should be rendered based on max_worlds limit."""
+        if world_idx == -1:  # Global entities always rendered
+            return True
+        if self.max_worlds is None:
+            return True
+        return world_idx < self.max_worlds
+
+    def _get_render_world_count(self) -> int:
+        """Get the number of worlds to render."""
+        if self.model is None:
+            return 0
+        if self.max_worlds is None:
+            return self.model.num_worlds
+        return min(self.max_worlds, self.model.num_worlds)
 
     def _get_shape_isomesh(self, shape_idx: int):
         """Get the isomesh for a collision shape with an SDF volume.
@@ -183,7 +213,7 @@ class ViewerBase:
         if self.model is None:
             raise RuntimeError("Model must be set before calling set_world_offsets()")
 
-        num_worlds = self.model.num_worlds
+        num_worlds = self._get_render_world_count()
 
         # Get up axis from model
         up_axis = self.model.up_axis
@@ -251,7 +281,7 @@ class ViewerBase:
     def _auto_compute_world_offsets(self):
         """Automatically compute world offsets based on model extents."""
         # If only one world or no worlds, no offsets needed
-        if self.model.num_worlds <= 1:
+        if self._get_render_world_count() <= 1:
             return
 
         max_extents = self._get_world_extents()
@@ -342,6 +372,7 @@ class ViewerBase:
         self._log_triangles(state)
         self._log_particles(state)
         self._log_joints(state)
+        self._log_com(state)
 
         self.model_changed = False
 
@@ -873,6 +904,10 @@ class ViewerBase:
 
         # loop over shapes
         for s in range(shape_count):
+            # skip shapes from worlds beyond max_worlds limit
+            if not self._should_render_world(shape_world[s]):
+                continue
+
             geo_type = shape_geo_type[s]
             geo_scale = [float(v) for v in shape_geo_scale[s]]
             geo_thickness = float(shape_geo_thickness[s])
@@ -1011,6 +1046,10 @@ class ViewerBase:
         shape_count = len(shape_body)
 
         for s in range(shape_count):
+            # skip shapes from worlds beyond max_worlds limit
+            if not self._should_render_world(shape_world[s]):
+                continue
+
             # Only process collision shapes with SDF volumes
             is_collision_shape = shape_flags[s] & int(newton.ShapeFlags.COLLIDE_SHAPES)
             if not is_collision_shape:
@@ -1125,8 +1164,12 @@ class ViewerBase:
         shape_name = "/model/inertia_boxes"
         batch = ViewerBase.ShapeInstances(shape_name, static, flags, mesh_name, self.device)
 
-        # loop over bodys
+        # loop over bodies
         for body in range(body_count):
+            # skip bodies from worlds beyond max_worlds limit
+            if not self._should_render_world(body_world[body]):
+                continue
+
             rot, principal_inertia = wp.eig3(wp.mat33(body_inertia[body]))
             xform = wp.transform(body_com[body], wp.quat_from_matrix(rot))
 
@@ -1211,6 +1254,33 @@ class ViewerBase:
 
         # Log all joint lines in a single call
         self.log_lines("/model/joints", self._joint_points0, self._joint_points1, self._joint_colors)
+
+    def _log_com(self, state):
+        num_bodies = self.model.body_count
+        if num_bodies == 0:
+            return
+
+        if self._com_positions is None or len(self._com_positions) < num_bodies:
+            self._com_positions = wp.zeros(num_bodies, dtype=wp.vec3, device=self.device)
+            self._com_colors = wp.full(num_bodies, wp.vec3(1.0, 0.8, 0.0), device=self.device)
+            self._com_radii = wp.full(num_bodies, 0.05, dtype=float, device=self.device)
+
+        from .kernels import compute_com_positions  # noqa: PLC0415
+
+        wp.launch(
+            kernel=compute_com_positions,
+            dim=num_bodies,
+            inputs=[
+                state.body_q,
+                self.model.body_com,
+                self.model.body_world,
+                self.world_offsets,
+            ],
+            outputs=[self._com_positions],
+            device=self.device,
+        )
+
+        self.log_points("/model/com", self._com_positions, self._com_radii, self._com_colors, hidden=not self.show_com)
 
     def _log_triangles(self, state):
         if self.model.tri_count:
