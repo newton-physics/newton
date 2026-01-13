@@ -1561,7 +1561,7 @@ def parse_usd(
                 builder.body_inv_mass[body_id] = 1.0 / mass
             com = usd.get_vector(prim, "physics:centerOfMass")
             if com is not None:
-                builder.body_com[body_id] = com
+                builder.body_com[body_id] = wp.vec3(*com)
             i_diag = usd.get_vector(prim, "physics:diagonalInertia", np.zeros(3, dtype=np.float32))
             i_rot = usd.get_quat(prim, "physics:principalAxes", wp.quat_identity())
             if np.linalg.norm(i_diag) > 0.0:
@@ -1571,7 +1571,7 @@ def parse_usd(
                 if inertia.any():
                     builder.body_inv_inertia[body_id] = wp.inverse(wp.mat33(*inertia))
                 else:
-                    builder.body_inv_inertia[body_id] = wp.mat33(*np.zeros((3, 3), dtype=np.float32))
+                    builder.body_inv_inertia[body_id] = wp.mat33(0.0)
 
             # Assign nonzero inertia if mass is nonzero to make sure the body can be simulated
             I_m = np.array(builder.body_inertia[body_id])
@@ -1592,7 +1592,7 @@ def parse_usd(
                     if np.linalg.norm(com) > 1e-6:
                         # I = I_cm + m * d² where d is distance from COM to body origin
                         d_squared = np.sum(com**2)
-                        I_default += mass * d_squared * np.eye(3)
+                        I_default += wp.mat33(mass * d_squared * np.eye(3, dtype=np.float32))
 
                     builder.body_inertia[body_id] = I_default
                     builder.body_inv_inertia[body_id] = wp.inverse(I_default)
