@@ -607,13 +607,13 @@ class ArticulationView:
         # launch appropriate kernel based on attribute dimensionality
         # TODO: cache concrete overload per attribute?
         if attrib.ndim == 1:
-            wp.launch(set_articulation_attribute_1d_kernel, dim=attrib.shape, inputs=[mask, values, attrib])
+            wp.launch(set_articulation_attribute_1d_kernel, dim=attrib.shape, inputs=[mask, values, attrib], device=self.device)
         elif attrib.ndim == 2:
-            wp.launch(set_articulation_attribute_2d_kernel, dim=attrib.shape, inputs=[mask, values, attrib])
+            wp.launch(set_articulation_attribute_2d_kernel, dim=attrib.shape, inputs=[mask, values, attrib], device=self.device)
         elif attrib.ndim == 3:
-            wp.launch(set_articulation_attribute_3d_kernel, dim=attrib.shape, inputs=[mask, values, attrib])
+            wp.launch(set_articulation_attribute_3d_kernel, dim=attrib.shape, inputs=[mask, values, attrib], device=self.device)
         elif attrib.ndim == 4:
-            wp.launch(set_articulation_attribute_4d_kernel, dim=attrib.shape, inputs=[mask, values, attrib])
+            wp.launch(set_articulation_attribute_4d_kernel, dim=attrib.shape, inputs=[mask, values, attrib], device=self.device)
         else:
             raise NotImplementedError(f"Unsupported attribute with ndim={attrib.ndim}")
 
@@ -840,6 +840,7 @@ class ArticulationView:
                 set_model_articulation_mask_kernel,
                 dim=mask.size,
                 inputs=[mask, self.articulation_indices, articulation_mask],
+                device=self.device,
             )
             return articulation_mask
 
