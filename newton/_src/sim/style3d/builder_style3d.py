@@ -30,6 +30,7 @@ from ...core.types import (
     Vec3,
 )
 from ...geometry import ParticleFlags
+from ...utils.mesh import MeshAdjacency
 from ..builder import ModelBuilder
 from ..sew import create_trimesh_sew_springs
 from .model_style3d import Style3DModel
@@ -598,7 +599,7 @@ class Style3DModelBuilder(ModelBuilder):
 
         end_tri = len(self.tri_indices)
 
-        adj = wp._src.utils.MeshAdjacency(self.tri_indices[start_tri:end_tri], end_tri - start_tri)
+        adj = MeshAdjacency(self.tri_indices[start_tri:end_tri], end_tri - start_tri)
 
         edge_indices = np.fromiter(
             (x for e in adj.edges.values() for x in (e.o0, e.o1, e.v0, e.v1, e.f0, e.f1)),

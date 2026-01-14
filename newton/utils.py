@@ -30,6 +30,8 @@ __all__ = [
 # mesh utils
 # ==================================================================================
 from ._src.utils.mesh import (
+    MeshAdjacency,
+    MeshEdge,
     create_box_mesh,
     create_capsule_mesh,
     create_cone_mesh,
@@ -40,6 +42,8 @@ from ._src.utils.mesh import (
 )
 
 __all__ += [
+    "MeshAdjacency",
+    "MeshEdge",
     "create_box_mesh",
     "create_capsule_mesh",
     "create_cone_mesh",

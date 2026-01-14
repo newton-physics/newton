@@ -13,10 +13,101 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import warnings
+from dataclasses import dataclass
+
 import numpy as np
 
 # Default number of segments for mesh generation
 default_num_segments = 32
+
+
+@dataclass
+class MeshEdge:
+    """Represents an edge in a triangle mesh with adjacency information.
+
+    Stores the two vertices of the edge, the opposite vertices from each
+    adjacent triangle, and the indices of those triangles. The winding order
+    is consistent: the first triangle is reconstructed as {v0, v1, o0}, and
+    the second triangle as {v1, v0, o1}.
+
+    For boundary edges (edges with only one adjacent triangle), o1 and f1
+    are set to -1.
+    """
+
+    v0: int
+    """Index of the first vertex of the edge."""
+    v1: int
+    """Index of the second vertex of the edge."""
+    o0: int
+    """Index of the vertex opposite to the edge in the first adjacent triangle."""
+    o1: int
+    """Index of the vertex opposite to the edge in the second adjacent triangle, or -1 if boundary."""
+    f0: int
+    """Index of the first adjacent triangle."""
+    f1: int
+    """Index of the second adjacent triangle, or -1 if boundary edge."""
+
+
+class MeshAdjacency:
+    """Builds and stores edge adjacency information for a triangle mesh.
+
+    This class processes triangle indices to create a mapping from edges to
+    their adjacent triangles. Each edge stores references to both adjacent
+    triangles (if they exist) along with the opposite vertices.
+
+    Attributes:
+        edges: Dictionary mapping edge keys (min_vertex, max_vertex) to MeshEdge objects.
+        indices: The original triangle indices used to build the adjacency.
+    """
+
+    def __init__(self, indices, num_tris):
+        """Build edge adjacency from triangle indices.
+
+        Args:
+            indices: Array-like of triangle indices, where each element is a
+                sequence of 3 vertex indices defining a triangle.
+            num_tris: Number of triangles (currently unused, kept for API compatibility).
+        """
+        self.edges = {}
+        self.indices = indices
+
+        for index, tri in enumerate(indices):
+            self.add_edge(tri[0], tri[1], tri[2], index)
+            self.add_edge(tri[1], tri[2], tri[0], index)
+            self.add_edge(tri[2], tri[0], tri[1], index)
+
+    def add_edge(self, i0, i1, o, f):
+        """Add or update an edge in the adjacency structure.
+
+        If the edge already exists, updates it with the second adjacent triangle.
+        If the edge would have more than two adjacent triangles, prints a warning
+        (non-manifold edge).
+
+        Args:
+            i0: Index of the first vertex of the edge.
+            i1: Index of the second vertex of the edge.
+            o: Index of the opposite vertex in the triangle.
+            f: Index of the triangle containing this edge.
+        """
+        key = (min(i0, i1), max(i0, i1))
+        edge = None
+
+        if key in self.edges:
+            edge = self.edges[key]
+
+            if edge.f1 != -1:
+                warnings.warn("Detected non-manifold edge", stacklevel=2)
+                return
+            else:
+                # update other side of the edge
+                edge.o1 = o
+                edge.f1 = f
+        else:
+            # create new edge with opposite yet to be filled
+            edge = MeshEdge(i0, i1, o, -1, f, -1)
+
+        self.edges[key] = edge
 
 
 def create_sphere_mesh(
