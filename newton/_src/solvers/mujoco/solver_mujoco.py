@@ -945,6 +945,7 @@ class SolverMuJoCo(SolverBase):
             joint_q = state.joint_q
             joint_qd = state.joint_qd
         joints_per_world = model.joint_count // nworld
+        bodies_per_world = model.body_count // nworld
         wp.launch(
             convert_warp_coords_to_mj_kernel,
             dim=(nworld, joints_per_world),
@@ -957,6 +958,9 @@ class SolverMuJoCo(SolverBase):
                 model.joint_q_start,
                 model.joint_qd_start,
                 model.joint_dof_dim,
+                model.joint_child,
+                model.body_com,
+                bodies_per_world,
             ],
             outputs=[qpos, qvel],
             device=model.device,
@@ -990,6 +994,7 @@ class SolverMuJoCo(SolverBase):
             xpos = wp.array([mj_data.xpos], dtype=wp.vec3, device=model.device)
             xquat = wp.array([mj_data.xquat], dtype=wp.quat, device=model.device)
         joints_per_world = model.joint_count // nworld
+        bodies_per_world = model.body_count // nworld
         wp.launch(
             convert_mj_coords_to_warp_kernel,
             dim=(nworld, joints_per_world),
@@ -1002,6 +1007,9 @@ class SolverMuJoCo(SolverBase):
                 model.joint_q_start,
                 model.joint_qd_start,
                 model.joint_dof_dim,
+                model.joint_child,
+                model.body_com,
+                bodies_per_world,
             ],
             outputs=[state.joint_q, state.joint_qd],
             device=model.device,

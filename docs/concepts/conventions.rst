@@ -62,10 +62,14 @@ world frame, though details vary:
 
 * **MuJoCo**  
   MuJoCo employs a *mixed-frame* format for free bodies:  
-  the linear part :math:`(v_x,v_y,v_z)` is in the world frame, while the
+  the linear part :math:`(v_x,v_y,v_z)` is the velocity of the **body frame
+  origin** (i.e., where ``qpos[0:3]`` is located) in the world frame, while the
   angular part :math:`(\omega_x,\omega_y,\omega_z)` is expressed in the **body
   frame**.  The choice follows from quaternion integration (angular velocities
-  "live" in the quaternion's tangent space, a local frame).
+  "live" in the quaternion's tangent space, a local frame).  Note that when the
+  body's center of mass (``body_ipos``) is offset from the body frame origin,
+  the linear velocity is *not* the CoM velocity—see :ref:`MuJoCo conversion`
+  below for the relationship.
 
 * **Isaac Lab / Isaac Gym**  
   NVIDIA's Isaac tools provide **both** linear and angular velocities in the
@@ -84,7 +88,9 @@ Newton's :attr:`State.body_qd` stores **both** linear and angular velocities
 in the world frame. The linear velocity represents the COM velocity in world
 coordinates, while the angular velocity is also expressed in world coordinates.
 This matches the Isaac Lab convention exactly. Note that Newton will automatically
-convert from this convention to MuJoCo's mixed-frame format when using the SolverMuJoCo.
+convert from this convention to MuJoCo's mixed-frame format when using the
+SolverMuJoCo, including both the angular velocity frame conversion (world ↔ body)
+and the linear velocity reference point conversion (CoM ↔ body frame origin).
 
 
 Summary of Conventions
@@ -111,7 +117,7 @@ Summary of Conventions
      - **World frame**
      - Spatial velocity :math:`V_{WB}^{W}`
    * - **MuJoCo**
-     - COM, **world frame**
+     - Body frame origin, **world frame**
      - **Body frame**
      - Mixed-frame 6-vector
    * - **Isaac Gym / Sim**
@@ -122,6 +128,24 @@ Summary of Conventions
      - COM, **world frame**
      - **World frame**
      - Physics engine convention
+
+.. warning::
+
+  **SolverFeatherstone Velocity Convention Limitation**
+
+  The Featherstone solver (``SolverFeatherstone``) uses body origin velocity internally
+  in its dynamics equations, rather than CoM velocity. While Newton converts velocities
+  at the solver boundary for ``joint_qd`` and ``body_qd``, the internal Featherstone
+  algorithm—including the motion subspace matrix and force computations—operates in
+  body origin coordinates.
+
+  For free-floating bodies with **non-zero center of mass offsets**, this can cause incorrect
+  behavior when applying angular velocity (i.e. ``joint_qd`` to the respective body's free joint):
+  the body may not rotate purely about its CoM. Linear velocity handling is correct.
+
+  Other Newton solvers (``SolverMuJoCo``, ``SolverXPBD``, ``SolverSemiImplicit``)
+  correctly handle CoM-centric rotation for all CoM offsets. If you require accurate
+  angular velocity dynamics with non-zero CoM offsets, prefer one of these solvers.
 
 Mapping Between Representations
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -156,9 +180,30 @@ Given engine values :math:`(v_{\text{com}}^{W},\;\omega^{W})`
    :math:`v_{\text{origin}}^{W} = v_{\text{com}}^{W} + \omega^{W}\times r^{W}`,
    where :math:`r^{W}=R\,r`.
 
+.. _MuJoCo conversion:
+
 **MuJoCo conversion**  
-Rotate its local angular velocity by :math:`R` to world frame
-(or rotate a world-frame twist back into the body frame for MuJoCo).
+Two conversions are needed between Newton and MuJoCo:
+
+1. **Angular velocity frame**: Rotate MuJoCo's body-frame angular velocity by
+   :math:`R` to obtain the world-frame angular velocity (or vice versa):
+
+   .. math::
+
+      \omega^{W} = R\,\omega^{B}, \qquad \omega^{B} = R^{\mathsf T}\omega^{W}
+
+2. **Linear velocity reference point**: MuJoCo's linear velocity is at the
+   body frame origin, while Newton uses the CoM velocity.  When the body has a
+   non-zero CoM offset :math:`r` (``body_ipos`` in MuJoCo, ``body_com`` in
+   Newton), convert using:
+
+   .. math::
+
+      v_{\text{origin}}^{W} = v_{\text{com}}^{W} - \omega^{W} \times r^{W},
+      \qquad
+      v_{\text{com}}^{W} = v_{\text{origin}}^{W} + \omega^{W} \times r^{W}
+
+   where :math:`r^{W} = R\,r` is the CoM offset expressed in world coordinates.
 
 In all cases the conversion boils down to the **reference point**
 (COM vs. another point) and the **frame** (world vs. body) used for each
