@@ -1,8 +1,23 @@
-from .render_context import RenderContext
-from .types import RenderLightType
+# SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 
 import numpy as np
 import warp as wp
+
+from .render_context import RenderContext
+from .types import RenderLightType
 
 
 class RenderDebugUtils:
@@ -21,7 +36,9 @@ class RenderDebugUtils:
         render_context.shape_colors = wp.array(colors, dtype=wp.vec4f)
 
     @staticmethod
-    def create_default_light(render_context: RenderContext, enable_shadows: bool = True, direction: wp.vec3f | None = None):
+    def create_default_light(
+        render_context: RenderContext, enable_shadows: bool = True, direction: wp.vec3f | None = None
+    ):
         render_context.enable_shadows = enable_shadows
         render_context.lights_active = wp.array([True], dtype=wp.bool)
         render_context.lights_type = wp.array([RenderLightType.DIRECTIONAL], dtype=wp.int32)
@@ -32,7 +49,9 @@ class RenderDebugUtils:
         )
 
     @staticmethod
-    def assign_checkerboard_material_to_all_shapes(render_context: RenderContext, resolution: int = 64, checker_size: int = 32):
+    def assign_checkerboard_material_to_all_shapes(
+        render_context: RenderContext, resolution: int = 64, checker_size: int = 32
+    ):
         checkerboard = (
             (np.arange(resolution) // checker_size)[:, None] + (np.arange(resolution) // checker_size)
         ) % 2 == 0

@@ -21,14 +21,14 @@ except ImportError:
 
     class GeoType:
         PLANE = 0
-        SPHERE = 1
-        CAPSULE = 2
-        ELLIPSOID = 3
-        CYLINDER = 4
-        BOX = 5
-        MESH = 6
-        CONE = 7
-        NONE = 8
+        SPHERE = 2
+        CAPSULE = 3
+        ELLIPSOID = 4
+        CYLINDER = 5
+        BOX = 6
+        MESH = 7
+        CONE = 9
+        NONE = 11
 
 
 class RenderShapeType(enum.IntEnum):
