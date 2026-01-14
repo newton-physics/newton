@@ -25,6 +25,7 @@ from ..geometry.broad_phase_nxn import BroadPhaseAllPairs, BroadPhaseExplicit
 from ..geometry.broad_phase_sap import BroadPhaseSAP
 from ..geometry.collision_core import compute_tight_aabb_from_support
 from ..geometry.contact_data import ContactData
+from ..geometry.kernels import create_soft_contacts
 from ..geometry.narrow_phase import NarrowPhase
 from ..geometry.sdf_hydroelastic import SDFHydroelastic, SDFHydroelasticConfig
 from ..geometry.support_function import (
@@ -640,6 +641,41 @@ class CollisionPipelineUnified:
             writer_data=writer_data,
             device=self.device,
         )
+
+        # Generate soft contacts for particles and shapes
+        particle_count = len(state.particle_q) if state.particle_q else 0
+        if state.particle_q and model.shape_count > 0:
+            wp.launch(
+                kernel=create_soft_contacts,
+                dim=particle_count * model.shape_count,
+                inputs=[
+                    state.particle_q,
+                    model.particle_radius,
+                    model.particle_flags,
+                    model.particle_world,
+                    state.body_q,
+                    model.shape_transform,
+                    model.shape_body,
+                    model.shape_type,
+                    model.shape_scale,
+                    model.shape_source_ptr,
+                    model.shape_world,
+                    self.soft_contact_margin,
+                    self.soft_contact_max,
+                    model.shape_count,
+                    model.shape_flags,
+                ],
+                outputs=[
+                    contacts.soft_contact_count,
+                    contacts.soft_contact_particle,
+                    contacts.soft_contact_shape,
+                    contacts.soft_contact_body_pos,
+                    contacts.soft_contact_body_vel,
+                    contacts.soft_contact_normal,
+                    contacts.soft_contact_tids,
+                ],
+                device=self.device,
+            )
 
         return contacts
 

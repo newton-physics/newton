@@ -22,7 +22,7 @@ import newton
 from newton.utils import create_plane_mesh
 
 from ..core.types import override
-from .viewer import ViewerBase
+from .viewer import ViewerBase, is_jupyter_notebook
 
 try:
     import rerun as rr
@@ -117,7 +117,7 @@ class ViewerRerun(ViewerBase):
         self._grpc_server_uri = None
 
         # Launch viewer client
-        self.is_jupyter_notebook = _is_jupyter_notebook()
+        self.is_jupyter_notebook = is_jupyter_notebook()
         if address is not None:
             rr.connect_grpc(address)
         elif not self.is_jupyter_notebook:
@@ -469,7 +469,7 @@ class ViewerRerun(ViewerBase):
             normals = wp.array(vertices[:, 3:6], dtype=wp.vec3, device=self.device)
             uvs = wp.array(vertices[:, 6:8], dtype=wp.vec2, device=self.device)
             indices = wp.array(indices, dtype=wp.int32, device=self.device)
-            self.log_mesh(name, points, indices, normals, uvs)
+            self.log_mesh(name, points, indices, normals, uvs, hidden=hidden)
         else:
             super().log_geo(name, geo_type, geo_scale, geo_thickness, geo_is_solid, geo_src, hidden)
 
@@ -539,7 +539,7 @@ class ViewerRerun(ViewerBase):
             height (int): Height of the viewer in pixels.
             legacy_notebook_show (bool): Whether to use ``rr.legacy_notebook_show`` instead of ``rr.notebook_show`` for displaying the viewer as static HTML with embedded recording data.
         """
-        if legacy_notebook_show:
+        if legacy_notebook_show and self.is_jupyter_notebook:
             rr.legacy_notebook_show(width=width, height=height, blueprint=self._get_blueprint())
         else:
             rr.notebook_show(width=width, height=height, blueprint=self._get_blueprint())
@@ -549,24 +549,6 @@ class ViewerRerun(ViewerBase):
         Display the viewer in an IPython notebook when the viewer is at the end of a cell.
         """
         self.show_notebook()
-
-
-def _is_jupyter_notebook():
-    try:
-        # Check if get_ipython is defined (available in IPython environments)
-        shell = get_ipython().__class__.__name__
-        if shell == "ZMQInteractiveShell":
-            # This indicates a Jupyter Notebook or JupyterLab environment
-            return True
-        elif shell == "TerminalInteractiveShell":
-            # This indicates a standard IPython terminal
-            return False
-        else:
-            # Other IPython-like environments
-            return False
-    except NameError:
-        # get_ipython is not defined, so it's likely a standard Python script
-        return False
 
 
 @wp.kernel
