@@ -558,36 +558,3 @@ Import Handling
 ~~~~~~~~~~~~~~~
 
 Newton's importers automatically handle convention differences when loading assets. No manual conversion is required when using these importers—they automatically transform shapes to Newton's conventions.
-
-Practical Considerations
-~~~~~~~~~~~~~~~~~~~~~~~~
-
-**Creating Shapes Programmatically**
-
-When using ModelBuilder to create shapes:
-
-.. code-block:: python
-
-   # Sphere - simple radius parameter
-   builder.add_shape_sphere(body=0, radius=1.0)
-   
-   # Box uses half-extents
-   builder.add_shape_box(body=0, hx=1.0, hy=0.5, hz=0.25)
-   
-   # Capsule half_height excludes caps
-   # Total length = 2 * (radius + half_height) = 2 * (0.5 + 1.0) = 3.0
-   builder.add_shape_capsule(body=0, radius=0.5, half_height=1.0)
-   
-   # Cylinder extends along Z-axis
-   builder.add_shape_cylinder(body=0, radius=0.5, half_height=1.0)
-   
-   # Cone - note the COM offset affects dynamics
-   # Base at z=-1.0, apex at z=+1.0, COM at z=-0.5
-   builder.add_shape_cone(body=0, radius=0.5, half_height=1.0)
-   
-   # Plane normal points along +Z of shape frame
-   builder.add_shape_plane(width=10.0, length=10.0)  # Bounded plane
-   builder.add_shape_plane(width=0.0, length=0.0)    # Infinite plane
-   
-   # Mesh - general triangle mesh (can be non-convex)
-   builder.add_shape_mesh(body=0, mesh=my_mesh)
