@@ -101,36 +101,36 @@ Summary of Conventions
    :widths: 28 33 27 22
 
    * - **System**
-     - **Linear velocity** (translation)
-     - **Angular velocity** (rotation)
+     - **Linear velocity (translation)**
+     - **Angular velocity (rotation)**
      - **Twist term**
-   * - *Modern Robotics* — **body twist**
-     - Body origin (chosen point; often set to COM), **body frame**
-     - **Body frame**
+   * - *Modern Robotics* — **Body twist**
+     - Body origin (chosen point; often COM), body frame
+     - Body frame
      - "Body twist" (:math:`V_b`)
-   * - *Modern Robotics* — **spatial twist**
-     - World origin, **world frame**
-     - **World frame**
+   * - *Modern Robotics* — **Spatial twist**
+     - World origin, world frame
+     - World frame
      - "Spatial twist" (:math:`V_s`)
    * - **Drake**
-     - **Body-frame origin** :math:`B_o` (not necessarily COM), **world frame**
-     - **World frame**
+     - Body-frame origin :math:`B_o` (not necessarily COM), world frame
+     - World frame
      - Spatial velocity :math:`V_{WB}^{W}`
    * - **MuJoCo**
-     - Body frame origin, **world frame**
-     - **Body frame**
+     - Body-frame origin, world frame
+     - Body frame
      - Mixed-frame 6-vector
    * - **Isaac Gym / Sim**
-     - COM, **world frame**
-     - **World frame**
-     - "Root" linear / angular velocity
+     - COM, world frame
+     - World frame
+     - "Root" linear/angular velocity
    * - **PhysX**
-     - COM, **world/global frame**
-     - **World/global frame**
+     - COM, world frame
+     - World frame
      - Not named "twist"; typically treated as :math:`[\mathbf{v}_{com}^W;\ \boldsymbol{\omega}^W]`
    * - **Newton**
-     - COM, **world frame**
-     - **World frame**
+     - COM, world frame
+     - World frame
      - Physics engine convention
 
 .. warning::
