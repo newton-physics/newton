@@ -568,6 +568,16 @@ class SolverMuJoCo(SolverBase):
         )
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
+                name="tendon_armature",
+                frequency="tendon",
+                dtype=wp.float32,
+                default=0.0,
+                namespace="mujoco",
+                mjcf_attribute_name="armature",
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
                 name="tendon_springlength",
                 frequency="tendon",
                 dtype=wp.vec2,
@@ -758,6 +768,7 @@ class SolverMuJoCo(SolverBase):
             "tendon_solref_friction",
             "tendon_solimp_friction",
             "tendon_springlength",
+            "tendon_armature",
             "tendon_joint_adr",
             "tendon_joint_num",
         ]
@@ -849,6 +860,7 @@ class SolverMuJoCo(SolverBase):
         tendon_solimp_limit = getattr(mujoco_attrs, "tendon_solimp_limit", None)
         tendon_solref_friction = getattr(mujoco_attrs, "tendon_solref_friction", None)
         tendon_solimp_friction = getattr(mujoco_attrs, "tendon_solimp_friction", None)
+        tendon_armature = getattr(mujoco_attrs, "tendon_armature", None)
         tendon_springlength = getattr(mujoco_attrs, "tendon_springlength", None)
         tendon_joint_adr = mujoco_attrs.tendon_joint_adr.numpy()
         tendon_joint_num = mujoco_attrs.tendon_joint_num.numpy()
@@ -883,6 +895,8 @@ class SolverMuJoCo(SolverBase):
                 t.actfrcrange = tendon_actuator_force_range.numpy()[i].tolist()
             if tendon_margin is not None:
                 t.margin = float(tendon_margin.numpy()[i])
+            if tendon_margin is not None:
+                t.armature = float(tendon_armature.numpy()[i])
             if tendon_solref_limit is not None:
                 t.solref_limit = tendon_solref_limit.numpy()[i].tolist()
             if tendon_solimp_limit is not None:

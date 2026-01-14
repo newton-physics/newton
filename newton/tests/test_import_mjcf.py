@@ -763,6 +763,7 @@ class TestImportMjcf(unittest.TestCase):
         solimpfriction="0.3 0.4 0.006 0.5 1.4"
         actuatorfrcrange="-2.2 2.2"
         actuatorfrclimited="true"
+        armature="0.13"
    		springlength="3.0 3.5">
       <joint joint="joint1" coef="8"/>
       <joint joint="joint2" coef="-8"/>
@@ -783,6 +784,7 @@ class TestImportMjcf(unittest.TestCase):
         solimpfriction="0.35 0.45 0.004 0.5 1.2"
         actuatorfrclimited="false"
         actuatorfrcrange="-3.3 3.3"
+        armature="0.23"
    		springlength="6.0">
       <joint joint="joint1" coef="9"/>
       <joint joint="joint2" coef="9"/>
@@ -812,6 +814,7 @@ class TestImportMjcf(unittest.TestCase):
         expected_solimplimit = [[vec5(0.7, 0.85, 0.002, 0.3, 1.8), vec5(0.8, 0.85, 0.003, 0.4, 1.9)]]
         expected_solimpfriction = [[vec5(0.3, 0.4, 0.006, 0.5, 1.4), vec5(0.35, 0.45, 0.004, 0.5, 1.2)]]
         expected_actuator_force_range = [[wp.vec2(-2.2, 2.2), wp.vec2(-3.3, 3.3)]]
+        expected_armature = [[0.13, 0.23]]
 
         for i in range(0, 1):
             for j in range(0, 2):
@@ -931,6 +934,16 @@ class TestImportMjcf(unittest.TestCase):
                         places=4,
                         msg=f"Expected range[{k}] value: {expected_float}, Measured value: {measured_float}",
                     )
+
+                # Check armature
+                expected_float = expected_armature[i][j]
+                measured_float = solver.mjw_model.tendon_armature.numpy()[i][j]
+                self.assertAlmostEqual(
+                    measured_float,
+                    expected_float,
+                    places=4,
+                    msg=f"Expected armature value: {expected_float}, Measured value: {measured_float}",
+                )
 
         expected_num = [2, 2]
         expected_limited = [0, 1]
