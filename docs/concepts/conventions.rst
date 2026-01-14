@@ -4,6 +4,24 @@ Conventions
 
 This document covers the various conventions used across physics engines and graphics frameworks when working with Newton and other simulation systems.
 
+Primer: Reference Points vs. Frames
+-----------------------------------
+
+Some quantities depend on the **frame** only, while others also depend on the **reference point**:
+
+- **Point-independent (free vectors)**: force :math:`\mathbf{f}`, angular velocity :math:`\boldsymbol{\omega}`.
+- **Point-dependent (moments/linear velocity)**: torque (moment) :math:`\boldsymbol{\tau}`, linear velocity :math:`\mathbf{v}`.
+
+Shifting the reference point by :math:`\mathbf{r}` changes these terms as:
+
+.. math::
+
+   \boldsymbol{\tau}_{\text{new}} = \boldsymbol{\tau} + \mathbf{r} \times \mathbf{f}, \qquad
+   \mathbf{v}_{\text{new}} = \mathbf{v} + \boldsymbol{\omega} \times \mathbf{r}.
+
+Keep this distinction in mind below: Newton will always state both the **frame**
+and (when needed) the **reference point** for each quantity.
+
 Spatial Twist Conventions
 --------------------------
 
@@ -152,21 +170,11 @@ Summary of Conventions
 
 .. warning::
 
-  **SolverFeatherstone Velocity Convention Limitation**
+  :class:`~newton.solvers.SolverFeatherstone` does not correctly handle angular velocity
+  for free-floating bodies with **non-zero center of mass offsets**. The body may not
+  rotate purely about its CoM.
 
-  The Featherstone solver (:class:`~newton.solvers.SolverFeatherstone`) uses body origin velocity internally
-  in its dynamics equations, rather than CoM velocity. While Newton converts velocities
-  at the solver boundary for ``joint_qd`` and ``body_qd``, the internal Featherstone
-  algorithm—including the motion subspace matrix and force computations—operates in
-  body origin coordinates.
-
-  For free-floating bodies with **non-zero center of mass offsets**, this can cause incorrect
-  behavior when applying angular velocity (i.e. ``joint_qd`` to the respective body's free joint):
-  the body may not rotate purely about its CoM. Linear velocity handling is correct.
-
-  Other Newton solvers (:class:`~newton.solvers.SolverMuJoCo`, :class:`~newton.solvers.SolverXPBD`, :class:`~newton.solvers.SolverSemiImplicit`)
-  correctly handle CoM-centric rotation for all CoM offsets. If you require accurate
-  angular velocity dynamics with non-zero CoM offsets, prefer one of these solvers.
+  We will fix this issue in the future.
 
 Mapping Between Representations
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -230,6 +238,37 @@ In all cases the conversion boils down to the **reference point**
 (COM vs. another point) and the **frame** (world vs. body) used for each
 component.  Physics is unchanged; any linear velocity at one point follows
 :math:`v_{\text{new}} = v + \omega\times r`.
+
+
+Spatial Wrench Conventions
+--------------------------
+
+Newton represents external rigid-body forces as **spatial wrenches** in
+:attr:`State.body_f <newton.State.body_f>`. The 6D wrench is stored in world
+frame as:
+
+.. math::
+
+   \mathbf{w} = \begin{bmatrix} \mathbf{f} \\ \boldsymbol{\tau} \end{bmatrix},
+
+where :math:`\mathbf{f}` is the **linear force** and :math:`\boldsymbol{\tau}`
+is the **moment about the body's center of mass (COM)**, both expressed in
+world coordinates. The reference point matters for the moment term, so shifting
+the wrench to a point offset by :math:`\mathbf{r}` changes the torque as:
+
+.. math::
+
+   \boldsymbol{\tau}_{\text{new}} = \boldsymbol{\tau} + \mathbf{r} \times \mathbf{f}.
+
+This convention is used in all Newton solvers, except for :class:`~newton.solvers.SolverFeatherstone` which does not correctly handle torque application for free-floating bodies with **non-zero center of mass offsets**.
+
+.. warning::
+
+  :class:`~newton.solvers.SolverFeatherstone` does not correctly handle torque application
+  for free-floating bodies with **non-zero center of mass offsets**. A pure torque will
+  incorrectly cause the CoM to translate instead of remaining stationary.
+
+  We will fix this issue in the future.
 
 Quaternion Ordering Conventions
 --------------------------------
