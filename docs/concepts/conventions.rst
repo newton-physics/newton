@@ -68,7 +68,7 @@ world frame, though details vary:
   frame**.  The choice follows from quaternion integration (angular velocities
   "live" in the quaternion's tangent space, a local frame).  Note that when the
   body's center of mass (``body_ipos``) is offset from the body frame origin,
-  the linear velocity is *not* the CoM velocity—see :ref:`MuJoCo conversion`
+  the linear velocity is *not* the CoM velocity—see :ref:`MuJoCo conversion <MuJoCo conversion>`
   below for the relationship.
 
 * **Isaac Lab / Isaac Gym**  
@@ -113,7 +113,7 @@ Summary of Conventions
      - **World frame**
      - "Spatial twist" (:math:`V_s`)
    * - **Drake**
-     - Body origin (COM), **world frame**
+     - **Body-frame origin** :math:`B_o` (not necessarily COM), **world frame**
      - **World frame**
      - Spatial velocity :math:`V_{WB}^{W}`
    * - **MuJoCo**
@@ -124,6 +124,10 @@ Summary of Conventions
      - COM, **world frame**
      - **World frame**
      - "Root" linear / angular velocity
+   * - **PhysX**
+     - **COM**, **world/global frame**
+     - **World/global frame**
+     - Not named "twist"; typically treated as :math:`[\mathbf{v}_{com}^W;\ \boldsymbol{\omega}^W]`
    * - **Newton**
      - COM, **world frame**
      - **World frame**
