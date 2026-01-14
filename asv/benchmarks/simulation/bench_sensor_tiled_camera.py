@@ -22,10 +22,10 @@ import math
 import os
 
 import newton
-from newton.sensors import TiledCameraSensor
+from newton.sensors import SensorTiledCamera
 
 
-class TiledCameraSensorBenchmark:
+class SensorTiledCameraBenchmark:
     param_names = ["resolution", "num_worlds", "iterations"]
     params = ([64], [4096], [50])
 
@@ -59,12 +59,12 @@ class TiledCameraSensorBenchmark:
             dtype=wp.transformf,
         )
 
-        self.tiled_camera_sensor = TiledCameraSensor(
+        self.tiled_camera_sensor = SensorTiledCamera(
             model=self.model,
             num_cameras=1,
             width=resolution,
             height=resolution,
-            options=TiledCameraSensor.Options(default_light=True, colors_per_shape=True, checkerboard_texture=True),
+            options=SensorTiledCamera.Options(default_light=True, colors_per_shape=True, checkerboard_texture=True),
         )
         self.camera_rays = self.tiled_camera_sensor.compute_pinhole_camera_rays(math.radians(45.0))
         self.color_image = self.tiled_camera_sensor.create_color_image_output()
@@ -137,7 +137,7 @@ class TiledCameraSensorBenchmark:
             Image.fromarray(color_image.numpy()).save("benchmark_color.png")
             Image.fromarray(depth_image.numpy()).save("benchmark_depth.png")
 
-    def __print_timer(self, name: str, elapsed: float, iterations: int, sensor: TiledCameraSensor):
+    def __print_timer(self, name: str, elapsed: float, iterations: int, sensor: SensorTiledCamera):
         title = f"{name}"
         if iterations > 1:
             title += " average"
@@ -153,7 +153,7 @@ if __name__ == "__main__":
     from newton.utils import run_benchmark
 
     benchmark_list = {
-        "TiledCameraSensor": TiledCameraSensorBenchmark,
+        "SensorTiledCamera": SensorTiledCameraBenchmark,
     }
 
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)

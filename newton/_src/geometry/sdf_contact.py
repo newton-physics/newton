@@ -17,9 +17,6 @@ from typing import Any
 
 import warp as wp
 
-from ..geometry.collision_core import (
-    build_pair_key2,
-)
 from ..geometry.contact_data import ContactData
 from ..geometry.sdf_utils import SDFData
 
@@ -200,25 +197,22 @@ def sample_sdf_extrapolated(
     )
 
     if inside_extent:
-        # Sample sparse grid
         sparse_idx = wp.volume_world_to_index(sdf_data.sparse_sdf_ptr, sdf_pos)
         sparse_dist = wp.volume_sample_f(sdf_data.sparse_sdf_ptr, sparse_idx, wp.Volume.LINEAR)
 
-        # Check if we got the background value (outside narrow band)
-        # Use a tolerance since we're comparing floats
-        background_threshold = sdf_data.background_value * 0.5
-        if sparse_dist >= background_threshold:
-            # Fallback to coarse grid
+        if sparse_dist >= wp.inf or wp.isnan(sparse_dist):
+            # Fallback to coarse grid when sparse sample is diluted by background
             coarse_idx = wp.volume_world_to_index(sdf_data.coarse_sdf_ptr, sdf_pos)
             return wp.volume_sample_f(sdf_data.coarse_sdf_ptr, coarse_idx, wp.Volume.LINEAR)
         else:
             return sparse_dist
     else:
         # Point is outside extent - project to boundary
-        clamped_pos = wp.min(wp.max(sdf_pos, lower), upper)
+        eps = 1e-2 * sdf_data.sparse_voxel_size  # slightly shrink to avoid sampling NaN
+        clamped_pos = wp.min(wp.max(sdf_pos, lower + eps), upper - eps)
         dist_to_boundary = wp.length(sdf_pos - clamped_pos)
 
-        # Sample at the boundary point using coarse grid (more reliable for extrapolation)
+        # Sample at the boundary point using coarse grid
         coarse_idx = wp.volume_world_to_index(sdf_data.coarse_sdf_ptr, clamped_pos)
         boundary_dist = wp.volume_sample_f(sdf_data.coarse_sdf_ptr, coarse_idx, wp.Volume.LINEAR)
 
@@ -263,14 +257,11 @@ def sample_sdf_grad_extrapolated(
     )
 
     if inside_extent:
-        # Sample sparse grid
         sparse_idx = wp.volume_world_to_index(sdf_data.sparse_sdf_ptr, sdf_pos)
         sparse_dist = wp.volume_sample_grad_f(sdf_data.sparse_sdf_ptr, sparse_idx, wp.Volume.LINEAR, gradient)
 
-        # Check if we got the background value (outside narrow band)
-        background_threshold = sdf_data.background_value * 0.5
-        if sparse_dist >= background_threshold:
-            # Fallback to coarse grid
+        if sparse_dist >= wp.inf or wp.isnan(sparse_dist):
+            # Fallback to coarse grid when sparse sample is diluted by background
             coarse_idx = wp.volume_world_to_index(sdf_data.coarse_sdf_ptr, sdf_pos)
             coarse_dist = wp.volume_sample_grad_f(sdf_data.coarse_sdf_ptr, coarse_idx, wp.Volume.LINEAR, gradient)
             return coarse_dist, gradient
@@ -278,7 +269,10 @@ def sample_sdf_grad_extrapolated(
             return sparse_dist, gradient
     else:
         # Point is outside extent - project to boundary
-        clamped_pos = wp.min(wp.max(sdf_pos, lower), upper)
+        eps = (
+            1e-2 * sdf_data.sparse_voxel_size
+        )  # slightly shrink the extent to avoid sampling the background value at edge
+        clamped_pos = wp.min(wp.max(sdf_pos, lower + eps), upper - eps)
         diff = sdf_pos - clamped_pos
         dist_to_boundary = wp.length(diff)
 
@@ -761,12 +755,10 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
             thickness_b = shape_data[mesh_shape_b][3]
 
             # Use per-geometry cutoff for contact detection
+            # Sum margins for consistency with thickness summing
             cutoff_a = shape_contact_margin[mesh_shape_a]
             cutoff_b = shape_contact_margin[mesh_shape_b]
-            margin = wp.max(cutoff_a, cutoff_b)
-
-            # Build pair key for this mesh-mesh pair
-            pair_key = build_pair_key2(wp.uint32(mesh_shape_a), wp.uint32(mesh_shape_b))
+            margin = cutoff_a + cutoff_b
 
             # Test both directions: mesh A against SDF B, and mesh B against SDF A
             for mode in range(2):
@@ -784,9 +776,13 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
 
                     mesh_id = mesh_id_a
                     mesh_scale = mesh_scale_a
-                    sdf_scale = mesh_scale_b  # SDF is from mesh B, need its scale
                     if not use_bvh_for_sdf:
                         sdf_data = shape_sdf_data[mesh_shape_b]
+                    # Use (1,1,1) if scale was baked into SDF, otherwise use mesh scale
+                    if sdf_data.scale_baked:
+                        sdf_scale = wp.vec3(1.0, 1.0, 1.0)
+                    else:
+                        sdf_scale = mesh_scale_b
                     sdf_mesh_id = mesh_id_b  # SDF belongs to mesh B
                     # Transform from mesh A space to mesh B space
                     X_mesh_to_sdf = wp.transform_multiply(wp.transform_inverse(X_mesh_b_ws), X_mesh_a_ws)
@@ -802,9 +798,13 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
 
                     mesh_id = mesh_id_b
                     mesh_scale = mesh_scale_b
-                    sdf_scale = mesh_scale_a  # SDF is from mesh A, need its scale
                     if not use_bvh_for_sdf:
                         sdf_data = shape_sdf_data[mesh_shape_a]
+                    # Use (1,1,1) if scale was baked into SDF, otherwise use mesh scale
+                    if sdf_data.scale_baked:
+                        sdf_scale = wp.vec3(1.0, 1.0, 1.0)
+                    else:
+                        sdf_scale = mesh_scale_a
                     sdf_mesh_id = mesh_id_a  # SDF belongs to mesh A
                     # Transform from mesh B space to mesh A space
                     X_mesh_to_sdf = wp.transform_multiply(wp.transform_inverse(X_mesh_a_ws), X_mesh_b_ws)
@@ -894,13 +894,8 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                         contact_data.shape_a = mesh_shape_a
                         contact_data.shape_b = mesh_shape_b
                         contact_data.margin = margin
-                        if mode == 0:
-                            contact_data.feature = wp.uint32(tri_idx + 1)
-                        else:
-                            contact_data.feature = wp.uint32(tri_idx + 1) | wp.uint32(0x80000000)
-                        contact_data.feature_pair_key = pair_key
 
-                        writer_func(contact_data, writer_data)
+                        writer_func(contact_data, writer_data, -1)
 
     # Return early if contact reduction is disabled
     if contact_reduction_funcs is None:
@@ -909,7 +904,7 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
     # Extract functions and constants from the contact reduction configuration
     num_reduction_slots = contact_reduction_funcs.num_reduction_slots
     store_reduced_contact_func = contact_reduction_funcs.store_reduced_contact
-    filter_unique_contacts_func = contact_reduction_funcs.filter_unique_contacts
+    collect_active_contacts_func = contact_reduction_funcs.collect_active_contacts
     get_smem_slots_plus_1 = contact_reduction_funcs.get_smem_slots_plus_1
     get_smem_slots_contacts = contact_reduction_funcs.get_smem_slots_contacts
 
@@ -958,7 +953,8 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
         thickness0 = mesh0_data[3]
         thickness1 = mesh1_data[3]
 
-        margin = wp.max(shape_contact_margin[shape_idx_0], shape_contact_margin[shape_idx_1])
+        # Sum margins for consistency with thickness summing
+        margin = shape_contact_margin[shape_idx_0] + shape_contact_margin[shape_idx_1]
 
         # Initialize (shared memory) buffers for contact reduction
         empty_marker = -1000000000.0
@@ -1005,7 +1001,9 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
             if mode == 0:
                 mesh = mesh0
                 mesh_scale = mesh0_scale
-                sdf_scale = mesh1_scale  # SDF belongs to mesh1, need its scale
+                # Use (1,1,1) if scale was baked into SDF, otherwise use mesh scale
+                if not sdf_data1.scale_baked:
+                    sdf_scale = mesh1_scale
                 mesh_sdf_transform = wp.transform_multiply(wp.transform_inverse(mesh1_transform), mesh0_transform)
                 sdf_data_current = sdf_data1
                 sdf_mesh_id = mesh1  # SDF belongs to mesh1
@@ -1014,7 +1012,9 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
             else:
                 mesh = mesh1
                 mesh_scale = mesh1_scale
-                sdf_scale = mesh0_scale  # SDF belongs to mesh0, need its scale
+                # Use (1,1,1) if scale was baked into SDF, otherwise use mesh scale
+                if not sdf_data0.scale_baked:
+                    sdf_scale = mesh0_scale
                 mesh_sdf_transform = wp.transform_multiply(wp.transform_inverse(mesh0_transform), mesh1_transform)
                 sdf_data_current = sdf_data0
                 sdf_mesh_id = mesh0  # SDF belongs to mesh0
@@ -1111,10 +1111,7 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                         c.position = point_centered  # Centered world-space position
                         c.normal = normal_world  # Normalized world-space normal pointing pair[0]->pair[1]
                         c.depth = dist
-                        # Encode mode into feature to distinguish triangles from mesh0 vs mesh1
-                        # Mode 0: positive triangle index, Mode 1: negative (-(index+1))
-                        tri_idx = selected_triangles[t]
-                        c.feature = tri_idx if mode == 0 else -(tri_idx + 1)
+                        c.mode = mode  # Track which mesh the triangle came from
                         c.projection = empty_marker
 
                 store_reduced_contact_func(
@@ -1133,8 +1130,8 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
         # normal points from pair[0] to pair[1]
         synchronize()
 
-        # Filter out duplicate contacts (same contact may have won multiple directions)
-        filter_unique_contacts_func(t, contacts_shared_mem, active_contacts_shared_mem, empty_marker)
+        # Collect all valid contacts from the reduction buffer
+        collect_active_contacts_func(t, contacts_shared_mem, active_contacts_shared_mem, empty_marker)
 
         num_contacts_to_keep = wp.min(
             active_contacts_shared_mem[wp.static(num_reduction_slots)], wp.static(num_reduction_slots)
@@ -1157,9 +1154,9 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
             contact_data.radius_eff_a = 0.0
             contact_data.radius_eff_b = 0.0
             # SDF mesh's thickness is already baked into the SDF, so set it to 0
-            # contact.feature >= 0 means mode 0: mesh0 triangles vs mesh1's SDF -> thickness1 already in SDF
-            # contact.feature < 0 means mode 1: mesh1 triangles vs mesh0's SDF -> thickness0 already in SDF
-            if contact.feature >= 0:
+            # mode == 0: mesh0 triangles vs mesh1's SDF -> thickness1 already in SDF
+            # mode == 1: mesh1 triangles vs mesh0's SDF -> thickness0 already in SDF
+            if contact.mode == 0:
                 contact_data.thickness_a = thickness0
                 contact_data.thickness_b = 0.0
             else:
@@ -1168,14 +1165,7 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
             contact_data.shape_a = pair[0]
             contact_data.shape_b = pair[1]
             contact_data.margin = margin
-            # The high bit distinguishes contacts from mesh B (mode 1) vs mesh A (mode 0)
-            if contact.feature >= 0:
-                feature_id = wp.uint32(contact.feature + 1)
-            else:
-                feature_id = wp.uint32(-contact.feature) | wp.uint32(0x80000000)
-            contact_data.feature = feature_id
-            contact_data.feature_pair_key = build_pair_key2(wp.uint32(pair[0]), wp.uint32(pair[1]))
 
-            writer_func(contact_data, writer_data)
+            writer_func(contact_data, writer_data, -1)
 
     return mesh_sdf_collision_reduce_kernel

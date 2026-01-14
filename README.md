@@ -176,6 +176,9 @@ uv sync --extra examples
       </a>
     </td>
     <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/robot/example_robot_panda_hydro.py">
+        <img src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_robot_panda_hydro.jpg" alt="Panda Hydro">
+      </a>
     </td>
   </tr>
   <tr>
@@ -186,6 +189,7 @@ uv sync --extra examples
       <code>uv run -m newton.examples robot_ur10</code>
     </td>
     <td align="center">
+      <code>uv run -m newton.examples robot_panda_hydro</code>
     </td>
   </tr>
 </table>
@@ -227,10 +231,18 @@ uv sync --extra examples
         <img src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_cloth_h1.jpg" alt="Cloth H1">
       </a>
     </td>
+        <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/cloth/example_cloth_twist.py">
+        <img src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_cloth_twist.jpg" alt="Cloth Twist">
+      </a>
+    </td>
   </tr>
  <tr>
     <td align="center">
       <code>uv run -m newton.examples cloth_h1</code>
+    </td>
+    <td align="center">
+      <code>uv run -m newton.examples cloth_twist</code>
     </td>
  </tr>
 </table>
@@ -279,8 +291,8 @@ uv sync --extra examples
       </a>
     </td>
     <td align="center" width="33%">
-      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/cloth/example_cloth_twist.py">
-        <img src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_cloth_twist.jpg" alt="Cloth Twist">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/ik/example_ik_cube_stacking.py">
+        <img src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_ik_cube_stacking.jpg" alt="Stack Cubes">
       </a>
     </td>
   </tr>
@@ -292,7 +304,7 @@ uv sync --extra examples
       <code>uv run -m newton.examples cloth_franka</code>
     </td>
     <td align="center">
-      <code>uv run -m newton.examples cloth_twist</code>
+      <code>uv run -m newton.examples ik_cube_stacking</code>
     </td>
   </tr>
 
@@ -342,11 +354,13 @@ uv sync --extra examples
     </td>
     <td align="center" width="33%">
       <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/sensors/example_sensor_tiled_camera.py">
-        <img src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_sensor_tiled_camera.jpg" alt="Sensor Contact">
+        <img src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_sensor_tiled_camera.jpg" alt="Sensor Tiled Camera">
       </a>
     </td>
     <td align="center" width="33%">
-      <!-- Future Sensor example -->
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/sensors/example_sensor_imu.py">
+        <img src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_sensor_imu.jpg" alt="Sensor IMU">
+      </a>
     </td>
   </tr>
   <tr>
@@ -357,7 +371,7 @@ uv sync --extra examples
       <code>uv run -m newton.examples sensor_tiled_camera</code>
     </td>
     <td align="center">
-      <!-- Future Sensor example -->
+      <code>uv run -m newton.examples sensor_imu</code>
     </td>
   </tr>
 </table>

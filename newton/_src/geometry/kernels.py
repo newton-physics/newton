@@ -267,6 +267,24 @@ def cylinder_sdf_grad(radius: float, half_height: float, p: wp.vec3):
 
 
 @wp.func
+def ellipsoid_sdf(radii: wp.vec3, p: wp.vec3):
+    # Approximate SDF for ellipsoid with radii (rx, ry, rz)
+    # Using the approximation: k0 * (k0 - 1) / k1
+    # Guard against zero/near-zero radii to avoid inf/NaN from division
+    eps = 1.0e-8
+    safe_r = wp.vec3(
+        wp.max(wp.abs(radii[0]), eps),
+        wp.max(wp.abs(radii[1]), eps),
+        wp.max(wp.abs(radii[2]), eps),
+    )
+    k0 = wp.length(wp.cw_div(p, safe_r))
+    k1 = wp.length(wp.cw_div(p, wp.cw_mul(safe_r, safe_r)))
+    if k1 > 0.0:
+        return k0 * (k0 - 1.0) / k1
+    return -wp.min(wp.min(safe_r[0], safe_r[1]), safe_r[2])
+
+
+@wp.func
 def cone_sdf(radius: float, half_height: float, p: wp.vec3):
     # Cone with apex at +half_height and base at -half_height
     dx = wp.length(wp.vec3(p[0], p[1], 0.0)) - radius * (half_height - p[2]) / (2.0 * half_height)
@@ -1089,8 +1107,8 @@ def broadphase_collision_pairs(
     if type_a == GeoType.PLANE and type_b == GeoType.PLANE:
         return
 
-    # Use per-shape contact margins
-    margin = wp.max(shape_contact_margin[shape_a], shape_contact_margin[shape_b])
+    # Use per-shape contact margins (sum for consistency with thickness)
+    margin = shape_contact_margin[shape_a] + shape_contact_margin[shape_b]
 
     # bounding sphere check
     if type_a == GeoType.PLANE:
@@ -1985,8 +2003,8 @@ def generate_handle_contact_pairs_kernel(enable_backward: bool):
         geo_a = create_geo_data(shape_a, body_q, shape_transform, shape_body, shape_type, shape_scale, shape_thickness)
         geo_b = create_geo_data(shape_b, body_q, shape_transform, shape_body, shape_type, shape_scale, shape_thickness)
 
-        # Calculate contact margin as max of per-shape margins
-        rigid_contact_margin = wp.max(shape_contact_margin[shape_a], shape_contact_margin[shape_b])
+        # Calculate contact margin as sum of per-shape margins (consistent with thickness summing)
+        rigid_contact_margin = shape_contact_margin[shape_a] + shape_contact_margin[shape_b]
 
         distance = 1.0e6
         thickness = geo_a.thickness + geo_b.thickness

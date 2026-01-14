@@ -647,68 +647,166 @@ def remesh_mesh(
     return mesh
 
 
-def create_box_mesh(half_extents: Vec3) -> tuple[nparray, nparray]:
+def create_box_mesh(half_extents: Vec3, duplicate_vertices: bool = False) -> tuple[nparray, nparray]:
+    """Create a box mesh with the given half extents.
+
+    Args:
+        half_extents: Half extents of the box along each axis (x, y, z).
+        duplicate_vertices: If True, duplicate vertices for each face to enable proper flat shading.
+            Each face will have its own 4 vertices (24 total), allowing distinct normals per face.
+            If False (default), use 8 shared corner vertices for a more compact representation.
+
+    Returns:
+        A tuple of (vertices, indices) numpy arrays.
+    """
     x_extent, y_extent, z_extent = half_extents
-    vertices = np.array(
-        [
-            [-x_extent, -y_extent, -z_extent],
-            [x_extent, -y_extent, -z_extent],
-            [x_extent, y_extent, -z_extent],
-            [-x_extent, y_extent, -z_extent],
-            [-x_extent, -y_extent, z_extent],
-            [x_extent, -y_extent, z_extent],
-            [x_extent, y_extent, z_extent],
-            [-x_extent, y_extent, z_extent],
-        ],
-        dtype=np.float32,
-    )
-    indices = np.array(
-        [
-            # Bottom face (z = -z_extent)
-            0,
-            2,
-            1,
-            0,
-            3,
-            2,
-            # Top face (z = z_extent)
-            4,
-            5,
-            6,
-            4,
-            6,
-            7,
-            # Front face (y = -y_extent)
-            0,
-            1,
-            5,
-            0,
-            5,
-            4,
-            # Back face (y = y_extent)
-            2,
-            3,
-            7,
-            2,
-            7,
-            6,
-            # Left face (x = -x_extent)
-            0,
-            4,
-            7,
-            0,
-            7,
-            3,
-            # Right face (x = x_extent)
-            1,
-            2,
-            6,
-            1,
-            6,
-            5,
-        ],
-        dtype=np.int32,
-    )
+
+    if duplicate_vertices:
+        # 24 vertices (4 per face) for proper flat shading
+        vertices = np.array(
+            [
+                # Bottom face (z = -z_extent) - vertices 0-3
+                [-x_extent, -y_extent, -z_extent],
+                [x_extent, -y_extent, -z_extent],
+                [x_extent, y_extent, -z_extent],
+                [-x_extent, y_extent, -z_extent],
+                # Top face (z = z_extent) - vertices 4-7
+                [-x_extent, -y_extent, z_extent],
+                [x_extent, -y_extent, z_extent],
+                [x_extent, y_extent, z_extent],
+                [-x_extent, y_extent, z_extent],
+                # Front face (y = -y_extent) - vertices 8-11
+                [-x_extent, -y_extent, -z_extent],
+                [x_extent, -y_extent, -z_extent],
+                [x_extent, -y_extent, z_extent],
+                [-x_extent, -y_extent, z_extent],
+                # Back face (y = y_extent) - vertices 12-15
+                [x_extent, y_extent, -z_extent],
+                [-x_extent, y_extent, -z_extent],
+                [-x_extent, y_extent, z_extent],
+                [x_extent, y_extent, z_extent],
+                # Left face (x = -x_extent) - vertices 16-19
+                [-x_extent, -y_extent, -z_extent],
+                [-x_extent, -y_extent, z_extent],
+                [-x_extent, y_extent, z_extent],
+                [-x_extent, y_extent, -z_extent],
+                # Right face (x = x_extent) - vertices 20-23
+                [x_extent, -y_extent, -z_extent],
+                [x_extent, y_extent, -z_extent],
+                [x_extent, y_extent, z_extent],
+                [x_extent, -y_extent, z_extent],
+            ],
+            dtype=np.float32,
+        )
+        indices = np.array(
+            [
+                # Bottom face
+                0,
+                2,
+                1,
+                0,
+                3,
+                2,
+                # Top face
+                4,
+                5,
+                6,
+                4,
+                6,
+                7,
+                # Front face
+                8,
+                9,
+                10,
+                8,
+                10,
+                11,
+                # Back face
+                12,
+                13,
+                14,
+                12,
+                14,
+                15,
+                # Left face
+                16,
+                17,
+                18,
+                16,
+                18,
+                19,
+                # Right face
+                20,
+                21,
+                22,
+                20,
+                22,
+                23,
+            ],
+            dtype=np.int32,
+        )
+    else:
+        # 8 shared corner vertices (original compact representation)
+        vertices = np.array(
+            [
+                [-x_extent, -y_extent, -z_extent],
+                [x_extent, -y_extent, -z_extent],
+                [x_extent, y_extent, -z_extent],
+                [-x_extent, y_extent, -z_extent],
+                [-x_extent, -y_extent, z_extent],
+                [x_extent, -y_extent, z_extent],
+                [x_extent, y_extent, z_extent],
+                [-x_extent, y_extent, z_extent],
+            ],
+            dtype=np.float32,
+        )
+        indices = np.array(
+            [
+                # Bottom face (z = -z_extent)
+                0,
+                2,
+                1,
+                0,
+                3,
+                2,
+                # Top face (z = z_extent)
+                4,
+                5,
+                6,
+                4,
+                6,
+                7,
+                # Front face (y = -y_extent)
+                0,
+                1,
+                5,
+                0,
+                5,
+                4,
+                # Back face (y = y_extent)
+                2,
+                3,
+                7,
+                2,
+                7,
+                6,
+                # Left face (x = -x_extent)
+                0,
+                4,
+                7,
+                0,
+                7,
+                3,
+                # Right face (x = x_extent)
+                1,
+                2,
+                6,
+                1,
+                6,
+                5,
+            ],
+            dtype=np.int32,
+        )
     return vertices, indices
 
 
@@ -716,6 +814,46 @@ def transform_points(points: nparray, transform: wp.transform, scale: Vec3 | Non
     if scale is not None:
         points = points * np.array(scale, dtype=np.float32)
     return points @ np.array(wp.quat_to_matrix(transform.q)).reshape(3, 3) + transform.p
+
+
+@wp.kernel(enable_backward=False)
+def get_total_kernel(
+    counts: wp.array(dtype=int),
+    prefix_sums: wp.array(dtype=int),
+    num_elements: wp.array(dtype=int),
+    max_elements: int,
+    total: wp.array(dtype=int),
+):
+    """
+    Get the total of an array of counts and prefix sums.
+    """
+    if num_elements[0] <= 0 or max_elements <= 0:
+        total[0] = 0
+        return
+
+    # Clip to array bounds to avoid out-of-bounds access
+    n = wp.min(num_elements[0], max_elements)
+    final_idx = n - 1
+    total[0] = prefix_sums[final_idx] + counts[final_idx]
+
+
+def scan_with_total(
+    counts: wp.array(dtype=int),
+    prefix_sums: wp.array(dtype=int),
+    num_elements: wp.array(dtype=int),
+    total: wp.array(dtype=int),
+):
+    """
+    Computes an exclusive prefix sum and total of a counts array.
+
+    Args:
+        counts: Input array of per-element counts.
+        prefix_sums: Output array for exclusive prefix sums (same size as counts).
+        num_elements: Single-element array containing the number of valid elements in counts.
+        total: Single-element output array that will contain the sum of all counts.
+    """
+    wp.utils.array_scan(counts, prefix_sums, inclusive=False)
+    wp.launch(get_total_kernel, dim=[1], inputs=[counts, prefix_sums, num_elements, counts.shape[0], total])
 
 
 __all__ = ["compute_shape_radius", "load_mesh", "visualize_meshes"]

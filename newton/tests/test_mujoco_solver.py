@@ -3068,16 +3068,55 @@ class TestMuJoCoValidation(unittest.TestCase):
             SolverMuJoCo(model, separate_worlds=True)
         self.assertIn("global world (-1) cannot contain equality constraints", str(ctx.exception).lower())
 
+    def test_body_missing_joint(self):
+        """Ensure that each body has an incoming joint and these joints are part of an articulation."""
+        builder = newton.ModelBuilder()
+        builder.begin_world()
+        b0 = builder.add_link()
+        b1 = builder.add_link()
+        j0 = builder.add_joint_revolute(-1, b0)
+        builder.add_joint_revolute(b0, b1)
+        builder.add_articulation([j0])
+        builder.end_world()
+        # we forgot to add the second joint to the articulation
+        # finalize() should now catch this and raise an error about orphan joints
+        with self.assertRaises(ValueError) as ctx:
+            builder.finalize()
+        self.assertIn("not belonging to any articulation", str(ctx.exception))
+
 
 class TestMuJoCoConversion(unittest.TestCase):
-    def test_no_shapes(self):
+    def test_no_shapes_separate_worlds_false(self):
+        """Testing that an articulation without any shapes can be converted successfully when setting separate_worlds=False."""
         builder = newton.ModelBuilder()
-        b = builder.add_link(mass=1.0, com=wp.vec3(1.0, 2.0, 3.0), I_m=wp.mat33(np.eye(3)))
-        j = builder.add_joint_prismatic(-1, b)
-        builder.add_articulation([j])
+        # force the ModelBuilder to correct zero mass/inertia values
+        builder.bound_inertia = 0.01
+        builder.bound_mass = 0.01
+        b0 = builder.add_link()
+        b1 = builder.add_link()
+        j0 = builder.add_joint_revolute(-1, b0)
+        j1 = builder.add_joint_revolute(b0, b1)
+        builder.add_articulation([j0, j1])
         model = builder.finalize()
-        solver = SolverMuJoCo(model)
-        self.assertEqual(solver.mj_model.nv, 1)
+        solver = SolverMuJoCo(model, separate_worlds=False)
+        self.assertEqual(solver.mj_model.nv, 2)
+
+    def test_no_shapes_separate_worlds_true(self):
+        """Testing that an articulation without any shapes can be converted successfully when setting separate_worlds=True."""
+        builder = newton.ModelBuilder()
+        # force the ModelBuilder to correct zero mass/inertia values
+        builder.bound_inertia = 0.01
+        builder.bound_mass = 0.01
+        builder.begin_world()
+        b0 = builder.add_link()
+        b1 = builder.add_link()
+        j0 = builder.add_joint_revolute(-1, b0)
+        j1 = builder.add_joint_revolute(b0, b1)
+        builder.add_articulation([j0, j1])
+        builder.end_world()
+        model = builder.finalize()
+        solver = SolverMuJoCo(model, separate_worlds=True)
+        self.assertEqual(solver.mj_model.nv, 2)
 
     def test_separate_worlds_false_multi_world_validation(self):
         """Test that separate_worlds=False is rejected for multi-world models."""
@@ -3471,8 +3510,8 @@ class TestMuJoCoConversion(unittest.TestCase):
             atol=1e-6,
         )
 
-    def test_shape_scaling_across_worlds(self):
-        """Test that shape scaling works correctly across different worlds in MuJoCo solver."""
+    def test_shape_offset_across_worlds(self):
+        """Test that shape offset works correctly across different worlds in MuJoCo solver."""
         # Create a simple model with 2 worlds
         builder = newton.ModelBuilder()
 
@@ -3493,7 +3532,7 @@ class TestMuJoCoConversion(unittest.TestCase):
         )
 
         # Add world 0 at normal scale
-        builder.add_world(env1, xform=wp.transform([0, 0, 0], wp.quat_identity()))
+        builder.add_world(env1, xform=wp.transform_identity())
 
         # Create shapes for world 2 at 0.5x scale
         env2 = newton.ModelBuilder()
@@ -3533,17 +3572,22 @@ class TestMuJoCoConversion(unittest.TestCase):
         world0_sphere2_x = geom_pos[0, 1, 0]
         self.assertAlmostEqual(world0_sphere2_x, 1.0, places=3, msg="World 0 sphere 2 should have local x=1.0")
 
-        # World 1, Sphere 2 should be at x=0.5 (scaled local offset)
+        # World 1, Sphere 2 should be at x=0.5 (local offset)
         world1_sphere2_x = geom_pos[1, 1, 0]
         expected_x = 0.5
 
-        # Check that the second sphere in world 1 has the correctly scaled local position
+        # Check that the second sphere in world 1 has the correct local position
         self.assertAlmostEqual(
             world1_sphere2_x,
             expected_x,
             places=3,
             msg=f"World 1 sphere 2 should have local x={expected_x} (scaled offset)",
         )
+
+        # Check scaling of the spheres
+        radii = solver.mjw_model.geom_size.numpy()[:, :, 0].flatten()
+        expected_radii = [0.1, 0.1, 0.05, 0.05]
+        np.testing.assert_allclose(radii, expected_radii, atol=1e-3)
 
     def test_mesh_geoms_across_worlds(self):
         """Test that mesh geoms work correctly across different worlds in MuJoCo solver."""
@@ -3927,15 +3971,15 @@ class TestMuJoCoAttributes(unittest.TestCase):
         <mujoco>
             <worldbody>
                 <body>
-                    <joint type="revolute" axis="0 0 1" />
+                    <joint type="hinge" axis="0 0 1" />
                     <geom type="box" size="0.1 0.1 0.1" condim="6" />
                 </body>
                 <body>
-                    <joint type="revolute" axis="0 0 1" />
+                    <joint type="hinge" axis="0 0 1" />
                     <geom type="box" size="0.1 0.1 0.1" condim="4" />
                 </body>
                 <body>
-                    <joint type="revolute" axis="0 0 1" />
+                    <joint type="hinge" axis="0 0 1" />
                     <geom type="box" size="0.1 0.1 0.1" />
                 </body>
             </worldbody>
@@ -4029,6 +4073,169 @@ class TestMuJoCoAttributes(unittest.TestCase):
         assert hasattr(model.mujoco, "condim")
         assert np.allclose(model.mujoco.condim.numpy(), [6])
         assert np.allclose(solver.mjw_model.geom_condim.numpy(), [6])
+
+    def test_ref_fk_matches_mujoco(self):
+        """Test that Newton's state matches MuJoCo's FK for joints with ref attribute.
+
+        When ref is used, Newton relies on MuJoCo's FK (via update_newton_state with eval_fk=False)
+        because ref is a MuJoCo-specific feature handled via qpos0.
+        """
+        import mujoco_warp  # noqa: PLC0415
+
+        mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test_ref_fk">
+    <worldbody>
+        <body name="base">
+            <geom type="box" size="0.1 0.1 0.1"/>
+            <body name="child1" pos="0 0 1">
+                <joint name="hinge" type="hinge" axis="0 1 0" ref="90"/>
+                <geom type="box" size="0.1 0.1 0.1"/>
+                <body name="child2" pos="0 0 1">
+                    <joint name="slide" type="slide" axis="0 0 1" ref="0.5"/>
+                    <geom type="box" size="0.1 0.1 0.1"/>
+                </body>
+            </body>
+        </body>
+    </worldbody>
+</mujoco>"""
+
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_mjcf(mjcf_content)
+        model = builder.finalize()
+        solver = SolverMuJoCo(model)
+
+        # Verify that _has_ref is True for this model
+        assert solver._has_ref, "Solver should detect that ref is used"
+
+        # Set qpos=0 in MuJoCo and run FK
+        state = model.state()
+        state.joint_q.zero_()
+        solver.update_mjc_data(solver.mjw_data, model, state)
+        mujoco_warp.kinematics(solver.mjw_model, solver.mjw_data)
+
+        # Use update_newton_state with eval_fk=False to get body transforms from MuJoCo
+        solver.update_newton_state(model, state, solver.mjw_data, eval_fk=False)
+
+        # Compare Newton's body_q (now from MuJoCo) with MuJoCo's xpos/xquat
+        newton_body_q = state.body_q.numpy()
+        mjc_body_to_newton = solver.mjc_body_to_newton.numpy()
+
+        for body_name in ["child1", "child2"]:
+            newton_body_idx = model.body_key.index(body_name)
+            mjc_body_idx = np.where(mjc_body_to_newton[0] == newton_body_idx)[0][0]
+
+            # Get Newton body position and quaternion (populated from MuJoCo via update_newton_state)
+            newton_pos = newton_body_q[newton_body_idx, 0:3]
+            newton_quat = newton_body_q[newton_body_idx, 3:7]  # [x, y, z, w]
+
+            # Get MuJoCo Warp body position and quaternion
+            mj_pos = solver.mjw_data.xpos.numpy()[0, mjc_body_idx]
+            mj_quat_wxyz = solver.mjw_data.xquat.numpy()[0, mjc_body_idx]  # MuJoCo uses [w, x, y, z]
+            mj_quat = np.array([mj_quat_wxyz[1], mj_quat_wxyz[2], mj_quat_wxyz[3], mj_quat_wxyz[0]])
+
+            # Compare positions
+            assert np.allclose(newton_pos, mj_pos, atol=0.01), (
+                f"Position mismatch for {body_name}: Newton={newton_pos}, MuJoCo={mj_pos}"
+            )
+
+            # Compare quaternions (sign-invariant since q and -q represent the same rotation)
+            quat_dist = min(np.linalg.norm(newton_quat - mj_quat), np.linalg.norm(newton_quat + mj_quat))
+            assert quat_dist < 0.01, f"Quaternion mismatch for {body_name}: Newton={newton_quat}, MuJoCo={mj_quat}"
+
+
+class TestMuJoCoArticulationConversion(unittest.TestCase):
+    def test_loop_joints_only(self):
+        """Testing that loop joints are converted to equality constraints."""
+        import mujoco  # noqa: PLC0415
+
+        builder = newton.ModelBuilder()
+        b0 = builder.add_link()
+        b1 = builder.add_link()
+        j0 = builder.add_joint_revolute(-1, b0)
+        j1 = builder.add_joint_revolute(b0, b1)
+        builder.add_articulation([j0, j1])
+        # add a loop joint
+        loop_joint = builder.add_joint_fixed(
+            b1,
+            b0,
+            # note these offset transforms here are important to ensure valid anchor points for the equality constraints are used
+            parent_xform=wp.transform(wp.vec3(0.0, 0.0, -0.45), wp.quat_identity()),
+            child_xform=wp.transform(wp.vec3(0.0, 0.0, -0.45), wp.quat_identity()),
+        )
+        num_worlds = 4
+        world_builder = newton.ModelBuilder()
+        # force the ModelBuilder to correct zero mass/inertia values
+        world_builder.bound_inertia = 0.01
+        world_builder.bound_mass = 0.01
+        world_builder.replicate(builder, num_worlds=num_worlds)
+        model = world_builder.finalize()
+        solver = SolverMuJoCo(model, separate_worlds=True)
+        self.assertEqual(solver.mj_model.nv, 2)
+        # 2 equality constraints per loop joint
+        self.assertEqual(solver.mj_model.neq, 2)
+        eq_type = int(mujoco.mjtEq.mjEQ_CONNECT)
+        assert np.allclose(solver.mj_model.eq_type, [eq_type, eq_type])
+        # we defined no regular equality constraints, so there is no mapping from MuJoCo to Newton equality constraints
+        assert np.allclose(solver.mjc_eq_to_newton_eq.numpy(), np.full_like(solver.mjc_eq_to_newton_eq.numpy(), -1))
+        # but we converted the loop joints to equality constraints, so there is a mapping from MuJoCo to Newton joints
+        assert np.allclose(
+            solver.mjc_eq_to_newton_jnt.numpy(),
+            [[loop_joint + i * builder.joint_count, loop_joint + i * builder.joint_count] for i in range(num_worlds)],
+        )
+
+    def test_mixed_loop_joints_and_equality_constraints(self):
+        """Testing that loop joints and regular equality constraints are converted to equality constraints."""
+        import mujoco  # noqa: PLC0415
+
+        builder = newton.ModelBuilder()
+        b0 = builder.add_link()
+        b1 = builder.add_link()
+        b2 = builder.add_link()
+        j0 = builder.add_joint_revolute(-1, b0)
+        j1 = builder.add_joint_revolute(-1, b1)
+        j2 = builder.add_joint_revolute(b1, b2)
+        builder.add_articulation([j0, j1, j2])
+        # add one equality constraint before the loop joint
+        builder.add_equality_constraint_connect(body1=b0, body2=b1, anchor=wp.vec3(0.0, 0.0, 1.0))
+        # add a loop joint
+        loop_joint = builder.add_joint_fixed(
+            b0,
+            b2,
+            # note these offset transforms here are important to ensure valid anchor points for the equality constraints are used
+            parent_xform=wp.transform(wp.vec3(0.0, 0.0, -0.45), wp.quat_identity()),
+            child_xform=wp.transform(wp.vec3(0.0, 0.0, -0.45), wp.quat_identity()),
+        )
+        # add one equality constraint after the loop joint
+        builder.add_equality_constraint_connect(body1=b0, body2=b2, anchor=wp.vec3(0.0, 0.0, 1.0))
+        num_worlds = 4
+        world_builder = newton.ModelBuilder()
+        # force the ModelBuilder to correct zero mass/inertia values
+        world_builder.bound_inertia = 0.01
+        world_builder.bound_mass = 0.01
+        world_builder.replicate(builder, num_worlds=num_worlds)
+        model = world_builder.finalize()
+        solver = SolverMuJoCo(model, separate_worlds=True)
+        self.assertEqual(model.joint_count, 4 * num_worlds)
+        self.assertEqual(model.equality_constraint_count, 2 * num_worlds)
+        self.assertEqual(solver.mj_model.nv, 3)
+        # 2 equality constraints per loop joint
+        self.assertEqual(solver.mj_model.neq, 4)
+        eq_type = int(mujoco.mjtEq.mjEQ_CONNECT)
+        assert np.allclose(solver.mj_model.eq_type, [eq_type] * 4)
+        # the two equality constraints we explicitly created are defined first in MuJoCo
+        expected_eq_to_newton_eq = np.full((num_worlds, 4), -1, dtype=np.int32)
+        for i in range(num_worlds):
+            expected_eq_to_newton_eq[i, 0] = i * 2
+            expected_eq_to_newton_eq[i, 1] = i * 2 + 1
+        assert np.allclose(solver.mjc_eq_to_newton_eq.numpy(), expected_eq_to_newton_eq)
+        # after those two explicit equality constraints come the 2 equality constraints per loop joint
+        expected_eq_to_newton_jnt = np.full((num_worlds, 4), -1, dtype=np.int32)
+        for i in range(num_worlds):
+            # joint 3 is the loop joint, we have 4 joints per world
+            expected_eq_to_newton_jnt[i, 2] = i * 4 + loop_joint
+            expected_eq_to_newton_jnt[i, 3] = i * 4 + loop_joint
+        assert np.allclose(solver.mjc_eq_to_newton_jnt.numpy(), expected_eq_to_newton_jnt)
 
 
 if __name__ == "__main__":

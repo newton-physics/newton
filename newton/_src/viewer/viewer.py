@@ -15,6 +15,8 @@
 
 from __future__ import annotations
 
+import os
+import sys
 from abc import abstractmethod
 
 import numpy as np
@@ -33,7 +35,7 @@ from newton.utils import (
 )
 
 from ..core.types import nparray
-from .kernels import estimate_world_extents
+from .kernels import compute_hydro_contact_surface_lines, estimate_world_extents
 
 
 class ViewerBase:
@@ -63,8 +65,13 @@ class ViewerBase:
         self._joint_points1 = None
         self._joint_colors = None
 
+        self._com_positions = None
+        self._com_colors = None
+        self._com_radii = None
+
         # World offset support
         self.world_offsets = None  # Array of vec3 offsets per world
+        self.max_worlds = None  # Limit on worlds to render (None = all)
 
         # Display options as individual boolean attributes
         self.show_joints = False
@@ -77,6 +84,13 @@ class ViewerBase:
         self.show_visual = True  # show visual shapes (non collider)
         self.show_static = False  # force static shapes to be visible
         self.show_inertia_boxes = False
+        self.show_hydro_contact_surface = False  # show hydroelastic contact surface wireframe
+        self.picking_enabled = True  # enable interactive picking via mouse
+
+        # cache for hydroelastic contact surface line rendering (lazily allocated)
+        self._hydro_surface_line_starts: wp.array | None = None
+        self._hydro_surface_line_ends: wp.array | None = None
+        self._hydro_surface_line_colors: wp.array | None = None
 
         self.model_shape_color: wp.array(dtype=wp.vec3) = None
         """Color of shapes created from ``self.model``, shape (model.shape_count,)"""
@@ -84,6 +98,14 @@ class ViewerBase:
         self._shape_to_slot: nparray | None = None
         # map from shape index -> Instances
         self._shape_to_batch: list[ViewerBase.ShapeInstances | None] | None = None
+
+        # cache for isomeshes (computed on demand for collision shapes with SDF volumes)
+        # keyed by volume.id (uint64) to deduplicate when multiple shapes share the same SDF volume
+        self._isomesh_cache: dict[int, object] = {}
+
+        # SDF isomesh instances -- created on-demand for collision visualization
+        self._sdf_isomesh_instances: dict[int, ViewerBase.ShapeInstances] = {}
+        self._sdf_isomesh_populated: bool = False  # lazy flag for SDF isomesh population
 
     def is_running(self) -> bool:
         return True
@@ -102,11 +124,20 @@ class ViewerBase:
         """
         return False
 
-    def set_model(self, model):
+    def set_model(self, model, max_worlds: int | None = None):
+        """
+        Set the model to be visualized.
+
+        Args:
+            model: The Newton model to visualize.
+            max_worlds: Maximum number of worlds to render (None = all).
+                        Useful for performance when training with many environments.
+        """
         if self.model is not None:
             raise RuntimeError("Viewer set_model() can be called only once.")
 
         self.model = model
+        self.max_worlds = max_worlds
 
         if model is not None:
             self.device = model.device
@@ -115,6 +146,58 @@ class ViewerBase:
             # Auto-compute world offsets if not already set
             if self.world_offsets is None:
                 self._auto_compute_world_offsets()
+
+    def _should_render_world(self, world_idx: int) -> bool:
+        """Check if a world should be rendered based on max_worlds limit."""
+        if world_idx == -1:  # Global entities always rendered
+            return True
+        if self.max_worlds is None:
+            return True
+        return world_idx < self.max_worlds
+
+    def _get_render_world_count(self) -> int:
+        """Get the number of worlds to render."""
+        if self.model is None:
+            return 0
+        if self.max_worlds is None:
+            return self.model.num_worlds
+        return min(self.max_worlds, self.model.num_worlds)
+
+    def _get_shape_isomesh(self, shape_idx: int):
+        """Get the isomesh for a collision shape with an SDF volume.
+
+        Computes the marching-cubes isosurface from the SDF volume and caches it.
+        Uses the volume.id (uint64) as cache key, so shapes sharing the same SDF
+        volume will reuse the same isomesh.
+
+        Args:
+            shape_idx: Index of the shape.
+
+        Returns:
+            Mesh object for the isomesh, or None if shape has no SDF volume.
+        """
+        if self.model is None:
+            return None
+
+        # Check if this shape has an SDF volume
+        sdf_volume = self.model.shape_sdf_volume[shape_idx] if self.model.shape_sdf_volume else None
+        if sdf_volume is None:
+            return None
+
+        # Use volume.id as cache key - this is a unique uint64 pointer
+        volume_id = sdf_volume.id
+
+        # Check if already computed (use False as sentinel for "computed but no mesh")
+        if volume_id in self._isomesh_cache:
+            cached = self._isomesh_cache[volume_id]
+            return cached if cached is not False else None
+
+        # Compute isomesh from SDF volume
+        from ..geometry.sdf_utils import compute_isomesh  # noqa: PLC0415
+
+        isomesh = compute_isomesh(sdf_volume)
+        self._isomesh_cache[volume_id] = isomesh if isomesh is not None else False
+        return isomesh
 
     def set_camera(self, pos: wp.vec3, pitch: float, yaw: float):
         pass
@@ -132,7 +215,7 @@ class ViewerBase:
         if self.model is None:
             raise RuntimeError("Model must be set before calling set_world_offsets()")
 
-        num_worlds = self.model.num_worlds
+        num_worlds = self._get_render_world_count()
 
         # Get up axis from model
         up_axis = self.model.up_axis
@@ -200,7 +283,7 @@ class ViewerBase:
     def _auto_compute_world_offsets(self):
         """Automatically compute world offsets based on model extents."""
         # If only one world or no worlds, no offsets needed
-        if self.model.num_worlds <= 1:
+        if self._get_render_world_count() <= 1:
             return
 
         max_extents = self._get_world_extents()
@@ -245,6 +328,31 @@ class ViewerBase:
 
             shapes.colors_changed = False
 
+        # render SDF isomesh instances for collision visualization (lazily populated)
+        sdf_isomesh_just_populated = False
+        if self.show_collision and not self._sdf_isomesh_populated:
+            self._populate_sdf_isomesh_instances()
+            self._sdf_isomesh_populated = True
+            sdf_isomesh_just_populated = True
+
+        for shapes in self._sdf_isomesh_instances.values():
+            visible = self.show_collision
+
+            if visible:
+                shapes.update(state, world_offsets=self.world_offsets)
+
+            # Send colors/materials on model change OR when isomeshes were just populated
+            send_appearance = self.model_changed or sdf_isomesh_just_populated
+            self.log_instances(
+                shapes.name,
+                shapes.mesh,
+                shapes.world_xforms,
+                shapes.scales,
+                shapes.colors if send_appearance else None,
+                shapes.materials if send_appearance else None,
+                hidden=not visible,
+            )
+
         # update inertia box transforms if visible
         if self.show_inertia_boxes:
             if self._inertia_box_instances is None:
@@ -266,6 +374,7 @@ class ViewerBase:
         self._log_triangles(state)
         self._log_particles(state)
         self._log_joints(state)
+        self._log_com(state)
 
         self.model_changed = False
 
@@ -333,6 +442,68 @@ class ViewerBase:
         colors = (0.0, 1.0, 0.0)
 
         self.log_lines("/contacts", starts, ends, colors)
+
+    def log_hydro_contact_surface(self, contact_surface_data, penetrating_only: bool = True):
+        """
+        Render the hydroelastic contact surface triangles as wireframe lines.
+
+        Args:
+            contact_surface_data: A HydroelasticContactSurfaceData instance containing vertex arrays
+                for visualization, or None if hydroelastic collision is not enabled.
+            penetrating_only: If True, only render penetrating contacts (depth > 0).
+        """
+        if contact_surface_data is None or not self.show_hydro_contact_surface:
+            self.log_lines("/hydro_contact_surface", None, None, None)
+            return
+
+        # Get the number of face contacts (triangles)
+        num_contacts = int(contact_surface_data.face_contact_count.numpy()[0])
+
+        if num_contacts == 0:
+            self.log_lines("/hydro_contact_surface", None, None, None)
+            return
+
+        # Each triangle has 3 edges -> 3 line segments per contact
+        num_lines = 3 * num_contacts
+        max_lines = 3 * contact_surface_data.max_num_face_contacts
+
+        # Pre-allocate line buffers (only once, to max capacity)
+        if self._hydro_surface_line_starts is None or len(self._hydro_surface_line_starts) < max_lines:
+            self._hydro_surface_line_starts = wp.zeros(max_lines, dtype=wp.vec3, device=self.device)
+            self._hydro_surface_line_ends = wp.zeros(max_lines, dtype=wp.vec3, device=self.device)
+            self._hydro_surface_line_colors = wp.zeros(max_lines, dtype=wp.vec3, device=self.device)
+
+        # Get depth range for colormap
+        depths = contact_surface_data.contact_surface_depth[:num_contacts]
+
+        # Convert triangles to line segments with depth-based colors
+        vertices = contact_surface_data.contact_surface_point
+        shape_pairs = contact_surface_data.contact_surface_shape_pair
+        wp.launch(
+            compute_hydro_contact_surface_lines,
+            dim=num_contacts,
+            inputs=[
+                vertices,
+                depths,
+                shape_pairs,
+                self.model.shape_world,
+                self.world_offsets,
+                num_contacts,
+                0.0,
+                0.0005,
+                penetrating_only,
+            ],
+            outputs=[self._hydro_surface_line_starts, self._hydro_surface_line_ends, self._hydro_surface_line_colors],
+            device=self.device,
+        )
+
+        # Render as lines
+        self.log_lines(
+            "/hydro_contact_surface",
+            self._hydro_surface_line_starts[:num_lines],
+            self._hydro_surface_line_ends[:num_lines],
+            self._hydro_surface_line_colors[:num_lines],
+        )
 
     def log_shapes(
         self,
@@ -642,25 +813,23 @@ class ViewerBase:
     def _should_show_shape(self, flags: int, is_static: bool) -> bool:
         """Determine if a shape should be visible based on current settings."""
 
-        is_collider = bool(flags & int(newton.ShapeFlags.COLLIDE_SHAPES))
-        is_visual = not is_collider  # todo: should we consider a separate flag for this?
+        has_collide_flag = bool(flags & int(newton.ShapeFlags.COLLIDE_SHAPES))
+        has_visible_flag = bool(flags & int(newton.ShapeFlags.VISIBLE))
 
+        # Static shapes override (e.g., for debugging)
         if is_static and self.show_static:
             return True
 
-        # if show_collision is True, then collider shapes are always visible
-        if is_collider and self.show_collision:
+        # Shapes can be both collision AND visual (e.g., ground plane).
+        # Show if either relevant toggle is enabled.
+        if has_collide_flag and self.show_collision:
             return True
 
-        if is_visual and self.show_visual:
+        if has_visible_flag and self.show_visual:
             return True
 
-        # allow hiding all visual shapes with the toggle
-        if is_visual and not self.show_visual:
-            return False
-
-        # if no overrides set then revert to shape visibility
-        return bool(flags & int(newton.ShapeFlags.VISIBLE))
+        # Hide if shape has no enabled flags
+        return False
 
     def _populate_geometry(
         self,
@@ -737,6 +906,10 @@ class ViewerBase:
 
         # loop over shapes
         for s in range(shape_count):
+            # skip shapes from worlds beyond max_worlds limit
+            if not self._should_render_world(shape_world[s]):
+                continue
+
             geo_type = shape_geo_type[s]
             geo_scale = [float(v) for v in shape_geo_scale[s]]
             geo_thickness = float(shape_geo_thickness[s])
@@ -773,6 +946,21 @@ class ViewerBase:
             parent = shape_body[s]
             static = parent == -1
 
+            # For collision shapes that ALSO have the VISIBLE flag AND have SDF volumes,
+            # treat the original mesh as visual geometry (the SDF isomesh will be rendered
+            # separately for collision visualization).
+            #
+            # Shapes that only have COLLIDE_SHAPES (no VISIBLE) should remain as collision
+            # shapes - these are typically convex hull approximations where a separate
+            # visual-only copy exists.
+            is_collision_shape = flags & int(newton.ShapeFlags.COLLIDE_SHAPES)
+            is_visible = flags & int(newton.ShapeFlags.VISIBLE)
+            # Check for SDF volume existence without computing the isomesh (lazy evaluation)
+            has_sdf = self.model.shape_sdf_volume and self.model.shape_sdf_volume[s] is not None
+            if is_collision_shape and is_visible and has_sdf:
+                # Remove COLLIDE_SHAPES flag so this is treated as a visual shape
+                flags = flags & ~int(newton.ShapeFlags.COLLIDE_SHAPES)
+
             shape_hash = self._hash_shape(geo_hash, static, flags)
 
             # ensure batch exists
@@ -789,7 +977,8 @@ class ViewerBase:
             if (shape_flags[s] & int(newton.ShapeFlags.COLLIDE_SHAPES)) == 0:
                 color = wp.vec3(0.5, 0.5, 0.5)
             else:
-                color = wp.vec3(self._shape_color_map(shape_hash))
+                # Use shape index for color to ensure each collision shape has a different color
+                color = wp.vec3(self._shape_color_map(s))
 
             material = wp.vec4(0.5, 0.0, 0.0, 0.0)  # roughness, metallic, checker, unused
 
@@ -838,6 +1027,99 @@ class ViewerBase:
                 shape_to_batch[s_idx] = batch
         self._shape_to_batch = shape_to_batch
 
+        # Note: SDF isomesh instances are populated lazily when show_collision is True
+        # to avoid GPU memory allocation until actually needed for visualization
+
+    def _populate_sdf_isomesh_instances(self):
+        """Create shape instances for SDF isomeshes (marching cubes visualization).
+
+        These are rendered separately based on the show_collision flag to allow
+        independent control of visual mesh and SDF collision visualization.
+        """
+        if self.model is None:
+            return
+
+        shape_body = self.model.shape_body.numpy()
+        shape_transform = self.model.shape_transform.numpy()
+        shape_flags = self.model.shape_flags.numpy()
+        shape_world = self.model.shape_world.numpy()
+        shape_geo_scale = self.model.shape_scale.numpy()
+        shape_sdf_data = self.model.shape_sdf_data.numpy() if self.model.shape_sdf_data is not None else None
+        shape_count = len(shape_body)
+
+        for s in range(shape_count):
+            # skip shapes from worlds beyond max_worlds limit
+            if not self._should_render_world(shape_world[s]):
+                continue
+
+            # Only process collision shapes with SDF volumes
+            is_collision_shape = shape_flags[s] & int(newton.ShapeFlags.COLLIDE_SHAPES)
+            if not is_collision_shape:
+                continue
+
+            isomesh = self._get_shape_isomesh(s)
+            if isomesh is None:
+                continue
+
+            # Check if scale was baked into the SDF
+            scale_baked = shape_sdf_data[s]["scale_baked"] if shape_sdf_data is not None else True
+
+            # Create isomesh geometry (always use (1,1,1) for geometry since isomesh is in SDF space)
+            geo_type = newton.GeoType.MESH
+            geo_scale = (1.0, 1.0, 1.0)
+            geo_thickness = 0.0
+            geo_is_solid = True
+
+            geo_hash = self._hash_geometry(
+                int(geo_type),
+                geo_scale,
+                geo_thickness,
+                geo_is_solid,
+                isomesh,
+            )
+
+            # Ensure geometry exists and get mesh path
+            if geo_hash not in self._geometry_cache:
+                mesh_name = self._populate_geometry(
+                    int(geo_type),
+                    geo_scale,
+                    geo_thickness,
+                    geo_is_solid,
+                    geo_src=isomesh,
+                )
+            else:
+                mesh_name = self._geometry_cache[geo_hash]
+
+            # Shape options
+            flags = shape_flags[s]
+            parent = shape_body[s]
+            static = parent == -1
+
+            # Use the geo_hash as the batch key for SDF isomesh instances
+            if geo_hash not in self._sdf_isomesh_instances:
+                shape_name = f"/model/sdf_isomesh/isomesh_{len(self._sdf_isomesh_instances)}"
+                batch = ViewerBase.ShapeInstances(shape_name, static, flags, mesh_name, self.device)
+                self._sdf_isomesh_instances[geo_hash] = batch
+            else:
+                batch = self._sdf_isomesh_instances[geo_hash]
+
+            xform = wp.transform_expand(shape_transform[s])
+            # Apply shape scale if not baked into SDF, otherwise use (1,1,1)
+            if scale_baked:
+                scale = np.array([1.0, 1.0, 1.0])
+            else:
+                scale = np.asarray(shape_geo_scale[s], dtype=np.float32)
+
+            # Use distinct collision color palette (different from visual shapes)
+            color = wp.vec3(self._collision_color_map(s))
+            material = wp.vec4(0.3, 0.0, 0.0, 0.0)  # roughness, metallic, checker, unused
+
+            batch.add(parent, xform, scale, color, material, s, shape_world[s])
+
+        # Finalize all SDF isomesh batches
+        for batch in self._sdf_isomesh_instances.values():
+            batch.finalize()
+
     def update_shape_colors(self, shape_colors: dict[int, wp.vec3 | tuple[float, float, float]]):
         """
         Set colors for a set of shapes at runtime.
@@ -884,8 +1166,12 @@ class ViewerBase:
         shape_name = "/model/inertia_boxes"
         batch = ViewerBase.ShapeInstances(shape_name, static, flags, mesh_name, self.device)
 
-        # loop over bodys
+        # loop over bodies
         for body in range(body_count):
+            # skip bodies from worlds beyond max_worlds limit
+            if not self._should_render_world(body_world[body]):
+                continue
+
             rot, principal_inertia = wp.eig3(wp.mat33(body_inertia[body]))
             xform = wp.transform(body_com[body], wp.quat_from_matrix(rot))
 
@@ -971,6 +1257,33 @@ class ViewerBase:
         # Log all joint lines in a single call
         self.log_lines("/model/joints", self._joint_points0, self._joint_points1, self._joint_colors)
 
+    def _log_com(self, state):
+        num_bodies = self.model.body_count
+        if num_bodies == 0:
+            return
+
+        if self._com_positions is None or len(self._com_positions) < num_bodies:
+            self._com_positions = wp.zeros(num_bodies, dtype=wp.vec3, device=self.device)
+            self._com_colors = wp.full(num_bodies, wp.vec3(1.0, 0.8, 0.0), device=self.device)
+            self._com_radii = wp.full(num_bodies, 0.05, dtype=float, device=self.device)
+
+        from .kernels import compute_com_positions  # noqa: PLC0415
+
+        wp.launch(
+            kernel=compute_com_positions,
+            dim=num_bodies,
+            inputs=[
+                state.body_q,
+                self.model.body_com,
+                self.model.body_world,
+                self.world_offsets,
+            ],
+            outputs=[self._com_positions],
+            device=self.device,
+        )
+
+        self.log_points("/model/com", self._com_positions, self._com_radii, self._com_colors, hidden=not self.show_com)
+
     def _log_triangles(self, state):
         if self.model.tri_count:
             self.log_mesh(
@@ -1014,3 +1327,73 @@ class ViewerBase:
 
         num_colors = len(colors)
         return [c / 255.0 for c in colors[i % num_colors]]
+
+    @staticmethod
+    def _collision_color_map(i: int) -> list[float]:
+        # Distinct palette for collision shapes (semi-transparent wireframe look)
+        # Uses cooler, more desaturated tones to contrast with bright visual colors
+        colors = [
+            [180, 120, 200],  # lavender
+            [120, 180, 160],  # sage
+            [200, 160, 120],  # tan
+            [140, 160, 200],  # steel blue
+            [200, 140, 160],  # dusty rose
+            [160, 200, 140],  # moss
+            [180, 180, 140],  # khaki
+            [140, 180, 180],  # slate
+            [200, 180, 200],  # mauve
+        ]
+
+        num_colors = len(colors)
+        return [c / 255.0 for c in colors[i % num_colors]]
+
+
+def is_jupyter_notebook():
+    try:
+        # Check if get_ipython is defined (available in IPython environments)
+        shell = get_ipython().__class__.__name__
+        if shell == "ZMQInteractiveShell":
+            # This indicates a Jupyter Notebook or JupyterLab environment
+            return True
+        elif shell == "TerminalInteractiveShell":
+            # This indicates a standard IPython terminal
+            return False
+        else:
+            # Other IPython-like environments
+            return False
+    except NameError:
+        # get_ipython is not defined, so it's likely a standard Python script
+        return False
+
+
+def is_sphinx_build() -> bool:
+    """
+    Detect if we're running inside a Sphinx documentation build (via nbsphinx).
+
+    Returns:
+        True if running in Sphinx/nbsphinx, False if in regular Jupyter session.
+    """
+
+    # Check for Newton's custom env var (set in docs/conf.py, inherited by nbsphinx subprocesses)
+    if os.environ.get("NEWTON_SPHINX_BUILD"):
+        return True
+
+    # nbsphinx sets SPHINXBUILD or we can check for sphinx in the call stack
+    if os.environ.get("SPHINXBUILD"):
+        return True
+
+    # Check if sphinx is in the module list (imported during doc build)
+    if "sphinx" in sys.modules or "nbsphinx" in sys.modules:
+        return True
+
+    # Check call stack for sphinx-related frames
+    try:
+        import traceback  # noqa: PLC0415
+
+        for frame_info in traceback.extract_stack():
+            if "sphinx" in frame_info.filename.lower() or "nbsphinx" in frame_info.filename.lower():
+                return True
+    except Exception:
+        pass
+
+    return False

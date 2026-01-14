@@ -323,6 +323,105 @@ class TestImportUsd(unittest.TestCase):
             )
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_loop_joint(self):
+        """Test that an articulation with a loop joint denoted with excludeFromArticulation is correctly parsed from USD."""
+        from pxr import Usd  # noqa: PLC0415
+
+        usd_content = """#usda 1.0
+(
+    upAxis = "Z"
+)
+
+def PhysicsScene "physicsScene"
+{
+}
+
+def Xform "Articulation" (
+    prepend apiSchemas = ["PhysicsArticulationRootAPI"]
+)
+{
+    def Xform "Body1" (
+        prepend apiSchemas = ["PhysicsRigidBodyAPI"]
+    )
+    {
+        double3 xformOp:translate = (0, 0, 1)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+
+        def Cube "Collision1" (
+            prepend apiSchemas = ["PhysicsCollisionAPI"]
+        )
+        {
+            double size = 0.2
+        }
+    }
+
+    def PhysicsRevoluteJoint "Joint1"
+    {
+        rel physics:body0 = </Articulation/Body1>
+        point3f physics:localPos0 = (0, 0, 0)
+        point3f physics:localPos1 = (0, 0, 0)
+        quatf physics:localRot0 = (1, 0, 0, 0)
+        quatf physics:localRot1 = (1, 0, 0, 0)
+        token physics:axis = "Z"
+        float physics:lowerLimit = -45
+        float physics:upperLimit = 45
+    }
+
+    def Xform "Body2" (
+        prepend apiSchemas = ["PhysicsRigidBodyAPI"]
+    )
+    {
+        double3 xformOp:translate = (1, 0, 1)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+
+        def Sphere "Collision2" (
+            prepend apiSchemas = ["PhysicsCollisionAPI"]
+        )
+        {
+            double radius = 0.1
+        }
+    }
+
+    def PhysicsRevoluteJoint "Joint2"
+    {
+        rel physics:body0 = </Articulation/Body2>
+        point3f physics:localPos0 = (0, 0, 0)
+        point3f physics:localPos1 = (0, 0, 0)
+        quatf physics:localRot0 = (1, 0, 0, 0)
+        quatf physics:localRot1 = (1, 0, 0, 0)
+        token physics:axis = "Z"
+        float physics:lowerLimit = -45
+        float physics:upperLimit = 45
+    }
+
+    def PhysicsFixedJoint "LoopJoint"
+    {
+        rel physics:body0 = </Articulation/Body1>
+        rel physics:body1 = </Articulation/Body2>
+        point3f physics:localPos0 = (0, 0, 0)
+        point3f physics:localPos1 = (0, 0, 0)
+        quatf physics:localRot0 = (1, 0, 0, 0)
+        quatf physics:localRot1 = (1, 0, 0, 0)
+        bool physics:excludeFromArticulation = true
+    }
+}
+"""
+        stage = Usd.Stage.CreateInMemory()
+        stage.GetRootLayer().ImportFromString(usd_content)
+
+        builder = newton.ModelBuilder()
+        builder.add_usd(stage)
+
+        self.assertEqual(builder.joint_count, 3)
+        self.assertEqual(builder.articulation_count, 1)
+        self.assertEqual(
+            builder.joint_type, [newton.JointType.REVOLUTE, newton.JointType.REVOLUTE, newton.JointType.FIXED]
+        )
+        self.assertEqual(builder.body_key, ["/Articulation/Body1", "/Articulation/Body2"])
+        self.assertEqual(builder.joint_key, ["/Articulation/Joint1", "/Articulation/Joint2", "/Articulation/LoopJoint"])
+        self.assertEqual(builder.joint_articulation, [0, 0, -1])
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_solimp_friction_parsing(self):
         """Test that solimp_friction attribute is parsed correctly from USD."""
         from pxr import Usd  # noqa: PLC0415
@@ -1528,7 +1627,7 @@ class TestImportSampleAssets(unittest.TestCase):
 
         self.assertEqual(int(total_dofs), int(model.joint_axis.numpy().shape[0]))
         joint_enabled = model.joint_enabled.numpy()
-        self.assertTrue(all(joint_enabled[i] != 0 for i in range(len(joint_enabled))))
+        self.assertTrue(all(joint_enabled))
 
         axis_vectors = {
             "X": [1.0, 0.0, 0.0],
@@ -2423,6 +2522,160 @@ def Xform "Articulation" (
         # Find the values - one should be True, one should be False
         self.assertTrue(np.any(jnt_actgravcomp))
         self.assertTrue(np.any(~jnt_actgravcomp))
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_ref_attribute_parsing(self):
+        """Test that 'mjc:ref' attribute is parsed."""
+        from pxr import Usd  # noqa: PLC0415
+
+        usd_content = """#usda 1.0
+(
+    metersPerUnit = 1.0
+    upAxis = "Z"
+)
+
+def Xform "Articulation" (
+    prepend apiSchemas = ["PhysicsArticulationRootAPI"]
+)
+{
+    def Cube "base" (
+        prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsCollisionAPI"]
+    )
+    {
+        double3 xformOp:translate = (0, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+
+    def Cube "child1" (
+        prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsCollisionAPI"]
+    )
+    {
+        double3 xformOp:translate = (0, 0, 1)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+
+    def PhysicsRevoluteJoint "revolute_joint"
+    {
+        token physics:axis = "Y"
+        rel physics:body0 = </Articulation/base>
+        rel physics:body1 = </Articulation/child1>
+        float mjc:ref = 90.0
+    }
+}
+"""
+        stage = Usd.Stage.CreateInMemory()
+        stage.GetRootLayer().ImportFromString(usd_content)
+
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_usd(stage)
+        model = builder.finalize()
+
+        # Verify custom attribute parsing
+        self.assertTrue(hasattr(model, "mujoco"))
+        self.assertTrue(hasattr(model.mujoco, "dof_ref"))
+        dof_ref = model.mujoco.dof_ref.numpy()
+        qd_start = model.joint_qd_start.numpy()
+
+        revolute_joint_idx = model.joint_key.index("/Articulation/revolute_joint")
+        self.assertAlmostEqual(dof_ref[qd_start[revolute_joint_idx]], 90.0, places=4)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_springref_attribute_parsing(self):
+        """Test that 'mjc:springref' attribute is parsed for revolute and prismatic joints."""
+        from pxr import Usd  # noqa: PLC0415
+
+        usd_content = """#usda 1.0
+(
+    upAxis = "Z"
+)
+
+def PhysicsScene "physicsScene"
+{
+}
+
+def Xform "Articulation" (
+    prepend apiSchemas = ["PhysicsArticulationRootAPI"]
+)
+{
+    def Xform "Body0" (
+        prepend apiSchemas = ["PhysicsRigidBodyAPI"]
+    )
+    {
+        double3 xformOp:translate = (0, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+        def Cube "Collision0" (
+            prepend apiSchemas = ["PhysicsCollisionAPI"]
+        )
+        {
+            double size = 0.2
+        }
+    }
+
+    def Xform "Body1" (
+        prepend apiSchemas = ["PhysicsRigidBodyAPI"]
+    )
+    {
+        double3 xformOp:translate = (1, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+        def Cube "Collision1" (
+            prepend apiSchemas = ["PhysicsCollisionAPI"]
+        )
+        {
+            double size = 0.2
+        }
+    }
+
+    def Xform "Body2" (
+        prepend apiSchemas = ["PhysicsRigidBodyAPI"]
+    )
+    {
+        double3 xformOp:translate = (2, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+        def Cube "Collision2" (
+            prepend apiSchemas = ["PhysicsCollisionAPI"]
+        )
+        {
+            double size = 0.2
+        }
+    }
+
+    def PhysicsRevoluteJoint "revolute_joint" (
+        prepend apiSchemas = ["PhysicsDriveAPI:angular"]
+    )
+    {
+        rel physics:body0 = </Articulation/Body0>
+        rel physics:body1 = </Articulation/Body1>
+        float mjc:springref = 30.0
+    }
+
+    def PhysicsPrismaticJoint "prismatic_joint"
+    {
+        token physics:axis = "Z"
+        rel physics:body0 = </Articulation/Body1>
+        rel physics:body1 = </Articulation/Body2>
+        float mjc:springref = 0.25
+    }
+}
+"""
+        stage = Usd.Stage.CreateInMemory()
+        stage.GetRootLayer().ImportFromString(usd_content)
+
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_usd(stage)
+        model = builder.finalize()
+
+        self.assertTrue(hasattr(model, "mujoco"))
+        self.assertTrue(hasattr(model.mujoco, "dof_springref"))
+        springref = model.mujoco.dof_springref.numpy()
+        qd_start = model.joint_qd_start.numpy()
+
+        revolute_joint_idx = model.joint_key.index("/Articulation/revolute_joint")
+        self.assertAlmostEqual(springref[qd_start[revolute_joint_idx]], 30.0, places=4)
+
+        prismatic_joint_idx = model.joint_key.index("/Articulation/prismatic_joint")
+        self.assertAlmostEqual(springref[qd_start[prismatic_joint_idx]], 0.25, places=4)
 
 
 if __name__ == "__main__":

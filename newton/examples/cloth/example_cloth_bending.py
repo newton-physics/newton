@@ -57,6 +57,13 @@ class Example:
         self.faces = mesh_indices.reshape(-1, 3)
 
         builder = newton.ModelBuilder()
+
+        contact_ke = 1.0e2
+        contact_kd = 1.0e0
+        contact_mu = 0.5
+        builder.default_shape_cfg.ke = contact_ke
+        builder.default_shape_cfg.kd = contact_kd
+        builder.default_shape_cfg.mu = contact_mu
         builder.add_cloth_mesh(
             pos=wp.vec3(0.0, 0.0, 10.0),
             rot=wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), wp.pi / 6.0),
@@ -76,22 +83,29 @@ class Example:
         builder.add_ground_plane()
 
         self.model = builder.finalize()
-        self.model.soft_contact_ke = 1.0e2
-        self.model.soft_contact_kd = 1.0e0
-        self.model.soft_contact_mu = 1.0
+        self.model.soft_contact_ke = contact_ke
+        self.model.soft_contact_kd = contact_kd
+        self.model.soft_contact_mu = contact_mu
 
         self.solver = newton.solvers.SolverVBD(
             self.model,
             self.iterations,
-            handle_self_contact=True,
-            self_contact_radius=0.2,
-            self_contact_margin=0.35,
+            particle_enable_self_contact=True,
+            particle_self_contact_radius=0.2,
+            particle_self_contact_margin=0.35,
+        )
+
+        # Use unified collision pipeline for particle-shape contacts
+        self.collision_pipeline = newton.CollisionPipelineUnified.from_model(
+            self.model,
+            broad_phase_mode=newton.BroadPhaseMode.NXN,
+            soft_contact_margin=0.1,
         )
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.control = self.model.control()
-        self.contacts = self.model.collide(self.state_0)
+        self.contacts = self.collision_pipeline.collide(self.model, self.state_0)
 
         self.viewer.set_model(self.model)
 
@@ -112,7 +126,7 @@ class Example:
             # apply forces to the model
             self.viewer.apply_forces(self.state_0)
 
-            self.contacts = self.model.collide(self.state_0)
+            self.contacts = self.collision_pipeline.collide(self.model, self.state_0)
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
 
             # swap states

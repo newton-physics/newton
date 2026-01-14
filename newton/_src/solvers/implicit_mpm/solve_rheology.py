@@ -1123,6 +1123,8 @@ def solve_rheology(
         compliance_mat_diagonal = None
     else:
         compliance_mat_diagonal = _register_temp(fem.borrow_temporary(temporary_store, shape=stress.shape, dtype=mat66))
+        # TODO: Remove .zero_() workaround once Newton uses warp_lang-1.12.0.dev20260113 or newer.
+        compliance_mat_diagonal.zero_()
         sp.bsr_get_diag(compliance_mat, out=compliance_mat_diagonal)
 
     # Project initial stress on yield surface

@@ -74,13 +74,11 @@ def eval_particle_contact(
     v = particle_v[i]
     radius = particle_radius[i]
 
-    f = wp.vec3()
+    f = wp.vec3(0.0)
 
     # particle contact
     query = wp.hash_grid_query(grid, x, radius + max_radius + k_cohesion)
     index = int(0)
-
-    count = int(0)
 
     while wp.hash_grid_query_next(query, index):
         if (particle_flags[index] & ParticleFlags.ACTIVE) != 0 and index != i:
@@ -89,13 +87,11 @@ def eval_particle_contact(
             d = wp.length(n)
             err = d - radius - particle_radius[index]
 
-            count += 1
-
             if err <= k_cohesion:
                 n = n / d
                 vrel = v - particle_v[index]
 
-                f = f + particle_force(n, vrel, err, k_contact, k_damp, k_friction, k_mu)
+                f += particle_force(n, vrel, err, k_contact, k_damp, k_friction, k_mu)
 
     particle_f[i] = f
 
@@ -413,6 +409,9 @@ def eval_body_contact(
     contact_shape1: wp.array(dtype=int),
     contact_thickness0: wp.array(dtype=float),
     contact_thickness1: wp.array(dtype=float),
+    rigid_contact_stiffness: wp.array(dtype=float),
+    rigid_contact_damping: wp.array(dtype=float),
+    rigid_contact_friction_scale: wp.array(dtype=float),
     force_in_world_frame: bool,
     friction_smoothing: float,
     # outputs
@@ -461,6 +460,15 @@ def eval_body_contact(
         kf /= float(mat_nonzero)
         ka /= float(mat_nonzero)
         mu /= float(mat_nonzero)
+
+    # per-contact stiffness/damping/friction
+    if rigid_contact_stiffness:
+        contact_ke = rigid_contact_stiffness[tid]
+        ke = contact_ke if contact_ke > 0.0 else ke
+        contact_kd = rigid_contact_damping[tid]
+        kd = contact_kd if contact_kd > 0.0 else kd
+        contact_mu = rigid_contact_friction_scale[tid]
+        mu = mu * contact_mu if contact_mu > 0.0 else mu
 
     # contact normal in world space
     n = contact_normal[tid]
@@ -560,7 +568,7 @@ def eval_body_contact(
 
 
 def eval_particle_contact_forces(model: Model, state: State, particle_f: wp.array):
-    if model.particle_count > 1 and model.particle_max_radius > 0.0:
+    if model.particle_count > 1 and model.particle_grid is not None:
         wp.launch(
             kernel=eval_particle_contact,
             dim=model.particle_count,
@@ -633,6 +641,9 @@ def eval_body_contact_forces(
                 contacts.rigid_contact_shape1,
                 contacts.rigid_contact_thickness0,
                 contacts.rigid_contact_thickness1,
+                contacts.rigid_contact_stiffness,
+                contacts.rigid_contact_damping,
+                contacts.rigid_contact_friction,
                 force_in_world_frame,
                 friction_smoothing,
             ],

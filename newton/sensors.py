@@ -14,30 +14,38 @@
 # limitations under the License.
 
 # Contact sensors
-from ._src.sensors.contact_sensor import (
-    ContactSensor,
+from ._src.sensors.sensor_contact import (
     MatchKind,
+    SensorContact,
     populate_contacts,
 )
 
 # Frame transform sensors
-from ._src.sensors.frame_transform_sensor import (
-    FrameTransformSensor,
+from ._src.sensors.sensor_frame_transform import (
+    SensorFrameTransform,
+)
+
+# IMU sensors
+from ._src.sensors.sensor_imu import (
+    SensorIMU,
 )
 
 # Raycast sensors
-from ._src.sensors.raycast_sensor import (
-    RaycastSensor,
+from ._src.sensors.sensor_raycast import (
+    SensorRaycast,
 )
-from ._src.sensors.tiled_camera_sensor import (
-    TiledCameraSensor,
+
+# Tiled camera sensors
+from ._src.sensors.sensor_tiled_camera import (
+    SensorTiledCamera,
 )
 
 __all__ = [
-    "ContactSensor",
-    "FrameTransformSensor",
     "MatchKind",
-    "RaycastSensor",
-    "TiledCameraSensor",
+    "SensorContact",
+    "SensorFrameTransform",
+    "SensorIMU",
+    "SensorRaycast",
+    "SensorTiledCamera",
     "populate_contacts",
 ]

@@ -487,6 +487,8 @@ class ViewerUSD(ViewerBase):
 
         if colors is None:
             color_interp = "constant"
+        elif isinstance(colors, wp.array):
+            color_interp = "vertex"
         elif len(colors) == 3 and all(np.isscalar(x) for x in colors):
             color_interp = "constant"
         else:

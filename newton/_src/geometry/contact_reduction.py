@@ -60,7 +60,7 @@ class ContactStruct:
     position: wp.vec3
     normal: wp.vec3
     depth: wp.float32
-    feature: wp.int32
+    mode: wp.int32  # Used to track collision mode (e.g., which mesh the triangle came from)
     projection: wp.float32
 
 
@@ -134,217 +134,6 @@ ICOSAHEDRON_FACE_NORMALS = _mat20x3(
     0.0,
 )
 
-_mat60x3 = wp.types.matrix(shape=(60, 3), dtype=wp.float32)
-
-# Triangle vertices ordered: top cap (0-14), equatorial (15-44), bottom cap (45-59)
-# Each face has 3 consecutive vertices. Layout matches ICOSAHEDRON_FACE_NORMALS.
-ICOSAHEDRON_TRIANGLES = _mat60x3(
-    # Top cap faces 0-4 (rows 0-14)
-    0.0,
-    1.0,
-    0.0,
-    0.27639318,
-    0.4472136,
-    0.85065085,
-    0.8944273,
-    0.44721365,
-    0.0,
-    0.0,
-    1.0,
-    0.0,
-    -0.7236069,
-    0.44721365,
-    0.5257311,
-    0.27639318,
-    0.4472136,
-    0.85065085,
-    0.0,
-    1.0,
-    0.0,
-    -0.72360677,
-    0.4472136,
-    -0.5257312,
-    -0.7236069,
-    0.44721365,
-    0.5257311,
-    0.0,
-    1.0,
-    0.0,
-    0.27639332,
-    0.4472136,
-    -0.8506508,
-    -0.72360677,
-    0.4472136,
-    -0.5257312,
-    0.0,
-    1.0,
-    0.0,
-    0.8944273,
-    0.44721365,
-    0.0,
-    0.27639332,
-    0.4472136,
-    -0.8506508,
-    # Equatorial band faces 5-14 (rows 15-44)
-    0.8944273,
-    0.44721365,
-    0.0,
-    0.7236068,
-    -0.4472136,
-    0.5257311,
-    0.72360677,
-    -0.4472136,
-    -0.52573115,
-    0.8944273,
-    0.44721365,
-    0.0,
-    0.72360677,
-    -0.4472136,
-    -0.52573115,
-    0.27639332,
-    0.4472136,
-    -0.8506508,
-    0.27639318,
-    0.4472136,
-    0.85065085,
-    -0.27639323,
-    -0.4472136,
-    0.8506508,
-    0.7236068,
-    -0.4472136,
-    0.5257311,
-    0.27639318,
-    0.4472136,
-    0.85065085,
-    0.7236068,
-    -0.4472136,
-    0.5257311,
-    0.8944273,
-    0.44721365,
-    0.0,
-    -0.7236069,
-    0.44721365,
-    0.5257311,
-    -0.8944273,
-    -0.44721365,
-    0.0,
-    -0.27639323,
-    -0.4472136,
-    0.8506508,
-    -0.7236069,
-    0.44721365,
-    0.5257311,
-    -0.27639323,
-    -0.4472136,
-    0.8506508,
-    0.27639318,
-    0.4472136,
-    0.85065085,
-    -0.72360677,
-    0.4472136,
-    -0.5257312,
-    -0.2763933,
-    -0.4472136,
-    -0.8506508,
-    -0.8944273,
-    -0.44721365,
-    0.0,
-    -0.72360677,
-    0.4472136,
-    -0.5257312,
-    -0.8944273,
-    -0.44721365,
-    0.0,
-    -0.7236069,
-    0.44721365,
-    0.5257311,
-    0.27639332,
-    0.4472136,
-    -0.8506508,
-    0.72360677,
-    -0.4472136,
-    -0.52573115,
-    -0.2763933,
-    -0.4472136,
-    -0.8506508,
-    0.27639332,
-    0.4472136,
-    -0.8506508,
-    -0.2763933,
-    -0.4472136,
-    -0.8506508,
-    -0.72360677,
-    0.4472136,
-    -0.5257312,
-    # Bottom cap faces 15-19 (rows 45-59)
-    0.0,
-    -1.0,
-    0.0,
-    0.7236068,
-    -0.4472136,
-    0.5257311,
-    -0.27639323,
-    -0.4472136,
-    0.8506508,
-    0.0,
-    -1.0,
-    0.0,
-    -0.27639323,
-    -0.4472136,
-    0.8506508,
-    -0.8944273,
-    -0.44721365,
-    0.0,
-    0.0,
-    -1.0,
-    0.0,
-    -0.8944273,
-    -0.44721365,
-    0.0,
-    -0.2763933,
-    -0.4472136,
-    -0.8506508,
-    0.0,
-    -1.0,
-    0.0,
-    -0.2763933,
-    -0.4472136,
-    -0.8506508,
-    0.72360677,
-    -0.4472136,
-    -0.52573115,
-    0.0,
-    -1.0,
-    0.0,
-    0.72360677,
-    -0.4472136,
-    -0.52573115,
-    0.7236068,
-    -0.4472136,
-    0.5257311,
-)
-
-
-@wp.func
-def get_scan_dir(icosahedron_face_id: int, i: int) -> wp.vec3:
-    """Get scan direction for contact reduction.
-
-    Args:
-        icosahedron_face_id: ID of the icosahedron face
-        i: Index in the range 0...5
-
-    Returns:
-        Edge of the triangle (not normalized).
-        Indices 3, 4, 5 return the edges with negated direction.
-    """
-    face_base = 3 * icosahedron_face_id
-    v0 = ICOSAHEDRON_TRIANGLES[face_base + (i + 1) % 3]
-    v1 = ICOSAHEDRON_TRIANGLES[face_base + i % 3]
-    result = v0 - v1
-    if i >= 3:
-        result = -result
-    return result
-
 
 @wp.func
 def get_slot(normal: wp.vec3) -> int:
@@ -396,7 +185,53 @@ def get_slot(normal: wp.vec3) -> int:
     return best_slot
 
 
-NUM_SPATIAL_DIRECTIONS = 6  # Triangle edge directions
+@wp.func
+def project_point_to_plane(bin_normal_idx: wp.int32, point: wp.vec3) -> wp.vec2:
+    """Project a 3D point onto the 2D plane of an icosahedron face.
+
+    Creates a local 2D coordinate system on the face plane using the face normal
+    and constructs orthonormal basis vectors u and v.
+
+    Args:
+        bin_normal_idx: Index of the icosahedron face (0-19)
+        point: 3D point to project
+
+    Returns:
+        2D coordinates of the point in the face's local coordinate system
+    """
+    face_normal = ICOSAHEDRON_FACE_NORMALS[bin_normal_idx]
+
+    # Create orthonormal basis on the plane
+    # Choose reference vector that's not parallel to normal
+    if wp.abs(face_normal[1]) < 0.9:
+        ref = wp.vec3(0.0, 1.0, 0.0)
+    else:
+        ref = wp.vec3(1.0, 0.0, 0.0)
+
+    # u = normalize(ref - dot(ref, normal) * normal)
+    u = wp.normalize(ref - wp.dot(ref, face_normal) * face_normal)
+    # v = cross(normal, u)
+    v = wp.cross(face_normal, u)
+
+    # Project point onto u and v axes
+    return wp.vec2(wp.dot(point, u), wp.dot(point, v))
+
+
+@wp.func
+def get_spatial_direction_2d(dir_idx: int) -> wp.vec2:
+    """Get evenly-spaced 2D direction for spatial binning.
+
+    Args:
+        dir_idx: Direction index in the range 0..NUM_SPATIAL_DIRECTIONS-1
+
+    Returns:
+        Unit 2D vector at angle (dir_idx * 2pi / NUM_SPATIAL_DIRECTIONS)
+    """
+    angle = float(dir_idx) * (2.0 * wp.pi / 6.0)
+    return wp.vec2(wp.cos(angle), wp.sin(angle))
+
+
+NUM_SPATIAL_DIRECTIONS = 6  # Evenly-spaced 2D directions (60 degrees apart)
 NUM_NORMAL_BINS = 20  # Icosahedron faces
 
 
@@ -526,7 +361,6 @@ class ContactReductionFunctions:
     1. Contacts are binned by normal direction (20 bins based on icosahedron faces)
     2. Within each bin, contacts compete for slots using a scoring function
     3. Winners are determined via atomic operations in shared memory
-    4. Duplicates (same geometric feature) are filtered out
 
     **Scoring Function:**
 
@@ -567,7 +401,7 @@ class ContactReductionFunctions:
 
         # Warp functions
         self.store_reduced_contact = self._create_store_reduced_contact()
-        self.filter_unique_contacts = self._create_filter_unique_contacts()
+        self.collect_active_contacts = self._create_collect_active_contacts()
 
     def create_betas_array(self, device=None) -> wp.array:
         """Create a warp array with the beta values."""
@@ -600,7 +434,7 @@ class ContactReductionFunctions:
             Args:
                 thread_id: Thread index within the block
                 active: Whether this thread has a valid contact to store
-                c: Contact data (position, normal, depth, feature)
+                c: Contact data (position, normal, depth, mode)
                 buffer: Shared memory buffer for winning contacts
                 active_ids: Tracks which slots contain valid contacts
                 betas_arr: Array of depth thresholds (contact participates if depth < beta)
@@ -620,18 +454,21 @@ class ContactReductionFunctions:
             synchronize()
 
             bin_id = 0
+            pos_2d = wp.vec2(0.0, 0.0)
             if active:
                 bin_id = get_slot(c.normal)
+                # Project position to 2D plane once, reuse for all directions
+                pos_2d = project_point_to_plane(bin_id, c.position)
 
             if active:
                 base_key = bin_id * slots_per_bin
                 # Compete for spatial direction + beta slots
                 for dir_i in range(wp.static(NUM_SPATIAL_DIRECTIONS)):
-                    scan_dir = get_scan_dir(bin_id, dir_i)
-                    spatial_dp = wp.dot(scan_dir, c.position)
+                    dir_2d = get_spatial_direction_2d(dir_i)
+                    spatial_dp = wp.dot(pos_2d, dir_2d)
                     for beta_i in range(num_betas):
                         if c.depth < betas_arr[beta_i]:
-                            score = spatial_dp  # - betas_arr[beta_i] * c.depth
+                            score = spatial_dp
                             key = base_key + dir_i * wp.static(num_betas) + beta_i
                             wp.atomic_max(winner_slots, key, pack_value_thread_id(score, thread_id))
                 # Compete for max depth slot (last slot in bin)
@@ -644,8 +481,8 @@ class ContactReductionFunctions:
                 base_key = bin_id * slots_per_bin
                 # Check spatial direction + beta slots
                 for dir_i in range(wp.static(NUM_SPATIAL_DIRECTIONS)):
-                    scan_dir = get_scan_dir(bin_id, dir_i)
-                    spatial_dp = wp.dot(scan_dir, c.position)
+                    dir_2d = get_spatial_direction_2d(dir_i)
+                    spatial_dp = wp.dot(pos_2d, dir_2d)
                     for beta_i in range(num_betas):
                         if c.depth < betas_arr[beta_i]:
                             key = base_key + dir_i * wp.static(num_betas) + beta_i
@@ -655,7 +492,7 @@ class ContactReductionFunctions:
                                     id = wp.atomic_add(active_ids, num_slots, 1)
                                     if id < num_slots:
                                         active_ids[id] = key
-                                score = spatial_dp  # - betas_arr[beta_i] * c.depth
+                                score = spatial_dp
                                 if score > p:
                                     c.projection = score
                                     buffer[key] = c
@@ -675,71 +512,42 @@ class ContactReductionFunctions:
 
         return store_reduced_contact
 
-    def _create_filter_unique_contacts(self):
-        """Create the filter_unique_contacts warp function.
+    def _create_collect_active_contacts(self):
+        """Create the collect_active_contacts warp function.
 
-        The returned function removes duplicate contacts that won multiple slots
-        but originate from the same geometric feature (e.g., same triangle).
-        Only the first occurrence per feature is kept.
+        The returned function collects all valid contacts from the reduction buffer
+        into a compact list of slot indices.
         """
-        num_reduction_slots = self.num_reduction_slots
         num_betas = self.num_betas
-        get_smem = self.get_smem_reduction
 
         @wp.func
-        def filter_unique_contacts(
+        def collect_active_contacts(
             thread_id: int,
             buffer: wp.array(dtype=ContactStruct),
             active_ids: wp.array(dtype=int),
             empty_marker: float,
         ):
-            """Remove duplicate contacts, keeping first occurrence per feature.
+            """Collect all valid contacts into a compact list.
 
             Args:
                 thread_id: Thread index within the block
                 buffer: Shared memory buffer containing reduced contacts
-                active_ids: Output array of unique contact slot indices
+                active_ids: Output array of valid contact slot indices
                 empty_marker: Sentinel value indicating empty slots
             """
             slots_per_bin = wp.static(NUM_SPATIAL_DIRECTIONS * num_betas + 1)
             num_slots = wp.static(NUM_NORMAL_BINS * slots_per_bin)
 
-            keep_flags = wp.array(
-                ptr=wp.static(get_smem)(),
-                shape=(wp.static(num_reduction_slots),),
-                dtype=wp.int32,
-            )
-
-            for i in range(thread_id, num_slots, wp.block_dim()):
-                keep_flags[i] = 0
-            synchronize()
-
-            if thread_id < wp.static(NUM_NORMAL_BINS):
-                bin_id = thread_id
-                base_key = bin_id * slots_per_bin
-                for slot_i in range(slots_per_bin):
-                    key_i = base_key + slot_i
-                    if buffer[key_i].projection > empty_marker:
-                        feature_i = buffer[key_i].feature
-                        is_dup = int(0)
-                        for slot_j in range(slot_i):
-                            key_j = base_key + slot_j
-                            if buffer[key_j].projection > empty_marker and buffer[key_j].feature == feature_i:
-                                is_dup = 1
-                        if is_dup == 0:
-                            keep_flags[key_i] = 1
-            synchronize()
-
             if thread_id == 0:
                 write_idx = int(0)
                 for key in range(num_slots):
-                    if keep_flags[key] == 1:
+                    if buffer[key].projection > empty_marker:
                         active_ids[write_idx] = key
                         write_idx += 1
                 active_ids[num_slots] = write_idx
             synchronize()
 
-        return filter_unique_contacts
+        return collect_active_contacts
 
 
 get_shared_memory_pointer_block_dim_plus_2_ints = create_shared_memory_pointer_block_dim_func(2)

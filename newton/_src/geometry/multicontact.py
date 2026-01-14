@@ -22,8 +22,8 @@
 Multi-contact manifold generation for collision detection.
 
 This module implements contact manifold generation algorithms for computing
-multiple contact points between colliding shapes. It includes polygon clipping,
-feature tracking, and contact point selection algorithms.
+multiple contact points between colliding shapes. It includes polygon clipping
+and contact point selection algorithms.
 """
 
 from typing import Any
@@ -720,109 +720,6 @@ def remove_zero_length_edges(
 
 
 @wp.func
-def edge_key(per_vertex_features: wp.types.vector(6, wp.uint8), count: int, edge_id: int) -> wp.uint32:
-    """
-    Creates a packed edge key from two consecutive feature IDs.
-    Used to create compact identifiers for edges defined by vertex pairs.
-
-    Args:
-        per_vertex_features: Array of feature IDs.
-        count: Number of features in the array.
-        edge_id: Index of the first vertex of the edge.
-
-    Returns:
-        16-bit packed edge key: (first_feature << 8) | second_feature.
-    """
-    # An edge always goes from one vertex to the next, wrapping around at the end.
-    first = per_vertex_features[edge_id]
-    second = per_vertex_features[(edge_id + 1) % count]
-    return wp.uint32(wp.uint32(first) << wp.uint32(8)) | wp.uint32(second)
-
-
-@wp.func
-def feature_id(
-    loop_seg_ids: wp.array(dtype=wp.uint8),
-    loop_id: int,
-    loop_count: int,
-    features_a: wp.types.vector(6, wp.uint8),
-    features_b: wp.types.vector(6, wp.uint8),
-    m_a_count: int,
-    m_b_count: int,
-) -> wp.uint32:
-    """
-    Determines the feature identifier for a vertex in the clipped contact polygon.
-    This function assigns feature IDs that encode which geometric features from the original
-    collision shapes (vertices, edges, or edge-edge intersections) each contact point represents.
-
-    ENCODING SCHEME:
-    - Original trim poly vertex: 8-bit feature ID from features_a
-    - Original loop poly vertex: 16-bit (features_b[vertex] << 8)
-    - Edge intersections: 32-bit ((edge1_key << 16) | edge2_key)
-    - Shape intersections: 32-bit ((shapeA_edge << 16) | shapeB_edge)
-
-    SEGMENT ID CONVENTION:
-    - IDs 0-5: segments from trim polygon (shape A)
-    - IDs 6+: segments from loop polygon (shape B, with offset)
-
-    Args:
-        loop_seg_ids: Array of segment IDs for the current clipped polygon.
-        loop_id: Index of the vertex to compute feature ID for.
-        loop_count: Total number of vertices in the polygon.
-        features_a: Original feature IDs from trim polygon (shape A).
-        features_b: Original feature IDs from loop polygon (shape B).
-        m_a_count: Number of vertices in original trim polygon.
-        m_b_count: Number of vertices in original loop polygon.
-
-    Returns:
-        A feature ID encoding the geometric origin of this contact point.
-    """
-    feature = wp.uint32(0)
-
-    incoming = loop_seg_ids[(loop_id - 1 + loop_count) % loop_count]
-    outgoing = loop_seg_ids[loop_id]
-    incoming_belongs_to_trim_poly = incoming < 6
-    outgoing_belongs_to_trim_poly = outgoing < 6
-
-    if incoming_belongs_to_trim_poly != outgoing_belongs_to_trim_poly:
-        # This must be an intersection point
-        if incoming_belongs_to_trim_poly:
-            x = edge_key(features_a, m_a_count, int(incoming))
-        else:
-            x = edge_key(features_b, m_b_count, int(incoming) - 6)
-
-        if outgoing_belongs_to_trim_poly:
-            y = edge_key(features_a, m_a_count, int(outgoing))
-        else:
-            y = edge_key(features_b, m_b_count, int(outgoing) - 6)
-
-        feature = (x << wp.uint32(16)) | y
-    else:
-        if incoming_belongs_to_trim_poly:
-            next_seg = (int(incoming) + 1) % m_a_count
-            is_original_poly_point = next_seg == int(outgoing)
-            if is_original_poly_point:
-                feature = wp.uint32(features_a[int(outgoing)])
-            else:
-                # Should not happen because input poly A would have self intersections
-                x = edge_key(features_a, m_a_count, int(incoming))
-                y = edge_key(features_a, m_a_count, int(outgoing))
-                feature = (x << wp.uint32(16)) | y
-        else:
-            next_seg = (int(incoming) - 6 + 1) % m_b_count + 6
-            is_original_poly_point = next_seg == int(outgoing)
-            if is_original_poly_point:
-                # Shifted such that not the same id can get generated as produced by features_a
-                feature = wp.uint32(features_b[int(outgoing) - 6]) << wp.uint32(8)
-            else:
-                # Should not happen because input poly B would have self intersections
-                x = edge_key(features_b, m_b_count, int(incoming) - 6)
-                y = edge_key(features_b, m_b_count, int(outgoing) - 6)
-                feature = (x << wp.uint32(16)) | y
-
-    return feature
-
-
-@wp.func
 def add_avoid_duplicates_vec2(
     arr: wp.array(dtype=wp.vec2), arr_count: int, vec: wp.vec2, eps: float
 ) -> tuple[int, bool]:
@@ -871,7 +768,7 @@ def create_build_manifold(support_func: Any, writer_func: Any, post_process_cont
 
     Args:
         support_func: Support mapping function for shapes that takes
-                     (geometry, direction, data_provider) and returns (point, feature_id)
+                     (geometry, direction, data_provider) and returns a support point
         writer_func: Function to write contact data (signature: (ContactData, writer_data) -> None)
         post_process_contact: Function to post-process contact data
 
@@ -883,10 +780,8 @@ def create_build_manifold(support_func: Any, writer_func: Any, post_process_cont
     @wp.func
     def extract_4_point_contact_manifolds(
         m_a: wp.array(dtype=wp.vec2),
-        features_a: wp.types.vector(6, wp.uint8),
         m_a_count: int,
         m_b: wp.array(dtype=wp.vec2),
-        features_b: wp.types.vector(6, wp.uint8),
         m_b_count: int,
         normal: wp.vec3,
         cross_vector_1: wp.vec3,
@@ -918,10 +813,8 @@ def create_build_manifold(support_func: Any, writer_func: Any, post_process_cont
 
         Args:
             m_a: Contact polygon vertices for shape A (2D contact plane space, up to 6 points).
-            features_a: Feature IDs for each vertex of polygon A.
             m_a_count: Number of vertices in polygon A.
             m_b: Contact polygon vertices for shape B (2D contact plane space, up to 6 points, space for 12).
-            features_b: Feature IDs for each vertex of polygon B.
             m_b_count: Number of vertices in polygon B.
             normal: Collision normal vector pointing from A to B.
             cross_vector_1: First tangent vector (forms contact plane basis).
@@ -956,7 +849,6 @@ def create_build_manifold(support_func: Any, writer_func: Any, post_process_cont
         loop_count = remove_zero_length_edges(m_b, loop_seg_ids, loop_count, EPS)
 
         if loop_count > 1:
-            original_loop_count = loop_count
             result = wp.vec4i()
             if loop_count > 4:
                 result = approx_max_quadrilateral_area_with_calipers(m_b, loop_count)
@@ -966,10 +858,6 @@ def create_build_manifold(support_func: Any, writer_func: Any, post_process_cont
 
             for i in range(loop_count):
                 ia = int(result[i])
-
-                feature = feature_id(
-                    loop_seg_ids, ia, original_loop_count, features_a, features_b, m_a_count, m_b_count
-                )
 
                 # Transform back to world space using projectors
                 p_world = m_b[ia].x * cross_vector_1 + m_b[ia].y * cross_vector_2 + center
@@ -985,12 +873,11 @@ def create_build_manifold(support_func: Any, writer_func: Any, post_process_cont
                 contact_data.contact_point_center = contact_point
                 contact_data.contact_normal_a_to_b = normal
                 contact_data.contact_distance = signed_distance
-                contact_data.feature = feature
 
                 contact_data = post_process_contact(
                     contact_data, geom_a, position_a, quaternion_a, geom_b, position_b, quaternion_b
                 )
-                writer_func(contact_data, writer_data)
+                writer_func(contact_data, writer_data, -1)
         else:
             normal_dot = 0.0
             loop_count = 0
@@ -1019,11 +906,10 @@ def create_build_manifold(support_func: Any, writer_func: Any, post_process_cont
         1. Finding contact polygons using perturbed support mapping in 6 directions
         2. Clipping the polygons against each other in contact plane space
         3. Selecting the best 4 points using rotating calipers algorithm if more than 4 exist
-        4. Transforming results back to world space with feature tracking
+        4. Transforming results back to world space
         5. Post-processing each contact and writing it via the writer function
 
-        The contact normal is the same for all contact points in the manifold. The two shapes
-        must always be queried in the same order to get stable feature IDs for contact tracking.
+        The contact normal is the same for all contact points in the manifold.
 
         Args:
             geom_a: Geometry data for the first shape.
@@ -1041,11 +927,6 @@ def create_build_manifold(support_func: Any, writer_func: Any, post_process_cont
 
         Returns:
             Number of valid contact points written (0-5).
-
-        Note:
-            The feature IDs encode geometric information about which features (vertices, edges,
-            or edge-edge intersections) each contact point represents, allowing the physics
-            solver to maintain contact consistency over time.
         """
 
         ROT_DELTA_ANGLE = wp.static(2.0 * wp.pi / float(6))
@@ -1056,9 +937,6 @@ def create_build_manifold(support_func: Any, writer_func: Any, post_process_cont
 
         # Create an orthonormal basis from the collision normal.
         tangent_a, tangent_b = build_orthonormal_basis(normal)
-
-        features_a = vec6_uint8(wp.uint8(0))
-        features_b = vec6_uint8(wp.uint8(0))
 
         plane_tracker_a = IncrementalPlaneTracker()
         plane_tracker_b = IncrementalPlaneTracker()
@@ -1087,7 +965,7 @@ def create_build_manifold(support_func: Any, writer_func: Any, post_process_cont
             # 1. Transform the world-space direction into shape A's local space.
             tmp = wp.quat_rotate_inv(quaternion_a, offset_normal)
             # 2. Find the furthest point on shape A in that local direction.
-            (pt_a, feature_a) = support_func(geom_a, tmp, data_provider)
+            pt_a = support_func(geom_a, tmp, data_provider)
             # 3. Transform the local-space support point back to world space.
             pt_a_3d = wp.quat_rotate(quaternion_a, pt_a) + position_a
             # 4. Project to 2D contact plane space
@@ -1095,9 +973,7 @@ def create_build_manifold(support_func: Any, writer_func: Any, post_process_cont
             pt_a_2d = wp.vec2(wp.dot(tangent_a, projected_a), wp.dot(tangent_b, projected_a))
             # 5. Add the 2D projected point, checking for duplicates.
             a_count, was_added_a = add_avoid_duplicates_vec2(a_buffer, a_count, pt_a_2d, EPS)
-            # Only store feature ID if the point was actually added (not a duplicate)
             if was_added_a:
-                features_a[a_count - 1] = wp.uint8(int(feature_a) + 1)
                 plane_tracker_a = update_incremental_plane_tracker(plane_tracker_a, pt_a_3d, a_count - 1)
 
             # Invert the direction for the other shape.
@@ -1106,15 +982,13 @@ def create_build_manifold(support_func: Any, writer_func: Any, post_process_cont
             # Find the support point on shape B in the opposite perturbed direction.
             # (Process is identical to the one for shape A).
             tmp = wp.quat_rotate_inv(quaternion_b, offset_normal)
-            (pt_b, feature_b) = support_func(geom_b, tmp, data_provider)
+            pt_b = support_func(geom_b, tmp, data_provider)
             pt_b_3d = wp.quat_rotate(quaternion_b, pt_b) + position_b
             # Project to 2D contact plane space
             projected_b = pt_b_3d - center
             pt_b_2d = wp.vec2(wp.dot(tangent_a, projected_b), wp.dot(tangent_b, projected_b))
             b_count, was_added_b = add_avoid_duplicates_vec2(b_buffer, b_count, pt_b_2d, EPS)
-            # Only store feature ID if the point was actually added (not a duplicate)
             if was_added_b:
-                features_b[b_count - 1] = wp.uint8(int(feature_b) + 1)
                 plane_tracker_b = update_incremental_plane_tracker(plane_tracker_b, pt_b_3d, b_count - 1)
 
         # Early-out for simple cases: if both have <=2 or either is empty
@@ -1134,10 +1008,8 @@ def create_build_manifold(support_func: Any, writer_func: Any, post_process_cont
                 # Extract and write up to 4 contact points
                 num_manifold_points, normal_dot = extract_4_point_contact_manifolds(
                     a_buffer,
-                    features_a,
                     a_count,
                     b_buffer,
-                    features_b,
                     b_count,
                     normal,
                     tangent_a,
@@ -1167,12 +1039,11 @@ def create_build_manifold(support_func: Any, writer_func: Any, post_process_cont
             contact_data.contact_point_center = deepest_contact_center
             contact_data.contact_normal_a_to_b = normal
             contact_data.contact_distance = deepest_signed_distance
-            contact_data.feature = wp.uint32(0)  # Use 0 for the deepest contact feature ID
 
             contact_data = post_process_contact(
                 contact_data, geom_a, position_a, quaternion_a, geom_b, position_b, quaternion_b
             )
-            writer_func(contact_data, writer_data)
+            writer_func(contact_data, writer_data, -1)
 
             count_out += 1
 

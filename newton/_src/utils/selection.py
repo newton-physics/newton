@@ -517,6 +517,15 @@ class ArticulationView:
 
         frequency = self.model.get_attribute_frequency(name)
 
+        # Custom frequencies (custom entity types) are not supported in ArticulationView
+        # They represent solver-specific data that is not per-articulation
+        if isinstance(frequency, str):
+            raise AttributeError(
+                f"Attribute '{name}' has custom frequency '{frequency}' which is not "
+                f"supported by ArticulationView. Custom frequencies are for custom entity types "
+                f"that are not part of articulations."
+            )
+
         # HACK: trim leading and trailing static shapes
         if frequency == ModelAttributeFrequency.SHAPE:
             attrib = attrib[self._worlds_shape_start : self._worlds_shape_end]
@@ -598,13 +607,33 @@ class ArticulationView:
         # launch appropriate kernel based on attribute dimensionality
         # TODO: cache concrete overload per attribute?
         if attrib.ndim == 1:
-            wp.launch(set_articulation_attribute_1d_kernel, dim=attrib.shape, inputs=[mask, values, attrib])
+            wp.launch(
+                set_articulation_attribute_1d_kernel,
+                dim=attrib.shape,
+                inputs=[mask, values, attrib],
+                device=self.device,
+            )
         elif attrib.ndim == 2:
-            wp.launch(set_articulation_attribute_2d_kernel, dim=attrib.shape, inputs=[mask, values, attrib])
+            wp.launch(
+                set_articulation_attribute_2d_kernel,
+                dim=attrib.shape,
+                inputs=[mask, values, attrib],
+                device=self.device,
+            )
         elif attrib.ndim == 3:
-            wp.launch(set_articulation_attribute_3d_kernel, dim=attrib.shape, inputs=[mask, values, attrib])
+            wp.launch(
+                set_articulation_attribute_3d_kernel,
+                dim=attrib.shape,
+                inputs=[mask, values, attrib],
+                device=self.device,
+            )
         elif attrib.ndim == 4:
-            wp.launch(set_articulation_attribute_4d_kernel, dim=attrib.shape, inputs=[mask, values, attrib])
+            wp.launch(
+                set_articulation_attribute_4d_kernel,
+                dim=attrib.shape,
+                inputs=[mask, values, attrib],
+                device=self.device,
+            )
         else:
             raise NotImplementedError(f"Unsupported attribute with ndim={attrib.ndim}")
 
@@ -831,6 +860,7 @@ class ArticulationView:
                 set_model_articulation_mask_kernel,
                 dim=mask.size,
                 inputs=[mask, self.articulation_indices, articulation_mask],
+                device=self.device,
             )
             return articulation_mask
 

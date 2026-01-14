@@ -294,13 +294,16 @@ CLOTH_FACES = [
 
 # fmt: on
 class ClothSim:
-    def __init__(self, device, solver, use_cuda_graph=False, do_rendering=False):
+    def __init__(self, device, solver, use_cuda_graph=False, do_rendering=False, use_unified_pipeline=False):
         self.frame_dt = 1 / 60
         self.num_test_frames = 50
         self.iterations = 5
         self.device = device
         self.use_cuda_graph = self.device.is_cuda and use_cuda_graph
         self.builder = newton.ModelBuilder(up_axis="Y")
+        self.builder.default_shape_cfg.ke = 1.0e5
+        self.builder.default_shape_cfg.kd = 1.0e3
+
         self.solver_name = solver
         self.do_rendering = do_rendering
         self.fixed_particles = []
@@ -308,8 +311,10 @@ class ClothSim:
         # controls particle-shape contact
         self.soft_contact_margin = 1.0
         # controls self-contact of trimesh
-        self.self_contact_radius = 0.1
-        self.self_contact_margin = 0.1
+        self.particle_self_contact_radius = 0.1
+        self.particle_self_contact_margin = 0.1
+        # whether to use unified collision pipeline for particle-shape contacts
+        self.use_unified_pipeline = use_unified_pipeline
 
         if solver != "semi_implicit":
             self.num_substeps = 10
@@ -481,7 +486,7 @@ class ClothSim:
 
         self.fixed_particles = range(0, 4)
 
-        self.finalize(handle_self_contact=True, ground=False)
+        self.finalize(particle_enable_self_contact=True, ground=False)
         self.model.soft_contact_ke = 1e4
         self.model.soft_contact_kd = 1e-3
         self.model.soft_contact_mu = 0.2
@@ -553,7 +558,7 @@ class ClothSim:
         )
         self.fixed_particles = [0, 1]
 
-        self.finalize(handle_self_contact=False, ground=False)
+        self.finalize(particle_enable_self_contact=False, ground=False)
 
     def set_up_complex_rest_angle_bending_experiment(
         self, tri_ke=1e4, tri_kd=1e-6, edge_ke=1e3, edge_kd=0.0, fixed_particles=None, use_gravity=True
@@ -613,7 +618,7 @@ class ClothSim:
         self.fixed_particles = fixed_particles if fixed_particles is not None else []
         self.renderer_scale_factor = 1
 
-        self.finalize(handle_self_contact=False, ground=False, use_gravity=use_gravity)
+        self.finalize(particle_enable_self_contact=False, ground=False, use_gravity=use_gravity)
 
     def set_free_falling_experiment(self):
         self.input_scale_factor = 1.0
@@ -698,7 +703,7 @@ class ClothSim:
 
         self.renderer_scale_factor = 0.1
 
-        self.finalize(handle_self_contact=False, ground=False, use_gravity=True)
+        self.finalize(particle_enable_self_contact=False, ground=False, use_gravity=True)
         self.soft_contact_margin = particle_radius * 1.1
         self.model.soft_contact_ke = stretching_stiffness
 
@@ -765,10 +770,10 @@ class ClothSim:
         self.renderer_scale_factor = 1
         self.fixed_particles = [1]
 
-        self.self_contact_radius = 0.1
-        self.self_contact_margin = 0.1
+        self.particle_self_contact_radius = 0.1
+        self.particle_self_contact_margin = 0.1
 
-        self.finalize(handle_self_contact=True, ground=False, use_gravity=True)
+        self.finalize(particle_enable_self_contact=True, ground=False, use_gravity=True)
 
     def set_up_enable_tri_contact_experiment(self):
         # fmt: off
@@ -823,7 +828,7 @@ class ClothSim:
         self.soft_contact_margin = particle_radius * 1.1
         self.model.soft_contact_ke = 1e5
 
-    def finalize(self, handle_self_contact=False, ground=True, use_gravity=True):
+    def finalize(self, particle_enable_self_contact=False, ground=True, use_gravity=True):
         builder = newton.ModelBuilder(up_axis="Y")
         builder.add_world(self.builder)
         if ground:
@@ -841,9 +846,9 @@ class ClothSim:
             self.solver = newton.solvers.SolverVBD(
                 model=self.model,
                 iterations=self.iterations,
-                handle_self_contact=handle_self_contact,
-                self_contact_radius=self.self_contact_radius,
-                self_contact_margin=self.self_contact_margin,
+                particle_enable_self_contact=particle_enable_self_contact,
+                particle_self_contact_radius=self.particle_self_contact_radius,
+                particle_self_contact_margin=self.particle_self_contact_margin,
             )
         elif self.solver_name == "xpbd":
             self.solver = newton.solvers.SolverXPBD(
@@ -854,6 +859,16 @@ class ClothSim:
             self.solver = newton.solvers.SolverSemiImplicit(self.model)
         else:
             raise ValueError("Unsupported solver type: " + self.solver_name)
+
+        # Create collision pipeline (unified or standard based on flag)
+        if self.use_unified_pipeline:
+            self.collision_pipeline = newton.CollisionPipelineUnified.from_model(
+                self.model,
+                broad_phase_mode=newton.BroadPhaseMode.NXN,
+                soft_contact_margin=self.soft_contact_margin,
+            )
+        else:
+            self.collision_pipeline = None
 
         self.state0 = self.model.state()
         self.state1 = self.model.state()
@@ -870,7 +885,11 @@ class ClothSim:
     def simulate(self):
         for _step in range(self.num_substeps):
             self.state0.clear_forces()
-            contacts = self.model.collide(self.state0, soft_contact_margin=self.soft_contact_margin)
+            contacts = self.model.collide(
+                self.state0,
+                collision_pipeline=self.collision_pipeline,
+                soft_contact_margin=self.soft_contact_margin,
+            )
             control = self.model.control()
             self.solver.step(self.state0, self.state1, control, contacts, self.dt)
             (self.state0, self.state1) = (self.state1, self.state0)
@@ -1219,6 +1238,69 @@ for solver, tests in tests_to_run.items():
     for test in tests:
         add_function_test(
             TestCloth, f"{test.__name__}_{solver}", partial(test, solver=solver), devices=devices, check_output=False
+        )
+
+
+# ============================================================================
+# Particle-Shape Collision Tests with Unified Pipeline
+# ============================================================================
+# These tests run existing cloth collision tests with the unified collision pipeline
+# to verify particle-shape contacts work correctly with both pipelines.
+
+
+class TestClothUnifiedPipeline(unittest.TestCase):
+    pass
+
+
+def test_cloth_collision_unified(test, device, solver):
+    """Test cloth collision using unified collision pipeline."""
+    example = ClothSim(device, solver, use_cuda_graph=True, use_unified_pipeline=True)
+    example.set_collision_experiment()
+
+    example.run()
+
+    # examine that the velocity has died out
+    final_vel = example.state0.particle_qd.numpy()
+    final_pos = example.state0.particle_q.numpy()
+    test.assertTrue((np.linalg.norm(final_vel, axis=0) < 1.0).all())
+    # examine that the simulation has moved
+    test.assertTrue((example.init_pos != final_pos).any())
+
+
+def test_cloth_body_collision_unified(test, device, solver):
+    """Test cloth-body collision using unified collision pipeline."""
+    example = ClothSim(device, solver, use_unified_pipeline=True)
+    example.set_up_body_cloth_contact_experiment()
+
+    example.run()
+
+    # examine that the velocity has died out
+    final_vel = example.state0.particle_qd.numpy()
+    final_pos = example.state0.particle_q.numpy()
+    test.assertTrue((np.linalg.norm(final_vel, axis=0) < 1.0).all())
+    # examine that the simulation has moved
+    test.assertTrue((np.abs(final_pos[:, 1] - 0.0) < 0.5).all())
+
+
+# Test both collision tests with unified pipeline for solvers that support it
+unified_tests_to_run = {
+    "xpbd": [
+        test_cloth_body_collision_unified,
+    ],
+    "vbd": [
+        test_cloth_collision_unified,
+        test_cloth_body_collision_unified,
+    ],
+}
+
+for solver, tests in unified_tests_to_run.items():
+    for test in tests:
+        add_function_test(
+            TestClothUnifiedPipeline,
+            f"{test.__name__}_{solver}",
+            partial(test, solver=solver),
+            devices=devices,
+            check_output=False,
         )
 
 

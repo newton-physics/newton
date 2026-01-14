@@ -70,7 +70,7 @@ def eval_body_joints(
     body_com: wp.array(dtype=wp.vec3),
     joint_qd_start: wp.array(dtype=int),
     joint_type: wp.array(dtype=int),
-    joint_enabled: wp.array(dtype=int),
+    joint_enabled: wp.array(dtype=bool),
     joint_child: wp.array(dtype=int),
     joint_parent: wp.array(dtype=int),
     joint_X_p: wp.array(dtype=wp.transform),
@@ -96,7 +96,7 @@ def eval_body_joints(
     c_child = joint_child[tid]
     c_parent = joint_parent[tid]
 
-    if joint_enabled[tid] == 0:
+    if not joint_enabled[tid]:
         return
 
     qd_start = joint_qd_start[tid]

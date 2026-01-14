@@ -38,7 +38,7 @@ import newton.utils
 
 
 class Example:
-    def __init__(self, viewer):
+    def __init__(self, viewer, args=None):
         # frame timing
         self.fps = 60
         self.frame_dt = 1.0 / self.fps
@@ -184,7 +184,10 @@ class Example:
         self.cloth_solver.precompute(h1)
         self.cloth_solver.collision.radius = 3.5e-3
         self.control = self.model.control()
-        self.contacts = self.model.collide(self.state)
+
+        # Create collision pipeline (default: unified)
+        self.collision_pipeline = newton.examples.create_collision_pipeline(self.model, args)
+        self.contacts = self.model.collide(self.state, collision_pipeline=self.collision_pipeline)
         self.shape_flags = self.model.shape_flags.numpy()
 
     # ----------------------------------------------------------------------
@@ -231,7 +234,7 @@ class Example:
                 device=self.model.device,
             )
             self.state.body_q.assign(self.state1.body_q)
-            self.contacts = self.model.collide(self.state)
+            self.contacts = self.model.collide(self.state, collision_pipeline=self.collision_pipeline)
             self.cloth_solver.step(self.state, self.state1, self.control, self.contacts, self.sim_dt)
             (self.state, self.state1) = (self.state1, self.state)
 
@@ -327,5 +330,5 @@ if __name__ == "__main__":
     parser = newton.examples.create_parser()
     parser.set_defaults(num_frames=601)
     viewer, args = newton.examples.init(parser)
-    example = Example(viewer)
+    example = Example(viewer, args)
     newton.examples.run(example, args)

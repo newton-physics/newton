@@ -9,11 +9,12 @@ newton.sensors
    :toctree: _generated
    :nosignatures:
 
-   ContactSensor
-   FrameTransformSensor
    MatchKind
-   RaycastSensor
-   TiledCameraSensor
+   SensorContact
+   SensorFrameTransform
+   SensorIMU
+   SensorRaycast
+   SensorTiledCamera
 
 .. rubric:: Functions
 

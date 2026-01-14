@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -25,6 +26,11 @@ import newton
 import newton.examples
 from newton._src.geometry.types import GeoType
 from newton.tests.unittest_utils import assert_np_equal
+
+try:
+    from resolve_robotics_uri_py import resolve_robotics_uri
+except ImportError:
+    resolve_robotics_uri = None
 
 MESH_URDF = """
 <robot name="mesh_test">
@@ -555,6 +561,119 @@ class TestImportUrdf(unittest.TestCase):
             f"Body quaternion after eval_fk does not match expected xform.\n"
             f"Expected: {expected_quat}\nActual: {body_quat}",
         )
+
+
+class TestUrdfUriResolution(unittest.TestCase):
+    """Tests for URDF URI resolution functionality."""
+
+    SIMPLE_URDF = '<robot name="r"><link name="base"><visual><geometry>{geo}</geometry></visual></link></robot>'
+    MESH_GEO = '<mesh filename="{filename}"/>'
+    SPHERE_GEO = '<sphere radius="0.5"/>'
+
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.base_path = Path(self.temp_dir.name)
+
+    def tearDown(self):
+        self.temp_dir.cleanup()
+
+    def _create_package(self, name="my_robot", with_mesh=True):
+        pkg = self.base_path / name
+        (pkg / "urdf").mkdir(parents=True)
+        if with_mesh:
+            (pkg / "meshes").mkdir(parents=True)
+            (pkg / "meshes" / "link.obj").write_text(MESH_OBJ)
+        return pkg
+
+    def test_package_uri_mesh_resolution(self):
+        """Test package:// URI in mesh filename works with library and fallback."""
+        pkg = self._create_package("my_robot")
+        urdf = self.SIMPLE_URDF.format(geo=self.MESH_GEO.format(filename="package://my_robot/meshes/link.obj"))
+        (pkg / "urdf" / "robot.urdf").write_text(urdf)
+
+        with patch.dict(os.environ, {"ROS_PACKAGE_PATH": str(self.base_path)}):
+            builder = newton.ModelBuilder()
+            builder.add_urdf(str(pkg / "urdf" / "robot.urdf"), up_axis="Z")
+            self.assertEqual(builder.shape_count, 1)
+            self.assertEqual(builder.shape_type[0], GeoType.MESH)
+
+    def test_package_uri_fallback_without_library(self):
+        """Test package:// URI fallback when library is not available."""
+        pkg = self._create_package("my_robot")
+        urdf = self.SIMPLE_URDF.format(geo=self.MESH_GEO.format(filename="package://my_robot/meshes/link.obj"))
+        (pkg / "urdf" / "robot.urdf").write_text(urdf)
+
+        with patch("newton._src.utils.import_urdf.resolve_robotics_uri", None):
+            builder = newton.ModelBuilder()
+            builder.add_urdf(str(pkg / "urdf" / "robot.urdf"), up_axis="Z")
+            self.assertEqual(builder.shape_count, 1)
+            self.assertEqual(builder.shape_type[0], GeoType.MESH)
+
+    @unittest.skipUnless(resolve_robotics_uri, "resolve-robotics-uri-py not installed")
+    def test_source_uri_resolution(self):
+        """Test package:// URI in source parameter works."""
+        pkg = self._create_package("my_robot", with_mesh=False)
+        urdf = self.SIMPLE_URDF.format(geo=self.SPHERE_GEO)
+        (pkg / "urdf" / "robot.urdf").write_text(urdf)
+
+        with patch.dict(os.environ, {"ROS_PACKAGE_PATH": str(self.base_path)}):
+            builder = newton.ModelBuilder()
+            builder.add_urdf("package://my_robot/urdf/robot.urdf", up_axis="Z")
+            self.assertEqual(builder.body_count, 1)
+
+    def test_uri_requires_library_or_warns(self):
+        """Test that missing library raises/warns appropriately."""
+        with patch("newton._src.utils.import_urdf.resolve_robotics_uri", None):
+            builder = newton.ModelBuilder()
+
+            # Source URI requires library - raises ImportError
+            with self.assertRaises(ImportError) as cm:
+                builder.add_urdf("package://pkg/robot.urdf", up_axis="Z")
+            self.assertIn("resolve-robotics-uri-py", str(cm.exception))
+
+            # model:// mesh URI warns
+            urdf = self.SIMPLE_URDF.format(geo=self.MESH_GEO.format(filename="model://m/mesh.obj"))
+            with self.assertWarns(UserWarning) as cm:
+                builder.add_urdf(urdf, up_axis="Z")
+            self.assertIn("resolve-robotics-uri-py", str(cm.warning))
+
+    def test_unresolved_package_warning(self):
+        """Test warning when package cannot be found."""
+        urdf = self.SIMPLE_URDF.format(geo=self.MESH_GEO.format(filename="package://nonexistent/mesh.obj"))
+        (self.base_path / "robot.urdf").write_text(urdf)
+
+        builder = newton.ModelBuilder()
+        with self.assertWarns(UserWarning) as cm:
+            builder.add_urdf(str(self.base_path / "robot.urdf"), up_axis="Z")
+        self.assertIn("could not resolve", str(cm.warning).lower())
+        self.assertEqual(builder.shape_count, 0)
+
+    @unittest.skipUnless(resolve_robotics_uri, "resolve-robotics-uri-py not installed")
+    def test_automatic_vs_manual_resolution(self):
+        """Test automatic resolution matches manual workaround from original ticket."""
+        pkg = self._create_package("pkg")
+        mesh_path = str(pkg / "meshes" / "link.obj")
+
+        urdf_with_pkg_uri = """<robot name="r"><link name="base">
+            <visual><geometry><mesh filename="package://pkg/meshes/link.obj"/></geometry></visual>
+            <collision><geometry><mesh filename="package://pkg/meshes/link.obj"/></geometry></collision>
+        </link></robot>"""
+        (pkg / "urdf" / "robot.urdf").write_text(urdf_with_pkg_uri)
+
+        urdf_resolved = f"""<robot name="r"><link name="base">
+            <visual><geometry><mesh filename="{mesh_path}"/></geometry></visual>
+            <collision><geometry><mesh filename="{mesh_path}"/></geometry></collision>
+        </link></robot>"""
+
+        with patch.dict(os.environ, {"ROS_PACKAGE_PATH": str(self.base_path)}):
+            builder_manual = newton.ModelBuilder()
+            builder_manual.add_urdf(urdf_resolved, up_axis="Z")
+
+            builder_auto = newton.ModelBuilder()
+            builder_auto.add_urdf("package://pkg/urdf/robot.urdf", up_axis="Z")
+
+            self.assertEqual(builder_manual.shape_count, builder_auto.shape_count)
+            self.assertEqual(builder_auto.shape_count, 2)
 
 
 if __name__ == "__main__":

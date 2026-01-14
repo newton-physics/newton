@@ -33,6 +33,12 @@ from ..sim.model import ModelAttributeFrequency
 from .import_utils import parse_custom_attributes, sanitize_xml_content
 from .topology import topological_sort
 
+# Optional dependency for robust URI resolution
+try:
+    from resolve_robotics_uri_py import resolve_robotics_uri
+except ImportError:
+    resolve_robotics_uri = None
+
 
 def _download_file(dst, url: str) -> None:
     import requests  # noqa: PLC0415
@@ -57,6 +63,7 @@ def download_asset_tmpfile(url: str):
 def parse_urdf(
     builder: ModelBuilder,
     source: str,
+    *,
     xform: Transform | None = None,
     floating: bool = False,
     base_joint: dict | str | None = None,
@@ -102,6 +109,25 @@ def parse_urdf(
         xform = axis_xform
     else:
         xform = wp.transform(*xform) * axis_xform
+
+    source = os.fspath(source) if hasattr(source, "__fspath__") else source
+
+    if source.startswith(("package://", "model://")):
+        if resolve_robotics_uri is not None:
+            try:
+                source = resolve_robotics_uri(source)
+            except FileNotFoundError:
+                raise FileNotFoundError(
+                    f'Could not resolve URDF source URI "{source}". '
+                    f"Check that the package is installed and that relevant environment variables "
+                    f"(ROS_PACKAGE_PATH, AMENT_PREFIX_PATH, GZ_SIM_RESOURCE_PATH, etc.) are set correctly. "
+                    f"See https://github.com/ami-iit/resolve-robotics-uri-py for details."
+                ) from None
+        else:
+            raise ImportError(
+                f'Cannot resolve URDF source URI "{source}" without resolve-robotics-uri-py. '
+                f"Install it with: pip install resolve-robotics-uri-py"
+            )
 
     if os.path.isfile(source):
         file = ET.parse(source)
@@ -213,19 +239,66 @@ def parse_urdf(
                 filename = mesh.get("filename")
                 if filename is None:
                     continue
-                if filename.startswith("package://"):
-                    fn = filename.replace("package://", "")
-                    package_name = fn.split("/")[0]
-                    urdf_folder = os.path.dirname(source)
-                    # resolve file path from package name, i.e. find
-                    # the package folder from the URDF folder
-                    if package_name in urdf_folder:
-                        filename = os.path.join(urdf_folder[: urdf_folder.rindex(package_name)], fn)
+
+                if filename.startswith(("package://", "model://")):
+                    # Try to resolve package:// or model:// URIs
+                    if resolve_robotics_uri is not None:
+                        # Use the robust resolve-robotics-uri-py library
+                        try:
+                            if filename.startswith("package://"):
+                                fn = filename.replace("package://", "")
+                                package_name = fn.split("/")[0]
+                                parent_urdf_folder = os.path.abspath(
+                                    os.path.join(os.path.abspath(source), os.pardir, os.pardir, os.pardir)
+                                )
+                                package_dirs = [parent_urdf_folder]
+                            else:
+                                package_dirs = []
+                            filename = resolve_robotics_uri(filename, package_dirs=package_dirs)
+                        except FileNotFoundError:
+                            warnings.warn(
+                                f'Warning: could not resolve URI "{filename}". '
+                                f"Check that the package is installed and that relevant environment variables "
+                                f"(ROS_PACKAGE_PATH, AMENT_PREFIX_PATH, GZ_SIM_RESOURCE_PATH, etc.) are set correctly. "
+                                f"See https://github.com/ami-iit/resolve-robotics-uri-py for details.",
+                                stacklevel=2,
+                            )
+                            continue
                     else:
-                        warnings.warn(
-                            f'Warning: package "{package_name}" not found in URDF folder while loading mesh at "{filename}"',
-                            stacklevel=2,
-                        )
+                        # Fallback: basic resolution relative to URDF folder
+                        # Only works if source is a file path (not XML content)
+                        if not os.path.isfile(source):
+                            warnings.warn(
+                                f'Warning: cannot resolve URI "{filename}" when URDF is loaded from XML string. '
+                                f"Load URDF from a file path, or install resolve-robotics-uri-py: "
+                                f"pip install resolve-robotics-uri-py",
+                                stacklevel=2,
+                            )
+                            continue
+                        if filename.startswith("package://"):
+                            fn = filename.replace("package://", "")
+                            package_name = fn.split("/")[0]
+                            urdf_folder = os.path.dirname(source)
+                            # resolve file path from package name, i.e. find
+                            # the package folder from the URDF folder
+                            if package_name in urdf_folder:
+                                filename = os.path.join(urdf_folder[: urdf_folder.rindex(package_name)], fn)
+                            else:
+                                warnings.warn(
+                                    f'Warning: could not resolve package "{package_name}" in URI "{filename}". '
+                                    f"For robust URI resolution, install resolve-robotics-uri-py: "
+                                    f"pip install resolve-robotics-uri-py",
+                                    stacklevel=2,
+                                )
+                                continue
+                        else:
+                            # model:// URIs require the external library
+                            warnings.warn(
+                                f'Warning: cannot resolve model:// URI "{filename}" without resolve-robotics-uri-py. '
+                                f"Install it with: pip install resolve-robotics-uri-py",
+                                stacklevel=2,
+                            )
+                            continue
                 elif filename.startswith(("http://", "https://")):
                     # download mesh
                     # note that the file must be deleted after use
@@ -233,6 +306,7 @@ def parse_urdf(
                     filename = file_tmp.name
                 else:
                     filename = os.path.join(os.path.dirname(source), filename)
+
                 if not os.path.exists(filename):
                     warnings.warn(f"Warning: mesh file {filename} does not exist", stacklevel=2)
                     continue

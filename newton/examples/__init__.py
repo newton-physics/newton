@@ -292,7 +292,7 @@ def create_parser():
         "--viewer",
         type=str,
         default="gl",
-        choices=["gl", "usd", "rerun", "null"],
+        choices=["gl", "usd", "rerun", "null", "viser"],
         help="Viewer to use (gl, usd, rerun, or null).",
     )
     parser.add_argument(
@@ -336,6 +336,12 @@ def create_parser():
         action=argparse.BooleanOptionalAction,
         default=False,
         help="Use MuJoCo's native contact solver instead of Newton contacts (default: use Newton contacts).",
+    )
+    parser.add_argument(
+        "--max-worlds",
+        type=int,
+        default=None,
+        help="Maximum number of worlds to render (for performance with many environments).",
     )
 
     return parser
@@ -381,6 +387,8 @@ def init(parser=None):
         viewer = newton.viewer.ViewerRerun(address=args.rerun_address)
     elif args.viewer == "null":
         viewer = newton.viewer.ViewerNull(num_frames=args.num_frames)
+    elif args.viewer == "viser":
+        viewer = newton.viewer.ViewerViser()
     else:
         raise ValueError(f"Invalid viewer: {args.viewer}")
 
@@ -480,7 +488,7 @@ def main():
 
     # Map short names to full module paths
     example_map = {}
-    modules = ["basic", "cloth", "diffsim", "ik", "mpm", "robot", "selection", "sensors"]
+    modules = ["basic", "cable", "cloth", "diffsim", "ik", "mpm", "robot", "selection", "sensors"]
     for module in sorted(modules):
         for example in sorted(os.listdir(os.path.join(get_source_directory(), module))):
             if example.endswith(".py"):

@@ -236,6 +236,47 @@ add_example_test(
 )
 
 
+class TestCableExamples(unittest.TestCase):
+    pass
+
+
+add_example_test(
+    TestCableExamples,
+    name="cable.example_cable_bend",
+    devices=test_devices,
+    use_viewer=True,
+    test_options={"num-frames": 20},
+)
+add_example_test(
+    TestCableExamples,
+    name="cable.example_cable_bend_damping",
+    devices=test_devices,
+    use_viewer=True,
+    test_options={"num-frames": 20},
+)
+add_example_test(
+    TestCableExamples,
+    name="cable.example_cable_twist",
+    devices=test_devices,
+    use_viewer=True,
+    test_options={"num-frames": 20},
+)
+add_example_test(
+    TestCableExamples,
+    name="cable.example_cable_helix",
+    devices=test_devices,
+    use_viewer=True,
+    test_options={"num-frames": 20},
+)
+add_example_test(
+    TestCableExamples,
+    name="cable.example_cable_pile",
+    devices=test_devices,
+    use_viewer=True,
+    test_options={"num-frames": 20},
+)
+
+
 class TestClothExamples(unittest.TestCase):
     pass
 
@@ -361,6 +402,13 @@ add_example_test(
     test_options={"usd_required": True, "num-frames": 500},
     use_viewer=True,
 )
+add_example_test(
+    TestRobotExamples,
+    name="robot.example_robot_panda_hydro",
+    devices=cuda_test_devices,
+    test_options={"usd_required": True, "num-frames": 600},
+    use_viewer=True,
+)
 
 
 class TestRobotPolicyExamples(unittest.TestCase):
@@ -456,6 +504,14 @@ add_example_test(
     name="ik.example_ik_benchmark",
     devices=test_devices,
     test_options_cpu={"batch_sizes": [1, 10]},
+    use_viewer=True,
+)
+
+add_example_test(
+    TestIKExamples,
+    name="ik.example_ik_cube_stacking",
+    test_options_cuda={"num-worlds": 16, "cube-count": 2, "num-frames": 1400},  # "cube-count": 3, "num-frames": 2000
+    devices=cuda_test_devices,
     use_viewer=True,
 )
 
@@ -566,6 +622,14 @@ add_example_test(
     name="sensors.example_sensor_tiled_camera",
     devices=cuda_test_devices,
     test_options={"num-frames": 4 * 36},  # train_iters * sim_steps
+    use_viewer=True,
+)
+
+add_example_test(
+    TestSensorExamples,
+    name="sensors.example_sensor_imu",
+    devices=test_devices,
+    test_options={"num-frames": 200},  # allow cubes to settle
     use_viewer=True,
 )
 
