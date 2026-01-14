@@ -864,9 +864,24 @@ class SolverMuJoCo(SolverBase):
                 t.solref_friction = tendon_solref_friction.numpy()[i].tolist()
             if tendon_solimp_friction is not None:
                 t.solimp_friction = tendon_solimp_friction.numpy()[i].tolist()
-            # TODO: Fixed tendon springlength is not supported yet.
             if tendon_springlength is not None:
-                t.springlength = tendon_springlength.numpy()[i].tolist()
+                val = tendon_springlength.numpy()[i]
+                has_automatic_length_computation = val[0] == -1.0
+                has_dead_zone = val[1] >= val[0]
+                if has_automatic_length_computation:
+                    # The spring length is automatically computed from
+                    # start state. In this mode it is not possible to
+                    # author a dead zone.
+                    t.springlength[0] = -1.0
+                    t.springlength[1] = -1.0
+                elif has_dead_zone:
+                    # Set a finite dead zone.
+                    t.springlength[0] = val[0]
+                    t.springlength[1] = val[1]
+                else:
+                    # Set a dead zone of zero width
+                    t.springlength[0] = val[0]
+                    t.springlength[1] = val[0]
 
             # Add joints for this fixed tendon's linear combination
             joint_start = int(tendon_joint_adr[i])
