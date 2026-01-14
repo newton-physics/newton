@@ -105,7 +105,7 @@ Summary of Conventions
      - **Angular velocity** (rotation)
      - **Twist term**
    * - *Modern Robotics* — **body twist**
-     - Body origin (e.g. COM), **body frame**
+     - Body origin (chosen point; often set to COM), **body frame**
      - **Body frame**
      - "Body twist" (:math:`V_b`)
    * - *Modern Robotics* — **spatial twist**
@@ -125,7 +125,7 @@ Summary of Conventions
      - **World frame**
      - "Root" linear / angular velocity
    * - **PhysX**
-     - **COM**, **world/global frame**
+     - COM, **world/global frame**
      - **World/global frame**
      - Not named "twist"; typically treated as :math:`[\mathbf{v}_{com}^W;\ \boldsymbol{\omega}^W]`
    * - **Newton**
