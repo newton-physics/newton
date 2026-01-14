@@ -15,6 +15,8 @@
 
 from __future__ import annotations
 
+import warp as wp
+
 
 def bourke_color_map(low: float, high: float, v: float) -> list[float]:
     """Map a scalar value to an RGB color using Bourke's color ramp.
@@ -56,3 +58,36 @@ def bourke_color_map(low: float, high: float, v: float) -> list[float]:
         c[2] = 0.0
 
     return c
+
+
+@wp.kernel
+def copy_rgb_frame_uint8(
+    input_img: wp.array(dtype=wp.uint8),
+    width: int,
+    height: int,
+    output_img: wp.array(dtype=wp.uint8, ndim=3),
+):
+    """Copy a flat RGB buffer to a 3D array with vertical flip.
+
+    Converts a flat RGB uint8 buffer (as produced by OpenGL readPixels) into
+    a 3D array of shape (height, width, 3) with the image flipped vertically
+    to convert from OpenGL's bottom-left origin to top-left origin.
+
+    Launch with dim=(width, height).
+
+    Args:
+        input_img: Flat uint8 array of size (width * height * 3) containing
+            packed RGB values.
+        width: Image width in pixels.
+        height: Image height in pixels.
+        output_img: Output array of shape (height, width, 3) to write the
+            flipped RGB image.
+    """
+    w, v = wp.tid()
+    pixel = v * width + w
+    pixel *= 3
+    # flip vertically (OpenGL coordinates start at bottom)
+    v = height - v - 1
+    output_img[v, w, 0] = input_img[pixel + 0]
+    output_img[v, w, 1] = input_img[pixel + 1]
+    output_img[v, w, 2] = input_img[pixel + 2]
