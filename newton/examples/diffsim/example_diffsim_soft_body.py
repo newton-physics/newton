@@ -30,11 +30,11 @@
 import numpy as np
 import warp as wp
 import warp.optim
-from warp._src.render.utils import bourke_color_map
 
 import newton
 import newton.examples
 from newton.tests.unittest_utils import most
+from newton.utils import bourke_color_map
 
 
 @wp.kernel

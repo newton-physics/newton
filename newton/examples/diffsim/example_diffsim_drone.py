@@ -29,7 +29,6 @@ import os
 import numpy as np
 import warp as wp
 import warp.optim
-from warp._src.render.utils import bourke_color_map
 
 import newton
 import newton.examples
@@ -38,6 +37,7 @@ import newton.examples
 # For now, implementing locally.
 from newton._src.geometry.kernels import box_sdf, capsule_sdf, cone_sdf, cylinder_sdf, mesh_sdf, plane_sdf, sphere_sdf
 from newton.tests.unittest_utils import most
+from newton.utils import bourke_color_map
 
 DEFAULT_DRONE_PATH = newton.examples.get_asset("crazyflie.usd")  # Path to input drone asset
 
