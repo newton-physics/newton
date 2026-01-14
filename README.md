@@ -87,9 +87,9 @@ uv sync --extra examples
       </a>
     </td>
     <td align="center" width="33%">
-      <!-- <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/basic/example_basic_viewer.py">
-        <img src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_basic_viewer.jpg" alt="Viewer">
-      </a> -->
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/basic/example_basic_particle_chain.py">
+        <img src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_basic_particle_chain.jpg" alt="Particle Chain">
+      </a>
     </td>
   </tr>
   <tr>
@@ -100,7 +100,19 @@ uv sync --extra examples
       <code>uv run -m newton.examples basic_joints</code>
     </td>
     <td align="center">
-      <!-- <code>uv run -m newton.examples basic_viewer</code> -->
+      <code>uv run -m newton.examples basic_particle_chain</code>
+    </td>
+  </tr>
+  <tr>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/basic/example_basic_cosserat_rod.py">
+        <img src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_basic_cosserat_rod.jpg" alt="Cosserat Rod">
+      </a>
+    </td>
+  </tr>
+  <tr>
+    <td align="center">
+      <code>uv run -m newton.examples basic_cosserat_rod</code>
     </td>
   </tr>
 </table>
