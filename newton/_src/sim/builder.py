@@ -4724,6 +4724,11 @@ class ModelBuilder:
         bend_damping = 0.0 if bend_damping is None else bend_damping
 
         # Input validation
+        if stretch_stiffness < 0.0 or bend_stiffness < 0.0:
+            raise ValueError("add_rod: stretch_stiffness and bend_stiffness must be >= 0")
+
+        # Guard against near-zero lengths: segment length is used to normalize stiffness later (EA/L, EI/L).
+        min_segment_length = 1.0e-9
         num_segments = len(quaternions)
         if len(positions) != num_segments + 1:
             raise ValueError(
@@ -4750,10 +4755,10 @@ class ModelBuilder:
 
             # Calculate segment properties
             segment_length = wp.length(p1 - p0)
-            if segment_length <= 0.0:
+            if segment_length <= min_segment_length:
                 raise ValueError(
-                    f"add_rod: segment {i} has zero or negative length; "
-                    "positions must form strictly positive-length segments"
+                    f"add_rod: segment {i} has a too-small length (length={float(segment_length):.3e}); "
+                    f"segment length must be > {min_segment_length:.1e}"
                 )
             segment_lengths.append(float(segment_length))
             half_height = 0.5 * segment_length
