@@ -566,8 +566,6 @@ class SolverMuJoCo(SolverBase):
                 mjcf_attribute_name="solimpfriction",
             )
         )
-
-        # TODO: springlength probably needs special handling.
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="tendon_springlength",
@@ -596,6 +594,27 @@ class SolverMuJoCo(SolverBase):
                 dtype=wp.int32,
                 default=0,
                 namespace="mujoco",
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="tendon_actuator_force_range",
+                frequency="tendon",
+                dtype=wp.vec2,
+                default=wp.vec2(0.0, 0.0),
+                namespace="mujoco",
+                mjcf_attribute_name="actuatorfrcrange",
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="tendon_actuator_force_limited",
+                frequency="tendon",
+                dtype=wp.int32,
+                default=2,  # 0=false, 1=true, 2=auto
+                namespace="mujoco",
+                mjcf_attribute_name="actuatorfrclimited",
+                mjcf_value_transformer=parse_limited,
             )
         )
 
@@ -732,6 +751,8 @@ class SolverMuJoCo(SolverBase):
             "tendon_limited",
             "tendon_range",
             "tendon_margin",
+            "tendon_actuator_force_limited",
+            "tendon_actuator_force_range",
             "tendon_solref_limit",
             "tendon_solimp_limit",
             "tendon_solref_friction",
@@ -821,6 +842,8 @@ class SolverMuJoCo(SolverBase):
         tendon_frictionloss = getattr(mujoco_attrs, "tendon_frictionloss", None)
         tendon_limited = getattr(mujoco_attrs, "tendon_limited", None)
         tendon_range = getattr(mujoco_attrs, "tendon_range", None)
+        tendon_actuator_force_limited = getattr(mujoco_attrs, "tendon_actuator_force_limited", None)
+        tendon_actuator_force_range = getattr(mujoco_attrs, "tendon_actuator_force_range", None)
         tendon_margin = getattr(mujoco_attrs, "tendon_margin", None)
         tendon_solref_limit = getattr(mujoco_attrs, "tendon_solref_limit", None)
         tendon_solimp_limit = getattr(mujoco_attrs, "tendon_solimp_limit", None)
@@ -854,6 +877,10 @@ class SolverMuJoCo(SolverBase):
                 t.limited = int(tendon_limited.numpy()[i])
             if tendon_range is not None:
                 t.range = tendon_range.numpy()[i].tolist()
+            if tendon_actuator_force_limited is not None:
+                t.actfrclimited = int(tendon_actuator_force_limited.numpy()[i])
+            if tendon_actuator_force_range is not None:
+                t.actfrcrange = tendon_actuator_force_range.numpy()[i].tolist()
             if tendon_margin is not None:
                 t.margin = float(tendon_margin.numpy()[i])
             if tendon_solref_limit is not None:

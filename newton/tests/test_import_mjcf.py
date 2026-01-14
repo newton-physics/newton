@@ -761,6 +761,8 @@ class TestImportMjcf(unittest.TestCase):
         solimplimit="0.7 0.85 0.002 0.3 1.8"
         solreffriction="0.055 1.2"
         solimpfriction="0.3 0.4 0.006 0.5 1.4"
+        actuatorfrcrange="-2.2 2.2"
+        actuatorfrclimited="true"
    		springlength="3.0 3.5">
       <joint joint="joint1" coef="8"/>
       <joint joint="joint2" coef="-8"/>
@@ -779,6 +781,8 @@ class TestImportMjcf(unittest.TestCase):
         frictionloss="2.8"
         solimplimit="0.8 0.85 0.003 0.4 1.9"
         solimpfriction="0.35 0.45 0.004 0.5 1.2"
+        actuatorfrclimited="false"
+        actuatorfrcrange="-3.3 3.3"
    		springlength="6.0">
       <joint joint="joint1" coef="9"/>
       <joint joint="joint2" coef="9"/>
@@ -807,6 +811,8 @@ class TestImportMjcf(unittest.TestCase):
         vec5 = wp.types.vector(5, wp.float32)
         expected_solimplimit = [[vec5(0.7, 0.85, 0.002, 0.3, 1.8), vec5(0.8, 0.85, 0.003, 0.4, 1.9)]]
         expected_solimpfriction = [[vec5(0.3, 0.4, 0.006, 0.5, 1.4), vec5(0.35, 0.45, 0.004, 0.5, 1.2)]]
+        expected_actuator_force_range = [[wp.vec2(-2.2, 2.2), wp.vec2(-3.3, 3.3)]]
+
         for i in range(0, 1):
             for j in range(0, 2):
                 # Check the stiffness
@@ -915,8 +921,20 @@ class TestImportMjcf(unittest.TestCase):
                         msg=f"Expected solimpfriction[{k}] value: {expected_float}, Measured value: {measured_float}",
                     )
 
+                # Check the actuator force range
+                for k in range(0, 2):
+                    expected_float = expected_actuator_force_range[i][j][k]
+                    measured_float = solver.mjw_model.tendon_actfrcrange.numpy()[i][j][k]
+                    self.assertAlmostEqual(
+                        measured_float,
+                        expected_float,
+                        places=4,
+                        msg=f"Expected range[{k}] value: {expected_float}, Measured value: {measured_float}",
+                    )
+
         expected_num = [2, 2]
         expected_limited = [0, 1]
+        expected_actfrc_limited = [1, 0]
         for i in range(0, 2):
             # Check the offsets that determine where the joint list starts for each tendon
             expected_int = expected_num[i]
@@ -934,6 +952,15 @@ class TestImportMjcf(unittest.TestCase):
                 measured_float,
                 expected_float,
                 msg=f"Expected tendon limited value: {expected_int}, Measured value: {measured_int}",
+            )
+
+            # Check the limited attribute
+            expected_int = expected_actfrc_limited[i]
+            measured_int = solver.mjw_model.tendon_actfrclimited.numpy()[i]
+            self.assertEqual(
+                measured_float,
+                expected_float,
+                msg=f"Expected tendon actuator force limited value: {expected_int}, Measured value: {measured_int}",
             )
 
     def test_solimplimit_parsing(self):
