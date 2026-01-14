@@ -17,6 +17,8 @@ import gc
 import os
 import sys
 
+from asv_runner.benchmarks.mark import skip_for_params
+
 # Force headless mode for CI environments before any pyglet imports
 os.environ["PYGLET_HEADLESS"] = "1"
 
@@ -124,9 +126,11 @@ class FastInitializeModel:
 
     def setup_cache(self):
         # Load a small model to cache the kernels
-        builder = Example.create_model_builder("cartpole", 1, randomize=False, seed=123)
-        model = builder.finalize(device="cpu")
-        del model
+        for robot in self.params[0]:
+            builder = Example.create_model_builder(robot, 1, randomize=False, seed=123)
+            model = builder.finalize(device="cpu")
+            del model
+            del builder
 
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
     def time_initialize_model(self, robot, num_worlds):
