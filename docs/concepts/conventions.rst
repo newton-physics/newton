@@ -84,8 +84,25 @@ Newton Conventions
 
 **Newton** follows the standard physics engine convention for most solvers,
 aligning with Isaac Lab's approach.
-Newton's :attr:`State.body_qd` stores **both** linear and angular velocities
-in the world frame. The linear velocity represents the COM velocity in world
+Newton's :attr:`State.body_qd <newton.State.body_qd>` stores **both** linear and angular velocities
+in the world frame.
+
+.. code-block:: python
+
+  @wp.kernel
+  def get_body_twist(body_qd: wp.array(dtype=wp.spatial_vector)):
+    body_id = wp.tid()
+    # body_qd is a 6D wp.spatial_vector in world frame
+    twist = body_qd[body_id]
+    # linear velocity is the velocity of the body's center of mass in world frame
+    linear_velocity = twist[0:3]
+    # angular velocity is the angular velocity of the body in world frame
+    angular_velocity = twist[3:6]
+
+  wp.launch(get_body_twist, dim=model.body_count, inputs=[state.body_qd])
+
+
+The linear velocity represents the COM velocity in world
 coordinates, while the angular velocity is also expressed in world coordinates.
 This matches the Isaac Lab convention exactly. Note that Newton will automatically
 convert from this convention to MuJoCo's mixed-frame format when using the
@@ -98,7 +115,7 @@ Summary of Conventions
 
 .. list-table::
    :header-rows: 1
-   :widths: 28 33 27 22
+   :widths: 28 27 27 18
 
    * - **System**
      - **Linear velocity (translation)**
@@ -128,16 +145,16 @@ Summary of Conventions
      - COM, world frame
      - World frame
      - Not named "twist"; typically treated as :math:`[\mathbf{v}_{com}^W;\ \boldsymbol{\omega}^W]`
-   * - **Newton**
+   * - **Newton** (except Featherstone solver, see below)
      - COM, world frame
      - World frame
-     - Physics engine convention
+     - :attr:`~newton.State.body_qd`
 
 .. warning::
 
   **SolverFeatherstone Velocity Convention Limitation**
 
-  The Featherstone solver (``SolverFeatherstone``) uses body origin velocity internally
+  The Featherstone solver (:class:`~newton.solvers.SolverFeatherstone`) uses body origin velocity internally
   in its dynamics equations, rather than CoM velocity. While Newton converts velocities
   at the solver boundary for ``joint_qd`` and ``body_qd``, the internal Featherstone
   algorithm—including the motion subspace matrix and force computations—operates in
@@ -147,7 +164,7 @@ Summary of Conventions
   behavior when applying angular velocity (i.e. ``joint_qd`` to the respective body's free joint):
   the body may not rotate purely about its CoM. Linear velocity handling is correct.
 
-  Other Newton solvers (``SolverMuJoCo``, ``SolverXPBD``, ``SolverSemiImplicit``)
+  Other Newton solvers (:class:`~newton.solvers.SolverMuJoCo`, :class:`~newton.solvers.SolverXPBD`, :class:`~newton.solvers.SolverSemiImplicit`)
   correctly handle CoM-centric rotation for all CoM offsets. If you require accurate
   angular velocity dynamics with non-zero CoM offsets, prefer one of these solvers.
 
