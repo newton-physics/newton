@@ -17,6 +17,7 @@ import warnings
 from dataclasses import dataclass
 
 import numpy as np
+import warp as wp
 
 # Default number of segments for mesh generation
 default_num_segments = 32
@@ -621,3 +622,133 @@ def create_plane_mesh(width, length):
     ]
 
     return (np.array(vertices, dtype=np.float32), np.array(indices, dtype=np.uint32))
+
+
+@wp.kernel
+def solidify_mesh_kernel(
+    indices: wp.array(dtype=int, ndim=2),
+    vertices: wp.array(dtype=wp.vec3, ndim=1),
+    thickness: wp.array(dtype=float, ndim=1),
+    # outputs
+    out_vertices: wp.array(dtype=wp.vec3, ndim=1),
+    out_indices: wp.array(dtype=int, ndim=2),
+):
+    """Extrude each triangle into a triangular prism (wedge) for solidification.
+
+    For each input triangle, creates 6 vertices (3 on each side of the surface)
+    and 8 output triangles forming a closed wedge. The extrusion is along the
+    face normal, with per-vertex thickness values.
+
+    Launch with dim=num_triangles.
+
+    Args:
+        indices: Triangle indices of shape (num_triangles, 3).
+        vertices: Vertex positions of shape (num_vertices,).
+        thickness: Per-vertex thickness values of shape (num_vertices,).
+        out_vertices: Output vertices of shape (num_vertices * 2,). Each input
+            vertex produces two output vertices (offset ± thickness along normal).
+        out_indices: Output triangle indices of shape (num_triangles * 8, 3).
+    """
+    tid = wp.tid()
+    i = indices[tid, 0]
+    j = indices[tid, 1]
+    k = indices[tid, 2]
+
+    vi = vertices[i]
+    vj = vertices[j]
+    vk = vertices[k]
+
+    normal = wp.normalize(wp.cross(vj - vi, vk - vi))
+    ti = normal * thickness[i]
+    tj = normal * thickness[j]
+    tk = normal * thickness[k]
+
+    # wedge vertices
+    vi0 = vi + ti
+    vi1 = vi - ti
+    vj0 = vj + tj
+    vj1 = vj - tj
+    vk0 = vk + tk
+    vk1 = vk - tk
+
+    i0 = i * 2
+    i1 = i * 2 + 1
+    j0 = j * 2
+    j1 = j * 2 + 1
+    k0 = k * 2
+    k1 = k * 2 + 1
+
+    out_vertices[i0] = vi0
+    out_vertices[i1] = vi1
+    out_vertices[j0] = vj0
+    out_vertices[j1] = vj1
+    out_vertices[k0] = vk0
+    out_vertices[k1] = vk1
+
+    oid = tid * 8
+    out_indices[oid + 0, 0] = i0
+    out_indices[oid + 0, 1] = j0
+    out_indices[oid + 0, 2] = k0
+    out_indices[oid + 1, 0] = j0
+    out_indices[oid + 1, 1] = k1
+    out_indices[oid + 1, 2] = k0
+    out_indices[oid + 2, 0] = j0
+    out_indices[oid + 2, 1] = j1
+    out_indices[oid + 2, 2] = k1
+    out_indices[oid + 3, 0] = j0
+    out_indices[oid + 3, 1] = i1
+    out_indices[oid + 3, 2] = j1
+    out_indices[oid + 4, 0] = j0
+    out_indices[oid + 4, 1] = i0
+    out_indices[oid + 4, 2] = i1
+    out_indices[oid + 5, 0] = j1
+    out_indices[oid + 5, 1] = i1
+    out_indices[oid + 5, 2] = k1
+    out_indices[oid + 6, 0] = i1
+    out_indices[oid + 6, 1] = i0
+    out_indices[oid + 6, 2] = k0
+    out_indices[oid + 7, 0] = i1
+    out_indices[oid + 7, 1] = k0
+    out_indices[oid + 7, 2] = k1
+
+
+def solidify_mesh(
+    faces: np.ndarray,
+    vertices: np.ndarray,
+    thickness: float | list | np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Convert a surface mesh into a solid mesh by extruding along face normals.
+
+    Takes a triangle mesh representing a surface and creates a closed solid
+    mesh by extruding each triangle into a triangular prism (wedge). Each input
+    triangle produces 8 output triangles forming the top, bottom, and sides
+    of the prism.
+
+    Args:
+        faces: Triangle indices of shape (N, 3), where N is the number of
+            triangles.
+        vertices: Vertex positions of shape (M, 3), where M is the number of
+            vertices.
+        thickness: Extrusion distance from the surface. Can be a single float
+            (uniform thickness), a list, or an array of shape (M,) for
+            per-vertex thickness.
+
+    Returns:
+        A tuple containing:
+            - faces: Output triangle indices of shape (N * 8, 3).
+            - vertices: Output vertex positions of shape (M * 2, 3).
+    """
+    faces = np.array(faces).reshape(-1, 3)
+    out_faces = wp.zeros((len(faces) * 8, 3), dtype=wp.int32)
+    out_vertices = wp.zeros(len(vertices) * 2, dtype=wp.vec3)
+    if not isinstance(thickness, np.ndarray) and not isinstance(thickness, list):
+        thickness = [thickness] * len(vertices)
+    wp.launch(
+        solidify_mesh_kernel,
+        dim=len(faces),
+        inputs=[wp.array(faces, dtype=int), wp.array(vertices, dtype=wp.vec3), wp.array(thickness, dtype=float)],
+        outputs=[out_vertices, out_faces],
+    )
+    faces = out_faces.numpy()
+    vertices = out_vertices.numpy()
+    return faces, vertices
