@@ -1196,7 +1196,7 @@ class ViewerBase:
             material = wp.vec4(0.5, 0.0, 0.0, 0.0)  # roughness, metallic, checker, unused
 
             # add render instance
-            batch.add(parent, xform, scale, color, material, body_world[body])
+            batch.add(parent, xform, scale, color, material, body, body_world[body])
 
         # batch to the GPU
         batch.finalize()
