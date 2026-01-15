@@ -730,14 +730,14 @@ class TestImportMjcf(unittest.TestCase):
     <!-- Root body (fixed to world) -->
     <body name="root" pos="0 0 0">
       <geom type="box" size="0.1 0.1 0.1" rgba="0.5 0.5 0.5 1"/>
-      
+
       <!-- First child link with prismatic joint along x -->
       <body name="link1" pos="0.0 -0.5 0">
         <joint name="joint1" type="slide" axis="1 0 0" range="-50.5 50.5"/>
         <geom solmix="1.0" type="cylinder" size="0.05 0.025" rgba="1 0 0 1" euler="0 90 0"/>
         <inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/>
       </body>
-      
+
       <!-- Second child link with prismatic joint along x -->
       <body name="link2" pos="-0.0 -0.7 0">
         <joint name="joint2" type="slide" axis="1 0 0" range="-50.5 50.5"/>
@@ -750,11 +750,11 @@ class TestImportMjcf(unittest.TestCase):
 
   <!-- Fixed tendon coupling joint1 and joint2 -->
   <tendon>
-   	<fixed 
-		name="coupling_tendon" 
+    <fixed
+		name="coupling_tendon"
         limited="false"
-		stiffness="1.0" 
-		damping="2.0" 
+		stiffness="1.0"
+		damping="2.0"
         margin="0.1"
         frictionloss="2.6"
         solreflimit="0.04 1.1"
@@ -764,20 +764,20 @@ class TestImportMjcf(unittest.TestCase):
         actuatorfrcrange="-2.2 2.2"
         actuatorfrclimited="true"
         armature="0.13"
-   		springlength="3.0 3.5">
+        springlength="3.0 3.5">
       <joint joint="joint1" coef="8"/>
       <joint joint="joint2" coef="-8"/>
     </fixed>
 
     <!-- Fixed tendon coupling joint1 and joint2 -->
-   	<fixed 
-		name="coupling_tendon_reversed" 
+    <fixed
+		name="coupling_tendon_reversed"
         limited="true"
         solreflimit="0.05 1.2"
         solreffriction="0.07 1.5"
         range="-10.0 11.0"
-   		stiffness="4.0" 
-		damping="5.0" 
+        stiffness="4.0"
+		damping="5.0"
         margin="0.3"
         frictionloss="2.8"
         solimplimit="0.8 0.85 0.003 0.4 1.9"
@@ -785,12 +785,12 @@ class TestImportMjcf(unittest.TestCase):
         actuatorfrclimited="false"
         actuatorfrcrange="-3.3 3.3"
         armature="0.23"
-   		springlength="6.0">
+        springlength="6.0">
       <joint joint="joint1" coef="9"/>
       <joint joint="joint2" coef="9"/>
     </fixed>
   </tendon>
-  
+
 </mujoco>
 """
 
@@ -985,14 +985,14 @@ class TestImportMjcf(unittest.TestCase):
     <!-- Root body (fixed to world) -->
     <body name="root" pos="0 0 0">
       <geom type="box" size="0.1 0.1 0.1" rgba="0.5 0.5 0.5 1"/>
-      
+
       <!-- First child link with prismatic joint along x -->
       <body name="link1" pos="0.0 -0.5 0">
         <joint name="joint1" type="slide" axis="1 0 0" range="-50.5 50.5"/>
         <geom solmix="1.0" type="cylinder" size="0.05 0.025" rgba="1 0 0 1" euler="0 90 0"/>
         <inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/>
       </body>
-      
+
       <!-- Second child link with prismatic joint along x -->
       <body name="link2" pos="-0.0 -0.7 0">
         <joint name="joint2" type="slide" axis="1 0 0" range="-50.5 50.5"/>
@@ -1005,7 +1005,7 @@ class TestImportMjcf(unittest.TestCase):
 
   <tendon>
     <!-- Fixed tendon coupling joint1 and joint2 -->
-	<fixed 
+	<fixed
 		name="coupling_tendon">
       <joint joint="joint1" coef="1"/>
       <joint joint="joint2" coef="-1"/>
@@ -1014,12 +1014,12 @@ class TestImportMjcf(unittest.TestCase):
 
   <tendon>
     <!-- Fixed tendon coupling joint1 and joint2 -->
-	<fixed 
-		name="coupling_tendon_reversed"> 
+	<fixed
+		name="coupling_tendon_reversed">
       <joint joint="joint1" coef="1"/>
       <joint joint="joint2" coef="1"/>
     </fixed>
-  </tendon>  
+  </tendon>
 </mujoco>
 """
 
@@ -1216,14 +1216,14 @@ class TestImportMjcf(unittest.TestCase):
     <!-- Root body (fixed to world) -->
     <body name="root" pos="0 0 0">
       <geom type="box" size="0.1 0.1 0.1" rgba="0.5 0.5 0.5 1"/>
-      
+
       <!-- First child link with prismatic joint along x -->
       <body name="link1" pos="0.0 -0.5 0">
         <joint name="joint1" type="slide" axis="1 0 0" range="-50.5 50.5"/>
         <geom solmix="1.0" type="cylinder" size="0.05 0.025" rgba="1 0 0 1" euler="0 90 0"/>
         <inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/>
       </body>
-      
+
       <!-- Second child link with prismatic joint along x -->
       <body name="link2" pos="-0.0 -0.7 0">
         <joint name="joint2" type="slide" axis="1 0 0" range="-50.5 50.5"/>
@@ -1236,8 +1236,8 @@ class TestImportMjcf(unittest.TestCase):
 
   <tendon>
     <!-- Fixed tendon coupling joint1 and joint2 -->
-	<fixed 
-	   range="-10.0 11.0"
+	<fixed
+        range="-10.0 11.0"
        actuatorfrcrange="-2.2 2.2"
        name="coupling_tendon1">
       <joint joint="joint1" coef="1"/>
@@ -1247,30 +1247,30 @@ class TestImportMjcf(unittest.TestCase):
 
   <tendon>
     <!-- Fixed tendon coupling joint1 and joint2 -->
-	<fixed 
+	<fixed
         limited="true"
         range="-12.0 13.0"
-        actuatorfrclimited="true"       
+        actuatorfrclimited="true"
         actuatorfrcrange="-3.3 3.3"
-   		name="coupling_tendon2"> 
+        name="coupling_tendon2">
       <joint joint="joint1" coef="1"/>
       <joint joint="joint2" coef="1"/>
     </fixed>
-  </tendon>  
+  </tendon>
 
   <tendon>
     <!-- Fixed tendon coupling joint1 and joint2 -->
-	<fixed 
+	<fixed
         limited="false"
         range="-14.0 15.0"
-        actuatorfrclimited="false"       
+        actuatorfrclimited="false"
         actuatorfrcrange="-4.4 4.4"
-		name="coupling_tendon3"> 
+		name="coupling_tendon3">
       <joint joint="joint1" coef="2"/>
       <joint joint="joint2" coef="3"/>
     </fixed>
-  </tendon>  
-  
+  </tendon>
+
 </mujoco>
 """
 
@@ -1341,6 +1341,81 @@ class TestImportMjcf(unittest.TestCase):
                 expected,
                 msg=f"Expected tendon actuator force limited value: {expected}, Measured value: {measured}",
             )
+
+    def test_single_mujoco_fixed_tendon_auto_springlength(self):
+        """Test that springlength=-1 auto-computes the spring length from initial joint positions.
+
+        When springlength first param is -1, MuJoCo auto-computes the spring length from
+        the initial joint state (qpos0) using: tendon_length = coeff0 * q0 + coeff1 * q1.
+        The computed value is stored in tendon_length0.
+
+        We set model.joint_q before the SolverMuJoCo constructor to ensure the spring
+        length is computed from non-zero initial positions.
+        """
+        mjcf = """<?xml version="1.0" ?>
+<mujoco>
+    <worldbody>
+    <!-- Root body (fixed to world) -->
+    <body name="root" pos="0 0 0">
+      <geom type="box" size="0.1 0.1 0.1" rgba="0.5 0.5 0.5 1"/>
+
+      <!-- First child link with prismatic joint along x -->
+      <body name="link1" pos="0.0 -0.5 0">
+        <joint name="joint1" type="slide" axis="1 0 0" range="-50.5 50.5"/>
+        <geom solmix="1.0" type="cylinder" size="0.05 0.025" rgba="1 0 0 1" euler="0 90 0"/>
+        <inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/>
+      </body>
+
+      <!-- Second child link with prismatic joint along x -->
+      <body name="link2" pos="-0.0 -0.7 0">
+        <joint name="joint2" type="slide" axis="1 0 0" range="-50.5 50.5"/>
+        <geom type="cylinder" size="0.05 0.025" rgba="0 0 1 1" euler="0 90 0"/>
+        <inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/>
+      </body>
+
+    </body>
+  </worldbody>
+
+  <tendon>
+    <!-- Fixed tendon with auto-computed spring length (springlength=-1) -->
+    <fixed
+        name="auto_length_tendon"
+        stiffness="1.0"
+        damping="0.5"
+        springlength="-1">
+      <joint joint="joint1" coef="2"/>
+      <joint joint="joint2" coef="3"/>
+    </fixed>
+  </tendon>
+
+</mujoco>
+"""
+
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_mjcf(mjcf)
+        model = builder.finalize()
+
+        # Set initial joint positions BEFORE the SolverMuJoCo constructor
+        q0 = 0.5
+        q1 = 0.7
+        model.joint_q.assign([q0, q1])
+
+        solver = SolverMuJoCo(model, iterations=10, ls_iterations=10)
+
+        # Expected tendon length from initial joint positions: coef0*q0 + coef1*q1
+        coef0 = 2.0
+        coef1 = 3.0
+        expected_tendon_length0 = coef0 * q0 + coef1 * q1  # 2*0.5 + 3*0.7 = 3.1
+
+        # Verify tendon_length0 is computed from initial joint positions
+        measured_tendon_length0 = solver.mj_model.tendon_length0[0]
+        self.assertAlmostEqual(
+            measured_tendon_length0,
+            expected_tendon_length0,
+            places=4,
+            msg=f"Expected tendon_length0: {expected_tendon_length0}, Measured: {measured_tendon_length0}",
+        )
 
     def test_solimplimit_parsing(self):
         """Test that solimplimit attribute is parsed correctly from MJCF."""

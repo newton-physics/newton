@@ -25,21 +25,21 @@ class TestMujocoFixedTendon(unittest.TestCase):
         mjcf = """<?xml version="1.0" ?>
 <mujoco model="two_prismatic_links">
   <compiler angle="degree"/>
-  
+
   <option timestep="0.002" gravity="0 0 -9.81"/>
-  
+
   <worldbody>
     <!-- Root body (fixed to world) -->
     <body name="root" pos="0 0 0">
       <geom type="box" size="0.1 0.1 0.1" rgba="0.5 0.5 0.5 1"/>
-      
+
       <!-- First child link with prismatic joint along x -->
       <body name="link1" pos="0.0 -0.5 0">
         <joint name="joint1" type="slide" axis="1 0 0" range="-50.5 50.5"/>
         <geom solmix="1.0" type="cylinder" size="0.05 0.025" rgba="1 0 0 1" euler="0 90 0"/>
         <inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/>
       </body>
-      
+
       <!-- Second child link with prismatic joint along x -->
       <body name="link2" pos="-0.0 -0.7 0">
         <joint name="joint2" type="slide" axis="1 0 0" range="-50.5 50.5"/>
@@ -51,10 +51,10 @@ class TestMujocoFixedTendon(unittest.TestCase):
 
   <tendon>
     <!-- Fixed tendon coupling joint1 and joint2 -->
-	<fixed 
-		name="coupling_tendon" 
-		stiffness="2" 
-		damping="1" 
+	<fixed
+		name="coupling_tendon"
+		stiffness="2"
+		damping="1"
 		springlength="0.0">
       <joint joint="joint1" coef="1"/>
       <joint joint="joint2" coef="1"/>
@@ -87,7 +87,7 @@ class TestMujocoFixedTendon(unittest.TestCase):
         joint_start_positions = [0.5, 0.0]
         state_in.joint_q.assign(joint_start_positions)
 
-        for i in range(0, 200):
+        for _i in range(0, 200):
             solver.step(state_in=state_in, state_out=state_out, contacts=contacts, control=control, dt=dt)
             state_in, state_out = state_out, state_in
 
