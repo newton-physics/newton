@@ -1189,7 +1189,6 @@ class TestImportMjcf(unittest.TestCase):
             )
 
             # Check the limited attribute
-            thing0 = solver.mjw_model.tendon_limited.numpy()
             expected = expected_limited[i]
             measured = solver.mjw_model.tendon_limited.numpy()[i]
             self.assertEqual(
@@ -1199,7 +1198,140 @@ class TestImportMjcf(unittest.TestCase):
             )
 
             # Check the actuation force limited attribute
-            thing = solver.mjw_model.tendon_actfrclimited.numpy()
+            expected = expected_actfrc_limited[i]
+            measured = solver.mjw_model.tendon_actfrclimited.numpy()[i]
+            self.assertEqual(
+                measured,
+                expected,
+                msg=f"Expected tendon actuator force limited value: {expected}, Measured value: {measured}",
+            )
+
+    def test_single_mujoco_fixed_tendon_limit_parsing(self):
+        """Test that tendons work"""
+        mjcf = """<?xml version="1.0" ?>
+<mujoco>
+    <worldbody>
+    <!-- Root body (fixed to world) -->
+    <body name="root" pos="0 0 0">
+      <geom type="box" size="0.1 0.1 0.1" rgba="0.5 0.5 0.5 1"/>
+      
+      <!-- First child link with prismatic joint along x -->
+      <body name="link1" pos="0.0 -0.5 0">
+        <joint name="joint1" type="slide" axis="1 0 0" range="-50.5 50.5"/>
+        <geom solmix="1.0" type="cylinder" size="0.05 0.025" rgba="1 0 0 1" euler="0 90 0"/>
+        <inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/>
+      </body>
+      
+      <!-- Second child link with prismatic joint along x -->
+      <body name="link2" pos="-0.0 -0.7 0">
+        <joint name="joint2" type="slide" axis="1 0 0" range="-50.5 50.5"/>
+        <geom type="cylinder" size="0.05 0.025" rgba="0 0 1 1" euler="0 90 0"/>
+        <inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/>
+      </body>
+
+    </body>
+  </worldbody>
+
+  <tendon>
+    <!-- Fixed tendon coupling joint1 and joint2 -->
+	<fixed 
+	   range="-10.0 11.0"
+       actuatorfrcrange="-2.2 2.2"
+       name="coupling_tendon1">
+      <joint joint="joint1" coef="1"/>
+      <joint joint="joint2" coef="-1"/>
+    </fixed>
+  </tendon>
+
+  <tendon>
+    <!-- Fixed tendon coupling joint1 and joint2 -->
+	<fixed 
+        limited="true"
+        range="-12.0 13.0"
+        actuatorfrclimited="true"       
+        actuatorfrcrange="-3.3 3.3"
+   		name="coupling_tendon2"> 
+      <joint joint="joint1" coef="1"/>
+      <joint joint="joint2" coef="1"/>
+    </fixed>
+  </tendon>  
+
+  <tendon>
+    <!-- Fixed tendon coupling joint1 and joint2 -->
+	<fixed 
+        limited="false"
+        range="-14.0 15.0"
+        actuatorfrclimited="false"       
+        actuatorfrcrange="-4.4 4.4"
+		name="coupling_tendon3"> 
+      <joint joint="joint1" coef="2"/>
+      <joint joint="joint2" coef="3"/>
+    </fixed>
+  </tendon>  
+  
+</mujoco>
+"""
+
+        # Newton hard-codes spec.compiler.automlimits=1.
+        # 1) With automlimits=1 we should not have to specify limited="true" on each tendon. It should be sufficient
+        # just to set the range. coupling_tendon1 is the test for this.
+        # 2) With compiler.autolimits=1 it shouldn't matter if we do specify limited="true.  We should still end up
+        # with an active limit with limited="true". coupling_tendon2 is the test for this.
+        # 3) With compiler.autolimits=1  and limited="false" we should end up with an inactive limit. coupling_tendon3
+        # is the test for this.
+        # 4) repeat the test with actuatorfrclimited.
+
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_mjcf(mjcf)
+        model = builder.finalize()
+        solver = SolverMuJoCo(model, iterations=10, ls_iterations=10)
+
+        springlength0 = solver.mjw_model.tendon_length0.numpy()
+
+        # Note default spring length is -1 but ends up being 0.
+
+        # 1 articulation
+        # 3 tendons
+        expected_range = [[wp.vec2(-10.0, 11.0), wp.vec2(-12.0, 13.0), wp.vec2(-14.0, 15.0)]]
+        expected_actuator_force_range = [[wp.vec2(-2.2, 2.2), wp.vec2(-3.3, 3.3), wp.vec2(-4.4, 4.4)]]
+        for i in range(0, 1):
+            for j in range(0, 3):
+                # Check the range
+                for k in range(0, 2):
+                    expected = expected_range[i][j][k]
+                    measured = solver.mjw_model.tendon_range.numpy()[i][j][k]
+                    self.assertAlmostEqual(
+                        measured,
+                        expected,
+                        places=4,
+                        msg=f"Expected range[{k}] value: {expected}, Measured value: {measured}",
+                    )
+
+                # Check the actuator force range
+                for k in range(0, 2):
+                    expected = expected_actuator_force_range[i][j][k]
+                    measured = solver.mjw_model.tendon_actfrcrange.numpy()[i][j][k]
+                    self.assertAlmostEqual(
+                        measured,
+                        expected,
+                        places=4,
+                        msg=f"Expected range[{k}] value: {expected}, Measured value: {measured}",
+                    )
+
+        expected_limited = [1, 1, 0]
+        expected_actfrc_limited = [1, 1, 0]
+        for i in range(0, 3):
+            # Check the limited attribute
+            expected = expected_limited[i]
+            measured = solver.mjw_model.tendon_limited.numpy()[i]
+            self.assertEqual(
+                measured,
+                expected,
+                msg=f"Expected tendon limited value: {expected}, Measured value: {measured}",
+            )
+
+            # Check the actuation force limited attribute
             expected = expected_actfrc_limited[i]
             measured = solver.mjw_model.tendon_actfrclimited.numpy()[i]
             self.assertEqual(
