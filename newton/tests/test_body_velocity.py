@@ -37,6 +37,7 @@ import numpy as np
 import warp as wp
 
 import newton
+from newton._src.viewer.kernels import compute_com_positions
 from newton.tests.unittest_utils import add_function_test, get_test_devices
 
 
@@ -44,10 +45,17 @@ class TestBodyVelocity(unittest.TestCase):
     pass
 
 
-def compute_com_world_position(body_q: np.ndarray, body_com: np.ndarray) -> np.ndarray:
+def compute_com_world_position(body_q, body_com, body_world, world_offsets=None, body_index: int = 0) -> np.ndarray:
     """Compute the center of mass position in world frame."""
-    result = wp.transform_point(wp.transform(*body_q), wp.vec3(*body_com))
-    return np.array([result[0], result[1], result[2]])
+    com_world = wp.zeros(body_q.shape[0], dtype=wp.vec3, device=body_q.device)
+    wp.launch(
+        kernel=compute_com_positions,
+        dim=body_q.shape[0],
+        inputs=[body_q, body_com, body_world, world_offsets],
+        outputs=[com_world],
+        device=body_q.device,
+    )
+    return com_world.numpy()[body_index]
 
 
 def test_angular_velocity_com_stationary(
@@ -107,8 +115,7 @@ def test_angular_velocity_com_stationary(
 
     # Get initial CoM position in world frame
     body_q_initial = state_0.body_q.numpy()[0].copy()
-    body_com = np.array(com_offset)
-    com_initial = compute_com_world_position(body_q_initial, body_com)
+    com_initial = compute_com_world_position(state_0.body_q, model.body_com, model.body_world)
 
     # Step simulation
     sim_dt = 0.01
@@ -120,7 +127,7 @@ def test_angular_velocity_com_stationary(
 
     # Get final CoM position
     body_q_final = state_0.body_q.numpy()[0]
-    com_final = compute_com_world_position(body_q_final, body_com)
+    com_final = compute_com_world_position(state_0.body_q, model.body_com, model.body_world)
 
     # CoM should stay stationary (within numerical tolerance)
     com_drift = np.linalg.norm(com_final - com_initial)
@@ -189,9 +196,7 @@ def test_linear_velocity_com_moves(
         state_0.body_qd.assign(velocity.reshape(1, 6))
 
     # Get initial CoM position
-    body_q_initial = state_0.body_q.numpy()[0]
-    body_com = np.array(com_offset)
-    com_initial = compute_com_world_position(body_q_initial, body_com)
+    com_initial = compute_com_world_position(state_0.body_q, model.body_com, model.body_world)
 
     # Step simulation
     sim_dt = 0.01
@@ -203,8 +208,7 @@ def test_linear_velocity_com_moves(
         state_0, state_1 = state_1, state_0
 
     # Get final CoM position
-    body_q_final = state_0.body_q.numpy()[0]
-    com_final = compute_com_world_position(body_q_final, body_com)
+    com_final = compute_com_world_position(state_0.body_q, model.body_com, model.body_world)
 
     # Expected displacement = velocity * time
     expected_displacement = np.array(linear_velocity) * total_time
@@ -269,8 +273,7 @@ def test_combined_velocity(
 
     # Get initial CoM position
     body_q_initial = state_0.body_q.numpy()[0].copy()
-    body_com = np.array(com_offset)
-    com_initial = compute_com_world_position(body_q_initial, body_com)
+    com_initial = compute_com_world_position(state_0.body_q, model.body_com, model.body_world)
 
     # Step simulation
     sim_dt = 0.01
@@ -283,7 +286,7 @@ def test_combined_velocity(
 
     # Get final CoM position
     body_q_final = state_0.body_q.numpy()[0]
-    com_final = compute_com_world_position(body_q_final, body_com)
+    com_final = compute_com_world_position(state_0.body_q, model.body_com, model.body_world)
 
     # Expected displacement = linear_velocity * time (rotation shouldn't affect CoM position)
     expected_displacement = np.array(linear_velocity) * total_time

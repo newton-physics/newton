@@ -36,6 +36,7 @@ import numpy as np
 import warp as wp
 
 import newton
+from newton._src.viewer.kernels import compute_com_positions
 from newton.tests.unittest_utils import add_function_test, get_test_devices
 
 
@@ -43,10 +44,17 @@ class TestBodyForce(unittest.TestCase):
     pass
 
 
-def compute_com_world_position(body_q: np.ndarray, body_com: np.ndarray) -> np.ndarray:
+def compute_com_world_position(body_q, body_com, body_world, world_offsets=None, body_index: int = 0) -> np.ndarray:
     """Compute the center of mass position in world frame."""
-    result = wp.transform_point(wp.transform(*body_q), wp.vec3(*body_com))
-    return np.array([result[0], result[1], result[2]])
+    com_world = wp.zeros(body_q.shape[0], dtype=wp.vec3, device=body_q.device)
+    wp.launch(
+        kernel=compute_com_positions,
+        dim=body_q.shape[0],
+        inputs=[body_q, body_com, body_world, world_offsets],
+        outputs=[com_world],
+        device=body_q.device,
+    )
+    return com_world.numpy()[body_index]
 
 
 def test_floating_body(test: TestBodyForce, device, solver_fn, test_angular=True, up_axis=newton.Axis.Y):
@@ -259,16 +267,6 @@ for device in devices:
 #
 # These tests verify that forces and torques are correctly applied when the body
 # has a non-zero center of mass offset.
-#
-# Note on solver compatibility:
-# - Featherstone and MuJoCo solvers are excluded from torque-CoM-stationary tests
-#   because they use body origin velocity internally. When a torque is applied,
-#   these solvers rotate the body around the body origin rather than the CoM,
-#   causing the CoM to drift significantly.
-# - Force tests pass for all solvers because forces act at the CoM regardless of
-#   the internal velocity representation.
-# - Maximal coordinate solvers (XPBD, SemiImplicit) directly integrate CoM-based
-#   dynamics and handle all tests correctly.
 
 
 def test_torque_com_stationary(
@@ -310,8 +308,7 @@ def test_torque_com_stationary(
 
     # Get initial CoM position in world frame
     body_q_initial = state_0.body_q.numpy()[0].copy()
-    body_com = np.array(com_offset)
-    com_initial = compute_com_world_position(body_q_initial, body_com)
+    com_initial = compute_com_world_position(state_0.body_q, model.body_com, model.body_world)
 
     # Apply pure torque (no force)
     torque_magnitude = 100.0
@@ -330,19 +327,16 @@ def test_torque_com_stationary(
     state_1.body_f.assign(body_f)
 
     # Step simulation
-    sim_dt = 0.01
-    num_steps = 10
+    sim_dt = 0.005
+    num_steps = 20
 
     for _ in range(num_steps):
         solver.step(state_0, state_1, None, None, sim_dt)
         state_0, state_1 = state_1, state_0
-        # Re-apply force for next step
-        state_0.body_f.assign(body_f)
-        state_1.body_f.assign(body_f)
 
     # Get final CoM position
     body_q_final = state_0.body_q.numpy()[0]
-    com_final = compute_com_world_position(body_q_final, body_com)
+    com_final = compute_com_world_position(state_0.body_q, model.body_com, model.body_world)
 
     # CoM should stay stationary (within numerical tolerance)
     com_drift = np.linalg.norm(com_final - com_initial)
@@ -490,8 +484,7 @@ def test_combined_force_torque(
 
     # Get initial state
     body_q_initial = state_0.body_q.numpy()[0].copy()
-    body_com = np.array(com_offset)
-    com_initial = compute_com_world_position(body_q_initial, body_com)
+    com_initial = compute_com_world_position(state_0.body_q, model.body_com, model.body_world)
     quat_initial = body_q_initial[3:7]
 
     # Apply both force and torque
@@ -517,7 +510,7 @@ def test_combined_force_torque(
 
     # Get final state
     body_q_final = state_0.body_q.numpy()[0]
-    com_final = compute_com_world_position(body_q_final, body_com)
+    com_final = compute_com_world_position(state_0.body_q, model.body_com, model.body_world)
     quat_final = body_q_final[3:7]
 
     # CoM should have moved primarily in X direction (due to force)
@@ -539,27 +532,28 @@ def test_combined_force_torque(
 
 # Solvers for non-zero CoM tests
 # Tuple format: (solver_fn, tolerance, supports_torque_com_tests)
-# MuJoCo solvers don't support torque-CoM tests due to body origin velocity representation
 com_solvers = {
     "mujoco_cpu": (
-        lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=True, disable_contacts=True),
+        # Use RK4 integrator to reduce numerical drift
+        lambda model: newton.solvers.SolverMuJoCo(model, integrator="rk4", use_mujoco_cpu=True, disable_contacts=True),
         1e-3,
-        False,  # Does NOT support torque-CoM tests
+        True,
     ),
     "mujoco_warp": (
-        lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=False, disable_contacts=True),
+        # Use RK4 integrator to reduce numerical drift
+        lambda model: newton.solvers.SolverMuJoCo(model, integrator="rk4", use_mujoco_cpu=False, disable_contacts=True),
         1e-3,
-        False,  # Does NOT support torque-CoM tests
+        True,
     ),
     "xpbd": (
         lambda model: newton.solvers.SolverXPBD(model, angular_damping=0.0),
         1e-3,
-        True,  # Supports torque-CoM tests
+        True,
     ),
     "semi_implicit": (
         lambda model: newton.solvers.SolverSemiImplicit(model, angular_damping=0.0),
         1e-3,
-        True,  # Supports torque-CoM tests
+        True,
     ),
     "featherstone": (
         lambda model: newton.solvers.SolverFeatherstone(model),
