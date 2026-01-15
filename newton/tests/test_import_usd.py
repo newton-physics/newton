@@ -33,6 +33,27 @@ devices = get_test_devices()
 
 class TestImportUsd(unittest.TestCase):
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_import_usd_raises_on_stage_errors(self):
+        from pxr import Sdf, Usd
+
+        usd_text = """#usda 1.0
+def Xform "Root" (
+    references = @does_not_exist.usda@
+)
+{
+}
+"""
+        layer = Sdf.Layer.CreateAnonymous()
+        layer.ImportFromString(usd_text)
+        stage = Usd.Stage.Open(layer, Usd.Stage.LoadAll)
+
+        builder = newton.ModelBuilder()
+        with self.assertRaises(RuntimeError) as exc_info:
+            builder.add_usd(stage)
+
+        self.assertIn("composition errors", str(exc_info.exception))
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_import_articulation(self):
         builder = newton.ModelBuilder()
 
