@@ -1763,6 +1763,8 @@ class SolverMuJoCo(SolverBase):
         # joint_velocity_limit = model.joint_velocity_limit.numpy()
         joint_friction = model.joint_friction.numpy()
         joint_world = model.joint_world.numpy()
+        joint_q = model.joint_q.numpy()
+        joint_q_start = model.joint_q_start.numpy()
         body_mass = model.body_mass.numpy()
         body_inertia = model.body_inertia.numpy()
         body_com = model.body_com.numpy()
@@ -2191,9 +2193,14 @@ class SolverMuJoCo(SolverBase):
 
                     axis = wp.quat_rotate(joint_rot, wp.vec3(*joint_axis[ai]))
 
+                    # Get initial joint position for ref parameter
+                    q_start = joint_q_start[j]
+                    ref_value = joint_q[q_start + i]
+
                     joint_params = {
                         "armature": joint_armature[qd_start + i],
                         "pos": joint_pos,
+                        "ref": float(ref_value),
                     }
                     # Set friction
                     joint_params["frictionloss"] = joint_friction[ai]
@@ -2271,9 +2278,14 @@ class SolverMuJoCo(SolverBase):
 
                     axis = wp.quat_rotate(joint_rot, wp.vec3(*joint_axis[ai]))
 
+                    # Get initial joint position for ref parameter (convert radians to degrees for hinge)
+                    q_start = joint_q_start[j]
+                    ref_value = np.rad2deg(joint_q[q_start + i])
+
                     joint_params = {
                         "armature": joint_armature[qd_start + i],
                         "pos": joint_pos,
+                        "ref": float(ref_value),
                     }
                     # Set friction
                     joint_params["frictionloss"] = joint_friction[ai]
