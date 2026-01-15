@@ -52,14 +52,15 @@ def quat_rotate_vector_by_e3(q: wp.quat) -> wp.vec3:
 
 @wp.func
 def quat_e3_conjugate(q: wp.quat) -> wp.quat:
-    """Compute q * e3_bar where e3_bar is the quaternion (0,0,1,0).conjugate() = (0,0,-1,0).
+    """Compute q * e3_bar where e3_bar is the quaternion (0,0,-1,0).
 
-    This is equivalent to computing q * (0, 0, -1, 0) as a quaternion product.
-    Result: (q.z, -q.y, q.x, -q.w) in (x,y,z,w) format.
+    Correct mapping for Warp (x,y,z,w) to match Eigen's (z, -y, x, -w) in (w,x,y,z):
+    x' = -q.y
+    y' = q.x
+    z' = -q.w
+    w' = q.z
     """
-    # From reference: Quaternionr q_e_3_bar(q0.z(), -q0.y(), q0.x(), -q0.w())
-    # Eigen uses (x,y,z,w) in constructor, so this is correct
-    return wp.quat(q[2], -q[1], q[0], -q[3])
+    return wp.quat(-q[1], q[0], -q[3], q[2])
 
 # @wp.func
 # def quat_e3_conjugate(q: wp.quat) -> wp.quat:
@@ -150,12 +151,13 @@ def solve_stretch_shear_constraint_kernel(
     # Scale gamma by inverse denominator
     gamma = gamma / denom
 
-    # Apply stretching and shearing stiffness (isotropic approximation)
-    # For full anisotropic support, would need to transform through q0's rotation matrix
-    gamma_x = gamma[0] * stretch_shear_stiffness[0]
-    gamma_y = gamma[1] * stretch_shear_stiffness[1]
-    gamma_z = gamma[2] * stretch_shear_stiffness[2]
-    gamma = wp.vec3(gamma_x, gamma_y, gamma_z)
+    # Apply stretching and shearing stiffness in local space (Anisotropic)
+    # Ks_w = R(q0) * diag(Ks) * R^T(q0) * gamma
+    gamma_loc = wp.quat_rotate_inv(q0, gamma)
+    gamma_loc_x = gamma_loc[0] * stretch_shear_stiffness[0]
+    gamma_loc_y = gamma_loc[1] * stretch_shear_stiffness[1]
+    gamma_loc_z = gamma_loc[2] * stretch_shear_stiffness[2]
+    gamma = wp.quat_rotate(q0, wp.vec3(gamma_loc_x, gamma_loc_y, gamma_loc_z))
 
     # Compute position corrections
     corr0 = gamma * inv_mass_p0
@@ -338,6 +340,38 @@ def zero_quat_kernel(arr: wp.array(dtype=wp.quat)):
     arr[tid] = wp.quat(0.0, 0.0, 0.0, 0.0)
 
 
+@wp.kernel
+def solve_ground_collision_kernel(
+    particle_q: wp.array(dtype=wp.vec3),
+    particle_inv_mass: wp.array(dtype=float),
+    particle_radius: wp.array(dtype=float),
+    ground_level: float,
+    # outputs
+    particle_delta: wp.array(dtype=wp.vec3),
+):
+    """Solve ground plane collision constraint for particles.
+
+    Pushes particles above the ground plane (z >= ground_level + radius).
+    """
+    tid = wp.tid()
+
+    inv_mass = particle_inv_mass[tid]
+    if inv_mass == 0.0:
+        return
+
+    pos = particle_q[tid]
+    radius = particle_radius[tid]
+
+    # Check penetration with ground plane
+    min_z = ground_level + radius
+    penetration = min_z - pos[2]
+
+    if penetration > 0.0:
+        # Push particle out of ground
+        correction = wp.vec3(0.0, 0.0, penetration)
+        wp.atomic_add(particle_delta, tid, correction)
+
+
 class Example:
     def __init__(self, viewer, args=None):
         # Setup simulation parameters
@@ -352,7 +386,7 @@ class Example:
         self.args = args
 
         # Rod parameters
-        self.num_particles = 50
+        self.num_particles = 100
         self.num_edges = self.num_particles - 1
         self.num_bend_twist = self.num_edges - 1
 
@@ -363,10 +397,11 @@ class Example:
         start_height = 3.0
 
         # Stiffness parameters (isotropic for simplicity)
-        #self.stretch_shear_stiffness = wp.vec3(1.0, 1.0, 1.0)  # normalized, actual stiffness via XPBD
-        self.stretch_shear_stiffness = wp.vec3(0.1, 0.1, 0.1)  # normalized, actual stiffness via XPBD
-        self.bend_twist_stiffness = wp.vec3(0.1, 0.1, 0.1)  # bending and torsion stiffness
-
+        self.stretch_shear_stiffness = wp.vec3(1.0, 1.0, 1.0)  # normalized, actual stiffness via XPBD
+        #self.stretch_shear_stiffness = wp.vec3(0.1, 0.1, 0.1)  # normalized, actual stiffness via XPBD
+        
+        #self.bend_twist_stiffness = wp.vec3(0.1, 0.1, 0.1)  # bending and torsion stiffness
+        self.bend_twist_stiffness = wp.vec3(0.5, 0.5, 0.5)  # bending and torsion stiffness
         self.gravity = wp.vec3(0.0, 0.0, -9.81)
 
         # Create model for collision detection and rendering
@@ -425,7 +460,8 @@ class Example:
 
         # Rest Darboux vectors (identity rotation between adjacent edges at rest)
         # For a straight rod, rest Darboux vector is identity quaternion
-        rest_darboux_np = [wp.quat(0.0, 0.0, 0.0, 1.0)] * self.num_bend_twist
+        #rest_darboux_np = [wp.quat(0.0, 0.0, 0.0, 1.0)] * self.num_bend_twist
+        rest_darboux_np = [wp.quat(0.0, 0.1, 0.1, 1.0)] * self.num_bend_twist
         self.rest_darboux = wp.array(rest_darboux_np, dtype=wp.quat, device=device)
 
         # Correction accumulators
@@ -505,6 +541,20 @@ class Example:
                         outputs=[self.edge_q_delta],
                         device=self.model.device,
                     )
+
+                # Solve ground collision constraints
+                wp.launch(
+                    kernel=solve_ground_collision_kernel,
+                    dim=self.num_particles,
+                    inputs=[
+                        self.state_0.particle_q,
+                        self.particle_inv_mass,
+                        self.model.particle_radius,
+                        0.0,  # ground level at z=0
+                    ],
+                    outputs=[self.particle_delta],
+                    device=self.model.device,
+                )
 
                 # Apply particle corrections
                 wp.launch(

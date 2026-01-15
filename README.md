@@ -109,11 +109,43 @@ uv sync --extra examples
         <img src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_basic_cosserat_rod.jpg" alt="Cosserat Rod">
       </a>
     </td>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/basic/example_direct_elastic_rod.py">
+        <img src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_basic_cosserat_rod.jpg" alt="Direct Elastic Rod">
+      </a>
+    </td>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/basic/example_basic_global_pbd_chain.py">
+        <img src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_basic_particle_chain.jpg" alt="Global PBD Chain">
+      </a>
+    </td>
   </tr>
   <tr>
     <td align="center">
       <code>uv run -m newton.examples basic_cosserat_rod</code>
     </td>
+    <td align="center">
+      <code>uv run -m newton.examples direct_elastic_rod</code>
+    </td>
+    <td align="center">
+      <code>uv run -m newton.examples basic_global_pbd_chain</code>
+    </td>
+  </tr>
+  <tr>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/basic/example_basic_global_pbd_chain_multitile.py">
+        <img src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_basic_particle_chain.jpg" alt="Global PBD Chain Multi-Tile">
+      </a>
+    </td>
+    <td align="center" width="33%">&nbsp;</td>
+    <td align="center" width="33%">&nbsp;</td>
+  </tr>
+  <tr>
+    <td align="center">
+      <code>uv run -m newton.examples basic_global_pbd_chain_multitile</code>
+    </td>
+    <td align="center">&nbsp;</td>
+    <td align="center">&nbsp;</td>
   </tr>
 </table>
 
