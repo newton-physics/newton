@@ -686,10 +686,10 @@ class ViewerViser(ViewerBase):
         # Read the recording file content
         recording_bytes = recording_path.read_bytes()
 
-        # Find an available port
+        # Find an available port on localhost
         def find_free_port():
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                s.bind(("", 0))
+                s.bind(("127.0.0.1", 0))
                 return s.getsockname()[1]
 
         port = find_free_port()
@@ -743,7 +743,7 @@ class ViewerViser(ViewerBase):
             return RecordingHandler
 
         handler_class = make_handler(recording_bytes, str(viser_client_dir))
-        # Bind to all interfaces so IFrame can access it
+        # Bind to all interfaces to support remote Jupyter access (e.g., jupyter lab --ip=*)
         server = HTTPServer(("", port), handler_class)
 
         # Start server in background thread
