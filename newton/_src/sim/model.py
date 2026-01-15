@@ -633,27 +633,35 @@ class Model:
         )
         return c
 
-    def set_gravity(self, gravity: tuple[float, float, float] | list[float] | wp.vec3) -> None:
+    def set_gravity(
+        self,
+        gravity: tuple[float, float, float] | list | wp.vec3 | np.ndarray,
+        world: int | None = None,
+    ) -> None:
         """
         Set gravity for runtime modification.
 
         Args:
-            gravity: Gravity vector as a tuple, list, or wp.vec3.
-                    Common values: (0, 0, -9.81) for Z-up, (0, -9.81, 0) for Y-up.
+            gravity: Gravity vector (3,) or per-world array (num_worlds, 3).
+            world: If provided, set gravity only for this world.
 
         Note:
-            After calling this method, you should notify solvers via
-            `solver.notify_model_changed(SolverNotifyFlags.MODEL_PROPERTIES)`.
+            Call ``solver.notify_model_changed(SolverNotifyFlags.MODEL_PROPERTIES)`` after.
         """
-        if self.gravity is None:
-            raise RuntimeError(
-                "Model gravity not initialized. Ensure the model was created via ModelBuilder.finalize()"
-            )
+        gravity_np = np.asarray(gravity, dtype=np.float32)
 
-        if isinstance(gravity, tuple | list):
-            self.gravity.assign([wp.vec3(gravity[0], gravity[1], gravity[2])])
+        if world is not None:
+            if world < 0 or world >= self.num_worlds:
+                raise IndexError(f"world {world} out of range [0, {self.num_worlds})")
+            current = self.gravity.numpy()
+            current[world] = gravity_np
+            self.gravity.assign(current)
+        elif gravity_np.ndim == 1:
+            self.gravity.assign(np.tile(gravity_np, (self.num_worlds, 1)))
         else:
-            self.gravity.assign([gravity])
+            if len(gravity_np) != self.num_worlds:
+                raise ValueError(f"Expected {self.num_worlds} gravity vectors, got {len(gravity_np)}")
+            self.gravity.assign(gravity_np)
 
     def collide(
         self: Model,

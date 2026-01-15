@@ -25,6 +25,7 @@ from ..sim.state import State
 @wp.kernel
 def compute_sensor_imu_kernel(
     gravity: wp.array(dtype=wp.vec3),
+    body_world: wp.array(dtype=wp.int32),
     body_com: wp.array(dtype=wp.vec3),
     shape_body: wp.array(dtype=int),
     shape_transform: wp.array(dtype=wp.transform),
@@ -52,6 +53,9 @@ def compute_sensor_imu_kernel(
         gyroscope[sensor_idx] = wp.vec3(0.0)
         return
 
+    world_idx = body_world[body_idx]
+    world_g = gravity[wp.max(world_idx, 0)]
+
     body_acc = body_qdd[body_idx]
 
     body_quat = body_q[body_idx].q
@@ -61,7 +65,7 @@ def compute_sensor_imu_kernel(
 
     acc_lin = (
         wp.spatial_top(body_acc)
-        - gravity[0]
+        - world_g
         + wp.cross(wp.spatial_bottom(body_acc), r)
         + wp.cross(vel_ang, wp.cross(vel_ang, r))
     )
@@ -164,6 +168,7 @@ class SensorIMU:
             dim=self.n_sensors,
             inputs=[
                 self.model.gravity,
+                self.model.body_world,
                 self.model.body_com,
                 self.model.shape_body,
                 self.model.shape_transform,

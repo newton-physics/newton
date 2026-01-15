@@ -934,6 +934,7 @@ class SolverVBD(SolverBase):
                 inputs=[
                     dt,
                     model.gravity,
+                    model.particle_world,
                     self.particle_q_prev,
                     state_in.particle_q,
                     state_in.particle_qd,
@@ -953,6 +954,7 @@ class SolverVBD(SolverBase):
                 inputs=[
                     dt,
                     model.gravity,
+                    model.particle_world,
                     self.particle_q_prev,
                     state_in.particle_q,
                     state_in.particle_qd,
@@ -988,6 +990,7 @@ class SolverVBD(SolverBase):
                 inputs=[
                     dt,
                     model.gravity,
+                    model.body_world,
                     state_in.body_f,
                     model.body_com,
                     model.body_inertia,

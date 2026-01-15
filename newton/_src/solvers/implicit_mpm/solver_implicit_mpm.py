@@ -148,15 +148,18 @@ def integrate_velocity(
     velocities: wp.array(dtype=wp.vec3),
     dt: float,
     gravity: wp.array(dtype=wp.vec3),
+    particle_world: wp.array(dtype=wp.int32),
     inv_cell_volume: float,
     particle_density: wp.array(dtype=float),
     particle_flags: wp.array(dtype=wp.int32),
 ):
     vel_adv = velocities[s.qp_index]
+    world_idx = particle_world[s.qp_index]
+    world_g = gravity[wp.max(world_idx, 0)]
 
     vel_adv = wp.where(
         particle_flags[s.qp_index] & newton.ParticleFlags.ACTIVE,
-        particle_density[s.qp_index] * (vel_adv + dt * gravity[0]),
+        particle_density[s.qp_index] * (vel_adv + dt * world_g),
         _INFINITY * vel_adv,
     )
     return wp.dot(u(s), vel_adv) * inv_cell_volume
@@ -2209,6 +2212,7 @@ class SolverImplicitMPM(SolverBase):
                     "velocities": state_in.particle_qd,
                     "dt": dt,
                     "gravity": model.gravity,
+                    "particle_world": model.particle_world,
                     "particle_density": mpm_model.particle_density,
                     "particle_flags": model.particle_flags,
                     "inv_cell_volume": inv_cell_volume,

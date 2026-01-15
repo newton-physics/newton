@@ -1229,7 +1229,8 @@ def update_model_properties_kernel(
     gravity_dst: wp.array(dtype=wp.vec3f),
 ):
     world_idx = wp.tid()
-    gravity_dst[world_idx] = gravity_src[0]
+    gravity_src_idx = wp.min(world_idx, gravity_src.shape[0] - 1)
+    gravity_dst[world_idx] = gravity_src[gravity_src_idx]
 
 
 @wp.kernel
@@ -1420,7 +1421,7 @@ def convert_rigid_forces_from_mj_kernel(
             world,
             mjc_body,
         )
-        body_qdd[newton_body] = wp.spatial_vector(lin + mjw_gravity[0], wp.spatial_top(cacc))
+        body_qdd[newton_body] = wp.spatial_vector(lin + mjw_gravity[world], wp.spatial_top(cacc))
 
     if body_parent_f:
         # TODO: implement link incoming forces
