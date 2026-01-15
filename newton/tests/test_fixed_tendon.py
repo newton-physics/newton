@@ -13,12 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import os
-import tempfile
 import unittest
-
-import numpy as np
-import warp as wp
 
 import newton
 from newton.solvers import SolverMuJoCo
@@ -82,24 +77,24 @@ class TestMujocoFixedTendon(unittest.TestCase):
         solver = SolverMuJoCo(model, iterations=10, ls_iterations=10)
 
         dt = 0.02
-        
-        coeff0 = 1.0                    # from mjcf above
-        coeff1 = 1.0                    # from mjcf above
-        expected_tendon_length  = 0.0   # from mjcf above
+
+        coeff0 = 1.0  # from mjcf above
+        coeff1 = 1.0  # from mjcf above
+        expected_tendon_length = 0.0  # from mjcf above
 
         # Length of tendon at start is: pos**coef0 + pos1*coef1 = 2*0.5 + 0*0.0 = 1.0
         # Target length is 0.0 (see mjcf above)
         joint_start_positions = [0.5, 0.0]
         state_in.joint_q.assign(joint_start_positions)
-        
-        for i in range (0, 200):
+
+        for i in range(0, 200):
             solver.step(state_in=state_in, state_out=state_out, contacts=contacts, control=control, dt=dt)
             state_in, state_out = state_out, state_in
 
         joint_q = state_in.joint_q.numpy()
         q0 = joint_q[0]
         q1 = joint_q[1]
-        measured_tendon_length = coeff0*q0 + coeff1*q1
+        measured_tendon_length = coeff0 * q0 + coeff1 * q1
         self.assertAlmostEqual(
             expected_tendon_length,
             measured_tendon_length,
