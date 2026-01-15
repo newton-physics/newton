@@ -181,10 +181,28 @@ def parse_usd(
         UsdPhysics.Axis.Z: Axis.Z,
     }
 
+    def _raise_on_stage_errors(usd_stage: Usd.Stage, stage_source: str):
+        get_errors = getattr(usd_stage, "GetCompositionErrors", None)
+        if get_errors is None:
+            return
+        errors = get_errors()
+        if not errors:
+            return
+        messages = []
+        for err in errors:
+            try:
+                messages.append(err.GetMessage())
+            except Exception:
+                messages.append(str(err))
+        formatted = "\n".join(f"- {message}" for message in messages)
+        raise RuntimeError(f"USD stage has composition errors while loading {stage_source}:\n{formatted}")
+
     if isinstance(source, str):
         stage = Usd.Stage.Open(source, Usd.Stage.LoadAll)
+        _raise_on_stage_errors(stage, source)
     else:
         stage = source
+        _raise_on_stage_errors(stage, "provided stage")
 
     DegreesToRadian = np.pi / 180
     mass_unit = 1.0
