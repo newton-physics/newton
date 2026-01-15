@@ -234,9 +234,7 @@ def extract_elastic_parameters(
 
 @wp.func
 def get_yield_parameters(
-    i: int,
-    material_parameters: MaterialParameters,
-    particle_Jp: wp.array(dtype=float),
+    i: int, material_parameters: MaterialParameters, particle_Jp: wp.array(dtype=float), dt: float
 ):
     h = hardening_law(particle_Jp[i], material_parameters.hardening[i])
 
@@ -248,6 +246,7 @@ def get_yield_parameters(
         material_parameters.tensile_yield_ratio[i],
         material_parameters.yield_stress[i] * h,
         material_parameters.dilatancy[i],
+        material_parameters.viscosity[i] / dt,
     )
 
 
@@ -272,9 +271,10 @@ def integrate_yield_parameters(
     inv_cell_volume: float,
     material_parameters: MaterialParameters,
     particle_Jp: wp.array(dtype=float),
+    dt: float,
 ):
     i = s.qp_index
-    params_vec = get_yield_parameters(i, material_parameters, particle_Jp)
+    params_vec = get_yield_parameters(i, material_parameters, particle_Jp, dt)
     return wp.dot(u(s), params_vec) * inv_cell_volume
 
 
@@ -409,7 +409,7 @@ def update_particle_strains(
     elastic_parameters_vec = get_elastic_parameters(s.qp_index, material_parameters, particle_Jp)
     compliance, poisson, _damping = extract_elastic_parameters(elastic_parameters_vec)
 
-    yield_parameters_vec = get_yield_parameters(s.qp_index, material_parameters, particle_Jp)
+    yield_parameters_vec = get_yield_parameters(s.qp_index, material_parameters, particle_Jp, dt)
 
     stress_0 = fem.SymmetricTensorMapper.value_to_dof_3d(stress(s))
     particle_stress_new = fem.SymmetricTensorMapper.dof_to_value_3d(project_stress(stress_0, yield_parameters_vec))
@@ -1674,6 +1674,7 @@ class SolverImplicitMPM(SolverBase):
             - ``mpm:hardening_rate``: Hardening rate for plasticity
             - ``mpm:softening_rate``: Softening rate for plasticity
             - ``mpm:dilatancy``: Dilatancy factor for plasticity
+            - ``mpm:viscosity``: Viscosity for plasticity
 
         Attributes registered on State (per-particle):
             - ``mpm:particle_qd_grad``: Velocity gradient for APIC transfer
@@ -1785,6 +1786,16 @@ class SolverImplicitMPM(SolverBase):
         builder.add_custom_attribute(
             newton.ModelBuilder.CustomAttribute(
                 name="dilatancy",
+                frequency=newton.Model.AttributeFrequency.PARTICLE,
+                assignment=newton.Model.AttributeAssignment.MODEL,
+                dtype=wp.float32,
+                default=0.0,
+                namespace="mpm",
+            )
+        )
+        builder.add_custom_attribute(
+            newton.ModelBuilder.CustomAttribute(
+                name="viscosity",
                 frequency=newton.Model.AttributeFrequency.PARTICLE,
                 assignment=newton.Model.AttributeAssignment.MODEL,
                 dtype=wp.float32,
@@ -2795,6 +2806,7 @@ class SolverImplicitMPM(SolverBase):
                     "particle_Jp": state_in.mpm.particle_Jp,
                     "material_parameters": mpm_model.material_parameters,
                     "inv_cell_volume": inv_cell_volume,
+                    "dt": dt,
                 },
                 output=scratch.strain_yield_parameters_field.dof_values,
                 temporary_store=self.temporary_store,
@@ -3061,6 +3073,7 @@ class SolverImplicitMPM(SolverBase):
                 strain_mat=scratch.strain_matrix,
                 transposed_strain_mat=scratch.transposed_strain_matrix,
                 compliance_mat=scratch.compliance_matrix,
+                strain_node_volume=scratch.strain_node_particle_volume,
                 yield_params=scratch.strain_yield_parameters_field.dof_values,
                 unilateral_strain_offset=scratch.unilateral_strain_offset,
                 color_offsets=scratch.color_offsets,

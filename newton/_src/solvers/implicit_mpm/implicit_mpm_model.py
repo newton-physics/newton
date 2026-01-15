@@ -254,6 +254,8 @@ class MaterialParameters:
     """Tensile yield ratio for the material."""
     yield_stress: wp.array(dtype=float)
     """Yield stress for the material."""
+    viscosity: wp.array(dtype=float)
+    """Viscosity for the material."""
 
     hardening: wp.array(dtype=float)
     """Hardening for the material."""
@@ -374,6 +376,7 @@ class ImplicitMPMModel:
         self.material_parameters.hardening_rate = model.mpm.hardening_rate
         self.material_parameters.softening_rate = model.mpm.softening_rate
         self.material_parameters.dilatancy = model.mpm.dilatancy
+        self.material_parameters.viscosity = model.mpm.viscosity
 
         self.notify_particle_material_changed()
 

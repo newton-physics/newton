@@ -48,7 +48,7 @@ mat31 = wp.vec3
 wp.set_module_options({"enable_backward": False})
 
 
-class YieldParamVec(wp.types.vector(length=5, dtype=wp.float32)):
+class YieldParamVec(wp.types.vector(length=6, dtype=wp.float32)):
     """Compact yield surface definition in an interpolation-friendly format:
     [p_max sqrt_3_2, -p_min sqrt_3_2, s_max, mu p_max] in scaled units.
 
@@ -63,6 +63,7 @@ class YieldParamVec(wp.types.vector(length=5, dtype=wp.float32)):
         tensile_yield_ratio: float,
         yield_stress: float,
         dilatancy: float,
+        viscosity: float,
     ):
         pressure_scale = wp.sqrt(3.0 / 2.0)
         return YieldParamVec(
@@ -71,6 +72,7 @@ class YieldParamVec(wp.types.vector(length=5, dtype=wp.float32)):
             yield_stress,
             friction_coeff * yield_pressure,
             dilatancy,
+            viscosity,
         )
 
 
@@ -250,6 +252,7 @@ def postprocess_stress_and_strain(
     delassus_rotation: wp.array(dtype=mat55),
     unilateral_strain_offset: wp.array(dtype=float),
     yield_params: wp.array(dtype=YieldParamVec),
+    strain_node_volume: wp.array(dtype=float),
     strain_rhs: wp.array(dtype=vec6),
     stress: wp.array(dtype=vec6),
     velocity: wp.array(dtype=wp.vec3),
@@ -290,7 +293,7 @@ def postprocess_stress_and_strain(
 
     yp = yield_params[tau_i]
     loc_plastic_strain_new = solve_flow_rule_aniso(
-        diag, loc_plastic_strain - wp.cw_mul(loc_stress, diag), loc_stress, yp
+        diag, loc_plastic_strain - wp.cw_mul(loc_stress, diag), loc_stress, yp, strain_node_volume[tau_i]
     )
     loc_stress += wp.cw_div(loc_plastic_strain_new - loc_plastic_strain, diag)
 
@@ -485,6 +488,11 @@ def get_dilatancy(yield_params: YieldParamVec):
 
 
 @wp.func
+def get_viscosity(yield_params: YieldParamVec):
+    return wp.max(0.0, yield_params[5])
+
+
+@wp.func
 def solve_flow_rule_camclay(
     D: vec6,
     b: vec6,
@@ -643,6 +651,7 @@ def solve_flow_rule_aniso(
     b: vec6,
     r_guess: vec6,
     yield_params: YieldParamVec,
+    strain_node_volume: float,
 ):
     """Solves the local non-associated flow-rule problem.
     u = D r + b
@@ -653,6 +662,10 @@ def solve_flow_rule_aniso(
 
     u_T in NC(|r_T| <= alpha s(r_N))
     """
+
+    D_visc = vec6(1.0) + get_viscosity(yield_params) / strain_node_volume * D
+    D = wp.cw_div(D, D_visc)
+    b = wp.cw_div(b, D_visc)
 
     if wp.static(_USE_CAM_CLAY):
         return solve_flow_rule_camclay(D, b, r_guess, yield_params)
@@ -743,6 +756,7 @@ def solve_local_stress(
     tau_i: int,
     strain_rhs: vec6,
     yield_params: wp.array(dtype=YieldParamVec),
+    strain_node_volume: wp.array(dtype=float),
     delassus_diagonal: wp.array(dtype=vec6),
     delassus_rotation: wp.array(dtype=mat55),
     cur_stress: wp.array(dtype=vec6),
@@ -760,6 +774,7 @@ def solve_local_stress(
         local_strain - wp.cw_mul(local_stress, D),
         local_stress,
         yield_params[tau_i],
+        strain_node_volume[tau_i],
     )
 
     return _local_to_world(wp.cw_div(tau_new - local_strain, D), rot)
@@ -768,6 +783,7 @@ def solve_local_stress(
 @wp.kernel
 def solve_local_stress_jacobi(
     yield_params: wp.array(dtype=YieldParamVec),
+    strain_node_volume: wp.array(dtype=float),
     compliance_mat_offsets: wp.array(dtype=int),
     compliance_mat_columns: wp.array(dtype=int),
     local_compliance_mat_values: wp.array(dtype=mat66),
@@ -803,6 +819,7 @@ def solve_local_stress_jacobi(
         tau_i,
         local_strain,
         yield_params,
+        strain_node_volume,
         delassus_diagonal,
         delassus_rotation,
         local_stress,
@@ -934,6 +951,7 @@ def solve_local_stress_gs(
     color_offsets: wp.array(dtype=int),
     color_blocks: wp.array2d(dtype=int),
     yield_params: wp.array(dtype=YieldParamVec),
+    strain_node_volume: wp.array(dtype=float),
     compliance_mat_offsets: wp.array(dtype=int),
     compliance_mat_columns: wp.array(dtype=int),
     compliance_mat_values: wp.array(dtype=mat66),
@@ -978,6 +996,7 @@ def solve_local_stress_gs(
                 tau_i,
                 local_strain,
                 yield_params,
+                strain_node_volume,
                 delassus_diagonal,
                 delassus_rotation,
                 local_stress,
@@ -1439,6 +1458,7 @@ class RheologyData:
     strain_mat: sp.BsrMatrix
     transposed_strain_mat: sp.BsrMatrix
     compliance_mat: sp.BsrMatrix
+    strain_node_volume: wp.array(dtype=float)
     yield_params: wp.array(dtype=YieldParamVec)
     unilateral_strain_offset: wp.array(dtype=float)
 
@@ -1601,6 +1621,7 @@ class _DelassusOperator:
                 self.delassus_rotation,
                 self.rheology.unilateral_strain_offset,
                 self.rheology.yield_params,
+                self.rheology.strain_node_volume,
                 self.rheology.elastic_strain_delta,
                 self.rheology.stress,
                 self.momentum.velocity,
@@ -1716,6 +1737,7 @@ class _GaussSeidelSolver(_RheologySolver):
                 self.rheology.color_offsets,
                 self.rheology.color_blocks,
                 self.rheology.yield_params,
+                self.rheology.strain_node_volume,
                 self.rheology.compliance_mat.offsets,
                 self.rheology.compliance_mat.columns,
                 self.rheology.compliance_mat.values,
@@ -1778,6 +1800,7 @@ class _JacobiSolver(_RheologySolver):
             dim=self.size,
             inputs=[
                 self.rheology.yield_params,
+                self.rheology.strain_node_volume,
                 self.rheology.compliance_mat.offsets,
                 self.rheology.compliance_mat.columns,
                 self.rheology.compliance_mat.values,
