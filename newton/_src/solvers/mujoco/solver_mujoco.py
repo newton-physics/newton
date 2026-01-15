@@ -500,7 +500,7 @@ class SolverMuJoCo(SolverBase):
                 name="tendon_limited",
                 frequency="tendon",
                 dtype=wp.int32,
-                default=0,  # 0=false, 1=true, 2=auto
+                default=2,  # 0=false, 1=true, 2=auto
                 namespace="mujoco",
                 mjcf_attribute_name="limited",
                 mjcf_value_transformer=parse_limited,

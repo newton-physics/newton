@@ -722,7 +722,7 @@ class TestImportMjcf(unittest.TestCase):
         self.assertAlmostEqual(joint_limit_ke[2], expected_ke_3, places=2)
         self.assertAlmostEqual(joint_limit_kd[2], expected_kd_3, places=2)
 
-    def test_single_tendon(self):
+    def test_single_mujoco_fixed_tendon_parsing(self):
         """Test that tendons work"""
         mjcf = """<?xml version="1.0" ?>
 <mujoco>
@@ -815,134 +815,133 @@ class TestImportMjcf(unittest.TestCase):
         expected_solimpfriction = [[vec5(0.3, 0.4, 0.006, 0.5, 1.4), vec5(0.35, 0.45, 0.004, 0.5, 1.2)]]
         expected_actuator_force_range = [[wp.vec2(-2.2, 2.2), wp.vec2(-3.3, 3.3)]]
         expected_armature = [[0.13, 0.23]]
-
         for i in range(0, 1):
             for j in range(0, 2):
                 # Check the stiffness
-                expected_float = expected_stiffness[i][j]
-                measured_float = solver.mjw_model.tendon_stiffness.numpy()[i][j]
+                expected = expected_stiffness[i][j]
+                measured = solver.mjw_model.tendon_stiffness.numpy()[i][j]
                 self.assertAlmostEqual(
-                    measured_float,
-                    expected_float,
+                    expected,
+                    measured,
                     places=4,
-                    msg=f"Expected stiffness value: {expected_float}, Measured value: {measured_float}",
+                    msg=f"Expected stiffness value: {expected}, Measured value: {measured}",
                 )
 
                 # Check the damping
-                expected_float = expected_damping[i][j]
-                measured_float = solver.mjw_model.tendon_damping.numpy()[i][j]
+                expected = expected_damping[i][j]
+                measured = solver.mjw_model.tendon_damping.numpy()[i][j]
                 self.assertAlmostEqual(
-                    measured_float,
-                    expected_float,
+                    measured,
+                    expected,
                     places=4,
-                    msg=f"Expected damping value: {expected_float}, Measured value: {measured_float}",
+                    msg=f"Expected damping value: {expected}, Measured value: {measured}",
                 )
 
                 # Check the spring length
                 for k in range(0, 2):
-                    expected_float = expected_springlength[i][j][k]
-                    measured_float = solver.mjw_model.tendon_lengthspring.numpy()[i][j][k]
+                    expected = expected_springlength[i][j][k]
+                    measured = solver.mjw_model.tendon_lengthspring.numpy()[i][j][k]
                     self.assertAlmostEqual(
-                        measured_float,
-                        expected_float,
+                        measured,
+                        expected,
                         places=4,
-                        msg=f"Expected springlength[{k}] value: {expected_float}, Measured value: {measured_float}",
+                        msg=f"Expected springlength[{k}] value: {expected}, Measured value: {measured}",
                     )
 
                 # Check the frictionloss
-                expected_float = expected_frictionloss[i][j]
-                measured_float = solver.mjw_model.tendon_frictionloss.numpy()[i][j]
+                expected = expected_frictionloss[i][j]
+                measured = solver.mjw_model.tendon_frictionloss.numpy()[i][j]
                 self.assertAlmostEqual(
-                    measured_float,
-                    expected_float,
+                    measured,
+                    expected,
                     places=4,
-                    msg=f"Expected tendon frictionloss value: {expected_float}, Measured value: {measured_float}",
+                    msg=f"Expected tendon frictionloss value: {expected}, Measured value: {measured}",
                 )
 
                 # Check the range
                 for k in range(0, 2):
-                    expected_float = expected_range[i][j][k]
-                    measured_float = solver.mjw_model.tendon_range.numpy()[i][j][k]
+                    expected = expected_range[i][j][k]
+                    measured = solver.mjw_model.tendon_range.numpy()[i][j][k]
                     self.assertAlmostEqual(
-                        measured_float,
-                        expected_float,
+                        measured,
+                        expected,
                         places=4,
-                        msg=f"Expected range[{k}] value: {expected_float}, Measured value: {measured_float}",
+                        msg=f"Expected range[{k}] value: {expected}, Measured value: {measured}",
                     )
 
                 # Check the margin
-                expected_float = expected_margin[i][j]
-                measured_float = solver.mjw_model.tendon_margin.numpy()[i][j]
+                expected = expected_margin[i][j]
+                measured = solver.mjw_model.tendon_margin.numpy()[i][j]
                 self.assertAlmostEqual(
-                    measured_float,
-                    expected_float,
+                    measured,
+                    expected,
                     places=4,
-                    msg=f"Expected margin value: {expected_float}, Measured value: {measured_float}",
+                    msg=f"Expected margin value: {expected}, Measured value: {measured}",
                 )
 
                 # Check solreflimit
                 for k in range(0, 2):
-                    expected_float = expected_solreflimit[i][j][k]
-                    measured_float = solver.mjw_model.tendon_solref_lim.numpy()[i][j][k]
+                    expected = expected_solreflimit[i][j][k]
+                    measured = solver.mjw_model.tendon_solref_lim.numpy()[i][j][k]
                     self.assertAlmostEqual(
-                        measured_float,
-                        expected_float,
+                        measured,
+                        expected,
                         places=4,
-                        msg=f"Expected solreflimit[{k}] value: {expected_float}, Measured value: {measured_float}",
+                        msg=f"Expected solreflimit[{k}] value: {expected}, Measured value: {measured}",
                     )
 
                 # Check solimplimit
                 for k in range(0, 5):
-                    expected_float = expected_solimplimit[i][j][k]
-                    measured_float = solver.mjw_model.tendon_solimp_lim.numpy()[i][j][k]
+                    expected = expected_solimplimit[i][j][k]
+                    measured = solver.mjw_model.tendon_solimp_lim.numpy()[i][j][k]
                     self.assertAlmostEqual(
-                        measured_float,
-                        expected_float,
+                        measured,
+                        expected,
                         places=4,
-                        msg=f"Expected solimplimit[{k}] value: {expected_float}, Measured value: {measured_float}",
+                        msg=f"Expected solimplimit[{k}] value: {expected}, Measured value: {measured}",
                     )
 
                 # Check solreffriction
                 for k in range(0, 2):
-                    expected_float = expected_solreffriction[i][j][k]
-                    measured_float = solver.mjw_model.tendon_solref_fri.numpy()[i][j][k]
+                    expected = expected_solreffriction[i][j][k]
+                    measured = solver.mjw_model.tendon_solref_fri.numpy()[i][j][k]
                     self.assertAlmostEqual(
-                        measured_float,
-                        expected_float,
+                        measured,
+                        expected,
                         places=4,
-                        msg=f"Expected solreffriction[{k}] value: {expected_float}, Measured value: {measured_float}",
+                        msg=f"Expected solreffriction[{k}] value: {expected}, Measured value: {measured}",
                     )
 
                 # Check solimplimit
                 for k in range(0, 5):
-                    expected_float = expected_solimpfriction[i][j][k]
-                    measured_float = solver.mjw_model.tendon_solimp_fri.numpy()[i][j][k]
+                    expected = expected_solimpfriction[i][j][k]
+                    measured = solver.mjw_model.tendon_solimp_fri.numpy()[i][j][k]
                     self.assertAlmostEqual(
-                        measured_float,
-                        expected_float,
+                        measured,
+                        expected,
                         places=4,
-                        msg=f"Expected solimpfriction[{k}] value: {expected_float}, Measured value: {measured_float}",
+                        msg=f"Expected solimpfriction[{k}] value: {expected}, Measured value: {measured}",
                     )
 
                 # Check the actuator force range
                 for k in range(0, 2):
-                    expected_float = expected_actuator_force_range[i][j][k]
-                    measured_float = solver.mjw_model.tendon_actfrcrange.numpy()[i][j][k]
+                    expected = expected_actuator_force_range[i][j][k]
+                    measured = solver.mjw_model.tendon_actfrcrange.numpy()[i][j][k]
                     self.assertAlmostEqual(
-                        measured_float,
-                        expected_float,
+                        measured,
+                        expected,
                         places=4,
-                        msg=f"Expected range[{k}] value: {expected_float}, Measured value: {measured_float}",
+                        msg=f"Expected range[{k}] value: {expected}, Measured value: {measured}",
                     )
 
                 # Check armature
-                expected_float = expected_armature[i][j]
-                measured_float = solver.mjw_model.tendon_armature.numpy()[i][j]
+                expected = expected_armature[i][j]
+                measured = solver.mjw_model.tendon_armature.numpy()[i][j]
                 self.assertAlmostEqual(
-                    measured_float,
-                    expected_float,
+                    measured,
+                    expected,
                     places=4,
-                    msg=f"Expected armature value: {expected_float}, Measured value: {measured_float}",
+                    msg=f"Expected armature value: {expected}, Measured value: {measured}",
                 )
 
         expected_num = [2, 2]
@@ -950,30 +949,263 @@ class TestImportMjcf(unittest.TestCase):
         expected_actfrc_limited = [1, 0]
         for i in range(0, 2):
             # Check the offsets that determine where the joint list starts for each tendon
-            expected_int = expected_num[i]
-            measured_int = solver.mjw_model.tendon_num.numpy()[i]
+            expected = expected_num[i]
+            measured = solver.mjw_model.tendon_num.numpy()[i]
             self.assertEqual(
-                measured_int,
-                expected_int,
-                msg=f"Expected springlength[0] value: {expected_int}, Measured value: {measured_int}",
+                measured,
+                expected,
+                msg=f"Expected springlength[0] value: {expected}, Measured value: {measured}",
             )
 
             # Check the limited attribute
-            expected_int = expected_limited[i]
-            measured_int = solver.mjw_model.tendon_limited.numpy()[i]
+            expected = expected_limited[i]
+            measured = solver.mjw_model.tendon_limited.numpy()[i]
             self.assertEqual(
-                measured_float,
-                expected_float,
-                msg=f"Expected tendon limited value: {expected_int}, Measured value: {measured_int}",
+                measured,
+                expected,
+                msg=f"Expected tendon limited value: {expected}, Measured value: {measured}",
+            )
+
+            # Check the actuation force limited attribute
+            expected = expected_actfrc_limited[i]
+            measured = solver.mjw_model.tendon_actfrclimited.numpy()[i]
+            self.assertEqual(
+                measured,
+                expected,
+                msg=f"Expected tendon actuator force limited value: {expected}, Measured value: {measured}",
+            )
+
+    def test_single_mujoco_fixed_tendon_defaults(self):
+        """Test that tendons work"""
+        mjcf = """<?xml version="1.0" ?>
+<mujoco>
+    <worldbody>
+    <!-- Root body (fixed to world) -->
+    <body name="root" pos="0 0 0">
+      <geom type="box" size="0.1 0.1 0.1" rgba="0.5 0.5 0.5 1"/>
+      
+      <!-- First child link with prismatic joint along x -->
+      <body name="link1" pos="0.0 -0.5 0">
+        <joint name="joint1" type="slide" axis="1 0 0" range="-50.5 50.5"/>
+        <geom solmix="1.0" type="cylinder" size="0.05 0.025" rgba="1 0 0 1" euler="0 90 0"/>
+        <inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/>
+      </body>
+      
+      <!-- Second child link with prismatic joint along x -->
+      <body name="link2" pos="-0.0 -0.7 0">
+        <joint name="joint2" type="slide" axis="1 0 0" range="-50.5 50.5"/>
+        <geom type="cylinder" size="0.05 0.025" rgba="0 0 1 1" euler="0 90 0"/>
+        <inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/>
+      </body>
+
+    </body>
+  </worldbody>
+
+  <tendon>
+    <!-- Fixed tendon coupling joint1 and joint2 -->
+	<fixed 
+		name="coupling_tendon">
+      <joint joint="joint1" coef="1"/>
+      <joint joint="joint2" coef="-1"/>
+    </fixed>
+  </tendon>
+
+  <tendon>
+    <!-- Fixed tendon coupling joint1 and joint2 -->
+	<fixed 
+		name="coupling_tendon_reversed"> 
+      <joint joint="joint1" coef="1"/>
+      <joint joint="joint2" coef="1"/>
+    </fixed>
+  </tendon>  
+</mujoco>
+"""
+
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_mjcf(mjcf)
+        model = builder.finalize()
+        solver = SolverMuJoCo(model, iterations=10, ls_iterations=10)
+
+        springlength0 = solver.mjw_model.tendon_length0.numpy()
+
+        # Note default spring length is -1 but ends up being 0.
+
+        # 1 articulation
+        # 2 tendons
+        expected_damping = [[0.0, 0.0]]
+        expected_stiffness = [[0.0, 0.0]]
+        expected_frictionloss = [[0, 0]]
+        expected_springlength = [[wp.vec2(0.0, 0.0), wp.vec2(0.0, 0.0)]]
+        expected_range = [[wp.vec2(0.0, 0.0), wp.vec2(0.0, 0.0)]]
+        expected_margin = [[0.0, 0.0]]
+        expected_solreflimit = [[wp.vec2(0.02, 1.0), wp.vec2(0.02, 1.0)]]
+        expected_solreffriction = [[wp.vec2(0.02, 1.0), wp.vec2(0.02, 1.0)]]
+        vec5 = wp.types.vector(5, wp.float32)
+        expected_solimplimit = [[vec5(0.9, 0.95, 0.001, 0.5, 2.0), vec5(0.9, 0.95, 0.001, 0.5, 2.0)]]
+        expected_solimpfriction = [[vec5(0.9, 0.95, 0.001, 0.5, 2.0), vec5(0.9, 0.95, 0.001, 0.5, 2.0)]]
+        expected_actuator_force_range = [[wp.vec2(0.0, 0.0), wp.vec2(0.0, 0.0)]]
+        expected_armature = [[0.0, 0.0]]
+        for i in range(0, 1):
+            for j in range(0, 2):
+                # Check the stiffness
+                expected = expected_stiffness[i][j]
+                measured = solver.mjw_model.tendon_stiffness.numpy()[i][j]
+                self.assertAlmostEqual(
+                    measured,
+                    expected,
+                    places=4,
+                    msg=f"Expected stiffness value: {expected}, Measured value: {measured}",
+                )
+
+                # Check the damping
+                expected = expected_damping[i][j]
+                measured = solver.mjw_model.tendon_damping.numpy()[i][j]
+                self.assertAlmostEqual(
+                    measured,
+                    expected,
+                    places=4,
+                    msg=f"Expected damping value: {expected}, Measured value: {measured}",
+                )
+
+                # Check the spring length
+                for k in range(0, 2):
+                    expected = expected_springlength[i][j][k]
+                    measured = solver.mjw_model.tendon_lengthspring.numpy()[i][j][k]
+                    self.assertAlmostEqual(
+                        measured,
+                        expected,
+                        places=4,
+                        msg=f"Expected springlength[{k}] value: {expected}, Measured value: {measured}",
+                    )
+
+                # Check the frictionloss
+                expected = expected_frictionloss[i][j]
+                measured = solver.mjw_model.tendon_frictionloss.numpy()[i][j]
+                self.assertAlmostEqual(
+                    measured,
+                    expected,
+                    places=4,
+                    msg=f"Expected tendon frictionloss value: {expected}, Measured value: {measured}",
+                )
+
+                # Check the range
+                for k in range(0, 2):
+                    expected = expected_range[i][j][k]
+                    measured = solver.mjw_model.tendon_range.numpy()[i][j][k]
+                    self.assertAlmostEqual(
+                        measured,
+                        expected,
+                        places=4,
+                        msg=f"Expected range[{k}] value: {expected}, Measured value: {measured}",
+                    )
+
+                # Check the margin
+                expected = expected_margin[i][j]
+                measured = solver.mjw_model.tendon_margin.numpy()[i][j]
+                self.assertAlmostEqual(
+                    measured,
+                    expected,
+                    places=4,
+                    msg=f"Expected margin value: {expected}, Measured value: {measured}",
+                )
+
+                # Check solreflimit
+                for k in range(0, 2):
+                    expected = expected_solreflimit[i][j][k]
+                    measured = solver.mjw_model.tendon_solref_lim.numpy()[i][j][k]
+                    self.assertAlmostEqual(
+                        measured,
+                        expected,
+                        places=4,
+                        msg=f"Expected solreflimit[{k}] value: {expected}, Measured value: {measured}",
+                    )
+
+                # Check solimplimit
+                for k in range(0, 5):
+                    expected = expected_solimplimit[i][j][k]
+                    measured = solver.mjw_model.tendon_solimp_lim.numpy()[i][j][k]
+                    self.assertAlmostEqual(
+                        measured,
+                        expected,
+                        places=4,
+                        msg=f"Expected solimplimit[{k}] value: {expected}, Measured value: {measured}",
+                    )
+
+                # Check solreffriction
+                for k in range(0, 2):
+                    expected = expected_solreffriction[i][j][k]
+                    measured = solver.mjw_model.tendon_solref_fri.numpy()[i][j][k]
+                    self.assertAlmostEqual(
+                        measured,
+                        expected,
+                        places=4,
+                        msg=f"Expected solreffriction[{k}] value: {expected}, Measured value: {measured}",
+                    )
+
+                # Check solimplimit
+                for k in range(0, 5):
+                    expected = expected_solimpfriction[i][j][k]
+                    measured = solver.mjw_model.tendon_solimp_fri.numpy()[i][j][k]
+                    self.assertAlmostEqual(
+                        measured,
+                        expected,
+                        places=4,
+                        msg=f"Expected solimpfriction[{k}] value: {expected}, Measured value: {measured}",
+                    )
+
+                # Check the actuator force range
+                for k in range(0, 2):
+                    expected = expected_actuator_force_range[i][j][k]
+                    measured = solver.mjw_model.tendon_actfrcrange.numpy()[i][j][k]
+                    self.assertAlmostEqual(
+                        measured,
+                        expected,
+                        places=4,
+                        msg=f"Expected range[{k}] value: {expected}, Measured value: {measured}",
+                    )
+
+                # Check armature
+                expected = expected_armature[i][j]
+                measured = solver.mjw_model.tendon_armature.numpy()[i][j]
+                self.assertAlmostEqual(
+                    measured,
+                    expected,
+                    places=4,
+                    msg=f"Expected armature value: {expected}, Measured value: {measured}",
+                )
+
+        expected_num = [2, 2]
+        expected_limited = [0, 0]
+        expected_actfrc_limited = [0, 0]
+        for i in range(0, 2):
+            # Check the offsets that determine where the joint list starts for each tendon
+            expected = expected_num[i]
+            measured = solver.mjw_model.tendon_num.numpy()[i]
+            self.assertEqual(
+                measured,
+                expected,
+                msg=f"Expected springlength[0] value: {expected}, Measured value: {measured}",
             )
 
             # Check the limited attribute
-            expected_int = expected_actfrc_limited[i]
-            measured_int = solver.mjw_model.tendon_actfrclimited.numpy()[i]
+            thing0 = solver.mjw_model.tendon_limited.numpy()
+            expected = expected_limited[i]
+            measured = solver.mjw_model.tendon_limited.numpy()[i]
             self.assertEqual(
-                measured_float,
-                expected_float,
-                msg=f"Expected tendon actuator force limited value: {expected_int}, Measured value: {measured_int}",
+                measured,
+                expected,
+                msg=f"Expected tendon limited value: {expected}, Measured value: {measured}",
+            )
+
+            # Check the actuation force limited attribute
+            thing = solver.mjw_model.tendon_actfrclimited.numpy()
+            expected = expected_actfrc_limited[i]
+            measured = solver.mjw_model.tendon_actfrclimited.numpy()[i]
+            self.assertEqual(
+                measured,
+                expected,
+                msg=f"Expected tendon actuator force limited value: {expected}, Measured value: {measured}",
             )
 
     def test_solimplimit_parsing(self):
