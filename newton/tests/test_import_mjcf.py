@@ -800,8 +800,10 @@ class TestImportMjcf(unittest.TestCase):
         model = builder.finalize()
         solver = SolverMuJoCo(model, iterations=10, ls_iterations=10)
 
-        # 1 articulation
-        # 2 tendons
+        nbBuilders = 1
+        nbTendonsPerBuilder = 2
+        nbTendons = nbBuilders * nbTendonsPerBuilder
+
         expected_damping = [[2.0, 5.0]]
         expected_stiffness = [[1.0, 4.0]]
         expected_frictionloss = [[2.6, 2.8]]
@@ -815,8 +817,8 @@ class TestImportMjcf(unittest.TestCase):
         expected_solimpfriction = [[vec5(0.3, 0.4, 0.006, 0.5, 1.4), vec5(0.35, 0.45, 0.004, 0.5, 1.2)]]
         expected_actuator_force_range = [[wp.vec2(-2.2, 2.2), wp.vec2(-3.3, 3.3)]]
         expected_armature = [[0.13, 0.23]]
-        for i in range(0, 1):
-            for j in range(0, 2):
+        for i in range(0, nbBuilders):
+            for j in range(0, nbTendonsPerBuilder):
                 # Check the stiffness
                 expected = expected_stiffness[i][j]
                 measured = solver.mjw_model.tendon_stiffness.numpy()[i][j]
@@ -947,7 +949,7 @@ class TestImportMjcf(unittest.TestCase):
         expected_num = [2, 2]
         expected_limited = [0, 1]
         expected_actfrc_limited = [1, 0]
-        for i in range(0, 2):
+        for i in range(0, nbTendons):
             # Check the offsets that determine where the joint list starts for each tendon
             expected = expected_num[i]
             measured = solver.mjw_model.tendon_num.numpy()[i]
@@ -1027,12 +1029,12 @@ class TestImportMjcf(unittest.TestCase):
         model = builder.finalize()
         solver = SolverMuJoCo(model, iterations=10, ls_iterations=10)
 
-        springlength0 = solver.mjw_model.tendon_length0.numpy()
+        nbBuilders = 1
+        nbTendonsPerBuilder = 2
+        nbTendons = nbBuilders * nbTendonsPerBuilder
 
         # Note default spring length is -1 but ends up being 0.
 
-        # 1 articulation
-        # 2 tendons
         expected_damping = [[0.0, 0.0]]
         expected_stiffness = [[0.0, 0.0]]
         expected_frictionloss = [[0, 0]]
@@ -1046,8 +1048,8 @@ class TestImportMjcf(unittest.TestCase):
         expected_solimpfriction = [[vec5(0.9, 0.95, 0.001, 0.5, 2.0), vec5(0.9, 0.95, 0.001, 0.5, 2.0)]]
         expected_actuator_force_range = [[wp.vec2(0.0, 0.0), wp.vec2(0.0, 0.0)]]
         expected_armature = [[0.0, 0.0]]
-        for i in range(0, 1):
-            for j in range(0, 2):
+        for i in range(0, nbBuilders):
+            for j in range(0, nbTendonsPerBuilder):
                 # Check the stiffness
                 expected = expected_stiffness[i][j]
                 measured = solver.mjw_model.tendon_stiffness.numpy()[i][j]
@@ -1178,7 +1180,7 @@ class TestImportMjcf(unittest.TestCase):
         expected_num = [2, 2]
         expected_limited = [0, 0]
         expected_actfrc_limited = [0, 0]
-        for i in range(0, 2):
+        for i in range(0, nbTendons):
             # Check the offsets that determine where the joint list starts for each tendon
             expected = expected_num[i]
             measured = solver.mjw_model.tendon_num.numpy()[i]
@@ -1287,16 +1289,16 @@ class TestImportMjcf(unittest.TestCase):
         model = builder.finalize()
         solver = SolverMuJoCo(model, iterations=10, ls_iterations=10)
 
-        springlength0 = solver.mjw_model.tendon_length0.numpy()
+        nbBuilders = 1
+        nbTendonsPerBuilder = 3
+        nbTendons = nbBuilders * nbTendonsPerBuilder
 
         # Note default spring length is -1 but ends up being 0.
 
-        # 1 articulation
-        # 3 tendons
         expected_range = [[wp.vec2(-10.0, 11.0), wp.vec2(-12.0, 13.0), wp.vec2(-14.0, 15.0)]]
         expected_actuator_force_range = [[wp.vec2(-2.2, 2.2), wp.vec2(-3.3, 3.3), wp.vec2(-4.4, 4.4)]]
-        for i in range(0, 1):
-            for j in range(0, 3):
+        for i in range(0, nbBuilders):
+            for j in range(0, nbTendonsPerBuilder):
                 # Check the range
                 for k in range(0, 2):
                     expected = expected_range[i][j][k]
@@ -1321,7 +1323,7 @@ class TestImportMjcf(unittest.TestCase):
 
         expected_limited = [1, 1, 0]
         expected_actfrc_limited = [1, 1, 0]
-        for i in range(0, 3):
+        for i in range(0, nbTendons):
             # Check the limited attribute
             expected = expected_limited[i]
             measured = solver.mjw_model.tendon_limited.numpy()[i]
