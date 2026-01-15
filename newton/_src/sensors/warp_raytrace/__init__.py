@@ -13,8 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from .debug import RenderDebugUtils
 from .render_context import ClearData, RenderContext
 from .types import RenderLightType, RenderShapeType
 
-__all__ = ["ClearData", "RenderContext", "RenderDebugUtils", "RenderLightType", "RenderShapeType"]
+__all__ = ["ClearData", "RenderContext", "RenderLightType", "RenderShapeType"]

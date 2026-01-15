@@ -22,7 +22,7 @@ import warp as wp
 
 from ..geometry import ShapeFlags
 from ..sim import Model, State
-from .warp_raytrace import ClearData, RenderContext, RenderDebugUtils, RenderLightType, RenderShapeType
+from .warp_raytrace import ClearData, RenderContext, RenderLightType, RenderShapeType
 
 DEFAULT_CLEAR_DATA = ClearData(0xFF666666)
 
@@ -164,7 +164,7 @@ class SensorTiledCamera:
         self.render_context.num_shapes_total = self.model.shape_count
         self.render_context.num_shapes_enabled = int(num_enabled_shapes.numpy()[0])
 
-        self.render_context.compute_mesh_bounds()
+        self.render_context.utils.compute_mesh_bounds()
 
         if options is not None:
             self.render_context.enable_backface_culling = options.backface_culling
@@ -277,7 +277,7 @@ class SensorTiledCamera:
             )
             camera_fovs = wp.array(camera_fovs, dtype=wp.float32)
 
-        return self.render_context.compute_pinhole_camera_rays(camera_fovs)
+        return self.render_context.utils.compute_pinhole_camera_rays(camera_fovs)
 
     def flatten_color_image_to_rgba(
         self,
@@ -297,7 +297,7 @@ class SensorTiledCamera:
             num_worlds_per_row: Optional number of rows
         """
 
-        return self.render_context.flatten_color_image_to_rgba(image, out_buffer, num_worlds_per_row)
+        return self.render_context.utils.flatten_color_image_to_rgba(image, out_buffer, num_worlds_per_row)
 
     def flatten_normal_image_to_rgba(
         self,
@@ -317,7 +317,7 @@ class SensorTiledCamera:
             num_worlds_per_row: Optional number of rows
         """
 
-        return self.render_context.flatten_normal_image_to_rgba(image, out_buffer, num_worlds_per_row)
+        return self.render_context.utils.flatten_normal_image_to_rgba(image, out_buffer, num_worlds_per_row)
 
     def flatten_depth_image_to_rgba(
         self,
@@ -338,7 +338,7 @@ class SensorTiledCamera:
             num_worlds_per_row: Optional number of rows
         """
 
-        return self.render_context.flatten_depth_image_to_rgba(image, out_buffer, num_worlds_per_row)
+        return self.render_context.utils.flatten_depth_image_to_rgba(image, out_buffer, num_worlds_per_row)
 
     def assign_random_colors_per_world(self, seed: int = 100):
         """
@@ -348,7 +348,7 @@ class SensorTiledCamera:
             seed: The seed to use for the randomizer.
         """
 
-        RenderDebugUtils.assign_random_colors_per_world(self.render_context, seed)
+        self.render_context.utils.assign_random_colors_per_world(seed)
 
     def assign_random_colors_per_shape(self, seed: int = 100):
         """
@@ -358,7 +358,7 @@ class SensorTiledCamera:
             seed: The seed to use for the randomizer.
         """
 
-        RenderDebugUtils.assign_random_colors_per_shape(self.render_context, seed)
+        self.render_context.utils.assign_random_colors_per_shape(seed)
 
     def create_default_light(self, enable_shadows: bool = True):
         """
@@ -367,7 +367,7 @@ class SensorTiledCamera:
         Sets up a single directional light oriented at (-1, 1, -1) with shadow casting enabled.
         """
 
-        RenderDebugUtils.create_default_light(self.render_context, enable_shadows)
+        self.render_context.utils.create_default_light(enable_shadows)
 
     def assign_checkerboard_material_to_all_shapes(self, resolution: int = 64, checker_size: int = 32):
         """
@@ -381,7 +381,7 @@ class SensorTiledCamera:
             checker_size: Size of each checkerboard square in pixels.
         """
 
-        RenderDebugUtils.assign_checkerboard_material_to_all_shapes(self.render_context, resolution, checker_size)
+        self.render_context.utils.assign_checkerboard_material_to_all_shapes(resolution, checker_size)
 
     def create_color_image_output(self):
         """
