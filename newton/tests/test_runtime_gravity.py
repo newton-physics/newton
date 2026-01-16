@@ -395,6 +395,10 @@ def test_set_gravity_invalid_array_size(test, device):
     with test.assertRaises(ValueError):
         model.set_gravity([(0.0, 0.0, -9.81), (0.0, 0.0, -4.9), (0.0, 0.0, 0.0)])
 
+    # Passing array with world parameter should raise ValueError
+    with test.assertRaises(ValueError):
+        model.set_gravity([(0.0, 0.0, -9.81), (0.0, 0.0, -4.9)], world=0)
+
 
 devices = get_test_devices()
 

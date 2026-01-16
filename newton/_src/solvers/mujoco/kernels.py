@@ -1229,8 +1229,7 @@ def update_model_properties_kernel(
     gravity_dst: wp.array(dtype=wp.vec3f),
 ):
     world_idx = wp.tid()
-    gravity_src_idx = wp.min(world_idx, gravity_src.shape[0] - 1)
-    gravity_dst[world_idx] = gravity_src[gravity_src_idx]
+    gravity_dst[world_idx] = gravity_src[world_idx]
 
 
 @wp.kernel

@@ -647,17 +647,22 @@ class Model:
 
         Note:
             Call ``solver.notify_model_changed(SolverNotifyFlags.MODEL_PROPERTIES)`` after.
+
+            Global entities (particles/bodies not assigned to a specific world) use
+            gravity from world 0.
         """
         gravity_np = np.asarray(gravity, dtype=np.float32)
 
         if world is not None:
+            if gravity_np.shape != (3,):
+                raise ValueError("Expected single gravity vector (3,) when world is specified")
             if world < 0 or world >= self.num_worlds:
                 raise IndexError(f"world {world} out of range [0, {self.num_worlds})")
             current = self.gravity.numpy()
             current[world] = gravity_np
             self.gravity.assign(current)
         elif gravity_np.ndim == 1:
-            self.gravity.assign(np.tile(gravity_np, (self.num_worlds, 1)))
+            self.gravity.fill_(gravity_np)
         else:
             if len(gravity_np) != self.num_worlds:
                 raise ValueError(f"Expected {self.num_worlds} gravity vectors, got {len(gravity_np)}")
