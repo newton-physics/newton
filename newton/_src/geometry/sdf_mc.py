@@ -185,7 +185,7 @@ def mc_calc_face(
         p_scaled = wp.volume_index_to_world(sdf_a, vol_idx)
         face_verts[vi] = p_scaled
         depth = wp.volume_sample_f(sdf_a, vol_idx, wp.Volume.LINEAR)
-        if depth >= MAXVAL * 0.5 or wp.isnan(depth):
+        if depth >= MAXVAL or wp.isnan(depth):
             depth = 0.0
         vert_depths[vi] = -depth
         if depth < 0.0:

@@ -70,7 +70,6 @@ MAXVAL = 1e10
 """Large finite sentinel value for 'no limit' / 'no hit' / 'invalid' markers.
 
 Use this instead of infinity to avoid verify_fp false positives.
-Matches MuJoCo's mjMAXVAL convention.
 """
 
 

@@ -223,11 +223,11 @@ def collide_capsule_capsule(
 
     Returns:
       Tuple containing:
-        contact_dist: Vector of contact distances (wp.inf for invalid contacts)
+        contact_dist: Vector of contact distances (MAXVAL for invalid contacts)
         contact_pos: Matrix of contact positions (one per row)
         contact_normal: Shared contact normal vector (from capsule 1 toward capsule 2)
     """
-    contact_dist = wp.vec2(wp.inf, wp.inf)
+    contact_dist = wp.vec2(MAXVAL, MAXVAL)
     contact_pos = _mat23f()
     contact_normal = wp.vec3()
 

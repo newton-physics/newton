@@ -2115,7 +2115,7 @@ def generate_handle_contact_pairs_kernel(enable_backward: bool):
             normal = -neg_normal
 
             # Check if this contact point is valid (primitive function returns MAXVAL for invalid contacts)
-            if distance >= MAXVAL * 0.5:  # Use threshold below MAXVAL to handle float32 precision
+            if distance >= MAXVAL:
                 return
 
         elif (
