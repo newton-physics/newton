@@ -566,13 +566,12 @@ def parse_mjcf(
         parent_body: int,
         defaults: dict,
         childclass: str | None,
-        accumulated_xform: wp.transform,
-        parent_body_world_xform: wp.transform | None = None,
+        incoming_xform: wp.transform,
     ):
         """Process children of a frame element, composing the frame's transform with children.
 
         Frame elements are pure coordinate transformations that can wrap any group of elements.
-        After processing, the frame's transform is accumulated with its direct children.
+        The frame's transform is composed with incoming_xform and passed to children.
         Frames can contain: body, geom, site, and nested frame elements.
 
         Args:
@@ -580,17 +579,12 @@ def parse_mjcf(
             parent_body: The parent body index (-1 for world).
             defaults: The current defaults dictionary.
             childclass: The current childclass for body inheritance.
-            accumulated_xform: The transform accumulated from parent frames/bodies.
-            parent_body_world_xform: The actual parent body's world transform (without frame offsets).
-                Used for computing joint_X_p for child bodies.
+            incoming_xform: The accumulated transform from parent frames/bodies.
         """
-        # Parse the frame's own transform
+        # Parse the frame's own transform and compose with incoming
         frame_pos = parse_vec(frame_element.attrib, "pos", (0.0, 0.0, 0.0)) * scale
         frame_rot = parse_orientation(frame_element.attrib)
-        frame_xform = wp.transform(frame_pos, frame_rot)
-
-        # Compose with incoming transform
-        composed_xform = accumulated_xform * frame_xform
+        composed_xform = incoming_xform * wp.transform(frame_pos, frame_rot)
 
         # Process child bodies
         for child_body in frame_element.findall("body"):
@@ -604,8 +598,7 @@ def parse_mjcf(
                 parent_body,
                 _incoming_defaults,
                 childclass=_childclass,
-                parent_world_xform=composed_xform,
-                parent_body_world_xform=parent_body_world_xform,
+                incoming_xform=composed_xform,
             )
 
         # Process child geoms (attached to parent_body)
@@ -641,8 +634,7 @@ def parse_mjcf(
                 parent_body=parent_body,
                 defaults=defaults,
                 childclass=childclass,
-                accumulated_xform=composed_xform,
-                parent_body_world_xform=parent_body_world_xform,
+                incoming_xform=composed_xform,
             )
 
     def parse_body(
@@ -650,8 +642,7 @@ def parse_mjcf(
         parent,
         incoming_defaults: dict,
         childclass: str | None = None,
-        parent_world_xform: Transform | None = None,
-        parent_body_world_xform: Transform | None = None,
+        incoming_xform: Transform | None = None,
     ):
         """Parse a body element from MJCF.
 
@@ -660,10 +651,8 @@ def parse_mjcf(
             parent: Parent body index (-1 for world).
             incoming_defaults: Default attributes dictionary.
             childclass: Child class name for inheritance.
-            parent_world_xform: Transform for computing child world positions.
-                May include frame offsets when called from process_frame_children.
-            parent_body_world_xform: The actual parent body's world transform (without frame offsets).
-                Used for computing joint_X_p. If None, uses parent_world_xform.
+            incoming_xform: Accumulated transform from parent (may include frame offsets).
+                If None, uses the import root xform.
         """
         body_class = body.get("class") or body.get("childclass")
         if body_class is None:
@@ -686,18 +675,18 @@ def parse_mjcf(
         # Create local transform from parsed position and orientation
         local_xform = wp.transform(body_pos * scale, body_ori)
 
-        # Compose with either the passed parent world transform or the import root xform
-        world_xform = (parent_world_xform or xform) * local_xform
+        # Compose with incoming transform (or import root xform if none)
+        world_xform = (incoming_xform or xform) * local_xform
 
         # For joint positioning, compute body position relative to the actual parent body
-        # (not including frame offsets which are in parent_world_xform but not in parent_body_world_xform)
-        if parent_body_world_xform is not None:
-            # Frame case: compute position relative to actual parent body
-            relative_xform = wp.transform_inverse(parent_body_world_xform) * world_xform
+        if parent >= 0:
+            # Look up parent body's world transform and compute relative position
+            parent_body_xform = builder.body_q[parent]
+            relative_xform = wp.transform_inverse(parent_body_xform) * world_xform
             body_pos_for_joints = relative_xform.p
             body_ori_for_joints = relative_xform.q
         else:
-            # Normal case: use raw body position
+            # World parent: use raw body position
             body_pos_for_joints = body_pos * scale
             body_ori_for_joints = body_ori
 
@@ -1065,7 +1054,7 @@ def parse_mjcf(
                 _incoming_defaults = defaults
             else:
                 _incoming_defaults = merge_attrib(defaults, class_defaults[_childclass])
-            parse_body(child, link, _incoming_defaults, childclass=_childclass, parent_world_xform=world_xform)
+            parse_body(child, link, _incoming_defaults, childclass=_childclass, incoming_xform=world_xform)
 
         # Process frame elements within this body
         for frame in body.findall("frame"):
@@ -1074,8 +1063,7 @@ def parse_mjcf(
                 parent_body=link,
                 defaults=defaults,
                 childclass=childclass,
-                accumulated_xform=world_xform,
-                parent_body_world_xform=world_xform,  # Pass current body's world transform for joint positioning
+                incoming_xform=world_xform,
             )
 
     def parse_equality_constraints(equality):
@@ -1278,7 +1266,7 @@ def parse_mjcf(
     # add bodies
 
     for body in world.findall("body"):
-        parse_body(body, -1, world_defaults, parent_world_xform=xform)
+        parse_body(body, -1, world_defaults, incoming_xform=xform)
 
     # -----------------
     # add static geoms
@@ -1310,7 +1298,7 @@ def parse_mjcf(
             parent_body=-1,
             defaults=world_defaults,
             childclass=None,
-            accumulated_xform=xform,
+            incoming_xform=xform,
         )
 
     # -----------------
