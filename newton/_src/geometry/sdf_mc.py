@@ -60,9 +60,9 @@ def get_mc_tables(device):
         ]
     )
 
-    tri_range_table = wp.marching_cubes._get_mc_case_to_tri_range_table(device)
-    tri_local_inds_table = wp.marching_cubes._get_mc_tri_local_inds_table(device)
-    corner_offsets_table = wp.array(wp.marching_cubes.mc_cube_corner_offsets, dtype=wp.vec3ub, device=device)
+    tri_range_table = wp._src.marching_cubes._get_mc_case_to_tri_range_table(device)
+    tri_local_inds_table = wp._src.marching_cubes._get_mc_tri_local_inds_table(device)
+    corner_offsets_table = wp.array(wp._src.marching_cubes.mc_cube_corner_offsets, dtype=wp.vec3ub, device=device)
     edge_to_verts_table = wp.array(edge_to_verts, dtype=wp.vec2ub, device=device)
 
     # Create flattened table:

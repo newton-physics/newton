@@ -66,7 +66,7 @@ class BvhAabb:
             ...
     """
 
-    def __init__(self, num_leaves: int, device: wp.context.Device):
+    def __init__(self, num_leaves: int, device: wp.Device):
         self.bvh = None
         self.device = device
         self.lower_bounds = wp.zeros(num_leaves, dtype=wp.vec3, device=self.device)
@@ -245,7 +245,7 @@ class BvhEdge(BvhAabb):
     It supports building, refitting, and querying against edge-based BVHs.
     """
 
-    def __init__(self, edge_count: int, device: wp.context.Device):
+    def __init__(self, edge_count: int, device: wp.Device):
         super().__init__(edge_count, device)
 
     def update_aabbs(self, pos: wp.array(dtype=wp.vec3), edge_indices: wp.array(dtype=int, ndim=2), enlarge: float):
@@ -391,7 +391,7 @@ class BvhTri(BvhAabb):
     involving triangles.
     """
 
-    def __init__(self, tri_count: int, device: wp.context.Device):
+    def __init__(self, tri_count: int, device: wp.Device):
         super().__init__(tri_count, device)
 
     def update_aabbs(self, pos: wp.array(dtype=wp.vec3), tri_indices: wp.array(dtype=int, ndim=2), enlarge: float):
@@ -549,8 +549,8 @@ if __name__ == "__main__":
     edge_indices = wp.array([[0, 1, 2, 3]], dtype=int)
     tri_indices = wp.array([[0, 1, 6], [3, 4, 5], [6, 7, 0]], dtype=int)
 
-    tri_bvh = BvhTri(3, wp.context.get_device())
-    edge_bvh = BvhEdge(1, wp.context.get_device())
+    tri_bvh = BvhTri(3, wp.get_device())
+    edge_bvh = BvhEdge(1, wp.get_device())
 
     tri_bvh.build(pos, tri_indices)
     edge_bvh.build(pos, edge_indices)
