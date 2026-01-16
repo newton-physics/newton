@@ -7,7 +7,7 @@ This document covers the various conventions used across physics engines and gra
 Primer: Reference Points for Rigid-Body Spatial Force and Velocity
 ------------------------------------------------------------------
 
-Newton uses rigid-body spatial force and velocity (wrench and twist) in its API. These spatial vectors are defined with respect to a **reference point**.
+Newton uses rigid-body spatial forces (wrenches) and velocities (twists) in its API. These spatial vectors are defined with respect to a **reference point**.
 When shifting the reference point, the force and velocity are updated in order to preserve the effect of the wrench, and the velocity field described by the twist, with respect to the new reference point.
 The 6D wrench and twist are composed of a linear and an angular 3D-vector component, and in the context of these spatial vectors, their reference-point dependence is as follows:
 
@@ -271,6 +271,10 @@ This convention is used in all Newton solvers, except for :class:`~newton.solver
   incorrectly cause the CoM to translate instead of remaining stationary.
 
   We will fix this issue with https://github.com/newton-physics/newton/issues/1366.
+
+The array of joint forces (torques) in generalized coordinates is stored in :attr:`Control.joint_f <newton.Control.joint_f>`.
+For free joints, the corresponding 6 dimensions in this array are the spatial wrench applied at the body's center of mass (COM)
+in world frame, following exactly the same convention as :attr:`State.body_f <newton.State.body_f>`.
 
 Quaternion Ordering Conventions
 --------------------------------
