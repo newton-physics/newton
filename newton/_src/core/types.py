@@ -65,6 +65,14 @@ nparray = np.ndarray[Any, np.dtype[Any]]
 # Warp vector types
 vec5 = wp.types.vector(length=5, dtype=wp.float32)
 
+# Large finite value used as sentinel (matches MuJoCo's mjMAXVAL)
+MAXVAL = 1e10
+"""Large finite sentinel value for 'no limit' / 'no hit' / 'invalid' markers.
+
+Use this instead of infinity to avoid verify_fp false positives.
+Matches MuJoCo's mjMAXVAL convention.
+"""
+
 
 class Axis(IntEnum):
     """Enumeration of axes in 3D space."""
@@ -181,6 +189,7 @@ def axis_to_vec3(axis: AxisType | Vec3) -> wp.vec3:
 
 
 __all__ = [
+    "MAXVAL",
     "Axis",
     "AxisType",
     "Devicelike",

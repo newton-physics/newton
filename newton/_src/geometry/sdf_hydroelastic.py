@@ -20,6 +20,8 @@ from typing import Any
 
 import warp as wp
 
+from newton._src.core.types import MAXVAL
+
 from ..sim.model import Model
 from .collision_core import sat_box_intersection
 from .contact_data import ContactData
@@ -963,7 +965,7 @@ def sdf_diff_sdf(
 
     valB = sample_sdf_extrapolated(sdfB_data, pointB)
 
-    is_valid = not (valA >= wp.inf or wp.isnan(valA) or valB >= wp.inf or wp.isnan(valB))
+    is_valid = not (valA >= MAXVAL or wp.isnan(valA) or valB >= MAXVAL or wp.isnan(valB))
 
     if valA < 0 and valB < 0:
         diff = k_eff_a * valA - k_eff_b * valB
@@ -995,7 +997,7 @@ def sdf_diff_sdf(
 
     valB = sample_sdf_extrapolated(sdfB_data, pointB)
 
-    is_valid = not (valA >= wp.inf or wp.isnan(valA) or valB >= wp.inf or wp.isnan(valB))
+    is_valid = not (valA >= MAXVAL or wp.isnan(valA) or valB >= MAXVAL or wp.isnan(valB))
 
     if valA < 0 and valB < 0:
         diff = k_eff_a * valA - k_eff_b * valB
