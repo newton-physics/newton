@@ -139,7 +139,7 @@ def "World"
         pos_0 = np.array(builder.body_q[body_0].p)
         pos_1 = np.array(builder.body_q[body_1].p)
 
-        np.testing.assert_allclose(pos_1 - pos_0, np.array([2.5, 0.0, 0.0]), atol=1e-5)
+        np.testing.assert_allclose(pos_0, np.array([0.0, 0.0, 1.0]), atol=1e-5)
         np.testing.assert_allclose(pos_1, np.array([2.5, 0.0, 1.0]), atol=1e-5)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
