@@ -1944,6 +1944,39 @@ class TestImportMjcf(unittest.TestCase):
         self.assertAlmostEqual(joint_X_p[1], 0.0, places=5)
         self.assertAlmostEqual(joint_X_p[2], 2.0, places=5)
 
+    def test_frame_geom_inside_body_is_body_relative(self):
+        """Test that geoms inside frames inside bodies have body-relative transforms.
+
+        This tests a critical distinction: geom transforms should be relative to
+        their parent body, NOT world transforms. A bug would cause the geom to be
+        positioned at the body's world position + frame offset + geom offset,
+        instead of just frame offset + geom offset relative to the body.
+        """
+        mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test_frame_geom_body_relative">
+    <worldbody>
+        <body name="parent" pos="10 20 30">
+            <geom name="parent_geom" size="0.1" type="sphere"/>
+            <frame pos="1 2 3">
+                <geom name="frame_geom" pos="0.1 0.2 0.3" size="0.1" type="sphere"/>
+            </frame>
+        </body>
+    </worldbody>
+</mujoco>"""
+
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf_content)
+
+        # Find the frame_geom - its transform should be body-relative
+        geom_idx = builder.shape_key.index("frame_geom")
+        geom_xform = builder.shape_transform[geom_idx]
+
+        # Position should be frame pos + geom pos = (1.1, 2.2, 3.3)
+        # NOT body world pos + frame pos + geom pos = (11.1, 22.2, 33.3)
+        self.assertAlmostEqual(geom_xform[0], 1.1, places=5)
+        self.assertAlmostEqual(geom_xform[1], 2.2, places=5)
+        self.assertAlmostEqual(geom_xform[2], 3.3, places=5)
+
     def test_frame_with_sites(self):
         """Test that frames correctly transform site positions."""
         mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
