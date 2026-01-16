@@ -289,8 +289,8 @@ def test_per_world_gravity_bodies_mujoco_warp(test, device):
     model = main_builder.finalize(device=device)
     solver = newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=False, update_data_interval=0)
 
-    # Verify opt.gravity was expanded to per-world
-    test.assertEqual(solver.mj_model.opt.gravity.shape[0], 3)
+    # Verify opt.gravity was expanded to per-world (dtype=vec3, so shape is (num_worlds,))
+    test.assertEqual(solver.mj_model.opt.gravity.shape, (3,))
 
     state_0, state_1 = model.state(), model.state()
     control = model.control()
