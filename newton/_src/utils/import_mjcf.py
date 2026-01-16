@@ -987,35 +987,39 @@ def parse_mjcf(
             parse_body(child, link, _incoming_defaults, childclass=_childclass, incoming_xform=world_xform)
 
         # Process frame elements within this body (frames are pure coordinate transforms)
-        frame_stack = [(f, world_xform) for f in body.findall("frame")]
+        # Track both world transform (for bodies) and body-relative transform (for geoms/sites)
+        # Stack entries: (frame, world_xform_for_bodies, body_relative_xform_for_geoms)
+        frame_stack = [(f, world_xform, wp.transform_identity()) for f in body.findall("frame")]
         while frame_stack:
-            frame, frame_incoming_xform = frame_stack.pop()
-            composed_xform = get_frame_xform(frame, frame_incoming_xform)
+            frame, frame_world_xform, frame_body_relative = frame_stack.pop()
+            frame_local = get_frame_xform(frame, wp.transform_identity())  # Just the frame's own transform
+            composed_world = frame_world_xform * frame_local  # For child bodies
+            composed_body_relative = frame_body_relative * frame_local  # For geoms/sites
             _childclass = frame.get("childclass") or childclass
 
-            # Process bodies inside this frame
+            # Process bodies inside this frame (need world transform)
             for child_body in frame.findall("body"):
                 if _childclass is None:
                     _incoming_defaults = defaults
                 else:
                     _incoming_defaults = merge_attrib(defaults, class_defaults.get(_childclass, {}))
-                parse_body(child_body, link, _incoming_defaults, childclass=_childclass, incoming_xform=composed_xform)
+                parse_body(child_body, link, _incoming_defaults, childclass=_childclass, incoming_xform=composed_world)
 
-            # Process geoms inside this frame (attached to current body)
+            # Process geoms inside this frame (need body-relative transform)
             child_geoms = frame.findall("geom")
             if child_geoms:
                 parse_shapes(
-                    defaults, body_name, link, child_geoms, default_shape_density, incoming_xform=composed_xform
+                    defaults, body_name, link, child_geoms, default_shape_density, incoming_xform=composed_body_relative
                 )
 
-            # Process sites inside this frame
+            # Process sites inside this frame (need body-relative transform)
             if parse_sites:
                 child_sites = frame.findall("site")
                 if child_sites:
-                    _parse_sites_impl(defaults, body_name, link, child_sites, incoming_xform=composed_xform)
+                    _parse_sites_impl(defaults, body_name, link, child_sites, incoming_xform=composed_body_relative)
 
             # Add nested frames to stack (in reverse to maintain order)
-            frame_stack.extend((f, composed_xform) for f in reversed(frame.findall("frame")))
+            frame_stack.extend((f, composed_world, composed_body_relative) for f in reversed(frame.findall("frame")))
 
     def parse_equality_constraints(equality):
         def parse_common_attributes(element):
