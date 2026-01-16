@@ -24,7 +24,6 @@ import warp as wp
 from .types import RenderLightType
 
 if TYPE_CHECKING:
-    print("MEOW")
     from .render_context import RenderContext
 
 
