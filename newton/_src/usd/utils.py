@@ -392,19 +392,31 @@ def get_custom_attribute_declarations(prim: Usd.Prim) -> dict[str, ModelBuilder.
     """
     from ..sim.builder import ModelBuilder  # noqa: PLC0415
 
-    def parse_custom_attr_name(name: str) -> tuple[str | None, str] | None:
+    def is_schema_attribute(prim, attr_name: str) -> bool:
+        """Check if attribute is defined by a registered schema."""
+        # Check the prim's type schema
+        prim_def = Usd.SchemaRegistry().FindConcretePrimDefinition(prim.GetTypeName())
+        if prim_def and attr_name in prim_def.GetPropertyNames():
+            return True
+
+        # Check all applied API schemas
+        for schema_name in prim.GetAppliedSchemas():
+            api_def = Usd.SchemaRegistry().FindAppliedAPIPrimDefinition(schema_name)
+            if api_def and attr_name in api_def.GetPropertyNames():
+                return True
+
+        return False
+
+    def parse_custom_attr_name(name: str) -> tuple[str | None, str | None]:
         """
         Parse custom attribute names in the format 'newton:namespace:attr_name' or 'newton:attr_name'.
 
         Returns:
             Tuple of (namespace, attr_name) where namespace can be None for default namespace,
-            or None if the name doesn't match the expected format.
+            and attr_name can be None if the name is invalid.
         """
 
         parts = name.split(":")
-        if len(parts) < 2 or parts[0] != "newton":
-            return None
-
         if len(parts) == 2:
             # newton:attr_name (default namespace)
             return None, parts[1]
@@ -413,16 +425,17 @@ def get_custom_attribute_declarations(prim: Usd.Prim) -> dict[str, ModelBuilder.
             return parts[1], parts[2]
         else:
             # Invalid format
-            return None
+            return None, None
 
     out: dict[str, ModelBuilder.CustomAttribute] = {}
-    for attr in prim.GetAttributes():
+    for attr in prim.GetAuthoredPropertiesInNamespace("newton"):
+        if is_schema_attribute(prim, attr.GetName()):
+            continue
         attr_name = attr.GetName()
-        parsed = parse_custom_attr_name(attr_name)
-        if not parsed:
+        namespace, local_name = parse_custom_attr_name(attr_name)
+        if not local_name:
             continue
 
-        namespace, local_name = parsed
         default_value = attr.Get()
 
         # Try to read customData for assignment and frequency
