@@ -305,7 +305,7 @@ class ModelBuilder:
             friction: float = 0.0,
         ):
             self.axis = wp.normalize(axis_to_vec3(axis))
-            """The 3D axis that this JointDofConfig object describes."""
+            """The 3D joint axis in the joint parent anchor frame."""
             self.limit_lower = limit_lower
             """The lower position limit of the joint axis. Defaults to -JOINT_LIMIT_UNLIMITED (unlimited)."""
             self.limit_upper = limit_upper
@@ -2332,11 +2332,15 @@ class ModelBuilder:
             joint_type (JointType): The type of joint to add (see :ref:`Joint types`).
             parent (int): The index of the parent body (-1 is the world).
             child (int): The index of the child body.
-            linear_axes (list(:class:`JointDofConfig`)): The linear axes (see :class:`JointDofConfig`) of the joint.
-            angular_axes (list(:class:`JointDofConfig`)): The angular axes (see :class:`JointDofConfig`) of the joint.
+            linear_axes (list(:class:`JointDofConfig`)): The linear axes (see :class:`JointDofConfig`) of the joint,
+                defined in the joint parent anchor frame.
+            angular_axes (list(:class:`JointDofConfig`)): The angular axes (see :class:`JointDofConfig`) of the joint,
+                defined in the joint parent anchor frame.
             key (str): The key of the joint (optional).
-            parent_xform (Transform): The transform of the joint in the parent body's local frame. If None, the identity transform is used.
-            child_xform (Transform): The transform of the joint in the child body's local frame. If None, the identity transform is used.
+            parent_xform (Transform): The transform from the parent body frame to the joint parent anchor frame.
+                If None, the identity transform is used.
+            child_xform (Transform): The transform from the child body frame to the joint child anchor frame.
+                If None, the identity transform is used.
             collision_filter_parent (bool): Whether to filter collisions between shapes of the parent and child bodies.
             enabled (bool): Whether the joint is enabled (not considered by :class:`SolverFeatherstone`).
             custom_attributes: Dictionary of custom attribute keys (see :attr:`CustomAttribute.key`) to values. Note that custom attributes with frequency :attr:`ModelAttributeFrequency.JOINT_DOF` or :attr:`ModelAttributeFrequency.JOINT_COORD` can be provided as: (1) lists with length equal to the joint's DOF or coordinate count, (2) dicts mapping DOF/coordinate indices to values, or (3) scalar values for single-DOF/single-coordinate joints (automatically expanded to lists). Custom attributes with frequency :attr:`ModelAttributeFrequency.JOINT` require a single value to be defined.
@@ -2489,9 +2493,11 @@ class ModelBuilder:
         Args:
             parent: The index of the parent body.
             child: The index of the child body.
-            parent_xform (Transform): The transform of the joint in the parent body's local frame.
-            child_xform (Transform): The transform of the joint in the child body's local frame.
-            axis (AxisType | Vec3 | JointDofConfig): The axis of rotation in the parent body's local frame, can be a :class:`JointDofConfig` object whose settings will be used instead of the other arguments.
+            parent_xform (Transform): The transform from the parent body frame to the joint parent anchor frame.
+            child_xform (Transform): The transform from the child body frame to the joint child anchor frame.
+            axis (AxisType | Vec3 | JointDofConfig): The axis of rotation in the joint parent anchor frame, which is
+                the parent body's local frame transformed by `parent_xform`. It can be a :class:`JointDofConfig` object
+                whose settings will be used instead of the other arguments.
             target_pos: The target position of the joint.
             target_vel: The target velocity of the joint.
             target_ke: The stiffness of the joint target.
@@ -2577,9 +2583,11 @@ class ModelBuilder:
         Args:
             parent: The index of the parent body.
             child: The index of the child body.
-            parent_xform (Transform): The transform of the joint in the parent body's local frame.
-            child_xform (Transform): The transform of the joint in the child body's local frame.
-            axis (AxisType | Vec3 | JointDofConfig): The axis of rotation in the parent body's local frame, can be a :class:`JointDofConfig` object whose settings will be used instead of the other arguments.
+            parent_xform (Transform): The transform from the parent body frame to the joint parent anchor frame.
+            child_xform (Transform): The transform from the child body frame to the joint child anchor frame.
+            axis (AxisType | Vec3 | JointDofConfig): The axis of translation in the joint parent anchor frame, which is
+                the parent body's local frame transformed by `parent_xform`. It can be a :class:`JointDofConfig` object
+                whose settings will be used instead of the other arguments.
             target_pos: The target position of the joint.
             target_vel: The target velocity of the joint.
             target_ke: The stiffness of the joint target.
@@ -2653,8 +2661,8 @@ class ModelBuilder:
         Args:
             parent: The index of the parent body.
             child: The index of the child body.
-            parent_xform (Transform): The transform of the joint in the parent body's local frame.
-            child_xform (Transform): The transform of the joint in the child body's local frame.
+            parent_xform (Transform): The transform from the parent body frame to the joint parent anchor frame.
+            child_xform (Transform): The transform from the child body frame to the joint child anchor frame.
             armature: Artificial inertia added around the joint axes. If None, the default value from :attr:`default_joint_armature` is used.
             friction: Friction coefficient for the joint axes. If None, the default value from :attr:`default_joint_cfg.friction` is used.
             key: The key of the joint.
@@ -2886,8 +2894,8 @@ class ModelBuilder:
             linear_axes: A list of linear axes.
             angular_axes: A list of angular axes.
             key: The key of the joint.
-            parent_xform (Transform): The transform of the joint in the parent body's local frame
-            child_xform (Transform): The transform of the joint in the child body's local frame
+            parent_xform (Transform): The transform from the parent body frame to the joint parent anchor frame.
+            child_xform (Transform): The transform from the child body frame to the joint child anchor frame.
             armature: Artificial inertia added around the joint axes. If None, the default value from :attr:`default_joint_armature` is used.
             collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies.
             enabled: Whether the joint is enabled.
@@ -2947,9 +2955,9 @@ class ModelBuilder:
         Args:
             parent: The index of the parent body.
             child: The index of the child body.
-            parent_xform (Transform): The transform of the joint in the parent body's local frame; its
+            parent_xform (Transform): The transform from the parent body frame to the joint parent anchor frame; its
                 translation is the attachment point.
-            child_xform (Transform): The transform of the joint in the child body's local frame; its
+            child_xform (Transform): The transform from the child body frame to the joint child anchor frame; its
                 translation is the attachment point.
             stretch_stiffness: Linear stretch stiffness. If None, defaults to 1.0e9.
             stretch_damping: Linear stretch damping. If None, defaults to 0.0.
