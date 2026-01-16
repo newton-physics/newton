@@ -4,23 +4,25 @@ Conventions
 
 This document covers the various conventions used across physics engines and graphics frameworks when working with Newton and other simulation systems.
 
-Primer: Reference Points vs. Frames
------------------------------------
+Primer: Reference Points for Rigid-Body Spatial Force and Velocity
+------------------------------------------------------------------
 
-Some quantities depend on the **frame** only, while others also depend on the **reference point**:
+Newton uses rigid-body spatial force and velocity (wrench and twist) in its API. These spatial vectors are defined with respect to a **reference point**.
+When shifting the reference point, the force and velocity are updated in order to preserve the effect of the wrench, and the velocity field described by the twist, with respect to the new reference point.
+The 6D wrench and twist are composed of a linear and an angular 3D-vector component, and in the context of these spatial vectors, their reference-point dependence is as follows:
 
-- **Point-independent (free vectors)**: force :math:`\mathbf{f}`, angular velocity :math:`\boldsymbol{\omega}`.
-- **Point-dependent (moments/linear velocity)**: torque (moment) :math:`\boldsymbol{\tau}`, linear velocity :math:`\mathbf{v}`.
+- **Point-independent components**: linear force :math:`\mathbf{f}`, angular velocity :math:`\boldsymbol{\omega}`.
+- **Point-dependent components**: angular torque (moment) :math:`\boldsymbol{\tau}`, linear velocity :math:`\mathbf{v}`.
 
-Shifting the reference point by :math:`\mathbf{r}` changes these terms as:
+Shifting the reference point by :math:`\mathbf{r} = (\mathbf{p}_{\text{new}} - \mathbf{p}_{\text{old}})` changes the point-dependent vector components as follows:
 
 .. math::
 
    \boldsymbol{\tau}_{\text{new}} = \boldsymbol{\tau} + \mathbf{r} \times \mathbf{f}, \qquad
    \mathbf{v}_{\text{new}} = \mathbf{v} + \boldsymbol{\omega} \times \mathbf{r}.
 
-Keep this distinction in mind below: Newton will always state both the **frame**
-and (when needed) the **reference point** for each quantity.
+Keep this distinction in mind below: In addition to the coordinate frame that wrenches and twists are expressed in,
+Newton documentation states the **reference point** that it expects. If you compute e.g. a wrench with respect to a different reference point, you must shift it to the expected reference point.
 
 Spatial Twist Conventions
 --------------------------
