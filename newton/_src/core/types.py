@@ -65,11 +65,13 @@ nparray = np.ndarray[Any, np.dtype[Any]]
 # Warp vector types
 vec5 = wp.types.vector(length=5, dtype=wp.float32)
 
-# Large finite value used as sentinel (larger than MuJoCo's mjMAXVAL of 1e10)
-MAXVAL = float(2**34)  # 17,179,869,184 - exactly representable in float32
+# Large finite value used as sentinel (matches MuJoCo's mjMAXVAL)
+MAXVAL = 1e10
 """Large finite sentinel value for 'no limit' / 'no hit' / 'invalid' markers.
 
 Use this instead of infinity to avoid verify_fp false positives.
+For comparisons with volume-sampled data, use `>= wp.static(MAXVAL * 0.99)` to handle
+interpolation-induced floating-point errors.
 """
 
 

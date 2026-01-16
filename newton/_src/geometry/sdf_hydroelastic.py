@@ -965,7 +965,9 @@ def sdf_diff_sdf(
 
     valB = sample_sdf_extrapolated(sdfB_data, pointB)
 
-    is_valid = not (valA >= MAXVAL or wp.isnan(valA) or valB >= MAXVAL or wp.isnan(valB))
+    is_valid = not (
+        valA >= wp.static(MAXVAL * 0.99) or wp.isnan(valA) or valB >= wp.static(MAXVAL * 0.99) or wp.isnan(valB)
+    )
 
     if valA < 0 and valB < 0:
         diff = k_eff_a * valA - k_eff_b * valB
@@ -997,7 +999,9 @@ def sdf_diff_sdf(
 
     valB = sample_sdf_extrapolated(sdfB_data, pointB)
 
-    is_valid = not (valA >= MAXVAL or wp.isnan(valA) or valB >= MAXVAL or wp.isnan(valB))
+    is_valid = not (
+        valA >= wp.static(MAXVAL * 0.99) or wp.isnan(valA) or valB >= wp.static(MAXVAL * 0.99) or wp.isnan(valB)
+    )
 
     if valA < 0 and valB < 0:
         diff = k_eff_a * valA - k_eff_b * valB
