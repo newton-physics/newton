@@ -34,7 +34,7 @@ devices = get_test_devices()
 class TestImportUsd(unittest.TestCase):
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_import_usd_raises_on_stage_errors(self):
-        from pxr import Sdf, Usd  # noqa: PLC0415
+        from pxr import Usd  # noqa: PLC0415
 
         usd_text = """#usda 1.0
 def Xform "Root" (
@@ -80,7 +80,7 @@ def Xform "Root" (
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_import_articulation_parent_offset(self):
-        from pxr import Sdf, Usd  # noqa: PLC0415
+        from pxr import Usd  # noqa: PLC0415
 
         usd_text = """#usda 1.0
 (
