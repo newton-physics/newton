@@ -129,7 +129,7 @@ def ray_plane_with_normal(
 ) -> tuple[wp.bool, wp.float32, wp.vec3f]:
     """Returns distance and normal at which a ray intersects with a plane."""
     t_hit = ray_plane(transform, size, enable_backface_culling, ray_origin_world, ray_direction_world)
-    if t_hit == MAXVAL:
+    if t_hit >= MAXVAL * 0.5:
         return False, MAXVAL, wp.vec3f(0.0, 0.0, 0.0)
     # Local plane normal is +Z; rotate to world space
     normal_world = wp.transform_vector(transform, wp.vec3f(0.0, 0.0, 1.0))
@@ -158,7 +158,7 @@ def ray_sphere_with_normal(
 ) -> tuple[wp.bool, wp.float32, wp.vec3f]:
     """Returns distance and normal at which a ray intersects with a sphere."""
     t_hit = ray_sphere(pos, dist_sqr, ray_origin_world, ray_direction_world)
-    if t_hit == MAXVAL:
+    if t_hit >= MAXVAL * 0.5:
         return False, MAXVAL, wp.vec3f(0.0, 0.0, 0.0)
     normal = wp.normalize(ray_origin_world + t_hit * ray_direction_world - pos)
     return True, t_hit, normal
@@ -172,7 +172,10 @@ def ray_capsule(
 
     # bounding sphere test
     ssz = size[0] + size[1]
-    if ray_sphere(wp.transform_get_translation(transform), ssz * ssz, ray_origin_world, ray_direction_world) == MAXVAL:
+    if (
+        ray_sphere(wp.transform_get_translation(transform), ssz * ssz, ray_origin_world, ray_direction_world)
+        >= MAXVAL * 0.5
+    ):
         return MAXVAL
 
     # map to local frame
@@ -255,7 +258,7 @@ def ray_capsule_with_normal(
 ) -> tuple[wp.bool, wp.float32, wp.vec3f]:
     """Returns distance and normal at which a ray intersects with a capsule."""
     t_hit = ray_capsule(transform, size, ray_origin_world, ray_direction_world)
-    if t_hit == MAXVAL:
+    if t_hit >= MAXVAL * 0.5:
         return False, MAXVAL, wp.vec3f(0.0, 0.0, 0.0)
 
     # Compute continuous normal: vector from closest point on axis segment to the hit point
@@ -299,7 +302,7 @@ def ray_cylinder(
     """Returns the distance at which a ray intersects with a cylinder."""
     # bounding sphere test
     ssz = size[0] * size[0] + size[1] * size[1]
-    if ray_sphere(wp.transform_get_translation(transform), ssz, ray_origin_world, ray_direction_world) == MAXVAL:
+    if ray_sphere(wp.transform_get_translation(transform), ssz, ray_origin_world, ray_direction_world) >= MAXVAL * 0.5:
         return MAXVAL, 0
 
     # map to local frame
@@ -367,7 +370,7 @@ def ray_cylinder_with_normal(
 ) -> tuple[wp.bool, wp.float32, wp.vec3f]:
     """Returns distance and normal at which a ray intersects with a cylinder."""
     t_hit, hit_side = ray_cylinder(transform, size, ray_origin_world, ray_direction_world)
-    if t_hit == MAXVAL:
+    if t_hit >= MAXVAL * 0.5:
         return False, MAXVAL, wp.vec3f(0.0, 0.0, 0.0)
     # Compute continuous normal: vector from closest point on axis segment to the hit point
     ray_origin_local, ray_direction_local = map_ray_to_local(transform, ray_origin_world, ray_direction_world)
@@ -391,7 +394,7 @@ def ray_cone(
     """Returns the distance at which a ray intersects with a cone."""
     # bounding sphere test
     ssz = size[0] * size[0] + size[1] * size[1]
-    if ray_sphere(wp.transform_get_translation(transform), ssz, ray_origin_world, ray_direction_world) == MAXVAL:
+    if ray_sphere(wp.transform_get_translation(transform), ssz, ray_origin_world, ray_direction_world) >= MAXVAL * 0.5:
         return MAXVAL
 
     # map to local frame
@@ -457,7 +460,7 @@ def ray_cone_with_normal(
 ) -> tuple[wp.bool, wp.float32, wp.vec3f]:
     """Returns distance and normal at which a ray intersects with a cone."""
     t_hit = ray_cone(transform, size, ray_origin_world, ray_direction_world)
-    if t_hit == MAXVAL:
+    if t_hit >= MAXVAL * 0.5:
         return False, MAXVAL, wp.vec3f(0.0, 0.0, 0.0)
 
     ray_origin_local, ray_direction_local = map_ray_to_local(transform, ray_origin_world, ray_direction_world)
@@ -497,7 +500,7 @@ def ray_box(
 
     # bounding sphere test
     ssz = wp.dot(size, size)
-    if ray_sphere(wp.transform_get_translation(transform), ssz, ray_origin_world, ray_direction_world) == MAXVAL:
+    if ray_sphere(wp.transform_get_translation(transform), ssz, ray_origin_world, ray_direction_world) >= MAXVAL * 0.5:
         return MAXVAL, all
 
     # map to local frame
@@ -540,7 +543,7 @@ def ray_box_with_normal(
 ) -> tuple[wp.bool, wp.float32, wp.vec3f]:
     """Returns distance and normal at which a ray intersects with a box."""
     t_hit, all = ray_box(transform, size, ray_origin_world, ray_direction_world)
-    if t_hit == MAXVAL:
+    if t_hit >= MAXVAL * 0.5:
         return False, MAXVAL, wp.vec3f(0.0, 0.0, 0.0)
 
     # Select the face by matching the closest intersection time among the 6 faces

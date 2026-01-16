@@ -15,6 +15,8 @@
 
 import warp as wp
 
+from newton._src.core.types import MAXVAL
+
 from . import collision_primitive as primitive
 from .broad_phase_common import binary_search
 from .flags import ParticleFlags, ShapeFlags
@@ -2079,7 +2081,7 @@ def generate_handle_contact_pairs_kernel(enable_backward: bool):
             normal = -neg_normal
 
             # Check if this contact point is valid (primitive function returns MAXVAL for invalid contacts)
-            if distance >= 1.0e5:  # Use a reasonable threshold instead of exact MAXVAL comparison
+            if distance >= MAXVAL * 0.5:  # Use threshold below MAXVAL to handle float32 precision
                 return
 
         elif (
