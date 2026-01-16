@@ -234,9 +234,9 @@ def parse_mjcf(
 
         length = len(out)
         if length == 1:
-            return wp.vec(len(default), wp.float32)(out[0], out[0], out[0])
+            return wp.types.vector(len(default), wp.float32)(out[0], out[0], out[0])
 
-        return wp.vec(length, wp.float32)(out)
+        return wp.types.vector(length, wp.float32)(out)
 
     def parse_orientation(attrib) -> wp.quat:
         if "quat" in attrib:
@@ -307,10 +307,8 @@ def parse_mjcf(
             geom_pos = parse_vec(geom_attrib, "pos", (0.0, 0.0, 0.0)) * scale
             geom_rot = parse_orientation(geom_attrib)
             tf = wp.transform(geom_pos, geom_rot)
-            if link == -1 and incoming_xform is not None:
+            if incoming_xform is not None:
                 tf = incoming_xform * tf
-                geom_pos = tf.p
-                geom_rot = tf.q
 
             geom_density = parse_float(geom_attrib, "density", density)
 
@@ -341,11 +339,6 @@ def parse_mjcf(
                 "cfg": shape_cfg,
                 "custom_attributes": custom_attributes,
             }
-
-            if incoming_xform is not None and link >= 0:
-                # Apply incoming_xform for non-static geoms (body-attached shapes)
-                # Static geoms (link == -1) are already handled above at lines 310-313
-                tf = incoming_xform * tf
 
             if geom_type == "sphere":
                 s = builder.add_shape_sphere(
@@ -427,6 +420,11 @@ def parse_mjcf(
                     start = wp.vec3(geom_fromto[0:3]) * scale
                     end = wp.vec3(geom_fromto[3:6]) * scale
 
+                    # Apply incoming_xform to fromto coordinates
+                    if incoming_xform is not None:
+                        start = wp.transform_point(incoming_xform, start)
+                        end = wp.transform_point(incoming_xform, end)
+
                     # compute rotation to align the Warp capsule (along x-axis), with mjcf fromto direction
                     axis = wp.normalize(end - start)
                     angle = math.acos(wp.dot(axis, wp.vec3(0.0, 1.0, 0.0)))
@@ -466,8 +464,9 @@ def parse_mjcf(
                     shapes.append(s)
 
             elif geom_type == "plane":
-                normal = wp.quat_rotate(geom_rot, wp.vec3(0.0, 0.0, 1.0))
-                p = wp.dot(geom_pos, normal)
+                # Use tf (which has incoming_xform applied) for plane normal/distance
+                normal = wp.quat_rotate(tf.q, wp.vec3(0.0, 0.0, 1.0))
+                p = wp.dot(tf.p, normal)
                 s = builder.add_shape_plane(
                     plane=(*normal, p),
                     width=geom_size[0],

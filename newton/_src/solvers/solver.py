@@ -166,7 +166,7 @@ class SolverBase:
         self.model = model
 
     @property
-    def device(self) -> wp.context.Device:
+    def device(self) -> wp.Device:
         """
         Get the device used by the solver.
 
