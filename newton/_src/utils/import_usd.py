@@ -183,8 +183,10 @@ def parse_usd(
 
     if isinstance(source, str):
         stage = Usd.Stage.Open(source, Usd.Stage.LoadAll)
+        _raise_on_stage_errors(stage, source)
     else:
         stage = source
+        _raise_on_stage_errors(stage, "provided stage")
 
     DegreesToRadian = np.pi / 180
     mass_unit = 1.0
@@ -1089,6 +1091,7 @@ def parse_usd(
             if any(re.match(p, articulation_path) for p in ignore_paths):
                 continue
             articulation_prim = stage.GetPrimAtPath(path)
+            articulation_xform = incoming_world_xform * usd.get_transform(articulation_prim, local=False)
             # Collect engine-specific attributes for the articulation root on first encounter
             if collect_schema_attrs:
                 R.collect_prim_attrs(articulation_prim)
@@ -1153,6 +1156,7 @@ def parse_usd(
                         body_data[current_body_id] = parse_body(
                             body_specs[key],
                             stage.GetPrimAtPath(p),
+                            incoming_xform=articulation_xform,
                             add_body_to_builder=False,
                         )
                     else:
@@ -1160,6 +1164,7 @@ def parse_usd(
                         bid: int = parse_body(  # pyright: ignore[reportAssignmentType]
                             body_specs[key],
                             stage.GetPrimAtPath(p),
+                            incoming_xform=articulation_xform,
                             add_body_to_builder=True,
                         )
                         if bid >= 0:
@@ -1199,7 +1204,6 @@ def parse_usd(
                     joint_edges.append((parent_id, child_id))
                     joint_names.append(joint_key)
 
-            articulation_xform = wp.mul(incoming_world_xform, usd.get_transform(articulation_prim))
             articulation_joint_indices = []
 
             if len(joint_edges) == 0:
@@ -1207,8 +1211,6 @@ def parse_usd(
                 if bodies_follow_joint_ordering:
                     for i in body_ids.values():
                         child_body_id = add_body(**body_data[i])
-                        # apply the articulation transform to the body
-                        builder.body_q[child_body_id] = articulation_xform
                         joint_id = builder.add_joint_free(child=child_body_id)
                         # note the free joint's coordinates will be initialized by the body_q of the
                         # child body
@@ -1217,8 +1219,6 @@ def parse_usd(
                         )
                 else:
                     for i, child_body_id in enumerate(art_bodies):
-                        # apply the articulation transform to the body
-                        builder.body_q[child_body_id] = articulation_xform
                         joint_id = builder.add_joint_free(child=child_body_id)
                         # note the free joint's coordinates will be initialized by the body_q of the
                         # child body
@@ -1801,3 +1801,20 @@ def resolve_usd_from_url(url: str, target_folder_name: str | None = None, export
         except Exception:
             print(f"Failed to download {refname}.")
     return target_filename
+
+
+def _raise_on_stage_errors(usd_stage, stage_source: str):
+    get_errors = getattr(usd_stage, "GetCompositionErrors", None)
+    if get_errors is None:
+        return
+    errors = get_errors()
+    if not errors:
+        return
+    messages = []
+    for err in errors:
+        try:
+            messages.append(err.GetMessage())
+        except Exception:
+            messages.append(str(err))
+    formatted = "\n".join(f"- {message}" for message in messages)
+    raise RuntimeError(f"USD stage has composition errors while loading {stage_source}:\n{formatted}")
