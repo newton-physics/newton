@@ -276,6 +276,38 @@ def test_per_world_gravity_bodies(test, device, solver_fn):
     test.assertLess(z_vel_world2, -0.5)
 
 
+def test_per_world_gravity_bodies_mujoco_warp(test, device):
+    """Test per-world gravity with MuJoCo Warp solver (CUDA only)"""
+    world_builder = newton.ModelBuilder(gravity=-9.81)
+    world_builder.default_shape_cfg.density = 1000.0
+    b = world_builder.add_body()
+    world_builder.add_shape_box(b, hx=0.5, hy=0.5, hz=0.5)
+
+    main_builder = newton.ModelBuilder(gravity=-9.81)
+    main_builder.replicate(world_builder, 3)
+
+    model = main_builder.finalize(device=device)
+    solver = newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=False, update_data_interval=0)
+
+    state_0, state_1 = model.state(), model.state()
+    control = model.control()
+
+    model.set_gravity((0.0, 0.0, 0.0), world=0)
+    model.set_gravity((0.0, 0.0, -4.905), world=1)
+    model.set_gravity((0.0, 0.0, -9.81), world=2)
+    solver.notify_model_changed(newton.solvers.SolverNotifyFlags.MODEL_PROPERTIES)
+
+    for _ in range(10):
+        state_0.clear_forces()
+        solver.step(state_0, state_1, control, None, 0.01)
+        state_0, state_1 = state_1, state_0
+
+    body_qd = state_0.body_qd.numpy()
+    test.assertAlmostEqual(body_qd[0, 2], 0.0, places=4)
+    test.assertLess(body_qd[1, 2], 0.0)
+    test.assertLess(body_qd[2, 2], body_qd[1, 2])
+
+
 def test_set_gravity_per_world(test, device):
     """Test setting gravity for individual worlds"""
     builder = newton.ModelBuilder(gravity=-9.81)
@@ -457,7 +489,7 @@ for device in devices:
             devices=[device],
         )
 
-    # Per-world gravity tests (skip MuJoCo - requires separate_worlds=True for multi-world)
+    # Per-world gravity tests (MuJoCo Warp tested separately - CUDA only)
     for solver_name, solver_fn in solvers_particles.items():
         add_function_test(
             TestRuntimeGravity,
@@ -465,6 +497,15 @@ for device in devices:
             test_per_world_gravity_bodies,
             devices=[device],
             solver_fn=solver_fn,
+        )
+
+    # Per-world gravity for MuJoCo Warp (only on CUDA - CPU MuJoCo uses single gravity)
+    if device.is_cuda:
+        add_function_test(
+            TestRuntimeGravity,
+            "test_per_world_gravity_bodies_mujoco_warp",
+            test_per_world_gravity_bodies_mujoco_warp,
+            devices=[device],
         )
 
     # Test set_gravity per world (once per device)

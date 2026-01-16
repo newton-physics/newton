@@ -2379,6 +2379,11 @@ class SolverMuJoCo(SolverBase):
             # "mat_rgba",
         }
 
+        # Fields in mj_model.opt to expand
+        opt_fields_to_expand = {
+            "gravity",
+        }
+
         def tile(x: wp.array):
             # Create new array with same shape but first dim multiplied by nworld
             new_shape = list(x.shape)
@@ -2405,6 +2410,11 @@ class SolverMuJoCo(SolverBase):
             if field in model_fields_to_expand:
                 array = getattr(mj_model, field)
                 setattr(mj_model, field, tile(array))
+
+        for field in mj_model.opt.__dataclass_fields__:
+            if field in opt_fields_to_expand:
+                array = getattr(mj_model.opt, field)
+                setattr(mj_model.opt, field, tile(array))
 
     def update_model_inertial_properties(self):
         if self.model.body_count == 0:
