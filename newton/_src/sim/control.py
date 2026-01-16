@@ -37,8 +37,12 @@ class Control:
         convention as the :attr:`newton.State.body_f` array where the 6D wrench is defined as
         ``(f_x, f_y, f_z, t_x, t_y, t_z)``, where ``f_x``, ``f_y``, and ``f_z`` are the components
         of the force vector (linear) and ``t_x``, ``t_y``, and ``t_z`` are the
-        components of the torque vector (angular). Both linear forces and angular torques applied to free joints are
-        applied in world frame (same as :attr:`newton.State.body_f`).
+        components of the torque vector (angular). For free joints, the wrench is applied in world frame and the
+        moment is referenced at the body's center of mass (same as :attr:`newton.State.body_f`).
+
+        .. note::
+            The Featherstone solver currently applies free-joint forces in the body-origin frame instead of the
+            center-of-mass frame, which can lead to rotation when applying pure forces with a non-zero CoM offset.
         """
         self.joint_target_pos: wp.array | None = None
         """Per-DOF position targets, shape ``(joint_dof_count,)``, type ``float`` (optional)."""

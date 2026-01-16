@@ -131,6 +131,11 @@ class SolverSemiImplicit(SolverBase):
             if control is None:
                 control = model.control(clone_variables=False)
 
+            body_f_work = body_f
+            if body_f is not None and model.joint_count and control.joint_f is not None:
+                # Avoid accumulating joint_f into the persistent state body_f buffer.
+                body_f_work = wp.clone(body_f)
+
             # damped springs
             eval_spring_forces(model, state_in, particle_f)
 
@@ -144,7 +149,7 @@ class SolverSemiImplicit(SolverBase):
             eval_tetrahedra_forces(model, state_in, control, particle_f)
 
             # body joints
-            eval_body_joint_forces(model, state_in, control, body_f, self.joint_attach_ke, self.joint_attach_kd)
+            eval_body_joint_forces(model, state_in, control, body_f_work, self.joint_attach_ke, self.joint_attach_kd)
 
             # muscles
             if False:
@@ -162,9 +167,15 @@ class SolverSemiImplicit(SolverBase):
 
             # particle shape contact
             eval_particle_body_contact_forces(
-                model, state_in, contacts, particle_f, body_f, body_f_in_world_frame=False
+                model, state_in, contacts, particle_f, body_f_work, body_f_in_world_frame=False
             )
 
             self.integrate_particles(model, state_in, state_out, dt)
 
-            self.integrate_bodies(model, state_in, state_out, dt, self.angular_damping)
+            if body_f_work is body_f:
+                self.integrate_bodies(model, state_in, state_out, dt, self.angular_damping)
+            else:
+                body_f_prev = state_in.body_f
+                state_in.body_f = body_f_work
+                self.integrate_bodies(model, state_in, state_out, dt, self.angular_damping)
+                state_in.body_f = body_f_prev

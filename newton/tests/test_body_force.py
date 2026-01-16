@@ -102,6 +102,57 @@ def test_floating_body(test: TestBodyForce, device, solver_fn, test_angular=True
         test.assertAlmostEqual(body_qd[i], 0.0, delta=1e-2)
 
 
+def test_floating_body_control_joint_f(
+    test: TestBodyForce,
+    device,
+    solver_fn,
+    test_angular=True,
+    up_axis=newton.Axis.Y,
+):
+    builder = newton.ModelBuilder(gravity=0.0, up_axis=up_axis)
+
+    # easy case: identity transform, zero center of mass
+    pos = wp.vec3(1.0, 2.0, 3.0)
+    rot = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), wp.pi * 0.0)
+
+    b = builder.add_body(xform=wp.transform(pos, rot))
+    builder.add_shape_box(b, hx=0.25, hy=0.5, hz=1.0)
+    builder.joint_q = [*pos, *rot]
+
+    model = builder.finalize(device=device)
+
+    solver = solver_fn(model)
+
+    state_0, state_1 = model.state(), model.state()
+
+    newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
+
+    control = model.control()
+    input = np.zeros(model.joint_dof_count, dtype=np.float32)
+
+    if test_angular:
+        test_index = 5
+        test_value = 0.96
+    else:
+        test_index = 1
+        test_value = 0.1
+
+    input[test_index] = 1000.0
+    control.joint_f.assign(input)
+
+    sim_dt = 1.0 / 10.0
+    for _ in range(1):
+        solver.step(state_0, state_1, control, None, sim_dt)
+        state_0, state_1 = state_1, state_0
+
+    body_qd = state_0.body_qd.numpy()[0]
+    test.assertAlmostEqual(body_qd[test_index], test_value, delta=1e-2)
+    for i in range(1):
+        if i == test_index:
+            continue
+        test.assertAlmostEqual(body_qd[i], 0.0, delta=1e-2)
+
+
 def test_3d_articulation(test: TestBodyForce, device, solver_fn, test_angular, up_axis):
     # test mechanism with 3 orthogonally aligned prismatic joints
     # which allows to test all 3 dimensions of the control force independently
@@ -254,6 +305,52 @@ for device in devices:
             TestBodyForce,
             f"test_3d_articulation_linear_up_axis_Z_{solver_name}",
             test_3d_articulation,
+            devices=[device],
+            solver_fn=solver_fn,
+            test_angular=False,
+            up_axis=newton.Axis.Z,
+        )
+        if solver_name == "featherstone":
+            continue
+        add_function_test(
+            TestBodyForce,
+            f"test_floating_body_joint_f_linear_{solver_name}",
+            test_floating_body_control_joint_f,
+            devices=[device],
+            solver_fn=solver_fn,
+            test_angular=False,
+        )
+        add_function_test(
+            TestBodyForce,
+            f"test_floating_body_joint_f_angular_up_axis_Y_{solver_name}",
+            test_floating_body_control_joint_f,
+            devices=[device],
+            solver_fn=solver_fn,
+            test_angular=True,
+            up_axis=newton.Axis.Y,
+        )
+        add_function_test(
+            TestBodyForce,
+            f"test_floating_body_joint_f_angular_up_axis_Z_{solver_name}",
+            test_floating_body_control_joint_f,
+            devices=[device],
+            solver_fn=solver_fn,
+            test_angular=True,
+            up_axis=newton.Axis.Z,
+        )
+        add_function_test(
+            TestBodyForce,
+            f"test_floating_body_joint_f_linear_up_axis_Y_{solver_name}",
+            test_floating_body_control_joint_f,
+            devices=[device],
+            solver_fn=solver_fn,
+            test_angular=False,
+            up_axis=newton.Axis.Y,
+        )
+        add_function_test(
+            TestBodyForce,
+            f"test_floating_body_joint_f_linear_up_axis_Z_{solver_name}",
+            test_floating_body_control_joint_f,
             devices=[device],
             solver_fn=solver_fn,
             test_angular=False,
@@ -530,6 +627,206 @@ def test_combined_force_torque(
     )
 
 
+def test_torque_com_stationary_control_joint_f(
+    test: TestBodyForce,
+    device,
+    solver_fn,
+    com_offset: tuple[float, float, float],
+    torque_axis: tuple[float, float, float],
+    tolerance: float,
+):
+    """Control.joint_f version of test_torque_com_stationary."""
+    builder = newton.ModelBuilder(gravity=0.0)
+
+    initial_pos = wp.vec3(1.0, 2.0, 3.0)
+    b = builder.add_body(xform=wp.transform(initial_pos, wp.quat_identity()))
+    builder.add_shape_box(b, hx=0.1, hy=0.1, hz=0.1)
+    builder.body_com[b] = wp.vec3(*com_offset)
+
+    model = builder.finalize(device=device)
+    solver = solver_fn(model)
+
+    state_0 = model.state()
+    state_1 = model.state()
+    control = model.control()
+
+    newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
+
+    body_q_initial = state_0.body_q.numpy()[0].copy()
+    com_initial = compute_com_world_position(state_0.body_q, model.body_com, model.body_world)
+
+    torque_magnitude = 100.0
+    joint_f = np.array(
+        [
+            0.0,
+            0.0,
+            0.0,
+            torque_axis[0] * torque_magnitude,
+            torque_axis[1] * torque_magnitude,
+            torque_axis[2] * torque_magnitude,
+        ],
+        dtype=np.float32,
+    )
+    control.joint_f.assign(joint_f)
+
+    sim_dt = 0.005
+    num_steps = 20
+
+    for _ in range(num_steps):
+        solver.step(state_0, state_1, control, None, sim_dt)
+        state_0, state_1 = state_1, state_0
+
+    body_q_final = state_0.body_q.numpy()[0]
+    com_final = compute_com_world_position(state_0.body_q, model.body_com, model.body_world)
+
+    com_drift = np.linalg.norm(com_final - com_initial)
+    test.assertLess(
+        com_drift,
+        tolerance,
+        f"CoM drifted by {com_drift:.6f} (expected < {tolerance}). Initial CoM: {com_initial}, Final CoM: {com_final}",
+    )
+
+    quat_initial = body_q_initial[3:7]
+    quat_final = body_q_final[3:7]
+    quat_diff = np.abs(np.dot(quat_initial, quat_final))
+    test.assertLess(
+        quat_diff,
+        0.9999,
+        "Body should have rotated but quaternion barely changed",
+    )
+
+
+def test_force_no_rotation_control_joint_f(
+    test: TestBodyForce,
+    device,
+    solver_fn,
+    com_offset: tuple[float, float, float],
+    force_direction: tuple[float, float, float],
+    tolerance: float,
+):
+    """Control.joint_f version of test_force_no_rotation."""
+    builder = newton.ModelBuilder(gravity=0.0)
+
+    initial_pos = wp.vec3(0.0, 0.0, 1.0)
+    b = builder.add_body(xform=wp.transform(initial_pos, wp.quat_identity()))
+    builder.add_shape_box(b, hx=0.1, hy=0.1, hz=0.1)
+    builder.body_com[b] = wp.vec3(*com_offset)
+
+    model = builder.finalize(device=device)
+    solver = solver_fn(model)
+
+    state_0 = model.state()
+    state_1 = model.state()
+    control = model.control()
+
+    newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
+
+    body_q_initial = state_0.body_q.numpy()[0].copy()
+    quat_initial = body_q_initial[3:7]
+
+    force_magnitude = 10.0
+    joint_f = np.array(
+        [
+            force_direction[0] * force_magnitude,
+            force_direction[1] * force_magnitude,
+            force_direction[2] * force_magnitude,
+            0.0,
+            0.0,
+            0.0,
+        ],
+        dtype=np.float32,
+    )
+    control.joint_f.assign(joint_f)
+
+    sim_dt = 0.01
+    num_steps = 10
+
+    for _ in range(num_steps):
+        solver.step(state_0, state_1, control, None, sim_dt)
+        state_0, state_1 = state_1, state_0
+
+    body_q_final = state_0.body_q.numpy()[0]
+    quat_final = body_q_final[3:7]
+
+    quat_diff = np.abs(np.dot(quat_initial, quat_final))
+    test.assertGreater(
+        quat_diff,
+        tolerance,
+        f"Body rotated unexpectedly. Quaternion dot product: {quat_diff:.6f} (expected > {tolerance})",
+    )
+
+    pos_initial = body_q_initial[:3]
+    pos_final = body_q_final[:3]
+    displacement = np.linalg.norm(pos_final - pos_initial)
+    test.assertGreater(
+        displacement,
+        0.001,
+        "Body should have translated but position barely changed",
+    )
+
+
+def test_combined_force_torque_control_joint_f(
+    test: TestBodyForce,
+    device,
+    solver_fn,
+    com_offset: tuple[float, float, float],
+    tolerance: float,
+):
+    """Control.joint_f version of test_combined_force_torque."""
+    builder = newton.ModelBuilder(gravity=0.0)
+
+    initial_pos = wp.vec3(0.0, 0.0, 1.0)
+    b = builder.add_body(xform=wp.transform(initial_pos, wp.quat_identity()))
+    builder.add_shape_box(b, hx=0.1, hy=0.1, hz=0.1)
+    builder.body_com[b] = wp.vec3(*com_offset)
+
+    model = builder.finalize(device=device)
+    solver = solver_fn(model)
+
+    state_0 = model.state()
+    state_1 = model.state()
+    control = model.control()
+
+    newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
+
+    body_q_initial = state_0.body_q.numpy()[0].copy()
+    com_initial = compute_com_world_position(state_0.body_q, model.body_com, model.body_world)
+    quat_initial = body_q_initial[3:7]
+
+    force_magnitude = 10.0
+    torque_magnitude = 50.0
+    joint_f = np.array(
+        [force_magnitude, 0.0, 0.0, 0.0, 0.0, torque_magnitude],
+        dtype=np.float32,
+    )
+    control.joint_f.assign(joint_f)
+
+    sim_dt = 0.01
+    num_steps = 10
+
+    for _ in range(num_steps):
+        solver.step(state_0, state_1, control, None, sim_dt)
+        state_0, state_1 = state_1, state_0
+
+    body_q_final = state_0.body_q.numpy()[0]
+    com_final = compute_com_world_position(state_0.body_q, model.body_com, model.body_world)
+    quat_final = body_q_final[3:7]
+
+    com_displacement = com_final - com_initial
+    test.assertGreater(
+        com_displacement[0],
+        0.001,
+        f"CoM should have moved in X direction. Displacement: {com_displacement}",
+    )
+
+    quat_diff = np.abs(np.dot(quat_initial, quat_final))
+    test.assertLess(
+        quat_diff,
+        0.9999,
+        "Body should have rotated but quaternion barely changed",
+    )
+
+
 # Solvers for non-zero CoM tests
 # Tuple format: (solver_fn, tolerance, supports_torque_com_tests)
 com_solvers = {
@@ -602,6 +899,17 @@ for device in devices:
                         torque_axis=torque_axis,
                         tolerance=tolerance,
                     )
+                    if solver_name != "featherstone":
+                        add_function_test(
+                            TestBodyForce,
+                            f"test_torque_com_stationary_joint_f_{solver_name}_com{i}_torque{j}",
+                            test_torque_com_stationary_control_joint_f,
+                            devices=[device],
+                            solver_fn=solver_fn,
+                            com_offset=com_offset,
+                            torque_axis=torque_axis,
+                            tolerance=tolerance,
+                        )
 
         # Test force with CoM offset (no rotation)
         # This should work for all solvers since forces act at the CoM
@@ -617,6 +925,17 @@ for device in devices:
                     force_direction=force_dir,
                     tolerance=0.9999,  # Quaternion dot product threshold
                 )
+                if solver_name != "featherstone":
+                    add_function_test(
+                        TestBodyForce,
+                        f"test_force_no_rotation_joint_f_{solver_name}_com{i}_force{j}",
+                        test_force_no_rotation_control_joint_f,
+                        devices=[device],
+                        solver_fn=solver_fn,
+                        com_offset=com_offset,
+                        force_direction=force_dir,
+                        tolerance=0.9999,  # Quaternion dot product threshold
+                    )
 
         # Test combined force and torque with CoM offset
         # Only for solvers that correctly handle torque with CoM offset
@@ -631,6 +950,16 @@ for device in devices:
                     com_offset=com_offset,
                     tolerance=tolerance,
                 )
+                if solver_name != "featherstone":
+                    add_function_test(
+                        TestBodyForce,
+                        f"test_combined_force_torque_joint_f_{solver_name}_com{i}",
+                        test_combined_force_torque_control_joint_f,
+                        devices=[device],
+                        solver_fn=solver_fn,
+                        com_offset=com_offset,
+                        tolerance=tolerance,
+                    )
 
 
 if __name__ == "__main__":
