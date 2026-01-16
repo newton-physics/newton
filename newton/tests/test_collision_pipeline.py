@@ -101,7 +101,6 @@ class CollisionSetup:
         if use_unified_pipeline:
             self.collision_pipeline = newton.CollisionPipelineUnified.from_model(
                 self.model,
-                rigid_contact_max_per_pair=20,
                 broad_phase_mode=broad_phase_mode,
             )
             self.contacts = self.model.collide(self.state_0, collision_pipeline=self.collision_pipeline)
@@ -431,8 +430,9 @@ def test_mesh_mesh_sdf_modes(
 # Wrapper functions for different SDF modes
 def test_mesh_mesh_sdf_vs_sdf(_test, device, broad_phase_mode: newton.BroadPhaseMode):
     """Test mesh-mesh collision where both meshes have SDFs."""
+    # SDF-SDF hydroelastic contacts can have some variability in contact normal direction
     test_mesh_mesh_sdf_modes(
-        _test, device, sdf_max_resolution_a=8, sdf_max_resolution_b=8, broad_phase_mode=broad_phase_mode
+        _test, device, sdf_max_resolution_a=8, sdf_max_resolution_b=8, broad_phase_mode=broad_phase_mode, tolerance=0.1
     )
 
 

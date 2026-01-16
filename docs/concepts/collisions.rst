@@ -636,7 +636,7 @@ The primary algorithm for convex shape pairs. Uses support mapping functions to 
 
 **Multi-contact Generation**
 
-For shape pairs, multiple contact points are generated for stable stacking and resting contacts. The maximum contacts per shape pair is controlled by ``rigid_contact_max_per_pair`` in :meth:`Model.collide`.
+For shape pairs, multiple contact points are generated for stable stacking and resting contacts. For the standard collision pipeline, the maximum contacts per shape pair is controlled by ``rigid_contact_max_per_pair`` in :meth:`Model.collide`. The unified collision pipeline automatically estimates buffer sizes based on the model.
 
 .. _Mesh Collisions:
 
