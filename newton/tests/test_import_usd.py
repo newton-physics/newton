@@ -43,9 +43,8 @@ def Xform "Root" (
 {
 }
 """
-        layer = Sdf.Layer.CreateAnonymous()
-        layer.ImportFromString(usd_text)
-        stage = Usd.Stage.Open(layer, Usd.Stage.LoadAll)
+        stage = Usd.Stage.CreateInMemory()
+        stage.GetRootLayer().ImportFromString(usd_text)
 
         builder = newton.ModelBuilder()
         with self.assertRaises(RuntimeError) as exc_info:
@@ -128,9 +127,8 @@ def "World"
     }
 }
 """
-        layer = Sdf.Layer.CreateAnonymous()
-        layer.ImportFromString(usd_text)
-        stage = Usd.Stage.Open(layer, Usd.Stage.LoadAll)
+        stage = Usd.Stage.CreateInMemory()
+        stage.GetRootLayer().ImportFromString(usd_text)
 
         builder = newton.ModelBuilder()
         results = builder.add_usd(stage, xform=wp.transform(wp.vec3(0.0, 0.0, 1.0), wp.quat_identity()))
