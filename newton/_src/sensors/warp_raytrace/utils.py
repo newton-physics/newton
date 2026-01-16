@@ -271,6 +271,8 @@ class Utils:
         return out_buffer
 
     def assign_random_colors_per_world(self, seed: int = 100):
+        if not self.__render_context.num_shapes_total:
+            return
         colors = np.random.default_rng(seed).random((self.__render_context.num_shapes_total, 4)) * 0.5 + 0.5
         colors[:, -1] = 1.0
         self.__render_context.shape_colors = wp.array(
