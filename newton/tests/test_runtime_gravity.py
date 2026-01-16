@@ -287,18 +287,23 @@ def test_per_world_gravity_bodies_mujoco_warp(test, device):
     main_builder.replicate(world_builder, 3)
 
     model = main_builder.finalize(device=device)
-    solver = newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=False, update_data_interval=0)
 
-    # Verify opt.gravity was expanded to per-world (dtype=vec3, so shape is (num_worlds,))
-    test.assertEqual(solver.mj_model.opt.gravity.shape, (3,))
-
-    state_0, state_1 = model.state(), model.state()
-    control = model.control()
-
+    # Set per-world gravity before creating solver
     model.set_gravity((0.0, 0.0, 0.0), world=0)
     model.set_gravity((0.0, 0.0, -4.905), world=1)
     model.set_gravity((0.0, 0.0, -9.81), world=2)
-    solver.notify_model_changed(newton.solvers.SolverNotifyFlags.MODEL_PROPERTIES)
+
+    solver = newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=False, update_data_interval=0)
+
+    # Verify opt.gravity was expanded and values propagated to MuJoCo Warp model
+    test.assertEqual(solver.mjw_model.opt.gravity.shape, (3,))  # 3 worlds, dtype=vec3
+    mj_gravity = solver.mjw_model.opt.gravity.numpy()  # (3, 3) after numpy conversion
+    np.testing.assert_allclose(mj_gravity[0], [0.0, 0.0, 0.0], atol=1e-6)
+    np.testing.assert_allclose(mj_gravity[1], [0.0, 0.0, -4.905], atol=1e-6)
+    np.testing.assert_allclose(mj_gravity[2], [0.0, 0.0, -9.81], atol=1e-6)
+
+    state_0, state_1 = model.state(), model.state()
+    control = model.control()
 
     for _ in range(10):
         state_0.clear_forces()
@@ -309,6 +314,18 @@ def test_per_world_gravity_bodies_mujoco_warp(test, device):
     test.assertAlmostEqual(body_qd[0, 2], 0.0, places=4)
     test.assertLess(body_qd[1, 2], 0.0)
     test.assertLess(body_qd[2, 2], body_qd[1, 2])
+
+    # Test runtime gravity change via notify_model_changed
+    model.set_gravity((0.0, 0.0, -1.0), world=0)
+    model.set_gravity((0.0, 0.0, -2.0), world=1)
+    model.set_gravity((0.0, 0.0, -3.0), world=2)
+    solver.notify_model_changed(newton.solvers.SolverNotifyFlags.MODEL_PROPERTIES)
+
+    # Verify new values propagated to MuJoCo Warp model
+    mj_gravity = solver.mjw_model.opt.gravity.numpy()
+    np.testing.assert_allclose(mj_gravity[0], [0.0, 0.0, -1.0], atol=1e-6)
+    np.testing.assert_allclose(mj_gravity[1], [0.0, 0.0, -2.0], atol=1e-6)
+    np.testing.assert_allclose(mj_gravity[2], [0.0, 0.0, -3.0], atol=1e-6)
 
 
 def test_set_gravity_per_world(test, device):
