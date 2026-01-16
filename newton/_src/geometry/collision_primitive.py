@@ -208,7 +208,7 @@ def collide_capsule_capsule(
     cap2_axis: wp.vec3,
     cap2_radius: float,
     cap2_half_length: float,
-) -> tuple[float, wp.vec3, wp.vec3]:
+) -> tuple[wp.vec2, wp.types.matrix((2, 3), wp.float32), wp.vec3]:
     """Core contact geometry calculation for capsule-capsule collision.
 
     Args:
@@ -223,27 +223,76 @@ def collide_capsule_capsule(
 
     Returns:
       Tuple containing:
-        dist: Distance between surfaces (negative if overlapping)
-        pos: Contact position (midpoint between closest surface points)
-        normal: Contact normal vector (from first capsule toward second)
+        contact_dist: Vector of contact distances (wp.inf for invalid contacts)
+        contact_pos: Matrix of contact positions (one per row)
+        contact_normal: Shared contact normal vector (from capsule 1 toward capsule 2)
     """
+    contact_dist = wp.vec2(wp.inf, wp.inf)
+    contact_pos = _mat23f()
+    contact_normal = wp.vec3()
 
-    # TODO(team): parallel axes case
+    # Calculate scaled axes and center difference
+    axis1 = cap1_axis * cap1_half_length
+    axis2 = cap2_axis * cap2_half_length
+    dif = cap1_pos - cap2_pos
 
-    # Calculate capsule segments
-    seg1 = cap1_axis * cap1_half_length
-    seg2 = cap2_axis * cap2_half_length
+    # Compute matrix coefficients and determinant
+    ma = wp.dot(axis1, axis1)
+    mb = -wp.dot(axis1, axis2)
+    mc = wp.dot(axis2, axis2)
+    u = -wp.dot(axis1, dif)
+    v = wp.dot(axis2, dif)
+    det = ma * mc - mb * mb
 
-    # Find closest points between capsule centerlines
-    pt1, pt2 = closest_segment_to_segment_points(
-        cap1_pos - seg1,
-        cap1_pos + seg1,
-        cap2_pos - seg2,
-        cap2_pos + seg2,
-    )
+    # Non-parallel axes: 1 contact
+    if wp.abs(det) >= MINVAL:
+        inv_det = 1.0 / det
+        x1 = (mc * u - mb * v) * inv_det
+        x2 = (ma * v - mb * u) * inv_det
 
-    # Use sphere-sphere collision between closest points
-    return collide_sphere_sphere(pt1, cap1_radius, pt2, cap2_radius)
+        if x1 > 1.0:
+            x1 = 1.0
+            x2 = (v - mb) / mc
+        elif x1 < -1.0:
+            x1 = -1.0
+            x2 = (v + mb) / mc
+
+        if x2 > 1.0:
+            x2 = 1.0
+            x1 = wp.clamp((u - mb) / ma, -1.0, 1.0)
+        elif x2 < -1.0:
+            x2 = -1.0
+            x1 = wp.clamp((u + mb) / ma, -1.0, 1.0)
+
+        # Find nearest points
+        vec1 = cap1_pos + axis1 * x1
+        vec2 = cap2_pos + axis2 * x2
+
+        dist, pos, normal = collide_sphere_sphere(vec1, cap1_radius, vec2, cap2_radius)
+        contact_dist[0] = dist
+        contact_pos[0] = pos
+        contact_normal = normal
+
+    # Parallel axes: 2 contacts (use first contact's normal for both)
+    else:
+        # First contact: positive end of capsule 1
+        vec1 = cap1_pos + axis1
+        x2 = wp.clamp((v - mb) / mc, -1.0, 1.0)
+        vec2 = cap2_pos + axis2 * x2
+        dist, pos, normal = collide_sphere_sphere(vec1, cap1_radius, vec2, cap2_radius)
+        contact_dist[0] = dist
+        contact_pos[0] = pos
+        contact_normal = normal  # Use first contact's normal for both
+
+        # Second contact: negative end of capsule 1
+        vec1 = cap1_pos - axis1
+        x2 = wp.clamp((v + mb) / mc, -1.0, 1.0)
+        vec2 = cap2_pos + axis2 * x2
+        dist, pos, _normal = collide_sphere_sphere(vec1, cap1_radius, vec2, cap2_radius)
+        contact_dist[1] = dist
+        contact_pos[1] = pos
+
+    return contact_dist, contact_pos, contact_normal
 
 
 @wp.func

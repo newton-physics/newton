@@ -193,12 +193,12 @@ def test_capsule_capsule_kernel(
     cap2_axes: wp.array(dtype=wp.vec3),
     cap2_radii: wp.array(dtype=float),
     cap2_half_lengths: wp.array(dtype=float),
-    distances: wp.array(dtype=float),
-    contact_positions: wp.array(dtype=wp.vec3),
+    distances: wp.array(dtype=wp.vec2),
+    contact_positions: wp.array(dtype=wp.types.matrix((2, 3), wp.float32)),
     contact_normals: wp.array(dtype=wp.vec3),
 ):
     tid = wp.tid()
-    dist, pos, normal = geometry.collide_capsule_capsule(
+    dists, positions, normal = geometry.collide_capsule_capsule(
         cap1_positions[tid],
         cap1_axes[tid],
         cap1_radii[tid],
@@ -208,8 +208,8 @@ def test_capsule_capsule_kernel(
         cap2_radii[tid],
         cap2_half_lengths[tid],
     )
-    distances[tid] = dist
-    contact_positions[tid] = pos
+    distances[tid] = dists
+    contact_positions[tid] = positions
     contact_normals[tid] = normal
 
 
@@ -815,8 +815,8 @@ class TestCollisionPrimitives(unittest.TestCase):
         cap2_radii = wp.array([tc[6] for tc in test_cases], dtype=float)
         cap2_half_lengths = wp.array([tc[7] for tc in test_cases], dtype=float)
         expected_distances = [tc[8] for tc in test_cases]
-        distances = wp.array([0.0] * len(test_cases), dtype=float)
-        contact_positions = wp.array([wp.vec3(0.0, 0.0, 0.0)] * len(test_cases), dtype=wp.vec3)
+        distances = wp.zeros(len(test_cases), dtype=wp.vec2)
+        contact_positions = wp.zeros((len(test_cases),), dtype=wp.types.matrix((2, 3), wp.float32))
         contact_normals = wp.array([wp.vec3(0.0, 0.0, 0.0)] * len(test_cases), dtype=wp.vec3)
 
         wp.launch(
@@ -842,19 +842,21 @@ class TestCollisionPrimitives(unittest.TestCase):
         normals_np = contact_normals.numpy()
         positions_np = contact_positions.numpy()
 
-        # Verify expected distances with analytical validation
+        # Verify expected distances with analytical validation (use first contact)
         tolerance = 0.01  # Small tolerance for numerical precision
         for i, expected_dist in enumerate(expected_distances):
+            # Use first contact distance (index 0)
             self.assertAlmostEqual(
-                distances_np[i],
+                distances_np[i][0],
                 expected_dist,
                 delta=tolerance,
-                msg=f"Test case {i}: Expected distance {expected_dist:.4f}, got {distances_np[i]:.4f}",
+                msg=f"Test case {i}: Expected distance {expected_dist:.4f}, got {distances_np[i][0]:.4f}",
             )
 
         # Check that contact position is at midpoint between surfaces
         for i in range(len(test_cases)):
-            if distances_np[i] >= 0:
+            # Use first contact distance
+            if distances_np[i][0] >= 0:
                 # Skip separated cases for now
                 continue
 
@@ -872,9 +874,10 @@ class TestCollisionPrimitives(unittest.TestCase):
             if axis_alignment < 0.9:  # Not parallel enough
                 continue
 
-            contact_pos = positions_np[i]
+            # Use first contact position (row 0 of the 2x3 matrix)
+            contact_pos = positions_np[i][0]
             normal = normals_np[i]
-            penetration_depth = distances_np[i]
+            penetration_depth = distances_np[i][0]
 
             # Check midpoint property: going half penetration depth in each direction should land on surfaces
             surface_point_0 = contact_pos - normal * (penetration_depth / 2.0)
