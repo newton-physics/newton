@@ -176,7 +176,7 @@ Summary of Conventions
   for free-floating bodies with **non-zero center of mass offsets**. The body may not
   rotate purely about its CoM.
 
-  We will fix this issue with [#1366](https://github.com/newton-physics/newton/issues/1366).
+  We will fix this issue with https://github.com/newton-physics/newton/issues/1366.
 
 Mapping Between Representations
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -270,7 +270,7 @@ This convention is used in all Newton solvers, except for :class:`~newton.solver
   for free-floating bodies with **non-zero center of mass offsets**. A pure torque will
   incorrectly cause the CoM to translate instead of remaining stationary.
 
-  We will fix this issue with [#1366](https://github.com/newton-physics/newton/issues/1366).
+  We will fix this issue with https://github.com/newton-physics/newton/issues/1366.
 
 Quaternion Ordering Conventions
 --------------------------------
