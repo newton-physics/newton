@@ -41,7 +41,6 @@ class FastExampleCablePile:
         wp.synchronize_device()
 
 
-
 if __name__ == "__main__":
     import argparse
 
