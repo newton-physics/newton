@@ -20,7 +20,7 @@ from typing import Any
 import warp as wp
 import warp.fem as fem
 import warp.sparse as sp
-from warp.fem.utils import symmetric_eigenvalues_qr
+from warp.fem.linalg import array_axpy, symmetric_eigenvalues_qr
 
 _DELASSUS_PROXIMAL_REG = wp.constant(1.0e-9)
 """Cutoff for the trace of the diagonal block of the Delassus operator to disable constraints"""
@@ -983,7 +983,7 @@ def apply_rigidity_operator(rigidity_operator, prev_collider_velocity, collider_
     D, J, IJtm = rigidity_operator
 
     # compute velocity delta, store in prev_collider_velocity
-    fem.utils.array_axpy(
+    array_axpy(
         y=prev_collider_velocity,
         x=collider_velocity,
         alpha=1.0,
@@ -1439,7 +1439,7 @@ def solve_rheology(
                 alpha=1.0,
                 beta=1.0,
             )
-            fem.utils.array_axpy(x=delta_stress, y=local_stress, alpha=1.0, beta=1.0)
+            array_axpy(x=delta_stress, y=local_stress, alpha=1.0, beta=1.0)
 
     # Run solver loop
 

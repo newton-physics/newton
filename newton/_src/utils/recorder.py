@@ -553,8 +553,8 @@ def pointer_as_key(obj, format_type: str = "json", cache: ArrayCache | None = No
                 return {"__type__": "newton.geometry.Mesh", "cache_index": int(assigned), "data": mesh_data}
             return {"__type__": "newton.geometry.Mesh", "data": mesh_data}
 
-        if isinstance(x, wp.context.Device):
-            return {"__type__": "wp.context.Device", "data": None}
+        if isinstance(x, wp.Device):
+            return {"__type__": "wp.Device", "data": None}
 
         if callable(x):
             return {"__type__": "callable", "data": None}
@@ -759,7 +759,7 @@ def depointer_as_key(data: dict, format_type: str = "json", cache: ArrayCache | 
 
         elif x_type == "warp.array":
             dtype_str = extract_last_type_name(x["__dtype__"])
-            a = getattr(wp.types, dtype_str)
+            a = getattr(wp, dtype_str)
             np_arr = deserialize_ndarray(x["data"], format_type, cache)
             result = wp.array(np_arr, dtype=a)
             # Register in cache if provided index present (optimization: single dict lookup)

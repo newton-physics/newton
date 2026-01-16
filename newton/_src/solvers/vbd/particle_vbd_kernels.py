@@ -26,7 +26,6 @@ from __future__ import annotations
 
 import numpy as np
 import warp as wp
-from warp.types import float32, matrix
 
 from newton._src.solvers.vbd.rigid_vbd_kernels import evaluate_body_particle_contact
 
@@ -52,7 +51,7 @@ NUM_THREADS_PER_COLLISION_PRIMITIVE = 4
 TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE = 16
 
 
-class mat32(matrix(shape=(3, 2), dtype=float32)):
+class mat32(wp.types.matrix(shape=(3, 2), dtype=wp.float32)):
     pass
 
 

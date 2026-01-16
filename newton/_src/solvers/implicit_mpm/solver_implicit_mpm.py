@@ -23,7 +23,6 @@ import numpy as np
 import warp as wp
 import warp.fem as fem
 import warp.sparse as sp
-from warp.context import assert_conditional_graph_support
 
 import newton
 import newton.utils
@@ -1739,13 +1738,7 @@ class SolverImplicitMPM(SolverBase):
 
         self.temporary_store = fem.TemporaryStore()
 
-        self._use_cuda_graph = False
-        if self.model.device.is_cuda:
-            try:
-                assert_conditional_graph_support()
-                self._use_cuda_graph = True
-            except Exception:
-                pass
+        self._use_cuda_graph = self.model.device.is_cuda and wp.is_conditional_graph_supported()
 
         self._enable_timers = False
         self._timers_use_nvtx = False
