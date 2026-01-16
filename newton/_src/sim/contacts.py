@@ -17,7 +17,7 @@
 from __future__ import annotations
 
 import warp as wp
-from warp.context import Devicelike
+from warp import DeviceLike as Devicelike
 
 
 class Contacts:

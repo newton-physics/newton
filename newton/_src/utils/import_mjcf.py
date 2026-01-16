@@ -234,9 +234,9 @@ def parse_mjcf(
 
         length = len(out)
         if length == 1:
-            return wp.vec(len(default), wp.float32)(out[0], out[0], out[0])
+            return wp.types.vector(len(default), wp.float32)(out[0], out[0], out[0])
 
-        return wp.vec(length, wp.float32)(out)
+        return wp.types.vector(length, wp.float32)(out)
 
     def parse_orientation(attrib) -> wp.quat:
         if "quat" in attrib:

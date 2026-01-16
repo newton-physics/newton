@@ -23,7 +23,7 @@ from typing import Any, Literal
 
 import numpy as np
 import warp as wp
-from warp.context import Devicelike
+from warp import DeviceLike as Devicelike
 
 try:
     from typing import override

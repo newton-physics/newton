@@ -32,6 +32,7 @@ from newton.utils import (
     create_ellipsoid_mesh,
     create_plane_mesh,
     create_sphere_mesh,
+    solidify_mesh,
 )
 
 from ..core.types import nparray
@@ -616,8 +617,6 @@ class ViewerBase:
                 raise ValueError(f"log_geo requires geo_src for MESH or CONVEX_MESH (name={name})")
 
             # resolve points/indices from source, solidify if requested
-            from warp.render.utils import solidify_mesh  # noqa: PLC0415
-
             if not geo_is_solid:
                 indices, points = solidify_mesh(geo_src.indices, geo_src.vertices, geo_thickness)
             else:
