@@ -1430,9 +1430,7 @@ class ModelBuilder:
         mesh_maxhullvert: int = MESH_MAXHULLVERT,
         schema_resolvers: list[SchemaResolver] | None = None,
     ) -> dict[str, Any]:
-        """
-        Parses a Universal Scene Description (USD) stage containing UsdPhysics schema definitions for rigid-body
-        articulations and adds the bodies, shapes and joints to the given :class:`~newton.ModelBuilder`.
+        """Parses a Universal Scene Description (USD) stage containing UsdPhysics schema definitions for rigid-body articulations and adds the bodies, shapes and joints to the given ModelBuilder.
 
         The USD description has to be either a path (file name or URL), or an existing USD stage instance that implements the `Stage <https://openusd.org/dev/api/class_usd_stage.html>`_ interface.
 
@@ -1482,14 +1480,11 @@ class ModelBuilder:
                 * - ``"up_axis"``
                   - :class:`Axis` representing the stage's up axis ("X", "Y", or "Z")
                 * - ``"path_body_map"``
-                  - Mapping from prim path (str) of a rigid body prim (e.g. that implements the PhysicsRigidBodyAPI)
-                    to the respective body index in :class:`~newton.ModelBuilder`
+                  - Mapping from prim path (str) of a rigid body prim (e.g. that implements the PhysicsRigidBodyAPI) to the respective body index in :class:`~newton.ModelBuilder`
                 * - ``"path_joint_map"``
-                  - Mapping from prim path (str) of a joint prim (e.g. that implements the PhysicsJointAPI)
-                    to the respective joint index in :class:`~newton.ModelBuilder`
+                  - Mapping from prim path (str) of a joint prim (e.g. that implements the PhysicsJointAPI) to the respective joint index in :class:`~newton.ModelBuilder`
                 * - ``"path_shape_map"``
-                  - Mapping from prim path (str) of the UsdGeom to the respective shape index in
-                    :class:`~newton.ModelBuilder`
+                  - Mapping from prim path (str) of the UsdGeom to the respective shape index in :class:`~newton.ModelBuilder`
                 * - ``"path_shape_scale"``
                   - Mapping from prim path (str) of the UsdGeom to its respective 3D world scale
                 * - ``"mass_unit"``
@@ -1499,8 +1494,7 @@ class ModelBuilder:
                 * - ``"scene_attributes"``
                   - Dictionary of all attributes applied to the PhysicsScene prim
                 * - ``"collapse_results"``
-                  - Dictionary returned by :meth:`newton.ModelBuilder.collapse_fixed_joints` if
-                    ``collapse_fixed_joints`` is True, otherwise None.
+                  - Dictionary returned by :meth:`newton.ModelBuilder.collapse_fixed_joints` if ``collapse_fixed_joints`` is True, otherwise None.
                 * - ``"physics_dt"``
                   - The resolved physics scene time step (float or None)
                 * - ``"schema_attrs"``
@@ -1512,11 +1506,10 @@ class ModelBuilder:
                 * - ``"path_original_body_map"``
                   - Mapping from prim path to original body index before ``collapse_fixed_joints``
                 * - ``"reversed_joint_ids"``
-                  - List of joint indices (int) for joints whose parent/child ordering was reversed during import
-                    due to original USD parent/child assignment not matching a topological order. Used to track
-                    which joints were flipped to ensure consistent kinematic hierarchy. Only joints of type
-                    FixedJoint, RevoluteJoint, and PrismaticJoint are supported. For other types of joints the
-                    parent body must be specified as ``physics:body0``, the child body as ``physics:body1``.
+                  - List of joint indices (int) for joints whose parent/child ordering was reversed during import due to original USD parent/child
+                    assignment not matching a topological order. Used to track which joints were flipped to ensure consistent kinematic hierarchy.
+                    Only joints of type FixedJoint, RevoluteJoint, and PrismaticJoint are supported. For other types of joints the parent body must
+                    be specified as ``physics:body0``, the child body as ``physics:body1``.
         """
         from ..utils.import_usd import parse_usd  # noqa: PLC0415
 
