@@ -1878,9 +1878,7 @@ class TestImportSampleAssets(unittest.TestCase):
                             JointType.REVOLUTE,
                             JointType.PRISMATIC,
                         ):
-                            self.fail(
-                                f"Joint {key} parent/child swapped for unsupported type {JointType(joint_type)}"
-                            )
+                            self.fail(f"Joint {key} parent/child swapped for unsupported type {JointType(joint_type)}")
                     elif j in reversed_joint_ids:
                         self.fail(
                             f"Joint {key} expected reversed parent/child indices "
