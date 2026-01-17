@@ -235,8 +235,8 @@ def "World"
             joint_ordering="dfs",
         )
         expected = [
-            "front_left_leg",
             "front_left_foot",
+            "front_left_leg",
             "front_right_leg",
             "front_right_foot",
             "left_back_leg",
@@ -254,17 +254,135 @@ def "World"
             joint_ordering="bfs",
         )
         expected = [
+            "front_left_foot",
             "front_left_leg",
             "front_right_leg",
             "left_back_leg",
             "right_back_leg",
-            "front_left_foot",
             "front_right_foot",
             "left_back_foot",
             "right_back_foot",
         ]
         for i in range(8):
             self.assertTrue(builder_bfs.joint_key[i + 1].endswith(expected[i]))
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_reversed_joint_axes_in_articulation(self):
+        """Ensure joint axes are negated when parent/child ordering is reversed."""
+        from pxr import Gf, Usd, UsdGeom, UsdPhysics  # noqa: PLC0415
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        articulation = UsdGeom.Xform.Define(stage, "/World/Articulation")
+        UsdPhysics.ArticulationRootAPI.Apply(articulation.GetPrim())
+
+        def define_body(path):
+            body = UsdGeom.Xform.Define(stage, path)
+            UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+            return body
+
+        body0 = define_body("/World/Articulation/Body0")
+        body1 = define_body("/World/Articulation/Body1")
+        body2 = define_body("/World/Articulation/Body2")
+
+        joint0 = UsdPhysics.RevoluteJoint.Define(stage, "/World/Articulation/Joint0")
+        joint0.CreateBody0Rel().SetTargets([body1.GetPath()])
+        joint0.CreateBody1Rel().SetTargets([body0.GetPath()])
+        joint0.CreateLocalPos0Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+        joint0.CreateLocalPos1Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+        joint0.CreateLocalRot0Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+        joint0.CreateLocalRot1Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+        joint0.CreateAxisAttr().Set("Z")
+
+        joint1 = UsdPhysics.RevoluteJoint.Define(stage, "/World/Articulation/Joint1")
+        joint1.CreateBody0Rel().SetTargets([body1.GetPath()])
+        joint1.CreateBody1Rel().SetTargets([body2.GetPath()])
+        joint1.CreateLocalPos0Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+        joint1.CreateLocalPos1Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+        joint1.CreateLocalRot0Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+        joint1.CreateLocalRot1Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+        joint1.CreateAxisAttr().Set("Z")
+
+        builder = newton.ModelBuilder()
+        builder.add_usd(stage)
+        model = builder.finalize()
+
+        joint0_idx = model.joint_key.index("/World/Articulation/Joint0")
+        joint1_idx = model.joint_key.index("/World/Articulation/Joint1")
+        joint_qd_start = model.joint_qd_start.numpy()
+        joint_axis = model.joint_axis.numpy()
+
+        axis0 = joint_axis[joint_qd_start[joint0_idx]]
+        axis1 = joint_axis[joint_qd_start[joint1_idx]]
+
+        np.testing.assert_allclose(axis0, np.array([0.0, 0.0, -1.0]), atol=1e-6)
+        np.testing.assert_allclose(axis1, np.array([0.0, 0.0, 1.0]), atol=1e-6)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_reversed_joint_unsupported_d6_raises(self):
+        """Reversing a D6 joint should raise an error."""
+        from pxr import Gf, Usd, UsdGeom, UsdPhysics  # noqa: PLC0415
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        articulation = UsdGeom.Xform.Define(stage, "/World/Articulation")
+        UsdPhysics.ArticulationRootAPI.Apply(articulation.GetPrim())
+
+        def define_body(path):
+            body = UsdGeom.Xform.Define(stage, path)
+            UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+            return body
+
+        body0 = define_body("/World/Articulation/Body0")
+        body1 = define_body("/World/Articulation/Body1")
+
+        joint = UsdPhysics.Joint.Define(stage, "/World/Articulation/JointD6")
+        joint.CreateBody0Rel().SetTargets([body1.GetPath()])
+        joint.CreateBody1Rel().SetTargets([body0.GetPath()])
+        joint.CreateLocalPos0Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+        joint.CreateLocalPos1Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+        joint.CreateLocalRot0Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+        joint.CreateLocalRot1Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+
+        builder = newton.ModelBuilder()
+        with self.assertRaisesRegex(ValueError, "Reversed joint .*JointD6.*not supported"):
+            builder.add_usd(stage)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_reversed_joint_unsupported_spherical_raises(self):
+        """Reversing a spherical joint should raise an error."""
+        from pxr import Gf, Usd, UsdGeom, UsdPhysics  # noqa: PLC0415
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        articulation = UsdGeom.Xform.Define(stage, "/World/Articulation")
+        UsdPhysics.ArticulationRootAPI.Apply(articulation.GetPrim())
+
+        def define_body(path):
+            body = UsdGeom.Xform.Define(stage, path)
+            UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+            return body
+
+        body0 = define_body("/World/Articulation/Body0")
+        body1 = define_body("/World/Articulation/Body1")
+
+        joint = UsdPhysics.SphericalJoint.Define(stage, "/World/Articulation/JointBall")
+        joint.CreateBody0Rel().SetTargets([body1.GetPath()])
+        joint.CreateBody1Rel().SetTargets([body0.GetPath()])
+        joint.CreateLocalPos0Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+        joint.CreateLocalPos1Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+        joint.CreateLocalRot0Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+        joint.CreateLocalRot1Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+
+        builder = newton.ModelBuilder()
+        with self.assertRaisesRegex(ValueError, "Reversed joint .*JointBall.*not supported"):
+            builder.add_usd(stage)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_joint_filtering(self):
@@ -659,21 +777,22 @@ def Xform "Articulation" (
             collapse_fixed_joints=True,
         )
 
+        expected_masses = np.array(
+            [
+                0.09677605,
+                0.00783155,
+                0.01351844,
+                0.00783155,
+                0.01351844,
+                0.00783155,
+                0.01351844,
+                0.00783155,
+                0.01351844,
+            ]
+        )
         np.testing.assert_allclose(
-            np.array(builder.body_mass),
-            np.array(
-                [
-                    0.09677605,
-                    0.00783155,
-                    0.01351844,
-                    0.00783155,
-                    0.01351844,
-                    0.00783155,
-                    0.01351844,
-                    0.00783155,
-                    0.01351844,
-                ]
-            ),
+            np.sort(np.array(builder.body_mass)),
+            np.sort(expected_masses),
             rtol=1e-5,
             atol=1e-7,
         )
@@ -1610,7 +1729,7 @@ def PhysicsRevoluteJoint "Joint2"
 
 
 class TestImportSampleAssets(unittest.TestCase):
-    def verify_usdphysics_parser(self, file, model, compare_min_max_coords, floating):
+    def verify_usdphysics_parser(self, file, model, compare_min_max_coords, floating, reversed_joint_ids=None):
         """Verify model based on the UsdPhysics Parsing Utils"""
         # [1] https://openusd.org/release/api/usd_physics_page_front.html
         from pxr import Sdf, Usd, UsdPhysics  # noqa: PLC0415
@@ -1726,6 +1845,8 @@ class TestImportSampleAssets(unittest.TestCase):
             if attr and attr.HasAuthoredValue():
                 drive_gain_scale = float(attr.Get())
 
+        reversed_joint_ids = set(reversed_joint_ids or [])
+
         for j, key in enumerate(model.joint_key):
             prim = stage.GetPrimAtPath(key)
             if not prim:
@@ -1744,8 +1865,32 @@ class TestImportSampleAssets(unittest.TestCase):
                 p_path = str(p_targets[0])
                 c_path = str(c_targets[0])
                 if p_path in body_key_to_idx and c_path in body_key_to_idx:
-                    self.assertEqual(int(model.joint_parent.numpy()[j]), body_key_to_idx[p_path])
-                    self.assertEqual(int(model.joint_child.numpy()[j]), body_key_to_idx[c_path])
+                    expected_parent = body_key_to_idx[p_path]
+                    expected_child = body_key_to_idx[c_path]
+                    actual_parent = int(model.joint_parent.numpy()[j])
+                    actual_child = int(model.joint_child.numpy()[j])
+                    if actual_parent == expected_parent and actual_child == expected_child:
+                        pass
+                    elif actual_parent == expected_child and actual_child == expected_parent:
+                        joint_type = int(model_joint_type[j])
+                        if joint_type not in (
+                            JointType.FIXED,
+                            JointType.REVOLUTE,
+                            JointType.PRISMATIC,
+                        ):
+                            self.fail(
+                                f"Joint {key} parent/child swapped for unsupported type {JointType(joint_type)}"
+                            )
+                    elif j in reversed_joint_ids:
+                        self.fail(
+                            f"Joint {key} expected reversed parent/child indices "
+                            f"({expected_child}, {expected_parent}), got ({actual_parent}, {actual_child})"
+                        )
+                    else:
+                        self.fail(
+                            f"Joint {key} expected parent/child indices "
+                            f"({expected_parent}, {expected_child}), got ({actual_parent}, {actual_child})"
+                        )
 
             if prim.IsA(UsdPhysics.RevoluteJoint) or prim.IsA(UsdPhysics.PrismaticJoint):
                 axis_attr = prim.GetAttribute("physics:axis")
@@ -1959,7 +2104,7 @@ class TestImportSampleAssets(unittest.TestCase):
         builder = newton.ModelBuilder()
 
         asset_path = newton.examples.get_asset("ant.usda")
-        builder.add_usd(
+        import_results = builder.add_usd(
             asset_path,
             collapse_fixed_joints=False,
             enable_self_collisions=False,
@@ -1967,7 +2112,13 @@ class TestImportSampleAssets(unittest.TestCase):
             load_visual_shapes=False,
         )
         model = builder.finalize()
-        self.verify_usdphysics_parser(asset_path, model, compare_min_max_coords=True, floating=True)
+        self.verify_usdphysics_parser(
+            asset_path,
+            model,
+            compare_min_max_coords=True,
+            floating=True,
+            reversed_joint_ids=import_results.get("reversed_joint_ids", []),
+        )
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_anymal(self):
@@ -1981,7 +2132,7 @@ class TestImportSampleAssets(unittest.TestCase):
         if not stage_path or not os.path.exists(stage_path):
             raise unittest.SkipTest(f"Stage file not found: {stage_path}")
 
-        builder.add_usd(
+        import_results = builder.add_usd(
             stage_path,
             collapse_fixed_joints=False,
             enable_self_collisions=False,
@@ -1989,14 +2140,20 @@ class TestImportSampleAssets(unittest.TestCase):
             load_visual_shapes=False,
         )
         model = builder.finalize()
-        self.verify_usdphysics_parser(stage_path, model, True, floating=True)
+        self.verify_usdphysics_parser(
+            stage_path,
+            model,
+            True,
+            floating=True,
+            reversed_joint_ids=import_results.get("reversed_joint_ids", []),
+        )
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_cartpole(self):
         builder = newton.ModelBuilder()
 
         asset_path = newton.examples.get_asset("cartpole.usda")
-        builder.add_usd(
+        import_results = builder.add_usd(
             asset_path,
             collapse_fixed_joints=False,
             enable_self_collisions=False,
@@ -2004,14 +2161,20 @@ class TestImportSampleAssets(unittest.TestCase):
             load_visual_shapes=False,
         )
         model = builder.finalize()
-        self.verify_usdphysics_parser(asset_path, model, compare_min_max_coords=True, floating=False)
+        self.verify_usdphysics_parser(
+            asset_path,
+            model,
+            compare_min_max_coords=True,
+            floating=False,
+            reversed_joint_ids=import_results.get("reversed_joint_ids", []),
+        )
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_g1(self):
         builder = newton.ModelBuilder()
         asset_path = str(newton.utils.download_asset("unitree_g1/usd") / "g1_isaac.usd")
 
-        builder.add_usd(
+        import_results = builder.add_usd(
             asset_path,
             collapse_fixed_joints=False,
             enable_self_collisions=False,
@@ -2019,14 +2182,20 @@ class TestImportSampleAssets(unittest.TestCase):
             load_visual_shapes=False,
         )
         model = builder.finalize()
-        self.verify_usdphysics_parser(asset_path, model, compare_min_max_coords=False, floating=True)
+        self.verify_usdphysics_parser(
+            asset_path,
+            model,
+            compare_min_max_coords=False,
+            floating=True,
+            reversed_joint_ids=import_results.get("reversed_joint_ids", []),
+        )
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_h1(self):
         builder = newton.ModelBuilder()
         asset_path = str(newton.utils.download_asset("unitree_h1/usd") / "h1_minimal.usda")
 
-        builder.add_usd(
+        import_results = builder.add_usd(
             asset_path,
             collapse_fixed_joints=False,
             enable_self_collisions=False,
@@ -2034,7 +2203,13 @@ class TestImportSampleAssets(unittest.TestCase):
             load_visual_shapes=False,
         )
         model = builder.finalize()
-        self.verify_usdphysics_parser(asset_path, model, compare_min_max_coords=True, floating=True)
+        self.verify_usdphysics_parser(
+            asset_path,
+            model,
+            compare_min_max_coords=True,
+            floating=True,
+            reversed_joint_ids=import_results.get("reversed_joint_ids", []),
+        )
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_granular_loading_flags(self):

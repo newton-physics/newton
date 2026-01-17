@@ -1431,7 +1431,8 @@ class ModelBuilder:
         schema_resolvers: list[SchemaResolver] | None = None,
     ) -> dict[str, Any]:
         """
-        Parses a Universal Scene Description (USD) stage containing UsdPhysics schema definitions for rigid-body articulations and adds the bodies, shapes and joints to the given ModelBuilder.
+        Parses a Universal Scene Description (USD) stage containing UsdPhysics schema definitions for rigid-body
+        articulations and adds the bodies, shapes and joints to the given :class:`~newton.ModelBuilder`.
 
         The USD description has to be either a path (file name or URL), or an existing USD stage instance that implements the `Stage <https://openusd.org/dev/api/class_usd_stage.html>`_ interface.
 
@@ -1474,36 +1475,48 @@ class ModelBuilder:
             .. list-table::
                 :widths: 25 75
 
-                * - "fps"
+                * - ``"fps"``
                   - USD stage frames per second
-                * - "duration"
+                * - ``"duration"``
                   - Difference between end time code and start time code of the USD stage
-                * - "up_axis"
+                * - ``"up_axis"``
                   - :class:`Axis` representing the stage's up axis ("X", "Y", or "Z")
-                * - "path_shape_map"
-                  - Mapping from prim path (str) of the UsdGeom to the respective shape index in :class:`ModelBuilder`
-                * - "path_body_map"
-                  - Mapping from prim path (str) of a rigid body prim (e.g. that implements the PhysicsRigidBodyAPI) to the respective body index in :class:`ModelBuilder`
-                * - "path_shape_scale"
+                * - ``"path_body_map"``
+                  - Mapping from prim path (str) of a rigid body prim (e.g. that implements the PhysicsRigidBodyAPI)
+                    to the respective body index in :class:`~newton.ModelBuilder`
+                * - ``"path_joint_map"``
+                  - Mapping from prim path (str) of a joint prim (e.g. that implements the PhysicsJointAPI)
+                    to the respective joint index in :class:`~newton.ModelBuilder`
+                * - ``"path_shape_map"``
+                  - Mapping from prim path (str) of the UsdGeom to the respective shape index in
+                    :class:`~newton.ModelBuilder`
+                * - ``"path_shape_scale"``
                   - Mapping from prim path (str) of the UsdGeom to its respective 3D world scale
-                * - "mass_unit"
+                * - ``"mass_unit"``
                   - The stage's Kilograms Per Unit (KGPU) definition (1.0 by default)
-                * - "linear_unit"
+                * - ``"linear_unit"``
                   - The stage's Meters Per Unit (MPU) definition (1.0 by default)
-                * - "scene_attributes"
+                * - ``"scene_attributes"``
                   - Dictionary of all attributes applied to the PhysicsScene prim
-                * - "collapse_results"
-                  - Dictionary returned by :meth:`newton.ModelBuilder.collapse_fixed_joints` if `collapse_fixed_joints` is True, otherwise None.
-                * - "physics_dt"
+                * - ``"collapse_results"``
+                  - Dictionary returned by :meth:`newton.ModelBuilder.collapse_fixed_joints` if
+                    ``collapse_fixed_joints`` is True, otherwise None.
+                * - ``"physics_dt"``
                   - The resolved physics scene time step (float or None)
-                * - "schema_attrs"
+                * - ``"schema_attrs"``
                   - Dictionary of collected per-prim schema attributes (dict)
-                * - "max_solver_iterations"
+                * - ``"max_solver_iterations"``
                   - The resolved maximum solver iterations (int or None)
-                * - "path_body_relative_transform"
-                  - Mapping from prim path to relative transform for bodies merged via `collapse_fixed_joints`
-                * - "path_original_body_map"
-                  - Mapping from prim path to original body index before `collapse_fixed_joints`
+                * - ``"path_body_relative_transform"``
+                  - Mapping from prim path to relative transform for bodies merged via ``collapse_fixed_joints``
+                * - ``"path_original_body_map"``
+                  - Mapping from prim path to original body index before ``collapse_fixed_joints``
+                * - ``"reversed_joint_ids"``
+                  - List of joint indices (int) for joints whose parent/child ordering was reversed during import
+                    due to original USD parent/child assignment not matching a topological order. Used to track
+                    which joints were flipped to ensure consistent kinematic hierarchy. Only joints of type
+                    FixedJoint, RevoluteJoint, and PrismaticJoint are supported. For other types of joints the
+                    parent body must be specified as ``physics:body0``, the child body as ``physics:body1``.
         """
         from ..utils.import_usd import parse_usd  # noqa: PLC0415
 
