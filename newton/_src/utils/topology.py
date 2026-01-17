@@ -113,7 +113,8 @@ def topological_sort_undirected(
     """
     Topological sort of a list of joints treating the graph as undirected.
 
-    This function orients each joint edge during traversal to produce a valid
+    This function first attempts to use the original (parent, child) ordering.
+    If that fails, it orients each joint edge during traversal to produce a valid
     parent-before-child ordering, and returns the joints that were reversed
     relative to the input orientation.
 
@@ -136,6 +137,17 @@ def topological_sort_undirected(
         raise ValueError(
             f"Length of custom indices must match length of joints: {len(custom_indices)} != {len(joints)}"
         )
+
+    try:
+        joint_order = topological_sort(
+            joints,
+            custom_indices=custom_indices,
+            use_dfs=use_dfs,
+            ensure_single_root=ensure_single_root,
+        )
+        return joint_order, []
+    except ValueError:
+        pass
 
     adjacency: dict[NodeT, list[tuple[int, NodeT]]] = defaultdict(list)
     nodes: set[NodeT] = set()
