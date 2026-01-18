@@ -64,6 +64,7 @@ nparray = np.ndarray[Any, np.dtype[Any]]
 
 # Warp vector types
 vec5 = wp.types.vector(length=5, dtype=wp.float32)
+vec10 = wp.types.vector(length=10, dtype=wp.float32)
 
 
 class Axis(IntEnum):

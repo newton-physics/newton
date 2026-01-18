@@ -1208,6 +1208,7 @@ class TestImportMjcf(unittest.TestCase):
             dof_idx = joint_qd_start[joint_idx]
             self.assertAlmostEqual(joint_stiffness[dof_idx], expected["stiffness"], places=4)
             self.assertAlmostEqual(joint_damping[dof_idx], expected["damping"], places=4)
+            # Now per-DOF, just check directly
             self.assertAlmostEqual(joint_target_ke[dof_idx], expected["target_ke"], places=1)
             self.assertAlmostEqual(joint_target_kd[dof_idx], expected["target_kd"], places=1)
 

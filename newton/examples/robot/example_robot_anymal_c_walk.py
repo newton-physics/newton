@@ -34,6 +34,7 @@ import newton.examples
 import newton.utils
 from newton import State
 from newton.geometry import generate_terrain_grid
+from newton import ActuatorMode
 
 lab_to_mujoco = [0, 6, 3, 9, 1, 7, 4, 10, 2, 8, 5, 11]
 mujoco_to_lab = [0, 4, 8, 2, 6, 10, 1, 5, 9, 3, 7, 11]
@@ -153,6 +154,7 @@ class Example:
         for i in range(len(builder.joint_target_ke)):
             builder.joint_target_ke[i] = 150
             builder.joint_target_kd[i] = 5
+            builder.joint_act_mode[i] = int(ActuatorMode.POSITION_VELOCITY)
 
         self.model = builder.finalize()
 

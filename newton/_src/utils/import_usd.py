@@ -30,6 +30,7 @@ from ..core import quat_between_axes
 from ..core.types import Axis, Transform
 from ..geometry import MESH_MAXHULLVERT, ShapeFlags, compute_sphere_inertia
 from ..sim.builder import ModelBuilder
+from ..sim.joints import ActuatorMode
 from ..sim.model import ModelAttributeFrequency
 from ..usd import utils as usd
 from ..usd.schema_resolver import PrimType, SchemaResolver, SchemaResolverManager
@@ -590,6 +591,19 @@ def parse_usd(
                 joint_params["target_kd"] = joint_desc.drive.damping
                 joint_params["effort_limit"] = joint_desc.drive.forceLimit
 
+                # Determine actuator mode based on targets
+                target_pos = joint_desc.drive.targetPosition
+                target_vel = joint_desc.drive.targetVelocity
+                if abs(target_pos) > 1e-9 and abs(target_vel) > 1e-9:
+                    joint_params["actuator_mode"] = ActuatorMode.POSITION_VELOCITY
+                elif abs(target_vel) > 1e-9:
+                    joint_params["actuator_mode"] = ActuatorMode.VELOCITY
+                else:
+                    # Has drive but only pos target or both zero - default to POSITION
+                    joint_params["actuator_mode"] = ActuatorMode.POSITION
+            else:
+                joint_params["actuator_mode"] = ActuatorMode.NONE
+
             # Read initial joint state BEFORE creating/overwriting USD attributes
             initial_position = None
             initial_velocity = None
@@ -669,18 +683,30 @@ def parse_usd(
                     target_ke = 0.0
                     target_kd = 0.0
                     effort_limit = np.inf
+                    has_drive = False
                     for drive in joint_desc.jointDrives:
                         if drive.first != dof:
                             continue
                         if drive.second.enabled:
+                            has_drive = True
                             target_vel = drive.second.targetVelocity
                             target_pos = drive.second.targetPosition
                             target_ke = drive.second.stiffness
                             target_kd = drive.second.damping
                             effort_limit = drive.second.forceLimit
-                    return target_pos, target_vel, target_ke, target_kd, effort_limit
+                    # Determine actuator mode based on drive presence and targets
+                    if not has_drive:
+                        actuator_mode = ActuatorMode.NONE
+                    elif abs(target_pos) > 1e-9 and abs(target_vel) > 1e-9:
+                        actuator_mode = ActuatorMode.POSITION_VELOCITY
+                    elif abs(target_vel) > 1e-9:
+                        actuator_mode = ActuatorMode.VELOCITY
+                    else:
+                        # Has drive but only pos target or both zero - default to POSITION
+                        actuator_mode = ActuatorMode.POSITION
+                    return target_pos, target_vel, target_ke, target_kd, effort_limit, actuator_mode
 
-                target_pos, target_vel, target_ke, target_kd, effort_limit = define_joint_targets(dof, joint_desc)
+                target_pos, target_vel, target_ke, target_kd, effort_limit, actuator_mode = define_joint_targets(dof, joint_desc)
 
                 _trans_axes = {
                     UsdPhysics.JointDOF.TransX: (1.0, 0.0, 0.0),
@@ -747,6 +773,7 @@ def parse_usd(
                             armature=joint_armature,
                             effort_limit=effort_limit,
                             friction=joint_friction,
+                            actuator_mode=actuator_mode,
                         )
                     )
                     # Track that this axis was added as a DOF
@@ -798,6 +825,7 @@ def parse_usd(
                             armature=joint_armature,
                             effort_limit=effort_limit,
                             friction=joint_friction,
+                            actuator_mode=actuator_mode,
                         )
                     )
                     # Track that this axis was added as a DOF

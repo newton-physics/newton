@@ -25,10 +25,11 @@ import numpy as np
 import warp as wp
 
 from ..core import quat_between_axes, quat_from_euler
-from ..core.types import Axis, AxisType, Sequence, Transform
+from ..core.types import Axis, AxisType, Sequence, Transform, vec10
 from ..geometry import MESH_MAXHULLVERT, Mesh
-from ..sim import JointType, ModelBuilder
+from ..sim import ActuatorMode, JointType, ModelBuilder
 from ..sim.model import ModelAttributeFrequency
+from ..solvers.mujoco import CtrlSource
 from ..usd.schemas import solref_to_stiffness_damping
 from .import_utils import parse_custom_attributes, sanitize_xml_content
 
@@ -62,6 +63,7 @@ def parse_mjcf(
     skip_equality_constraints: bool = False,
     convert_3d_hinge_to_ball_joints: bool = False,
     mesh_maxhullvert: int = MESH_MAXHULLVERT,
+    ctrl_direct: bool = False,
 ):
     """
     Parses MuJoCo XML (MJCF) file and adds the bodies and joints to the given ModelBuilder.
@@ -95,6 +97,9 @@ def parse_mjcf(
         skip_equality_constraints (bool): Whether <equality> tags should be parsed. If True, equality constraints are ignored.
         convert_3d_hinge_to_ball_joints (bool): If True, series of three hinge joints are converted to a single ball joint. Default is False.
         mesh_maxhullvert (int): Maximum vertices for convex hull approximation of meshes.
+        ctrl_direct (bool): If True, all actuators use CTRL_DIRECT mode where control comes directly 
+            from control.mujoco.ctrl array (MuJoCo-native behavior). If False (default), position/velocity 
+            actuators use JOINT_TARGET mode where control comes from joint_target_pos/vel.
     """
     if xform is None:
         xform = wp.transform_identity()
@@ -140,6 +145,11 @@ def parse_mjcf(
     builder_custom_attr_eq: list[ModelBuilder.CustomAttribute] = builder.get_custom_attributes_by_frequency(
         [ModelAttributeFrequency.EQUALITY_CONSTRAINT]
     )
+    # MuJoCo actuator custom attributes (from "mujoco:actuator" frequency)
+    # Note: The frequency is "actuator" but the frequency_key is "mujoco:actuator" due to namespace
+    builder_custom_attr_actuator: list[ModelBuilder.CustomAttribute] = [
+        attr for attr in builder.custom_attributes.values() if attr.frequency_key == "mujoco:actuator"
+    ]
 
     compiler = root.find("compiler")
     if compiler is not None:
@@ -642,7 +652,8 @@ def parse_mjcf(
                     joint_type = JointType.FIXED
                     break
                 is_angular = joint_type_str == "hinge"
-                axis_vec = parse_vec(joint_attrib, "axis", (0.0, 0.0, 0.0))
+                # MuJoCo default axis is (0, 0, 1) for hinge/slide joints
+                axis_vec = parse_vec(joint_attrib, "axis", (0.0, 0.0, 1.0))
                 limit_lower = np.deg2rad(joint_range[0]) if is_angular and use_degrees else joint_range[0]
                 limit_upper = np.deg2rad(joint_range[1]) if is_angular and use_degrees else joint_range[1]
 
@@ -668,6 +679,7 @@ def parse_mjcf(
                                 f"but actuatorfrclimited='{actuatorfrclimited}'. Force clamping will be disabled."
                             )
 
+                # Create joint with default mode (NONE) - will be updated when actuators are parsed
                 ax = ModelBuilder.JointDofConfig(
                     axis=axis_vec,
                     limit_lower=limit_lower,
@@ -678,6 +690,7 @@ def parse_mjcf(
                     target_kd=default_joint_target_kd,
                     armature=joint_armature[-1],
                     effort_limit=effort_limit,
+                    actuator_mode=ActuatorMode.NONE,  # Will be set by parse_actuators
                 )
                 if is_angular:
                     angular_axes.append(ax)
@@ -1076,6 +1089,9 @@ def parse_mjcf(
     start_shape_count = len(builder.shape_type)
     joint_indices = []  # Collect joint indices as we create them
 
+    # Note: Actuator modes are set later when parsing the actuator section
+    # Joints are created with default mode (NONE) and updated when actuators are parsed
+
     world = root.find("worldbody")
     world_class = get_class(world)
     world_defaults = merge_attrib(class_defaults["__all__"], class_defaults.get(world_class, {}))
@@ -1178,54 +1194,142 @@ def parse_mjcf(
     # parse actuators
 
     def parse_actuators(actuator_section):
-        """Parse actuators and set target_ke/target_kd for joints."""
-        for position_actuator in actuator_section.findall("position"):
-            joint_name = position_actuator.attrib.get("joint")
+        """Parse actuators from MJCF preserving order.
+        
+        All actuators are added as custom attributes with mujoco:actuator frequency,
+        preserving their order from the MJCF file. This ensures control.mujoco.ctrl
+        has the same ordering as native MuJoCo.
+        
+        For position/velocity actuators: also set mode/target_ke/target_kd on per-DOF arrays
+        for backward compatibility with Newton's joint target interface.
+        
+        Args:
+            actuator_section: The <actuator> XML element
+            
+        Uses outer scope:
+            ctrl_direct: If True, all actuators use CTRL_DIRECT mode
+            builder: The ModelBuilder
+            verbose: Print debug info
+        """
+        # Check if custom attributes are registered (via SolverMuJoCo.register_custom_attributes())
+        has_custom_attrs = "mujoco:ctrl_source" in builder.custom_attributes
+        
+        # Process ALL actuators in MJCF order
+        for actuator_elem in actuator_section:
+            actuator_type = actuator_elem.tag  # position, velocity, motor, general, etc.
+            joint_name = actuator_elem.attrib.get("joint")
+            
             if not joint_name:
+                if verbose:
+                    print(f"Warning: {actuator_type} actuator has no joint target, skipping")
                 continue
-
+            
             if joint_name not in builder.joint_key:
                 if verbose:
-                    print(f"Warning: Actuator references unknown joint '{joint_name}'")
+                    print(f"Warning: {actuator_type} actuator references unknown joint '{joint_name}'")
                 continue
-
+            
             joint_idx = builder.joint_key.index(joint_name)
             qd_start = builder.joint_qd_start[joint_idx]
             lin_dofs, ang_dofs = builder.joint_dof_dim[joint_idx]
             total_dofs = lin_dofs + ang_dofs
-
-            kp = parse_float(position_actuator.attrib, "kp", 0.0)
-            kv = parse_float(position_actuator.attrib, "kv", 0.0)
-
-            for i in range(total_dofs):
-                dof_idx = qd_start + i
-                builder.joint_target_ke[dof_idx] = kp
-                builder.joint_target_kd[dof_idx] = kv
-
-            if verbose:
-                print(f"Position actuator on joint '{joint_name}': kp={kp}, kv={kv}")
-
-        for velocity_actuator in actuator_section.findall("velocity"):
-            joint_name = velocity_actuator.attrib.get("joint")
-            if not joint_name:
-                continue
-
-            if joint_name not in builder.joint_key:
+            act_name = actuator_elem.attrib.get("name", f"{actuator_type}_{joint_name}")
+            
+            # Extract gains based on actuator type
+            if actuator_type == "position":
+                kp = parse_float(actuator_elem.attrib, "kp", 0.0)
+                kv = parse_float(actuator_elem.attrib, "kv", 0.0)  # Optional velocity damping
+                gainprm = vec10(kp, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+                biasprm = vec10(0.0, -kp, -kv, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+                if ctrl_direct:
+                    ctrl_source_val = CtrlSource.CTRL_DIRECT
+                else:
+                    ctrl_source_val = CtrlSource.JOINT_TARGET
+                
+                # Backward compat: update per-DOF arrays for joint target interface
+                for i in range(total_dofs):
+                    dof_idx = qd_start + i
+                    current_mode = builder.joint_act_mode[dof_idx]
+                    if current_mode == int(ActuatorMode.VELOCITY):
+                        builder.joint_act_mode[dof_idx] = int(ActuatorMode.POSITION_VELOCITY)
+                    elif current_mode == int(ActuatorMode.NONE):
+                        builder.joint_act_mode[dof_idx] = int(ActuatorMode.POSITION)
+                    builder.joint_target_ke[dof_idx] = kp
+                    if kv > 0:
+                        builder.joint_target_kd[dof_idx] = kv
+                        
+            elif actuator_type == "velocity":
+                kv = parse_float(actuator_elem.attrib, "kv", 0.0)
+                gainprm = vec10(kv, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+                biasprm = vec10(0.0, 0.0, -kv, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+                if ctrl_direct:
+                    ctrl_source_val = CtrlSource.CTRL_DIRECT
+                else:
+                    ctrl_source_val = CtrlSource.JOINT_TARGET
+                # Backward compat: update per-DOF arrays for joint target interface
+                for i in range(total_dofs):
+                    dof_idx = qd_start + i
+                    current_mode = builder.joint_act_mode[dof_idx]
+                    if current_mode == int(ActuatorMode.POSITION):
+                        builder.joint_act_mode[dof_idx] = int(ActuatorMode.POSITION_VELOCITY)
+                    elif current_mode == int(ActuatorMode.NONE):
+                        builder.joint_act_mode[dof_idx] = int(ActuatorMode.VELOCITY)
+                    builder.joint_target_kd[dof_idx] = kv
+                    
+            elif actuator_type in ("motor", "general"):
+                # Parse gainprm/biasprm from attributes (up to 10 elements)
+                gainprm_str = actuator_elem.attrib.get("gainprm", "1 0 0 0 0 0 0 0 0 0")
+                biasprm_str = actuator_elem.attrib.get("biasprm", "0 0 0 0 0 0 0 0 0 0")
+                gainprm_vals = [float(x) for x in gainprm_str.split()[:10]]
+                biasprm_vals = [float(x) for x in biasprm_str.split()[:10]]
+                while len(gainprm_vals) < 10:
+                    gainprm_vals.append(0.0)
+                while len(biasprm_vals) < 10:
+                    biasprm_vals.append(0.0)
+                gainprm = vec10(*gainprm_vals)
+                biasprm = vec10(*biasprm_vals)
+                ctrl_source_val = CtrlSource.CTRL_DIRECT
+            else:
                 if verbose:
-                    print(f"Warning: Actuator references unknown joint '{joint_name}'")
+                    print(f"Warning: Unknown actuator type '{actuator_type}', skipping")
                 continue
-
-            joint_idx = builder.joint_key.index(joint_name)
-            qd_start = builder.joint_qd_start[joint_idx]
-            lin_dofs, ang_dofs = builder.joint_dof_dim[joint_idx]
-            total_dofs = lin_dofs + ang_dofs
-            kv = parse_float(velocity_actuator.attrib, "kv", 0.0)
-            for i in range(total_dofs):
-                dof_idx = qd_start + i
-                builder.joint_target_kd[dof_idx] = kv
-
-            if verbose:
-                print(f"Velocity actuator on joint '{joint_name}': kv={kv}")
+            
+            
+            # Add actuator via custom attributes (if registered)
+            if has_custom_attrs:
+                # For multi-DOF joints (like ball joints), we create one actuator per DOF
+                # For single-DOF joints, just one actuator
+                # Note: Native MuJoCo would have separate actuators for each axis
+                # We follow the MJCF's actuator definition (one actuator per <position>/<velocity>/etc. element)
+                dof_idx = qd_start  # Target the first DOF of the joint
+                
+                # Parse other attributes using the custom attribute system
+                parsed_attrs = parse_custom_attributes(
+                    actuator_elem.attrib, builder_custom_attr_actuator, parsing_mode="mjcf"
+                )
+                
+                # Build full values dict
+                actuator_values: dict[str, Any] = {}
+                for attr in builder_custom_attr_actuator:
+                    if attr.key in ("mujoco:ctrl_source",
+                                    "mujoco:actuator_gainprm", "mujoco:actuator_biasprm", "mujoco:ctrl"):
+                        continue  # We set these manually
+                    actuator_values[attr.key] = parsed_attrs.get(attr.key, attr.default)
+                
+                # Set the control mapping attributes
+                # Note: ctrl_type and ctrl_to_dof are NOT set here - they're computed in solver_mujoco
+                # based on how actuators are actually created in MuJoCo
+                actuator_values["mujoco:ctrl_source"] = ctrl_source_val
+                actuator_values["mujoco:actuator_gainprm"] = gainprm
+                actuator_values["mujoco:actuator_biasprm"] = biasprm
+                actuator_values["mujoco:actuator_trnid"] = wp.vec2i(joint_idx, 0)
+                
+                builder.add_custom_values(**actuator_values)
+                
+                if verbose:
+                    source_name = "CTRL_DIRECT" if ctrl_source_val == CtrlSource.CTRL_DIRECT else "JOINT_TARGET"
+                    print(f"{actuator_type.capitalize()} actuator '{act_name}' on joint '{joint_name}': "
+                          f"dof={dof_idx}, source={source_name}")
 
     actuator_section = root.find("actuator")
     if actuator_section is not None:

@@ -54,6 +54,7 @@ __all__ += [
 # ==================================================================================
 from ._src.sim import (  # noqa: E402
     JOINT_LIMIT_UNLIMITED,
+    ActuatorMode,
     BroadPhaseMode,
     CollisionPipeline,
     CollisionPipelineUnified,
@@ -74,6 +75,7 @@ from ._src.sim import (  # noqa: E402
 
 __all__ += [
     "JOINT_LIMIT_UNLIMITED",
+    "ActuatorMode",
     "BroadPhaseMode",
     "CollisionPipeline",
     "CollisionPipelineUnified",

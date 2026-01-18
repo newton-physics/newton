@@ -13,8 +13,39 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from enum import IntEnum
+
+
+class CtrlSource(IntEnum):
+    """Control source for MuJoCo actuators.
+
+    Determines where an actuator gets its control input from:
+    - JOINT_TARGET: Maps from Newton's joint_target_pos/vel arrays
+    - CTRL_DIRECT: Uses control.mujoco.ctrl directly (for MuJoCo-native control)
+    """
+
+    JOINT_TARGET = 0
+    CTRL_DIRECT = 1
+
+
+class CtrlType(IntEnum):
+    """Control type for MuJoCo actuators.
+
+    For JOINT_TARGET mode, determines which target array to read from:
+    - POSITION: Maps from joint_target_pos, syncs gains from joint_target_ke
+    - VELOCITY: Maps from joint_target_vel, syncs gains from joint_target_kd
+    - GENERAL: Used with CTRL_DIRECT mode for motor/general actuators
+    """
+
+    POSITION = 0
+    VELOCITY = 1
+    GENERAL = 2
+
+
 from .solver_mujoco import SolverMuJoCo
 
 __all__ = [
+    "CtrlSource",
+    "CtrlType",
     "SolverMuJoCo",
 ]

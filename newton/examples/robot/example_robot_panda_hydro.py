@@ -37,6 +37,7 @@ import newton.ik as ik
 import newton.usd
 import newton.utils
 from newton.geometry import SDFHydroelasticConfig, create_box_mesh
+from newton import ActuatorMode
 
 
 class SceneType(Enum):
@@ -126,6 +127,7 @@ class Example:
 
         builder.joint_target_ke[:9] = [500.0] * 9
         builder.joint_target_kd[:9] = [100.0] * 9
+        builder.joint_act_mode[:9] = [int(ActuatorMode.POSITION_VELOCITY)] * 9
         builder.joint_effort_limit[:7] = [80.0] * 7
         builder.joint_effort_limit[7:9] = [20.0] * 2
         builder.joint_armature[:7] = [0.1] * 7

@@ -32,6 +32,7 @@ import newton
 import newton.examples
 import newton.utils
 from newton.examples.robot.example_robot_anymal_c_walk import compute_obs, lab_to_mujoco, mujoco_to_lab
+from newton import ActuatorMode
 from newton.solvers import SolverImplicitMPM
 
 
@@ -116,6 +117,7 @@ class Example:
         for i in range(builder.joint_dof_count):
             builder.joint_target_ke[i] = 150
             builder.joint_target_kd[i] = 5
+            builder.joint_act_mode[i] = int(ActuatorMode.POSITION_VELOCITY)
 
         # add sand particles
         density = 2500.0
