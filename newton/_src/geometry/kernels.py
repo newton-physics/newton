@@ -270,18 +270,48 @@ def cylinder_sdf_grad(radius: float, half_height: float, p: wp.vec3):
 def ellipsoid_sdf(radii: wp.vec3, p: wp.vec3):
     # Approximate SDF for ellipsoid with radii (rx, ry, rz)
     # Using the approximation: k0 * (k0 - 1) / k1
-    # Guard against zero/near-zero radii to avoid inf/NaN from division
     eps = 1.0e-8
-    safe_r = wp.vec3(
+    r = wp.vec3(
         wp.max(wp.abs(radii[0]), eps),
         wp.max(wp.abs(radii[1]), eps),
         wp.max(wp.abs(radii[2]), eps),
     )
-    k0 = wp.length(wp.cw_div(p, safe_r))
-    k1 = wp.length(wp.cw_div(p, wp.cw_mul(safe_r, safe_r)))
-    if k1 > 0.0:
+    inv_r = wp.cw_div(wp.vec3(1.0, 1.0, 1.0), r)
+    inv_r2 = wp.cw_mul(inv_r, inv_r)
+    q0 = wp.cw_mul(p, inv_r)  # p / r
+    q1 = wp.cw_mul(p, inv_r2)  # p / r^2
+    k0 = wp.length(q0)
+    k1 = wp.length(q1)
+    if k1 > eps:
         return k0 * (k0 - 1.0) / k1
-    return -wp.min(wp.min(safe_r[0], safe_r[1]), safe_r[2])
+    # Deep inside / near center fallback
+    return -wp.min(wp.min(r[0], r[1]), r[2])
+
+
+@wp.func
+def ellipsoid_sdf_grad(radii: wp.vec3, p: wp.vec3):
+    # Gradient of the ellipsoid SDF approximation
+    # grad(d) ≈ normalize((k0 / k1) * (p / r^2))
+    eps = 1.0e-8
+    r = wp.vec3(
+        wp.max(wp.abs(radii[0]), eps),
+        wp.max(wp.abs(radii[1]), eps),
+        wp.max(wp.abs(radii[2]), eps),
+    )
+    inv_r = wp.cw_div(wp.vec3(1.0, 1.0, 1.0), r)
+    inv_r2 = wp.cw_mul(inv_r, inv_r)
+    q0 = wp.cw_mul(p, inv_r)  # p / r
+    q1 = wp.cw_mul(p, inv_r2)  # p / r^2
+    k0 = wp.length(q0)
+    k1 = wp.length(q1)
+    if k1 < eps:
+        return wp.vec3(0.0, 0.0, 1.0)
+    # Analytic gradient of the approximation
+    grad = q1 * (k0 / k1)
+    grad_len = wp.length(grad)
+    if grad_len > eps:
+        return grad / grad_len
+    return wp.vec3(0.0, 0.0, 1.0)
 
 
 @wp.func
@@ -786,6 +816,10 @@ def create_soft_contacts(
     if geo_type == GeoType.CONE:
         d = cone_sdf(geo_scale[0], geo_scale[1], x_local)
         n = cone_sdf_grad(geo_scale[0], geo_scale[1], x_local)
+
+    if geo_type == GeoType.ELLIPSOID:
+        d = ellipsoid_sdf(geo_scale, x_local)
+        n = ellipsoid_sdf_grad(geo_scale, x_local)
 
     if geo_type == GeoType.MESH or geo_type == GeoType.CONVEX_MESH:
         mesh = shape_source_ptr[shape_index]

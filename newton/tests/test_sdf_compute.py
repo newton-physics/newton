@@ -1053,7 +1053,6 @@ def test_brick_pyramid_stability(test, device):
     # Create collision pipeline and solver
     collision_pipeline = newton.CollisionPipelineUnified.from_model(
         model,
-        rigid_contact_max_per_pair=10,
         broad_phase_mode=newton.BroadPhaseMode.NXN,
         reduce_contacts=True,
     )
