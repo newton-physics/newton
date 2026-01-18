@@ -148,6 +148,8 @@ class Mesh:
         color: Vec3 | None = None,
         texture_path: str | None = None,
         texture_image: nparray | None = None,
+        roughness: float | None = None,
+        metallic: float | None = None,
     ):
         """
         Construct a Mesh object from a triangle mesh.
@@ -167,6 +169,8 @@ class Mesh:
             color (Vec3 | None, optional): Optional per-mesh base color (values in [0, 1]).
             texture_path (str | None, optional): Optional texture image path for the mesh.
             texture_image (nparray | None, optional): Optional texture image data (H, W, C).
+            roughness (float | None, optional): Optional mesh roughness in [0, 1].
+            metallic (float | None, optional): Optional mesh metallic in [0, 1].
         """
         from .inertia import compute_mesh_inertia  # noqa: PLC0415
 
@@ -177,6 +181,8 @@ class Mesh:
         self._color = color
         self._texture_path = texture_path
         self._texture_image = np.array(texture_image) if texture_image is not None else None
+        self._roughness = roughness
+        self._metallic = metallic
         self.is_solid = is_solid
         self.has_inertia = compute_inertia
         self.mesh = None
@@ -223,6 +229,8 @@ class Mesh:
             color=self._color,
             texture_path=self._texture_path,
             texture_image=self._texture_image.copy() if self._texture_image is not None else None,
+            roughness=self._roughness,
+            metallic=self._metallic,
         )
         if not recompute_inertia:
             m.I = self.I
@@ -287,6 +295,24 @@ class Mesh:
             else:
                 self._texture_hash = 0
         return self._texture_hash
+
+    @property
+    def roughness(self) -> float | None:
+        return self._roughness
+
+    @roughness.setter
+    def roughness(self, value: float | None):
+        self._roughness = value
+        self._cached_hash = None
+
+    @property
+    def metallic(self) -> float | None:
+        return self._metallic
+
+    @metallic.setter
+    def metallic(self, value: float | None):
+        self._metallic = value
+        self._cached_hash = None
 
     # construct simulation ready buffers from points
     def finalize(self, device: Devicelike = None, requires_grad: bool = False) -> wp.uint64:
@@ -355,6 +381,8 @@ class Mesh:
                     tuple(np.array(self.indices).flatten()),
                     self.is_solid,
                     self._compute_texture_hash(),
+                    self._roughness,
+                    self._metallic,
                 )
             )
         return self._cached_hash

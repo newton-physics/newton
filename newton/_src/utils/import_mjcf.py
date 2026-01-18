@@ -369,7 +369,11 @@ def parse_mjcf(
             if rgba is not None:
                 rgba_values = np.fromstring(rgba, sep=" ", dtype=np.float32)
                 if len(rgba_values) >= 3:
-                    material_color = rgba_values[:3]
+                    material_color = (
+                        float(rgba_values[0]),
+                        float(rgba_values[1]),
+                        float(rgba_values[2]),
+                    )
 
             texture_image = None
             texture_path = None

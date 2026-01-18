@@ -236,7 +236,7 @@ def parse_urdf(
             if rgba:
                 values = np.fromstring(rgba, sep=" ", dtype=np.float32)
                 if len(values) >= 3:
-                    color = values[:3]
+                    color = (float(values[0]), float(values[1]), float(values[2]))
 
         texture_el = material_element.find("texture")
         if texture_el is not None:

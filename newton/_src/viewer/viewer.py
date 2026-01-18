@@ -1004,6 +1004,10 @@ class ViewerBase:
 
                 if geo_src._color is not None:
                     color = wp.vec3(geo_src._color[0:3])
+                if getattr(geo_src, "roughness", None) is not None:
+                    material = wp.vec4(float(geo_src.roughness), material.y, material.z, material.w)
+                if getattr(geo_src, "metallic", None) is not None:
+                    material = wp.vec4(material.x, float(geo_src.metallic), material.z, material.w)
                 if geo_src is not None and geo_src._uvs is not None:
                     has_texture = geo_src.texture_image is not None or geo_src.texture_path is not None
                     if has_texture:

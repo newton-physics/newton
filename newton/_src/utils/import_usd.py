@@ -33,6 +33,7 @@ from ..sim.builder import ModelBuilder
 from ..sim.model import ModelAttributeFrequency
 from ..usd import utils as usd
 from ..usd.schema_resolver import PrimType, SchemaResolver, SchemaResolverManager
+from ..utils.mesh import load_texture_image
 
 
 def parse_usd(
@@ -139,7 +140,7 @@ def parse_usd(
     collect_schema_attrs = len(schema_resolvers) > 0
 
     try:
-        from pxr import Sdf, Usd, UsdGeom, UsdPhysics  # noqa: PLC0415
+        from pxr import Sdf, Usd, UsdGeom, UsdPhysics, UsdShade  # noqa: PLC0415
     except ImportError as e:
         raise ImportError("Failed to import pxr. Please install USD (e.g. via `pip install usd-core`).") from e
 
@@ -256,6 +257,107 @@ def parse_usd(
         has_shape_collision=False,
         has_particle_collision=False,
     )
+
+    def _resolve_asset_path(asset: Sdf.AssetPath | str | None, prim: Usd.Prim) -> str | None:
+        if asset is None:
+            return None
+        if isinstance(asset, Sdf.AssetPath):
+            if asset.resolvedPath:
+                return asset.resolvedPath
+            asset_path = asset.path
+        else:
+            asset_path = str(asset)
+        if not asset_path:
+            return None
+        if os.path.isabs(asset_path):
+            return asset_path
+        root_layer = prim.GetStage().GetRootLayer()
+        base_dir = None
+        if root_layer is not None:
+            base_dir = os.path.dirname(root_layer.realPath or root_layer.identifier or "")
+        if base_dir:
+            return os.path.abspath(os.path.join(base_dir, asset_path))
+        return asset_path
+
+    def _find_texture_in_shader(shader: UsdShade.Shader, prim: Usd.Prim) -> str | None:
+        if shader is None:
+            return None
+        shader_id = shader.GetIdAttr().Get()
+        if shader_id == "UsdUVTexture":
+            file_input = shader.GetInput("file")
+            if file_input:
+                asset = file_input.Get()
+                return _resolve_asset_path(asset, prim)
+            return None
+        if shader_id in ("UsdPreviewSurface", "UsdPreviewSurface2"):
+            for input_name in ("diffuseColor", "baseColor"):
+                shader_input = shader.GetInput(input_name)
+                if shader_input:
+                    source = shader_input.GetConnectedSource()
+                    if source:
+                        source_shader = UsdShade.Shader(source[0].GetPrim())
+                        texture_path = _find_texture_in_shader(source_shader, prim)
+                        if texture_path:
+                            return texture_path
+        return None
+
+    def _extract_preview_surface_properties(shader: UsdShade.Shader, prim: Usd.Prim) -> dict[str, Any]:
+        properties: dict[str, Any] = {
+            "color": None,
+            "metallic": None,
+            "roughness": None,
+            "texture_path": None,
+        }
+        if shader is None:
+            return properties
+        shader_id = shader.GetIdAttr().Get()
+        if shader_id not in ("UsdPreviewSurface", "UsdPreviewSurface2"):
+            return properties
+
+        color_input = shader.GetInput("baseColor") or shader.GetInput("diffuseColor")
+        if color_input:
+            source = color_input.GetConnectedSource()
+            if source:
+                source_shader = UsdShade.Shader(source[0].GetPrim())
+                properties["texture_path"] = _find_texture_in_shader(source_shader, prim)
+            else:
+                color_value = color_input.Get()
+                if color_value is not None:
+                    color_np = np.array(color_value, dtype=np.float32)
+                    if color_np.size >= 3:
+                        properties["color"] = (float(color_np[0]), float(color_np[1]), float(color_np[2]))
+
+        metallic_input = shader.GetInput("metallic")
+        if metallic_input and not metallic_input.GetConnectedSource():
+            metallic_value = metallic_input.Get()
+            if metallic_value is not None:
+                properties["metallic"] = float(metallic_value)
+
+        roughness_input = shader.GetInput("roughness")
+        if roughness_input and not roughness_input.GetConnectedSource():
+            roughness_value = roughness_input.Get()
+            if roughness_value is not None:
+                properties["roughness"] = float(roughness_value)
+
+        return properties
+
+    def _resolve_material_properties_for_prim(prim: Usd.Prim) -> dict[str, Any]:
+        if not prim or not prim.IsValid():
+            return {"color": None, "metallic": None, "roughness": None, "texture_path": None}
+        binding_api = UsdShade.MaterialBindingAPI(prim)
+        material, _ = binding_api.ComputeBoundMaterial()
+        if not material:
+            return {"color": None, "metallic": None, "roughness": None, "texture_path": None}
+        surface_output = material.GetSurfaceOutput()
+        if not surface_output:
+            surface_output = material.GetOutput("surface")
+        if not surface_output:
+            return {"color": None, "metallic": None, "roughness": None, "texture_path": None}
+        source = surface_output.GetConnectedSource()
+        if not source:
+            return {"color": None, "metallic": None, "roughness": None, "texture_path": None}
+        source_shader = UsdShade.Shader(source[0].GetPrim())
+        return _extract_preview_surface_properties(source_shader, prim)
 
     def _load_visual_shapes_impl(
         parent_body_id: int, prim: Usd.Prim, incoming_xform: wp.transform, incoming_scale: wp.vec3
@@ -417,7 +519,25 @@ def parse_usd(
                     key=path_name,
                 )
             elif type_name == "mesh":
-                mesh = usd.get_mesh(prim)
+                mesh = usd.get_mesh(prim, load_uvs=True)
+                material_props = _resolve_material_properties_for_prim(prim)
+                texture_path = material_props.get("texture_path")
+                if texture_path and os.path.exists(texture_path):
+                    mesh.texture_path = texture_path
+                    mesh.texture_image = load_texture_image(texture_path)
+                elif texture_path and verbose:
+                    print(f"Warning: texture file not found for {path_name}: {texture_path}")
+                if mesh.texture_image is not None and mesh.uvs is None:
+                    warnings.warn(
+                        f"Warning: mesh {path_name} has a texture but no UVs; texture will be ignored.",
+                        stacklevel=2,
+                    )
+                if material_props.get("color") is not None:
+                    mesh._color = material_props["color"]
+                if material_props.get("roughness") is not None:
+                    mesh.roughness = material_props["roughness"]
+                if material_props.get("metallic") is not None:
+                    mesh.metallic = material_props["metallic"]
                 shape_id = builder.add_shape_mesh(
                     parent_body_id,
                     xform,
