@@ -61,6 +61,50 @@ def check_gl_error():
         print(f"Called from: {''.join(stack[-2:-1])}")
 
 
+def _normalize_texture_image(texture_image: np.ndarray) -> tuple[np.ndarray, int]:
+    image = np.asarray(texture_image)
+    if image.dtype != np.uint8:
+        image = np.clip(image, 0.0, 255.0)
+        if image.max() <= 1.0:
+            image = image * 255.0
+        image = image.astype(np.uint8)
+    if image.ndim == 2:
+        image = np.repeat(image[:, :, None], 3, axis=2)
+    if image.shape[2] not in (3, 4):
+        raise ValueError(f"Unsupported texture channels: {image.shape[2]}")
+    # Flip vertically to match OpenGL texture coordinates
+    image = np.flipud(image)
+    return image, image.shape[2]
+
+
+def _upload_texture(gl, texture_image: np.ndarray) -> int:
+    image, channels = _normalize_texture_image(texture_image)
+    texture_id = gl.GLuint()
+    gl.glGenTextures(1, texture_id)
+    gl.glBindTexture(gl.GL_TEXTURE_2D, texture_id)
+
+    gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_WRAP_S, gl.GL_REPEAT)
+    gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_WRAP_T, gl.GL_REPEAT)
+    gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MIN_FILTER, gl.GL_LINEAR_MIPMAP_LINEAR)
+    gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MAG_FILTER, gl.GL_LINEAR)
+
+    format_enum = gl.GL_RGBA if channels == 4 else gl.GL_RGB
+    gl.glTexImage2D(
+        gl.GL_TEXTURE_2D,
+        0,
+        format_enum,
+        image.shape[1],
+        image.shape[0],
+        0,
+        format_enum,
+        gl.GL_UNSIGNED_BYTE,
+        image.ctypes.data_as(ctypes.POINTER(ctypes.c_ubyte)),
+    )
+    gl.glGenerateMipmap(gl.GL_TEXTURE_2D)
+    gl.glBindTexture(gl.GL_TEXTURE_2D, 0)
+    return texture_id
+
+
 @wp.struct
 class RenderVertex:
     pos: wp.vec3
@@ -168,6 +212,7 @@ class MeshGL:
         self.vertices = wp.zeros(num_points, dtype=RenderVertex, device=self.device)
         self.indices = None
         self.normals = None  # scratch buffer used during normal recomputation
+        self.texture_id = None
 
         # Set up vertex attributes in the packed format the shaders expect
         self.vertex_byte_size = 12 + 12 + 8
@@ -223,7 +268,7 @@ class MeshGL:
 
         # albedo
         gl.glVertexAttrib3f(7, 0.7, 0.5, 0.3)
-        # material, roughness, metallic, checker, unused
+        # material, roughness, metallic, checker, texture_enable
         gl.glVertexAttrib4f(8, 0.5, 0.0, 0.0, 0.0)
 
         gl.glBindVertexArray(0)
@@ -244,11 +289,13 @@ class MeshGL:
                 gl.glDeleteBuffers(1, self.vbo)
             if hasattr(self, "ebo"):
                 gl.glDeleteBuffers(1, self.ebo)
+            if hasattr(self, "texture_id") and self.texture_id is not None:
+                gl.glDeleteTextures(1, self.texture_id)
         except Exception:
             # Ignore any errors if the GL context has already been torn down
             pass
 
-    def update(self, points, indices, normals, uvs):
+    def update(self, points, indices, normals, uvs, texture_image=None, texture_path=None):
         """Update vertex positions in the VBO.
 
         Args:
@@ -297,6 +344,8 @@ class MeshGL:
             gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self.vbo)
             gl.glBufferData(gl.GL_ARRAY_BUFFER, host_vertices.nbytes, host_vertices.ctypes.data, gl.GL_STATIC_DRAW)
 
+        self.update_texture(texture_image, texture_path)
+
     def recompute_normals(self):
         if self.normals is None:
             self.normals = wp.zeros(len(self.vertices), dtype=wp.vec3, device=self.device)
@@ -315,6 +364,31 @@ class MeshGL:
         # Compute average normals per vertex
         wp.launch(normalize_normals, dim=len(self.vertices), inputs=[self.normals, self.vertices], device=self.device)
 
+    def update_texture(self, texture_image=None, texture_path=None):
+        gl = RendererGL.gl
+        if texture_image is None and texture_path:
+            from ...utils.mesh import load_texture_image  # noqa: PLC0415
+
+            texture_image = load_texture_image(texture_path)
+
+        if texture_image is None:
+            if self.texture_id is not None:
+                try:
+                    gl.glDeleteTextures(1, self.texture_id)
+                except Exception:
+                    pass
+                self.texture_id = None
+            return
+
+        if self.texture_id is not None:
+            try:
+                gl.glDeleteTextures(1, self.texture_id)
+            except Exception:
+                pass
+            self.texture_id = None
+
+        self.texture_id = _upload_texture(gl, texture_image)
+
     def render(self):
         if not self.hidden:
             gl = RendererGL.gl
@@ -323,6 +397,12 @@ class MeshGL:
                 gl.glEnable(gl.GL_CULL_FACE)
             else:
                 gl.glDisable(gl.GL_CULL_FACE)
+
+            gl.glActiveTexture(gl.GL_TEXTURE1)
+            if self.texture_id is not None:
+                gl.glBindTexture(gl.GL_TEXTURE_2D, self.texture_id)
+            else:
+                gl.glBindTexture(gl.GL_TEXTURE_2D, 0)
 
             gl.glBindVertexArray(self.vao)
             gl.glDrawElements(gl.GL_TRIANGLES, self.num_indices, gl.GL_UNSIGNED_INT, None)
@@ -787,6 +867,12 @@ class MeshInstancerGL:
             gl.glEnable(gl.GL_CULL_FACE)
         else:
             gl.glDisable(gl.GL_CULL_FACE)
+
+        gl.glActiveTexture(gl.GL_TEXTURE1)
+        if self.mesh.texture_id is not None:
+            gl.glBindTexture(gl.GL_TEXTURE_2D, self.mesh.texture_id)
+        else:
+            gl.glBindTexture(gl.GL_TEXTURE_2D, 0)
 
         gl.glBindVertexArray(self.vao)
         gl.glDrawElementsInstanced(

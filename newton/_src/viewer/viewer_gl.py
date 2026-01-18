@@ -235,6 +235,8 @@ class ViewerGL(ViewerBase):
         indices: wp.array,
         normals: wp.array | None = None,
         uvs: wp.array | None = None,
+        texture_image: np.ndarray | None = None,
+        texture_path: str | None = None,
         hidden=False,
         backface_culling=True,
     ):
@@ -247,6 +249,8 @@ class ViewerGL(ViewerBase):
             indices (wp.array): Triangle indices.
             normals (wp.array, optional): Vertex normals.
             uvs (wp.array, optional): Vertex UVs.
+            texture_image (np.ndarray, optional): Texture image array (H, W, C).
+            texture_path (str, optional): Texture image path.
             hidden (bool): Whether the mesh is hidden.
             backface_culling (bool): Enable backface culling.
         """
@@ -260,7 +264,7 @@ class ViewerGL(ViewerBase):
                 len(points), len(indices), self.device, hidden=hidden, backface_culling=backface_culling
             )
 
-        self.objects[name].update(points, indices, normals, uvs)
+        self.objects[name].update(points, indices, normals, uvs, texture_image, texture_path)
         self.objects[name].hidden = hidden
         self.objects[name].backface_culling = backface_culling
 

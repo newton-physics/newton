@@ -627,6 +627,8 @@ class ViewerBase:
             indices = wp.array(indices, dtype=wp.int32, device=self.device)
             normals = None
             uvs = None
+            texture_image = None
+            texture_path = None
 
             if geo_src._normals is not None:
                 normals = wp.array(geo_src._normals, dtype=wp.vec3, device=self.device)
@@ -634,7 +636,21 @@ class ViewerBase:
             if geo_src._uvs is not None:
                 uvs = wp.array(geo_src._uvs, dtype=wp.vec2, device=self.device)
 
-            self.log_mesh(name, points, indices, normals, uvs, hidden=hidden)
+            if hasattr(geo_src, "texture_image"):
+                texture_image = geo_src.texture_image
+            if hasattr(geo_src, "texture_path"):
+                texture_path = geo_src.texture_path
+
+            self.log_mesh(
+                name,
+                points,
+                indices,
+                normals,
+                uvs,
+                hidden=hidden,
+                texture_image=texture_image,
+                texture_path=texture_path,
+            )
             return
 
         # Generate vertices/indices for supported primitive types
@@ -682,7 +698,7 @@ class ViewerBase:
         uvs = wp.array(vertices[:, 6:8], dtype=wp.vec2, device=self.device)
         indices = wp.array(indices, dtype=wp.int32, device=self.device)
 
-        self.log_mesh(name, points, indices, normals, uvs, hidden=hidden)
+        self.log_mesh(name, points, indices, normals, uvs, hidden=hidden, texture_image=None, texture_path=None)
 
     def log_gizmo(
         self,
@@ -700,6 +716,8 @@ class ViewerBase:
         indices: wp.array,
         normals: wp.array | None = None,
         uvs: wp.array | None = None,
+        texture_image: np.ndarray | None = None,
+        texture_path: str | None = None,
         hidden=False,
         backface_culling=True,
     ):
@@ -979,13 +997,17 @@ class ViewerBase:
                 # Use shape index for color to ensure each collision shape has a different color
                 color = wp.vec3(self._shape_color_map(s))
 
-            material = wp.vec4(0.5, 0.0, 0.0, 0.0)  # roughness, metallic, checker, unused
+            material = wp.vec4(0.5, 0.0, 0.0, 0.0)  # roughness, metallic, checker, texture_enable
 
             if geo_type in (newton.GeoType.MESH, newton.GeoType.CONVEX_MESH):
                 scale = np.asarray(geo_scale, dtype=np.float32)
 
                 if geo_src._color is not None:
                     color = wp.vec3(geo_src._color[0:3])
+                if geo_src is not None and geo_src._uvs is not None:
+                    has_texture = geo_src.texture_image is not None or geo_src.texture_path is not None
+                    if has_texture:
+                        material = wp.vec4(material.x, material.y, material.z, 1.0)
 
             # plane appearance: checkerboard + gray
             if geo_type == newton.GeoType.PLANE:

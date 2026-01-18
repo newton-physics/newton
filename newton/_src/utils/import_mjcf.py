@@ -26,11 +26,12 @@ import warp as wp
 
 from ..core import quat_between_axes, quat_from_euler
 from ..core.types import Axis, AxisType, Sequence, Transform
-from ..geometry import MESH_MAXHULLVERT, Mesh, ShapeFlags
+from ..geometry import MESH_MAXHULLVERT, ShapeFlags
 from ..sim import JointType, ModelBuilder
 from ..sim.model import ModelAttributeFrequency
 from ..usd.schemas import solref_to_stiffness_damping
 from .import_utils import parse_custom_attributes, sanitize_xml_content
+from .mesh import load_texture_image, load_trimesh_meshes
 
 
 def parse_mjcf(
@@ -147,10 +148,14 @@ def parse_mjcf(
         use_degrees = compiler.attrib.get("angle", "degree").lower() == "degree"
         euler_seq = ["xyz".index(c) for c in compiler.attrib.get("eulerseq", "xyz").lower()]
         mesh_dir = compiler.attrib.get("meshdir", ".")
+        texture_dir = compiler.attrib.get("texturedir", mesh_dir)
     else:
         mesh_dir = "."
+        texture_dir = "."
 
     mesh_assets = {}
+    texture_assets = {}
+    material_assets = {}
     for asset in root.findall("asset"):
         for mesh in asset.findall("mesh"):
             if "file" in mesh.attrib:
@@ -164,6 +169,23 @@ def parse_mjcf(
                 # parse maxhullvert attribute, default to mesh_maxhullvert if not specified
                 maxhullvert = int(mesh.attrib.get("maxhullvert", str(mesh_maxhullvert)))
                 mesh_assets[name] = {"file": fname, "scale": s, "maxhullvert": maxhullvert}
+        for texture in asset.findall("texture"):
+            tex_name = texture.attrib.get("name")
+            tex_file = texture.attrib.get("file")
+            if not tex_name or not tex_file:
+                continue
+            tex_path = os.path.join(texture_dir, tex_file)
+            if not os.path.isabs(tex_path):
+                tex_path = os.path.abspath(os.path.join(mjcf_dirname, tex_path))
+            texture_assets[tex_name] = {"file": tex_path}
+        for material in asset.findall("material"):
+            mat_name = material.attrib.get("name")
+            if not mat_name:
+                continue
+            material_assets[mat_name] = {
+                "rgba": material.attrib.get("rgba"),
+                "texture": material.attrib.get("texture"),
+            }
 
     class_parent = {}
     class_children = {}
@@ -340,6 +362,27 @@ def parse_mjcf(
                 "custom_attributes": custom_attributes,
             }
 
+            material_name = geom_attrib.get("material")
+            material_info = material_assets.get(material_name, {})
+            rgba = geom_attrib.get("rgba", material_info.get("rgba"))
+            material_color = None
+            if rgba is not None:
+                rgba_values = np.fromstring(rgba, sep=" ", dtype=np.float32)
+                if len(rgba_values) >= 3:
+                    material_color = rgba_values[:3]
+
+            texture_image = None
+            texture_path = None
+            texture_name = material_info.get("texture")
+            if texture_name:
+                texture_asset = texture_assets.get(texture_name)
+                if texture_asset and "file" in texture_asset:
+                    texture_path = texture_asset["file"]
+                    if os.path.exists(texture_path):
+                        texture_image = load_texture_image(texture_path)
+                    else:
+                        texture_path = None
+
             if geom_type == "sphere":
                 s = builder.add_shape_sphere(
                     xform=tf,
@@ -359,12 +402,13 @@ def parse_mjcf(
                 shapes.append(s)
 
             elif geom_type == "mesh" and parse_meshes:
-                import trimesh  # noqa: PLC0415
-
                 # use force='mesh' to load the mesh as a trimesh object
                 # with baked in transforms, e.g. from COLLADA files
+                if geom_attrib["mesh"] not in mesh_assets:
+                    if verbose:
+                        print(f"Warning: mesh asset {geom_attrib['mesh']} not found, skipping")
+                    continue
                 stl_file = mesh_assets[geom_attrib["mesh"]]["file"]
-                m = trimesh.load(stl_file, force="mesh")
                 if "mesh" in geom_defaults:
                     mesh_scale = parse_vec(geom_defaults["mesh"], "scale", mesh_assets[geom_attrib["mesh"]]["scale"])
                 else:
@@ -376,36 +420,18 @@ def parse_mjcf(
                 # get maxhullvert value from mesh assets
                 maxhullvert = mesh_assets[geom_attrib["mesh"]].get("maxhullvert", mesh_maxhullvert)
 
-                if hasattr(m, "geometry"):
-                    # multiple meshes are contained in a scene
-                    for m_geom in m.geometry.values():
-                        m_vertices = np.array(m_geom.vertices, dtype=np.float32) * scaling
-                        m_faces = np.array(m_geom.faces.flatten(), dtype=np.int32)
-                        m_mesh = Mesh(
-                            m_vertices,
-                            m_faces,
-                            m.vertex_normals,
-                            color=np.array(m.visual.main_color) / 255.0,
-                            maxhullvert=maxhullvert,
-                        )
-                        s = builder.add_shape_mesh(
-                            xform=tf,
-                            mesh=m_mesh,
-                            **shape_kwargs,
-                        )
-                        shapes.append(s)
-                else:
-                    # a single mesh
-                    m_vertices = np.array(m.vertices, dtype=np.float32) * scaling
-                    m_faces = np.array(m.faces.flatten(), dtype=np.int32)
-                    m_color = np.array(m.visual.main_color) / 255.0 if hasattr(m.visual, "main_color") else None
-                    m_mesh = Mesh(
-                        m_vertices,
-                        m_faces,
-                        m.vertex_normals,
-                        color=m_color,
-                        maxhullvert=maxhullvert,
-                    )
+                m_meshes = load_trimesh_meshes(
+                    stl_file,
+                    scale=scaling,
+                    maxhullvert=maxhullvert,
+                    override_color=material_color,
+                    override_texture_path=texture_path,
+                    override_texture_image=texture_image,
+                )
+                for m_mesh in m_meshes:
+                    if m_mesh.texture_image is not None and m_mesh.uvs is None:
+                        if verbose:
+                            print(f"Warning: mesh {stl_file} has a texture but no UVs; texture will be ignored.")
                     s = builder.add_shape_mesh(
                         xform=tf,
                         mesh=m_mesh,

@@ -135,6 +135,7 @@ uniform vec3 sky_color;
 uniform vec3 ground_color;
 uniform vec3 sun_direction;
 uniform sampler2D shadow_map;
+uniform sampler2D albedo_map;
 
 uniform vec3 fogColor;
 uniform int up_axis;
@@ -258,10 +259,16 @@ void main()
     float roughness = Material.x;
     float metallic = Material.y;
     float checker_enable = Material.z;
+    float texture_enable = Material.w;
     float checker_scale = 1.0;
 
     // convert to linear space
     vec3 albedo = pow(ObjectColor, vec3(2.2));
+    if (texture_enable > 0.5)
+    {
+        vec3 tex_color = texture(albedo_map, TexCoord).rgb;
+        albedo *= pow(tex_color, vec3(2.2));
+    }
 
     // Optional checker_enable pattern based on surface UVs
     if (checker_enable > 0.0)
@@ -469,6 +476,7 @@ class ShaderShape(ShaderGL):
             self.loc_view_pos = self._get_uniform_location("view_pos")
             self.loc_light_space_matrix = self._get_uniform_location("light_space_matrix")
             self.loc_shadow_map = self._get_uniform_location("shadow_map")
+            self.loc_albedo_map = self._get_uniform_location("albedo_map")
             self.loc_fog_color = self._get_uniform_location("fogColor")
             self.loc_up_axis = self._get_uniform_location("up_axis")
             self.loc_sun_direction = self._get_uniform_location("sun_direction")
@@ -516,6 +524,7 @@ class ShaderShape(ShaderGL):
             self._gl.glUniformMatrix4fv(
                 self.loc_light_space_matrix, 1, self._gl.GL_FALSE, arr_pointer(light_space_matrix)
             )
+            self._gl.glUniform1i(self.loc_albedo_map, 1)
 
 
 class ShaderSky(ShaderGL):

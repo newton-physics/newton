@@ -13,11 +13,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import os
 import warnings
 from dataclasses import dataclass
 
 import numpy as np
 import warp as wp
+
+from ..geometry.types import Mesh
 
 # Default number of segments for mesh generation
 default_num_segments = 32
@@ -259,6 +262,145 @@ def create_ellipsoid_mesh(
                 indices.extend([first, first + 1, second, second, first + 1, second + 1])
 
     return np.array(vertices, dtype=np.float32), np.array(indices, dtype=np.uint32)
+
+
+def load_texture_image(texture_path: str | None) -> np.ndarray | None:
+    """Load a texture image from disk into a numpy array.
+
+    Args:
+        texture_path: Path to the texture image.
+
+    Returns:
+        Texture image as uint8 numpy array (H, W, C), or None if load fails.
+    """
+    if texture_path is None:
+        return None
+    try:
+        from PIL import Image  # noqa: PLC0415
+
+        with Image.open(texture_path) as source_img:
+            img = source_img.convert("RGBA")
+            return np.array(img)
+    except Exception:
+        try:
+            import imageio.v2 as imageio  # noqa: PLC0415
+
+            img = imageio.imread(texture_path)
+            return np.array(img)
+        except Exception:
+            warnings.warn(f"Failed to load texture image: {texture_path}", stacklevel=2)
+            return None
+
+
+def _normalize_color(color) -> np.ndarray | None:
+    if color is None:
+        return None
+    color = np.asarray(color, dtype=np.float32).flatten()
+    if color.size >= 3:
+        if np.max(color) > 1.0:
+            color = color / 255.0
+        return color[:3]
+    return None
+
+
+def _extract_trimesh_texture(visual, base_dir: str) -> tuple[np.ndarray | None, str | None]:
+    texture_image = None
+    texture_path = None
+
+    if visual is None or not hasattr(visual, "material"):
+        return None, None
+
+    material = visual.material
+    if material is None:
+        return None, None
+
+    image = getattr(material, "image", None)
+    image_path = getattr(material, "image_path", None)
+
+    if image is None:
+        base_color_texture = getattr(material, "baseColorTexture", None)
+        if base_color_texture is not None:
+            image = getattr(base_color_texture, "image", None)
+            image_path = image_path or getattr(base_color_texture, "image_path", None)
+
+    if image is not None:
+        try:
+            texture_image = np.array(image)
+        except Exception:
+            texture_image = None
+
+    if image_path:
+        if not os.path.isabs(image_path):
+            texture_path = os.path.abspath(os.path.join(base_dir, image_path))
+        else:
+            texture_path = image_path
+
+    return texture_image, texture_path
+
+
+def load_trimesh_meshes(
+    filename: str,
+    *,
+    scale: np.ndarray | list[float] | tuple[float, ...] = (1.0, 1.0, 1.0),
+    maxhullvert: int,
+    override_color: np.ndarray | None = None,
+    override_texture_path: str | None = None,
+    override_texture_image: np.ndarray | None = None,
+) -> list[Mesh]:
+    """Load meshes from a file using trimesh and capture texture data if present.
+
+    Args:
+        filename: Path to the mesh file.
+        scale: Per-axis scale to apply to vertices.
+        maxhullvert: Maximum vertices for convex hull approximation.
+        override_color: Optional base color override (RGB).
+        override_texture_path: Optional texture path override.
+        override_texture_image: Optional texture image override.
+
+    Returns:
+        List of Mesh objects.
+    """
+    import trimesh  # noqa: PLC0415
+
+    scale = np.asarray(scale, dtype=np.float32)
+    base_dir = os.path.dirname(filename)
+
+    tri = trimesh.load(filename, force="mesh")
+    tri_meshes = tri.geometry.values() if hasattr(tri, "geometry") else [tri]
+
+    meshes = []
+    for tri_mesh in tri_meshes:
+        vertices = np.array(tri_mesh.vertices, dtype=np.float32) * scale
+        indices = np.array(tri_mesh.faces, dtype=np.int32).flatten()
+        normals = np.array(tri_mesh.vertex_normals, dtype=np.float32) if tri_mesh.vertex_normals is not None else None
+
+        uvs = None
+        if hasattr(tri_mesh, "visual") and getattr(tri_mesh.visual, "uv", None) is not None:
+            uvs = np.array(tri_mesh.visual.uv, dtype=np.float32)
+
+        color = override_color
+        if color is None and hasattr(tri_mesh, "visual") and hasattr(tri_mesh.visual, "main_color"):
+            color = _normalize_color(tri_mesh.visual.main_color)
+
+        texture_image = override_texture_image
+        texture_path = override_texture_path
+        if texture_image is None and texture_path is None and hasattr(tri_mesh, "visual"):
+            texture_image, texture_path = _extract_trimesh_texture(tri_mesh.visual, base_dir)
+
+        meshes.append(
+            Mesh(
+                vertices,
+                indices,
+                normals=normals,
+                uvs=uvs,
+                maxhullvert=maxhullvert,
+                color=color,
+                texture_path=texture_path,
+                texture_image=texture_image,
+            )
+        )
+
+    return meshes
 
 
 def create_capsule_mesh(radius, half_height, up_axis=1, segments=default_num_segments):
