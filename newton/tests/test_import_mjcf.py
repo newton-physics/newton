@@ -991,6 +991,21 @@ class TestImportMjcf(unittest.TestCase):
                 msg=f"wrap_prm[{i}] expected {expected_coef}, got {wrap_prm[i]}",
             )
 
+        # Check tendon_invweight0 is computed correctly
+        # tendon_invweight0 is computed by MuJoCo based on the mass matrix and tendon geometry.
+        # The formula accounts for: sum(coef^2 * effective_dof_inv_weight) / (1 + armature)
+        # where effective_dof_inv_weight depends on the full articulated body inertia.
+        # These expected values are verified against the Newton -> MuJoCo pipeline.
+        expected_invweight0 = [4.6796, 5.9226]  # Values after Newton's inertia processing
+        invweight0 = solver.mj_model.tendon_invweight0
+        for i, expected in enumerate(expected_invweight0):
+            self.assertAlmostEqual(
+                invweight0[i],
+                expected,
+                places=2,
+                msg=f"tendon_invweight0[{i}] expected {expected:.4f}, got {invweight0[i]:.4f}",
+            )
+
     def test_single_mujoco_fixed_tendon_defaults(self):
         """Test that tendons work"""
         mjcf = """<?xml version="1.0" ?>
