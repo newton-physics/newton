@@ -57,6 +57,7 @@ from ..geometry.inertia import validate_and_correct_inertia_kernel, verify_and_c
 from ..geometry.utils import RemeshingMethod, compute_inertia_obb, remesh_mesh
 from ..usd.schema_resolver import SchemaResolver
 from ..utils import compute_world_offsets
+from ..utils.mesh import MeshAdjacency
 from .graph_coloring import ColoringAlgorithm, color_rigid_bodies, color_trimesh, combine_independent_particle_coloring
 from .joints import (
     JOINT_LIMIT_UNLIMITED,
@@ -165,10 +166,13 @@ class ModelBuilder:
         rolling_friction: float = 0.0005
         """The coefficient of rolling friction (resistance to rolling motion). Used by XPBD, MuJoCo."""
         thickness: float = 1e-5
-        """The thickness of the shape."""
+        """Outward offset from the shape's surface for collision detection.
+        Extends the effective collision surface outward by this amount. When two shapes collide,
+        their thicknesses are summed (thickness_a + thickness_b) to determine the total separation."""
         contact_margin: float | None = None
         """The contact margin for collision detection. If None, uses builder.rigid_contact_margin as default.
-        Note: contact_margin should be >= thickness for proper collision detection."""
+        AABBs are expanded by this value for broad phase detection. Must be >= thickness to ensure
+        collisions are not missed when thickened surfaces approach each other."""
         is_solid: bool = True
         """Indicates whether the shape is solid or hollow. Defaults to True."""
         collision_group: int = 1
@@ -1339,6 +1343,7 @@ class ModelBuilder:
     def add_urdf(
         self,
         source: str,
+        *,
         xform: Transform | None = None,
         floating: bool = False,
         base_joint: dict | str | None = None,
@@ -1383,27 +1388,28 @@ class ModelBuilder:
         return parse_urdf(
             self,
             source,
-            xform,
-            floating,
-            base_joint,
-            scale,
-            hide_visuals,
-            parse_visuals_as_colliders,
-            up_axis,
-            force_show_colliders,
-            enable_self_collisions,
-            ignore_inertial_definitions,
-            ensure_nonstatic_links,
-            static_link_mass,
-            joint_ordering,
-            bodies_follow_joint_ordering,
-            collapse_fixed_joints,
-            mesh_maxhullvert,
+            xform=xform,
+            floating=floating,
+            base_joint=base_joint,
+            scale=scale,
+            hide_visuals=hide_visuals,
+            parse_visuals_as_colliders=parse_visuals_as_colliders,
+            up_axis=up_axis,
+            force_show_colliders=force_show_colliders,
+            enable_self_collisions=enable_self_collisions,
+            ignore_inertial_definitions=ignore_inertial_definitions,
+            ensure_nonstatic_links=ensure_nonstatic_links,
+            static_link_mass=static_link_mass,
+            joint_ordering=joint_ordering,
+            bodies_follow_joint_ordering=bodies_follow_joint_ordering,
+            collapse_fixed_joints=collapse_fixed_joints,
+            mesh_maxhullvert=mesh_maxhullvert,
         )
 
     def add_usd(
         self,
         source,
+        *,
         xform: Transform | None = None,
         only_load_enabled_rigid_bodies: bool = False,
         only_load_enabled_joints: bool = True,
@@ -1504,30 +1510,31 @@ class ModelBuilder:
         return parse_usd(
             self,
             source,
-            xform,
-            only_load_enabled_rigid_bodies,
-            only_load_enabled_joints,
-            joint_drive_gains_scaling,
-            verbose,
-            ignore_paths,
-            cloned_world,
-            collapse_fixed_joints,
-            enable_self_collisions,
-            apply_up_axis_from_stage,
-            root_path,
-            joint_ordering,
-            bodies_follow_joint_ordering,
-            skip_mesh_approximation,
-            load_sites,
-            load_visual_shapes,
-            hide_collision_shapes,
-            mesh_maxhullvert,
-            schema_resolvers,
+            xform=xform,
+            only_load_enabled_rigid_bodies=only_load_enabled_rigid_bodies,
+            only_load_enabled_joints=only_load_enabled_joints,
+            joint_drive_gains_scaling=joint_drive_gains_scaling,
+            verbose=verbose,
+            ignore_paths=ignore_paths,
+            cloned_world=cloned_world,
+            collapse_fixed_joints=collapse_fixed_joints,
+            enable_self_collisions=enable_self_collisions,
+            apply_up_axis_from_stage=apply_up_axis_from_stage,
+            root_path=root_path,
+            joint_ordering=joint_ordering,
+            bodies_follow_joint_ordering=bodies_follow_joint_ordering,
+            skip_mesh_approximation=skip_mesh_approximation,
+            load_sites=load_sites,
+            load_visual_shapes=load_visual_shapes,
+            hide_collision_shapes=hide_collision_shapes,
+            mesh_maxhullvert=mesh_maxhullvert,
+            schema_resolvers=schema_resolvers,
         )
 
     def add_mjcf(
         self,
         source: str,
+        *,
         xform: Transform | None = None,
         floating: bool | None = None,
         base_joint: dict | str | None = None,
@@ -1592,32 +1599,32 @@ class ModelBuilder:
         return parse_mjcf(
             self,
             source,
-            xform,
-            floating,
-            base_joint,
-            armature_scale,
-            scale,
-            hide_visuals,
-            parse_visuals_as_colliders,
-            parse_meshes,
-            parse_sites,
-            parse_visuals,
-            up_axis,
-            ignore_names,
-            ignore_classes,
-            visual_classes,
-            collider_classes,
-            no_class_as_colliders,
-            force_show_colliders,
-            enable_self_collisions,
-            ignore_inertial_definitions,
-            ensure_nonstatic_links,
-            static_link_mass,
-            collapse_fixed_joints,
-            verbose,
-            skip_equality_constraints,
-            convert_3d_hinge_to_ball_joints,
-            mesh_maxhullvert,
+            xform=xform,
+            floating=floating,
+            base_joint=base_joint,
+            armature_scale=armature_scale,
+            scale=scale,
+            hide_visuals=hide_visuals,
+            parse_visuals_as_colliders=parse_visuals_as_colliders,
+            parse_meshes=parse_meshes,
+            parse_sites=parse_sites,
+            parse_visuals=parse_visuals,
+            up_axis=up_axis,
+            ignore_names=ignore_names,
+            ignore_classes=ignore_classes,
+            visual_classes=visual_classes,
+            collider_classes=collider_classes,
+            no_class_as_colliders=no_class_as_colliders,
+            force_show_colliders=force_show_colliders,
+            enable_self_collisions=enable_self_collisions,
+            ignore_inertial_definitions=ignore_inertial_definitions,
+            ensure_nonstatic_links=ensure_nonstatic_links,
+            static_link_mass=static_link_mass,
+            collapse_fixed_joints=collapse_fixed_joints,
+            verbose=verbose,
+            skip_equality_constraints=skip_equality_constraints,
+            convert_3d_hinge_to_ball_joints=convert_3d_hinge_to_ball_joints,
+            mesh_maxhullvert=mesh_maxhullvert,
         )
 
     # endregion
@@ -1772,7 +1779,7 @@ class ModelBuilder:
 
         # explicitly resolve the transform multiplication function to avoid
         # repeatedly resolving builtin overloads during shape transformation
-        transform_mul_cfunc = wp.context.runtime.core.wp_builtin_mul_transformf_transformf
+        transform_mul_cfunc = wp._src.context.runtime.core.wp_builtin_mul_transformf_transformf
 
         # dispatches two transform multiplies to the native implementation
         def transform_mul(a, b):
@@ -2131,6 +2138,31 @@ class ModelBuilder:
             offset = custom_frequency_offsets.get(freq_key, 0)
             self._custom_frequency_counts[freq_key] = offset + builder_count
 
+    @staticmethod
+    def _coerce_mat33(value: Any) -> wp.mat33:
+        """Coerce a mat33-like value into a wp.mat33 without triggering Warp row-vector constructor warnings."""
+        if wp.types.type_is_matrix(type(value)):
+            return value
+
+        if isinstance(value, (list, tuple)) and len(value) == 3:
+            rows = []
+            is_rows = True
+            for r in value:
+                if wp.types.type_is_vector(type(r)):
+                    rows.append(wp.vec3(*r))
+                elif isinstance(r, (list, tuple, np.ndarray)) and len(r) == 3:
+                    rows.append(wp.vec3(*r))
+                else:
+                    is_rows = False
+                    break
+            if is_rows:
+                return wp.matrix_from_rows(*rows)
+
+        if isinstance(value, np.ndarray) and value.shape == (3, 3):
+            return wp.mat33(*value.reshape(-1).tolist())
+
+        return wp.mat33(*value)
+
     def add_link(
         self,
         xform: Transform | None = None,
@@ -2172,15 +2204,19 @@ class ModelBuilder:
             xform = wp.transform(*xform)
         if com is None:
             com = wp.vec3()
+        else:
+            com = wp.vec3(*com)
         if I_m is None:
             I_m = wp.mat33()
+        else:
+            I_m = self._coerce_mat33(I_m)
 
         body_id = len(self.body_mass)
 
         # body data
         if armature is None:
             armature = self.default_body_armature
-        inertia = I_m + wp.mat33(np.eye(3)) * armature
+        inertia = I_m + wp.mat33(np.eye(3, dtype=np.float32)) * armature
         self.body_inertia.append(inertia)
         self.body_mass.append(mass)
         self.body_com.append(com)
@@ -3273,15 +3309,16 @@ class ModelBuilder:
         merged_body_data = {}
         for i in range(self.body_count):
             key = self.body_key[i]
+            inertia_i = self._coerce_mat33(self.body_inertia[i])
             body_data[i] = {
                 "shapes": self.body_shapes[i],
                 "q": self.body_q[i],
                 "qd": self.body_qd[i],
                 "mass": self.body_mass[i],
-                "inertia": wp.mat33(*self.body_inertia[i]),
+                "inertia": inertia_i,
                 "inv_mass": self.body_inv_mass[i],
                 "inv_inertia": self.body_inv_inertia[i],
-                "com": self.body_com[i],
+                "com": wp.vec3(*self.body_com[i]),
                 "key": key,
                 "original_id": i,
             }
@@ -5441,7 +5478,7 @@ class ModelBuilder:
 
         end_tri = len(self.tri_indices)
 
-        adj = wp.utils.MeshAdjacency(self.tri_indices[start_tri:end_tri], end_tri - start_tri)
+        adj = MeshAdjacency(self.tri_indices[start_tri:end_tri], end_tri - start_tri)
 
         edge_indices = np.fromiter(
             (x for e in adj.edges.values() for x in (e.o0, e.o1, e.v0, e.v1)),
@@ -6055,6 +6092,65 @@ class ModelBuilder:
         # validate world ordering and contiguity
         self._validate_world_ordering()
 
+        # validate all joints belong to an articulation, except for "loop joints"
+        # Loop joints connect two bodies that are already reachable via articulated joints
+        # (used to create kinematic loops, converted to equality constraints by MuJoCo solver)
+        if self.joint_count > 0:
+            # First, find all bodies reachable via articulated joints
+            articulated_bodies = set()
+            articulated_bodies.add(-1)  # World is always reachable
+            for i, art in enumerate(self.joint_articulation):
+                if art >= 0:  # Joint is in an articulation
+                    child = self.joint_child[i]
+                    articulated_bodies.add(child)
+
+            # Now check for true orphan joints: non-articulated joints whose child
+            # is NOT reachable via other articulated joints
+            orphan_joints = []
+            for i, art in enumerate(self.joint_articulation):
+                if art < 0:  # Joint is not in an articulation
+                    child = self.joint_child[i]
+                    if child not in articulated_bodies:
+                        # This is a true orphan - the child body has no articulated path
+                        orphan_joints.append(i)
+                    # else: this is a loop joint - child is already reachable, so it's allowed
+
+            if orphan_joints:
+                joint_keys = [self.joint_key[i] for i in orphan_joints[:5]]  # Show first 5
+                raise ValueError(
+                    f"Found {len(orphan_joints)} joint(s) not belonging to any articulation. "
+                    f"Call add_articulation() for all joints. Orphan joints: {joint_keys}"
+                    + ("..." if len(orphan_joints) > 5 else "")
+                )
+
+        # warn if any shape has thickness > contact_margin (causes unstable contact behavior)
+        # Thickness is an outward offset from each shape's surface. AABBs are expanded by contact_margin.
+        # For proper broad phase detection, each shape must have contact_margin >= thickness.
+        # This ensures that when thickened surfaces are close (sum of thicknesses),
+        # the AABBs overlap (sum of margins >= sum of thicknesses).
+        # Only check shapes that participate in collisions (have COLLIDE_SHAPES or COLLIDE_PARTICLES flag).
+        collision_flags_mask = ShapeFlags.COLLIDE_SHAPES | ShapeFlags.COLLIDE_PARTICLES
+        shapes_with_bad_margin = []
+        for i in range(self.shape_count):
+            # Skip shapes that don't participate in any collisions (e.g., sites, visual-only)
+            if not (self.shape_flags[i] & collision_flags_mask):
+                continue
+            thickness = self.shape_thickness[i]
+            margin = self.shape_contact_margin[i]
+            if thickness > margin:
+                shapes_with_bad_margin.append(
+                    f"{self.shape_key[i] or f'shape_{i}'} (thickness={thickness:.6g}, margin={margin:.6g})"
+                )
+        if shapes_with_bad_margin:
+            example_shapes = shapes_with_bad_margin[:5]
+            warnings.warn(
+                f"Found {len(shapes_with_bad_margin)} shape(s) with thickness > contact_margin. "
+                f"This can cause missed collisions in broad phase since AABBs are only expanded by contact_margin. "
+                f"Set contact_margin >= thickness for each shape. "
+                f"Affected shapes: {example_shapes}" + ("..." if len(shapes_with_bad_margin) > 5 else ""),
+                stacklevel=2,
+            )
+
         # construct particle inv masses
         ms = np.array(self.particle_mass, dtype=np.float32)
         # static particles (with zero mass) have zero inverse mass
@@ -6554,9 +6650,10 @@ class ModelBuilder:
             m.up_axis = self.up_axis
             m.up_vector = np.array(self.up_vector, dtype=wp.float32)
 
-            # set gravity
+            # set gravity - create per-world gravity array for multi-world support
+            gravity_vec = wp.vec3(*(g * self.gravity for g in self.up_vector))
             m.gravity = wp.array(
-                [wp.vec3(*(g * self.gravity for g in self.up_vector))],
+                [gravity_vec] * self.num_worlds,
                 dtype=wp.vec3,
                 device=device,
                 requires_grad=requires_grad,

@@ -292,7 +292,7 @@ def create_parser():
         "--viewer",
         type=str,
         default="gl",
-        choices=["gl", "usd", "rerun", "null"],
+        choices=["gl", "usd", "rerun", "null", "viser"],
         help="Viewer to use (gl, usd, rerun, or null).",
     )
     parser.add_argument(
@@ -336,6 +336,12 @@ def create_parser():
         action=argparse.BooleanOptionalAction,
         default=False,
         help="Use MuJoCo's native contact solver instead of Newton contacts (default: use Newton contacts).",
+    )
+    parser.add_argument(
+        "--max-worlds",
+        type=int,
+        default=None,
+        help="Maximum number of worlds to render (for performance with many environments).",
     )
 
     return parser
@@ -381,6 +387,8 @@ def init(parser=None):
         viewer = newton.viewer.ViewerRerun(address=args.rerun_address)
     elif args.viewer == "null":
         viewer = newton.viewer.ViewerNull(num_frames=args.num_frames)
+    elif args.viewer == "viser":
+        viewer = newton.viewer.ViewerViser()
     else:
         raise ValueError(f"Invalid viewer: {args.viewer}")
 
@@ -392,7 +400,6 @@ def create_collision_pipeline(
     args=None,
     collision_pipeline_type=None,
     broad_phase_mode=None,
-    rigid_contact_max_per_pair=None,
 ):
     """Create a collision pipeline based on command-line arguments or explicit parameters.
 
@@ -404,7 +411,6 @@ def create_collision_pipeline(
         args: Parsed arguments from create_parser() (optional if explicit parameters provided)
         collision_pipeline_type: Explicit pipeline type ("unified" or "standard"), overrides args
         broad_phase_mode: Explicit broad phase mode ("nxn", "sap", "explicit"), overrides args
-        rigid_contact_max_per_pair: Maximum number of contact points per shape pair (default: 10)
 
     Returns:
         CollisionPipelineUnified instance if unified pipeline is selected, None for standard pipeline
@@ -424,13 +430,6 @@ def create_collision_pipeline(
             model,
             collision_pipeline_type="unified",
             broad_phase_mode="nxn"
-        )
-
-        # Override contact parameters for complex meshes
-        pipeline = newton.examples.create_collision_pipeline(
-            model,
-            args,
-            rigid_contact_max_per_pair=100
         )
     """
     import newton  # noqa: PLC0415
@@ -461,14 +460,9 @@ def create_collision_pipeline(
     }
     broad_phase_enum = broad_phase_map.get(broad_phase_mode.lower(), newton.BroadPhaseMode.NXN)
 
-    # Use provided values or defaults
-    if rigid_contact_max_per_pair is None:
-        rigid_contact_max_per_pair = 10
-
     # Create and return CollisionPipelineUnified
     return newton.CollisionPipelineUnified.from_model(
         model,
-        rigid_contact_max_per_pair=rigid_contact_max_per_pair,
         broad_phase_mode=broad_phase_enum,
     )
 

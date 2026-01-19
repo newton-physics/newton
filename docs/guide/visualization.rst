@@ -3,6 +3,16 @@ Visualization
 
 Newton provides multiple viewer backends for different visualization needs, from real-time rendering to offline recording and external integrations.
 
+All viewer backends share a common interface with ``set_model()``, ``begin_frame()``, ``log_state()``, and ``end_frame()`` methods.
+
+**Limiting rendered worlds**: When training with many parallel environments, rendering all worlds can impact performance. 
+All viewers support the ``max_worlds`` parameter to limit visualization to a subset of environments:
+
+.. code-block:: python
+
+    # Only render the first 4 environments
+    viewer.set_model(model, max_worlds=4)
+
 Real-time Viewers
 -----------------
 
@@ -238,6 +248,98 @@ Then, you can use the rerun SDK in a Jupyter notebook by importing the :mod:`rer
 
 The history of states will be available in the viewer to scrub through the simulation timeline.
 
+Viser Viewer
+~~~~~~~~~~~~
+
+The :class:`~newton.viewer.ViewerViser` backend integrates with the `viser <https://viser.studio>`_ visualization library,
+providing web-based 3D visualization that works in any browser and has native Jupyter notebook support.
+
+**Installation**: Requires the viser package:
+
+.. code-block:: bash
+
+    pip install viser
+
+**Usage**:
+
+.. code-block:: python
+
+    # Default usage: starts a web server on port 8080
+    viewer = newton.viewer.ViewerViser(port=8080)
+
+    # Open http://localhost:8080 in your browser to view the simulation
+
+    viewer.set_model(model)
+
+    # at every frame:
+    viewer.begin_frame(sim_time)
+    viewer.log_state(state)
+    viewer.end_frame()
+
+    # Close the viewer when done
+    viewer.close()
+
+Key parameters:
+
+- ``port``: Port number for the web server (default: ``8080``)
+- ``label``: Optional label for the browser window title
+- ``verbose``: If True, print the server URL when starting (default: ``True``)
+- ``share``: If True, create a publicly accessible URL via viser's share feature
+- ``record_to_viser``: Path to record the visualization to a ``.viser`` file for later playback
+
+**Recording and playback**
+
+ViewerViser can record simulations to ``.viser`` files for later playback:
+
+.. code-block:: python
+
+    # Record to a .viser file
+    viewer = newton.viewer.ViewerViser(record_to_viser="my_simulation.viser")
+
+    viewer.set_model(model)
+
+    # Run simulation...
+    for frame in range(500):
+        viewer.begin_frame(sim_time)
+        viewer.log_state(state)
+        viewer.end_frame()
+        sim_time += frame_dt
+
+    # Save the recording
+    viewer.save_recording()
+
+The recorded ``.viser`` file can be played back using the viser HTML player.
+
+**Jupyter notebook support**
+
+ViewerViser has native Jupyter notebook integration. When recording is enabled, calling ``show_notebook()`` 
+will display an embedded player with timeline controls:
+
+.. code-block:: python
+
+    viewer = newton.viewer.ViewerViser(record_to_viser="simulation.viser")
+    viewer.set_model(model)
+
+    # Run simulation...
+    for frame in range(500):
+        viewer.begin_frame(sim_time)
+        viewer.log_state(state)
+        viewer.end_frame()
+        sim_time += frame_dt
+
+    # Display in notebook with timeline controls
+    viewer.show_notebook()  # or simply `viewer` at the end of a cell
+
+When no recording is active, ``show_notebook()`` displays the live server in an IFrame.
+
+The viser viewer provides features like:
+
+- Real-time 3D visualization in any web browser
+- Interactive camera controls (pan, zoom, orbit)
+- GPU-accelerated batched mesh rendering
+- Recording and playback capabilities
+- Public URL sharing via viser's share feature
+
 Utility Viewers
 ---------------
 
@@ -292,6 +394,10 @@ Choosing the Right Viewer
       - Advanced visualization and analysis
       - Web interface
       - rerun-sdk
+    * - :class:`~newton.viewer.ViewerViser`
+      - Browser-based visualization and Jupyter notebooks
+      - Web interface, .viser files
+      - viser
     * - :class:`~newton.viewer.ViewerNull`
       - Headless/automated environments
       - None

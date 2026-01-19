@@ -190,6 +190,8 @@ def main(argv=None):
         "anybotics_anymal_d",
         "anybotics_anymal_d/usd",
         "franka_emika_panda",
+        "manipulation_objects/cup",  # Used in robot.example_robot_panda_hydro
+        "manipulation_objects/pad",  # Used in robot.example_robot_panda_hydro
         "unitree_go2",
         "unitree_g1",
         "unitree_g1/usd",

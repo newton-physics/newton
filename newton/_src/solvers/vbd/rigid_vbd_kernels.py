@@ -30,7 +30,6 @@ Organization:
 """
 
 import warp as wp
-from warp.types import float32, vector
 
 from newton._src.core.spatial import quat_velocity
 from newton._src.sim import JointType
@@ -66,7 +65,7 @@ _NUM_CONTACT_THREADS_PER_BODY = 16
 # ---------------------------------
 
 
-class vec6(vector(length=6, dtype=float32)):
+class vec6(wp.types.vector(length=6, dtype=wp.float32)):
     """Packed lower-triangular 3x3 matrix storage: [L00, L10, L11, L20, L21, L22]."""
 
     pass
@@ -1025,6 +1024,7 @@ def forward_step_rigid_bodies(
     # Inputs
     dt: float,
     gravity: wp.array(dtype=wp.vec3),
+    body_world: wp.array(dtype=wp.int32),
     body_f: wp.array(dtype=wp.spatial_vector),
     body_com: wp.array(dtype=wp.vec3),
     body_inertia: wp.array(dtype=wp.mat33),
@@ -1041,6 +1041,7 @@ def forward_step_rigid_bodies(
     Args:
         dt: Time step [s].
         gravity: Gravity vector array (world frame).
+        body_world: World index for each body.
         body_f: External forces on bodies (spatial wrenches, world frame).
         body_com: Centers of mass (local body frame).
         body_inertia: Inertia tensors (local body frame).
@@ -1072,6 +1073,8 @@ def forward_step_rigid_bodies(
     com_local = body_com[tid]
     I_local = body_inertia[tid]
     inv_I = body_inv_inertia[tid]
+    world_idx = body_world[tid]
+    world_g = gravity[wp.max(world_idx, 0)]
 
     # Integrate rigid body motion (semi-implicit Euler, no angular damping)
     q_new, qd_new = integrate_rigid_body(
@@ -1082,7 +1085,7 @@ def forward_step_rigid_bodies(
         I_local,
         inv_m,
         inv_I,
-        gravity,
+        world_g,
         0.0,  # angular_damping = 0 (consistent with particle VBD)
         dt,
     )

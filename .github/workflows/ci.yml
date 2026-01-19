@@ -33,6 +33,7 @@ jobs:
 
   newton-unittests:
     strategy:
+      fail-fast: false
       matrix:
         os:
           [

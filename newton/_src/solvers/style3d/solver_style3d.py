@@ -120,6 +120,7 @@ class SolverStyle3D(SolverBase):
             inputs=[
                 dt,
                 self.model.gravity,
+                self.model.particle_world,
                 state_in.particle_f,
                 state_in.particle_qd,
                 state_in.particle_q,

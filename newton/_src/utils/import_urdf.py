@@ -63,6 +63,7 @@ def download_asset_tmpfile(url: str):
 def parse_urdf(
     builder: ModelBuilder,
     source: str,
+    *,
     xform: Transform | None = None,
     floating: bool = False,
     base_joint: dict | str | None = None,
