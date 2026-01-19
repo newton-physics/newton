@@ -35,7 +35,7 @@ from newton.utils import (
     solidify_mesh,
 )
 
-from ..core.types import nparray
+from ..core.types import MAXVAL, nparray
 from .kernels import compute_cable_joint_lines, compute_hydro_contact_surface_lines, estimate_world_extents
 
 
@@ -245,8 +245,8 @@ class ViewerBase:
         num_worlds = self.model.num_worlds
 
         # Initialize bounds arrays for all worlds
-        world_bounds_min = wp.full((num_worlds, 3), wp.inf, dtype=wp.float32, device=self.device)
-        world_bounds_max = wp.full((num_worlds, 3), -wp.inf, dtype=wp.float32, device=self.device)
+        world_bounds_min = wp.full((num_worlds, 3), MAXVAL, dtype=wp.float32, device=self.device)
+        world_bounds_max = wp.full((num_worlds, 3), -MAXVAL, dtype=wp.float32, device=self.device)
 
         # Get initial state for body transforms
         state = self.model.state()

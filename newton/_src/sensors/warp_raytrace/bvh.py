@@ -15,6 +15,8 @@
 
 import warp as wp
 
+from newton._src.core.types import MAXVAL
+
 from .types import RenderShapeType
 
 
@@ -25,8 +27,8 @@ def compute_mesh_bounds(
     mesh_min_bounds = wp.cw_mul(mesh_min_bounds, scale)
     mesh_max_bounds = wp.cw_mul(mesh_max_bounds, scale)
 
-    min_bound = wp.vec3f(wp.inf)
-    max_bound = wp.vec3f(-wp.inf)
+    min_bound = wp.vec3f(MAXVAL)
+    max_bound = wp.vec3f(-MAXVAL)
 
     corner_1 = wp.transform_point(transform, wp.vec3f(mesh_min_bounds[0], mesh_min_bounds[1], mesh_min_bounds[2]))
     min_bound = wp.min(min_bound, corner_1)
@@ -65,8 +67,8 @@ def compute_mesh_bounds(
 
 @wp.func
 def compute_box_bounds(transform: wp.transformf, size: wp.vec3f) -> tuple[wp.vec3f, wp.vec3f]:
-    min_bound = wp.vec3f(wp.inf)
-    max_bound = wp.vec3f(-wp.inf)
+    min_bound = wp.vec3f(MAXVAL)
+    max_bound = wp.vec3f(-MAXVAL)
 
     for x in range(2):
         for y in range(2):
@@ -117,8 +119,8 @@ def compute_plane_bounds(transform: wp.transformf, size: wp.vec3f) -> tuple[wp.v
     if size[0] <= 0.0 or size[1] <= 0.0:
         size_scale = 1000.0
 
-    min_bound = wp.vec3f(wp.inf)
-    max_bound = wp.vec3f(-wp.inf)
+    min_bound = wp.vec3f(MAXVAL)
+    max_bound = wp.vec3f(-MAXVAL)
 
     for x in range(2):
         for y in range(2):
