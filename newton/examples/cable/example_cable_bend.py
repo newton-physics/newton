@@ -52,8 +52,8 @@ class Example:
 
         Returns:
             Tuple of (points, edge_indices, quaternions):
-            - points: List of capsule center positions (num_elements + 1).
-            - edge_indices: Flattened array of edge connectivity (2*num_elements).
+            - points: List of segment endpoints in world space (num_elements + 1).
+            - edge_indices: Flattened array of edge connectivity (2*num_elements). (Not used by `add_rod()`.)
             - quaternions: List of capsule orientations using parallel transport (num_elements).
         """
         if num_elements <= 0:
@@ -158,6 +158,7 @@ class Example:
         builder.default_shape_cfg.mu = 1.0  # Friction coefficient
 
         y_separation = 0.5
+        self.cable_bodies_list: list[list[int]] = []
 
         # Create 5 cables in a row along the y-axis, centered around origin
         for i, bend_stiffness in enumerate(bend_stiffness_values):
@@ -190,6 +191,11 @@ class Example:
             first_body = rod_bodies[0]
             builder.body_mass[first_body] = 0.0
             builder.body_inv_mass[first_body] = 0.0
+            builder.body_inertia[first_body] = wp.mat33(0.0)
+            builder.body_inv_inertia[first_body] = wp.mat33(0.0)
+
+            # Store full body index list for each cable for robust testing.
+            self.cable_bodies_list.append(rod_bodies)
 
         # Add ground plane
         builder.add_ground_plane()
@@ -275,11 +281,10 @@ class Example:
             assert (np.abs(body_velocities) < 5e2).all(), "Body velocities too large (>500)"
 
             # Test 2: Check cable connectivity (joint constraints)
-            for cable_idx in range(self.num_cables):
-                start_body = cable_idx * self.num_elements
-                for segment in range(self.num_elements - 1):
-                    body1_idx = start_body + segment
-                    body2_idx = start_body + segment + 1
+            for cable_idx, rod_bodies in enumerate(self.cable_bodies_list):
+                for segment in range(len(rod_bodies) - 1):
+                    body1_idx = rod_bodies[segment]
+                    body2_idx = rod_bodies[segment + 1]
 
                     pos1 = body_positions[body1_idx][:3]  # Extract translation part
                     pos2 = body_positions[body2_idx][:3]
@@ -307,9 +312,10 @@ class Example:
             assert min_z >= -ground_tolerance, f"Cable fell below ground: min_z = {min_z:.3f} < {-ground_tolerance:.3f}"
 
             # Test 5: Basic physics check - cables should hang down due to gravity
-            # Compare first and last segment positions of first cable
-            first_segment_z = body_positions[0, 2]
-            last_segment_z = body_positions[self.num_elements - 1, 2]
+            # Compare the anchored end and free end of the first cable.
+            first_cable = self.cable_bodies_list[0]
+            first_segment_z = body_positions[first_cable[0], 2]
+            last_segment_z = body_positions[first_cable[-1], 2]
             assert last_segment_z < first_segment_z, (
                 f"Cable not hanging properly: last segment z={last_segment_z:.3f} should be < first segment z={first_segment_z:.3f}"
             )
