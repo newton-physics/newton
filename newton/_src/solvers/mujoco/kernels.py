@@ -1504,28 +1504,6 @@ def _create_inverse_shape_mapping_kernel(
         newton_shape_to_mjc_geom[newton_shape_idx] = geom_idx
 
 
-@wp.func
-def mj_body_acceleration(
-    body_rootid: wp.array(dtype=int),
-    xipos_in: wp.array2d(dtype=wp.vec3),
-    subtree_com_in: wp.array2d(dtype=wp.vec3),
-    cvel_in: wp.array2d(dtype=wp.spatial_vector),
-    cacc_in: wp.array2d(dtype=wp.spatial_vector),
-    worldid: int,
-    bodyid: int,
-) -> wp.vec3:
-    """Compute accelerations for bodies from mjwarp data."""
-    cacc = cacc_in[worldid, bodyid]
-    cvel = cvel_in[worldid, bodyid]
-    offset = xipos_in[worldid, bodyid] - subtree_com_in[worldid, body_rootid[bodyid]]
-    ang = wp.spatial_top(cvel)
-    lin = wp.spatial_bottom(cvel) - wp.cross(offset, ang)
-    acc = wp.spatial_bottom(cacc) - wp.cross(offset, wp.spatial_top(cacc))
-    correction = wp.cross(ang, lin)
-
-    return acc + correction
-
-
 @wp.kernel
 def update_eq_properties_kernel(
     mjc_eq_to_newton_eq: wp.array2d(dtype=wp.int32),
@@ -1550,6 +1528,28 @@ def update_eq_properties_kernel(
 
     if eq_solimp:
         eq_solimp_out[world, mjc_eq] = eq_solimp[newton_eq]
+
+
+@wp.func
+def mj_body_acceleration(
+    body_rootid: wp.array(dtype=int),
+    xipos_in: wp.array2d(dtype=wp.vec3),
+    subtree_com_in: wp.array2d(dtype=wp.vec3),
+    cvel_in: wp.array2d(dtype=wp.spatial_vector),
+    cacc_in: wp.array2d(dtype=wp.spatial_vector),
+    worldid: int,
+    bodyid: int,
+) -> wp.vec3:
+    """Compute accelerations for bodies from mjwarp data."""
+    cacc = cacc_in[worldid, bodyid]
+    cvel = cvel_in[worldid, bodyid]
+    offset = xipos_in[worldid, bodyid] - subtree_com_in[worldid, body_rootid[bodyid]]
+    ang = wp.spatial_top(cvel)
+    lin = wp.spatial_bottom(cvel) - wp.cross(offset, ang)
+    acc = wp.spatial_bottom(cacc) - wp.cross(offset, wp.spatial_top(cacc))
+    correction = wp.cross(ang, lin)
+
+    return acc + correction
 
 
 @wp.kernel
@@ -1698,10 +1698,11 @@ def convert_rigid_forces_from_mj_kernel(
     # mjw sources
     mjw_body_rootid: wp.array(dtype=wp.int32),
     mjw_gravity: wp.array(dtype=wp.vec3),
-    mjw_xpos: wp.array2d(dtype=wp.vec3),
+    mjw_xipos: wp.array2d(dtype=wp.vec3),
     mjw_subtree_com: wp.array2d(dtype=wp.vec3),
     mjw_cacc: wp.array2d(dtype=wp.spatial_vector),
     mjw_cvel: wp.array2d(dtype=wp.spatial_vector),
+    mjw_cint: wp.array2d(dtype=wp.spatial_vector),
     # outputs
     body_qdd: wp.array(dtype=wp.spatial_vector),
     body_parent_f: wp.array(dtype=wp.spatial_vector),
@@ -1715,17 +1716,22 @@ def convert_rigid_forces_from_mj_kernel(
 
     if body_qdd:
         cacc = mjw_cacc[world, mjc_body]
-        lin = mj_body_acceleration(
+        qdd_lin = mj_body_acceleration(
             mjw_body_rootid,
-            mjw_xpos,
+            mjw_xipos,
             mjw_subtree_com,
             mjw_cvel,
             mjw_cacc,
             world,
             mjc_body,
         )
-        body_qdd[newton_body] = wp.spatial_vector(lin + mjw_gravity[world], wp.spatial_top(cacc))
+        body_qdd[newton_body] = wp.spatial_vector(qdd_lin + mjw_gravity[world], wp.spatial_top(cacc))
 
     if body_parent_f:
-        # TODO: implement link incoming forces
-        pass
+        cint = mjw_cint[world, mjc_body]
+        parent_f_ang = wp.spatial_top(cint)
+        parent_f_lin = wp.spatial_bottom(cint)
+
+        offset = mjw_xipos[world, mjc_body] - mjw_subtree_com[world, mjw_body_rootid[mjc_body]]
+
+        body_parent_f[newton_body] = wp.spatial_vector(parent_f_lin, parent_f_ang - wp.cross(offset, parent_f_lin))

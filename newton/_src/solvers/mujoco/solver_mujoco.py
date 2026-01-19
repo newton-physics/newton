@@ -1735,10 +1735,10 @@ class SolverMuJoCo(SolverBase):
         if m.sensor_rne_postconstraint:
             return
         if any(getattr(state_out, field) is not None for field in rne_postconstraint_fields):
+            # required for cfrc_ext, cfrc_int, cacc
             if wp.config.verbose:
                 print("Setting model.sensor_rne_postconstraint True")
             m.sensor_rne_postconstraint = True
-            # required for cfrc_ext, cfrc_int, cacc
 
     def convert_contacts_to_mjwarp(self, model: Model, state_in: State, contacts: Contacts):
         # Ensure the inverse shape mapping exists (lazy creation)
@@ -2079,7 +2079,7 @@ class SolverMuJoCo(SolverBase):
                     self.mjw_data.subtree_com,
                     self.mjw_data.cacc,
                     self.mjw_data.cvel,
-                    # self.mjw_data.cfrc_int,
+                    self.mjw_data.cfrc_int,
                 ],
                 outputs=[state.body_qdd, state.body_parent_f],
                 device=model.device,
