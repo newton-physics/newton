@@ -36,7 +36,7 @@ from newton.utils import (
 )
 
 from ..core.types import nparray
-from .kernels import compute_hydro_contact_surface_lines, estimate_world_extents
+from .kernels import compute_cable_joint_lines, compute_hydro_contact_surface_lines, estimate_world_extents
 
 
 class ViewerBase:
@@ -66,6 +66,11 @@ class ViewerBase:
         self._joint_points1 = None
         self._joint_colors = None
 
+        # line vertices for cable joint axes (d1, d2)
+        self._cable_joint_points0 = None
+        self._cable_joint_points1 = None
+        self._cable_joint_colors = None
+
         self._com_positions = None
         self._com_colors = None
         self._com_radii = None
@@ -76,6 +81,7 @@ class ViewerBase:
 
         # Display options as individual boolean attributes
         self.show_joints = False
+        self.show_cable_joints = False
         self.show_com = False
         self.show_particles = False
         self.show_contacts = False
@@ -375,6 +381,7 @@ class ViewerBase:
         self._log_triangles(state)
         self._log_particles(state)
         self._log_joints(state)
+        self._log_cable_joints(state)
         self._log_com(state)
 
         self.model_changed = False
@@ -1255,6 +1262,58 @@ class ViewerBase:
 
         # Log all joint lines in a single call
         self.log_lines("/model/joints", self._joint_points0, self._joint_points1, self._joint_colors)
+
+    def _log_cable_joints(self, state):
+        """
+        Creates line segments for cable joint axes (d1, d2).
+
+        Args:
+            state: Current simulation state
+        """
+        if not self.show_cable_joints:
+            self.log_lines("/model/cable_joints", None, None, None)
+            return
+
+        num_joints = len(self.model.joint_type)
+        if num_joints == 0:
+            return
+
+        # Each cable joint can emit 4 lines: d1/d2 at parent and child frames.
+        max_lines = num_joints * 4
+
+        if self._cable_joint_points0 is None or len(self._cable_joint_points0) < max_lines:
+            self._cable_joint_points0 = wp.zeros(max_lines, dtype=wp.vec3, device=self.device)
+            self._cable_joint_points1 = wp.zeros(max_lines, dtype=wp.vec3, device=self.device)
+            self._cable_joint_colors = wp.zeros(max_lines, dtype=wp.vec3, device=self.device)
+
+        wp.launch(
+            kernel=compute_cable_joint_lines,
+            dim=max_lines,
+            inputs=[
+                self.model.joint_type,
+                self.model.joint_parent,
+                self.model.joint_child,
+                self.model.joint_X_p,
+                self.model.joint_X_c,
+                state.body_q,
+                self.model.body_world,
+                self.world_offsets,
+                0.1,  # line scale factor
+            ],
+            outputs=[
+                self._cable_joint_points0,
+                self._cable_joint_points1,
+                self._cable_joint_colors,
+            ],
+            device=self.device,
+        )
+
+        self.log_lines(
+            "/model/cable_joints",
+            self._cable_joint_points0,
+            self._cable_joint_points1,
+            self._cable_joint_colors,
+        )
 
     def _log_com(self, state):
         num_bodies = self.model.body_count

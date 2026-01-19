@@ -1098,6 +1098,10 @@ class ViewerGL(ViewerBase):
                     show_joints = self.show_joints
                     changed, self.show_joints = imgui.checkbox("Show Joints", show_joints)
 
+                    # Cable joint visualization
+                    show_cable_joints = self.show_cable_joints
+                    changed, self.show_cable_joints = imgui.checkbox("Show Cable Joints", show_cable_joints)
+
                     # Contact visualization
                     show_contacts = self.show_contacts
                     changed, self.show_contacts = imgui.checkbox("Show Contacts", show_contacts)
