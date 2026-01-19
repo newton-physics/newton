@@ -941,7 +941,7 @@ class SolverMuJoCo(SolverBase):
                 t.actfrcrange = tendon_actuator_force_range.numpy()[i].tolist()
             if tendon_margin is not None:
                 t.margin = float(tendon_margin.numpy()[i])
-            if tendon_margin is not None:
+            if tendon_armature is not None:
                 t.armature = float(tendon_armature.numpy()[i])
             if tendon_solref_limit is not None:
                 t.solref_limit = tendon_solref_limit.numpy()[i].tolist()
