@@ -1383,6 +1383,71 @@ def update_eq_properties_kernel(
 
 
 @wp.kernel
+def update_tendon_properties_kernel(
+    mjc_tendon_to_newton_tendon: wp.array2d(dtype=wp.int32),
+    # Newton tendon properties (inputs)
+    tendon_stiffness: wp.array(dtype=wp.float32),
+    tendon_damping: wp.array(dtype=wp.float32),
+    tendon_frictionloss: wp.array(dtype=wp.float32),
+    tendon_range: wp.array(dtype=wp.vec2),
+    tendon_margin: wp.array(dtype=wp.float32),
+    tendon_solref_limit: wp.array(dtype=wp.vec2),
+    tendon_solimp_limit: wp.array(dtype=vec5),
+    tendon_solref_friction: wp.array(dtype=wp.vec2),
+    tendon_solimp_friction: wp.array(dtype=vec5),
+    tendon_armature: wp.array(dtype=wp.float32),
+    tendon_actfrcrange: wp.array(dtype=wp.vec2),
+    # MuJoCo tendon properties (outputs)
+    tendon_stiffness_out: wp.array2d(dtype=wp.float32),
+    tendon_damping_out: wp.array2d(dtype=wp.float32),
+    tendon_frictionloss_out: wp.array2d(dtype=wp.float32),
+    tendon_range_out: wp.array2d(dtype=wp.vec2),
+    tendon_margin_out: wp.array2d(dtype=wp.float32),
+    tendon_solref_lim_out: wp.array2d(dtype=wp.vec2),
+    tendon_solimp_lim_out: wp.array2d(dtype=vec5),
+    tendon_solref_fri_out: wp.array2d(dtype=wp.vec2),
+    tendon_solimp_fri_out: wp.array2d(dtype=vec5),
+    tendon_armature_out: wp.array2d(dtype=wp.float32),
+    tendon_actfrcrange_out: wp.array2d(dtype=wp.vec2),
+):
+    """Update MuJoCo tendon properties from Newton tendon custom attributes.
+
+    Iterates over MuJoCo tendons [world, tendon], looks up Newton tendon,
+    and copies properties.
+
+    Note: tendon_lengthspring is NOT updated at runtime because it has special
+    initialization semantics in MuJoCo (value -1.0 means auto-compute from initial state).
+    """
+    world, mjc_tendon = wp.tid()
+    newton_tendon = mjc_tendon_to_newton_tendon[world, mjc_tendon]
+    if newton_tendon < 0:
+        return
+
+    if tendon_stiffness:
+        tendon_stiffness_out[world, mjc_tendon] = tendon_stiffness[newton_tendon]
+    if tendon_damping:
+        tendon_damping_out[world, mjc_tendon] = tendon_damping[newton_tendon]
+    if tendon_frictionloss:
+        tendon_frictionloss_out[world, mjc_tendon] = tendon_frictionloss[newton_tendon]
+    if tendon_range:
+        tendon_range_out[world, mjc_tendon] = tendon_range[newton_tendon]
+    if tendon_margin:
+        tendon_margin_out[world, mjc_tendon] = tendon_margin[newton_tendon]
+    if tendon_solref_limit:
+        tendon_solref_lim_out[world, mjc_tendon] = tendon_solref_limit[newton_tendon]
+    if tendon_solimp_limit:
+        tendon_solimp_lim_out[world, mjc_tendon] = tendon_solimp_limit[newton_tendon]
+    if tendon_solref_friction:
+        tendon_solref_fri_out[world, mjc_tendon] = tendon_solref_friction[newton_tendon]
+    if tendon_solimp_friction:
+        tendon_solimp_fri_out[world, mjc_tendon] = tendon_solimp_friction[newton_tendon]
+    if tendon_armature:
+        tendon_armature_out[world, mjc_tendon] = tendon_armature[newton_tendon]
+    if tendon_actfrcrange:
+        tendon_actfrcrange_out[world, mjc_tendon] = tendon_actfrcrange[newton_tendon]
+
+
+@wp.kernel
 def convert_rigid_forces_from_mj_kernel(
     mjc_body_to_newton: wp.array2d(dtype=wp.int32),
     # mjw sources

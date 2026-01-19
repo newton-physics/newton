@@ -2707,6 +2707,160 @@ class TestMuJoCoSolverEqualityConstraintProperties(TestMuJoCoSolverPropertiesBas
         )
 
 
+class TestMuJoCoSolverFixedTendonProperties(TestMuJoCoSolverPropertiesBase):
+    """Test fixed tendon property replication and runtime updates across multiple worlds."""
+
+    def test_tendon_properties_conversion_and_update(self):
+        """
+        Test validation of fixed tendon custom attributes:
+        1. Initial conversion from Model to MuJoCo (multi-world)
+        2. Runtime updates via notify_model_changed (multi-world)
+        """
+        # Create template with tendons using MJCF
+        mjcf = """<?xml version="1.0" ?>
+<mujoco>
+    <worldbody>
+        <body name="root" pos="0 0 0">
+            <geom type="box" size="0.1 0.1 0.1"/>
+            <body name="link1" pos="0.0 -0.5 0">
+                <joint name="joint1" type="slide" axis="1 0 0" range="-50.5 50.5"/>
+                <geom type="cylinder" size="0.05 0.025"/>
+                <inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/>
+            </body>
+            <body name="link2" pos="-0.0 -0.7 0">
+                <joint name="joint2" type="slide" axis="1 0 0" range="-50.5 50.5"/>
+                <geom type="cylinder" size="0.05 0.025"/>
+                <inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/>
+            </body>
+        </body>
+    </worldbody>
+    <tendon>
+        <fixed name="coupling_tendon" stiffness="1.0" damping="2.0" frictionloss="0.5">
+            <joint joint="joint1" coef="1"/>
+            <joint joint="joint2" coef="-1"/>
+        </fixed>
+    </tendon>
+</mujoco>
+"""
+
+        template_builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(template_builder)
+        template_builder.add_mjcf(mjcf)
+
+        # Create main builder with multiple worlds
+        num_worlds = 3
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.replicate(template_builder, num_worlds)
+        model = builder.finalize()
+
+        # Verify we have the custom attributes
+        self.assertTrue(hasattr(model, "mujoco"))
+        self.assertTrue(hasattr(model.mujoco, "tendon_stiffness"))
+
+        # Get the total number of tendons (1 per world)
+        tendon_count = len(model.mujoco.tendon_stiffness)
+        self.assertEqual(tendon_count, num_worlds)  # 1 tendon per world
+
+        # --- Step 1: Set initial values and verify conversion ---
+
+        # Set different values for each world's tendon
+        initial_stiffness = np.array([1.0 + i * 0.5 for i in range(num_worlds)], dtype=np.float32)
+        initial_damping = np.array([2.0 + i * 0.3 for i in range(num_worlds)], dtype=np.float32)
+        initial_frictionloss = np.array([0.5 + i * 0.1 for i in range(num_worlds)], dtype=np.float32)
+
+        model.mujoco.tendon_stiffness.assign(initial_stiffness)
+        model.mujoco.tendon_damping.assign(initial_damping)
+        model.mujoco.tendon_frictionloss.assign(initial_frictionloss)
+
+        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
+
+        # Check mapping exists
+        self.assertIsNotNone(solver.mjc_tendon_to_newton_tendon)
+
+        # Get MuJoCo tendon values
+        mjc_tendon_to_newton = solver.mjc_tendon_to_newton_tendon.numpy()
+        mjw_stiffness = solver.mjw_model.tendon_stiffness.numpy()
+        mjw_damping = solver.mjw_model.tendon_damping.numpy()
+        mjw_frictionloss = solver.mjw_model.tendon_frictionloss.numpy()
+
+        ntendon = mjc_tendon_to_newton.shape[1]  # Number of MuJoCo tendons per world
+
+        def check_values(
+            expected_stiff, expected_damp, expected_friction, actual_stiff, actual_damp, actual_friction, msg_prefix
+        ):
+            for w in range(num_worlds):
+                for mjc_tendon in range(ntendon):
+                    newton_tendon = mjc_tendon_to_newton[w, mjc_tendon]
+                    if newton_tendon < 0:
+                        continue
+
+                    self.assertAlmostEqual(
+                        float(actual_stiff[w, mjc_tendon]),
+                        float(expected_stiff[newton_tendon]),
+                        places=4,
+                        msg=f"{msg_prefix} stiffness mismatch at World {w}, tendon {mjc_tendon}",
+                    )
+                    self.assertAlmostEqual(
+                        float(actual_damp[w, mjc_tendon]),
+                        float(expected_damp[newton_tendon]),
+                        places=4,
+                        msg=f"{msg_prefix} damping mismatch at World {w}, tendon {mjc_tendon}",
+                    )
+                    self.assertAlmostEqual(
+                        float(actual_friction[w, mjc_tendon]),
+                        float(expected_friction[newton_tendon]),
+                        places=4,
+                        msg=f"{msg_prefix} frictionloss mismatch at World {w}, tendon {mjc_tendon}",
+                    )
+
+        check_values(
+            initial_stiffness,
+            initial_damping,
+            initial_frictionloss,
+            mjw_stiffness,
+            mjw_damping,
+            mjw_frictionloss,
+            "Initial conversion",
+        )
+
+        # --- Step 2: Runtime Update ---
+
+        # Generate new unique values
+        updated_stiffness = np.array([10.0 + i * 2.0 for i in range(num_worlds)], dtype=np.float32)
+        updated_damping = np.array([5.0 + i * 1.0 for i in range(num_worlds)], dtype=np.float32)
+        updated_frictionloss = np.array([1.0 + i * 0.2 for i in range(num_worlds)], dtype=np.float32)
+
+        # Update model attributes
+        model.mujoco.tendon_stiffness.assign(updated_stiffness)
+        model.mujoco.tendon_damping.assign(updated_damping)
+        model.mujoco.tendon_frictionloss.assign(updated_frictionloss)
+
+        # Notify solver
+        solver.notify_model_changed(SolverNotifyFlags.FIXED_TENDON_PROPERTIES)
+
+        # Verify updates
+        mjw_stiffness_updated = solver.mjw_model.tendon_stiffness.numpy()
+        mjw_damping_updated = solver.mjw_model.tendon_damping.numpy()
+        mjw_frictionloss_updated = solver.mjw_model.tendon_frictionloss.numpy()
+
+        check_values(
+            updated_stiffness,
+            updated_damping,
+            updated_frictionloss,
+            mjw_stiffness_updated,
+            mjw_damping_updated,
+            mjw_frictionloss_updated,
+            "Runtime update",
+        )
+
+        # Check that values actually changed (sanity check)
+        self.assertFalse(
+            np.allclose(mjw_stiffness_updated[0, 0], initial_stiffness[0]),
+            "Stiffness value did not change from initial!",
+        )
+
+
 class TestMuJoCoSolverNewtonContacts(unittest.TestCase):
     def setUp(self):
         """Set up a simple model with a sphere and a plane."""
