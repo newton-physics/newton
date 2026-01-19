@@ -14,14 +14,21 @@
 # limitations under the License.
 
 import unittest
+from enum import IntEnum
 
 import newton
 from newton.solvers import SolverMuJoCo
 
 
 class TestMujocoFixedTendon(unittest.TestCase):
-    def test_single_mujoco_fixed_tendon_limit_behaviour(self):
-        """Test that tendons work"""
+    class LimitBreachType(IntEnum):
+        UPPER_LIMIT_FROM_ABOVE = 0
+        UPPER_LIMIT_FROM_BELOW = 1
+        LOWER_LIMIT_FROM_BELOW = 2
+        LOWER_LIMIT_FROM_ABOVE = 3
+
+    def test_single_mujoco_fixed_tendon_length_behaviour(self):
+        """Test that tendon length works as expected"""
         mjcf = """<?xml version="1.0" ?>
 <mujoco model="two_prismatic_links">
   <compiler angle="degree"/>
@@ -87,7 +94,7 @@ class TestMujocoFixedTendon(unittest.TestCase):
         joint_start_positions = [0.5, 0.0]
         state_in.joint_q.assign(joint_start_positions)
 
-        for _ in range(0, 200):
+        for _i in range(0, 200):
             solver.step(state_in=state_in, state_out=state_out, contacts=contacts, control=control, dt=dt)
             state_in, state_out = state_out, state_in
 
@@ -101,6 +108,115 @@ class TestMujocoFixedTendon(unittest.TestCase):
             places=3,
             msg=f"Expected stiffness value: {expected_tendon_length}, Measured value: {measured_tendon_length}",
         )
+
+    def run_test_single_mujoco_fixed_tendon_limit_behaviour(self, mode: LimitBreachType):
+        """Test that tendons limits are respected"""
+        mjcf = """<?xml version="1.0" ?>
+<mujoco model="two_prismatic_links">
+  <compiler angle="degree"/>
+
+  <option timestep="0.002" gravity="0 0 -9.81"/>
+
+  <worldbody>
+    <!-- Root body (fixed to world) -->
+    <body name="root" pos="0 0 0">
+      <geom type="box" size="0.1 0.1 0.1" rgba="0.5 0.5 0.5 1"/>
+
+      <!-- First child link with prismatic joint along x -->
+      <body name="link1" pos="0.0 -0.5 0">
+        <joint name="joint1" type="slide" axis="1 0 0" range="-50.5 50.5"/>
+        <geom solmix="1.0" type="cylinder" size="0.05 0.025" rgba="1 0 0 1" euler="0 90 0"/>
+        <inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/>
+      </body>
+
+      <!-- Second child link with prismatic joint along x -->
+      <body name="link2" pos="-0.0 -0.7 0">
+        <joint name="joint2" type="slide" axis="1 0 0" range="-50.5 50.5"/>
+        <geom type="cylinder" size="0.05 0.025" rgba="0 0 1 1" euler="0 90 0"/>
+        <inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/>
+      </body>
+    </body>
+  </worldbody>
+
+  <tendon>
+    <!-- Fixed tendon coupling joint1 and joint2 -->
+	<fixed
+		name="coupling_tendon"
+    range = "-1.0 1.0"
+		stiffness="0.0"
+		damping="0.0"
+        solreflimit="0.004 1"
+        solimplimit="0.95 0.99 0.001"        
+		springlength="0.0">
+      <joint joint="joint1" coef="1"/>
+      <joint joint="joint2" coef="1"/>
+    </fixed>
+  </tendon>
+
+</mujoco>
+
+"""
+        coeff0 = 1.0  # from mjcf above
+        coeff1 = 1.0  # from mjcf above
+        lower_limit = -1.0  # from mjcf above
+        upper_limit = 1.0  # from mjcf above
+
+        joint_start_positions = [0.0, 0.0]
+        joint_start_velocities = [0.0, 0.0]
+        if mode is self.LimitBreachType.UPPER_LIMIT_FROM_ABOVE:
+            joint_start_positions[0] = upper_limit + 0.1
+        elif mode is self.LimitBreachType.UPPER_LIMIT_FROM_BELOW:
+            joint_start_positions[0] = upper_limit - 0.1
+            joint_start_velocities[0] = 1.0
+        elif mode is self.LimitBreachType.LOWER_LIMIT_FROM_BELOW:
+            joint_start_positions[0] = lower_limit - 0.1
+        elif mode is self.LimitBreachType.LOWER_LIMIT_FROM_ABOVE:
+            joint_start_positions[0] = lower_limit + 0.1
+            joint_start_velocities[0] = -1.0
+
+        start_tendon_length = joint_start_positions[0] * coeff0 + joint_start_positions[1] * coeff1
+
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_mjcf(mjcf)
+        model = builder.finalize()
+        state_in = model.state()
+        state_out = model.state()
+        control = model.control()
+        contacts = model.collide(state_in)
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state_in)
+        solver = SolverMuJoCo(model, iterations=10, ls_iterations=10)
+
+        dt = 0.02
+
+        state_in.joint_q.assign(joint_start_positions)
+        state_in.joint_qd.assign(joint_start_velocities)
+
+        for _i in range(0, 20):
+            solver.step(state_in=state_in, state_out=state_out, contacts=contacts, control=control, dt=dt)
+            state_in, state_out = state_out, state_in
+
+        joint_q = state_in.joint_q.numpy()
+        q0 = joint_q[0]
+        q1 = joint_q[1]
+        measured_tendon_length = coeff0 * q0 + coeff1 * q1
+        has_legal_length = measured_tendon_length > lower_limit and measured_tendon_length < upper_limit
+        self.assertTrue(
+            has_legal_length,
+            f"Allowed range is {lower_limit} to {upper_limit}. measured length is {measured_tendon_length}",
+        )
+
+    def test_upper_tendon_limit_from_above(self):
+        self.run_test_single_mujoco_fixed_tendon_limit_behaviour(self.LimitBreachType.UPPER_LIMIT_FROM_ABOVE)
+
+    def test_upper_tendon_limit_from_below(self):
+        self.run_test_single_mujoco_fixed_tendon_limit_behaviour(self.LimitBreachType.UPPER_LIMIT_FROM_BELOW)
+
+    def test_lower_tendon_limit_from_below(self):
+        self.run_test_single_mujoco_fixed_tendon_limit_behaviour(self.LimitBreachType.LOWER_LIMIT_FROM_BELOW)
+
+    def test_lower_tendon_limit_from_above(self):
+        self.run_test_single_mujoco_fixed_tendon_limit_behaviour(self.LimitBreachType.LOWER_LIMIT_FROM_ABOVE)
 
 
 if __name__ == "__main__":
