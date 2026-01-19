@@ -1342,6 +1342,81 @@ class TestImportMjcf(unittest.TestCase):
                 msg=f"Expected tendon actuator force limited value: {expected}, Measured value: {measured}",
             )
 
+    def test_single_mujoco_fixed_tendon_auto_springlength(self):
+        """Test that springlength=-1 auto-computes the spring length from initial joint positions.
+
+        When springlength first param is -1, MuJoCo auto-computes the spring length from
+        the initial joint state (qpos0) using: tendon_length = coeff0 * q0 + coeff1 * q1.
+        The computed value is stored in tendon_length0.
+
+        We set model.joint_q before the SolverMuJoCo constructor to ensure the spring
+        length is computed from non-zero initial positions.
+        """
+        mjcf = """<?xml version="1.0" ?>
+<mujoco>
+    <worldbody>
+    <!-- Root body (fixed to world) -->
+    <body name="root" pos="0 0 0">
+      <geom type="box" size="0.1 0.1 0.1" rgba="0.5 0.5 0.5 1"/>
+
+      <!-- First child link with prismatic joint along x -->
+      <body name="link1" pos="0.0 -0.5 0">
+        <joint name="joint1" type="slide" axis="1 0 0" range="-50.5 50.5"/>
+        <geom solmix="1.0" type="cylinder" size="0.05 0.025" rgba="1 0 0 1" euler="0 90 0"/>
+        <inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/>
+      </body>
+
+      <!-- Second child link with prismatic joint along x -->
+      <body name="link2" pos="-0.0 -0.7 0">
+        <joint name="joint2" type="slide" axis="1 0 0" range="-50.5 50.5"/>
+        <geom type="cylinder" size="0.05 0.025" rgba="0 0 1 1" euler="0 90 0"/>
+        <inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/>
+      </body>
+
+    </body>
+  </worldbody>
+
+  <tendon>
+    <!-- Fixed tendon with auto-computed spring length (springlength=-1) -->
+    <fixed
+        name="auto_length_tendon"
+        stiffness="1.0"
+        damping="0.5"
+        springlength="-1">
+      <joint joint="joint1" coef="2"/>
+      <joint joint="joint2" coef="3"/>
+    </fixed>
+  </tendon>
+
+</mujoco>
+"""
+
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_mjcf(mjcf)
+        model = builder.finalize()
+
+        # Set initial joint positions BEFORE the SolverMuJoCo constructor
+        q0 = 0.5
+        q1 = 0.7
+        model.joint_q.assign([q0, q1])
+
+        solver = SolverMuJoCo(model, iterations=10, ls_iterations=10)
+
+        # Expected tendon length from initial joint positions: coef0*q0 + coef1*q1
+        coef0 = 2.0
+        coef1 = 3.0
+        expected_tendon_length0 = coef0 * q0 + coef1 * q1  # 2*0.5 + 3*0.7 = 3.1
+
+        # Verify tendon_length0 is computed from initial joint positions
+        measured_tendon_length0 = solver.mj_model.tendon_length0[0]
+        self.assertAlmostEqual(
+            measured_tendon_length0,
+            expected_tendon_length0,
+            places=4,
+            msg=f"Expected tendon_length0: {expected_tendon_length0}, Measured: {measured_tendon_length0}",
+        )
+
     def test_solimplimit_parsing(self):
         """Test that solimplimit attribute is parsed correctly from MJCF."""
         mjcf = """<?xml version="1.0" ?>
