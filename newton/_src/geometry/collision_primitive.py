@@ -34,12 +34,14 @@ Conventions:
 
 Returns (single contact): (distance: float, position: vec3, normal: vec3)
 Returns (multi contact): (distances: vecN, positions: matNx3, normals: vecN or matNx3)
-                        Use wp.inf for unpopulated contact slots.
+                        Use MAXVAL for unpopulated contact slots.
 """
 
 from typing import Any
 
 import warp as wp
+
+from newton._src.core.types import MAXVAL
 
 # Local type definitions for use within kernels
 _vec8f = wp.types.vector(8, wp.float32)
@@ -221,11 +223,11 @@ def collide_capsule_capsule(
 
     Returns:
       Tuple containing:
-        contact_dist: Vector of contact distances (wp.inf for invalid contacts)
+        contact_dist: Vector of contact distances (MAXVAL for invalid contacts)
         contact_pos: Matrix of contact positions (one per row)
         contact_normal: Shared contact normal vector (from capsule 1 toward capsule 2)
     """
-    contact_dist = wp.vec2(wp.inf, wp.inf)
+    contact_dist = wp.vec2(MAXVAL, MAXVAL)
     contact_pos = _mat23f()
     contact_normal = wp.vec3()
 
@@ -400,7 +402,7 @@ def collide_plane_box(
 
     Returns:
       Tuple containing:
-        contact_dist: Vector of contact distances (wp.inf for unpopulated contacts)
+        contact_dist: Vector of contact distances (MAXVAL for unpopulated contacts)
         contact_pos: Matrix of contact positions (one per row)
         contact_normal: contact normal vector
     """
@@ -408,7 +410,7 @@ def collide_plane_box(
     corner = wp.vec3()
     center_dist = wp.dot(box_pos - plane_pos, plane_normal)
 
-    dist = wp.vec4(wp.inf)
+    dist = wp.vec4(MAXVAL)
     pos = _mat43f()
 
     # test all corners, pick bottom 4
@@ -540,7 +542,7 @@ def collide_plane_cylinder(
     """
 
     # Initialize output matrices
-    contact_dist = wp.vec4(wp.inf)
+    contact_dist = wp.vec4(MAXVAL)
     contact_pos = _mat43f()
     contact_count = 0
 
@@ -668,7 +670,7 @@ def collide_box_box(
 
     Returns:
       Tuple containing:
-        contact_dist: Vector of contact distances (wp.inf for unpopulated contacts)
+        contact_dist: Vector of contact distances (MAXVAL for unpopulated contacts)
         contact_pos: Matrix of contact positions (one per row)
         contact_normals: Matrix of contact normal vectors (one per row)
     """
@@ -676,7 +678,7 @@ def collide_box_box(
     # Initialize output matrices
     contact_dist = _vec8f()
     for i in range(8):
-        contact_dist[i] = wp.inf
+        contact_dist[i] = MAXVAL
     contact_pos = _mat83f()
     contact_normals = _mat83f()
     contact_count = 0
@@ -1182,7 +1184,7 @@ def collide_capsule_box(
 
     Returns:
       Tuple containing:
-        contact_dist: Vector of contact distances (wp.inf for unpopulated contacts)
+        contact_dist: Vector of contact distances (MAXVAL for unpopulated contacts)
         contact_pos: Matrix of contact positions (one per row)
         contact_normals: Matrix of contact normal vectors (one per row)
     """
@@ -1357,7 +1359,7 @@ def collide_capsule_box(
         c1 = wp.where((ee2 > 0) == w_neg, 1, 2)
 
     if cltype == -4:  # invalid type
-        return wp.vec2(wp.inf), _mat23f(), _mat23f()
+        return wp.vec2(MAXVAL), _mat23f(), _mat23f()
 
     if cltype >= 0 and cltype // 3 != 1:  # closest to a corner of the box
         c1 = axisdir ^ clcorner
@@ -1488,7 +1490,7 @@ def collide_capsule_box(
         # collide with sphere using core function
         dist2, pos2, normal2 = collide_sphere_box(s2_pos_g, capsule_radius, box_pos, box_rot, box_size)
     else:
-        dist2 = wp.inf
+        dist2 = MAXVAL
         pos2 = wp.vec3()
         normal2 = wp.vec3()
 
