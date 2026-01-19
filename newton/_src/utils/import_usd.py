@@ -150,7 +150,7 @@ def parse_usd(
     except ImportError as e:
         raise ImportError("Failed to import pxr. Please install USD (e.g. via `pip install usd-core`).") from e
 
-    from .topology import topological_sort_undirected  # noqa: PLC0415 (circular import)
+    from .topology import topological_sort_undirected  # noqa: PLC0415
 
     @dataclass
     class PhysicsMaterial:
@@ -1277,7 +1277,6 @@ def parse_usd(
                             joint_edges[joint_id] = (child, parent)
                         if verbose:
                             print(f"Reversed joints: {reversed_joint_list}")
-                        reversed_joint_ids.extend(reversed_joint_list)
                         reversed_joints_set = set(reversed_joint_list)
                     if verbose:
                         print("Joint ordering:", sorted_joints)
@@ -1321,21 +1320,24 @@ def parse_usd(
 
                 # insert the remaining joints in topological order
                 for joint_id, i in enumerate(sorted_joints):
+                    is_reversed = i in reversed_joints_set
                     if joint_id == 0 and first_joint_parent == -1:
                         # the articulation root joint receives the articulation transform as parent transform
                         # except if we already inserted a floating-base joint
                         joint = parse_joint(
                             joint_descriptions[joint_names[i]],
                             incoming_xform=articulation_xform,
-                            reverse_parent_child=i in reversed_joints_set,
+                            reverse_parent_child=is_reversed,
                         )
                     else:
                         joint = parse_joint(
                             joint_descriptions[joint_names[i]],
-                            reverse_parent_child=i in reversed_joints_set,
+                            reverse_parent_child=is_reversed,
                         )
                     if joint is not None:
                         articulation_joint_indices.append(joint)
+                        if is_reversed:
+                            reversed_joint_ids.append(joint)
 
                 # insert loop joints
                 for joint_key in joint_excluded:
