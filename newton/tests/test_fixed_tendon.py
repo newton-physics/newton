@@ -106,7 +106,7 @@ class TestMujocoFixedTendon(unittest.TestCase):
             expected_tendon_length,
             measured_tendon_length,
             places=3,
-            msg=f"Expected stiffness value: {expected_tendon_length}, Measured value: {measured_tendon_length}",
+            msg=f"Expected tendon length: {expected_tendon_length}, Measured tendon length: {measured_tendon_length}",
         )
 
     def run_test_single_mujoco_fixed_tendon_limit_behaviour(self, mode: LimitBreachType):
