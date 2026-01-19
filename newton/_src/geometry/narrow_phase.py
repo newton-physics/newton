@@ -20,6 +20,8 @@ from typing import Any
 
 import warp as wp
 
+from newton._src.core.types import MAXVAL
+
 from ..geometry.collision_core import (
     ENABLE_TILE_BVH_QUERY,
     check_infinite_plane_bsphere_overlap,
@@ -375,7 +377,7 @@ def create_narrow_phase_primitive_kernel(writer_func: Any):
                 contact_pos_0 = wp.vec3(positions[0, 0], positions[0, 1], positions[0, 2])
 
                 # Check if second contact is valid (parallel axes case)
-                if dists[1] < wp.inf:
+                if dists[1] < MAXVAL:
                     contact_dist_1 = dists[1]
                     contact_pos_1 = wp.vec3(positions[1, 0], positions[1, 1], positions[1, 2])
                     num_contacts = 2

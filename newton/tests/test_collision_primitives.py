@@ -19,6 +19,7 @@ import numpy as np
 import warp as wp
 
 from newton import geometry
+from newton._src.core.types import MAXVAL
 
 
 def check_normal_direction_sphere_sphere(pos1, pos2, normal, tolerance=1e-5):
@@ -1330,7 +1331,7 @@ class TestCollisionPrimitives(unittest.TestCase):
         for i, expected_dist in enumerate(expected_distances):
             # Both contacts should have approximately the same distance for horizontal capsule
             for j in range(2):
-                if distances_np[i][j] != float("inf"):
+                if distances_np[i][j] < MAXVAL * 0.99:
                     self.assertAlmostEqual(
                         distances_np[i][j],
                         expected_dist,
@@ -1412,7 +1413,7 @@ class TestCollisionPrimitives(unittest.TestCase):
         # Verify contact counts and distances
         tolerance = 0.01
         for i in range(len(test_cases)):
-            valid_contacts = sum(1 for d in distances_np[i] if d != float("inf"))
+            valid_contacts = sum(1 for d in distances_np[i] if d < MAXVAL * 0.99)
             expected_count = expected_contact_counts[i]
             expected_dist = expected_distances[i]
 
@@ -1425,7 +1426,7 @@ class TestCollisionPrimitives(unittest.TestCase):
             # Check that all valid contact distances match expected value
             if valid_contacts > 0:
                 for j in range(4):
-                    if distances_np[i][j] != float("inf"):
+                    if distances_np[i][j] < MAXVAL * 0.99:
                         self.assertAlmostEqual(
                             distances_np[i][j],
                             expected_dist,
@@ -1595,7 +1596,7 @@ class TestCollisionPrimitives(unittest.TestCase):
 
         # Count valid contacts for each test case
         for i in range(len(test_cases)):
-            valid_contacts = sum(1 for j in range(8) if distances_np[i][j] != float("inf"))
+            valid_contacts = sum(1 for j in range(8) if distances_np[i][j] < MAXVAL * 0.99)
 
             if i == 0:  # Separated boxes
                 self.assertEqual(valid_contacts, 0, msg="Separated boxes should have no contacts")
@@ -1605,7 +1606,7 @@ class TestCollisionPrimitives(unittest.TestCase):
         # Check that contact normals are unit length and point from box1 into box2
         for i in range(len(test_cases)):
             for j in range(8):
-                if distances_np[i][j] == float("inf"):
+                if distances_np[i][j] >= MAXVAL * 0.99:
                     continue
 
                 # Check normal is unit length
@@ -1733,7 +1734,7 @@ class TestCollisionPrimitives(unittest.TestCase):
 
         # Verify expected contact behavior for each test case
         for i in range(len(test_cases)):
-            valid_contacts = sum(1 for j in range(8) if distances_np[i][j] != float("inf"))
+            valid_contacts = sum(1 for j in range(8) if distances_np[i][j] < MAXVAL * 0.99)
             expect_contacts = test_cases[i][7]
             margin = test_cases[i][6]
 
@@ -1757,7 +1758,7 @@ class TestCollisionPrimitives(unittest.TestCase):
                 continue
 
             for j in range(8):
-                if distances_np[i][j] == float("inf"):
+                if distances_np[i][j] >= MAXVAL * 0.99:
                     continue
 
                 normal = normals_np[i][j]
@@ -1841,7 +1842,7 @@ class TestCollisionPrimitives(unittest.TestCase):
         tolerance = 0.05  # Slightly larger tolerance for capsule-box collision
         for i, expected_min_dist in enumerate(expected_min_distances):
             # Find the minimum distance among valid contacts
-            valid_distances = [d for d in distances_np[i] if d != float("inf")]
+            valid_distances = [d for d in distances_np[i] if d < MAXVAL * 0.99]
             if len(valid_distances) > 0:
                 min_distance = min(valid_distances)
                 self.assertAlmostEqual(
@@ -1875,7 +1876,7 @@ class TestCollisionPrimitives(unittest.TestCase):
             box_size = np.array(test_cases[i][6])
 
             for j in range(2):  # Check up to 2 contacts
-                if distances_np[i][j] == float("inf") or distances_np[i][j] >= 0:
+                if distances_np[i][j] >= MAXVAL * 0.99 or distances_np[i][j] >= 0:
                     continue
 
                 contact_pos = positions_np[i][j]
@@ -2112,7 +2113,7 @@ class TestCollisionPrimitives(unittest.TestCase):
             # Count valid contacts and find deepest penetration
             valid_contacts = []
             for j in range(8):
-                if distances_np[i][j] != float("inf"):
+                if distances_np[i][j] < MAXVAL * 0.99:
                     valid_contacts.append(distances_np[i][j])
 
             if expect_contacts:
@@ -2164,7 +2165,7 @@ class TestCollisionPrimitives(unittest.TestCase):
                 continue
 
             for j in range(8):
-                if distances_np[i][j] == float("inf"):
+                if distances_np[i][j] >= MAXVAL * 0.99:
                     continue
 
                 normal = normals_np[i][j]
