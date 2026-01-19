@@ -682,7 +682,7 @@ class ModelBuilder:
         self.joint_parent = []  # index of the parent body                      (constant)
         self.joint_parents = {}  # mapping from joint to parent bodies
         self.joint_child = []  # index of the child body                       (constant)
-        self.joint_axis = []  # joint axis in child joint frame               (constant)
+        self.joint_axis = []  # joint axis in joint parent anchor frame        (constant)
         self.joint_X_p = []  # frame of joint in parent                      (constant)
         self.joint_X_c = []  # frame of child com (in child coordinates)     (constant)
         self.joint_q = []
