@@ -977,6 +977,20 @@ class TestImportMjcf(unittest.TestCase):
                 msg=f"Expected tendon actuator force limited value: {expected}, Measured value: {measured}",
             )
 
+        # Check that joint coefficients are correctly parsed
+        # Tendon 1: joint1 coef=8, joint2 coef=-8
+        # Tendon 2: joint1 coef=9, joint2 coef=9
+        expected_wrap_prm = [8.0, -8.0, 9.0, 9.0]
+        wrap_prm = solver.mj_model.wrap_prm
+        self.assertEqual(len(wrap_prm), len(expected_wrap_prm), "wrap_prm length mismatch")
+        for i, expected_coef in enumerate(expected_wrap_prm):
+            self.assertAlmostEqual(
+                wrap_prm[i],
+                expected_coef,
+                places=4,
+                msg=f"wrap_prm[{i}] expected {expected_coef}, got {wrap_prm[i]}",
+            )
+
     def test_single_mujoco_fixed_tendon_defaults(self):
         """Test that tendons work"""
         mjcf = """<?xml version="1.0" ?>
