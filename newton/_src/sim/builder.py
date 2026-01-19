@@ -29,6 +29,7 @@ import numpy as np
 import warp as wp
 
 from ..core.types import (
+    MAXVAL,
     Axis,
     AxisType,
     Devicelike,
@@ -60,7 +61,6 @@ from ..utils import compute_world_offsets
 from ..utils.mesh import MeshAdjacency
 from .graph_coloring import ColoringAlgorithm, color_rigid_bodies, color_trimesh, combine_independent_particle_coloring
 from .joints import (
-    JOINT_LIMIT_UNLIMITED,
     EqType,
     JointType,
     get_joint_dof_count,
@@ -291,8 +291,8 @@ class ModelBuilder:
         def __init__(
             self,
             axis: AxisType | Vec3 = Axis.X,
-            limit_lower: float = -JOINT_LIMIT_UNLIMITED,
-            limit_upper: float = JOINT_LIMIT_UNLIMITED,
+            limit_lower: float = -MAXVAL,
+            limit_upper: float = MAXVAL,
             limit_ke: float = 1e4,
             limit_kd: float = 1e1,
             target_pos: float = 0.0,
@@ -307,9 +307,9 @@ class ModelBuilder:
             self.axis = wp.normalize(axis_to_vec3(axis))
             """The 3D joint axis in the joint parent anchor frame."""
             self.limit_lower = limit_lower
-            """The lower position limit of the joint axis. Defaults to -JOINT_LIMIT_UNLIMITED (unlimited)."""
+            """The lower position limit of the joint axis. Defaults to -MAXVAL (unlimited)."""
             self.limit_upper = limit_upper
-            """The upper position limit of the joint axis. Defaults to JOINT_LIMIT_UNLIMITED (unlimited)."""
+            """The upper position limit of the joint axis. Defaults to MAXVAL (unlimited)."""
             self.limit_ke = limit_ke
             """The elastic stiffness of the joint axis limits. Defaults to 1e4."""
             self.limit_kd = limit_kd
@@ -341,8 +341,8 @@ class ModelBuilder:
             """Creates a JointDofConfig with no limits."""
             return ModelBuilder.JointDofConfig(
                 axis=axis,
-                limit_lower=-JOINT_LIMIT_UNLIMITED,
-                limit_upper=JOINT_LIMIT_UNLIMITED,
+                limit_lower=-MAXVAL,
+                limit_upper=MAXVAL,
                 target_pos=0.0,
                 target_vel=0.0,
                 target_ke=0.0,
@@ -2416,11 +2416,11 @@ class ModelBuilder:
             if np.isfinite(dim.limit_lower):
                 self.joint_limit_lower.append(dim.limit_lower)
             else:
-                self.joint_limit_lower.append(-JOINT_LIMIT_UNLIMITED)
+                self.joint_limit_lower.append(-MAXVAL)
             if np.isfinite(dim.limit_upper):
                 self.joint_limit_upper.append(dim.limit_upper)
             else:
-                self.joint_limit_upper.append(JOINT_LIMIT_UNLIMITED)
+                self.joint_limit_upper.append(MAXVAL)
 
         for dim in linear_axes:
             add_axis_dim(dim)
