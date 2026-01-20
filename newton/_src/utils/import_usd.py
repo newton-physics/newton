@@ -27,7 +27,7 @@ import numpy as np
 import warp as wp
 
 from ..core import quat_between_axes
-from ..core.types import Axis, Transform, axis_to_vec3
+from ..core.types import Axis, Transform
 from ..geometry import MESH_MAXHULLVERT, ShapeFlags, compute_sphere_inertia
 from ..sim.builder import ModelBuilder
 from ..sim.model import ModelAttributeFrequency
@@ -135,11 +135,6 @@ def parse_usd(
               - Mapping from prim path to relative transform for bodies merged via ``collapse_fixed_joints``
             * - ``"path_original_body_map"``
               - Mapping from prim path to original body index before ``collapse_fixed_joints``
-            * - ``"reversed_joint_ids"``
-              - List of joint indices (int) for joints whose parent/child ordering was reversed during import due to original USD parent/child
-                assignment not matching a topological order. Used to track which joints were flipped to ensure consistent kinematic hierarchy.
-                Only joints of type FixedJoint, RevoluteJoint, and PrismaticJoint are supported. For other types of joints the parent body must
-                be specified as ``physics:body0``, the child body as ``physics:body1``.
     """
     if schema_resolvers is None:
         schema_resolvers = []
@@ -255,9 +250,6 @@ def parse_usd(
     path_shape_scale: dict[str, wp.vec3] = {}
     # mapping from prim path to joint index in ModelBuilder
     path_joint_map: dict[str, int] = {}
-
-    # list of joint indices (int) for joints whose parent/child ordering was reversed during import due to original USD parent/child
-    reversed_joint_ids: list[int] = []
 
     physics_scene_prim = None
     physics_dt = None
@@ -536,7 +528,6 @@ def parse_usd(
     def parse_joint(
         joint_desc: UsdPhysics.JointDesc,
         incoming_xform: wp.transform | None = None,
-        reverse_parent_child: bool = False,
     ) -> int | None:
         """Parse a joint description and add it to the builder. Returns the resulting joint index if successful, None otherwise."""
         if not joint_desc.jointEnabled and only_load_enabled_joints:
@@ -550,24 +541,6 @@ def parse_usd(
         parent_id, child_id, parent_tf, child_tf = resolve_joint_parent_child(  # pyright: ignore[reportAssignmentType]
             joint_desc, path_body_map, get_transforms=True
         )
-        if reverse_parent_child:
-            if key not in (
-                UsdPhysics.ObjectType.FixedJoint,
-                UsdPhysics.ObjectType.RevoluteJoint,
-                UsdPhysics.ObjectType.PrismaticJoint,
-            ):
-                raise ValueError(
-                    f"Reversed joint {joint_path} of type {key} is not supported. Only FixedJoint, RevoluteJoint, and PrismaticJoint are supported. For other types of joints the parent body must be specified as physics:body0, the child body as physics:body1."
-                )
-            parent_id, child_id = child_id, parent_id
-            parent_tf, child_tf = child_tf, parent_tf
-
-        def adjust_axis(axis_value: Axis | tuple[float, float, float] | wp.vec3) -> wp.vec3:
-            axis_vec = axis_to_vec3(axis_value)
-            if reverse_parent_child:
-                # reverse the joint axis if the parent and child are reversed
-                axis_vec = -axis_vec
-            return axis_vec
 
         if incoming_xform is not None:
             parent_tf = incoming_xform * parent_tf
@@ -616,7 +589,7 @@ def parse_usd(
                 default=default_joint_limit_kd * limit_gains_scaling,
                 verbose=verbose,
             )
-            joint_params["axis"] = adjust_axis(usd_axis_to_axis[joint_desc.axis])
+            joint_params["axis"] = usd_axis_to_axis[joint_desc.axis]
             joint_params["limit_lower"] = joint_desc.limit.lower
             joint_params["limit_upper"] = joint_desc.limit.upper
             joint_params["limit_ke"] = current_joint_limit_ke
@@ -827,7 +800,7 @@ def parse_usd(
 
                     angular_axes.append(
                         ModelBuilder.JointDofConfig(
-                            axis=adjust_axis(_rot_axes[dof]),
+                            axis=_rot_axes[dof],
                             limit_lower=limit_lower * DegreesToRadian,
                             limit_upper=limit_upper * DegreesToRadian,
                             limit_ke=current_joint_limit_ke / DegreesToRadian,
@@ -1241,7 +1214,6 @@ def parse_usd(
                     joint_names.append(joint_key)
 
             articulation_joint_indices = []
-            reversed_joints_set = set()
 
             if len(joint_edges) == 0:
                 # We have an articulation without joints, i.e. only free rigid bodies
@@ -1272,12 +1244,11 @@ def parse_usd(
                         joint_edges, use_dfs=joint_ordering == "dfs", ensure_single_root=True
                     )
                     if reversed_joint_list:
-                        for joint_id in reversed_joint_list:
-                            parent, child = joint_edges[joint_id]
-                            joint_edges[joint_id] = (child, parent)
-                        if verbose:
-                            print(f"Reversed joints: {reversed_joint_list}")
-                        reversed_joints_set = set(reversed_joint_list)
+                        reversed_joint_paths = [joint_names[joint_id] for joint_id in reversed_joint_list]
+                        reversed_joint_names = ", ".join(reversed_joint_paths)
+                        raise ValueError(
+                            f"Reversed joints are not supported: {reversed_joint_names}. Ensure that the joint parent body is defined as physics:body0 and the child is defined as physics:body1 in the joint prim."
+                        )
                     if verbose:
                         print("Joint ordering:", sorted_joints)
                 else:
@@ -1320,24 +1291,19 @@ def parse_usd(
 
                 # insert the remaining joints in topological order
                 for joint_id, i in enumerate(sorted_joints):
-                    is_reversed = i in reversed_joints_set
                     if joint_id == 0 and first_joint_parent == -1:
                         # the articulation root joint receives the articulation transform as parent transform
                         # except if we already inserted a floating-base joint
                         joint = parse_joint(
                             joint_descriptions[joint_names[i]],
                             incoming_xform=articulation_xform,
-                            reverse_parent_child=is_reversed,
                         )
                     else:
                         joint = parse_joint(
                             joint_descriptions[joint_names[i]],
-                            reverse_parent_child=is_reversed,
                         )
                     if joint is not None:
                         articulation_joint_indices.append(joint)
-                        if is_reversed:
-                            reversed_joint_ids.append(joint)
 
                 # insert loop joints
                 for joint_key in joint_excluded:
@@ -1772,7 +1738,6 @@ def parse_usd(
         "path_body_relative_transform": path_body_relative_transform,
         "max_solver_iterations": max_solver_iters,
         "path_original_body_map": path_original_body_map,
-        "reversed_joint_ids": reversed_joint_ids,
     }
 
 

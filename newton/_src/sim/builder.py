@@ -1505,11 +1505,6 @@ class ModelBuilder:
                   - Mapping from prim path to relative transform for bodies merged via ``collapse_fixed_joints``
                 * - ``"path_original_body_map"``
                   - Mapping from prim path to original body index before ``collapse_fixed_joints``
-                * - ``"reversed_joint_ids"``
-                  - List of joint indices (int) for joints whose parent/child ordering was reversed during import due to original USD parent/child
-                    assignment not matching a topological order. Used to track which joints were flipped to ensure consistent kinematic hierarchy.
-                    Only joints of type FixedJoint, RevoluteJoint, and PrismaticJoint are supported. For other types of joints the parent body must
-                    be specified as ``physics:body0``, the child body as ``physics:body1``.
         """
         from ..utils.import_usd import parse_usd  # noqa: PLC0415
 

@@ -267,8 +267,8 @@ def "World"
             self.assertTrue(builder_bfs.joint_key[i + 1].endswith(expected[i]))
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
-    def test_reversed_joint_axes_in_articulation(self):
-        """Ensure joint axes are negated when parent/child ordering is reversed."""
+    def test_reversed_joints_in_articulation_raise(self):
+        """Ensure reversed joints are reported when encountered in articulations."""
         from pxr import Gf, Usd, UsdGeom, UsdPhysics  # noqa: PLC0415
 
         stage = Usd.Stage.CreateInMemory()
@@ -314,66 +314,9 @@ def "World"
         joint1.CreateAxisAttr().Set("Z")
 
         builder = newton.ModelBuilder()
-        builder.add_usd(stage)
-        model = builder.finalize()
-
-        joint0_idx = model.joint_key.index("/World/Articulation/Joint0")
-        joint1_idx = model.joint_key.index("/World/Articulation/Joint1")
-        joint_qd_start = model.joint_qd_start.numpy()
-        joint_axis = model.joint_axis.numpy()
-
-        axis0 = joint_axis[joint_qd_start[joint0_idx]]
-        axis1 = joint_axis[joint_qd_start[joint1_idx]]
-
-        assert_np_equal(axis0, np.array([0.0, 0.0, 1.0]), tol=1e-6)
-        # Axis is inverted because the parent/child are reversed
-        assert_np_equal(axis1, np.array([0.0, 0.0, -1.0]), tol=1e-6)
-
-        joint_X_p = model.joint_X_p.numpy()
-        joint_X_c = model.joint_X_c.numpy()
-
-        joint0_pos0_np = np.array([joint0_pos0[0], joint0_pos0[1], joint0_pos0[2]])
-        joint0_pos1_np = np.array([joint0_pos1[0], joint0_pos1[1], joint0_pos1[2]])
-        joint0_rot0_np = np.array(
-            [joint0_rot0.imaginary[0], joint0_rot0.imaginary[1], joint0_rot0.imaginary[2], joint0_rot0.real]
-        )
-        joint0_rot1_np = np.array(
-            [joint0_rot1.imaginary[0], joint0_rot1.imaginary[1], joint0_rot1.imaginary[2], joint0_rot1.real]
-        )
-
-        joint1_pos0_np = np.array([joint1_pos0[0], joint1_pos0[1], joint1_pos0[2]])
-        joint1_pos1_np = np.array([joint1_pos1[0], joint1_pos1[1], joint1_pos1[2]])
-        joint1_rot0_np = np.array(
-            [joint1_rot0.imaginary[0], joint1_rot0.imaginary[1], joint1_rot0.imaginary[2], joint1_rot0.real]
-        )
-        joint1_rot1_np = np.array(
-            [joint1_rot1.imaginary[0], joint1_rot1.imaginary[1], joint1_rot1.imaginary[2], joint1_rot1.real]
-        )
-
-        assert_np_equal(joint_X_p[joint0_idx][:3], joint0_pos0_np, tol=1e-6)
-        assert_np_equal(joint_X_c[joint0_idx][:3], joint0_pos1_np, tol=1e-6)
-
-        joint0_p_quat = joint_X_p[joint0_idx][3:7]
-        joint0_c_quat = joint_X_c[joint0_idx][3:7]
-        if np.dot(joint0_p_quat, joint0_rot0_np) < 0.0:
-            joint0_rot0_np = -joint0_rot0_np
-        if np.dot(joint0_c_quat, joint0_rot1_np) < 0.0:
-            joint0_rot1_np = -joint0_rot1_np
-        assert_np_equal(joint0_p_quat, joint0_rot0_np, tol=1e-6)
-        assert_np_equal(joint0_c_quat, joint0_rot1_np, tol=1e-6)
-
-        # Joint1 is reversed, so parent/child transforms should be swapped
-        assert_np_equal(joint_X_p[joint1_idx][:3], joint1_pos1_np, tol=1e-6)
-        assert_np_equal(joint_X_c[joint1_idx][:3], joint1_pos0_np, tol=1e-6)
-
-        joint1_p_quat = joint_X_p[joint1_idx][3:7]
-        joint1_c_quat = joint_X_c[joint1_idx][3:7]
-        if np.dot(joint1_p_quat, joint1_rot1_np) < 0.0:
-            joint1_rot1_np = -joint1_rot1_np
-        if np.dot(joint1_c_quat, joint1_rot0_np) < 0.0:
-            joint1_rot0_np = -joint1_rot0_np
-        assert_np_equal(joint1_p_quat, joint1_rot1_np, tol=1e-6)
-        assert_np_equal(joint1_c_quat, joint1_rot0_np, tol=1e-6)
+        with self.assertRaises(ValueError) as exc_info:
+            builder.add_usd(stage)
+        self.assertIn("/World/Articulation/Joint1", str(exc_info.exception))
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_reversed_joint_unsupported_d6_raises(self):
@@ -413,8 +356,11 @@ def "World"
         fixed.CreateLocalRot1Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
 
         builder = newton.ModelBuilder()
-        with self.assertRaisesRegex(ValueError, "Reversed joint .*JointD6.*not supported"):
+        with self.assertRaises(ValueError) as exc_info:
             builder.add_usd(stage)
+        error_message = str(exc_info.exception)
+        self.assertIn("/World/Articulation/JointD6", error_message)
+        self.assertIn("/World/Articulation/FixedJoint", error_message)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_reversed_joint_unsupported_spherical_raises(self):
@@ -454,8 +400,11 @@ def "World"
         fixed.CreateLocalRot1Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
 
         builder = newton.ModelBuilder()
-        with self.assertRaisesRegex(ValueError, "Reversed joint .*JointBall.*not supported"):
+        with self.assertRaises(ValueError) as exc_info:
             builder.add_usd(stage)
+        error_message = str(exc_info.exception)
+        self.assertIn("/World/Articulation/JointBall", error_message)
+        self.assertIn("/World/Articulation/FixedJoint", error_message)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_joint_filtering(self):
