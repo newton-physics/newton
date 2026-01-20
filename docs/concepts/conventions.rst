@@ -234,7 +234,7 @@ Two conversions are needed between Newton and MuJoCo:
       \qquad
       v_{\text{com}}^{W} = v_{\text{origin}}^{W} + \omega^{W} \times r^{W}
 
-   where :math:`r^{W} = R\,r` is the CoM offset expressed in world coordinates.
+   where :math:`r^{W} = R\,r^{B}` is the CoM offset expressed in world coordinates.
 
 In all cases the conversion boils down to the **reference point**
 (COM vs. another point) and the **frame** (world vs. body) used for each
