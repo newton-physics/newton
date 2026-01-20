@@ -47,6 +47,7 @@ from pxr import Usd
 import newton
 import newton.examples
 import newton.usd
+from newton.examples.cosserat.collision_kernels import collide_particles_vs_triangles
 
 
 # Warp tile configuration
@@ -626,7 +627,7 @@ def apply_quaternion_corrections_kernel(
     q = edge_q[tid]
     dq = edge_q_delta[tid]
 
-    # Add correction
+    # Add correction[np.float32(-3.283308), np.float32(-0.50000024), np.float32(1.6833224)]
     q_new = wp.quat(q[0] + dq[0], q[1] + dq[1], q[2] + dq[2], q[3] + dq[3])
 
     # Normalize to maintain unit quaternion
@@ -716,6 +717,44 @@ def update_rest_darboux_kernel(
         s = wp.sin(angle) / angle
         c = wp.cos(angle)
         rest_darboux[tid] = wp.quat(s * half_bend_d1, s * half_bend_d2, s * half_twist, c)
+
+
+@wp.kernel
+def update_tip_rest_darboux_kernel(
+    tip_rest_bend_d1: float,
+    tip_start_idx: int,
+    num_bend: int,
+    # output
+    rest_darboux: wp.array(dtype=wp.quat),
+):
+    """
+    Update rest Darboux vectors for only the tip (last N particles) of the rod.
+
+    Only modifies bend constraints from tip_start_idx to num_bend-1.
+    Only affects bending around the d1 axis.
+
+    Args:
+        tip_rest_bend_d1: bending rate around d1 axis for tip (rad/segment)
+        tip_start_idx: starting index of tip bend constraints
+        num_bend: total number of bend constraints
+    """
+    tid = wp.tid()
+    constraint_idx = tip_start_idx + tid
+    if constraint_idx >= num_bend:
+        return
+
+    # Build quaternion from axis-angle for bend around d1 only
+    half_bend_d1 = tip_rest_bend_d1 * 0.5
+    angle = wp.abs(half_bend_d1)
+
+    if angle < 1.0e-8:
+        # Near-identity: use limit formula
+        rest_darboux[constraint_idx] = wp.quat(0.0, 0.0, 0.0, 1.0)
+    else:
+        # Quaternion from rotation vector (bend_d1, 0, 0)
+        s = wp.sin(angle) / angle
+        c = wp.cos(angle)
+        rest_darboux[constraint_idx] = wp.quat(s * half_bend_d1, 0.0, 0.0, c)
 
 
 @wp.kernel
@@ -888,10 +927,11 @@ class Example:
 
         vessel_mesh = newton.usd.get_mesh(mesh_prim)
 
+        # Store mesh data for PBD collision kernel
+        self.vessel_vertices_np = np.array(vessel_mesh.vertices, dtype=np.float32)
+        self.vessel_indices_np = np.array(vessel_mesh.indices, dtype=np.int32).reshape(-1, 3)
+        self.num_vessel_triangles = self.vessel_indices_np.shape[0]
 
-
-
-       
         # Add the vessel mesh as a static collision shape
         # Using body=-1 for static geometry
         vessel_cfg = newton.ModelBuilder.ShapeConfig(
@@ -954,6 +994,24 @@ class Example:
 
         device = self.model.device
 
+        # Prepare vessel mesh for PBD collision
+        # Apply scale and transform to vertices
+        mesh_xform = wp.transform(
+            wp.vec3(0.0, 0.0, 1.0),
+            wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), math.pi / 2.0)
+        )
+        # Scale vertices
+        scaled_vertices = self.vessel_vertices_np * self.mesh_scale
+        # Apply rotation and translation
+        transformed_vertices = np.zeros_like(scaled_vertices)
+        for i in range(len(scaled_vertices)):
+            v = wp.vec3(scaled_vertices[i, 0], scaled_vertices[i, 1], scaled_vertices[i, 2])
+            v_transformed = wp.transform_point(mesh_xform, v)
+            transformed_vertices[i] = [v_transformed[0], v_transformed[1], v_transformed[2]]
+        
+        self.vessel_vertices = wp.array(transformed_vertices, dtype=wp.vec3f, device=device)
+        self.vessel_indices = wp.array(self.vessel_indices_np, dtype=wp.int32, device=device)
+
         # Particle inverse mass array
         inv_mass_np = [0.0] + [1.0 / particle_mass] * (self.num_particles - 1)
         self.particle_inv_mass = wp.array(inv_mass_np, dtype=float, device=device)
@@ -967,7 +1025,8 @@ class Example:
         self.edge_q_new = wp.array(edge_q_init, dtype=wp.quat, device=device)
 
         # Edge inverse masses
-        edge_inv_mass_np = [1.0 / edge_mass] * self.num_stretch
+        # First edge is locked (inv_mass = 0) to match the locked first particle
+        edge_inv_mass_np = [0.0] + [1.0 / edge_mass] * (self.num_stretch - 1)
         self.edge_inv_mass = wp.array(edge_inv_mass_np, dtype=float, device=device)
 
         # Rest lengths for stretch constraints
@@ -1011,6 +1070,13 @@ class Example:
 
         # Keyboard control for the first locked particle
         self.particle_move_speed = 1.0  # units per second
+        self.particle_rotation_speed = 1.0  # radians per second
+        self.first_particle_rotation = 0.0  # current rotation angle around z-axis
+
+        # Tip bend control (last 10 particles)
+        self.tip_num_particles = 10  # Number of particles at the tip to control
+        self.tip_rest_bend_d1 = 0.0  # Rest bend around d1 axis for tip (rad/segment)
+        self.tip_bend_speed = 0.3  # Rate of change per second when using keyboard
 
         # Initialize kappa_prev with current curvature
         self._initialize_kappa()
@@ -1191,6 +1257,23 @@ class Example:
             )
             wp.copy(self.state_1.particle_q, self.particle_q_predicted)
 
+            # Step 3b: Vessel mesh collision (PBD particle vs triangles)
+            wp.launch(
+                kernel=collide_particles_vs_triangles,
+                dim=self.num_particles,
+                inputs=[
+                    self.state_1.particle_q,
+                    self.model.particle_radius,
+                    self.particle_inv_mass,
+                    self.vessel_vertices,
+                    self.vessel_indices,
+                    self.num_vessel_triangles,
+                ],
+                outputs=[self.particle_q_predicted],
+                device=self.model.device,
+            )
+            wp.copy(self.state_1.particle_q, self.particle_q_predicted)
+
             # Step 4: Update velocities from position change
             wp.launch(
                 kernel=update_velocities_kernel,
@@ -1248,6 +1331,8 @@ class Example:
             - Numpad 4/6: Move in X direction (left/right)
             - Numpad 8/2: Move in Y direction (forward/back)
             - Numpad 9/3: Move in Z direction (up/down)
+            - Numpad 7/1: Rotate around Z axis (counterclockwise/clockwise)
+            - Numpad +/-: Control tip rest bend
         """
         if not hasattr(self.viewer, "is_key_down"):
             return
@@ -1280,6 +1365,32 @@ class Example:
             dz += self.particle_move_speed * self.frame_dt
         if self.viewer.is_key_down(key.NUM_3):
             dz -= self.particle_move_speed * self.frame_dt
+
+        # Numpad 7/1 for rotation around Z axis
+        rotation_changed = False
+        if self.viewer.is_key_down(key.NUM_7):
+            self.first_particle_rotation += self.particle_rotation_speed * self.frame_dt
+            rotation_changed = True
+        if self.viewer.is_key_down(key.NUM_1):
+            self.first_particle_rotation -= self.particle_rotation_speed * self.frame_dt
+            rotation_changed = True
+
+        if rotation_changed:
+            self._update_first_edge_rotation()
+
+        # Numpad +/- for tip rest bend control
+        tip_bend_changed = False
+        if self.viewer.is_key_down(key.NUM_ADD):
+            self.tip_rest_bend_d1 += self.tip_bend_speed * self.frame_dt
+            self.tip_rest_bend_d1 = min(self.tip_rest_bend_d1, 0.5)  # Clamp to max
+            tip_bend_changed = True
+        if self.viewer.is_key_down(key.NUM_SUBTRACT):
+            self.tip_rest_bend_d1 -= self.tip_bend_speed * self.frame_dt
+            self.tip_rest_bend_d1 = max(self.tip_rest_bend_d1, -0.5)  # Clamp to min
+            tip_bend_changed = True
+
+        if tip_bend_changed:
+            self._update_tip_rest_darboux()
 
         # Apply movement if any key was pressed
         if dx != 0.0 or dy != 0.0 or dz != 0.0:
@@ -1348,6 +1459,49 @@ class Example:
             device=self.model.device,
         )
 
+    def _update_tip_rest_darboux(self):
+        """Update rest Darboux vectors for the tip of the rod (last N particles)."""
+        # Calculate the starting bend constraint index for the tip
+        # Bend constraint i connects edges i and i+1, affecting particles i, i+1, i+2
+        # For last N particles, we need bend constraints starting from (num_particles - N - 1)
+        tip_start_idx = max(0, self.num_bend - self.tip_num_particles + 1)
+        num_tip_constraints = self.num_bend - tip_start_idx
+
+        if num_tip_constraints > 0:
+            wp.launch(
+                kernel=update_tip_rest_darboux_kernel,
+                dim=num_tip_constraints,
+                inputs=[
+                    self.tip_rest_bend_d1,
+                    tip_start_idx,
+                    self.num_bend,
+                ],
+                outputs=[self.rest_darboux],
+                device=self.model.device,
+            )
+
+    def _update_first_edge_rotation(self):
+        """Update the first edge quaternion to apply rotation around the rod's local z-axis (d3/tangent).
+
+        This rotates the material frame at the first edge, affecting the rod's twist at the base.
+        """
+        # Base rotation: 90 degrees around y-axis (orients rod in x-direction)
+        base_angle = math.pi / 2.0
+        q_base = wp.quat(0.0, math.sin(base_angle / 2.0), 0.0, math.cos(base_angle / 2.0))
+
+        # Additional rotation around local z-axis (twist)
+        twist_angle = self.first_particle_rotation
+        q_twist = wp.quat(0.0, 0.0, math.sin(twist_angle / 2.0), math.cos(twist_angle / 2.0))
+
+        # Combined quaternion: first apply base rotation, then twist in local frame
+        # q_combined = q_base * q_twist
+        q_combined = wp.mul(q_base, q_twist)
+
+        # Update the first edge quaternion
+        edge_q_np = self.edge_q.numpy()
+        edge_q_np[0] = [q_combined[0], q_combined[1], q_combined[2], q_combined[3]]
+        self.edge_q = wp.array(edge_q_np, dtype=wp.quat, device=self.model.device)
+
     def gui(self, ui):
         ui.text("Cosserat Rod with Internal Friction")
         ui.text(f"Particles: {self.num_particles}, Tiles: {self.num_tiles}")
@@ -1367,6 +1521,13 @@ class Example:
         # Update rest Darboux vectors when sliders change
         if changed_d1 or changed_d2 or changed_twist:
             self._update_rest_darboux()
+
+        ui.separator()
+        ui.text("Tip Rest Shape (Last 20 Particles)")
+        changed_tip, self.tip_rest_bend_d1 = ui.slider_float("Tip Rest Bend d1", self.tip_rest_bend_d1, -0.5, 0.5)
+        if changed_tip:
+            self._update_tip_rest_darboux()
+        ui.text("  Numpad +/-: Increase/decrease tip bend")
 
         ui.separator()
         ui.text("Internal Friction")
@@ -1396,7 +1557,10 @@ class Example:
         ui.text("  Numpad 4/6: Move left/right (X)")
         ui.text("  Numpad 8/2: Move forward/back (Y)")
         ui.text("  Numpad 9/3: Move up/down (Z)")
+        ui.text("  Numpad 7/1: Rotate CCW/CW (around Z)")
         _changed, self.particle_move_speed = ui.slider_float("Move Speed", self.particle_move_speed, 0.1, 5.0)
+        _changed, self.particle_rotation_speed = ui.slider_float("Rotation Speed", self.particle_rotation_speed, 0.1, 3.0)
+        ui.text(f"  Current rotation: {self.first_particle_rotation:.2f} rad")
 
         ui.separator()
         ui.text("Visualization")
