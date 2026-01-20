@@ -406,9 +406,12 @@ def parse_mjcf(
                 shapes.append(s)
 
             elif geom_type == "mesh" and parse_meshes:
-                # use force='mesh' to load the mesh as a trimesh object
-                # with baked in transforms, e.g. from COLLADA files
-                if geom_attrib["mesh"] not in mesh_assets:
+                mesh_attrib = geom_attrib.get("mesh")
+                if mesh_attrib is None:
+                    if verbose:
+                        print(f"Warning: mesh attribute not defined for {geom_name}, skipping")
+                    continue
+                elif mesh_attrib not in mesh_assets:
                     if verbose:
                         print(f"Warning: mesh asset {geom_attrib['mesh']} not found, skipping")
                     continue
@@ -436,6 +439,8 @@ def parse_mjcf(
                     if m_mesh.texture_image is not None and m_mesh.uvs is None:
                         if verbose:
                             print(f"Warning: mesh {stl_file} has a texture but no UVs; texture will be ignored.")
+                        m_mesh.texture_image = None
+                        m_mesh.texture_path = None
                     s = builder.add_shape_mesh(
                         xform=tf,
                         mesh=m_mesh,
