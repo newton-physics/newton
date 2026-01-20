@@ -1579,10 +1579,11 @@ class RendererGL:
 
         light_near = 1.0
         light_far = 1000.0
-        light_pos = self._sun_direction * extents
+        camera_pos = np.array(self.camera.pos, dtype=np.float32)
+        light_pos = camera_pos + self._sun_direction * extents
         light_proj = Mat4.orthogonal_projection(-extents, extents, -extents, extents, light_near, light_far)
 
-        light_view = Mat4.look_at(Vec3(*light_pos), Vec3(0, 0, 0), Vec3(*self.camera.get_up()))
+        light_view = Mat4.look_at(Vec3(*light_pos), Vec3(*camera_pos), Vec3(*self.camera.get_up()))
         self._light_space_matrix = np.array(light_proj @ light_view, dtype=np.float32)
 
         self._shadow_shader.update(self._light_space_matrix)

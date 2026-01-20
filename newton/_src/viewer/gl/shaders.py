@@ -236,8 +236,8 @@ float ShadowCalculation()
 
 float SpotlightAttenuation()
 {
-    // Calculate spotlight position as 20 units from origin in sun direction
-    vec3 spotlight_pos = sun_direction * 20.0;
+    // Calculate spotlight position as 20 units from the camera in sun direction
+    vec3 spotlight_pos = view_pos + sun_direction * 20.0;
 
     // Vector from fragment to spotlight
     vec3 fragToLight = normalize(spotlight_pos - FragPos);
