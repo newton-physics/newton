@@ -38,11 +38,16 @@
 ###########################################################################
 
 import math
+import os
 
+import numpy as np
 import warp as wp
+from pxr import Usd
 
 import newton
 import newton.examples
+import newton.usd
+
 
 # Warp tile configuration
 BLOCK_DIM = 128
@@ -869,19 +874,64 @@ class Example:
         self.dahl_eps_max = 0.01  # Method 3: maximum persistent strain [rad]
         self.dahl_tau = 0.005  # Method 3: memory decay length [rad]
 
-        self.gravity = wp.vec3(0.0, 0.0, -9.81)
+        #self.gravity = wp.vec3(0.0, 0.0, -9.81)
+        self.gravity = wp.vec3(0.0, 0.0, 0.0)
 
         # Build the model
         builder = newton.ModelBuilder()
         builder.add_ground_plane()
 
-        
+         # Load the aorta vessel mesh
+        usd_path = os.path.join(os.path.dirname(__file__), "models", "DynamicAorta.usdc")
+        usd_stage = Usd.Stage.Open(usd_path)
+        mesh_prim = usd_stage.GetPrimAtPath("/root/A4009/A4007/Xueguan_rudong/Dynamic_vessels/Mesh")
 
+        vessel_mesh = newton.usd.get_mesh(mesh_prim)
+
+
+
+
+       
+        # Add the vessel mesh as a static collision shape
+        # Using body=-1 for static geometry
+        vessel_cfg = newton.ModelBuilder.ShapeConfig(
+            ke=1.0e4,  # Contact stiffness
+            kd=1.0e2,  # Contact damping
+            mu=0.1,  # Low friction for blood vessels
+            has_shape_collision=False,  # Don't collide with other shapes
+            has_particle_collision=True,  # Collide with particles (catheter)
+        )
+        # Scale factor to convert from mesh units to simulation units
+        # The mesh seems to be in a different scale, adjust as needed
+        self.mesh_scale = 0.01  # Convert cm to m if needed
+
+        builder.add_shape_mesh(
+            body=-1,  # Static shape
+            mesh=vessel_mesh,
+            scale=(self.mesh_scale, self.mesh_scale, self.mesh_scale),
+            #xform=wp.transform(wp.vec3(0.0, 0.0, 1.0), wp.quat_from_axis_angle(wp.vec3(-1.0, 0.0, 0.0), math.pi / 2.0)),
+            xform=wp.transform(wp.vec3(0.0, 0.0, 1.0), wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), math.pi / 2.0)),
+            cfg=vessel_cfg,
+        )
+
+
+        # Target position for the last particle (inside the aorta)
+        target_last_pos = np.array([-3.283308, -0.50000024, 1.6833224])
+        
+        # Calculate current last particle position (without offset)
+        last_particle_idx = self.num_particles - 1
+        current_last_pos = np.array([last_particle_idx * particle_spacing, 0.0, start_height])
+        
+        # Calculate translation offset to move last particle to target
+        translation_offset = target_last_pos - current_last_pos
+        
         # Create particles: first one is fixed (kinematic)
         for i in range(self.num_particles):
             mass = 0.0 if i == 0 else particle_mass
+            pos = np.array([i * particle_spacing, 0.0, start_height]) + translation_offset
+            #pos = np.array([0.0, i * particle_spacing, start_height]) + translation_offset
             builder.add_particle(
-                pos=(i * particle_spacing, 0.0, start_height),
+                pos=tuple(pos),
                 vel=(0.0, 0.0, 0.0),
                 mass=mass,
                 radius=particle_radius,
@@ -910,6 +960,7 @@ class Example:
 
         # Edge quaternions (initialized to rotate z-axis to x-axis for horizontal rod)
         angle = math.pi / 2.0
+
         q_init = wp.quat(0.0, math.sin(angle / 2.0), 0.0, math.cos(angle / 2.0))
         edge_q_init = [q_init] * self.num_stretch
         self.edge_q = wp.array(edge_q_init, dtype=wp.quat, device=device)
@@ -1244,6 +1295,8 @@ class Example:
                 new_pos[2] = 0.1
 
             particle_q_np[0] = new_pos
+
+            print(new_pos)
 
             # Write back to device
             self.state_0.particle_q = wp.array(particle_q_np, dtype=wp.vec3, device=self.model.device)
