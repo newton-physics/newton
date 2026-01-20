@@ -16,8 +16,8 @@
 import warp as wp
 
 from . import ray
-from .types import RenderShapeType
 from .ray import MAXVAL
+from .types import RenderShapeType
 
 NO_HIT_SHAPE_ID = wp.uint32(0xFFFFFFFF)
 MAX_SHAPE_ID = wp.uint32(0xFFFFFFF0)
