@@ -13,10 +13,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import io
 import os
 import warnings
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
+from urllib.parse import unquote, urlparse
+from urllib.request import urlopen
 
 import numpy as np
 import warp as wp
@@ -372,11 +375,39 @@ def create_ellipsoid_mesh(
     return np.array(vertices, dtype=np.float32), np.array(indices, dtype=np.uint32)
 
 
+_texture_url_cache: dict[str, bytes] = {}
+
+
+def _is_http_url(path: str) -> bool:
+    parsed = urlparse(path)
+    return parsed.scheme in ("http", "https")
+
+
+def _resolve_file_url(path: str) -> str:
+    parsed = urlparse(path)
+    if parsed.scheme != "file":
+        return path
+    return unquote(parsed.path)
+
+
+def _download_texture_bytes(url: str) -> bytes | None:
+    if url in _texture_url_cache:
+        return _texture_url_cache[url]
+    try:
+        with urlopen(url, timeout=10) as response:
+            data = response.read()
+        _texture_url_cache[url] = data
+        return data
+    except Exception as exc:
+        warnings.warn(f"Failed to download texture image: {url} ({exc})", stacklevel=2)
+        return None
+
+
 def load_texture_image(texture_path: str | None) -> np.ndarray | None:
-    """Load a texture image from disk into a numpy array.
+    """Load a texture image from disk or URL into a numpy array.
 
     Args:
-        texture_path: Path to the texture image.
+        texture_path: Path or URL to the texture image.
 
     Returns:
         Texture image as uint8 numpy array (H, W, C), or None if load fails.
@@ -386,11 +417,20 @@ def load_texture_image(texture_path: str | None) -> np.ndarray | None:
     try:
         from PIL import Image  # noqa: PLC0415
 
+        if _is_http_url(texture_path):
+            data = _download_texture_bytes(texture_path)
+            if data is None:
+                return None
+            with Image.open(io.BytesIO(data)) as source_img:
+                img = source_img.convert("RGBA")
+                return np.array(img)
+
+        texture_path = _resolve_file_url(texture_path)
         with Image.open(texture_path) as source_img:
             img = source_img.convert("RGBA")
             return np.array(img)
-    except Exception:
-        warnings.warn(f"Failed to load texture image: {texture_path}", stacklevel=2)
+    except Exception as exc:
+        warnings.warn(f"Failed to load texture image: {texture_path} ({exc})", stacklevel=2)
         return None
 
 
