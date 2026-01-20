@@ -670,5 +670,19 @@ add_example_test(
     use_viewer=True,
 )
 
+
+class TestContactsExamples(unittest.TestCase):
+    pass
+
+
+add_example_test(
+    TestContactsExamples,
+    name="contacts.example_sdf",
+    devices=cuda_test_devices,
+    test_options={"num-frames": 120, "num-worlds": 1, "scene": "nut_bolt"},
+    use_viewer=True,
+)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

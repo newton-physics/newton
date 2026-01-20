@@ -1042,7 +1042,7 @@ def create_narrow_phase_process_mesh_plane_contacts_kernel(
                         c.position = contact_pos
                         c.normal = contact_normal
                         c.depth = distance
-                        c.mode = 0
+                        c.feature = vertex_idx
                         c.projection = empty_marker
 
                 # Apply contact reduction
