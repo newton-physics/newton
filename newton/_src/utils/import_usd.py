@@ -291,7 +291,7 @@ def parse_usd(
                 asset = file_input.Get()
                 return _resolve_asset_path(asset, prim)
             return None
-        if shader_id in ("UsdPreviewSurface", "UsdPreviewSurface2"):
+        if shader_id == "UsdPreviewSurface":
             for input_name in ("diffuseColor", "baseColor"):
                 shader_input = shader.GetInput(input_name)
                 if shader_input:
@@ -313,7 +313,7 @@ def parse_usd(
         if shader is None:
             return properties
         shader_id = shader.GetIdAttr().Get()
-        if shader_id not in ("UsdPreviewSurface", "UsdPreviewSurface2"):
+        if shader_id != "UsdPreviewSurface":
             return properties
 
         color_input = shader.GetInput("baseColor") or shader.GetInput("diffuseColor")
