@@ -380,7 +380,11 @@ def compute_joint_basis_lines(
         return
 
     joint_t = joint_type[joint_id]
-    if joint_t != int(newton.JointType.REVOLUTE) and joint_t != int(newton.JointType.D6):
+    if (
+        joint_t != int(newton.JointType.REVOLUTE)
+        and joint_t != int(newton.JointType.D6)
+        and joint_t != int(newton.JointType.CABLE)
+    ):
         # Set NaN for unsupported joints to hide them
         line_starts[tid] = wp.vec3(wp.nan, wp.nan, wp.nan)
         line_ends[tid] = wp.vec3(wp.nan, wp.nan, wp.nan)
@@ -424,83 +428,6 @@ def compute_joint_basis_lines(
     # Set line endpoints
     line_starts[tid] = world_pos
     line_ends[tid] = world_pos + axis_vec * scale_factor
-    line_colors[tid] = color
-
-
-@wp.kernel
-def compute_cable_joint_lines(
-    joint_type: wp.array(dtype=int),
-    joint_parent: wp.array(dtype=int),
-    joint_child: wp.array(dtype=int),
-    joint_X_p: wp.array(dtype=wp.transform),
-    joint_X_c: wp.array(dtype=wp.transform),
-    body_q: wp.array(dtype=wp.transform),
-    body_world: wp.array(dtype=int),
-    world_offsets: wp.array(dtype=wp.vec3),
-    line_scale: float,
-    # outputs
-    line_starts: wp.array(dtype=wp.vec3),
-    line_ends: wp.array(dtype=wp.vec3),
-    line_colors: wp.array(dtype=wp.vec3),
-):
-    """Create line segments for cable joint axes (d1, d2).
-
-    Each cable joint can emit 4 lines:
-      - d1, d2 at the parent joint frame
-      - d1, d2 at the child joint frame
-    """
-    tid = wp.tid()
-    joint_id = tid // 4
-    axis_id = tid % 4
-
-    if joint_id >= len(joint_type):
-        line_starts[tid] = wp.vec3(wp.nan, wp.nan, wp.nan)
-        line_ends[tid] = wp.vec3(wp.nan, wp.nan, wp.nan)
-        line_colors[tid] = wp.vec3(0.0, 0.0, 0.0)
-        return
-
-    if joint_type[joint_id] != int(newton.JointType.CABLE):
-        line_starts[tid] = wp.vec3(wp.nan, wp.nan, wp.nan)
-        line_ends[tid] = wp.vec3(wp.nan, wp.nan, wp.nan)
-        line_colors[tid] = wp.vec3(0.0, 0.0, 0.0)
-        return
-
-    parent_body = joint_parent[joint_id]
-    child_body = joint_child[joint_id]
-    if parent_body < 0 or child_body < 0:
-        line_starts[tid] = wp.vec3(wp.nan, wp.nan, wp.nan)
-        line_ends[tid] = wp.vec3(wp.nan, wp.nan, wp.nan)
-        line_colors[tid] = wp.vec3(0.0, 0.0, 0.0)
-        return
-
-    if axis_id < 2:
-        joint_tf = joint_X_p[joint_id]
-        body_tf = body_q[parent_body]
-        body_world_id = body_world[parent_body]
-    else:
-        joint_tf = joint_X_c[joint_id]
-        body_tf = body_q[child_body]
-        body_world_id = body_world[child_body]
-
-    X_wj = body_tf * joint_tf
-    world_pos = wp.transform_get_translation(X_wj)
-    world_rot = wp.transform_get_rotation(X_wj)
-
-    if world_offsets and body_world_id >= 0:
-        world_pos += world_offsets[body_world_id]
-
-    is_parent = axis_id < 2
-    intensity = 1.0 if is_parent else 0.25  # Diminish child direction lines
-
-    if axis_id == 0 or axis_id == 2:
-        axis_vec = wp.quat_rotate(world_rot, wp.vec3(1.0, 0.0, 0.0))
-        color = wp.vec3(1.0 * intensity, 0.0, 0.0)
-    else:
-        axis_vec = wp.quat_rotate(world_rot, wp.vec3(0.0, 1.0, 0.0))
-        color = wp.vec3(0.0, 1.0 * intensity, 0.0)
-
-    line_starts[tid] = world_pos
-    line_ends[tid] = world_pos + axis_vec * line_scale
     line_colors[tid] = color
 
 
