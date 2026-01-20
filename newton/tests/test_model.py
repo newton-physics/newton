@@ -197,6 +197,43 @@ class TestModel(unittest.TestCase):
         assert builder2.articulation_count == 2 * builder.articulation_count
         assert builder2.articulation_start == [0, 1, 2, 3]
 
+    def test_lock_inertia_on_shape_addition(self):
+        builder = ModelBuilder()
+        shape_cfg = ModelBuilder.ShapeConfig(density=1000.0)
+        base_com = wp.vec3(0.1, 0.2, 0.3)
+        base_inertia = wp.mat33(0.2, 0.0, 0.0, 0.0, 0.3, 0.0, 0.0, 0.0, 0.4)
+
+        locked_body = builder.add_link(mass=2.0, com=base_com, I_m=base_inertia, lock_inertia=True)
+        unlocked_body = builder.add_link(mass=2.0, com=base_com, I_m=base_inertia, lock_inertia=False)
+
+        locked_mass = builder.body_mass[locked_body]
+        locked_com = builder.body_com[locked_body]
+        locked_inertia = builder.body_inertia[locked_body]
+
+        unlocked_mass = builder.body_mass[unlocked_body]
+
+        builder.add_shape_box(body=locked_body, hx=0.5, hy=0.5, hz=0.5, cfg=shape_cfg)
+        builder.add_shape_box(body=unlocked_body, hx=0.5, hy=0.5, hz=0.5, cfg=shape_cfg)
+
+        self.assertEqual(builder.body_mass[locked_body], locked_mass)
+        assert_np_equal(np.array(builder.body_com[locked_body]), np.array(locked_com))
+        assert_np_equal(np.array(builder.body_inertia[locked_body]), np.array(locked_inertia))
+        self.assertNotEqual(builder.body_mass[unlocked_body], unlocked_mass)
+
+    def test_collapse_fixed_joints_with_locked_inertia(self):
+        builder = ModelBuilder()
+        b0 = builder.add_link(mass=1.0, lock_inertia=True)
+        j0 = builder.add_joint_free(b0)
+        b1 = builder.add_link(mass=2.0, lock_inertia=True)
+        j1 = builder.add_joint_fixed(parent=b0, child=b1)
+        builder.add_articulation([j0, j1])
+
+        builder.collapse_fixed_joints()
+
+        self.assertEqual(builder.body_count, 1)
+        self.assertAlmostEqual(builder.body_mass[0], 3.0)
+        self.assertTrue(builder.body_lock_inertia[0])
+
     def test_add_world_with_open_edges(self):
         builder = ModelBuilder()
 

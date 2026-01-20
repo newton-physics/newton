@@ -674,6 +674,7 @@ class ModelBuilder:
         self.body_q = []
         self.body_qd = []
         self.body_key = []
+        self.body_lock_inertia = []
         self.body_shapes = {-1: []}  # mapping from body to shapes
         self.body_world = []  # world index for each body
         self.body_color_groups: list[nparray] = []
@@ -1946,6 +1947,7 @@ class ModelBuilder:
             "body_inv_inertia",
             "body_inv_mass",
             "body_com",
+            "body_lock_inertia",
             "body_qd",
             "body_key",
             "joint_type",
@@ -2172,6 +2174,7 @@ class ModelBuilder:
         mass: float = 0.0,
         key: str | None = None,
         custom_attributes: dict[str, Any] | None = None,
+        lock_inertia: bool = False,
     ) -> int:
         """Adds a link (rigid body) to the model within an articulation.
 
@@ -2189,6 +2192,9 @@ class ModelBuilder:
             mass: Mass of the body.
             key: Key of the body (optional).
             custom_attributes: Dictionary of custom attribute names to values.
+            lock_inertia: If True, prevents subsequent shape additions from modifying this body's mass,
+                center of mass, or inertia. This does not affect merging behavior in
+                :meth:`collapse_fixed_joints`, which always accumulates mass and inertia across merged bodies.
 
         Returns:
             The index of the body in the model.
@@ -2220,6 +2226,7 @@ class ModelBuilder:
         self.body_inertia.append(inertia)
         self.body_mass.append(mass)
         self.body_com.append(com)
+        self.body_lock_inertia.append(lock_inertia)
 
         if mass > 0.0:
             self.body_inv_mass.append(1.0 / mass)
@@ -2256,6 +2263,7 @@ class ModelBuilder:
         mass: float = 0.0,
         key: str | None = None,
         custom_attributes: dict[str, Any] | None = None,
+        lock_inertia: bool = False,
     ) -> int:
         """Adds a stand-alone free-floating rigid body to the model.
 
@@ -2278,6 +2286,9 @@ class ModelBuilder:
             key: Key of the body. When provided, the auto-created free joint and articulation
                 are assigned keys ``{key}_free_joint`` and ``{key}_articulation`` respectively.
             custom_attributes: Dictionary of custom attribute names to values.
+            lock_inertia: If True, prevents subsequent shape additions from modifying this body's mass,
+                center of mass, or inertia. This does not affect merging behavior in
+                :meth:`collapse_fixed_joints`, which always accumulates mass and inertia across merged bodies.
 
         Returns:
             The index of the body in the model.
@@ -2295,6 +2306,7 @@ class ModelBuilder:
             mass=mass,
             key=key,
             custom_attributes=custom_attributes,
+            lock_inertia=lock_inertia,
         )
 
         # Add a free joint to make it float
@@ -3319,6 +3331,7 @@ class ModelBuilder:
                 "inv_mass": self.body_inv_mass[i],
                 "inv_inertia": self.body_inv_inertia[i],
                 "com": wp.vec3(*self.body_com[i]),
+                "lock_inertia": self.body_lock_inertia[i],
                 "key": key,
                 "original_id": i,
             }
@@ -3498,6 +3511,7 @@ class ModelBuilder:
         self.body_mass.clear()
         self.body_inertia.clear()
         self.body_com.clear()
+        self.body_lock_inertia.clear()
         self.body_inv_mass.clear()
         self.body_inv_inertia.clear()
         self.body_world.clear()  # Clear body groups
@@ -3517,6 +3531,7 @@ class ModelBuilder:
             self.body_mass.append(m)
             self.body_inertia.append(inertia)
             self.body_com.append(body["com"])
+            self.body_lock_inertia.append(body["lock_inertia"])
             if body["inv_mass"] is None:
                 # recompute inverse mass and inertia
                 if m > 0.0:
@@ -3834,7 +3849,7 @@ class ModelBuilder:
                     for parent_shape in self.body_shapes[parent_body]:
                         self.shape_collision_filter_pairs.append((parent_shape, shape))
 
-        if not is_static and cfg.density > 0.0:
+        if not is_static and cfg.density > 0.0 and body >= 0 and not self.body_lock_inertia[body]:
             (m, c, I) = compute_shape_inertia(type, scale, src, cfg.density, cfg.is_solid, cfg.thickness)
             com_body = wp.transform_point(xform, c)
             self._update_body_mass(body, m, I, com_body, xform.q)
