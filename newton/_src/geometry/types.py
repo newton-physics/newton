@@ -281,7 +281,7 @@ class Mesh:
 
     @texture_image.setter
     def texture_image(self, value: nparray | None):
-        self._texture_image = np.array(value) if value is not None else None
+        self._texture_image = np.asarray(value) if value is not None else None
         self._texture_hash = None
         self._cached_hash = None
 
@@ -291,7 +291,17 @@ class Mesh:
                 self._texture_hash = hash(("path", self._texture_path))
             elif self._texture_image is not None:
                 texture = np.asarray(self._texture_image)
-                self._texture_hash = hash((texture.shape, texture.dtype.str, texture.tobytes()))
+                flat_size = texture.size
+                if flat_size == 0:
+                    sample_bytes = b""
+                else:
+                    # Only sample a small portion of the texture to avoid hashing large textures in full.
+                    flat = texture.ravel()
+                    max_samples = 1024
+                    step = max(1, flat.size // max_samples)
+                    sample = flat[::step]
+                    sample_bytes = sample.tobytes()
+                self._texture_hash = hash((texture.shape, texture.dtype.str, sample_bytes))
             else:
                 self._texture_hash = 0
         return self._texture_hash
