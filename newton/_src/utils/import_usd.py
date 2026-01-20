@@ -269,6 +269,8 @@ def parse_usd(
             asset_path = str(asset)
         if not asset_path:
             return None
+        if asset_path.startswith(("http://", "https://")):
+            return asset_path
         if os.path.isabs(asset_path):
             return asset_path
         root_layer = prim.GetStage().GetRootLayer()
@@ -413,8 +415,47 @@ def parse_usd(
     def _resolve_material_properties_for_prim(prim: Usd.Prim) -> dict[str, Any]:
         if not prim or not prim.IsValid():
             return {"color": None, "metallic": None, "roughness": None, "texture_path": None}
-        binding_api = UsdShade.MaterialBindingAPI(prim)
-        material, _ = binding_api.ComputeBoundMaterial()
+
+        def _get_bound_material(target_prim: Usd.Prim):
+            if not target_prim or not target_prim.IsValid():
+                return None
+            if target_prim.HasAPI(UsdShade.MaterialBindingAPI):
+                binding_api = UsdShade.MaterialBindingAPI(target_prim)
+                bound_material, _ = binding_api.ComputeBoundMaterial()
+                return bound_material
+
+            # Some assets author material:binding relationships without applying MaterialBindingAPI.
+            rels = [rel for rel in target_prim.GetRelationships() if rel.GetName().startswith("material:binding")]
+            if not rels:
+                return None
+            rels.sort(
+                key=lambda rel: 0
+                if rel.GetName() == "material:binding"
+                else 1
+                if rel.GetName() == "material:binding:preview"
+                else 2
+            )
+            for rel in rels:
+                targets = rel.GetTargets()
+                if targets:
+                    mat_prim = target_prim.GetStage().GetPrimAtPath(targets[0])
+                    if mat_prim and mat_prim.IsValid():
+                        return UsdShade.Material(mat_prim)
+            return None
+
+        material = _get_bound_material(prim)
+        if not material:
+            proto_prim = None
+            try:
+                if prim.IsInstanceProxy():
+                    proto_prim = prim.GetPrimInPrototype()
+                elif prim.IsInstance():
+                    proto_prim = prim.GetPrototype()
+            except Exception:
+                proto_prim = None
+            if proto_prim and proto_prim.IsValid():
+                material = _get_bound_material(proto_prim)
+
         if not material:
             return {"color": None, "metallic": None, "roughness": None, "texture_path": None}
         surface_output = material.GetSurfaceOutput()
@@ -604,17 +645,19 @@ def parse_usd(
                 mesh = usd.get_mesh(prim, load_uvs=True)
                 material_props = _resolve_material_properties_for_prim(prim)
                 texture_path = material_props.get("texture_path")
-                if texture_path and os.path.exists(texture_path):
-                    mesh.texture_path = texture_path
-                    mesh.texture_image = load_texture_image(texture_path)
-                elif texture_path and verbose:
-                    print(f"Warning: texture file not found for {path_name}: {texture_path}")
+                if texture_path:
+                    is_url = texture_path.startswith(("http://", "https://"))
+                    if is_url or os.path.exists(texture_path):
+                        mesh.texture_path = texture_path
+                        mesh.texture_image = load_texture_image(texture_path)
+                    elif verbose:
+                        print(f"Warning: texture file not found for {path_name}: {texture_path}")
                 if mesh.texture_image is not None and mesh.uvs is None:
                     warnings.warn(
                         f"Warning: mesh {path_name} has a texture but no UVs; texture will be ignored.",
                         stacklevel=2,
                     )
-                if material_props.get("color") is not None:
+                if material_props.get("color") is not None and mesh.texture_image is None:
                     mesh._color = material_props["color"]
                 if material_props.get("roughness") is not None:
                     mesh.roughness = material_props["roughness"]
