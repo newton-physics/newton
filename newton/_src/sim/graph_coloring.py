@@ -231,7 +231,7 @@ def color_graph(
     else:
         indices = wp.clone(graph_edge_indices, device="cpu")
 
-    num_colors = wp.context.runtime.core.wp_graph_coloring(
+    num_colors = wp._src.context.runtime.core.wp_graph_coloring(
         num_nodes,
         indices.__ctype__(),
         algorithm.value,
@@ -239,7 +239,7 @@ def color_graph(
     )
 
     if balance_colors:
-        max_min_ratio = wp.context.runtime.core.wp_balance_coloring(
+        max_min_ratio = wp._src.context.runtime.core.wp_balance_coloring(
             num_nodes,
             indices.__ctype__(),
             num_colors,

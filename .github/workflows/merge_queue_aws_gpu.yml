@@ -11,6 +11,9 @@ jobs:
     with:
       ref: ${{ github.sha }}
     secrets: inherit
+    permissions:
+      id-token: write   # Required for AWS OIDC authentication in start-runner/stop-runner
+      contents: read    # Required for checkout in all jobs
 
   run-benchmarks:
     name: Run GPU Benchmarks
@@ -20,3 +23,6 @@ jobs:
       ref: ${{ github.sha }}
       base_ref: ${{ github.event.merge_group.base_sha }}
     secrets: inherit
+    permissions:
+      id-token: write   # Required for AWS OIDC authentication in start-runner/stop-runner
+      contents: read    # Required for checkout in all jobs

@@ -139,7 +139,7 @@ def test_coloring_trimesh(test, device):
         edge_indices_cpu = wp.array(model.edge_indices.numpy()[:, 2:], dtype=int, device="cpu")
 
         # coloring without bending
-        num_colors_greedy = wp.context.runtime.core.wp_graph_coloring(
+        num_colors_greedy = wp._src.context.runtime.core.wp_graph_coloring(
             model.particle_count,
             edge_indices_cpu.__ctype__(),
             ColoringAlgorithm.GREEDY.value,
@@ -152,7 +152,7 @@ def test_coloring_trimesh(test, device):
             device="cpu",
         )
 
-        num_colors_mcs = wp.context.runtime.core.wp_graph_coloring(
+        num_colors_mcs = wp._src.context.runtime.core.wp_graph_coloring(
             model.particle_count,
             edge_indices_cpu.__ctype__(),
             ColoringAlgorithm.MCS.value,
@@ -167,13 +167,13 @@ def test_coloring_trimesh(test, device):
 
         # coloring with bending
         edge_indices_cpu_with_bending = construct_trimesh_graph_edges(model.edge_indices, True)
-        num_colors_greedy = wp.context.runtime.core.wp_graph_coloring(
+        num_colors_greedy = wp._src.context.runtime.core.wp_graph_coloring(
             model.particle_count,
             edge_indices_cpu_with_bending.__ctype__(),
             ColoringAlgorithm.GREEDY.value,
             particle_colors.__ctype__(),
         )
-        wp.context.runtime.core.wp_balance_coloring(
+        wp._src.context.runtime.core.wp_balance_coloring(
             model.particle_count,
             edge_indices_cpu_with_bending.__ctype__(),
             num_colors_greedy,
@@ -187,13 +187,13 @@ def test_coloring_trimesh(test, device):
             device="cpu",
         )
 
-        num_colors_mcs = wp.context.runtime.core.wp_graph_coloring(
+        num_colors_mcs = wp._src.context.runtime.core.wp_graph_coloring(
             model.particle_count,
             edge_indices_cpu_with_bending.__ctype__(),
             ColoringAlgorithm.MCS.value,
             particle_colors.__ctype__(),
         )
-        max_min_ratio = wp.context.runtime.core.wp_balance_coloring(
+        max_min_ratio = wp._src.context.runtime.core.wp_balance_coloring(
             model.particle_count,
             edge_indices_cpu_with_bending.__ctype__(),
             num_colors_mcs,

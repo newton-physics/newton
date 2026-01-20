@@ -29,7 +29,6 @@ import os
 import numpy as np
 import warp as wp
 import warp.optim
-import warp.render
 
 import newton
 import newton.examples
@@ -38,6 +37,7 @@ import newton.examples
 # For now, implementing locally.
 from newton._src.geometry.kernels import box_sdf, capsule_sdf, cone_sdf, cylinder_sdf, mesh_sdf, plane_sdf, sphere_sdf
 from newton.tests.unittest_utils import most
+from newton.utils import bourke_color_map
 
 DEFAULT_DRONE_PATH = newton.examples.get_asset("crazyflie.usd")  # Path to input drone asset
 
@@ -783,7 +783,7 @@ class Example:
             max_cost = np.max(costs)
             for i in range(self.rollout_count):
                 # Flip colors, so red means best trajectory, blue worst.
-                color = wp.render.bourke_color_map(-max_cost, -min_cost, -costs[i])
+                color = bourke_color_map(-max_cost, -min_cost, -costs[i])
                 self.viewer.log_lines(
                     f"/rollout_{i}",
                     wp.array(positions[0:-1, i], dtype=wp.vec3),

@@ -15,6 +15,8 @@
 
 import warp as wp
 
+from newton._src.core.types import MAXVAL
+
 from . import ray_cast
 
 
@@ -54,7 +56,7 @@ def compute_lighting(
         return light_contribution
 
     L = wp.vec3f(0.0, 0.0, 0.0)
-    dist_to_light = wp.float32(wp.inf)
+    dist_to_light = wp.float32(MAXVAL)
     attenuation = wp.float32(1.0)
 
     if light_type == 1:  # directional light

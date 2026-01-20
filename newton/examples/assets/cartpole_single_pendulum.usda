@@ -1,0 +1,159 @@
+#usda 1.0
+# Origin of this file:
+# The file located at {ISAACLAB_NUCLEUS_DIR}/Robots/Classic/Cartpole/cartpole.usd was imported into Omniverse on 2026-01-13
+# and saved as a flattened USDA version.
+# Some assets have been renamed to be more informative.
+# Information unrelated to Newton has been removed (e.g., Omniverse- or PhysX-specific data).
+# Visuals/visual geometry have also been removed.
+(
+    defaultPrim = "cartPole"
+    metersPerUnit = 1
+    kilogramsPerUnit = 1
+    upAxis = "Z"
+)
+
+over "slider"
+{
+    def Cube "mesh_0" (
+        apiSchemas = ["PhysicsCollisionAPI"]
+    )
+    {
+        float3[] extent = [(-0.015, -4, -0.015), (0.015, 4, 0.015)]
+        uniform token purpose = "guide"
+        double size = 1
+        quatd xformOp:orient = (1, 0, 0, 0)
+        double3 xformOp:scale = (0.029999999329447746, 8, 0.029999999329447746)
+        double3 xformOp:translate = (0, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+    }
+}
+
+over "pole"
+{
+    def Cube "mesh_0" (
+        apiSchemas = ["PhysicsCollisionAPI"]
+    )
+    {
+        float3[] extent = [(-0.02, -0.03, -0.5), (0.02, 0.03, 0.5)]
+        uniform token purpose = "guide"
+        double size = 1
+        quatd xformOp:orient = (1, 0, 0, 0)
+        double3 xformOp:scale = (0.03999999910593033, 0.05999999865889549, 1)
+        double3 xformOp:translate = (0, 0, 0.4699999988079071)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+    }
+}
+
+over "cart"
+{
+    def Cube "mesh_0" (
+        apiSchemas = ["PhysicsCollisionAPI"]
+    )
+    {
+        float3[] extent = [(-0.1, -0.125, -0.1), (0.1, 0.125, 0.1)]
+        uniform token purpose = "guide"
+        double size = 1
+        quatd xformOp:orient = (1, 0, 0, 0)
+        double3 xformOp:scale = (0.20000000298023224, 0.25, 0.20000000298023224)
+        double3 xformOp:translate = (0, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+    }
+}
+
+def Xform "cartpole" (
+    apiSchemas = ["PhysicsArticulationRootAPI", "PhysxArticulationAPI"]
+)
+{
+    bool physxArticulation:enabledSelfCollisions = 0
+    quatd xformOp:orient = (1, 0, 0, 0)
+    double3 xformOp:scale = (1, 1, 1)
+    double3 xformOp:translate = (0, 0, 0)
+    uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+
+    def Xform "slider" (
+        apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI"]
+    )
+    {
+        quatd xformOp:orient = (1, 0, 0, 0)
+        double3 xformOp:scale = (1, 1, 1)
+        double3 xformOp:translate = (0, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+
+        def "collisions" (
+            instanceable = true
+            add references = </slider>
+        )
+        {
+        }
+
+        def PhysicsPrismaticJoint "slider_to_cart"
+        {
+            uniform token physics:axis = "X"
+            rel physics:body0 = </cartpole/slider>
+            rel physics:body1 = </cartpole/cart>
+            float physics:breakForce = 3.4028235e38
+            float physics:breakTorque = 3.4028235e38
+            point3f physics:localPos0 = (0, 0, 0)
+            point3f physics:localPos1 = (0, 0, 0)
+            quatf physics:localRot0 = (0.70710677, 0, 0, 0.70710677)
+            quatf physics:localRot1 = (0.70710677, 0, 0, 0.70710677)
+            float physics:lowerLimit = -4
+            float physics:upperLimit = 4
+        }
+    }
+
+    def PhysicsFixedJoint "root_joint"
+    {
+        rel physics:body1 = </cartpole/slider>
+    }
+
+    def Xform "cart" (
+        apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI"]
+    )
+    {
+        float physics:mass = 1
+        quatd xformOp:orient = (1, 0, 0, 0)
+        double3 xformOp:scale = (1, 1, 1)
+        double3 xformOp:translate = (0, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+
+        def "collisions" (
+            instanceable = true
+            add references = </cart>
+        )
+        {
+        }
+
+        def PhysicsRevoluteJoint "cart_to_pole"
+        {
+            uniform token physics:axis = "X"
+            rel physics:body0 = </cartpole/cart>
+            rel physics:body1 = </cartpole/pole>
+            float physics:breakForce = 3.4028235e38
+            float physics:breakTorque = 3.4028235e38
+            point3f physics:localPos0 = (0.12, 0, 0)
+            point3f physics:localPos1 = (0, 0, 0)
+            quatf physics:localRot0 = (1, 0, 0, 0)
+            quatf physics:localRot1 = (1, 0, 0, 0)
+        }
+    }
+
+    def Xform "pole" (
+        apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI"]
+    )
+    {
+        point3f physics:centerOfMass = (0, 0, 0.47)
+        float physics:mass = 1
+        quatd xformOp:orient = (1, 0, 0, 0)
+        double3 xformOp:scale = (1, 1, 1)
+        double3 xformOp:translate = (0.11999999731779099, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+
+        def "collisions" (
+            instanceable = true
+            add references = </pole>
+        )
+        {
+        }
+    }
+}

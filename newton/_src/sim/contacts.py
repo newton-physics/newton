@@ -17,7 +17,7 @@
 from __future__ import annotations
 
 import warp as wp
-from warp.context import Devicelike
+from warp import DeviceLike as Devicelike
 
 
 class Contacts:
@@ -39,11 +39,32 @@ class Contacts:
         requires_grad: bool = False,
         device: Devicelike = None,
         per_contact_shape_properties: bool = False,
+        clear_buffers: bool = False,
     ):
+        """
+        Initialize Contacts storage.
+
+        Args:
+            rigid_contact_max: Maximum number of rigid contacts
+            soft_contact_max: Maximum number of soft contacts
+            requires_grad: Whether contact arrays require gradients for differentiable simulation
+            device: Device to allocate buffers on
+            per_contact_shape_properties: Enable per-contact stiffness/damping/friction arrays
+            clear_buffers: If True, clear() will zero all contact buffers (slower but conservative).
+                If False (default), clear() only resets counts, relying on collision detection
+                to overwrite active contacts. This is much faster (86-90% fewer kernel launches)
+                and safe since solvers only read up to contact_count.
+        """
         self.per_contact_shape_properties = per_contact_shape_properties
+        self.clear_buffers = clear_buffers
         with wp.ScopedDevice(device):
+            # Consolidated counter array to minimize kernel launches for zeroing
+            # Layout: [rigid_contact_count, soft_contact_count]
+            self._counter_array = wp.zeros(2, dtype=wp.int32)
+            # Create sliced views for individual counters (no additional allocation)
+            self.rigid_contact_count = self._counter_array[0:1]
+
             # rigid contacts
-            self.rigid_contact_count = wp.zeros(1, dtype=wp.int32)
             self.rigid_contact_point_id = wp.zeros(rigid_contact_max, dtype=wp.int32)
             self.rigid_contact_shape0 = wp.full(rigid_contact_max, -1, dtype=wp.int32)
             self.rigid_contact_shape1 = wp.full(rigid_contact_max, -1, dtype=wp.int32)
@@ -71,7 +92,7 @@ class Contacts:
                 self.rigid_contact_friction = None
 
             # soft contacts
-            self.soft_contact_count = wp.zeros(1, dtype=wp.int32)
+            self.soft_contact_count = self._counter_array[1:2]
             self.soft_contact_particle = wp.full(soft_contact_max, -1, dtype=int)
             self.soft_contact_shape = wp.full(soft_contact_max, -1, dtype=int)
             self.soft_contact_body_pos = wp.zeros(soft_contact_max, dtype=wp.vec3, requires_grad=requires_grad)
@@ -86,25 +107,37 @@ class Contacts:
 
     def clear(self):
         """
-        Clear all contact data, resetting counts and filling indices with -1.
+        Clear contact data, resetting counts and optionally clearing all buffers.
+
+        By default (clear_buffers=False), only resets contact counts. This is highly optimized,
+        requiring just 1 kernel launch. Collision detection overwrites all data up to the new
+        contact_count, and solvers only read up to count, so clearing stale data is unnecessary.
+
+        If clear_buffers=True (conservative mode), performs full buffer clearing with sentinel
+        values and zeros. This requires 7-10 kernel launches but may be useful for debugging.
         """
-        self.rigid_contact_count.zero_()
-        self.rigid_contact_shape0.fill_(-1)
-        self.rigid_contact_shape1.fill_(-1)
-        self.rigid_contact_tids.fill_(-1)
-        self.rigid_contact_force.zero_()
+        # Clear all counters with a single kernel launch (consolidated counter array)
+        self._counter_array.zero_()
 
-        # per-contact shape properties
-        # zero-values indicate that no per-contact shape properties are set for this contact
-        if self.per_contact_shape_properties:
-            self.rigid_contact_stiffness.zero_()
-            self.rigid_contact_damping.zero_()
-            self.rigid_contact_friction.zero_()
+        if self.clear_buffers:
+            # Conservative path: clear all buffers (7-10 kernel launches)
+            # This is slower but may be useful for debugging or special cases
+            self.rigid_contact_shape0.fill_(-1)
+            self.rigid_contact_shape1.fill_(-1)
+            self.rigid_contact_tids.fill_(-1)
+            self.rigid_contact_force.zero_()
 
-        self.soft_contact_count.zero_()
-        self.soft_contact_particle.fill_(-1)
-        self.soft_contact_shape.fill_(-1)
-        self.soft_contact_tids.fill_(-1)
+            if self.per_contact_shape_properties:
+                self.rigid_contact_stiffness.zero_()
+                self.rigid_contact_damping.zero_()
+                self.rigid_contact_friction.zero_()
+
+            self.soft_contact_particle.fill_(-1)
+            self.soft_contact_shape.fill_(-1)
+            self.soft_contact_tids.fill_(-1)
+        # else: Optimized path (default) - only counter clear needed
+        #   Collision detection overwrites all active contacts [0, contact_count)
+        #   Solvers only read [0, contact_count), so stale data is never accessed
 
     @property
     def device(self):

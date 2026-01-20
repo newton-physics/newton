@@ -26,11 +26,13 @@ from .spatial import (
     velocity_at_point,
 )
 from .types import (
+    MAXVAL,
     Axis,
     AxisType,
 )
 
 __all__ = [
+    "MAXVAL",
     "Axis",
     "AxisType",
     "quat_between_axes",

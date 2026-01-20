@@ -393,6 +393,7 @@ class SolverFeatherstone(SolverBase):
                         state_in.body_q,
                         state_aug.body_q_com,
                         model.joint_X_p,
+                        model.body_world,
                         model.gravity,
                     ],
                     outputs=[

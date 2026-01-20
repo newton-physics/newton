@@ -555,6 +555,10 @@ def create_reduce_buffered_contacts_kernel(beta0: float, beta1: float):
         # Get total number of contacts written
         num_contacts = reducer_data.contact_count[0]
 
+        # Early exit if no contacts (fast path for empty work)
+        if num_contacts == 0:
+            return
+
         # Cap at capacity
         num_contacts = wp.min(num_contacts, reducer_data.capacity)
 
@@ -681,6 +685,10 @@ def create_export_reduced_contacts_kernel(writer_func: Any, values_per_key: int 
         ht_capacity = ht_keys.shape[0]
         num_active = ht_active_slots[ht_capacity]
 
+        # Early exit if no active entries (fast path for empty work)
+        if num_active == 0:
+            return
+
         # Grid stride loop over active entries
         for i in range(tid, num_active, total_num_threads):
             # Get the hashtable entry index
@@ -701,11 +709,16 @@ def create_export_reduced_contacts_kernel(writer_func: Any, values_per_key: int 
                 # Extract contact ID from low 32 bits
                 contact_id = unpack_contact_id(value)
 
-                # Skip if already exported
-                already_exported = False
-                for j in range(values_per_key):
-                    if j < num_exported and exported_ids[j] == contact_id:
+                # Skip if already exported - use while loop with early exit
+                # This is O(num_exported) instead of O(values_per_key) per slot
+                # Note: Use explicit type declarations for variables mutated in while loops (Warp requirement)
+                already_exported = bool(False)
+                j = int(0)
+                while j < num_exported:
+                    if exported_ids[j] == contact_id:
                         already_exported = True
+                        break  # Early exit when duplicate found
+                    j = j + 1
                 if already_exported:
                     continue
 

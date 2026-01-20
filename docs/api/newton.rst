@@ -60,7 +60,7 @@ newton
 
    * - Name
      - Value
-   * - JOINT_LIMIT_UNLIMITED
-     - 10000000000.0
+   * - MAXVAL
+     - 1e10
    * - __version__
      - 0.2.0

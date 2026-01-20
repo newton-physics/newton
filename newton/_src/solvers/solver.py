@@ -26,6 +26,7 @@ def integrate_particles(
     f: wp.array(dtype=wp.vec3),
     w: wp.array(dtype=float),
     particle_flags: wp.array(dtype=wp.int32),
+    particle_world: wp.array(dtype=wp.int32),
     gravity: wp.array(dtype=wp.vec3),
     dt: float,
     v_max: float,
@@ -43,9 +44,11 @@ def integrate_particles(
     f0 = f[tid]
 
     inv_mass = w[tid]
+    world_idx = particle_world[tid]
+    world_g = gravity[wp.max(world_idx, 0)]
 
     # simple semi-implicit Euler. v1 = v0 + a dt, x1 = x0 + v1 dt
-    v1 = v0 + (f0 * inv_mass + gravity[0] * wp.step(-inv_mass)) * dt
+    v1 = v0 + (f0 * inv_mass + world_g * wp.step(-inv_mass)) * dt
     # enforce velocity limit to prevent instability
     v1_mag = wp.length(v1)
     if v1_mag > v_max:
@@ -65,7 +68,7 @@ def integrate_rigid_body(
     inertia: wp.mat33,
     inv_mass: float,
     inv_inertia: wp.mat33,
-    gravity: wp.array(dtype=wp.vec3),
+    gravity: wp.vec3,
     angular_damping: float,
     dt: float,
 ):
@@ -84,7 +87,7 @@ def integrate_rigid_body(
     x_com = x0 + wp.quat_rotate(r0, com)
 
     # linear part
-    v1 = v0 + (f0 * inv_mass + gravity[0] * wp.nonzero(inv_mass)) * dt
+    v1 = v0 + (f0 * inv_mass + gravity * wp.nonzero(inv_mass)) * dt
     x1 = x_com + v1 * dt
 
     # angular part (compute in body frame)
@@ -114,6 +117,7 @@ def integrate_bodies(
     I: wp.array(dtype=wp.mat33),
     inv_m: wp.array(dtype=float),
     inv_I: wp.array(dtype=wp.mat33),
+    body_world: wp.array(dtype=wp.int32),
     gravity: wp.array(dtype=wp.vec3),
     angular_damping: float,
     dt: float,
@@ -135,6 +139,8 @@ def integrate_bodies(
     inv_inertia = inv_I[tid]  # inverse of 3x3 inertia matrix
 
     com = body_com[tid]
+    world_idx = body_world[tid]
+    world_g = gravity[wp.max(world_idx, 0)]
 
     q_new, qd_new = integrate_rigid_body(
         q,
@@ -144,7 +150,7 @@ def integrate_bodies(
         inertia,
         inv_mass,
         inv_inertia,
-        gravity,
+        world_g,
         angular_damping,
         dt,
     )
@@ -166,7 +172,7 @@ class SolverBase:
         self.model = model
 
     @property
-    def device(self) -> wp.context.Device:
+    def device(self) -> wp.Device:
         """
         Get the device used by the solver.
 
@@ -207,6 +213,7 @@ class SolverBase:
                     model.body_inertia,
                     model.body_inv_mass,
                     model.body_inv_inertia,
+                    model.body_world,
                     model.gravity,
                     angular_damping,
                     dt,
@@ -241,6 +248,7 @@ class SolverBase:
                     state_in.particle_f,
                     model.particle_inv_mass,
                     model.particle_flags,
+                    model.particle_world,
                     model.gravity,
                     dt,
                     model.particle_max_velocity,

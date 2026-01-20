@@ -31,9 +31,23 @@ from __future__ import annotations
 
 import warp as wp
 
+# Note on uint64 constants: HASHTABLE_EMPTY_KEY and HASH_MIX_MULTIPLIER are
+# defined with wp.uint64() at module scope rather than cast inside kernels.
+# When a literal is cast inside a @wp.kernel or @wp.func (e.g., wp.uint64(x)),
+# Warp first creates an intermediate variable with an incorrect type (signed),
+# then casts to the target type. Defining the typed value at global scope and
+# referencing it directly in kernels avoids this intermediate.
+# On CPU builds, users may still see: "warning: integer literal is too large to
+# be represented in a signed integer type, interpreting as unsigned". This is
+# benign—no truncation or data loss occurs.
+# See also: https://github.com/NVIDIA/warp/issues/485
+
 # Sentinel value for empty slots
 _HASHTABLE_EMPTY_KEY_VALUE = 0xFFFFFFFFFFFFFFFF
 HASHTABLE_EMPTY_KEY = wp.constant(wp.uint64(_HASHTABLE_EMPTY_KEY_VALUE))
+
+# Multiplier constant from MurmurHash3's 64-bit finalizer (fmix64)
+HASH_MIX_MULTIPLIER = wp.constant(wp.uint64(0xFF51AFD7ED558CCD))
 
 
 def _next_power_of_two(n: int) -> int:
@@ -55,7 +69,7 @@ def _hashtable_hash(key: wp.uint64, capacity_mask: int) -> int:
     """Compute hash index using a simplified mixer."""
     h = key
     h = h ^ (h >> wp.uint64(33))
-    h = h * wp.uint64(0xFF51AFD7ED558CCD)
+    h = h * HASH_MIX_MULTIPLIER
     h = h ^ (h >> wp.uint64(33))
     return int(h) & capacity_mask
 

@@ -379,7 +379,6 @@ def test_shape_collisions_gjk_mpr_multicontact(test, device, verbose=False):
     # Create CollisionPipelineUnified with EXPLICIT broad phase mode
     collision_pipeline = newton.CollisionPipelineUnified.from_model(
         model,
-        rigid_contact_max_per_pair=10,
         broad_phase_mode=newton.BroadPhaseMode.EXPLICIT,
     )
 
@@ -489,9 +488,10 @@ def test_mesh_box_on_ground(test, device):
     model = builder.finalize(device=device)
 
     # Create collision pipeline (unified)
+    # Mesh boxes can generate many contacts, so we need a larger buffer
     collision_pipeline = newton.CollisionPipelineUnified.from_model(
         model,
-        rigid_contact_max_per_pair=20,
+        rigid_contact_max=500,
         broad_phase_mode=newton.BroadPhaseMode.EXPLICIT,
     )
 
@@ -584,7 +584,6 @@ def test_mujoco_warp_newton_contacts(test, device):
     # Create unified collision pipeline (critical for this test)
     collision_pipeline = newton.CollisionPipelineUnified.from_model(
         model,
-        rigid_contact_max_per_pair=10,
         broad_phase_mode=newton.BroadPhaseMode.EXPLICIT,
     )
 

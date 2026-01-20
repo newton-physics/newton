@@ -51,6 +51,8 @@ jobs:
   require-approval:
     name: Require Manual Approval for External PRs
     runs-on: ubuntu-latest
+    permissions:
+      deployments: write  # Required for creating deployment record when using environment
     needs: check-author-membership
     if: needs.check-author-membership.outputs.membership_status != 'CONFIRMED_MEMBER'
     environment:
@@ -70,3 +72,6 @@ jobs:
     with:
       ref: ${{ github.event.pull_request.head.sha }}
     secrets: inherit
+    permissions:
+      id-token: write   # Required for AWS OIDC authentication in start-runner/stop-runner
+      contents: read    # Required for checkout in all jobs

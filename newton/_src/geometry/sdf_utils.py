@@ -18,6 +18,7 @@ from collections.abc import Sequence
 import numpy as np
 import warp as wp
 
+from ..core.types import MAXVAL
 from ..geometry.kernels import box_sdf, capsule_sdf, cone_sdf, cylinder_sdf, ellipsoid_sdf, sphere_sdf
 from .sdf_mc import get_mc_tables, int_to_vec3f, mc_calc_face, vec8f
 from .types import GeoType, Mesh
@@ -52,9 +53,9 @@ class SDFData:
 
 
 # Default background value for unallocated voxels in sparse SDF.
-# Using inf ensures any trilinear interpolation with unallocated voxels produces inf or NaN,
-# allowing detection of unallocated voxels.
-SDF_BACKGROUND_VALUE = wp.inf
+# Using a large finite value ensures any trilinear interpolation with unallocated voxels
+# produces a large value, allowing detection of unallocated voxels.
+SDF_BACKGROUND_VALUE = MAXVAL
 
 
 def create_empty_sdf_data() -> SDFData:

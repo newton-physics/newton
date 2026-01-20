@@ -21,6 +21,7 @@ from dataclasses import dataclass
 import numpy as np
 import warp as wp
 
+from ..core.types import MAXVAL
 from ..geometry import ShapeFlags
 from ..sim import Model, State
 from .warp_raytrace import ClearData, RenderContext, RenderLightType, RenderShapeType
@@ -52,8 +53,8 @@ def convert_newton_transform(
 def compute_mesh_bounds(in_meshes: wp.array(dtype=wp.uint64), out_bounds: wp.array2d(dtype=wp.vec3f)):
     tid = wp.tid()
 
-    min_point = wp.vec3(wp.inf)
-    max_point = wp.vec3(-wp.inf)
+    min_point = wp.vec3(MAXVAL)
+    max_point = wp.vec3(-MAXVAL)
 
     if in_meshes[tid] != 0:
         mesh = wp.mesh_get(in_meshes[tid])

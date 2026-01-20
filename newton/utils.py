@@ -30,6 +30,8 @@ __all__ = [
 # mesh utils
 # ==================================================================================
 from ._src.utils.mesh import (
+    MeshAdjacency,
+    MeshEdge,
     create_box_mesh,
     create_capsule_mesh,
     create_cone_mesh,
@@ -37,9 +39,12 @@ from ._src.utils.mesh import (
     create_ellipsoid_mesh,
     create_plane_mesh,
     create_sphere_mesh,
+    solidify_mesh,
 )
 
 __all__ += [
+    "MeshAdjacency",
+    "MeshEdge",
     "create_box_mesh",
     "create_capsule_mesh",
     "create_cone_mesh",
@@ -47,6 +52,20 @@ __all__ += [
     "create_ellipsoid_mesh",
     "create_plane_mesh",
     "create_sphere_mesh",
+    "solidify_mesh",
+]
+
+# ==================================================================================
+# render utils
+# ==================================================================================
+from ._src.utils.render import (  # noqa: E402
+    bourke_color_map,
+    copy_rgb_frame_uint8,
+)
+
+__all__ += [
+    "bourke_color_map",
+    "copy_rgb_frame_uint8",
 ]
 
 # ==================================================================================

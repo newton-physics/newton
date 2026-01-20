@@ -508,7 +508,7 @@ class ArticulationView:
         attrib = getattr(source, name)
 
         # handle structures
-        if isinstance(attrib, wp.codegen.StructInstance):
+        if wp.types.is_struct(attrib):
             if len(name_components) < 2:
                 raise AttributeError(f"Attribute '{name}' is a structure, use '{name}.attrib' to get an attribute")
             attrib = getattr(attrib, name_components[1])

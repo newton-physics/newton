@@ -25,7 +25,6 @@
 
 import torch
 import warp as wp
-from warp.torch import device_to_torch
 
 wp.config.enable_backward = False
 
@@ -79,7 +78,7 @@ class Example:
     def __init__(self, viewer, args=None):
         self.viewer = viewer
         self.device = wp.get_device()
-        self.torch_device = device_to_torch(self.device)
+        self.torch_device = wp.device_to_torch(self.device)
         self.is_test = args is not None and args.test
 
         builder = newton.ModelBuilder()

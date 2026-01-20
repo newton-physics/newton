@@ -129,11 +129,12 @@ def build_stacked_cubes_scene(
 
     sdf_hydroelastic_config = SDFHydroelasticConfig(output_contact_surface=True, reduce_contacts=reduce_contacts)
 
-    rigid_contact_max_per_pair = 5000 if not reduce_contacts else 100
+    # Hydroelastic without contact reduction can generate many contacts
+    rigid_contact_max = 6000 if not reduce_contacts else 100
 
     collision_pipeline = newton.CollisionPipelineUnified.from_model(
         model,
-        rigid_contact_max_per_pair=rigid_contact_max_per_pair,
+        rigid_contact_max=rigid_contact_max,
         broad_phase_mode=newton.BroadPhaseMode.EXPLICIT,
         sdf_hydroelastic_config=sdf_hydroelastic_config,
     )
@@ -329,7 +330,6 @@ def test_mujoco_hydroelastic_penetration_depth(test, device):
     sdf_config = SDFHydroelasticConfig(output_contact_surface=True)
     collision_pipeline = newton.CollisionPipelineUnified.from_model(
         model,
-        rigid_contact_max_per_pair=100,
         broad_phase_mode=newton.BroadPhaseMode.EXPLICIT,
         sdf_hydroelastic_config=sdf_config,
     )

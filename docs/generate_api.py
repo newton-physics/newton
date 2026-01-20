@@ -104,7 +104,7 @@ def write_module_page(mod_name: str) -> None:
         # ------------------------------------------------------------------
         # Class-like objects
         # ------------------------------------------------------------------
-        if inspect.isclass(attr) or isinstance(attr, wp.codegen.Struct):
+        if inspect.isclass(attr) or wp.types.type_is_struct(attr):
             classes.append(name)
             continue
 

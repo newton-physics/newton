@@ -28,6 +28,8 @@ jobs:
     name: Check for new warp-lang nightly build
     if: github.repository == 'newton-physics/newton'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     outputs:
       warp-updated: ${{ steps.check-update.outputs.warp-updated }}
     steps:
@@ -108,6 +110,8 @@ jobs:
     name: Run Tests with Warp Nightly Build
     needs: start-runner
     runs-on: ${{ needs.start-runner.outputs.label }}
+    permissions:
+      contents: read
     env:
       HOME: /actions-runner
     steps:

@@ -1730,6 +1730,62 @@ class TestImportMjcf(unittest.TestCase):
         slide_idx = model.joint_key.index("slide")
         self.assertAlmostEqual(springref[qd_start[slide_idx]], 0.25, places=4)
 
+    def test_static_geom_xform_not_applied_twice(self):
+        """Test that xform parameter is applied exactly once to static geoms.
+
+        This is a regression test for a bug where incoming_xform was applied twice
+        to static geoms (link == -1) in parse_shapes.
+
+        A static geom at pos=(1,0,0) with xform translation of (0,2,0) should
+        result in final position (1,2,0), NOT (1,4,0) from double application.
+        """
+        mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test_static_xform">
+    <worldbody>
+        <geom name="static_geom" pos="1 0 0" size="0.1" type="sphere"/>
+    </worldbody>
+</mujoco>"""
+
+        builder = newton.ModelBuilder()
+        # Apply a translation via xform parameter
+        import_xform = wp.transform(wp.vec3(0.0, 2.0, 0.0), wp.quat_identity())
+        builder.add_mjcf(mjcf_content, xform=import_xform)
+
+        # Find the static geom
+        geom_idx = builder.shape_key.index("static_geom")
+        geom_xform = builder.shape_transform[geom_idx]
+
+        # Position should be geom_pos + xform_pos = (1,0,0) + (0,2,0) = (1,2,0)
+        # Bug would give (1,0,0) + (0,2,0) + (0,2,0) = (1,4,0)
+        self.assertAlmostEqual(geom_xform[0], 1.0, places=5)
+        self.assertAlmostEqual(geom_xform[1], 2.0, places=5)  # Would be 4.0 with bug
+        self.assertAlmostEqual(geom_xform[2], 0.0, places=5)
+
+    def test_static_fromto_capsule_xform(self):
+        """Test that xform parameter is applied to capsule/cylinder fromto coordinates.
+
+        A static capsule with fromto="0 0 0  1 0 0" (centered at (0.5,0,0)) with
+        xform translation of (0,5,0) should result in position (0.5, 5.0, 0).
+        """
+        mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test_fromto_xform">
+    <worldbody>
+        <geom name="fromto_cap" type="capsule" fromto="0 0 0  1 0 0" size="0.1"/>
+    </worldbody>
+</mujoco>"""
+
+        builder = newton.ModelBuilder()
+        import_xform = wp.transform(wp.vec3(0.0, 5.0, 0.0), wp.quat_identity())
+        builder.add_mjcf(mjcf_content, xform=import_xform)
+
+        geom_idx = builder.shape_key.index("fromto_cap")
+        geom_xform = builder.shape_transform[geom_idx]
+
+        # Position should be midpoint(0,0,0 to 1,0,0) + xform = (0.5,0,0) + (0,5,0) = (0.5,5,0)
+        self.assertAlmostEqual(geom_xform[0], 0.5, places=5)
+        self.assertAlmostEqual(geom_xform[1], 5.0, places=5)
+        self.assertAlmostEqual(geom_xform[2], 0.0, places=5)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

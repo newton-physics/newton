@@ -60,3 +60,37 @@ class ContactData:
     contact_stiffness: float
     contact_damping: float
     contact_friction_scale: float
+
+
+@wp.func
+def contact_passes_margin_check(
+    contact_data: ContactData,
+) -> bool:
+    """
+    Check if a contact passes the margin check and should be written.
+
+    Args:
+        contact_data: ContactData struct containing contact information
+
+    Returns:
+        True if the contact distance is within the contact margin, False otherwise
+    """
+    total_separation_needed = (
+        contact_data.radius_eff_a + contact_data.radius_eff_b + contact_data.thickness_a + contact_data.thickness_b
+    )
+
+    # Distance calculation matching box_plane_collision
+    contact_normal_a_to_b = wp.normalize(contact_data.contact_normal_a_to_b)
+
+    a_contact_world = contact_data.contact_point_center - contact_normal_a_to_b * (
+        0.5 * contact_data.contact_distance + contact_data.radius_eff_a
+    )
+    b_contact_world = contact_data.contact_point_center + contact_normal_a_to_b * (
+        0.5 * contact_data.contact_distance + contact_data.radius_eff_b
+    )
+
+    diff = b_contact_world - a_contact_world
+    distance = wp.dot(diff, contact_normal_a_to_b)
+    d = distance - total_separation_needed
+
+    return d <= contact_data.margin
