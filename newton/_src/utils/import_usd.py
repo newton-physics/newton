@@ -1091,7 +1091,20 @@ def parse_usd(
             if any(re.match(p, articulation_path) for p in ignore_paths):
                 continue
             articulation_prim = stage.GetPrimAtPath(path)
-            articulation_xform = incoming_world_xform * usd.get_transform(articulation_prim, local=False)
+            articulation_root_xform = usd.get_transform(articulation_prim, local=False)
+            articulation_incoming_xform = incoming_world_xform
+            for body_path in desc.articulatedBodies:
+                body_key = str(body_path)
+                if body_key in ignored_body_paths or body_key not in body_specs:
+                    continue
+                body_prim = stage.GetPrimAtPath(body_path)
+                # If the body prim is not nested under the articulation root, treat the rigid-body
+                # descriptor as local to the articulation root and compose with that transform.
+                body_prim_path = body_prim.GetPath()
+                articulation_prim_path = articulation_prim.GetPath()
+                if not body_prim_path.HasPrefix(articulation_prim_path):
+                    articulation_incoming_xform = incoming_world_xform * articulation_root_xform
+                break
             # Collect engine-specific attributes for the articulation root on first encounter
             if collect_schema_attrs:
                 R.collect_prim_attrs(articulation_prim)
@@ -1156,7 +1169,7 @@ def parse_usd(
                         body_data[current_body_id] = parse_body(
                             body_specs[key],
                             stage.GetPrimAtPath(p),
-                            incoming_xform=articulation_xform,
+                            incoming_xform=articulation_incoming_xform,
                             add_body_to_builder=False,
                         )
                     else:
@@ -1164,7 +1177,7 @@ def parse_usd(
                         bid: int = parse_body(  # pyright: ignore[reportAssignmentType]
                             body_specs[key],
                             stage.GetPrimAtPath(p),
-                            incoming_xform=articulation_xform,
+                            incoming_xform=articulation_incoming_xform,
                             add_body_to_builder=True,
                         )
                         if bid >= 0:
@@ -1268,11 +1281,8 @@ def parse_usd(
                     else:
                         child_body_id = art_bodies[first_joint_parent]
                     # apply the articulation transform to the body
-                    #! investigate why assigning body_q (joint_q) by art_xform * body_q is breaking the tests
-                    # builder.body_q[child_body_id] = articulation_xform * builder.body_q[child_body_id]
                     free_joint_id = builder.add_joint_free(child=child_body_id)
                     articulation_joint_indices.append(free_joint_id)
-                    builder.joint_q[-7:] = articulation_xform
 
                 # insert the remaining joints in topological order
                 for joint_id, i in enumerate(sorted_joints):
@@ -1281,7 +1291,7 @@ def parse_usd(
                         # except if we already inserted a floating-base joint
                         joint = parse_joint(
                             joint_descriptions[joint_names[i]],
-                            incoming_xform=articulation_xform,
+                            incoming_xform=articulation_incoming_xform,
                         )
                     else:
                         joint = parse_joint(
@@ -1294,7 +1304,7 @@ def parse_usd(
                 for joint_key in joint_excluded:
                     joint = parse_joint(
                         joint_descriptions[joint_key],
-                        incoming_xform=articulation_xform,
+                        incoming_xform=articulation_incoming_xform,
                     )
 
             # Create the articulation from all collected joints
