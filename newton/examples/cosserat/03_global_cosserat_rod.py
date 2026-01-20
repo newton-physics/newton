@@ -275,7 +275,8 @@ def solve_bend_twist_constraint_kernel(
     
     # Accumulate corrections
     wp.atomic_add(edge_q_delta, tid, corrq0)
-    wp.atomic_add(edge_q_delta, tid + 1, corrq1)
+    wp.atomic_add(edge_q_delta, tid + 1, corr.0     # Resist bending
+        self.twist_stiffness = q1)
 
 
 
@@ -360,6 +361,57 @@ def update_velocities_kernel(
 
     delta_x = particle_q_new[tid] - particle_q_old[tid]
     particle_qd[tid] = delta_x / dt
+
+
+@wp.kernel
+def update_rest_darboux_kernel(
+    rest_bend_d1: float,
+    rest_bend_d2: float,
+    rest_twist: float,
+    # output
+    rest_darboux: wp.array(dtype=wp.quat),
+):
+    """
+    Update rest Darboux vectors to define the rod's rest shape.
+    
+    The Darboux vector represents the relative rotation between adjacent frames.
+    For small angles, we use: q ≈ (sin(θ/2)*axis, cos(θ/2)) ≈ (θ/2*axis, 1) for small θ
+    
+    - rest_bend_d1: bending rate around d1 axis (curvature in d2-d3 plane)
+    - rest_bend_d2: bending rate around d2 axis (curvature in d1-d3 plane)
+    - rest_twist: twist rate around d3 axis
+    
+    Values are in radians per edge segment.
+    """
+    tid = wp.tid()
+    
+    # Build quaternion from axis-angle: half-angles for quaternion representation
+    half_bend_d1 = rest_bend_d1 * 0.5
+    half_bend_d2 = rest_bend_d2 * 0.5
+    half_twist = rest_twist * 0.5
+    
+    # For small angles, sin(θ/2) ≈ θ/2 and cos(θ/2) ≈ 1 - θ²/8
+    # Use exact formula for robustness
+    angle_sq = half_bend_d1 * half_bend_d1 + half_bend_d2 * half_bend_d2 + half_twist * half_twist
+    angle = wp.sqrt(angle_sq)
+    
+    if angle < 1.0e-8:
+        # Near-identity: use limit formula
+        rest_darboux[tid] = wp.quat(0.0, 0.0, 0.0, 1.0)
+    else:
+        # Quaternion from rotation vector (bend_d1, bend_d2, twist)
+        # The rotation vector in the material frame corresponds to:
+        # x -> d1 axis (bending)
+        # y -> d2 axis (bending) 
+        # z -> d3 axis (twist)
+        s = wp.sin(angle) / angle
+        c = wp.cos(angle)
+        rest_darboux[tid] = wp.quat(
+            s * half_bend_d1,
+            s * half_bend_d2,
+            s * half_twist,
+            c
+        )
 
 
 @wp.kernel
@@ -480,8 +532,14 @@ class Example:
         # These map to PBD stiffness: 1.0 means apply full correction per iteration
         self.stretch_stiffness = 1.0  # Inextensibility
         self.shear_stiffness = 1.0    # d3 director alignment with edge
-        self.bend_stiffness = 1.0     # Resist bending
-        self.twist_stiffness = 1.0    # Resist twisting
+        self.bend_stiffness = 0.1     # Resist bending
+        self.twist_stiffness = 0.1    # Resist twisting
+
+        # Rest shape parameters (Darboux vector components)
+        # These control the rod's rest configuration
+        self.rest_bend_d1 = 0.0  # Bending rate around d1 axis (rad/segment)
+        self.rest_bend_d2 = 0.0  # Bending rate around d2 axis (rad/segment)
+        self.rest_twist = 0.0    # Twist rate around d3 axis (rad/segment)
 
         self.gravity = wp.vec3(0.0, 0.0, -9.81)
 
@@ -499,7 +557,8 @@ class Example:
                 radius=particle_radius,
             )
 
-        self.model = builder.finalize()
+        self.model = builder.finalize().0     # Resist bending
+        self.twist_stiffness = 
 
         # Soft contact parameters for particle-ground collision
         self.model.soft_contact_ke = 1.0e3
@@ -736,12 +795,34 @@ class Example:
             norm = (q[0] ** 2 + q[1] ** 2 + q[2] ** 2 + q[3] ** 2) ** 0.5
             assert abs(norm - 1.0) < 0.1, f"Edge quaternion {i} not normalized: norm={norm}"
 
+    def _update_rest_darboux(self):
+        """Update rest Darboux vectors from current slider values."""
+        wp.launch(
+            kernel=update_rest_darboux_kernel,
+            dim=self.num_bend,
+            inputs=[
+                self.rest_bend_d1,
+                self.rest_bend_d2,
+                self.rest_twist,
+            ],
+            outputs=[self.rest_darboux],
+            device=self.model.device,
+        )
+
     def gui(self, ui):
         ui.text("Cosserat Rod Parameters")
         _changed, self.stretch_stiffness = ui.slider_float("Stretch Stiffness", self.stretch_stiffness, 0.0, 1.0)
         _changed, self.shear_stiffness = ui.slider_float("Shear Stiffness", self.shear_stiffness, 0.0, 1.0)
         _changed, self.bend_stiffness = ui.slider_float("Bend Stiffness", self.bend_stiffness, 0.0, 1.0)
         _changed, self.twist_stiffness = ui.slider_float("Twist Stiffness", self.twist_stiffness, 0.0, 1.0)
+        ui.separator()
+        ui.text("Rest Shape (Darboux Vector)")
+        changed_d1, self.rest_bend_d1 = ui.slider_float("Rest Bend d1", self.rest_bend_d1, -0.5, 0.5)
+        changed_d2, self.rest_bend_d2 = ui.slider_float("Rest Bend d2", self.rest_bend_d2, -0.5, 0.5)
+        changed_twist, self.rest_twist = ui.slider_float("Rest Twist", self.rest_twist, -0.5, 0.5)
+        # Update rest Darboux vectors when sliders change
+        if changed_d1 or changed_d2 or changed_twist:
+            self._update_rest_darboux()
         ui.separator()
         ui.text("Visualization")
         _changed, self.show_directors = ui.checkbox("Show Directors", self.show_directors)
