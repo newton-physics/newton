@@ -15,10 +15,9 @@
 
 import warp as wp
 
-from newton._src.core.types import MAXVAL
-
 from . import ray
 from .types import RenderShapeType
+from .ray import MAXVAL
 
 NO_HIT_SHAPE_ID = wp.uint32(0xFFFFFFFF)
 MAX_SHAPE_ID = wp.uint32(0xFFFFFFF0)

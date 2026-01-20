@@ -15,8 +15,7 @@
 
 import warp as wp
 
-from newton._src.core.types import MAXVAL
-
+from .ray import MAXVAL
 from .types import RenderShapeType
 
 

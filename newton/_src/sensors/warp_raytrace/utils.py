@@ -21,12 +21,11 @@ from typing import TYPE_CHECKING
 import numpy as np
 import warp as wp
 
+from .ray import MAXVAL
 from .types import RenderLightType
 
 if TYPE_CHECKING:
     from .render_context import RenderContext
-
-MAXVAL = 1e10
 
 
 @wp.kernel(enable_backward=False)
