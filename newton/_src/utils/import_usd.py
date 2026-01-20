@@ -1093,6 +1093,9 @@ def parse_usd(
             articulation_prim = stage.GetPrimAtPath(path)
             articulation_root_xform = usd.get_transform(articulation_prim, local=False)
             articulation_incoming_xform = incoming_world_xform
+            # There are two cases:
+            # 1) Bodies are nested under the articulation root => descriptors are already in articulation root space.
+            # 2) Bodies are not nested under the root => descriptors are local to the root and must be composed.
             for body_path in desc.articulatedBodies:
                 body_key = str(body_path)
                 if body_key in ignored_body_paths or body_key not in body_specs:
