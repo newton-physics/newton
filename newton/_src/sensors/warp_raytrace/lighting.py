@@ -15,9 +15,8 @@
 
 import warp as wp
 
-from newton._src.core.types import MAXVAL
-
 from . import ray_cast
+from .ray import MAXVAL
 
 
 @wp.func

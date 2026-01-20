@@ -21,6 +21,7 @@ import warp as wp
 
 from .bvh import compute_bvh_group_roots, compute_particle_bvh_bounds, compute_shape_bvh_bounds
 from .render import render_megakernel
+from .utils import Utils
 
 
 @dataclass
@@ -50,6 +51,8 @@ class RenderContext:
         tile_rendering: bool = False,
         tile_size: int = 8,
     ):
+        self.utils = Utils(self)
+
         self.width = width
         self.height = height
         self.tile_rendering = tile_rendering
@@ -66,7 +69,8 @@ class RenderContext:
         self.bvh_shapes: wp.Bvh = None
         self.bvh_particles: wp.Bvh = None
         self.triangle_mesh: wp.Mesh = None
-        self.num_shapes = 0
+        self.num_shapes_enabled = 0
+        self.num_shapes_total = 0
 
         self.mesh_bounds: wp.array2d(dtype=wp.vec3f) = None
         self.mesh_texcoord: wp.array(dtype=wp.vec2f) = None
@@ -119,11 +123,11 @@ class RenderContext:
 
     def __init_shape_outputs(self):
         if self.bvh_shapes_lowers is None:
-            self.bvh_shapes_lowers = wp.zeros(self.num_shapes_total, dtype=wp.vec3f)
+            self.bvh_shapes_lowers = wp.zeros(self.num_shapes_enabled, dtype=wp.vec3f)
         if self.bvh_shapes_uppers is None:
-            self.bvh_shapes_uppers = wp.zeros(self.num_shapes_total, dtype=wp.vec3f)
+            self.bvh_shapes_uppers = wp.zeros(self.num_shapes_enabled, dtype=wp.vec3f)
         if self.bvh_shapes_groups is None:
-            self.bvh_shapes_groups = wp.zeros(self.num_shapes_total, dtype=wp.int32)
+            self.bvh_shapes_groups = wp.zeros(self.num_shapes_enabled, dtype=wp.int32)
         if self.bvh_shapes_group_roots is None:
             self.bvh_shapes_group_roots = wp.zeros((self.num_worlds_total), dtype=wp.int32)
 
@@ -150,7 +154,7 @@ class RenderContext:
         return wp.zeros((self.num_worlds, self.num_cameras, self.width * self.height), dtype=wp.vec3f)
 
     def refit_bvh(self):
-        if self.num_shapes_total:
+        if self.num_shapes_enabled:
             self.__init_shape_outputs()
             self.__compute_bvh_shape_bounds()
             if self.bvh_shapes is None:
@@ -214,9 +218,9 @@ class RenderContext:
     def __compute_bvh_shape_bounds(self):
         wp.launch(
             kernel=compute_shape_bvh_bounds,
-            dim=self.num_shapes_total,
+            dim=self.num_shapes_enabled,
             inputs=[
-                self.num_shapes_total,
+                self.num_shapes_enabled,
                 self.num_worlds_total,
                 self.shape_world_index,
                 self.shape_enabled,
@@ -254,10 +258,6 @@ class RenderContext:
         return self.num_worlds
 
     @property
-    def num_shapes_total(self) -> int:
-        return self.num_shapes
-
-    @property
     def num_particles_total(self) -> int:
         if self.particles_position is not None:
             return self.particles_position.shape[0]
@@ -271,7 +271,7 @@ class RenderContext:
 
     @property
     def has_shapes(self) -> bool:
-        return self.num_shapes_total > 0
+        return self.num_shapes_enabled > 0
 
     @property
     def has_particles(self) -> bool:

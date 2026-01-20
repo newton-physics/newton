@@ -17,14 +17,12 @@ from typing import Any
 
 import warp as wp
 
-from newton._src.core.types import MAXVAL
+EPSILON = 1e-6
+MAXVAL = 1e10
 
 
 class vec6f(wp.types.vector(length=6, dtype=wp.float32)):
     pass
-
-
-EPSILON = 1e-6
 
 
 @wp.func
