@@ -33,6 +33,26 @@ devices = get_test_devices()
 
 class TestImportUsd(unittest.TestCase):
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_import_usd_raises_on_stage_errors(self):
+        from pxr import Usd  # noqa: PLC0415
+
+        usd_text = """#usda 1.0
+def Xform "Root" (
+    references = @does_not_exist.usda@
+)
+{
+}
+"""
+        stage = Usd.Stage.CreateInMemory()
+        stage.GetRootLayer().ImportFromString(usd_text)
+
+        builder = newton.ModelBuilder()
+        with self.assertRaises(RuntimeError) as exc_info:
+            builder.add_usd(stage)
+
+        self.assertIn("composition errors", str(exc_info.exception))
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_import_articulation(self):
         builder = newton.ModelBuilder()
 
@@ -57,6 +77,70 @@ class TestImportUsd(unittest.TestCase):
             i for i in range(builder.shape_count) if builder.shape_flags[i] & int(newton.ShapeFlags.COLLIDE_SHAPES)
         ]
         self.assertEqual(len(collision_shapes), 13)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_import_articulation_parent_offset(self):
+        from pxr import Usd  # noqa: PLC0415
+
+        usd_text = """#usda 1.0
+(
+    upAxis = "Z"
+)
+def "World"
+{
+    def Xform "Env_0"
+    {
+        double3 xformOp:translate = (0, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+
+        def Xform "Robot" (
+            apiSchemas = ["PhysicsArticulationRootAPI"]
+        )
+        {
+            def Xform "Body" (
+                apiSchemas = ["PhysicsRigidBodyAPI"]
+            )
+            {
+                double3 xformOp:translate = (0, 0, 0)
+                uniform token[] xformOpOrder = ["xformOp:translate"]
+            }
+        }
+    }
+
+    def Xform "Env_1"
+    {
+        double3 xformOp:translate = (2.5, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+
+        def Xform "Robot" (
+            apiSchemas = ["PhysicsArticulationRootAPI"]
+        )
+        {
+            def Xform "Body" (
+                apiSchemas = ["PhysicsRigidBodyAPI"]
+            )
+            {
+                double3 xformOp:translate = (0, 0, 0)
+                uniform token[] xformOpOrder = ["xformOp:translate"]
+            }
+        }
+    }
+}
+"""
+        stage = Usd.Stage.CreateInMemory()
+        stage.GetRootLayer().ImportFromString(usd_text)
+
+        builder = newton.ModelBuilder()
+        results = builder.add_usd(stage, xform=wp.transform(wp.vec3(0.0, 0.0, 1.0), wp.quat_identity()))
+
+        body_0 = results["path_body_map"]["/World/Env_0/Robot/Body"]
+        body_1 = results["path_body_map"]["/World/Env_1/Robot/Body"]
+
+        pos_0 = np.array(builder.body_q[body_0].p)
+        pos_1 = np.array(builder.body_q[body_1].p)
+
+        np.testing.assert_allclose(pos_0, np.array([0.0, 0.0, 1.0]), atol=1e-5)
+        np.testing.assert_allclose(pos_1, np.array([2.5, 0.0, 1.0]), atol=1e-5)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_import_articulation_no_visuals(self):

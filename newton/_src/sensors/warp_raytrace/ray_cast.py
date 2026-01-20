@@ -15,6 +15,8 @@
 
 import warp as wp
 
+from newton._src.core.types import MAXVAL
+
 from . import ray
 from .types import RenderShapeType
 
@@ -75,7 +77,7 @@ def closest_hit_shape(
                 si = shape_enabled[shape_index]
 
                 hit = wp.bool(False)
-                hit_dist = wp.float32(wp.inf)
+                hit_dist = wp.float32(MAXVAL)
                 hit_normal = wp.vec3f(0.0)
                 hit_u = wp.float32(0.0)
                 hit_v = wp.float32(0.0)
@@ -319,7 +321,7 @@ def first_hit_shape(
             while wp.bvh_query_next(query, shape_index, max_dist):
                 si = shape_enabled[shape_index]
 
-                dist = wp.float32(wp.inf)
+                dist = wp.float32(MAXVAL)
 
                 if shape_types[si] == RenderShapeType.MESH:
                     _h, dist, _n, _u, _v, _f, _mesh_id = ray.ray_mesh_with_bvh(

@@ -29,6 +29,7 @@ import numpy as np
 import warp as wp
 
 from ..core.types import (
+    MAXVAL,
     Axis,
     AxisType,
     Devicelike,
@@ -57,9 +58,9 @@ from ..geometry.inertia import validate_and_correct_inertia_kernel, verify_and_c
 from ..geometry.utils import RemeshingMethod, compute_inertia_obb, remesh_mesh
 from ..usd.schema_resolver import SchemaResolver
 from ..utils import compute_world_offsets
+from ..utils.mesh import MeshAdjacency
 from .graph_coloring import ColoringAlgorithm, color_rigid_bodies, color_trimesh, combine_independent_particle_coloring
 from .joints import (
-    JOINT_LIMIT_UNLIMITED,
     EqType,
     JointType,
     get_joint_dof_count,
@@ -290,8 +291,8 @@ class ModelBuilder:
         def __init__(
             self,
             axis: AxisType | Vec3 = Axis.X,
-            limit_lower: float = -JOINT_LIMIT_UNLIMITED,
-            limit_upper: float = JOINT_LIMIT_UNLIMITED,
+            limit_lower: float = -MAXVAL,
+            limit_upper: float = MAXVAL,
             limit_ke: float = 1e4,
             limit_kd: float = 1e1,
             target_pos: float = 0.0,
@@ -306,9 +307,9 @@ class ModelBuilder:
             self.axis = wp.normalize(axis_to_vec3(axis))
             """The 3D axis that this JointDofConfig object describes."""
             self.limit_lower = limit_lower
-            """The lower position limit of the joint axis. Defaults to -JOINT_LIMIT_UNLIMITED (unlimited)."""
+            """The lower position limit of the joint axis. Defaults to -MAXVAL (unlimited)."""
             self.limit_upper = limit_upper
-            """The upper position limit of the joint axis. Defaults to JOINT_LIMIT_UNLIMITED (unlimited)."""
+            """The upper position limit of the joint axis. Defaults to MAXVAL (unlimited)."""
             self.limit_ke = limit_ke
             """The elastic stiffness of the joint axis limits. Defaults to 1e4."""
             self.limit_kd = limit_kd
@@ -340,8 +341,8 @@ class ModelBuilder:
             """Creates a JointDofConfig with no limits."""
             return ModelBuilder.JointDofConfig(
                 axis=axis,
-                limit_lower=-JOINT_LIMIT_UNLIMITED,
-                limit_upper=JOINT_LIMIT_UNLIMITED,
+                limit_lower=-MAXVAL,
+                limit_upper=MAXVAL,
                 target_pos=0.0,
                 target_vel=0.0,
                 target_ke=0.0,
@@ -1778,7 +1779,7 @@ class ModelBuilder:
 
         # explicitly resolve the transform multiplication function to avoid
         # repeatedly resolving builtin overloads during shape transformation
-        transform_mul_cfunc = wp.context.runtime.core.wp_builtin_mul_transformf_transformf
+        transform_mul_cfunc = wp._src.context.runtime.core.wp_builtin_mul_transformf_transformf
 
         # dispatches two transform multiplies to the native implementation
         def transform_mul(a, b):
@@ -2405,11 +2406,11 @@ class ModelBuilder:
             if np.isfinite(dim.limit_lower):
                 self.joint_limit_lower.append(dim.limit_lower)
             else:
-                self.joint_limit_lower.append(-JOINT_LIMIT_UNLIMITED)
+                self.joint_limit_lower.append(-MAXVAL)
             if np.isfinite(dim.limit_upper):
                 self.joint_limit_upper.append(dim.limit_upper)
             else:
-                self.joint_limit_upper.append(JOINT_LIMIT_UNLIMITED)
+                self.joint_limit_upper.append(MAXVAL)
 
         for dim in linear_axes:
             add_axis_dim(dim)
@@ -2950,10 +2951,15 @@ class ModelBuilder:
                 translation is the attachment point.
             child_xform (Transform): The transform of the joint in the child body's local frame; its
                 translation is the attachment point.
-            stretch_stiffness: Linear stretch stiffness. If None, defaults to 1.0e9.
-            stretch_damping: Linear stretch damping. If None, defaults to 0.0.
-            bend_stiffness: Angular bend/twist stiffness. If None, defaults to 0.0.
-            bend_damping: Angular bend/twist damping. If None, defaults to 0.0.
+            stretch_stiffness: Cable stretch stiffness (stored as ``target_ke``) [N/m]. If None, defaults to 1.0e9.
+            stretch_damping: Cable stretch damping (stored as ``target_kd``). In :class:`newton.solvers.SolverVBD`
+                this is a dimensionless (Rayleigh-style) coefficient. If None,
+                defaults to 0.0.
+            bend_stiffness: Cable bend/twist stiffness (stored as ``target_ke``) [N*m] (torque per radian). If None,
+                defaults to 0.0.
+            bend_damping: Cable bend/twist damping (stored as ``target_kd``). In :class:`newton.solvers.SolverVBD`
+                this is a dimensionless (Rayleigh-style) coefficient. If None,
+                defaults to 0.0.
             key: The key of the joint.
             collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies.
             enabled: Whether the joint is enabled.
@@ -4663,10 +4669,18 @@ class ModelBuilder:
                 align the capsule's local +Z with the segment direction ``positions[i+1] - positions[i]``.
             radius: Capsule radius.
             cfg: Shape configuration for the capsules. If None, :attr:`default_shape_cfg` is used.
-            stretch_stiffness: Stretch stiffness for the cable joints. If None, defaults to 1.0e9.
-            stretch_damping: Stretch damping for the cable joints. If None, defaults to 0.0.
-            bend_stiffness: Bend/twist stiffness for the cable joints. If None, defaults to 0.0.
-            bend_damping: Bend/twist damping for the cable joints. If None, defaults to 0.0.
+            stretch_stiffness: Stretch stiffness for the cable joints. For rods, this is treated as a
+                material-like axial/shear stiffness (commonly interpreted as EA)
+                with units [N] and is internally converted to an effective point stiffness [N/m] by dividing by
+                segment length. If None, defaults to 1.0e9.
+            stretch_damping: Stretch damping for the cable joints (applied per-joint; not length-normalized). If None,
+                defaults to 0.0.
+            bend_stiffness: Bend/twist stiffness for the cable joints. For rods, this is treated as a
+                material-like bending/twist stiffness (e.g., EI) with units [N*m^2] and is internally converted to
+                an effective per-joint stiffness [N*m] (torque per radian) by dividing by segment length. If None,
+                defaults to 0.0.
+            bend_damping: Bend/twist damping for the cable joints (applied per-joint; not length-normalized). If None,
+                defaults to 0.0.
             closed: If True, connects the last segment back to the first to form a closed loop. If False,
                 creates an open chain. Note: rods require at least 2 segments.
             key: Optional key prefix for bodies, shapes, and joints.
@@ -4691,6 +4705,9 @@ class ModelBuilder:
         Note:
             - Bend defaults are 0.0 (no bending resistance unless specified). Stretch defaults to a high
               stiffness (1.0e9), which keeps neighboring capsules closely coupled (approximately inextensible).
+            - Internally, stretch and bend stiffnesses are pre-scaled by dividing by segment length so solver kernels
+              do not need per-segment length normalization.
+            - Damping values are passed through as provided (per joint) and are not length-normalized.
             - Each segment is implemented as a capsule primitive. The segment's body transform is
               placed at the start point ``positions[i]`` with a local center-of-mass offset of
               ``(0, 0, half_height)`` so that the COM lies at the segment midpoint. The capsule shape
@@ -4708,6 +4725,11 @@ class ModelBuilder:
         bend_damping = 0.0 if bend_damping is None else bend_damping
 
         # Input validation
+        if stretch_stiffness < 0.0 or bend_stiffness < 0.0:
+            raise ValueError("add_rod: stretch_stiffness and bend_stiffness must be >= 0")
+
+        # Guard against near-zero lengths: segment length is used to normalize stiffness later (EA/L, EI/L).
+        min_segment_length = 1.0e-9
         num_segments = len(quaternions)
         if len(positions) != num_segments + 1:
             raise ValueError(
@@ -4734,10 +4756,10 @@ class ModelBuilder:
 
             # Calculate segment properties
             segment_length = wp.length(p1 - p0)
-            if segment_length <= 0.0:
+            if segment_length <= min_segment_length:
                 raise ValueError(
-                    f"add_rod: segment {i} has zero or negative length; "
-                    "positions must form strictly positive-length segments"
+                    f"add_rod: segment {i} has a too-small length (length={float(segment_length):.3e}); "
+                    f"segment length must be > {min_segment_length:.1e}"
                 )
             segment_lengths.append(float(segment_length))
             half_height = 0.5 * segment_length
@@ -4807,14 +4829,25 @@ class ModelBuilder:
             # Joint key: numbered 1 through num_joints
             joint_key = f"{key}_cable_{i + 1}" if key else None
 
+            # Pre-scale rod stiffnesses here so solver kernels do not need per-segment length normalization.
+            # Use the parent segment length L.
+            #
+            # - Stretch: treat the user input as a material-like axial/shear stiffness (commonly EA) [N]
+            #   and store an effective per-joint (point-to-point) spring stiffness k_eff = EA / L [N/m].
+            # - Bend/twist: treat the user input as a material-like bending/twist stiffness (commonly EI) [N*m^2]
+            #   and store an effective per-joint angular stiffness k_eff = EI / L [N*m].
+            seg_len = segment_lengths[parent_idx]
+            stretch_ke_eff = stretch_stiffness / seg_len
+            bend_ke_eff = bend_stiffness / seg_len
+
             joint = self.add_joint_cable(
                 parent=parent_body,
                 child=child_body,
                 parent_xform=parent_xform,
                 child_xform=child_xform,
-                bend_stiffness=bend_stiffness,
+                bend_stiffness=bend_ke_eff,
                 bend_damping=bend_damping,
-                stretch_stiffness=stretch_stiffness,
+                stretch_stiffness=stretch_ke_eff,
                 stretch_damping=stretch_damping,
                 key=joint_key,
                 collision_filter_parent=True,
@@ -5477,7 +5510,7 @@ class ModelBuilder:
 
         end_tri = len(self.tri_indices)
 
-        adj = wp.utils.MeshAdjacency(self.tri_indices[start_tri:end_tri], end_tri - start_tri)
+        adj = MeshAdjacency(self.tri_indices[start_tri:end_tri], end_tri - start_tri)
 
         edge_indices = np.fromiter(
             (x for e in adj.edges.values() for x in (e.o0, e.o1, e.v0, e.v1)),
@@ -6649,9 +6682,10 @@ class ModelBuilder:
             m.up_axis = self.up_axis
             m.up_vector = np.array(self.up_vector, dtype=wp.float32)
 
-            # set gravity
+            # set gravity - create per-world gravity array for multi-world support
+            gravity_vec = wp.vec3(*(g * self.gravity for g in self.up_vector))
             m.gravity = wp.array(
-                [wp.vec3(*(g * self.gravity for g in self.up_vector))],
+                [gravity_vec] * self.num_worlds,
                 dtype=wp.vec3,
                 device=device,
                 requires_grad=requires_grad,

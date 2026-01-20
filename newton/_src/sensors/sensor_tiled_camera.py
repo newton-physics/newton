@@ -20,6 +20,7 @@ from dataclasses import dataclass
 import numpy as np
 import warp as wp
 
+from ..core.types import MAXVAL
 from ..geometry import ShapeFlags
 from ..sim import Model, State
 from .warp_raytrace import ClearData, RenderContext, RenderLightType, RenderShapeType

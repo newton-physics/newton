@@ -194,6 +194,39 @@ uv sync --extra examples
   </tr>
 </table>
 
+### Cable Examples
+
+<table>
+  <tr>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/cable/example_cable_bend.py">
+        <img src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_cable_bend.jpg" alt="Cable Bend">
+      </a>
+    </td>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/cable/example_cable_twist.py">
+        <img src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_cable_twist.jpg" alt="Cable Twist">
+      </a>
+    </td>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/cable/example_cable_bundle_hysteresis.py">
+        <img src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_cable_bundle_hysteresis.jpg" alt="Cable Bundle Hysteresis">
+      </a>
+    </td>
+  </tr>
+  <tr>
+    <td align="center">
+      <code>uv run -m newton.examples cable_bend</code>
+    </td>
+    <td align="center">
+      <code>uv run -m newton.examples cable_twist</code>
+    </td>
+    <td align="center">
+      <code>uv run -m newton.examples cable_bundle_hysteresis</code>
+    </td>
+  </tr>
+</table>
+
 ### Cloth Examples
 
 <table>

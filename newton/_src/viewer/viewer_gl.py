@@ -20,13 +20,13 @@ import time
 
 import numpy as np
 import warp as wp
-import warp.render.render_opengl
 
 import newton as nt
 from newton.selection import ArticulationView
 from newton.utils import create_sphere_mesh
 
 from ..core.types import override
+from ..utils.render import copy_rgb_frame_uint8
 from .camera import Camera
 from .gl.gui import UI
 from .gl.opengl import LinesGL, MeshGL, MeshInstancerGL, RendererGL
@@ -610,7 +610,7 @@ class ViewerGL(ViewerBase):
 
         # Launch the RGB kernel.
         wp.launch(
-            warp.render.render_opengl.copy_rgb_frame_uint8,
+            copy_rgb_frame_uint8,
             dim=(w, h),
             inputs=[buf, w, h],
             outputs=[target_image],
