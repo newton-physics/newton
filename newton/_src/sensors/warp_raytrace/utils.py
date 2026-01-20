@@ -26,13 +26,15 @@ from .types import RenderLightType
 if TYPE_CHECKING:
     from .render_context import RenderContext
 
+MAXVAL = 1e10
+
 
 @wp.kernel(enable_backward=False)
 def compute_mesh_bounds(in_meshes: wp.array(dtype=wp.uint64), out_bounds: wp.array2d(dtype=wp.vec3f)):
     tid = wp.tid()
 
-    min_point = wp.vec3(wp.inf)
-    max_point = wp.vec3(-wp.inf)
+    min_point = wp.vec3(MAXVAL)
+    max_point = wp.vec3(-MAXVAL)
 
     if in_meshes[tid] != 0:
         mesh = wp.mesh_get(in_meshes[tid])
