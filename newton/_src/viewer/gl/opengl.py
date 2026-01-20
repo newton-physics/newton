@@ -23,6 +23,7 @@ import warp as wp
 
 from newton.utils import create_sphere_mesh
 
+from ...utils.mesh import compute_vertex_normals_wp
 from .shaders import (
     FrameShader,
     ShaderLine,
@@ -70,15 +71,23 @@ def _normalize_texture_image(texture_image: np.ndarray) -> tuple[np.ndarray, int
         image = image.astype(np.uint8)
     if image.ndim == 2:
         image = np.repeat(image[:, :, None], 3, axis=2)
+    if image.ndim < 2 or image.shape[0] == 0 or image.shape[1] == 0:
+        raise ValueError("Texture image has invalid dimensions.")
     if image.shape[2] not in (3, 4):
         raise ValueError(f"Unsupported texture channels: {image.shape[2]}")
     # Flip vertically to match OpenGL texture coordinates
-    image = np.flipud(image)
+    image = np.ascontiguousarray(np.flipud(image))
     return image, image.shape[2]
 
 
 def _upload_texture(gl, texture_image: np.ndarray) -> int:
     image, channels = _normalize_texture_image(texture_image)
+    if image.size == 0:
+        return 0
+    max_size = gl.GLint()
+    gl.glGetIntegerv(gl.GL_MAX_TEXTURE_SIZE, max_size)
+    if image.shape[0] > max_size.value or image.shape[1] > max_size.value:
+        return 0
     texture_id = gl.GLuint()
     gl.glGenTextures(1, texture_id)
     gl.glBindTexture(gl.GL_TEXTURE_2D, texture_id)
@@ -134,43 +143,6 @@ def fill_vertex_data(
 
     if uvs:
         vertices[tid].uv = uvs[tid]
-
-
-@wp.kernel
-def compute_normals(
-    vertices: wp.array(dtype=RenderVertex),
-    indices: wp.array(dtype=wp.uint32),
-    normals: wp.array(dtype=wp.vec3),
-):
-    face = wp.tid()
-
-    i0 = indices[face * 3 + 0]
-    i1 = indices[face * 3 + 1]
-    i2 = indices[face * 3 + 2]
-
-    # Get scaled vertices
-    v0 = vertices[i0].pos
-    v1 = vertices[i1].pos
-    v2 = vertices[i2].pos
-
-    # Compute face normal
-    edge1 = v1 - v0
-    edge2 = v2 - v0
-    normal = wp.normalize(wp.cross(edge1, edge2))
-
-    # Accumulate normals for each vertex
-    wp.atomic_add(normals, i0, normal)
-    wp.atomic_add(normals, i1, normal)
-    wp.atomic_add(normals, i2, normal)
-
-
-@wp.kernel
-def normalize_normals(
-    normals: wp.array(dtype=wp.vec3),
-    vertices: wp.array(dtype=RenderVertex),
-):
-    tid = wp.tid()
-    vertices[tid].normal = wp.normalize(normals[tid])
 
 
 @wp.kernel
@@ -278,6 +250,7 @@ class MeshGL:
             self.vertex_cuda_buffer = wp.RegisteredGLBuffer(int(self.vbo.value), self.device)
         else:
             self.vertex_cuda_buffer = None
+        self._points = None
 
     def destroy(self):
         """Clean up OpenGL resources."""
@@ -307,14 +280,7 @@ class MeshGL:
         if len(points) != len(self.vertices):
             raise RuntimeError("Number of points does not match")
 
-        # update gfx vertices
-        wp.launch(
-            fill_vertex_data,
-            dim=len(self.vertices),
-            inputs=[points, normals, uvs],
-            outputs=[self.vertices],
-            device=self.device,
-        )
+        self._points = points
 
         # only update indices the first time (no topology changes)
         if self.indices is None:
@@ -327,10 +293,19 @@ class MeshGL:
                 gl.GL_ELEMENT_ARRAY_BUFFER, host_indices.nbytes, host_indices.ctypes.data, gl.GL_STATIC_DRAW
             )
 
-        # if points are changing but not the normals
-        # then we recompute normals before uploading to GL
+        # If normals are missing, compute them before packing vertex data.
         if points is not None and normals is None:
             self.recompute_normals()
+            normals = self.normals
+
+        # update gfx vertices
+        wp.launch(
+            fill_vertex_data,
+            dim=len(self.vertices),
+            inputs=[points, normals, uvs],
+            outputs=[self.vertices],
+            device=self.device,
+        )
 
         # upload vertices to GL
         if ENABLE_CUDA_INTEROP and self.vertices.device.is_cuda:
@@ -347,22 +322,14 @@ class MeshGL:
         self.update_texture(texture_image, texture_path)
 
     def recompute_normals(self):
-        if self.normals is None:
-            self.normals = wp.zeros(len(self.vertices), dtype=wp.vec3, device=self.device)
-
-        self.normals.zero_()
-
-        # Compute average normals per vertex
-        wp.launch(
-            compute_normals,
-            dim=len(self.indices) // 3,
-            inputs=[self.vertices, self.indices],
-            outputs=[self.normals],
+        if self._points is None or self.indices is None:
+            return
+        self.normals = compute_vertex_normals_wp(
+            self._points,
+            self.indices,
+            normals=self.normals,
             device=self.device,
         )
-
-        # Compute average normals per vertex
-        wp.launch(normalize_normals, dim=len(self.vertices), inputs=[self.normals, self.vertices], device=self.device)
 
     def update_texture(self, texture_image=None, texture_path=None):
         gl = RendererGL.gl
@@ -387,7 +354,10 @@ class MeshGL:
                 pass
             self.texture_id = None
 
-        self.texture_id = _upload_texture(gl, texture_image)
+        texture_id = _upload_texture(gl, texture_image)
+        if not texture_id:
+            return
+        self.texture_id = texture_id
 
     def render(self):
         if not self.hidden:
@@ -963,6 +933,20 @@ class RendererGL:
         self._last_x, self._last_y = self._screen_width // 2, self._screen_height // 2
         self._key_callbacks = []
         self._key_release_callbacks = []
+
+        self._env_texture = None
+        self._env_intensity = 1.0
+        self._pending_env_map = None
+        self._env_texture_obj = None
+
+        try:
+            import newton.examples  # noqa: PLC0415
+
+            default_env = newton.examples.get_asset("studio_small_03_1k.jpg")
+            if os.path.exists(default_env):
+                self._pending_env_map = default_env
+        except Exception:
+            pass
         self._mouse_drag_callbacks = []
         self._mouse_press_callbacks = []
         self._mouse_release_callbacks = []
@@ -1053,6 +1037,14 @@ class RendererGL:
         # Store matrices for other methods
         self._view_matrix = self.camera.get_view_matrix()
         self._projection_matrix = self.camera.get_projection_matrix()
+
+        # Lazy-load environment map after a valid GL context is active
+        if self._pending_env_map is not None and self._env_texture is None:
+            try:
+                self.set_environment_map(self._pending_env_map)
+            except Exception:
+                pass
+            self._pending_env_map = None
 
         # 1. render depth of scene to texture (from light's perspective)
         gl.glViewport(0, 0, self._shadow_width, self._shadow_height)
@@ -1625,6 +1617,8 @@ class RendererGL:
             light_color=self._light_color,
             sky_color=self.sky_upper,
             ground_color=self.sky_lower,
+            env_texture=self._env_texture,
+            env_intensity=self._env_intensity,
         )
 
         with self._shape_shader:
@@ -1673,6 +1667,23 @@ class RendererGL:
         gl.glBindVertexArray(0)
 
         check_gl_error()
+
+    def set_environment_map(self, path: str, intensity: float = 1.0) -> None:
+        gl = RendererGL.gl
+        from ...utils.mesh import load_texture_image  # noqa: PLC0415
+
+        image = load_texture_image(path)
+        if image is None:
+            return
+        if self._env_texture is not None:
+            try:
+                gl.glDeleteTextures(1, self._env_texture)
+            except Exception:
+                pass
+            self._env_texture = None
+        self._env_texture = _upload_texture(gl, image)
+        self._env_texture_obj = None
+        self._env_intensity = float(intensity)
 
     def _make_current(self):
         try:

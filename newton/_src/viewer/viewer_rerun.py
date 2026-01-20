@@ -22,6 +22,7 @@ import newton
 from newton.utils import create_plane_mesh
 
 from ..core.types import override
+from ..utils.mesh import compute_vertex_normals_wp
 from .viewer import ViewerBase, is_jupyter_notebook
 
 try:
@@ -182,10 +183,7 @@ class ViewerRerun(ViewerBase):
             indices_np = indices_np.reshape(-1, 3)
 
         if normals is None:
-            normals = wp.zeros_like(points)
-            wp.launch(_compute_normals, dim=len(indices_np), inputs=[points, indices, normals], device=self.device)
-            # normalize the normals
-            wp.map(wp.normalize, normals, out=normals)
+            normals = compute_vertex_normals_wp(points, indices, device=self.device)
             normals_np = normals.numpy()
         else:
             normals_np = self._to_numpy(normals)
@@ -551,23 +549,3 @@ class ViewerRerun(ViewerBase):
         Display the viewer in an IPython notebook when the viewer is at the end of a cell.
         """
         self.show_notebook()
-
-
-@wp.kernel
-def _compute_normals(
-    points: wp.array(dtype=wp.vec3),
-    indices: wp.array(dtype=wp.int32),
-    # output
-    normals: wp.array(dtype=wp.vec3),
-):
-    face = wp.tid()
-    i0 = indices[face * 3]
-    i1 = indices[face * 3 + 1]
-    i2 = indices[face * 3 + 2]
-    v0 = points[i0]
-    v1 = points[i1]
-    v2 = points[i2]
-    normal = wp.normalize(wp.cross(v1 - v0, v2 - v0))
-    wp.atomic_add(normals, i0, normal)
-    wp.atomic_add(normals, i1, normal)
-    wp.atomic_add(normals, i2, normal)

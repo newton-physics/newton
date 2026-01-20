@@ -341,6 +341,75 @@ def parse_usd(
 
         return properties
 
+    def _extract_shader_properties(shader: UsdShade.Shader, prim: Usd.Prim) -> dict[str, Any]:
+        properties = _extract_preview_surface_properties(shader, prim)
+        if shader is None:
+            return properties
+        try:
+            if not shader.GetPrim().IsValid():
+                return properties
+        except Exception:
+            return properties
+
+        def _get_input_value(name: str):
+            inp = shader.GetInput(name)
+            if inp is None:
+                return None
+            try:
+                if inp.HasConnectedSource():
+                    return None
+            except Exception:
+                return None
+            return inp.Get()
+
+        def _get_input_color(names: tuple[str, ...]):
+            for name in names:
+                value = _get_input_value(name)
+                if value is not None:
+                    color_np = np.array(value, dtype=np.float32)
+                    if color_np.size >= 3:
+                        return (float(color_np[0]), float(color_np[1]), float(color_np[2]))
+            return None
+
+        def _get_input_float(names: tuple[str, ...]):
+            for name in names:
+                value = _get_input_value(name)
+                if value is not None:
+                    try:
+                        return float(value)
+                    except (TypeError, ValueError):
+                        continue
+            return None
+
+        if properties["color"] is None:
+            properties["color"] = _get_input_color(
+                ("diffuse_color_constant", "diffuse_color", "base_color", "baseColor")
+            )
+        if properties["metallic"] is None:
+            properties["metallic"] = _get_input_float(("metallic_constant", "metallic"))
+        if properties["roughness"] is None:
+            properties["roughness"] = _get_input_float(
+                ("reflection_roughness_constant", "roughness_constant", "roughness")
+            )
+
+        if properties["texture_path"] is None:
+            for inp in shader.GetInputs():
+                name = inp.GetBaseName()
+                if inp.HasConnectedSource():
+                    source = inp.GetConnectedSource()
+                    source_shader = UsdShade.Shader(source[0].GetPrim())
+                    texture_path = _find_texture_in_shader(source_shader, prim)
+                    if texture_path:
+                        properties["texture_path"] = texture_path
+                        break
+                elif "file" in name or "texture" in name:
+                    asset = inp.Get()
+                    if asset:
+                        properties["texture_path"] = _resolve_asset_path(asset, prim)
+                        break
+
+        return properties
+
     def _resolve_material_properties_for_prim(prim: Usd.Prim) -> dict[str, Any]:
         if not prim or not prim.IsValid():
             return {"color": None, "metallic": None, "roughness": None, "texture_path": None}
@@ -352,12 +421,25 @@ def parse_usd(
         if not surface_output:
             surface_output = material.GetOutput("surface")
         if not surface_output:
+            surface_output = material.GetOutput("mdl:surface")
+
+        source_shader = None
+        if surface_output:
+            source = surface_output.GetConnectedSource()
+            if source:
+                source_shader = UsdShade.Shader(source[0].GetPrim())
+
+        if source_shader is None:
+            # Fallback: scan material children for a shader node (MDL-style materials).
+            for child in material.GetPrim().GetChildren():
+                if child.IsA(UsdShade.Shader):
+                    source_shader = UsdShade.Shader(child)
+                    break
+
+        if source_shader is None:
             return {"color": None, "metallic": None, "roughness": None, "texture_path": None}
-        source = surface_output.GetConnectedSource()
-        if not source:
-            return {"color": None, "metallic": None, "roughness": None, "texture_path": None}
-        source_shader = UsdShade.Shader(source[0].GetPrim())
-        return _extract_preview_surface_properties(source_shader, prim)
+
+        return _extract_shader_properties(source_shader, prim)
 
     def _load_visual_shapes_impl(
         parent_body_id: int, prim: Usd.Prim, incoming_xform: wp.transform, incoming_scale: wp.vec3
