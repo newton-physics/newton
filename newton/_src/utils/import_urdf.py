@@ -155,7 +155,6 @@ def parse_urdf(
                 try:
                     if filename.startswith("package://"):
                         fn = filename.replace("package://", "")
-                        package_name = fn.split("/")[0]
                         parent_urdf_folder = os.path.abspath(
                             os.path.join(os.path.abspath(source), os.pardir, os.pardir, os.pardir)
                         )
@@ -243,12 +242,14 @@ def parse_urdf(
             texture_name = texture_el.get("filename")
             if texture_name:
                 resolved, tmpfile = resolve_urdf_asset(texture_name)
-                if resolved is not None:
-                    texture_image = load_texture_image(resolved)
-                    if tmpfile is None:
-                        texture_path = resolved
-                if tmpfile is not None:
-                    os.remove(tmpfile.name)
+                try:
+                    if resolved is not None:
+                        texture_image = load_texture_image(resolved)
+                        if tmpfile is None:
+                            texture_path = resolved
+                finally:
+                    if tmpfile is not None:
+                        os.remove(tmpfile.name)
 
         return color, texture_image, texture_path
 
