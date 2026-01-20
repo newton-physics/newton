@@ -66,6 +66,7 @@ def parse_mjcf(
 ):
     """
     Parses MuJoCo XML (MJCF) file and adds the bodies and joints to the given ModelBuilder.
+    MuJoCo-specific custom attributes are registered on the builder automatically.
 
     Args:
         builder (ModelBuilder): The :class:`ModelBuilder` to add the bodies and joints to.
