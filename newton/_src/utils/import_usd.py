@@ -1092,22 +1092,8 @@ def parse_usd(
                 continue
             articulation_prim = stage.GetPrimAtPath(path)
             articulation_root_xform = usd.get_transform(articulation_prim, local=False)
-            articulation_incoming_xform = incoming_world_xform
-            # There are two cases:
-            # 1) Bodies are nested under the articulation root => descriptors are already in articulation root space.
-            # 2) Bodies are not nested under the root => descriptors are local to the root and must be composed.
-            for body_path in desc.articulatedBodies:
-                body_key = str(body_path)
-                if body_key in ignored_body_paths or body_key not in body_specs:
-                    continue
-                body_prim = stage.GetPrimAtPath(body_path)
-                # If the body prim is not nested under the articulation root, treat the rigid-body
-                # descriptor as local to the articulation root and compose with that transform.
-                body_prim_path = body_prim.GetPath()
-                articulation_prim_path = articulation_prim.GetPath()
-                if not body_prim_path.HasPrefix(articulation_prim_path):
-                    articulation_incoming_xform = incoming_world_xform * articulation_root_xform
-                break
+            # Joints are authored in the articulation-root frame, so always compose with it.
+            articulation_incoming_xform = incoming_world_xform * articulation_root_xform
             # Collect engine-specific attributes for the articulation root on first encounter
             if collect_schema_attrs:
                 R.collect_prim_attrs(articulation_prim)
@@ -1167,20 +1153,25 @@ def parse_usd(
                         articulation_roots.append(key)
 
                 if key in body_specs:
+                    body_desc = body_specs[key]
+                    desc_xform = wp.transform(body_desc.position, usd.from_gfquat(body_desc.rotation))
+                    body_world = usd.get_transform(usd_prim, local=False)
+                    desired_world = incoming_world_xform * body_world
+                    body_incoming_xform = desired_world * wp.transform_inverse(desc_xform)
                     if bodies_follow_joint_ordering:
                         # we just parse the body information without yet adding it to the builder
                         body_data[current_body_id] = parse_body(
-                            body_specs[key],
+                            body_desc,
                             stage.GetPrimAtPath(p),
-                            incoming_xform=articulation_incoming_xform,
+                            incoming_xform=body_incoming_xform,
                             add_body_to_builder=False,
                         )
                     else:
                         # look up description and add body to builder
                         bid: int = parse_body(  # pyright: ignore[reportAssignmentType]
-                            body_specs[key],
+                            body_desc,
                             stage.GetPrimAtPath(p),
-                            incoming_xform=articulation_incoming_xform,
+                            incoming_xform=body_incoming_xform,
                             add_body_to_builder=True,
                         )
                         if bid >= 0:
