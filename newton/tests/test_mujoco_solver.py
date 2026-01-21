@@ -4360,7 +4360,6 @@ class TestMuJoCoAttributes(unittest.TestCase):
         </mujoco>
         """
         builder = newton.ModelBuilder()
-        newton.solvers.SolverMuJoCo.register_custom_attributes(builder)
         builder.add_mjcf(mjcf)
         model = builder.finalize()
         solver = SolverMuJoCo(model, separate_worlds=False)
@@ -4474,7 +4473,6 @@ class TestMuJoCoAttributes(unittest.TestCase):
 </mujoco>"""
 
         builder = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(builder)
         builder.add_mjcf(mjcf_content)
         model = builder.finalize()
         solver = SolverMuJoCo(model)
