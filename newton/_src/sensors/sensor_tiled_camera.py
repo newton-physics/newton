@@ -122,11 +122,18 @@ class SensorTiledCamera:
         self.model = model
 
         self.render_context = RenderContext(
-            width,
-            height,
-            self.model.num_worlds,
-            num_cameras,
-            RenderContext.Options(True, False, False, True, True, True),
+            width=width,
+            height=height,
+            num_worlds=self.model.num_worlds,
+            num_cameras=num_cameras,
+            options=RenderContext.Options(
+                enable_global_world=True,
+                enable_textures=False,
+                enable_shadows=False,
+                enable_ambient_lighting=True,
+                enable_particles=True,
+                enable_backface_culling=True,
+            ),
         )
         self.render_context.mesh_ids = model.shape_source_ptr
         self.render_context.shape_mesh_indices = wp.empty(self.model.shape_count, dtype=wp.int32)
