@@ -24,7 +24,6 @@ import newton
 import newton.examples
 from newton._src.geometry.types import GeoType
 from newton._src.sim.builder import ShapeFlags
-from newton.solvers import SolverMuJoCo
 
 
 class TestImportMjcf(unittest.TestCase):
@@ -742,7 +741,6 @@ class TestImportMjcf(unittest.TestCase):
 
         builder = newton.ModelBuilder()
 
-        SolverMuJoCo.register_custom_attributes(builder)
         builder.add_mjcf(mjcf)
         model = builder.finalize()
 
@@ -815,7 +813,6 @@ class TestImportMjcf(unittest.TestCase):
         </mujoco>
         """
         builder = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(builder)
         builder.add_mjcf(mjcf)
         model = builder.finalize()
 
@@ -843,7 +840,6 @@ class TestImportMjcf(unittest.TestCase):
 
         builder = newton.ModelBuilder()
 
-        SolverMuJoCo.register_custom_attributes(builder)
         builder.add_mjcf(mjcf)
         model = builder.finalize()
 
@@ -917,7 +913,6 @@ class TestImportMjcf(unittest.TestCase):
 
         builder = newton.ModelBuilder()
 
-        SolverMuJoCo.register_custom_attributes(builder)
         builder.add_mjcf(mjcf)
         model = builder.finalize()
 
@@ -1136,7 +1131,6 @@ class TestImportMjcf(unittest.TestCase):
 
         builder = newton.ModelBuilder()
         # Register gravcomp
-        SolverMuJoCo.register_custom_attributes(builder)
         builder.add_mjcf(mjcf_content)
         model = builder.finalize()
 
@@ -1181,7 +1175,6 @@ class TestImportMjcf(unittest.TestCase):
 </mujoco>
 """
         builder = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(builder)
         builder.add_mjcf(mjcf_content)
         model = builder.finalize()
 
@@ -1232,7 +1225,6 @@ class TestImportMjcf(unittest.TestCase):
 </mujoco>
 """
         builder = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(builder)
         builder.add_mjcf(mjcf_content)
         model = builder.finalize()
 
@@ -1353,7 +1345,6 @@ class TestImportMjcf(unittest.TestCase):
 """
 
         builder = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(builder)
         builder.add_mjcf(mjcf_content)
         model = builder.finalize()
 
@@ -1389,7 +1380,6 @@ class TestImportMjcf(unittest.TestCase):
 """
 
         builder = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(builder)
         builder.add_mjcf(mjcf)
         model = builder.finalize()
 
@@ -1433,7 +1423,6 @@ class TestImportMjcf(unittest.TestCase):
 """
 
         builder = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(builder)
         builder.add_mjcf(mjcf)
         model = builder.finalize()
 
@@ -1476,7 +1465,6 @@ class TestImportMjcf(unittest.TestCase):
 """
 
         builder = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(builder)
         builder.add_mjcf(mjcf)
         model = builder.finalize()
 
@@ -1518,7 +1506,6 @@ class TestImportMjcf(unittest.TestCase):
 """
 
         builder = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(builder)
         builder.add_mjcf(mjcf_content)
         model = builder.finalize()
 
@@ -1642,7 +1629,6 @@ class TestImportMjcf(unittest.TestCase):
 """
 
         builder = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(builder)
         builder.add_mjcf(mjcf)
         model = builder.finalize()
 
@@ -1685,7 +1671,6 @@ class TestImportMjcf(unittest.TestCase):
 </mujoco>"""
 
         builder = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(builder)
         builder.add_mjcf(mjcf_content)
         model = builder.finalize()
 
@@ -1719,7 +1704,6 @@ class TestImportMjcf(unittest.TestCase):
 </mujoco>"""
 
         builder = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(builder)
         builder.add_mjcf(mjcf_content)
         model = builder.finalize()
         springref = model.mujoco.dof_springref.numpy()

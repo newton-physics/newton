@@ -1565,6 +1565,7 @@ class ModelBuilder:
     ):
         """
         Parses MuJoCo XML (MJCF) file and adds the bodies and joints to the given ModelBuilder.
+        MuJoCo-specific custom attributes are registered on the builder automatically.
 
         Args:
             source (str): The filename of the MuJoCo file to parse, or the MJCF XML string content.
@@ -1595,8 +1596,10 @@ class ModelBuilder:
             convert_3d_hinge_to_ball_joints (bool): If True, series of three hinge joints are converted to a single ball joint. Default is False.
             mesh_maxhullvert (int): Maximum vertices for convex hull approximation of meshes.
         """
+        from ..solvers.mujoco.solver_mujoco import SolverMuJoCo  # noqa: PLC0415
         from ..utils.import_mjcf import parse_mjcf  # noqa: PLC0415
 
+        SolverMuJoCo.register_custom_attributes(self)
         return parse_mjcf(
             self,
             source,
