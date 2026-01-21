@@ -341,7 +341,7 @@ class ModelBuilder:
                 self.target_pos = 0.5 * (self.limit_lower + self.limit_upper)
 
         @classmethod
-        def create_unlimited(cls, axis: AxisType | Vec3, actuator_mode: ActuatorMode | None = None) -> ModelBuilder.JointDofConfig:
+        def create_unlimited(cls, axis: AxisType | Vec3) -> ModelBuilder.JointDofConfig:
             """Creates a JointDofConfig with no limits."""
             return ModelBuilder.JointDofConfig(
                 axis=axis,
@@ -353,8 +353,7 @@ class ModelBuilder:
                 target_kd=0.0,
                 armature=0.0,
                 limit_ke=0.0,
-                limit_kd=0.0,
-                actuator_mode=actuator_mode,
+                limit_kd=0.0
             )
 
     @dataclass
