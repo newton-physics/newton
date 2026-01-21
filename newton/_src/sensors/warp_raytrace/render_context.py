@@ -40,35 +40,32 @@ DEFAULT_CLEAR_DATA = ClearData()
 
 
 class RenderContext:
+    @dataclass
+    class Options:
+        enable_global_world: bool = True
+        enable_textures: bool = True
+        enable_shadows: bool = True
+        enable_ambient_lighting: bool = True
+        enable_particles: bool = True
+        enable_backface_culling: bool = True
+        tile_rendering: bool = False
+        tile_size: int = 8
+        max_distance: float = 1000.0
+
     def __init__(
         self,
         width: int = 512,
         height: int = 512,
-        enable_textures: bool = True,
-        enable_shadows: bool = True,
-        enable_ambient_lighting: bool = True,
-        enable_particles: bool = True,
-        enable_backface_culling: bool = True,
         num_worlds: int = 1,
         num_cameras: int = 1,
-        has_global_world: bool = False,
-        tile_rendering: bool = False,
-        tile_size: int = 8,
+        options: Options | None = None,
     ):
         self.utils = Utils(self)
+        self.options = options if options else RenderContext.Options()
 
         self.width = width
         self.height = height
-        self.tile_rendering = tile_rendering
-        self.tile_size = tile_size
-        self.enable_textures = enable_textures
-        self.enable_shadows = enable_shadows
-        self.enable_ambient_lighting = enable_ambient_lighting
-        self.enable_backface_culling = enable_backface_culling
         self.num_worlds = num_worlds
-        self.has_global_world = has_global_world
-        self.enable_particles = enable_particles
-        self.max_distance = 1000.0
 
         self.bvh_shapes: wp.Bvh = None
         self.bvh_particles: wp.Bvh = None
@@ -257,7 +254,7 @@ class RenderContext:
 
     @property
     def num_worlds_total(self) -> int:
-        if self.has_global_world:
+        if self.options.enable_global_world:
             return self.num_worlds + 1
         return self.num_worlds
 
