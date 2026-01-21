@@ -126,7 +126,7 @@ class TestMujocoFixedTendon(unittest.TestCase):
             q3,
             q1,
             places=3,
-            msg=f"Expected joint_q[3]: {q1}, Measured tendon length: {q3}",
+            msg=f"Expected joint_q[3]: {q1}, Measured q3: {q3}",
         )
 
     def run_test_mujoco_fixed_tendon_limit_behavior(self, mode: LimitBreachType):
@@ -200,8 +200,6 @@ class TestMujocoFixedTendon(unittest.TestCase):
         joint_start_positions[2] = joint_start_positions[0]
         joint_start_velocities[2] = joint_start_velocities[0]
 
-        start_tendon_length = joint_start_positions[0] * coeff0 + joint_start_positions[1] * coeff1
-
         individual_builder = newton.ModelBuilder()
         SolverMuJoCo.register_custom_attributes(individual_builder)
         individual_builder.add_mjcf(mjcf)
@@ -250,7 +248,7 @@ class TestMujocoFixedTendon(unittest.TestCase):
             q3,
             q1,
             places=3,
-            msg=f"Expected joint_q[3]: {q1}, Measured tendon length: {q3}",
+            msg=f"Expected joint_q[3]: {q1}, Measured q3: {q3}",
         )
 
     def test_upper_tendon_limit_breach_from_above(self):
