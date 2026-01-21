@@ -807,7 +807,6 @@ class TestImportMjcf(unittest.TestCase):
         expected_damping = [[2.0, 5.0]]
         expected_stiffness = [[1.0, 4.0]]
         expected_frictionloss = [[2.6, 2.8]]
-        expected_springlength = [[wp.vec2(3.0, 3.5), wp.vec2(6.0, 6.0)]]
         expected_range = [[wp.vec2(0.0, 0.0), wp.vec2(-10.0, 11.0)]]
         expected_margin = [[0.1, 0.3]]
         expected_solreflimit = [[wp.vec2(0.04, 1.1), wp.vec2(0.05, 1.2)]]
@@ -817,9 +816,19 @@ class TestImportMjcf(unittest.TestCase):
         expected_solimpfriction = [[vec5(0.3, 0.4, 0.006, 0.5, 1.4), vec5(0.35, 0.45, 0.004, 0.5, 1.2)]]
         expected_actuator_force_range = [[wp.vec2(-2.2, 2.2), wp.vec2(-3.3, 3.3)]]
         expected_armature = [[0.13, 0.23]]
+
+        # We parse the 2nd tendon rest length as (6, -1) and store that in model.mujoco.
+        # When we create the mujoco tendon in the mujoco solver we apply the dead zone rule.
+        # If the user has authored a dead zone (2nd number > 1st number) then we honour that
+        # but if they have not authored a dead zone (2nd number <= 1st number) then we create
+        # the tendon with dead zone bounds that have zero extent. In our example, we create the
+        # dead zone (6,6).
+        expected_model_springlength = [[wp.vec2(3.0, 3.5), wp.vec2(6.0, -1.0)]]
+        expected_solver_springlength = [[wp.vec2(3.0, 3.5), wp.vec2(6.0, 6.0)]]
+
         for i in range(0, nbBuilders):
             for j in range(0, nbTendonsPerBuilder):
-                # Check the stiffness
+                # Check the solver stiffness
                 expected = expected_stiffness[i][j]
                 measured = solver.mjw_model.tendon_stiffness.numpy()[i][j]
                 self.assertAlmostEqual(
@@ -829,7 +838,17 @@ class TestImportMjcf(unittest.TestCase):
                     msg=f"Expected stiffness value: {expected}, Measured value: {measured}",
                 )
 
-                # Check the damping
+                # Check the model stiffness
+                expected = expected_stiffness[i][j]
+                measured = model.mujoco.tendon_stiffness.numpy()[nbTendonsPerBuilder * i + j]
+                self.assertAlmostEqual(
+                    expected,
+                    measured,
+                    places=4,
+                    msg=f"Expected stiffness value: {expected}, Measured value: {measured}",
+                )
+
+                # Check the solver damping
                 expected = expected_damping[i][j]
                 measured = solver.mjw_model.tendon_damping.numpy()[i][j]
                 self.assertAlmostEqual(
@@ -839,9 +858,19 @@ class TestImportMjcf(unittest.TestCase):
                     msg=f"Expected damping value: {expected}, Measured value: {measured}",
                 )
 
-                # Check the spring length
+                # Check the model damping
+                expected = expected_damping[i][j]
+                measured = model.mujoco.tendon_damping.numpy()[nbTendonsPerBuilder * i + j]
+                self.assertAlmostEqual(
+                    measured,
+                    expected,
+                    places=4,
+                    msg=f"Expected damping value: {expected}, Measured value: {measured}",
+                )
+
+                # Check the solver spring length
                 for k in range(0, 2):
-                    expected = expected_springlength[i][j][k]
+                    expected = expected_solver_springlength[i][j][k]
                     measured = solver.mjw_model.tendon_lengthspring.numpy()[i][j][k]
                     self.assertAlmostEqual(
                         measured,
@@ -850,7 +879,19 @@ class TestImportMjcf(unittest.TestCase):
                         msg=f"Expected springlength[{k}] value: {expected}, Measured value: {measured}",
                     )
 
-                # Check the frictionloss
+                # Check the model spring length
+                thing = model.mujoco.tendon_springlength.numpy()
+                for k in range(0, 2):
+                    expected = expected_model_springlength[i][j][k]
+                    measured = model.mujoco.tendon_springlength.numpy()[nbTendonsPerBuilder * i + j][k]
+                    self.assertAlmostEqual(
+                        measured,
+                        expected,
+                        places=4,
+                        msg=f"Expected springlength[{k}] value: {expected}, Measured value: {measured}",
+                    )
+
+                # Check the solver frictionloss
                 expected = expected_frictionloss[i][j]
                 measured = solver.mjw_model.tendon_frictionloss.numpy()[i][j]
                 self.assertAlmostEqual(
@@ -860,7 +901,17 @@ class TestImportMjcf(unittest.TestCase):
                     msg=f"Expected tendon frictionloss value: {expected}, Measured value: {measured}",
                 )
 
-                # Check the range
+                # Check the model frictionloss
+                expected = expected_frictionloss[i][j]
+                measured = model.mujoco.tendon_frictionloss.numpy()[nbTendonsPerBuilder * i + j]
+                self.assertAlmostEqual(
+                    measured,
+                    expected,
+                    places=4,
+                    msg=f"Expected tendon frictionloss value: {expected}, Measured value: {measured}",
+                )
+
+                # Check the solver range
                 for k in range(0, 2):
                     expected = expected_range[i][j][k]
                     measured = solver.mjw_model.tendon_range.numpy()[i][j][k]
@@ -871,7 +922,18 @@ class TestImportMjcf(unittest.TestCase):
                         msg=f"Expected range[{k}] value: {expected}, Measured value: {measured}",
                     )
 
-                # Check the margin
+                # Check the model range
+                for k in range(0, 2):
+                    expected = expected_range[i][j][k]
+                    measured = model.mujoco.tendon_range.numpy()[nbTendonsPerBuilder * i + j][k]
+                    self.assertAlmostEqual(
+                        measured,
+                        expected,
+                        places=4,
+                        msg=f"Expected range[{k}] value: {expected}, Measured value: {measured}",
+                    )
+
+                # Check the solver margin
                 expected = expected_margin[i][j]
                 measured = solver.mjw_model.tendon_margin.numpy()[i][j]
                 self.assertAlmostEqual(
@@ -881,7 +943,17 @@ class TestImportMjcf(unittest.TestCase):
                     msg=f"Expected margin value: {expected}, Measured value: {measured}",
                 )
 
-                # Check solreflimit
+                # Check the model margin
+                expected = expected_margin[i][j]
+                measured = model.mujoco.tendon_margin.numpy()[nbTendonsPerBuilder * i + j]
+                self.assertAlmostEqual(
+                    measured,
+                    expected,
+                    places=4,
+                    msg=f"Expected margin value: {expected}, Measured value: {measured}",
+                )
+
+                # Check solver solreflimit
                 for k in range(0, 2):
                     expected = expected_solreflimit[i][j][k]
                     measured = solver.mjw_model.tendon_solref_lim.numpy()[i][j][k]
@@ -892,7 +964,18 @@ class TestImportMjcf(unittest.TestCase):
                         msg=f"Expected solreflimit[{k}] value: {expected}, Measured value: {measured}",
                     )
 
-                # Check solimplimit
+                # Check model solreflimit
+                for k in range(0, 2):
+                    expected = expected_solreflimit[i][j][k]
+                    measured = model.mujoco.tendon_solref_limit.numpy()[nbTendonsPerBuilder * i + j][k]
+                    self.assertAlmostEqual(
+                        measured,
+                        expected,
+                        places=4,
+                        msg=f"Expected solreflimit[{k}] value: {expected}, Measured value: {measured}",
+                    )
+
+                # Check solver solimplimit
                 for k in range(0, 5):
                     expected = expected_solimplimit[i][j][k]
                     measured = solver.mjw_model.tendon_solimp_lim.numpy()[i][j][k]
@@ -903,7 +986,18 @@ class TestImportMjcf(unittest.TestCase):
                         msg=f"Expected solimplimit[{k}] value: {expected}, Measured value: {measured}",
                     )
 
-                # Check solreffriction
+                # Check model solimplimit
+                for k in range(0, 5):
+                    expected = expected_solimplimit[i][j][k]
+                    measured = model.mujoco.tendon_solimp_limit.numpy()[nbTendonsPerBuilder * i + j][k]
+                    self.assertAlmostEqual(
+                        measured,
+                        expected,
+                        places=4,
+                        msg=f"Expected solimplimit[{k}] value: {expected}, Measured value: {measured}",
+                    )
+
+                # Check solver solreffriction
                 for k in range(0, 2):
                     expected = expected_solreffriction[i][j][k]
                     measured = solver.mjw_model.tendon_solref_fri.numpy()[i][j][k]
@@ -914,7 +1008,18 @@ class TestImportMjcf(unittest.TestCase):
                         msg=f"Expected solreffriction[{k}] value: {expected}, Measured value: {measured}",
                     )
 
-                # Check solimplimit
+                # Check model solreffriction
+                for k in range(0, 2):
+                    expected = expected_solreffriction[i][j][k]
+                    measured = model.mujoco.tendon_solref_friction.numpy()[nbTendonsPerBuilder * i + j][k]
+                    self.assertAlmostEqual(
+                        measured,
+                        expected,
+                        places=4,
+                        msg=f"Expected solreffriction[{k}] value: {expected}, Measured value: {measured}",
+                    )
+
+                # Check solver solimplimit
                 for k in range(0, 5):
                     expected = expected_solimpfriction[i][j][k]
                     measured = solver.mjw_model.tendon_solimp_fri.numpy()[i][j][k]
@@ -925,7 +1030,18 @@ class TestImportMjcf(unittest.TestCase):
                         msg=f"Expected solimpfriction[{k}] value: {expected}, Measured value: {measured}",
                     )
 
-                # Check the actuator force range
+                # Check model solimplimit
+                for k in range(0, 5):
+                    expected = expected_solimpfriction[i][j][k]
+                    measured = model.mujoco.tendon_solimp_friction.numpy()[nbTendonsPerBuilder * i + j][k]
+                    self.assertAlmostEqual(
+                        measured,
+                        expected,
+                        places=4,
+                        msg=f"Expected solimpfriction[{k}] value: {expected}, Measured value: {measured}",
+                    )
+
+                # Check the solver actuator force range
                 for k in range(0, 2):
                     expected = expected_actuator_force_range[i][j][k]
                     measured = solver.mjw_model.tendon_actfrcrange.numpy()[i][j][k]
@@ -936,9 +1052,30 @@ class TestImportMjcf(unittest.TestCase):
                         msg=f"Expected range[{k}] value: {expected}, Measured value: {measured}",
                     )
 
-                # Check armature
+                # Check the model actuator force range
+                for k in range(0, 2):
+                    expected = expected_actuator_force_range[i][j][k]
+                    measured = model.mujoco.tendon_actuator_force_range.numpy()[nbTendonsPerBuilder * i + j][k]
+                    self.assertAlmostEqual(
+                        measured,
+                        expected,
+                        places=4,
+                        msg=f"Expected range[{k}] value: {expected}, Measured value: {measured}",
+                    )
+
+                # Check solver armature
                 expected = expected_armature[i][j]
                 measured = solver.mjw_model.tendon_armature.numpy()[i][j]
+                self.assertAlmostEqual(
+                    measured,
+                    expected,
+                    places=4,
+                    msg=f"Expected armature value: {expected}, Measured value: {measured}",
+                )
+
+                # Check model armature
+                expected = expected_armature[i][j]
+                measured = model.mujoco.tendon_armature.numpy()[nbTendonsPerBuilder * i + j]
                 self.assertAlmostEqual(
                     measured,
                     expected,
