@@ -2265,7 +2265,6 @@ class SolverMuJoCo(SolverBase):
                     joint_params = {
                         "armature": joint_armature[qd_start + i],
                         "pos": joint_pos,
-                        # "ref": float(ref_value),
                     }
                     # Set friction
                     joint_params["frictionloss"] = joint_friction[ai]
@@ -2356,7 +2355,6 @@ class SolverMuJoCo(SolverBase):
                     joint_params = {
                         "armature": joint_armature[qd_start + i],
                         "pos": joint_pos,
-                        # "ref": float(ref_value),
                     }
                     # Set friction
                     joint_params["frictionloss"] = joint_friction[ai]
