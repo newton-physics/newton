@@ -813,7 +813,9 @@ def parse_mjcf(
 
         if len(freejoint_tags) > 0 and parent == -1 and (base_joint is not None or floating is not None):
             joint_pos = joint_pos[0] if len(joint_pos) > 0 else wp.vec3(0.0, 0.0, 0.0)
-            _xform = wp.transform(body_pos_for_joints + joint_pos, body_ori_for_joints)
+            # Rotate joint_pos by body orientation before adding to body position
+            rotated_joint_pos = wp.quat_rotate(body_ori_for_joints, joint_pos)
+            _xform = wp.transform(body_pos_for_joints + rotated_joint_pos, body_ori_for_joints)
 
             if base_joint is not None:
                 # in case of a given base joint, the position is applied first, the rotation only
@@ -875,7 +877,9 @@ def parse_mjcf(
                 if parent == -1:
                     parent_xform_for_joint = world_xform * wp.transform(joint_pos, wp.quat_identity())
                 else:
-                    parent_xform_for_joint = wp.transform(body_pos_for_joints + joint_pos, body_ori_for_joints)
+                    # Rotate joint_pos by body orientation before adding to body position
+                    rotated_joint_pos = wp.quat_rotate(body_ori_for_joints, joint_pos)
+                    parent_xform_for_joint = wp.transform(body_pos_for_joints + rotated_joint_pos, body_ori_for_joints)
 
                 joint_indices.append(
                     builder.add_joint(
