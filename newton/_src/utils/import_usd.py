@@ -58,6 +58,7 @@ def parse_usd(
     hide_collision_shapes: bool = False,
     mesh_maxhullvert: int = MESH_MAXHULLVERT,
     schema_resolvers: list[SchemaResolver] | None = None,
+    force_position_velocity_actuation: bool = False,
 ) -> dict[str, Any]:
     """Parses a Universal Scene Description (USD) stage containing UsdPhysics schema definitions for rigid-body articulations and adds the bodies, shapes and joints to the given ModelBuilder.
 
@@ -96,6 +97,10 @@ def parse_usd(
 
             .. note::
                 Using the ``schema_resolvers`` argument is an experimental feature that may be removed or changed significantly in the future.
+        force_position_velocity_actuation (bool): If True, joints with both non-zero stiffness (kp) and 
+            damping (kd) will use POSITION_VELOCITY actuation mode (creating both position and velocity 
+            actuators). If False (default), joints with any position gain use POSITION mode, and joints 
+            with only velocity gain use VELOCITY mode.
 
     Returns:
         dict: Dictionary with the following entries:
@@ -595,14 +600,19 @@ def parse_usd(
                 joint_params["target_kd"] = target_kd
                 joint_params["effort_limit"] = joint_desc.drive.forceLimit
 
-                if target_ke != 0.0 and target_kd != 0.0 and target_vel != 0.0:
+                # Determine actuator mode from gains
+                if force_position_velocity_actuation and (target_ke != 0.0 and target_kd != 0.0):
+                    # Force POSITION_VELOCITY mode when flag is set and both gains are non-zero
                     joint_params["actuator_mode"] = ActuatorMode.POSITION_VELOCITY
-                elif target_ke != 0.0 and target_kd != 0.0:
+                elif target_ke != 0.0:
+                    # Position gain present - use POSITION
                     joint_params["actuator_mode"] = ActuatorMode.POSITION
                 elif target_kd != 0.0:
+                    # Only velocity gain - use VELOCITY
                     joint_params["actuator_mode"] = ActuatorMode.VELOCITY
                 else:
-                    joint_params["actuator_mode"] = ActuatorMode.POSITION
+                    # No gains - no actuators
+                    joint_params["actuator_mode"] = ActuatorMode.NONE
             else:
                 joint_params["actuator_mode"] = ActuatorMode.NONE
 
@@ -696,16 +706,21 @@ def parse_usd(
                             target_ke = drive.second.stiffness
                             target_kd = drive.second.damping
                             effort_limit = drive.second.forceLimit
+                    # Determine actuator mode from gains
                     if not has_drive:
                         actuator_mode = ActuatorMode.NONE
-                    elif target_ke != 0.0 and target_kd != 0.0 and target_vel != 0.0:
+                    elif force_position_velocity_actuation and (target_ke != 0.0 and target_kd != 0.0):
+                        # Force POSITION_VELOCITY mode when flag is set and both gains are non-zero
                         actuator_mode = ActuatorMode.POSITION_VELOCITY
-                    elif target_ke != 0.0 and target_kd != 0.0:
+                    elif target_ke != 0.0:
+                        # Position gain present - use POSITION
                         actuator_mode = ActuatorMode.POSITION
                     elif target_kd != 0.0:
+                        # Only velocity gain - use VELOCITY
                         actuator_mode = ActuatorMode.VELOCITY
                     else:
-                        actuator_mode = ActuatorMode.POSITION
+                        # No gains - no actuators
+                        actuator_mode = ActuatorMode.NONE
                     return target_pos, target_vel, target_ke, target_kd, effort_limit, actuator_mode
 
                 target_pos, target_vel, target_ke, target_kd, effort_limit, actuator_mode = define_joint_targets(dof, joint_desc)

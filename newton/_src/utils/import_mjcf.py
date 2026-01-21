@@ -1241,6 +1241,10 @@ def parse_mjcf(
                     builder.joint_target_ke[dof_idx] = kp
                     current_mode = builder.joint_act_mode[dof_idx]
                     if current_mode == int(ActuatorMode.VELOCITY):
+                        # A velocity actuator was already parsed for this DOF - upgrade to POSITION_VELOCITY.
+                        # We intentionally preserve the existing kd from the velocity actuator rather than
+                        # overwriting it with this position actuator's kv, since the velocity actuator's
+                        # kv takes precedence for velocity control.
                         builder.joint_act_mode[dof_idx] = int(ActuatorMode.POSITION_VELOCITY)
                     elif current_mode == int(ActuatorMode.NONE):
                         builder.joint_act_mode[dof_idx] = int(ActuatorMode.POSITION)

@@ -1432,6 +1432,7 @@ class ModelBuilder:
         hide_collision_shapes: bool = False,
         mesh_maxhullvert: int = MESH_MAXHULLVERT,
         schema_resolvers: list[SchemaResolver] | None = None,
+        force_position_velocity_actuation: bool = False,
     ) -> dict[str, Any]:
         """
         Parses a Universal Scene Description (USD) stage containing UsdPhysics schema definitions for rigid-body articulations and adds the bodies, shapes and joints to the given ModelBuilder.
@@ -1470,6 +1471,9 @@ class ModelBuilder:
 
                 .. note::
                     Using the ``schema_resolvers`` argument is an experimental feature that may be removed or changed significantly in the future.
+            force_position_velocity_actuation (bool): If True, joints with both non-zero stiffness (kp) and 
+                damping (kd) will use POSITION_VELOCITY actuation mode (creating both position and velocity 
+                actuators). If False (default), joints with any position gain use POSITION mode.
 
         Returns:
             dict: Dictionary with the following entries:
@@ -1532,6 +1536,7 @@ class ModelBuilder:
             hide_collision_shapes,
             mesh_maxhullvert,
             schema_resolvers,
+            force_position_velocity_actuation,
         )
 
     def add_mjcf(
@@ -2378,11 +2383,11 @@ class ModelBuilder:
             # Use actuator_mode if explicitly set, otherwise infer from gains
             if dim.actuator_mode is not None:
                 mode = int(dim.actuator_mode)
-            elif dim.target_ke != 0.0 and dim.target_kd != 0.0 and dim.target_vel != 0.0:
-                # Both gains and non-zero velocity target - use POSITION_VELOCITY for PD control
-                mode = int(ActuatorMode.POSITION_VELOCITY)
             elif dim.target_ke != 0.0 and dim.target_kd != 0.0:
-                # Both gains but no velocity target - use POSITION only
+                # Both position and velocity gains - use POSITION_VELOCITY for full PD control
+                mode = int(ActuatorMode.POSITION_VELOCITY)
+            elif dim.target_ke != 0.0:
+                # Only position gain - use POSITION
                 mode = int(ActuatorMode.POSITION)
             elif dim.target_kd != 0.0:
                 # Only velocity gain - use VELOCITY
