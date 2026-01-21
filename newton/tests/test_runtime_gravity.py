@@ -452,6 +452,77 @@ def test_set_gravity_invalid_array_size(test, device):
         model.set_gravity([(0.0, 0.0, -9.81), (0.0, 0.0, -4.9)], world=0)
 
 
+def test_replicate_gravity(test, device):
+    """Test that replicate() copies gravity from source builder to all worlds"""
+    # Create a robot builder with zero gravity
+    robot = newton.ModelBuilder(gravity=0)
+    robot.add_particle(pos=(0.0, 0.0, 1.0), vel=(0.0, 0.0, 0.0), mass=1.0)
+
+    # Replicate into a main builder (which has default gravity -9.81)
+    num_worlds = 3
+    worlds = newton.ModelBuilder()
+    worlds.replicate(robot, num_worlds)
+
+    model = worlds.finalize(device=device)
+    gravity = model.gravity.numpy()
+
+    # All worlds should have zero gravity (inherited from robot builder)
+    test.assertEqual(len(gravity), num_worlds)
+    for i in range(num_worlds):
+        np.testing.assert_allclose(gravity[i], [0.0, 0.0, 0.0], atol=1e-6)
+
+
+def test_replicate_gravity_nonzero(test, device):
+    """Test that replicate() copies non-zero gravity from source builder"""
+    # Create a robot builder with custom gravity
+    robot = newton.ModelBuilder(gravity=-4.905)  # Half gravity
+    robot.add_particle(pos=(0.0, 0.0, 1.0), vel=(0.0, 0.0, 0.0), mass=1.0)
+
+    # Replicate into a main builder
+    num_worlds = 2
+    worlds = newton.ModelBuilder()
+    worlds.replicate(robot, num_worlds)
+
+    model = worlds.finalize(device=device)
+    gravity = model.gravity.numpy()
+
+    # All worlds should have half gravity (inherited from robot builder)
+    test.assertEqual(len(gravity), num_worlds)
+    for i in range(num_worlds):
+        np.testing.assert_allclose(gravity[i], [0.0, 0.0, -4.905], atol=1e-6)
+
+
+def test_replicate_gravity_simulation(test, device):
+    """Test that replicated gravity actually affects simulation behavior"""
+    # Create a robot builder with zero gravity
+    robot = newton.ModelBuilder(gravity=0)
+    robot.default_shape_cfg.density = 1000.0
+    b = robot.add_body()
+    robot.add_shape_box(b, hx=0.5, hy=0.5, hz=0.5)
+
+    # Replicate into a main builder
+    worlds = newton.ModelBuilder()
+    worlds.replicate(robot, 2)
+
+    model = worlds.finalize(device=device)
+    solver = SolverXPBD(model)
+
+    state_0, state_1 = model.state(), model.state()
+    control = model.control()
+    dt = 0.01
+
+    # Simulate
+    for _ in range(10):
+        state_0.clear_forces()
+        solver.step(state_0, state_1, control, None, dt)
+        state_0, state_1 = state_1, state_0
+
+    # Bodies should not have moved (zero gravity)
+    body_qd = state_0.body_qd.numpy()
+    for i in range(2):
+        test.assertAlmostEqual(body_qd[i, 2], 0.0, places=4)
+
+
 devices = get_test_devices()
 
 # Test with different solvers
@@ -555,6 +626,26 @@ for device in devices:
         TestRuntimeGravity,
         "test_set_gravity_invalid_array_size",
         test_set_gravity_invalid_array_size,
+        devices=[device],
+    )
+
+    # Test gravity replication (once per device)
+    add_function_test(
+        TestRuntimeGravity,
+        "test_replicate_gravity",
+        test_replicate_gravity,
+        devices=[device],
+    )
+    add_function_test(
+        TestRuntimeGravity,
+        "test_replicate_gravity_nonzero",
+        test_replicate_gravity_nonzero,
+        devices=[device],
+    )
+    add_function_test(
+        TestRuntimeGravity,
+        "test_replicate_gravity_simulation",
+        test_replicate_gravity_simulation,
         devices=[device],
     )
 

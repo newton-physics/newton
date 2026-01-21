@@ -729,6 +729,10 @@ class ModelBuilder:
         self.up_axis: Axis = Axis.from_any(up_axis)
         self.gravity: float = gravity
 
+        # Per-world gravity vectors, populated when worlds are created via begin_world()
+        # Each entry is a tuple (gx, gy, gz) representing the gravity vector for that world
+        self.world_gravity: list[tuple[float, float, float]] = []
+
         # contacts to be generated within the given distance margin to be generated at
         # every simulation substep (can be 0 if only one PBD solver iteration is used)
         self.rigid_contact_margin = 0.1
@@ -1683,6 +1687,9 @@ class ModelBuilder:
         # Note: We might want to add world_key and world_attributes lists in __init__ if needed
         # For now, we just track the world index
 
+        # Initialize this world's gravity from the builder's default gravity
+        self.world_gravity.append(tuple(g * self.gravity for g in self.up_vector))
+
     def end_world(self):
         """End the current world context and return to global scope.
 
@@ -1774,6 +1781,14 @@ class ModelBuilder:
 
         if builder.up_axis != self.up_axis:
             raise ValueError("Cannot add a builder with a different up axis.")
+
+        # Copy gravity from source builder
+        if self.current_world >= 0:
+            # We're in a world context, update this world's gravity vector
+            self.world_gravity[self.current_world] = tuple(g * builder.gravity for g in builder.up_vector)
+        else:
+            # No world context (add_builder called directly), copy scalar gravity
+            self.gravity = builder.gravity
 
         self._requested_state_attributes.update(builder._requested_state_attributes)
 
@@ -6651,9 +6666,15 @@ class ModelBuilder:
             m.up_vector = np.array(self.up_vector, dtype=wp.float32)
 
             # set gravity - create per-world gravity array for multi-world support
-            gravity_vec = wp.vec3(*(g * self.gravity for g in self.up_vector))
+            if self.world_gravity:
+                # Use per-world gravity from _world_gravity list
+                gravity_vecs = [wp.vec3(*g) for g in self.world_gravity]
+            else:
+                # Fallback: use scalar gravity for all worlds
+                gravity_vec = wp.vec3(*(g * self.gravity for g in self.up_vector))
+                gravity_vecs = [gravity_vec] * self.num_worlds
             m.gravity = wp.array(
-                [gravity_vec] * self.num_worlds,
+                gravity_vecs,
                 dtype=wp.vec3,
                 device=device,
                 requires_grad=requires_grad,
