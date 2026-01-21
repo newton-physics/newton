@@ -584,22 +584,24 @@ def parse_usd(
             joint_params["armature"] = joint_armature
             joint_params["friction"] = joint_friction
             if joint_desc.drive.enabled:
-                joint_params["target_vel"] = joint_desc.drive.targetVelocity
-                joint_params["target_pos"] = joint_desc.drive.targetPosition
+                target_vel = joint_desc.drive.targetVelocity
+                target_pos = joint_desc.drive.targetPosition
+                target_ke = joint_desc.drive.stiffness
+                target_kd = joint_desc.drive.damping
 
-                joint_params["target_ke"] = joint_desc.drive.stiffness
-                joint_params["target_kd"] = joint_desc.drive.damping
+                joint_params["target_vel"] = target_vel
+                joint_params["target_pos"] = target_pos
+                joint_params["target_ke"] = target_ke
+                joint_params["target_kd"] = target_kd
                 joint_params["effort_limit"] = joint_desc.drive.forceLimit
 
-                # Determine actuator mode based on targets
-                target_pos = joint_desc.drive.targetPosition
-                target_vel = joint_desc.drive.targetVelocity
-                if abs(target_pos) > 1e-9 and abs(target_vel) > 1e-9:
+                if target_ke != 0.0 and target_kd != 0.0 and target_vel != 0.0:
                     joint_params["actuator_mode"] = ActuatorMode.POSITION_VELOCITY
-                elif abs(target_vel) > 1e-9:
+                elif target_ke != 0.0 and target_kd != 0.0:
+                    joint_params["actuator_mode"] = ActuatorMode.POSITION
+                elif target_kd != 0.0:
                     joint_params["actuator_mode"] = ActuatorMode.VELOCITY
                 else:
-                    # Has drive but only pos target or both zero - default to POSITION
                     joint_params["actuator_mode"] = ActuatorMode.POSITION
             else:
                 joint_params["actuator_mode"] = ActuatorMode.NONE
@@ -694,15 +696,16 @@ def parse_usd(
                             target_ke = drive.second.stiffness
                             target_kd = drive.second.damping
                             effort_limit = drive.second.forceLimit
-                    # Determine actuator mode based on drive presence and targets
+                    # Determine actuator mode based on gains (consistent with builder)
                     if not has_drive:
                         actuator_mode = ActuatorMode.NONE
-                    elif abs(target_pos) > 1e-9 and abs(target_vel) > 1e-9:
+                    elif target_ke != 0.0 and target_kd != 0.0 and target_vel != 0.0:
                         actuator_mode = ActuatorMode.POSITION_VELOCITY
-                    elif abs(target_vel) > 1e-9:
+                    elif target_ke != 0.0 and target_kd != 0.0:
+                        actuator_mode = ActuatorMode.POSITION
+                    elif target_kd != 0.0:
                         actuator_mode = ActuatorMode.VELOCITY
                     else:
-                        # Has drive but only pos target or both zero - default to POSITION
                         actuator_mode = ActuatorMode.POSITION
                     return target_pos, target_vel, target_ke, target_kd, effort_limit, actuator_mode
 

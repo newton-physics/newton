@@ -2381,13 +2381,13 @@ class ModelBuilder:
             # Use actuator_mode if explicitly set, otherwise infer from gains
             if dim.actuator_mode is not None:
                 mode = int(dim.actuator_mode)
-            elif dim.target_ke > 0.0 and dim.target_kd > 0.0 and dim.target_vel != 0.0:
+            elif dim.target_ke != 0.0 and dim.target_kd != 0.0 and dim.target_vel != 0.0:
                 # Both gains and non-zero velocity target - use POSITION_VELOCITY for PD control
                 mode = int(ActuatorMode.POSITION_VELOCITY)
-            elif dim.target_ke > 0.0 and dim.target_kd > 0.0:
+            elif dim.target_ke != 0.0 and dim.target_kd != 0.0:
                 # Both gains but no velocity target - use POSITION only
                 mode = int(ActuatorMode.POSITION)
-            elif dim.target_kd > 0.0:
+            elif dim.target_kd != 0.0:
                 # Only velocity gain - use VELOCITY
                 mode = int(ActuatorMode.VELOCITY)
             else:
@@ -3580,6 +3580,9 @@ class ModelBuilder:
         self.joint_X_p.clear()
         self.joint_X_c.clear()
         self.joint_axis.clear()
+        self.joint_act_mode.clear()
+        self.joint_target_ke.clear()
+        self.joint_target_kd.clear()
         self.joint_limit_lower.clear()
         self.joint_limit_upper.clear()
         self.joint_limit_ke.clear()
@@ -3590,10 +3593,6 @@ class ModelBuilder:
         self.joint_target_vel.clear()
         self.joint_world.clear()
         self.joint_articulation.clear()
-        # Clear per-DOF actuator arrays
-        self.joint_act_mode.clear()
-        self.joint_target_ke.clear()
-        self.joint_target_kd.clear()
         for joint in retained_joints:
             self.joint_key.append(joint["key"])
             self.joint_type.append(joint["type"])
@@ -3621,6 +3620,9 @@ class ModelBuilder:
                 self.joint_articulation.append(-1)
             for axis in joint["axes"]:
                 self.joint_axis.append(axis["axis"])
+                self.joint_act_mode.append(axis["actuator_mode"])
+                self.joint_target_ke.append(axis["target_ke"])
+                self.joint_target_kd.append(axis["target_kd"])
                 self.joint_limit_lower.append(axis["limit_lower"])
                 self.joint_limit_upper.append(axis["limit_upper"])
                 self.joint_limit_ke.append(axis["limit_ke"])
@@ -3628,10 +3630,6 @@ class ModelBuilder:
                 self.joint_target_pos.append(axis["target_pos"])
                 self.joint_target_vel.append(axis["target_vel"])
                 self.joint_effort_limit.append(axis["effort_limit"])
-                # Per-DOF actuator properties
-                self.joint_act_mode.append(axis["actuator_mode"])
-                self.joint_target_ke.append(axis["target_ke"])
-                self.joint_target_kd.append(axis["target_kd"])
 
         # Remap equality constraint body/joint indices and transform anchors for merged bodies
         for i in range(len(self.equality_constraint_body1)):
@@ -6588,12 +6586,12 @@ class ModelBuilder:
 
             # dynamics properties
             m.joint_armature = wp.array(self.joint_armature, dtype=wp.float32, requires_grad=requires_grad)
-            m.joint_target_pos = wp.array(self.joint_target_pos, dtype=wp.float32, requires_grad=requires_grad)
-            m.joint_target_vel = wp.array(self.joint_target_vel, dtype=wp.float32, requires_grad=requires_grad)
 
-            m.joint_act_mode = wp.array(self.joint_act_mode, dtype=wp.int32)
+            m.joint_act_mode = wp.array(self.joint_act_mode, dtype=wp.int32, requires_grad=requires_grad)
             m.joint_target_ke = wp.array(self.joint_target_ke, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_target_kd = wp.array(self.joint_target_kd, dtype=wp.float32, requires_grad=requires_grad)
+            m.joint_target_pos = wp.array(self.joint_target_pos, dtype=wp.float32, requires_grad=requires_grad)
+            m.joint_target_vel = wp.array(self.joint_target_vel, dtype=wp.float32, requires_grad=requires_grad)
 
             m.joint_f = wp.array(self.joint_f, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_effort_limit = wp.array(self.joint_effort_limit, dtype=wp.float32, requires_grad=requires_grad)
