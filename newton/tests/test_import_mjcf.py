@@ -1528,14 +1528,14 @@ class TestImportMjcf(unittest.TestCase):
 
       <!-- First child link with prismatic joint along x -->
       <body name="link1" pos="0.0 -0.5 0">
-        <joint name="joint1" type="slide" axis="1 0 0" range="-50.5 50.5"/>
+        <joint name="joint1" type="slide" axis="1 0 0" ref="0.5" range="-50.5 50.5"/>
         <geom solmix="1.0" type="cylinder" size="0.05 0.025" rgba="1 0 0 1" euler="0 90 0"/>
         <inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/>
       </body>
 
       <!-- Second child link with prismatic joint along x -->
       <body name="link2" pos="-0.0 -0.7 0">
-        <joint name="joint2" type="slide" axis="1 0 0" range="-50.5 50.5"/>
+        <joint name="joint2" type="slide" axis="1 0 0" ref="0.7" range="-50.5 50.5"/>
         <geom type="cylinder" size="0.05 0.025" rgba="0 0 1 1" euler="0 90 0"/>
         <inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/>
       </body>

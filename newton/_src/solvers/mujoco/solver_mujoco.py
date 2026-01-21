@@ -2260,7 +2260,6 @@ class SolverMuJoCo(SolverBase):
 
                     # Get initial joint position for ref parameter
                     q_start = joint_q_start[j]
-                    ref_value = joint_q[q_start + i]
 
                     joint_params = {
                         "armature": joint_armature[qd_start + i],
@@ -2350,7 +2349,6 @@ class SolverMuJoCo(SolverBase):
 
                     # Get initial joint position for ref parameter (convert radians to degrees for hinge)
                     q_start = joint_q_start[j]
-                    ref_value = np.rad2deg(joint_q[q_start + i])
 
                     joint_params = {
                         "armature": joint_armature[qd_start + i],
