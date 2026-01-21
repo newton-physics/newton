@@ -801,7 +801,7 @@ class TestImportMjcf(unittest.TestCase):
         SolverMuJoCo.register_custom_attributes(individual_builder)
         individual_builder.add_mjcf(mjcf)
         builder = newton.ModelBuilder()
-        for i in range(0, nbBuilders):
+        for _i in range(0, nbBuilders):
             builder.add_world(individual_builder)
         model = builder.finalize()
         solver = SolverMuJoCo(model, iterations=10, ls_iterations=10)
@@ -1519,7 +1519,7 @@ class TestImportMjcf(unittest.TestCase):
         SolverMuJoCo.register_custom_attributes(individual_builder)
         individual_builder.add_mjcf(mjcf)
         builder = newton.ModelBuilder()
-        for i in range(0, nbBuilders):
+        for _i in range(0, nbBuilders):
             builder.add_world(individual_builder)
         model = builder.finalize()
         solver = SolverMuJoCo(model, iterations=10, ls_iterations=10)

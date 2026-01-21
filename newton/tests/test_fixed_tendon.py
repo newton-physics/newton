@@ -76,7 +76,7 @@ class TestMujocoFixedTendon(unittest.TestCase):
         SolverMuJoCo.register_custom_attributes(individual_builder)
         individual_builder.add_mjcf(mjcf)
         builder = newton.ModelBuilder(gravity=0.0)
-        for i in range(0, 2):
+        for _i in range(0, 2):
             builder.add_world(individual_builder)
         model = builder.finalize()
         state_in = model.state()
@@ -166,7 +166,7 @@ class TestMujocoFixedTendon(unittest.TestCase):
 		stiffness="0.0"
 		damping="0.0"
         solreflimit="0.004 1"
-        solimplimit="0.95 0.99 0.001"        
+        solimplimit="0.95 0.99 0.001"
 		springlength="0.0">
       <joint joint="joint1" coef="1"/>
       <joint joint="joint2" coef="1"/>
@@ -204,7 +204,7 @@ class TestMujocoFixedTendon(unittest.TestCase):
         SolverMuJoCo.register_custom_attributes(individual_builder)
         individual_builder.add_mjcf(mjcf)
         builder = newton.ModelBuilder(gravity=0.0)
-        for i in range(0, 2):
+        for _i in range(0, 2):
             builder.add_world(individual_builder)
         model = builder.finalize()
         state_in = model.state()
