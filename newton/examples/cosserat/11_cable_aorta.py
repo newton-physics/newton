@@ -1056,12 +1056,19 @@ class Example:
         self.fps = 60
         self.frame_dt = 1.0 / self.fps
         self.sim_time = 0.0
-        self.sim_substeps = 8
+        self.sim_substeps = 32
         self.sim_dt = self.frame_dt / self.sim_substeps
-        self.constraint_iterations = 2  # More iterations for block-Jacobi coupling
+        self.constraint_iterations = 6  # More iterations for block-Jacobi coupling
+        self.vbd_iterations = 5  # VBD solver iterations
 
         self.viewer = viewer
         self.args = args
+
+        # Simulation toggles
+        self.simulate_xpbd = True  # Enable/disable XPBD Cosserat rod simulation
+        # Note: VBD is disabled by default due to mesh collision issues with the vessel mesh
+        # Enable only if you remove the vessel mesh or fix the mesh indices format
+        self.simulate_vbd = False  # Enable/disable VBD cable simulation
 
         # Rod parameters
         self.num_particles = NUM_PARTICLES
@@ -1117,12 +1124,15 @@ class Example:
 
         # Add the vessel mesh as a static collision shape
         # Using body=-1 for static geometry
+        # Note: has_particle_collision=False because XPBD particles use a custom
+        # BVH-based collision kernel (collide_particles_vs_triangles_bvh_kernel)
+        # This avoids VBD solver mesh collision issues
         vessel_cfg = newton.ModelBuilder.ShapeConfig(
             ke=1.0e4,  # Contact stiffness
             kd=1.0e2,  # Contact damping
             mu=0.1,  # Low friction for blood vessels
             has_shape_collision=False,  # Don't collide with other shapes
-            has_particle_collision=True,  # Collide with particles (catheter)
+            has_particle_collision=False,  # Use custom BVH collision instead
         )
         # Scale factor to convert from mesh units to simulation units
         # The mesh seems to be in a different scale, adjust as needed
@@ -1148,17 +1158,59 @@ class Example:
         # Calculate translation offset to move last particle to target
         translation_offset = target_last_pos - current_last_pos
         
+        # Store particle positions for both XPBD and VBD
+        self.particle_positions = []
+        
         # Create particles: first one is fixed (kinematic)
         for i in range(self.num_particles):
             mass = 0.0 if i == 0 else particle_mass
             pos = np.array([i * particle_spacing, 0.0, start_height]) + translation_offset
-            #pos = np.array([0.0, i * particle_spacing, start_height]) + translation_offset
+            self.particle_positions.append(wp.vec3(pos[0], pos[1], pos[2]))
             builder.add_particle(
                 pos=tuple(pos),
                 vel=(0.0, 0.0, 0.0),
                 mass=mass,
                 radius=particle_radius,
             )
+
+        # =========================================================================
+        # VBD Cable Setup (same geometry as XPBD rod)
+        # =========================================================================
+        
+        # Create quaternions for VBD cable segments (horizontal rod pointing in X direction)
+        angle = math.pi / 2.0
+        q_init = wp.quat(0.0, math.sin(angle / 2.0), 0.0, math.cos(angle / 2.0))
+        cable_edge_q = [q_init] * self.num_stretch
+        
+        # Set default material properties for the cable
+        # Note: Disable shape collision for VBD cable to avoid mesh collision issues
+        # (mesh collision is handled by XPBD particles only)
+        builder.default_shape_cfg.ke = 1.0e2  # Contact stiffness
+        builder.default_shape_cfg.kd = 1.0e1  # Contact damping
+        builder.default_shape_cfg.mu = 0.5  # Friction coefficient
+        builder.default_shape_cfg.has_shape_collision = False  # Avoid mesh collision
+        
+        # Add VBD cable using add_rod (128 segments = 129 bodies)
+        self.cable_bodies, self.cable_joints = builder.add_rod(
+            positions=self.particle_positions,
+            quaternions=cable_edge_q,
+            radius=particle_radius,
+            bend_stiffness=1.0e1,  # Moderate bending stiffness
+            bend_damping=1.0e-2,
+            stretch_stiffness=1.0e9,  # High stretch stiffness (inextensible)
+            stretch_damping=0.0,
+            key="vbd_cable",
+        )
+        
+        # Fix the first body to make it kinematic (matches XPBD locked first particle)
+        first_body = self.cable_bodies[0]
+        builder.body_mass[first_body] = 0.0
+        builder.body_inv_mass[first_body] = 0.0
+        builder.body_inertia[first_body] = wp.mat33(0.0)
+        builder.body_inv_inertia[first_body] = wp.mat33(0.0)
+        
+        # Color particles and rigid bodies for VBD solver
+        builder.color()
 
         self.model = builder.finalize()
 
@@ -1174,6 +1226,10 @@ class Example:
         # Collision pipeline
         self.collision_pipeline = newton.examples.create_collision_pipeline(self.model, self.args)
         self.contacts = self.model.collide(self.state_0, collision_pipeline=self.collision_pipeline)
+
+        # VBD solver for cable simulation
+        self.solver_vbd = newton.solvers.SolverVBD(self.model, iterations=self.vbd_iterations, friction_epsilon=0.1)
+        self.control = self.model.control()
 
         device = self.model.device
 
@@ -1290,229 +1346,256 @@ class Example:
 
     def simulate(self):
         for _ in range(self.sim_substeps):
-            # Store old positions for velocity update
-            wp.copy(self.particle_q_temp, self.state_0.particle_q)
+            # Get contacts for this substep (used by VBD)
+            self.contacts = self.model.collide(self.state_0, collision_pipeline=self.collision_pipeline)
 
-            # Build stiffness vectors from UI parameters
-            # Stretch/shear: (shear_x, shear_y, stretch_z) - z is along rod axis
-            stretch_shear_ks = wp.vec3(self.shear_stiffness, self.shear_stiffness, self.stretch_stiffness)
-            # Bend/twist: (bend_x, twist_y, bend_z)
-            bend_twist_ks = wp.vec3(self.bend_stiffness, self.twist_stiffness, self.bend_stiffness)
+            # =====================================================================
+            # XPBD Cosserat Rod Simulation
+            # =====================================================================
+            if self.simulate_xpbd:
+                # Store old positions for velocity update
+                wp.copy(self.particle_q_temp, self.state_0.particle_q)
 
-            # Step 1: Integrate (predict positions)
-            wp.launch(
-                kernel=integrate_particles_kernel,
-                dim=self.num_particles,
-                inputs=[
-                    self.state_0.particle_q,
-                    self.state_0.particle_qd,
-                    self.particle_inv_mass,
-                    self.gravity,
-                    self.sim_dt,
-                ],
-                outputs=[self.particle_q_predicted, self.state_1.particle_qd],
-                device=self.model.device,
-            )
+                # Build stiffness vectors from UI parameters
+                # Stretch/shear: (shear_x, shear_y, stretch_z) - z is along rod axis
+                stretch_shear_ks = wp.vec3(self.shear_stiffness, self.shear_stiffness, self.stretch_stiffness)
+                # Bend/twist: (bend_x, twist_y, bend_z)
+                bend_twist_ks = wp.vec3(self.bend_stiffness, self.twist_stiffness, self.bend_stiffness)
 
-            # Copy predicted to state_1 for constraint solving
-            wp.copy(self.state_1.particle_q, self.particle_q_predicted)
-
-            # Step 2: Iterative Jacobi-style constraint solving
-            for _ in range(self.constraint_iterations):
-                # Zero out correction accumulators
+                # Step 1: Integrate (predict positions)
                 wp.launch(
-                    kernel=zero_vec3_kernel,
+                    kernel=integrate_particles_kernel,
                     dim=self.num_particles,
-                    inputs=[self.particle_delta],
-                    device=self.model.device,
-                )
-                wp.launch(
-                    kernel=zero_quat_kernel,
-                    dim=self.num_stretch,
-                    inputs=[self.edge_q_delta],
-                    device=self.model.device,
-                )
-
-                # Solve stretch/shear constraints (accumulates corrections)
-                wp.launch(
-                    kernel=solve_stretch_shear_constraint_kernel,
-                    dim=self.num_stretch,
                     inputs=[
-                        self.state_1.particle_q,
+                        self.state_0.particle_q,
+                        self.state_0.particle_qd,
                         self.particle_inv_mass,
-                        self.edge_q,
-                        self.edge_inv_mass,
-                        self.rest_length,
-                        stretch_shear_ks,
-                        self.num_stretch,
+                        self.gravity,
+                        self.sim_dt,
                     ],
-                    outputs=[self.particle_delta, self.edge_q_delta],
+                    outputs=[self.particle_q_predicted, self.state_1.particle_qd],
                     device=self.model.device,
                 )
 
-                # Solve bend/twist constraints with selected friction method
-                if self.num_bend > 0:
-                    if self.friction_method == FRICTION_STRAIN_RATE:
-                        # Method 2: Strain-rate damping
-                        wp.launch(
-                            kernel=solve_bend_twist_with_strain_rate_damping_kernel,
-                            dim=self.num_bend,
-                            inputs=[
-                                self.edge_q,
-                                self.edge_inv_mass,
-                                self.rest_darboux,
-                                bend_twist_ks,
-                                self.kappa_prev,
-                                self.strain_rate_damping,
-                                self.sim_dt,
-                                self.num_bend,
-                            ],
-                            outputs=[self.edge_q_delta, self.kappa_current],
-                            device=self.model.device,
-                        )
-                    elif self.friction_method == FRICTION_DAHL:
-                        # Method 3: Dahl hysteresis friction
-                        wp.launch(
-                            kernel=solve_bend_twist_with_dahl_friction_kernel,
-                            dim=self.num_bend,
-                            inputs=[
-                                self.edge_q,
-                                self.edge_inv_mass,
-                                self.rest_darboux,
-                                bend_twist_ks,
-                                self.kappa_prev,
-                                self.sigma_prev,
-                                self.dkappa_prev,
-                                self.dahl_eps_max,
-                                self.dahl_tau,
-                                self.num_bend,
-                            ],
-                            outputs=[
-                                self.edge_q_delta,
-                                self.kappa_current,
-                                self.sigma_current,
-                                self.dkappa_current,
-                            ],
-                            device=self.model.device,
-                        )
-                    else:
-                        # No friction or Method 1 (velocity damping applied separately)
-                        wp.launch(
-                            kernel=solve_bend_twist_constraint_kernel,
-                            dim=self.num_bend,
-                            inputs=[
-                                self.edge_q,
-                                self.edge_inv_mass,
-                                self.rest_darboux,
-                                bend_twist_ks,
-                                self.num_bend,
-                            ],
-                            outputs=[self.edge_q_delta],
-                            device=self.model.device,
-                        )
+                # Copy predicted to state_1 for constraint solving
+                wp.copy(self.state_1.particle_q, self.particle_q_predicted)
 
-                # Apply accumulated position corrections
+                # Step 2: Iterative Jacobi-style constraint solving
+                for _ in range(self.constraint_iterations):
+                    # Zero out correction accumulators
+                    wp.launch(
+                        kernel=zero_vec3_kernel,
+                        dim=self.num_particles,
+                        inputs=[self.particle_delta],
+                        device=self.model.device,
+                    )
+                    wp.launch(
+                        kernel=zero_quat_kernel,
+                        dim=self.num_stretch,
+                        inputs=[self.edge_q_delta],
+                        device=self.model.device,
+                    )
+
+                    # Solve stretch/shear constraints (accumulates corrections)
+                    wp.launch(
+                        kernel=solve_stretch_shear_constraint_kernel,
+                        dim=self.num_stretch,
+                        inputs=[
+                            self.state_1.particle_q,
+                            self.particle_inv_mass,
+                            self.edge_q,
+                            self.edge_inv_mass,
+                            self.rest_length,
+                            stretch_shear_ks,
+                            self.num_stretch,
+                        ],
+                        outputs=[self.particle_delta, self.edge_q_delta],
+                        device=self.model.device,
+                    )
+
+                    # Solve bend/twist constraints with selected friction method
+                    if self.num_bend > 0:
+                        if self.friction_method == FRICTION_STRAIN_RATE:
+                            # Method 2: Strain-rate damping
+                            wp.launch(
+                                kernel=solve_bend_twist_with_strain_rate_damping_kernel,
+                                dim=self.num_bend,
+                                inputs=[
+                                    self.edge_q,
+                                    self.edge_inv_mass,
+                                    self.rest_darboux,
+                                    bend_twist_ks,
+                                    self.kappa_prev,
+                                    self.strain_rate_damping,
+                                    self.sim_dt,
+                                    self.num_bend,
+                                ],
+                                outputs=[self.edge_q_delta, self.kappa_current],
+                                device=self.model.device,
+                            )
+                        elif self.friction_method == FRICTION_DAHL:
+                            # Method 3: Dahl hysteresis friction
+                            wp.launch(
+                                kernel=solve_bend_twist_with_dahl_friction_kernel,
+                                dim=self.num_bend,
+                                inputs=[
+                                    self.edge_q,
+                                    self.edge_inv_mass,
+                                    self.rest_darboux,
+                                    bend_twist_ks,
+                                    self.kappa_prev,
+                                    self.sigma_prev,
+                                    self.dkappa_prev,
+                                    self.dahl_eps_max,
+                                    self.dahl_tau,
+                                    self.num_bend,
+                                ],
+                                outputs=[
+                                    self.edge_q_delta,
+                                    self.kappa_current,
+                                    self.sigma_current,
+                                    self.dkappa_current,
+                                ],
+                                device=self.model.device,
+                            )
+                        else:
+                            # No friction or Method 1 (velocity damping applied separately)
+                            wp.launch(
+                                kernel=solve_bend_twist_constraint_kernel,
+                                dim=self.num_bend,
+                                inputs=[
+                                    self.edge_q,
+                                    self.edge_inv_mass,
+                                    self.rest_darboux,
+                                    bend_twist_ks,
+                                    self.num_bend,
+                                ],
+                                outputs=[self.edge_q_delta],
+                                device=self.model.device,
+                            )
+
+                    # Apply accumulated position corrections
+                    wp.launch(
+                        kernel=apply_particle_corrections_kernel,
+                        dim=self.num_particles,
+                        inputs=[
+                            self.state_1.particle_q,
+                            self.particle_delta,
+                            self.particle_inv_mass,
+                        ],
+                        outputs=[self.particle_q_predicted],
+                        device=self.model.device,
+                    )
+                    wp.copy(self.state_1.particle_q, self.particle_q_predicted)
+
+                    # Apply accumulated quaternion corrections
+                    wp.launch(
+                        kernel=apply_quaternion_corrections_kernel,
+                        dim=self.num_stretch,
+                        inputs=[
+                            self.edge_q,
+                            self.edge_q_delta,
+                            self.edge_inv_mass,
+                        ],
+                        outputs=[self.edge_q_new],
+                        device=self.model.device,
+                    )
+                    self.edge_q, self.edge_q_new = self.edge_q_new, self.edge_q
+
+                # Step 3: Ground collision
                 wp.launch(
-                    kernel=apply_particle_corrections_kernel,
+                    kernel=solve_ground_collision_kernel,
                     dim=self.num_particles,
                     inputs=[
                         self.state_1.particle_q,
-                        self.particle_delta,
                         self.particle_inv_mass,
+                        self.model.particle_radius,
+                        0.0,
                     ],
                     outputs=[self.particle_q_predicted],
                     device=self.model.device,
                 )
                 wp.copy(self.state_1.particle_q, self.particle_q_predicted)
 
-                # Apply accumulated quaternion corrections
+                # Step 3b: Vessel mesh collision (PBD particle vs triangles with BVH broadphase)
                 wp.launch(
-                    kernel=apply_quaternion_corrections_kernel,
-                    dim=self.num_stretch,
-                    inputs=[
-                        self.edge_q,
-                        self.edge_q_delta,
-                        self.edge_inv_mass,
-                    ],
-                    outputs=[self.edge_q_new],
-                    device=self.model.device,
-                )
-                self.edge_q, self.edge_q_new = self.edge_q_new, self.edge_q
-
-            # Step 3: Ground collision
-            wp.launch(
-                kernel=solve_ground_collision_kernel,
-                dim=self.num_particles,
-                inputs=[
-                    self.state_1.particle_q,
-                    self.particle_inv_mass,
-                    self.model.particle_radius,
-                    0.0,
-                ],
-                outputs=[self.particle_q_predicted],
-                device=self.model.device,
-            )
-            wp.copy(self.state_1.particle_q, self.particle_q_predicted)
-
-            # Step 3b: Vessel mesh collision (PBD particle vs triangles with BVH broadphase)
-            wp.launch(
-                kernel=collide_particles_vs_triangles_bvh_kernel,
-                dim=self.num_particles,
-                inputs=[
-                    self.state_1.particle_q,
-                    self.model.particle_radius,
-                    self.particle_inv_mass,
-                    self.vessel_vertices,
-                    self.vessel_indices,
-                    self.vessel_bvh.id,
-                ],
-                outputs=[self.particle_q_predicted],
-                device=self.model.device,
-            )
-            wp.copy(self.state_1.particle_q, self.particle_q_predicted)
-
-            # Step 4: Update velocities from position change
-            wp.launch(
-                kernel=update_velocities_kernel,
-                dim=self.num_particles,
-                inputs=[
-                    self.particle_q_temp,
-                    self.state_1.particle_q,
-                    self.particle_inv_mass,
-                    self.sim_dt,
-                ],
-                outputs=[self.state_1.particle_qd],
-                device=self.model.device,
-            )
-
-            # Step 5: Apply velocity damping (Method 1) if selected
-            if self.friction_method == FRICTION_VELOCITY:
-                wp.launch(
-                    kernel=apply_velocity_damping_kernel,
+                    kernel=collide_particles_vs_triangles_bvh_kernel,
                     dim=self.num_particles,
                     inputs=[
-                        self.state_1.particle_qd,
+                        self.state_1.particle_q,
+                        self.model.particle_radius,
                         self.particle_inv_mass,
-                        self.velocity_damping,
+                        self.vessel_vertices,
+                        self.vessel_indices,
+                        self.vessel_bvh.id,
                     ],
-                    outputs=[self.particle_qd_temp],
+                    outputs=[self.particle_q_predicted],
                     device=self.model.device,
                 )
-                wp.copy(self.state_1.particle_qd, self.particle_qd_temp)
+                wp.copy(self.state_1.particle_q, self.particle_q_predicted)
 
-            # Update friction state for next substep (for strain-rate and Dahl)
-            if self.friction_method == FRICTION_STRAIN_RATE:
-                wp.copy(self.kappa_prev, self.kappa_current)
-            elif self.friction_method == FRICTION_DAHL:
-                wp.copy(self.kappa_prev, self.kappa_current)
-                wp.copy(self.sigma_prev, self.sigma_current)
-                wp.copy(self.dkappa_prev, self.dkappa_current)
+                # Step 4: Update velocities from position change
+                wp.launch(
+                    kernel=update_velocities_kernel,
+                    dim=self.num_particles,
+                    inputs=[
+                        self.particle_q_temp,
+                        self.state_1.particle_q,
+                        self.particle_inv_mass,
+                        self.sim_dt,
+                    ],
+                    outputs=[self.state_1.particle_qd],
+                    device=self.model.device,
+                )
+
+                # Step 5: Apply velocity damping (Method 1) if selected
+                if self.friction_method == FRICTION_VELOCITY:
+                    wp.launch(
+                        kernel=apply_velocity_damping_kernel,
+                        dim=self.num_particles,
+                        inputs=[
+                            self.state_1.particle_qd,
+                            self.particle_inv_mass,
+                            self.velocity_damping,
+                        ],
+                        outputs=[self.particle_qd_temp],
+                        device=self.model.device,
+                    )
+                    wp.copy(self.state_1.particle_qd, self.particle_qd_temp)
+
+                # Update friction state for next substep (for strain-rate and Dahl)
+                if self.friction_method == FRICTION_STRAIN_RATE:
+                    wp.copy(self.kappa_prev, self.kappa_current)
+                elif self.friction_method == FRICTION_DAHL:
+                    wp.copy(self.kappa_prev, self.kappa_current)
+                    wp.copy(self.sigma_prev, self.sigma_current)
+                    wp.copy(self.dkappa_prev, self.dkappa_current)
+            else:
+                # If XPBD disabled, preserve particle state
+                wp.copy(self.state_1.particle_q, self.state_0.particle_q)
+                wp.copy(self.state_1.particle_qd, self.state_0.particle_qd)
+
+            # =====================================================================
+            # VBD Cable Simulation
+            # =====================================================================
+            if self.simulate_vbd:
+                self.state_0.clear_forces()
+                self.viewer.apply_forces(self.state_0)
+                self.solver_vbd.step(
+                    self.state_0,
+                    self.state_1,
+                    self.control,
+                    self.contacts,
+                    self.sim_dt,
+                )
+            else:
+                # If VBD disabled, preserve body state
+                if self.state_0.body_q is not None:
+                    wp.copy(self.state_1.body_q, self.state_0.body_q)
+                    wp.copy(self.state_1.body_qd, self.state_0.body_qd)
 
             # Swap states
             self.state_0, self.state_1 = self.state_1, self.state_0
-
-            # Update contacts for visualization
-            self.contacts = self.model.collide(self.state_0, collision_pipeline=self.collision_pipeline)
 
     def step(self):
         # Handle keyboard input to move the first locked particle
@@ -1591,7 +1674,7 @@ class Example:
 
         # Apply movement if any key was pressed
         if dx != 0.0 or dy != 0.0 or dz != 0.0:
-            # Get current position of particle 0
+            # Get current position of particle 0 (XPBD)
             particle_q_np = self.state_0.particle_q.numpy()
             pos = particle_q_np[0]
 
@@ -1606,10 +1689,23 @@ class Example:
 
             print(new_pos)
 
-            # Write back to device
+            # Write back to device (XPBD particle)
             self.state_0.particle_q = wp.array(particle_q_np, dtype=wp.vec3, device=self.model.device)
 
+            # Also update the first VBD cable body to match
+            if self.state_0.body_q is not None and len(self.cable_bodies) > 0:
+                body_q_np = self.state_0.body_q.numpy()
+                first_body_idx = self.cable_bodies[0]
+                # body_q is stored as [x, y, z, qx, qy, qz, qw] (wp.transform)
+                body_q_np[first_body_idx][0] = new_pos[0]
+                body_q_np[first_body_idx][1] = new_pos[1]
+                body_q_np[first_body_idx][2] = new_pos[2]
+                self.state_0.body_q = wp.array(body_q_np, dtype=wp.transform, device=self.model.device)
+
     def test_final(self):
+        # =====================================================================
+        # XPBD Rod Tests
+        # =====================================================================
         # Verify that the anchor particle (first particle) is still at rest
         newton.examples.test_particle_state(
             self.state_0,
@@ -1626,8 +1722,8 @@ class Example:
         )
 
         # Verify particles are within reasonable bounds
-        # Rod has 129 particles with 0.05 spacing (~6.4m length)
-        p_lower = wp.vec3(-3.0, -5.0, -0.1)
+        # Rod has 129 particles with 0.025 spacing (~3.2m length)
+        p_lower = wp.vec3(-10.0, -5.0, -0.1)
         p_upper = wp.vec3(10.0, 5.0, 7.0)
         newton.examples.test_particle_state(
             self.state_0,
@@ -1640,6 +1736,23 @@ class Example:
         for i, q in enumerate(edge_q_np):
             norm = (q[0] ** 2 + q[1] ** 2 + q[2] ** 2 + q[3] ** 2) ** 0.5
             assert abs(norm - 1.0) < 0.1, f"Edge quaternion {i} not normalized: norm={norm}"
+
+        # =====================================================================
+        # VBD Cable Tests
+        # =====================================================================
+        if self.state_0.body_q is not None and self.state_0.body_qd is not None:
+            body_positions = self.state_0.body_q.numpy()
+            body_velocities = self.state_0.body_qd.numpy()
+
+            # Test: Check for numerical stability (NaN/inf values)
+            assert np.isfinite(body_positions).all(), "Non-finite values in VBD body positions"
+            assert np.isfinite(body_velocities).all(), "Non-finite values in VBD body velocities"
+
+            # Test: VBD cable bodies are within reasonable bounds
+            for body_idx in self.cable_bodies:
+                pos = body_positions[body_idx][:3]
+                assert pos[2] >= -0.1, f"VBD body {body_idx} below ground: z={pos[2]}"
+                assert np.abs(pos).max() < 20.0, f"VBD body {body_idx} out of bounds: pos={pos}"
 
     def _update_rest_darboux(self):
         """Update rest Darboux vectors from current slider values."""
@@ -1700,11 +1813,16 @@ class Example:
         self.edge_q = wp.array(edge_q_np, dtype=wp.quat, device=self.model.device)
 
     def gui(self, ui):
-        ui.text("Cosserat Rod with Internal Friction")
-        ui.text(f"Particles: {self.num_particles}, Tiles: {self.num_tiles}")
+        ui.text("Cosserat Rod with Internal Friction + VBD Cable")
+        ui.text(f"XPBD Particles: {self.num_particles}, VBD Bodies: {len(self.cable_bodies)}")
 
         ui.separator()
-        ui.text("Stiffness Parameters")
+        ui.text("Simulation Toggles")
+        _changed, self.simulate_xpbd = ui.checkbox("Enable XPBD Rod", self.simulate_xpbd)
+        _changed, self.simulate_vbd = ui.checkbox("Enable VBD Cable", self.simulate_vbd)
+
+        ui.separator()
+        ui.text("XPBD Stiffness Parameters")
         _changed, self.stretch_stiffness = ui.slider_float("Stretch Stiffness", self.stretch_stiffness, 0.0, 1.0)
         _changed, self.shear_stiffness = ui.slider_float("Shear Stiffness", self.shear_stiffness, 0.0, 1.0)
         _changed, self.bend_stiffness = ui.slider_float("Bend Stiffness", self.bend_stiffness, 0.0, 1.0)
@@ -1760,8 +1878,14 @@ class Example:
         ui.text(f"  Current rotation: {self.first_particle_rotation:.2f} rad")
 
         ui.separator()
+        ui.text("VBD Cable Parameters")
+        _changed, self.vbd_iterations = ui.slider_int("VBD Iterations", self.vbd_iterations, 1, 20)
+        if _changed:
+            self.solver_vbd.iterations = self.vbd_iterations
+
+        ui.separator()
         ui.text("Visualization")
-        _changed, self.show_directors = ui.checkbox("Show Directors", self.show_directors)
+        _changed, self.show_directors = ui.checkbox("Show Directors (XPBD)", self.show_directors)
         _changed, self.director_scale = ui.slider_float("Director Scale", self.director_scale, 0.01, 0.1)
 
     def render(self):

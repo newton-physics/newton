@@ -137,15 +137,27 @@ uv sync --extra examples
         <img src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_basic_particle_chain.jpg" alt="Global PBD Chain Multi-Tile">
       </a>
     </td>
-    <td align="center" width="33%">&nbsp;</td>
-    <td align="center" width="33%">&nbsp;</td>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/cosserat/07_global_cosserat_rod_cholesky.py">
+        <img src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_basic_cosserat_rod.jpg" alt="Global Cosserat Rod Cholesky">
+      </a>
+    </td>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/cosserat/08_global_cosserat_rod_cholesky_multitile.py">
+        <img src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_basic_cosserat_rod.jpg" alt="Global Cosserat Rod Cholesky Multi-Tile">
+      </a>
+    </td>
   </tr>
   <tr>
     <td align="center">
       <code>uv run -m newton.examples basic_global_pbd_chain_multitile</code>
     </td>
-    <td align="center">&nbsp;</td>
-    <td align="center">&nbsp;</td>
+    <td align="center">
+      <code>uv run python newton/examples/cosserat/07_global_cosserat_rod_cholesky.py</code>
+    </td>
+    <td align="center">
+      <code>uv run python newton/examples/cosserat/08_global_cosserat_rod_cholesky_multitile.py</code>
+    </td>
   </tr>
 </table>
 
