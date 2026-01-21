@@ -46,8 +46,7 @@ def map_ray_to_local(
     """Maps ray to local shape frame coordinates.
 
     Args:
-            pos: position of shape frame
-            mat: orientation of shape frame
+            transform: transform of shape frame
             ray_origin_world: starting point of ray in world coordinates
             ray_direction_world: direction of ray in world coordinates
 
@@ -272,22 +271,31 @@ def ray_ellipsoid(
     transform: wp.transformf, size: wp.vec3f, ray_origin_world: wp.vec3f, ray_direction_world: wp.vec3f
 ) -> wp.float32:
     """Returns the distance at which a ray intersects with an ellipsoid."""
-
-    # map to local frame
     ray_origin_local, ray_direction_local = map_ray_to_local(transform, ray_origin_world, ray_direction_world)
 
-    # invert size^2
-    s = wp.vec3f(safe_div(1.0, size[0] * size[0]), safe_div(1.0, size[1] * size[1]), safe_div(1.0, size[2] * size[2]))
+    inv_size = safe_div_vec3(wp.vec3f(1.0), size)
+    ray_origin_local = wp.cw_mul(ray_origin_local, inv_size)
+    ray_direction_local = wp.cw_mul(ray_direction_local, inv_size)
+    return ray_sphere(wp.vec3f(0.0), 1.0, ray_origin_local, ray_direction_local)
 
-    # (x * ray_direction_local + ray_origin_local)' * diag(1 / size^2) * (x * ray_direction_local + ray_origin_local) = 1
-    slvec = wp.cw_mul(s, ray_direction_local)
-    a = wp.dot(slvec, ray_direction_local)
-    b = wp.dot(slvec, ray_origin_local)
-    c = wp.dot(wp.cw_mul(s, ray_origin_local), ray_origin_local) - 1.0
 
-    # solve a * x^2 + 2 * b * x + c = 0
-    t_hit, _ = ray_compute_quadratic(a, b, c)
-    return t_hit
+@wp.func
+def ray_ellipsoid_with_normal(
+    transform: wp.transformf, size: wp.vec3f, ray_origin_world: wp.vec3f, ray_direction_world: wp.vec3f
+) -> tuple[wp.bool, wp.float32, wp.vec3f]:
+    """Returns the distance and normal at which a ray intersects with an ellipsoid."""
+    ray_origin_local, ray_direction_local = map_ray_to_local(transform, ray_origin_world, ray_direction_world)
+
+    inv_size = safe_div_vec3(wp.vec3f(1.0), size)
+    ray_origin_local = wp.cw_mul(ray_origin_local, inv_size)
+    ray_direction_local = wp.cw_mul(ray_direction_local, inv_size)
+
+    t_hit = ray_sphere(wp.vec3f(0.0), 1.0, ray_origin_local, ray_direction_local)
+    if t_hit == MAXVAL:
+        return False, MAXVAL, wp.vec3f(0.0, 0.0, 0.0)
+
+    normal = wp.normalize(ray_origin_local + t_hit * ray_direction_local)
+    return True, t_hit, normal
 
 
 @wp.func

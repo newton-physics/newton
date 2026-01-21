@@ -193,7 +193,6 @@ def _render_megakernel(
         ray_dir_world,
     )
 
-    # Early Out
     if closest_hit.shape_index == ray_cast.NO_HIT_SHAPE_ID:
         return
 
@@ -353,7 +352,7 @@ def render_megakernel(
             rc.enable_shadows,
             rc.enable_textures,
             rc.enable_ambient_lighting,
-            rc.enable_particles,
+            rc.enable_particles and rc.has_particles,
             rc.enable_backface_culling,
             rc.has_global_world,
             rc.max_distance,
@@ -379,7 +378,7 @@ def render_megakernel(
             rc.mesh_texcoord,
             rc.mesh_texcoord_offsets,
             # Particle BVH
-            rc.particles_position.shape[0] if rc.particles_position else 0,
+            rc.num_particles_total,
             rc.bvh_particles.id if rc.bvh_particles else 0,
             rc.bvh_particles_group_roots,
             # Particles

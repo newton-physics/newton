@@ -109,6 +109,13 @@ def closest_hit_shape(
                         ray_origin_world,
                         ray_dir_world,
                     )
+                elif shape_types[si] == RenderShapeType.ELLIPSOID:
+                    hit, hit_dist, hit_normal = ray.ray_ellipsoid_with_normal(
+                        shape_transforms[si],
+                        shape_sizes[si],
+                        ray_origin_world,
+                        ray_dir_world,
+                    )
                 elif shape_types[si] == RenderShapeType.CAPSULE:
                     hit, hit_dist, hit_normal = ray.ray_capsule_with_normal(
                         shape_transforms[si],
@@ -345,6 +352,13 @@ def first_hit_shape(
                     dist = ray.ray_sphere(
                         wp.transform_get_translation(shape_transforms[si]),
                         shape_sizes[si][0] * shape_sizes[si][0],
+                        ray_origin_world,
+                        ray_dir_world,
+                    )
+                elif shape_types[si] == RenderShapeType.ELLIPSOID:
+                    dist = ray.ray_ellipsoid(
+                        shape_transforms[si],
+                        shape_sizes[si],
                         ray_origin_world,
                         ray_dir_world,
                     )

@@ -19,7 +19,11 @@ from dataclasses import dataclass, field
 
 import warp as wp
 
-from .bvh import compute_bvh_group_roots, compute_particle_bvh_bounds, compute_shape_bvh_bounds
+from .bvh import (
+    compute_bvh_group_roots,
+    compute_particle_bvh_bounds,
+    compute_shape_bvh_bounds,
+)
 from .render import render_megakernel
 from .utils import Utils
 
@@ -240,7 +244,7 @@ class RenderContext:
             kernel=compute_particle_bvh_bounds,
             dim=self.num_particles_total,
             inputs=[
-                self.particles_position.shape[0],
+                self.num_particles_total,
                 self.num_worlds_total,
                 self.particles_world_index,
                 self.particles_position,
