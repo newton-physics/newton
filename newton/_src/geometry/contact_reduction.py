@@ -60,7 +60,7 @@ class ContactStruct:
     position: wp.vec3
     normal: wp.vec3
     depth: wp.float32
-    mode: wp.int32  # Used to track collision mode (e.g., which mesh the triangle came from)
+    feature: wp.int32  # Feature ID for deduplication (e.g., triangle index)
     projection: wp.float32
 
 
@@ -401,7 +401,7 @@ class ContactReductionFunctions:
 
         # Warp functions
         self.store_reduced_contact = self._create_store_reduced_contact()
-        self.collect_active_contacts = self._create_collect_active_contacts()
+        self.filter_unique_contacts = self._create_filter_unique_contacts()
 
     def create_betas_array(self, device=None) -> wp.array:
         """Create a warp array with the beta values."""
@@ -512,42 +512,71 @@ class ContactReductionFunctions:
 
         return store_reduced_contact
 
-    def _create_collect_active_contacts(self):
-        """Create the collect_active_contacts warp function.
+    def _create_filter_unique_contacts(self):
+        """Create the filter_unique_contacts warp function.
 
-        The returned function collects all valid contacts from the reduction buffer
-        into a compact list of slot indices.
+        The returned function removes duplicate contacts that won multiple slots
+        but originate from the same geometric feature (e.g., same triangle).
+        Only the first occurrence per feature is kept.
         """
+        num_reduction_slots = self.num_reduction_slots
         num_betas = self.num_betas
+        get_smem = self.get_smem_reduction
 
         @wp.func
-        def collect_active_contacts(
+        def filter_unique_contacts(
             thread_id: int,
             buffer: wp.array(dtype=ContactStruct),
             active_ids: wp.array(dtype=int),
             empty_marker: float,
         ):
-            """Collect all valid contacts into a compact list.
+            """Remove duplicate contacts, keeping first occurrence per feature.
 
             Args:
                 thread_id: Thread index within the block
                 buffer: Shared memory buffer containing reduced contacts
-                active_ids: Output array of valid contact slot indices
+                active_ids: Output array of unique contact slot indices
                 empty_marker: Sentinel value indicating empty slots
             """
             slots_per_bin = wp.static(NUM_SPATIAL_DIRECTIONS * num_betas + 1)
             num_slots = wp.static(NUM_NORMAL_BINS * slots_per_bin)
 
+            keep_flags = wp.array(
+                ptr=wp.static(get_smem)(),
+                shape=(wp.static(num_reduction_slots),),
+                dtype=wp.int32,
+            )
+
+            for i in range(thread_id, num_slots, wp.block_dim()):
+                keep_flags[i] = 0
+            synchronize()
+
+            if thread_id < wp.static(NUM_NORMAL_BINS):
+                bin_id = thread_id
+                base_key = bin_id * slots_per_bin
+                for slot_i in range(slots_per_bin):
+                    key_i = base_key + slot_i
+                    if buffer[key_i].projection > empty_marker:
+                        feature_i = buffer[key_i].feature
+                        is_dup = int(0)
+                        for slot_j in range(slot_i):
+                            key_j = base_key + slot_j
+                            if buffer[key_j].projection > empty_marker and buffer[key_j].feature == feature_i:
+                                is_dup = 1
+                        if is_dup == 0:
+                            keep_flags[key_i] = 1
+            synchronize()
+
             if thread_id == 0:
                 write_idx = int(0)
                 for key in range(num_slots):
-                    if buffer[key].projection > empty_marker:
+                    if keep_flags[key] == 1:
                         active_ids[write_idx] = key
                         write_idx += 1
                 active_ids[num_slots] = write_idx
             synchronize()
 
-        return collect_active_contacts
+        return filter_unique_contacts
 
 
 get_shared_memory_pointer_block_dim_plus_2_ints = create_shared_memory_pointer_block_dim_func(2)

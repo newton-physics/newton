@@ -22,10 +22,9 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 import warp as wp
 
-from ...core.types import nparray, override, vec5
+from ...core.types import MAXVAL, nparray, override, vec5
 from ...geometry import MESH_MAXHULLVERT, GeoType, ShapeFlags
 from ...sim import (
-    JOINT_LIMIT_UNLIMITED,
     Contacts,
     Control,
     EqType,
@@ -2277,7 +2276,7 @@ class SolverMuJoCo(SolverBase):
                     if joint_actgravcomp is not None:
                         joint_params["actgravcomp"] = joint_actgravcomp[ai]
                     lower, upper = joint_limit_lower[ai], joint_limit_upper[ai]
-                    if lower <= -JOINT_LIMIT_UNLIMITED and upper >= JOINT_LIMIT_UNLIMITED:
+                    if lower <= -MAXVAL and upper >= MAXVAL:
                         joint_params["limited"] = False
                     else:
                         joint_params["limited"] = True
@@ -2366,7 +2365,7 @@ class SolverMuJoCo(SolverBase):
                     if joint_actgravcomp is not None:
                         joint_params["actgravcomp"] = joint_actgravcomp[ai]
                     lower, upper = joint_limit_lower[ai], joint_limit_upper[ai]
-                    if lower <= -JOINT_LIMIT_UNLIMITED and upper >= JOINT_LIMIT_UNLIMITED:
+                    if lower <= -MAXVAL and upper >= MAXVAL:
                         joint_params["limited"] = False
                     else:
                         joint_params["limited"] = True
