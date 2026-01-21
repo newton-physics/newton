@@ -294,7 +294,9 @@ def ray_ellipsoid_with_normal(
     if t_hit == MAXVAL:
         return False, MAXVAL, wp.vec3f(0.0, 0.0, 0.0)
 
-    normal = wp.normalize(ray_origin_local + t_hit * ray_direction_local)
+    normal = ray_origin_local + t_hit * ray_direction_local
+    normal = wp.transform_vector(transform, normal)
+    normal = wp.normalize(normal)
     return True, t_hit, normal
 
 
