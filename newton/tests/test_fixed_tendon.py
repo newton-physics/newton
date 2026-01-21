@@ -33,7 +33,7 @@ class TestMujocoFixedTendon(unittest.TestCase):
 <mujoco model="two_prismatic_links">
   <compiler angle="degree"/>
 
-  <option timestep="0.002" gravity="0 0 -9.81"/>
+  <option timestep="0.002" gravity="0 0 0"/>
 
   <worldbody>
     <!-- Root body (fixed to world) -->
@@ -72,9 +72,12 @@ class TestMujocoFixedTendon(unittest.TestCase):
 
 """
 
+        individual_builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(individual_builder)
+        individual_builder.add_mjcf(mjcf)
         builder = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(builder)
-        builder.add_mjcf(mjcf)
+        for i in range(0, 2):
+            builder.add_world(individual_builder)
         model = builder.finalize()
         state_in = model.state()
         state_out = model.state()
@@ -91,13 +94,14 @@ class TestMujocoFixedTendon(unittest.TestCase):
 
         # Length of tendon at start is: pos**coef0 + pos1*coef1 = 2*0.5 + 0*0.0 = 1.0
         # Target length is 0.0 (see mjcf above)
-        joint_start_positions = [0.5, 0.0]
+        joint_start_positions = [0.5, 0.0, 0.5, 0.0]
         state_in.joint_q.assign(joint_start_positions)
 
         for _i in range(0, 200):
             solver.step(state_in=state_in, state_out=state_out, contacts=contacts, control=control, dt=dt)
             state_in, state_out = state_out, state_in
 
+        # World 0 should have achieved the rest length of the tendon.
         joint_q = state_in.joint_q.numpy()
         q0 = joint_q[0]
         q1 = joint_q[1]
@@ -109,13 +113,29 @@ class TestMujocoFixedTendon(unittest.TestCase):
             msg=f"Expected tendon length: {expected_tendon_length}, Measured tendon length: {measured_tendon_length}",
         )
 
-    def run_test_single_mujoco_fixed_tendon_limit_behaviour(self, mode: LimitBreachType):
+        # World 1 and world 0 should have identical state.
+        q2 = joint_q[2]
+        self.assertAlmostEqual(
+            q2,
+            q0,
+            places=3,
+            msg=f"Expected joint_q[2]: {q0}, Measured q2: {q2}",
+        )
+        q3 = joint_q[3]
+        self.assertAlmostEqual(
+            q3,
+            q1,
+            places=3,
+            msg=f"Expected joint_q[3]: {q1}, Measured tendon length: {q3}",
+        )
+
+    def run_test_mujoco_fixed_tendon_limit_behavior(self, mode: LimitBreachType):
         """Test that tendons limits are respected"""
         mjcf = """<?xml version="1.0" ?>
 <mujoco model="two_prismatic_links">
   <compiler angle="degree"/>
 
-  <option timestep="0.002" gravity="0 0 -9.81"/>
+  <option timestep="0.002" gravity="0 0 0"/>
 
   <worldbody>
     <!-- Root body (fixed to world) -->
@@ -161,8 +181,9 @@ class TestMujocoFixedTendon(unittest.TestCase):
         lower_limit = -1.0  # from mjcf above
         upper_limit = 1.0  # from mjcf above
 
-        joint_start_positions = [0.0, 0.0]
-        joint_start_velocities = [0.0, 0.0]
+        # Configure the start state of world 0
+        joint_start_positions = [0.0, 0.0, 0.0, 0.0]
+        joint_start_velocities = [0.0, 0.0, 0.0, 0.0]
         if mode is self.LimitBreachType.UPPER_LIMIT_FROM_ABOVE:
             joint_start_positions[0] = upper_limit + 0.1
         elif mode is self.LimitBreachType.UPPER_LIMIT_FROM_BELOW:
@@ -174,11 +195,19 @@ class TestMujocoFixedTendon(unittest.TestCase):
             joint_start_positions[0] = lower_limit + 0.1
             joint_start_velocities[0] = -1.0
 
+        # Configure the start state of world 1 to be identical
+        # to that of world 0.
+        joint_start_positions[2] = joint_start_positions[0]
+        joint_start_velocities[2] = joint_start_velocities[0]
+
         start_tendon_length = joint_start_positions[0] * coeff0 + joint_start_positions[1] * coeff1
 
+        individual_builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(individual_builder)
+        individual_builder.add_mjcf(mjcf)
         builder = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(builder)
-        builder.add_mjcf(mjcf)
+        for i in range(0, 2):
+            builder.add_world(individual_builder)
         model = builder.finalize()
         state_in = model.state()
         state_out = model.state()
@@ -197,6 +226,8 @@ class TestMujocoFixedTendon(unittest.TestCase):
             state_in, state_out = state_out, state_in
 
         joint_q = state_in.joint_q.numpy()
+
+        # Test that the limits are observed in world 0.
         q0 = joint_q[0]
         q1 = joint_q[1]
         measured_tendon_length = coeff0 * q0 + coeff1 * q1
@@ -206,17 +237,33 @@ class TestMujocoFixedTendon(unittest.TestCase):
             f"Allowed range is {lower_limit} to {upper_limit}. measured length is {measured_tendon_length}",
         )
 
-    def test_upper_tendon_limit_from_above(self):
-        self.run_test_single_mujoco_fixed_tendon_limit_behaviour(self.LimitBreachType.UPPER_LIMIT_FROM_ABOVE)
+        # World 1 and world 0 should have identical state.
+        q2 = joint_q[2]
+        self.assertAlmostEqual(
+            q2,
+            q0,
+            places=3,
+            msg=f"Expected joint_q[2]: {q0}, Measured q2: {q2}",
+        )
+        q3 = joint_q[3]
+        self.assertAlmostEqual(
+            q3,
+            q1,
+            places=3,
+            msg=f"Expected joint_q[3]: {q1}, Measured tendon length: {q3}",
+        )
 
-    def test_upper_tendon_limit_from_below(self):
-        self.run_test_single_mujoco_fixed_tendon_limit_behaviour(self.LimitBreachType.UPPER_LIMIT_FROM_BELOW)
+    def test_upper_tendon_limit_breach_from_above(self):
+        self.run_test_mujoco_fixed_tendon_limit_behavior(self.LimitBreachType.UPPER_LIMIT_FROM_ABOVE)
 
-    def test_lower_tendon_limit_from_below(self):
-        self.run_test_single_mujoco_fixed_tendon_limit_behaviour(self.LimitBreachType.LOWER_LIMIT_FROM_BELOW)
+    def test_upper_tendon_limit_breach_from_below(self):
+        self.run_test_mujoco_fixed_tendon_limit_behavior(self.LimitBreachType.UPPER_LIMIT_FROM_BELOW)
 
-    def test_lower_tendon_limit_from_above(self):
-        self.run_test_single_mujoco_fixed_tendon_limit_behaviour(self.LimitBreachType.LOWER_LIMIT_FROM_ABOVE)
+    def test_lower_tendon_limit_breach_from_below(self):
+        self.run_test_mujoco_fixed_tendon_limit_behavior(self.LimitBreachType.LOWER_LIMIT_FROM_BELOW)
+
+    def test_lower_tendon_limit_breach_from_above(self):
+        self.run_test_mujoco_fixed_tendon_limit_behavior(self.LimitBreachType.LOWER_LIMIT_FROM_ABOVE)
 
 
 if __name__ == "__main__":
