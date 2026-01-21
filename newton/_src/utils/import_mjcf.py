@@ -562,13 +562,214 @@ def parse_mjcf(
 
         return site_shapes
 
+    def get_frame_xform(frame_element, incoming_xform: wp.transform) -> wp.transform:
+        """Compute composed transform for a frame element."""
+        frame_pos = parse_vec(frame_element.attrib, "pos", (0.0, 0.0, 0.0)) * scale
+        frame_rot = parse_orientation(frame_element.attrib)
+        return incoming_xform * wp.transform(frame_pos, frame_rot)
+
+    def _process_body_geoms(
+        geoms,
+        defaults: dict,
+        body_name: str,
+        link: int,
+        incoming_xform: wp.transform | None = None,
+    ) -> list:
+        """Process geoms for a body, partitioning into visuals and colliders.
+
+        This helper applies the same filtering/partitioning logic for geoms whether
+        they appear directly in a <body> or inside a <frame> within a body.
+
+        Args:
+            geoms: Iterable of geom XML elements to process.
+            defaults: The current defaults dictionary.
+            body_name: Name of the parent body (for naming).
+            link: The body index.
+            incoming_xform: Optional transform to apply to geoms.
+
+        Returns:
+            List of visual shape indices (if parse_visuals is True).
+        """
+        visuals = []
+        colliders = []
+
+        for geo_count, geom in enumerate(geoms):
+            geom_defaults = defaults
+            geom_class = None
+            if "class" in geom.attrib:
+                geom_class = geom.attrib["class"]
+                ignore_geom = False
+                for pattern in ignore_classes:
+                    if re.match(pattern, geom_class):
+                        ignore_geom = True
+                        break
+                if ignore_geom:
+                    continue
+                if geom_class in class_defaults:
+                    geom_defaults = merge_attrib(defaults, class_defaults[geom_class])
+            if "geom" in geom_defaults:
+                geom_attrib = merge_attrib(geom_defaults["geom"], geom.attrib)
+            else:
+                geom_attrib = geom.attrib
+
+            geom_name = geom_attrib.get("name", f"{body_name}_geom_{geo_count}")
+
+            contype = geom_attrib.get("contype", 1)
+            conaffinity = geom_attrib.get("conaffinity", 1)
+            collides_with_anything = not (int(contype) == 0 and int(conaffinity) == 0)
+
+            if geom_class is not None:
+                neither_visual_nor_collider = True
+                for pattern in visual_classes:
+                    if re.match(pattern, geom_class):
+                        visuals.append(geom)
+                        neither_visual_nor_collider = False
+                        break
+                for pattern in collider_classes:
+                    if re.match(pattern, geom_class):
+                        colliders.append(geom)
+                        neither_visual_nor_collider = False
+                        break
+                if neither_visual_nor_collider:
+                    if no_class_as_colliders and collides_with_anything:
+                        colliders.append(geom)
+                    else:
+                        visuals.append(geom)
+            else:
+                no_class_class = "collision" if no_class_as_colliders else "visual"
+                if verbose:
+                    print(f"MJCF parsing shape {geom_name} issue: no class defined for geom, assuming {no_class_class}")
+                if no_class_as_colliders and collides_with_anything:
+                    colliders.append(geom)
+                else:
+                    visuals.append(geom)
+
+        visual_shape_indices = []
+
+        if parse_visuals_as_colliders:
+            colliders = visuals
+        elif parse_visuals:
+            s = parse_shapes(
+                defaults,
+                body_name,
+                link,
+                geoms=visuals,
+                density=0.0,
+                just_visual=True,
+                visible=not hide_visuals,
+                incoming_xform=incoming_xform,
+            )
+            visual_shape_indices.extend(s)
+
+        show_colliders = force_show_colliders
+        if parse_visuals_as_colliders:
+            show_colliders = True
+        elif len(visuals) == 0 or not parse_visuals:
+            # we need to show the collision shapes since there are no visual shapes (or we're not loading them)
+            show_colliders = True
+
+        parse_shapes(
+            defaults,
+            body_name,
+            link,
+            geoms=colliders,
+            density=default_shape_density,
+            visible=show_colliders,
+            incoming_xform=incoming_xform,
+        )
+
+        return visual_shape_indices
+
+    def process_frames(
+        frames,
+        parent_body: int,
+        defaults: dict,
+        childclass: str | None,
+        world_xform: wp.transform,
+        body_relative_xform: wp.transform | None = None,
+    ):
+        """Process frame elements, composing transforms with children.
+
+        Frames are pure coordinate transformations that can wrap bodies, geoms, sites, and nested frames.
+
+        Args:
+            frames: Iterable of frame XML elements to process.
+            parent_body: The parent body index (-1 for world).
+            defaults: The current defaults dictionary.
+            childclass: The current childclass for body inheritance.
+            world_xform: World transform for positioning child bodies.
+            body_relative_xform: Body-relative transform for geoms/sites. If None, uses world_xform
+                (appropriate for static geoms at worldbody level).
+        """
+        # Stack entries: (frame, world_xform, body_relative_xform, frame_defaults, frame_childclass)
+        # For worldbody frames, body_relative equals world (static geoms use world coords)
+        if body_relative_xform is None:
+            frame_stack = [(f, world_xform, world_xform, defaults, childclass) for f in frames]
+        else:
+            frame_stack = [(f, world_xform, body_relative_xform, defaults, childclass) for f in frames]
+
+        while frame_stack:
+            frame, frame_world, frame_body_rel, frame_defaults, frame_childclass = frame_stack.pop()
+            frame_local = get_frame_xform(frame, wp.transform_identity())
+            composed_world = frame_world * frame_local
+            composed_body_rel = frame_body_rel * frame_local
+
+            # Resolve childclass for this frame's children
+            _childclass = frame.get("childclass") or frame_childclass
+
+            # Compute merged defaults for this frame's children
+            if _childclass is None:
+                _defaults = frame_defaults
+            else:
+                _defaults = merge_attrib(frame_defaults, class_defaults.get(_childclass, {}))
+
+            # Process child bodies (need world transform)
+            for child_body in frame.findall("body"):
+                parse_body(child_body, parent_body, _defaults, childclass=_childclass, incoming_xform=composed_world)
+
+            # Process child geoms (need body-relative transform)
+            # Use the same visual/collider partitioning logic as parse_body
+            child_geoms = frame.findall("geom")
+            if child_geoms:
+                body_name = "world" if parent_body == -1 else builder.body_key[parent_body]
+                frame_visual_shapes = _process_body_geoms(
+                    child_geoms,
+                    _defaults,
+                    body_name,
+                    parent_body,
+                    incoming_xform=composed_body_rel,
+                )
+                visual_shapes.extend(frame_visual_shapes)
+
+            # Process child sites (need body-relative transform)
+            if parse_sites:
+                child_sites = frame.findall("site")
+                if child_sites:
+                    body_name = "world" if parent_body == -1 else builder.body_key[parent_body]
+                    _parse_sites_impl(_defaults, body_name, parent_body, child_sites, incoming_xform=composed_body_rel)
+
+            # Add nested frames to stack with current defaults and childclass (in reverse to maintain order)
+            frame_stack.extend(
+                (f, composed_world, composed_body_rel, _defaults, _childclass) for f in reversed(frame.findall("frame"))
+            )
+
     def parse_body(
         body,
         parent,
         incoming_defaults: dict,
         childclass: str | None = None,
-        parent_world_xform: Transform | None = None,
+        incoming_xform: Transform | None = None,
     ):
+        """Parse a body element from MJCF.
+
+        Args:
+            body: The XML body element.
+            parent: Parent body index (-1 for world).
+            incoming_defaults: Default attributes dictionary.
+            childclass: Child class name for inheritance.
+            incoming_xform: Accumulated transform from parent (may include frame offsets).
+                If None, uses the import root xform.
+        """
         body_class = body.get("class") or body.get("childclass")
         if body_class is None:
             body_class = childclass
@@ -590,12 +791,20 @@ def parse_mjcf(
         # Create local transform from parsed position and orientation
         local_xform = wp.transform(body_pos * scale, body_ori)
 
-        # Compose with either the passed parent world transform or the import root xform
-        world_xform = (parent_world_xform or xform) * local_xform
+        # Compose with incoming transform (or import root xform if none)
+        world_xform = (incoming_xform or xform) * local_xform
 
-        # For joint positioning, we need the relative position/orientation scaled
-        body_pos_for_joints = body_pos * scale
-        body_ori_for_joints = body_ori
+        # For joint positioning, compute body position relative to the actual parent body
+        if parent >= 0:
+            # Look up parent body's world transform and compute relative position
+            parent_body_xform = builder.body_q[parent]
+            relative_xform = wp.transform_inverse(parent_body_xform) * world_xform
+            body_pos_for_joints = relative_xform.p
+            body_ori_for_joints = relative_xform.q
+        else:
+            # World parent: use the composed world_xform (includes frame/import root transforms)
+            body_pos_for_joints = world_xform.p
+            body_ori_for_joints = world_xform.q
 
         joint_armature = []
         joint_name = []
@@ -718,7 +927,9 @@ def parse_mjcf(
 
         if len(freejoint_tags) > 0 and parent == -1 and (base_joint is not None or floating is not None):
             joint_pos = joint_pos[0] if len(joint_pos) > 0 else wp.vec3(0.0, 0.0, 0.0)
-            _xform = wp.transform(body_pos_for_joints + joint_pos, body_ori_for_joints)
+            # Rotate joint_pos by body orientation before adding to body position
+            rotated_joint_pos = wp.quat_rotate(body_ori_for_joints, joint_pos)
+            _xform = wp.transform(body_pos_for_joints + rotated_joint_pos, body_ori_for_joints)
 
             if base_joint is not None:
                 # in case of a given base joint, the position is applied first, the rotation only
@@ -780,7 +991,9 @@ def parse_mjcf(
                 if parent == -1:
                     parent_xform_for_joint = world_xform * wp.transform(joint_pos, wp.quat_identity())
                 else:
-                    parent_xform_for_joint = wp.transform(body_pos_for_joints + joint_pos, body_ori_for_joints)
+                    # Rotate joint_pos by body orientation before adding to body position
+                    rotated_joint_pos = wp.quat_rotate(body_ori_for_joints, joint_pos)
+                    parent_xform_for_joint = wp.transform(body_pos_for_joints + rotated_joint_pos, body_ori_for_joints)
 
                 joint_indices.append(
                     builder.add_joint(
@@ -797,90 +1010,11 @@ def parse_mjcf(
                 )
 
         # -----------------
-        # add shapes
+        # add shapes (using shared helper for visual/collider partitioning)
 
         geoms = body.findall("geom")
-        visuals = []
-        colliders = []
-        for geo_count, geom in enumerate(geoms):
-            geom_defaults = defaults
-            if "class" in geom.attrib:
-                geom_class = geom.attrib["class"]
-                ignore_geom = False
-                for pattern in ignore_classes:
-                    if re.match(pattern, geom_class):
-                        ignore_geom = True
-                        break
-                if ignore_geom:
-                    continue
-                if geom_class in class_defaults:
-                    geom_defaults = merge_attrib(defaults, class_defaults[geom_class])
-            if "geom" in geom_defaults:
-                geom_attrib = merge_attrib(geom_defaults["geom"], geom.attrib)
-            else:
-                geom_attrib = geom.attrib
-
-            geom_name = geom_attrib.get("name", f"{body_name}_geom_{geo_count}")
-
-            contype = geom_attrib.get("contype", 1)
-            conaffinity = geom_attrib.get("conaffinity", 1)
-            collides_with_anything = not (int(contype) == 0 and int(conaffinity) == 0)
-
-            if "class" in geom.attrib:
-                neither_visual_nor_collider = True
-                for pattern in visual_classes:
-                    if re.match(pattern, geom_class):
-                        visuals.append(geom)
-                        neither_visual_nor_collider = False
-                        break
-                for pattern in collider_classes:
-                    if re.match(pattern, geom_class):
-                        colliders.append(geom)
-                        neither_visual_nor_collider = False
-                        break
-                if neither_visual_nor_collider:
-                    if no_class_as_colliders and collides_with_anything:
-                        colliders.append(geom)
-                    else:
-                        visuals.append(geom)
-            else:
-                no_class_class = "collision" if no_class_as_colliders else "visual"
-                if verbose:
-                    print(f"MJCF parsing shape {geom_name} issue: no class defined for geom, assuming {no_class_class}")
-                if no_class_as_colliders and collides_with_anything:
-                    colliders.append(geom)
-                else:
-                    visuals.append(geom)
-
-        if parse_visuals_as_colliders:
-            colliders = visuals
-        elif parse_visuals:
-            s = parse_shapes(
-                defaults,
-                body_name,
-                link,
-                geoms=visuals,
-                density=0.0,
-                just_visual=True,
-                visible=not hide_visuals,
-            )
-            visual_shapes.extend(s)
-
-        show_colliders = force_show_colliders
-        if parse_visuals_as_colliders:
-            show_colliders = True
-        elif len(visuals) == 0 or not parse_visuals:
-            # we need to show the collision shapes since there are no visual shapes (or we're not loading them)
-            show_colliders = True
-
-        parse_shapes(
-            defaults,
-            body_name,
-            link,
-            geoms=colliders,
-            density=default_shape_density,
-            visible=show_colliders,
-        )
+        body_visual_shapes = _process_body_geoms(geoms, defaults, body_name, link)
+        visual_shapes.extend(body_visual_shapes)
 
         # Parse sites (non-colliding reference points)
         if parse_sites:
@@ -961,7 +1095,22 @@ def parse_mjcf(
                 _incoming_defaults = defaults
             else:
                 _incoming_defaults = merge_attrib(defaults, class_defaults[_childclass])
-            parse_body(child, link, _incoming_defaults, childclass=_childclass, parent_world_xform=world_xform)
+            parse_body(child, link, _incoming_defaults, childclass=_childclass, incoming_xform=world_xform)
+
+        # Process frame elements within this body
+        # Use body's childclass if declared, otherwise inherit from parent
+        frame_childclass = body.get("childclass") or childclass
+        frame_defaults = (
+            merge_attrib(defaults, class_defaults.get(frame_childclass, {})) if frame_childclass else defaults
+        )
+        process_frames(
+            body.findall("frame"),
+            parent_body=link,
+            defaults=frame_defaults,
+            childclass=frame_childclass,
+            world_xform=world_xform,
+            body_relative_xform=wp.transform_identity(),  # Geoms/sites need body-relative coords
+        )
 
     def parse_equality_constraints(equality):
         def parse_common_attributes(element):
@@ -1163,7 +1312,7 @@ def parse_mjcf(
     # add bodies
 
     for body in world.findall("body"):
-        parse_body(body, -1, world_defaults, parent_world_xform=xform)
+        parse_body(body, -1, world_defaults, incoming_xform=xform)
 
     # -----------------
     # add static geoms
@@ -1185,6 +1334,18 @@ def parse_mjcf(
             sites=world.findall("site"),
             incoming_xform=xform,
         )
+
+    # -----------------
+    # process frame elements at worldbody level
+
+    process_frames(
+        world.findall("frame"),
+        parent_body=-1,
+        defaults=world_defaults,
+        childclass=None,
+        world_xform=xform,
+        body_relative_xform=None,  # Static geoms use world coords
+    )
 
     # -----------------
     # add equality constraints
