@@ -33,6 +33,7 @@ from ..sim.builder import ModelBuilder
 from ..sim.model import ModelAttributeFrequency
 from ..usd import utils as usd
 from ..usd.schema_resolver import PrimType, SchemaResolver, SchemaResolverManager
+from ..usd.schemas import SchemaResolverNewton
 
 
 def parse_usd(
@@ -86,7 +87,7 @@ def parse_usd(
         load_visual_shapes (bool): If True, non-physics visual geometry is loaded. If False, visual-only shapes are ignored (sites are still controlled by ``load_sites``). Default is True.
         hide_collision_shapes (bool): If True, collision shapes are hidden. Default is False.
         mesh_maxhullvert (int): Maximum vertices for convex hull approximation of meshes.
-        schema_resolvers (list[SchemaResolver]): Resolver instances in priority order. Default is no schema resolution.
+        schema_resolvers (list[SchemaResolver]): Resolver instances in priority order. Default is to only parse Newton-specific attributes.
             Schema resolvers collect per-prim "solver-specific" attributes, see :ref:`schema_resolvers` for more information.
             These include namespaced attributes such as ``newton:*``, ``physx*``
             (e.g., ``physxScene:*``, ``physxRigidBody:*``, ``physxSDFMeshCollision:*``), and ``mjc:*`` that
@@ -137,7 +138,7 @@ def parse_usd(
               - Mapping from prim path to original body index before ``collapse_fixed_joints``
     """
     if schema_resolvers is None:
-        schema_resolvers = []
+        schema_resolvers = [SchemaResolverNewton()]
     collect_schema_attrs = len(schema_resolvers) > 0
 
     try:
