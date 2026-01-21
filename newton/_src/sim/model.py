@@ -373,9 +373,6 @@ class Model:
         self.joint_target_kd = None
         """Velocity gain (damping) per DOF, shape [joint_dof_count], float."""
 
-        # Note: MuJoCo general actuators (motor, general) are handled via custom attributes
-        # with "mujoco:actuator" frequency. See SolverMuJoCo.register_custom_attributes().
-
         """Joint keys, shape [joint_count], str."""
         self.joint_world = None
         """World index for each joint, shape [joint_count], int. -1 for global."""

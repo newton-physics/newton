@@ -1201,15 +1201,10 @@ def parse_mjcf(
         has the same ordering as native MuJoCo.
         
         For position/velocity actuators: also set mode/target_ke/target_kd on per-DOF arrays
-        for backward compatibility with Newton's joint target interface.
+        for compatibility with Newton's joint target interface.
         
         Args:
             actuator_section: The <actuator> XML element
-            
-        Uses outer scope:
-            ctrl_direct: If True, all actuators use CTRL_DIRECT mode
-            builder: The ModelBuilder
-            verbose: Print debug info
         """
         # Check if custom attributes are registered (via SolverMuJoCo.register_custom_attributes())
         has_custom_attrs = "mujoco:ctrl_source" in builder.custom_attributes
@@ -1249,14 +1244,14 @@ def parse_mjcf(
                 # Backward compat: update per-DOF arrays for joint target interface
                 for i in range(total_dofs):
                     dof_idx = qd_start + i
+                    builder.joint_target_ke[dof_idx] = kp
                     current_mode = builder.joint_act_mode[dof_idx]
                     if current_mode == int(ActuatorMode.VELOCITY):
                         builder.joint_act_mode[dof_idx] = int(ActuatorMode.POSITION_VELOCITY)
                     elif current_mode == int(ActuatorMode.NONE):
                         builder.joint_act_mode[dof_idx] = int(ActuatorMode.POSITION)
-                    builder.joint_target_ke[dof_idx] = kp
-                    if kv > 0:
                         builder.joint_target_kd[dof_idx] = kv
+                        
                         
             elif actuator_type == "velocity":
                 kv = parse_float(actuator_elem.attrib, "kv", 0.0)
@@ -1276,7 +1271,7 @@ def parse_mjcf(
                         builder.joint_act_mode[dof_idx] = int(ActuatorMode.VELOCITY)
                     builder.joint_target_kd[dof_idx] = kv
                     
-            elif actuator_type in ("motor", "general"):
+            elif actuator_type in ("general"):
                 # Parse gainprm/biasprm from attributes (up to 10 elements)
                 gainprm_str = actuator_elem.attrib.get("gainprm", "1 0 0 0 0 0 0 0 0 0")
                 biasprm_str = actuator_elem.attrib.get("biasprm", "0 0 0 0 0 0 0 0 0 0")
@@ -1297,13 +1292,7 @@ def parse_mjcf(
             
             # Add actuator via custom attributes (if registered)
             if has_custom_attrs:
-                # For multi-DOF joints (like ball joints), we create one actuator per DOF
-                # For single-DOF joints, just one actuator
-                # Note: Native MuJoCo would have separate actuators for each axis
-                # We follow the MJCF's actuator definition (one actuator per <position>/<velocity>/etc. element)
                 dof_idx = qd_start  # Target the first DOF of the joint
-                
-                # Parse other attributes using the custom attribute system
                 parsed_attrs = parse_custom_attributes(
                     actuator_elem.attrib, builder_custom_attr_actuator, parsing_mode="mjcf"
                 )
@@ -1315,10 +1304,7 @@ def parse_mjcf(
                                     "mujoco:actuator_gainprm", "mujoco:actuator_biasprm", "mujoco:ctrl"):
                         continue  # We set these manually
                     actuator_values[attr.key] = parsed_attrs.get(attr.key, attr.default)
-                
-                # Set the control mapping attributes
-                # Note: ctrl_type and ctrl_to_dof are NOT set here - they're computed in solver_mujoco
-                # based on how actuators are actually created in MuJoCo
+            
                 actuator_values["mujoco:ctrl_source"] = ctrl_source_val
                 actuator_values["mujoco:actuator_gainprm"] = gainprm
                 actuator_values["mujoco:actuator_biasprm"] = biasprm

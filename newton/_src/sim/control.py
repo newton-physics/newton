@@ -75,24 +75,12 @@ class Control:
             self.joint_target_pos.zero_()
         if self.joint_target_vel is not None:
             self.joint_target_vel.zero_()
-        # Clear namespaced control attributes (e.g., control.mujoco.ctrl)
         self._clear_namespaced_arrays()
 
     def _clear_namespaced_arrays(self) -> None:
-        """Clear all wp.array attributes in namespaced containers.
-
-        Iterates over all namespace containers (like self.mujoco) and zeros
-        any wp.array attributes they contain.
-        """
-        for attr_name in dir(self):
-            if attr_name.startswith("_"):
-                continue
-            attr = getattr(self, attr_name, None)
-            # Check if it's a namespace container (has _name attribute)
-            if attr is not None and hasattr(attr, "_name"):
-                # Iterate over namespace attributes
-                for ns_attr_name, ns_attr in attr.__dict__.items():
-                    if ns_attr_name.startswith("_"):
-                        continue
-                    if isinstance(ns_attr, wp.array):
-                        ns_attr.zero_()
+        """Clear all wp.array attributes in namespaced containers (e.g., control.mujoco.ctrl)."""
+        for attr in self.__dict__.values():
+            if hasattr(attr, "_name"):
+                for value in attr.__dict__.values():
+                    if isinstance(value, wp.array):
+                        value.zero_()

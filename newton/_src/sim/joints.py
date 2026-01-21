@@ -107,7 +107,7 @@ class ActuatorMode(IntEnum):
     Determines which actuators are installed for a DOF when using solvers that
     require explicit actuator definitions (e.g., MuJoCo solver).
     
-    Note: MuJoCo general actuators (motor, general) are handled separately via
+    Note: MuJoCo general actuators are handled separately via
     custom attributes with "mujoco:actuator" frequency and control.mujoco.ctrl, not through this enum.
     """
 
@@ -121,7 +121,7 @@ class ActuatorMode(IntEnum):
     """Only a velocity actuator is installed for this DOF. Tracks velocity targets."""
 
     POSITION_VELOCITY = 3
-    """Both position and velocity actuators are installed (default PD control)."""
+    """Both position and velocity actuators are installed."""
 
 
 # Sentinel value for unlimited joint limits

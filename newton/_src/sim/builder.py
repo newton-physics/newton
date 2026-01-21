@@ -335,8 +335,7 @@ class ModelBuilder:
             """Friction coefficient for the joint axis. Defaults to 0.0."""
             self.actuator_mode = actuator_mode
             """Actuator mode for this DOF. Determines which actuators are installed (see :class:`ActuatorMode`).
-            If None, the mode is inferred from gains: POSITION_VELOCITY if target_ke > 0 or target_kd > 0,
-            otherwise NONE."""
+            If None, the mode is inferred from gains and targets."""
 
             if self.target_pos > self.limit_upper or self.target_pos < self.limit_lower:
                 self.target_pos = 0.5 * (self.limit_lower + self.limit_upper)
@@ -719,13 +718,10 @@ class ModelBuilder:
         self.joint_world = []  # world index for each joint
         self.joint_articulation = []  # articulation index for each joint, -1 if not in any articulation
 
-        # Per-DOF actuator properties
-        self.joint_act_mode: list[int] = []
-        """Actuator mode per DOF (ActuatorMode.NONE=0, POSITION=1, VELOCITY=2, POSITION_VELOCITY=3), shape [joint_dof_count], int."""
-        self.joint_target_ke: list[float] = []
-        """Position gain (stiffness) per DOF, shape [joint_dof_count], float."""
-        self.joint_target_kd: list[float] = []
-        """Velocity gain (damping) per DOF, shape [joint_dof_count], float."""
+        # Per-DOF actuator properties, shape [joint_dof_count]
+        self.joint_act_mode = [] # Actuator mode per DOF (ActuatorMode.NONE=0, POSITION=1, VELOCITY=2, POSITION_VELOCITY=3)
+        self.joint_target_ke = []
+        self.joint_target_kd = []
 
         self.articulation_start = []
         self.articulation_key = []
@@ -2385,9 +2381,15 @@ class ModelBuilder:
             # Use actuator_mode if explicitly set, otherwise infer from gains
             if dim.actuator_mode is not None:
                 mode = int(dim.actuator_mode)
-            elif dim.target_ke > 0.0 or dim.target_kd > 0.0:
-                # Has any gains - use POSITION_VELOCITY for PD control (backward compatible)
+            elif dim.target_ke > 0.0 and dim.target_kd > 0.0 and dim.target_vel != 0.0:
+                # Both gains and non-zero velocity target - use POSITION_VELOCITY for PD control
                 mode = int(ActuatorMode.POSITION_VELOCITY)
+            elif dim.target_ke > 0.0 and dim.target_kd > 0.0:
+                # Both gains but no velocity target - use POSITION only
+                mode = int(ActuatorMode.POSITION)
+            elif dim.target_kd > 0.0:
+                # Only velocity gain - use VELOCITY
+                mode = int(ActuatorMode.VELOCITY)
             else:
                 # No gains - no actuators
                 mode = int(ActuatorMode.NONE)
@@ -6589,7 +6591,6 @@ class ModelBuilder:
             m.joint_target_pos = wp.array(self.joint_target_pos, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_target_vel = wp.array(self.joint_target_vel, dtype=wp.float32, requires_grad=requires_grad)
 
-            # Per-DOF actuator properties
             m.joint_act_mode = wp.array(self.joint_act_mode, dtype=wp.int32)
             m.joint_target_ke = wp.array(self.joint_target_ke, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_target_kd = wp.array(self.joint_target_kd, dtype=wp.float32, requires_grad=requires_grad)
