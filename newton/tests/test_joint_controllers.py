@@ -48,7 +48,7 @@ def test_revolute_controller(
     b = builder.add_link(armature=0.0, I_m=box_inertia, mass=box_mass)
     builder.add_shape_box(body=b, hx=0.2, hy=0.2, hz=0.2, cfg=newton.ModelBuilder.ShapeConfig(density=1))
 
-    # Create a revolute joint with POSITION_VELOCITY actuator mode for PD control
+    # Create a revolute joint
     j = builder.add_joint_revolute(
         parent=-1,
         child=b,
@@ -142,11 +142,10 @@ def test_ball_controller(
     # Ball joints have 3 axes (X, Y, Z) that are added to joint_target_ke/kd arrays
     qd_start = builder.joint_qd_start[j]
     for i in range(3):  # 3 angular axes
-        dof_idx = qd_start + i
-        builder.joint_target_ke[dof_idx] = target_ke
-        builder.joint_target_kd[dof_idx] = target_kd
-        builder.joint_target_pos[dof_idx] = pos_target_vals[i]
-        builder.joint_target_vel[dof_idx] = vel_target_vals[i]
+        builder.joint_target_ke[qd_start + i] = target_ke
+        builder.joint_target_kd[qd_start + i] = target_kd
+        builder.joint_target_pos[qd_start + i] = pos_target_vals[i]
+        builder.joint_target_vel[qd_start + i] = vel_target_vals[i]
 
     model = builder.finalize(device=device)
 

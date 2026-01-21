@@ -1712,7 +1712,6 @@ class TestImportSampleAssets(unittest.TestCase):
                 ke_val = ke_attr.Get() if ke_attr.HasAuthoredValue() else None
                 if ke_val is not None:
                     ke = float(ke_val)
-                    # Now per-DOF, check directly
                     self.assertAlmostEqual(
                         float(model.joint_target_ke.numpy()[dof_index]), ke * math.degrees(drive_gain_scale), places=2
                     )
@@ -1721,7 +1720,6 @@ class TestImportSampleAssets(unittest.TestCase):
                 kd_val = kd_attr.Get() if kd_attr.HasAuthoredValue() else None
                 if kd_val is not None:
                     kd = float(kd_val)
-                    # Now per-DOF, check directly
                     self.assertAlmostEqual(
                         float(model.joint_target_kd.numpy()[dof_index]), kd * math.degrees(drive_gain_scale), places=2
                     )
@@ -2335,7 +2333,6 @@ def Xform "Articulation" (
             dof_idx = joint_qd_start[joint_idx]
             self.assertAlmostEqual(joint_stiffness[dof_idx], expected["stiffness"], places=4)
             self.assertAlmostEqual(joint_damping[dof_idx], expected["damping"], places=4)
-            # Now per-DOF, just check directly
             self.assertAlmostEqual(joint_target_ke[dof_idx], expected["target_ke"], places=1)
             self.assertAlmostEqual(joint_target_kd[dof_idx], expected["target_kd"], places=1)
 

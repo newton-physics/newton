@@ -696,7 +696,6 @@ def parse_usd(
                             target_ke = drive.second.stiffness
                             target_kd = drive.second.damping
                             effort_limit = drive.second.forceLimit
-                    # Determine actuator mode based on gains (consistent with builder)
                     if not has_drive:
                         actuator_mode = ActuatorMode.NONE
                     elif target_ke != 0.0 and target_kd != 0.0 and target_vel != 0.0:

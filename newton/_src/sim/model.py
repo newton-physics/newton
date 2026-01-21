@@ -337,6 +337,12 @@ class Model:
         """Joint axis in child frame, shape [joint_dof_count, 3], float."""
         self.joint_armature = None
         """Armature for each joint axis (used by :class:`~newton.solvers.SolverMuJoCo` and :class:`~newton.solvers.SolverFeatherstone`), shape [joint_dof_count], float."""
+        self.joint_act_mode = None
+        """Actuator mode per DOF (ActuatorMode.NONE=0, POSITION=1, VELOCITY=2, POSITION_VELOCITY=3), shape [joint_dof_count], int32."""
+        self.joint_target_ke = None
+        """Position gain (stiffness) per DOF, shape [joint_dof_count], float."""
+        self.joint_target_kd = None
+        """Velocity gain (damping) per DOF, shape [joint_dof_count], float."""
         self.joint_effort_limit = None
         """Joint effort (force/torque) limits, shape [joint_dof_count], float."""
         self.joint_velocity_limit = None
@@ -364,14 +370,6 @@ class Model:
         self.joint_qd_start = None
         """Start index of the first velocity coordinate per joint (last value is a sentinel for dimension queries), shape [joint_count + 1], int."""
         self.joint_key = []
-
-        # Per-DOF actuator properties
-        self.joint_act_mode = None
-        """Actuator mode per DOF (ActuatorMode.NONE=0, POSITION=1, VELOCITY=2, POSITION_VELOCITY=3), shape [joint_dof_count], int32."""
-        self.joint_target_ke = None
-        """Position gain (stiffness) per DOF, shape [joint_dof_count], float."""
-        self.joint_target_kd = None
-        """Velocity gain (damping) per DOF, shape [joint_dof_count], float."""
 
         """Joint keys, shape [joint_count], str."""
         self.joint_world = None
