@@ -353,7 +353,7 @@ class ModelBuilder:
                 target_kd=0.0,
                 armature=0.0,
                 limit_ke=0.0,
-                limit_kd=0.0
+                limit_kd=0.0,
             )
 
     @dataclass

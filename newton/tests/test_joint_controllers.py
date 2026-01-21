@@ -118,7 +118,7 @@ def test_ball_controller(
     b = builder.add_link(armature=0.0, I_m=box_inertia, mass=box_mass)
     builder.add_shape_box(body=b, hx=0.2, hy=0.2, hz=0.2, cfg=newton.ModelBuilder.ShapeConfig(density=1))
 
-    # Create a ball joint with POSITION_VELOCITY actuator mode for PD control
+    # Create a ball joint
     j = builder.add_joint_ball(
         parent=-1,
         child=b,

@@ -340,9 +340,9 @@ class Model:
         self.joint_act_mode = None
         """Actuator mode per DOF (ActuatorMode.NONE=0, POSITION=1, VELOCITY=2, POSITION_VELOCITY=3), shape [joint_dof_count], int32."""
         self.joint_target_ke = None
-        """Position gain (stiffness) per DOF, shape [joint_dof_count], float."""
+        """Joint stiffness, shape [joint_dof_count], float."""
         self.joint_target_kd = None
-        """Velocity gain (damping) per DOF, shape [joint_dof_count], float."""
+        """Joint damping, shape [joint_dof_count], float."""
         self.joint_effort_limit = None
         """Joint effort (force/torque) limits, shape [joint_dof_count], float."""
         self.joint_velocity_limit = None
@@ -370,7 +370,6 @@ class Model:
         self.joint_qd_start = None
         """Start index of the first velocity coordinate per joint (last value is a sentinel for dimension queries), shape [joint_count + 1], int."""
         self.joint_key = []
-
         """Joint keys, shape [joint_count], str."""
         self.joint_world = None
         """World index for each joint, shape [joint_count], int. -1 for global."""
