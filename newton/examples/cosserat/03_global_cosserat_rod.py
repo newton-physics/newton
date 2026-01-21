@@ -275,8 +275,7 @@ def solve_bend_twist_constraint_kernel(
     
     # Accumulate corrections
     wp.atomic_add(edge_q_delta, tid, corrq0)
-    wp.atomic_add(edge_q_delta, tid + 1, corr.0     # Resist bending
-        self.twist_stiffness = q1)
+    wp.atomic_add(edge_q_delta, tid + 1, corrq1)
 
 
 
@@ -557,8 +556,8 @@ class Example:
                 radius=particle_radius,
             )
 
-        self.model = builder.finalize().0     # Resist bending
-        self.twist_stiffness = 
+        self.model = builder.finalize()     # Resist bending
+
 
         # Soft contact parameters for particle-ground collision
         self.model.soft_contact_ke = 1.0e3
