@@ -1627,7 +1627,7 @@ class TestImportMjcf(unittest.TestCase):
         builder.add_mjcf(mjcf)
         model = builder.finalize()
 
-        # Set initial joint positions BEFORE the SolverMuJoCo constructor
+        # Taken from joint.ref values in mjcf.
         q0 = 0.5
         q1 = 0.7
 

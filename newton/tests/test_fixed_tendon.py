@@ -92,7 +92,7 @@ class TestMujocoFixedTendon(unittest.TestCase):
         coeff1 = 1.0  # from mjcf above
         expected_tendon_length = 0.0  # from mjcf above
 
-        # Length of tendon at start is: pos*coef0 + pos1*coef1 = 2*0.5 + 0*0.0 = 1.0
+        # Length of tendon at start is: pos*coef0 + pos1*coef1 = 1*0.5 + 1*0.0 = 0.5
         # Target length is 0.0 (see mjcf above)
         joint_start_positions = [0.5, 0.0, 0.5, 0.0]
         state_in.joint_q.assign(joint_start_positions)
