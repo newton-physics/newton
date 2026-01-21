@@ -28,11 +28,11 @@
 ###########################################################################
 import numpy as np
 import warp as wp
-from warp.render import bourke_color_map
 
 import newton
 import newton.examples
 from newton.tests.unittest_utils import assert_np_equal
+from newton.utils import bourke_color_map
 
 
 @wp.kernel

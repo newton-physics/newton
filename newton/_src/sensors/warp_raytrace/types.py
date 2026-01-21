@@ -15,7 +15,20 @@
 
 import enum
 
-from .... import GeoType
+try:
+    from .... import GeoType
+except ImportError:
+
+    class GeoType:
+        PLANE = 0
+        SPHERE = 2
+        CAPSULE = 3
+        ELLIPSOID = 4
+        CYLINDER = 5
+        BOX = 6
+        MESH = 7
+        CONE = 9
+        NONE = 11
 
 
 class RenderShapeType(enum.IntEnum):

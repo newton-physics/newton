@@ -33,6 +33,26 @@ devices = get_test_devices()
 
 class TestImportUsd(unittest.TestCase):
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_import_usd_raises_on_stage_errors(self):
+        from pxr import Usd  # noqa: PLC0415
+
+        usd_text = """#usda 1.0
+def Xform "Root" (
+    references = @does_not_exist.usda@
+)
+{
+}
+"""
+        stage = Usd.Stage.CreateInMemory()
+        stage.GetRootLayer().ImportFromString(usd_text)
+
+        builder = newton.ModelBuilder()
+        with self.assertRaises(RuntimeError) as exc_info:
+            builder.add_usd(stage)
+
+        self.assertIn("composition errors", str(exc_info.exception))
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_import_articulation(self):
         builder = newton.ModelBuilder()
 
@@ -57,6 +77,70 @@ class TestImportUsd(unittest.TestCase):
             i for i in range(builder.shape_count) if builder.shape_flags[i] & int(newton.ShapeFlags.COLLIDE_SHAPES)
         ]
         self.assertEqual(len(collision_shapes), 13)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_import_articulation_parent_offset(self):
+        from pxr import Usd  # noqa: PLC0415
+
+        usd_text = """#usda 1.0
+(
+    upAxis = "Z"
+)
+def "World"
+{
+    def Xform "Env_0"
+    {
+        double3 xformOp:translate = (0, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+
+        def Xform "Robot" (
+            apiSchemas = ["PhysicsArticulationRootAPI"]
+        )
+        {
+            def Xform "Body" (
+                apiSchemas = ["PhysicsRigidBodyAPI"]
+            )
+            {
+                double3 xformOp:translate = (0, 0, 0)
+                uniform token[] xformOpOrder = ["xformOp:translate"]
+            }
+        }
+    }
+
+    def Xform "Env_1"
+    {
+        double3 xformOp:translate = (2.5, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+
+        def Xform "Robot" (
+            apiSchemas = ["PhysicsArticulationRootAPI"]
+        )
+        {
+            def Xform "Body" (
+                apiSchemas = ["PhysicsRigidBodyAPI"]
+            )
+            {
+                double3 xformOp:translate = (0, 0, 0)
+                uniform token[] xformOpOrder = ["xformOp:translate"]
+            }
+        }
+    }
+}
+"""
+        stage = Usd.Stage.CreateInMemory()
+        stage.GetRootLayer().ImportFromString(usd_text)
+
+        builder = newton.ModelBuilder()
+        results = builder.add_usd(stage, xform=wp.transform(wp.vec3(0.0, 0.0, 1.0), wp.quat_identity()))
+
+        body_0 = results["path_body_map"]["/World/Env_0/Robot/Body"]
+        body_1 = results["path_body_map"]["/World/Env_1/Robot/Body"]
+
+        pos_0 = np.array(builder.body_q[body_0].p)
+        pos_1 = np.array(builder.body_q[body_1].p)
+
+        np.testing.assert_allclose(pos_0, np.array([0.0, 0.0, 1.0]), atol=1e-5)
+        np.testing.assert_allclose(pos_1, np.array([2.5, 0.0, 1.0]), atol=1e-5)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_import_articulation_no_visuals(self):
@@ -181,6 +265,205 @@ class TestImportUsd(unittest.TestCase):
         ]
         for i in range(8):
             self.assertTrue(builder_bfs.joint_key[i + 1].endswith(expected[i]))
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_reversed_joints_in_articulation_raise(self):
+        """Ensure reversed joints are reported when encountered in articulations."""
+        from pxr import Gf, Usd, UsdGeom, UsdPhysics  # noqa: PLC0415
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        articulation = UsdGeom.Xform.Define(stage, "/World/Articulation")
+        UsdPhysics.ArticulationRootAPI.Apply(articulation.GetPrim())
+
+        def define_body(path):
+            body = UsdGeom.Xform.Define(stage, path)
+            UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+            return body
+
+        body0 = define_body("/World/Articulation/Body0")
+        body1 = define_body("/World/Articulation/Body1")
+        body2 = define_body("/World/Articulation/Body2")
+
+        joint0 = UsdPhysics.RevoluteJoint.Define(stage, "/World/Articulation/Joint0")
+        joint0.CreateBody0Rel().SetTargets([body0.GetPath()])
+        joint0.CreateBody1Rel().SetTargets([body1.GetPath()])
+        joint0_pos0 = Gf.Vec3f(0.1, 0.2, 0.3)
+        joint0_pos1 = Gf.Vec3f(-0.4, 0.25, 0.05)
+        joint0_rot0 = Gf.Quatf(1.0, 0.0, 0.0, 0.0)
+        joint0_rot1 = Gf.Quatf(0.9238795, 0.0, 0.3826834, 0.0)
+        joint0.CreateLocalPos0Attr().Set(joint0_pos0)
+        joint0.CreateLocalPos1Attr().Set(joint0_pos1)
+        joint0.CreateLocalRot0Attr().Set(joint0_rot0)
+        joint0.CreateLocalRot1Attr().Set(joint0_rot1)
+        joint0.CreateAxisAttr().Set("Z")
+
+        joint1 = UsdPhysics.RevoluteJoint.Define(stage, "/World/Articulation/Joint1")
+        joint1.CreateBody0Rel().SetTargets([body2.GetPath()])
+        joint1.CreateBody1Rel().SetTargets([body1.GetPath()])
+        joint1_pos0 = Gf.Vec3f(0.6, -0.1, 0.2)
+        joint1_pos1 = Gf.Vec3f(-0.15, 0.35, -0.25)
+        joint1_rot0 = Gf.Quatf(0.9659258, 0.2588190, 0.0, 0.0)
+        joint1_rot1 = Gf.Quatf(0.7071068, 0.0, 0.0, 0.7071068)
+        joint1.CreateLocalPos0Attr().Set(joint1_pos0)
+        joint1.CreateLocalPos1Attr().Set(joint1_pos1)
+        joint1.CreateLocalRot0Attr().Set(joint1_rot0)
+        joint1.CreateLocalRot1Attr().Set(joint1_rot1)
+        joint1.CreateAxisAttr().Set("Z")
+
+        builder = newton.ModelBuilder()
+        with self.assertRaises(ValueError) as exc_info:
+            builder.add_usd(stage)
+        self.assertIn("/World/Articulation/Joint1", str(exc_info.exception))
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_reversed_fixed_root_joint_to_world_is_allowed(self):
+        """Ensure a fixed root joint to world (body1 unset) does not raise."""
+        from pxr import Gf, Usd, UsdGeom, UsdPhysics  # noqa: PLC0415
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        articulation = UsdGeom.Xform.Define(stage, "/World/Articulation")
+        UsdPhysics.ArticulationRootAPI.Apply(articulation.GetPrim())
+
+        def define_body(path):
+            body = UsdGeom.Xform.Define(stage, path)
+            UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+            return body
+
+        root = define_body("/World/Articulation/Root")
+        link1 = define_body("/World/Articulation/Link1")
+        link2 = define_body("/World/Articulation/Link2")
+
+        fixed = UsdPhysics.FixedJoint.Define(stage, "/World/Articulation/RootToWorld")
+        # Here the child body (physics:body1) is -1, so the joint is silently reversed
+        fixed.CreateBody0Rel().SetTargets([root.GetPath()])
+        fixed.CreateLocalPos0Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+        fixed.CreateLocalPos1Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+        fixed.CreateLocalRot0Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+        fixed.CreateLocalRot1Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+
+        joint1 = UsdPhysics.RevoluteJoint.Define(stage, "/World/Articulation/Joint1")
+        joint1.CreateBody0Rel().SetTargets([root.GetPath()])
+        joint1.CreateBody1Rel().SetTargets([link1.GetPath()])
+        joint1.CreateLocalPos0Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+        joint1.CreateLocalPos1Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+        joint1.CreateLocalRot0Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+        joint1.CreateLocalRot1Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+        joint1.CreateAxisAttr().Set("Z")
+
+        joint2 = UsdPhysics.RevoluteJoint.Define(stage, "/World/Articulation/Joint2")
+        joint2.CreateBody0Rel().SetTargets([link1.GetPath()])
+        joint2.CreateBody1Rel().SetTargets([link2.GetPath()])
+        joint2.CreateLocalPos0Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+        joint2.CreateLocalPos1Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+        joint2.CreateLocalRot0Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+        joint2.CreateLocalRot1Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+        joint2.CreateAxisAttr().Set("Z")
+
+        builder = newton.ModelBuilder()
+        # We must not trigger an error here regarding the reversed joint.
+        builder.add_usd(stage)
+
+        self.assertEqual(builder.body_count, 3)
+        self.assertEqual(builder.joint_count, 3)
+
+        fixed_idx = builder.joint_key.index("/World/Articulation/RootToWorld")
+        root_idx = builder.body_key.index("/World/Articulation/Root")
+        self.assertEqual(builder.joint_parent[fixed_idx], -1)
+        self.assertEqual(builder.joint_child[fixed_idx], root_idx)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_reversed_joint_unsupported_d6_raises(self):
+        """Reversing a D6 joint should raise an error."""
+        from pxr import Gf, Usd, UsdGeom, UsdPhysics  # noqa: PLC0415
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        articulation = UsdGeom.Xform.Define(stage, "/World/Articulation")
+        UsdPhysics.ArticulationRootAPI.Apply(articulation.GetPrim())
+
+        def define_body(path):
+            body = UsdGeom.Xform.Define(stage, path)
+            UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+            return body
+
+        body0 = define_body("/World/Articulation/Body0")
+        body1 = define_body("/World/Articulation/Body1")
+        body2 = define_body("/World/Articulation/Body2")
+
+        joint = UsdPhysics.Joint.Define(stage, "/World/Articulation/JointD6")
+        joint.CreateBody0Rel().SetTargets([body1.GetPath()])
+        joint.CreateBody1Rel().SetTargets([body0.GetPath()])
+        joint.CreateLocalPos0Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+        joint.CreateLocalPos1Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+        joint.CreateLocalRot0Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+        joint.CreateLocalRot1Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+
+        fixed = UsdPhysics.FixedJoint.Define(stage, "/World/Articulation/FixedJoint")
+        fixed.CreateBody0Rel().SetTargets([body2.GetPath()])
+        fixed.CreateBody1Rel().SetTargets([body0.GetPath()])
+        fixed.CreateLocalPos0Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+        fixed.CreateLocalPos1Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+        fixed.CreateLocalRot0Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+        fixed.CreateLocalRot1Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+
+        builder = newton.ModelBuilder()
+        with self.assertRaises(ValueError) as exc_info:
+            builder.add_usd(stage)
+        error_message = str(exc_info.exception)
+        self.assertIn("/World/Articulation/JointD6", error_message)
+        self.assertIn("/World/Articulation/FixedJoint", error_message)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_reversed_joint_unsupported_spherical_raises(self):
+        """Reversing a spherical joint should raise an error."""
+        from pxr import Gf, Usd, UsdGeom, UsdPhysics  # noqa: PLC0415
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        articulation = UsdGeom.Xform.Define(stage, "/World/Articulation")
+        UsdPhysics.ArticulationRootAPI.Apply(articulation.GetPrim())
+
+        def define_body(path):
+            body = UsdGeom.Xform.Define(stage, path)
+            UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+            return body
+
+        body0 = define_body("/World/Articulation/Body0")
+        body1 = define_body("/World/Articulation/Body1")
+        body2 = define_body("/World/Articulation/Body2")
+
+        joint = UsdPhysics.SphericalJoint.Define(stage, "/World/Articulation/JointBall")
+        joint.CreateBody0Rel().SetTargets([body1.GetPath()])
+        joint.CreateBody1Rel().SetTargets([body0.GetPath()])
+        joint.CreateLocalPos0Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+        joint.CreateLocalPos1Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+        joint.CreateLocalRot0Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+        joint.CreateLocalRot1Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+
+        fixed = UsdPhysics.FixedJoint.Define(stage, "/World/Articulation/FixedJoint")
+        fixed.CreateBody0Rel().SetTargets([body2.GetPath()])
+        fixed.CreateBody1Rel().SetTargets([body0.GetPath()])
+        fixed.CreateLocalPos0Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+        fixed.CreateLocalPos1Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+        fixed.CreateLocalRot0Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+        fixed.CreateLocalRot1Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+
+        builder = newton.ModelBuilder()
+        with self.assertRaises(ValueError) as exc_info:
+            builder.add_usd(stage)
+        error_message = str(exc_info.exception)
+        self.assertIn("/World/Articulation/JointBall", error_message)
+        self.assertIn("/World/Articulation/FixedJoint", error_message)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_joint_filtering(self):

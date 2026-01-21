@@ -46,6 +46,8 @@ GEAR_FILES = [
 SHAPE_CFG = newton.ModelBuilder.ShapeConfig(
     thickness=0.0,
     mu=0.01,
+    ke=1e7,  # Contact stiffness for MuJoCo solver
+    kd=1e4,  # Contact damping
     sdf_max_resolution=512,
     sdf_narrow_band_range=(-0.005, 0.005),
     contact_margin=0.005,
@@ -87,17 +89,19 @@ def add_mesh_object(
 
 
 class Example:
-    def __init__(self, viewer, num_worlds=1, num_per_world=1, scene="nut_bolt", solver="xpbd"):
+    def __init__(self, viewer, num_worlds=1, num_per_world=1, scene="nut_bolt", solver="xpbd", test_mode=False):
         self.fps = 120
         self.frame_dt = 1.0 / self.fps
         self.sim_time = 0.0
-        self.sim_substeps = 5
+        # Use more substeps for gears scene to improve stability
+        self.sim_substeps = 50 if scene == "gears" else 5
         self.sim_dt = self.frame_dt / self.sim_substeps
 
         self.num_worlds = num_worlds
         self.viewer = viewer
         self.scene = scene
         self.solver_type = solver
+        self.test_mode = test_mode
 
         # XPBD contact correction (0.0 = no correction, 1.0 = full correction)
         self.xpbd_contact_relaxation = 0.8
@@ -157,13 +161,16 @@ class Example:
             num_per_world = self.rigid_contact_max // self.num_worlds
             self.solver = newton.solvers.SolverMuJoCo(
                 self.model,
-                ls_parallel=True,
+                use_mujoco_contacts=False,
                 solver="newton",
                 integrator="implicitfast",
+                cone="elliptic",
                 njmax=num_per_world,
                 nconmax=num_per_world,
+                iterations=15,
                 ls_iterations=100,
-                use_mujoco_contacts=False,
+                ls_parallel=True,
+                impratio=1.0,
             )
         else:
             raise ValueError(f"Unknown solver type: {self.solver_type}. Choose from 'xpbd' or 'mujoco'.")
@@ -186,6 +193,9 @@ class Example:
             offset = 0.25 * self.scene_scale
             self.viewer.set_world_offsets((offset, offset, 0.0))
             self.viewer.set_camera(pos=wp.vec3(offset, -offset, 0.2 * self.scene_scale), pitch=-25.0, yaw=135.0)
+
+        # Initialize test tracking data (only in test mode for nut_bolt scene)
+        self._init_test_tracking()
 
         self.capture()
 
@@ -297,11 +307,110 @@ class Example:
 
         self.sim_time += self.frame_dt
 
+        # Track transforms for test validation
+        self._track_test_data()
+
     def render(self):
         self.viewer.begin_frame(self.sim_time)
         self.viewer.log_state(self.state_0)
         self.viewer.log_contacts(self.contacts, self.state_0)
         self.viewer.end_frame()
+
+    def _init_test_tracking(self):
+        """Initialize tracking data for test validation (nut_bolt scene only)."""
+        if not self.test_mode or self.scene != "nut_bolt":
+            self.bolt_body_indices = None
+            self.nut_body_indices = None
+            return
+
+        # Find bolt and nut body indices by key
+        self.bolt_body_indices = []
+        self.nut_body_indices = []
+
+        for i in range(self.grid_x):
+            for j in range(self.grid_y):
+                bolt_key = f"bolt_{i}_{j}"
+                nut_key = f"nut_{i}_{j}"
+
+                if bolt_key in self.model.body_key:
+                    self.bolt_body_indices.append(self.model.body_key.index(bolt_key))
+                if nut_key in self.model.body_key:
+                    self.nut_body_indices.append(self.model.body_key.index(nut_key))
+
+        # Store initial transforms
+        body_q = self.state_0.body_q.numpy()
+        self.bolt_initial_transforms = [body_q[idx].copy() for idx in self.bolt_body_indices]
+        self.nut_initial_transforms = [body_q[idx].copy() for idx in self.nut_body_indices]
+
+        # Track maximum rotation change and z displacement for nuts
+        self.nut_max_rotation_change = [0.0] * len(self.nut_body_indices)
+        self.nut_min_z = [body_q[idx][2] for idx in self.nut_body_indices]
+
+    def _track_test_data(self):
+        """Track transforms for test validation (called each step in test mode)."""
+        if not self.test_mode or self.scene != "nut_bolt":
+            return
+
+        body_q = self.state_0.body_q.numpy()
+
+        # Track nut rotation and z position
+        for i, nut_idx in enumerate(self.nut_body_indices):
+            current_q = body_q[nut_idx]
+            initial_q = self.nut_initial_transforms[i]
+
+            # Compute rotation change using quaternion dot product
+            # |q1 · q2| = cos(theta/2), where theta is the angle between orientations
+            q_current = current_q[3:7]  # quaternion part (x, y, z, w)
+            q_initial = initial_q[3:7]
+            dot = abs(np.dot(q_current, q_initial))
+            dot = min(dot, 1.0)  # Clamp for numerical stability
+            rotation_angle = 2.0 * np.arccos(dot)
+            self.nut_max_rotation_change[i] = max(self.nut_max_rotation_change[i], rotation_angle)
+
+            # Track minimum z (nuts should move down)
+            self.nut_min_z[i] = min(self.nut_min_z[i], current_q[2])
+
+    def test_final(self):
+        """Verify simulation state after example completes.
+
+        For nut_bolt scene:
+        - Bolts should stay approximately in place (limited displacement)
+        - Nuts should rotate (thread engagement) and move slightly downward
+        """
+        if self.scene != "nut_bolt":
+            # For gears scene, just verify simulation ran without error
+            return
+
+        body_q = self.state_0.body_q.numpy()
+
+        # Check bolts stayed in place
+        max_bolt_displacement = 0.01 * self.scene_scale  # 1cm scaled
+        for i, bolt_idx in enumerate(self.bolt_body_indices):
+            current_pos = body_q[bolt_idx][:3]
+            initial_pos = self.bolt_initial_transforms[i][:3]
+            displacement = np.linalg.norm(current_pos - initial_pos)
+            assert displacement < max_bolt_displacement, (
+                f"Bolt {i}: displaced too much. "
+                f"Displacement={displacement:.4f} (max allowed={max_bolt_displacement:.4f})"
+            )
+
+        # Check nuts rotated and moved down
+        min_rotation_threshold = 0.1  # At least ~5.7 degrees of rotation
+        for i in range(len(self.nut_body_indices)):
+            # Check rotation occurred
+            max_rotation = self.nut_max_rotation_change[i]
+            assert max_rotation > min_rotation_threshold, (
+                f"Nut {i}: did not rotate enough. "
+                f"Max rotation={np.degrees(max_rotation):.2f} degrees "
+                f"(expected > {np.degrees(min_rotation_threshold):.2f} degrees)"
+            )
+
+            # Check nut moved downward (min_z should be less than initial z)
+            initial_z = self.nut_initial_transforms[i][2]
+            min_z = self.nut_min_z[i]
+            assert min_z < initial_z, (
+                f"Nut {i}: did not move downward. Initial z={initial_z:.4f}, min z reached={min_z:.4f}"
+            )
 
 
 if __name__ == "__main__":
@@ -336,7 +445,12 @@ if __name__ == "__main__":
     viewer, args = newton.examples.init(parser)
 
     example = Example(
-        viewer, num_worlds=args.num_worlds, num_per_world=args.num_per_world, scene=args.scene, solver=args.solver
+        viewer,
+        num_worlds=args.num_worlds,
+        num_per_world=args.num_per_world,
+        scene=args.scene,
+        solver=args.solver,
+        test_mode=args.test,
     )
 
     newton.examples.run(example, args)

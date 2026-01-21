@@ -227,7 +227,7 @@ class SolverXPBD(SolverBase):
 
         if contacts:
             if self.rigid_contact_con_weighting:
-                rigid_contact_inv_weight = wp.zeros_like(contacts.rigid_contact_thickness0)
+                rigid_contact_inv_weight = wp.zeros(model.body_count, dtype=float, device=model.device)
             rigid_contact_inv_weight_init = None
 
         if control is None:
@@ -638,6 +638,7 @@ class SolverXPBD(SolverBase):
                             model.body_com,
                             model.body_inv_mass,
                             model.body_inv_inertia,
+                            model.body_world,
                             model.shape_body,
                             contacts.rigid_contact_count,
                             contacts.rigid_contact_normal,

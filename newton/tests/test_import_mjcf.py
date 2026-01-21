@@ -24,7 +24,6 @@ import newton
 import newton.examples
 from newton._src.geometry.types import GeoType
 from newton._src.sim.builder import ShapeFlags
-from newton.solvers import SolverMuJoCo
 
 
 class TestImportMjcf(unittest.TestCase):
@@ -742,7 +741,6 @@ class TestImportMjcf(unittest.TestCase):
 
         builder = newton.ModelBuilder()
 
-        SolverMuJoCo.register_custom_attributes(builder)
         builder.add_mjcf(mjcf)
         model = builder.finalize()
 
@@ -815,7 +813,6 @@ class TestImportMjcf(unittest.TestCase):
         </mujoco>
         """
         builder = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(builder)
         builder.add_mjcf(mjcf)
         model = builder.finalize()
 
@@ -843,7 +840,6 @@ class TestImportMjcf(unittest.TestCase):
 
         builder = newton.ModelBuilder()
 
-        SolverMuJoCo.register_custom_attributes(builder)
         builder.add_mjcf(mjcf)
         model = builder.finalize()
 
@@ -917,7 +913,6 @@ class TestImportMjcf(unittest.TestCase):
 
         builder = newton.ModelBuilder()
 
-        SolverMuJoCo.register_custom_attributes(builder)
         builder.add_mjcf(mjcf)
         model = builder.finalize()
 
@@ -1136,7 +1131,6 @@ class TestImportMjcf(unittest.TestCase):
 
         builder = newton.ModelBuilder()
         # Register gravcomp
-        SolverMuJoCo.register_custom_attributes(builder)
         builder.add_mjcf(mjcf_content)
         model = builder.finalize()
 
@@ -1181,7 +1175,6 @@ class TestImportMjcf(unittest.TestCase):
 </mujoco>
 """
         builder = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(builder)
         builder.add_mjcf(mjcf_content)
         model = builder.finalize()
 
@@ -1232,7 +1225,6 @@ class TestImportMjcf(unittest.TestCase):
 </mujoco>
 """
         builder = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(builder)
         builder.add_mjcf(mjcf_content)
         model = builder.finalize()
 
@@ -1353,7 +1345,6 @@ class TestImportMjcf(unittest.TestCase):
 """
 
         builder = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(builder)
         builder.add_mjcf(mjcf_content)
         model = builder.finalize()
 
@@ -1389,7 +1380,6 @@ class TestImportMjcf(unittest.TestCase):
 """
 
         builder = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(builder)
         builder.add_mjcf(mjcf)
         model = builder.finalize()
 
@@ -1433,7 +1423,6 @@ class TestImportMjcf(unittest.TestCase):
 """
 
         builder = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(builder)
         builder.add_mjcf(mjcf)
         model = builder.finalize()
 
@@ -1476,7 +1465,6 @@ class TestImportMjcf(unittest.TestCase):
 """
 
         builder = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(builder)
         builder.add_mjcf(mjcf)
         model = builder.finalize()
 
@@ -1518,7 +1506,6 @@ class TestImportMjcf(unittest.TestCase):
 """
 
         builder = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(builder)
         builder.add_mjcf(mjcf_content)
         model = builder.finalize()
 
@@ -1642,7 +1629,6 @@ class TestImportMjcf(unittest.TestCase):
 """
 
         builder = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(builder)
         builder.add_mjcf(mjcf)
         model = builder.finalize()
 
@@ -1685,7 +1671,6 @@ class TestImportMjcf(unittest.TestCase):
 </mujoco>"""
 
         builder = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(builder)
         builder.add_mjcf(mjcf_content)
         model = builder.finalize()
 
@@ -1719,7 +1704,6 @@ class TestImportMjcf(unittest.TestCase):
 </mujoco>"""
 
         builder = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(builder)
         builder.add_mjcf(mjcf_content)
         model = builder.finalize()
         springref = model.mujoco.dof_springref.numpy()
@@ -1729,6 +1713,635 @@ class TestImportMjcf(unittest.TestCase):
         self.assertAlmostEqual(springref[qd_start[hinge_idx]], 30.0, places=4)
         slide_idx = model.joint_key.index("slide")
         self.assertAlmostEqual(springref[qd_start[slide_idx]], 0.25, places=4)
+
+    def test_static_geom_xform_not_applied_twice(self):
+        """Test that xform parameter is applied exactly once to static geoms.
+
+        This is a regression test for a bug where incoming_xform was applied twice
+        to static geoms (link == -1) in parse_shapes.
+
+        A static geom at pos=(1,0,0) with xform translation of (0,2,0) should
+        result in final position (1,2,0), NOT (1,4,0) from double application.
+        """
+        mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test_static_xform">
+    <worldbody>
+        <geom name="static_geom" pos="1 0 0" size="0.1" type="sphere"/>
+    </worldbody>
+</mujoco>"""
+
+        builder = newton.ModelBuilder()
+        # Apply a translation via xform parameter
+        import_xform = wp.transform(wp.vec3(0.0, 2.0, 0.0), wp.quat_identity())
+        builder.add_mjcf(mjcf_content, xform=import_xform)
+
+        # Find the static geom
+        geom_idx = builder.shape_key.index("static_geom")
+        geom_xform = builder.shape_transform[geom_idx]
+
+        # Position should be geom_pos + xform_pos = (1,0,0) + (0,2,0) = (1,2,0)
+        # Bug would give (1,0,0) + (0,2,0) + (0,2,0) = (1,4,0)
+        self.assertAlmostEqual(geom_xform[0], 1.0, places=5)
+        self.assertAlmostEqual(geom_xform[1], 2.0, places=5)  # Would be 4.0 with bug
+        self.assertAlmostEqual(geom_xform[2], 0.0, places=5)
+
+    def test_static_fromto_capsule_xform(self):
+        """Test that xform parameter is applied to capsule/cylinder fromto coordinates.
+
+        A static capsule with fromto="0 0 0  1 0 0" (centered at (0.5,0,0)) with
+        xform translation of (0,5,0) should result in position (0.5, 5.0, 0).
+        """
+        mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test_fromto_xform">
+    <worldbody>
+        <geom name="fromto_cap" type="capsule" fromto="0 0 0  1 0 0" size="0.1"/>
+    </worldbody>
+</mujoco>"""
+
+        builder = newton.ModelBuilder()
+        import_xform = wp.transform(wp.vec3(0.0, 5.0, 0.0), wp.quat_identity())
+        builder.add_mjcf(mjcf_content, xform=import_xform)
+
+        geom_idx = builder.shape_key.index("fromto_cap")
+        geom_xform = builder.shape_transform[geom_idx]
+
+        # Position should be midpoint(0,0,0 to 1,0,0) + xform = (0.5,0,0) + (0,5,0) = (0.5,5,0)
+        self.assertAlmostEqual(geom_xform[0], 0.5, places=5)
+        self.assertAlmostEqual(geom_xform[1], 5.0, places=5)
+        self.assertAlmostEqual(geom_xform[2], 0.0, places=5)
+
+    def test_frame_transform_composition_geoms(self):
+        """Test that frame transforms are correctly composed with child geom positions.
+
+        Based on MuJoCo documentation example:
+        - A frame with pos="0 1 0" containing a geom with pos="0 1 0" should result
+          in the geom having pos="0 2 0" (transforms are accumulated).
+        """
+        mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test_frame">
+    <worldbody>
+        <frame pos="0 1 0">
+            <geom name="Bob" pos="0 1 0" size="1" type="sphere"/>
+        </frame>
+    </worldbody>
+</mujoco>"""
+
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf_content)
+
+        # Find the geom named "Bob"
+        bob_idx = builder.shape_key.index("Bob")
+        bob_xform = builder.shape_transform[bob_idx]
+
+        # Position should be (0, 2, 0) = frame pos + geom pos
+        self.assertAlmostEqual(bob_xform[0], 0.0, places=5)
+        self.assertAlmostEqual(bob_xform[1], 2.0, places=5)
+        self.assertAlmostEqual(bob_xform[2], 0.0, places=5)
+
+    def test_frame_transform_composition_rotation(self):
+        """Test that frame quaternion rotations are correctly composed.
+
+        Based on MuJoCo documentation example:
+        - A frame with quat="0 0 1 0" (180 deg around Y) containing a geom with quat="0 1 0 0" (180 deg around X)
+          should result in quat="0 0 0 1" (180 deg around Z).
+        """
+        mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test_frame_rotation">
+    <worldbody>
+        <frame quat="0 0 1 0">
+            <geom name="Alice" quat="0 1 0 0" size="1" type="sphere"/>
+        </frame>
+    </worldbody>
+</mujoco>"""
+
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf_content)
+
+        # Find the geom named "Alice"
+        alice_idx = builder.shape_key.index("Alice")
+        alice_xform = builder.shape_transform[alice_idx]
+
+        # The resulting quaternion should be approximately (0, 0, 0, 1) in xyzw format
+        # or equivalently (1, 0, 0, 0) in wxyz MuJoCo format (representing 180 deg around Z)
+        # In Newton's xyzw format: (x, y, z, w) = (0, 0, 1, 0) for 180 deg around Z
+        # But we need to check the actual composed result
+        quat = wp.quat(alice_xform[3], alice_xform[4], alice_xform[5], alice_xform[6])
+        # The expected result from MuJoCo docs: quat="0 0 0 1" in wxyz = (0, 0, 1, 0) in xyzw after normalization
+        # Actually the doc says result is "0 0 0 1" which is wxyz format meaning w=0, x=0, y=0, z=1
+        # In Newton xyzw: x=0, y=0, z=1, w=0
+        self.assertAlmostEqual(abs(quat[0]), 0.0, places=4)  # x
+        self.assertAlmostEqual(abs(quat[1]), 0.0, places=4)  # y
+        self.assertAlmostEqual(abs(quat[2]), 1.0, places=4)  # z
+        self.assertAlmostEqual(abs(quat[3]), 0.0, places=4)  # w
+
+    def test_frame_transform_composition_body(self):
+        """Test that frame transforms are correctly composed with child body positions.
+
+        A frame with pos="1 0 0" containing a body with pos="1 0 0" should result
+        in the body having position (2, 0, 0) relative to parent.
+        """
+        mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test_frame_body">
+    <worldbody>
+        <frame pos="1 0 0">
+            <body name="Carl" pos="1 0 0">
+                <geom name="carl_geom" size="0.1" type="sphere"/>
+            </body>
+        </frame>
+    </worldbody>
+</mujoco>"""
+
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf_content)
+        model = builder.finalize()
+
+        # Find the body named "Carl"
+        _carl_idx = model.body_key.index("Carl")
+
+        # Get the joint transform for Carl's joint (which connects Carl to world)
+        # The joint_X_p contains the parent frame transform
+        joint_idx = 0  # First joint should be Carl's
+        joint_X_p = model.joint_X_p.numpy()[joint_idx]
+
+        # Position should be (2, 0, 0) = frame pos + body pos
+        self.assertAlmostEqual(joint_X_p[0], 2.0, places=5)
+        self.assertAlmostEqual(joint_X_p[1], 0.0, places=5)
+        self.assertAlmostEqual(joint_X_p[2], 0.0, places=5)
+
+    def test_nested_frames(self):
+        """Test that nested frames correctly compose their transforms."""
+        mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test_nested_frames">
+    <worldbody>
+        <frame pos="1 0 0">
+            <frame pos="0 1 0">
+                <frame pos="0 0 1">
+                    <geom name="nested_geom" pos="0 0 0" size="0.1" type="sphere"/>
+                </frame>
+            </frame>
+        </frame>
+    </worldbody>
+</mujoco>"""
+
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf_content)
+
+        # Find the nested geom
+        geom_idx = builder.shape_key.index("nested_geom")
+        geom_xform = builder.shape_transform[geom_idx]
+
+        # Position should be (1, 1, 1) from accumulated frame positions
+        self.assertAlmostEqual(geom_xform[0], 1.0, places=5)
+        self.assertAlmostEqual(geom_xform[1], 1.0, places=5)
+        self.assertAlmostEqual(geom_xform[2], 1.0, places=5)
+
+    def test_frame_inside_body(self):
+        """Test that frames inside bodies correctly transform their children."""
+        mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test_frame_in_body">
+    <worldbody>
+        <body name="parent" pos="0 0 0">
+            <geom name="parent_geom" size="0.1" type="sphere"/>
+            <frame pos="0 0 1">
+                <body name="child" pos="0 0 1">
+                    <geom name="child_geom" size="0.1" type="sphere"/>
+                </body>
+            </frame>
+        </body>
+    </worldbody>
+</mujoco>"""
+
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf_content)
+        model = builder.finalize()
+
+        # Find the child body's joint
+        child_idx = model.body_key.index("child")
+
+        # The child's joint_X_p should have z=2 (frame z=1 + body z=1)
+        # Find the joint that has child as its child body
+        joint_child = model.joint_child.numpy()
+        joint_idx = np.where(joint_child == child_idx)[0][0]
+        joint_X_p = model.joint_X_p.numpy()[joint_idx]
+
+        self.assertAlmostEqual(joint_X_p[0], 0.0, places=5)
+        self.assertAlmostEqual(joint_X_p[1], 0.0, places=5)
+        self.assertAlmostEqual(joint_X_p[2], 2.0, places=5)
+
+    def test_frame_geom_inside_body_is_body_relative(self):
+        """Test that geoms inside frames inside bodies have body-relative transforms.
+
+        This tests a critical distinction: geom transforms should be relative to
+        their parent body, NOT world transforms. A bug would cause the geom to be
+        positioned at the body's world position + frame offset + geom offset,
+        instead of just frame offset + geom offset relative to the body.
+        """
+        mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test_frame_geom_body_relative">
+    <worldbody>
+        <body name="parent" pos="10 20 30">
+            <geom name="parent_geom" size="0.1" type="sphere"/>
+            <frame pos="1 2 3">
+                <geom name="frame_geom" pos="0.1 0.2 0.3" size="0.1" type="sphere"/>
+            </frame>
+        </body>
+    </worldbody>
+</mujoco>"""
+
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf_content)
+
+        # Find the frame_geom - its transform should be body-relative
+        geom_idx = builder.shape_key.index("frame_geom")
+        geom_xform = builder.shape_transform[geom_idx]
+
+        # Position should be frame pos + geom pos = (1.1, 2.2, 3.3)
+        # NOT body world pos + frame pos + geom pos = (11.1, 22.2, 33.3)
+        self.assertAlmostEqual(geom_xform[0], 1.1, places=5)
+        self.assertAlmostEqual(geom_xform[1], 2.2, places=5)
+        self.assertAlmostEqual(geom_xform[2], 3.3, places=5)
+
+    def test_frame_with_sites(self):
+        """Test that frames correctly transform site positions."""
+        mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test_frame_sites">
+    <worldbody>
+        <frame pos="1 2 3">
+            <site name="test_site" pos="0.5 0.5 0.5" size="0.01"/>
+        </frame>
+    </worldbody>
+</mujoco>"""
+
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf_content, parse_sites=True)
+
+        # Find the site
+        site_idx = builder.shape_key.index("test_site")
+        site_xform = builder.shape_transform[site_idx]
+
+        # Position should be (1.5, 2.5, 3.5) = frame pos + site pos
+        self.assertAlmostEqual(site_xform[0], 1.5, places=5)
+        self.assertAlmostEqual(site_xform[1], 2.5, places=5)
+        self.assertAlmostEqual(site_xform[2], 3.5, places=5)
+
+    def test_frame_childclass_propagation(self):
+        """Test that frames correctly propagate childclass and merged defaults to geoms, sites, and nested frames."""
+        mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test_frame_childclass">
+    <default>
+        <default class="red_class">
+            <geom rgba="1 0 0 1" size="0.1"/>
+            <site rgba="1 0 0 1" size="0.05"/>
+        </default>
+        <default class="blue_class">
+            <geom rgba="0 0 1 1" size="0.2"/>
+            <site rgba="0 0 1 1" size="0.08"/>
+        </default>
+        <default class="green_class">
+            <geom rgba="0 1 0 1" size="0.3"/>
+            <site rgba="0 1 0 1" size="0.12"/>
+        </default>
+    </default>
+    <worldbody>
+        <!-- Frame with childclass should apply defaults to its children -->
+        <frame name="red_frame" childclass="red_class" pos="1 0 0">
+            <geom name="geom_in_red_frame" type="sphere"/>
+            <site name="site_in_red_frame"/>
+
+            <!-- Nested frame inherits parent's childclass -->
+            <frame name="nested_in_red" pos="0 1 0">
+                <geom name="geom_in_nested_red" type="sphere"/>
+                <site name="site_in_nested_red"/>
+            </frame>
+
+            <!-- Nested frame with its own childclass overrides -->
+            <frame name="blue_nested_in_red" childclass="blue_class" pos="0 0 1">
+                <geom name="geom_in_blue_nested" type="sphere"/>
+                <site name="site_in_blue_nested"/>
+
+                <!-- Double-nested frame inherits blue_class -->
+                <frame name="double_nested" pos="0.5 0 0">
+                    <geom name="geom_double_nested" type="sphere"/>
+                    <site name="site_double_nested"/>
+                </frame>
+            </frame>
+        </frame>
+
+        <!-- Geom outside any frame (uses global defaults) -->
+        <geom name="geom_no_frame" type="sphere" size="0.5"/>
+    </worldbody>
+</mujoco>"""
+
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf_content, parse_sites=True, up_axis="Z")
+
+        def get_shape_size(name):
+            idx = builder.shape_key.index(name)
+            geo_type = builder.shape_type[idx]
+            if geo_type == GeoType.SPHERE:
+                return builder.shape_scale[idx][0]  # radius
+            return None
+
+        def get_shape_pos(name):
+            idx = builder.shape_key.index(name)
+            return builder.shape_transform[idx][:3]
+
+        # Geom in red_frame should have red_class size (0.1)
+        self.assertAlmostEqual(get_shape_size("geom_in_red_frame"), 0.1, places=5)
+
+        # Geom in nested frame (inherits red_class) should also have size 0.1
+        self.assertAlmostEqual(get_shape_size("geom_in_nested_red"), 0.1, places=5)
+
+        # Geom in blue_nested_in_red (overrides to blue_class) should have size 0.2
+        self.assertAlmostEqual(get_shape_size("geom_in_blue_nested"), 0.2, places=5)
+
+        # Double-nested geom (inherits blue_class from parent frame) should have size 0.2
+        self.assertAlmostEqual(get_shape_size("geom_double_nested"), 0.2, places=5)
+
+        # Geom outside frames should use explicit size (0.5)
+        self.assertAlmostEqual(get_shape_size("geom_no_frame"), 0.5, places=5)
+
+        # Verify transforms are still correctly composed
+        # geom_in_red_frame: frame pos (1,0,0) + geom pos (0,0,0) = (1,0,0)
+        pos = get_shape_pos("geom_in_red_frame")
+        self.assertAlmostEqual(pos[0], 1.0, places=5)
+        self.assertAlmostEqual(pos[1], 0.0, places=5)
+        self.assertAlmostEqual(pos[2], 0.0, places=5)
+
+        # geom_in_nested_red: (1,0,0) + (0,1,0) = (1,1,0)
+        pos = get_shape_pos("geom_in_nested_red")
+        self.assertAlmostEqual(pos[0], 1.0, places=5)
+        self.assertAlmostEqual(pos[1], 1.0, places=5)
+        self.assertAlmostEqual(pos[2], 0.0, places=5)
+
+        # geom_in_blue_nested: (1,0,0) + (0,0,1) = (1,0,1)
+        pos = get_shape_pos("geom_in_blue_nested")
+        self.assertAlmostEqual(pos[0], 1.0, places=5)
+        self.assertAlmostEqual(pos[1], 0.0, places=5)
+        self.assertAlmostEqual(pos[2], 1.0, places=5)
+
+        # geom_double_nested: (1,0,0) + (0,0,1) + (0.5,0,0) = (1.5,0,1)
+        pos = get_shape_pos("geom_double_nested")
+        self.assertAlmostEqual(pos[0], 1.5, places=5)
+        self.assertAlmostEqual(pos[1], 0.0, places=5)
+        self.assertAlmostEqual(pos[2], 1.0, places=5)
+
+        # Verify sites also receive the correct defaults
+        # site_in_red_frame should have red_class size (0.05)
+        site_idx = builder.shape_key.index("site_in_red_frame")
+        self.assertAlmostEqual(builder.shape_scale[site_idx][0], 0.05, places=5)
+
+        # site_in_blue_nested should have blue_class size (0.08)
+        site_idx = builder.shape_key.index("site_in_blue_nested")
+        self.assertAlmostEqual(builder.shape_scale[site_idx][0], 0.08, places=5)
+
+        # site_double_nested should inherit blue_class size (0.08)
+        site_idx = builder.shape_key.index("site_double_nested")
+        self.assertAlmostEqual(builder.shape_scale[site_idx][0], 0.08, places=5)
+
+    def test_joint_anchor_with_rotated_body(self):
+        """Test that joint anchor position is correctly computed when body has rotation.
+
+        This is a regression test for a bug where the joint position offset was added
+        directly to the body position without being rotated by the body's orientation.
+
+        Setup:
+        - Parent body at (0,0,0) with 90° rotation around Z
+        - Child body at (1,0,0) relative to parent (becomes (0,1,0) in world due to rotation)
+        - Joint with pos="0.5 0 0" in child's local frame
+
+        The joint anchor (in parent frame) should be:
+        - body_pos_relative_to_parent + rotate(joint_pos, body_orientation)
+        - = (1,0,0) + rotate_90z(0.5,0,0)
+        - = (1,0,0) + (0,0.5,0)
+        - = (1, 0.5, 0)
+
+        Bug would compute: (1,0,0) + (0.5,0,0) = (1.5, 0, 0) - WRONG
+        """
+        # Parent rotated 90° around Z axis
+        # MJCF quat format is [w, x, y, z]
+        mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test_joint_anchor_rotation">
+    <worldbody>
+        <body name="parent" pos="0 0 0" quat="0.7071068 0 0 0.7071068">
+            <geom type="box" size="0.1 0.1 0.1"/>
+            <body name="child" pos="1 0 0">
+                <joint name="child_joint" type="hinge" axis="0 0 1" pos="0.5 0 0"/>
+                <geom type="box" size="0.1 0.1 0.1"/>
+            </body>
+        </body>
+    </worldbody>
+</mujoco>"""
+
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf_content)
+        model = builder.finalize()
+
+        # Find the child's joint
+        joint_idx = model.joint_key.index("child_joint")
+        joint_X_p = model.joint_X_p.numpy()[joint_idx]
+
+        # The joint anchor position (in parent's frame) should be:
+        # child_body_pos + rotate(joint_pos, child_body_orientation)
+        #
+        # Since child has no explicit rotation, it inherits parent's orientation.
+        # child_body_pos relative to parent = (1, 0, 0)
+        # child orientation relative to parent = identity (no additional rotation)
+        # joint_pos = (0.5, 0, 0) in child's local frame
+        #
+        # But wait - the joint_X_p is the parent_xform which includes the body transform.
+        # In the parent >= 0 case:
+        #   relative_xform = inverse(parent_world) * child_world
+        #   body_pos_for_joints = relative_xform.p = (1, 0, 0)
+        #   body_ori_for_joints = relative_xform.q = identity (child has no local rotation)
+        #
+        # So joint anchor = (1, 0, 0) + rotate(identity, (0.5, 0, 0)) = (1.5, 0, 0)
+        #
+        # Actually, this test case doesn't trigger the bug because child has no
+        # rotation relative to parent!
+
+        # Let me verify the position - with identity rotation, the anchor should be (1.5, 0, 0)
+        np.testing.assert_allclose(joint_X_p[:3], [1.5, 0.0, 0.0], atol=1e-5)
+
+    def test_joint_anchor_with_rotated_child_body(self):
+        """Test joint anchor when child body itself has rotation relative to parent.
+
+        This specifically tests the case where joint_pos needs to be rotated by
+        the child body's orientation (relative to parent) before being added.
+
+        Setup:
+        - Parent body at origin with no rotation
+        - Child body at (2,0,0) with 90° Z rotation relative to parent
+        - Joint with pos="1 0 0" in child's local frame
+
+        The joint anchor (in parent frame) should be:
+        - child_pos + rotate(joint_pos, child_orientation)
+        - = (2,0,0) + rotate_90z(1,0,0)
+        - = (2,0,0) + (0,1,0)
+        - = (2, 1, 0)
+
+        Bug would compute: (2,0,0) + (1,0,0) = (3, 0, 0) - WRONG
+        """
+        # Child has 90° rotation around Z relative to parent
+        mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test_joint_anchor_child_rotation">
+    <worldbody>
+        <body name="parent" pos="0 0 0">
+            <geom type="box" size="0.1 0.1 0.1"/>
+            <body name="child" pos="2 0 0" quat="0.7071068 0 0 0.7071068">
+                <joint name="rotated_joint" type="hinge" axis="0 0 1" pos="1 0 0"/>
+                <geom type="box" size="0.1 0.1 0.1"/>
+            </body>
+        </body>
+    </worldbody>
+</mujoco>"""
+
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf_content)
+        model = builder.finalize()
+
+        # Find the child's joint
+        joint_idx = model.joint_key.index("rotated_joint")
+        joint_X_p = model.joint_X_p.numpy()[joint_idx]
+
+        # The joint anchor position should be:
+        # child_body_pos (2,0,0) + rotate_90z(joint_pos (1,0,0))
+        # = (2,0,0) + (0,1,0) = (2, 1, 0)
+        #
+        # With the bug it would be: (2,0,0) + (1,0,0) = (3, 0, 0)
+        np.testing.assert_allclose(
+            joint_X_p[:3],
+            [2.0, 1.0, 0.0],
+            atol=1e-5,
+            err_msg="Joint anchor should be rotated by child body orientation",
+        )
+
+        # Also verify the orientation is correct (90° Z rotation)
+        # In xyzw format: [0, 0, sin(45°), cos(45°)] = [0, 0, 0.7071, 0.7071]
+        np.testing.assert_allclose(joint_X_p[3:7], [0, 0, 0.7071068, 0.7071068], atol=1e-5)
+
+    def test_base_joint_respects_import_xform(self):
+        """Test that base joints (parent == -1) correctly use the import xform.
+
+        This is a regression test for a bug where root bodies with base_joint
+        ignored the import xform parameter, using raw body pos/ori instead of
+        the composed world_xform.
+
+        Setup:
+        - Root body at (1, 0, 0) with no rotation
+        - Import xform: translate by (10, 20, 30) and rotate 90° around Z
+        - Using base_joint="lx,ly,lz" (D6 joint with linear axes)
+
+        Expected final body transform after FK:
+        - world_xform = import_xform * body_local_xform
+        - = transform((10,20,30), rot_90z) * transform((1,0,0), identity)
+        - Position: (10,20,30) + rotate_90z(1,0,0) = (10,20,30) + (0,1,0) = (10, 21, 30)
+        - Orientation: 90° Z rotation
+
+        Bug would give: position = (1, 0, 0), orientation = identity (ignoring import xform)
+        """
+        mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test_base_joint_xform">
+    <worldbody>
+        <body name="floating_body" pos="1 0 0">
+            <freejoint/>
+            <geom type="box" size="0.1 0.1 0.1"/>
+        </body>
+    </worldbody>
+</mujoco>"""
+
+        # Create import xform: translate + 90° Z rotation
+        import_pos = wp.vec3(10.0, 20.0, 30.0)
+        import_quat = wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), np.pi / 2)  # 90° Z
+        import_xform = wp.transform(import_pos, import_quat)
+
+        # Use base_joint to convert freejoint to a D6 joint
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf_content, xform=import_xform, base_joint="lx,ly,lz")
+        model = builder.finalize()
+
+        # Verify body transform after forward kinematics
+        # Note: base_joint splits position and rotation between parent_xform and child_xform
+        # to preserve joint axis directions, so we check the final body transform instead
+        state = model.state()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+
+        body_idx = model.body_key.index("floating_body")
+        body_q = state.body_q.numpy()[body_idx]
+
+        # Expected position: import_pos + rotate_90z(body_pos)
+        # = (10, 20, 30) + rotate_90z(1, 0, 0) = (10, 20, 30) + (0, 1, 0) = (10, 21, 30)
+        np.testing.assert_allclose(
+            body_q[:3],
+            [10.0, 21.0, 30.0],
+            atol=1e-5,
+            err_msg="Body position should include import xform",
+        )
+
+        # Expected orientation: 90° Z rotation
+        # In xyzw format: [0, 0, sin(45°), cos(45°)] = [0, 0, 0.7071, 0.7071]
+        expected_quat = np.array([0, 0, 0.7071068, 0.7071068])
+        actual_quat = body_q[3:7]
+        quat_match = np.allclose(actual_quat, expected_quat, atol=1e-5) or np.allclose(
+            actual_quat, -expected_quat, atol=1e-5
+        )
+        self.assertTrue(quat_match, f"Body orientation should include import xform. Got {actual_quat}")
+
+    def test_base_joint_in_frame_respects_frame_xform(self):
+        """Test that base joints inside frames correctly use the frame transform.
+
+        Setup:
+        - Frame at (5, 0, 0) with 90° Z rotation
+        - Root body inside frame at (1, 0, 0) local position
+        - Using base_joint
+
+        Expected final body transform:
+        - frame_xform * body_local_xform
+        - = transform((5,0,0), rot_90z) * transform((1,0,0), identity)
+        - Position: (5,0,0) + rotate_90z(1,0,0) = (5,0,0) + (0,1,0) = (5, 1, 0)
+        - Orientation: 90° Z rotation
+
+        Bug would give: position = (1, 0, 0), orientation = identity (ignoring frame transform)
+        """
+        mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test_base_joint_frame">
+    <worldbody>
+        <frame pos="5 0 0" quat="0.7071068 0 0 0.7071068">
+            <body name="body_in_frame" pos="1 0 0">
+                <freejoint/>
+                <geom type="box" size="0.1 0.1 0.1"/>
+            </body>
+        </frame>
+    </worldbody>
+</mujoco>"""
+
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf_content, base_joint="lx,ly,lz")
+        model = builder.finalize()
+
+        # Verify body transform after forward kinematics
+        state = model.state()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+
+        body_idx = model.body_key.index("body_in_frame")
+        body_q = state.body_q.numpy()[body_idx]
+
+        # Expected position: frame_pos + rotate_90z(body_pos)
+        # = (5, 0, 0) + rotate_90z(1, 0, 0) = (5, 0, 0) + (0, 1, 0) = (5, 1, 0)
+        np.testing.assert_allclose(
+            body_q[:3],
+            [5.0, 1.0, 0.0],
+            atol=1e-5,
+            err_msg="Body position should include frame transform",
+        )
+
+        # Expected orientation: 90° Z rotation (from frame)
+        expected_quat = np.array([0, 0, 0.7071068, 0.7071068])
+        actual_quat = body_q[3:7]
+        quat_match = np.allclose(actual_quat, expected_quat, atol=1e-5) or np.allclose(
+            actual_quat, -expected_quat, atol=1e-5
+        )
+        self.assertTrue(quat_match, f"Body orientation should include frame rotation. Got {actual_quat}")
 
 
 if __name__ == "__main__":

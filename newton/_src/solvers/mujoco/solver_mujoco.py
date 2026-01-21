@@ -22,10 +22,9 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 import warp as wp
 
-from ...core.types import nparray, override, vec5
+from ...core.types import MAXVAL, nparray, override, vec5
 from ...geometry import MESH_MAXHULLVERT, GeoType, ShapeFlags
 from ...sim import (
-    JOINT_LIMIT_UNLIMITED,
     Contacts,
     Control,
     EqType,
@@ -1818,7 +1817,7 @@ class SolverMuJoCo(SolverBase):
                     if joint_actgravcomp is not None:
                         joint_params["actgravcomp"] = joint_actgravcomp[ai]
                     lower, upper = joint_limit_lower[ai], joint_limit_upper[ai]
-                    if lower <= -JOINT_LIMIT_UNLIMITED and upper >= JOINT_LIMIT_UNLIMITED:
+                    if lower <= -MAXVAL and upper >= MAXVAL:
                         joint_params["limited"] = False
                     else:
                         joint_params["limited"] = True
@@ -1904,7 +1903,7 @@ class SolverMuJoCo(SolverBase):
                     if joint_actgravcomp is not None:
                         joint_params["actgravcomp"] = joint_actgravcomp[ai]
                     lower, upper = joint_limit_lower[ai], joint_limit_upper[ai]
-                    if lower <= -JOINT_LIMIT_UNLIMITED and upper >= JOINT_LIMIT_UNLIMITED:
+                    if lower <= -MAXVAL and upper >= MAXVAL:
                         joint_params["limited"] = False
                     else:
                         joint_params["limited"] = True
@@ -2379,6 +2378,11 @@ class SolverMuJoCo(SolverBase):
             # "mat_rgba",
         }
 
+        # Fields in mj_model.opt to expand
+        opt_fields_to_expand = {
+            "gravity",
+        }
+
         def tile(x: wp.array):
             # Create new array with same shape but first dim multiplied by nworld
             new_shape = list(x.shape)
@@ -2405,6 +2409,11 @@ class SolverMuJoCo(SolverBase):
             if field in model_fields_to_expand:
                 array = getattr(mj_model, field)
                 setattr(mj_model, field, tile(array))
+
+        for field in mj_model.opt.__dataclass_fields__:
+            if field in opt_fields_to_expand:
+                array = getattr(mj_model.opt, field)
+                setattr(mj_model.opt, field, tile(array))
 
     def update_model_inertial_properties(self):
         if self.model.body_count == 0:
