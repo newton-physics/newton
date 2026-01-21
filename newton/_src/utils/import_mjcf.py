@@ -567,6 +567,118 @@ def parse_mjcf(
         frame_rot = parse_orientation(frame_element.attrib)
         return incoming_xform * wp.transform(frame_pos, frame_rot)
 
+    def _process_body_geoms(
+        geoms,
+        defaults: dict,
+        body_name: str,
+        link: int,
+        incoming_xform: wp.transform | None = None,
+    ) -> list:
+        """Process geoms for a body, partitioning into visuals and colliders.
+
+        This helper applies the same filtering/partitioning logic for geoms whether
+        they appear directly in a <body> or inside a <frame> within a body.
+
+        Args:
+            geoms: Iterable of geom XML elements to process.
+            defaults: The current defaults dictionary.
+            body_name: Name of the parent body (for naming).
+            link: The body index.
+            incoming_xform: Optional transform to apply to geoms.
+
+        Returns:
+            List of visual shape indices (if parse_visuals is True).
+        """
+        visuals = []
+        colliders = []
+
+        for geo_count, geom in enumerate(geoms):
+            geom_defaults = defaults
+            geom_class = None
+            if "class" in geom.attrib:
+                geom_class = geom.attrib["class"]
+                ignore_geom = False
+                for pattern in ignore_classes:
+                    if re.match(pattern, geom_class):
+                        ignore_geom = True
+                        break
+                if ignore_geom:
+                    continue
+                if geom_class in class_defaults:
+                    geom_defaults = merge_attrib(defaults, class_defaults[geom_class])
+            if "geom" in geom_defaults:
+                geom_attrib = merge_attrib(geom_defaults["geom"], geom.attrib)
+            else:
+                geom_attrib = geom.attrib
+
+            geom_name = geom_attrib.get("name", f"{body_name}_geom_{geo_count}")
+
+            contype = geom_attrib.get("contype", 1)
+            conaffinity = geom_attrib.get("conaffinity", 1)
+            collides_with_anything = not (int(contype) == 0 and int(conaffinity) == 0)
+
+            if geom_class is not None:
+                neither_visual_nor_collider = True
+                for pattern in visual_classes:
+                    if re.match(pattern, geom_class):
+                        visuals.append(geom)
+                        neither_visual_nor_collider = False
+                        break
+                for pattern in collider_classes:
+                    if re.match(pattern, geom_class):
+                        colliders.append(geom)
+                        neither_visual_nor_collider = False
+                        break
+                if neither_visual_nor_collider:
+                    if no_class_as_colliders and collides_with_anything:
+                        colliders.append(geom)
+                    else:
+                        visuals.append(geom)
+            else:
+                no_class_class = "collision" if no_class_as_colliders else "visual"
+                if verbose:
+                    print(f"MJCF parsing shape {geom_name} issue: no class defined for geom, assuming {no_class_class}")
+                if no_class_as_colliders and collides_with_anything:
+                    colliders.append(geom)
+                else:
+                    visuals.append(geom)
+
+        visual_shape_indices = []
+
+        if parse_visuals_as_colliders:
+            colliders = visuals
+        elif parse_visuals:
+            s = parse_shapes(
+                defaults,
+                body_name,
+                link,
+                geoms=visuals,
+                density=0.0,
+                just_visual=True,
+                visible=not hide_visuals,
+                incoming_xform=incoming_xform,
+            )
+            visual_shape_indices.extend(s)
+
+        show_colliders = force_show_colliders
+        if parse_visuals_as_colliders:
+            show_colliders = True
+        elif len(visuals) == 0 or not parse_visuals:
+            # we need to show the collision shapes since there are no visual shapes (or we're not loading them)
+            show_colliders = True
+
+        parse_shapes(
+            defaults,
+            body_name,
+            link,
+            geoms=colliders,
+            density=default_shape_density,
+            visible=show_colliders,
+            incoming_xform=incoming_xform,
+        )
+
+        return visual_shape_indices
+
     def process_frames(
         frames,
         parent_body: int,
@@ -615,17 +727,18 @@ def parse_mjcf(
                 parse_body(child_body, parent_body, _defaults, childclass=_childclass, incoming_xform=composed_world)
 
             # Process child geoms (need body-relative transform)
+            # Use the same visual/collider partitioning logic as parse_body
             child_geoms = frame.findall("geom")
             if child_geoms:
                 body_name = "world" if parent_body == -1 else builder.body_key[parent_body]
-                parse_shapes(
+                frame_visual_shapes = _process_body_geoms(
+                    child_geoms,
                     _defaults,
                     body_name,
                     parent_body,
-                    child_geoms,
-                    default_shape_density,
                     incoming_xform=composed_body_rel,
                 )
+                visual_shapes.extend(frame_visual_shapes)
 
             # Process child sites (need body-relative transform)
             if parse_sites:
@@ -896,90 +1009,11 @@ def parse_mjcf(
                 )
 
         # -----------------
-        # add shapes
+        # add shapes (using shared helper for visual/collider partitioning)
 
         geoms = body.findall("geom")
-        visuals = []
-        colliders = []
-        for geo_count, geom in enumerate(geoms):
-            geom_defaults = defaults
-            if "class" in geom.attrib:
-                geom_class = geom.attrib["class"]
-                ignore_geom = False
-                for pattern in ignore_classes:
-                    if re.match(pattern, geom_class):
-                        ignore_geom = True
-                        break
-                if ignore_geom:
-                    continue
-                if geom_class in class_defaults:
-                    geom_defaults = merge_attrib(defaults, class_defaults[geom_class])
-            if "geom" in geom_defaults:
-                geom_attrib = merge_attrib(geom_defaults["geom"], geom.attrib)
-            else:
-                geom_attrib = geom.attrib
-
-            geom_name = geom_attrib.get("name", f"{body_name}_geom_{geo_count}")
-
-            contype = geom_attrib.get("contype", 1)
-            conaffinity = geom_attrib.get("conaffinity", 1)
-            collides_with_anything = not (int(contype) == 0 and int(conaffinity) == 0)
-
-            if "class" in geom.attrib:
-                neither_visual_nor_collider = True
-                for pattern in visual_classes:
-                    if re.match(pattern, geom_class):
-                        visuals.append(geom)
-                        neither_visual_nor_collider = False
-                        break
-                for pattern in collider_classes:
-                    if re.match(pattern, geom_class):
-                        colliders.append(geom)
-                        neither_visual_nor_collider = False
-                        break
-                if neither_visual_nor_collider:
-                    if no_class_as_colliders and collides_with_anything:
-                        colliders.append(geom)
-                    else:
-                        visuals.append(geom)
-            else:
-                no_class_class = "collision" if no_class_as_colliders else "visual"
-                if verbose:
-                    print(f"MJCF parsing shape {geom_name} issue: no class defined for geom, assuming {no_class_class}")
-                if no_class_as_colliders and collides_with_anything:
-                    colliders.append(geom)
-                else:
-                    visuals.append(geom)
-
-        if parse_visuals_as_colliders:
-            colliders = visuals
-        elif parse_visuals:
-            s = parse_shapes(
-                defaults,
-                body_name,
-                link,
-                geoms=visuals,
-                density=0.0,
-                just_visual=True,
-                visible=not hide_visuals,
-            )
-            visual_shapes.extend(s)
-
-        show_colliders = force_show_colliders
-        if parse_visuals_as_colliders:
-            show_colliders = True
-        elif len(visuals) == 0 or not parse_visuals:
-            # we need to show the collision shapes since there are no visual shapes (or we're not loading them)
-            show_colliders = True
-
-        parse_shapes(
-            defaults,
-            body_name,
-            link,
-            geoms=colliders,
-            density=default_shape_density,
-            visible=show_colliders,
-        )
+        body_visual_shapes = _process_body_geoms(geoms, defaults, body_name, link)
+        visual_shapes.extend(body_visual_shapes)
 
         # Parse sites (non-colliding reference points)
         if parse_sites:
