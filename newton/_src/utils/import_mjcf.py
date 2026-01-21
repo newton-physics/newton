@@ -47,7 +47,7 @@ def parse_mjcf(
     parse_meshes: bool = True,
     parse_sites: bool = True,
     parse_visuals: bool = True,
-    parse_options: bool = True,
+    parse_mujoco_options: bool = True,
     up_axis: AxisType = Axis.Z,
     ignore_names: Sequence[str] = (),
     ignore_classes: Sequence[str] = (),
@@ -81,7 +81,7 @@ def parse_mjcf(
         parse_meshes (bool): Whether geometries of type `"mesh"` should be parsed. If False, geometries of type `"mesh"` are ignored.
         parse_sites (bool): Whether sites (non-colliding reference points) should be parsed. If False, sites are ignored.
         parse_visuals (bool): Whether visual geometries (non-collision shapes) should be loaded. If False, visual shapes are not loaded (different from `hide_visuals` which loads but hides them). Default is True.
-        parse_options (bool): Whether solver options from the MJCF `<option>` tag should be parsed. If False, solver options are not loaded and custom attributes retain their default values. Default is True.
+        parse_mujoco_options (bool): Whether solver options from the MJCF `<option>` tag should be parsed. If False, solver options are not loaded and custom attributes retain their default values. Default is True.
         up_axis (AxisType): The up axis of the MuJoCo scene. The default is Z up.
         ignore_names (Sequence[str]): A list of regular expressions. Bodies and joints with a name matching one of the regular expressions will be ignored.
         ignore_classes (Sequence[str]): A list of regular expressions. Bodies and joints with a class matching one of the regular expressions will be ignored.
@@ -154,7 +154,7 @@ def parse_mjcf(
 
     # Parse MJCF option tag for ONCE and WORLD frequency custom attributes (solver options)
     # WORLD frequency attributes use index 0 here; they get remapped during add_world()
-    if parse_options:
+    if parse_mujoco_options:
         builder_custom_attr_option: list[ModelBuilder.CustomAttribute] = builder.get_custom_attributes_by_frequency(
             [ModelAttributeFrequency.ONCE, ModelAttributeFrequency.WORLD]
         )

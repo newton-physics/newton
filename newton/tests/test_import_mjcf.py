@@ -1742,8 +1742,8 @@ class TestImportMjcf(unittest.TestCase):
             for i, (a, e) in enumerate(zip(actual, expected, strict=False)):
                 self.assertAlmostEqual(a, e, places=4, msg=f"eq_solref[{eq_idx}][{i}] should be {e}, got {a}")
 
-    def test_parse_options_disabled(self):
-        """Test that solver options from <option> tag are not parsed when parse_options=False."""
+    def test_parse_mujoco_options_disabled(self):
+        """Test that solver options from <option> tag are not parsed when parse_mujoco_options=False."""
         mjcf = """<?xml version="1.0" ?>
 <mujoco>
     <option impratio="99.0"/>
@@ -1757,7 +1757,7 @@ class TestImportMjcf(unittest.TestCase):
 """
         builder = newton.ModelBuilder()
         SolverMuJoCo.register_custom_attributes(builder)
-        builder.add_mjcf(mjcf, parse_options=False)
+        builder.add_mjcf(mjcf, parse_mujoco_options=False)
         model = builder.finalize()
 
         # impratio should remain at default (1.0), not the MJCF value (99.0)
