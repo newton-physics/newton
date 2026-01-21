@@ -1097,11 +1097,16 @@ def parse_mjcf(
             parse_body(child, link, _incoming_defaults, childclass=_childclass, incoming_xform=world_xform)
 
         # Process frame elements within this body
+        # Use body's childclass if declared, otherwise inherit from parent
+        frame_childclass = body.get("childclass") or childclass
+        frame_defaults = (
+            merge_attrib(defaults, class_defaults.get(frame_childclass, {})) if frame_childclass else defaults
+        )
         process_frames(
             body.findall("frame"),
             parent_body=link,
-            defaults=defaults,
-            childclass=childclass,
+            defaults=frame_defaults,
+            childclass=frame_childclass,
             world_xform=world_xform,
             body_relative_xform=wp.transform_identity(),  # Geoms/sites need body-relative coords
         )
