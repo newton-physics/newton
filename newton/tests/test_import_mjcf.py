@@ -2236,6 +2236,124 @@ class TestImportMjcf(unittest.TestCase):
         # In xyzw format: [0, 0, sin(45°), cos(45°)] = [0, 0, 0.7071, 0.7071]
         np.testing.assert_allclose(joint_X_p[3:7], [0, 0, 0.7071068, 0.7071068], atol=1e-5)
 
+    def test_base_joint_respects_import_xform(self):
+        """Test that base joints (parent == -1) correctly use the import xform.
+
+        This is a regression test for a bug where root bodies with base_joint
+        ignored the import xform parameter, using raw body pos/ori instead of
+        the composed world_xform.
+
+        Setup:
+        - Root body at (1, 0, 0) with no rotation
+        - Import xform: translate by (10, 20, 30) and rotate 90° around Z
+        - Using base_joint="lx,ly,lz" (D6 joint with linear axes)
+
+        The joint parent_xform should include the import xform composition:
+        - world_xform = import_xform * body_local_xform
+        - = transform((10,20,30), rot_90z) * transform((1,0,0), identity)
+        - Position: (10,20,30) + rotate_90z(1,0,0) = (10,20,30) + (0,1,0) = (10, 21, 30)
+        - Orientation: 90° Z rotation
+
+        Bug would give: position = (1, 0, 0), orientation = identity (ignoring import xform)
+        """
+        mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test_base_joint_xform">
+    <worldbody>
+        <body name="floating_body" pos="1 0 0">
+            <freejoint/>
+            <geom type="box" size="0.1 0.1 0.1"/>
+        </body>
+    </worldbody>
+</mujoco>"""
+
+        # Create import xform: translate + 90° Z rotation
+        import_pos = wp.vec3(10.0, 20.0, 30.0)
+        import_quat = wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), np.pi / 2)  # 90° Z
+        import_xform = wp.transform(import_pos, import_quat)
+
+        # Use base_joint to convert freejoint to a D6 joint
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf_content, xform=import_xform, base_joint="lx,ly,lz")
+        model = builder.finalize()
+
+        # Find the base joint
+        joint_idx = model.joint_key.index("base_joint")
+        joint_X_p = model.joint_X_p.numpy()[joint_idx]
+
+        # Expected position: import_pos + rotate_90z(body_pos)
+        # = (10, 20, 30) + rotate_90z(1, 0, 0)
+        # = (10, 20, 30) + (0, 1, 0)
+        # = (10, 21, 30)
+        np.testing.assert_allclose(
+            joint_X_p[:3],
+            [10.0, 21.0, 30.0],
+            atol=1e-5,
+            err_msg="Base joint should include import xform in position",
+        )
+
+        # Expected orientation: 90° Z rotation (from import_xform)
+        # In xyzw format: [0, 0, sin(45°), cos(45°)] = [0, 0, 0.7071, 0.7071]
+        np.testing.assert_allclose(
+            joint_X_p[3:7],
+            [0, 0, 0.7071068, 0.7071068],
+            atol=1e-5,
+            err_msg="Base joint should include import xform rotation",
+        )
+
+    def test_base_joint_in_frame_respects_frame_xform(self):
+        """Test that base joints inside frames correctly use the frame transform.
+
+        Setup:
+        - Frame at (5, 0, 0) with 90° Z rotation
+        - Root body inside frame at (1, 0, 0) local position
+        - Using base_joint
+
+        The joint parent_xform should be:
+        - frame_xform * body_local_xform
+        - = transform((5,0,0), rot_90z) * transform((1,0,0), identity)
+        - Position: (5,0,0) + rotate_90z(1,0,0) = (5,0,0) + (0,1,0) = (5, 1, 0)
+
+        Bug would give: position = (1, 0, 0) (ignoring frame transform)
+        """
+        mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test_base_joint_frame">
+    <worldbody>
+        <frame pos="5 0 0" quat="0.7071068 0 0 0.7071068">
+            <body name="body_in_frame" pos="1 0 0">
+                <freejoint/>
+                <geom type="box" size="0.1 0.1 0.1"/>
+            </body>
+        </frame>
+    </worldbody>
+</mujoco>"""
+
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf_content, base_joint="lx,ly,lz")
+        model = builder.finalize()
+
+        # Find the base joint
+        joint_idx = model.joint_key.index("base_joint")
+        joint_X_p = model.joint_X_p.numpy()[joint_idx]
+
+        # Expected position: frame_pos + rotate_90z(body_pos)
+        # = (5, 0, 0) + rotate_90z(1, 0, 0)
+        # = (5, 0, 0) + (0, 1, 0)
+        # = (5, 1, 0)
+        np.testing.assert_allclose(
+            joint_X_p[:3],
+            [5.0, 1.0, 0.0],
+            atol=1e-5,
+            err_msg="Base joint should include frame transform in position",
+        )
+
+        # Expected orientation: 90° Z rotation (from frame)
+        np.testing.assert_allclose(
+            joint_X_p[3:7],
+            [0, 0, 0.7071068, 0.7071068],
+            atol=1e-5,
+            err_msg="Base joint should include frame rotation",
+        )
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
