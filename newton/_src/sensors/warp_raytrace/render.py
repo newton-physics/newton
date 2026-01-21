@@ -361,7 +361,7 @@ def render_megakernel(
             camera_rays,
             camera_transforms,
             # Shape BVH
-            rc.num_shapes,
+            rc.num_shapes_enabled,
             rc.bvh_shapes.id if rc.bvh_shapes else 0,
             rc.bvh_shapes_group_roots,
             # Shapes

@@ -24,6 +24,140 @@ from newton.tests.unittest_utils import add_function_test, get_test_devices
 devices = get_test_devices()
 
 
+# -----------------------------------------------------------------------------
+# Assert helpers
+# -----------------------------------------------------------------------------
+
+
+def _assert_bodies_above_ground(
+    test: unittest.TestCase,
+    body_q: np.ndarray,
+    body_ids: list[int],
+    context: str,
+    margin: float = 1.0e-4,
+) -> None:
+    """Assert a set of bodies are not below the z=0 ground plane (within margin)."""
+    z_pos = body_q[body_ids, 2]
+    z_min = z_pos.min()
+    test.assertGreaterEqual(
+        z_min,
+        -margin,
+        msg=f"{context}: body below ground: z_min={z_min:.6f} < {-margin:.6f}",
+    )
+
+
+def _assert_capsule_attachments(
+    test: unittest.TestCase,
+    body_q: np.ndarray,
+    body_ids: list[int],
+    context: str,
+    segment_length: float,
+    tol_ratio: float = 0.05,
+) -> None:
+    """Assert that adjacent capsules remain attached within tolerance.
+
+    Approximates the parent capsule end and child capsule start in world space and
+    checks that their separation is small relative to the rest capsule length.
+    """
+    tol = tol_ratio * segment_length
+    for i in range(len(body_ids) - 1):
+        idx_p = body_ids[i]
+        idx_c = body_ids[i + 1]
+
+        p_pos = body_q[idx_p, :3]
+        c_pos = body_q[idx_c, :3]
+
+        dir_vec = c_pos - p_pos
+        seg_len = np.linalg.norm(dir_vec)
+        if seg_len > 1.0e-6:
+            dir_hat = dir_vec / seg_len
+        else:
+            dir_hat = np.array([1.0, 0.0, 0.0], dtype=float)
+
+        parent_end = p_pos + dir_hat * segment_length
+        child_start = c_pos
+        gap = np.linalg.norm(parent_end - child_start)
+
+        test.assertLessEqual(
+            gap,
+            tol,
+            msg=f"{context}: capsule attachment gap too large at segment {i} (gap={gap:.6g}, tol={tol:.6g})",
+        )
+
+
+def _assert_surface_attachment(
+    test: unittest.TestCase,
+    body_q: np.ndarray,
+    anchor_body: int,
+    child_body: int,
+    context: str,
+    parent_anchor_local: wp.vec3,
+    tol: float = 1.0e-3,
+) -> None:
+    """Assert that the child body origin lies on the anchor-frame attachment point.
+
+    Intended attach point (world):
+        x_expected = x_anchor + R_anchor * parent_anchor_local
+    """
+    with wp.ScopedDevice("cpu"):
+        x_anchor = wp.vec3(body_q[anchor_body][0], body_q[anchor_body][1], body_q[anchor_body][2])
+        q_anchor = wp.quat(
+            body_q[anchor_body][3], body_q[anchor_body][4], body_q[anchor_body][5], body_q[anchor_body][6]
+        )
+        x_expected = x_anchor + wp.quat_rotate(q_anchor, parent_anchor_local)
+
+        x_child = wp.vec3(body_q[child_body][0], body_q[child_body][1], body_q[child_body][2])
+        err = float(wp.length(x_child - x_expected))
+        test.assertLess(
+            err,
+            tol,
+            msg=f"{context}: surface-attachment error is {err:.6e} (tol={tol:.1e})",
+        )
+
+
+# -----------------------------------------------------------------------------
+# Warp kernels
+# -----------------------------------------------------------------------------
+
+
+@wp.kernel
+def _set_kinematic_body_pose(
+    body_id: wp.int32,
+    pose: wp.transform,
+    body_q: wp.array(dtype=wp.transform),
+    body_qd: wp.array(dtype=wp.spatial_vector),
+):
+    body_q[body_id] = pose
+    body_qd[body_id] = wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+
+
+# -----------------------------------------------------------------------------
+# Geometry helpers
+# -----------------------------------------------------------------------------
+
+
+def _make_straight_cable_along_x(num_elements: int, segment_length: float, z_height: float):
+    """Create points/quats for `ModelBuilder.add_rod()` with a straight cable along +X.
+
+    Notes:
+        - Points are centered about x=0 (first point is at x=-0.5*cable_length).
+        - Capsules have local +Z as their axis; quaternions rotate local +Z to world +X.
+    """
+    cable_length = num_elements * segment_length
+    start_x = -0.5 * cable_length
+    points = [wp.vec3(start_x + i * segment_length, 0.0, z_height) for i in range(num_elements + 1)]
+
+    # Capsule internal axis is +Z; rotate so rod axis aligns with +X
+    rot_z_to_x = wp.quat_between_vectors(wp.vec3(0.0, 0.0, 1.0), wp.vec3(1.0, 0.0, 0.0))
+    edge_q = [rot_z_to_x] * num_elements
+    return points, edge_q
+
+
+# -----------------------------------------------------------------------------
+# Model builders
+# -----------------------------------------------------------------------------
+
+
 def _build_cable_chain(
     device,
     num_links: int = 6,
@@ -50,21 +184,7 @@ def _build_cable_chain(
 
     # Geometry: straight cable along +X, centered around the origin
     num_elements = num_links
-    cable_length = num_elements * segment_length
-
-    # Points: segment endpoints along X at some height
-    z_height = 3.0
-    start_x = -0.5 * cable_length
-    points = []
-    for i in range(num_elements + 1):
-        x = start_x + i * segment_length
-        points.append(wp.vec3(x, 0.0, z_height))
-
-    # Capsule internal axis is +Z; rotate so rod axis aligns with +X
-    # Use a single orientation for all segments since the cable is straight.
-    # quat_between_vectors(local +Z, world +X) gives the minimal rotation that aligns the axes.
-    rot_z_to_x = wp.quat_between_vectors(wp.vec3(0.0, 0.0, 1.0), wp.vec3(1.0, 0.0, 0.0))
-    edge_q = [rot_z_to_x] * num_elements
+    points, edge_q = _make_straight_cable_along_x(num_elements, segment_length, z_height=3.0)
 
     # Create a rod-based cable
     rod_bodies, _rod_joints = builder.add_rod(
@@ -113,7 +233,7 @@ def _build_cable_loop(device, num_links: int = 6):
     points = []
     for i in range(num_elements + 1):
         # For a closed loop we wrap the last point back to the first
-        angle = 2.0 * wp.pi * float(i) / float(num_elements)
+        angle = 2.0 * wp.pi * (i / num_elements)
         x = radius * wp.cos(angle)
         y = radius * wp.sin(angle)
         points.append(wp.vec3(x, y, z_height))
@@ -151,42 +271,86 @@ def _build_cable_loop(device, num_links: int = 6):
     return model, state0, state1, control
 
 
-def _assert_capsule_attachments(
-    test: unittest.TestCase,
-    body_q: np.ndarray,
-    rod_bodies: list[int],
-    segment_length: float,
-    context: str,
-) -> None:
-    """Assert that adjacent capsules remain attached within 5% of segment length.
+# -----------------------------------------------------------------------------
+# Compute helpers
+# -----------------------------------------------------------------------------
 
-    Approximates the parent capsule end and child capsule start in world space and
-    checks that their separation is small relative to the rest capsule length.
+
+def _compute_ball_joint_anchor_error(model: newton.Model, body_q: wp.array, joint_id: int) -> float:
+    """Compute BALL joint world-space anchor error (CPU float).
+
+    Returns:
+        |x_c - x_p|, where x_p and x_c are the parent/child anchor positions in world space.
     """
-    tol = 0.05 * segment_length
-    for i in range(len(rod_bodies) - 1):
-        idx_p = rod_bodies[i]
-        idx_c = rod_bodies[i + 1]
+    with wp.ScopedDevice("cpu"):
+        jp = model.joint_parent.numpy()[joint_id].item()
+        jc = model.joint_child.numpy()[joint_id].item()
+        X_p = model.joint_X_p.numpy()[joint_id]
+        X_c = model.joint_X_c.numpy()[joint_id]
 
-        p = body_q[idx_p, :3]
-        c = body_q[idx_c, :3]
+        # wp.transform is [p(3), q(4)] in xyzw order
+        X_pj = wp.transform(wp.vec3(X_p[0], X_p[1], X_p[2]), wp.quat(X_p[3], X_p[4], X_p[5], X_p[6]))
+        X_cj = wp.transform(wp.vec3(X_c[0], X_c[1], X_c[2]), wp.quat(X_c[3], X_c[4], X_c[5], X_c[6]))
 
-        dir_vec = c - p
-        seg_len_now = np.linalg.norm(dir_vec)
-        if seg_len_now > 1.0e-6:
-            dir = dir_vec / seg_len_now
-        else:
-            dir = np.array([1.0, 0.0, 0.0], dtype=float)
+        bq = body_q.to("cpu").numpy()
+        q_p = bq[jp]
+        q_c = bq[jc]
+        T_p = wp.transform(wp.vec3(q_p[0], q_p[1], q_p[2]), wp.quat(q_p[3], q_p[4], q_p[5], q_p[6]))
+        T_c = wp.transform(wp.vec3(q_c[0], q_c[1], q_c[2]), wp.quat(q_c[3], q_c[4], q_c[5], q_c[6]))
 
-        parent_end = p + dir * segment_length
-        child_start = c
-        dist = np.linalg.norm(parent_end - child_start)
+        X_wp = T_p * X_pj
+        X_wc = T_c * X_cj
+        x_p = wp.transform_get_translation(X_wp)
+        x_c = wp.transform_get_translation(X_wc)
+        return float(wp.length(x_c - x_p))
 
-        test.assertLessEqual(
-            dist,
-            tol,
-            msg=f"{context}: capsule attachment gap too large at segment {i} (dist={dist}, tol={tol})",
-        )
+
+def _compute_fixed_joint_frame_error(model: newton.Model, body_q: wp.array, joint_id: int) -> tuple[float, float]:
+    """Compute FIXED joint world-space frame error (CPU floats).
+
+    Returns:
+        (pos_err, ang_err)
+
+        - pos_err: |x_c - x_p| where x_p/x_c are the parent/child joint-frame translations in world space.
+        - ang_err: relative rotation angle between joint-frame orientations in world space [rad].
+    """
+    with wp.ScopedDevice("cpu"):
+        jp = model.joint_parent.numpy()[joint_id].item()
+        jc = model.joint_child.numpy()[joint_id].item()
+        X_p = model.joint_X_p.numpy()[joint_id]
+        X_c = model.joint_X_c.numpy()[joint_id]
+
+        # wp.transform is [p(3), q(4)] in xyzw order
+        X_pj = wp.transform(wp.vec3(X_p[0], X_p[1], X_p[2]), wp.quat(X_p[3], X_p[4], X_p[5], X_p[6]))
+        X_cj = wp.transform(wp.vec3(X_c[0], X_c[1], X_c[2]), wp.quat(X_c[3], X_c[4], X_c[5], X_c[6]))
+
+        bq = body_q.to("cpu").numpy()
+        q_p = bq[jp]
+        q_c = bq[jc]
+        T_p = wp.transform(wp.vec3(q_p[0], q_p[1], q_p[2]), wp.quat(q_p[3], q_p[4], q_p[5], q_p[6]))
+        T_c = wp.transform(wp.vec3(q_c[0], q_c[1], q_c[2]), wp.quat(q_c[3], q_c[4], q_c[5], q_c[6]))
+
+        X_wp = T_p * X_pj
+        X_wc = T_c * X_cj
+
+        x_p = wp.transform_get_translation(X_wp)
+        x_c = wp.transform_get_translation(X_wc)
+        pos_err = float(wp.length(x_c - x_p))
+
+        q_wp = wp.transform_get_rotation(X_wp)
+        q_wc = wp.transform_get_rotation(X_wc)
+        q_rel = wp.mul(wp.quat_inverse(q_wp), q_wc)
+        q_rel = wp.normalize(q_rel)
+        # Quaternion sign is arbitrary; enforce shortest-path angle for robustness.
+        w = wp.clamp(wp.abs(q_rel[3]), 0.0, 1.0)
+        ang_err = float(2.0 * wp.acos(w))
+
+        return pos_err, ang_err
+
+
+# -----------------------------------------------------------------------------
+# Test implementations
+# -----------------------------------------------------------------------------
 
 
 def _cable_chain_connectivity_impl(test: unittest.TestCase, device):
@@ -268,42 +432,77 @@ def _cable_loop_connectivity_impl(test: unittest.TestCase, device):
 
 def _cable_bend_stiffness_impl(test: unittest.TestCase, device):
     """Cable VBD: bend stiffness sweep should have a noticeable effect on tip position."""
-    # From soft to stiff
+    # From soft to stiff. Build multiple cables in one model.
     bend_values = [1.0e1, 1.0e2, 1.0e3]
-    tip_heights = []
     segment_length = 0.2
+    num_links = 10
 
-    for k in bend_values:
-        model, state0, state1, control, rod_bodies = _build_cable_chain(
-            device, num_links=10, bend_stiffness=k, bend_damping=1.0e1, segment_length=segment_length
+    builder = newton.ModelBuilder()
+    builder.default_shape_cfg.ke = 1.0e2
+    builder.default_shape_cfg.kd = 1.0e1
+    builder.default_shape_cfg.mu = 1.0
+
+    # Place cables far apart along Y so they don't interact.
+    y_offsets = [-5.0, 0.0, 5.0]
+    tip_bodies: list[int] = []
+    all_rod_bodies: list[list[int]] = []
+
+    for k, y0 in zip(bend_values, y_offsets, strict=True):
+        points, edge_q = _make_straight_cable_along_x(num_links, segment_length, z_height=3.0)
+        points = [wp.vec3(p[0], p[1] + y0, p[2]) for p in points]
+
+        rod_bodies, _rod_joints = builder.add_rod(
+            positions=points,
+            quaternions=edge_q,
+            radius=0.05,
+            bend_stiffness=k,
+            bend_damping=1.0e1,
+            stretch_stiffness=1.0e6,
+            stretch_damping=1.0e-2,
+            key=f"bend_stiffness_{k:.0e}",
         )
-        solver = newton.solvers.SolverVBD(model, iterations=10)
-        frame_dt = 1.0 / 60.0
-        sim_substeps = 10
-        sim_dt = frame_dt / sim_substeps
 
-        # Run for a short duration to let bending respond to gravity
-        for _ in range(20):
-            for _ in range(sim_substeps):
-                state0.clear_forces()
-                contacts = model.collide(state0)
-                solver.step(state0, state1, control, contacts, sim_dt)
-                state0, state1 = state1, state0
+        # Pin the first body of each cable.
+        first_body = rod_bodies[0]
+        builder.body_mass[first_body] = 0.0
+        builder.body_inv_mass[first_body] = 0.0
 
-        final_q = state0.body_q.numpy()
-        tip_body = rod_bodies[-1]
-        tip_heights.append(float(final_q[tip_body, 2]))
+        all_rod_bodies.append(rod_bodies)
+        tip_bodies.append(rod_bodies[-1])
 
-        # Check capsule attachments for this dynamic configuration
+    builder.color()
+    model = builder.finalize(device=device)
+    model.set_gravity((0.0, 0.0, -9.81))
+
+    state0, state1 = model.state(), model.state()
+    control = model.control()
+    solver = newton.solvers.SolverVBD(model, iterations=10)
+
+    frame_dt = 1.0 / 60.0
+    sim_substeps = 10
+    sim_dt = frame_dt / sim_substeps
+    num_steps = 20
+
+    # Run for a short duration to let bending respond to gravity
+    for _step in range(num_steps):
+        for _substep in range(sim_substeps):
+            state0.clear_forces()
+            contacts = model.collide(state0)
+            solver.step(state0, state1, control, contacts, sim_dt)
+            state0, state1 = state1, state0
+
+    final_q = state0.body_q.numpy()
+    tip_heights = np.array([final_q[tip_body, 2] for tip_body in tip_bodies], dtype=float)
+
+    # Check capsule attachments for each dynamic configuration
+    for k, rod_bodies in zip(bend_values, all_rod_bodies, strict=True):
         _assert_capsule_attachments(
             test,
             body_q=final_q,
-            rod_bodies=rod_bodies,
+            body_ids=rod_bodies,
             segment_length=segment_length,
             context=f"Bend stiffness {k}",
         )
-
-    tip_heights = np.array(tip_heights, dtype=float)
 
     # Check that stiffer cables have higher tip positions (less sagging under gravity)
     # Expect monotonic increase: tip_heights[0] < tip_heights[1] < tip_heights[2]
@@ -313,8 +512,8 @@ def _cable_bend_stiffness_impl(test: unittest.TestCase, device):
             tip_heights[i + 1],
             msg=(
                 f"Stiffer cable should have higher tip (less sag): "
-                f"k={bend_values[i]:.1e} → z={tip_heights[i]:.4f}, "
-                f"k={bend_values[i + 1]:.1e} → z={tip_heights[i + 1]:.4f}"
+                f"k={bend_values[i]:.1e} -> z={tip_heights[i]:.4f}, "
+                f"k={bend_values[i + 1]:.1e} -> z={tip_heights[i + 1]:.4f}"
             ),
         )
 
@@ -334,13 +533,14 @@ def _cable_sagging_and_stability_impl(test: unittest.TestCase, device):
     frame_dt = 1.0 / 60.0
     sim_substeps = 10
     sim_dt = frame_dt / sim_substeps
+    num_steps = 20
 
     # Record initial positions
     initial_q = state0.body_q.numpy().copy()
     z_initial = initial_q[:, 2]
 
-    for _ in range(20):
-        for _ in range(sim_substeps):
+    for _step in range(num_steps):
+        for _substep in range(sim_substeps):
             state0.clear_forces()
             contacts = model.collide(state0)
             solver.step(state0, state1, control, contacts, sim_dt)
@@ -353,9 +553,9 @@ def _cable_sagging_and_stability_impl(test: unittest.TestCase, device):
     test.assertTrue((z_final < z_initial).any())
 
     # Positions should remain within a band relative to initial height and cable length
-    z0 = float(z_initial.min())
+    z0 = z_initial.min()
     x_initial = initial_q[:, 0]
-    cable_length = float(x_initial.max() - x_initial.min())
+    cable_length = x_initial.max() - x_initial.min()
     lower_bound = z0 - 2.0 * cable_length
     upper_bound = z0 + 2.0 * cable_length
 
@@ -442,10 +642,11 @@ def _cable_twist_response_impl(test: unittest.TestCase, device):
     frame_dt = 1.0 / 60.0
     sim_substeps = 10
     sim_dt = frame_dt / sim_substeps
+    num_steps = 20
 
     # Run a short simulation to let twist propagate
-    for _ in range(20):
-        for _ in range(sim_substeps):
+    for _step in range(num_steps):
+        for _substep in range(sim_substeps):
             state0.clear_forces()
             contacts = model.collide(state0)
             solver.step(state0, state1, control, contacts, sim_dt)
@@ -455,14 +656,14 @@ def _cable_twist_response_impl(test: unittest.TestCase, device):
 
     # Check capsule attachments remain good
     _assert_capsule_attachments(
-        test, body_q=final_q, rod_bodies=rod_bodies, segment_length=segment_length, context="Twist"
+        test, body_q=final_q, body_ids=rod_bodies, segment_length=segment_length, context="Twist"
     )
 
     # Check that the child orientation has changed significantly due to twist
     q_child_final = final_q[child_body, 3:]
 
     # Quaternion dot product magnitude indicates orientation similarity (1 => identical up to sign)
-    dot = float(abs(np.dot(q_child_initial, q_child_final)))
+    dot = abs(np.dot(q_child_initial, q_child_final))
     test.assertLess(
         dot,
         0.999,
@@ -477,7 +678,7 @@ def _cable_twist_response_impl(test: unittest.TestCase, device):
     def get_tip_pos(body_idx, q_all):
         p = q_all[body_idx, :3]
         q = q_all[body_idx, 3:]  # x, y, z, w
-        rot = wp.quat(float(q[0]), float(q[1]), float(q[2]), float(q[3]))
+        rot = wp.quat(q[0], q[1], q[2], q[3])
         v = wp.vec3(0.0, 0.0, segment_length)
         v_rot = wp.quat_rotate(rot, v)
         return np.array([p[0] + v_rot[0], p[1] + v_rot[1], p[2] + v_rot[2]])
@@ -488,17 +689,19 @@ def _cable_twist_response_impl(test: unittest.TestCase, device):
     tol = 0.1 * segment_length
 
     # X and Z should stay close to their original values
+    tip_x0, tip_y0, tip_z0 = tip_initial
+    tip_x1, tip_y1, tip_z1 = tip_final
     test.assertAlmostEqual(
-        float(tip_final[0]),
-        float(tip_initial[0]),
+        tip_x1,
+        tip_x0,
         delta=tol,
-        msg=f"Twist: expected child tip x to stay near {float(tip_initial[0])}, got {float(tip_final[0])}",
+        msg=f"Twist: expected child tip x to stay near {tip_x0}, got {tip_x1}",
     )
     test.assertAlmostEqual(
-        float(tip_final[2]),
-        float(tip_initial[2]),
+        tip_z1,
+        tip_z0,
         delta=tol,
-        msg=f"Twist: expected child tip z to stay near {float(tip_initial[2])}, got {float(tip_final[2])}",
+        msg=f"Twist: expected child tip z to stay near {tip_z0}, got {tip_z1}",
     )
 
     # Y should approximately flip sign (reflect across the X-Z plane)
@@ -506,18 +709,14 @@ def _cable_twist_response_impl(test: unittest.TestCase, device):
     # We check if the sign is flipped, but allow for some deviation in magnitude
     # because the twist might not be perfectly 180 degrees or there might be some energy loss/damping
     test.assertTrue(
-        float(tip_final[1]) * float(tip_initial[1]) < 0,
-        msg=f"Twist: expected child tip y to flip sign from {float(tip_initial[1])}, got {float(tip_final[1])}",
+        tip_y1 * tip_y0 < 0,
+        msg=f"Twist: expected child tip y to flip sign from {tip_y0}, got {tip_y1}",
     )
     test.assertAlmostEqual(
-        float(tip_final[1]),
-        float(-tip_initial[1]),
+        tip_y1,
+        -tip_y0,
         delta=tol,
-        msg=(
-            "Twist: expected child tip y magnitude to be similar "
-            f"from {abs(float(tip_initial[1]))}, "
-            f"got {abs(float(tip_final[1]))}"
-        ),
+        msg=(f"Twist: expected child tip y magnitude to be similar from {abs(tip_y0)}, got {abs(tip_y1)}"),
     )
 
 
@@ -567,12 +766,13 @@ def _two_layer_cable_pile_collision_impl(test: unittest.TestCase, device):
 
     # Build two layers: bottom layer along X, top layer along Y
     # Both layers centered at origin (0, 0) in horizontal plane
+    cable_bodies: list[int] = []
     for layer in range(2):
         orient = "x" if layer == 0 else "y"
         z0 = base_height + layer * layer_gap
 
         for lane in range(2):
-            # Symmetric offset: lane 0 → -0.5*spacing, lane 1 → +0.5*spacing
+            # Symmetric offset: lane 0 -> -0.5*spacing, lane 1 -> +0.5*spacing
             # This centers both layers at the same (x,y) = (0,0) position
             offset = (lane - 0.5) * lane_spacing
 
@@ -600,7 +800,7 @@ def _two_layer_cable_pile_collision_impl(test: unittest.TestCase, device):
             rot = wp.quat_between_vectors(local_axis, cable_direction)
             edge_q = [rot] * num_elements
 
-            builder.add_rod(
+            rod_bodies, _rod_joints = builder.add_rod(
                 positions=points,
                 quaternions=edge_q,
                 radius=cable_radius,
@@ -610,6 +810,7 @@ def _two_layer_cable_pile_collision_impl(test: unittest.TestCase, device):
                 stretch_damping=1.0e-2,
                 key=f"pile_l{layer}_{lane}",
             )
+            cable_bodies.extend(rod_bodies)
 
     builder.color()
     model = builder.finalize(device=device)
@@ -626,8 +827,8 @@ def _two_layer_cable_pile_collision_impl(test: unittest.TestCase, device):
 
     # Let the pile settle under gravity and contact
     num_steps = 20
-    for _ in range(num_steps):
-        for _ in range(sim_substeps):
+    for _step in range(num_steps):
+        for _substep in range(sim_substeps):
             state0.clear_forces()
             contacts = model.collide(state0)
             solver.step(state0, state1, control, contacts, sim_dt)
@@ -639,15 +840,22 @@ def _two_layer_cable_pile_collision_impl(test: unittest.TestCase, device):
 
     # Basic sanity checks
     test.assertTrue(np.isfinite(positions).all(), "Non-finite positions detected in cable pile")
+    _assert_bodies_above_ground(
+        test,
+        body_q=body_q,
+        body_ids=cable_bodies,
+        margin=0.25 * cable_width,
+        context="Cable pile",
+    )
 
     # Define vertical bands with a small margin for soft contact tolerance
     # Increased margin to account for contact compression and stiff cable deformation
     margin = 0.1 * cable_width
 
-    # Bottom layer should live between ground and one cable width (±margin)
+    # Bottom layer should live between ground and one cable width (+/- margin)
     bottom_band = (z_positions >= -margin) & (z_positions <= cable_width + margin)
 
-    # Second layer between one and two cable widths (±margin)
+    # Second layer between one and two cable widths (+/- margin)
     top_band = (z_positions >= cable_width - margin) & (z_positions <= 2.0 * cable_width + margin)
 
     # All bodies should fall within one of the two bands
@@ -656,15 +864,15 @@ def _two_layer_cable_pile_collision_impl(test: unittest.TestCase, device):
         np.all(in_bands),
         msg=(
             "Some cable bodies lie outside the expected two-layer vertical bands: "
-            f"min_z={float(z_positions.min()):.4f}, max_z={float(z_positions.max()):.4f}, "
+            f"min_z={z_positions.min():.4f}, max_z={z_positions.max():.4f}, "
             f"cable_width={cable_width:.4f}, expected in [0, {2.0 * cable_width + margin:.4f}] "
             f"with band margin {margin:.4f}."
         ),
     )
 
     # Ensure we actually formed two distinct layers
-    num_bottom = np.sum(bottom_band)
-    num_top = np.sum(top_band)
+    num_bottom = int(np.sum(bottom_band))
+    num_top = int(np.sum(top_band))
 
     test.assertGreater(
         num_bottom,
@@ -681,13 +889,269 @@ def _two_layer_cable_pile_collision_impl(test: unittest.TestCase, device):
     total_bodies = len(z_positions)
     test.assertGreater(
         num_bottom,
-        total_bodies * 0.1,
+        0.1 * total_bodies,
         msg=f"Bottom layer has too few bodies: {num_bottom}/{total_bodies} (< 10%)",
     )
     test.assertGreater(
         num_top,
-        total_bodies * 0.1,
+        0.1 * total_bodies,
         msg=f"Top layer has too few bodies: {num_top}/{total_bodies} (< 10%)",
+    )
+
+
+def _cable_ball_joint_attaches_rod_endpoint_impl(test: unittest.TestCase, device):
+    """Cable VBD: BALL joint should keep rod start endpoint attached to a kinematic anchor."""
+    builder = newton.ModelBuilder()
+    builder.default_shape_cfg.ke = 1.0e2
+    builder.default_shape_cfg.kd = 1.0e1
+    builder.default_shape_cfg.mu = 1.0
+
+    # Kinematic anchor body at the rod start point.
+    anchor_pos = wp.vec3(0.0, 0.0, 3.0)
+    anchor = builder.add_body(xform=wp.transform(anchor_pos, wp.quat_identity()))
+    builder.body_mass[anchor] = 0.0
+    builder.body_inv_mass[anchor] = 0.0
+    # Anchor marker sphere.
+    anchor_radius = 0.1
+    builder.add_shape_sphere(anchor, radius=anchor_radius)
+
+    # Build a straight cable (rod) and attach its start endpoint to the anchor with a BALL joint.
+    num_elements = 20
+    segment_length = 0.05
+    points, edge_q = _make_straight_cable_along_x(num_elements, segment_length, z_height=anchor_pos[2])
+    rod_radius = 0.01
+    # Attach the cable endpoint to the sphere surface (not the center), accounting for cable radius so the
+    # capsule endcap surface and the sphere surface are coincident along the rod axis (+X).
+    attach_offset = wp.float32(anchor_radius + rod_radius)
+    parent_anchor_local = wp.vec3(attach_offset, 0.0, 0.0)  # parent local == world (identity rotation)
+    anchor_world_attach = anchor_pos + wp.vec3(attach_offset, 0.0, 0.0)
+
+    # Reposition the generated cable so its first point coincides with the sphere-surface attach point.
+    # (The helper builds a cable centered about x=0.)
+    p0 = points[0]
+    offset = anchor_world_attach - p0
+    points = [p + offset for p in points]
+
+    rod_bodies, rod_joints = builder.add_rod(
+        positions=points,
+        quaternions=edge_q,
+        radius=rod_radius,
+        bend_stiffness=1.0e-1,
+        bend_damping=1.0e-2,
+        stretch_stiffness=1.0e9,
+        stretch_damping=0.0,
+        wrap_in_articulation=False,
+        key="test_cable_ball_joint_attach",
+    )
+
+    # `add_rod()` convention: rod body origin is at `positions[i]` (segment start), so the start endpoint is at z=0 local.
+    child_anchor_local = wp.vec3(0.0, 0.0, 0.0)
+    j_ball = builder.add_joint_ball(
+        parent=anchor,
+        child=rod_bodies[0],
+        parent_xform=wp.transform(parent_anchor_local, wp.quat_identity()),
+        child_xform=wp.transform(child_anchor_local, wp.quat_identity()),
+    )
+    builder.add_articulation([*rod_joints, j_ball])
+
+    builder.add_ground_plane()
+    builder.color()
+    model = builder.finalize(device=device)
+    model.set_gravity((0.0, 0.0, -9.81))
+
+    state0 = model.state()
+    state1 = model.state()
+    control = model.control()
+
+    solver = newton.solvers.SolverVBD(
+        model,
+        iterations=10,
+    )
+
+    # Smoothly move the anchor with substeps (mirrors cable example pattern).
+    frame_dt = 1.0 / 60.0
+    sim_substeps = 10
+    sim_dt = frame_dt / sim_substeps
+    num_steps = 20
+
+    for _step in range(num_steps):
+        for _substep in range(sim_substeps):
+            t = (_step * sim_substeps + _substep) * sim_dt
+            dx = wp.float32(0.05 * np.sin(1.5 * t))
+
+            pose = wp.transform(wp.vec3(dx, 0.0, anchor_pos[2]), wp.quat_identity())
+            wp.launch(
+                _set_kinematic_body_pose,
+                dim=1,
+                inputs=[wp.int32(anchor), pose, state0.body_q, state0.body_qd],
+                device=device,
+            )
+
+            contacts = model.collide(state0)
+            solver.step(state0, state1, control, contacts, dt=sim_dt)
+            state0, state1 = state1, state0
+
+            err = _compute_ball_joint_anchor_error(model, state0.body_q, j_ball)
+            test.assertLess(err, 1.0e-3)
+
+    # Also verify the rod joints remained well-attached along the chain.
+    final_q = state0.body_q.numpy()
+    test.assertTrue(np.isfinite(final_q).all(), "Non-finite body transforms detected in BALL joint test")
+    _assert_surface_attachment(
+        test,
+        body_q=final_q,
+        anchor_body=anchor,
+        child_body=rod_bodies[0],
+        context="Cable BALL joint attachment",
+        parent_anchor_local=parent_anchor_local,
+    )
+
+    _assert_bodies_above_ground(
+        test,
+        body_q=final_q,
+        body_ids=rod_bodies,
+        margin=0.25 * segment_length,
+        context="Cable BALL joint attachment",
+    )
+    _assert_capsule_attachments(
+        test,
+        body_q=final_q,
+        body_ids=rod_bodies,
+        segment_length=segment_length,
+        context="Cable BALL joint attachment",
+    )
+
+
+def _cable_fixed_joint_attaches_rod_endpoint_impl(test: unittest.TestCase, device):
+    """Cable VBD: FIXED joint should keep rod start frame welded to a kinematic anchor."""
+    builder = newton.ModelBuilder()
+    builder.default_shape_cfg.ke = 1.0e2
+    builder.default_shape_cfg.kd = 1.0e1
+    builder.default_shape_cfg.mu = 1.0
+
+    anchor_pos = wp.vec3(0.0, 0.0, 3.0)
+
+    # Build a straight cable along +X and use its segment orientation for the kinematic anchor.
+    num_elements = 20
+    segment_length = 0.05
+    points, edge_q = _make_straight_cable_along_x(num_elements, segment_length, z_height=anchor_pos[2])
+    anchor_rot = edge_q[0]
+
+    # Kinematic anchor body at the rod start point (match rod orientation).
+    anchor = builder.add_body(xform=wp.transform(anchor_pos, anchor_rot))
+    builder.body_mass[anchor] = 0.0
+    builder.body_inv_mass[anchor] = 0.0
+    # Anchor marker sphere.
+    anchor_radius = 0.1
+    builder.add_shape_sphere(anchor, radius=anchor_radius)
+
+    rod_radius = 0.01
+    # Attach the cable endpoint to the sphere surface (not the center), accounting for cable radius so the
+    # capsule endcap surface and the sphere surface are coincident along the rod axis (+X).
+    # The rod axis is world +X, and anchor_rot maps parent-local +Z -> world +X, so use +Z in parent local.
+    attach_offset = wp.float32(anchor_radius + rod_radius)
+    parent_anchor_local = wp.vec3(0.0, 0.0, attach_offset)
+    anchor_world_attach = anchor_pos + wp.quat_rotate(anchor_rot, parent_anchor_local)
+
+    # Reposition the generated cable so its first point coincides with the sphere-surface attach point.
+    p0 = points[0]
+    offset = anchor_world_attach - p0
+    points = [p + offset for p in points]
+
+    rod_bodies, rod_joints = builder.add_rod(
+        positions=points,
+        quaternions=edge_q,
+        radius=rod_radius,
+        bend_stiffness=1.0e-1,
+        bend_damping=1.0e-2,
+        stretch_stiffness=1.0e9,
+        stretch_damping=0.0,
+        wrap_in_articulation=False,
+        key="test_cable_fixed_joint_attach",
+    )
+
+    child_anchor_local = wp.vec3(0.0, 0.0, 0.0)
+    j_fixed = builder.add_joint_fixed(
+        parent=anchor,
+        child=rod_bodies[0],
+        parent_xform=wp.transform(parent_anchor_local, wp.quat_identity()),
+        child_xform=wp.transform(child_anchor_local, wp.quat_identity()),
+    )
+    builder.add_articulation([*rod_joints, j_fixed])
+
+    builder.add_ground_plane()
+    builder.color()
+    model = builder.finalize(device=device)
+    model.set_gravity((0.0, 0.0, -9.81))
+
+    state0 = model.state()
+    state1 = model.state()
+    control = model.control()
+
+    # Stiffen both linear and angular caps for non-cable joints so FIXED behaves near-hard.
+    solver = newton.solvers.SolverVBD(
+        model,
+        iterations=10,
+        rigid_joint_linear_ke=1.0e9,
+        rigid_joint_angular_ke=1.0e9,
+        rigid_joint_linear_k_start=1.0e7,
+        rigid_joint_angular_k_start=1.0e7,
+    )
+
+    frame_dt = 1.0 / 60.0
+    sim_substeps = 10
+    sim_dt = frame_dt / sim_substeps
+    num_steps = 20
+
+    for _step in range(num_steps):
+        for _substep in range(sim_substeps):
+            t = (_step * sim_substeps + _substep) * sim_dt
+            # Use wp.float32 so Warp builtins match expected scalar types (avoid numpy.float64).
+            dx = wp.float32(0.05 * np.sin(1.5 * t))
+            ang = wp.float32(0.4 * np.sin(1.5 * t + 0.7))
+            q_drive = wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), ang)
+            q = wp.mul(q_drive, anchor_rot)
+
+            pose = wp.transform(wp.vec3(dx, 0.0, anchor_pos[2]), q)
+            wp.launch(
+                _set_kinematic_body_pose,
+                dim=1,
+                inputs=[wp.int32(anchor), pose, state0.body_q, state0.body_qd],
+                device=device,
+            )
+
+            contacts = model.collide(state0)
+            solver.step(state0, state1, control, contacts, dt=sim_dt)
+            state0, state1 = state1, state0
+
+            pos_err, ang_err = _compute_fixed_joint_frame_error(model, state0.body_q, j_fixed)
+            test.assertLess(pos_err, 1.0e-3)
+            test.assertLess(ang_err, 2.0e-2)
+
+    final_q = state0.body_q.numpy()
+    test.assertTrue(np.isfinite(final_q).all(), "Non-finite body transforms detected in FIXED joint test")
+    _assert_surface_attachment(
+        test,
+        body_q=final_q,
+        anchor_body=anchor,
+        child_body=rod_bodies[0],
+        context="Cable FIXED joint attachment",
+        parent_anchor_local=parent_anchor_local,
+    )
+
+    _assert_bodies_above_ground(
+        test,
+        body_q=final_q,
+        body_ids=rod_bodies,
+        margin=0.25 * segment_length,
+        context="Cable FIXED joint attachment",
+    )
+    _assert_capsule_attachments(
+        test,
+        body_q=final_q,
+        body_ids=rod_bodies,
+        segment_length=segment_length,
+        context="Cable FIXED joint attachment",
     )
 
 
@@ -729,6 +1193,18 @@ add_function_test(
     TestCable,
     "test_two_layer_cable_pile_collision",
     _two_layer_cable_pile_collision_impl,
+    devices=devices,
+)
+add_function_test(
+    TestCable,
+    "test_cable_ball_joint_attaches_rod_endpoint",
+    _cable_ball_joint_attaches_rod_endpoint_impl,
+    devices=devices,
+)
+add_function_test(
+    TestCable,
+    "test_cable_fixed_joint_attaches_rod_endpoint",
+    _cable_fixed_joint_attaches_rod_endpoint_impl,
     devices=devices,
 )
 

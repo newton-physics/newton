@@ -638,6 +638,7 @@ class SolverXPBD(SolverBase):
                             model.body_com,
                             model.body_inv_mass,
                             model.body_inv_inertia,
+                            model.body_world,
                             model.shape_body,
                             contacts.rigid_contact_count,
                             contacts.rigid_contact_normal,
