@@ -319,6 +319,65 @@ def "World"
         self.assertIn("/World/Articulation/Joint1", str(exc_info.exception))
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_reversed_fixed_root_joint_to_world_is_allowed(self):
+        """Ensure a fixed root joint to world (body1 unset) does not raise."""
+        from pxr import Gf, Usd, UsdGeom, UsdPhysics  # noqa: PLC0415
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        articulation = UsdGeom.Xform.Define(stage, "/World/Articulation")
+        UsdPhysics.ArticulationRootAPI.Apply(articulation.GetPrim())
+
+        def define_body(path):
+            body = UsdGeom.Xform.Define(stage, path)
+            UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+            return body
+
+        root = define_body("/World/Articulation/Root")
+        link1 = define_body("/World/Articulation/Link1")
+        link2 = define_body("/World/Articulation/Link2")
+
+        fixed = UsdPhysics.FixedJoint.Define(stage, "/World/Articulation/RootToWorld")
+        # Here the child body (physics:body1) is -1, so the joint is silently reversed
+        fixed.CreateBody0Rel().SetTargets([root.GetPath()])
+        fixed.CreateLocalPos0Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+        fixed.CreateLocalPos1Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+        fixed.CreateLocalRot0Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+        fixed.CreateLocalRot1Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+
+        joint1 = UsdPhysics.RevoluteJoint.Define(stage, "/World/Articulation/Joint1")
+        joint1.CreateBody0Rel().SetTargets([root.GetPath()])
+        joint1.CreateBody1Rel().SetTargets([link1.GetPath()])
+        joint1.CreateLocalPos0Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+        joint1.CreateLocalPos1Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+        joint1.CreateLocalRot0Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+        joint1.CreateLocalRot1Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+        joint1.CreateAxisAttr().Set("Z")
+
+        joint2 = UsdPhysics.RevoluteJoint.Define(stage, "/World/Articulation/Joint2")
+        joint2.CreateBody0Rel().SetTargets([link1.GetPath()])
+        joint2.CreateBody1Rel().SetTargets([link2.GetPath()])
+        joint2.CreateLocalPos0Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+        joint2.CreateLocalPos1Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+        joint2.CreateLocalRot0Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+        joint2.CreateLocalRot1Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+        joint2.CreateAxisAttr().Set("Z")
+
+        builder = newton.ModelBuilder()
+        # We must not trigger an error here regarding the reversed joint.
+        builder.add_usd(stage)
+
+        self.assertEqual(builder.body_count, 3)
+        self.assertEqual(builder.joint_count, 3)
+
+        fixed_idx = builder.joint_key.index("/World/Articulation/RootToWorld")
+        root_idx = builder.body_key.index("/World/Articulation/Root")
+        self.assertEqual(builder.joint_parent[fixed_idx], -1)
+        self.assertEqual(builder.joint_child[fixed_idx], root_idx)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_reversed_joint_unsupported_d6_raises(self):
         """Reversing a D6 joint should raise an error."""
         from pxr import Gf, Usd, UsdGeom, UsdPhysics  # noqa: PLC0415
