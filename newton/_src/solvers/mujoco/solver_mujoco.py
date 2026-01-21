@@ -2669,6 +2669,7 @@ class SolverMuJoCo(SolverBase):
         """Update equality constraint properties in the MuJoCo model.
 
         Updates:
+
         - eq_solref/eq_solimp from MuJoCo custom attributes (if set)
         - eq_data from Newton's equality_constraint_anchor, equality_constraint_relpose,
           equality_constraint_polycoef, equality_constraint_torquescale
