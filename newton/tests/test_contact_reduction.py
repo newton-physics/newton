@@ -204,7 +204,7 @@ def _generate_test_contact(t: int) -> ContactStruct:
     c.position = wp.vec3(wp.sin(ft * 0.1) * ft * 0.01, 0.0, wp.cos(ft * 0.1) * ft * 0.01)
     c.normal = wp.vec3(0.0, 1.0, 0.0)
     c.depth = 0.1
-    c.mode = t % 10  # Assign features 0-9 cyclically
+    c.feature = t % 10  # Assign features 0-9 cyclically
     c.projection = 0.0
     return c
 
@@ -213,7 +213,7 @@ def _create_reduction_test_kernel(reduction_funcs: ContactReductionFunctions):
     """Create a test kernel for contact reduction with shared memory."""
     num_slots = reduction_funcs.num_reduction_slots
     store_reduced_contact = reduction_funcs.store_reduced_contact
-    collect_active_contacts = reduction_funcs.collect_active_contacts
+    filter_unique_contacts = reduction_funcs.filter_unique_contacts
 
     @wp.kernel(enable_backward=False)
     def reduction_test_kernel(
@@ -249,8 +249,8 @@ def _create_reduction_test_kernel(reduction_funcs: ContactReductionFunctions):
 
         store_reduced_contact(t, has_contact, c, buffer, active_ids, betas_arr, empty_marker)
 
-        # Collect active contacts
-        collect_active_contacts(t, buffer, active_ids, empty_marker)
+        # Filter duplicates
+        filter_unique_contacts(t, buffer, active_ids, empty_marker)
 
         # Write output
         num_contacts = active_ids[wp.static(num_slots)]
