@@ -683,7 +683,7 @@ class SolverMuJoCo(SolverBase):
                 dtype=wp.float32,
                 default=0.0,
                 namespace="mujoco",
-                references="joint",  # Offset by joint count during merge
+                mjcf_attribute_name="coef",
             )
         )
 
@@ -2265,7 +2265,7 @@ class SolverMuJoCo(SolverBase):
                     joint_params = {
                         "armature": joint_armature[qd_start + i],
                         "pos": joint_pos,
-                        "ref": float(ref_value),
+                        # "ref": float(ref_value),
                     }
                     # Set friction
                     joint_params["frictionloss"] = joint_friction[ai]
@@ -2356,7 +2356,7 @@ class SolverMuJoCo(SolverBase):
                     joint_params = {
                         "armature": joint_armature[qd_start + i],
                         "pos": joint_pos,
-                        "ref": float(ref_value),
+                        # "ref": float(ref_value),
                     }
                     # Set friction
                     joint_params["frictionloss"] = joint_friction[ai]
@@ -2859,12 +2859,12 @@ class SolverMuJoCo(SolverBase):
             # "pair_gap",
             # "pair_friction",
             "tendon_world",
-            # "tendon_adr",
-            # "tendon_num",
-            # "tendon_limited",
-            # "tendon_actfrclimited",
-            # "tendon_jnt_adr",
-            # "tendon_limited_adr",
+            # "tendon_adr",                 # Topological, not replicated
+            # "tendon_num",                 # Topological, not replicated
+            # "tendon_limited",             # Topological, not replicated
+            # "tendon_actfrclimited",       # Topological, not replicated
+            # "tendon_jnt_adr",             # Topological, not replicated
+            # "tendon_limited_adr",         # Topological, not replicated
             "tendon_solref_lim",
             "tendon_solimp_lim",
             "tendon_solref_fri",
@@ -2877,8 +2877,8 @@ class SolverMuJoCo(SolverBase):
             "tendon_armature",
             "tendon_frictionloss",
             "tendon_lengthspring",
-            "tendon_length0",
-            "tendon_invweight0",
+            # "tendon_length0",            # Autocomputed and auto-replicated by mujoco
+            # "tendon_invweight0",         # Autocomputed and auto-replicated by mujoco
             # "mat_rgba",
         }
 
