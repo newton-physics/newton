@@ -1207,22 +1207,45 @@ def parse_mjcf(
         for actuator_elem in actuator_section:
             actuator_type = actuator_elem.tag  # position, velocity, general. # todo: add motor etc. actuators.
             joint_name = actuator_elem.attrib.get("joint")
+            body_name = actuator_elem.attrib.get("body")
             
-            if not joint_name:
+            # Determine transmission type and target
+            trntype = 0  # Default: joint
+            target_idx = -1
+            target_name_for_log = ""
+            joint_idx = -1
+            qd_start = -1
+            total_dofs = 0
+            
+            if joint_name:
+                # Joint transmission (trntype=0)
+                if joint_name not in builder.joint_key:
+                    if verbose:
+                        print(f"Warning: {actuator_type} actuator references unknown joint '{joint_name}'")
+                    continue
+                joint_idx = builder.joint_key.index(joint_name)
+                target_idx = joint_idx
+                target_name_for_log = joint_name
+                trntype = 0  # TrnType.JOINT
+                qd_start = builder.joint_qd_start[joint_idx]
+                lin_dofs, ang_dofs = builder.joint_dof_dim[joint_idx]
+                total_dofs = lin_dofs + ang_dofs
+            elif body_name:
+                # Body transmission (trntype=4)
+                if body_name not in builder.body_key:
+                    if verbose:
+                        print(f"Warning: {actuator_type} actuator references unknown body '{body_name}'")
+                    continue
+                body_idx = builder.body_key.index(body_name)
+                target_idx = body_idx
+                target_name_for_log = body_name
+                trntype = 4  # TrnType.BODY
+            else:
                 if verbose:
-                    print(f"Warning: {actuator_type} actuator has no joint target, skipping")
+                    print(f"Warning: {actuator_type} actuator has no joint or body target, skipping")
                 continue
             
-            if joint_name not in builder.joint_key:
-                if verbose:
-                    print(f"Warning: {actuator_type} actuator references unknown joint '{joint_name}'")
-                continue
-            
-            joint_idx = builder.joint_key.index(joint_name)
-            qd_start = builder.joint_qd_start[joint_idx]
-            lin_dofs, ang_dofs = builder.joint_dof_dim[joint_idx]
-            total_dofs = lin_dofs + ang_dofs
-            act_name = actuator_elem.attrib.get("name", f"{actuator_type}_{joint_name}")
+            act_name = actuator_elem.attrib.get("name", f"{actuator_type}_{target_name_for_log}")
             
             # Extract gains based on actuator type
             if actuator_type == "position":
@@ -1235,20 +1258,20 @@ def parse_mjcf(
                 else:
                     ctrl_source_val = CtrlSource.JOINT_TARGET
                 
-                # Backward compat: update per-DOF arrays for joint target interface
-                for i in range(total_dofs):
-                    dof_idx = qd_start + i
-                    builder.joint_target_ke[dof_idx] = kp
-                    current_mode = builder.joint_act_mode[dof_idx]
-                    if current_mode == int(ActuatorMode.VELOCITY):
-                        # A velocity actuator was already parsed for this DOF - upgrade to POSITION_VELOCITY.
-                        # We intentionally preserve the existing kd from the velocity actuator rather than
-                        # overwriting it with this position actuator's kv, since the velocity actuator's
-                        # kv takes precedence for velocity control.
-                        builder.joint_act_mode[dof_idx] = int(ActuatorMode.POSITION_VELOCITY)
-                    elif current_mode == int(ActuatorMode.NONE):
-                        builder.joint_act_mode[dof_idx] = int(ActuatorMode.POSITION)
-                        builder.joint_target_kd[dof_idx] = kv
+                if trntype == 0 and total_dofs > 0:  # TrnType.JOINT
+                    for i in range(total_dofs):
+                        dof_idx = qd_start + i
+                        builder.joint_target_ke[dof_idx] = kp
+                        current_mode = builder.joint_act_mode[dof_idx]
+                        if current_mode == int(ActuatorMode.VELOCITY):
+                            # A velocity actuator was already parsed for this DOF - upgrade to POSITION_VELOCITY.
+                            # We intentionally preserve the existing kd from the velocity actuator rather than
+                            # overwriting it with this position actuator's kv, since the velocity actuator's
+                            # kv takes precedence for velocity control.
+                            builder.joint_act_mode[dof_idx] = int(ActuatorMode.POSITION_VELOCITY)
+                        elif current_mode == int(ActuatorMode.NONE):
+                            builder.joint_act_mode[dof_idx] = int(ActuatorMode.POSITION)
+                            builder.joint_target_kd[dof_idx] = kv
                         
                         
             elif actuator_type == "velocity":
@@ -1259,14 +1282,16 @@ def parse_mjcf(
                     ctrl_source_val = CtrlSource.CTRL_DIRECT
                 else:
                     ctrl_source_val = CtrlSource.JOINT_TARGET
-                for i in range(total_dofs):
-                    dof_idx = qd_start + i
-                    current_mode = builder.joint_act_mode[dof_idx]
-                    if current_mode == int(ActuatorMode.POSITION):
-                        builder.joint_act_mode[dof_idx] = int(ActuatorMode.POSITION_VELOCITY)
-                    elif current_mode == int(ActuatorMode.NONE):
-                        builder.joint_act_mode[dof_idx] = int(ActuatorMode.VELOCITY)
-                    builder.joint_target_kd[dof_idx] = kv
+                # Update per-DOF arrays only for joint actuators
+                if trntype == 0 and total_dofs > 0:  # TrnType.JOINT
+                    for i in range(total_dofs):
+                        dof_idx = qd_start + i
+                        current_mode = builder.joint_act_mode[dof_idx]
+                        if current_mode == int(ActuatorMode.POSITION):
+                            builder.joint_act_mode[dof_idx] = int(ActuatorMode.POSITION_VELOCITY)
+                        elif current_mode == int(ActuatorMode.NONE):
+                            builder.joint_act_mode[dof_idx] = int(ActuatorMode.VELOCITY)
+                        builder.joint_target_kd[dof_idx] = kv
                     
             elif actuator_type in ("general"):
                 gainprm_str = actuator_elem.attrib.get("gainprm", "1 0 0 0 0 0 0 0 0 0")
@@ -1288,7 +1313,6 @@ def parse_mjcf(
             
             # Add actuator via custom attributes (if registered)
             if has_custom_attrs:
-                dof_idx = qd_start  # Target the first DOF of the joint
                 parsed_attrs = parse_custom_attributes(
                     actuator_elem.attrib, builder_custom_attr_actuator, parsing_mode="mjcf"
                 )
@@ -1296,7 +1320,7 @@ def parse_mjcf(
                 # Build full values dict
                 actuator_values: dict[str, Any] = {}
                 for attr in builder_custom_attr_actuator:
-                    if attr.key in ("mujoco:ctrl_source",
+                    if attr.key in ("mujoco:ctrl_source", "mujoco:actuator_trntype",
                                     "mujoco:actuator_gainprm", "mujoco:actuator_biasprm", "mujoco:ctrl"):
                         continue  # We set these manually
                     actuator_values[attr.key] = parsed_attrs.get(attr.key, attr.default)
@@ -1304,14 +1328,17 @@ def parse_mjcf(
                 actuator_values["mujoco:ctrl_source"] = ctrl_source_val
                 actuator_values["mujoco:actuator_gainprm"] = gainprm
                 actuator_values["mujoco:actuator_biasprm"] = biasprm
-                actuator_values["mujoco:actuator_trnid"] = wp.vec2i(joint_idx, 0)
+                actuator_values["mujoco:actuator_trnid"] = wp.vec2i(target_idx, 0)
+                actuator_values["mujoco:actuator_trntype"] = trntype
+                actuator_values["mujoco:actuator_world"] = builder.current_world
                 
                 builder.add_custom_values(**actuator_values)
                 
                 if verbose:
                     source_name = "CTRL_DIRECT" if ctrl_source_val == CtrlSource.CTRL_DIRECT else "JOINT_TARGET"
-                    print(f"{actuator_type.capitalize()} actuator '{act_name}' on joint '{joint_name}': "
-                          f"dof={dof_idx}, source={source_name}")
+                    trn_name = "body" if trntype == 4 else "joint"
+                    print(f"{actuator_type.capitalize()} actuator '{act_name}' on {trn_name} '{target_name_for_log}': "
+                          f"trntype={trntype}, source={source_name}")
 
     actuator_section = root.find("actuator")
     if actuator_section is not None:

@@ -520,6 +520,18 @@ class SolverMuJoCo(SolverBase):
                 namespace="mujoco",
             )
         )
+        # Track which world each actuator belongs to (for multi-world filtering)
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="actuator_world",
+                frequency="actuator",
+                assignment=ModelAttributeAssignment.MODEL,
+                dtype=wp.int32,
+                default=-1,
+                namespace="mujoco",
+                references="world",  # Gets replaced with current_world during add_world()
+            )
+        )
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="actuator_ctrllimited",
@@ -2357,6 +2369,7 @@ class SolverMuJoCo(SolverBase):
         # These use custom attributes with "mujoco:actuator" frequency
         # Note: JOINT_TARGET actuators (position/velocity) are skipped here as they're
         # already added by the joint iteration loop above via joint_act_mode
+        # Only process actuators belonging to the first world (template model)
         mujoco_attrs = getattr(model, "mujoco", None)
         mujoco_actuator_mapping = {}  # mujoco_act_idx -> mjc_actuator_idx
         
@@ -2366,6 +2379,7 @@ class SolverMuJoCo(SolverBase):
             actuator_trnid = mujoco_attrs.actuator_trnid.numpy()
             trntype_arr = mujoco_attrs.actuator_trntype.numpy() if hasattr(mujoco_attrs, "actuator_trntype") else None
             ctrl_source_arr = mujoco_attrs.ctrl_source.numpy() if hasattr(mujoco_attrs, "ctrl_source") else None
+            actuator_world_arr = mujoco_attrs.actuator_world.numpy() if hasattr(mujoco_attrs, "actuator_world") else None
             
             for mujoco_act_idx in range(mujoco_actuator_count):
                 # Skip JOINT_TARGET actuators - they're already added via joint_act_mode path
@@ -2373,6 +2387,12 @@ class SolverMuJoCo(SolverBase):
                     ctrl_source = int(ctrl_source_arr[mujoco_act_idx])
                     if ctrl_source == CtrlSource.JOINT_TARGET:
                         continue  # Already handled in joint iteration
+                
+                # Only include actuators from the first world (template) or global actuators
+                if actuator_world_arr is not None:
+                    actuator_world = int(actuator_world_arr[mujoco_act_idx])
+                    if actuator_world != first_world and actuator_world != -1:
+                        continue  # Skip actuators from other worlds
                 
                 target_idx = int(actuator_trnid[mujoco_act_idx, 0])
                 
@@ -2386,8 +2406,14 @@ class SolverMuJoCo(SolverBase):
                             print(f"Warning: MuJoCo actuator {mujoco_act_idx} has invalid joint target {target_idx}")
                         continue
                     target_name = model.joint_key[target_idx]
+                elif trntype == 4:  # TrnType.BODY
+                    if target_idx < 0 or target_idx >= len(model.body_key):
+                        if verbose:
+                            print(f"Warning: MuJoCo actuator {mujoco_act_idx} has invalid body target {target_idx}")
+                        continue
+                    target_name = model.body_key[target_idx]
                 else:
-                    # TODO: Support tendon, site, and other transmission types
+                    # TODO: Support tendon, site, slidercrank, and jointinparent transmission types
                     if verbose:
                         print(f"Warning: MuJoCo actuator {mujoco_act_idx} has unsupported trntype {trntype}")
                     continue
@@ -2437,9 +2463,20 @@ class SolverMuJoCo(SolverBase):
                         if actdim >= 0:  # -1 means auto
                             general_args["actdim"] = int(actdim)
                 
+                # Map trntype integer to MuJoCo enum and override default in general_args
+                trntype_enum = {
+                    0: mujoco.mjtTrn.mjTRN_JOINT,
+                    1: mujoco.mjtTrn.mjTRN_JOINTINPARENT,
+                    2: mujoco.mjtTrn.mjTRN_TENDON,
+                    3: mujoco.mjtTrn.mjTRN_SITE,
+                    4: mujoco.mjtTrn.mjTRN_BODY,
+                    5: mujoco.mjtTrn.mjTRN_SLIDERCRANK,
+                }.get(trntype, mujoco.mjtTrn.mjTRN_JOINT)
+                general_args["trntype"] = trntype_enum
                 spec.add_actuator(target=target_name, **general_args)
                 mujoco_actuator_mapping[mujoco_act_idx] = actuator_count
-                # CTRL_DIRECT actuators - store index into mujoco.ctrl
+                # CTRL_DIRECT actuators - store template index into mujoco.ctrl
+                # ctrl_direct_count is the per-world index (template), kernel applies world offset
                 mjc_actuator_ctrl_source_list.append(1)  # CTRL_DIRECT
                 mjc_actuator_to_newton_idx_list.append(ctrl_direct_count)
                 ctrl_direct_count += 1

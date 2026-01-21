@@ -1473,7 +1473,8 @@ class ModelBuilder:
                     Using the ``schema_resolvers`` argument is an experimental feature that may be removed or changed significantly in the future.
             force_position_velocity_actuation (bool): If True, joints with both non-zero stiffness (kp) and 
                 damping (kd) will use POSITION_VELOCITY actuation mode (creating both position and velocity 
-                actuators). If False (default), joints with any position gain use POSITION mode.
+                actuators). If False (default), joints with any position gain use POSITION mode, and joints 
+                with only velocity gain use VELOCITY mode.
 
         Returns:
             dict: Dictionary with the following entries:

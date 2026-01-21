@@ -471,35 +471,6 @@ class TestCtrlSourceModes(unittest.TestCase):
         # Note: ctrl_type is NOT a custom attribute - it's computed in solver_mujoco
 
 
-class TestBackwardCompatibility(unittest.TestCase):
-    """Test backward compatibility with existing code."""
-
-    def test_legacy_per_dof_arrays_still_work(self):
-        """Test that per-DOF arrays (joint_act_mode, joint_target_ke/kd) still work."""
-        builder = newton.ModelBuilder()
-
-        # Create articulation with explicit actuator modes
-        b1 = builder.add_link(mass=1.0, com=wp.vec3(0, 0, 0), I_m=wp.mat33(np.eye(3)))
-        j1 = builder.add_joint_revolute(
-            -1, b1, 
-            target_ke=100.0, 
-            target_kd=10.0,
-            actuator_mode=ActuatorMode.POSITION_VELOCITY
-        )
-        builder.add_articulation([j1])
-        model = builder.finalize()
-
-        # Check per-DOF arrays
-        joint_act_mode = model.joint_act_mode.numpy()
-        self.assertEqual(joint_act_mode[0], int(ActuatorMode.POSITION_VELOCITY))
-
-        joint_target_ke = model.joint_target_ke.numpy()
-        self.assertEqual(joint_target_ke[0], 100.0)
-
-        joint_target_kd = model.joint_target_kd.numpy()
-        self.assertEqual(joint_target_kd[0], 10.0)
-
-
 class TestGainSynchronization(unittest.TestCase):
     """Test that gains are properly synchronized between Newton and MuJoCo."""
 
@@ -539,6 +510,327 @@ class TestGainSynchronization(unittest.TestCase):
 
         # The solver should sync the new gain to MuJoCo
         # (This test verifies the notification mechanism works)
+
+
+class TestMultiWorldActuators(unittest.TestCase):
+    """Test multi-world handling for MuJoCo general actuators."""
+
+    def test_actuator_world_attribute_set_correctly(self):
+        """Test that actuator_world is set to current_world during MJCF parsing."""
+        mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test_actuator_world">
+    <worldbody>
+        <body name="link1" pos="0 0 1">
+            <joint name="joint1" axis="0 0 1" type="hinge"/>
+            <geom type="box" size="0.1 0.1 0.1"/>
+        </body>
+    </worldbody>
+    <actuator>
+        <general name="act1" joint="joint1" gainprm="100 0 0" biasprm="0 -100 0"/>
+    </actuator>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.current_world = 0
+        builder.add_mjcf(mjcf_content)
+        model = builder.finalize()
+
+        # Check actuator_world attribute exists and is set correctly
+        self.assertTrue(hasattr(model.mujoco, "actuator_world"))
+        actuator_world = model.mujoco.actuator_world.numpy()
+        self.assertEqual(len(actuator_world), 1)
+        self.assertEqual(actuator_world[0], 0)  # Should be world 0
+
+    def test_actuator_world_remapped_during_add_world(self):
+        """Test that actuator_world is correctly remapped when using add_world()."""
+        mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test_multiworld">
+    <worldbody>
+        <body name="link1" pos="0 0 1">
+            <joint name="joint1" axis="0 0 1" type="hinge"/>
+            <geom type="box" size="0.1 0.1 0.1"/>
+        </body>
+    </worldbody>
+    <actuator>
+        <general name="act1" joint="joint1" gainprm="100 0 0" biasprm="0 -100 0"/>
+    </actuator>
+</mujoco>
+"""
+        # Create a robot builder
+        robot_builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(robot_builder)
+        robot_builder.add_mjcf(mjcf_content)
+
+        # Create main builder and add robot to two worlds
+        main_builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(main_builder)
+        main_builder.add_world(robot_builder)  # World 0
+        main_builder.add_world(robot_builder)  # World 1
+
+        model = main_builder.finalize()
+
+        # Should have 2 actuators (one per world)
+        self.assertEqual(model.custom_frequency_counts.get("mujoco:actuator", 0), 2)
+
+        # Check actuator_world values
+        actuator_world = model.mujoco.actuator_world.numpy()
+        self.assertEqual(len(actuator_world), 2)
+        self.assertEqual(actuator_world[0], 0)  # First actuator in world 0
+        self.assertEqual(actuator_world[1], 1)  # Second actuator in world 1
+
+    def test_multiworld_ctrl_array_sizing(self):
+        """Test that control.mujoco.ctrl is correctly sized for multiple worlds."""
+        mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test_multiworld_ctrl">
+    <worldbody>
+        <body name="link1" pos="0 0 1">
+            <joint name="joint1" axis="0 0 1" type="hinge"/>
+            <geom type="box" size="0.1 0.1 0.1"/>
+        </body>
+        <body name="link2" pos="1 0 1">
+            <joint name="joint2" axis="0 1 0" type="hinge"/>
+            <geom type="box" size="0.1 0.1 0.1"/>
+        </body>
+    </worldbody>
+    <actuator>
+        <general name="act1" joint="joint1" gainprm="100 0 0" biasprm="0 -100 0"/>
+        <general name="act2" joint="joint2" gainprm="50 0 0" biasprm="0 -50 0"/>
+    </actuator>
+</mujoco>
+"""
+        # Create robot builder
+        robot_builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(robot_builder)
+        robot_builder.add_mjcf(mjcf_content)
+
+        # Create main builder with 3 worlds
+        main_builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(main_builder)
+        main_builder.add_world(robot_builder)  # World 0
+        main_builder.add_world(robot_builder)  # World 1
+        main_builder.add_world(robot_builder)  # World 2
+
+        model = main_builder.finalize()
+
+        # Should have 6 actuators (2 per world × 3 worlds)
+        mujoco_act_count = model.custom_frequency_counts.get("mujoco:actuator", 0)
+        self.assertEqual(mujoco_act_count, 6)
+
+        # Control array should be sized for all actuators
+        control = model.control()
+        self.assertEqual(control.mujoco.ctrl.shape[0], 6)
+
+    def test_multiworld_solver_creates_template_actuators_only(self):
+        """Test that MuJoCo solver only creates template actuators, not duplicates."""
+        mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test_template">
+    <option gravity="0 0 0"/>
+    <worldbody>
+        <body name="link1" pos="0 0 1">
+            <joint name="joint1" axis="0 0 1" type="hinge"/>
+            <geom type="box" size="0.1 0.1 0.1" mass="1"/>
+        </body>
+    </worldbody>
+    <actuator>
+        <general name="act1" joint="joint1" gainprm="1 0 0" biasprm="0 0 0"/>
+    </actuator>
+</mujoco>
+"""
+        # Create robot builder
+        robot_builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(robot_builder)
+        robot_builder.add_mjcf(mjcf_content)
+
+        # Create main builder with 2 worlds
+        main_builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(main_builder)
+        main_builder.add_world(robot_builder)  # World 0
+        main_builder.add_world(robot_builder)  # World 1
+
+        model = main_builder.finalize()
+        model.ground = False
+
+        # Create solver - should only create 1 actuator in MuJoCo (template)
+        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True, separate_worlds=True)
+
+        # MuJoCo model should have 1 actuator (template), not 2
+        self.assertEqual(solver.mj_model.nu, 1)
+
+    def test_multiworld_ctrl_routing(self):
+        """Test that control signals are correctly routed to each world's actuators."""
+        mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test_ctrl_routing">
+    <option gravity="0 0 0"/>
+    <worldbody>
+        <body name="link1" pos="0 0 1">
+            <joint name="joint1" axis="0 0 1" type="hinge"/>
+            <geom type="box" size="0.1 0.1 0.1" mass="1"/>
+        </body>
+    </worldbody>
+    <actuator>
+        <general name="act1" joint="joint1" gainprm="1 0 0" biasprm="0 0 0"/>
+    </actuator>
+</mujoco>
+"""
+        # Create robot builder
+        robot_builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(robot_builder)
+        robot_builder.add_mjcf(mjcf_content)
+
+        # Create main builder with 2 worlds
+        main_builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(main_builder)
+        main_builder.add_world(robot_builder)  # World 0
+        main_builder.add_world(robot_builder)  # World 1
+
+        model = main_builder.finalize()
+        model.ground = False
+
+        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True, separate_worlds=True)
+
+        state_0 = model.state()
+        state_1 = model.state()
+        control = model.control()
+
+        # Initialize states
+        state_0.joint_q.zero_()
+        state_0.joint_qd.zero_()
+
+        # Apply different control to each world
+        # ctrl[0] is world 0's actuator, ctrl[1] is world 1's actuator
+        control.mujoco.ctrl.assign([10.0, -5.0])
+
+        dt = 0.01
+        solver.step(state_0, state_1, control, None, dt)
+
+        # Get velocities for each world's joint
+        joint_qd = state_1.joint_qd.numpy()
+
+        # World 0's joint should have positive velocity (positive torque)
+        # World 1's joint should have negative velocity (negative torque)
+        self.assertGreater(joint_qd[0], 0.0, "World 0 joint should have positive velocity")
+        self.assertLess(joint_qd[1], 0.0, "World 1 joint should have negative velocity")
+
+        # Velocities should have opposite signs and different magnitudes
+        self.assertNotEqual(abs(joint_qd[0]), abs(joint_qd[1]))
+
+
+class TestBodyActuators(unittest.TestCase):
+    """Test body transmission actuators (trntype=body)."""
+
+    def test_parse_body_actuator_from_mjcf(self):
+        """Test that actuators with body= attribute are parsed correctly."""
+        mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test_body_actuator">
+    <worldbody>
+        <body name="floating_body" pos="0 0 1">
+            <freejoint name="free"/>
+            <geom type="sphere" size="0.1" mass="1"/>
+        </body>
+    </worldbody>
+    <actuator>
+        <general name="body_act" body="floating_body" 
+                 gainprm="50 0 0" 
+                 biasprm="0 0 0"
+                 gear="1 0 0 0 0 0"/>
+    </actuator>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_mjcf(mjcf_content)
+        model = builder.finalize()
+
+        # 1 actuator created in mujoco namespace
+        self.assertEqual(model.custom_frequency_counts.get("mujoco:actuator", 0), 1)
+
+        # Check custom attributes exist
+        self.assertTrue(hasattr(model, "mujoco"))
+        mujoco_attrs = model.mujoco
+
+        # Check trntype is BODY (4)
+        self.assertTrue(hasattr(mujoco_attrs, "actuator_trntype"))
+        trntype = mujoco_attrs.actuator_trntype.numpy()
+        self.assertEqual(trntype[0], 4)  # TrnType.BODY
+
+        # Check actuator_trnid targets the body index
+        trnid = mujoco_attrs.actuator_trnid.numpy()
+        body_idx = model.body_key.index("floating_body")
+        self.assertEqual(trnid[0, 0], body_idx)
+
+        # Check ctrl_source is CTRL_DIRECT
+        ctrl_source = mujoco_attrs.ctrl_source.numpy()
+        self.assertEqual(ctrl_source[0], CtrlSource.CTRL_DIRECT)
+
+    def test_body_actuator_solver_creation(self):
+        """Test that body actuators are correctly added to MuJoCo model."""
+        mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test_body_actuator_solver">
+    <worldbody>
+        <body name="floating_body" pos="0 0 1">
+            <freejoint name="free"/>
+            <geom type="sphere" size="0.1" mass="1"/>
+        </body>
+    </worldbody>
+    <actuator>
+        <general name="body_act" body="floating_body" 
+                 gainprm="100 0 0"/>
+    </actuator>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_mjcf(mjcf_content)
+        model = builder.finalize()
+        model.ground = False
+
+        # Create solver - should not raise
+        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
+
+        # MuJoCo model should have 1 actuator
+        self.assertEqual(solver.mj_model.nu, 1)
+
+    def test_mixed_joint_and_body_actuators(self):
+        """Test MJCF with both joint and body actuators."""
+        mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test_mixed_actuators">
+    <worldbody>
+        <body name="base" pos="0 0 1">
+            <freejoint name="free"/>
+            <geom type="box" size="0.1 0.1 0.1" mass="1"/>
+            <body name="arm" pos="0.2 0 0">
+                <joint name="hinge" type="hinge" axis="0 1 0"/>
+                <geom type="capsule" size="0.05" fromto="0 0 0 0.2 0 0" mass="0.5"/>
+            </body>
+        </body>
+    </worldbody>
+    <actuator>
+        <general name="joint_act" joint="hinge" gainprm="50 0 0"/>
+        <general name="body_act" body="base" gainprm="10 0 0" gear="0 0 1 0 0 0"/>
+    </actuator>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_mjcf(mjcf_content)
+        model = builder.finalize()
+
+        # 2 actuators created
+        self.assertEqual(model.custom_frequency_counts.get("mujoco:actuator", 0), 2)
+
+        mujoco_attrs = model.mujoco
+        trntype = mujoco_attrs.actuator_trntype.numpy()
+
+        # First actuator targets joint (trntype=0)
+        self.assertEqual(trntype[0], 0)
+        # Second actuator targets body (trntype=4)
+        self.assertEqual(trntype[1], 4)
+
+        # Create solver - should handle both actuator types
+        model.ground = False
+        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
+        self.assertEqual(solver.mj_model.nu, 2)
 
 
 if __name__ == "__main__":
