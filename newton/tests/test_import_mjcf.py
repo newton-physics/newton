@@ -796,7 +796,6 @@ class TestImportMjcf(unittest.TestCase):
 
         nbBuilders = 2
         nbTendonsPerBuilder = 2
-        nbTendons = nbBuilders * nbTendonsPerBuilder
 
         individual_builder = newton.ModelBuilder()
         SolverMuJoCo.register_custom_attributes(individual_builder)
