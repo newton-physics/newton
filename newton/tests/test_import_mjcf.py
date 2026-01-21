@@ -2000,6 +2000,121 @@ class TestImportMjcf(unittest.TestCase):
         self.assertAlmostEqual(site_xform[1], 2.5, places=5)
         self.assertAlmostEqual(site_xform[2], 3.5, places=5)
 
+    def test_frame_childclass_propagation(self):
+        """Test that frames correctly propagate childclass and merged defaults to geoms, sites, and nested frames."""
+        mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test_frame_childclass">
+    <default>
+        <default class="red_class">
+            <geom rgba="1 0 0 1" size="0.1"/>
+            <site rgba="1 0 0 1" size="0.05"/>
+        </default>
+        <default class="blue_class">
+            <geom rgba="0 0 1 1" size="0.2"/>
+            <site rgba="0 0 1 1" size="0.08"/>
+        </default>
+        <default class="green_class">
+            <geom rgba="0 1 0 1" size="0.3"/>
+            <site rgba="0 1 0 1" size="0.12"/>
+        </default>
+    </default>
+    <worldbody>
+        <!-- Frame with childclass should apply defaults to its children -->
+        <frame name="red_frame" childclass="red_class" pos="1 0 0">
+            <geom name="geom_in_red_frame" type="sphere"/>
+            <site name="site_in_red_frame"/>
+
+            <!-- Nested frame inherits parent's childclass -->
+            <frame name="nested_in_red" pos="0 1 0">
+                <geom name="geom_in_nested_red" type="sphere"/>
+                <site name="site_in_nested_red"/>
+            </frame>
+
+            <!-- Nested frame with its own childclass overrides -->
+            <frame name="blue_nested_in_red" childclass="blue_class" pos="0 0 1">
+                <geom name="geom_in_blue_nested" type="sphere"/>
+                <site name="site_in_blue_nested"/>
+
+                <!-- Double-nested frame inherits blue_class -->
+                <frame name="double_nested" pos="0.5 0 0">
+                    <geom name="geom_double_nested" type="sphere"/>
+                    <site name="site_double_nested"/>
+                </frame>
+            </frame>
+        </frame>
+
+        <!-- Geom outside any frame (uses global defaults) -->
+        <geom name="geom_no_frame" type="sphere" size="0.5"/>
+    </worldbody>
+</mujoco>"""
+
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf_content, parse_sites=True, up_axis="Z")
+
+        def get_shape_size(name):
+            idx = builder.shape_key.index(name)
+            geo_type = builder.shape_type[idx]
+            if geo_type == GeoType.SPHERE:
+                return builder.shape_scale[idx][0]  # radius
+            return None
+
+        def get_shape_pos(name):
+            idx = builder.shape_key.index(name)
+            return builder.shape_transform[idx][:3]
+
+        # Geom in red_frame should have red_class size (0.1)
+        self.assertAlmostEqual(get_shape_size("geom_in_red_frame"), 0.1, places=5)
+
+        # Geom in nested frame (inherits red_class) should also have size 0.1
+        self.assertAlmostEqual(get_shape_size("geom_in_nested_red"), 0.1, places=5)
+
+        # Geom in blue_nested_in_red (overrides to blue_class) should have size 0.2
+        self.assertAlmostEqual(get_shape_size("geom_in_blue_nested"), 0.2, places=5)
+
+        # Double-nested geom (inherits blue_class from parent frame) should have size 0.2
+        self.assertAlmostEqual(get_shape_size("geom_double_nested"), 0.2, places=5)
+
+        # Geom outside frames should use explicit size (0.5)
+        self.assertAlmostEqual(get_shape_size("geom_no_frame"), 0.5, places=5)
+
+        # Verify transforms are still correctly composed
+        # geom_in_red_frame: frame pos (1,0,0) + geom pos (0,0,0) = (1,0,0)
+        pos = get_shape_pos("geom_in_red_frame")
+        self.assertAlmostEqual(pos[0], 1.0, places=5)
+        self.assertAlmostEqual(pos[1], 0.0, places=5)
+        self.assertAlmostEqual(pos[2], 0.0, places=5)
+
+        # geom_in_nested_red: (1,0,0) + (0,1,0) = (1,1,0)
+        pos = get_shape_pos("geom_in_nested_red")
+        self.assertAlmostEqual(pos[0], 1.0, places=5)
+        self.assertAlmostEqual(pos[1], 1.0, places=5)
+        self.assertAlmostEqual(pos[2], 0.0, places=5)
+
+        # geom_in_blue_nested: (1,0,0) + (0,0,1) = (1,0,1)
+        pos = get_shape_pos("geom_in_blue_nested")
+        self.assertAlmostEqual(pos[0], 1.0, places=5)
+        self.assertAlmostEqual(pos[1], 0.0, places=5)
+        self.assertAlmostEqual(pos[2], 1.0, places=5)
+
+        # geom_double_nested: (1,0,0) + (0,0,1) + (0.5,0,0) = (1.5,0,1)
+        pos = get_shape_pos("geom_double_nested")
+        self.assertAlmostEqual(pos[0], 1.5, places=5)
+        self.assertAlmostEqual(pos[1], 0.0, places=5)
+        self.assertAlmostEqual(pos[2], 1.0, places=5)
+
+        # Verify sites also receive the correct defaults
+        # site_in_red_frame should have red_class size (0.05)
+        site_idx = builder.shape_key.index("site_in_red_frame")
+        self.assertAlmostEqual(builder.shape_scale[site_idx][0], 0.05, places=5)
+
+        # site_in_blue_nested should have blue_class size (0.08)
+        site_idx = builder.shape_key.index("site_in_blue_nested")
+        self.assertAlmostEqual(builder.shape_scale[site_idx][0], 0.08, places=5)
+
+        # site_double_nested should inherit blue_class size (0.08)
+        site_idx = builder.shape_key.index("site_double_nested")
+        self.assertAlmostEqual(builder.shape_scale[site_idx][0], 0.08, places=5)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
