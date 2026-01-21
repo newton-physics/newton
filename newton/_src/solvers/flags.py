@@ -49,7 +49,7 @@ class SolverNotifyFlags(IntEnum):
     """Indicates equality constraint property updates: eq_solref."""
 
     FIXED_TENDON_PROPERTIES = 1 << 7
-    """Indicates fixed tendon properties: eg stiffness."""
+    """Indicates fixed tendon properties: eg tendon_stiffness."""
 
     ALL = (
         JOINT_PROPERTIES

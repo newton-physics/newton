@@ -887,7 +887,6 @@ class TestImportMjcf(unittest.TestCase):
                     )
 
                 # Check the model spring length
-                thing = model.mujoco.tendon_springlength.numpy()
                 for k in range(0, 2):
                     expected = expected_model_springlength[0][j][k]
                     measured = model.mujoco.tendon_springlength.numpy()[nbTendonsPerBuilder * i + j][k]

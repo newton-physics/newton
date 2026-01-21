@@ -72,10 +72,10 @@ class TestMujocoFixedTendon(unittest.TestCase):
 
 """
 
-        individual_builder = newton.ModelBuilder()
+        individual_builder = newton.ModelBuilder(gravity=0.0)
         SolverMuJoCo.register_custom_attributes(individual_builder)
         individual_builder.add_mjcf(mjcf)
-        builder = newton.ModelBuilder()
+        builder = newton.ModelBuilder(gravity=0.0)
         for i in range(0, 2):
             builder.add_world(individual_builder)
         model = builder.finalize()
@@ -92,7 +92,7 @@ class TestMujocoFixedTendon(unittest.TestCase):
         coeff1 = 1.0  # from mjcf above
         expected_tendon_length = 0.0  # from mjcf above
 
-        # Length of tendon at start is: pos**coef0 + pos1*coef1 = 2*0.5 + 0*0.0 = 1.0
+        # Length of tendon at start is: pos*coef0 + pos1*coef1 = 2*0.5 + 0*0.0 = 1.0
         # Target length is 0.0 (see mjcf above)
         joint_start_positions = [0.5, 0.0, 0.5, 0.0]
         state_in.joint_q.assign(joint_start_positions)
@@ -200,10 +200,10 @@ class TestMujocoFixedTendon(unittest.TestCase):
         joint_start_positions[2] = joint_start_positions[0]
         joint_start_velocities[2] = joint_start_velocities[0]
 
-        individual_builder = newton.ModelBuilder()
+        individual_builder = newton.ModelBuilder(gravity=0.0)
         SolverMuJoCo.register_custom_attributes(individual_builder)
         individual_builder.add_mjcf(mjcf)
-        builder = newton.ModelBuilder()
+        builder = newton.ModelBuilder(gravity=0.0)
         for i in range(0, 2):
             builder.add_world(individual_builder)
         model = builder.finalize()
