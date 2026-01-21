@@ -1783,10 +1783,10 @@ class ModelBuilder:
             raise ValueError("Cannot add a builder with a different up axis.")
 
         # Copy gravity from source builder
-        if self.current_world >= 0:
+        if self.current_world >= 0 and self.current_world < len(self.world_gravity):
             # We're in a world context, update this world's gravity vector
             self.world_gravity[self.current_world] = tuple(g * builder.gravity for g in builder.up_vector)
-        else:
+        elif self.current_world < 0:
             # No world context (add_builder called directly), copy scalar gravity
             self.gravity = builder.gravity
 
