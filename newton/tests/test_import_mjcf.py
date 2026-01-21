@@ -24,7 +24,6 @@ import newton
 import newton.examples
 from newton._src.geometry.types import GeoType
 from newton._src.sim.builder import ShapeFlags
-from newton.solvers import SolverMuJoCo
 
 
 class TestImportMjcf(unittest.TestCase):
@@ -742,7 +741,6 @@ class TestImportMjcf(unittest.TestCase):
 
         builder = newton.ModelBuilder()
 
-        SolverMuJoCo.register_custom_attributes(builder)
         builder.add_mjcf(mjcf)
         model = builder.finalize()
 
@@ -815,7 +813,6 @@ class TestImportMjcf(unittest.TestCase):
         </mujoco>
         """
         builder = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(builder)
         builder.add_mjcf(mjcf)
         model = builder.finalize()
 
@@ -843,7 +840,6 @@ class TestImportMjcf(unittest.TestCase):
 
         builder = newton.ModelBuilder()
 
-        SolverMuJoCo.register_custom_attributes(builder)
         builder.add_mjcf(mjcf)
         model = builder.finalize()
 
@@ -917,7 +913,6 @@ class TestImportMjcf(unittest.TestCase):
 
         builder = newton.ModelBuilder()
 
-        SolverMuJoCo.register_custom_attributes(builder)
         builder.add_mjcf(mjcf)
         model = builder.finalize()
 
@@ -1136,7 +1131,6 @@ class TestImportMjcf(unittest.TestCase):
 
         builder = newton.ModelBuilder()
         # Register gravcomp
-        SolverMuJoCo.register_custom_attributes(builder)
         builder.add_mjcf(mjcf_content)
         model = builder.finalize()
 
@@ -1181,7 +1175,6 @@ class TestImportMjcf(unittest.TestCase):
 </mujoco>
 """
         builder = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(builder)
         builder.add_mjcf(mjcf_content)
         model = builder.finalize()
 
@@ -1232,7 +1225,6 @@ class TestImportMjcf(unittest.TestCase):
 </mujoco>
 """
         builder = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(builder)
         builder.add_mjcf(mjcf_content)
         model = builder.finalize()
 
@@ -1353,7 +1345,6 @@ class TestImportMjcf(unittest.TestCase):
 """
 
         builder = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(builder)
         builder.add_mjcf(mjcf_content)
         model = builder.finalize()
 
@@ -1389,7 +1380,6 @@ class TestImportMjcf(unittest.TestCase):
 """
 
         builder = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(builder)
         builder.add_mjcf(mjcf)
         model = builder.finalize()
 
@@ -1433,7 +1423,6 @@ class TestImportMjcf(unittest.TestCase):
 """
 
         builder = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(builder)
         builder.add_mjcf(mjcf)
         model = builder.finalize()
 
@@ -1476,7 +1465,6 @@ class TestImportMjcf(unittest.TestCase):
 """
 
         builder = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(builder)
         builder.add_mjcf(mjcf)
         model = builder.finalize()
 
@@ -1518,7 +1506,6 @@ class TestImportMjcf(unittest.TestCase):
 """
 
         builder = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(builder)
         builder.add_mjcf(mjcf_content)
         model = builder.finalize()
 
@@ -1642,7 +1629,6 @@ class TestImportMjcf(unittest.TestCase):
 """
 
         builder = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(builder)
         builder.add_mjcf(mjcf)
         model = builder.finalize()
 
@@ -1664,6 +1650,125 @@ class TestImportMjcf(unittest.TestCase):
             actual = eq_solref[eq_idx].tolist()
             for i, (a, e) in enumerate(zip(actual, expected, strict=False)):
                 self.assertAlmostEqual(a, e, places=4, msg=f"eq_solref[{eq_idx}][{i}] should be {e}, got {a}")
+
+    def test_ref_attribute_parsing(self):
+        """Test that 'ref' attribute is parsed"""
+        mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test">
+    <worldbody>
+        <body name="base">
+            <geom type="box" size="0.1 0.1 0.1"/>
+            <body name="child1" pos="0 0 1">
+                <joint name="hinge" type="hinge" axis="0 1 0" ref="90"/>
+                <geom type="box" size="0.1 0.1 0.1"/>
+                <body name="child2" pos="0 0 1">
+                    <joint name="slide" type="slide" axis="0 0 1" ref="0.5"/>
+                    <geom type="box" size="0.1 0.1 0.1"/>
+                </body>
+            </body>
+        </body>
+    </worldbody>
+</mujoco>"""
+
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf_content)
+        model = builder.finalize()
+
+        # Verify custom attribute parsing
+        qd_start = model.joint_qd_start.numpy()
+        dof_ref = model.mujoco.dof_ref.numpy()
+
+        hinge_idx = model.joint_key.index("hinge")
+        self.assertAlmostEqual(dof_ref[qd_start[hinge_idx]], 90.0, places=4)
+
+        slide_idx = model.joint_key.index("slide")
+        self.assertAlmostEqual(dof_ref[qd_start[slide_idx]], 0.5, places=4)
+
+    def test_springref_attribute_parsing(self):
+        """Test that 'springref' attribute is parsed for hinge and slide joints."""
+        mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test">
+    <worldbody>
+        <body name="base">
+            <geom type="box" size="0.1 0.1 0.1"/>
+            <body name="child1" pos="0 0 1">
+                <joint name="hinge" type="hinge" axis="0 0 1" stiffness="100" springref="30"/>
+                <geom type="box" size="0.1 0.1 0.1"/>
+                <body name="child2" pos="0 0 1">
+                    <joint name="slide" type="slide" axis="0 0 1" stiffness="50" springref="0.25"/>
+                    <geom type="box" size="0.1 0.1 0.1"/>
+                </body>
+            </body>
+        </body>
+    </worldbody>
+</mujoco>"""
+
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf_content)
+        model = builder.finalize()
+        springref = model.mujoco.dof_springref.numpy()
+        qd_start = model.joint_qd_start.numpy()
+
+        hinge_idx = model.joint_key.index("hinge")
+        self.assertAlmostEqual(springref[qd_start[hinge_idx]], 30.0, places=4)
+        slide_idx = model.joint_key.index("slide")
+        self.assertAlmostEqual(springref[qd_start[slide_idx]], 0.25, places=4)
+
+    def test_static_geom_xform_not_applied_twice(self):
+        """Test that xform parameter is applied exactly once to static geoms.
+
+        This is a regression test for a bug where incoming_xform was applied twice
+        to static geoms (link == -1) in parse_shapes.
+
+        A static geom at pos=(1,0,0) with xform translation of (0,2,0) should
+        result in final position (1,2,0), NOT (1,4,0) from double application.
+        """
+        mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test_static_xform">
+    <worldbody>
+        <geom name="static_geom" pos="1 0 0" size="0.1" type="sphere"/>
+    </worldbody>
+</mujoco>"""
+
+        builder = newton.ModelBuilder()
+        # Apply a translation via xform parameter
+        import_xform = wp.transform(wp.vec3(0.0, 2.0, 0.0), wp.quat_identity())
+        builder.add_mjcf(mjcf_content, xform=import_xform)
+
+        # Find the static geom
+        geom_idx = builder.shape_key.index("static_geom")
+        geom_xform = builder.shape_transform[geom_idx]
+
+        # Position should be geom_pos + xform_pos = (1,0,0) + (0,2,0) = (1,2,0)
+        # Bug would give (1,0,0) + (0,2,0) + (0,2,0) = (1,4,0)
+        self.assertAlmostEqual(geom_xform[0], 1.0, places=5)
+        self.assertAlmostEqual(geom_xform[1], 2.0, places=5)  # Would be 4.0 with bug
+        self.assertAlmostEqual(geom_xform[2], 0.0, places=5)
+
+    def test_static_fromto_capsule_xform(self):
+        """Test that xform parameter is applied to capsule/cylinder fromto coordinates.
+
+        A static capsule with fromto="0 0 0  1 0 0" (centered at (0.5,0,0)) with
+        xform translation of (0,5,0) should result in position (0.5, 5.0, 0).
+        """
+        mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test_fromto_xform">
+    <worldbody>
+        <geom name="fromto_cap" type="capsule" fromto="0 0 0  1 0 0" size="0.1"/>
+    </worldbody>
+</mujoco>"""
+
+        builder = newton.ModelBuilder()
+        import_xform = wp.transform(wp.vec3(0.0, 5.0, 0.0), wp.quat_identity())
+        builder.add_mjcf(mjcf_content, xform=import_xform)
+
+        geom_idx = builder.shape_key.index("fromto_cap")
+        geom_xform = builder.shape_transform[geom_idx]
+
+        # Position should be midpoint(0,0,0 to 1,0,0) + xform = (0.5,0,0) + (0,5,0) = (0.5,5,0)
+        self.assertAlmostEqual(geom_xform[0], 0.5, places=5)
+        self.assertAlmostEqual(geom_xform[1], 5.0, places=5)
+        self.assertAlmostEqual(geom_xform[2], 0.0, places=5)
 
 
 if __name__ == "__main__":

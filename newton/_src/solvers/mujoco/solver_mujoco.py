@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 import warp as wp
 
-from ...core.types import nparray, override, vec5, vec10
+from ...core.types import MAXVAL, nparray, override, vec5, vec10
 from ...geometry import MESH_MAXHULLVERT, GeoType, ShapeFlags
 from ...sim import (
     JOINT_LIMIT_UNLIMITED,
@@ -309,6 +309,30 @@ class SolverMuJoCo(SolverBase):
         )
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
+                name="dof_springref",
+                frequency=ModelAttributeFrequency.JOINT_DOF,
+                assignment=ModelAttributeAssignment.MODEL,
+                dtype=wp.float32,
+                default=0.0,
+                namespace="mujoco",
+                usd_attribute_name="mjc:springref",
+                mjcf_attribute_name="springref",
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="dof_ref",
+                frequency=ModelAttributeFrequency.JOINT_DOF,
+                assignment=ModelAttributeAssignment.MODEL,
+                dtype=wp.float32,
+                default=0.0,
+                namespace="mujoco",
+                usd_attribute_name="mjc:ref",
+                mjcf_attribute_name="ref",
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
                 name="jnt_actgravcomp",
                 frequency=ModelAttributeFrequency.JOINT_DOF,
                 assignment=ModelAttributeAssignment.MODEL,
@@ -329,6 +353,18 @@ class SolverMuJoCo(SolverBase):
                 namespace="mujoco",
                 usd_attribute_name="mjc:solref",
                 mjcf_attribute_name="solref",
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="eq_solimp",
+                frequency=ModelAttributeFrequency.EQUALITY_CONSTRAINT,
+                assignment=ModelAttributeAssignment.MODEL,
+                dtype=vec5,
+                default=vec5(0.9, 0.95, 0.001, 0.5, 2.0),
+                namespace="mujoco",
+                usd_attribute_name="mjc:solimp",
+                mjcf_attribute_name="solimp",
             )
         )
 
@@ -962,6 +998,12 @@ class SolverMuJoCo(SolverBase):
         self.update_data_interval = update_data_interval
         self._step = 0
 
+        # Check if dof_ref is used - if so, we use MuJoCo's FK (eval_fk=False)
+        # because ref is only handled by MuJoCo via qpos0
+        mujoco_attrs = getattr(model, "mujoco", None)
+        dof_ref = getattr(mujoco_attrs, "dof_ref", None) if mujoco_attrs is not None else None
+        self._has_ref = dof_ref is not None and np.any(dof_ref.numpy() != 0.0)
+
         if self.mjw_model is not None:
             self.mjw_model.opt.run_collision_detection = use_mujoco_contacts
 
@@ -972,6 +1014,9 @@ class SolverMuJoCo(SolverBase):
     @event_scope
     @override
     def step(self, state_in: State, state_out: State, control: Control, contacts: Contacts, dt: float):
+        # When ref is used, we rely on MuJoCo's FK (eval_fk=False) because ref is handled by MuJoCo via qpos0
+        eval_fk = not self._has_ref
+
         if self.use_mujoco_cpu:
             self.apply_mjc_control(self.model, state_in, control, self.mj_data)
             if self.update_data_interval > 0 and self._step % self.update_data_interval == 0:
@@ -979,7 +1024,7 @@ class SolverMuJoCo(SolverBase):
                 self.update_mjc_data(self.mj_data, self.model, state_in)
             self.mj_model.opt.timestep = dt
             self._mujoco.mj_step(self.mj_model, self.mj_data)
-            self.update_newton_state(self.model, state_out, self.mj_data)
+            self.update_newton_state(self.model, state_out, self.mj_data, eval_fk=eval_fk)
         else:
             self.enable_rne_postconstraint(state_out)
             self.apply_mjc_control(self.model, state_in, control, self.mjw_data)
@@ -993,7 +1038,7 @@ class SolverMuJoCo(SolverBase):
                     self.convert_contacts_to_mjwarp(self.model, state_in, contacts)
                     self.mujoco_warp_step()
 
-            self.update_newton_state(self.model, state_out, self.mjw_data)
+            self.update_newton_state(self.model, state_out, self.mjw_data, eval_fk=eval_fk)
         self._step += 1
         return state_out
 
@@ -1674,6 +1719,8 @@ class SolverMuJoCo(SolverBase):
         joint_stiffness = get_custom_attribute("dof_passive_stiffness")
         joint_damping = get_custom_attribute("dof_passive_damping")
         joint_actgravcomp = get_custom_attribute("jnt_actgravcomp")
+        joint_springref = get_custom_attribute("dof_springref")
+        joint_ref = get_custom_attribute("dof_ref")
 
         eq_constraint_type = model.equality_constraint_type.numpy()
         eq_constraint_body1 = model.equality_constraint_body1.numpy()
@@ -2102,7 +2149,7 @@ class SolverMuJoCo(SolverBase):
                     if joint_actgravcomp is not None:
                         joint_params["actgravcomp"] = joint_actgravcomp[ai]
                     lower, upper = joint_limit_lower[ai], joint_limit_upper[ai]
-                    if lower <= -JOINT_LIMIT_UNLIMITED and upper >= JOINT_LIMIT_UNLIMITED:
+                    if lower <= -MAXVAL and upper >= MAXVAL:
                         joint_params["limited"] = False
                     else:
                         joint_params["limited"] = True
@@ -2123,6 +2170,12 @@ class SolverMuJoCo(SolverBase):
                         effort_limit = joint_effort_limit[ai]
                         joint_params["actfrclimited"] = True
                         joint_params["actfrcrange"] = (-effort_limit, effort_limit)
+
+                    if joint_springref is not None:
+                        joint_params["springref"] = joint_springref[ai]
+                    if joint_ref is not None:
+                        joint_params["ref"] = joint_ref[ai]
+
                     axname = name
                     if lin_axis_count > 1 or ang_axis_count > 1:
                         axname += "_lin"
@@ -2204,7 +2257,7 @@ class SolverMuJoCo(SolverBase):
                     if joint_actgravcomp is not None:
                         joint_params["actgravcomp"] = joint_actgravcomp[ai]
                     lower, upper = joint_limit_lower[ai], joint_limit_upper[ai]
-                    if lower <= -JOINT_LIMIT_UNLIMITED and upper >= JOINT_LIMIT_UNLIMITED:
+                    if lower <= -MAXVAL and upper >= MAXVAL:
                         joint_params["limited"] = False
                     else:
                         joint_params["limited"] = True
@@ -2225,6 +2278,11 @@ class SolverMuJoCo(SolverBase):
                         effort_limit = joint_effort_limit[ai]
                         joint_params["actfrclimited"] = True
                         joint_params["actfrcrange"] = (-effort_limit, effort_limit)
+
+                    if joint_springref is not None:
+                        joint_params["springref"] = joint_springref[ai]
+                    if joint_ref is not None:
+                        joint_params["ref"] = joint_ref[ai]
 
                     axname = name
                     if lin_axis_count > 1 or ang_axis_count > 1:
@@ -2289,14 +2347,20 @@ class SolverMuJoCo(SolverBase):
 
             add_geoms(child)
 
+        def get_body_name(body_idx: int) -> str:
+            """Get body name, handling world body (-1) correctly."""
+            if body_idx == -1:
+                return "world"
+            return model.body_key[body_idx]
+
         for i in selected_constraints:
             constraint_type = eq_constraint_type[i]
             if constraint_type == EqType.CONNECT:
                 eq = spec.add_equality(objtype=mujoco.mjtObj.mjOBJ_BODY)
                 eq.type = mujoco.mjtEq.mjEQ_CONNECT
                 eq.active = eq_constraint_enabled[i]
-                eq.name1 = model.body_key[eq_constraint_body1[i]]
-                eq.name2 = model.body_key[eq_constraint_body2[i]]
+                eq.name1 = get_body_name(eq_constraint_body1[i])
+                eq.name2 = get_body_name(eq_constraint_body2[i])
                 eq.data[0:3] = eq_constraint_anchor[i]
                 if eq_constraint_solref is not None:
                     eq.solref = eq_constraint_solref[i]
@@ -2315,8 +2379,8 @@ class SolverMuJoCo(SolverBase):
                 eq = spec.add_equality(objtype=mujoco.mjtObj.mjOBJ_BODY)
                 eq.type = mujoco.mjtEq.mjEQ_WELD
                 eq.active = eq_constraint_enabled[i]
-                eq.name1 = model.body_key[eq_constraint_body1[i]]
-                eq.name2 = model.body_key[eq_constraint_body2[i]]
+                eq.name1 = get_body_name(eq_constraint_body1[i])
+                eq.name2 = get_body_name(eq_constraint_body2[i])
                 cns_relpose = wp.transform(*eq_constraint_relpose[i])
                 eq.data[0:3] = eq_constraint_anchor[i]
                 eq.data[3:6] = wp.transform_get_translation(cns_relpose)
@@ -2695,18 +2759,14 @@ class SolverMuJoCo(SolverBase):
             # TODO find better heuristics to determine nconmax and njmax
             if disable_contacts:
                 nconmax = 0
-            elif nconmax is None:
-                nconmax = self.mj_data.ncon
-            elif nconmax < self.mj_data.ncon:
+            elif nconmax is not None and nconmax < self.mj_data.ncon:
                 warnings.warn(
                     f"[WARNING] Value for nconmax is changed from {nconmax} to {self.mj_data.ncon} following an MjWarp requirement.",
                     stacklevel=2,
                 )
                 nconmax = self.mj_data.ncon
 
-            if njmax is None:
-                njmax = self.mj_data.nefc
-            elif njmax < self.mj_data.nefc:
+            if njmax is not None and njmax < self.mj_data.nefc:
                 warnings.warn(
                     f"[WARNING] Value for njmax is changed from {njmax} to {self.mj_data.nefc} following an MjWarp requirement.",
                     stacklevel=2,
@@ -2782,7 +2842,7 @@ class SolverMuJoCo(SolverBase):
             # "light_poscom0",
             # "light_pos0",
             "eq_solref",
-            # "eq_solimp",
+            "eq_solimp",
             # "eq_data",
             # "actuator_dynprm",
             "actuator_gainprm",
@@ -2804,6 +2864,11 @@ class SolverMuJoCo(SolverBase):
             # "tendon_length0",
             # "tendon_invweight0",
             # "mat_rgba",
+        }
+
+        # Fields in mj_model.opt to expand
+        opt_fields_to_expand = {
+            "gravity",
         }
 
         def tile(x: wp.array):
@@ -2832,6 +2897,11 @@ class SolverMuJoCo(SolverBase):
             if field in model_fields_to_expand:
                 array = getattr(mj_model, field)
                 setattr(mj_model, field, tile(array))
+
+        for field in mj_model.opt.__dataclass_fields__:
+            if field in opt_fields_to_expand:
+                array = getattr(mj_model.opt, field)
+                setattr(mj_model.opt, field, tile(array))
 
     def update_model_inertial_properties(self):
         if self.model.body_count == 0:
@@ -2991,6 +3061,7 @@ class SolverMuJoCo(SolverBase):
         if self.mjc_jnt_to_newton_jnt is not None and self.mjc_jnt_to_newton_jnt.shape[1] > 0:
             nworld = self.mjc_jnt_to_newton_jnt.shape[0]
             njnt = self.mjc_jnt_to_newton_jnt.shape[1]
+
             wp.launch(
                 update_joint_transforms_kernel,
                 dim=(nworld, njnt),
@@ -3103,20 +3174,23 @@ class SolverMuJoCo(SolverBase):
 
         num_worlds = self.mjc_eq_to_newton_eq.shape[0]
 
-        # Get custom attribute for eq_solref
+        # Get custom attributes for eq_solref and eq_solimp
         mujoco_attrs = getattr(self.model, "mujoco", None)
         eq_solref = getattr(mujoco_attrs, "eq_solref", None) if mujoco_attrs is not None else None
+        eq_solimp = getattr(mujoco_attrs, "eq_solimp", None) if mujoco_attrs is not None else None
 
-        if eq_solref is not None:
+        if eq_solref is not None or eq_solimp is not None:
             wp.launch(
                 update_eq_properties_kernel,
                 dim=(num_worlds, neq),
                 inputs=[
                     self.mjc_eq_to_newton_eq,
                     eq_solref,
+                    eq_solimp,
                 ],
                 outputs=[
                     self.mjw_model.eq_solref,
+                    self.mjw_model.eq_solimp,
                 ],
                 device=self.model.device,
             )

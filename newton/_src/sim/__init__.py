@@ -33,7 +33,6 @@ from .state import State
 from .style3d import Style3DModel, Style3DModelBuilder
 
 __all__ = [
-    "JOINT_LIMIT_UNLIMITED",
     "BroadPhaseMode",
     "CollisionPipeline",
     "CollisionPipelineUnified",

@@ -29,6 +29,7 @@ import numpy as np
 import warp as wp
 
 from ..core.types import (
+    MAXVAL,
     Axis,
     AxisType,
     Devicelike,
@@ -57,6 +58,7 @@ from ..geometry.inertia import validate_and_correct_inertia_kernel, verify_and_c
 from ..geometry.utils import RemeshingMethod, compute_inertia_obb, remesh_mesh
 from ..usd.schema_resolver import SchemaResolver
 from ..utils import compute_world_offsets
+from ..utils.mesh import MeshAdjacency
 from .graph_coloring import ColoringAlgorithm, color_rigid_bodies, color_trimesh, combine_independent_particle_coloring
 from .joints import (
     JOINT_LIMIT_UNLIMITED,
@@ -291,8 +293,8 @@ class ModelBuilder:
         def __init__(
             self,
             axis: AxisType | Vec3 = Axis.X,
-            limit_lower: float = -JOINT_LIMIT_UNLIMITED,
-            limit_upper: float = JOINT_LIMIT_UNLIMITED,
+            limit_lower: float = -MAXVAL,
+            limit_upper: float = MAXVAL,
             limit_ke: float = 1e4,
             limit_kd: float = 1e1,
             target_pos: float = 0.0,
@@ -306,11 +308,11 @@ class ModelBuilder:
             actuator_mode: ActuatorMode | None = None,
         ):
             self.axis = wp.normalize(axis_to_vec3(axis))
-            """The 3D axis that this JointDofConfig object describes."""
+            """The 3D joint axis in the joint parent anchor frame."""
             self.limit_lower = limit_lower
-            """The lower position limit of the joint axis. Defaults to -JOINT_LIMIT_UNLIMITED (unlimited)."""
+            """The lower position limit of the joint axis. Defaults to -MAXVAL (unlimited)."""
             self.limit_upper = limit_upper
-            """The upper position limit of the joint axis. Defaults to JOINT_LIMIT_UNLIMITED (unlimited)."""
+            """The upper position limit of the joint axis. Defaults to MAXVAL (unlimited)."""
             self.limit_ke = limit_ke
             """The elastic stiffness of the joint axis limits. Defaults to 1e4."""
             self.limit_kd = limit_kd
@@ -345,8 +347,8 @@ class ModelBuilder:
             """Creates a JointDofConfig with no limits."""
             return ModelBuilder.JointDofConfig(
                 axis=axis,
-                limit_lower=-JOINT_LIMIT_UNLIMITED,
-                limit_upper=JOINT_LIMIT_UNLIMITED,
+                limit_lower=-MAXVAL,
+                limit_upper=MAXVAL,
                 target_pos=0.0,
                 target_vel=0.0,
                 target_ke=0.0,
@@ -686,7 +688,7 @@ class ModelBuilder:
         self.joint_parent = []  # index of the parent body                      (constant)
         self.joint_parents = {}  # mapping from joint to parent bodies
         self.joint_child = []  # index of the child body                       (constant)
-        self.joint_axis = []  # joint axis in child joint frame               (constant)
+        self.joint_axis = []  # joint axis in joint parent anchor frame        (constant)
         self.joint_X_p = []  # frame of joint in parent                      (constant)
         self.joint_X_c = []  # frame of child com (in child coordinates)     (constant)
         self.joint_q = []
@@ -1348,6 +1350,7 @@ class ModelBuilder:
     def add_urdf(
         self,
         source: str,
+        *,
         xform: Transform | None = None,
         floating: bool = False,
         base_joint: dict | str | None = None,
@@ -1395,28 +1398,29 @@ class ModelBuilder:
         return parse_urdf(
             self,
             source,
-            xform,
-            floating,
-            base_joint,
-            scale,
-            hide_visuals,
-            parse_visuals_as_colliders,
-            up_axis,
-            force_show_colliders,
-            enable_self_collisions,
-            ignore_inertial_definitions,
-            ensure_nonstatic_links,
-            static_link_mass,
-            joint_ordering,
-            bodies_follow_joint_ordering,
-            collapse_fixed_joints,
-            mesh_maxhullvert,
-            force_position_velocity_actuation,
+            xform=xform,
+            floating=floating,
+            base_joint=base_joint,
+            scale=scale,
+            hide_visuals=hide_visuals,
+            parse_visuals_as_colliders=parse_visuals_as_colliders,
+            up_axis=up_axis,
+            force_show_colliders=force_show_colliders,
+            enable_self_collisions=enable_self_collisions,
+            ignore_inertial_definitions=ignore_inertial_definitions,
+            ensure_nonstatic_links=ensure_nonstatic_links,
+            static_link_mass=static_link_mass,
+            joint_ordering=joint_ordering,
+            bodies_follow_joint_ordering=bodies_follow_joint_ordering,
+            collapse_fixed_joints=collapse_fixed_joints,
+            mesh_maxhullvert=mesh_maxhullvert,
+            force_position_velocity_actuation=force_position_velocity_actuation,
         )
 
     def add_usd(
         self,
         source,
+        *,
         xform: Transform | None = None,
         only_load_enabled_rigid_bodies: bool = False,
         only_load_enabled_joints: bool = True,
@@ -1438,8 +1442,7 @@ class ModelBuilder:
         schema_resolvers: list[SchemaResolver] | None = None,
         force_position_velocity_actuation: bool = False,
     ) -> dict[str, Any]:
-        """
-        Parses a Universal Scene Description (USD) stage containing UsdPhysics schema definitions for rigid-body articulations and adds the bodies, shapes and joints to the given ModelBuilder.
+        """Parses a Universal Scene Description (USD) stage containing UsdPhysics schema definitions for rigid-body articulations and adds the bodies, shapes and joints to the given ModelBuilder.
 
         The USD description has to be either a path (file name or URL), or an existing USD stage instance that implements the `Stage <https://openusd.org/dev/api/class_usd_stage.html>`_ interface.
 
@@ -1486,67 +1489,70 @@ class ModelBuilder:
             .. list-table::
                 :widths: 25 75
 
-                * - "fps"
+                * - ``"fps"``
                   - USD stage frames per second
-                * - "duration"
+                * - ``"duration"``
                   - Difference between end time code and start time code of the USD stage
-                * - "up_axis"
+                * - ``"up_axis"``
                   - :class:`Axis` representing the stage's up axis ("X", "Y", or "Z")
-                * - "path_shape_map"
-                  - Mapping from prim path (str) of the UsdGeom to the respective shape index in :class:`ModelBuilder`
-                * - "path_body_map"
-                  - Mapping from prim path (str) of a rigid body prim (e.g. that implements the PhysicsRigidBodyAPI) to the respective body index in :class:`ModelBuilder`
-                * - "path_shape_scale"
+                * - ``"path_body_map"``
+                  - Mapping from prim path (str) of a rigid body prim (e.g. that implements the PhysicsRigidBodyAPI) to the respective body index in :class:`~newton.ModelBuilder`
+                * - ``"path_joint_map"``
+                  - Mapping from prim path (str) of a joint prim (e.g. that implements the PhysicsJointAPI) to the respective joint index in :class:`~newton.ModelBuilder`
+                * - ``"path_shape_map"``
+                  - Mapping from prim path (str) of the UsdGeom to the respective shape index in :class:`~newton.ModelBuilder`
+                * - ``"path_shape_scale"``
                   - Mapping from prim path (str) of the UsdGeom to its respective 3D world scale
-                * - "mass_unit"
+                * - ``"mass_unit"``
                   - The stage's Kilograms Per Unit (KGPU) definition (1.0 by default)
-                * - "linear_unit"
+                * - ``"linear_unit"``
                   - The stage's Meters Per Unit (MPU) definition (1.0 by default)
-                * - "scene_attributes"
+                * - ``"scene_attributes"``
                   - Dictionary of all attributes applied to the PhysicsScene prim
-                * - "collapse_results"
-                  - Dictionary returned by :meth:`newton.ModelBuilder.collapse_fixed_joints` if `collapse_fixed_joints` is True, otherwise None.
-                * - "physics_dt"
+                * - ``"collapse_results"``
+                  - Dictionary returned by :meth:`newton.ModelBuilder.collapse_fixed_joints` if ``collapse_fixed_joints`` is True, otherwise None.
+                * - ``"physics_dt"``
                   - The resolved physics scene time step (float or None)
-                * - "schema_attrs"
+                * - ``"schema_attrs"``
                   - Dictionary of collected per-prim schema attributes (dict)
-                * - "max_solver_iterations"
+                * - ``"max_solver_iterations"``
                   - The resolved maximum solver iterations (int or None)
-                * - "path_body_relative_transform"
-                  - Mapping from prim path to relative transform for bodies merged via `collapse_fixed_joints`
-                * - "path_original_body_map"
-                  - Mapping from prim path to original body index before `collapse_fixed_joints`
+                * - ``"path_body_relative_transform"``
+                  - Mapping from prim path to relative transform for bodies merged via ``collapse_fixed_joints``
+                * - ``"path_original_body_map"``
+                  - Mapping from prim path to original body index before ``collapse_fixed_joints``
         """
         from ..utils.import_usd import parse_usd  # noqa: PLC0415
 
         return parse_usd(
             self,
             source,
-            xform,
-            only_load_enabled_rigid_bodies,
-            only_load_enabled_joints,
-            joint_drive_gains_scaling,
-            verbose,
-            ignore_paths,
-            cloned_world,
-            collapse_fixed_joints,
-            enable_self_collisions,
-            apply_up_axis_from_stage,
-            root_path,
-            joint_ordering,
-            bodies_follow_joint_ordering,
-            skip_mesh_approximation,
-            load_sites,
-            load_visual_shapes,
-            hide_collision_shapes,
-            mesh_maxhullvert,
-            schema_resolvers,
-            force_position_velocity_actuation,
+            xform=xform,
+            only_load_enabled_rigid_bodies=only_load_enabled_rigid_bodies,
+            only_load_enabled_joints=only_load_enabled_joints,
+            joint_drive_gains_scaling=joint_drive_gains_scaling,
+            verbose=verbose,
+            ignore_paths=ignore_paths,
+            cloned_world=cloned_world,
+            collapse_fixed_joints=collapse_fixed_joints,
+            enable_self_collisions=enable_self_collisions,
+            apply_up_axis_from_stage=apply_up_axis_from_stage,
+            root_path=root_path,
+            joint_ordering=joint_ordering,
+            bodies_follow_joint_ordering=bodies_follow_joint_ordering,
+            skip_mesh_approximation=skip_mesh_approximation,
+            load_sites=load_sites,
+            load_visual_shapes=load_visual_shapes,
+            hide_collision_shapes=hide_collision_shapes,
+            mesh_maxhullvert=mesh_maxhullvert,
+            schema_resolvers=schema_resolvers,
+            force_position_velocity_actuation=force_position_velocity_actuation,
         )
 
     def add_mjcf(
         self,
         source: str,
+        *,
         xform: Transform | None = None,
         floating: bool | None = None,
         base_joint: dict | str | None = None,
@@ -1577,6 +1583,7 @@ class ModelBuilder:
     ):
         """
         Parses MuJoCo XML (MJCF) file and adds the bodies and joints to the given ModelBuilder.
+        MuJoCo-specific custom attributes are registered on the builder automatically.
 
         Args:
             source (str): The filename of the MuJoCo file to parse, or the MJCF XML string content.
@@ -1610,38 +1617,40 @@ class ModelBuilder:
                 from control.mujoco.ctrl array (MuJoCo-native behavior). If False (default), position/velocity 
                 actuators use JOINT_TARGET mode where control comes from joint_target_pos/vel.
         """
+        from ..solvers.mujoco.solver_mujoco import SolverMuJoCo  # noqa: PLC0415
         from ..utils.import_mjcf import parse_mjcf  # noqa: PLC0415
 
+        SolverMuJoCo.register_custom_attributes(self)
         return parse_mjcf(
             self,
             source,
-            xform,
-            floating,
-            base_joint,
-            armature_scale,
-            scale,
-            hide_visuals,
-            parse_visuals_as_colliders,
-            parse_meshes,
-            parse_sites,
-            parse_visuals,
-            up_axis,
-            ignore_names,
-            ignore_classes,
-            visual_classes,
-            collider_classes,
-            no_class_as_colliders,
-            force_show_colliders,
-            enable_self_collisions,
-            ignore_inertial_definitions,
-            ensure_nonstatic_links,
-            static_link_mass,
-            collapse_fixed_joints,
-            verbose,
-            skip_equality_constraints,
-            convert_3d_hinge_to_ball_joints,
-            mesh_maxhullvert,
-            ctrl_direct,
+            xform=xform,
+            floating=floating,
+            base_joint=base_joint,
+            armature_scale=armature_scale,
+            scale=scale,
+            hide_visuals=hide_visuals,
+            parse_visuals_as_colliders=parse_visuals_as_colliders,
+            parse_meshes=parse_meshes,
+            parse_sites=parse_sites,
+            parse_visuals=parse_visuals,
+            up_axis=up_axis,
+            ignore_names=ignore_names,
+            ignore_classes=ignore_classes,
+            visual_classes=visual_classes,
+            collider_classes=collider_classes,
+            no_class_as_colliders=no_class_as_colliders,
+            force_show_colliders=force_show_colliders,
+            enable_self_collisions=enable_self_collisions,
+            ignore_inertial_definitions=ignore_inertial_definitions,
+            ensure_nonstatic_links=ensure_nonstatic_links,
+            static_link_mass=static_link_mass,
+            collapse_fixed_joints=collapse_fixed_joints,
+            verbose=verbose,
+            skip_equality_constraints=skip_equality_constraints,
+            convert_3d_hinge_to_ball_joints=convert_3d_hinge_to_ball_joints,
+            mesh_maxhullvert=mesh_maxhullvert,
+            ctrl_direct=ctrl_direct,
         )
 
     # endregion
@@ -1796,7 +1805,7 @@ class ModelBuilder:
 
         # explicitly resolve the transform multiplication function to avoid
         # repeatedly resolving builtin overloads during shape transformation
-        transform_mul_cfunc = wp.context.runtime.core.wp_builtin_mul_transformf_transformf
+        transform_mul_cfunc = wp._src.context.runtime.core.wp_builtin_mul_transformf_transformf
 
         # dispatches two transform multiplies to the native implementation
         def transform_mul(a, b):
@@ -2156,6 +2165,31 @@ class ModelBuilder:
             offset = custom_frequency_offsets.get(freq_key, 0)
             self._custom_frequency_counts[freq_key] = offset + builder_count
 
+    @staticmethod
+    def _coerce_mat33(value: Any) -> wp.mat33:
+        """Coerce a mat33-like value into a wp.mat33 without triggering Warp row-vector constructor warnings."""
+        if wp.types.type_is_matrix(type(value)):
+            return value
+
+        if isinstance(value, (list, tuple)) and len(value) == 3:
+            rows = []
+            is_rows = True
+            for r in value:
+                if wp.types.type_is_vector(type(r)):
+                    rows.append(wp.vec3(*r))
+                elif isinstance(r, (list, tuple, np.ndarray)) and len(r) == 3:
+                    rows.append(wp.vec3(*r))
+                else:
+                    is_rows = False
+                    break
+            if is_rows:
+                return wp.matrix_from_rows(*rows)
+
+        if isinstance(value, np.ndarray) and value.shape == (3, 3):
+            return wp.mat33(*value.reshape(-1).tolist())
+
+        return wp.mat33(*value)
+
     def add_link(
         self,
         xform: Transform | None = None,
@@ -2197,15 +2231,19 @@ class ModelBuilder:
             xform = wp.transform(*xform)
         if com is None:
             com = wp.vec3()
+        else:
+            com = wp.vec3(*com)
         if I_m is None:
             I_m = wp.mat33()
+        else:
+            I_m = self._coerce_mat33(I_m)
 
         body_id = len(self.body_mass)
 
         # body data
         if armature is None:
             armature = self.default_body_armature
-        inertia = I_m + wp.mat33(np.eye(3)) * armature
+        inertia = I_m + wp.mat33(np.eye(3, dtype=np.float32)) * armature
         self.body_inertia.append(inertia)
         self.body_mass.append(mass)
         self.body_com.append(com)
@@ -2321,11 +2359,15 @@ class ModelBuilder:
             joint_type (JointType): The type of joint to add (see :ref:`Joint types`).
             parent (int): The index of the parent body (-1 is the world).
             child (int): The index of the child body.
-            linear_axes (list(:class:`JointDofConfig`)): The linear axes (see :class:`JointDofConfig`) of the joint.
-            angular_axes (list(:class:`JointDofConfig`)): The angular axes (see :class:`JointDofConfig`) of the joint.
+            linear_axes (list(:class:`JointDofConfig`)): The linear axes (see :class:`JointDofConfig`) of the joint,
+                defined in the joint parent anchor frame.
+            angular_axes (list(:class:`JointDofConfig`)): The angular axes (see :class:`JointDofConfig`) of the joint,
+                defined in the joint parent anchor frame.
             key (str): The key of the joint (optional).
-            parent_xform (Transform): The transform of the joint in the parent body's local frame. If None, the identity transform is used.
-            child_xform (Transform): The transform of the joint in the child body's local frame. If None, the identity transform is used.
+            parent_xform (Transform): The transform from the parent body frame to the joint parent anchor frame.
+                If None, the identity transform is used.
+            child_xform (Transform): The transform from the child body frame to the joint child anchor frame.
+                If None, the identity transform is used.
             collision_filter_parent (bool): Whether to filter collisions between shapes of the parent and child bodies.
             enabled (bool): Whether the joint is enabled (not considered by :class:`SolverFeatherstone`).
             custom_attributes: Dictionary of custom attribute keys (see :attr:`CustomAttribute.key`) to values. Note that custom attributes with frequency :attr:`ModelAttributeFrequency.JOINT_DOF` or :attr:`ModelAttributeFrequency.JOINT_COORD` can be provided as: (1) lists with length equal to the joint's DOF or coordinate count, (2) dicts mapping DOF/coordinate indices to values, or (3) scalar values for single-DOF/single-coordinate joints (automatically expanded to lists). Custom attributes with frequency :attr:`ModelAttributeFrequency.JOINT` require a single value to be defined.
@@ -2414,11 +2456,11 @@ class ModelBuilder:
             if np.isfinite(dim.limit_lower):
                 self.joint_limit_lower.append(dim.limit_lower)
             else:
-                self.joint_limit_lower.append(-JOINT_LIMIT_UNLIMITED)
+                self.joint_limit_lower.append(-MAXVAL)
             if np.isfinite(dim.limit_upper):
                 self.joint_limit_upper.append(dim.limit_upper)
             else:
-                self.joint_limit_upper.append(JOINT_LIMIT_UNLIMITED)
+                self.joint_limit_upper.append(MAXVAL)
 
         for dim in linear_axes:
             add_axis_dim(dim)
@@ -2498,9 +2540,11 @@ class ModelBuilder:
         Args:
             parent: The index of the parent body.
             child: The index of the child body.
-            parent_xform (Transform): The transform of the joint in the parent body's local frame.
-            child_xform (Transform): The transform of the joint in the child body's local frame.
-            axis (AxisType | Vec3 | JointDofConfig): The axis of rotation in the parent body's local frame, can be a :class:`JointDofConfig` object whose settings will be used instead of the other arguments.
+            parent_xform (Transform): The transform from the parent body frame to the joint parent anchor frame.
+            child_xform (Transform): The transform from the child body frame to the joint child anchor frame.
+            axis (AxisType | Vec3 | JointDofConfig): The axis of rotation in the joint parent anchor frame, which is
+                the parent body's local frame transformed by `parent_xform`. It can be a :class:`JointDofConfig` object
+                whose settings will be used instead of the other arguments.
             target_pos: The target position of the joint.
             target_vel: The target velocity of the joint.
             target_ke: The stiffness of the joint target.
@@ -2588,9 +2632,11 @@ class ModelBuilder:
         Args:
             parent: The index of the parent body.
             child: The index of the child body.
-            parent_xform (Transform): The transform of the joint in the parent body's local frame.
-            child_xform (Transform): The transform of the joint in the child body's local frame.
-            axis (AxisType | Vec3 | JointDofConfig): The axis of rotation in the parent body's local frame, can be a :class:`JointDofConfig` object whose settings will be used instead of the other arguments.
+            parent_xform (Transform): The transform from the parent body frame to the joint parent anchor frame.
+            child_xform (Transform): The transform from the child body frame to the joint child anchor frame.
+            axis (AxisType | Vec3 | JointDofConfig): The axis of translation in the joint parent anchor frame, which is
+                the parent body's local frame transformed by `parent_xform`. It can be a :class:`JointDofConfig` object
+                whose settings will be used instead of the other arguments.
             target_pos: The target position of the joint.
             target_vel: The target velocity of the joint.
             target_ke: The stiffness of the joint target.
@@ -2666,8 +2712,8 @@ class ModelBuilder:
         Args:
             parent: The index of the parent body.
             child: The index of the child body.
-            parent_xform (Transform): The transform of the joint in the parent body's local frame.
-            child_xform (Transform): The transform of the joint in the child body's local frame.
+            parent_xform (Transform): The transform from the parent body frame to the joint parent anchor frame.
+            child_xform (Transform): The transform from the child body frame to the joint child anchor frame.
             armature: Artificial inertia added around the joint axes. If None, the default value from :attr:`default_joint_armature` is used.
             friction: Friction coefficient for the joint axes. If None, the default value from :attr:`default_joint_cfg.friction` is used.
             key: The key of the joint.
@@ -2903,8 +2949,8 @@ class ModelBuilder:
             linear_axes: A list of linear axes.
             angular_axes: A list of angular axes.
             key: The key of the joint.
-            parent_xform (Transform): The transform of the joint in the parent body's local frame
-            child_xform (Transform): The transform of the joint in the child body's local frame
+            parent_xform (Transform): The transform from the parent body frame to the joint parent anchor frame.
+            child_xform (Transform): The transform from the child body frame to the joint child anchor frame.
             armature: Artificial inertia added around the joint axes. If None, the default value from :attr:`default_joint_armature` is used.
             collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies.
             enabled: Whether the joint is enabled.
@@ -2964,14 +3010,19 @@ class ModelBuilder:
         Args:
             parent: The index of the parent body.
             child: The index of the child body.
-            parent_xform (Transform): The transform of the joint in the parent body's local frame; its
+            parent_xform (Transform): The transform from the parent body frame to the joint parent anchor frame; its
                 translation is the attachment point.
-            child_xform (Transform): The transform of the joint in the child body's local frame; its
+            child_xform (Transform): The transform from the child body frame to the joint child anchor frame; its
                 translation is the attachment point.
-            stretch_stiffness: Linear stretch stiffness. If None, defaults to 1.0e9.
-            stretch_damping: Linear stretch damping. If None, defaults to 0.0.
-            bend_stiffness: Angular bend/twist stiffness. If None, defaults to 0.0.
-            bend_damping: Angular bend/twist damping. If None, defaults to 0.0.
+            stretch_stiffness: Cable stretch stiffness (stored as ``target_ke``) [N/m]. If None, defaults to 1.0e9.
+            stretch_damping: Cable stretch damping (stored as ``target_kd``). In :class:`newton.solvers.SolverVBD`
+                this is a dimensionless (Rayleigh-style) coefficient. If None,
+                defaults to 0.0.
+            bend_stiffness: Cable bend/twist stiffness (stored as ``target_ke``) [N*m] (torque per radian). If None,
+                defaults to 0.0.
+            bend_damping: Cable bend/twist damping (stored as ``target_kd``). In :class:`newton.solvers.SolverVBD`
+                this is a dimensionless (Rayleigh-style) coefficient. If None,
+                defaults to 0.0.
             key: The key of the joint.
             collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies.
             enabled: Whether the joint is enabled.
@@ -3326,15 +3377,16 @@ class ModelBuilder:
         merged_body_data = {}
         for i in range(self.body_count):
             key = self.body_key[i]
+            inertia_i = self._coerce_mat33(self.body_inertia[i])
             body_data[i] = {
                 "shapes": self.body_shapes[i],
                 "q": self.body_q[i],
                 "qd": self.body_qd[i],
                 "mass": self.body_mass[i],
-                "inertia": wp.mat33(*self.body_inertia[i]),
+                "inertia": inertia_i,
                 "inv_mass": self.body_inv_mass[i],
                 "inv_inertia": self.body_inv_inertia[i],
-                "com": self.body_com[i],
+                "com": wp.vec3(*self.body_com[i]),
                 "key": key,
                 "original_id": i,
             }
@@ -4683,10 +4735,18 @@ class ModelBuilder:
                 align the capsule's local +Z with the segment direction ``positions[i+1] - positions[i]``.
             radius: Capsule radius.
             cfg: Shape configuration for the capsules. If None, :attr:`default_shape_cfg` is used.
-            stretch_stiffness: Stretch stiffness for the cable joints. If None, defaults to 1.0e9.
-            stretch_damping: Stretch damping for the cable joints. If None, defaults to 0.0.
-            bend_stiffness: Bend/twist stiffness for the cable joints. If None, defaults to 0.0.
-            bend_damping: Bend/twist damping for the cable joints. If None, defaults to 0.0.
+            stretch_stiffness: Stretch stiffness for the cable joints. For rods, this is treated as a
+                material-like axial/shear stiffness (commonly interpreted as EA)
+                with units [N] and is internally converted to an effective point stiffness [N/m] by dividing by
+                segment length. If None, defaults to 1.0e9.
+            stretch_damping: Stretch damping for the cable joints (applied per-joint; not length-normalized). If None,
+                defaults to 0.0.
+            bend_stiffness: Bend/twist stiffness for the cable joints. For rods, this is treated as a
+                material-like bending/twist stiffness (e.g., EI) with units [N*m^2] and is internally converted to
+                an effective per-joint stiffness [N*m] (torque per radian) by dividing by segment length. If None,
+                defaults to 0.0.
+            bend_damping: Bend/twist damping for the cable joints (applied per-joint; not length-normalized). If None,
+                defaults to 0.0.
             closed: If True, connects the last segment back to the first to form a closed loop. If False,
                 creates an open chain. Note: rods require at least 2 segments.
             key: Optional key prefix for bodies, shapes, and joints.
@@ -4711,6 +4771,9 @@ class ModelBuilder:
         Note:
             - Bend defaults are 0.0 (no bending resistance unless specified). Stretch defaults to a high
               stiffness (1.0e9), which keeps neighboring capsules closely coupled (approximately inextensible).
+            - Internally, stretch and bend stiffnesses are pre-scaled by dividing by segment length so solver kernels
+              do not need per-segment length normalization.
+            - Damping values are passed through as provided (per joint) and are not length-normalized.
             - Each segment is implemented as a capsule primitive. The segment's body transform is
               placed at the start point ``positions[i]`` with a local center-of-mass offset of
               ``(0, 0, half_height)`` so that the COM lies at the segment midpoint. The capsule shape
@@ -4728,6 +4791,11 @@ class ModelBuilder:
         bend_damping = 0.0 if bend_damping is None else bend_damping
 
         # Input validation
+        if stretch_stiffness < 0.0 or bend_stiffness < 0.0:
+            raise ValueError("add_rod: stretch_stiffness and bend_stiffness must be >= 0")
+
+        # Guard against near-zero lengths: segment length is used to normalize stiffness later (EA/L, EI/L).
+        min_segment_length = 1.0e-9
         num_segments = len(quaternions)
         if len(positions) != num_segments + 1:
             raise ValueError(
@@ -4754,10 +4822,10 @@ class ModelBuilder:
 
             # Calculate segment properties
             segment_length = wp.length(p1 - p0)
-            if segment_length <= 0.0:
+            if segment_length <= min_segment_length:
                 raise ValueError(
-                    f"add_rod: segment {i} has zero or negative length; "
-                    "positions must form strictly positive-length segments"
+                    f"add_rod: segment {i} has a too-small length (length={float(segment_length):.3e}); "
+                    f"segment length must be > {min_segment_length:.1e}"
                 )
             segment_lengths.append(float(segment_length))
             half_height = 0.5 * segment_length
@@ -4827,14 +4895,25 @@ class ModelBuilder:
             # Joint key: numbered 1 through num_joints
             joint_key = f"{key}_cable_{i + 1}" if key else None
 
+            # Pre-scale rod stiffnesses here so solver kernels do not need per-segment length normalization.
+            # Use the parent segment length L.
+            #
+            # - Stretch: treat the user input as a material-like axial/shear stiffness (commonly EA) [N]
+            #   and store an effective per-joint (point-to-point) spring stiffness k_eff = EA / L [N/m].
+            # - Bend/twist: treat the user input as a material-like bending/twist stiffness (commonly EI) [N*m^2]
+            #   and store an effective per-joint angular stiffness k_eff = EI / L [N*m].
+            seg_len = segment_lengths[parent_idx]
+            stretch_ke_eff = stretch_stiffness / seg_len
+            bend_ke_eff = bend_stiffness / seg_len
+
             joint = self.add_joint_cable(
                 parent=parent_body,
                 child=child_body,
                 parent_xform=parent_xform,
                 child_xform=child_xform,
-                bend_stiffness=bend_stiffness,
+                bend_stiffness=bend_ke_eff,
                 bend_damping=bend_damping,
-                stretch_stiffness=stretch_stiffness,
+                stretch_stiffness=stretch_ke_eff,
                 stretch_damping=stretch_damping,
                 key=joint_key,
                 collision_filter_parent=True,
@@ -5497,7 +5576,7 @@ class ModelBuilder:
 
         end_tri = len(self.tri_indices)
 
-        adj = wp.utils.MeshAdjacency(self.tri_indices[start_tri:end_tri], end_tri - start_tri)
+        adj = MeshAdjacency(self.tri_indices[start_tri:end_tri], end_tri - start_tri)
 
         edge_indices = np.fromiter(
             (x for e in adj.edges.values() for x in (e.o0, e.o1, e.v0, e.v1)),
@@ -6670,9 +6749,10 @@ class ModelBuilder:
             m.up_axis = self.up_axis
             m.up_vector = np.array(self.up_vector, dtype=wp.float32)
 
-            # set gravity
+            # set gravity - create per-world gravity array for multi-world support
+            gravity_vec = wp.vec3(*(g * self.gravity for g in self.up_vector))
             m.gravity = wp.array(
-                [wp.vec3(*(g * self.gravity for g in self.up_vector))],
+                [gravity_vec] * self.num_worlds,
                 dtype=wp.vec3,
                 device=device,
                 requires_grad=requires_grad,

@@ -39,6 +39,23 @@ class TestEqualityConstraints(unittest.TestCase):
 
         self.model = builder.finalize()
 
+        eq_keys = self.model.equality_constraint_key
+        eq_body1 = self.model.equality_constraint_body1.numpy()
+        eq_body2 = self.model.equality_constraint_body2.numpy()
+        eq_anchors = self.model.equality_constraint_anchor.numpy()
+        eq_torquescale = self.model.equality_constraint_torquescale.numpy()
+
+        c_site_idx = eq_keys.index("c_site")
+        self.assertEqual(eq_body1[c_site_idx], -1)
+        self.assertEqual(eq_body2[c_site_idx], 0)
+        np.testing.assert_allclose(eq_anchors[c_site_idx], [0.0, 0.0, 1.0], rtol=1e-5)
+
+        w_site_idx = eq_keys.index("w_site")
+        self.assertEqual(eq_body1[w_site_idx], -1)
+        self.assertEqual(eq_body2[w_site_idx], 1)
+        np.testing.assert_allclose(eq_anchors[w_site_idx], [0.0, 0.0, 0.0], rtol=1e-5)
+        self.assertAlmostEqual(eq_torquescale[w_site_idx], 0.1, places=5)
+
         self.solver = newton.solvers.SolverMuJoCo(
             self.model,
             use_mujoco_cpu=True,
@@ -62,9 +79,7 @@ class TestEqualityConstraints(unittest.TestCase):
 
             self.sim_time += self.frame_dt
 
-        self.assertGreater(
-            self.solver.mj_model.eq_type.shape[0], 0
-        )  # check if number of equality constraints in mjModel > 0
+        self.assertEqual(self.solver.mj_model.eq_type.shape[0], 5)
 
         # Check constraint violations
         nefc = self.solver.mj_data.nefc  # number of active constraints

@@ -26,7 +26,7 @@ import warp as wp
 
 from ..core import quat_between_axes, quat_from_euler
 from ..core.types import Axis, AxisType, Sequence, Transform, vec10
-from ..geometry import MESH_MAXHULLVERT, Mesh
+from ..geometry import MESH_MAXHULLVERT, Mesh, ShapeFlags
 from ..sim import ActuatorMode, JointType, ModelBuilder
 from ..sim.model import ModelAttributeFrequency
 from ..solvers.mujoco import CtrlSource
@@ -37,6 +37,7 @@ from .import_utils import parse_custom_attributes, sanitize_xml_content
 def parse_mjcf(
     builder: ModelBuilder,
     source: str,
+    *,
     xform: Transform | None = None,
     floating: bool | None = None,
     base_joint: dict | str | None = None,
@@ -67,6 +68,7 @@ def parse_mjcf(
 ):
     """
     Parses MuJoCo XML (MJCF) file and adds the bodies and joints to the given ModelBuilder.
+    MuJoCo-specific custom attributes are registered on the builder automatically.
 
     Args:
         builder (ModelBuilder): The :class:`ModelBuilder` to add the bodies and joints to.
@@ -242,9 +244,9 @@ def parse_mjcf(
 
         length = len(out)
         if length == 1:
-            return wp.vec(len(default), wp.float32)(out[0], out[0], out[0])
+            return wp.types.vector(len(default), wp.float32)(out[0], out[0], out[0])
 
-        return wp.vec(length, wp.float32)(out)
+        return wp.types.vector(length, wp.float32)(out)
 
     def parse_orientation(attrib) -> wp.quat:
         if "quat" in attrib:
@@ -315,10 +317,8 @@ def parse_mjcf(
             geom_pos = parse_vec(geom_attrib, "pos", (0.0, 0.0, 0.0)) * scale
             geom_rot = parse_orientation(geom_attrib)
             tf = wp.transform(geom_pos, geom_rot)
-            if link == -1 and incoming_xform is not None:
+            if incoming_xform is not None:
                 tf = incoming_xform * tf
-                geom_pos = tf.p
-                geom_rot = tf.q
 
             geom_density = parse_float(geom_attrib, "density", density)
 
@@ -349,9 +349,6 @@ def parse_mjcf(
                 "cfg": shape_cfg,
                 "custom_attributes": custom_attributes,
             }
-
-            if incoming_xform is not None:
-                tf = incoming_xform * tf
 
             if geom_type == "sphere":
                 s = builder.add_shape_sphere(
@@ -433,6 +430,11 @@ def parse_mjcf(
                     start = wp.vec3(geom_fromto[0:3]) * scale
                     end = wp.vec3(geom_fromto[3:6]) * scale
 
+                    # Apply incoming_xform to fromto coordinates
+                    if incoming_xform is not None:
+                        start = wp.transform_point(incoming_xform, start)
+                        end = wp.transform_point(incoming_xform, end)
+
                     # compute rotation to align the Warp capsule (along x-axis), with mjcf fromto direction
                     axis = wp.normalize(end - start)
                     angle = math.acos(wp.dot(axis, wp.vec3(0.0, 1.0, 0.0)))
@@ -472,8 +474,9 @@ def parse_mjcf(
                     shapes.append(s)
 
             elif geom_type == "plane":
-                normal = wp.quat_rotate(geom_rot, wp.vec3(0.0, 0.0, 1.0))
-                p = wp.dot(geom_pos, normal)
+                # Use tf (which has incoming_xform applied) for plane normal/distance
+                normal = wp.quat_rotate(tf.q, wp.vec3(0.0, 0.0, 1.0))
+                p = wp.dot(tf.p, normal)
                 s = builder.add_shape_plane(
                     plane=(*normal, p),
                     width=geom_size[0],
@@ -783,7 +786,6 @@ def parse_mjcf(
                     )
                 )
             else:
-                # TODO parse ref, springref values from joint_attrib
                 # When parent is world (-1), use world_xform to respect the xform argument
                 if parent == -1:
                     parent_xform_for_joint = world_xform * wp.transform(joint_pos, wp.quat_identity())
@@ -978,6 +980,26 @@ def parse_mjcf(
                 "active": element.attrib.get("active", "true").lower() == "true",
             }
 
+        def get_site_body_and_anchor(site_name: str) -> tuple[int, wp.vec3] | None:
+            """Look up a site by name and return its body index and position (anchor).
+
+            Returns:
+                Tuple of (body_idx, anchor_position) or None if site not found or not a site.
+            """
+            if site_name not in builder.shape_key:
+                if verbose:
+                    print(f"Warning: Site '{site_name}' not found")
+                return None
+            site_idx = builder.shape_key.index(site_name)
+            if not (builder.shape_flags[site_idx] & ShapeFlags.SITE):
+                if verbose:
+                    print(f"Warning: Shape '{site_name}' is not a site")
+                return None
+            body_idx = builder.shape_body[site_idx]
+            site_xform = builder.shape_transform[site_idx]
+            anchor = wp.vec3(site_xform[0], site_xform[1], site_xform[2])
+            return (body_idx, anchor)
+
         for connect in equality.findall("connect"):
             common = parse_common_attributes(connect)
             custom_attrs = parse_custom_attributes(connect.attrib, builder_custom_attr_eq, parsing_mode="mjcf")
@@ -986,8 +1008,8 @@ def parse_mjcf(
                 connect.attrib.get("body2", "worldbody").replace("-", "_") if connect.attrib.get("body2") else None
             )
             anchor = connect.attrib.get("anchor")
-
             site1 = connect.attrib.get("site1")
+            site2 = connect.attrib.get("site2")
 
             if body1_name and anchor:
                 if verbose:
@@ -1006,9 +1028,35 @@ def parse_mjcf(
                     enabled=common["active"],
                     custom_attributes=custom_attrs,
                 )
-
-            if site1:  # Implement site-based connect after Newton supports sites
-                print("Warning: MuJoCo sites are not yet supported in Newton.")
+            elif site1:
+                if site2:
+                    # Site-based connect: both site1 and site2 must be specified
+                    site1_info = get_site_body_and_anchor(site1)
+                    site2_info = get_site_body_and_anchor(site2)
+                    if site1_info is None or site2_info is None:
+                        if verbose:
+                            print(f"Warning: Connect constraint '{common['name']}' failed.")
+                        continue
+                    body1_idx, anchor_vec = site1_info
+                    body2_idx, _ = site2_info
+                    if verbose:
+                        print(
+                            f"Connect constraint (site-based): site '{site1}' on body {body1_idx} to body {body2_idx}"
+                        )
+                    builder.add_equality_constraint_connect(
+                        body1=body1_idx,
+                        body2=body2_idx,
+                        anchor=anchor_vec,
+                        key=common["name"],
+                        enabled=common["active"],
+                        custom_attributes=custom_attrs,
+                    )
+                else:
+                    if verbose:
+                        print(
+                            f"Warning: Connect constraint '{common['name']}' has site1 but no site2. "
+                            "When using sites, both site1 and site2 must be specified. Skipping."
+                        )
 
         for weld in equality.findall("weld"):
             common = parse_common_attributes(weld)
@@ -1018,8 +1066,8 @@ def parse_mjcf(
             anchor = weld.attrib.get("anchor", "0 0 0")
             relpose = weld.attrib.get("relpose", "0 1 0 0 0 0 0")
             torquescale = weld.attrib.get("torquescale")
-
             site1 = weld.attrib.get("site1")
+            site2 = weld.attrib.get("site2")
 
             if body1_name:
                 if verbose:
@@ -1046,9 +1094,40 @@ def parse_mjcf(
                     enabled=common["active"],
                     custom_attributes=custom_attrs,
                 )
-
-            if site1:  # Implement site-based weld after Newton supports sites
-                print("Warning: MuJoCo sites are not yet supported in Newton.")
+            elif site1:
+                if site2:
+                    # Site-based weld: both site1 and site2 must be specified
+                    site1_info = get_site_body_and_anchor(site1)
+                    site2_info = get_site_body_and_anchor(site2)
+                    if site1_info is None or site2_info is None:
+                        if verbose:
+                            print(f"Warning: Weld constraint '{common['name']}' failed.")
+                        continue
+                    body1_idx, _ = site1_info
+                    body2_idx, anchor_vec = site2_info
+                    relpose_list = [float(x) for x in relpose.split()]
+                    relpose_transform = wp.transform(
+                        wp.vec3(relpose_list[0], relpose_list[1], relpose_list[2]),
+                        wp.quat(relpose_list[4], relpose_list[5], relpose_list[6], relpose_list[3]),
+                    )
+                    if verbose:
+                        print(f"Weld constraint (site-based): body {body1_idx} to body {body2_idx}")
+                    builder.add_equality_constraint_weld(
+                        body1=body1_idx,
+                        body2=body2_idx,
+                        anchor=anchor_vec,
+                        relpose=relpose_transform,
+                        torquescale=torquescale,
+                        key=common["name"],
+                        enabled=common["active"],
+                        custom_attributes=custom_attrs,
+                    )
+                else:
+                    if verbose:
+                        print(
+                            f"Warning: Weld constraint '{common['name']}' has site1 but no site2. "
+                            "When using sites, both site1 and site2 must be specified. Skipping."
+                        )
 
         for joint in equality.findall("joint"):
             common = parse_common_attributes(joint)

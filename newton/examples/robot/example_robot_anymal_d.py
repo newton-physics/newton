@@ -88,7 +88,7 @@ class Example:
             impratio=100,
             iterations=100,
             ls_iterations=50,
-            nconmax=20,
+            nconmax=45,
             njmax=100,
             use_mujoco_contacts=args.use_mujoco_contacts if args else False,
         )

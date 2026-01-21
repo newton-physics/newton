@@ -1279,7 +1279,7 @@ def update_model_properties_kernel(
     gravity_dst: wp.array(dtype=wp.vec3f),
 ):
     world_idx = wp.tid()
-    gravity_dst[world_idx] = gravity_src[0]
+    gravity_dst[world_idx] = gravity_src[world_idx]
 
 
 @wp.kernel
@@ -1416,13 +1416,15 @@ def mj_body_acceleration(
 def update_eq_properties_kernel(
     mjc_eq_to_newton_eq: wp.array2d(dtype=wp.int32),
     eq_solref: wp.array(dtype=wp.vec2),
+    eq_solimp: wp.array(dtype=vec5),
     # outputs
     eq_solref_out: wp.array2d(dtype=wp.vec2),
+    eq_solimp_out: wp.array2d(dtype=vec5),
 ):
     """Update MuJoCo equality constraint properties from Newton equality constraint properties.
 
     Iterates over MuJoCo equality constraints [world, eq], looks up Newton eq constraint,
-    and copies solref.
+    and copies solref and solimp.
     """
     world, mjc_eq = wp.tid()
     newton_eq = mjc_eq_to_newton_eq[world, mjc_eq]
@@ -1431,6 +1433,9 @@ def update_eq_properties_kernel(
 
     if eq_solref:
         eq_solref_out[world, mjc_eq] = eq_solref[newton_eq]
+
+    if eq_solimp:
+        eq_solimp_out[world, mjc_eq] = eq_solimp[newton_eq]
 
 
 @wp.kernel
@@ -1465,7 +1470,7 @@ def convert_rigid_forces_from_mj_kernel(
             world,
             mjc_body,
         )
-        body_qdd[newton_body] = wp.spatial_vector(lin + mjw_gravity[0], wp.spatial_top(cacc))
+        body_qdd[newton_body] = wp.spatial_vector(lin + mjw_gravity[world], wp.spatial_top(cacc))
 
     if body_parent_f:
         # TODO: implement link incoming forces

@@ -28,11 +28,11 @@
 ###########################################################################
 import numpy as np
 import warp as wp
-from warp.render import bourke_color_map
 
 import newton
 import newton.examples
 from newton.tests.unittest_utils import assert_np_equal
+from newton.utils import bourke_color_map
 
 
 @wp.kernel
@@ -51,7 +51,7 @@ def step_kernel(x: wp.array(dtype=wp.vec3), grad: wp.array(dtype=wp.vec3), alpha
 
 
 class Example:
-    def __init__(self, viewer, verbose=False):
+    def __init__(self, viewer, args=None, verbose=False):
         # setup simulation parameters first
         self.fps = 60
         self.frame = 0
@@ -108,7 +108,14 @@ class Example:
         # allocate sim states, initialize control and one-shot contacts (valid for simple collisions against constant plane)
         self.states = [self.model.state() for _ in range(self.sim_steps * self.sim_substeps + 1)]
         self.control = self.model.control()
-        self.contacts = self.model.collide(self.states[0], soft_contact_margin=10.0)
+
+        # Create collision pipeline (default: unified)
+        self.collision_pipeline = newton.examples.create_collision_pipeline(self.model, args)
+        if self.collision_pipeline is not None:
+            self.collision_pipeline.soft_contact_margin = 10.0
+        self.contacts = self.model.collide(
+            self.states[0], collision_pipeline=self.collision_pipeline, soft_contact_margin=10.0
+        )
 
         self.viewer.set_model(self.model)
 
@@ -262,7 +269,7 @@ if __name__ == "__main__":
     viewer, args = newton.examples.init(parser)
 
     # Create example
-    example = Example(viewer, verbose=args.verbose)
+    example = Example(viewer, args=args, verbose=args.verbose)
 
     # Check gradients
     example.check_grad()
