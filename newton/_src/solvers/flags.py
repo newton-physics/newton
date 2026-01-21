@@ -46,7 +46,7 @@ class SolverNotifyFlags(IntEnum):
     """Indicates model property updates: gravity and other global parameters."""
 
     EQUALITY_CONSTRAINT_PROPERTIES = 1 << 6
-    """Indicates equality constraint property updates: eq_solref."""
+    """Indicates equality constraint property updates: equality_constraint_anchor, equality_constraint_relpose, equality_constraint_polycoef, equality_constraint_torquescale, equality_constraint_enabled, and mujoco.eq_solref, mujoco.eq_solimp custom attributes."""
 
     ALL = (
         JOINT_PROPERTIES
