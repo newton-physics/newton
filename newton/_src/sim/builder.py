@@ -690,7 +690,6 @@ class ModelBuilder:
         self.joint_q = []
         self.joint_qd = []
         self.joint_f = []
-        self.joint_lambda = []
 
         self.joint_type = []
         self.joint_key = []
@@ -2016,7 +2015,6 @@ class ModelBuilder:
             "joint_key",
             "joint_qd",
             "joint_f",
-            "joint_lambda",
             "joint_target_pos",
             "joint_target_vel",
             "joint_limit_lower",
@@ -2499,8 +2497,6 @@ class ModelBuilder:
         for _ in range(dof_count):
             self.joint_qd.append(0.0)
             self.joint_f.append(0.0)
-        for _ in range(cts_count):
-            self.joint_lambda.append(0.0)
 
         if joint_type == JointType.FREE or joint_type == JointType.DISTANCE or joint_type == JointType.BALL:
             # ensure that a valid quaternion is used for the angular dofs
@@ -3427,17 +3423,14 @@ class ModelBuilder:
             if i < self.joint_count - 1:
                 q_dim = self.joint_q_start[i + 1] - q_start
                 qd_dim = self.joint_qd_start[i + 1] - qd_start
-                cts_dim = self.joint_cts_start[i + 1] - cts_start
             else:
                 q_dim = len(self.joint_q) - q_start
                 qd_dim = len(self.joint_qd) - qd_start
-                cts_dim = len(self.joint_lambda) - cts_start
 
             data = {
                 "type": self.joint_type[i],
                 "q": self.joint_q[q_start : q_start + q_dim],
                 "qd": self.joint_qd[qd_start : qd_start + qd_dim],
-                "lambda": self.joint_lambda[cts_start : cts_start + cts_dim],
                 "armature": self.joint_armature[qd_start : qd_start + qd_dim],
                 "q_start": q_start,
                 "qd_start": qd_start,

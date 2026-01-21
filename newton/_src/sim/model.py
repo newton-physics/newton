@@ -510,9 +510,6 @@ class Model:
         # attributes per joint coord
         self.attribute_frequency["joint_q"] = ModelAttributeFrequency.JOINT_COORD
 
-        # attributes per joint constraint
-        self.attribute_frequency["joint_lambda"] = ModelAttributeFrequency.JOINT_CONSTRAINT
-
         # attributes per joint dof
         self.attribute_frequency["joint_qd"] = ModelAttributeFrequency.JOINT_DOF
         self.attribute_frequency["joint_f"] = ModelAttributeFrequency.JOINT_DOF
