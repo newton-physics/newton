@@ -263,7 +263,7 @@ class Example:
             builder.joint_target_ke[i + 6] = config["mjw_joint_stiffness"][i]
             builder.joint_target_kd[i + 6] = config["mjw_joint_damping"][i]
             builder.joint_armature[i + 6] = config["mjw_joint_armature"][i]
-            builder.joint_act_mode[i + 6] = int(ActuatorMode.POSITION_VELOCITY)
+            builder.joint_act_mode[i + 6] = int(ActuatorMode.POSITION)
 
         self.model = builder.finalize()
         self.model.set_gravity((0.0, 0.0, -9.81))

@@ -114,7 +114,7 @@ class Example:
             allegro_hand.joint_target_ke[i] = 150
             allegro_hand.joint_target_kd[i] = 5
             allegro_hand.joint_target_pos[i] = 0.0
-            allegro_hand.joint_act_mode[i] = int(ActuatorMode.POSITION_VELOCITY)
+            allegro_hand.joint_act_mode[i] = int(ActuatorMode.POSITION)
 
         builder = newton.ModelBuilder()
         builder.replicate(allegro_hand, self.num_worlds)

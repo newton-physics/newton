@@ -33,7 +33,6 @@ import warp as wp
 import newton
 import newton.examples
 import newton.ik as ik
-from newton import ActuatorMode
 
 
 class TaskType(enum.IntEnum):
@@ -388,7 +387,6 @@ class Example:
 
         builder.joint_target_ke[:9] = [4500, 4500, 3500, 3500, 2000, 2000, 2000, 100, 100]
         builder.joint_target_kd[:9] = [450, 450, 350, 350, 200, 200, 200, 10, 10]
-        builder.joint_act_mode[:9] = [int(ActuatorMode.POSITION_VELOCITY)] * 9
         builder.joint_effort_limit[:9] = [87, 87, 87, 87, 12, 12, 12, 100, 100]
         builder.joint_armature[:9] = [0.195] * 4 + [0.074] * 3 + [0.1] * 2
 

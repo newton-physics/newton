@@ -69,7 +69,7 @@ class Example:
         for i in range(len(h1.joint_target_ke)):
             h1.joint_target_ke[i] = 150
             h1.joint_target_kd[i] = 5
-            h1.joint_act_mode[i] = int(ActuatorMode.POSITION_VELOCITY)
+            h1.joint_act_mode[i] = int(ActuatorMode.POSITION)
 
         builder = newton.ModelBuilder()
         builder.replicate(h1, self.num_worlds)
