@@ -16,9 +16,4 @@
 from .render_context import ClearData, RenderContext
 from .types import RenderLightType, RenderShapeType
 
-__all__ = [
-    "ClearData",
-    "RenderContext",
-    "RenderLightType",
-    "RenderShapeType",
-]
+__all__ = ["ClearData", "RenderContext", "RenderLightType", "RenderShapeType"]

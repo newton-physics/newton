@@ -105,7 +105,6 @@ def test_basic_contact_storage(test, device):
             position=wp.vec3(1.0, 2.0, 3.0),
             normal=wp.vec3(0.0, 1.0, 0.0),
             depth=-0.01,
-            feature=42,
             reducer_data=reducer_data,
             beta0=1000.0,
             beta1=0.001,
@@ -147,7 +146,6 @@ def test_multiple_contacts_same_pair(test, device):
             position=wp.vec3(x, 0.0, 0.0),
             normal=wp.vec3(0.0, 1.0, 0.0),
             depth=-0.01,
-            feature=tid,
             reducer_data=reducer_data,
             beta0=1000.0,
             beta1=0.001,
@@ -187,7 +185,6 @@ def test_different_shape_pairs(test, device):
             position=wp.vec3(0.0, 0.0, 0.0),
             normal=wp.vec3(0.0, 1.0, 0.0),
             depth=-0.01,
-            feature=tid,
             reducer_data=reducer_data,
             beta0=1000.0,
             beta1=0.001,
@@ -224,7 +221,6 @@ def test_clear(test, device):
             position=wp.vec3(0.0, 0.0, 0.0),
             normal=wp.vec3(0.0, 1.0, 0.0),
             depth=-0.01,
-            feature=0,
             reducer_data=reducer_data,
             beta0=1000.0,
             beta1=0.001,
@@ -279,7 +275,6 @@ def test_stress_many_contacts(test, device):
             position=wp.vec3(x, y, 0.0),
             normal=wp.vec3(nx / n_len, ny / n_len, nz / n_len),
             depth=-0.01,
-            feature=tid,
             reducer_data=reducer_data,
             beta0=1000.0,
             beta1=0.001,
@@ -316,7 +311,6 @@ def test_clear_active(test, device):
             position=wp.vec3(1.0, 2.0, 3.0),
             normal=wp.vec3(0.0, 1.0, 0.0),
             depth=-0.01,
-            feature=42,
             reducer_data=reducer_data,
             beta0=1000.0,
             beta1=0.001,
@@ -380,7 +374,6 @@ def test_export_reduced_contacts_kernel(test, device):
             position=wp.vec3(float(tid), 0.0, 0.0),
             normal=wp.vec3(0.0, 1.0, 0.0),
             depth=-0.01,
-            feature=tid,
             reducer_data=reducer_data,
             beta0=1000.0,
             beta1=0.001,
@@ -402,8 +395,6 @@ def test_export_reduced_contacts_kernel(test, device):
     contact_penetration_out = wp.zeros(max_output, dtype=float, device=device)
     contact_count_out = wp.zeros(1, dtype=int, device=device)
     contact_tangent_out = wp.zeros(0, dtype=wp.vec3, device=device)
-    contact_pair_key_out = wp.zeros(0, dtype=wp.uint64, device=device)
-    contact_key_out = wp.zeros(0, dtype=wp.uint32, device=device)
 
     # Create dummy shape_data for thickness lookup
     num_shapes = 200
@@ -424,8 +415,6 @@ def test_export_reduced_contacts_kernel(test, device):
     writer_data.contact_normal = contact_normal_out
     writer_data.contact_penetration = contact_penetration_out
     writer_data.contact_tangent = contact_tangent_out
-    writer_data.contact_pair_key = contact_pair_key_out
-    writer_data.contact_key = contact_key_out
 
     # Launch export kernel
     total_threads = 128  # Grid stride threads
@@ -437,7 +426,7 @@ def test_export_reduced_contacts_kernel(test, device):
             reducer.ht_values,  # Values are now managed by GlobalContactReducer
             reducer.hashtable.active_slots,
             reducer.position_depth,
-            reducer.normal_feature,
+            reducer.normal,
             reducer.shape_pairs,
             shape_data,
             shape_contact_margin,

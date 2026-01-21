@@ -60,7 +60,7 @@ class ContactStruct:
     position: wp.vec3
     normal: wp.vec3
     depth: wp.float32
-    feature: wp.int32
+    feature: wp.int32  # Feature ID for deduplication (e.g., triangle index)
     projection: wp.float32
 
 
@@ -361,7 +361,6 @@ class ContactReductionFunctions:
     1. Contacts are binned by normal direction (20 bins based on icosahedron faces)
     2. Within each bin, contacts compete for slots using a scoring function
     3. Winners are determined via atomic operations in shared memory
-    4. Duplicates (same geometric feature) are filtered out
 
     **Scoring Function:**
 
@@ -435,7 +434,7 @@ class ContactReductionFunctions:
             Args:
                 thread_id: Thread index within the block
                 active: Whether this thread has a valid contact to store
-                c: Contact data (position, normal, depth, feature)
+                c: Contact data (position, normal, depth, mode)
                 buffer: Shared memory buffer for winning contacts
                 active_ids: Tracks which slots contain valid contacts
                 betas_arr: Array of depth thresholds (contact participates if depth < beta)

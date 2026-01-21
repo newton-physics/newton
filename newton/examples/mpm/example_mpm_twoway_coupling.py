@@ -98,7 +98,7 @@ def subtract_body_force(
 
 
 class Example:
-    def __init__(self, viewer):
+    def __init__(self, viewer, args=None):
         # setup simulation parameters first
         self.fps = 100
         self.frame_dt = 1.0 / self.fps
@@ -158,7 +158,10 @@ class Example:
         self.mpm_solver.enrich_state(self.sand_state_0)
 
         self.control = self.model.control()
-        self.contacts = self.model.collide(self.state_0)
+
+        # Create collision pipeline (default: unified)
+        self.collision_pipeline = newton.examples.create_collision_pipeline(self.model, args)
+        self.contacts = self.model.collide(self.state_0, collision_pipeline=self.collision_pipeline)
 
         # viewer
         self.viewer.set_model(self.model)
@@ -221,7 +224,7 @@ class Example:
             # apply forces to the model
             self.viewer.apply_forces(self.state_0)
 
-            self.contacts = self.model.collide(self.state_0)
+            self.contacts = self.model.collide(self.state_0, collision_pipeline=self.collision_pipeline)
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
 
             # swap states
@@ -398,6 +401,6 @@ if __name__ == "__main__":
     viewer, args = newton.examples.init()
 
     # Create example and run
-    example = Example(viewer)
+    example = Example(viewer, args)
 
     newton.examples.run(example, args)

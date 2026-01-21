@@ -15,6 +15,8 @@
 
 import warp as wp
 
+from newton._src.core.types import MAXVAL
+
 from . import collision_primitive as primitive
 from .broad_phase_common import binary_search
 from .flags import ParticleFlags, ShapeFlags
@@ -270,18 +272,48 @@ def cylinder_sdf_grad(radius: float, half_height: float, p: wp.vec3):
 def ellipsoid_sdf(radii: wp.vec3, p: wp.vec3):
     # Approximate SDF for ellipsoid with radii (rx, ry, rz)
     # Using the approximation: k0 * (k0 - 1) / k1
-    # Guard against zero/near-zero radii to avoid inf/NaN from division
     eps = 1.0e-8
-    safe_r = wp.vec3(
+    r = wp.vec3(
         wp.max(wp.abs(radii[0]), eps),
         wp.max(wp.abs(radii[1]), eps),
         wp.max(wp.abs(radii[2]), eps),
     )
-    k0 = wp.length(wp.cw_div(p, safe_r))
-    k1 = wp.length(wp.cw_div(p, wp.cw_mul(safe_r, safe_r)))
-    if k1 > 0.0:
+    inv_r = wp.cw_div(wp.vec3(1.0, 1.0, 1.0), r)
+    inv_r2 = wp.cw_mul(inv_r, inv_r)
+    q0 = wp.cw_mul(p, inv_r)  # p / r
+    q1 = wp.cw_mul(p, inv_r2)  # p / r^2
+    k0 = wp.length(q0)
+    k1 = wp.length(q1)
+    if k1 > eps:
         return k0 * (k0 - 1.0) / k1
-    return -wp.min(wp.min(safe_r[0], safe_r[1]), safe_r[2])
+    # Deep inside / near center fallback
+    return -wp.min(wp.min(r[0], r[1]), r[2])
+
+
+@wp.func
+def ellipsoid_sdf_grad(radii: wp.vec3, p: wp.vec3):
+    # Gradient of the ellipsoid SDF approximation
+    # grad(d) ≈ normalize((k0 / k1) * (p / r^2))
+    eps = 1.0e-8
+    r = wp.vec3(
+        wp.max(wp.abs(radii[0]), eps),
+        wp.max(wp.abs(radii[1]), eps),
+        wp.max(wp.abs(radii[2]), eps),
+    )
+    inv_r = wp.cw_div(wp.vec3(1.0, 1.0, 1.0), r)
+    inv_r2 = wp.cw_mul(inv_r, inv_r)
+    q0 = wp.cw_mul(p, inv_r)  # p / r
+    q1 = wp.cw_mul(p, inv_r2)  # p / r^2
+    k0 = wp.length(q0)
+    k1 = wp.length(q1)
+    if k1 < eps:
+        return wp.vec3(0.0, 0.0, 1.0)
+    # Analytic gradient of the approximation
+    grad = q1 * (k0 / k1)
+    grad_len = wp.length(grad)
+    if grad_len > eps:
+        return grad / grad_len
+    return wp.vec3(0.0, 0.0, 1.0)
 
 
 @wp.func
@@ -787,6 +819,10 @@ def create_soft_contacts(
         d = cone_sdf(geo_scale[0], geo_scale[1], x_local)
         n = cone_sdf_grad(geo_scale[0], geo_scale[1], x_local)
 
+    if geo_type == GeoType.ELLIPSOID:
+        d = ellipsoid_sdf(geo_scale, x_local)
+        n = ellipsoid_sdf_grad(geo_scale, x_local)
+
     if geo_type == GeoType.MESH or geo_type == GeoType.CONVEX_MESH:
         mesh = shape_source_ptr[shape_index]
 
@@ -1107,8 +1143,8 @@ def broadphase_collision_pairs(
     if type_a == GeoType.PLANE and type_b == GeoType.PLANE:
         return
 
-    # Use per-shape contact margins
-    margin = wp.max(shape_contact_margin[shape_a], shape_contact_margin[shape_b])
+    # Use per-shape contact margins (sum for consistency with thickness)
+    margin = shape_contact_margin[shape_a] + shape_contact_margin[shape_b]
 
     # bounding sphere check
     if type_a == GeoType.PLANE:
@@ -2003,8 +2039,8 @@ def generate_handle_contact_pairs_kernel(enable_backward: bool):
         geo_a = create_geo_data(shape_a, body_q, shape_transform, shape_body, shape_type, shape_scale, shape_thickness)
         geo_b = create_geo_data(shape_b, body_q, shape_transform, shape_body, shape_type, shape_scale, shape_thickness)
 
-        # Calculate contact margin as max of per-shape margins
-        rigid_contact_margin = wp.max(shape_contact_margin[shape_a], shape_contact_margin[shape_b])
+        # Calculate contact margin as sum of per-shape margins (consistent with thickness summing)
+        rigid_contact_margin = shape_contact_margin[shape_a] + shape_contact_margin[shape_b]
 
         distance = 1.0e6
         thickness = geo_a.thickness + geo_b.thickness
@@ -2078,8 +2114,8 @@ def generate_handle_contact_pairs_kernel(enable_backward: bool):
             # Flip the normal since we flipped the arguments
             normal = -neg_normal
 
-            # Check if this contact point is valid (primitive function returns wp.inf for invalid contacts)
-            if distance >= 1.0e5:  # Use a reasonable threshold instead of exact wp.inf comparison
+            # Check if this contact point is valid (primitive function returns MAXVAL for invalid contacts)
+            if distance >= MAXVAL:
                 return
 
         elif (

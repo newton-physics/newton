@@ -21,9 +21,8 @@ geometric primitives. A support mapping finds the furthest point of a shape in a
 given direction, which is a fundamental operation for collision detection algorithms
 like GJK, MPR, and EPA.
 
-The support mapping operates in the shape's local coordinate frame and returns:
-- The support point (furthest point in the given direction)
-- A feature ID that identifies which geometric feature (vertex, edge, face) the point lies on
+The support mapping operates in the shape's local coordinate frame and returns the
+support point (furthest point in the given direction).
 
 Supported primitives:
 - Box (axis-aligned rectangular prism)
@@ -110,11 +109,9 @@ class GenericShapeData:
 
 
 @wp.func
-def support_map(
-    geom: GenericShapeData, direction: wp.vec3, data_provider: SupportMapDataProvider
-) -> tuple[wp.vec3, int]:
+def support_map(geom: GenericShapeData, direction: wp.vec3, data_provider: SupportMapDataProvider) -> wp.vec3:
     """
-    Return the support point of a primitive in its local frame, with a feature id.
+    Return the support point of a primitive in its local frame.
 
     Conventions for `geom.scale` and `geom.auxiliary`:
     - BOX: half-extents in x/y/z
@@ -136,7 +133,6 @@ def support_map(
         dir_safe = direction
 
     result = wp.vec3(0.0, 0.0, 0.0)
-    feature_id = int(0)
 
     if geom.shape_type == int(GeoType.CONVEX_MESH):
         # Convex hull support: find the furthest point in the direction
@@ -149,7 +145,6 @@ def support_map(
         # Find the vertex with the maximum dot product with the direction
         max_dot = float(-1.0e10)
         best_vertex = wp.vec3(0.0, 0.0, 0.0)
-        best_idx = int(0)
 
         num_verts = mesh.points.shape[0]
 
@@ -164,9 +159,7 @@ def support_map(
             if dot_val > max_dot:
                 max_dot = dot_val
                 best_vertex = vertex
-                best_idx = i
         result = best_vertex
-        feature_id = best_idx
 
     elif geom.shape_type == int(GeoTypeEx.TRIANGLE):
         # Triangle vertices: a at origin, b at scale, c at auxiliary
@@ -182,28 +175,16 @@ def support_map(
         # Find the vertex with maximum dot product (furthest in the direction)
         if dot_a >= dot_b and dot_a >= dot_c:
             result = tri_a
-            feature_id = 0  # vertex A
         elif dot_b >= dot_c:
             result = tri_b
-            feature_id = 1  # vertex B
         else:
             result = tri_c
-            feature_id = 2  # vertex C
     elif geom.shape_type == int(GeoType.BOX):
         sx = 1.0 if dir_safe[0] >= 0.0 else -1.0
         sy = 1.0 if dir_safe[1] >= 0.0 else -1.0
         sz = 1.0 if dir_safe[2] >= 0.0 else -1.0
 
         result = wp.vec3(sx * geom.scale[0], sy * geom.scale[1], sz * geom.scale[2])
-
-        # Bit mask consistent with reference: x->4, y->2, z->1
-        feature_id = 0
-        if sx >= 0.0:
-            feature_id |= 4
-        if sy >= 0.0:
-            feature_id |= 2
-        if sz >= 0.0:
-            feature_id |= 1
 
     elif geom.shape_type == int(GeoType.SPHERE):
         radius = geom.scale[0]
@@ -212,7 +193,6 @@ def support_map(
         else:
             n = wp.vec3(1.0, 0.0, 0.0)
         result = n * radius
-        feature_id = 0
 
     elif geom.shape_type == int(GeoType.CAPSULE):
         radius = geom.scale[0]
@@ -230,10 +210,8 @@ def support_map(
         # Use sign of Z-component to pick the correct endpoint
         if dir_safe[2] >= 0.0:
             result = result + wp.vec3(0.0, 0.0, half_height)
-            feature_id = 1  # top cap
         else:
             result = result + wp.vec3(0.0, 0.0, -half_height)
-            feature_id = 2  # bottom cap
 
     elif geom.shape_type == int(GeoType.ELLIPSOID):
         # Ellipsoid support for semi-axes a, b, c in direction d:
@@ -255,7 +233,6 @@ def support_map(
                 result = wp.vec3(a, 0.0, 0.0)
         else:
             result = wp.vec3(a, 0.0, 0.0)
-        feature_id = 0
 
     elif geom.shape_type == int(GeoType.CYLINDER):
         radius = geom.scale[0]
@@ -274,13 +251,10 @@ def support_map(
         # Choose between top cap, bottom cap, or lateral surface
         if dir_safe[2] > 0.0:
             result = wp.vec3(lateral_point[0], lateral_point[1], half_height)
-            feature_id = 1  # top cap
         elif dir_safe[2] < 0.0:
             result = wp.vec3(lateral_point[0], lateral_point[1], -half_height)
-            feature_id = 2  # bottom cap
         else:
             result = lateral_point
-            feature_id = 0  # lateral surface
 
     elif geom.shape_type == int(GeoType.CONE):
         radius = geom.scale[0]
@@ -298,18 +272,14 @@ def support_map(
             # Purely vertical direction
             if dir_safe[2] >= 0.0:
                 result = apex
-                feature_id = 1  # apex
             else:
                 result = wp.vec3(radius, 0.0, -half_height)
-                feature_id = 2  # base edge
         else:
             if dir_safe[2] >= k * dir_xy_len:
                 result = apex
-                feature_id = 1  # apex
             else:
                 n_xy = dir_xy / dir_xy_len
                 result = wp.vec3(n_xy[0] * radius, n_xy[1] * radius, -half_height)
-                feature_id = 2  # base edge
 
     elif geom.shape_type == int(GeoType.PLANE):
         # Finite plane support: rectangular plane in XY, extents in scale[0] (half-width X) and scale[1] (half-length Y)
@@ -324,19 +294,11 @@ def support_map(
         # The support point is at the corner in the XY plane (z=0)
         result = wp.vec3(sx * half_width, sy * half_length, 0.0)
 
-        # Feature ID based on which corner
-        feature_id = 0
-        if sx >= 0.0:
-            feature_id |= 1
-        if sy >= 0.0:
-            feature_id |= 2
-
     else:
-        # Unhandled type: return origin and feature 0
+        # Unhandled type: return origin
         result = wp.vec3(0.0, 0.0, 0.0)
-        feature_id = 0
 
-    return result, feature_id
+    return result
 
 
 @wp.func

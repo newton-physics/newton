@@ -129,19 +129,6 @@ def test_create_betas_array(test, device):
     test.assertAlmostEqual(arr_np[1], 1000000.0, places=1)
 
 
-def test_contact_struct_fields(test, device):
-    """Test ContactStruct has expected fields."""
-    arr = wp.zeros(1, dtype=ContactStruct, device=device)
-    arr_np = arr.numpy()
-
-    # Check that expected fields exist
-    test.assertIn("position", arr_np.dtype.names)
-    test.assertIn("normal", arr_np.dtype.names)
-    test.assertIn("depth", arr_np.dtype.names)
-    test.assertIn("feature", arr_np.dtype.names)
-    test.assertIn("projection", arr_np.dtype.names)
-
-
 # =============================================================================
 # Tests for get_slot function (works on CPU and GPU)
 # =============================================================================
@@ -358,9 +345,7 @@ def test_contact_reduction_reduces_count(test, device):
     count = out_count.numpy()[0]
 
     # With 64 active contacts (128 threads, every other one active),
-    # reduction should produce fewer contacts due to:
-    # 1. Keeping only best contact per (bin, direction) slot
-    # 2. Filtering duplicate features within each bin
+    # reduction should produce fewer contacts due to keeping only best contact per (bin, direction) slot
     test.assertGreater(count, 0, "Should have at least one contact")
     test.assertLess(count, 64, "Reduction should reduce contact count")
 
@@ -386,7 +371,6 @@ for device in devices:
         TestContactReduction, "test_compute_num_reduction_slots", test_compute_num_reduction_slots, devices=[device]
     )
     add_function_test(TestContactReduction, "test_create_betas_array", test_create_betas_array, devices=[device])
-    add_function_test(TestContactReduction, "test_contact_struct_fields", test_contact_struct_fields, devices=[device])
 
     # get_slot tests
     add_function_test(

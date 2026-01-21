@@ -17,9 +17,8 @@ from typing import Any
 
 import warp as wp
 
-from ..geometry.collision_core import (
-    build_pair_key2,
-)
+from newton._src.core.types import MAXVAL
+
 from ..geometry.contact_data import ContactData
 from ..geometry.sdf_utils import SDFData
 
@@ -203,7 +202,7 @@ def sample_sdf_extrapolated(
         sparse_idx = wp.volume_world_to_index(sdf_data.sparse_sdf_ptr, sdf_pos)
         sparse_dist = wp.volume_sample_f(sdf_data.sparse_sdf_ptr, sparse_idx, wp.Volume.LINEAR)
 
-        if sparse_dist >= wp.inf or wp.isnan(sparse_dist):
+        if sparse_dist >= wp.static(MAXVAL * 0.99) or wp.isnan(sparse_dist):
             # Fallback to coarse grid when sparse sample is diluted by background
             coarse_idx = wp.volume_world_to_index(sdf_data.coarse_sdf_ptr, sdf_pos)
             return wp.volume_sample_f(sdf_data.coarse_sdf_ptr, coarse_idx, wp.Volume.LINEAR)
@@ -211,7 +210,7 @@ def sample_sdf_extrapolated(
             return sparse_dist
     else:
         # Point is outside extent - project to boundary
-        eps = 1e-2 * sdf_data.sparse_voxel_size  # slightly shrink to avoid sampling NaN
+        eps = 1e-2 * sdf_data.sparse_voxel_size  # slightly shrink to avoid sampling background
         clamped_pos = wp.min(wp.max(sdf_pos, lower + eps), upper - eps)
         dist_to_boundary = wp.length(sdf_pos - clamped_pos)
 
@@ -263,7 +262,7 @@ def sample_sdf_grad_extrapolated(
         sparse_idx = wp.volume_world_to_index(sdf_data.sparse_sdf_ptr, sdf_pos)
         sparse_dist = wp.volume_sample_grad_f(sdf_data.sparse_sdf_ptr, sparse_idx, wp.Volume.LINEAR, gradient)
 
-        if sparse_dist >= wp.inf or wp.isnan(sparse_dist):
+        if sparse_dist >= wp.static(MAXVAL * 0.99) or wp.isnan(sparse_dist):
             # Fallback to coarse grid when sparse sample is diluted by background
             coarse_idx = wp.volume_world_to_index(sdf_data.coarse_sdf_ptr, sdf_pos)
             coarse_dist = wp.volume_sample_grad_f(sdf_data.coarse_sdf_ptr, coarse_idx, wp.Volume.LINEAR, gradient)
@@ -758,12 +757,10 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
             thickness_b = shape_data[mesh_shape_b][3]
 
             # Use per-geometry cutoff for contact detection
+            # Sum margins for consistency with thickness summing
             cutoff_a = shape_contact_margin[mesh_shape_a]
             cutoff_b = shape_contact_margin[mesh_shape_b]
-            margin = wp.max(cutoff_a, cutoff_b)
-
-            # Build pair key for this mesh-mesh pair
-            pair_key = build_pair_key2(wp.uint32(mesh_shape_a), wp.uint32(mesh_shape_b))
+            margin = cutoff_a + cutoff_b
 
             # Test both directions: mesh A against SDF B, and mesh B against SDF A
             for mode in range(2):
@@ -899,11 +896,6 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                         contact_data.shape_a = mesh_shape_a
                         contact_data.shape_b = mesh_shape_b
                         contact_data.margin = margin
-                        if mode == 0:
-                            contact_data.feature = wp.uint32(tri_idx + 1)
-                        else:
-                            contact_data.feature = wp.uint32(tri_idx + 1) | (wp.uint32(1) << wp.uint32(31))
-                        contact_data.feature_pair_key = pair_key
 
                         writer_func(contact_data, writer_data, -1)
 
@@ -963,7 +955,8 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
         thickness0 = mesh0_data[3]
         thickness1 = mesh1_data[3]
 
-        margin = wp.max(shape_contact_margin[shape_idx_0], shape_contact_margin[shape_idx_1])
+        # Sum margins for consistency with thickness summing
+        margin = shape_contact_margin[shape_idx_0] + shape_contact_margin[shape_idx_1]
 
         # Initialize (shared memory) buffers for contact reduction
         empty_marker = -1000000000.0
@@ -1177,13 +1170,6 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
             contact_data.shape_a = pair[0]
             contact_data.shape_b = pair[1]
             contact_data.margin = margin
-            # The high bit distinguishes contacts from mesh B (mode 1) vs mesh A (mode 0)
-            if contact.feature >= 0:
-                feature_id = wp.uint32(contact.feature + 1)
-            else:
-                feature_id = wp.uint32(-contact.feature) | (wp.uint32(1) << wp.uint32(31))
-            contact_data.feature = feature_id
-            contact_data.feature_pair_key = build_pair_key2(wp.uint32(pair[0]), wp.uint32(pair[1]))
 
             writer_func(contact_data, writer_data, -1)
 

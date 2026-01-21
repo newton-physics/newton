@@ -85,6 +85,8 @@ jobs:
     name: Run GPU Unit Tests on AWS EC2
     needs: start-runner # required to start the main job when the runner is ready
     runs-on: ${{ needs.start-runner.outputs.label }} # run the job on the newly created runner
+    permissions:
+      contents: read
     steps:
       - name: Checkout repository
         uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8  # v6.0.1
@@ -117,6 +119,44 @@ jobs:
           files: ./coverage.xml
           flags: unittests
           token: ${{ secrets.CODECOV_TOKEN }}
+
+      - name: Re-run instructions
+        if: failure()
+        run: |
+          # Create error annotations (appear at top of job summary)
+          echo "::error::DO NOT use 'Re-run failed jobs' - the EC2 runner no longer exists and your job will be queued forever."
+          echo "::error::USE 'Re-run all jobs' instead to start a fresh EC2 runner."
+
+          # Write to job summary (appears in Summary tab)
+          cat >> "$GITHUB_STEP_SUMMARY" << 'EOF'
+          ## ⚠️ How to Re-run This Workflow
+
+          This workflow uses **ephemeral EC2 runners** that are terminated after each run.
+
+          | | Option | Result |
+          |---|--------|--------|
+          | ❌ | **Re-run failed jobs** | Runner no longer exists → job queued forever |
+          | ✅ | **Re-run all jobs** | Starts new EC2 runner → tests re-run |
+          EOF
+
+          # Also print to log for completeness
+          cat << 'EOF'
+
+          ================================================================================
+          ⚠️  IMPORTANT: HOW TO RE-RUN THIS WORKFLOW
+          ================================================================================
+
+          This workflow uses ephemeral EC2 runners that are terminated after each run.
+
+          ❌ DO NOT select "Re-run failed jobs"
+             → The runner no longer exists and your job will be queued forever.
+
+          ✅ DO select "Re-run all jobs"
+             → This will start a new EC2 runner and re-run the tests.
+
+          ================================================================================
+
+          EOF
 
   stop-runner:
     name: Stop self-hosted EC2 runner
