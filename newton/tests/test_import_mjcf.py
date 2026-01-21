@@ -2248,7 +2248,7 @@ class TestImportMjcf(unittest.TestCase):
         - Import xform: translate by (10, 20, 30) and rotate 90° around Z
         - Using base_joint="lx,ly,lz" (D6 joint with linear axes)
 
-        The joint parent_xform should include the import xform composition:
+        Expected final body transform after FK:
         - world_xform = import_xform * body_local_xform
         - = transform((10,20,30), rot_90z) * transform((1,0,0), identity)
         - Position: (10,20,30) + rotate_90z(1,0,0) = (10,20,30) + (0,1,0) = (10, 21, 30)
@@ -2276,29 +2276,32 @@ class TestImportMjcf(unittest.TestCase):
         builder.add_mjcf(mjcf_content, xform=import_xform, base_joint="lx,ly,lz")
         model = builder.finalize()
 
-        # Find the base joint
-        joint_idx = model.joint_key.index("base_joint")
-        joint_X_p = model.joint_X_p.numpy()[joint_idx]
+        # Verify body transform after forward kinematics
+        # Note: base_joint splits position and rotation between parent_xform and child_xform
+        # to preserve joint axis directions, so we check the final body transform instead
+        state = model.state()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+
+        body_idx = model.body_key.index("floating_body")
+        body_q = state.body_q.numpy()[body_idx]
 
         # Expected position: import_pos + rotate_90z(body_pos)
-        # = (10, 20, 30) + rotate_90z(1, 0, 0)
-        # = (10, 20, 30) + (0, 1, 0)
-        # = (10, 21, 30)
+        # = (10, 20, 30) + rotate_90z(1, 0, 0) = (10, 20, 30) + (0, 1, 0) = (10, 21, 30)
         np.testing.assert_allclose(
-            joint_X_p[:3],
+            body_q[:3],
             [10.0, 21.0, 30.0],
             atol=1e-5,
-            err_msg="Base joint should include import xform in position",
+            err_msg="Body position should include import xform",
         )
 
-        # Expected orientation: 90° Z rotation (from import_xform)
+        # Expected orientation: 90° Z rotation
         # In xyzw format: [0, 0, sin(45°), cos(45°)] = [0, 0, 0.7071, 0.7071]
-        np.testing.assert_allclose(
-            joint_X_p[3:7],
-            [0, 0, 0.7071068, 0.7071068],
-            atol=1e-5,
-            err_msg="Base joint should include import xform rotation",
+        expected_quat = np.array([0, 0, 0.7071068, 0.7071068])
+        actual_quat = body_q[3:7]
+        quat_match = np.allclose(actual_quat, expected_quat, atol=1e-5) or np.allclose(
+            actual_quat, -expected_quat, atol=1e-5
         )
+        self.assertTrue(quat_match, f"Body orientation should include import xform. Got {actual_quat}")
 
     def test_base_joint_in_frame_respects_frame_xform(self):
         """Test that base joints inside frames correctly use the frame transform.
@@ -2308,12 +2311,13 @@ class TestImportMjcf(unittest.TestCase):
         - Root body inside frame at (1, 0, 0) local position
         - Using base_joint
 
-        The joint parent_xform should be:
+        Expected final body transform:
         - frame_xform * body_local_xform
         - = transform((5,0,0), rot_90z) * transform((1,0,0), identity)
         - Position: (5,0,0) + rotate_90z(1,0,0) = (5,0,0) + (0,1,0) = (5, 1, 0)
+        - Orientation: 90° Z rotation
 
-        Bug would give: position = (1, 0, 0) (ignoring frame transform)
+        Bug would give: position = (1, 0, 0), orientation = identity (ignoring frame transform)
         """
         mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
 <mujoco model="test_base_joint_frame">
@@ -2331,28 +2335,29 @@ class TestImportMjcf(unittest.TestCase):
         builder.add_mjcf(mjcf_content, base_joint="lx,ly,lz")
         model = builder.finalize()
 
-        # Find the base joint
-        joint_idx = model.joint_key.index("base_joint")
-        joint_X_p = model.joint_X_p.numpy()[joint_idx]
+        # Verify body transform after forward kinematics
+        state = model.state()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+
+        body_idx = model.body_key.index("body_in_frame")
+        body_q = state.body_q.numpy()[body_idx]
 
         # Expected position: frame_pos + rotate_90z(body_pos)
-        # = (5, 0, 0) + rotate_90z(1, 0, 0)
-        # = (5, 0, 0) + (0, 1, 0)
-        # = (5, 1, 0)
+        # = (5, 0, 0) + rotate_90z(1, 0, 0) = (5, 0, 0) + (0, 1, 0) = (5, 1, 0)
         np.testing.assert_allclose(
-            joint_X_p[:3],
+            body_q[:3],
             [5.0, 1.0, 0.0],
             atol=1e-5,
-            err_msg="Base joint should include frame transform in position",
+            err_msg="Body position should include frame transform",
         )
 
         # Expected orientation: 90° Z rotation (from frame)
-        np.testing.assert_allclose(
-            joint_X_p[3:7],
-            [0, 0, 0.7071068, 0.7071068],
-            atol=1e-5,
-            err_msg="Base joint should include frame rotation",
+        expected_quat = np.array([0, 0, 0.7071068, 0.7071068])
+        actual_quat = body_q[3:7]
+        quat_match = np.allclose(actual_quat, expected_quat, atol=1e-5) or np.allclose(
+            actual_quat, -expected_quat, atol=1e-5
         )
+        self.assertTrue(quat_match, f"Body orientation should include frame rotation. Got {actual_quat}")
 
 
 if __name__ == "__main__":
