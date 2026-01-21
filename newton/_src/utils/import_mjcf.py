@@ -588,26 +588,30 @@ def parse_mjcf(
             body_relative_xform: Body-relative transform for geoms/sites. If None, uses world_xform
                 (appropriate for static geoms at worldbody level).
         """
-        # Stack entries: (frame, world_xform, body_relative_xform)
+        # Stack entries: (frame, world_xform, body_relative_xform, frame_defaults, frame_childclass)
         # For worldbody frames, body_relative equals world (static geoms use world coords)
         if body_relative_xform is None:
-            frame_stack = [(f, world_xform, world_xform) for f in frames]
+            frame_stack = [(f, world_xform, world_xform, defaults, childclass) for f in frames]
         else:
-            frame_stack = [(f, world_xform, body_relative_xform) for f in frames]
+            frame_stack = [(f, world_xform, body_relative_xform, defaults, childclass) for f in frames]
 
         while frame_stack:
-            frame, frame_world, frame_body_rel = frame_stack.pop()
+            frame, frame_world, frame_body_rel, frame_defaults, frame_childclass = frame_stack.pop()
             frame_local = get_frame_xform(frame, wp.transform_identity())
             composed_world = frame_world * frame_local
             composed_body_rel = frame_body_rel * frame_local
-            _childclass = frame.get("childclass") or childclass
+
+            # Resolve childclass for this frame's children
+            _childclass = frame.get("childclass") or frame_childclass
+
+            # Compute merged defaults for this frame's children
+            if _childclass is None:
+                _defaults = frame_defaults
+            else:
+                _defaults = merge_attrib(frame_defaults, class_defaults.get(_childclass, {}))
 
             # Process child bodies (need world transform)
             for child_body in frame.findall("body"):
-                if _childclass is None:
-                    _defaults = defaults
-                else:
-                    _defaults = merge_attrib(defaults, class_defaults.get(_childclass, {}))
                 parse_body(child_body, parent_body, _defaults, childclass=_childclass, incoming_xform=composed_world)
 
             # Process child geoms (need body-relative transform)
@@ -615,7 +619,7 @@ def parse_mjcf(
             if child_geoms:
                 body_name = "world" if parent_body == -1 else builder.body_key[parent_body]
                 parse_shapes(
-                    defaults,
+                    _defaults,
                     body_name,
                     parent_body,
                     child_geoms,
@@ -628,10 +632,12 @@ def parse_mjcf(
                 child_sites = frame.findall("site")
                 if child_sites:
                     body_name = "world" if parent_body == -1 else builder.body_key[parent_body]
-                    _parse_sites_impl(defaults, body_name, parent_body, child_sites, incoming_xform=composed_body_rel)
+                    _parse_sites_impl(_defaults, body_name, parent_body, child_sites, incoming_xform=composed_body_rel)
 
-            # Add nested frames to stack (in reverse to maintain order)
-            frame_stack.extend((f, composed_world, composed_body_rel) for f in reversed(frame.findall("frame")))
+            # Add nested frames to stack with current defaults and childclass (in reverse to maintain order)
+            frame_stack.extend(
+                (f, composed_world, composed_body_rel, _defaults, _childclass) for f in reversed(frame.findall("frame"))
+            )
 
     def parse_body(
         body,
