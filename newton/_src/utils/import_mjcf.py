@@ -688,9 +688,9 @@ def parse_mjcf(
             body_pos_for_joints = relative_xform.p
             body_ori_for_joints = relative_xform.q
         else:
-            # World parent: use raw body position
-            body_pos_for_joints = body_pos * scale
-            body_ori_for_joints = body_ori
+            # World parent: use the composed world_xform (includes frame/import root transforms)
+            body_pos_for_joints = world_xform.p
+            body_ori_for_joints = world_xform.q
 
         joint_armature = []
         joint_name = []
