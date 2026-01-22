@@ -1180,10 +1180,9 @@ class TestImportMjcf(unittest.TestCase):
         for i in range(0, nbBuilders):
             for j in range(0, nbTendonsPerBuilder):
                 for k in range(0, 2):
-                    expected = expected_model_joint_coef[nbTendonsPerBuilder * nbTendonsPerBuilder * i + 2 * j + k]
-                    measured = model.mujoco.tendon_coef.numpy()[
-                        nbTendonsPerBuilder * nbTendonsPerBuilder * i + 2 * j + k
-                    ]
+                    idx = nbTendonsPerBuilder * 2 * i + 2 * j + k
+                    expected = expected_model_joint_coef[idx]
+                    measured = model.mujoco.tendon_coef.numpy()[idx]
                     self.assertEqual(
                         measured,
                         expected,
