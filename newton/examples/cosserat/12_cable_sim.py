@@ -103,10 +103,16 @@ def collide_bodies_vs_triangles_bvh_kernel(
     """
     Body vs triangles collision kernel using BVH broadphase and PBD response.
 
+    Uses a Gauss-Seidel approach: for each body (treated as a sphere), we iterate
+    through triangles and update the sphere position locally after each collision.
+    Only the final corrected position is written to memory.
+
     For each body:
     1. Query BVH for triangles within body radius (broadphase)
-    2. For each candidate triangle, compute closest point (narrowphase)
-    3. If penetrating, compute and apply position correction (PBD response)
+    2. For each candidate triangle:
+       a. Compute closest point on triangle to current sphere position (narrowphase)
+       b. If penetrating, immediately update sphere position locally
+    3. Write final position to memory
     """
     tid = wp.tid()
     body_idx = body_indices[tid]
@@ -123,12 +129,9 @@ def collide_bodies_vs_triangles_bvh_kernel(
         body_q_out[body_idx] = xform
         return
 
-    # Accumulate total correction from all triangle collisions
-    total_correction = wp.vec3f(0.0, 0.0, 0.0)
-    num_collisions = wp.int32(0)
-
     # Query BVH for triangles within body's bounding sphere
-    query_margin = body_radius * 1.5
+    # Use a larger margin to account for position updates during iteration
+    query_margin = body_radius * 2.0
     lower = wp.vec3f(
         pos[0] - query_margin,
         pos[1] - query_margin,
@@ -144,6 +147,7 @@ def collide_bodies_vs_triangles_bvh_kernel(
     query = wp.bvh_query_aabb(bvh_id, lower, upper)
     tri_idx = wp.int32(0)
 
+    # Gauss-Seidel: update position locally after each triangle collision
     while wp.bvh_query_next(query, tri_idx):
         # Get triangle vertex indices
         i0 = tri_indices[tri_idx, 0]
@@ -155,44 +159,134 @@ def collide_bodies_vs_triangles_bvh_kernel(
         v1 = tri_vertices[i1]
         v2 = tri_vertices[i2]
 
-        # Narrowphase: find closest point on triangle to body center
+        # Compute triangle normal (defines front face direction)
+        tri_normal = compute_triangle_normal(v0, v1, v2)
+
+        # Signed distance from triangle plane (positive = front side, negative = back side)
+        signed_dist = wp.dot(tri_normal, pos - v0)
+
+        # Narrowphase: find closest point on triangle to current sphere position
         closest_p, bary, feature_type = triangle_closest_point(v0, v1, v2, pos)
 
-        # Compute distance from body center to closest point
+        # Compute distance from sphere center to closest point
         to_body = pos - closest_p
         dist = wp.length(to_body)
 
-        # Check for penetration
-        penetration = body_radius - dist
-
-        if penetration > 0.0:
-            # Compute correction direction (push body away from triangle)
+        if signed_dist < 0.0:
+            # Sphere is on backface - push it to front side
+            # Target position: closest point + normal * body_radius (front side at correct distance)
+            target_pos = closest_p + tri_normal * body_radius
+            pos = target_pos
+        elif dist < body_radius:
+            # Sphere is on frontface but penetrating - standard collision response
+            penetration = body_radius - dist
             if dist > 1e-8:
                 correction_dir = to_body / dist
             else:
-                # Body center is on or very close to the triangle surface
-                correction_dir = compute_triangle_normal(v0, v1, v2)
+                # Sphere center is exactly on the triangle surface
+                correction_dir = tri_normal
 
-                # Make sure normal points towards body
-                edge1 = v1 - v0
-                edge2 = v2 - v0
-                tri_norm = wp.cross(edge1, edge2)
-                if wp.dot(tri_norm, pos - v0) < 0.0:
-                    correction_dir = -correction_dir
-
-            # Compute position correction to resolve penetration
+            # Compute and apply position correction immediately (Gauss-Seidel)
             correction = correction_dir * penetration
+            pos = pos + correction
 
-            total_correction = total_correction + correction
-            num_collisions = num_collisions + 1
+    # Write final corrected position to memory
+    body_q_out[body_idx] = wp.transform(pos, rot)
 
-    # Average corrections if multiple collisions (Jacobi-style)
-    if num_collisions > 0:
-        avg_correction = total_correction / wp.float32(num_collisions)
-        new_pos = pos + avg_correction
-        body_q_out[body_idx] = wp.transform(new_pos, rot)
-    else:
+
+@wp.kernel
+def collide_bodies_vs_triangles_bruteforce_kernel(
+    body_q: wp.array(dtype=wp.transform),
+    body_inv_mass: wp.array(dtype=float),
+    body_indices: wp.array(dtype=wp.int32),
+    body_radius: float,
+    tri_vertices: wp.array(dtype=wp.vec3f),
+    tri_indices: wp.array(dtype=wp.int32, ndim=2),
+    num_triangles: int,
+    # outputs
+    body_q_out: wp.array(dtype=wp.transform),
+):
+    """
+    Body vs triangles collision kernel using brute force iteration.
+
+    Uses a Gauss-Seidel approach: for each body (treated as a sphere), we iterate
+    through ALL triangles and update the sphere position locally after each collision.
+    Only the final corrected position is written to memory.
+
+    For each body:
+    1. Iterate through all triangles (brute force)
+    2. For each triangle:
+       a. Compute closest point on triangle to current sphere position (narrowphase)
+       b. If penetrating, immediately update sphere position locally
+    3. Write final position to memory
+    """
+    tid = wp.tid()
+    body_idx = body_indices[tid]
+
+    inv_mass = body_inv_mass[body_idx]
+
+    # Get current body transform
+    xform = body_q[body_idx]
+    pos = wp.transform_get_translation(xform)
+    rot = wp.transform_get_rotation(xform)
+
+    # Skip kinematic bodies
+    if inv_mass <= 0.0:
         body_q_out[body_idx] = xform
+        return
+
+    # Gauss-Seidel: iterate through ALL triangles (brute force)
+    # Use same margin as BVH version for proximity check
+    collision_margin = body_radius * 2.0
+
+    for tri_idx in range(num_triangles):
+        # Get triangle vertex indices
+        i0 = tri_indices[tri_idx, 0]
+        i1 = tri_indices[tri_idx, 1]
+        i2 = tri_indices[tri_idx, 2]
+
+        # Get triangle vertex positions
+        v0 = tri_vertices[i0]
+        v1 = tri_vertices[i1]
+        v2 = tri_vertices[i2]
+
+        # Narrowphase: find closest point on triangle to current sphere position
+        closest_p, bary, feature_type = triangle_closest_point(v0, v1, v2, pos)
+
+        # Compute distance from sphere center to closest point
+        to_body = pos - closest_p
+        dist = wp.length(to_body)
+
+        # Early-out: skip triangles that are too far away
+        if dist > collision_margin:
+            continue
+
+        # Compute triangle normal (defines front face direction)
+        tri_normal = compute_triangle_normal(v0, v1, v2)
+
+        # Signed distance from triangle plane (positive = front side, negative = back side)
+        signed_dist = wp.dot(tri_normal, pos - v0)
+
+        if signed_dist < 0.0:
+            # Sphere is on backface - push it to front side
+            # Target position: closest point + normal * body_radius (front side at correct distance)
+            target_pos = closest_p + tri_normal * body_radius
+            pos = target_pos
+        elif dist < body_radius:
+            # Sphere is on frontface but penetrating - standard collision response
+            penetration = body_radius - dist
+            if dist > 1e-8:
+                correction_dir = to_body / dist
+            else:
+                # Sphere center is exactly on the triangle surface
+                correction_dir = tri_normal
+
+            # Compute and apply position correction immediately (Gauss-Seidel)
+            correction = correction_dir * penetration
+            pos = pos + correction
+
+    # Write final corrected position to memory
+    body_q_out[body_idx] = wp.transform(pos, rot)
 
 
 class Example:
@@ -235,12 +329,12 @@ class Example:
         self.num_vessel_triangles = self.vessel_indices_np.shape[0]
         self.mesh_scale = 0.01  # Convert mesh units to simulation units
 
-        # Add the vessel mesh as a static collision shape (for visualization)
+        # Add the vessel mesh as a static collision shape
         vessel_cfg = newton.ModelBuilder.ShapeConfig(
             ke=1.0e4,
             kd=1.0e2,
             mu=0.1,  # Low friction for blood vessels
-            has_shape_collision=False,
+            has_shape_collision=True,  # Enable VBD rigid body collisions
             has_particle_collision=False,
         )
 
@@ -266,14 +360,18 @@ class Example:
             length=self.cable_length,
         )
 
+        # Rod stiffness parameters (can be modified at runtime via UI)
+        self.bend_stiffness = 1.0e1
+        self.stretch_stiffness = 1.0e9
+
         # Add the catheter as a rod using Newton's built-in system
-        self.cable_bodies, _rod_joints = builder.add_rod(
+        self.cable_bodies, self.cable_joints = builder.add_rod(
             positions=cable_points,
             quaternions=cable_edge_q,
             radius=cable_radius,
-            bend_stiffness=1.0e1,
+            bend_stiffness=self.bend_stiffness,
             bend_damping=1.0e-1,
-            stretch_stiffness=1.0e9,
+            stretch_stiffness=self.stretch_stiffness,
             stretch_damping=0.0,
             key="catheter",
         )
@@ -317,6 +415,9 @@ class Example:
 
         # Graph capture for CUDA acceleration
         self.graph = None
+
+        # Collision settings
+        self.use_bvh = True  # Use BVH acceleration (vs brute force)
 
         # Setup collision detection for cable vs vessel mesh
         self._setup_mesh_collision()
@@ -399,25 +500,67 @@ class Example:
         # Copy current state to temp buffer (for bodies not in collision)
         wp.copy(self.body_q_temp, state.body_q)
 
-        # Apply collision detection and response
-        wp.launch(
-            kernel=collide_bodies_vs_triangles_bvh_kernel,
-            dim=self.num_cable_bodies,
-            inputs=[
-                state.body_q,
-                self.model.body_inv_mass,
-                self.cable_body_indices,
-                self.cable_collision_radius,
-                self.vessel_vertices,
-                self.vessel_indices,
-                self.vessel_bvh.id,
-            ],
-            outputs=[self.body_q_temp],
-            device=self.model.device,
-        )
+        if self.use_bvh:
+            # BVH-accelerated collision detection
+            wp.launch(
+                kernel=collide_bodies_vs_triangles_bvh_kernel,
+                dim=self.num_cable_bodies,
+                inputs=[
+                    state.body_q,
+                    self.model.body_inv_mass,
+                    self.cable_body_indices,
+                    self.cable_collision_radius,
+                    self.vessel_vertices,
+                    self.vessel_indices,
+                    self.vessel_bvh.id,
+                ],
+                outputs=[self.body_q_temp],
+                device=self.model.device,
+            )
+        else:
+            # Brute force collision detection (iterate through all triangles)
+            wp.launch(
+                kernel=collide_bodies_vs_triangles_bruteforce_kernel,
+                dim=self.num_cable_bodies,
+                inputs=[
+                    state.body_q,
+                    self.model.body_inv_mass,
+                    self.cable_body_indices,
+                    self.cable_collision_radius,
+                    self.vessel_vertices,
+                    self.vessel_indices,
+                    self.num_vessel_triangles,
+                ],
+                outputs=[self.body_q_temp],
+                device=self.model.device,
+            )
 
         # Copy collision-corrected positions back to state
         wp.copy(state.body_q, self.body_q_temp)
+
+    def _update_rod_stiffness(self):
+        """Update rod joint stiffness values in the solver."""
+        # Get segment length for normalization (same as used in add_rod)
+        segment_length = self.cable_length / self.num_elements
+
+        # Compute effective stiffness (normalized by segment length)
+        stretch_ke_eff = self.stretch_stiffness / segment_length
+        bend_ke_eff = self.bend_stiffness / segment_length
+
+        # Update the solver's joint_penalty_k_max array directly
+        # VBD solver caches stiffness in joint_penalty_k_max indexed by joint_constraint_start
+        joint_constraint_start = self.solver.joint_constraint_start.numpy()
+        joint_penalty_k_max = self.solver.joint_penalty_k_max.numpy()
+
+        # Update stiffness for each cable joint
+        # Cable joints have 2 constraint slots: stretch (idx 0), bend (idx 1)
+        for joint_idx in self.cable_joints:
+            c_start = joint_constraint_start[joint_idx]
+            joint_penalty_k_max[c_start] = stretch_ke_eff  # Stretch constraint
+            joint_penalty_k_max[c_start + 1] = bend_ke_eff  # Bend constraint
+
+        # Update the solver array
+        self.solver.joint_penalty_k_max.assign(joint_penalty_k_max)
 
     def simulate(self):
         for _ in range(self.sim_substeps):
@@ -441,8 +584,8 @@ class Example:
                 self.sim_dt,
             )
 
-            # Apply cable vs vessel mesh collision (PBD position correction)
-            self._apply_mesh_collision(self.state_1)
+            # Custom cable vs vessel mesh collision is disabled - using VBD built-in collisions instead
+            # self._apply_mesh_collision(self.state_1)
 
             # Swap states
             self.state_0, self.state_1 = self.state_1, self.state_0
@@ -524,6 +667,28 @@ class Example:
         ui.text("  Numpad 9/3 or U/O: Move Z")
         ui.separator()
         _changed, self.move_speed = ui.slider_float("Move Speed", self.move_speed, 0.1, 5.0)
+        ui.separator()
+        ui.text("Collision Settings:")
+        _changed, self.use_bvh = ui.checkbox("Use BVH Acceleration", self.use_bvh)
+        _changed, self.cable_collision_radius = ui.slider_float(
+            "Collision Radius", self.cable_collision_radius, 0.001, 0.1
+        )
+        ui.separator()
+        ui.text("Rod Stiffness:")
+        # Use log scale for stiffness sliders
+        bend_log = np.log10(self.bend_stiffness)
+        changed_bend, bend_log = ui.slider_float("Bend Stiffness (log10)", bend_log, -2.0, 4.0)
+        if changed_bend:
+            self.bend_stiffness = 10.0**bend_log
+            self._update_rod_stiffness()
+        ui.text(f"  Bend: {self.bend_stiffness:.2e} N*m")
+
+        stretch_log = np.log10(self.stretch_stiffness)
+        changed_stretch, stretch_log = ui.slider_float("Stretch Stiffness (log10)", stretch_log, 4.0, 12.0)
+        if changed_stretch:
+            self.stretch_stiffness = 10.0**stretch_log
+            self._update_rod_stiffness()
+        ui.text(f"  Stretch: {self.stretch_stiffness:.2e} N/m")
 
     def test_final(self):
         """Test that the simulation ran correctly."""
