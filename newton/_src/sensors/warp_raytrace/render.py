@@ -91,7 +91,7 @@ def _render_megakernel(
     enable_ambient_lighting: wp.bool,
     enable_particles: wp.bool,
     enable_backface_culling: wp.bool,
-    has_global_world: wp.bool,
+    enable_global_world: wp.bool,
     max_distance: wp.float32,
     # Camera
     camera_rays: wp.array(dtype=wp.vec3f, ndim=4),
@@ -176,7 +176,7 @@ def _render_megakernel(
         bvh_particles_id,
         bvh_particles_group_roots,
         world_index,
-        has_global_world,
+        enable_global_world,
         enable_particles,
         enable_backface_culling,
         max_distance,
@@ -193,7 +193,6 @@ def _render_megakernel(
         ray_dir_world,
     )
 
-    # Early Out
     if closest_hit.shape_index == ray_cast.NO_HIT_SHAPE_ID:
         return
 
@@ -276,7 +275,7 @@ def _render_megakernel(
             enable_particles,
             enable_backface_culling,
             world_index,
-            has_global_world,
+            enable_global_world,
             bvh_shapes_size,
             bvh_shapes_id,
             bvh_shapes_group_roots,
@@ -322,9 +321,9 @@ def render_megakernel(
     normal_image: wp.array(dtype=wp.vec3f, ndim=3) | None,
     clear_data: ClearData | None,
 ):
-    if rc.tile_rendering:
-        assert rc.width % rc.tile_size == 0, "render width must be a multiple of tile_size"
-        assert rc.height % rc.tile_size == 0, "render height must be a multiple of tile_size"
+    if rc.options.tile_rendering:
+        assert rc.width % rc.options.tile_size == 0, "render width must be a multiple of tile_size"
+        assert rc.height % rc.options.tile_size == 0, "render height must be a multiple of tile_size"
 
     if clear_data is not None and clear_data.clear_color is not None and color_image is not None:
         color_image.fill_(wp.uint32(clear_data.clear_color))
@@ -348,15 +347,15 @@ def render_megakernel(
             rc.num_lights,
             rc.width,
             rc.height,
-            rc.tile_size,
-            rc.tile_rendering,
-            rc.enable_shadows,
-            rc.enable_textures,
-            rc.enable_ambient_lighting,
-            rc.enable_particles,
-            rc.enable_backface_culling,
-            rc.has_global_world,
-            rc.max_distance,
+            rc.options.tile_size,
+            rc.options.tile_rendering,
+            rc.options.enable_shadows,
+            rc.options.enable_textures,
+            rc.options.enable_ambient_lighting,
+            rc.options.enable_particles and rc.has_particles,
+            rc.options.enable_backface_culling,
+            rc.options.enable_global_world,
+            rc.options.max_distance,
             # Camera
             camera_rays,
             camera_transforms,
@@ -379,7 +378,7 @@ def render_megakernel(
             rc.mesh_texcoord,
             rc.mesh_texcoord_offsets,
             # Particle BVH
-            rc.particles_position.shape[0] if rc.particles_position else 0,
+            rc.num_particles_total,
             rc.bvh_particles.id if rc.bvh_particles else 0,
             rc.bvh_particles_group_roots,
             # Particles
