@@ -25,6 +25,8 @@ import newton.examples
 from newton._src.geometry.types import GeoType
 from newton._src.sim.builder import ShapeFlags
 
+from newton.solvers import SolverMuJoCo
+
 
 class TestImportMjcf(unittest.TestCase):
     def test_humanoid_mjcf(self):
