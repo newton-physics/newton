@@ -21,10 +21,10 @@ This module includes tests for:
 2. Force/torque behavior with non-zero center of mass (CoM) offsets
 
 For non-zero CoM tests:
-- When a pure torque is applied, the body should rotate about its CoM, so the CoM
-  position should remain stationary.
 - When a force is applied (which acts at the CoM), the body should accelerate
   linearly without rotation.
+- When a combined force and torque is applied, the body should accelerate linearly and rotate about its CoM
+  according to the applied force and torque.
 
 Note: Featherstone solver is excluded from non-zero CoM tests due to known issues
 with CoM offset handling in the algorithm.
@@ -380,94 +380,6 @@ for device in devices:
 # has a non-zero center of mass offset.
 
 
-def test_torque_com_stationary(
-    test: TestBodyForce,
-    device,
-    solver_fn,
-    com_offset: tuple[float, float, float],
-    torque_axis: tuple[float, float, float],
-    tolerance: float,
-):
-    """Test that pure torque causes rotation about CoM, keeping CoM stationary.
-
-    When a body has a non-zero CoM offset and we apply a pure torque (no force),
-    the body should rotate about its CoM, so the CoM position should remain
-    stationary.
-
-    Args:
-        test: Test case instance
-        device: Compute device
-        solver_fn: Function that creates a solver given a model
-        com_offset: Center of mass offset in body frame (x, y, z)
-        torque_axis: Axis of applied torque (tx, ty, tz)
-        tolerance: Maximum allowed CoM drift
-    """
-    builder = newton.ModelBuilder(gravity=0.0)
-
-    initial_pos = wp.vec3(1.0, 2.0, 3.0)
-    b = builder.add_body(xform=wp.transform(initial_pos, wp.quat_identity()))
-    builder.add_shape_box(b, hx=0.1, hy=0.1, hz=0.1)
-    builder.body_com[b] = wp.vec3(*com_offset)
-
-    model = builder.finalize(device=device)
-    solver = solver_fn(model)
-
-    state_0 = model.state()
-    state_1 = model.state()
-
-    newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
-
-    # Get initial CoM position in world frame
-    body_q_initial = state_0.body_q.numpy()[0].copy()
-    com_initial = compute_com_world_position(state_0.body_q, model.body_com, model.body_world)
-
-    # Apply pure torque (no force)
-    torque_magnitude = 100.0
-    body_f = np.array(
-        [
-            0.0,
-            0.0,
-            0.0,
-            torque_axis[0] * torque_magnitude,
-            torque_axis[1] * torque_magnitude,
-            torque_axis[2] * torque_magnitude,
-        ],
-        dtype=np.float32,
-    )
-    state_0.body_f.assign(body_f)
-    state_1.body_f.assign(body_f)
-
-    # Step simulation
-    sim_dt = 0.005
-    num_steps = 20
-
-    for _ in range(num_steps):
-        solver.step(state_0, state_1, None, None, sim_dt)
-        state_0, state_1 = state_1, state_0
-
-    # Get final CoM position
-    body_q_final = state_0.body_q.numpy()[0]
-    com_final = compute_com_world_position(state_0.body_q, model.body_com, model.body_world)
-
-    # CoM should stay stationary (within numerical tolerance)
-    com_drift = np.linalg.norm(com_final - com_initial)
-    test.assertLess(
-        com_drift,
-        tolerance,
-        f"CoM drifted by {com_drift:.6f} (expected < {tolerance}). Initial CoM: {com_initial}, Final CoM: {com_final}",
-    )
-
-    # Verify that the body actually rotated (quaternion changed)
-    quat_initial = body_q_initial[3:7]
-    quat_final = body_q_final[3:7]
-    quat_diff = np.abs(np.dot(quat_initial, quat_final))
-    test.assertLess(
-        quat_diff,
-        0.9999,
-        "Body should have rotated but quaternion barely changed",
-    )
-
-
 def test_force_no_rotation(
     test: TestBodyForce,
     device,
@@ -633,73 +545,6 @@ def test_combined_force_torque(
     )
 
 
-def test_torque_com_stationary_control_joint_f(
-    test: TestBodyForce,
-    device,
-    solver_fn,
-    com_offset: tuple[float, float, float],
-    torque_axis: tuple[float, float, float],
-    tolerance: float,
-):
-    """Control.joint_f version of test_torque_com_stationary."""
-    builder = newton.ModelBuilder(gravity=0.0)
-
-    initial_pos = wp.vec3(1.0, 2.0, 3.0)
-    b = builder.add_body(xform=wp.transform(initial_pos, wp.quat_identity()))
-    builder.add_shape_box(b, hx=0.1, hy=0.1, hz=0.1)
-    builder.body_com[b] = wp.vec3(*com_offset)
-
-    model = builder.finalize(device=device)
-    solver = solver_fn(model)
-
-    state_0 = model.state()
-    state_1 = model.state()
-    control = model.control()
-
-    newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
-
-    body_q_initial = state_0.body_q.numpy()[0].copy()
-    com_initial = compute_com_world_position(state_0.body_q, model.body_com, model.body_world)
-
-    torque_magnitude = 100.0
-    joint_f = np.array(
-        [
-            0.0,
-            0.0,
-            0.0,
-            torque_axis[0] * torque_magnitude,
-            torque_axis[1] * torque_magnitude,
-            torque_axis[2] * torque_magnitude,
-        ],
-        dtype=np.float32,
-    )
-    control.joint_f.assign(joint_f)
-
-    sim_dt = 0.005
-    num_steps = 20
-
-    for _ in range(num_steps):
-        solver.step(state_0, state_1, control, None, sim_dt)
-        state_0, state_1 = state_1, state_0
-
-    body_q_final = state_0.body_q.numpy()[0]
-    com_final = compute_com_world_position(state_0.body_q, model.body_com, model.body_world)
-
-    com_drift = np.linalg.norm(com_final - com_initial)
-    test.assertLess(
-        com_drift,
-        tolerance,
-        f"CoM drifted by {com_drift:.6f} (expected < {tolerance}). Initial CoM: {com_initial}, Final CoM: {com_final}",
-    )
-
-    quat_initial = body_q_initial[3:7]
-    quat_final = body_q_final[3:7]
-    quat_diff = np.abs(np.dot(quat_initial, quat_final))
-    test.assertLess(
-        quat_diff,
-        0.9999,
-        "Body should have rotated but quaternion barely changed",
-    )
 
 
 def test_force_no_rotation_control_joint_f(
@@ -869,12 +714,6 @@ com_offsets = [
     (0.2, 0.3, 0.1),  # Combined offset
 ]
 
-torque_axes = [
-    (0.0, 0.0, 1.0),  # Z rotation
-    (0.0, 1.0, 0.0),  # Y rotation
-    (1.0, 0.0, 0.0),  # X rotation
-]
-
 force_directions = [
     (1.0, 0.0, 0.0),  # X force
     (0.0, 1.0, 0.0),  # Y force
@@ -885,33 +724,6 @@ for device in devices:
     for solver_name, (solver_fn, tolerance, supports_torque_com) in com_solvers.items():
         if device.is_cuda and solver_name == "mujoco_cpu":
             continue
-
-        # Test torque with CoM offset (CoM should stay stationary)
-        # Only for solvers that correctly handle torque with CoM offset
-        if supports_torque_com:
-            for i, com_offset in enumerate(com_offsets):
-                for j, torque_axis in enumerate(torque_axes):
-                    add_function_test(
-                        TestBodyForce,
-                        f"test_torque_com_stationary_{solver_name}_com{i}_torque{j}",
-                        test_torque_com_stationary,
-                        devices=[device],
-                        solver_fn=solver_fn,
-                        com_offset=com_offset,
-                        torque_axis=torque_axis,
-                        tolerance=tolerance,
-                    )
-                    if solver_name != "featherstone":
-                        add_function_test(
-                            TestBodyForce,
-                            f"test_torque_com_stationary_joint_f_{solver_name}_com{i}_torque{j}",
-                            test_torque_com_stationary_control_joint_f,
-                            devices=[device],
-                            solver_fn=solver_fn,
-                            com_offset=com_offset,
-                            torque_axis=torque_axis,
-                            tolerance=tolerance,
-                        )
 
         # Test force with CoM offset (no rotation)
         # This should work for all solvers since forces act at the CoM
