@@ -2953,7 +2953,7 @@ class TestMuJoCoSolverFixedTendonProperties(TestMuJoCoSolverPropertiesBase):
         model.mujoco.tendon_frictionloss.assign(updated_frictionloss)
 
         # Notify solver
-        solver.notify_model_changed(SolverNotifyFlags.FIXED_TENDON_PROPERTIES)
+        solver.notify_model_changed(SolverNotifyFlags.TENDON_PROPERTIES)
 
         # Verify updates
         mjw_stiffness_updated = solver.mjw_model.tendon_stiffness.numpy()

@@ -1296,7 +1296,7 @@ class SolverMuJoCo(SolverBase):
             self.update_model_properties()
         if flags & SolverNotifyFlags.EQUALITY_CONSTRAINT_PROPERTIES:
             self.update_eq_properties()
-        if flags & SolverNotifyFlags.FIXED_TENDON_PROPERTIES:
+        if flags & SolverNotifyFlags.TENDON_PROPERTIES:
             self.update_tendon_properties()
 
     def _create_inverse_shape_mapping(self):
