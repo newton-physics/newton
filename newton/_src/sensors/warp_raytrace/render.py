@@ -29,13 +29,13 @@ if TYPE_CHECKING:
 @wp.func
 def tid_to_coord_tiled(
     tid: wp.int32,
-    num_worlds: wp.int32,
     num_cameras: wp.int32,
     width: wp.int32,
+    height: wp.int32,
     tile_width: wp.int32,
     tile_height: wp.int32,
 ):
-    num_pixels_per_view = width * width
+    num_pixels_per_view = width * height
     num_pixels_per_tile = tile_width * tile_height
     num_tiles_per_row = width // tile_width
 
@@ -74,8 +74,8 @@ def tid_to_coord_pixel_priority(tid: wp.int32, num_worlds: wp.int32, num_cameras
 
 
 @wp.func
-def tid_to_coord_view_priority(tid: wp.int32, num_worlds: wp.int32, num_cameras: wp.int32, width: wp.int32):
-    num_pixels_per_view = width * width
+def tid_to_coord_view_priority(tid: wp.int32, num_cameras: wp.int32, width: wp.int32, height: wp.int32):
+    num_pixels_per_view = width * height
 
     pixel_idx = tid % num_pixels_per_view
     view_idx = tid // num_pixels_per_view
@@ -179,10 +179,10 @@ def _render_megakernel(
     if render_order == RenderOrder.PIXEL_PRIORITY:
         world_index, camera_index, py, px = tid_to_coord_pixel_priority(tid, num_worlds, num_cameras, img_width)
     elif render_order == RenderOrder.VIEW_PRIORITY:
-        world_index, camera_index, py, px = tid_to_coord_view_priority(tid, num_worlds, num_cameras, img_width)
+        world_index, camera_index, py, px = tid_to_coord_view_priority(tid, num_cameras, img_width, img_height)
     elif render_order == RenderOrder.TILED:
         world_index, camera_index, py, px = tid_to_coord_tiled(
-            tid, num_worlds, num_cameras, img_width, tile_width, tile_height
+            tid, num_cameras, img_width, img_height, tile_width, tile_height
         )
     else:
         return
