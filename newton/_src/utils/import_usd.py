@@ -982,6 +982,10 @@ def parse_usd(
     )
 
     if physics_scene_prim is not None:
+        # Collect schema-defined attributes from the scene prim for inspection (e.g., mjc:* attributes)
+        if collect_schema_attrs:
+            R.collect_prim_attrs(physics_scene_prim)
+
         # Extract custom attributes for model (ONCE and WORLD frequency) from the PhysicsScene prim
         # WORLD frequency attributes use index 0 here; they get remapped during add_world()
         builder_custom_attr_model: list[ModelBuilder.CustomAttribute] = [
@@ -994,10 +998,11 @@ def parse_usd(
         if not parse_mujoco_options:
             builder_custom_attr_model = [attr for attr in builder_custom_attr_model if attr.namespace != "mujoco"]
 
+        # Read custom attribute values from the PhysicsScene prim
         scene_custom_attrs = usd.get_custom_attribute_values(physics_scene_prim, builder_custom_attr_model)
         scene_attributes.update(scene_custom_attrs)
 
-        # Set values on builder's custom attributes (similar to MJCF parsing)
+        # Set values on builder's custom attributes
         for key, value in scene_custom_attrs.items():
             if key in builder.custom_attributes:
                 builder.custom_attributes[key].values[0] = value
