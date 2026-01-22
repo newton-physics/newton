@@ -235,8 +235,14 @@ class ControlStrategy:
 class ZeroControlStrategy(ControlStrategy):
     """Always returns zero control - useful for drop tests."""
 
+    def __init__(self):
+        super().__init__(seed=0)
+        self._ctrl: wp.array | None = None
+
     def get_control(self, t, step, num_worlds, num_actuators):
-        return np.zeros((num_worlds, num_actuators))
+        if self._ctrl is None or self._ctrl.shape != (num_worlds, num_actuators):
+            self._ctrl = wp.zeros((num_worlds, num_actuators), dtype=wp.float32)
+        return self._ctrl
 
 
 @wp.kernel
@@ -847,6 +853,7 @@ class TestMenagerie_UniversalRobotsUr5e(TestMenagerieBase):
     robot_folder = "universal_robots_ur5e"
     robot_xml = "ur5e.xml"
     floating = False
+    control_strategy = ZeroControlStrategy()
 
 
 class TestMenagerie_UniversalRobotsUr10e(TestMenagerieBase):
