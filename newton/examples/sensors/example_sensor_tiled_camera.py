@@ -310,7 +310,10 @@ class Example:
             )
         elif self.image_output == 1:
             self.tiled_camera_sensor.flatten_depth_image_to_rgba(
-                self.tiled_camera_sensor_depth_image, texture_buffer, self.num_worlds_per_row
+                self.tiled_camera_sensor_depth_image,
+                texture_buffer,
+                self.num_worlds_per_row,
+                wp.array([1.0, 100.0], dtype=wp.float32),
             )
         elif self.image_output == 2:
             self.tiled_camera_sensor.flatten_normal_image_to_rgba(
