@@ -122,8 +122,8 @@ def test_floating_body_control_joint_f(
     pos = wp.vec3(1.0, 2.0, 3.0)
     rot = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), wp.pi * 0.0)
 
-    b = builder.add_body(xform=wp.transform(pos, rot))
-    builder.add_shape_box(b, hx=0.25, hy=0.5, hz=1.0)
+    body_index = builder.add_body(xform=wp.transform(pos, rot))
+    builder.add_shape_box(body_index, hx=0.25, hy=0.5, hz=1.0)
     builder.joint_q = [*pos, *rot]
 
     model = builder.finalize(device=device)
@@ -137,27 +137,34 @@ def test_floating_body_control_joint_f(
     control = model.control()
     input = np.zeros(model.joint_dof_count, dtype=np.float32)
 
-    if test_angular:
-        test_index = 5
-        test_value = 0.96
-    else:
-        test_index = 1
-        test_value = 0.1
+    sim_dt = 1.0 / 10.0
+    test_force_torque = 1000.0
+    relative_tolerance = 5e-2  # for testing expected velocity
+    zero_velocity_tolerance = 1e-3  # for testing zero velocities
 
-    input[test_index] = 1000.0
+    if test_angular:
+        test_index = 5  # torque about z-axis
+        inertia_zz = model.body_inertia.numpy()[body_index][2, 2]
+        expected_velocity = test_force_torque / inertia_zz * sim_dt
+    else:
+        test_index = 1  # force in y-direction
+        mass = model.body_mass.numpy()[body_index]
+        expected_velocity = test_force_torque / mass * sim_dt
+
+    input[test_index] = test_force_torque
     control.joint_f.assign(input)
 
-    sim_dt = 1.0 / 10.0
     for _ in range(1):
         solver.step(state_0, state_1, control, None, sim_dt)
         state_0, state_1 = state_1, state_0
 
-    body_qd = state_0.body_qd.numpy()[0]
-    test.assertAlmostEqual(body_qd[test_index], test_value, delta=1e-2)
-    for i in range(1):
+    body_qd = state_0.body_qd.numpy()[body_index]
+    abs_tol_expected_velocity = relative_tolerance * abs(expected_velocity)
+    test.assertAlmostEqual(body_qd[test_index], expected_velocity, delta=abs_tol_expected_velocity)
+    for i in range(6):
         if i == test_index:
             continue
-        test.assertAlmostEqual(body_qd[i], 0.0, delta=1e-2)
+        test.assertAlmostEqual(body_qd[i], 0.0, delta=zero_velocity_tolerance)
 
 
 def test_3d_articulation(test: TestBodyForce, device, solver_fn, test_angular, up_axis):
