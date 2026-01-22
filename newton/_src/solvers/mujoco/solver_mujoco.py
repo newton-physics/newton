@@ -59,8 +59,7 @@ from .kernels import (
     update_body_inertia_kernel,
     update_body_mass_ipos_kernel,
     update_dof_properties_kernel,
-    update_eq_active_kernel,
-    update_eq_data_kernel,
+    update_eq_data_and_active_kernel,
     update_eq_properties_kernel,
     update_geom_properties_kernel,
     update_jnt_properties_kernel,
@@ -2712,9 +2711,9 @@ class SolverMuJoCo(SolverBase):
                 device=self.model.device,
             )
 
-        # Update eq_data from Newton equality constraint properties
+        # Update eq_data and eq_active from Newton equality constraint properties
         wp.launch(
-            update_eq_data_kernel,
+            update_eq_data_and_active_kernel,
             dim=(num_worlds, neq),
             inputs=[
                 self.mjc_eq_to_newton_eq,
@@ -2723,22 +2722,10 @@ class SolverMuJoCo(SolverBase):
                 self.model.equality_constraint_relpose,
                 self.model.equality_constraint_polycoef,
                 self.model.equality_constraint_torquescale,
-            ],
-            outputs=[
-                self.mjw_model.eq_data,
-            ],
-            device=self.model.device,
-        )
-
-        # Update eq_active from Newton equality_constraint_enabled
-        wp.launch(
-            update_eq_active_kernel,
-            dim=(num_worlds, neq),
-            inputs=[
-                self.mjc_eq_to_newton_eq,
                 self.model.equality_constraint_enabled,
             ],
             outputs=[
+                self.mjw_model.eq_data,
                 self.mjw_data.eq_active,
             ],
             device=self.model.device,

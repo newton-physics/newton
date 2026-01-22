@@ -1390,7 +1390,7 @@ def update_eq_properties_kernel(
 
 
 @wp.kernel
-def update_eq_data_kernel(
+def update_eq_data_and_active_kernel(
     mjc_eq_to_newton_eq: wp.array2d(dtype=wp.int32),
     # Newton equality constraint data
     eq_constraint_type: wp.array(dtype=wp.int32),
@@ -1398,16 +1398,20 @@ def update_eq_data_kernel(
     eq_constraint_relpose: wp.array(dtype=wp.transform),
     eq_constraint_polycoef: wp.array2d(dtype=wp.float32),
     eq_constraint_torquescale: wp.array(dtype=wp.float32),
+    eq_constraint_enabled: wp.array(dtype=wp.bool),
     # outputs
     eq_data_out: wp.array2d(dtype=vec11),
+    eq_active_out: wp.array2d(dtype=wp.bool),
 ):
-    """Update MuJoCo equality constraint data from Newton equality constraint properties.
+    """Update MuJoCo equality constraint data and active status from Newton properties.
 
     Iterates over MuJoCo equality constraints [world, eq], looks up Newton eq constraint,
-    and copies data based on constraint type:
-    - CONNECT: data[0:3] = anchor
-    - JOINT: data[0:5] = polycoef
-    - WELD: data[0:3] = anchor, data[3:6] = relpose translation, data[6:10] = relpose quaternion, data[10] = torquescale
+    and copies:
+    - eq_data based on constraint type:
+      - CONNECT: data[0:3] = anchor
+      - JOINT: data[0:5] = polycoef
+      - WELD: data[0:3] = anchor, data[3:6] = relpose translation, data[6:10] = relpose quaternion, data[10] = torquescale
+    - eq_active from equality_constraint_enabled
     """
     world, mjc_eq = wp.tid()
     newton_eq = mjc_eq_to_newton_eq[world, mjc_eq]
@@ -1457,25 +1461,6 @@ def update_eq_data_kernel(
         data[10] = eq_constraint_torquescale[newton_eq]
 
     eq_data_out[world, mjc_eq] = data
-
-
-@wp.kernel
-def update_eq_active_kernel(
-    mjc_eq_to_newton_eq: wp.array2d(dtype=wp.int32),
-    eq_constraint_enabled: wp.array(dtype=wp.bool),
-    # outputs
-    eq_active_out: wp.array2d(dtype=wp.bool),
-):
-    """Update MuJoCo equality constraint active status from Newton equality_constraint_enabled.
-
-    Iterates over MuJoCo equality constraints [world, eq], looks up Newton eq constraint,
-    and copies the enabled flag to eq_active.
-    """
-    world, mjc_eq = wp.tid()
-    newton_eq = mjc_eq_to_newton_eq[world, mjc_eq]
-    if newton_eq < 0:
-        return
-
     eq_active_out[world, mjc_eq] = eq_constraint_enabled[newton_eq]
 
 
