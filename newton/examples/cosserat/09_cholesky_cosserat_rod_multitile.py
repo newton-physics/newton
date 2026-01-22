@@ -14,14 +14,18 @@
 # limitations under the License.
 
 ###########################################################################
-# Example Cholesky Cosserat Rod - Multi-Tile
+# Example Cholesky Cosserat Rod - Multi-Tile (3-DOF Tangent Space)
 #
 # Demonstrates a Block-Jacobi approach with Cholesky solving for Position
 # And Orientation Based Cosserat Rods on longer particle chains.
 #
 # This combines:
-#   - Global Cholesky solving from example 05
+#   - Global Cholesky solving with 3-DOF tangent-space from example 08
 #   - Multi-tile Block-Jacobi partitioning from example 01
+#
+# Key difference from examples 07/08_global_cosserat_rod_cholesky:
+#   - Uses full 3×3 constraint formulation (96 scalar DOFs per tile)
+#   - Each constraint row represents one component of the 3D violation
 #
 # For 129 particles with 128 stretch + 127 bend constraints:
 #   - Stretch tiles: 4 tiles of 32 constraints each (96 scalar DOFs per tile)
@@ -32,7 +36,9 @@
 # using atomic operations. Coupling between tiles happens through outer
 # constraint iterations.
 #
-# Command: uv run -m newton.examples cosserat_cholesky_cosserat_rod_multitile
+# STATUS: Partially working - explodes when changing rest shape via UI
+#
+# Command: uv run -m newton.examples cosserat_09_cholesky_cosserat_rod_multitile
 #
 ###########################################################################
 

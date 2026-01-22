@@ -14,10 +14,16 @@
 # limitations under the License.
 
 ###########################################################################
-# Example Cosserat Rod
+# Example Cosserat Rod (Jacobi Iteration)
 #
 # Demonstrates Position And Orientation Based Cosserat Rods using GPU Warp
-# kernels. Implements the constraint solvers from the paper:
+# kernels with iterative Jacobi-style constraint projection.
+#
+# NOTE: Despite the filename suggesting "global", this uses iterative Jacobi
+# projection, NOT a global matrix solve. For true global Cholesky solving,
+# see examples 07/08 (single-tile) or 08/09 (multi-tile Cholesky).
+#
+# Implements the constraint solvers from the paper:
 #   "Position And Orientation Based Cosserat Rods"
 #   by Tassilo Kugelstadt, RWTH Aachen University
 #   https://animation.rwth-aachen.de/publication/0550/
@@ -25,8 +31,15 @@
 # Constraint types:
 #   - Stretch/Shear: gamma = (p1-p0)/L - d3(q) = 0
 #     Couples positions AND quaternions to maintain edge length and alignment
-#   - Bend/Twist: omega = conj(q0)*q1 - restDarboux = 0  
+#   - Bend/Twist: omega = conj(q0)*q1 - restDarboux = 0
 #     Constrains relative rotation via quaternion-based Darboux vector
+#
+# Solver approach (Jacobi-style):
+#   1. All stretch/shear constraints compute corrections in parallel
+#   2. All bend/twist constraints compute corrections in parallel
+#   3. Corrections accumulated via atomic operations
+#   4. Corrections applied in batch
+#   5. Repeat for multiple iterations
 #
 # Each edge has:
 #   - Two endpoint particles (positions)
@@ -35,7 +48,7 @@
 # The material frame is visualized as RGB axes (d1=red, d2=green, d3=blue)
 # where d3 (blue) should align with the edge direction.
 #
-# Command: uv run -m newton.examples basic_global_cosserat_rod
+# Command: uv run -m newton.examples cosserat_04_global_cosserat_rod
 #
 ###########################################################################
 

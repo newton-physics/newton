@@ -14,9 +14,15 @@
 # limitations under the License.
 
 ###########################################################################
-# Example Global Cosserat Rod - Multi-Tile with Internal Friction
+# Example Cosserat Rod with Internal Friction (Jacobi Iteration)
 #
-# Extends example 04 with three internal friction models for Cosserat rods:
+# Extends example 04 with three internal friction models for Cosserat rods.
+#
+# NOTE: Like example 04, this uses iterative Jacobi-style constraint
+# projection, NOT a global matrix solve or tiled Cholesky. The "multi-tile"
+# in the filename refers to the extended chain length (129 particles).
+#
+# Friction Models:
 #
 # 1. Velocity Damping (simplest):
 #    - Directly damps particle velocities: v_new = v * damping_coeff
@@ -33,7 +39,7 @@
 #    - Uses exponential evolution: sigma evolves based on curvature direction
 #    - Parameters: eps_max (friction saturation), tau (memory decay)
 #
-# Command: uv run -m newton.examples.cosserat.06_global_cosserat_rod_multitile_friction
+# Command: uv run -m newton.examples cosserat_05_global_cosserat_rod_multitile_friction
 #
 ###########################################################################
 
@@ -44,11 +50,11 @@ import warp as wp
 import newton
 import newton.examples
 
-# Warp tile configuration
+# Configuration constants (TILE kept for consistency, not used for Cholesky here)
 BLOCK_DIM = 128
-TILE = 32  # 32x32 tile size for Cholesky
+TILE = 32  # Used for sizing, not for tiled Cholesky in this example
 
-# Rod configuration - sized for multi-tile solving
+# Rod configuration - extended chain with 129 particles
 NUM_TILES = 4
 CONSTRAINTS_PER_TILE = 32
 NUM_PARTICLES = NUM_TILES * TILE + 1  # 129 particles

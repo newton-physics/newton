@@ -14,15 +14,20 @@
 # limitations under the License.
 
 ###########################################################################
-# Example Global Cosserat Rod with Cholesky Solve
+# Example Global Cosserat Rod with Cholesky Solve (Scalar Reduction)
 #
 # Demonstrates a TRUE global matrix-based approach for Position And
 # Orientation Based Cosserat Rods using Warp's tile Cholesky decomposition.
-# Unlike the iterative Jacobi approach in examples 03/04, this example
+# Unlike the iterative Jacobi approach in examples 02/04, this example
 # assembles a global system matrix A = J M^{-1} J^T and solves it directly.
 #
 # This guarantees inextensibility (stretch constraint satisfaction) in
 # fewer iterations compared to iterative Jacobi methods.
+#
+# Constraint formulation:
+#   - The 3D constraint violation is reduced to a scalar magnitude
+#   - System matrix is tridiagonal (one row per constraint)
+#   - Stretch and bend solved as separate systems
 #
 # Constraint types:
 #   - Stretch/Shear: gamma = (p1-p0)/L - d3(q) = 0
@@ -31,7 +36,9 @@
 #     Solved via separate global Cholesky system
 #
 # The banded structure of rod constraints (tridiagonal in constraint space)
-# enables efficient O(n) solving via Cholesky factorization.
+# enables efficient solving via Cholesky factorization on a 32×32 tile.
+#
+# For full 3-DOF constraint formulation, see examples 08/09.
 #
 # Command: uv run -m newton.examples cosserat_07_global_cosserat_rod_cholesky
 #

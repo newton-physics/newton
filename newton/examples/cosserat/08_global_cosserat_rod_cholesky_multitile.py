@@ -14,7 +14,7 @@
 # limitations under the License.
 
 ###########################################################################
-# Example Global Cosserat Rod with Cholesky Solve - Multi-Tile
+# Example Global Cosserat Rod with Cholesky Solve - Multi-Tile (Scalar)
 #
 # Demonstrates a Block-Jacobi approach for TRUE global matrix-based solving
 # of Position And Orientation Based Cosserat Rods on longer particle chains.
@@ -22,11 +22,11 @@
 # parallel using Warp's tile Cholesky API.
 #
 # This combines:
-#   - True global Cholesky solving from example 07
+#   - True global Cholesky solving (scalar reduction) from example 07
 #   - Multi-tile Block-Jacobi partitioning from example 01
 #
-# Unlike the iterative Jacobi approach in examples 03/04 which uses atomic
-# operations, this example:
+# Unlike the iterative Jacobi approach in examples 02/04 which uses atomic
+# operations for ALL corrections, this example:
 #   1. Assembles block system matrices A_i = J_i M^{-1} J_i^T per tile
 #   2. Solves each block via Cholesky in parallel
 #   3. Applies corrections (with atomics only at tile boundaries)
@@ -38,6 +38,8 @@
 # For 129 particles with 128 stretch + 127 bend constraints:
 #   - Stretch tiles: 4 tiles of 32 constraints each
 #   - Bend tiles: 4 tiles handling up to 32 constraints each
+#
+# For full 3-DOF constraint formulation (96×96 tiles), see example 09.
 #
 # Command: uv run -m newton.examples cosserat_08_global_cosserat_rod_cholesky_multitile
 #

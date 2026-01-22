@@ -19,11 +19,15 @@
 # Implements a TRUE combined stretch+bend system matching the C++ reference
 # "Direct Position-Based Solver for Stiff Rods" paper.
 #
+# This is the most physically accurate formulation among the examples:
+#   - Stretch and bend constraints are solved together (not sequentially)
+#   - The coupling through shared quaternions is captured in the system matrix
+#
 # Each joint has 6 DOFs:
 #   - 3 DOFs for stretch/shear constraint (position part)
 #   - 3 DOFs for bend/twist constraint (orientation part)
 #
-# The 6x6 block per joint captures the coupling between stretch and bend
+# The 6×6 block per joint captures the coupling between stretch and bend
 # that arises because both constraints affect the edge quaternion:
 #
 #   A_ii = [ K_stretch,     coupling^T ]
@@ -36,7 +40,12 @@
 #
 # This matches Equation (19) and the system structure in the paper.
 #
-# Command: uv run -m newton.examples cosserat_cholesky_cosserat_rod_multitile_combined
+# Comparison with other examples:
+#   - Examples 02/04/05: Jacobi iteration (stretch then bend sequentially)
+#   - Examples 07/08: Cholesky solve (stretch and bend as separate systems)
+#   - This example: Cholesky solve (combined stretch+bend system)
+#
+# Command: uv run -m newton.examples cosserat_09_cholesky_cosserat_rod_multitile_combined
 #
 ###########################################################################
 

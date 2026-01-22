@@ -14,18 +14,30 @@
 # limitations under the License.
 
 ###########################################################################
-# Example Basic Cosserat Rod
+# Example Basic Cosserat Rod (Jacobi Iteration)
 #
 # Demonstrates Position And Orientation Based Cosserat Rods using GPU Warp
-# kernels. Implements the two core constraint solvers from the paper:
-# - Stretch/Shear constraint: enforces edge length and alignment
+# kernels with iterative Jacobi-style constraint projection.
+#
+# Implements the two core constraint solvers from the paper:
+# - Stretch/Shear constraint: enforces edge length and alignment with d3
 # - Bend/Twist constraint: enforces relative rotation via Darboux vector
+#
+# Solver approach (Jacobi-style, NOT Gauss-Seidel):
+#   1. All constraints compute corrections in parallel
+#   2. Corrections accumulated via atomic operations
+#   3. Corrections applied in batch after all constraints processed
+#   4. Repeat for multiple iterations
+#
+# This differs from true Gauss-Seidel which would apply corrections
+# immediately and use updated values for subsequent constraints.
+# Jacobi-style is more GPU-friendly but may need more iterations.
 #
 # Reference: "Position And Orientation Based Cosserat Rods"
 # by Tassilo Kugelstadt, RWTH Aachen University
 # https://animation.rwth-aachen.de/publication/0550/
 #
-# Command: python -m newton.examples basic_cosserat_rod
+# Command: uv run -m newton.examples cosserat_02_local_cosserat_rod
 #
 ###########################################################################
 
@@ -459,9 +471,10 @@ class Example:
         self.edge_rest_length = wp.array(rest_length_np, dtype=float, device=device)
 
         # Rest Darboux vectors (identity rotation between adjacent edges at rest)
-        # For a straight rod, rest Darboux vector is identity quaternion
-        #rest_darboux_np = [wp.quat(0.0, 0.0, 0.0, 1.0)] * self.num_bend_twist
-        rest_darboux_np = [wp.quat(0.0, 0.1, 0.1, 1.0)] * self.num_bend_twist
+        # For a straight rod, rest Darboux vector is identity quaternion (0, 0, 0, 1)
+        # For curved rods, use a normalized quaternion representing the rest curvature
+        # Example: wp.normalize(wp.quat(0.0, 0.1, 0.1, 1.0)) for slight curl
+        rest_darboux_np = [wp.quat(0.0, 0.0, 0.0, 1.0)] * self.num_bend_twist
         self.rest_darboux = wp.array(rest_darboux_np, dtype=wp.quat, device=device)
 
         # Correction accumulators

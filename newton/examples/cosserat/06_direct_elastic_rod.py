@@ -1,10 +1,30 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 #
-# Direct elastic rod example using a Warp tile Cholesky solve to
-# enforce a simplified stretch + bend/twist constraint per joint.
+###########################################################################
+# Example Direct Elastic Rod (Per-Joint Cholesky)
 #
-# Command: uv run -m newton.examples direct_elastic_rod
+# Demonstrates a per-joint direct solver using Warp's tile Cholesky for
+# elastic rod constraints. Each joint has a 6×6 SPD system embedded in
+# an 8×8 tile for Warp's Cholesky decomposition.
+#
+# Per-joint system structure:
+#   - 3 DOFs for stretch constraint (connector position matching)
+#   - 3 DOFs for bend/twist constraint (Darboux vector matching)
+#
+# Unlike global solvers (examples 07-09), this solves each joint
+# independently, which is simpler but doesn't capture the inter-joint
+# coupling that global solvers provide. The coupling is resolved through
+# outer iterations.
+#
+# NOTE: This uses a different formulation than examples 02-05:
+#   - Constraints are defined at joints (between segments) not edges
+#   - Uses segment centers and local connector offsets
+#   - Bend computed via Darboux vector approximation: 2/L * vec(q0* × q1)
+#
+# Command: uv run -m newton.examples cosserat_06_direct_elastic_rod
+#
+###########################################################################
 
 import math
 

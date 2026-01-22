@@ -17,16 +17,28 @@
 # Example Full Cosserat Rod with Block-Tridiagonal Global Solver
 #
 # Implements Position And Orientation Based Cosserat Rods using a global
-# block-tridiagonal solver instead of local Gauss-Seidel iterations.
+# block-tridiagonal solver instead of iterative Jacobi projection.
 #
-# Constraints (per edge k):
-#   - Stretch/Shear (3 DOFs): γ_k = (p_{k+1} - p_k)/L - d3(q_k) = 0
-#   - Bend/Twist (3 DOFs): ω_k = vec(conj(q_k) * q_{k+1} - restDarboux_k) = 0
+# Constraints:
+#   - Stretch/Shear (3 DOFs per edge k): γ_k = (p_{k+1} - p_k)/L - d3(q_k) = 0
+#     Involves: particles k, k+1 and quaternion k
+#   - Bend/Twist (3 DOFs between edges k, k+1): ω_k = vec(conj(q_k) * q_{k+1} - rest) = 0
+#     Involves: quaternions k and k+1
 #
-# Block structure:
-#   - Each block is 6×6 representing [stretch(3), bend(3)] constraints per edge
-#   - Block-tridiagonal system arises from constraint coupling through shared DOFs
-#   - Uses block Thomas algorithm for O(n) direct solve
+# Block structure (6×6 per edge):
+#   - Rows 0-2: stretch/shear constraint for edge k
+#   - Rows 3-5: bend/twist constraint k (between quaternions k and k+1)
+#   - This creates coupling: bend_k shares q_k with stretch_k, and q_{k+1} with stretch_{k+1}
+#
+# IMPORTANT INDEXING NOTE:
+#   - Stretch constraint k involves edge k (particle k to k+1, quaternion k)
+#   - Bend constraint k involves the JUNCTION between edges k and k+1 (quaternions k, k+1)
+#   - The last edge has NO bend constraint after it
+#   - Total: n edges -> n stretch constraints, n-1 bend constraints
+#
+# Uses block Thomas algorithm for O(n) direct solve.
+#
+# STATUS: NOT WORKING - visualization issue, possibly indexing problems
 #
 # Reference: "Position And Orientation Based Cosserat Rods"
 # by Tassilo Kugelstadt, RWTH Aachen University
@@ -380,17 +392,20 @@ def assemble_block_system_kernel(
     """
     Assemble block-tridiagonal system for coupled Cosserat constraints.
 
-    Block structure per edge k:
-      - Rows 0-2: stretch-shear constraint k
-      - Rows 3-5: bend-twist constraint k (between edge k and k+1)
+    Block structure per edge k (6×6 diagonal block D_k):
+      - Rows 0-2: stretch-shear constraint k (involves p_k, p_{k+1}, q_k)
+      - Rows 3-5: bend-twist constraint k (involves q_k, q_{k+1})
+
+    NOTE: The last edge (k = num_edges-1) has no bend constraint after it,
+    so rows 3-5 of D_{num_edges-1} are regularized with identity.
 
     The system matrix A = J M^{-1} J^T + compliance*I
 
-    Coupling arises from:
-      - Stretch k and stretch k+1 share particle k+1
-      - Stretch k and bend k share quaternion q_k
-      - Bend k and stretch k+1 share quaternion q_{k+1}
-      - Bend k and bend k+1 share quaternion q_{k+1}
+    Off-diagonal coupling (L_k, U_k connect blocks k and k+1):
+      - Stretch_k and stretch_{k+1} share particle p_{k+1}
+      - Stretch_k and bend_k both involve q_k (within-block coupling in D_k)
+      - Bend_k and stretch_{k+1} share quaternion q_{k+1}
+      - Bend_k and bend_{k+1} share quaternion q_{k+1}
     """
     # Single-threaded assembly
     eps = 1.0e-8

@@ -14,10 +14,11 @@
 # limitations under the License.
 
 ###########################################################################
-# Example Block-Tridiagonal Cosserat Rod Solver
+# Example Block-Tridiagonal Cosserat Rod Solver (Stretch Only)
 #
-# Demonstrates a block-tridiagonal solver for Cosserat rod constraints
-# where each element has multiple coupled DOFs (stretch-shear + bend-twist).
+# Demonstrates a block-tridiagonal solver for simplified Cosserat rod
+# with only stretch constraints (3 DOFs per element). This is a stepping
+# stone toward full Cosserat (see 03_block_tridiagonal_cosserat_full.py).
 #
 # The system matrix has block-tridiagonal structure:
 #
@@ -26,16 +27,18 @@
 #   [  0  L₂  D₂  U₂  ... ] × [ x₂ ] = [ b₂ ]
 #   [  ⋮           ⋱      ]   [  ⋮ ]   [  ⋮ ]
 #
-# Where each block is BLOCK×BLOCK (e.g., 6×6 for full Cosserat).
+# Where each block is 3×3 (stretch only in this example).
 #
-# Block Thomas Algorithm:
+# Block Thomas Algorithm (O(n) direct solve):
 #   Forward: D'[0] = D[0], for i>0: D'[i] = D[i] - L[i] @ inv(D'[i-1]) @ U[i-1]
 #            b'[0] = b[0], for i>0: b'[i] = b[i] - L[i] @ inv(D'[i-1]) @ b'[i-1]
 #   Back:    x[n-1] = inv(D'[n-1]) @ b'[n-1]
 #            x[i] = inv(D'[i]) @ (b'[i] - U[i] @ x[i+1])
 #
-# This example uses a simplified 3-DOF block (stretch only) for demonstration.
-# Extend BLOCK to 6 for full stretch-shear + bend-twist coupling.
+# NOTE: This example implements stretch constraints only (no bend/twist).
+# For full Cosserat with 6×6 blocks, see 03_block_tridiagonal_cosserat_full.py.
+#
+# STATUS: NOT WORKING - visualization issue, rod not visible after start
 #
 # Command: uv run -m newton.examples cosserat_block_tridiagonal
 #

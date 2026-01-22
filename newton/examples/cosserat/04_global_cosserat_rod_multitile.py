@@ -14,15 +14,15 @@
 # limitations under the License.
 
 ###########################################################################
-# Example Global Cosserat Rod - Multi-Tile
+# Example Cosserat Rod - Extended Chain (Jacobi Iteration)
 #
-# Demonstrates a Block-Jacobi approach for Position And Orientation Based
-# Cosserat Rods on longer particle chains. The rod is partitioned into
-# multiple 32x32 tiles that are solved in parallel using Warp's tile API.
+# Demonstrates Position And Orientation Based Cosserat Rods on longer
+# particle chains using iterative Jacobi-style constraint projection.
 #
-# This combines:
-#   - Cosserat rod physics from example 03 (stretch/shear + bend/twist)
-#   - Multi-tile Block-Jacobi partitioning from example 01
+# NOTE: Despite the filename suggesting "multi-tile", this example does NOT
+# use tiled Cholesky solving. It uses the same Jacobi iteration approach
+# as example 04, just with more particles. For true tiled Cholesky solving,
+# see examples 07/08 (global Cholesky) or 08/09 (multi-tile Cholesky).
 #
 # Constraint types (from Position And Orientation Based Cosserat Rods):
 #   - Stretch/Shear: gamma = (p1-p0)/L - d3(q) = 0
@@ -30,15 +30,17 @@
 #   - Bend/Twist: omega = conj(q0)*q1 - restDarboux = 0
 #     Constrains relative rotation via quaternion-based Darboux vector
 #
-# For 129 particles with 128 stretch + 127 bend constraints:
-#   - Stretch tiles: 4 tiles of 32 constraints each
-#   - Bend tiles: 4 tiles (31, 32, 32, 32 constraints)
+# Solver approach:
+#   1. All stretch/shear constraints compute corrections in parallel
+#   2. All bend/twist constraints compute corrections in parallel
+#   3. Corrections accumulated via atomic operations
+#   4. Corrections applied in batch
+#   5. Repeat for multiple iterations
 #
-# Each tile is solved independently in parallel. Boundary particles/quaternions
-# receive corrections from both adjacent tiles using atomic operations.
-# Coupling between tiles happens through outer constraint iterations.
+# This is Jacobi-style iteration (NOT Gauss-Seidel), suitable for GPU
+# parallelization but requiring more iterations to converge.
 #
-# Command: uv run newton/examples/cosserat/05_global_cosserat_rod_multitile.py
+# Command: uv run -m newton.examples cosserat_04_global_cosserat_rod_multitile
 #
 ###########################################################################
 
@@ -49,12 +51,12 @@ import warp as wp
 import newton
 import newton.examples
 
-# Warp tile configuration
+# Configuration constants (TILE/NUM_TILES kept for consistency with other examples)
 BLOCK_DIM = 128
-TILE = 32  # 32x32 tile size for Cholesky
+TILE = 32  # Used for sizing, not for tiled Cholesky in this example
 
-# Rod configuration - sized for multi-tile solving
-NUM_TILES = 4
+# Rod configuration - extended chain with 129 particles
+NUM_TILES = 4  # Conceptual partitioning (not used for Cholesky tiles here)
 CONSTRAINTS_PER_TILE = 32
 NUM_PARTICLES = NUM_TILES * TILE + 1  # 129 particles
 NUM_STRETCH = NUM_PARTICLES - 1  # 128 stretch constraints

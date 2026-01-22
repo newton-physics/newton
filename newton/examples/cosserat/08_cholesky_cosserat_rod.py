@@ -14,28 +14,35 @@
 # limitations under the License.
 
 ###########################################################################
-# Example Cholesky Cosserat Rod
+# Example Cholesky Cosserat Rod (3-DOF Tangent Space Formulation)
 #
 # Demonstrates a global Cholesky-based solver for Position And Orientation
-# Based Cosserat Rods. Unlike examples 03/04 which use Jacobi iteration,
+# Based Cosserat Rods. Unlike examples 02/04 which use Jacobi iteration,
 # this example assembles and solves the global constraint system using
 # Warp's tile Cholesky decomposition.
 #
+# Key difference from example 07:
+#   - Example 07 reduces 3D constraints to scalar (tridiagonal system)
+#   - This example keeps full 3D constraints (denser coupling)
+#   - Each constraint contributes 3 rows to the system matrix
+#
 # Mathematical formulation (constraint-space):
-#   - Constraint violation: C (vector of all constraint values)
+#   - Constraint violation: C (vector of all constraint values, 3 per constraint)
 #   - Jacobian: J (maps DOF corrections to constraint changes)
 #   - System matrix: A = J M^{-1} J^T + alpha*I (SPD matrix)
 #   - Solve: A * delta_lambda = -C
 #   - Apply corrections: delta_x = M^{-1} J^T delta_lambda
 #
 # The stretch/shear and bend/twist constraints are solved separately:
-#   - Stretch/shear: 16 constraints x 3 = 48 scalar constraints -> 64x64 tile
-#   - Bend/twist: 15 constraints x 3 = 45 scalar constraints -> 64x64 tile
+#   - Stretch/shear: 16 constraints × 3 = 48 scalar constraints -> 64×64 tile
+#   - Bend/twist: 15 constraints × 3 = 45 scalar constraints -> 64×64 tile
 #
 # Uses tangent-space quaternion parameterization (3-DOF angular velocity)
 # instead of 4-DOF quaternion, enabling efficient Jacobian computation.
 #
-# Command: uv run -m newton.examples cosserat_cholesky_cosserat_rod
+# For multi-tile version, see example 09.
+#
+# Command: uv run -m newton.examples cosserat_08_cholesky_cosserat_rod
 #
 ###########################################################################
 
