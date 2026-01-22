@@ -225,17 +225,18 @@ def main(argv=None):
 
     menagerie_assets_to_download = [
         # High-priority robots for menagerie integration tests
-        "apptronik_apollo",
-        "booster_t1",
-        "robotiq_2f85_v4",
-        "shadow_hand",
-        "unitree_g1",
-        "unitree_h1",
-        "universal_robots_ur5e",
-        "wonik_allegro",
+        # TODO: Uncomment when menagerie tests are enabled
+        # "apptronik_apollo",
+        # "booster_t1",
+        # "robotiq_2f85_v4",
+        # "shadow_hand",
+        # "unitree_g1",
+        # "unitree_h1",
+        # "universal_robots_ur5e",
+        # "wonik_allegro",
     ]
 
-    max_workers = max(1, min(args.maxjobs, len(menagerie_assets_to_download)))
+    max_workers = max(1, min(args.maxjobs, len(menagerie_assets_to_download) or 1))
     futures = {}
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         for asset in menagerie_assets_to_download:
