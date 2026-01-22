@@ -258,9 +258,9 @@ def generate_sinusoidal_control_kernel(
     act_idx = i % num_actuators  # type: ignore[operator]
     freq = frequencies[act_idx]
     phase = phases[i]  # phases are stored flat: phases[world_idx * num_actuators + act_idx]
-    two_pi = wp.float32(6.28318530717959)  # 2 * pi
-    val = amplitude * wp.sin(two_pi * freq * t + phase)
-    ctrl_out[i] = wp.clamp(val, wp.float32(-1.0), wp.float32(1.0))
+    two_pi = 6.28318530717959  # 2 * pi
+    val = amplitude * wp.sin(two_pi * freq * t + phase)  # type: ignore[operator]
+    ctrl_out[i] = wp.clamp(val, -1.0, 1.0)  # type: ignore[arg-type]
 
 
 class StructuredControlStrategy(ControlStrategy):
@@ -611,27 +611,20 @@ class TestMenagerieBase(unittest.TestCase):
         newton_state = newton_model.state()
         newton_control = newton_model.control()
 
-        print(f"[DEBUG] Newton model.num_worlds = {newton_model.num_worlds}")
-        print(f"[DEBUG] self.num_worlds = {self.num_worlds}")
-
         # Create Newton's MuJoCo solver (uses warp backend with batched worlds)
         newton_solver = SolverMuJoCo(newton_model)
-
-        print(f"[DEBUG] Newton mjw_data.ctrl.shape = {newton_solver.mjw_data.ctrl.shape}")
-        print(f"[DEBUG] Newton mjw_data.nworld = {newton_solver.mjw_data.nworld}")
 
         # Create native mujoco_warp model/data with same number of worlds
         mj_model, mj_data_native, native_mjw_model, native_mjw_data = self._create_native_mujoco_warp()
 
-        print(f"[DEBUG] Native mjw_data.ctrl.shape = {native_mjw_data.ctrl.shape}")
-        print(f"[DEBUG] Native mjw_data.nworld = {native_mjw_data.nworld}")
-        print(f"[DEBUG] mj_model.nu (num actuators) = {mj_model.nu}")
+        if self.debug_visual:
+            print(f"[DEBUG] Newton model.num_worlds = {newton_model.num_worlds}")
+            print(f"[DEBUG] Newton mjw_data.ctrl.shape = {newton_solver.mjw_data.ctrl.shape}")
+            print(f"[DEBUG] Newton mj_model.nu = {newton_solver.mj_model.nu}")
+            print(f"[DEBUG] Native mjw_data.ctrl.shape = {native_mjw_data.ctrl.shape}")
+            print(f"[DEBUG] Native mj_model.nu = {mj_model.nu}")
 
-        # Also need mj_data for newton viewer
-        mj_data_newton = _mujoco.MjData(mj_model)
-        _mujoco.mj_forward(mj_model, mj_data_newton)
-
-        # Get number of actuators from native model
+        # Get number of actuators from native model (for control generation)
         num_actuators = native_mjw_data.ctrl.shape[1] if native_mjw_data.ctrl.shape[1] > 0 else 0
 
         def print_diff(step_num: int):
@@ -644,16 +637,30 @@ class TestMenagerieBase(unittest.TestCase):
                     continue
                 newton_np = newton_arr.numpy()
                 native_np = native_arr.numpy()
+                # Handle shape mismatch (e.g., ctrl has different sizes due to Newton's 2-actuator-per-DOF)
+                if newton_np.shape != native_np.shape:
+                    print(f"  {field_name}: SHAPE MISMATCH newton={newton_np.shape} vs native={native_np.shape}")
+                    continue
                 max_diff = float(np.max(np.abs(newton_np - native_np)))
                 tol = self.tolerances.get(field_name, 1e-6)
                 status = "OK" if max_diff <= tol else "FAIL"
                 print(f"  {field_name}: max_diff={max_diff:.6e} (tol={tol:.0e}) [{status}]")
 
-        def sync_mjdata_to_viewer(mjw_data: Any, mj_data: Any):
-            """Copy first world from mjw_data to mj_data for viewer."""
+        def sync_newton_to_viewer():
+            """Copy first world from Newton's mjw_data to Newton's mj_data for viewer."""
             assert _mujoco_warp is not None
+            assert _mujoco is not None
             wp.synchronize()
-            _mujoco_warp.get_data_into(mj_data, mj_model, mjw_data)
+            _mujoco_warp.get_data_into(newton_solver.mj_data, newton_solver.mj_model, newton_solver.mjw_data)
+            _mujoco.mj_forward(newton_solver.mj_model, newton_solver.mj_data)
+
+        def sync_native_to_viewer():
+            """Copy first world from native mjw_data to native mj_data for viewer."""
+            assert _mujoco_warp is not None
+            assert _mujoco is not None
+            wp.synchronize()
+            _mujoco_warp.get_data_into(mj_data_native, mj_model, native_mjw_data)
+            _mujoco.mj_forward(mj_model, mj_data_native)
 
         # Visual debug mode: open two viewers for interactive stepping
         if self.debug_visual:
@@ -664,12 +671,16 @@ class TestMenagerieBase(unittest.TestCase):
             print("Commands: Enter=step, q=quit, number=run N steps")
             print("Close either viewer window to exit.\n")
 
-            viewer_newton = mujoco.viewer.launch_passive(mj_model, mj_data_newton, show_left_ui=False)
+            # Newton viewer uses Newton's converted mj_model/mj_data (may have different actuator count)
+            # Native viewer uses original mj_model/mj_data
+            viewer_newton = mujoco.viewer.launch_passive(
+                newton_solver.mj_model, newton_solver.mj_data, show_left_ui=False
+            )
             viewer_native = mujoco.viewer.launch_passive(mj_model, mj_data_native, show_right_ui=False)
 
             # Sync initial state to viewers
-            sync_mjdata_to_viewer(newton_solver.mjw_data, mj_data_newton)
-            sync_mjdata_to_viewer(native_mjw_data, mj_data_native)
+            sync_newton_to_viewer()
+            sync_native_to_viewer()
             viewer_newton.sync()
             viewer_native.sync()
 
@@ -696,17 +707,19 @@ class TestMenagerieBase(unittest.TestCase):
 
                 for _ in range(steps_to_run):
                     t = step * self.dt
+                    # Control is applied to native only (Newton has different actuator count)
+                    # For now, use zero control which works for both
                     ctrl = self.control_strategy.get_control(t, step, self.num_worlds, num_actuators)
-                    newton_solver.mjw_data.ctrl.assign(ctrl)
                     native_mjw_data.ctrl.assign(ctrl)
+                    # Newton's ctrl has different size (2 actuators per DOF), leave at zero for now
 
                     # Step both
                     _mujoco_warp.step(native_mjw_model, native_mjw_data)
                     newton_solver.step(newton_state, newton_state, newton_control, None, self.dt)
 
-                    # Sync to viewers
-                    sync_mjdata_to_viewer(newton_solver.mjw_data, mj_data_newton)
-                    sync_mjdata_to_viewer(native_mjw_data, mj_data_native)
+                    # Sync to viewers using their respective mj_model/mj_data pairs
+                    sync_newton_to_viewer()
+                    sync_native_to_viewer()
                     viewer_newton.sync()
                     viewer_native.sync()
 
