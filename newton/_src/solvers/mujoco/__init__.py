@@ -42,7 +42,7 @@ class CtrlType(IntEnum):
     GENERAL = 2
 
 
-from .solver_mujoco import SolverMuJoCo
+from .solver_mujoco import SolverMuJoCo  # noqa: E402
 
 __all__ = [
     "CtrlSource",

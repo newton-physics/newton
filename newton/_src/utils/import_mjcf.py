@@ -1337,8 +1337,7 @@ def parse_mjcf(
                     ctrl_source_val = CtrlSource.CTRL_DIRECT
                 else:
                     ctrl_source_val = CtrlSource.JOINT_TARGET
-
-                if trntype == 0 and total_dofs > 0:  # TrnType.JOINT
+                if ctrl_source_val == CtrlSource.JOINT_TARGET:
                     for i in range(total_dofs):
                         dof_idx = qd_start + i
                         builder.joint_target_ke[dof_idx] = kp
@@ -1362,8 +1361,7 @@ def parse_mjcf(
                     ctrl_source_val = CtrlSource.CTRL_DIRECT
                 else:
                     ctrl_source_val = CtrlSource.JOINT_TARGET
-                # Update per-DOF arrays only for joint actuators
-                if trntype == 0 and total_dofs > 0:  # TrnType.JOINT
+                if ctrl_source_val == CtrlSource.JOINT_TARGET:
                     for i in range(total_dofs):
                         dof_idx = qd_start + i
                         current_mode = builder.joint_act_mode[dof_idx]

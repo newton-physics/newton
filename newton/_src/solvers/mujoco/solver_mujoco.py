@@ -713,18 +713,6 @@ class SolverMuJoCo(SolverBase):
 
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
-                name="actuator_group",
-                frequency="actuator",
-                assignment=ModelAttributeAssignment.MODEL,
-                dtype=wp.int32,
-                default=0,
-                namespace="mujoco",
-                mjcf_attribute_name="group",
-            )
-        )
-
-        builder.add_custom_attribute(
-            ModelBuilder.CustomAttribute(
                 name="ctrl",
                 frequency="actuator",
                 assignment=ModelAttributeAssignment.CONTROL,
@@ -908,7 +896,7 @@ class SolverMuJoCo(SolverBase):
         """Mapping from MuJoCo actuator to Newton index.
 
         For JOINT_TARGET: sign-encoded DOF index (>=0: position, -1: unmapped, <=-2: velocity with -(idx+2))
-        For CTRL_DIRECT: index into mujoco.ctrl array
+        For CTRL_DIRECT: MJCF-order index into control.mujoco.ctrl array
 
         Shape [nu], dtype int32."""
         self.mjc_mocap_to_newton_jnt: wp.array(dtype=wp.int32, ndim=2) | None = None
@@ -1731,10 +1719,9 @@ class SolverMuJoCo(SolverBase):
         # Track actuator mapping as they're created (indexed by MuJoCo actuator order)
         # ctrl_source: 0=JOINT_TARGET, 1=CTRL_DIRECT
         # to_newton_idx: for JOINT_TARGET: >=0 position DOF, -1 unmapped, <=-2 velocity (DOF = -(val+2))
-        #                for CTRL_DIRECT: index into mujoco.ctrl
+        #                for CTRL_DIRECT: MJCF-order index into control.mujoco.ctrl
         mjc_actuator_ctrl_source_list: list[int] = []
         mjc_actuator_to_newton_idx_list: list[int] = []
-        ctrl_direct_count = 0  # Counter for CTRL_DIRECT actuators
 
         # supported non-fixed joint types in MuJoCo (fixed joints are handled by nesting bodies)
         supported_joint_types = {
@@ -2505,9 +2492,6 @@ class SolverMuJoCo(SolverBase):
                     if hasattr(mujoco_attrs, "actuator_actearly"):
                         actearly = mujoco_attrs.actuator_actearly.numpy()[mujoco_act_idx]
                         general_args["actearly"] = bool(actearly)
-                    if hasattr(mujoco_attrs, "actuator_group"):
-                        group = mujoco_attrs.actuator_group.numpy()[mujoco_act_idx]
-                        general_args["group"] = int(group)
                     if hasattr(mujoco_attrs, "actuator_actdim"):
                         actdim = mujoco_attrs.actuator_actdim.numpy()[mujoco_act_idx]
                         if actdim >= 0:  # -1 means auto
@@ -2525,11 +2509,10 @@ class SolverMuJoCo(SolverBase):
                 general_args["trntype"] = trntype_enum
                 spec.add_actuator(target=target_name, **general_args)
                 mujoco_actuator_mapping[mujoco_act_idx] = actuator_count
-                # CTRL_DIRECT actuators - store template index into mujoco.ctrl
-                # ctrl_direct_count is the per-world index (template), kernel applies world offset
+                # CTRL_DIRECT actuators - store MJCF-order index into control.mujoco.ctrl
+                # mujoco_act_idx is the index in Newton's mujoco:actuator frequency (MJCF order)
                 mjc_actuator_ctrl_source_list.append(1)  # CTRL_DIRECT
-                mjc_actuator_to_newton_idx_list.append(ctrl_direct_count)
-                ctrl_direct_count += 1
+                mjc_actuator_to_newton_idx_list.append(mujoco_act_idx)
                 actuator_count += 1
 
         # Convert actuator mapping lists to warp arrays

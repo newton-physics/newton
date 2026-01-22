@@ -408,6 +408,43 @@ class TestCtrlSourceModes(unittest.TestCase):
 
         # Note: ctrl_type is NOT a custom attribute - it's computed in solver_mujoco
 
+    def test_ctrl_direct_does_not_create_duplicate_actuators(self):
+        """Test that ctrl_direct=True does NOT create duplicate actuators.
+
+        When ctrl_direct=True, actuators should ONLY use the CTRL_DIRECT path
+        (control.mujoco.ctrl), not the JOINT_TARGET path (joint_target_pos/vel).
+        The MuJoCo model should have exactly 1 actuator, not 2.
+        """
+        mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test_ctrl_direct_no_duplicates">
+    <worldbody>
+        <body name="link1" pos="0 0 1">
+            <joint name="joint1" axis="0 0 1" type="hinge"/>
+            <geom type="box" size="0.1 0.1 0.1"/>
+        </body>
+    </worldbody>
+    <actuator>
+        <position name="pos1" joint="joint1" kp="100"/>
+    </actuator>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf_content, ctrl_direct=True)
+        model = builder.finalize()
+        model.ground = False
+
+        # Create solver to build the MuJoCo model
+        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
+
+        # The MuJoCo model should have exactly 1 actuator (from CTRL_DIRECT)
+        # If joint_act_mode was also set, there would be 2 actuators (duplicate)
+        mujoco_nu = solver.mjw_model.nu
+        self.assertEqual(
+            mujoco_nu,
+            1,
+            f"ctrl_direct=True should create exactly 1 actuator, but got {mujoco_nu} (duplicates!)",
+        )
+
 
 class TestGainSynchronization(unittest.TestCase):
     """Test that gains are properly synchronized between Newton and MuJoCo."""
