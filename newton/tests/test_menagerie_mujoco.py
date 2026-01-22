@@ -33,8 +33,6 @@ Each test:
 
 from __future__ import annotations
 
-import select
-import sys
 import time
 import unittest
 from abc import abstractmethod
@@ -537,8 +535,9 @@ class TestMenagerieBase(unittest.TestCase):
     # Model source type (for parametrized testing)
     model_source_type: ModelSourceType = ModelSourceType.MJCF
 
-    # Debug mode: opens dual viewers for interactive stepping
+    # Debug mode: opens viewer for visual debugging
     debug_visual: bool = False
+    debug_view_newton: bool = False  # False=Native, True=Newton
 
     @classmethod
     def setUpClass(cls):
@@ -603,7 +602,7 @@ class TestMenagerieBase(unittest.TestCase):
         Each world receives different controls (varied by phase/noise).
         Uses CUDA graphs when available for performance.
 
-        If debug_visual=True, opens dual MuJoCo viewers for interactive debugging.
+        If debug_visual=True, opens MuJoCo viewer (set debug_view_newton to choose view).
         """
         assert _mujoco is not None
         assert _mujoco_warp is not None
@@ -665,133 +664,55 @@ class TestMenagerieBase(unittest.TestCase):
             _mujoco_warp.get_data_into(mj_data_native, mj_model, native_mjw_data)
             _mujoco.mj_forward(mj_model, mj_data_native)
 
-        # Visual debug mode: single viewer that can toggle between Newton and Native
+        # Visual debug mode: auto-run with viewer
         if self.debug_visual:
             import mujoco.viewer  # noqa: PLC0415
 
-            print("\n=== VISUAL DEBUG MODE ===")
-            print("Single viewer - toggle between Newton and Native views")
-            print("Terminal commands:")
-            print("  Enter  = step both simulations")
-            print("  t      = toggle view (Newton <-> Native)")
-            print("  <num>  = run N steps")
-            print("  run    = run continuously")
-            print("  q      = quit")
-            print("Close viewer window to exit.\n")
+            # Choose view: set debug_view_newton = True to show Newton, False for Native
+            view_name = "NEWTON" if self.debug_view_newton else "NATIVE"
+            print(f"\n=== VISUAL DEBUG MODE ({view_name}) ===")
+            print("Close viewer to exit.\n")
 
-            # Start with Native view (uses original MJCF structure)
-            showing_newton = False
-            viewer = mujoco.viewer.launch_passive(mj_model, mj_data_native)
-
-            # Sync initial state
-            sync_native_to_viewer()
+            if self.debug_view_newton:
+                viewer = mujoco.viewer.launch_passive(newton_solver.mj_model, newton_solver.mj_data)
+                sync_newton_to_viewer()
+            else:
+                viewer = mujoco.viewer.launch_passive(mj_model, mj_data_native)
+                sync_native_to_viewer()
             viewer.sync()
 
-            print("Step -1 (initial) - showing NATIVE:")
+            print("Initial state:")
             print_diff(-1)
 
             step = 0
-            paused = True
-            print("\n[PAUSED - NATIVE] Enter=step, t=toggle, q=quit")
+            max_steps = 500
+
+            while viewer.is_running() and step < max_steps:
+                t = step * self.dt
+                ctrl = self.control_strategy.get_control(t, step, self.num_worlds, num_actuators)
+                native_mjw_data.ctrl.assign(ctrl)
+
+                _mujoco_warp.step(native_mjw_model, native_mjw_data)
+                newton_solver.step(newton_state, newton_state, newton_control, None, self.dt)
+
+                if self.debug_view_newton:
+                    sync_newton_to_viewer()
+                else:
+                    sync_native_to_viewer()
+                viewer.sync()
+                step += 1
+
+                if step % 50 == 0:
+                    print(f"Step {step}:")
+                    print_diff(step - 1)
+
+                time.sleep(self.dt)
+
+            print(f"\nFinal ({step} steps):")
+            print_diff(step - 1)
 
             while viewer.is_running():
-                # Check for terminal input (non-blocking on Unix)
-                cmd = None
-                if sys.stdin in select.select([sys.stdin], [], [], 0.01)[0]:
-                    try:
-                        cmd = sys.stdin.readline().strip().lower()
-                    except Exception:
-                        pass
-
-                if cmd == "q":
-                    break
-                elif cmd == "t":
-                    # Toggle view - need to close and reopen with different model
-                    showing_newton = not showing_newton
-                    viewer.close()
-                    time.sleep(0.1)  # Small delay for cleanup
-
-                    if showing_newton:
-                        viewer = mujoco.viewer.launch_passive(newton_solver.mj_model, newton_solver.mj_data)
-                        sync_newton_to_viewer()
-                        print(f"[Switched to NEWTON view at step {step}]")
-                    else:
-                        viewer = mujoco.viewer.launch_passive(mj_model, mj_data_native)
-                        sync_native_to_viewer()
-                        print(f"[Switched to NATIVE view at step {step}]")
-                    viewer.sync()
-
-                elif cmd == "run":
-                    paused = False
-                    view_name = "NEWTON" if showing_newton else "NATIVE"
-                    print(f"[RUNNING - {view_name}] Press Enter to pause")
-                elif cmd == "":  # Enter pressed
-                    if paused:
-                        # Single step both simulations
-                        t = step * self.dt
-                        ctrl = self.control_strategy.get_control(t, step, self.num_worlds, num_actuators)
-                        native_mjw_data.ctrl.assign(ctrl)
-
-                        _mujoco_warp.step(native_mjw_model, native_mjw_data)
-                        newton_solver.step(newton_state, newton_state, newton_control, None, self.dt)
-
-                        # Sync whichever view is active
-                        if showing_newton:
-                            sync_newton_to_viewer()
-                        else:
-                            sync_native_to_viewer()
-                        viewer.sync()
-
-                        step += 1
-                        view_name = "NEWTON" if showing_newton else "NATIVE"
-                        print(f"Step {step - 1} ({view_name}):")
-                        print_diff(step - 1)
-                    else:
-                        paused = True
-                        view_name = "NEWTON" if showing_newton else "NATIVE"
-                        print(f"[PAUSED - {view_name} at step {step}]")
-                elif cmd and cmd.isdigit():
-                    # Run N steps
-                    for _ in range(int(cmd)):
-                        t = step * self.dt
-                        ctrl = self.control_strategy.get_control(t, step, self.num_worlds, num_actuators)
-                        native_mjw_data.ctrl.assign(ctrl)
-
-                        _mujoco_warp.step(native_mjw_model, native_mjw_data)
-                        newton_solver.step(newton_state, newton_state, newton_control, None, self.dt)
-
-                        if showing_newton:
-                            sync_newton_to_viewer()
-                        else:
-                            sync_native_to_viewer()
-                        viewer.sync()
-                        step += 1
-
-                    view_name = "NEWTON" if showing_newton else "NATIVE"
-                    print(f"After step {step - 1} ({view_name}):")
-                    print_diff(step - 1)
-                    paused = True
-                    print(f"[PAUSED - {view_name}]")
-
-                if not paused:
-                    # Continuous run mode
-                    t = step * self.dt
-                    ctrl = self.control_strategy.get_control(t, step, self.num_worlds, num_actuators)
-                    native_mjw_data.ctrl.assign(ctrl)
-
-                    _mujoco_warp.step(native_mjw_model, native_mjw_data)
-                    newton_solver.step(newton_state, newton_state, newton_control, None, self.dt)
-
-                    if showing_newton:
-                        sync_newton_to_viewer()
-                    else:
-                        sync_native_to_viewer()
-                    viewer.sync()
-                    step += 1
-
-                    time.sleep(self.dt)  # Real-time pacing
-
-                time.sleep(0.001)  # Small sleep to prevent CPU spin
+                time.sleep(0.1)
 
             viewer.close()
             self.skipTest("Visual debug mode completed")
@@ -1026,7 +947,8 @@ class TestMenagerie_UniversalRobotsUr5e(TestMenagerieBase):
     floating = False
     control_strategy = ZeroControlStrategy()
     num_worlds = 1  # For debugging
-    debug_visual = True  # Enable dual-viewer debugging
+    debug_visual = True  # Enable viewer
+    debug_view_newton = True  # False=Native, True=Newton
 
 
 class TestMenagerie_UniversalRobotsUr10e(TestMenagerieBase):
