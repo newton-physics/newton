@@ -1446,7 +1446,6 @@ class TestImportMjcf(unittest.TestCase):
 
         # Robot B with impratio=2.0
         robot_b = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(robot_b)
         robot_b.add_mjcf("""
 <mujoco>
     <option impratio="2.0"/>
@@ -1461,7 +1460,6 @@ class TestImportMjcf(unittest.TestCase):
 
         # Merge into main builder
         main = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(main)
         main.add_world(robot_a)
         main.add_world(robot_b)
         model = main.finalize()
