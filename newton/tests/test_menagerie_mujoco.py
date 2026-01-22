@@ -521,7 +521,7 @@ class TestMenagerieBase(unittest.TestCase):
     floating: bool = True
 
     # Configurable defaults
-    num_worlds: int = 2
+    num_worlds: int = 16
     num_steps: int = 100
     dt: float = 0.002
 
