@@ -535,8 +535,8 @@ class TestMenagerieBase(unittest.TestCase):
     compare_fields: list[str] = DEFAULT_COMPARE_FIELDS
     tolerances: dict[str, float] = DEFAULT_TOLERANCES
 
-    # Skip reason (set to None to enable test)
-    skip_reason: str | None = "Not yet implemented"
+    # Skip reason (set to a string to skip test, leave unset or None to run)
+    skip_reason: str | None = None
 
     # Model source type (for parametrized testing)
     model_source_type: ModelSourceType = ModelSourceType.MJCF
@@ -847,7 +847,6 @@ class TestMenagerie_UniversalRobotsUr5e(TestMenagerieBase):
     robot_folder = "universal_robots_ur5e"
     robot_xml = "ur5e.xml"
     floating = False
-    skip_reason = None
 
 
 class TestMenagerie_UniversalRobotsUr10e(TestMenagerieBase):
