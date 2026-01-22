@@ -67,6 +67,7 @@ from .kernels import (
     update_mocap_transforms_kernel,
     update_model_properties_kernel,
     update_shape_mappings_kernel,
+    update_tendon_properties_kernel,
 )
 
 if TYPE_CHECKING:
@@ -474,6 +475,218 @@ class SolverMuJoCo(SolverBase):
             )
         )
 
+        # --- Fixed Tendon attributes (variable-length, from MJCF <tendon><fixed> tag) ---
+        # Fixed tendons compute length as a linear combination of joint positions.
+        # Only tendons from the template world are used; MuJoCo replicates them across worlds.
+
+        # Tendon-level attributes (one per tendon)
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="tendon_world",
+                frequency="tendon",
+                dtype=wp.int32,
+                default=0,
+                namespace="mujoco",
+                references="world",
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="tendon_stiffness",
+                frequency="tendon",
+                dtype=wp.float32,
+                default=0.0,
+                namespace="mujoco",
+                mjcf_attribute_name="stiffness",
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="tendon_damping",
+                frequency="tendon",
+                dtype=wp.float32,
+                default=0.0,
+                namespace="mujoco",
+                mjcf_attribute_name="damping",
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="tendon_frictionloss",
+                frequency="tendon",
+                dtype=wp.float32,
+                default=0.0,
+                namespace="mujoco",
+                mjcf_attribute_name="frictionloss",
+            )
+        )
+
+        def parse_limited(value: str) -> int:
+            """Parse MuJoCo limited attribute: false=0, true=1, auto=2."""
+            v = value.lower().strip()
+            if v in ("false", "0"):
+                return 0
+            if v in ("true", "1"):
+                return 1
+            if v in ("auto", "2"):
+                return 2
+            return int(value)
+
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="tendon_limited",
+                frequency="tendon",
+                dtype=wp.int32,
+                default=2,  # 0=false, 1=true, 2=auto
+                namespace="mujoco",
+                mjcf_attribute_name="limited",
+                mjcf_value_transformer=parse_limited,
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="tendon_range",
+                frequency="tendon",
+                dtype=wp.vec2,
+                default=wp.vec2(0.0, 0.0),
+                namespace="mujoco",
+                mjcf_attribute_name="range",
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="tendon_margin",
+                frequency="tendon",
+                dtype=wp.float32,
+                default=0.0,
+                namespace="mujoco",
+                mjcf_attribute_name="margin",
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="tendon_solref_limit",
+                frequency="tendon",
+                dtype=wp.vec2,
+                default=wp.vec2(0.02, 1.0),
+                namespace="mujoco",
+                mjcf_attribute_name="solreflimit",
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="tendon_solimp_limit",
+                frequency="tendon",
+                dtype=vec5,
+                default=vec5(0.9, 0.95, 0.001, 0.5, 2.0),
+                namespace="mujoco",
+                mjcf_attribute_name="solimplimit",
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="tendon_solref_friction",
+                frequency="tendon",
+                dtype=wp.vec2,
+                default=wp.vec2(0.02, 1.0),
+                namespace="mujoco",
+                mjcf_attribute_name="solreffriction",
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="tendon_solimp_friction",
+                frequency="tendon",
+                dtype=vec5,
+                default=vec5(0.9, 0.95, 0.001, 0.5, 2.0),
+                namespace="mujoco",
+                mjcf_attribute_name="solimpfriction",
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="tendon_armature",
+                frequency="tendon",
+                dtype=wp.float32,
+                default=0.0,
+                namespace="mujoco",
+                mjcf_attribute_name="armature",
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="tendon_springlength",
+                frequency="tendon",
+                dtype=wp.vec2,
+                default=wp.vec2(-1.0, -1.0),  # -1 means use default (model length)
+                namespace="mujoco",
+                mjcf_attribute_name="springlength",
+            )
+        )
+        # Addressing into joint arrays (one per tendon)
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="tendon_joint_adr",
+                frequency="tendon",
+                dtype=wp.int32,
+                default=0,
+                namespace="mujoco",
+                references="mujoco:tendon_joint",  # Offset by joint entry count during merge
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="tendon_joint_num",
+                frequency="tendon",
+                dtype=wp.int32,
+                default=0,
+                namespace="mujoco",
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="tendon_actuator_force_range",
+                frequency="tendon",
+                dtype=wp.vec2,
+                default=wp.vec2(0.0, 0.0),
+                namespace="mujoco",
+                mjcf_attribute_name="actuatorfrcrange",
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="tendon_actuator_force_limited",
+                frequency="tendon",
+                dtype=wp.int32,
+                default=2,  # 0=false, 1=true, 2=auto
+                namespace="mujoco",
+                mjcf_attribute_name="actuatorfrclimited",
+                mjcf_value_transformer=parse_limited,
+            )
+        )
+
+        # Joint arrays (one entry per joint in a fixed tendon's linear combination)
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="tendon_joint",
+                frequency="tendon_joint",
+                dtype=wp.int32,
+                default=-1,
+                namespace="mujoco",
+                references="joint",  # Offset by joint count during merge
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="tendon_coef",
+                frequency="tendon_joint",
+                dtype=wp.float32,
+                default=0.0,
+                namespace="mujoco",
+                mjcf_attribute_name="coef",
+            )
+        )
+
     def _init_pairs(self, model: Model, spec, shape_mapping: dict[int, str], template_world: int) -> None:
         """
         Initialize MuJoCo contact pairs from custom attributes.
@@ -557,6 +770,261 @@ class SolverMuJoCo(SolverBase):
                 pair_kwargs["friction"] = pair_friction[i].tolist()
 
             spec.add_pair(**pair_kwargs)
+
+    @staticmethod
+    def _validate_tendon_attributes(model: Model) -> tuple[int, int]:
+        """
+        Validate that all tendon attributes have consistent lengths.
+
+        Args:
+            model: The Newton model to validate.
+
+        Returns:
+            tuple[int, int]: (tendon_count, wrap_count) - number of tendons and total wraps defined.
+
+        Raises:
+            ValueError: If tendon attributes have inconsistent lengths.
+        """
+        mujoco_attrs = getattr(model, "mujoco", None)
+        if mujoco_attrs is None:
+            return 0, 0
+
+        # Tendon-level attributes
+        tendon_attr_names = [
+            "tendon_world",
+            "tendon_stiffness",
+            "tendon_damping",
+            "tendon_frictionloss",
+            "tendon_limited",
+            "tendon_range",
+            "tendon_margin",
+            "tendon_actuator_force_limited",
+            "tendon_actuator_force_range",
+            "tendon_solref_limit",
+            "tendon_solimp_limit",
+            "tendon_solref_friction",
+            "tendon_solimp_friction",
+            "tendon_springlength",
+            "tendon_armature",
+            "tendon_joint_adr",
+            "tendon_joint_num",
+        ]
+
+        # If the list above has N parameters then each tendon should have exactly N parameters.
+        # Count the number of parameters that we have for each tendon.
+        # Each entry in the array of counts should be N.
+        # We can then extract the number of unique entries in our array of counts.
+        # The number of unique entries should be 1 because every entry should be N.
+        # If the number of unique entries is not 1 then we are missing an attribute on at least one tendon.
+        tendon_lengths: dict[str, int] = {}
+        for name in tendon_attr_names:
+            attr = getattr(mujoco_attrs, name, None)
+            if attr is not None:
+                tendon_lengths[name] = len(attr)
+        if not tendon_lengths:
+            return 0, 0
+        # Check all tendon-level lengths are the same
+        unique_tendon_lengths = set(tendon_lengths.values())
+        if len(unique_tendon_lengths) > 1:
+            raise ValueError(
+                f"MuJoCo tendon attributes have inconsistent lengths: {tendon_lengths}. "
+                "All tendon-level attributes must have the same number of elements."
+            )
+
+        # Compute the number of tendons.
+        tendon_count = next(iter(unique_tendon_lengths))
+
+        # Attributes per joint in the tendon that allow the tendon length to
+        # be calculated as a linear sum of coefficient and joint position.
+        # For each joint in a tendon (specified by joint index) there must be a corresponding coefficient.
+        joint_attr_names = ["tendon_joint", "tendon_coef"]
+        joint_lengths: dict[str, int] = {}
+        for name in joint_attr_names:
+            attr = getattr(mujoco_attrs, name, None)
+            if attr is not None:
+                joint_lengths[name] = len(attr)
+        if not joint_lengths:
+            return tendon_count, 0
+        # Check all joint-level lengths are the same
+        unique_joint_lengths = set(joint_lengths.values())
+        if len(unique_joint_lengths) > 1:
+            raise ValueError(
+                f"MuJoCo tendon joint attributes have inconsistent lengths: {joint_lengths}. "
+                "All joint-level attributes must have the same number of elements."
+            )
+
+        # Count the length of the array of all joint indices and the
+        # length of the array of all coefficients.
+        joint_entry_count = next(iter(unique_joint_lengths))
+
+        return tendon_count, joint_entry_count
+
+    def _init_tendons(self, model: Model, spec, joint_mapping: dict[int, str], template_world: int) -> list[int]:
+        """
+        Initialize MuJoCo fixed tendons from custom attributes.
+
+        Only tendons belonging to the template world are added to the MuJoCo spec.
+        MuJoCo will replicate these tendons across all worlds automatically.
+
+        Args:
+            model: The Newton model.
+            spec: The MuJoCo spec to add tendons to.
+            joint_mapping: Mapping from Newton joint index to MuJoCo joint name.
+            template_world: The world index to use as the template (typically first_group).
+
+        Returns:
+            list[int]: List of Newton tendon indices that were added to MuJoCo (in order).
+        """
+
+        # Count the number of tendons (tendon_count)
+        # Count the length of the arrays that contains the joint indices of all tendons (joint_entry_count)
+        tendon_count, joint_entry_count = self._validate_tendon_attributes(model)
+        if tendon_count == 0:
+            return []
+
+        mujoco_attrs = model.mujoco
+
+        # Get tendon arrays
+        tendon_world = mujoco_attrs.tendon_world.numpy()
+        tendon_stiffness = getattr(mujoco_attrs, "tendon_stiffness", None)
+        tendon_stiffness_np = tendon_stiffness.numpy() if tendon_stiffness is not None else None
+        tendon_damping = getattr(mujoco_attrs, "tendon_damping", None)
+        tendon_damping_np = tendon_damping.numpy() if tendon_damping is not None else None
+        tendon_frictionloss = getattr(mujoco_attrs, "tendon_frictionloss", None)
+        tendon_frictionloss_np = tendon_frictionloss.numpy() if tendon_frictionloss is not None else None
+        tendon_limited = getattr(mujoco_attrs, "tendon_limited", None)
+        tendon_limited_np = tendon_limited.numpy() if tendon_limited is not None else None
+        tendon_range = getattr(mujoco_attrs, "tendon_range", None)
+        tendon_range_np = tendon_range.numpy() if tendon_range is not None else None
+        tendon_actuator_force_limited = getattr(mujoco_attrs, "tendon_actuator_force_limited", None)
+        tendon_actuator_force_limited_np = (
+            tendon_actuator_force_limited.numpy() if tendon_actuator_force_limited is not None else None
+        )
+        tendon_actuator_force_range = getattr(mujoco_attrs, "tendon_actuator_force_range", None)
+        tendon_actuator_force_range_np = (
+            tendon_actuator_force_range.numpy() if tendon_actuator_force_range is not None else None
+        )
+        tendon_margin = getattr(mujoco_attrs, "tendon_margin", None)
+        tendon_margin_np = tendon_margin.numpy() if tendon_margin is not None else None
+        tendon_solref_limit = getattr(mujoco_attrs, "tendon_solref_limit", None)
+        tendon_solref_limit_np = tendon_solref_limit.numpy() if tendon_solref_limit is not None else None
+        tendon_solimp_limit = getattr(mujoco_attrs, "tendon_solimp_limit", None)
+        tendon_solimp_limit_np = tendon_solimp_limit.numpy() if tendon_solimp_limit is not None else None
+        tendon_solref_friction = getattr(mujoco_attrs, "tendon_solref_friction", None)
+        tendon_solref_friction_np = tendon_solref_friction.numpy() if tendon_solref_friction is not None else None
+        tendon_solimp_friction = getattr(mujoco_attrs, "tendon_solimp_friction", None)
+        tendon_solimp_friction_np = tendon_solimp_friction.numpy() if tendon_solimp_friction is not None else None
+        tendon_armature = getattr(mujoco_attrs, "tendon_armature", None)
+        tendon_armature_np = tendon_armature.numpy() if tendon_armature is not None else None
+        tendon_springlength = getattr(mujoco_attrs, "tendon_springlength", None)
+        tendon_springlength_np = tendon_springlength.numpy() if tendon_springlength is not None else None
+        tendon_joint_adr = mujoco_attrs.tendon_joint_adr.numpy()
+        tendon_joint_num = mujoco_attrs.tendon_joint_num.numpy()
+
+        # Get joint arrays (for the linear combination)
+        tendon_joint = mujoco_attrs.tendon_joint.numpy() if joint_entry_count > 0 else None
+        tendon_coef = mujoco_attrs.tendon_coef.numpy() if joint_entry_count > 0 else None
+
+        model_joint_type_np = model.joint_type.numpy()
+
+        # Track which Newton tendon indices are added to MuJoCo
+        selected_tendons: list[int] = []
+
+        for i in range(tendon_count):
+            # Only include tendons from the template world or global tendons (world < 0)
+            tw = int(tendon_world[i])
+            if tw != template_world and tw >= 0:
+                continue
+
+            # Track this tendon
+            selected_tendons.append(i)
+
+            # Create tendon
+            t = spec.add_tendon()
+
+            # Set tendon properties
+            if tendon_stiffness_np is not None:
+                t.stiffness = float(tendon_stiffness_np[i])
+            if tendon_damping_np is not None:
+                t.damping = float(tendon_damping_np[i])
+            if tendon_frictionloss_np is not None:
+                t.frictionloss = float(tendon_frictionloss_np[i])
+            if tendon_limited_np is not None:
+                t.limited = int(tendon_limited_np[i])
+            if tendon_range_np is not None:
+                t.range = tendon_range_np[i].tolist()
+            if tendon_actuator_force_limited_np is not None:
+                t.actfrclimited = int(tendon_actuator_force_limited_np[i])
+            if tendon_actuator_force_range_np is not None:
+                t.actfrcrange = tendon_actuator_force_range_np[i].tolist()
+            if tendon_margin_np is not None:
+                t.margin = float(tendon_margin_np[i])
+            if tendon_armature_np is not None:
+                t.armature = float(tendon_armature_np[i])
+            if tendon_solref_limit_np is not None:
+                t.solref_limit = tendon_solref_limit_np[i].tolist()
+            if tendon_solimp_limit_np is not None:
+                t.solimp_limit = tendon_solimp_limit_np[i].tolist()
+            if tendon_solref_friction_np is not None:
+                t.solref_friction = tendon_solref_friction_np[i].tolist()
+            if tendon_solimp_friction_np is not None:
+                t.solimp_friction = tendon_solimp_friction_np[i].tolist()
+            if tendon_springlength_np is not None:
+                val = tendon_springlength_np[i]
+                has_automatic_length_computation = val[0] == -1.0
+                has_dead_zone = val[1] >= val[0]
+                if has_automatic_length_computation:
+                    # The spring length is automatically computed from
+                    # start state. In this mode it is not possible to
+                    # author a dead zone.
+                    t.springlength[0] = -1.0
+                    t.springlength[1] = -1.0
+                elif has_dead_zone:
+                    # Set a finite dead zone.
+                    t.springlength[0] = val[0]
+                    t.springlength[1] = val[1]
+                else:
+                    # Set a dead zone of zero width
+                    t.springlength[0] = val[0]
+                    t.springlength[1] = val[0]
+
+            # Add joints for this fixed tendon's linear combination
+            joint_start = int(tendon_joint_adr[i])
+            joint_num = int(tendon_joint_num[i])
+
+            for j in range(joint_start, joint_start + joint_num):
+                if tendon_joint is None or tendon_coef is None:
+                    break
+
+                newton_joint = int(tendon_joint[j])
+                coef = float(tendon_coef[j])
+
+                if newton_joint < 0:
+                    warnings.warn(
+                        f"Skipping joint entry {j} for tendon {i}: invalid joint index {newton_joint}.",
+                        stacklevel=2,
+                    )
+                    continue
+
+                if model_joint_type_np[newton_joint] == JointType.D6:
+                    warnings.warn(
+                        f"Skipping joint entry {j} for tendon {i}: invalid D6 joint type {newton_joint}.",
+                        stacklevel=2,
+                    )
+                    continue
+
+                joint_name = joint_mapping.get(newton_joint)
+                if joint_name is None:
+                    warnings.warn(
+                        f"Skipping joint entry {j} for tendon {i}: Newton joint {newton_joint} "
+                        f"not found in MuJoCo joint mapping.",
+                        stacklevel=2,
+                    )
+                    continue
+
+                t.wrap_joint(joint_name, coef)
+
+        return selected_tendons
 
     def __init__(
         self,
@@ -656,6 +1124,10 @@ class SolverMuJoCo(SolverBase):
         see :attr:`mjc_eq_to_newton_eq` for the corresponding equality constraint index.
 
         Shape [nworld, neq], dtype int32."""
+        self.mjc_tendon_to_newton_tendon: wp.array(dtype=wp.int32, ndim=2) | None = None
+        """Mapping from MuJoCo [world, tendon] to Newton tendon index.
+
+        Shape [nworld, ntendon], dtype int32."""
 
         # --- Conditional/lazy mappings ---
         self.newton_shape_to_mjc_geom: wp.array(dtype=wp.int32) | None = None
@@ -834,6 +1306,8 @@ class SolverMuJoCo(SolverBase):
             self.update_model_properties()
         if flags & SolverNotifyFlags.EQUALITY_CONSTRAINT_PROPERTIES:
             self.update_eq_properties()
+        if flags & SolverNotifyFlags.TENDON_PROPERTIES:
+            self.update_tendon_properties()
 
     def _create_inverse_shape_mapping(self):
         """
@@ -1465,6 +1939,8 @@ class SolverMuJoCo(SolverBase):
         body_mapping = {-1: 0}
         # mapping from Newton shape id to MuJoCo geom name
         shape_mapping = {}
+        # Store mapping from Newton joint index to MuJoCo joint name
+        joint_mapping = {}
         # track mocap index for each Newton body (dict: newton_body_id -> mocap_index)
         newton_body_to_mocap_index = {}
         # counter for assigning sequential mocap indices
@@ -1733,6 +2209,9 @@ class SolverMuJoCo(SolverBase):
                 while name in joint_names:
                     joint_names[name] += 1
                     name = f"{name}_{joint_names[name]}"
+
+            # Store mapping from Newton joint index to MuJoCo joint name
+            joint_mapping[j] = name
 
             joint_mjc_dof_start[j] = num_dofs
 
@@ -2055,6 +2534,9 @@ class SolverMuJoCo(SolverBase):
         # add explicit contact pairs from custom attributes
         self._init_pairs(model, spec, shape_mapping, first_world)
 
+        # add fixed tendons from custom attributes
+        selected_tendons = self._init_tendons(model, spec, joint_mapping, first_world)
+
         self.mj_model = spec.compile()
         self.mj_data = mujoco.MjData(self.mj_model)
 
@@ -2261,6 +2743,25 @@ class SolverMuJoCo(SolverBase):
             self.mjc_eq_to_newton_eq = wp.array(mjc_eq_to_newton_eq_np, dtype=wp.int32)
             self.mjc_eq_to_newton_jnt = wp.array(mjc_eq_to_newton_jnt_np, dtype=wp.int32)
 
+            # Create mjc_tendon_to_newton_tendon: MuJoCo[world, tendon] -> Newton tendon
+            # selected_tendons[idx] is the Newton template tendon index
+            ntendon = self.mj_model.ntendon
+            if ntendon > 0:
+                # Get tendon count per world from custom attributes
+                mujoco_attrs = getattr(model, "mujoco", None)
+                tendon_world = getattr(mujoco_attrs, "tendon_world", None) if mujoco_attrs else None
+                if tendon_world is not None:
+                    total_tendons = len(tendon_world)
+                    tendons_per_world = total_tendons // model.num_worlds if model.num_worlds > 0 else total_tendons
+                else:
+                    tendons_per_world = ntendon
+                mjc_tendon_to_newton_tendon_np = np.full((nworld, ntendon), -1, dtype=np.int32)
+                for mjc_tendon, newton_tendon in enumerate(selected_tendons):
+                    template_tendon = newton_tendon % tendons_per_world if tendons_per_world > 0 else newton_tendon
+                    for w in range(nworld):
+                        mjc_tendon_to_newton_tendon_np[w, mjc_tendon] = w * tendons_per_world + template_tendon
+                self.mjc_tendon_to_newton_tendon = wp.array(mjc_tendon_to_newton_tendon_np, dtype=wp.int32)
+
             # set mjwarp-only settings
             self.mjw_model.opt.ls_parallel = ls_parallel
 
@@ -2370,12 +2871,21 @@ class SolverMuJoCo(SolverBase):
             # "pair_margin",
             # "pair_gap",
             # "pair_friction",
-            # "tendon_solref_lim",
-            # "tendon_solimp_lim",
-            # "tendon_range",
-            # "tendon_margin",
-            # "tendon_length0",
-            # "tendon_invweight0",
+            "tendon_world",
+            "tendon_solref_lim",
+            "tendon_solimp_lim",
+            "tendon_solref_fri",
+            "tendon_solimp_fri",
+            "tendon_range",
+            "tendon_actfrcrange",
+            "tendon_margin",
+            "tendon_stiffness",
+            "tendon_damping",
+            "tendon_armature",
+            "tendon_frictionloss",
+            "tendon_lengthspring",
+            # "tendon_length0",            # Autocomputed and auto-replicated by mujoco
+            # "tendon_invweight0",         # Autocomputed and auto-replicated by mujoco
             # "mat_rgba",
         }
 
@@ -2727,6 +3237,74 @@ class SolverMuJoCo(SolverBase):
             outputs=[
                 self.mjw_model.eq_data,
                 self.mjw_data.eq_active,
+            ],
+            device=self.model.device,
+        )
+
+    def update_tendon_properties(self):
+        """Update fixed tendon properties in the MuJoCo model.
+
+        Updates tendon stiffness, damping, frictionloss, range, margin, solref, solimp,
+        armature, and actfrcrange from Newton custom attributes.
+        """
+        if self.mjc_tendon_to_newton_tendon is None:
+            return
+
+        ntendon = self.mj_model.ntendon
+        if ntendon == 0:
+            return
+
+        num_worlds = self.mjc_tendon_to_newton_tendon.shape[0]
+
+        # Get custom attributes for tendons
+        mujoco_attrs = getattr(self.model, "mujoco", None)
+        if mujoco_attrs is None:
+            return
+
+        # Get tendon custom attributes (may be None if not defined)
+        # Note: tendon_springlength is NOT updated at runtime because it has special
+        # initialization semantics in MuJoCo (value -1.0 means auto-compute from initial state).
+        tendon_stiffness = getattr(mujoco_attrs, "tendon_stiffness", None)
+        tendon_damping = getattr(mujoco_attrs, "tendon_damping", None)
+        tendon_frictionloss = getattr(mujoco_attrs, "tendon_frictionloss", None)
+        tendon_range = getattr(mujoco_attrs, "tendon_range", None)
+        tendon_margin = getattr(mujoco_attrs, "tendon_margin", None)
+        tendon_solref_limit = getattr(mujoco_attrs, "tendon_solref_limit", None)
+        tendon_solimp_limit = getattr(mujoco_attrs, "tendon_solimp_limit", None)
+        tendon_solref_friction = getattr(mujoco_attrs, "tendon_solref_friction", None)
+        tendon_solimp_friction = getattr(mujoco_attrs, "tendon_solimp_friction", None)
+        tendon_armature = getattr(mujoco_attrs, "tendon_armature", None)
+        tendon_actfrcrange = getattr(mujoco_attrs, "tendon_actuator_force_range", None)
+
+        wp.launch(
+            update_tendon_properties_kernel,
+            dim=(num_worlds, ntendon),
+            inputs=[
+                self.mjc_tendon_to_newton_tendon,
+                tendon_stiffness,
+                tendon_damping,
+                tendon_frictionloss,
+                tendon_range,
+                tendon_margin,
+                tendon_solref_limit,
+                tendon_solimp_limit,
+                tendon_solref_friction,
+                tendon_solimp_friction,
+                tendon_armature,
+                tendon_actfrcrange,
+            ],
+            outputs=[
+                self.mjw_model.tendon_stiffness,
+                self.mjw_model.tendon_damping,
+                self.mjw_model.tendon_frictionloss,
+                self.mjw_model.tendon_range,
+                self.mjw_model.tendon_margin,
+                self.mjw_model.tendon_solref_lim,
+                self.mjw_model.tendon_solimp_lim,
+                self.mjw_model.tendon_solref_fri,
+                self.mjw_model.tendon_solimp_fri,
+                self.mjw_model.tendon_armature,
+                self.mjw_model.tendon_actfrcrange,
             ],
             device=self.model.device,
         )
