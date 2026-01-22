@@ -22,10 +22,11 @@ from typing import Any
 import warp as wp
 
 from ...core.types import vec5
-from ...sim import JointType
+from ...sim import EqType, JointType
 
 # Custom vector types
 vec10 = wp.types.vector(length=10, dtype=wp.float32)
+vec11 = wp.types.vector(length=11, dtype=wp.float32)
 
 
 # Constants
@@ -1387,7 +1388,6 @@ def update_eq_properties_kernel(
     if eq_solimp:
         eq_solimp_out[world, mjc_eq] = eq_solimp[newton_eq]
 
-
 @wp.kernel
 def update_tendon_properties_kernel(
     mjc_tendon_to_newton_tendon: wp.array2d(dtype=wp.int32),
@@ -1451,6 +1451,80 @@ def update_tendon_properties_kernel(
         tendon_armature_out[world, mjc_tendon] = tendon_armature[newton_tendon]
     if tendon_actfrcrange:
         tendon_actfrcrange_out[world, mjc_tendon] = tendon_actfrcrange[newton_tendon]
+
+@wp.kernel
+def update_eq_data_and_active_kernel(
+    mjc_eq_to_newton_eq: wp.array2d(dtype=wp.int32),
+    # Newton equality constraint data
+    eq_constraint_type: wp.array(dtype=wp.int32),
+    eq_constraint_anchor: wp.array(dtype=wp.vec3),
+    eq_constraint_relpose: wp.array(dtype=wp.transform),
+    eq_constraint_polycoef: wp.array2d(dtype=wp.float32),
+    eq_constraint_torquescale: wp.array(dtype=wp.float32),
+    eq_constraint_enabled: wp.array(dtype=wp.bool),
+    # outputs
+    eq_data_out: wp.array2d(dtype=vec11),
+    eq_active_out: wp.array2d(dtype=wp.bool),
+):
+    """Update MuJoCo equality constraint data and active status from Newton properties.
+
+    Iterates over MuJoCo equality constraints [world, eq], looks up Newton eq constraint,
+    and copies:
+    - eq_data based on constraint type:
+      - CONNECT: data[0:3] = anchor
+      - JOINT: data[0:5] = polycoef
+      - WELD: data[0:3] = anchor, data[3:6] = relpose translation, data[6:10] = relpose quaternion, data[10] = torquescale
+    - eq_active from equality_constraint_enabled
+    """
+    world, mjc_eq = wp.tid()
+    newton_eq = mjc_eq_to_newton_eq[world, mjc_eq]
+    if newton_eq < 0:
+        return
+
+    constraint_type = eq_constraint_type[newton_eq]
+
+    # Initialize output data
+    data = vec11(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+
+    if constraint_type == int(EqType.CONNECT):
+        # CONNECT: data[0:3] = anchor
+        anchor = eq_constraint_anchor[newton_eq]
+        data[0] = anchor[0]
+        data[1] = anchor[1]
+        data[2] = anchor[2]
+
+    elif constraint_type == int(EqType.JOINT):
+        # JOINT: data[0:5] = polycoef
+        for i in range(5):
+            data[i] = eq_constraint_polycoef[newton_eq, i]
+
+    elif constraint_type == int(EqType.WELD):
+        # WELD: data[0:3] = anchor
+        anchor = eq_constraint_anchor[newton_eq]
+        data[0] = anchor[0]
+        data[1] = anchor[1]
+        data[2] = anchor[2]
+
+        # data[3:6] = relpose translation
+        relpose = eq_constraint_relpose[newton_eq]
+        pos = wp.transform_get_translation(relpose)
+        data[3] = pos[0]
+        data[4] = pos[1]
+        data[5] = pos[2]
+
+        # data[6:10] = relpose quaternion in MuJoCo order (wxyz)
+        # Newton stores as xyzw, MuJoCo expects wxyz
+        quat = wp.transform_get_rotation(relpose)
+        data[6] = quat[3]  # w
+        data[7] = quat[0]  # x
+        data[8] = quat[1]  # y
+        data[9] = quat[2]  # z
+
+        # data[10] = torquescale
+        data[10] = eq_constraint_torquescale[newton_eq]
+
+    eq_data_out[world, mjc_eq] = data
+    eq_active_out[world, mjc_eq] = eq_constraint_enabled[newton_eq]
 
 
 @wp.kernel

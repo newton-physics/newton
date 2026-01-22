@@ -59,6 +59,7 @@ from .kernels import (
     update_body_inertia_kernel,
     update_body_mass_ipos_kernel,
     update_dof_properties_kernel,
+    update_eq_data_and_active_kernel,
     update_eq_properties_kernel,
     update_geom_properties_kernel,
     update_jnt_properties_kernel,
@@ -2856,7 +2857,7 @@ class SolverMuJoCo(SolverBase):
             # "light_pos0",
             "eq_solref",
             "eq_solimp",
-            # "eq_data",
+            "eq_data",
             # "actuator_dynprm",
             "actuator_gainprm",
             "actuator_biasprm",
@@ -3174,7 +3175,14 @@ class SolverMuJoCo(SolverBase):
                 )
 
     def update_eq_properties(self):
-        """Update equality constraint properties including solref in the MuJoCo model.
+        """Update equality constraint properties in the MuJoCo model.
+
+        Updates:
+
+        - eq_solref/eq_solimp from MuJoCo custom attributes (if set)
+        - eq_data from Newton's equality_constraint_anchor, equality_constraint_relpose,
+          equality_constraint_polycoef, equality_constraint_torquescale
+        - eq_active from Newton's equality_constraint_enabled
 
         .. note::
 
@@ -3212,6 +3220,26 @@ class SolverMuJoCo(SolverBase):
                 ],
                 device=self.model.device,
             )
+
+        # Update eq_data and eq_active from Newton equality constraint properties
+        wp.launch(
+            update_eq_data_and_active_kernel,
+            dim=(num_worlds, neq),
+            inputs=[
+                self.mjc_eq_to_newton_eq,
+                self.model.equality_constraint_type,
+                self.model.equality_constraint_anchor,
+                self.model.equality_constraint_relpose,
+                self.model.equality_constraint_polycoef,
+                self.model.equality_constraint_torquescale,
+                self.model.equality_constraint_enabled,
+            ],
+            outputs=[
+                self.mjw_model.eq_data,
+                self.mjw_data.eq_active,
+            ],
+            device=self.model.device,
+        )
 
     def update_tendon_properties(self):
         """Update fixed tendon properties in the MuJoCo model.
@@ -3280,6 +3308,7 @@ class SolverMuJoCo(SolverBase):
             ],
             device=self.model.device,
         )
+
 
     def _validate_model_for_separate_worlds(self, model: Model) -> None:
         """Validate that the Newton model is compatible with MuJoCo's separate_worlds mode.

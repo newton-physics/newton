@@ -218,16 +218,16 @@ def compute_particle_bvh_bounds(
     if bvh_index_local >= num_particles:
         return
 
-    shape_index = bvh_index_local
+    particle_index = bvh_index_local
 
-    world_index = particle_world_index[shape_index]
+    world_index = particle_world_index[particle_index]
     if world_index < 0:
         world_index = num_worlds + world_index
 
     if world_index >= num_worlds:
         return
 
-    lower, upper = compute_sphere_bounds(particle_position[shape_index], particle_radius[shape_index])
+    lower, upper = compute_sphere_bounds(particle_position[particle_index], particle_radius[particle_index])
 
     out_bvh_lowers[bvh_index_local] = lower
     out_bvh_uppers[bvh_index_local] = upper
