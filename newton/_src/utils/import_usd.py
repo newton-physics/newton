@@ -1062,23 +1062,24 @@ def parse_usd(
                     body_density[body_path] = density
             # <--- Marking for deprecation
 
+    # Collect joint descriptions regardless of whether articulations are authored.
+    for key, value in ret_dict.items():
+        if key in {
+            UsdPhysics.ObjectType.FixedJoint,
+            UsdPhysics.ObjectType.RevoluteJoint,
+            UsdPhysics.ObjectType.PrismaticJoint,
+            UsdPhysics.ObjectType.SphericalJoint,
+            UsdPhysics.ObjectType.D6Joint,
+            UsdPhysics.ObjectType.DistanceJoint,
+        }:
+            paths, joint_specs = value
+            for path, joint_spec in zip(paths, joint_specs, strict=False):
+                joint_descriptions[str(path)] = joint_spec
+
     # maps from articulation_id to bool indicating if self-collisions are enabled
     articulation_has_self_collision = {}
 
     if UsdPhysics.ObjectType.Articulation in ret_dict:
-        for key, value in ret_dict.items():
-            if key in {
-                UsdPhysics.ObjectType.FixedJoint,
-                UsdPhysics.ObjectType.RevoluteJoint,
-                UsdPhysics.ObjectType.PrismaticJoint,
-                UsdPhysics.ObjectType.SphericalJoint,
-                UsdPhysics.ObjectType.D6Joint,
-                UsdPhysics.ObjectType.DistanceJoint,
-            }:
-                paths, joint_specs = value
-                for path, joint_spec in zip(paths, joint_specs, strict=False):
-                    joint_descriptions[str(path)] = joint_spec
-
         paths, articulation_descs = ret_dict[UsdPhysics.ObjectType.Articulation]
 
         articulation_id = builder.articulation_count
@@ -1313,6 +1314,8 @@ def parse_usd(
                 default=enable_self_collisions,
             )
             articulation_id += 1
+    no_articulations = UsdPhysics.ObjectType.Articulation not in ret_dict
+    has_joints = bool(joint_descriptions)
 
     # insert remaining bodies that were not part of any articulation so far
     for path, rigid_body_desc in body_specs.items():
@@ -1323,9 +1326,22 @@ def parse_usd(
             incoming_xform=incoming_world_xform,
             add_body_to_builder=True,
         )
-        # add articulation and free joint for this body
-        joint_id = builder.add_joint_free(child=body_id)
-        builder.add_articulation([joint_id], key=key)
+        if not (no_articulations and has_joints):
+            # add articulation and free joint for this body
+            joint_id = builder.add_joint_free(child=body_id)
+            builder.add_articulation([joint_id], key=key)
+
+    if no_articulations and has_joints:
+        for joint_key, joint_desc in joint_descriptions.items():
+            if any(re.match(p, joint_key) for p in ignore_paths):
+                continue
+            if str(joint_desc.body0) in ignored_body_paths or str(joint_desc.body1) in ignored_body_paths:
+                continue
+            try:
+                parse_joint(joint_desc)
+            except ValueError as exc:
+                if verbose:
+                    print(f"Skipping joint {joint_key}: {exc}")
 
     # parse shapes attached to the rigid bodies
     path_collision_filters = set()
@@ -1608,8 +1624,9 @@ def parse_usd(
                     )
 
     # add free joints to floating bodies that's just been added by import_usd
-    new_bodies = path_body_map.values()
-    builder.add_free_joints_to_floating_bodies(new_bodies)
+    if not (no_articulations and has_joints):
+        new_bodies = path_body_map.values()
+        builder.add_free_joints_to_floating_bodies(new_bodies)
 
     # collapsing fixed joints to reduce the number of simulated bodies connected by fixed joints.
     collapse_results = None
