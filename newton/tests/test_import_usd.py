@@ -79,6 +79,18 @@ def Xform "Root" (
         self.assertEqual(len(collision_shapes), 13)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_import_non_articulated_joints(self):
+        builder = newton.ModelBuilder()
+
+        asset_path = newton.examples.get_asset("boxes_fourbar.usda")
+        builder.add_usd(asset_path)
+
+        self.assertEqual(builder.body_count, 4)
+        self.assertEqual(builder.joint_type.count(newton.JointType.REVOLUTE), 4)
+        self.assertEqual(builder.joint_type.count(newton.JointType.FREE), 0)
+        self.assertTrue(all(art_id == -1 for art_id in builder.joint_articulation))
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_import_articulation_parent_offset(self):
         from pxr import Usd  # noqa: PLC0415
 

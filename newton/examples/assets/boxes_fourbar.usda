@@ -1,0 +1,263 @@
+#usda 1.0
+(
+    doc = """Authored manually for testing purposes."""
+    defaultPrim = "boxes_fourbar"
+    timeCodesPerSecond = 1000
+    kilogramsPerUnit = 1
+    metersPerUnit = 1
+    upAxis = "Z"
+)
+
+def PhysicsScene "World"
+{
+    float physics:gravityMagnitude = 9.8067
+    vector3f physics:gravityDirection = (0, 0, -1)
+}
+
+def Xform "boxes_fourbar"
+{
+    def Scope "RigidBodies"
+    {
+        def Xform "body_1" (
+            prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI"]
+        )
+        {
+            # Body Frame
+            quatf xformOp:orient = (1, 0, 0, 0)
+            double3 xformOp:translate = (0.0, 0.0, 0.004999999888241291)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient"]
+
+            # Body Velocities
+            vector3f physics:linearVelocity = (0, 0, 0)
+            vector3f physics:angularVelocity = (0, 0, 0)
+
+            # Mass Properties
+            float physics:mass = 1.0
+            point3f physics:centerOfMass = (0, 0, 0)
+            float3 physics:diagonalInertia = (1.6666666851961054e-05, 0.0008416666532866657, 0.0008416666532866657)
+            quatf physics:principalAxes = (1, 0, 0, 0)
+
+            def Scope "Geometry"
+            {
+                def Cube "box_1" (
+                    prepend apiSchemas = ["PhysicsCollisionAPI", "PhysicsMeshCollisionAPI"]
+                )
+                {
+                    float3[] extent = [(-1, -1, -1), (1, 1, 1)]
+                    float3 xformOp:scale = (0.05, 0.005, 0.005)
+                    quatf xformOp:orient = (1, 0, 0, 0)
+                    double3 xformOp:translate = (0, 0, 0)
+                    uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+                }
+            }
+        }
+
+        def Xform "body_2" (
+            prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI"]
+        )
+        {
+            # Body Frame
+            quatf xformOp:orient = (1, 0, 0, 0)
+            double3 xformOp:translate = (0.0560000017285347, 0.0, 0.061000000685453415)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient"]
+
+            # Body Velocities
+            vector3f physics:linearVelocity = (0, 0, 0)
+            vector3f physics:angularVelocity = (0, 0, 0)
+
+            # Mass Properties
+            float physics:mass = 1.0
+            point3f physics:centerOfMass = (0, 0, 0)
+            float3 physics:diagonalInertia = (0.0008416666532866657, 0.0008416666532866657, 1.6666666851961054e-05)
+            quatf physics:principalAxes = (1, 0, 0, 0)
+
+            def Scope "Geometry"
+            {
+                def Cube "box_2" (
+                    prepend apiSchemas = ["PhysicsCollisionAPI", "PhysicsMeshCollisionAPI"]
+                )
+                {
+                    float3[] extent = [(-1, -1, -1), (1, 1, 1)]
+                    float3 xformOp:scale = (0.005, 0.005, 0.05)
+                    quatf xformOp:orient = (1, 0, 0, 0)
+                    double3 xformOp:translate = (0, 0, 0)
+                    uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+                }
+            }
+        }
+
+        def Xform "body_3" (
+            prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI"]
+        )
+        {
+            # Body Frame
+            quatf xformOp:orient = (1, 0, 0, 0)
+            double3 xformOp:translate = (0.0, 0.0, 0.11700000613927841)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient"]
+
+            # Body Velocities
+            vector3f physics:linearVelocity = (0, 0, 0)
+            vector3f physics:angularVelocity = (0, 0, 0)
+
+            # Mass Properties
+            float physics:mass = 1.0
+            point3f physics:centerOfMass = (0, 0, 0)
+            float3 physics:diagonalInertia = (1.6666666851961054e-05, 0.0008416666532866657, 0.0008416666532866657)
+            quatf physics:principalAxes = (1, 0, 0, 0)
+
+            def Scope "Geometry"
+            {
+                def Cube "box_3" (
+                    prepend apiSchemas = ["PhysicsCollisionAPI", "PhysicsMeshCollisionAPI"]
+                )
+                {
+                    float3[] extent = [(-1, -1, -1), (1, 1, 1)]
+                    float3 xformOp:scale = (0.05, 0.005, 0.005)
+                    quatf xformOp:orient = (1, 0, 0, 0)
+                    double3 xformOp:translate = (0, 0, 0)
+                    uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+                }
+            }
+        }
+
+        def Xform "body_4" (
+            prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI"]
+        )
+        {
+            # Body Frame
+            quatf xformOp:orient = (1, 0, 0, 0)
+            double3 xformOp:translate = (-0.0560000017285347, 0.0, 0.061000000685453415)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient"]
+
+            # Body Velocities
+            vector3f physics:linearVelocity = (0, 0, 0)
+            vector3f physics:angularVelocity = (0, 0, 0)
+
+            # Mass Properties
+            float physics:mass = 1.0
+            point3f physics:centerOfMass = (0, 0, 0)
+            float3 physics:diagonalInertia = (0.0008416666532866657, 0.0008416666532866657, 1.6666666851961054e-05)
+            quatf physics:principalAxes = (1, 0, 0, 0)
+
+            def Scope "Geometry"
+            {
+                def Cube "box_4" (
+                    prepend apiSchemas = ["PhysicsCollisionAPI", "PhysicsMeshCollisionAPI"]
+                )
+                {
+                    float3[] extent = [(-1, -1, -1), (1, 1, 1)]
+                    float3 xformOp:scale = (0.005, 0.005, 0.05)
+                    quatf xformOp:orient = (1, 0, 0, 0)
+                    double3 xformOp:translate = (0, 0, 0)
+                    uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+                }
+            }
+        }
+    }
+
+    def Scope "Joints"
+    {
+        def PhysicsRevoluteJoint "joint_1" (
+            prepend apiSchemas = ["PhysicsDriveAPI:angular"]
+        )
+        {
+            uniform token physics:axis = "Y"
+            rel physics:body0 = </boxes_fourbar/RigidBodies/body_1>
+            rel physics:body1 = </boxes_fourbar/RigidBodies/body_2>
+            point3f physics:localPos0 = (0.0560000017285347, 0.0, 0.0)
+            point3f physics:localPos1 = (0.0, 0.0, -0.0560000017285347)
+            quatf physics:localRot0 = (1, 0, 0, 0)
+            quatf physics:localRot1 = (1, 0, 0, 0)
+            float physics:lowerLimit = -45.0
+            float physics:upperLimit = 45
+            float drive:angular:physics:maxForce = inf
+            uniform token drive:angular:physics:type = "force"
+        }
+
+        def PhysicsRevoluteJoint "joint_2"
+        {
+            uniform token physics:axis = "Y"
+            rel physics:body0 = </boxes_fourbar/RigidBodies/body_2>
+            rel physics:body1 = </boxes_fourbar/RigidBodies/body_3>
+            point3f physics:localPos0 = (0.0, 0.0, 0.056000005453825)
+            point3f physics:localPos1 = (0.0560000017285347, 0.0, 0.0)
+            quatf physics:localRot0 = (1, 0, 0, 0)
+            quatf physics:localRot1 = (1, 0, 0, 0)
+            float physics:lowerLimit = -45.0
+            float physics:upperLimit = 45
+        }
+
+        def PhysicsRevoluteJoint "joint_3" (
+            prepend apiSchemas = ["PhysicsDriveAPI:angular"]
+        )
+        {
+            uniform token physics:axis = "Y"
+            rel physics:body0 = </boxes_fourbar/RigidBodies/body_3>
+            rel physics:body1 = </boxes_fourbar/RigidBodies/body_4>
+            point3f physics:localPos0 = (-0.0560000017285347, 0.0, 0.0)
+            point3f physics:localPos1 = (0.0, 0.0, 0.056000005453825)
+            quatf physics:localRot0 = (1, 0, 0, 0)
+            quatf physics:localRot1 = (1, 0, 0, 0)
+            float physics:lowerLimit = -45.0
+            float physics:upperLimit = 45
+            float drive:angular:physics:maxForce = inf
+            uniform token drive:angular:physics:type = "force"
+        }
+
+        def PhysicsRevoluteJoint "joint_4"
+        {
+            uniform token physics:axis = "Y"
+            rel physics:body0 = </boxes_fourbar/RigidBodies/body_4>
+            rel physics:body1 = </boxes_fourbar/RigidBodies/body_1>
+            point3f physics:localPos0 = (0.0, 0.0, -0.0560000017285347)
+            point3f physics:localPos1 = (-0.0560000017285347, 0.0, 0.0)
+            quatf physics:localRot0 = (1, 0, 0, 0)
+            quatf physics:localRot1 = (1, 0, 0, 0)
+            float physics:lowerLimit = -45.0
+            float physics:upperLimit = 45
+        }
+    }
+
+    def Scope "StaticGeometry"
+    {
+        def Cube "plane" (
+            # NOTE: "MaterialBindingAPI" is required for the material binding to work.
+            prepend apiSchemas = ["PhysicsCollisionAPI", "PhysicsMeshCollisionAPI", "MaterialBindingAPI"]
+        )
+        {
+            float3[] extent = [(-1, -1, -1), (1, 1, 1)]
+
+            float3 xformOp:scale = (0.5, 0.5, 0.05)
+            quatf xformOp:orient = (1, 0, 0, 0)
+            double3 xformOp:translate = (0, 0, -0.05)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+
+            rel material:binding:physics = </boxes_nunchaku/Materials/Concrete> (
+                bindMaterialAs = "weakerThanDescendants"
+            )
+
+            color3f[] primvars:displayColor = [(0.8, 0.8, 0.8)]
+        }
+    }
+
+    def Scope "Meshes"
+    {
+    }
+
+    def Scope "Materials"
+    {
+    }
+
+    def PhysicsCollisionGroup "Collisions"
+    {
+        rel collection:colliders:includes = [
+            </boxes_fourbar/RigidBodies/body_1>,
+            </boxes_fourbar/RigidBodies/body_2>,
+            </boxes_fourbar/RigidBodies/body_3>,
+            </boxes_fourbar/RigidBodies/body_4>,
+        ]
+        rel physics:filteredGroups = </boxes_fourbar/Collisions>
+    }
+}
+
+
