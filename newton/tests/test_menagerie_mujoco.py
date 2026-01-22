@@ -45,6 +45,7 @@ import warp as wp
 import newton
 from newton._src.utils.download_assets import download_git_folder
 from newton.solvers import SolverMuJoCo
+from newton.tests.unittest_utils import CheckOutput
 
 # Check for mujoco availability via SolverMuJoCo's lazy import mechanism
 try:
@@ -339,35 +340,36 @@ DEFAULT_TOLERANCES: dict[str, float] = {
 DEFAULT_COMPARE_FIELDS: list[str] = ["qpos", "qvel"]
 
 
-def compare_mjdata(
+@wp.kernel
+def compare_arrays_kernel(
+    newton_arr: wp.array(dtype=wp.float64),  # type: ignore[valid-type]
+    native_arr: wp.array(dtype=wp.float64),  # type: ignore[valid-type]
+    tol: float,
+):
+    """Compare two 1D arrays element-wise, fail on first mismatch."""
+    i = wp.tid()
+    newton_val = newton_arr[i]
+    native_val = native_arr[i]
+    wp.expect_near(newton_val, native_val, tol)
+
+
+def compare_mjdata_gpu(
     newton_mjw_data: Any,
     native_mjw_data: Any,
-    step: int,
-    world_idx: int = 0,
-    fields: list[str] | None = None,
-    tolerances: dict[str, float] | None = None,
-) -> tuple[bool, list[str]]:
+    fields: list[str],
+    tolerances: dict[str, float],
+) -> None:
     """
-    Compare MjWarpData from Newton's SolverMuJoCo against native mujoco_warp.
+    Compare MjWarpData arrays directly on GPU using Warp kernels.
 
-    Both sides have the same batched structure: arrays have shape [num_worlds, ...].
+    Compares all worlds in parallel. Fails on first mismatch via wp.expect_near.
 
     Args:
         newton_mjw_data: MjWarpData from SolverMuJoCo
         native_mjw_data: MjWarpData from native mujoco_warp
-        step: Current step number
-        world_idx: Which world to compare
-        fields: Fields to compare (default: ["qpos", "qvel"])
-        tolerances: Per-field tolerances (default: see DEFAULT_TOLERANCES)
-
-    Returns:
-        (passed, errors) tuple where errors is a list of error messages
+        fields: Fields to compare
+        tolerances: Per-field tolerances
     """
-    fields = fields or DEFAULT_COMPARE_FIELDS
-    tolerances = {**DEFAULT_TOLERANCES, **(tolerances or {})}
-
-    errors: list[str] = []
-
     for field_name in fields:
         tol = tolerances.get(field_name, 1e-6)
 
@@ -377,31 +379,18 @@ def compare_mjdata(
         if newton_arr is None or native_arr is None:
             continue
 
-        # Convert to numpy if needed (warp arrays)
-        if hasattr(newton_arr, "numpy"):
-            newton_arr = newton_arr.numpy()
-        if hasattr(native_arr, "numpy"):
-            native_arr = native_arr.numpy()
-
-        newton_arr = np.asarray(newton_arr)
-        native_arr = np.asarray(native_arr)
-
-        # Select the specific world (first dimension is world index)
-        newton_world = newton_arr[world_idx].flatten()
-        native_world = native_arr[world_idx].flatten()
-
-        if len(newton_world) != len(native_world):
-            errors.append(f"step {step}, {field_name}: size mismatch ({len(newton_world)} vs {len(native_world)})")
+        if newton_arr.size == 0:
             continue
 
-        if len(newton_world) == 0:
-            continue
+        # Flatten arrays for comparison
+        newton_flat = newton_arr.flatten()
+        native_flat = native_arr.flatten()
 
-        max_error = float(np.max(np.abs(newton_world - native_world)))
-        if max_error > tol:
-            errors.append(f"step {step}, {field_name}: max error {max_error:.2e} > {tol:.2e}")
-
-    return len(errors) == 0, errors
+        wp.launch(
+            compare_arrays_kernel,
+            dim=newton_flat.size,
+            inputs=[newton_flat, native_flat, tol],
+        )
 
 
 # =============================================================================
@@ -577,69 +566,61 @@ class TestMenagerieBase(unittest.TestCase):
 
         newton_graph = None
         native_graph = None
-        all_errors: list[str] = []
 
-        def compare_step(step: int):
-            """Compare mjw_data arrays for all worlds at the given step."""
-            for world_idx in range(self.num_worlds):
-                passed, errors = compare_mjdata(
-                    newton_solver.mjw_data,
-                    native_mjw_data,
-                    step,
-                    world_idx,
-                    fields=self.compare_fields,
-                    tolerances=self.tolerances,
-                )
-                if not passed:
-                    all_errors.extend([f"world {world_idx}: {e}" for e in errors])
+        def compare_step():
+            """Compare mjw_data arrays for all worlds on GPU."""
+            compare_mjdata_gpu(
+                newton_solver.mjw_data,
+                native_mjw_data,
+                fields=self.compare_fields,
+                tolerances=self.tolerances,
+            )
 
-        # Step 0: Run normally and capture graphs
-        ctrl = self.control_strategy.get_control(0, 0, self.num_worlds, num_actuators)
-        newton_solver.mjw_data.ctrl.assign(ctrl)
-        native_mjw_data.ctrl.assign(ctrl)
+        # Use CheckOutput to capture wp.expect_near failures
+        with CheckOutput(self):
+            # Compare initial state before any step
+            compare_step()
 
-        if use_cuda_graph:
-            # Capture Newton graph (step 0 runs during capture)
-            with wp.ScopedCapture() as capture:
-                newton_solver.step(newton_state, newton_state, newton_control, None, self.dt)
-            newton_graph = capture.graph
-
-            # Capture native graph (step 0 runs during capture)
-            with wp.ScopedCapture() as capture:
-                _mujoco_warp.step(native_mjw_model, native_mjw_data)
-            native_graph = capture.graph
-        else:
-            _mujoco_warp.step(native_mjw_model, native_mjw_data)
-            newton_solver.step(newton_state, newton_state, newton_control, None, self.dt)
-
-        # Compare after step 0
-        compare_step(0)
-
-        # Steps 1+: Use captured graphs
-        for step in range(1, self.num_steps):
-            t = step * self.dt
-
-            # Generate control: shape (num_worlds, num_actuators)
-            ctrl = self.control_strategy.get_control(t, step, self.num_worlds, num_actuators)
+            # Step 0: Run normally and capture graphs
+            ctrl = self.control_strategy.get_control(0, 0, self.num_worlds, num_actuators)
             newton_solver.mjw_data.ctrl.assign(ctrl)
             native_mjw_data.ctrl.assign(ctrl)
 
-            # Step both using mujoco_warp
-            if newton_graph and native_graph:
-                wp.capture_launch(native_graph)
-                wp.capture_launch(newton_graph)
+            if use_cuda_graph:
+                # Capture Newton graph (step 0 runs during capture)
+                with wp.ScopedCapture() as capture:
+                    newton_solver.step(newton_state, newton_state, newton_control, None, self.dt)
+                newton_graph = capture.graph
+
+                # Capture native graph (step 0 runs during capture)
+                with wp.ScopedCapture() as capture:
+                    _mujoco_warp.step(native_mjw_model, native_mjw_data)
+                native_graph = capture.graph
             else:
                 _mujoco_warp.step(native_mjw_model, native_mjw_data)
                 newton_solver.step(newton_state, newton_state, newton_control, None, self.dt)
 
-            compare_step(step)
+            # Compare after step 0
+            compare_step()
 
-        # Report failures
-        if all_errors:
-            msg = "\n".join(all_errors[:20])
-            if len(all_errors) > 20:
-                msg += f"\n... and {len(all_errors) - 20} more errors"
-            self.fail(f"Simulation mismatch:\n{msg}")
+            # Steps 1+: Use captured graphs
+            for step in range(1, self.num_steps):
+                t = step * self.dt
+
+                # Generate control: shape (num_worlds, num_actuators)
+                ctrl = self.control_strategy.get_control(t, step, self.num_worlds, num_actuators)
+                newton_solver.mjw_data.ctrl.assign(ctrl)
+                native_mjw_data.ctrl.assign(ctrl)
+
+                # Step both using mujoco_warp
+                if newton_graph and native_graph:
+                    wp.capture_launch(native_graph)
+                    wp.capture_launch(newton_graph)
+                else:
+                    _mujoco_warp.step(native_mjw_model, native_mjw_data)
+                    newton_solver.step(newton_state, newton_state, newton_control, None, self.dt)
+
+                compare_step()
 
 
 # =============================================================================
