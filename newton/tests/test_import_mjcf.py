@@ -1579,8 +1579,7 @@ class TestImportMjcf(unittest.TestCase):
         the initial joint state (qpos0) using: tendon_length = coeff0 * q0 + coeff1 * q1.
         The computed value is stored in tendon_length0.
 
-        We set model.joint_q before the SolverMuJoCo constructor to ensure the spring
-        length is computed from non-zero initial positions.
+        We set qpos0 using joint "ref" values in mjcf.
         """
         mjcf = """<?xml version="1.0" ?>
 <mujoco>
