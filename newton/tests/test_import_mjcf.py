@@ -1416,7 +1416,6 @@ class TestImportMjcf(unittest.TestCase):
 """
 
         builder = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(builder)
         builder.add_mjcf(mjcf)
         model = builder.finalize()
 
@@ -1433,7 +1432,6 @@ class TestImportMjcf(unittest.TestCase):
         """Test that impratio is correctly remapped per world when merging builders."""
         # Robot A with impratio=1.5
         robot_a = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(robot_a)
         robot_a.add_mjcf("""
 <mujoco>
     <option impratio="1.5"/>
@@ -1742,7 +1740,6 @@ class TestImportMjcf(unittest.TestCase):
 </mujoco>
 """
         builder = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(builder)
         builder.add_mjcf(mjcf, parse_mujoco_options=False)
         model = builder.finalize()
 
