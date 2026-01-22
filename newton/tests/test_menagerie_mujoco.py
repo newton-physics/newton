@@ -241,11 +241,11 @@ class ZeroControlStrategy(ControlStrategy):
 
 @wp.kernel
 def generate_sinusoidal_control_kernel(
-    frequencies: wp.array(dtype=wp.float64),  # type: ignore[valid-type]
-    phases: wp.array(dtype=wp.float64),  # type: ignore[valid-type]
-    ctrl_out: wp.array(dtype=wp.float64),  # type: ignore[valid-type]
-    t: float,
-    amplitude: float,
+    frequencies: wp.array(dtype=wp.float32),  # type: ignore[valid-type]
+    phases: wp.array(dtype=wp.float32),  # type: ignore[valid-type]
+    ctrl_out: wp.array(dtype=wp.float32),  # type: ignore[valid-type]
+    t: wp.float32,
+    amplitude: wp.float32,
     num_actuators: int,
 ):
     """Generate sinusoidal control pattern on GPU."""
@@ -253,8 +253,9 @@ def generate_sinusoidal_control_kernel(
     act_idx = i % num_actuators  # type: ignore[operator]
     freq = frequencies[act_idx]
     phase = phases[i]  # phases are stored flat: phases[world_idx * num_actuators + act_idx]
-    val = amplitude * wp.sin(2.0 * 3.14159265358979 * freq * t + phase)
-    ctrl_out[i] = wp.clamp(val, -1.0, 1.0)
+    two_pi = wp.float32(6.28318530717959)  # 2 * pi
+    val = amplitude * wp.sin(two_pi * freq * t + phase)
+    ctrl_out[i] = wp.clamp(val, wp.float32(-1.0), wp.float32(1.0))
 
 
 class StructuredControlStrategy(ControlStrategy):
@@ -284,9 +285,9 @@ class StructuredControlStrategy(ControlStrategy):
         # Different phase per world for variation - flattened for kernel
         phases_np = self.rng.uniform(0, 2 * np.pi, (num_worlds, num_actuators)).flatten()
 
-        self._frequencies = wp.array(frequencies_np, dtype=wp.float64)
-        self._phases = wp.array(phases_np, dtype=wp.float64)
-        self._ctrl = wp.zeros(num_worlds * num_actuators, dtype=wp.float64)
+        self._frequencies = wp.array(frequencies_np, dtype=wp.float32)
+        self._phases = wp.array(phases_np, dtype=wp.float32)
+        self._ctrl = wp.zeros(num_worlds * num_actuators, dtype=wp.float32)
 
     def get_control(self, t, step, num_worlds, num_actuators):
         if self._frequencies is None or self._phases is None or self._ctrl is None:
@@ -313,21 +314,23 @@ class StructuredControlStrategy(ControlStrategy):
 
 @wp.kernel
 def generate_random_control_kernel(
-    prev_ctrl: wp.array(dtype=wp.float64),  # type: ignore[valid-type]
-    ctrl_out: wp.array(dtype=wp.float64),  # type: ignore[valid-type]
+    prev_ctrl: wp.array(dtype=wp.float32),  # type: ignore[valid-type]
+    ctrl_out: wp.array(dtype=wp.float32),  # type: ignore[valid-type]
     seed: int,
     step: int,
-    noise_scale: float,
-    smoothing: float,
+    noise_scale: wp.float32,
+    smoothing: wp.float32,
 ):
     """Generate random control with smoothing on GPU."""
     i = wp.tid()
     # Initialize RNG with unique seed per element and step
     state = wp.rand_init(seed, i + step * 1000000)  # type: ignore[arg-type, operator]
     # Generate uniform random in [-1, 1]
-    noise = (wp.randf(state) * 2.0 - 1.0) * noise_scale
+    rand_val = wp.randf(state) * 2.0 - 1.0
+    noise = rand_val * noise_scale
     # Smooth with previous control
-    val = smoothing * prev_ctrl[i] + (1.0 - smoothing) * noise
+    one_minus_smooth = 1.0 - smoothing
+    val = smoothing * prev_ctrl[i] + one_minus_smooth * noise
     ctrl_out[i] = wp.clamp(val, -1.0, 1.0)
     # Update prev for next step
     prev_ctrl[i] = ctrl_out[i]
@@ -355,8 +358,8 @@ class RandomControlStrategy(ControlStrategy):
 
     def _init_for_model(self, num_worlds: int, num_actuators: int):
         """Initialize control arrays."""
-        self._prev_ctrl = wp.zeros(num_worlds * num_actuators, dtype=wp.float64)
-        self._ctrl = wp.zeros(num_worlds * num_actuators, dtype=wp.float64)
+        self._prev_ctrl = wp.zeros(num_worlds * num_actuators, dtype=wp.float32)
+        self._ctrl = wp.zeros(num_worlds * num_actuators, dtype=wp.float32)
 
     def get_control(self, t, step, num_worlds, num_actuators):
         if self._prev_ctrl is None or self._ctrl is None:
@@ -400,11 +403,11 @@ DEFAULT_COMPARE_FIELDS: list[str] = ["qpos", "qvel"]
 
 @wp.kernel
 def compare_arrays_kernel(
-    newton_arr: wp.array(dtype=wp.float64),  # type: ignore[valid-type]
-    native_arr: wp.array(dtype=wp.float64),  # type: ignore[valid-type]
-    tol: float,
+    newton_arr: wp.array(dtype=wp.float32),  # type: ignore[valid-type]
+    native_arr: wp.array(dtype=wp.float32),  # type: ignore[valid-type]
+    tol: wp.float32,
 ):
-    """Compare two 1D arrays element-wise, fail on first mismatch."""
+    """Compare two 1D float32 arrays element-wise, fail on first mismatch."""
     i = wp.tid()
     newton_val = newton_arr[i]
     native_val = native_arr[i]
@@ -844,7 +847,7 @@ class TestMenagerie_UniversalRobotsUr5e(TestMenagerieBase):
     robot_folder = "universal_robots_ur5e"
     robot_xml = "ur5e.xml"
     floating = False
-    skip_reason = "HIGH PRIORITY - Not yet implemented"
+    skip_reason = None
 
 
 class TestMenagerie_UniversalRobotsUr10e(TestMenagerieBase):
