@@ -11,6 +11,7 @@ from newton.examples.cosserat2.solvers.base import (
 from newton.examples.cosserat2.solvers.cholesky import ConstraintSolverCholesky
 from newton.examples.cosserat2.solvers.jacobi import ConstraintSolverJacobi
 from newton.examples.cosserat2.solvers.local import ConstraintSolverLocal
+from newton.examples.cosserat2.solvers.numpy_reference import ConstraintSolverNumpyReference
 from newton.examples.cosserat2.solvers.thomas import ConstraintSolverThomas
 
 # Solver registry for runtime switching
@@ -20,6 +21,7 @@ SOLVER_REGISTRY = {
     ConstraintSolverType.CHOLESKY_SINGLE: ConstraintSolverCholesky,
     ConstraintSolverType.CHOLESKY_MULTI: ConstraintSolverCholesky,  # Same class, different config
     ConstraintSolverType.LOCAL: ConstraintSolverLocal,
+    ConstraintSolverType.NUMPY_REFERENCE: ConstraintSolverNumpyReference,
 }
 
 __all__ = [
@@ -28,6 +30,7 @@ __all__ = [
     "ConstraintSolverCholesky",
     "ConstraintSolverJacobi",
     "ConstraintSolverLocal",
+    "ConstraintSolverNumpyReference",
     "ConstraintSolverThomas",
     "ConstraintSolverType",
     "FrictionMethod",

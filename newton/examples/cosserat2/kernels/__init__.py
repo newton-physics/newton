@@ -25,6 +25,7 @@ from newton.examples.cosserat2.kernels.direct_solvers import (
     thomas_solve_kernel,
 )
 from newton.examples.cosserat2.kernels.integration import (
+    apply_quaternion_damping_kernel,
     apply_velocity_damping_kernel,
     integrate_particles_kernel,
     update_velocities_kernel,
@@ -66,6 +67,7 @@ __all__ = [
     "integrate_particles_kernel",
     "update_velocities_kernel",
     "apply_velocity_damping_kernel",
+    "apply_quaternion_damping_kernel",
     # Stretch/Shear
     "solve_stretch_shear_constraint_kernel",
     "compute_stretch_constraint_data_kernel",

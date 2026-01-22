@@ -12,6 +12,7 @@ import warp as wp
 
 from newton.examples.cosserat2.cosserat_rod import CosseratRod
 from newton.examples.cosserat2.kernels import (
+    apply_quaternion_damping_kernel,
     apply_velocity_damping_kernel,
     collide_particles_vs_triangles_bvh_kernel,
     compute_current_kappa_kernel,
@@ -41,7 +42,9 @@ class SolverConfig:
         shear_stiffness: Shear stiffness (0 to 1).
         bend_stiffness: Bend stiffness (0 to 1).
         twist_stiffness: Twist stiffness (0 to 1).
-        velocity_damping: Velocity damping coefficient (for VELOCITY_DAMPING).
+        particle_damping: Global particle velocity damping (0 to 1, 1 = no damping).
+        quaternion_damping: Global quaternion angular velocity damping (0 to 1, 1 = no damping).
+        velocity_damping: Velocity damping coefficient (for VELOCITY_DAMPING friction).
         strain_rate_damping: Strain-rate damping coefficient (for STRAIN_RATE_DAMPING).
         dahl_eps_max: Maximum persistent strain for Dahl friction.
         dahl_tau: Memory decay length for Dahl friction.
@@ -53,6 +56,10 @@ class SolverConfig:
     gravity: wp.vec3 = field(default_factory=lambda: wp.vec3(0.0, 0.0, 0.0))
     ground_level: float = 0.0
     solver_type: ConstraintSolverType = ConstraintSolverType.JACOBI
+
+    # Global damping (always applied)
+    particle_damping: float = 1.0  # 1.0 = no damping
+    quaternion_damping: float = 1.0  # 1.0 = no damping
 
     # Friction settings
     friction_method: FrictionMethod = FrictionMethod.NONE
@@ -111,6 +118,8 @@ class SolverCosseratXPBD:
         self.particle_q_predicted = wp.zeros(rod.num_particles, dtype=wp.vec3, device=device)
         self.particle_q_temp = wp.zeros(rod.num_particles, dtype=wp.vec3, device=device)
         self.particle_qd_temp = wp.zeros(rod.num_particles, dtype=wp.vec3, device=device)
+        self.edge_q_old = wp.zeros(rod.num_stretch, dtype=wp.quat, device=device)
+        self.edge_q_temp = wp.zeros(rod.num_stretch, dtype=wp.quat, device=device)
 
         # Initialize constraint solver
         self._constraint_solver = self._create_solver(self.config.solver_type)
@@ -214,6 +223,9 @@ class SolverCosseratXPBD:
 
         # Store old positions for velocity update
         wp.copy(self.particle_q_temp, particle_q_in)
+
+        # Store old quaternions for damping
+        wp.copy(self.edge_q_old, rod.edge_q)
 
         # Build stiffness vectors from config
         stretch_shear_ks = wp.vec3(
@@ -355,3 +367,35 @@ class SolverCosseratXPBD:
                 rod.update_friction_state_strain_rate()
             elif config.friction_method == FrictionMethod.DAHL_HYSTERESIS:
                 rod.update_friction_state_dahl()
+
+        # Phase 6: Global damping (always applied, independent of friction method)
+        # Particle velocity damping
+        if config.particle_damping < 1.0:
+            wp.launch(
+                kernel=apply_velocity_damping_kernel,
+                dim=rod.num_particles,
+                inputs=[
+                    particle_qd_out,
+                    rod.particle_inv_mass,
+                    config.particle_damping,
+                ],
+                outputs=[self.particle_qd_temp],
+                device=self.device,
+            )
+            wp.copy(particle_qd_out, self.particle_qd_temp)
+
+        # Quaternion angular velocity damping
+        if config.quaternion_damping < 1.0:
+            wp.launch(
+                kernel=apply_quaternion_damping_kernel,
+                dim=rod.num_stretch,
+                inputs=[
+                    self.edge_q_old,
+                    rod.edge_q,
+                    rod.edge_inv_mass,
+                    config.quaternion_damping,
+                ],
+                outputs=[self.edge_q_temp],
+                device=self.device,
+            )
+            wp.copy(rod.edge_q, self.edge_q_temp)

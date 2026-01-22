@@ -4,7 +4,9 @@
       "Bash(uv run python:*)",
       "Bash(ln:*)",
       "Bash(uvx pre-commit run:*)",
-      "Bash(uv run:*)"
+      "Bash(uv run:*)",
+      "Bash(wc:*)",
+      "Bash(tree:*)"
     ]
   }
 }

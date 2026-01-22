@@ -77,15 +77,20 @@ class Example:
             gravity=wp.vec3(0.0, 0.0, 0.0),
             ground_level=0.0,
             solver_type=ConstraintSolverType.JACOBI,
+            # Global damping (always applied)
+            particle_damping=1.0,  # 1.0 = no damping
+            quaternion_damping=1.0,  # 1.0 = no damping
+            # Friction settings
             friction_method=FrictionMethod.NONE,
-            stretch_stiffness=1.0,
-            shear_stiffness=1.0,
-            bend_stiffness=0.5,
-            twist_stiffness=0.5,
             velocity_damping=0.99,
             strain_rate_damping=0.1,
             dahl_eps_max=0.01,
             dahl_tau=0.005,
+            # Stiffness parameters
+            stretch_stiffness=1.0,
+            shear_stiffness=1.0,
+            bend_stiffness=0.5,
+            twist_stiffness=0.5,
         )
 
         # Build Newton model
@@ -372,17 +377,18 @@ class Example:
         if tip_bend_changed:
             self._update_tip_rest_darboux()
 
-        # Solver switching with 1, 2, 3, 4 keys
+        # Solver switching with 1, 2, 3, 4, 5 keys
         method_types = [
             ConstraintSolverType.JACOBI,
             ConstraintSolverType.THOMAS,
             ConstraintSolverType.CHOLESKY_SINGLE,
             ConstraintSolverType.LOCAL,
+            ConstraintSolverType.NUMPY_REFERENCE,
         ]
-        method_names = ["Jacobi", "Thomas", "Cholesky", "Local"]
+        method_names = ["Jacobi", "Thomas", "Cholesky", "Local", "NumPy Reference"]
 
         for i, (k, solver_type, name) in enumerate(
-            zip([key._1, key._2, key._3, key._4], method_types, method_names, strict=True)
+            zip([key._1, key._2, key._3, key._4, key._5], method_types, method_names, strict=True)
         ):
             if self.viewer.is_key_down(k) and self.current_solver_idx != i:
                 try:
@@ -494,12 +500,19 @@ class Example:
         # Constraint Solver Selection
         ui.separator()
         ui.text("Constraint Solving Method")
-        methods = ["Jacobi Iteration", "Thomas Algorithm", "Cholesky (Single Tile)", "Local Iterative"]
+        methods = [
+            "Jacobi Iteration",
+            "Thomas Algorithm",
+            "Cholesky (Single Tile)",
+            "Local Iterative",
+            "NumPy Reference (CPU)",
+        ]
         method_types = [
             ConstraintSolverType.JACOBI,
             ConstraintSolverType.THOMAS,
             ConstraintSolverType.CHOLESKY_SINGLE,
             ConstraintSolverType.LOCAL,
+            ConstraintSolverType.NUMPY_REFERENCE,
         ]
         changed, new_idx = ui.combo("Solver Method", self.current_solver_idx, methods)
         if changed:
@@ -522,7 +535,9 @@ class Example:
             ui.text("  Tile size: 32x32")
         elif solver_type == ConstraintSolverType.LOCAL:
             ui.text("  Local iteration with velocity update")
-        ui.text("  Keys 1/2/3/4: Switch solver")
+        elif solver_type == ConstraintSolverType.NUMPY_REFERENCE:
+            ui.text("  Pure NumPy (CPU, for validation)")
+        ui.text("  Keys 1/2/3/4/5: Switch solver")
 
         # Simulation Parameters
         ui.separator()
@@ -555,6 +570,16 @@ class Example:
         )
         _, self.solver_config.twist_stiffness = ui.slider_float(
             "Twist Stiffness", self.solver_config.twist_stiffness, 0.0, 1.0
+        )
+
+        # Global Damping
+        ui.separator()
+        ui.text("Global Damping")
+        _, self.solver_config.particle_damping = ui.slider_float(
+            "Particle Damping", self.solver_config.particle_damping, 0.9, 1.0
+        )
+        _, self.solver_config.quaternion_damping = ui.slider_float(
+            "Quaternion Damping", self.solver_config.quaternion_damping, 0.9, 1.0
         )
 
         # Rest Shape
