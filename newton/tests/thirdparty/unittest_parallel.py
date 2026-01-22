@@ -232,7 +232,7 @@ def main(argv=None):
         # "shadow_hand",
         # "unitree_g1",
         # "unitree_h1",
-        # "universal_robots_ur5e",
+        "universal_robots_ur5e",
         # "wonik_allegro",
     ]
 
