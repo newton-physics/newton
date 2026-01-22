@@ -3245,7 +3245,7 @@ class SolverMuJoCo(SolverBase):
         """Update fixed tendon properties in the MuJoCo model.
 
         Updates tendon stiffness, damping, frictionloss, range, margin, solref, solimp,
-        springlength, armature, and actfrcrange from Newton custom attributes.
+        armature, and actfrcrange from Newton custom attributes.
         """
         if self.mjc_tendon_to_newton_tendon is None:
             return
