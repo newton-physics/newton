@@ -2452,19 +2452,19 @@ class SolverMuJoCo(SolverBase):
 
                 if trntype == 0:  # TrnType.JOINT
                     if target_idx < 0 or target_idx >= len(model.joint_key):
-                        if verbose:
+                        if wp.config.verbose:
                             print(f"Warning: MuJoCo actuator {mujoco_act_idx} has invalid joint target {target_idx}")
                         continue
                     target_name = model.joint_key[target_idx]
                 elif trntype == 4:  # TrnType.BODY
                     if target_idx < 0 or target_idx >= len(model.body_key):
-                        if verbose:
+                        if wp.config.verbose:
                             print(f"Warning: MuJoCo actuator {mujoco_act_idx} has invalid body target {target_idx}")
                         continue
                     target_name = model.body_key[target_idx]
                 else:
                     # TODO: Support tendon, site, slidercrank, and jointinparent transmission types
-                    if verbose:
+                    if wp.config.verbose:
                         print(f"Warning: MuJoCo actuator {mujoco_act_idx} has unsupported trntype {trntype}")
                     continue
 

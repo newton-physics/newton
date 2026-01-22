@@ -16,11 +16,13 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 import warp as wp
 
-from ..sim.builder import ModelBuilder
+if TYPE_CHECKING:
+    from ..sim.builder import ModelBuilder
+    from ..sim.joints import ActuatorMode
 
 
 def parse_warp_value_from_string(value: str, warp_dtype: Any, default: Any = None) -> Any:
@@ -164,3 +166,31 @@ def sanitize_xml_content(source: str) -> str:
             break
     xml_content = xml_content.strip()
     return xml_content
+
+
+def infer_actuator_mode(
+    target_ke: float,
+    target_kd: float,
+    force_position_velocity: bool = False,
+) -> ActuatorMode:
+    """Infer actuator mode from position and velocity gains.
+
+    Args:
+        target_ke: Position gain (stiffness).
+        target_kd: Velocity gain (damping).
+        force_position_velocity: If True and both gains are non-zero,
+            forces POSITION_VELOCITY mode instead of just POSITION.
+
+    Returns:
+        The inferred ActuatorMode based on which gains are non-zero.
+    """
+    from ..sim.joints import ActuatorMode  # noqa: PLC0415
+
+    if force_position_velocity and (target_ke != 0.0 and target_kd != 0.0):
+        return ActuatorMode.POSITION_VELOCITY
+    elif target_ke != 0.0:
+        return ActuatorMode.POSITION
+    elif target_kd != 0.0:
+        return ActuatorMode.VELOCITY
+    else:
+        return ActuatorMode.NONE

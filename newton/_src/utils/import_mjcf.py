@@ -1332,7 +1332,8 @@ def parse_mjcf(
                 kv = parse_float(actuator_elem.attrib, "kv", 0.0)  # Optional velocity damping
                 gainprm = vec10(kp, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
                 biasprm = vec10(0.0, -kp, -kv, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
-                if ctrl_direct:
+                # Non-joint actuators (body, tendon, etc.) must use CTRL_DIRECT
+                if trntype != 0 or total_dofs == 0 or ctrl_direct:
                     ctrl_source_val = CtrlSource.CTRL_DIRECT
                 else:
                     ctrl_source_val = CtrlSource.JOINT_TARGET
@@ -1356,7 +1357,8 @@ def parse_mjcf(
                 kv = parse_float(actuator_elem.attrib, "kv", 0.0)
                 gainprm = vec10(kv, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
                 biasprm = vec10(0.0, 0.0, -kv, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
-                if ctrl_direct:
+                # Non-joint actuators (body, tendon, etc.) must use CTRL_DIRECT
+                if trntype != 0 or total_dofs == 0 or ctrl_direct:
                     ctrl_source_val = CtrlSource.CTRL_DIRECT
                 else:
                     ctrl_source_val = CtrlSource.JOINT_TARGET
@@ -1371,7 +1373,7 @@ def parse_mjcf(
                             builder.joint_act_mode[dof_idx] = int(ActuatorMode.VELOCITY)
                         builder.joint_target_kd[dof_idx] = kv
 
-            elif actuator_type in ("general"):
+            elif actuator_type == "general":
                 gainprm_str = actuator_elem.attrib.get("gainprm", "1 0 0 0 0 0 0 0 0 0")
                 biasprm_str = actuator_elem.attrib.get("biasprm", "0 0 0 0 0 0 0 0 0 0")
                 gainprm_vals = [float(x) for x in gainprm_str.split()[:10]]

@@ -545,7 +545,7 @@ class TestMultiWorldActuators(unittest.TestCase):
 
         model = main_builder.finalize()
 
-        # Should have 6 actuators (2 per world × 3 worlds)
+        # Should have 6 actuators (2 per world x 3 worlds)
         mujoco_act_count = model.custom_frequency_counts.get("mujoco:actuator", 0)
         self.assertEqual(mujoco_act_count, 6)
 

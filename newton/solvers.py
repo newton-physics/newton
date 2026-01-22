@@ -139,3 +139,11 @@ from ._src.solvers.flags import SolverNotifyFlags
 __all__ += [
     "SolverNotifyFlags",
 ]
+
+# MuJoCo solver enums
+from ._src.solvers.mujoco import CtrlSource, CtrlType
+
+__all__ += [
+    "CtrlSource",
+    "CtrlType",
+]

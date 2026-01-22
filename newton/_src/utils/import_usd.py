@@ -34,6 +34,7 @@ from ..sim.joints import ActuatorMode
 from ..sim.model import ModelAttributeFrequency
 from ..usd import utils as usd
 from ..usd.schema_resolver import PrimType, SchemaResolver, SchemaResolverManager
+from .import_utils import infer_actuator_mode
 
 
 def parse_usd(
@@ -615,18 +616,9 @@ def parse_usd(
                 joint_params["effort_limit"] = joint_desc.drive.forceLimit
 
                 # Determine actuator mode from gains
-                if force_position_velocity_actuation and (target_ke != 0.0 and target_kd != 0.0):
-                    # Force POSITION_VELOCITY mode when flag is set and both gains are non-zero
-                    joint_params["actuator_mode"] = ActuatorMode.POSITION_VELOCITY
-                elif target_ke != 0.0:
-                    # Position gain present - use POSITION
-                    joint_params["actuator_mode"] = ActuatorMode.POSITION
-                elif target_kd != 0.0:
-                    # Only velocity gain - use VELOCITY
-                    joint_params["actuator_mode"] = ActuatorMode.VELOCITY
-                else:
-                    # No gains - no actuators
-                    joint_params["actuator_mode"] = ActuatorMode.NONE
+                joint_params["actuator_mode"] = infer_actuator_mode(
+                    target_ke, target_kd, force_position_velocity_actuation
+                )
             else:
                 joint_params["actuator_mode"] = ActuatorMode.NONE
 
@@ -723,18 +715,8 @@ def parse_usd(
                     # Determine actuator mode from gains
                     if not has_drive:
                         actuator_mode = ActuatorMode.NONE
-                    elif force_position_velocity_actuation and (target_ke != 0.0 and target_kd != 0.0):
-                        # Force POSITION_VELOCITY mode when flag is set and both gains are non-zero
-                        actuator_mode = ActuatorMode.POSITION_VELOCITY
-                    elif target_ke != 0.0:
-                        # Position gain present - use POSITION
-                        actuator_mode = ActuatorMode.POSITION
-                    elif target_kd != 0.0:
-                        # Only velocity gain - use VELOCITY
-                        actuator_mode = ActuatorMode.VELOCITY
                     else:
-                        # No gains - no actuators
-                        actuator_mode = ActuatorMode.NONE
+                        actuator_mode = infer_actuator_mode(target_ke, target_kd, force_position_velocity_actuation)
                     return target_pos, target_vel, target_ke, target_kd, effort_limit, actuator_mode
 
                 target_pos, target_vel, target_ke, target_kd, effort_limit, actuator_mode = define_joint_targets(

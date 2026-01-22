@@ -58,6 +58,7 @@ from ..geometry.inertia import validate_and_correct_inertia_kernel, verify_and_c
 from ..geometry.utils import RemeshingMethod, compute_inertia_obb, remesh_mesh
 from ..usd.schema_resolver import SchemaResolver
 from ..utils import compute_world_offsets
+from ..utils.import_utils import infer_actuator_mode
 from ..utils.mesh import MeshAdjacency
 from .graph_coloring import ColoringAlgorithm, color_rigid_bodies, color_trimesh, combine_independent_particle_coloring
 from .joints import (
@@ -2429,18 +2430,8 @@ class ModelBuilder:
             # Use actuator_mode if explicitly set, otherwise infer from gains
             if dim.actuator_mode is not None:
                 mode = int(dim.actuator_mode)
-            elif dim.target_ke != 0.0 and dim.target_kd != 0.0:
-                # Both position and velocity gains - use POSITION_VELOCITY for full PD control
-                mode = int(ActuatorMode.POSITION_VELOCITY)
-            elif dim.target_ke != 0.0:
-                # Only position gain - use POSITION
-                mode = int(ActuatorMode.POSITION)
-            elif dim.target_kd != 0.0:
-                # Only velocity gain - use VELOCITY
-                mode = int(ActuatorMode.VELOCITY)
             else:
-                # No gains - no actuators
-                mode = int(ActuatorMode.NONE)
+                mode = int(infer_actuator_mode(dim.target_ke, dim.target_kd))
 
             # Store per-DOF actuator properties
             self.joint_act_mode.append(mode)
@@ -6671,7 +6662,7 @@ class ModelBuilder:
 
             # dynamics properties
             m.joint_armature = wp.array(self.joint_armature, dtype=wp.float32, requires_grad=requires_grad)
-            m.joint_act_mode = wp.array(self.joint_act_mode, dtype=wp.int32, requires_grad=requires_grad)
+            m.joint_act_mode = wp.array(self.joint_act_mode, dtype=wp.int32)
             m.joint_target_ke = wp.array(self.joint_target_ke, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_target_kd = wp.array(self.joint_target_kd, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_target_pos = wp.array(self.joint_target_pos, dtype=wp.float32, requires_grad=requires_grad)
