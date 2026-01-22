@@ -221,8 +221,7 @@ def Xform "boxes_fourbar"
     def Scope "StaticGeometry"
     {
         def Cube "plane" (
-            # NOTE: "MaterialBindingAPI" is required for the material binding to work.
-            prepend apiSchemas = ["PhysicsCollisionAPI", "PhysicsMeshCollisionAPI", "MaterialBindingAPI"]
+            prepend apiSchemas = ["PhysicsCollisionAPI", "PhysicsMeshCollisionAPI"]
         )
         {
             float3[] extent = [(-1, -1, -1), (1, 1, 1)]
@@ -232,20 +231,8 @@ def Xform "boxes_fourbar"
             double3 xformOp:translate = (0, 0, -0.05)
             uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
 
-            rel material:binding:physics = </boxes_nunchaku/Materials/Concrete> (
-                bindMaterialAs = "weakerThanDescendants"
-            )
-
             color3f[] primvars:displayColor = [(0.8, 0.8, 0.8)]
         }
-    }
-
-    def Scope "Meshes"
-    {
-    }
-
-    def Scope "Materials"
-    {
     }
 
     def PhysicsCollisionGroup "Collisions"
