@@ -10,6 +10,8 @@ newton.utils
    :nosignatures:
 
    EventTracer
+   MeshAdjacency
+   MeshEdge
    RecorderBasic
    RecorderModelAndState
 
@@ -20,8 +22,10 @@ newton.utils
    :signatures: long
 
    boltzmann
+   bourke_color_map
    color_graph
    compute_world_offsets
+   copy_rgb_frame_uint8
    create_box_mesh
    create_capsule_mesh
    create_cone_mesh
@@ -45,6 +49,7 @@ newton.utils
    run_benchmark
    smooth_max
    smooth_min
+   solidify_mesh
    transform_twist
    transform_wrench
    vec_abs

@@ -140,6 +140,16 @@ class ViewerGL(ViewerBase):
 
         self.set_model(None)
 
+    def _invalidate_pbo(self):
+        """Invalidate PBO resources, forcing reallocation on next get_frame() call."""
+        if self._wp_pbo is not None:
+            self._wp_pbo = None  # Let Python garbage collect the RegisteredGLBuffer
+        if self._pbo is not None:
+            gl = RendererGL.gl
+            pbo_id = (gl.GLuint * 1)(self._pbo)
+            gl.glDeleteBuffers(1, pbo_id)
+            self._pbo = None
+
     def register_ui_callback(self, callback, position="side"):
         """
         Register a UI callback to be rendered during the UI phase.
@@ -966,6 +976,7 @@ class ViewerGL(ViewerBase):
         """
         fb_w, fb_h = self.renderer.window.get_framebuffer_size()
         self.camera.update_screen_size(fb_w, fb_h)
+        self._invalidate_pbo()
 
         if self.ui:
             self.ui.resize(width, height)

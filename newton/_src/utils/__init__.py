@@ -20,7 +20,7 @@ import warp as wp
 
 from ..core.types import Axis
 from .download_assets import clear_git_cache, download_asset
-from .topology import topological_sort
+from .topology import topological_sort, topological_sort_undirected
 
 
 @wp.func
@@ -309,6 +309,7 @@ __all__ = [
     "smooth_max",
     "smooth_min",
     "topological_sort",
+    "topological_sort_undirected",
     "vec_abs",
     "vec_allclose",
     "vec_inside_limits",

@@ -90,13 +90,14 @@ def select_aggregate_net_force(
     sp_ord = bisect_shape_pairs(sp_sorted, num_sp, normalized_pair)
 
     force = contact_force[con_idx] * contact_normal[con_idx]
-    if sp_ord < num_sp and sp_sorted[sp_ord] == normalized_pair:
-        # add the force to the pair's force accumulators
-        offset = sp_ep_offset[sp_ord]
-        for i in range(sp_ep_count[sp_ord]):
-            ep = sp_ep[offset + i]
-            force_acc, flip = ep[0], ep[1]
-            wp.atomic_add(net_force, force_acc, wp.where(sp_flip != flip, -force, force))
+    if sp_ord < num_sp:
+        if sp_sorted[sp_ord] == normalized_pair:
+            # add the force to the pair's force accumulators
+            offset = sp_ep_offset[sp_ord]
+            for i in range(sp_ep_count[sp_ord]):
+                ep = sp_ep[offset + i]
+                force_acc, flip = ep[0], ep[1]
+                wp.atomic_add(net_force, force_acc, wp.where(sp_flip != flip, -force, force))
 
     # add contribution for shape a and b
     for i in range(2):
@@ -104,9 +105,10 @@ def select_aggregate_net_force(
         mono_ord = bisect_shape_pairs(sp_sorted, num_sp, mono_sp)
 
         # for shape vs all, only one accumulator is supported and flip is trivially true
-        if mono_ord < num_sp and sp_sorted[mono_ord] == mono_sp:
-            force_acc = sp_ep[sp_ep_offset[mono_ord]][0]
-            wp.atomic_add(net_force, force_acc, wp.where(bool(i), -force, force))
+        if mono_ord < num_sp:
+            if sp_sorted[mono_ord] == mono_sp:
+                force_acc = sp_ep[sp_ep_offset[mono_ord]][0]
+                wp.atomic_add(net_force, force_acc, wp.where(bool(i), -force, force))
 
 
 class MatchAny:

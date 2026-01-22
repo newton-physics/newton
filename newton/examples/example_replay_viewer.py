@@ -30,6 +30,7 @@
 ###########################################################################
 
 import os
+import traceback
 
 import newton
 import newton.examples
@@ -203,9 +204,13 @@ class ReplayUI:
         except FileNotFoundError:
             self.status_message = f"File not found: {file_path}"
             self.status_color = (1.0, 0.3, 0.3, 1.0)  # Red
+            print(f"[ReplayUI] File not found: {file_path}")
         except Exception as e:
             self.status_message = f"Error loading recording: {str(e)[:50]}..."
             self.status_color = (1.0, 0.3, 0.3, 1.0)  # Red
+            print(f"[ReplayUI] Error loading recording: {file_path}")
+            print(f"[ReplayUI] Full error: {e}")
+            traceback.print_exc()
 
     def _load_frame(self):
         """Load a specific frame for display."""

@@ -61,6 +61,6 @@ newton
    * - Name
      - Value
    * - MAXVAL
-     - 1e10
+     - 10000000000.0
    * - __version__
      - 0.2.0

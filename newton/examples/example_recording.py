@@ -33,7 +33,6 @@ wp.config.enable_backward = False
 
 import newton
 import newton.examples
-import newton.utils
 
 
 class Example:
@@ -57,10 +56,8 @@ class Example:
         mjcf_filename = newton.examples.get_asset("nv_humanoid.xml")
 
         articulation_builder = newton.ModelBuilder()
-        newton.solvers.SolverMuJoCo.register_custom_attributes(articulation_builder)
-        newton.utils.parse_mjcf(
+        articulation_builder.add_mjcf(
             mjcf_filename,
-            articulation_builder,
             ignore_names=["floor", "ground"],
             up_axis="Z",
         )
@@ -91,6 +88,7 @@ class Example:
             integrator="euler",
             iterations=10,
             ls_iterations=5,
+            njmax=100,
         )
 
         self.state_0, self.state_1 = self.model.state(), self.model.state()

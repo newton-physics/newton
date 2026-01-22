@@ -15,8 +15,7 @@
 
 import warp as wp
 
-from newton._src.core.types import MAXVAL
-
+from .ray import MAXVAL
 from .types import RenderShapeType
 
 
@@ -145,7 +144,7 @@ def compute_ellipsoid_bounds(transform: wp.transformf, size: wp.vec3f) -> tuple[
 
 @wp.kernel(enable_backward=False)
 def compute_shape_bvh_bounds(
-    num_shapes: wp.int32,
+    num_shapes_enabled: wp.int32,
     num_worlds: wp.int32,
     shape_world_index: wp.array(dtype=wp.int32),
     shape_enabled: wp.array(dtype=wp.uint32),
@@ -159,8 +158,8 @@ def compute_shape_bvh_bounds(
     out_bvh_groups: wp.array(dtype=wp.int32),
 ):
     tid = wp.tid()
-    bvh_index_local = tid % num_shapes
-    if bvh_index_local >= num_shapes:
+    bvh_index_local = tid % num_shapes_enabled
+    if bvh_index_local >= num_shapes_enabled:
         return
 
     shape_index = shape_enabled[bvh_index_local]
@@ -219,16 +218,16 @@ def compute_particle_bvh_bounds(
     if bvh_index_local >= num_particles:
         return
 
-    shape_index = bvh_index_local
+    particle_index = bvh_index_local
 
-    world_index = particle_world_index[shape_index]
+    world_index = particle_world_index[particle_index]
     if world_index < 0:
         world_index = num_worlds + world_index
 
     if world_index >= num_worlds:
         return
 
-    lower, upper = compute_sphere_bounds(particle_position[shape_index], particle_radius[shape_index])
+    lower, upper = compute_sphere_bounds(particle_position[particle_index], particle_radius[particle_index])
 
     out_bvh_lowers[bvh_index_local] = lower
     out_bvh_uppers[bvh_index_local] = upper

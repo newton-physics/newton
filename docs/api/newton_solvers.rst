@@ -83,7 +83,7 @@ Supported Features
      - ❌
    * - :class:`~newton.solvers.SolverVBD`
      - Implicit
-     - ✅
+     - ❌
      - ❌
      - ✅
      - ✅

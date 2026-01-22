@@ -18,7 +18,6 @@ from collections.abc import Sequence
 import numpy as np
 import warp as wp
 
-from ..core.types import MAXVAL
 from ..geometry.kernels import box_sdf, capsule_sdf, cone_sdf, cylinder_sdf, ellipsoid_sdf, sphere_sdf
 from .sdf_mc import get_mc_tables, int_to_vec3f, mc_calc_face, vec8f
 from .types import GeoType, Mesh
@@ -53,9 +52,9 @@ class SDFData:
 
 
 # Default background value for unallocated voxels in sparse SDF.
-# Using a large finite value ensures any trilinear interpolation with unallocated voxels
-# produces a large value, allowing detection of unallocated voxels.
-SDF_BACKGROUND_VALUE = MAXVAL
+# Using inf ensures any trilinear interpolation with unallocated voxels produces inf or NaN,
+# allowing detection of unallocated voxels.
+SDF_BACKGROUND_VALUE = wp.inf
 
 
 def create_empty_sdf_data() -> SDFData:
@@ -77,13 +76,40 @@ def create_empty_sdf_data() -> SDFData:
     return sdf_data
 
 
+@wp.kernel
+def compute_mesh_signed_volume_kernel(
+    points: wp.array(dtype=wp.vec3),
+    indices: wp.array(dtype=wp.int32),
+    volume_sum: wp.array(dtype=wp.float32),
+):
+    """Compute signed volume contribution from each triangle."""
+    tri_idx = wp.tid()
+    v0 = points[indices[tri_idx * 3 + 0]]
+    v1 = points[indices[tri_idx * 3 + 1]]
+    v2 = points[indices[tri_idx * 3 + 2]]
+    wp.atomic_add(volume_sum, 0, wp.dot(v0, wp.cross(v1, v2)) / 6.0)
+
+
+def compute_mesh_signed_volume(points: wp.array, indices: wp.array) -> float:
+    """Compute signed volume of a mesh on GPU. Positive = correct winding, negative = inverted."""
+    num_tris = indices.shape[0] // 3
+    volume_sum = wp.zeros(1, dtype=wp.float32)
+    wp.launch(compute_mesh_signed_volume_kernel, dim=num_tris, inputs=[points, indices, volume_sum])
+    return float(volume_sum.numpy()[0])
+
+
 @wp.func
-def get_distance_to_mesh(mesh: wp.uint64, point: wp.vec3, max_dist: wp.float32):
-    res = wp.mesh_query_point_sign_winding_number(mesh, point, max_dist)
+def get_distance_to_mesh(mesh: wp.uint64, point: wp.vec3, max_dist: wp.float32, winding_threshold: wp.float32):
+    res = wp.mesh_query_point_sign_winding_number(mesh, point, max_dist, 2.0, winding_threshold)
     if res.result:
         closest = wp.mesh_eval_position(mesh, res.face, res.u, res.v)
         vec_to_surface = closest - point
-        return res.sign * wp.length(vec_to_surface)
+        sign = res.sign
+        # For inverted meshes (threshold < 0), the winding > threshold comparison
+        # gives inverted signs, so we flip them back
+        if winding_threshold < 0.0:
+            sign = -sign
+        return sign * wp.length(vec_to_surface)
     return max_dist
 
 
@@ -93,6 +119,7 @@ def sdf_from_mesh_kernel(
     sdf: wp.uint64,
     tile_points: wp.array(dtype=wp.vec3i),
     thickness: wp.float32,
+    winding_threshold: wp.float32,
 ):
     """
     Populate SDF grid from triangle mesh.
@@ -107,7 +134,7 @@ def sdf_from_mesh_kernel(
     z_id = tile_origin[2] + local_z
 
     sample_pos = wp.volume_index_to_world(sdf, int_to_vec3f(x_id, y_id, z_id))
-    signed_distance = get_distance_to_mesh(mesh, sample_pos, 10000.0)
+    signed_distance = get_distance_to_mesh(mesh, sample_pos, 10000.0, winding_threshold)
     signed_distance -= thickness
     wp.volume_store(sdf, x_id, y_id, z_id, signed_distance)
 
@@ -154,12 +181,13 @@ def check_tile_occupied_mesh_kernel(
     mesh: wp.uint64,
     tile_points: wp.array(dtype=wp.vec3f),
     threshold: wp.vec2f,
+    winding_threshold: wp.float32,
     tile_occupied: wp.array(dtype=bool),
 ):
     tid = wp.tid()
     sample_pos = tile_points[tid]
 
-    signed_distance = get_distance_to_mesh(mesh, sample_pos, 10000.0)
+    signed_distance = get_distance_to_mesh(mesh, sample_pos, 10000.0, winding_threshold)
     is_occupied = wp.bool(False)
     if wp.sign(signed_distance) > 0.0:
         is_occupied = signed_distance < threshold[1]
@@ -304,6 +332,13 @@ def compute_sdf(
         mesh = wp.Mesh(points=pos, indices=indices, support_winding_number=True)
         m_id = mesh.id
 
+        # Compute winding threshold based on mesh volume sign
+        # Positive volume = correct winding (threshold 0.5), negative = inverted (threshold -0.5)
+        signed_volume = compute_mesh_signed_volume(pos, indices)
+        winding_threshold = 0.5 if signed_volume >= 0.0 else -0.5
+        if verbose and signed_volume < 0:
+            print("Mesh has inverted winding (negative volume), using threshold -0.5")
+
         min_ext = np.min(verts, axis=0).tolist()
         max_ext = np.max(verts, axis=0).tolist()
     else:
@@ -358,7 +393,7 @@ def compute_sdf(
         wp.launch(
             check_tile_occupied_mesh_kernel,
             dim=(len(tile_points)),
-            inputs=[m_id, tile_center_points_world, threshold],
+            inputs=[m_id, tile_center_points_world, threshold, winding_threshold],
             outputs=[tile_occupied],
         )
     else:
@@ -389,7 +424,7 @@ def compute_sdf(
         wp.launch(
             sdf_from_mesh_kernel,
             dim=(num_allocated_tiles, 8, 8, 8),
-            inputs=[m_id, sparse_volume.id, tile_points_wp, shape_thickness],
+            inputs=[m_id, sparse_volume.id, tile_points_wp, shape_thickness, winding_threshold],
         )
     else:
         wp.launch(
@@ -419,7 +454,7 @@ def compute_sdf(
         wp.launch(
             sdf_from_mesh_kernel,
             dim=(1, 8, 8, 8),
-            inputs=[m_id, coarse_volume.id, coarse_tile_points_wp, shape_thickness],
+            inputs=[m_id, coarse_volume.id, coarse_tile_points_wp, shape_thickness, winding_threshold],
         )
     else:
         wp.launch(

@@ -22,6 +22,7 @@ from typing import Generic, TypeVar
 
 import numpy as np
 import warp as wp
+from warp._src import types as warp_types
 
 from ..geometry import Mesh
 from ..sim import Model, State
@@ -494,12 +495,56 @@ def _is_struct_dtype(dtype) -> bool:
     return type(dtype).__name__ == "Struct"
 
 
+def _serialize_warp_dtype(dtype) -> dict:
+    """
+    Serialize a warp dtype with full metadata for proper reconstruction.
+
+    For built-in types (vec3f, mat33f, etc.), just stores the type string.
+    For dynamically created types (vec_t, mat_t), also stores length/shape
+    and scalar type metadata to enable reconstruction.
+
+    Args:
+        dtype: The warp dtype to serialize.
+
+    Returns:
+        A dict containing dtype info that can be used to reconstruct the type.
+    """
+    dtype_str = str(dtype)
+    dtype_name = dtype.__name__
+
+    result = {"__dtype__": dtype_str}
+
+    # Check if this is a dynamically created type that needs extra metadata
+    if dtype_name in ("vec_t", "mat_t", "quat_t"):
+        # Get scalar type
+        try:
+            scalar_type = warp_types.type_scalar_type(dtype)
+            result["__scalar_type__"] = scalar_type.__name__
+        except Exception:
+            pass
+
+        # Get length/shape
+        try:
+            length = warp_types.type_length(dtype)
+            result["__type_length__"] = length
+        except Exception:
+            pass
+
+        # For matrices, also get shape
+        if hasattr(dtype, "_shape_"):
+            result["__type_shape__"] = list(dtype._shape_)
+
+    return result
+
+
 def pointer_as_key(obj, format_type: str = "json", cache: ArrayCache | None = None):
     def callback(x, path):
         if isinstance(x, wp.array):
             # Skip arrays with struct dtypes - they can't be serialized
             if _is_struct_dtype(x.dtype):
                 return None
+            # Get dtype info with metadata for dynamic types
+            dtype_info = _serialize_warp_dtype(x.dtype)
             # Use device pointer as cache key
             if cache is not None:
                 key = _warp_key(x)
@@ -507,14 +552,14 @@ def pointer_as_key(obj, format_type: str = "json", cache: ArrayCache | None = No
                 if idx > 0:
                     return {
                         "__type__": "warp.array_ref",
-                        "__dtype__": str(x.dtype),
+                        **dtype_info,
                         "cache_index": int(idx),
                     }
                 # First occurrence: store full payload plus cache_index
                 assigned = cache.get_index_for_key(key)
                 return {
                     "__type__": "warp.array",
-                    "__dtype__": str(x.dtype),
+                    **dtype_info,
                     "cache_index": int(assigned),
                     # Avoid nested cache for raw bytes to keep warp-level dedup authoritative
                     "data": serialize_ndarray(x.numpy(), format_type, cache=None),
@@ -522,7 +567,7 @@ def pointer_as_key(obj, format_type: str = "json", cache: ArrayCache | None = No
             # No cache: fall back to plain encoding
             return {
                 "__type__": "warp.array",
-                "__dtype__": str(x.dtype),
+                **dtype_info,
                 "data": serialize_ndarray(x.numpy(), format_type, cache=None),
             }
 
@@ -731,6 +776,134 @@ def extract_last_type_name(class_str: str) -> str:
     raise ValueError(f"Unexpected format: {class_str}")
 
 
+# Mapping of scalar type names to warp scalar types and suffixes
+_SCALAR_TYPE_MAP = {
+    "float32": (wp.float32, "f"),
+    "float64": (wp.float64, "d"),
+    "int32": (wp.int32, "i"),
+    "int64": (wp.int64, "l"),
+    "uint32": (wp.uint32, "u"),
+    "uint64": (wp.uint64, "ul"),
+    "int16": (wp.int16, "h"),
+    "uint16": (wp.uint16, "uh"),
+    "int8": (wp.int8, "b"),
+    "uint8": (wp.uint8, "ub"),
+}
+
+# Mapping numpy dtypes to warp scalar suffixes
+_NUMPY_DTYPE_TO_SUFFIX = {
+    np.float32: "f",
+    np.float64: "d",
+    np.int32: "i",
+    np.int64: "l",
+    np.uint32: "u",
+    np.uint64: "ul",
+}
+
+# Mapping numpy dtypes to warp scalar types (for dynamic type creation)
+_NUMPY_TO_WARP_SCALAR = {
+    np.float32: wp.float32,
+    np.float64: wp.float64,
+    np.int32: wp.int32,
+    np.int64: wp.int64,
+    np.uint32: wp.uint32,
+    np.uint64: wp.uint64,
+    np.int16: wp.int16,
+    np.uint16: wp.uint16,
+    np.int8: wp.int8,
+    np.uint8: wp.uint8,
+}
+
+
+def _resolve_warp_dtype(dtype_str: str, serialized_data: dict | None = None, np_arr: np.ndarray | None = None):
+    """
+    Resolve a dtype string to a warp dtype, with backwards compatibility.
+
+    Uses metadata from serialized_data when available (for new recordings),
+    falls back to inferring from numpy array shape (for old recordings).
+
+    Args:
+        dtype_str: The dtype name extracted from serialized data.
+        serialized_data: Optional dict containing dtype metadata (__scalar_type__, __type_length__, __type_shape__).
+        np_arr: Optional numpy array to infer shape for generic types (fallback for old recordings).
+
+    Returns:
+        The warp dtype object.
+
+    Raises:
+        AttributeError: If the dtype cannot be resolved.
+    """
+    # Try direct lookup first
+    if hasattr(wp, dtype_str):
+        return getattr(wp, dtype_str)
+
+    # Try to reconstruct from metadata (new recordings)
+    if serialized_data is not None:
+        scalar_type_name = serialized_data.get("__scalar_type__")
+        type_length = serialized_data.get("__type_length__")
+        type_shape = serialized_data.get("__type_shape__")
+
+        if scalar_type_name and scalar_type_name in _SCALAR_TYPE_MAP:
+            scalar_type, suffix = _SCALAR_TYPE_MAP[scalar_type_name]
+
+            # Handle vector types (vec_t)
+            if dtype_str == "vec_t" and type_length:
+                inferred = f"vec{type_length}{suffix}"
+                if hasattr(wp, inferred):
+                    return getattr(wp, inferred)
+                # For non-standard lengths, create dynamically
+                return wp.types.vector(type_length, scalar_type)
+
+            # Handle matrix types (mat_t)
+            if dtype_str == "mat_t" and type_shape and len(type_shape) == 2:
+                rows, cols = type_shape
+                inferred = f"mat{rows}{cols}{suffix}"
+                if hasattr(wp, inferred):
+                    return getattr(wp, inferred)
+                # For non-standard shapes, create dynamically
+                return wp.types.matrix((rows, cols), scalar_type)
+
+            # Handle quaternion types (quat_t)
+            if dtype_str == "quat_t":
+                inferred = f"quat{suffix}"
+                if hasattr(wp, inferred):
+                    return getattr(wp, inferred)
+
+    # Fallback: infer from numpy array shape (for old recordings without metadata)
+    if dtype_str == "vec_t" and np_arr is not None and np_arr.ndim >= 1:
+        vec_len = np_arr.shape[-1] if np_arr.ndim > 1 else np_arr.shape[0]
+        suffix = _NUMPY_DTYPE_TO_SUFFIX.get(np_arr.dtype.type, "f")
+        inferred = f"vec{vec_len}{suffix}"
+        if hasattr(wp, inferred):
+            print(f"[Recorder] Info: Inferred dtype '{inferred}' from data shape for generic 'vec_t'")
+            return getattr(wp, inferred)
+        # For non-standard vector lengths (e.g., vec5), create dynamically
+        scalar_type = _NUMPY_TO_WARP_SCALAR.get(np_arr.dtype.type, wp.float32)
+        print(f"[Recorder] Info: Creating dynamic vector type vec{vec_len} with {scalar_type.__name__}")
+        return wp.types.vector(vec_len, scalar_type)
+
+    if dtype_str == "mat_t" and np_arr is not None and np_arr.ndim >= 2:
+        rows = np_arr.shape[-2] if np_arr.ndim > 2 else np_arr.shape[0]
+        cols = np_arr.shape[-1]
+        suffix = _NUMPY_DTYPE_TO_SUFFIX.get(np_arr.dtype.type, "f")
+        inferred = f"mat{rows}{cols}{suffix}"
+        if hasattr(wp, inferred):
+            print(f"[Recorder] Info: Inferred dtype '{inferred}' from data shape for generic 'mat_t'")
+            return getattr(wp, inferred)
+        # For non-standard matrix shapes, create dynamically
+        scalar_type = _NUMPY_TO_WARP_SCALAR.get(np_arr.dtype.type, wp.float32)
+        print(f"[Recorder] Info: Creating dynamic matrix type mat{rows}x{cols} with {scalar_type.__name__}")
+        return wp.types.matrix((rows, cols), scalar_type)
+
+    # If dtype ends with 'f' or 'd', try without suffix (e.g., vec3f -> vec3)
+    if dtype_str.endswith("f") or dtype_str.endswith("d"):
+        base = dtype_str[:-1]
+        if hasattr(wp, base):
+            return getattr(wp, base)
+
+    raise AttributeError(f"Cannot resolve warp dtype: '{dtype_str}'")
+
+
 # returns a model and a state history
 def depointer_as_key(data: dict, format_type: str = "json", cache: ArrayCache | None = None):
     """
@@ -758,16 +931,21 @@ def depointer_as_key(data: dict, format_type: str = "json", cache: ArrayCache | 
                 return {"__cache_ref__": {"index": ref_index, "kind": "warp.array"}}
 
         elif x_type == "warp.array":
-            dtype_str = extract_last_type_name(x["__dtype__"])
-            a = getattr(wp, dtype_str)
-            np_arr = deserialize_ndarray(x["data"], format_type, cache)
-            result = wp.array(np_arr, dtype=a)
-            # Register in cache if provided index present (optimization: single dict lookup)
-            cache_index = x.get("cache_index")
-            if cache is not None and cache_index is not None:
-                key = _warp_key(result)
-                cache.try_register_pointer_and_value_and_index(key, result, int(cache_index))
-            return result
+            try:
+                dtype_str = extract_last_type_name(x["__dtype__"])
+                np_arr = deserialize_ndarray(x["data"], format_type, cache)
+                # Pass the full serialized dict for metadata, and np_arr as fallback for old recordings
+                a = _resolve_warp_dtype(dtype_str, serialized_data=x, np_arr=np_arr)
+                result = wp.array(np_arr, dtype=a)
+                # Register in cache if provided index present (optimization: single dict lookup)
+                cache_index = x.get("cache_index")
+                if cache is not None and cache_index is not None:
+                    key = _warp_key(result)
+                    cache.try_register_pointer_and_value_and_index(key, result, int(cache_index))
+                return result
+            except Exception as e:
+                print(f"[Recorder] Warning: Failed to deserialize warp.array at '{path}': {e}")
+                return None
 
         elif x_type == "warp.HashGrid":
             # Return None or create empty HashGrid as appropriate
@@ -787,29 +965,33 @@ def depointer_as_key(data: dict, format_type: str = "json", cache: ArrayCache | 
                 return {"__cache_ref__": {"index": ref_index, "kind": "mesh"}}
 
         elif x_type == "newton.geometry.Mesh":
-            mesh_data = x["data"]
-            vertices = deserialize_ndarray(mesh_data["vertices"], format_type, cache)
-            indices = deserialize_ndarray(mesh_data["indices"], format_type, cache)
-            # Create the mesh without computing inertia since we'll restore the saved values
-            mesh = Mesh(
-                vertices=vertices,
-                indices=indices,
-                compute_inertia=False,
-                is_solid=mesh_data["is_solid"],
-                maxhullvert=mesh_data["maxhullvert"],
-            )
+            try:
+                mesh_data = x["data"]
+                vertices = deserialize_ndarray(mesh_data["vertices"], format_type, cache)
+                indices = deserialize_ndarray(mesh_data["indices"], format_type, cache)
+                # Create the mesh without computing inertia since we'll restore the saved values
+                mesh = Mesh(
+                    vertices=vertices,
+                    indices=indices,
+                    compute_inertia=False,
+                    is_solid=mesh_data["is_solid"],
+                    maxhullvert=mesh_data["maxhullvert"],
+                )
 
-            # Restore the saved inertia properties
-            mesh.has_inertia = mesh_data["has_inertia"]
-            mesh.mass = mesh_data["mass"]
-            mesh.com = wp.vec3(*mesh_data["com"])
-            mesh.I = wp.mat33(deserialize_ndarray(mesh_data["I"], format_type, cache))
-            # Optimization: single dict lookup
-            cache_index = x.get("cache_index")
-            if cache is not None and cache_index is not None:
-                mesh_key = _mesh_key_from_vertices(vertices, fallback_obj=mesh)
-                cache.try_register_pointer_and_value_and_index(mesh_key, mesh, int(cache_index))
-            return mesh
+                # Restore the saved inertia properties
+                mesh.has_inertia = mesh_data["has_inertia"]
+                mesh.mass = mesh_data["mass"]
+                mesh.com = wp.vec3(*mesh_data["com"])
+                mesh.I = wp.mat33(deserialize_ndarray(mesh_data["I"], format_type, cache))
+                # Optimization: single dict lookup
+                cache_index = x.get("cache_index")
+                if cache is not None and cache_index is not None:
+                    mesh_key = _mesh_key_from_vertices(vertices, fallback_obj=mesh)
+                    cache.try_register_pointer_and_value_and_index(mesh_key, mesh, int(cache_index))
+                return mesh
+            except Exception as e:
+                print(f"[Recorder] Warning: Failed to deserialize Mesh at '{path}': {e}")
+                return None
 
         elif x_type == "callable":
             # Return None for callables as they can't be serialized/deserialized

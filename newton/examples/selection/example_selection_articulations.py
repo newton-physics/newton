@@ -95,7 +95,6 @@ class Example:
         self.num_worlds = num_worlds
 
         world = newton.ModelBuilder()
-        newton.solvers.SolverMuJoCo.register_custom_attributes(world)
         world.add_mjcf(
             newton.examples.get_asset("nv_ant.xml"),
             ignore_names=["floor", "ground"],
