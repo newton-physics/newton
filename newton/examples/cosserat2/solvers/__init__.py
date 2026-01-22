@@ -9,6 +9,7 @@ from newton.examples.cosserat2.solvers.base import (
     FrictionMethod,
 )
 from newton.examples.cosserat2.solvers.cholesky import ConstraintSolverCholesky
+from newton.examples.cosserat2.solvers.direct_stiff_rods import ConstraintSolverDirectStiffRods
 from newton.examples.cosserat2.solvers.jacobi import ConstraintSolverJacobi
 from newton.examples.cosserat2.solvers.local import ConstraintSolverLocal
 from newton.examples.cosserat2.solvers.numpy_reference import ConstraintSolverNumpyReference
@@ -22,12 +23,14 @@ SOLVER_REGISTRY = {
     ConstraintSolverType.CHOLESKY_MULTI: ConstraintSolverCholesky,  # Same class, different config
     ConstraintSolverType.LOCAL: ConstraintSolverLocal,
     ConstraintSolverType.NUMPY_REFERENCE: ConstraintSolverNumpyReference,
+    ConstraintSolverType.DIRECT_STIFF_RODS: ConstraintSolverDirectStiffRods,
 }
 
 __all__ = [
     "SOLVER_REGISTRY",
     "ConstraintSolverBase",
     "ConstraintSolverCholesky",
+    "ConstraintSolverDirectStiffRods",
     "ConstraintSolverJacobi",
     "ConstraintSolverLocal",
     "ConstraintSolverNumpyReference",

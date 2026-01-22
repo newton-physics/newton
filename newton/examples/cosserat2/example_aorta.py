@@ -34,7 +34,7 @@ from newton.examples.cosserat2.solver_cosserat_xpbd import SolverConfig, SolverC
 from newton.examples.cosserat2.solvers import ConstraintSolverType, FrictionMethod
 
 # Default rod configuration
-DEFAULT_NUM_PARTICLES = 32
+DEFAULT_NUM_PARTICLES = 129
 DEFAULT_PARTICLE_SPACING = 0.025
 
 
@@ -377,18 +377,19 @@ class Example:
         if tip_bend_changed:
             self._update_tip_rest_darboux()
 
-        # Solver switching with 1, 2, 3, 4, 5 keys
+        # Solver switching with 1, 2, 3, 4, 5, 6 keys
         method_types = [
             ConstraintSolverType.JACOBI,
             ConstraintSolverType.THOMAS,
             ConstraintSolverType.CHOLESKY_SINGLE,
             ConstraintSolverType.LOCAL,
             ConstraintSolverType.NUMPY_REFERENCE,
+            ConstraintSolverType.DIRECT_STIFF_RODS,
         ]
-        method_names = ["Jacobi", "Thomas", "Cholesky", "Local", "NumPy Reference"]
+        method_names = ["Jacobi", "Thomas", "Cholesky", "Local", "NumPy Reference", "Direct Stiff Rods"]
 
         for i, (k, solver_type, name) in enumerate(
-            zip([key._1, key._2, key._3, key._4, key._5], method_types, method_names, strict=True)
+            zip([key._1, key._2, key._3, key._4, key._5, key._6], method_types, method_names, strict=True)
         ):
             if self.viewer.is_key_down(k) and self.current_solver_idx != i:
                 try:
@@ -506,6 +507,7 @@ class Example:
             "Cholesky (Single Tile)",
             "Local Iterative",
             "NumPy Reference (CPU)",
+            "Direct Stiff Rods (CPU)",
         ]
         method_types = [
             ConstraintSolverType.JACOBI,
@@ -513,6 +515,7 @@ class Example:
             ConstraintSolverType.CHOLESKY_SINGLE,
             ConstraintSolverType.LOCAL,
             ConstraintSolverType.NUMPY_REFERENCE,
+            ConstraintSolverType.DIRECT_STIFF_RODS,
         ]
         changed, new_idx = ui.combo("Solver Method", self.current_solver_idx, methods)
         if changed:
@@ -537,7 +540,9 @@ class Example:
             ui.text("  Local iteration with velocity update")
         elif solver_type == ConstraintSolverType.NUMPY_REFERENCE:
             ui.text("  Pure NumPy (CPU, for validation)")
-        ui.text("  Keys 1/2/3/4/5: Switch solver")
+        elif solver_type == ConstraintSolverType.DIRECT_STIFF_RODS:
+            ui.text("  Direct LDLT solver (Deul 2017)")
+        ui.text("  Keys 1/2/3/4/5/6: Switch solver")
 
         # Simulation Parameters
         ui.separator()

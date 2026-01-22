@@ -22,6 +22,7 @@ class ConstraintSolverType(IntEnum):
     CHOLESKY_MULTI = auto()  # Multi-tile Cholesky (from 08_multitile)
     LOCAL = auto()  # Local iterative solver with velocity update (from 02_local_cosserat_rod)
     NUMPY_REFERENCE = auto()  # NumPy reference implementation (CPU, non-parallel)
+    DIRECT_STIFF_RODS = auto()  # Direct solver for stiff rods (CPU, Deul et al. 2017)
 
 
 class FrictionMethod(IntEnum):
@@ -68,6 +69,7 @@ class ConstraintSolverBase(ABC):
             ConstraintSolverType.CHOLESKY_MULTI: "Cholesky (Multi-Tile)",
             ConstraintSolverType.LOCAL: "Local Iterative",
             ConstraintSolverType.NUMPY_REFERENCE: "NumPy Reference (CPU)",
+            ConstraintSolverType.DIRECT_STIFF_RODS: "Direct Stiff Rods (CPU)",
         }
         return names.get(self.solver_type, "Unknown")
 
