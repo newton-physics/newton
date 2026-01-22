@@ -6575,17 +6575,13 @@ class ModelBuilder:
         This method validates that the per-world start index arrays for various entities
         (particles, bodies, shapes, joints, articulations, equality constraints and joint
         coord/DOFs) are cumulative and match the total counts of those entities. Moreover,
-        it appends the number of tail-end global entities and the overall total counts to
+        it appends the start of tail-end global entities and the overall total counts to
         the end of each start index array.
 
         The format of the start index arrays is as follows (where `*` can be `body`, `shape`, `joint`, etc.):
             .. code-block:: python
 
                 world_*_start = [ start_world_0, start_world_1, ..., start_world_N , start_global_tail, total_count]
-
-        Essentially, the arrays store cumulative counts of entities up to each world
-        index, with the last two entries representing the count of global entities
-        at the end and the sum total count of entities over the entire model.
 
         This allows retrieval of per-world counts using:
             .. code-block:: python
@@ -6599,8 +6595,6 @@ class ModelBuilder:
                 body_world = [-1, -1, 0, 0, ..., 1, 1, ..., N - 1, N - 1, ..., -1, -1, -1, ...]
                 world_body_start = [2, 15, 25, ..., 50, 60, 72]
                 #          world :  -1 |  0 |  1   ... |  N-1 | -1 |  total
-
-
         """
         # List of all world start arrays of entities
         world_entity_start_arrays = [
@@ -6738,7 +6732,6 @@ class ModelBuilder:
         for world_start_array, space_start_array, total_count, name in world_joint_space_start_arrays:
             # First finalize the start array by appending tail-end global and total entity counts
             finalize_joint_space_start_array(total_count, space_start_array, world_start_array, name)
-            # print(f"\n{name}: world_start_array: {world_start_array}\n")
 
             # Ensure the world_start array has length num_worlds + 2 (for global entities at start/end)
             expected_length = self.num_worlds + 2
