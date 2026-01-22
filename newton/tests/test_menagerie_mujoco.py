@@ -40,6 +40,7 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+import warp as wp
 
 import newton
 from newton._src.utils.download_assets import download_git_folder
@@ -551,6 +552,7 @@ class TestMenagerieBase(unittest.TestCase):
 
         Both sides use mujoco_warp with the same number of worlds.
         Each world receives different controls (varied by phase/noise).
+        Uses CUDA graphs when available for performance.
         """
         assert _mujoco is not None
         assert _mujoco_warp is not None
@@ -558,8 +560,7 @@ class TestMenagerieBase(unittest.TestCase):
 
         # Create Newton model and solver (num_worlds is batch dimension)
         newton_model = self._create_newton_model()
-        newton_state_0 = newton_model.state()
-        newton_state_1 = newton_model.state()
+        newton_state = newton_model.state()
         newton_control = newton_model.control()
 
         # Create Newton's MuJoCo solver (uses warp backend with batched worlds)
@@ -571,25 +572,15 @@ class TestMenagerieBase(unittest.TestCase):
         # Get number of actuators from native model
         num_actuators = native_mjw_data.ctrl.shape[1] if native_mjw_data.ctrl.shape[1] > 0 else 0
 
-        # Run simulation and compare
+        # Check if CUDA graphs are available
+        use_cuda_graph = wp.get_device().is_cuda and wp.is_mempool_enabled(wp.get_device())
+
+        newton_graph = None
+        native_graph = None
         all_errors: list[str] = []
 
-        for step in range(self.num_steps):
-            t = step * self.dt
-
-            # Generate control: shape (num_worlds, num_actuators)
-            ctrl = self.control_strategy.get_control(t, step, self.num_worlds, num_actuators)
-
-            # Apply same controls to both sides
-            newton_solver.mjw_data.ctrl.assign(ctrl)
-            native_mjw_data.ctrl.assign(ctrl)
-
-            # Step both using mujoco_warp
-            _mujoco_warp.step(native_mjw_model, native_mjw_data)
-            newton_solver.step(newton_state_0, newton_state_1, newton_control, None, self.dt)
-            newton_state_0, newton_state_1 = newton_state_1, newton_state_0
-
-            # Compare mjw_data arrays directly (both have same shape)
+        def compare_step(step: int):
+            """Compare mjw_data arrays for all worlds at the given step."""
             for world_idx in range(self.num_worlds):
                 passed, errors = compare_mjdata(
                     newton_solver.mjw_data,
@@ -601,6 +592,47 @@ class TestMenagerieBase(unittest.TestCase):
                 )
                 if not passed:
                     all_errors.extend([f"world {world_idx}: {e}" for e in errors])
+
+        # Step 0: Run normally and capture graphs
+        ctrl = self.control_strategy.get_control(0, 0, self.num_worlds, num_actuators)
+        newton_solver.mjw_data.ctrl.assign(ctrl)
+        native_mjw_data.ctrl.assign(ctrl)
+
+        if use_cuda_graph:
+            # Capture Newton graph (step 0 runs during capture)
+            with wp.ScopedCapture() as capture:
+                newton_solver.step(newton_state, newton_state, newton_control, None, self.dt)
+            newton_graph = capture.graph
+
+            # Capture native graph (step 0 runs during capture)
+            with wp.ScopedCapture() as capture:
+                _mujoco_warp.step(native_mjw_model, native_mjw_data)
+            native_graph = capture.graph
+        else:
+            _mujoco_warp.step(native_mjw_model, native_mjw_data)
+            newton_solver.step(newton_state, newton_state, newton_control, None, self.dt)
+
+        # Compare after step 0
+        compare_step(0)
+
+        # Steps 1+: Use captured graphs
+        for step in range(1, self.num_steps):
+            t = step * self.dt
+
+            # Generate control: shape (num_worlds, num_actuators)
+            ctrl = self.control_strategy.get_control(t, step, self.num_worlds, num_actuators)
+            newton_solver.mjw_data.ctrl.assign(ctrl)
+            native_mjw_data.ctrl.assign(ctrl)
+
+            # Step both using mujoco_warp
+            if newton_graph and native_graph:
+                wp.capture_launch(native_graph)
+                wp.capture_launch(newton_graph)
+            else:
+                _mujoco_warp.step(native_mjw_model, native_mjw_data)
+                newton_solver.step(newton_state, newton_state, newton_control, None, self.dt)
+
+            compare_step(step)
 
         # Report failures
         if all_errors:
