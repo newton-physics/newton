@@ -723,7 +723,7 @@ class TestImportMjcf(unittest.TestCase):
         self.assertAlmostEqual(joint_limit_kd[2], expected_kd_3, places=2)
 
     def test_single_mujoco_fixed_tendon_parsing(self):
-        """Test that tendons work"""
+        """Test that tendon parameters can be parsed from mjcf"""
         mjcf = """<?xml version="1.0" ?>
 <mujoco>
     <worldbody>
@@ -1205,7 +1205,7 @@ class TestImportMjcf(unittest.TestCase):
             )
 
     def test_single_mujoco_fixed_tendon_defaults(self):
-        """Test that tendons work"""
+        """Test that tendon parsing uses the correct mujoco default values."""
         mjcf = """<?xml version="1.0" ?>
 <mujoco>
     <worldbody>
@@ -1436,7 +1436,7 @@ class TestImportMjcf(unittest.TestCase):
             )
 
     def test_single_mujoco_fixed_tendon_limit_parsing(self):
-        """Test that tendons work"""
+        """Test that tendon limits are correctly parsed."""
         mjcf = """<?xml version="1.0" ?>
 <mujoco>
     <worldbody>
