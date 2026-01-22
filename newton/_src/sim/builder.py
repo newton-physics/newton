@@ -6573,10 +6573,10 @@ class ModelBuilder:
         Finalize the per-world entity start index arrays.
 
         This method validates that the per-world start index arrays for various entities
-        (particles, bodies, shapes, joints, triangles, tetrahedra, edges, springs, muscles,
-        articulations, and equality constraints) are cumulative and match the total counts
-        of those entities. Moreover, it appends the number of tail-end global entities and
-        the overall total counts to the end of each start index array.
+        (particles, bodies, shapes, joints, articulations, equality constraints and joint
+        coord/DOFs) are cumulative and match the total counts of those entities. Moreover,
+        it appends the number of tail-end global entities and the overall total counts to
+        the end of each start index array.
 
         The format of the start index arrays is as follows (where `*` can be `body`, `shape`, `joint`, etc.):
             .. code-block:: python
@@ -6617,7 +6617,15 @@ class ModelBuilder:
             ),
         ]
 
-        def finalize_entity_start_array(entity_count: int, entity_world: list[int], world_entity_start: list[int]):
+        def finalize_entity_start_array(
+            entity_count: int, entity_world: list[int], world_entity_start: list[int], name: str
+        ):
+            # Ensure that joint_space_start has length equal to self.joint_count
+            if len(entity_world) != entity_count:
+                raise ValueError(
+                    f"World array for {name}s has incorrect length: expected {entity_count}, found {len(entity_world)}."
+                )
+
             # Initialize world_entity_start with zeros
             world_entity_start.clear()
             world_entity_start.extend([0] * (self.num_worlds + 2))
@@ -6644,7 +6652,7 @@ class ModelBuilder:
         # Check that all world offset indices are cumulative and match counts
         for world_start_array, total_count, entity_world_array, name in world_entity_start_arrays:
             # First finalize the start array by appending tail-end global and total entity counts
-            finalize_entity_start_array(total_count, entity_world_array, world_start_array)
+            finalize_entity_start_array(total_count, entity_world_array, world_start_array, name)
 
             # Ensure the world_start array has length num_worlds + 2 (for global entities at start/end)
             expected_length = self.num_worlds + 2
@@ -6690,6 +6698,13 @@ class ModelBuilder:
         def finalize_joint_space_start_array(
             space_count: int, joint_space_start: list[int], world_space_start: list[int], name: str
         ):
+            # Ensure that joint_space_start has length equal to self.joint_count
+            if len(joint_space_start) != self.joint_count:
+                raise ValueError(
+                    f"Joint start array for {name}s has incorrect length: "
+                    f"expected {self.joint_count}, found {len(joint_space_start)}."
+                )
+
             # Initialize world_space_start with zeros
             world_space_start.clear()
             world_space_start.extend([0] * (self.num_worlds + 2))
@@ -7369,18 +7384,14 @@ class ModelBuilder:
 
             # ---------------------
             # per-world start indices
-            m.world_particle_start = wp.array(self.world_particle_start, dtype=wp.int32, requires_grad=requires_grad)
-            m.world_body_start = wp.array(self.world_body_start, dtype=wp.int32, requires_grad=requires_grad)
-            m.world_shape_start = wp.array(self.world_shape_start, dtype=wp.int32, requires_grad=requires_grad)
-            m.world_joint_start = wp.array(self.world_joint_start, dtype=wp.int32, requires_grad=requires_grad)
-            m.world_articulation_start = wp.array(
-                self.world_articulation_start, dtype=wp.int32, requires_grad=requires_grad
-            )
-            m.world_equality_constraint_start = wp.array(
-                self.world_equality_constraint_start, dtype=wp.int32, requires_grad=requires_grad
-            )
-            m.world_joint_q_start = wp.array(self.world_joint_q_start, dtype=wp.int32, requires_grad=requires_grad)
-            m.world_joint_qd_start = wp.array(self.world_joint_qd_start, dtype=wp.int32, requires_grad=requires_grad)
+            m.world_particle_start = wp.array(self.world_particle_start, dtype=wp.int32)
+            m.world_body_start = wp.array(self.world_body_start, dtype=wp.int32)
+            m.world_shape_start = wp.array(self.world_shape_start, dtype=wp.int32)
+            m.world_joint_start = wp.array(self.world_joint_start, dtype=wp.int32)
+            m.world_articulation_start = wp.array(self.world_articulation_start, dtype=wp.int32)
+            m.world_equality_constraint_start = wp.array(self.world_equality_constraint_start, dtype=wp.int32)
+            m.world_joint_q_start = wp.array(self.world_joint_q_start, dtype=wp.int32)
+            m.world_joint_qd_start = wp.array(self.world_joint_qd_start, dtype=wp.int32)
 
             # ---------------------
             # counts
