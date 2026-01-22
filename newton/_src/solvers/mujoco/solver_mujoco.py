@@ -924,6 +924,8 @@ class SolverMuJoCo(SolverBase):
         tendon_joint = mujoco_attrs.tendon_joint.numpy() if joint_entry_count > 0 else None
         tendon_coef = mujoco_attrs.tendon_coef.numpy() if joint_entry_count > 0 else None
 
+        model_joint_type_np = model.joint_type.numpy()
+
         # Track which Newton tendon indices are added to MuJoCo
         selected_tendons: list[int] = []
 
@@ -999,6 +1001,13 @@ class SolverMuJoCo(SolverBase):
                 if newton_joint < 0:
                     warnings.warn(
                         f"Skipping joint entry {j} for tendon {i}: invalid joint index {newton_joint}.",
+                        stacklevel=2,
+                    )
+                    continue
+
+                if model_joint_type_np[newton_joint] == JointType.D6:
+                    warnings.warn(
+                        f"Skipping joint entry {j} for tendon {i}: invalid D6 joint type {newton_joint}.",
                         stacklevel=2,
                     )
                     continue
