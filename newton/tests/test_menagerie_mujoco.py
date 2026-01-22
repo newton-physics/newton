@@ -212,8 +212,8 @@ class ControlStrategy:
         self,
         t: float,
         step: int,
-        model: newton.Model,
-        state: newton.State,
+        num_worlds: int,
+        num_actuators: int,
     ) -> np.ndarray:
         """
         Generate control values for the given timestep.
@@ -221,8 +221,8 @@ class ControlStrategy:
         Args:
             t: Current simulation time
             step: Current step number
-            model: Newton model
-            state: Current Newton state
+            num_worlds: Number of parallel worlds
+            num_actuators: Number of actuators per world
 
         Returns:
             Control array of shape (num_worlds, num_actuators)
@@ -233,10 +233,8 @@ class ControlStrategy:
 class ZeroControlStrategy(ControlStrategy):
     """Always returns zero control - useful for drop tests."""
 
-    def get_control(self, t, step, model, state):
-        num_worlds = max(model.num_worlds, 1)
-        num_dofs = model.joint_dof_count // num_worlds
-        return np.zeros((num_worlds, num_dofs))
+    def get_control(self, t, step, num_worlds, num_actuators):
+        return np.zeros((num_worlds, num_actuators))
 
 
 class StructuredControlStrategy(ControlStrategy):
@@ -244,8 +242,7 @@ class StructuredControlStrategy(ControlStrategy):
     Generate structured control patterns designed to explore joint limits.
 
     Combines sinusoids at different frequencies with occasional step changes.
-    Control magnitudes are scaled to approach actuator limits.
-    All worlds receive the same control pattern.
+    Each world gets a slightly different phase offset for variation.
     """
 
     def __init__(
@@ -260,48 +257,44 @@ class StructuredControlStrategy(ControlStrategy):
         self.frequency_range = frequency_range
         self.step_probability = step_probability
         self._frequencies: np.ndarray | None = None
-        self._phases: np.ndarray | None = None
+        self._phases: np.ndarray | None = None  # Shape: (num_worlds, num_actuators)
         self._step_values: np.ndarray | None = None
 
-    def _init_for_model(self, num_actuators: int):
-        """Initialize frequencies and phases for each actuator."""
+    def _init_for_model(self, num_worlds: int, num_actuators: int):
+        """Initialize frequencies and phases."""
         self._frequencies = self.rng.uniform(self.frequency_range[0], self.frequency_range[1], num_actuators)
-        self._phases = self.rng.uniform(0, 2 * np.pi, num_actuators)
-        self._step_values = np.zeros(num_actuators)
+        # Different phase per world for variation
+        self._phases = self.rng.uniform(0, 2 * np.pi, (num_worlds, num_actuators))
+        self._step_values = np.zeros((num_worlds, num_actuators))
 
-    def get_control(self, t, step, model, state):
-        num_worlds = max(model.num_worlds, 1)
-        num_dofs = model.joint_dof_count // num_worlds
+    def get_control(self, t, step, num_worlds, num_actuators):
+        if self._frequencies is None or self._phases is None or self._phases.shape != (num_worlds, num_actuators):
+            self._init_for_model(num_worlds, num_actuators)
 
-        if self._frequencies is None or len(self._frequencies) != num_dofs:
-            self._init_for_model(num_dofs)
-
-        # Base sinusoidal pattern
         assert self._frequencies is not None
         assert self._phases is not None
         assert self._step_values is not None
-        control = self.amplitude_scale * np.sin(2 * np.pi * self._frequencies * t + self._phases)
 
-        # Occasional step changes
+        # Base sinusoidal pattern: broadcast frequencies across worlds
+        # Shape: (num_worlds, num_actuators)
+        control = self.amplitude_scale * np.sin(2 * np.pi * self._frequencies[np.newaxis, :] * t + self._phases)
+
+        # Occasional step changes (random world and actuator)
         if self.rng.random() < self.step_probability:
-            idx = self.rng.integers(0, num_dofs)
-            self._step_values[idx] = self.rng.uniform(-1, 1)
+            world_idx = self.rng.integers(0, num_worlds)
+            act_idx = self.rng.integers(0, num_actuators)
+            self._step_values[world_idx, act_idx] = self.rng.uniform(-1, 1)
 
         control += 0.3 * self._step_values
 
-        # Clip to [-1, 1] range (will be scaled by actuator limits later)
-        control = np.clip(control, -1, 1)
-
-        # Broadcast to all worlds (same control for all)
-        return np.tile(control, (num_worlds, 1))
+        return np.clip(control, -1, 1)
 
 
 class RandomControlStrategy(ControlStrategy):
     """
     Generate random control values with configurable noise.
 
-    Good for exploring the control space but less structured.
-    All worlds receive the same control pattern.
+    Each world gets independent random controls.
     """
 
     def __init__(
@@ -315,22 +308,16 @@ class RandomControlStrategy(ControlStrategy):
         self.smoothing = smoothing
         self._prev_control: np.ndarray | None = None
 
-    def get_control(self, t, step, model, state):
-        num_worlds = max(model.num_worlds, 1)
-        num_dofs = model.joint_dof_count // num_worlds
+    def get_control(self, t, step, num_worlds, num_actuators):
+        if self._prev_control is None or self._prev_control.shape != (num_worlds, num_actuators):
+            self._prev_control = np.zeros((num_worlds, num_actuators))
 
-        if self._prev_control is None or len(self._prev_control) != num_dofs:
-            self._prev_control = np.zeros(num_dofs)
-
-        # Random noise with smoothing
-        noise = self.rng.uniform(-1, 1, num_dofs) * self.noise_scale
+        # Random noise with smoothing (independent per world)
+        noise = self.rng.uniform(-1, 1, (num_worlds, num_actuators)) * self.noise_scale
         control = self.smoothing * self._prev_control + (1 - self.smoothing) * noise
         self._prev_control = control
 
-        control = np.clip(control, -1, 1)
-
-        # Broadcast to all worlds (same control for all)
-        return np.tile(control, (num_worlds, 1))
+        return np.clip(control, -1, 1)
 
 
 # =============================================================================
@@ -353,18 +340,20 @@ DEFAULT_COMPARE_FIELDS: list[str] = ["qpos", "qvel"]
 
 def compare_mjdata(
     newton_mjw_data: Any,
-    native_mj_data: Any,
+    native_mjw_data: Any,
     step: int,
     world_idx: int = 0,
     fields: list[str] | None = None,
     tolerances: dict[str, float] | None = None,
 ) -> tuple[bool, list[str]]:
     """
-    Compare MjData from Newton's SolverMuJoCo against native MuJoCo MjData.
+    Compare MjWarpData from Newton's SolverMuJoCo against native mujoco_warp.
+
+    Both sides have the same batched structure: arrays have shape [num_worlds, ...].
 
     Args:
-        newton_mjw_data: MjWarpData from SolverMuJoCo (arrays have shape [num_worlds, ...])
-        native_mj_data: MjData from native MuJoCo simulation
+        newton_mjw_data: MjWarpData from SolverMuJoCo
+        native_mjw_data: MjWarpData from native mujoco_warp
         step: Current step number
         world_idx: Which world to compare
         fields: Fields to compare (default: ["qpos", "qvel"])
@@ -382,32 +371,32 @@ def compare_mjdata(
         tol = tolerances.get(field_name, 1e-6)
 
         newton_arr = getattr(newton_mjw_data, field_name, None)
-        native_arr = getattr(native_mj_data, field_name, None)
+        native_arr = getattr(native_mjw_data, field_name, None)
 
         if newton_arr is None or native_arr is None:
             continue
 
-        # Convert to numpy if needed
+        # Convert to numpy if needed (warp arrays)
         if hasattr(newton_arr, "numpy"):
             newton_arr = newton_arr.numpy()
+        if hasattr(native_arr, "numpy"):
+            native_arr = native_arr.numpy()
+
         newton_arr = np.asarray(newton_arr)
         native_arr = np.asarray(native_arr)
 
-        # Select world from batched array
-        if newton_arr.ndim > native_arr.ndim:
-            newton_arr = newton_arr[world_idx]
+        # Select the specific world (first dimension is world index)
+        newton_world = newton_arr[world_idx].flatten()
+        native_world = native_arr[world_idx].flatten()
 
-        newton_flat = newton_arr.flatten()
-        native_flat = native_arr.flatten()
-
-        if len(newton_flat) != len(native_flat):
-            errors.append(f"step {step}, {field_name}: size mismatch ({len(newton_flat)} vs {len(native_flat)})")
+        if len(newton_world) != len(native_world):
+            errors.append(f"step {step}, {field_name}: size mismatch ({len(newton_world)} vs {len(native_world)})")
             continue
 
-        if len(newton_flat) == 0:
+        if len(newton_world) == 0:
             continue
 
-        max_error = float(np.max(np.abs(newton_flat - native_flat)))
+        max_error = float(np.max(np.abs(newton_world - native_world)))
         if max_error > tol:
             errors.append(f"step {step}, {field_name}: max error {max_error:.2e} > {tol:.2e}")
 
@@ -536,25 +525,35 @@ class TestMenagerieBase(unittest.TestCase):
             add_ground=True,
         )
 
-    def _create_native_mujoco_model(self) -> tuple[Any, Any]:
-        """Create native MuJoCo model from the same MJCF."""
+    def _create_native_mujoco_warp(self) -> tuple[Any, Any, Any, Any]:
+        """Create native mujoco_warp model/data from the same MJCF.
+
+        Returns:
+            (mj_model, mj_data, mjw_model, mjw_data) tuple
+        """
         assert _mujoco is not None
+        assert _mujoco_warp is not None
+
+        # Create base MuJoCo model/data (uses default initialization)
         mj_model = _mujoco.MjModel.from_xml_path(str(self.mjcf_path))
         mj_data = _mujoco.MjData(mj_model)
-        # Initialize with default state and run forward kinematics
-        mj_data.qpos[:] = mj_model.qpos0
-        mj_data.qvel[:] = 0
         _mujoco.mj_forward(mj_model, mj_data)
-        return mj_model, mj_data
+
+        # Create mujoco_warp model/data with multiple worlds
+        mjw_model = _mujoco_warp.put_model(mj_model)
+        mjw_data = _mujoco_warp.put_data(mj_model, mj_data, nworld=self.num_worlds)
+
+        return mj_model, mj_data, mjw_model, mjw_data
 
     def test_simulation_equivalence(self):
         """
-        Main test: verify Newton's SolverMuJoCo and native MuJoCo produce equivalent results.
+        Main test: verify Newton's SolverMuJoCo and native mujoco_warp produce equivalent results.
 
-        Compares MjWarpData arrays against native MjData.
-        All worlds receive the same controls, so all should match the single native simulation.
+        Both sides use mujoco_warp with the same number of worlds.
+        Each world receives different controls (varied by phase/noise).
         """
         assert _mujoco is not None
+        assert _mujoco_warp is not None
         assert self.control_strategy is not None
 
         # Create Newton model and solver (num_worlds is batch dimension)
@@ -566,8 +565,11 @@ class TestMenagerieBase(unittest.TestCase):
         # Create Newton's MuJoCo solver (uses warp backend with batched worlds)
         newton_solver = SolverMuJoCo(newton_model)
 
-        # Create single native MuJoCo model (all worlds should match this)
-        native_mj_model, native_mj_data = self._create_native_mujoco_model()
+        # Create native mujoco_warp model/data with same number of worlds
+        _, _, native_mjw_model, native_mjw_data = self._create_native_mujoco_warp()
+
+        # Get number of actuators from native model
+        num_actuators = native_mjw_data.ctrl.shape[1] if native_mjw_data.ctrl.shape[1] > 0 else 0
 
         # Run simulation and compare
         all_errors: list[str] = []
@@ -575,28 +577,23 @@ class TestMenagerieBase(unittest.TestCase):
         for step in range(self.num_steps):
             t = step * self.dt
 
-            # Generate control for all worlds: shape (num_worlds, num_actuators)
-            ctrl = self.control_strategy.get_control(t, step, newton_model, newton_state_0)
+            # Generate control: shape (num_worlds, num_actuators)
+            ctrl = self.control_strategy.get_control(t, step, self.num_worlds, num_actuators)
 
-            # Apply to native MuJoCo (use first world's control)
-            native_mj_data.ctrl[:] = ctrl[0]
-
-            # Apply to Newton's mujoco_warp (full batched array)
+            # Apply same controls to both sides
             newton_solver.mjw_data.ctrl.assign(ctrl)
+            native_mjw_data.ctrl.assign(ctrl)
 
-            # Step native MuJoCo
-            _mujoco.mj_step(native_mj_model, native_mj_data)
-
-            # Step Newton's MuJoCo solver (all worlds at once)
-            contacts = newton_model.collide(newton_state_0)
-            newton_solver.step(newton_state_0, newton_state_1, newton_control, contacts, self.dt)
+            # Step both using mujoco_warp
+            _mujoco_warp.step(native_mjw_model, native_mjw_data)
+            newton_solver.step(newton_state_0, newton_state_1, newton_control, None, self.dt)
             newton_state_0, newton_state_1 = newton_state_1, newton_state_0
 
-            # Compare each world against native (all should match)
+            # Compare mjw_data arrays directly (both have same shape)
             for world_idx in range(self.num_worlds):
                 passed, errors = compare_mjdata(
                     newton_solver.mjw_data,
-                    native_mj_data,
+                    native_mjw_data,
                     step,
                     world_idx,
                     fields=self.compare_fields,
