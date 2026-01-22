@@ -24,7 +24,6 @@ import numpy as np
 import warp as wp
 
 from ..sim import Contacts, Model
-from ..solvers import SolverBase
 
 
 class MatchKind(Enum):
@@ -69,9 +68,10 @@ def select_aggregate_net_force(
     sp_ep: wp.array(dtype=wp.vec2i),
     sp_ep_offset: wp.array(dtype=wp.int32),
     sp_ep_count: wp.array(dtype=wp.int32),
-    contact_pair: wp.array(dtype=wp.vec2i),
+    contact_shape0: wp.array(dtype=wp.int32),
+    contact_shape1: wp.array(dtype=wp.int32),
     contact_normal: wp.array(dtype=wp.vec3),
-    contact_force: wp.array(dtype=wp.float32),
+    contact_force: wp.array(dtype=wp.spatial_vector),
     # output
     net_force: wp.array(dtype=wp.vec3),
 ):
@@ -79,17 +79,19 @@ def select_aggregate_net_force(
     if con_idx >= num_contacts[0]:
         return
 
-    pair = contact_pair[con_idx]
+    shape0 = contact_shape0[con_idx]
+    shape1 = contact_shape1[con_idx]
 
     # Find the entity pairs
-    smin, smax = wp.min(pair[0], pair[1]), wp.max(pair[0], pair[1])
+    smin, smax = wp.min(shape0, shape1), wp.max(shape0, shape1)
 
     # add contribution for shape pair
     normalized_pair = wp.vec2i(smin, smax)
-    sp_flip = normalized_pair[0] != pair[0]
+    sp_flip = normalized_pair[0] != shape0
     sp_ord = bisect_shape_pairs(sp_sorted, num_sp, normalized_pair)
 
-    force = contact_force[con_idx] * contact_normal[con_idx]
+    normal_force = wp.spatial_top(contact_force[con_idx])[0]
+    force = -normal_force * contact_normal[con_idx]
     if sp_ord < num_sp:
         if sp_sorted[sp_ord] == normalized_pair:
             # add the force to the pair's force accumulators
@@ -101,7 +103,7 @@ def select_aggregate_net_force(
 
     # add contribution for shape a and b
     for i in range(2):
-        mono_sp = wp.vec2i(-1, pair[i])
+        mono_sp = wp.vec2i(-1, wp.where(i == 0, shape0, shape1))
         mono_ord = bisect_shape_pairs(sp_sorted, num_sp, mono_sp)
 
         # for shape vs all, only one accumulator is supported and flip is trivially true
@@ -113,29 +115,6 @@ def select_aggregate_net_force(
 
 class MatchAny:
     """Wildcard counterpart; matches any object."""
-
-
-def populate_contacts(
-    contacts: Contacts,
-    solver: SolverBase,
-):
-    """
-    Populate a Contacts object with the latest contact data from a solver.
-
-    This function updates the given `contacts` object in-place using the contact information
-    from the provided `solver`. It is typically called after a simulation step to refresh
-    the contact data for use in sensors or analysis.
-
-    This function will be removed once contact forces are implemented as extended state attributes.
-
-    Args:
-        contacts (Contacts): The Contacts object to be populated or updated.
-        solver (SolverBase): The solver instance containing the latest contact results.
-
-    Returns:
-        None
-    """
-    solver.update_contacts(contacts)
 
 
 class SensorContact:
@@ -180,6 +159,7 @@ class SensorContact:
         include_total: bool = True,
         prune_noncolliding: bool = False,
         verbose: bool | None = None,
+        request_contact_attributes: bool = True,
     ):
         """Initialize the SensorContact.
 
@@ -198,6 +178,7 @@ class SensorContact:
             prune_noncolliding: If True, omit force readings for shape pairs that never collide from the force
                 matrix. Does nothing when no counterparts are specified.
             verbose: If True, print details. If None, uses ``wp.config.verbose``.
+            request_contact_attributes: If True (default), transparently request the extended contact attribute ``force`` from the model.
         """
 
         self.shape: tuple[int, int]
@@ -222,6 +203,10 @@ class SensorContact:
 
         self.device = model.device
         self.verbose = verbose if verbose is not None else wp.config.verbose
+
+        # request contact force attribute
+        if request_contact_attributes:
+            model.request_contact_attributes("force")
 
         if match_fn is None:
             match_fn = fnmatch
@@ -273,6 +258,11 @@ class SensorContact:
         Args:
             contacts (Contacts): The contact data to evaluate.
         """
+        if contacts.force is None:
+            raise ValueError(
+                "SensorContact requires a ``Contacts`` object with ``force`` allocated."
+                "Create ``SensorContact`` before ``Contacts`` for automatically requesting it."
+            )
         self._eval_net_force(contacts)
 
     def get_total_force(self) -> wp.array2d(dtype=wp.vec3):
@@ -356,24 +346,25 @@ class SensorContact:
         shape = len(sensing_objs), n_readings
         return sp_sorted, sp_reading, shape, counterpart_indices, sensing_obj_kinds, counterpart_kinds
 
-    def _eval_net_force(self, contact: Contacts):
+    def _eval_net_force(self, contacts: Contacts):
         self._net_force.zero_()
         wp.launch(
             select_aggregate_net_force,
-            dim=contact.rigid_contact_max,
+            dim=contacts.rigid_contact_max,
             inputs=[
-                contact.rigid_contact_count,
+                contacts.rigid_contact_count,
                 self._sp_sorted,
                 self._n_shape_pairs,
                 self._sp_reading,
                 self._sp_ep_offset,
                 self._sp_ep_count,
-                contact.pair,
-                contact.normal,
-                contact.force,
+                contacts.rigid_contact_shape0,
+                contacts.rigid_contact_shape1,
+                contacts.rigid_contact_normal,
+                contacts.force,
             ],
             outputs=[self._net_force],
-            device=contact.device,
+            device=contacts.device,
         )
 
     @classmethod

@@ -18,7 +18,7 @@ import unittest
 import warp as wp
 
 import newton
-from newton.sensors import SensorContact, populate_contacts
+from newton.sensors import SensorContact
 from newton.solvers import SolverMuJoCo
 from newton.tests.unittest_utils import assert_np_equal
 
@@ -29,37 +29,31 @@ class MockModel:
     def __init__(self, device=None):
         self.device = device or wp.get_device()
 
+    def request_contact_attributes(self, *args):
+        pass
 
-def create_contacts(device, pairs, naconmax, positions=None, normals=None, separations=None, forces=None):
+
+def create_contacts(device, pairs, naconmax, normals=None, forces=None):
     """Helper to create Contacts with specified contacts"""
-    contacts = newton.Contacts(0, 0)
-
+    contacts = newton.Contacts(naconmax, 0, device=device, requested_attributes={"force"})
     n_contacts = len(pairs)
 
-    if positions is None:
-        positions = [[0.0, 0.0, 0.0]] * n_contacts
     if normals is None:
         normals = [[0.0, 0.0, 1.0]] * n_contacts
-    if separations is None:
-        separations = [-0.1] * n_contacts
     if forces is None:
         forces = [0.1] * n_contacts
 
-    pairs_padded = pairs + [(-1, -1)] * (naconmax - n_contacts)
-    positions_padded = positions + [[0.0, 0.0, 0.0]] * (naconmax - n_contacts)
+    shapes0 = [p[0] for p in pairs] + [-1] * (naconmax - n_contacts)
+    shapes1 = [p[1] for p in pairs] + [-1] * (naconmax - n_contacts)
     normals_padded = normals + [[0.0, 0.0, 0.0]] * (naconmax - n_contacts)
-    separations_padded = separations + [0.0] * (naconmax - n_contacts)
-    forces_padded = forces + [0.0] * (naconmax - n_contacts)
+    forces_spatial = [(*([f] + [0.0] * 2), 0.0, 0.0, 0.0) for f in forces] + [(0.0,) * 6] * (naconmax - n_contacts)
 
     with wp.ScopedDevice(device):
-        contacts.pair = wp.array(pairs_padded, dtype=wp.vec2i)
-        contacts.position = wp.array(positions_padded, dtype=wp.vec3f)
-        contacts.normal = wp.array(normals_padded, dtype=wp.vec3f)
-        contacts.separation = wp.array(separations_padded, dtype=wp.float32)
-        contacts.force = wp.array(forces_padded, dtype=wp.float32)
-
+        contacts.rigid_contact_shape0 = wp.array(shapes0, dtype=wp.int32)
+        contacts.rigid_contact_shape1 = wp.array(shapes1, dtype=wp.int32)
+        contacts.rigid_contact_normal = wp.array(normals_padded, dtype=wp.vec3f)
         contacts.rigid_contact_count = wp.array([n_contacts], dtype=wp.int32)
-        contacts.rigid_contact_max = naconmax
+        contacts.force = wp.array(forces_spatial, dtype=wp.spatial_vector)
 
     return contacts
 
@@ -80,49 +74,21 @@ class TestSensorContact(unittest.TestCase):
         contact_sensor = SensorContact(model, sensing_obj_bodies="*", counterpart_bodies="*")
 
         test_contacts = [
-            {
-                "pair": (0, 2),
-                "position": [0.0, 0.0, 0.0],
-                "normal": [0.0, 0.0, 1.0],
-                "separation": -0.01,
-                "force": 1.0,
-            },
-            {
-                "pair": (1, 2),
-                "position": [0.1, 0.0, 0.0],
-                "normal": [1.0, 0.0, 0.0],
-                "separation": -0.02,
-                "force": 2.0,
-            },
-            {
-                "pair": (2, 1),
-                "position": [0.2, 0.0, 0.0],
-                "normal": [0.0, 1.0, 0.0],
-                "separation": -0.015,
-                "force": 1.5,
-            },
-            {
-                "pair": (0, 3),
-                "position": [0.3, 0.0, 0.0],
-                "normal": [0.0, 0.0, -1.0],
-                "separation": -0.005,
-                "force": 0.5,
-            },
+            {"pair": (0, 2), "normal": [0.0, 0.0, -1.0], "force": 1.0},
+            {"pair": (1, 2), "normal": [-1.0, 0.0, 0.0], "force": 2.0},
+            {"pair": (2, 1), "normal": [0.0, -1.0, 0.0], "force": 1.5},
+            {"pair": (0, 3), "normal": [0.0, 0.0, 1.0], "force": 0.5},
         ]
 
         pairs = [contact["pair"] for contact in test_contacts]
-        positions = [contact["position"] for contact in test_contacts]
         normals = [contact["normal"] for contact in test_contacts]
-        separations = [contact["separation"] for contact in test_contacts]
         forces = [contact["force"] for contact in test_contacts]
 
         test_scenarios = [
             {
                 "name": "no_contacts",
                 "pairs": [],
-                "positions": [],
                 "normals": [],
-                "separations": [],
                 "forces": [],
                 "force_A_vs_B": (0.0, 0.0, 0.0),
                 "force_B_vs_A": (0.0, 0.0, 0.0),
@@ -132,9 +98,7 @@ class TestSensorContact(unittest.TestCase):
             {
                 "name": "only_contact_0",
                 "pairs": pairs[:1],
-                "positions": positions[:1],
                 "normals": normals[:1],
-                "separations": separations[:1],
                 "forces": forces[:1],
                 "force_A_vs_B": (0.0, 0.0, 1.0),
                 "force_B_vs_A": (0.0, 0.0, -1.0),
@@ -144,9 +108,7 @@ class TestSensorContact(unittest.TestCase):
             {
                 "name": "only 1",
                 "pairs": pairs[1:2],
-                "positions": positions[1:2],
                 "normals": normals[1:2],
-                "separations": separations[1:2],
                 "forces": forces[1:2],
                 "force_A_vs_B": (2.0, 0.0, 0.0),
                 "force_B_vs_A": (-2.0, 0.0, 0.0),
@@ -156,9 +118,7 @@ class TestSensorContact(unittest.TestCase):
             {
                 "name": "only 2",
                 "pairs": pairs[2:3],
-                "positions": positions[2:3],
                 "normals": normals[2:3],
-                "separations": separations[2:3],
                 "forces": forces[2:3],
                 "force_A_vs_B": (0.0, -1.5, 0.0),
                 "force_B_vs_A": (0.0, 1.5, 0.0),
@@ -168,9 +128,7 @@ class TestSensorContact(unittest.TestCase):
             {
                 "name": "all_contacts",
                 "pairs": pairs,
-                "positions": positions,
                 "normals": normals,
-                "separations": separations,
                 "forces": forces,
                 "force_A_vs_B": (2.0, -1.5, 1.0),
                 "force_B_vs_A": (-2.0, 1.5, -1.0),
@@ -185,9 +143,7 @@ class TestSensorContact(unittest.TestCase):
                     device,
                     scenario["pairs"],
                     naconmax=10,
-                    positions=scenario["positions"],
                     normals=scenario["normals"],
-                    separations=scenario["separations"],
                     forces=scenario["forces"],
                 )
 
@@ -231,14 +187,19 @@ class TestSensorContactMuJoCo(unittest.TestCase):
             self.skipTest(f"MuJoCo not available: {e}")
 
         sensor = SensorContact(model, sensing_obj_bodies=["a", "b"])
-        contacts = newton.Contacts(0, 0)
+        contacts = newton.Contacts(
+            solver.max_contact_count(),
+            0,
+            device=model.device,
+            requested_attributes=model.get_requested_contact_attributes(),
+        )
 
         # Simulate 2s
         state_in, state_out, control = model.state(), model.state(), model.control()
         for _ in range(240 * 2):
             solver.step(state_in, state_out, control, contacts, 1.0 / 240.0)
             state_in, state_out = state_out, state_in
-        populate_contacts(contacts, solver)
+        solver.update_contacts(contacts, state_in)
         sensor.eval(contacts)
 
         forces = sensor.net_force.numpy()
@@ -271,14 +232,19 @@ class TestSensorContactMuJoCo(unittest.TestCase):
 
         sensor_abc = SensorContact(model, sensing_obj_bodies=["a", "b", "c"])
         sensor_base = SensorContact(model, sensing_obj_shapes=["base"])
-        contacts = newton.Contacts(0, 0)
+        contacts = newton.Contacts(
+            solver.max_contact_count(),
+            0,
+            device=model.device,
+            requested_attributes=model.get_requested_contact_attributes(),
+        )
 
         # Simulate 2s
         state_in, state_out, control = model.state(), model.state(), model.control()
         for _ in range(240 * 2):
             solver.step(state_in, state_out, control, contacts, 1.0 / 240.0)
             state_in, state_out = state_out, state_in
-        populate_contacts(contacts, solver)
+        solver.update_contacts(contacts, state_in)
         sensor_abc.eval(contacts)
         sensor_base.eval(contacts)
 

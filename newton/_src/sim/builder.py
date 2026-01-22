@@ -638,6 +638,7 @@ class ModelBuilder:
         # filtering to ignore certain collision pairs
         self.shape_collision_filter_pairs: list[tuple[int, int]] = []
 
+        self._requested_contact_attributes: set[str] = set()
         self._requested_state_attributes: set[str] = set()
 
         # springs
@@ -1909,6 +1910,7 @@ class ModelBuilder:
             # No world context (add_builder called directly), copy scalar gravity
             self.gravity = builder.gravity
 
+        self._requested_contact_attributes.update(builder._requested_contact_attributes)
         self._requested_state_attributes.update(builder._requested_state_attributes)
 
         # explicitly resolve the transform multiplication function to avoid
@@ -6247,6 +6249,19 @@ class ModelBuilder:
                 joint = self.add_joint_free(child=body_id)
                 self.add_articulation([joint])
 
+    def request_contact_attributes(self, *attributes: str) -> None:
+        """
+        Request that specific contact attributes be allocated when creating a Contacts object from the finalized Model.
+
+        Args:
+            *attributes: Variable number of attribute names (strings).
+        """
+        # Local import to avoid adding more module-level dependencies in this large file.
+        from .contacts import Contacts  # noqa: PLC0415
+
+        Contacts.validate_extended_contact_attributes(attributes)
+        self._requested_contact_attributes.update(attributes)
+
     def request_state_attributes(self, *attributes: str) -> None:
         """
         Request that specific state attributes be allocated when creating a State object from the finalized Model.
@@ -6580,6 +6595,7 @@ class ModelBuilder:
             # construct Model (non-time varying) data
 
             m = Model(device)
+            m.request_contact_attributes(*self._requested_contact_attributes)
             m.request_state_attributes(*self._requested_state_attributes)
             m.requires_grad = requires_grad
 

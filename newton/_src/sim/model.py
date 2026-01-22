@@ -506,6 +506,7 @@ class Model:
         If an attribute is not in this dictionary, it is assumed to be a Model attribute (assignment=Model.AttributeAssignment.MODEL)."""
 
         self._requested_state_attributes: set[str] = set()
+        self._requested_contact_attributes: set[str] = set()
 
         # attributes per body
         self.attribute_frequency["body_q"] = Model.AttributeFrequency.BODY
@@ -770,6 +771,25 @@ class Model:
         """
         State.validate_extended_state_attributes(attributes)
         self._requested_state_attributes.update(attributes)
+
+    def request_contact_attributes(self, *attributes: str) -> None:
+        """
+        Request that specific contact attributes be allocated when creating a Contacts object.
+
+        Args:
+            *attributes: Variable number of attribute names (strings).
+        """
+        Contacts.validate_extended_contact_attributes(attributes)
+        self._requested_contact_attributes.update(attributes)
+
+    def get_requested_contact_attributes(self) -> set[str]:
+        """
+        Get the set of requested contact attribute names.
+
+        Returns:
+            set[str]: The set of requested contact attributes.
+        """
+        return self._requested_contact_attributes
 
     def _add_custom_attributes(
         self,

@@ -556,9 +556,10 @@ def convert_warp_coords_to_mj_kernel(
 
 
 @wp.kernel
-def convert_mjw_contact_to_warp_kernel(
+def convert_mjw_contacts_to_newton_kernel(
     # inputs
     mjc_geom_to_newton_shape: wp.array2d(dtype=wp.int32),
+    mjc_body_to_newton: wp.array(dtype=wp.int32, ndim=2),
     pyramidal_cone: bool,
     mj_nacon: wp.array(dtype=wp.int32),
     mj_contact_frame: wp.array(dtype=wp.mat33f),
@@ -568,16 +569,23 @@ def convert_mjw_contact_to_warp_kernel(
     mj_contact_worldid: wp.array(dtype=wp.int32),
     mj_efc_force: wp.array2d(dtype=float),
     # outputs
-    contact_pair: wp.array(dtype=wp.vec2i),
-    contact_normal: wp.array(dtype=wp.vec3f),
-    contact_force: wp.array(dtype=float),
+    rigid_contact_count: wp.array(dtype=wp.int32),
+    rigid_contact_shape0: wp.array(dtype=wp.int32),
+    rigid_contact_shape1: wp.array(dtype=wp.int32),
+    rigid_contact_point0: wp.array(dtype=wp.vec3),
+    rigid_contact_point1: wp.array(dtype=wp.vec3),
+    rigid_contact_normal: wp.array(dtype=wp.vec3),
+    contact_force: wp.array(dtype=wp.spatial_vector),
 ):
     """Convert MuJoCo contacts to Newton contact format.
 
     Uses mjc_geom_to_newton_shape to convert MuJoCo geom indices to Newton shape indices.
     """
-    n_contacts = mj_nacon[0]
     contact_idx = wp.tid()
+    n_contacts = mj_nacon[0]
+
+    if contact_idx == 0:
+        rigid_contact_count[0] = n_contacts
 
     if contact_idx >= n_contacts:
         return
@@ -585,23 +593,26 @@ def convert_mjw_contact_to_warp_kernel(
     world = mj_contact_worldid[contact_idx]
     geoms_mjw = mj_contact_geom[contact_idx]
 
-    normalforce = wp.float(-1.0)
+    normal = wp.transpose(mj_contact_frame[contact_idx])[0]
 
-    efc_address0 = mj_contact_efc_address[contact_idx, 0]
-    if efc_address0 >= 0:
-        normalforce = mj_efc_force[world, efc_address0]
+    rigid_contact_shape0[contact_idx] = mjc_geom_to_newton_shape[world, geoms_mjw[0]]
+    rigid_contact_shape1[contact_idx] = mjc_geom_to_newton_shape[world, geoms_mjw[1]]
+    rigid_contact_normal[contact_idx] = -normal
 
-        if pyramidal_cone:
-            dim = mj_contact_dim[contact_idx]
-            for i in range(1, 2 * (dim - 1)):
-                normalforce += mj_efc_force[world, mj_contact_efc_address[contact_idx, i]]
+    if contact_force:
+        efc_address0 = mj_contact_efc_address[contact_idx, 0]
+        has_force = efc_address0 >= 0
+        normalforce = float(-1.0)
+        if has_force:
+            normalforce = mj_efc_force[world, efc_address0]
 
-    pair = wp.vec2i()
-    for i in range(2):
-        pair[i] = mjc_geom_to_newton_shape[world, geoms_mjw[i]]
-    contact_pair[contact_idx] = pair
-    contact_normal[contact_idx] = wp.transpose(mj_contact_frame[contact_idx])[0]
-    contact_force[contact_idx] = wp.where(normalforce > 0.0, normalforce, 0.0)
+            if pyramidal_cone:
+                dim = mj_contact_dim[contact_idx]
+                for i in range(1, 2 * (dim - 1)):
+                    normalforce += mj_efc_force[world, mj_contact_efc_address[contact_idx, i]]
+        force = wp.where(normalforce > 0, wp.vec3(normalforce, 0.0, 0.0), wp.vec3(0.0))
+        # TODO: preserve force directions
+        contact_force[contact_idx] = wp.spatial_vector(force, wp.vec3(0.0))
 
 
 # Import control source/type enums and create warp constants

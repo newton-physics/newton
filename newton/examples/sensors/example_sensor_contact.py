@@ -33,9 +33,12 @@ import warp as wp
 
 import newton
 import newton.examples
-from newton import Contacts
-from newton.sensors import SensorContact, populate_contacts
+from newton.sensors import SensorContact
 from newton.tests.unittest_utils import find_nonfinite_members
+
+# wp.config.mode = "debug"
+# wp.config.verify_cuda = True
+#
 
 
 class Example:
@@ -59,8 +62,6 @@ class Example:
         newton.solvers.SolverMuJoCo.register_custom_attributes(builder)
 
         builder.add_ground_plane()
-        # used for storing contact info required by contact sensors
-        self.contacts = Contacts(0, 0)
 
         # finalize model
         self.model = builder.finalize()
@@ -84,6 +85,8 @@ class Example:
             impratio=1,
         )
 
+        self.contacts = self.model.contacts(collision_pipeline=self.solver)
+
         self.viewer.set_model(self.model)
 
         self.plates_touched = 2 * [False]
@@ -96,7 +99,7 @@ class Example:
         }
         self.shape_map = {key: s for s, key in enumerate(self.model.shape_key)}
 
-        self.state_0 = self.model.state()
+        self.state_0 = self.model.state(contacts=self.contacts)
 
         self.control = self.model.control()
         hinge_joint_idx = self.model.joint_key.index("/env/Hinge")
@@ -138,8 +141,8 @@ class Example:
             else:
                 self.simulate()
 
-        populate_contacts(self.contacts, self.solver)
-        self.plate_contact_sensor.eval(self.contacts)
+        self.solver.update_contacts(self.contacts, self.state_0)
+        self.plate_contact_sensor.eval(self.contacts, self.state_0)
 
         net_force = self.plate_contact_sensor.net_force.numpy()
         for i in range(2):
@@ -156,7 +159,7 @@ class Example:
             print(f"Plate {self.model.shape_key[plate]} was touched by counterpart {obj_key}")
             self.viewer.update_shape_colors({plate: self.shape_colors[obj_key]})
 
-        self.flap_contact_sensor.eval(self.contacts)
+        self.flap_contact_sensor.eval(self.contacts, self.state_0)
         self.plot_window.add_point(np.abs(self.flap_contact_sensor.net_force.numpy()[0, 0, 2]))
         self.sim_time += self.frame_dt
 

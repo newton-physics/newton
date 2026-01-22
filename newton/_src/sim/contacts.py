@@ -32,6 +32,30 @@ class Contacts:
         This class is a temporary solution and its interface may change in the future.
     """
 
+    EXTENDED_CONTACT_ATTRIBUTES: frozenset[str] = frozenset(("force",))
+    """
+    Names of optional extended contact attributes that are not allocated by default.
+
+    These can be requested via :meth:`newton.ModelBuilder.request_contact_attributes` or
+    :meth:`newton.Model.request_contact_attributes` before calling :meth:`newton.Model.collide`
+    or the solver's ``contacts()`` method.
+    """
+
+    @classmethod
+    def validate_extended_contact_attributes(cls, attributes: tuple[str, ...]) -> None:
+        """Validate names passed to request_contact_attributes().
+
+        Only extended contact attributes listed in :attr:`EXTENDED_CONTACT_ATTRIBUTES` are accepted.
+        """
+        if not attributes:
+            return
+
+        invalid = sorted(set(attributes).difference(cls.EXTENDED_CONTACT_ATTRIBUTES))
+        if invalid:
+            allowed = ", ".join(sorted(cls.EXTENDED_CONTACT_ATTRIBUTES))
+            bad = ", ".join(invalid)
+            raise ValueError(f"Unknown extended contact attribute(s): {bad}. Allowed: {allowed}.")
+
     def __init__(
         self,
         rigid_contact_max: int,
@@ -40,6 +64,7 @@ class Contacts:
         device: Devicelike = None,
         per_contact_shape_properties: bool = False,
         clear_buffers: bool = False,
+        requested_attributes: set[str] | None = None,
     ):
         """
         Initialize Contacts storage.
@@ -54,6 +79,8 @@ class Contacts:
                 If False (default), clear() only resets counts, relying on collision detection
                 to overwrite active contacts. This is much faster (86-90% fewer kernel launches)
                 and safe since solvers only read up to contact_count.
+            requested_attributes: Set of extended contact attribute names to allocate.
+                See :attr:`EXTENDED_CONTACT_ATTRIBUTES` for available options.
         """
         self.per_contact_shape_properties = per_contact_shape_properties
         self.clear_buffers = clear_buffers
@@ -100,6 +127,19 @@ class Contacts:
             self.soft_contact_normal = wp.zeros(soft_contact_max, dtype=wp.vec3, requires_grad=requires_grad)
             self.soft_contact_tids = wp.full(soft_contact_max, -1, dtype=int)
 
+            # Extended contact attributes (optional, allocated on demand)
+            self.force: wp.array | None = None
+            """Contact forces (spatial), shape (rigid_contact_max + soft_contact_max,), dtype :class:`spatial_vector`.
+            First three entries: normal force magnitude, tangent force components; last three: torques.
+            When both rigid and soft contacts are present, soft contact forces follow rigid contact forces.
+
+            This is an extended contact attribute and is only allocated when requested via
+            :meth:`newton.Model.request_contact_attributes` or :meth:`newton.ModelBuilder.request_contact_attributes`.
+            """
+            if requested_attributes and "force" in requested_attributes:
+                total_contacts = rigid_contact_max + soft_contact_max
+                self.force = wp.zeros(total_contacts, dtype=wp.spatial_vector, requires_grad=requires_grad)
+
         self.requires_grad = requires_grad
 
         self.rigid_contact_max = rigid_contact_max
@@ -126,6 +166,9 @@ class Contacts:
             self.rigid_contact_shape1.fill_(-1)
             self.rigid_contact_tids.fill_(-1)
             self.rigid_contact_force.zero_()
+
+            if self.force is not None:
+                self.force.zero_()
 
             if self.per_contact_shape_properties:
                 self.rigid_contact_stiffness.zero_()
