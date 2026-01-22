@@ -90,6 +90,15 @@ def Xform "Root" (
         self.assertEqual(builder.joint_type.count(newton.JointType.FREE), 0)
         self.assertTrue(all(art_id == -1 for art_id in builder.joint_articulation))
 
+        # finalize the builder and check the model
+        model = builder.finalize(skip_validation_joints=True)
+        # note we have to skip joint validation here because otherwise a ValueError would be
+        # raised because of the orphan joints that are not part of an articulation
+        self.assertEqual(model.body_count, 4)
+        self.assertEqual(model.joint_type.list().count(newton.JointType.REVOLUTE), 4)
+        self.assertEqual(model.joint_type.list().count(newton.JointType.FREE), 0)
+        self.assertTrue(all(art_id == -1 for art_id in model.joint_articulation.numpy()))
+
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_import_articulation_parent_offset(self):
         from pxr import Usd  # noqa: PLC0415
