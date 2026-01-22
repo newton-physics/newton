@@ -468,7 +468,6 @@ def test_combined_force_torque(
     device,
     solver_fn,
     com_offset: tuple[float, float, float],
-    tolerance: float,
 ):
     """Test combined force and torque with non-zero CoM offset.
 
@@ -497,14 +496,9 @@ def test_combined_force_torque(
 
     newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
 
-    # Get initial state
-    body_q_initial = state_0.body_q.numpy()[0].copy()
-    com_initial = compute_com_world_position(state_0.body_q, model.body_com, model.body_world)
-    quat_initial = body_q_initial[3:7]
-
     # Apply both force and torque
     force_magnitude = 10.0
-    torque_magnitude = 50.0
+    torque_magnitude = 10.0
     body_f = np.array(
         [force_magnitude, 0.0, 0.0, 0.0, 0.0, torque_magnitude],  # Force in X, torque about Z
         dtype=np.float32,
@@ -515,6 +509,14 @@ def test_combined_force_torque(
     # Step simulation
     sim_dt = 0.01
     num_steps = 10
+    mass = model.body_mass.numpy()[0]
+    expected_velocity = force_magnitude / mass * sim_dt * num_steps
+    abs_tol_expected_velocity = 5e-2 * abs(expected_velocity)
+
+    expected_angular_velocity = torque_magnitude / model.body_inertia.numpy()[0][2, 2] * sim_dt * num_steps
+    abs_tol_expected_angular_velocity = 5e-2 * abs(expected_angular_velocity)
+
+    abs_tol_zero_velocities = 1e-3 # for testing zero velocities
 
     for _ in range(num_steps):
         solver.step(state_0, state_1, None, None, sim_dt)
@@ -523,29 +525,20 @@ def test_combined_force_torque(
         state_0.body_f.assign(body_f)
         state_1.body_f.assign(body_f)
 
-    # Get final state
-    body_q_final = state_0.body_q.numpy()[0]
-    com_final = compute_com_world_position(state_0.body_q, model.body_com, model.body_world)
-    quat_final = body_q_final[3:7]
+    # Get final body twist
+    body_qd = state_0.body_qd.numpy()[0]
 
-    # CoM should have moved primarily in X direction (due to force)
-    com_displacement = com_final - com_initial
-    test.assertGreater(
-        com_displacement[0],
-        0.001,
-        f"CoM should have moved in X direction. Displacement: {com_displacement}",
-    )
+    linear_velocity = body_qd[:3]
+    test.assertAlmostEqual(linear_velocity[0], expected_velocity, delta=abs_tol_expected_velocity)
+    test.assertAlmostEqual(linear_velocity[1], 0.0, delta=abs_tol_zero_velocities)
+    test.assertAlmostEqual(linear_velocity[2], 0.0, delta=abs_tol_zero_velocities)
 
-    # Body should have rotated (due to torque)
-    quat_diff = np.abs(np.dot(quat_initial, quat_final))
-    test.assertLess(
-        quat_diff,
-        0.9999,
-        "Body should have rotated but quaternion barely changed",
-    )
+    # Test angular velocity
+    angular_velocity = body_qd[3:6]
 
-
-
+    test.assertAlmostEqual(angular_velocity[0], 0.0, delta=abs_tol_zero_velocities)
+    test.assertAlmostEqual(angular_velocity[1], 0.0, delta=abs_tol_zero_velocities)
+    test.assertAlmostEqual(angular_velocity[2], expected_angular_velocity, delta=abs_tol_expected_angular_velocity)
 
 def test_force_no_rotation_control_joint_f(
     test: TestBodyForce,
@@ -617,15 +610,14 @@ def test_combined_force_torque_control_joint_f(
     device,
     solver_fn,
     com_offset: tuple[float, float, float],
-    tolerance: float,
 ):
     """Control.joint_f version of test_combined_force_torque."""
     builder = newton.ModelBuilder(gravity=0.0)
 
     initial_pos = wp.vec3(0.0, 0.0, 1.0)
-    b = builder.add_body(xform=wp.transform(initial_pos, wp.quat_identity()))
-    builder.add_shape_box(b, hx=0.1, hy=0.1, hz=0.1)
-    builder.body_com[b] = wp.vec3(*com_offset)
+    body_index = builder.add_body(xform=wp.transform(initial_pos, wp.quat_identity()))
+    builder.add_shape_box(body_index, hx=0.1, hy=0.1, hz=0.1)
+    builder.body_com[body_index] = wp.vec3(*com_offset)
 
     model = builder.finalize(device=device)
     solver = solver_fn(model)
@@ -636,12 +628,8 @@ def test_combined_force_torque_control_joint_f(
 
     newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
 
-    body_q_initial = state_0.body_q.numpy()[0].copy()
-    com_initial = compute_com_world_position(state_0.body_q, model.body_com, model.body_world)
-    quat_initial = body_q_initial[3:7]
-
     force_magnitude = 10.0
-    torque_magnitude = 50.0
+    torque_magnitude = 10.0
     joint_f = np.array(
         [force_magnitude, 0.0, 0.0, 0.0, 0.0, torque_magnitude],
         dtype=np.float32,
@@ -650,29 +638,30 @@ def test_combined_force_torque_control_joint_f(
 
     sim_dt = 0.01
     num_steps = 10
+    mass = model.body_mass.numpy()[body_index]
+    expected_velocity = force_magnitude / mass * sim_dt * num_steps
+    abs_tol_expected_velocity = 5e-2 * abs(expected_velocity)
+
+    expected_angular_velocity = torque_magnitude / model.body_inertia.numpy()[body_index][2, 2] * sim_dt * num_steps
+    abs_tol_expected_angular_velocity = 5e-2 * abs(expected_angular_velocity)
+
+    abs_tol_zero_velocities = 1e-3  # for testing zero velocities
 
     for _ in range(num_steps):
         solver.step(state_0, state_1, control, None, sim_dt)
         state_0, state_1 = state_1, state_0
 
-    body_q_final = state_0.body_q.numpy()[0]
-    com_final = compute_com_world_position(state_0.body_q, model.body_com, model.body_world)
-    quat_final = body_q_final[3:7]
+    body_qd = state_0.body_qd.numpy()[body_index]
 
-    com_displacement = com_final - com_initial
-    test.assertGreater(
-        com_displacement[0],
-        0.001,
-        f"CoM should have moved in X direction. Displacement: {com_displacement}",
-    )
+    linear_velocity = body_qd[:3]
+    test.assertAlmostEqual(linear_velocity[0], expected_velocity, delta=abs_tol_expected_velocity)
+    test.assertAlmostEqual(linear_velocity[1], 0.0, delta=abs_tol_zero_velocities)
+    test.assertAlmostEqual(linear_velocity[2], 0.0, delta=abs_tol_zero_velocities)
 
-    quat_diff = np.abs(np.dot(quat_initial, quat_final))
-    test.assertLess(
-        quat_diff,
-        0.9999,
-        "Body should have rotated but quaternion barely changed",
-    )
-
+    angular_velocity = body_qd[3:6]
+    test.assertAlmostEqual(angular_velocity[0], 0.0, delta=abs_tol_zero_velocities)
+    test.assertAlmostEqual(angular_velocity[1], 0.0, delta=abs_tol_zero_velocities)
+    test.assertAlmostEqual(angular_velocity[2], expected_angular_velocity, delta=abs_tol_expected_angular_velocity)
 
 # Solvers for non-zero CoM tests
 # Tuple format: (solver_fn, tolerance, supports_torque_com_tests)
@@ -760,7 +749,6 @@ for device in devices:
                     devices=[device],
                     solver_fn=solver_fn,
                     com_offset=com_offset,
-                    tolerance=tolerance,
                 )
                 if solver_name != "featherstone":
                     add_function_test(
@@ -770,7 +758,6 @@ for device in devices:
                         devices=[device],
                         solver_fn=solver_fn,
                         com_offset=com_offset,
-                        tolerance=tolerance,
                     )
 
 
