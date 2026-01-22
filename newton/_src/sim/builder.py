@@ -6095,38 +6095,15 @@ class ModelBuilder:
                     f"Found worlds: {world_list}. Worlds must form a continuous sequence starting from 0."
                 )
 
-    def finalize(self, device: Devicelike | None = None, requires_grad: bool = False) -> Model:
+    def _validate_joints(self):
+        """Validate that all joints belong to an articulation, except for "loop joints".
+
+        Loop joints connect two bodies that are already reachable via articulated joints
+        (used to create kinematic loops, converted to equality constraints by MuJoCo solver).
+
+        Raises:
+            ValueError: If any validation check fails.
         """
-        Finalize the builder and create a concrete Model for simulation.
-
-        This method transfers all simulation data from the builder to device memory,
-        returning a Model object ready for simulation. It should be called after all
-        elements (particles, bodies, shapes, joints, etc.) have been added to the builder.
-
-        Args:
-            device: The simulation device to use (e.g., 'cpu', 'cuda'). If None, uses the current Warp device.
-            requires_grad: If True, enables gradient computation for the model (for differentiable simulation).
-
-        Returns:
-            Model: A fully constructed Model object containing all simulation data on the specified device.
-
-        Notes:
-            - Performs validation and correction of rigid body inertia and mass properties.
-            - Closes all start-index arrays (e.g., for muscles, joints, articulations) with sentinel values.
-            - Sets up all arrays and properties required for simulation, including particles, bodies, shapes,
-              joints, springs, muscles, constraints, and collision/contact data.
-        """
-        from .collide import count_rigid_contact_points  # noqa: PLC0415
-
-        # ensure the world count is set correctly
-        self.num_worlds = max(1, self.num_worlds)
-
-        # validate world ordering and contiguity
-        self._validate_world_ordering()
-
-        # validate all joints belong to an articulation, except for "loop joints"
-        # Loop joints connect two bodies that are already reachable via articulated joints
-        # (used to create kinematic loops, converted to equality constraints by MuJoCo solver)
         if self.joint_count > 0:
             # First, find all bodies reachable via articulated joints
             articulated_bodies = set()
@@ -6155,12 +6132,23 @@ class ModelBuilder:
                     + ("..." if len(orphan_joints) > 5 else "")
                 )
 
-        # warn if any shape has thickness > contact_margin (causes unstable contact behavior)
-        # Thickness is an outward offset from each shape's surface. AABBs are expanded by contact_margin.
-        # For proper broad phase detection, each shape must have contact_margin >= thickness.
-        # This ensures that when thickened surfaces are close (sum of thicknesses),
-        # the AABBs overlap (sum of margins >= sum of thicknesses).
-        # Only check shapes that participate in collisions (have COLLIDE_SHAPES or COLLIDE_PARTICLES flag).
+    def _validate_shapes(self) -> bool:
+        """Validate shape contact margins against thickness for stable broad phase detection.
+
+        Thickness is an outward offset from a shape's surface, while AABBs are expanded
+        by `contact_margin`. For reliable broad phase detection, each colliding shape
+        should satisfy `contact_margin >= thickness` so that thickened surfaces produce
+        overlapping AABBs.
+
+        This check only considers shapes that participate in collisions (with the
+        `COLLIDE_SHAPES` or `COLLIDE_PARTICLES` flag).
+
+        Warns:
+            UserWarning: If any colliding shape has `thickness > contact_margin`.
+
+        Returns:
+            bool: True if no shapes with thickness > contact_margin, False otherwise.
+        """
         collision_flags_mask = ShapeFlags.COLLIDE_SHAPES | ShapeFlags.COLLIDE_PARTICLES
         shapes_with_bad_margin = []
         for i in range(self.shape_count):
@@ -6182,6 +6170,55 @@ class ModelBuilder:
                 f"Affected shapes: {example_shapes}" + ("..." if len(shapes_with_bad_margin) > 5 else ""),
                 stacklevel=2,
             )
+        return len(shapes_with_bad_margin) == 0
+
+    def finalize(
+        self,
+        device: Devicelike | None = None,
+        requires_grad: bool = False,
+        skip_validation_worlds: bool = False,
+        skip_validation_joints: bool = False,
+        skip_validation_shapes: bool = False,
+    ) -> Model:
+        """
+        Finalize the builder and create a concrete :class:`~newton.Model` for simulation.
+
+        This method transfers all simulation data from the builder to device memory,
+        returning a Model object ready for simulation. It should be called after all
+        elements (particles, bodies, shapes, joints, etc.) have been added to the builder.
+
+        Args:
+            device: The simulation device to use (e.g., 'cpu', 'cuda'). If None, uses the current Warp device.
+            requires_grad: If True, enables gradient computation for the model (for differentiable simulation).
+            skip_validation_worlds: If True, skips validation of world ordering and contiguity. Default is False.
+            skip_validation_joints: If True, skips validation of joints belonging to an articulation. Default is False.
+            skip_validation_shapes: If True, skips validation of shapes having valid contact margins. Default is False.
+
+        Returns:
+            Model: A fully constructed Model object containing all simulation data on the specified device.
+
+        Notes:
+            - Performs validation and correction of rigid body inertia and mass properties.
+            - Closes all start-index arrays (e.g., for muscles, joints, articulations) with sentinel values.
+            - Sets up all arrays and properties required for simulation, including particles, bodies, shapes,
+              joints, springs, muscles, constraints, and collision/contact data.
+        """
+        from .collide import count_rigid_contact_points  # noqa: PLC0415
+
+        # ensure the world count is set correctly
+        self.num_worlds = max(1, self.num_worlds)
+
+        # validate world ordering and contiguity
+        if not skip_validation_worlds:
+            self._validate_world_ordering()
+
+        # validate joints belong to an articulation
+        if not skip_validation_joints:
+            self._validate_joints()
+
+        # validate shapes have valid contact margins
+        if not skip_validation_shapes:
+            self._validate_shapes()
 
         # construct particle inv masses
         ms = np.array(self.particle_mass, dtype=np.float32)
