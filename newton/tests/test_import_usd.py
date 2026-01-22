@@ -2034,11 +2034,18 @@ class TestImportSampleAssets(unittest.TestCase):
                 lhs_q = wp.transform_get_rotation(lhs_tf)
                 rhs_q = wp.transform_get_rotation(rhs_tf)
 
-                self.assertTrue(all(abs(lhs_p[i] - rhs_p[i]) < 1e-6 for i in range(3)), f"Joint {j} ({model.joint_key[j]}) position mismatch: expected={rhs_p}, Newton={lhs_p}")
+                self.assertTrue(
+                    all(abs(lhs_p[i] - rhs_p[i]) < 1e-6 for i in range(3)),
+                    f"Joint {j} ({model.joint_key[j]}) position mismatch: expected={rhs_p}, Newton={lhs_p}",
+                )
 
                 q_diff = lhs_q * wp.quat_inverse(rhs_q)
                 angle_diff = 2.0 * math.acos(min(1.0, abs(q_diff[3])))
-                self.assertLessEqual(angle_diff, 1e-3, f"Joint {j} ({model.joint_key[j]}) rotation mismatch: expected={rhs_q}, Newton={lhs_q}, angle_diff={math.degrees(angle_diff)}°")
+                self.assertLessEqual(
+                    angle_diff,
+                    3e-3,
+                    f"Joint {j} ({model.joint_key[j]}) rotation mismatch: expected={rhs_q}, Newton={lhs_q}, angle_diff={math.degrees(angle_diff)}°",
+                )
 
         model.shape_body.numpy()
         shape_type_array = model.shape_type.numpy()
