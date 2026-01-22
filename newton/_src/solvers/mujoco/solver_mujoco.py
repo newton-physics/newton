@@ -888,19 +888,37 @@ class SolverMuJoCo(SolverBase):
         # Get tendon arrays
         tendon_world = mujoco_attrs.tendon_world.numpy()
         tendon_stiffness = getattr(mujoco_attrs, "tendon_stiffness", None)
+        tendon_stiffness_np = tendon_stiffness.numpy() if tendon_stiffness is not None else None
         tendon_damping = getattr(mujoco_attrs, "tendon_damping", None)
+        tendon_damping_np = tendon_damping.numpy() if tendon_damping is not None else None
         tendon_frictionloss = getattr(mujoco_attrs, "tendon_frictionloss", None)
+        tendon_frictionloss_np = tendon_frictionloss.numpy() if tendon_frictionloss is not None else None
         tendon_limited = getattr(mujoco_attrs, "tendon_limited", None)
+        tendon_limited_np = tendon_limited.numpy() if tendon_limited is not None else None
         tendon_range = getattr(mujoco_attrs, "tendon_range", None)
+        tendon_range_np = tendon_range.numpy() if tendon_range is not None else None
         tendon_actuator_force_limited = getattr(mujoco_attrs, "tendon_actuator_force_limited", None)
+        tendon_actuator_force_limited_np = (
+            tendon_actuator_force_limited.numpy() if tendon_actuator_force_limited is not None else None
+        )
         tendon_actuator_force_range = getattr(mujoco_attrs, "tendon_actuator_force_range", None)
+        tendon_actuator_force_range_np = (
+            tendon_actuator_force_range.numpy() if tendon_actuator_force_range is not None else None
+        )
         tendon_margin = getattr(mujoco_attrs, "tendon_margin", None)
+        tendon_margin_np = tendon_margin.numpy() if tendon_margin is not None else None
         tendon_solref_limit = getattr(mujoco_attrs, "tendon_solref_limit", None)
+        tendon_solref_limit_np = tendon_solref_limit.numpy() if tendon_solref_limit is not None else None
         tendon_solimp_limit = getattr(mujoco_attrs, "tendon_solimp_limit", None)
+        tendon_solimp_limit_np = tendon_solimp_limit.numpy() if tendon_solimp_limit is not None else None
         tendon_solref_friction = getattr(mujoco_attrs, "tendon_solref_friction", None)
+        tendon_solref_friction_np = tendon_solref_friction.numpy() if tendon_solref_friction is not None else None
         tendon_solimp_friction = getattr(mujoco_attrs, "tendon_solimp_friction", None)
+        tendon_solimp_friction_np = tendon_solimp_friction.numpy() if tendon_solimp_friction is not None else None
         tendon_armature = getattr(mujoco_attrs, "tendon_armature", None)
+        tendon_armature_np = tendon_armature.numpy() if tendon_armature is not None else None
         tendon_springlength = getattr(mujoco_attrs, "tendon_springlength", None)
+        tendon_springlength_np = tendon_springlength.numpy() if tendon_springlength is not None else None
         tendon_joint_adr = mujoco_attrs.tendon_joint_adr.numpy()
         tendon_joint_num = mujoco_attrs.tendon_joint_num.numpy()
 
@@ -924,34 +942,34 @@ class SolverMuJoCo(SolverBase):
             t = spec.add_tendon()
 
             # Set tendon properties
-            if tendon_stiffness is not None:
-                t.stiffness = float(tendon_stiffness.numpy()[i])
-            if tendon_damping is not None:
-                t.damping = float(tendon_damping.numpy()[i])
-            if tendon_frictionloss is not None:
-                t.frictionloss = float(tendon_frictionloss.numpy()[i])
-            if tendon_limited is not None:
-                t.limited = int(tendon_limited.numpy()[i])
-            if tendon_range is not None:
-                t.range = tendon_range.numpy()[i].tolist()
-            if tendon_actuator_force_limited is not None:
-                t.actfrclimited = int(tendon_actuator_force_limited.numpy()[i])
-            if tendon_actuator_force_range is not None:
-                t.actfrcrange = tendon_actuator_force_range.numpy()[i].tolist()
-            if tendon_margin is not None:
-                t.margin = float(tendon_margin.numpy()[i])
-            if tendon_armature is not None:
-                t.armature = float(tendon_armature.numpy()[i])
-            if tendon_solref_limit is not None:
-                t.solref_limit = tendon_solref_limit.numpy()[i].tolist()
-            if tendon_solimp_limit is not None:
-                t.solimp_limit = tendon_solimp_limit.numpy()[i].tolist()
-            if tendon_solref_friction is not None:
-                t.solref_friction = tendon_solref_friction.numpy()[i].tolist()
-            if tendon_solimp_friction is not None:
-                t.solimp_friction = tendon_solimp_friction.numpy()[i].tolist()
-            if tendon_springlength is not None:
-                val = tendon_springlength.numpy()[i]
+            if tendon_stiffness_np is not None:
+                t.stiffness = float(tendon_stiffness_np[i])
+            if tendon_damping_np is not None:
+                t.damping = float(tendon_damping_np[i])
+            if tendon_frictionloss_np is not None:
+                t.frictionloss = float(tendon_frictionloss_np[i])
+            if tendon_limited_np is not None:
+                t.limited = int(tendon_limited_np[i])
+            if tendon_range_np is not None:
+                t.range = tendon_range_np[i].tolist()
+            if tendon_actuator_force_limited_np is not None:
+                t.actfrclimited = int(tendon_actuator_force_limited_np[i])
+            if tendon_actuator_force_range_np is not None:
+                t.actfrcrange = tendon_actuator_force_range_np[i].tolist()
+            if tendon_margin_np is not None:
+                t.margin = float(tendon_margin_np[i])
+            if tendon_armature_np is not None:
+                t.armature = float(tendon_armature_np[i])
+            if tendon_solref_limit_np is not None:
+                t.solref_limit = tendon_solref_limit_np[i].tolist()
+            if tendon_solimp_limit_np is not None:
+                t.solimp_limit = tendon_solimp_limit_np[i].tolist()
+            if tendon_solref_friction_np is not None:
+                t.solref_friction = tendon_solref_friction_np[i].tolist()
+            if tendon_solimp_friction_np is not None:
+                t.solimp_friction = tendon_solimp_friction_np[i].tolist()
+            if tendon_springlength_np is not None:
+                val = tendon_springlength_np[i]
                 has_automatic_length_computation = val[0] == -1.0
                 has_dead_zone = val[1] >= val[0]
                 if has_automatic_length_computation:
