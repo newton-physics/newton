@@ -311,10 +311,33 @@ class StructuredControlStrategy(ControlStrategy):
         return self._ctrl.reshape((num_worlds, num_actuators))
 
 
+@wp.kernel
+def generate_random_control_kernel(
+    prev_ctrl: wp.array(dtype=wp.float64),  # type: ignore[valid-type]
+    ctrl_out: wp.array(dtype=wp.float64),  # type: ignore[valid-type]
+    seed: int,
+    step: int,
+    noise_scale: float,
+    smoothing: float,
+):
+    """Generate random control with smoothing on GPU."""
+    i = wp.tid()
+    # Initialize RNG with unique seed per element and step
+    state = wp.rand_init(seed, i + step * 1000000)  # type: ignore[arg-type, operator]
+    # Generate uniform random in [-1, 1]
+    noise = (wp.randf(state) * 2.0 - 1.0) * noise_scale
+    # Smooth with previous control
+    val = smoothing * prev_ctrl[i] + (1.0 - smoothing) * noise
+    ctrl_out[i] = wp.clamp(val, -1.0, 1.0)
+    # Update prev for next step
+    prev_ctrl[i] = ctrl_out[i]
+
+
 class RandomControlStrategy(ControlStrategy):
     """
     Generate random control values with configurable noise.
 
+    Uses a Warp kernel to generate smoothed random controls on GPU.
     Each world gets independent random controls.
     """
 
@@ -327,18 +350,34 @@ class RandomControlStrategy(ControlStrategy):
         super().__init__(seed)
         self.noise_scale = noise_scale
         self.smoothing = smoothing
-        self._prev_control: np.ndarray | None = None
+        self._prev_ctrl: wp.array | None = None
+        self._ctrl: wp.array | None = None
+
+    def _init_for_model(self, num_worlds: int, num_actuators: int):
+        """Initialize control arrays."""
+        self._prev_ctrl = wp.zeros(num_worlds * num_actuators, dtype=wp.float64)
+        self._ctrl = wp.zeros(num_worlds * num_actuators, dtype=wp.float64)
 
     def get_control(self, t, step, num_worlds, num_actuators):
-        if self._prev_control is None or self._prev_control.shape != (num_worlds, num_actuators):
-            self._prev_control = np.zeros((num_worlds, num_actuators))
+        if self._prev_ctrl is None or self._ctrl is None:
+            self._init_for_model(num_worlds, num_actuators)
 
-        # Random noise with smoothing (independent per world)
-        noise = self.rng.uniform(-1, 1, (num_worlds, num_actuators)) * self.noise_scale
-        control = self.smoothing * self._prev_control + (1 - self.smoothing) * noise
-        self._prev_control = control
+        assert self._prev_ctrl is not None
+        assert self._ctrl is not None
 
-        return np.clip(control, -1, 1)
+        wp.launch(
+            generate_random_control_kernel,
+            dim=num_worlds * num_actuators,
+            inputs=[
+                self._prev_ctrl,
+                self._ctrl,
+                self.rng.integers(0, 2**31),  # Random seed for this step
+                step,
+                self.noise_scale,
+                self.smoothing,
+            ],
+        )
+        return self._ctrl.reshape((num_worlds, num_actuators))
 
 
 # =============================================================================
