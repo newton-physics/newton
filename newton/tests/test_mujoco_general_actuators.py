@@ -36,8 +36,8 @@ import warp as wp
 
 import newton
 from newton import ActuatorMode
-from newton.solvers import SolverMuJoCo, SolverNotifyFlags
 from newton._src.solvers.mujoco import CtrlSource
+from newton.solvers import SolverMuJoCo, SolverNotifyFlags
 
 
 class TestMuJoCoGeneralActuators(unittest.TestCase):
@@ -310,14 +310,15 @@ class TestMuJoCoGeneralActuators(unittest.TestCase):
         model = builder.finalize()
 
         control = model.control()
-        
+
         # Set some values
         control.mujoco.ctrl.assign([10.0])
         self.assertAlmostEqual(control.mujoco.ctrl.numpy()[0], 10.0, places=5)
-        
+
         # Clear
         control.clear()
         self.assertAlmostEqual(control.mujoco.ctrl.numpy()[0], 0.0, places=5)
+
 
 class TestCtrlSourceModes(unittest.TestCase):
     """Test CtrlSource modes (JOINT_TARGET vs CTRL_DIRECT)."""

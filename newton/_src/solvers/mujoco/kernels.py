@@ -570,7 +570,6 @@ def convert_mjw_contact_to_warp_kernel(
 
 
 # Import control source/type enums and create warp constants
-from . import CtrlSource, CtrlType
 
 CTRL_SOURCE_JOINT_TARGET = wp.constant(0)
 CTRL_SOURCE_CTRL_DIRECT = wp.constant(1)
@@ -610,7 +609,7 @@ def apply_mjc_control_kernel(
     world, actuator = wp.tid()
     source = mjc_actuator_ctrl_source[actuator]
     idx = mjc_actuator_to_newton_idx[actuator]
-    
+
     if source == CTRL_SOURCE_JOINT_TARGET:
         if idx >= 0:
             # Position actuator
@@ -1032,11 +1031,11 @@ def update_axis_properties_kernel(
     """
     world, actuator = wp.tid()
     source = mjc_actuator_ctrl_source[actuator]
-    
+
     if source != CTRL_SOURCE_JOINT_TARGET:
         # CTRL_DIRECT: gains unchanged (set from custom attributes)
         return
-    
+
     idx = mjc_actuator_to_newton_idx[actuator]
     if idx >= 0:
         # Position actuator - get kp from per-DOF array

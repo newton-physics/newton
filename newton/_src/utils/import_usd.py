@@ -98,9 +98,9 @@ def parse_usd(
 
             .. note::
                 Using the ``schema_resolvers`` argument is an experimental feature that may be removed or changed significantly in the future.
-        force_position_velocity_actuation (bool): If True, joints with both non-zero stiffness (kp) and 
-            damping (kd) will use POSITION_VELOCITY actuation mode (creating both position and velocity 
-            actuators). If False (default), joints with any position gain use POSITION mode, and joints 
+        force_position_velocity_actuation (bool): If True, joints with both non-zero stiffness (kp) and
+            damping (kd) will use POSITION_VELOCITY actuation mode (creating both position and velocity
+            actuators). If False (default), joints with any position gain use POSITION mode, and joints
             with only velocity gain use VELOCITY mode.
 
     Returns:
@@ -737,7 +737,9 @@ def parse_usd(
                         actuator_mode = ActuatorMode.NONE
                     return target_pos, target_vel, target_ke, target_kd, effort_limit, actuator_mode
 
-                target_pos, target_vel, target_ke, target_kd, effort_limit, actuator_mode = define_joint_targets(dof, joint_desc)
+                target_pos, target_vel, target_ke, target_kd, effort_limit, actuator_mode = define_joint_targets(
+                    dof, joint_desc
+                )
 
                 _trans_axes = {
                     UsdPhysics.JointDOF.TransX: (1.0, 0.0, 0.0),

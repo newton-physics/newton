@@ -43,8 +43,7 @@ import newton
 import newton._src.viewer.gl.opengl as opengl_module
 import newton.examples
 import newton.utils
-from newton import State
-from newton import ActuatorMode
+from newton import ActuatorMode, State
 
 opengl_module.ENABLE_CUDA_INTEROP = False
 

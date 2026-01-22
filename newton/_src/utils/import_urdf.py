@@ -105,7 +105,7 @@ def parse_urdf(
         bodies_follow_joint_ordering (bool): If True, the bodies are added to the builder in the same order as the joints (parent then child body). Otherwise, bodies are added in the order they appear in the URDF. Default is True.
         collapse_fixed_joints (bool): If True, fixed joints are removed and the respective bodies are merged.
         mesh_maxhullvert (int): Maximum vertices for convex hull approximation of meshes.
-        force_position_velocity_actuation (bool): If True, joints use POSITION_VELOCITY actuation mode 
+        force_position_velocity_actuation (bool): If True, joints use POSITION_VELOCITY actuation mode
             (both position and velocity actuators). If False (default), joints use POSITION mode.
     """
     axis_xform = wp.transform(wp.vec3(0.0), quat_between_axes(up_axis, builder.up_axis))

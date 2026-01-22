@@ -61,7 +61,6 @@ from ..utils import compute_world_offsets
 from ..utils.mesh import MeshAdjacency
 from .graph_coloring import ColoringAlgorithm, color_rigid_bodies, color_trimesh, combine_independent_particle_coloring
 from .joints import (
-    JOINT_LIMIT_UNLIMITED,
     ActuatorMode,
     EqType,
     JointType,
@@ -698,7 +697,7 @@ class ModelBuilder:
         self.joint_type = []
         self.joint_key = []
         self.joint_armature = []
-        self.joint_act_mode = [] # Actuator mode per DOF (ActuatorMode.NONE=0, POSITION=1, VELOCITY=2, POSITION_VELOCITY=3)
+        self.joint_act_mode = []  # Actuator mode per DOF (ActuatorMode.NONE=0, POSITION=1, VELOCITY=2, POSITION_VELOCITY=3)
         self.joint_target_ke = []
         self.joint_target_kd = []
         self.joint_limit_lower = []
@@ -1390,7 +1389,7 @@ class ModelBuilder:
             bodies_follow_joint_ordering (bool): If True, the bodies are added to the builder in the same order as the joints (parent then child body). Otherwise, bodies are added in the order they appear in the URDF. Default is True.
             collapse_fixed_joints (bool): If True, fixed joints are removed and the respective bodies are merged.
             mesh_maxhullvert (int): Maximum vertices for convex hull approximation of meshes.
-            force_position_velocity_actuation (bool): If True, joints use POSITION_VELOCITY actuation mode 
+            force_position_velocity_actuation (bool): If True, joints use POSITION_VELOCITY actuation mode
                 (both position and velocity actuators). If False (default), joints use POSITION mode.
         """
         from ..utils.import_urdf import parse_urdf  # noqa: PLC0415
@@ -1478,9 +1477,9 @@ class ModelBuilder:
 
                 .. note::
                     Using the ``schema_resolvers`` argument is an experimental feature that may be removed or changed significantly in the future.
-            force_position_velocity_actuation (bool): If True, joints with both non-zero stiffness (kp) and 
-                damping (kd) will use POSITION_VELOCITY actuation mode (creating both position and velocity 
-                actuators). If False (default), joints with any position gain use POSITION mode, and joints 
+            force_position_velocity_actuation (bool): If True, joints with both non-zero stiffness (kp) and
+                damping (kd) will use POSITION_VELOCITY actuation mode (creating both position and velocity
+                actuators). If False (default), joints with any position gain use POSITION mode, and joints
                 with only velocity gain use VELOCITY mode.
 
         Returns:
@@ -1613,8 +1612,8 @@ class ModelBuilder:
             skip_equality_constraints (bool): Whether <equality> tags should be parsed. If True, equality constraints are ignored.
             convert_3d_hinge_to_ball_joints (bool): If True, series of three hinge joints are converted to a single ball joint. Default is False.
             mesh_maxhullvert (int): Maximum vertices for convex hull approximation of meshes.
-            ctrl_direct (bool): If True, all actuators use CTRL_DIRECT mode where control comes directly 
-                from control.mujoco.ctrl array (MuJoCo-native behavior). If False (default), position/velocity 
+            ctrl_direct (bool): If True, all actuators use CTRL_DIRECT mode where control comes directly
+                from control.mujoco.ctrl array (MuJoCo-native behavior). If False (default), position/velocity
                 actuators use JOINT_TARGET mode where control comes from joint_target_pos/vel.
         """
         from ..solvers.mujoco.solver_mujoco import SolverMuJoCo  # noqa: PLC0415
@@ -2426,7 +2425,7 @@ class ModelBuilder:
             self.joint_axis.append(dim.axis)
             self.joint_target_pos.append(dim.target_pos)
             self.joint_target_vel.append(dim.target_vel)
-            
+
             # Use actuator_mode if explicitly set, otherwise infer from gains
             if dim.actuator_mode is not None:
                 mode = int(dim.actuator_mode)

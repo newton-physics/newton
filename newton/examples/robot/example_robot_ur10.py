@@ -30,8 +30,8 @@ import warp as wp
 import newton
 import newton.examples
 import newton.utils
-from newton.selection import ArticulationView
 from newton import ActuatorMode
+from newton.selection import ArticulationView
 
 
 @wp.kernel

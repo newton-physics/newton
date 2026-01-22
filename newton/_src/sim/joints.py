@@ -106,7 +106,7 @@ class ActuatorMode(IntEnum):
 
     Determines which actuators are installed for a DOF when using solvers that
     require explicit actuator definitions (e.g., MuJoCo solver).
-    
+
     Note: MuJoCo general actuators are handled separately via
     custom attributes with "mujoco:actuator" frequency and control.mujoco.ctrl, not through this enum.
     """

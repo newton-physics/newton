@@ -25,7 +25,6 @@ import warp as wp
 from ...core.types import MAXVAL, nparray, override, vec5, vec10
 from ...geometry import MESH_MAXHULLVERT, GeoType, ShapeFlags
 from ...sim import (
-    JOINT_LIMIT_UNLIMITED,
     ActuatorMode,
     Contacts,
     Control,
@@ -43,7 +42,7 @@ from ...utils import topological_sort
 from ...utils.benchmark import event_scope
 from ..flags import SolverNotifyFlags
 from ..solver import SolverBase
-from . import CtrlSource, CtrlType
+from . import CtrlSource
 from .kernels import (
     _create_inverse_shape_mapping_kernel,
     apply_mjc_body_f_kernel,
@@ -483,7 +482,9 @@ class SolverMuJoCo(SolverBase):
 
         # Value transformers for enum-like MJCF attributes
         def parse_trntype(s: str) -> int:
-            return {"joint": 0, "jointinparent": 1, "tendon": 2, "site": 3, "body": 4, "slidercrank": 5}.get(s.lower(), 0)
+            return {"joint": 0, "jointinparent": 1, "tendon": 2, "site": 3, "body": 4, "slidercrank": 5}.get(
+                s.lower(), 0
+            )
 
         def parse_dyntype(s: str) -> int:
             return {"none": 0, "integrator": 1, "filter": 2, "filterexact": 3, "muscle": 4}.get(s.lower(), 0)
@@ -1176,12 +1177,12 @@ class SolverMuJoCo(SolverBase):
             if self.mjc_actuator_ctrl_source is not None and self.mjc_actuator_to_newton_idx is not None:
                 nu = self.mjc_actuator_ctrl_source.shape[0]
                 dofs_per_world = model.joint_dof_count // nworld if nworld > 0 else model.joint_dof_count
-                
+
                 # Get mujoco.ctrl (None if not available - won't be accessed if no CTRL_DIRECT actuators)
                 mujoco_ctrl_ns = getattr(control, "mujoco", None)
                 mujoco_ctrl = getattr(mujoco_ctrl_ns, "ctrl", None) if mujoco_ctrl_ns is not None else None
                 ctrls_per_world = mujoco_ctrl.shape[0] // nworld if mujoco_ctrl is not None and nworld > 0 else 0
-                
+
                 wp.launch(
                     apply_mjc_control_kernel,
                     dim=(nworld, nu),
@@ -1743,7 +1744,7 @@ class SolverMuJoCo(SolverBase):
         # axis_to_actuator[i, 1] = velocity actuator index
         axis_to_actuator = np.zeros((model.joint_dof_count, 2), dtype=np.int32) - 1
         actuator_count = 0
-        
+
         # Track actuator mapping as they're created (indexed by MuJoCo actuator order)
         # ctrl_source: 0=JOINT_TARGET, 1=CTRL_DIRECT
         # to_newton_idx: for JOINT_TARGET: >=0 position DOF, -1 unmapped, <=-2 velocity (DOF = -(val+2))
@@ -2436,34 +2437,36 @@ class SolverMuJoCo(SolverBase):
         # Only process actuators belonging to the first world (template model)
         mujoco_attrs = getattr(model, "mujoco", None)
         mujoco_actuator_mapping = {}  # mujoco_act_idx -> mjc_actuator_idx
-        
+
         mujoco_actuator_count = model.custom_frequency_counts.get("mujoco:actuator", 0)
         if mujoco_actuator_count > 0 and mujoco_attrs is not None and hasattr(mujoco_attrs, "actuator_trnid"):
             # actuator_trnid[:,0] is the target index, actuator_trntype determines its meaning
             actuator_trnid = mujoco_attrs.actuator_trnid.numpy()
             trntype_arr = mujoco_attrs.actuator_trntype.numpy() if hasattr(mujoco_attrs, "actuator_trntype") else None
             ctrl_source_arr = mujoco_attrs.ctrl_source.numpy() if hasattr(mujoco_attrs, "ctrl_source") else None
-            actuator_world_arr = mujoco_attrs.actuator_world.numpy() if hasattr(mujoco_attrs, "actuator_world") else None
-            
+            actuator_world_arr = (
+                mujoco_attrs.actuator_world.numpy() if hasattr(mujoco_attrs, "actuator_world") else None
+            )
+
             for mujoco_act_idx in range(mujoco_actuator_count):
                 # Skip JOINT_TARGET actuators - they're already added via joint_act_mode path
                 if ctrl_source_arr is not None:
                     ctrl_source = int(ctrl_source_arr[mujoco_act_idx])
                     if ctrl_source == CtrlSource.JOINT_TARGET:
                         continue  # Already handled in joint iteration
-                
+
                 # Only include actuators from the first world (template) or global actuators
                 if actuator_world_arr is not None:
                     actuator_world = int(actuator_world_arr[mujoco_act_idx])
                     if actuator_world != first_world and actuator_world != -1:
                         continue  # Skip actuators from other worlds
-                
+
                 target_idx = int(actuator_trnid[mujoco_act_idx, 0])
-                
+
                 # Determine target type from trntype (0=JOINT, 1=TENDON, 2=SITE, etc.)
                 # Currently only JOINT targets are supported
                 trntype = int(trntype_arr[mujoco_act_idx]) if trntype_arr is not None else 0
-                
+
                 if trntype == 0:  # TrnType.JOINT
                     if target_idx < 0 or target_idx >= len(model.joint_key):
                         if verbose:
@@ -2481,9 +2484,9 @@ class SolverMuJoCo(SolverBase):
                     if verbose:
                         print(f"Warning: MuJoCo actuator {mujoco_act_idx} has unsupported trntype {trntype}")
                     continue
-                
+
                 general_args = dict(actuator_args)
-                
+
                 # Get custom attributes for this MuJoCo actuator
                 if mujoco_attrs is not None:
                     if hasattr(mujoco_attrs, "actuator_gainprm"):
@@ -2526,7 +2529,7 @@ class SolverMuJoCo(SolverBase):
                         actdim = mujoco_attrs.actuator_actdim.numpy()[mujoco_act_idx]
                         if actdim >= 0:  # -1 means auto
                             general_args["actdim"] = int(actdim)
-                
+
                 # Map trntype integer to MuJoCo enum and override default in general_args
                 trntype_enum = {
                     0: mujoco.mjtTrn.mjTRN_JOINT,
@@ -2954,7 +2957,7 @@ class SolverMuJoCo(SolverBase):
             nu = self.mjc_actuator_ctrl_source.shape[0]
             nworld = self.mjw_model.actuator_biasprm.shape[0]
             dofs_per_world = self.model.joint_dof_count // nworld if nworld > 0 else self.model.joint_dof_count
-            
+
             wp.launch(
                 update_axis_properties_kernel,
                 dim=(nworld, nu),
