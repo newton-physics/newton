@@ -2862,12 +2862,6 @@ class SolverMuJoCo(SolverBase):
             # "pair_gap",
             # "pair_friction",
             "tendon_world",
-            # "tendon_adr",                 # Topological, not replicated
-            # "tendon_num",                 # Topological, not replicated
-            # "tendon_limited",             # Topological, not replicated
-            # "tendon_actfrclimited",       # Topological, not replicated
-            # "tendon_jnt_adr",             # Topological, not replicated
-            # "tendon_limited_adr",         # Topological, not replicated
             "tendon_solref_lim",
             "tendon_solimp_lim",
             "tendon_solref_fri",
