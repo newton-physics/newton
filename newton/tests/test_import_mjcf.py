@@ -1035,7 +1035,7 @@ class TestImportMjcf(unittest.TestCase):
                         msg=f"Expected solimpfriction[{k}] value: {expected}, Measured value: {measured}",
                     )
 
-                # Check model solimplimit
+                # Check model solimpfriction
                 for k in range(0, 5):
                     expected = expected_solimpfriction[0][j][k]
                     measured = model.mujoco.tendon_solimp_friction.numpy()[nbTendonsPerBuilder * i + j][k]
