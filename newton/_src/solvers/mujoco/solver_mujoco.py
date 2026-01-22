@@ -836,8 +836,6 @@ class SolverMuJoCo(SolverBase):
         # Attributes per joint in the tendon that allow the tendon length to
         # be calculated as a linear sum of coefficient and joint position.
         # For each joint in a tendon (specified by joint index) there must be a corresponding coefficient.
-        # We will not test that  the number of joint indices of all tendons must be equal to the number of
-        # coefficients of all tendons.
         joint_attr_names = ["tendon_joint", "tendon_coef"]
         joint_lengths: dict[str, int] = {}
         for name in joint_attr_names:
