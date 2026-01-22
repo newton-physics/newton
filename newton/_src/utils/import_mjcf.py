@@ -1253,7 +1253,7 @@ def parse_mjcf(
                 print(f"Parsed contact pair: {geom1_name} ({geom1_idx}) <-> {geom2_name} ({geom2_idx})")
 
     # -----------------
-    # parse fixed tendons
+    # Parse all fixed tendons in a single tendon section.
 
     # Get variable-length custom attributes for tendon parsing (frequency="tendon")
     # Exclude tendon_world, tendon_joint_adr, tendon_joint_num as they're handled specially
@@ -1265,76 +1265,71 @@ def parse_mjcf(
         and attr.name not in ("tendon_world", "tendon_joint_adr", "tendon_joint_num", "tendon_joint", "tendon_coef")
     ]
 
-    # Only parse tendons if custom tendon attributes are registered
-    has_tendon_attrs = "mujoco:tendon_world" in builder.custom_attributes
-    if has_tendon_attrs:
-        # Find all sections marked <tendon></tendon>
-        tendon_sections = root.findall(".//tendon")
-        for tendon_section in tendon_sections:
-            # Parse all fixed tendons in the current tendon section.
-            for fixed in tendon_section.findall("fixed"):
-                tendon_name = fixed.attrib.get("name", "")
+    def parse_tendons(tendon_section):
+        for fixed in tendon_section.findall("fixed"):
+            tendon_name = fixed.attrib.get("name", "")
 
-                # Parse joint elements within this fixed tendon
-                joint_entries = []
-                for joint_elem in fixed.findall("joint"):
-                    joint_name = joint_elem.attrib.get("joint")
-                    coef_str = joint_elem.attrib.get("coef", "1.0")
+            # Parse joint elements within this fixed tendon
+            joint_entries = []
+            for joint_elem in fixed.findall("joint"):
+                joint_name = joint_elem.attrib.get("joint")
+                coef_str = joint_elem.attrib.get("coef", "1.0")
 
-                    if not joint_name:
-                        if verbose:
-                            print(f"Warning: <joint> in tendon '{tendon_name}' missing joint attribute, skipping")
-                        continue
-
-                    # Look up joint index by name
-                    try:
-                        joint_idx = builder.joint_key.index(joint_name)
-                    except ValueError:
-                        if verbose:
-                            print(
-                                f"Warning: Tendon '{tendon_name}' references unknown joint '{joint_name}', skipping joint"
-                            )
-                        continue
-
-                    coef = float(coef_str)
-                    joint_entries.append((joint_idx, coef))
-
-                if not joint_entries:
+                if not joint_name:
                     if verbose:
-                        print(f"Warning: Fixed tendon '{tendon_name}' has no valid joint elements, skipping")
+                        print(f"Warning: <joint> in tendon '{tendon_name}' missing joint attribute, skipping")
                     continue
 
-                # Parse tendon-level attributes using the standard custom attribute parsing
-                tendon_attrs = parse_custom_attributes(fixed.attrib, builder_custom_attr_tendon, parsing_mode="mjcf")
+                # Look up joint index by name
+                try:
+                    joint_idx = builder.joint_key.index(joint_name)
+                except ValueError:
+                    if verbose:
+                        print(
+                            f"Warning: Tendon '{tendon_name}' references unknown joint '{joint_name}', skipping joint"
+                        )
+                    continue
 
-                # Determine wrap array start index
-                tendon_joint_attr = builder.custom_attributes.get("mujoco:tendon_joint")
-                joint_start = len(tendon_joint_attr.values) if tendon_joint_attr and tendon_joint_attr.values else 0
+                coef = float(coef_str)
+                joint_entries.append((joint_idx, coef))
 
-                # Add joints to the joint arrays
-                for joint_idx, coef in joint_entries:
-                    builder.add_custom_values(
-                        **{
-                            "mujoco:tendon_joint": joint_idx,
-                            "mujoco:tendon_coef": coef,
-                        }
-                    )
-
-                # Build values dict for tendon-level attributes
-                tendon_values: dict[str, Any] = {
-                    "mujoco:tendon_world": builder.current_world,
-                    "mujoco:tendon_joint_adr": joint_start,
-                    "mujoco:tendon_joint_num": len(joint_entries),
-                }
-                # Add remaining attributes with parsed values or defaults
-                for attr in builder_custom_attr_tendon:
-                    tendon_values[attr.key] = tendon_attrs.get(attr.key, attr.default)
-
-                builder.add_custom_values(**tendon_values)
-
+            if not joint_entries:
                 if verbose:
-                    joint_names_str = ", ".join(f"{builder.joint_key[j]}*{c}" for j, c in joint_entries)
-                    print(f"Parsed fixed tendon: {tendon_name} ({joint_names_str})")
+                    print(f"Warning: Fixed tendon '{tendon_name}' has no valid joint elements, skipping")
+                continue
+
+            # Parse tendon-level attributes using the standard custom attribute parsing
+            tendon_attrs = parse_custom_attributes(fixed.attrib, builder_custom_attr_tendon, parsing_mode="mjcf")
+
+            # Determine wrap array start index
+            tendon_joint_attr = builder.custom_attributes.get("mujoco:tendon_joint")
+            joint_start = len(tendon_joint_attr.values) if tendon_joint_attr and tendon_joint_attr.values else 0
+
+            # Add joints to the joint arrays
+            for joint_idx, coef in joint_entries:
+                builder.add_custom_values(
+                    **{
+                        "mujoco:tendon_joint": joint_idx,
+                        "mujoco:tendon_coef": coef,
+                    }
+                )
+
+            # Build values dict for tendon-level attributes
+            tendon_values: dict[str, Any] = {
+                "mujoco:tendon_world": builder.current_world,
+                "mujoco:tendon_joint_adr": joint_start,
+                "mujoco:tendon_joint_num": len(joint_entries),
+            }
+            # Add remaining attributes with parsed values or defaults
+            for attr in builder_custom_attr_tendon:
+                tendon_values[attr.key] = tendon_attrs.get(attr.key, attr.default)
+
+            builder.add_custom_values(**tendon_values)
+
+            if verbose:
+                joint_names_str = ", ".join(f"{builder.joint_key[j]}*{c}" for j, c in joint_entries)
+                print(f"Parsed fixed tendon: {tendon_name} ({joint_names_str})")
+
     # -----------------
     # parse actuators
 
@@ -1387,6 +1382,14 @@ def parse_mjcf(
 
             if verbose:
                 print(f"Velocity actuator on joint '{joint_name}': kv={kv}")
+
+    # Only parse tendons if custom tendon attributes are registered
+    has_tendon_attrs = "mujoco:tendon_world" in builder.custom_attributes
+    if has_tendon_attrs:
+        # Find all sections marked <tendon></tendon>
+        tendon_sections = root.findall(".//tendon")
+        for tendon_section in tendon_sections:
+            parse_tendons(tendon_section)
 
     actuator_section = root.find("actuator")
     if actuator_section is not None:
