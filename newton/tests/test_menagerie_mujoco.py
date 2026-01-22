@@ -45,7 +45,6 @@ import warp as wp
 import newton
 from newton._src.utils.download_assets import download_git_folder
 from newton.solvers import SolverMuJoCo
-from newton.tests.unittest_utils import CheckOutput
 
 # Check for mujoco availability via SolverMuJoCo's lazy import mechanism
 try:
@@ -407,24 +406,18 @@ DEFAULT_TOLERANCES: dict[str, float] = {
 DEFAULT_COMPARE_FIELDS: list[str] = ["qpos", "qvel"]
 
 
-@wp.kernel
-def compare_arrays_kernel(
-    newton_arr: wp.array(dtype=wp.float32),  # type: ignore[valid-type]
-    native_arr: wp.array(dtype=wp.float32),  # type: ignore[valid-type]
-    tol: wp.float32,
-):
-    """Compare two 1D float32 arrays element-wise."""
-    i = wp.tid()
-    wp.expect_near(newton_arr[i], native_arr[i], tol)
-
-
 def compare_mjdata_field(
     newton_mjw_data: Any,
     native_mjw_data: Any,
     field_name: str,
     tol: float,
+    step: int,
 ) -> None:
-    """Compare a single MjWarpData field on GPU."""
+    """
+    Compare a single MjWarpData field using numpy.
+
+    Fails immediately with detailed info on first mismatch.
+    """
     newton_arr = getattr(newton_mjw_data, field_name, None)
     native_arr = getattr(native_mjw_data, field_name, None)
 
@@ -434,14 +427,24 @@ def compare_mjdata_field(
     if newton_arr.size == 0:
         return
 
-    newton_flat = newton_arr.flatten()
-    native_flat = native_arr.flatten()
+    # Sync and copy to numpy
+    wp.synchronize()
+    newton_np = newton_arr.numpy()
+    native_np = native_arr.numpy()
 
-    wp.launch(
-        compare_arrays_kernel,
-        dim=newton_flat.size,
-        inputs=[newton_flat, native_flat, tol],
-    )
+    # Vectorized comparison
+    diff = np.abs(newton_np - native_np)
+    max_diff = float(np.max(diff))
+
+    if max_diff > tol:
+        max_idx = np.unravel_index(np.argmax(diff), diff.shape)
+        newton_val = float(newton_np[max_idx])
+        native_val = float(native_np[max_idx])
+
+        raise AssertionError(
+            f"Step {step}, field '{field_name}': max diff {max_diff:.6e} > tol {tol:.6e}\n"
+            f"  at index {max_idx}: newton={newton_val:.6e}, native={native_val:.6e}"
+        )
 
 
 # =============================================================================
@@ -622,17 +625,13 @@ class TestMenagerieBase(unittest.TestCase):
             """Compare mjw_data arrays for all worlds, fail on first mismatch."""
             for field_name in self.compare_fields:
                 tol = self.tolerances.get(field_name, 1e-6)
-                try:
-                    with CheckOutput(self):
-                        compare_mjdata_field(
-                            newton_solver.mjw_data,
-                            native_mjw_data,
-                            field_name,
-                            tol,
-                        )
-                except AssertionError as e:
-                    # Re-raise with context
-                    raise AssertionError(f"Step {step_num}, field '{field_name}' (tol={tol}): {e}") from None
+                compare_mjdata_field(
+                    newton_solver.mjw_data,
+                    native_mjw_data,
+                    field_name,
+                    tol,
+                    step_num,
+                )
 
         # Compare initial state before any step
         compare_at_step(-1)
@@ -843,6 +842,7 @@ class TestMenagerie_UniversalRobotsUr5e(TestMenagerieBase):
     robot_xml = "ur5e.xml"
     floating = False
     control_strategy = ZeroControlStrategy()
+    num_worlds = 1  # For debugging
 
 
 class TestMenagerie_UniversalRobotsUr10e(TestMenagerieBase):
