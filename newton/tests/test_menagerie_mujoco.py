@@ -534,6 +534,9 @@ class TestMenagerieBase(unittest.TestCase):
     # Model source type (for parametrized testing)
     model_source_type: ModelSourceType = ModelSourceType.MJCF
 
+    # Debug mode: opens dual viewers for interactive stepping
+    debug_visual: bool = False
+
     @classmethod
     def setUpClass(cls):
         """Download assets once for all tests in this class."""
@@ -596,6 +599,8 @@ class TestMenagerieBase(unittest.TestCase):
         Both sides use mujoco_warp with the same number of worlds.
         Each world receives different controls (varied by phase/noise).
         Uses CUDA graphs when available for performance.
+
+        If debug_visual=True, opens dual MuJoCo viewers for interactive debugging.
         """
         assert _mujoco is not None
         assert _mujoco_warp is not None
@@ -606,21 +611,116 @@ class TestMenagerieBase(unittest.TestCase):
         newton_state = newton_model.state()
         newton_control = newton_model.control()
 
+        print(f"[DEBUG] Newton model.num_worlds = {newton_model.num_worlds}")
+        print(f"[DEBUG] self.num_worlds = {self.num_worlds}")
+
         # Create Newton's MuJoCo solver (uses warp backend with batched worlds)
         newton_solver = SolverMuJoCo(newton_model)
 
+        print(f"[DEBUG] Newton mjw_data.ctrl.shape = {newton_solver.mjw_data.ctrl.shape}")
+        print(f"[DEBUG] Newton mjw_data.nworld = {newton_solver.mjw_data.nworld}")
+
         # Create native mujoco_warp model/data with same number of worlds
-        _, _, native_mjw_model, native_mjw_data = self._create_native_mujoco_warp()
+        mj_model, mj_data_native, native_mjw_model, native_mjw_data = self._create_native_mujoco_warp()
+
+        print(f"[DEBUG] Native mjw_data.ctrl.shape = {native_mjw_data.ctrl.shape}")
+        print(f"[DEBUG] Native mjw_data.nworld = {native_mjw_data.nworld}")
+        print(f"[DEBUG] mj_model.nu (num actuators) = {mj_model.nu}")
+
+        # Also need mj_data for newton viewer
+        mj_data_newton = _mujoco.MjData(mj_model)
+        _mujoco.mj_forward(mj_model, mj_data_newton)
 
         # Get number of actuators from native model
         num_actuators = native_mjw_data.ctrl.shape[1] if native_mjw_data.ctrl.shape[1] > 0 else 0
 
-        # Check if CUDA graphs are available
-        use_cuda_graph = wp.get_device().is_cuda and wp.is_mempool_enabled(wp.get_device())
+        def print_diff(step_num: int):
+            """Print max difference for each field."""
+            wp.synchronize()
+            for field_name in self.compare_fields:
+                newton_arr = getattr(newton_solver.mjw_data, field_name, None)
+                native_arr = getattr(native_mjw_data, field_name, None)
+                if newton_arr is None or native_arr is None or newton_arr.size == 0:
+                    continue
+                newton_np = newton_arr.numpy()
+                native_np = native_arr.numpy()
+                max_diff = float(np.max(np.abs(newton_np - native_np)))
+                tol = self.tolerances.get(field_name, 1e-6)
+                status = "OK" if max_diff <= tol else "FAIL"
+                print(f"  {field_name}: max_diff={max_diff:.6e} (tol={tol:.0e}) [{status}]")
 
-        newton_graph = None
-        native_graph = None
+        def sync_mjdata_to_viewer(mjw_data: Any, mj_data: Any):
+            """Copy first world from mjw_data to mj_data for viewer."""
+            assert _mujoco_warp is not None
+            wp.synchronize()
+            _mujoco_warp.get_data_into(mj_data, mj_model, mjw_data)
 
+        # Visual debug mode: open two viewers for interactive stepping
+        if self.debug_visual:
+            import mujoco.viewer  # noqa: PLC0415
+
+            print("\n=== VISUAL DEBUG MODE ===")
+            print("Opening two viewers: Newton (left) and Native (right)")
+            print("Commands: Enter=step, q=quit, number=run N steps")
+            print("Close either viewer window to exit.\n")
+
+            viewer_newton = mujoco.viewer.launch_passive(mj_model, mj_data_newton, show_left_ui=False)
+            viewer_native = mujoco.viewer.launch_passive(mj_model, mj_data_native, show_right_ui=False)
+
+            # Sync initial state to viewers
+            sync_mjdata_to_viewer(newton_solver.mjw_data, mj_data_newton)
+            sync_mjdata_to_viewer(native_mjw_data, mj_data_native)
+            viewer_newton.sync()
+            viewer_native.sync()
+
+            print("Step -1 (initial):")
+            print_diff(-1)
+
+            step = 0
+            while viewer_newton.is_running() and viewer_native.is_running():
+                try:
+                    cmd = input(f"\nStep {step}> ").strip().lower()
+                except EOFError:
+                    break
+
+                if cmd == "q":
+                    break
+
+                # Number of steps to run
+                steps_to_run = 1
+                if cmd.isdigit():
+                    steps_to_run = int(cmd)
+                elif cmd and cmd != "":
+                    print("Unknown command. Enter=step, q=quit, number=run N steps")
+                    continue
+
+                for _ in range(steps_to_run):
+                    t = step * self.dt
+                    ctrl = self.control_strategy.get_control(t, step, self.num_worlds, num_actuators)
+                    newton_solver.mjw_data.ctrl.assign(ctrl)
+                    native_mjw_data.ctrl.assign(ctrl)
+
+                    # Step both
+                    _mujoco_warp.step(native_mjw_model, native_mjw_data)
+                    newton_solver.step(newton_state, newton_state, newton_control, None, self.dt)
+
+                    # Sync to viewers
+                    sync_mjdata_to_viewer(newton_solver.mjw_data, mj_data_newton)
+                    sync_mjdata_to_viewer(native_mjw_data, mj_data_native)
+                    viewer_newton.sync()
+                    viewer_native.sync()
+
+                    step += 1
+
+                print(f"After step {step - 1}:")
+                print_diff(step - 1)
+
+            viewer_newton.close()
+            viewer_native.close()
+            self.skipTest("Visual debug mode completed")
+            return
+
+        # Normal test mode (no visual debugging)
         def compare_at_step(step_num: int):
             """Compare mjw_data arrays for all worlds, fail on first mismatch."""
             for field_name in self.compare_fields:
@@ -632,6 +732,12 @@ class TestMenagerieBase(unittest.TestCase):
                     tol,
                     step_num,
                 )
+
+        # Check if CUDA graphs are available
+        use_cuda_graph = wp.get_device().is_cuda and wp.is_mempool_enabled(wp.get_device())
+
+        newton_graph = None
+        native_graph = None
 
         # Compare initial state before any step
         compare_at_step(-1)
@@ -843,6 +949,7 @@ class TestMenagerie_UniversalRobotsUr5e(TestMenagerieBase):
     floating = False
     control_strategy = ZeroControlStrategy()
     num_worlds = 1  # For debugging
+    debug_visual = True  # Enable dual-viewer debugging
 
 
 class TestMenagerie_UniversalRobotsUr10e(TestMenagerieBase):
