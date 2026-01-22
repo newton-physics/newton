@@ -8,6 +8,7 @@ an aorta mesh, with runtime-switchable constraint solving methods:
 - Jacobi: Iterative parallel solver (default)
 - Thomas: O(n) tridiagonal solver for stretch
 - Cholesky: Direct tile-based solver
+- Local: Local iterative solver with velocity update (from 02_local_cosserat_rod)
 
 Command: uv run -m newton.examples cosserat2_aorta
 """
@@ -22,21 +23,18 @@ from pxr import Usd
 import newton
 import newton.examples
 import newton.usd
-
 from newton.examples.cosserat2.cosserat_rod import CosseratRod
-from newton.examples.cosserat2.solver_cosserat_xpbd import SolverCosseratXPBD, SolverConfig
-from newton.examples.cosserat2.solvers import ConstraintSolverType, FrictionMethod
 from newton.examples.cosserat2.kernels import (
     compute_director_lines_kernel,
+    compute_static_tri_aabbs_kernel,
     update_rest_darboux_kernel,
     update_tip_rest_darboux_kernel,
-    compute_static_tri_aabbs_kernel,
-    compute_current_kappa_kernel,
 )
-
+from newton.examples.cosserat2.solver_cosserat_xpbd import SolverConfig, SolverCosseratXPBD
+from newton.examples.cosserat2.solvers import ConstraintSolverType, FrictionMethod
 
 # Default rod configuration
-DEFAULT_NUM_PARTICLES = 65
+DEFAULT_NUM_PARTICLES = 32
 DEFAULT_PARTICLE_SPACING = 0.025
 
 
@@ -44,8 +42,8 @@ class Example:
     """Cosserat rod example with pluggable constraint solvers.
 
     Features:
-    - Runtime-switchable solver methods (Jacobi, Thomas, Cholesky)
-    - Three internal friction models
+    - Runtime-switchable solver methods (Jacobi, Thomas, Cholesky, Local)
+    - Three internal friction models (not supported by Local solver)
     - Aorta mesh collision
     - Director frame visualization
     - Keyboard control for anchor movement
@@ -82,8 +80,8 @@ class Example:
             friction_method=FrictionMethod.NONE,
             stretch_stiffness=1.0,
             shear_stiffness=1.0,
-            bend_stiffness=0.1,
-            twist_stiffness=0.1,
+            bend_stiffness=0.5,
+            twist_stiffness=0.5,
             velocity_damping=0.99,
             strain_rate_damping=0.1,
             dahl_eps_max=0.01,
@@ -200,9 +198,7 @@ class Example:
         q_init = wp.quat(0.0, math.sin(angle / 2.0), 0.0, math.cos(angle / 2.0))
         edge_q_init = wp.array([q_init] * self.num_stretch, dtype=wp.quat, device=device)
 
-        rest_darboux_init = wp.array(
-            [wp.quat(0.0, 0.0, 0.0, 1.0)] * self.num_bend, dtype=wp.quat, device=device
-        )
+        rest_darboux_init = wp.array([wp.quat(0.0, 0.0, 0.0, 1.0)] * self.num_bend, dtype=wp.quat, device=device)
 
         self.cosserat_rod = CosseratRod(
             num_particles=self.num_particles,
@@ -255,11 +251,53 @@ class Example:
 
         # Keyboard control
         self.particle_move_speed = 1.0
-        self.particle_rotation_speed = 1.0
+        self.particle_rotation_speed = 3.0
         self.first_particle_rotation = 0.0
 
         # Solver type for UI
         self.current_solver_idx = 0
+
+        # Gravity toggle
+        self.gravity_enabled = False
+        self.gravity_value = wp.vec3(0.0, 0.0, -9.81)
+        self._gravity_key_was_down = False
+
+        # Reset key tracking
+        self._reset_key_was_down = False
+
+        # Store initial state for reset
+        self._initial_particle_q = self.state_0.particle_q.numpy().copy()
+        self._initial_particle_qd = self.state_0.particle_qd.numpy().copy()
+        self._initial_edge_q = self.cosserat_rod.edge_q.numpy().copy()
+
+    def _reset_simulation(self):
+        """Reset the simulation to initial state."""
+        device = self.model.device
+
+        # Reset particle positions and velocities
+        self.state_0.particle_q = wp.array(self._initial_particle_q, dtype=wp.vec3, device=device)
+        self.state_0.particle_qd = wp.array(self._initial_particle_qd, dtype=wp.vec3, device=device)
+        self.state_1.particle_q = wp.array(self._initial_particle_q, dtype=wp.vec3, device=device)
+        self.state_1.particle_qd = wp.array(self._initial_particle_qd, dtype=wp.vec3, device=device)
+
+        # Reset edge quaternions
+        self.cosserat_rod.edge_q = wp.array(self._initial_edge_q, dtype=wp.quat, device=device)
+        self.cosserat_rod.edge_q_new = wp.array(self._initial_edge_q, dtype=wp.quat, device=device)
+
+        # Reset simulation time
+        self.sim_time = 0.0
+
+        # Reset control parameters
+        self.first_particle_rotation = 0.0
+        self.tip_rest_bend_d1 = 0.0
+        self.rest_bend_d1 = 0.0
+        self.rest_bend_d2 = 0.0
+        self.rest_twist = 0.0
+
+        # Update contacts
+        self.contacts = self.model.collide(self.state_0, collision_pipeline=self.collision_pipeline)
+
+        print("Simulation reset")
 
     def simulate(self):
         for _ in range(self.sim_substeps):
@@ -310,10 +348,10 @@ class Example:
 
         # Rotation control
         rotation_changed = False
-        if self.viewer.is_key_down(key.NUM_7) or self.viewer.is_key_down(key.H):
+        if self.viewer.is_key_down(key.NUM_7) or self.viewer.is_key_down(key.Y):
             self.first_particle_rotation += self.particle_rotation_speed * self.frame_dt
             rotation_changed = True
-        if self.viewer.is_key_down(key.NUM_1) or self.viewer.is_key_down(key.G):
+        if self.viewer.is_key_down(key.NUM_1) or self.viewer.is_key_down(key.T):
             self.first_particle_rotation -= self.particle_rotation_speed * self.frame_dt
             rotation_changed = True
 
@@ -333,6 +371,45 @@ class Example:
 
         if tip_bend_changed:
             self._update_tip_rest_darboux()
+
+        # Solver switching with 1, 2, 3, 4 keys
+        method_types = [
+            ConstraintSolverType.JACOBI,
+            ConstraintSolverType.THOMAS,
+            ConstraintSolverType.CHOLESKY_SINGLE,
+            ConstraintSolverType.LOCAL,
+        ]
+        method_names = ["Jacobi", "Thomas", "Cholesky", "Local"]
+
+        for i, (k, solver_type, name) in enumerate(
+            zip([key._1, key._2, key._3, key._4], method_types, method_names, strict=True)
+        ):
+            if self.viewer.is_key_down(k) and self.current_solver_idx != i:
+                try:
+                    self.solver.set_constraint_solver(solver_type)
+                    self.current_solver_idx = i
+                    print(f"Switched to {name} solver")
+                except ValueError as e:
+                    print(f"Cannot switch to {name}: {e}")
+                break
+
+        # Gravity toggle with G key (edge-triggered)
+        g_key_down = self.viewer.is_key_down(key.G)
+        if g_key_down and not self._gravity_key_was_down:
+            self.gravity_enabled = not self.gravity_enabled
+            if self.gravity_enabled:
+                self.solver_config.gravity = self.gravity_value
+                print("Gravity enabled")
+            else:
+                self.solver_config.gravity = wp.vec3(0.0, 0.0, 0.0)
+                print("Gravity disabled")
+        self._gravity_key_was_down = g_key_down
+
+        # Reset simulation with R key (edge-triggered)
+        r_key_down = self.viewer.is_key_down(key.R)
+        if r_key_down and not self._reset_key_was_down:
+            self._reset_simulation()
+        self._reset_key_was_down = r_key_down
 
         # Apply movement
         if dx != 0.0 or dy != 0.0 or dz != 0.0:
@@ -417,11 +494,12 @@ class Example:
         # Constraint Solver Selection
         ui.separator()
         ui.text("Constraint Solving Method")
-        methods = ["Jacobi Iteration", "Thomas Algorithm", "Cholesky (Single Tile)"]
+        methods = ["Jacobi Iteration", "Thomas Algorithm", "Cholesky (Single Tile)", "Local Iterative"]
         method_types = [
             ConstraintSolverType.JACOBI,
             ConstraintSolverType.THOMAS,
             ConstraintSolverType.CHOLESKY_SINGLE,
+            ConstraintSolverType.LOCAL,
         ]
         changed, new_idx = ui.combo("Solver Method", self.current_solver_idx, methods)
         if changed:
@@ -437,11 +515,31 @@ class Example:
         # Method-specific info
         solver_type = self.solver_config.solver_type
         if solver_type == ConstraintSolverType.JACOBI:
-            ui.text(f"  Iterations: {self.solver_config.constraint_iterations}")
+            ui.text("  Parallel Jacobi iteration")
         elif solver_type == ConstraintSolverType.THOMAS:
             ui.text("  O(n) direct solve for stretch")
         elif solver_type == ConstraintSolverType.CHOLESKY_SINGLE:
             ui.text("  Tile size: 32x32")
+        elif solver_type == ConstraintSolverType.LOCAL:
+            ui.text("  Local iteration with velocity update")
+        ui.text("  Keys 1/2/3/4: Switch solver")
+
+        # Simulation Parameters
+        ui.separator()
+        ui.text("Simulation Parameters")
+        _, new_substeps = ui.slider_int("Substeps", self.sim_substeps, 1, 32)
+        if new_substeps != self.sim_substeps:
+            self.sim_substeps = new_substeps
+            self.sim_dt = self.frame_dt / self.sim_substeps
+        _, self.solver_config.constraint_iterations = ui.slider_int(
+            "Constraint Iterations", self.solver_config.constraint_iterations, 1, 16
+        )
+        changed, self.gravity_enabled = ui.checkbox("Gravity (G key)", self.gravity_enabled)
+        if changed:
+            if self.gravity_enabled:
+                self.solver_config.gravity = self.gravity_value
+            else:
+                self.solver_config.gravity = wp.vec3(0.0, 0.0, 0.0)
 
         # Stiffness Parameters
         ui.separator()
@@ -471,9 +569,7 @@ class Example:
         # Tip Control
         ui.separator()
         ui.text("Tip Rest Shape")
-        changed_tip, self.tip_rest_bend_d1 = ui.slider_float(
-            "Tip Rest Bend d1", self.tip_rest_bend_d1, -0.5, 0.5
-        )
+        changed_tip, self.tip_rest_bend_d1 = ui.slider_float("Tip Rest Bend d1", self.tip_rest_bend_d1, -0.5, 0.5)
         if changed_tip:
             self._update_tip_rest_darboux()
         ui.text("  Numpad +/-: Increase/decrease tip bend")
@@ -482,9 +578,7 @@ class Example:
         ui.separator()
         ui.text("Internal Friction")
         friction_methods = ["None", "Velocity Damping", "Strain-Rate Damping", "Dahl Hysteresis"]
-        _, friction_idx = ui.combo(
-            "Friction Method", int(self.solver_config.friction_method), friction_methods
-        )
+        _, friction_idx = ui.combo("Friction Method", int(self.solver_config.friction_method), friction_methods)
         self.solver_config.friction_method = FrictionMethod(friction_idx)
 
         if self.solver_config.friction_method == FrictionMethod.VELOCITY_DAMPING:
@@ -496,12 +590,8 @@ class Example:
                 "Strain-Rate Damping", self.solver_config.strain_rate_damping, 0.0, 1.0
             )
         elif self.solver_config.friction_method == FrictionMethod.DAHL_HYSTERESIS:
-            _, self.solver_config.dahl_eps_max = ui.slider_float(
-                "Eps Max", self.solver_config.dahl_eps_max, 0.0, 0.1
-            )
-            _, self.solver_config.dahl_tau = ui.slider_float(
-                "Tau", self.solver_config.dahl_tau, 0.001, 0.1
-            )
+            _, self.solver_config.dahl_eps_max = ui.slider_float("Eps Max", self.solver_config.dahl_eps_max, 0.0, 0.1)
+            _, self.solver_config.dahl_tau = ui.slider_float("Tau", self.solver_config.dahl_tau, 0.001, 0.1)
 
         # Anchor Control
         ui.separator()
@@ -511,15 +601,19 @@ class Example:
         ui.text("  Numpad 9/3: Move up/down (Z)")
         ui.text("  Numpad 7/1: Rotate CCW/CW")
         _, self.particle_move_speed = ui.slider_float("Move Speed", self.particle_move_speed, 0.1, 5.0)
-        _, self.particle_rotation_speed = ui.slider_float(
-            "Rotation Speed", self.particle_rotation_speed, 0.1, 3.0
-        )
+        _, self.particle_rotation_speed = ui.slider_float("Rotation Speed", self.particle_rotation_speed, 0.1, 5.0)
 
         # Visualization
         ui.separator()
         ui.text("Visualization")
         _, self.show_directors = ui.checkbox("Show Directors", self.show_directors)
         _, self.director_scale = ui.slider_float("Director Scale", self.director_scale, 0.01, 0.1)
+
+        # Simulation Controls
+        ui.separator()
+        ui.text("Simulation Controls")
+        ui.text("  R: Reset simulation")
+        ui.text("  G: Toggle gravity")
 
     def render(self):
         self.viewer.begin_frame(self.sim_time)

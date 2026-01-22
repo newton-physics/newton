@@ -145,6 +145,50 @@ def apply_particle_corrections_kernel(
 
 
 @wp.kernel
+def apply_particle_corrections_with_velocity_kernel(
+    particle_q: wp.array(dtype=wp.vec3),
+    particle_qd: wp.array(dtype=wp.vec3),
+    particle_delta: wp.array(dtype=wp.vec3),
+    particle_inv_mass: wp.array(dtype=float),
+    dt: float,
+    # outputs
+    particle_q_out: wp.array(dtype=wp.vec3),
+    particle_qd_out: wp.array(dtype=wp.vec3),
+):
+    """Apply accumulated position corrections and update velocities.
+
+    This is the local iterative approach from 02_local_cosserat_rod.py where
+    velocity is updated incrementally based on position corrections during
+    constraint solving iterations.
+
+    Args:
+        particle_q: Current particle positions.
+        particle_qd: Current particle velocities.
+        particle_delta: Accumulated position corrections.
+        particle_inv_mass: Inverse mass per particle (0 = kinematic).
+        dt: Time step for velocity update.
+        particle_q_out: Output corrected positions.
+        particle_qd_out: Output updated velocities.
+    """
+    tid = wp.tid()
+
+    inv_mass = particle_inv_mass[tid]
+    if inv_mass == 0.0:
+        particle_q_out[tid] = particle_q[tid]
+        particle_qd_out[tid] = particle_qd[tid]
+        return
+
+    delta = particle_delta[tid]
+    q_new = particle_q[tid] + delta
+
+    # Update velocity based on position change
+    qd_new = particle_qd[tid] + delta / dt
+
+    particle_q_out[tid] = q_new
+    particle_qd_out[tid] = qd_new
+
+
+@wp.kernel
 def apply_quaternion_corrections_kernel(
     edge_q: wp.array(dtype=wp.quat),
     edge_q_delta: wp.array(dtype=wp.quat),

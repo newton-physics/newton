@@ -8,9 +8,10 @@ from newton.examples.cosserat2.solvers.base import (
     ConstraintSolverType,
     FrictionMethod,
 )
-from newton.examples.cosserat2.solvers.jacobi import ConstraintSolverJacobi
-from newton.examples.cosserat2.solvers.thomas import ConstraintSolverThomas
 from newton.examples.cosserat2.solvers.cholesky import ConstraintSolverCholesky
+from newton.examples.cosserat2.solvers.jacobi import ConstraintSolverJacobi
+from newton.examples.cosserat2.solvers.local import ConstraintSolverLocal
+from newton.examples.cosserat2.solvers.thomas import ConstraintSolverThomas
 
 # Solver registry for runtime switching
 SOLVER_REGISTRY = {
@@ -18,14 +19,16 @@ SOLVER_REGISTRY = {
     ConstraintSolverType.THOMAS: ConstraintSolverThomas,
     ConstraintSolverType.CHOLESKY_SINGLE: ConstraintSolverCholesky,
     ConstraintSolverType.CHOLESKY_MULTI: ConstraintSolverCholesky,  # Same class, different config
+    ConstraintSolverType.LOCAL: ConstraintSolverLocal,
 }
 
 __all__ = [
+    "SOLVER_REGISTRY",
     "ConstraintSolverBase",
+    "ConstraintSolverCholesky",
+    "ConstraintSolverJacobi",
+    "ConstraintSolverLocal",
+    "ConstraintSolverThomas",
     "ConstraintSolverType",
     "FrictionMethod",
-    "ConstraintSolverJacobi",
-    "ConstraintSolverThomas",
-    "ConstraintSolverCholesky",
-    "SOLVER_REGISTRY",
 ]

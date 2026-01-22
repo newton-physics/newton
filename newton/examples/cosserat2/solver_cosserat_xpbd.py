@@ -7,24 +7,23 @@ Maintains a constant simulation loop with pluggable constraint solvers.
 """
 
 from dataclasses import dataclass, field
-from typing import Optional
 
 import warp as wp
 
 from newton.examples.cosserat2.cosserat_rod import CosseratRod
+from newton.examples.cosserat2.kernels import (
+    apply_velocity_damping_kernel,
+    collide_particles_vs_triangles_bvh_kernel,
+    compute_current_kappa_kernel,
+    integrate_particles_kernel,
+    solve_ground_collision_kernel,
+    update_velocities_kernel,
+)
 from newton.examples.cosserat2.solvers import (
+    SOLVER_REGISTRY,
     ConstraintSolverBase,
     ConstraintSolverType,
     FrictionMethod,
-    SOLVER_REGISTRY,
-)
-from newton.examples.cosserat2.kernels import (
-    integrate_particles_kernel,
-    update_velocities_kernel,
-    apply_velocity_damping_kernel,
-    solve_ground_collision_kernel,
-    collide_particles_vs_triangles_bvh_kernel,
-    compute_current_kappa_kernel,
 )
 
 
@@ -253,13 +252,27 @@ class SolverCosseratXPBD:
             "tau": config.dahl_tau,
         }
 
+        # Check if using LOCAL solver (needs velocity updates during constraint solving)
+        is_local_solver = config.solver_type == ConstraintSolverType.LOCAL
+
         for _ in range(config.constraint_iterations):
             # Solve stretch/shear
-            self._constraint_solver.solve_stretch_shear(
-                particle_q_out,
-                self.particle_q_predicted,
-                stretch_shear_ks,
-            )
+            if is_local_solver:
+                # LOCAL solver updates velocity incrementally during constraint solving
+                self._constraint_solver.solve_stretch_shear(
+                    particle_q_out,
+                    self.particle_q_predicted,
+                    stretch_shear_ks,
+                    particle_qd=particle_qd_out,
+                    particle_qd_out=self.particle_qd_temp,
+                )
+                wp.copy(particle_qd_out, self.particle_qd_temp)
+            else:
+                self._constraint_solver.solve_stretch_shear(
+                    particle_q_out,
+                    self.particle_q_predicted,
+                    stretch_shear_ks,
+                )
             wp.copy(particle_q_out, self.particle_q_predicted)
 
             # Solve bend/twist
@@ -304,22 +317,25 @@ class SolverCosseratXPBD:
             )
             wp.copy(particle_q_out, self.particle_q_predicted)
 
-        # Phase 4: Velocity update (CONSTANT)
-        wp.launch(
-            kernel=update_velocities_kernel,
-            dim=rod.num_particles,
-            inputs=[
-                self.particle_q_temp,
-                particle_q_out,
-                rod.particle_inv_mass,
-                dt,
-            ],
-            outputs=[particle_qd_out],
-            device=self.device,
-        )
+        # Phase 4: Velocity update
+        # LOCAL solver already updated velocity during constraint solving
+        if not is_local_solver:
+            wp.launch(
+                kernel=update_velocities_kernel,
+                dim=rod.num_particles,
+                inputs=[
+                    self.particle_q_temp,
+                    particle_q_out,
+                    rod.particle_inv_mass,
+                    dt,
+                ],
+                outputs=[particle_qd_out],
+                device=self.device,
+            )
 
-        # Phase 5: Friction post-processing (CONSTANT)
-        if config.friction_method == FrictionMethod.VELOCITY_DAMPING:
+        # Phase 5: Friction post-processing
+        # LOCAL solver doesn't support friction models
+        if not is_local_solver and config.friction_method == FrictionMethod.VELOCITY_DAMPING:
             wp.launch(
                 kernel=apply_velocity_damping_kernel,
                 dim=rod.num_particles,
@@ -333,8 +349,9 @@ class SolverCosseratXPBD:
             )
             wp.copy(particle_qd_out, self.particle_qd_temp)
 
-        # Update friction state for next substep
-        if config.friction_method == FrictionMethod.STRAIN_RATE_DAMPING:
-            rod.update_friction_state_strain_rate()
-        elif config.friction_method == FrictionMethod.DAHL_HYSTERESIS:
-            rod.update_friction_state_dahl()
+        # Update friction state for next substep (LOCAL solver doesn't use friction)
+        if not is_local_solver:
+            if config.friction_method == FrictionMethod.STRAIN_RATE_DAMPING:
+                rod.update_friction_state_strain_rate()
+            elif config.friction_method == FrictionMethod.DAHL_HYSTERESIS:
+                rod.update_friction_state_dahl()

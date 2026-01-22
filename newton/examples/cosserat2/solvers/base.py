@@ -20,6 +20,7 @@ class ConstraintSolverType(IntEnum):
     THOMAS = auto()  # Thomas algorithm O(n) (from 01_thomas)
     CHOLESKY_SINGLE = auto()  # Tiled Cholesky 32x32 (from 07)
     CHOLESKY_MULTI = auto()  # Multi-tile Cholesky (from 08_multitile)
+    LOCAL = auto()  # Local iterative solver with velocity update (from 02_local_cosserat_rod)
 
 
 class FrictionMethod(IntEnum):
@@ -64,6 +65,7 @@ class ConstraintSolverBase(ABC):
             ConstraintSolverType.THOMAS: "Thomas Algorithm",
             ConstraintSolverType.CHOLESKY_SINGLE: "Cholesky (Single Tile)",
             ConstraintSolverType.CHOLESKY_MULTI: "Cholesky (Multi-Tile)",
+            ConstraintSolverType.LOCAL: "Local Iterative",
         }
         return names.get(self.solver_type, "Unknown")
 
