@@ -105,7 +105,6 @@ def create_newton_model_from_mjcf(
     floating: bool = True,
     num_worlds: int = 1,
     add_ground: bool = True,
-    overrides: dict[str, Any] | None = None,
 ) -> newton.Model:
     """
     Create a Newton model from an MJCF file.
@@ -115,25 +114,17 @@ def create_newton_model_from_mjcf(
         floating: Whether the robot has a floating base
         num_worlds: Number of world instances to create
         add_ground: Whether to add a ground plane
-        overrides: Optional dict of builder/model overrides
 
     Returns:
         Finalized Newton Model
     """
-    overrides = overrides or {}
-
     # Create articulation builder for the robot
     robot_builder = newton.ModelBuilder()
     SolverMuJoCo.register_custom_attributes(robot_builder)
 
-    # Apply any pre-parse overrides
-    for key, value in overrides.get("builder_pre", {}).items():
-        setattr(robot_builder, key, value)
-
     robot_builder.add_mjcf(
         str(mjcf_path),
         floating=floating,
-        **overrides.get("mjcf_args", {}),
     )
 
     # Create main builder and replicate
@@ -149,10 +140,6 @@ def create_newton_model_from_mjcf(
     else:
         builder.add_world(robot_builder)
 
-    # Apply any post-replicate overrides
-    for key, value in overrides.get("builder_post", {}).items():
-        setattr(builder, key, value)
-
     return builder.finalize()
 
 
@@ -162,7 +149,6 @@ def create_newton_model_from_usd(
     floating: bool = True,
     num_worlds: int = 1,
     add_ground: bool = True,
-    overrides: dict[str, Any] | None = None,
 ) -> newton.Model:
     """
     Create a Newton model by converting MJCF to USD first.
@@ -174,7 +160,6 @@ def create_newton_model_from_usd(
         floating: Whether the robot has a floating base
         num_worlds: Number of world instances to create
         add_ground: Whether to add a ground plane
-        overrides: Optional dict of builder/model overrides
 
     Returns:
         Finalized Newton Model
@@ -535,7 +520,6 @@ class TestMenagerieBase(unittest.TestCase):
         - dt: float - timestep (default: 0.002)
         - control_strategy: ControlStrategy - how to generate controls
         - comparison_config: ComparisonConfig - what MjData fields to compare
-        - model_overrides: dict - overrides for model creation
         - skip_reason: str | None - if set, skip this test
     """
 
@@ -552,7 +536,6 @@ class TestMenagerieBase(unittest.TestCase):
     # Strategy and config (can override in subclass or setUp)
     control_strategy: ControlStrategy | None = None
     comparison_config: ComparisonConfig | None = None
-    model_overrides: dict[str, Any] | None = None
 
     # Skip reason (set to None to enable test)
     skip_reason: str | None = "Not yet implemented"
@@ -589,10 +572,6 @@ class TestMenagerieBase(unittest.TestCase):
         if self.comparison_config is None:
             self.comparison_config = ComparisonConfig()
 
-        # Default model overrides
-        if self.model_overrides is None:
-            self.model_overrides = {}
-
     def _create_newton_model(self) -> newton.Model:
         """Create Newton model using the factory."""
         return create_newton_model(
@@ -601,7 +580,6 @@ class TestMenagerieBase(unittest.TestCase):
             floating=self.floating,
             num_worlds=self.num_worlds,
             add_ground=True,
-            overrides=self.model_overrides,
         )
 
     def _create_native_mujoco_model(self) -> tuple[Any, Any]:
