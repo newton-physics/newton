@@ -3309,7 +3309,6 @@ class SolverMuJoCo(SolverBase):
             device=self.model.device,
         )
 
-
     def _validate_model_for_separate_worlds(self, model: Model) -> None:
         """Validate that the Newton model is compatible with MuJoCo's separate_worlds mode.
 

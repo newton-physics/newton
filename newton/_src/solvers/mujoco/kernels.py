@@ -1388,6 +1388,7 @@ def update_eq_properties_kernel(
     if eq_solimp:
         eq_solimp_out[world, mjc_eq] = eq_solimp[newton_eq]
 
+
 @wp.kernel
 def update_tendon_properties_kernel(
     mjc_tendon_to_newton_tendon: wp.array2d(dtype=wp.int32),
@@ -1451,6 +1452,7 @@ def update_tendon_properties_kernel(
         tendon_armature_out[world, mjc_tendon] = tendon_armature[newton_tendon]
     if tendon_actfrcrange:
         tendon_actfrcrange_out[world, mjc_tendon] = tendon_actfrcrange[newton_tendon]
+
 
 @wp.kernel
 def update_eq_data_and_active_kernel(
