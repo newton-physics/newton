@@ -217,7 +217,39 @@ def main(argv=None):
                 print(f"Asset download failed: {asset}: {e}", file=sys.stderr)
                 raise
 
-    print("Downloaded assets")
+    print("Downloaded newton-assets")
+
+    # Pre-download MuJoCo Menagerie assets for menagerie tests
+    # This avoids race conditions in parallel test runs
+    from newton.tests.test_menagerie_mujoco import download_menagerie_asset  # noqa: PLC0415
+
+    menagerie_assets_to_download = [
+        # High-priority robots for menagerie integration tests
+        "apptronik_apollo",
+        "booster_t1",
+        "robotiq_2f85_v4",
+        "shadow_hand",
+        "unitree_g1",
+        "unitree_h1",
+        "universal_robots_ur5e",
+        "wonik_allegro",
+    ]
+
+    max_workers = max(1, min(args.maxjobs, len(menagerie_assets_to_download)))
+    futures = {}
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        for asset in menagerie_assets_to_download:
+            futures[executor.submit(download_menagerie_asset, asset)] = asset
+
+        for future in as_completed(futures):
+            asset = futures[future]
+            try:
+                future.result()
+            except Exception as e:
+                # Don't fail on menagerie download errors - tests will be skipped
+                print(f"Menagerie asset download failed (tests will be skipped): {asset}: {e}", file=sys.stderr)
+
+    print("Downloaded menagerie assets")
 
     # Create the temporary directory (for coverage files)
     with tempfile.TemporaryDirectory() as temp_dir:
