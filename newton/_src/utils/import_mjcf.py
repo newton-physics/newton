@@ -1255,7 +1255,7 @@ def parse_mjcf(
     # -----------------
     # parse fixed tendons
 
-    # Get variable-length custom attributes for tendon parsing (frequency="tendon"")
+    # Get variable-length custom attributes for tendon parsing (frequency="tendon")
     # Exclude tendon_world, tendon_joint_adr, tendon_joint_num as they're handled specially
     builder_custom_attr_tendon: list[ModelBuilder.CustomAttribute] = [
         attr
