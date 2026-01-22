@@ -1640,7 +1640,12 @@ class ModelBuilder:
 
     # region World management methods
 
-    def begin_world(self, key: str | None = None, attributes: dict[str, Any] | None = None):
+    def begin_world(
+        self,
+        key: str | None = None,
+        attributes: dict[str, Any] | None = None,
+        gravity: Vec3 | None = None,
+    ):
         """Begin a new world context for adding entities.
 
         This method starts a new world scope where all subsequently added entities
@@ -1655,6 +1660,9 @@ class ModelBuilder:
                 a default key "world_{index}" will be generated.
             attributes (dict[str, Any] | None): Optional custom attributes to associate
                 with this world for later use.
+            gravity (Vec3 | None): Optional gravity vector for this world. If None,
+                the world will use the builder's default gravity (computed from
+                ``self.gravity`` and ``self.up_vector``).
 
         Raises:
             RuntimeError: If called when already inside a world context (current_world != -1).
@@ -1666,14 +1674,14 @@ class ModelBuilder:
             # Add global ground plane
             builder.add_ground_plane()  # Added to world -1 (global)
 
-            # Create world 0
+            # Create world 0 with default gravity
             builder.begin_world(key="robot_0")
             builder.add_body(...)  # Added to world 0
             builder.add_shape_box(...)  # Added to world 0
             builder.end_world()
 
-            # Create world 1
-            builder.begin_world(key="robot_1")
+            # Create world 1 with custom zero gravity
+            builder.begin_world(key="robot_1", gravity=(0.0, 0.0, 0.0))
             builder.add_body(...)  # Added to world 1
             builder.add_shape_box(...)  # Added to world 1
             builder.end_world()
@@ -1692,8 +1700,11 @@ class ModelBuilder:
         # Note: We might want to add world_key and world_attributes lists in __init__ if needed
         # For now, we just track the world index
 
-        # Initialize this world's gravity from the builder's default gravity
-        self.world_gravity.append(tuple(g * self.gravity for g in self.up_vector))
+        # Initialize this world's gravity
+        if gravity is not None:
+            self.world_gravity.append(tuple(gravity))
+        else:
+            self.world_gravity.append(tuple(g * self.gravity for g in self.up_vector))
 
     def end_world(self):
         """End the current world context and return to global scope.
@@ -6726,7 +6737,7 @@ class ModelBuilder:
 
             # set gravity - create per-world gravity array for multi-world support
             if self.world_gravity:
-                # Use per-world gravity from _world_gravity list
+                # Use per-world gravity from world_gravity list
                 gravity_vecs = [wp.vec3(*g) for g in self.world_gravity]
             else:
                 # Fallback: use scalar gravity for all worlds
