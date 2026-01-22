@@ -64,7 +64,6 @@ class TestMuJoCoGeneralActuators(unittest.TestCase):
 </mujoco>
 """
         builder = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(builder)
         builder.add_mjcf(mjcf_content)
         model = builder.finalize()
 
@@ -173,7 +172,6 @@ class TestMuJoCoGeneralActuators(unittest.TestCase):
 </mujoco>
 """
         builder = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(builder)
         builder.add_mjcf(mjcf_content)
         model = builder.finalize()
 
@@ -213,7 +211,6 @@ class TestMuJoCoGeneralActuators(unittest.TestCase):
 </mujoco>
 """
         builder = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(builder)
         builder.add_mjcf(mjcf_content)
         model = builder.finalize()
         model.ground = False
@@ -264,7 +261,6 @@ class TestMuJoCoGeneralActuators(unittest.TestCase):
 </mujoco>
 """
         builder = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(builder)
         builder.add_mjcf(mjcf_content)
         model = builder.finalize()
 
@@ -310,7 +306,6 @@ class TestMuJoCoGeneralActuators(unittest.TestCase):
 </mujoco>
 """
         builder = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(builder)
         builder.add_mjcf(mjcf_content)
         model = builder.finalize()
 
@@ -323,61 +318,6 @@ class TestMuJoCoGeneralActuators(unittest.TestCase):
         # Clear
         control.clear()
         self.assertAlmostEqual(control.mujoco.ctrl.numpy()[0], 0.0, places=5)
-
-    def test_general_actuator_without_register_custom_attributes(self):
-        """Test that general actuators are ignored without register_custom_attributes."""
-        mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
-<mujoco model="test_general_no_register">
-    <worldbody>
-        <body name="link1" pos="0 0 1">
-            <joint name="joint1" axis="0 0 1" type="hinge"/>
-            <geom type="box" size="0.1 0.1 0.1"/>
-        </body>
-    </worldbody>
-    <actuator>
-        <general name="gen1" joint="joint1" gainprm="1 0 0"/>
-    </actuator>
-</mujoco>
-"""
-        builder = newton.ModelBuilder()
-        # Note: NOT calling SolverMuJoCo.register_custom_attributes(builder)
-        builder.add_mjcf(mjcf_content)
-        model = builder.finalize()
-
-        # Without register_custom_attributes, general actuators are NOT created
-        # because there's no actuator_trnid custom attribute to store them
-        self.assertEqual(model.custom_frequency_counts.get("mujoco:actuator", 0), 0)
-
-    def test_position_actuator_without_register_custom_attributes(self):
-        """Test that position actuators are parsed correctly without custom attributes."""
-        mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
-<mujoco model="test_pos_no_register">
-    <worldbody>
-        <body name="link1" pos="0 0 1">
-            <joint name="joint1" axis="0 0 1" type="hinge"/>
-            <geom type="box" size="0.1 0.1 0.1"/>
-        </body>
-    </worldbody>
-    <actuator>
-        <position name="pos1" joint="joint1" kp="100"/>
-    </actuator>
-</mujoco>
-"""
-        builder = newton.ModelBuilder()
-        # Note: NOT calling SolverMuJoCo.register_custom_attributes(builder)
-        builder.add_mjcf(mjcf_content)
-        model = builder.finalize()
-
-        # Position actuators set per-DOF properties
-        self.assertEqual(model.custom_frequency_counts.get("mujoco:actuator", 0), 0)
-
-        joint_act_mode = model.joint_act_mode.numpy()
-        self.assertEqual(joint_act_mode[0], int(ActuatorMode.POSITION))
-
-        # Check kp was set per-DOF
-        joint_target_ke = model.joint_target_ke.numpy()
-        self.assertAlmostEqual(joint_target_ke[0], 100.0, places=5)
-
 
 class TestCtrlSourceModes(unittest.TestCase):
     """Test CtrlSource modes (JOINT_TARGET vs CTRL_DIRECT)."""
@@ -398,7 +338,6 @@ class TestCtrlSourceModes(unittest.TestCase):
 </mujoco>
 """
         builder = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(builder)
         builder.add_mjcf(mjcf_content)
         model = builder.finalize()
 
@@ -426,7 +365,6 @@ class TestCtrlSourceModes(unittest.TestCase):
 </mujoco>
 """
         builder = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(builder)
         builder.add_mjcf(mjcf_content)
         model = builder.finalize()
 
@@ -458,7 +396,6 @@ class TestCtrlSourceModes(unittest.TestCase):
 </mujoco>
 """
         builder = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(builder)
         builder.add_mjcf(mjcf_content, ctrl_direct=True)  # Force CTRL_DIRECT
         model = builder.finalize()
 
@@ -491,7 +428,6 @@ class TestGainSynchronization(unittest.TestCase):
 </mujoco>
 """
         builder = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(builder)
         builder.add_mjcf(mjcf_content)
         model = builder.finalize()
         model.ground = False
@@ -531,7 +467,6 @@ class TestMultiWorldActuators(unittest.TestCase):
 </mujoco>
 """
         builder = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(builder)
         builder.current_world = 0
         builder.add_mjcf(mjcf_content)
         model = builder.finalize()
@@ -559,12 +494,10 @@ class TestMultiWorldActuators(unittest.TestCase):
 """
         # Create a robot builder
         robot_builder = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(robot_builder)
         robot_builder.add_mjcf(mjcf_content)
 
         # Create main builder and add robot to two worlds
         main_builder = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(main_builder)
         main_builder.add_world(robot_builder)  # World 0
         main_builder.add_world(robot_builder)  # World 1
 
@@ -601,12 +534,10 @@ class TestMultiWorldActuators(unittest.TestCase):
 """
         # Create robot builder
         robot_builder = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(robot_builder)
         robot_builder.add_mjcf(mjcf_content)
 
         # Create main builder with 3 worlds
         main_builder = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(main_builder)
         main_builder.add_world(robot_builder)  # World 0
         main_builder.add_world(robot_builder)  # World 1
         main_builder.add_world(robot_builder)  # World 2
@@ -639,12 +570,10 @@ class TestMultiWorldActuators(unittest.TestCase):
 """
         # Create robot builder
         robot_builder = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(robot_builder)
         robot_builder.add_mjcf(mjcf_content)
 
         # Create main builder with 2 worlds
         main_builder = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(main_builder)
         main_builder.add_world(robot_builder)  # World 0
         main_builder.add_world(robot_builder)  # World 1
 
@@ -675,12 +604,10 @@ class TestMultiWorldActuators(unittest.TestCase):
 """
         # Create robot builder
         robot_builder = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(robot_builder)
         robot_builder.add_mjcf(mjcf_content)
 
         # Create main builder with 2 worlds
         main_builder = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(main_builder)
         main_builder.add_world(robot_builder)  # World 0
         main_builder.add_world(robot_builder)  # World 1
 
@@ -738,7 +665,6 @@ class TestBodyActuators(unittest.TestCase):
 </mujoco>
 """
         builder = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(builder)
         builder.add_mjcf(mjcf_content)
         model = builder.finalize()
 
@@ -780,7 +706,6 @@ class TestBodyActuators(unittest.TestCase):
 </mujoco>
 """
         builder = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(builder)
         builder.add_mjcf(mjcf_content)
         model = builder.finalize()
         model.ground = False
@@ -812,7 +737,6 @@ class TestBodyActuators(unittest.TestCase):
 </mujoco>
 """
         builder = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(builder)
         builder.add_mjcf(mjcf_content)
         model = builder.finalize()
 
