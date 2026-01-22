@@ -57,64 +57,13 @@ def compute_com_world_position(body_q, body_com, body_world, world_offsets=None,
     return com_world.numpy()[body_index]
 
 
-def test_floating_body(test: TestBodyForce, device, solver_fn, test_angular=True, up_axis=newton.Axis.Y):
-    builder = newton.ModelBuilder(gravity=0.0, up_axis=up_axis)
-
-    # easy case: identity transform, zero center of mass
-    pos = wp.vec3(1.0, 2.0, 3.0)
-    rot = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), wp.pi * 0.0)
-
-    body_index = builder.add_body(xform=wp.transform(pos, rot))
-    builder.add_shape_box(body_index, hx=0.25, hy=0.5, hz=1.0)
-    builder.joint_q = [*pos, *rot]
-
-    model = builder.finalize(device=device)
-
-    solver = solver_fn(model)
-
-    state_0, state_1 = model.state(), model.state()
-
-    newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
-
-    input = np.zeros(model.body_count * 6, dtype=np.float32)
-    
-    sim_dt = 1.0 / 10.0
-    test_force_torque = 1000.0
-    relative_tolerance = 5e-2  # for testing expected velocity
-    zero_velocity_tolerance = 1e-3  # for testing zero velocities
-
-    if test_angular:
-        test_index = 5  # torque about z-axis
-        inertia_zz = model.body_inertia.numpy()[body_index][2, 2]
-        expected_velocity = test_force_torque / inertia_zz * sim_dt
-    else:
-        test_index = 1  # force in y-direction
-        mass = model.body_mass.numpy()[body_index]
-        expected_velocity = test_force_torque / mass * sim_dt
-
-    input[test_index] = test_force_torque
-    state_0.body_f.assign(input)
-    state_1.body_f.assign(input)
-
-    for _ in range(1):
-        solver.step(state_0, state_1, None, None, sim_dt)
-        state_0, state_1 = state_1, state_0
-
-    body_qd = state_0.body_qd.numpy()[body_index]
-    abs_tol_expected_velocity = relative_tolerance * abs(expected_velocity)
-    test.assertAlmostEqual(body_qd[test_index], expected_velocity, delta=abs_tol_expected_velocity)
-    for i in range(6):
-        if i == test_index:
-            continue
-        test.assertAlmostEqual(body_qd[i], 0.0, delta=zero_velocity_tolerance)
-
-
-def test_floating_body_control_joint_f(
+def test_floating_body(
     test: TestBodyForce,
     device,
     solver_fn,
     test_angular=True,
     up_axis=newton.Axis.Y,
+    use_control: bool = False,
 ):
     builder = newton.ModelBuilder(gravity=0.0, up_axis=up_axis)
 
@@ -131,12 +80,12 @@ def test_floating_body_control_joint_f(
     solver = solver_fn(model)
 
     state_0, state_1 = model.state(), model.state()
+    control = model.control() if use_control else None
 
     newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
 
-    control = model.control()
-    input = np.zeros(model.joint_dof_count, dtype=np.float32)
-
+    wrench = np.zeros(6, dtype=np.float32)
+    
     sim_dt = 1.0 / 10.0
     test_force_torque = 1000.0
     relative_tolerance = 5e-2  # for testing expected velocity
@@ -151,8 +100,12 @@ def test_floating_body_control_joint_f(
         mass = model.body_mass.numpy()[body_index]
         expected_velocity = test_force_torque / mass * sim_dt
 
-    input[test_index] = test_force_torque
-    control.joint_f.assign(input)
+    wrench[test_index] = test_force_torque
+    if use_control:
+        control.joint_f.assign(wrench)
+    else:
+        state_0.body_f.assign(wrench)
+        state_1.body_f.assign(wrench)
 
     for _ in range(1):
         solver.step(state_0, state_1, control, None, sim_dt)
@@ -329,46 +282,51 @@ for device in devices:
         add_function_test(
             TestBodyForce,
             f"test_floating_body_joint_f_linear_{solver_name}",
-            test_floating_body_control_joint_f,
+            test_floating_body,
             devices=[device],
             solver_fn=solver_fn,
             test_angular=False,
+            use_control=True,
         )
         add_function_test(
             TestBodyForce,
             f"test_floating_body_joint_f_angular_up_axis_Y_{solver_name}",
-            test_floating_body_control_joint_f,
+            test_floating_body,
             devices=[device],
             solver_fn=solver_fn,
             test_angular=True,
             up_axis=newton.Axis.Y,
+            use_control=True,
         )
         add_function_test(
             TestBodyForce,
             f"test_floating_body_joint_f_angular_up_axis_Z_{solver_name}",
-            test_floating_body_control_joint_f,
+            test_floating_body,
             devices=[device],
             solver_fn=solver_fn,
             test_angular=True,
             up_axis=newton.Axis.Z,
+            use_control=True,
         )
         add_function_test(
             TestBodyForce,
             f"test_floating_body_joint_f_linear_up_axis_Y_{solver_name}",
-            test_floating_body_control_joint_f,
+            test_floating_body,
             devices=[device],
             solver_fn=solver_fn,
             test_angular=False,
             up_axis=newton.Axis.Y,
+            use_control=True,
         )
         add_function_test(
             TestBodyForce,
             f"test_floating_body_joint_f_linear_up_axis_Z_{solver_name}",
-            test_floating_body_control_joint_f,
+            test_floating_body,
             devices=[device],
             solver_fn=solver_fn,
             test_angular=False,
             up_axis=newton.Axis.Z,
+            use_control=True,
         )
 
 
