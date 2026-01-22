@@ -122,28 +122,22 @@ from ._src.solvers import (
     SolverXPBD,
 )
 
-__all__ = [
-    "SolverBase",
-    "SolverFeatherstone",
-    "SolverImplicitMPM",
-    "SolverMuJoCo",
-    "SolverSemiImplicit",
-    "SolverStyle3D",
-    "SolverVBD",
-    "SolverXPBD",
-]
-
 # solver flags
 from ._src.solvers.flags import SolverNotifyFlags
-
-__all__ += [
-    "SolverNotifyFlags",
-]
 
 # MuJoCo solver enums
 from ._src.solvers.mujoco import CtrlSource, CtrlType
 
-__all__ += [
+__all__ = [
     "CtrlSource",
     "CtrlType",
+    "SolverBase",
+    "SolverFeatherstone",
+    "SolverImplicitMPM",
+    "SolverMuJoCo",
+    "SolverNotifyFlags",
+    "SolverSemiImplicit",
+    "SolverStyle3D",
+    "SolverVBD",
+    "SolverXPBD",
 ]

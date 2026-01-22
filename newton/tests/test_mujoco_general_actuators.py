@@ -54,8 +54,8 @@ class TestMuJoCoGeneralActuators(unittest.TestCase):
         </body>
     </worldbody>
     <actuator>
-        <general name="act1" joint="joint1" 
-                 gainprm="100 0 0" 
+        <general name="act1" joint="joint1"
+                 gainprm="100 0 0"
                  biasprm="0 -100 -10"
                  gear="1.5"
                  ctrlrange="-1 1"
@@ -203,8 +203,8 @@ class TestMuJoCoGeneralActuators(unittest.TestCase):
         </body>
     </worldbody>
     <actuator>
-        <general name="act1" joint="joint1" 
-                 gainprm="1 0 0" 
+        <general name="act1" joint="joint1"
+                 gainprm="1 0 0"
                  biasprm="0 0 0"
                  gear="1"/>
     </actuator>
@@ -658,8 +658,8 @@ class TestBodyActuators(unittest.TestCase):
         </body>
     </worldbody>
     <actuator>
-        <general name="body_act" body="floating_body" 
-                 gainprm="50 0 0" 
+        <general name="body_act" body="floating_body"
+                 gainprm="50 0 0"
                  biasprm="0 0 0"
                  gear="1 0 0 0 0 0"/>
     </actuator>
@@ -701,7 +701,7 @@ class TestBodyActuators(unittest.TestCase):
         </body>
     </worldbody>
     <actuator>
-        <general name="body_act" body="floating_body" 
+        <general name="body_act" body="floating_body"
                  gainprm="100 0 0"/>
     </actuator>
 </mujoco>

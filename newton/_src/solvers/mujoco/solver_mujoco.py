@@ -740,7 +740,7 @@ class SolverMuJoCo(SolverBase):
                 frequency="actuator",
                 assignment=ModelAttributeAssignment.MODEL,
                 dtype=wp.int32,
-                default=0,  # CtrlSource.JOINT_TARGET
+                default=int(CtrlSource.CTRL_DIRECT),
                 namespace="mujoco",
             )
         )
@@ -901,15 +901,15 @@ class SolverMuJoCo(SolverBase):
         """Mapping from MuJoCo [world, dof] to Newton DOF index. Shape [nworld, nv], dtype int32."""
         self.mjc_actuator_ctrl_source: wp.array(dtype=wp.int32) | None = None
         """Control source for each MuJoCo actuator.
-        
+
         Values: 0=JOINT_TARGET (uses joint_target_pos/vel), 1=CTRL_DIRECT (uses mujoco.ctrl)
         Shape [nu], dtype int32."""
         self.mjc_actuator_to_newton_idx: wp.array(dtype=wp.int32) | None = None
         """Mapping from MuJoCo actuator to Newton index.
-        
+
         For JOINT_TARGET: sign-encoded DOF index (>=0: position, -1: unmapped, <=-2: velocity with -(idx+2))
         For CTRL_DIRECT: index into mujoco.ctrl array
-        
+
         Shape [nu], dtype int32."""
         self.mjc_mocap_to_newton_jnt: wp.array(dtype=wp.int32, ndim=2) | None = None
         """Mapping from MuJoCo [world, mocap] to Newton joint index. Shape [nworld, nmocap], dtype int32."""

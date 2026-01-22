@@ -205,4 +205,5 @@ __all__ = [
     "flag_to_int",
     "override",
     "vec5",
+    "vec10",
 ]
