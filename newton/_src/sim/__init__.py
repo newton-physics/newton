@@ -22,7 +22,6 @@ from .contacts import Contacts
 from .control import Control
 from .graph_coloring import color_graph, plot_graph
 from .joints import (
-    JOINT_LIMIT_UNLIMITED,
     ActuatorMode,
     EqType,
     JointType,
