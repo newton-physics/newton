@@ -2771,66 +2771,71 @@ class SolverMuJoCo(SolverBase):
             ("shapes", non_global_shapes),
             ("equality constraints", eq_constraint_world),
         ]:
-            # Count per world and check all worlds have same count as world 0
-            counts = [np.sum(world_arr == w) for w in range(num_worlds)]
-            expected = counts[0]
-            for w in range(1, num_worlds):
-                if counts[w] != expected:
-                    raise ValueError(
-                        f"SolverMuJoCo requires homogeneous worlds. "
-                        f"World 0 has {expected} {entity_name}, but world {w} has {counts[w]}."
-                    )
+            # Use bincount for O(n) counting instead of O(n * num_worlds) loop
+            if len(world_arr) == 0:
+                continue
+            counts = np.bincount(world_arr.astype(np.int64), minlength=num_worlds)
+            # Vectorized check: all counts must equal the first
+            if not np.all(counts == counts[0]):
+                # Find first mismatch for error message (only on failure path)
+                expected = counts[0]
+                mismatched = np.where(counts != expected)[0]
+                w = mismatched[0]
+                raise ValueError(
+                    f"SolverMuJoCo requires homogeneous worlds. "
+                    f"World 0 has {expected} {entity_name}, but world {w} has {counts[w]}."
+                )
 
         # --- Check type matching across worlds (vectorized) ---
-        # For entities that must have matching types across worlds
-        joint_type = model.joint_type.numpy()
-        shape_type = model.shape_type.numpy()
-        eq_constraint_type = model.equality_constraint_type.numpy()
-
+        # Load type arrays lazily - only when needed for validation
         joints_per_world = model.joint_count // num_worlds
         if joints_per_world > 0:
+            joint_type = model.joint_type.numpy()
             joint_types_2d = joint_type.reshape(num_worlds, joints_per_world)
-            if not np.all(joint_types_2d == joint_types_2d[0]):
-                # Find first mismatch for error message
-                for j in range(joints_per_world):
-                    types = joint_types_2d[:, j]
-                    if not np.all(types == types[0]):
-                        raise ValueError(
-                            f"SolverMuJoCo requires homogeneous worlds. "
-                            f"Joint types mismatch at position {j}: world 0 has type {types[0]}, "
-                            f"but other worlds have types {types[1:].tolist()}."
-                        )
+            # Vectorized mismatch check: compare all rows to first row
+            mismatches = joint_types_2d != joint_types_2d[0]
+            if np.any(mismatches):
+                # Find first mismatch position using vectorized operations
+                j = np.argmax(np.any(mismatches, axis=0))
+                types = joint_types_2d[:, j]
+                raise ValueError(
+                    f"SolverMuJoCo requires homogeneous worlds. "
+                    f"Joint types mismatch at position {j}: world 0 has type {types[0]}, "
+                    f"but other worlds have types {types[1:].tolist()}."
+                )
 
         # Only check non-global shapes
         shapes_per_world = len(non_global_shapes) // num_worlds if num_worlds > 0 else 0
         if shapes_per_world > 0:
+            shape_type = model.shape_type.numpy()
             # Get shape types for non-global shapes only
             non_global_shape_types = shape_type[shape_world >= 0]
             shape_types_2d = non_global_shape_types.reshape(num_worlds, shapes_per_world)
-            if not np.all(shape_types_2d == shape_types_2d[0]):
-                # Find first mismatch for error message
-                for s in range(shapes_per_world):
-                    types = shape_types_2d[:, s]
-                    if not np.all(types == types[0]):
-                        raise ValueError(
-                            f"SolverMuJoCo requires homogeneous worlds. "
-                            f"Shape types mismatch at position {s}: world 0 has type {types[0]}, "
-                            f"but other worlds have types {types[1:].tolist()}."
-                        )
+            # Vectorized mismatch check
+            mismatches = shape_types_2d != shape_types_2d[0]
+            if np.any(mismatches):
+                s = np.argmax(np.any(mismatches, axis=0))
+                types = shape_types_2d[:, s]
+                raise ValueError(
+                    f"SolverMuJoCo requires homogeneous worlds. "
+                    f"Shape types mismatch at position {s}: world 0 has type {types[0]}, "
+                    f"but other worlds have types {types[1:].tolist()}."
+                )
 
         constraints_per_world = model.equality_constraint_count // num_worlds if num_worlds > 0 else 0
         if constraints_per_world > 0:
+            eq_constraint_type = model.equality_constraint_type.numpy()
             constraint_types_2d = eq_constraint_type.reshape(num_worlds, constraints_per_world)
-            if not np.all(constraint_types_2d == constraint_types_2d[0]):
-                # Find first mismatch for error message
-                for c in range(constraints_per_world):
-                    types = constraint_types_2d[:, c]
-                    if not np.all(types == types[0]):
-                        raise ValueError(
-                            f"SolverMuJoCo requires homogeneous worlds. "
-                            f"Equality constraint types mismatch at position {c}: world 0 has type {types[0]}, "
-                            f"but other worlds have types {types[1:].tolist()}."
-                        )
+            # Vectorized mismatch check
+            mismatches = constraint_types_2d != constraint_types_2d[0]
+            if np.any(mismatches):
+                c = np.argmax(np.any(mismatches, axis=0))
+                types = constraint_types_2d[:, c]
+                raise ValueError(
+                    f"SolverMuJoCo requires homogeneous worlds. "
+                    f"Equality constraint types mismatch at position {c}: world 0 has type {types[0]}, "
+                    f"but other worlds have types {types[1:].tolist()}."
+                )
 
     def render_mujoco_viewer(
         self,
