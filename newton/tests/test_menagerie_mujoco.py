@@ -686,15 +686,16 @@ class TestMenagerieBase(unittest.TestCase):
 # =============================================================================
 # Each robot from the menagerie gets its own test class.
 # Initially all are skipped; enable as support is verified.
+# Total: 61 robots (excluding test/ folder and realsense_d435i sensor)
 
 
 # -----------------------------------------------------------------------------
-# Arms
+# Arms (14 robots)
 # -----------------------------------------------------------------------------
 
 
 class TestMenagerie_AgilexPiper(TestMenagerieBase):
-    """AgileX PIPER arm."""
+    """AgileX PIPER bimanual arm."""
 
     robot_folder = "agilex_piper"
     robot_xml = "piper.xml"
@@ -711,6 +712,15 @@ class TestMenagerie_ArxL5(TestMenagerieBase):
     skip_reason = "Not yet implemented"
 
 
+class TestMenagerie_Dynamixel2r(TestMenagerieBase):
+    """Dynamixel 2R simple arm."""
+
+    robot_folder = "dynamixel_2r"
+    robot_xml = "2r.xml"
+    floating = False
+    skip_reason = "Not yet implemented"
+
+
 class TestMenagerie_FrankaEmikaPanda(TestMenagerieBase):
     """Franka Emika Panda arm."""
 
@@ -720,11 +730,29 @@ class TestMenagerie_FrankaEmikaPanda(TestMenagerieBase):
     skip_reason = "Not yet implemented"
 
 
-class TestMenagerie_GoogleRobot(TestMenagerieBase):
-    """Google Robot arm."""
+class TestMenagerie_FrankaFr3(TestMenagerieBase):
+    """Franka FR3 arm."""
 
-    robot_folder = "google_robot"
-    robot_xml = "robot.xml"
+    robot_folder = "franka_fr3"
+    robot_xml = "fr3.xml"
+    floating = False
+    skip_reason = "Not yet implemented"
+
+
+class TestMenagerie_FrankaFr3V2(TestMenagerieBase):
+    """Franka FR3 v2 arm."""
+
+    robot_folder = "franka_fr3_v2"
+    robot_xml = "fr3.xml"
+    floating = False
+    skip_reason = "Not yet implemented"
+
+
+class TestMenagerie_KinovaGen3(TestMenagerieBase):
+    """Kinova Gen3 arm."""
+
+    robot_folder = "kinova_gen3"
+    robot_xml = "gen3.xml"
     floating = False
     skip_reason = "Not yet implemented"
 
@@ -738,6 +766,15 @@ class TestMenagerie_KukaIiwa14(TestMenagerieBase):
     skip_reason = "Not yet implemented"
 
 
+class TestMenagerie_LowCostRobotArm(TestMenagerieBase):
+    """Low-cost robot arm."""
+
+    robot_folder = "low_cost_robot_arm"
+    robot_xml = "low_cost_robot_arm.xml"
+    floating = False
+    skip_reason = "Not yet implemented"
+
+
 class TestMenagerie_RethinkSawyer(TestMenagerieBase):
     """Rethink Robotics Sawyer arm."""
 
@@ -747,22 +784,58 @@ class TestMenagerie_RethinkSawyer(TestMenagerieBase):
     skip_reason = "Not yet implemented"
 
 
-class TestMenagerie_Robotiq2f85V3(TestMenagerieBase):
-    """Robotiq 2F-85 gripper v3."""
+class TestMenagerie_TrossenVx300s(TestMenagerieBase):
+    """Trossen Robotics ViperX 300 S arm."""
 
-    robot_folder = "robotiq_2f85_v3"
-    robot_xml = "2f85.xml"
+    robot_folder = "trossen_vx300s"
+    robot_xml = "vx300s.xml"
     floating = False
-    skip_reason = "Robot not found in menagerie"
+    skip_reason = "Not yet implemented"
 
 
-class TestMenagerie_Robotiq2f85V4(TestMenagerieBase):
-    """Robotiq 2F-85 gripper v4."""
+class TestMenagerie_TrossenWx250s(TestMenagerieBase):
+    """Trossen Robotics WidowX 250 S arm."""
 
-    robot_folder = "robotiq_2f85_v4"
-    robot_xml = "2f85.xml"
+    robot_folder = "trossen_wx250s"
+    robot_xml = "wx250s.xml"
     floating = False
-    skip_reason = "HIGH PRIORITY - Not yet implemented"
+    skip_reason = "Not yet implemented"
+
+
+class TestMenagerie_TrossenWxai(TestMenagerieBase):
+    """Trossen Robotics WidowX AI arm."""
+
+    robot_folder = "trossen_wxai"
+    robot_xml = "wxai.xml"
+    floating = False
+    skip_reason = "Not yet implemented"
+
+
+class TestMenagerie_TrsSoArm100(TestMenagerieBase):
+    """TRS SO-ARM100 arm."""
+
+    robot_folder = "trs_so_arm100"
+    robot_xml = "so_arm100.xml"
+    floating = False
+    skip_reason = "Not yet implemented"
+
+
+class TestMenagerie_UfactoryLite6(TestMenagerieBase):
+    """UFACTORY Lite 6 arm."""
+
+    robot_folder = "ufactory_lite6"
+    robot_xml = "lite6.xml"
+    floating = False
+    skip_reason = "Not yet implemented"
+
+
+class TestMenagerie_UfactoryXarm7(TestMenagerieBase):
+    """UFACTORY xArm 7 arm."""
+
+    robot_folder = "ufactory_xarm7"
+    robot_xml = "xarm7.xml"
+    floating = False
+    skip_reason = "Not yet implemented"
 
 
 class TestMenagerie_UniversalRobotsUr5e(TestMenagerieBase):
@@ -783,36 +856,45 @@ class TestMenagerie_UniversalRobotsUr10e(TestMenagerieBase):
     skip_reason = "Not yet implemented"
 
 
-class TestMenagerie_ViperwX300(TestMenagerieBase):
-    """ViperX 300 arm."""
+# -----------------------------------------------------------------------------
+# Grippers / Hands (9 robots)
+# -----------------------------------------------------------------------------
 
-    robot_folder = "trossen_vx300s"
-    robot_xml = "vx300s.xml"
+
+class TestMenagerie_LeapHand(TestMenagerieBase):
+    """LEAP Hand."""
+
+    robot_folder = "leap_hand"
+    robot_xml = "left_hand.xml"
     floating = False
     skip_reason = "Not yet implemented"
 
 
-class TestMenagerie_XArm7(TestMenagerieBase):
-    """xArm 7 arm."""
+class TestMenagerie_Robotiq2f85(TestMenagerieBase):
+    """Robotiq 2F-85 gripper."""
 
-    robot_folder = "ufactory_xarm7"
-    robot_xml = "xarm7.xml"
+    robot_folder = "robotiq_2f85"
+    robot_xml = "2f85.xml"
     floating = False
     skip_reason = "Not yet implemented"
 
 
-# -----------------------------------------------------------------------------
-# Grippers / Hands
-# -----------------------------------------------------------------------------
+class TestMenagerie_Robotiq2f85V4(TestMenagerieBase):
+    """Robotiq 2F-85 gripper v4."""
+
+    robot_folder = "robotiq_2f85_v4"
+    robot_xml = "2f85.xml"
+    floating = False
+    skip_reason = "HIGH PRIORITY - Not yet implemented"
 
 
-class TestMenagerie_ShadowDexEe(TestMenagerieBase):
+class TestMenagerie_ShadowDexee(TestMenagerieBase):
     """Shadow DEX-EE hand."""
 
-    robot_folder = "shadow_dex_ee"
-    robot_xml = "shadow_hand.xml"
+    robot_folder = "shadow_dexee"
+    robot_xml = "shadow_dexee.xml"
     floating = False
-    skip_reason = "Robot not found in menagerie"
+    skip_reason = "Not yet implemented"
 
 
 class TestMenagerie_ShadowHand(TestMenagerieBase):
@@ -824,20 +906,20 @@ class TestMenagerie_ShadowHand(TestMenagerieBase):
     skip_reason = "HIGH PRIORITY - Not yet implemented"
 
 
-class TestMenagerie_TrossenPincherX100(TestMenagerieBase):
-    """Trossen Robotics PincherX 100 gripper."""
+class TestMenagerie_TetheriaAeroHandOpen(TestMenagerieBase):
+    """Tetheria Aero Hand (open)."""
 
-    robot_folder = "trossen_px100"
-    robot_xml = "px100.xml"
+    robot_folder = "tetheria_aero_hand_open"
+    robot_xml = "aero_hand_open.xml"
     floating = False
-    skip_reason = "Robot not found in menagerie"
+    skip_reason = "Not yet implemented"
 
 
-class TestMenagerie_TrossenWidowX250(TestMenagerieBase):
-    """Trossen Robotics WidowX 250 arm."""
+class TestMenagerie_UmiGripper(TestMenagerieBase):
+    """UMI Gripper."""
 
-    robot_folder = "trossen_wx250s"
-    robot_xml = "wx250s.xml"
+    robot_folder = "umi_gripper"
+    robot_xml = "umi_gripper.xml"
     floating = False
     skip_reason = "Not yet implemented"
 
@@ -851,13 +933,22 @@ class TestMenagerie_WonikAllegro(TestMenagerieBase):
     skip_reason = "HIGH PRIORITY - Not yet implemented"
 
 
+class TestMenagerie_IitSoftfoot(TestMenagerieBase):
+    """IIT Softfoot biomechanical gripper."""
+
+    robot_folder = "iit_softfoot"
+    robot_xml = "softfoot.xml"
+    floating = False
+    skip_reason = "Not yet implemented"
+
+
 # -----------------------------------------------------------------------------
-# Dual Arms
+# Bimanual Systems (2 robots)
 # -----------------------------------------------------------------------------
 
 
-class TestMenagerie_Aloha2(TestMenagerieBase):
-    """ALOHA 2 dual arm system."""
+class TestMenagerie_Aloha(TestMenagerieBase):
+    """ALOHA bimanual system."""
 
     robot_folder = "aloha"
     robot_xml = "aloha.xml"
@@ -865,70 +956,33 @@ class TestMenagerie_Aloha2(TestMenagerieBase):
     skip_reason = "Not yet implemented"
 
 
-class TestMenagerie_TrossenAloha(TestMenagerieBase):
-    """Trossen Robotics ALOHA system."""
+class TestMenagerie_GoogleRobot(TestMenagerieBase):
+    """Google Robot (bimanual)."""
 
-    robot_folder = "trossen_aloha"
-    robot_xml = "aloha.xml"
+    robot_folder = "google_robot"
+    robot_xml = "robot.xml"
     floating = False
-    skip_reason = "Robot not found in menagerie"
-
-
-# -----------------------------------------------------------------------------
-# Bipeds
-# -----------------------------------------------------------------------------
-
-
-class TestMenagerie_AgilityCassie(TestMenagerieBase):
-    """Agility Robotics Cassie biped."""
-
-    robot_folder = "agility_cassie"
-    robot_xml = "cassie.xml"
-    floating = True
     skip_reason = "Not yet implemented"
 
 
 # -----------------------------------------------------------------------------
-# Legged Manipulators
+# Mobile Manipulators (5 robots)
 # -----------------------------------------------------------------------------
 
 
-class TestMenagerie_AnyboticsAnymalDArm(TestMenagerieBase):
-    """ANYbotics ANYmal D with arm."""
-
-    robot_folder = "anybotics_anymal_d"
-    robot_xml = "anymal_d.xml"
-    floating = True
-    skip_reason = "Robot not found in menagerie (available in newton-assets)"
-
-
-class TestMenagerie_BostonDynamicsSpotArm(TestMenagerieBase):
-    """Boston Dynamics Spot with arm."""
-
-    robot_folder = "boston_dynamics_spot"
-    robot_xml = "spot_arm.xml"
-    floating = True
-    skip_reason = "Not yet implemented"
-
-
-# -----------------------------------------------------------------------------
-# Mobile Manipulators
-# -----------------------------------------------------------------------------
-
-
-class TestMenagerie_GoogleMobileAloha(TestMenagerieBase):
-    """Google Mobile ALOHA."""
-
-    robot_folder = "google_mobile_aloha"
-    robot_xml = "mobile_aloha.xml"
-    floating = True
-    skip_reason = "Robot not found in menagerie"
-
-
-class TestMenagerie_HelloStretch(TestMenagerieBase):
+class TestMenagerie_HelloRobotStretch(TestMenagerieBase):
     """Hello Robot Stretch."""
 
     robot_folder = "hello_robot_stretch"
+    robot_xml = "stretch.xml"
+    floating = True
+    skip_reason = "Not yet implemented"
+
+
+class TestMenagerie_HelloRobotStretch3(TestMenagerieBase):
+    """Hello Robot Stretch 3."""
+
+    robot_folder = "hello_robot_stretch_3"
     robot_xml = "stretch.xml"
     floating = True
     skip_reason = "Not yet implemented"
@@ -952,39 +1006,25 @@ class TestMenagerie_PalTiagoDual(TestMenagerieBase):
     skip_reason = "Not yet implemented"
 
 
-# -----------------------------------------------------------------------------
-# Mobile Bases
-# -----------------------------------------------------------------------------
+class TestMenagerie_StanfordTidybot(TestMenagerieBase):
+    """Stanford Tidybot mobile manipulator."""
 
-
-class TestMenagerie_RobotSoccerKit(TestMenagerieBase):
-    """Robot Soccer Kit omniwheel base."""
-
-    robot_folder = "robot_soccer_kit"
-    robot_xml = "robot_soccer_kit.xml"
+    robot_folder = "stanford_tidybot"
+    robot_xml = "tidybot.xml"
     floating = True
     skip_reason = "Not yet implemented"
 
 
 # -----------------------------------------------------------------------------
-# Humanoids
+# Humanoids (10 robots)
 # -----------------------------------------------------------------------------
-
-
-class TestMenagerie_PndboticsAdamLite(TestMenagerieBase):
-    """PNDbotics Adam Lite humanoid."""
-
-    robot_folder = "pndbotics_adam_lite"
-    robot_xml = "adam_lite.xml"
-    floating = True
-    skip_reason = "Not yet implemented"
 
 
 class TestMenagerie_ApptronikApollo(TestMenagerieBase):
     """Apptronik Apollo humanoid."""
 
     robot_folder = "apptronik_apollo"
-    robot_xml = "apptronik_apollo.xml"
+    robot_xml = "apollo.xml"
     floating = True
     skip_reason = "HIGH PRIORITY - Not yet implemented"
 
@@ -1016,6 +1056,24 @@ class TestMenagerie_FourierN1(TestMenagerieBase):
     skip_reason = "Not yet implemented"
 
 
+class TestMenagerie_PalTalos(TestMenagerieBase):
+    """PAL Robotics TALOS humanoid."""
+
+    robot_folder = "pal_talos"
+    robot_xml = "talos.xml"
+    floating = True
+    skip_reason = "Not yet implemented"
+
+
+class TestMenagerie_PndboticsAdamLite(TestMenagerieBase):
+    """PNDbotics Adam Lite humanoid."""
+
+    robot_folder = "pndbotics_adam_lite"
+    robot_xml = "adam_lite.xml"
+    floating = True
+    skip_reason = "Not yet implemented"
+
+
 class TestMenagerie_RobotisOp3(TestMenagerieBase):
     """Robotis OP3 humanoid."""
 
@@ -1025,11 +1083,20 @@ class TestMenagerie_RobotisOp3(TestMenagerieBase):
     skip_reason = "Not yet implemented"
 
 
-class TestMenagerie_PalTalos(TestMenagerieBase):
-    """PAL Robotics TALOS humanoid."""
+class TestMenagerie_ToddlerBot2xc(TestMenagerieBase):
+    """ToddlerBot 2XC humanoid."""
 
-    robot_folder = "pal_talos"
-    robot_xml = "talos.xml"
+    robot_folder = "toddlerbot_2xc"
+    robot_xml = "toddlerbot_2xc.xml"
+    floating = True
+    skip_reason = "Not yet implemented"
+
+
+class TestMenagerie_ToddlerBot2xm(TestMenagerieBase):
+    """ToddlerBot 2XM humanoid."""
+
+    robot_folder = "toddlerbot_2xm"
+    robot_xml = "toddlerbot_2xm.xml"
     floating = True
     skip_reason = "Not yet implemented"
 
@@ -1052,26 +1119,22 @@ class TestMenagerie_UnitreeH1(TestMenagerieBase):
     skip_reason = "HIGH PRIORITY - Not yet implemented"
 
 
-class TestMenagerie_ToddlerBot2xc(TestMenagerieBase):
-    """Stanford ToddlerBot 2XC humanoid."""
-
-    robot_folder = "toddlerbot_2xc"
-    robot_xml = "toddlerbot_2xc.xml"
-    floating = True
-    skip_reason = "Not yet implemented"
+# -----------------------------------------------------------------------------
+# Bipeds (1 robot)
+# -----------------------------------------------------------------------------
 
 
-class TestMenagerie_ToddlerBot2xm(TestMenagerieBase):
-    """Stanford ToddlerBot 2XM humanoid."""
+class TestMenagerie_AgilityCassie(TestMenagerieBase):
+    """Agility Robotics Cassie biped."""
 
-    robot_folder = "toddlerbot_2xm"
-    robot_xml = "toddlerbot_2xm.xml"
+    robot_folder = "agility_cassie"
+    robot_xml = "cassie.xml"
     floating = True
     skip_reason = "Not yet implemented"
 
 
 # -----------------------------------------------------------------------------
-# Quadrupeds
+# Quadrupeds (8 robots)
 # -----------------------------------------------------------------------------
 
 
@@ -1098,6 +1161,24 @@ class TestMenagerie_BostonDynamicsSpot(TestMenagerieBase):
 
     robot_folder = "boston_dynamics_spot"
     robot_xml = "spot.xml"
+    floating = True
+    skip_reason = "Not yet implemented"
+
+
+class TestMenagerie_GoogleBarkourV0(TestMenagerieBase):
+    """Google Barkour v0 quadruped."""
+
+    robot_folder = "google_barkour_v0"
+    robot_xml = "barkour_v0.xml"
+    floating = True
+    skip_reason = "Not yet implemented"
+
+
+class TestMenagerie_GoogleBarkourVb(TestMenagerieBase):
+    """Google Barkour vB quadruped."""
+
+    robot_folder = "google_barkour_vb"
+    robot_xml = "barkour_vb.xml"
     floating = True
     skip_reason = "Not yet implemented"
 
@@ -1129,44 +1210,91 @@ class TestMenagerie_UnitreeGo2(TestMenagerieBase):
     skip_reason = "Not yet implemented"
 
 
-class TestMenagerie_GoogleBarkourV0(TestMenagerieBase):
-    """Google Barkour v0 quadruped."""
-
-    robot_folder = "google_barkour_v0"
-    robot_xml = "barkour_v0.xml"
-    floating = True
-    skip_reason = "Not yet implemented"
-
-
-class TestMenagerie_GoogleBarkourVb(TestMenagerieBase):
-    """Google Barkour vB quadruped."""
-
-    robot_folder = "google_barkour_vb"
-    robot_xml = "barkour_vb.xml"
-    floating = True
-    skip_reason = "Not yet implemented"
-
-
 # -----------------------------------------------------------------------------
-# Biomechanical
+# Arms with Gripper (Unitree Z1)
 # -----------------------------------------------------------------------------
 
 
-class TestMenagerie_IitSoftfoot(TestMenagerieBase):
-    """IIT Softfoot biomechanical model."""
+class TestMenagerie_UnitreeZ1(TestMenagerieBase):
+    """Unitree Z1 arm."""
 
-    robot_folder = "iit_softfoot"
-    robot_xml = "softfoot.xml"
+    robot_folder = "unitree_z1"
+    robot_xml = "z1.xml"
     floating = False
     skip_reason = "Not yet implemented"
 
 
+# -----------------------------------------------------------------------------
+# Drones (2 robots)
+# -----------------------------------------------------------------------------
+
+
+class TestMenagerie_BitcrazeCrazyflie2(TestMenagerieBase):
+    """Bitcraze Crazyflie 2 quadrotor."""
+
+    robot_folder = "bitcraze_crazyflie_2"
+    robot_xml = "cf2.xml"
+    floating = True
+    skip_reason = "Not yet implemented"
+
+
+class TestMenagerie_SkydioX2(TestMenagerieBase):
+    """Skydio X2 drone."""
+
+    robot_folder = "skydio_x2"
+    robot_xml = "x2.xml"
+    floating = True
+    skip_reason = "Not yet implemented"
+
+
+# -----------------------------------------------------------------------------
+# Mobile Bases (2 robots)
+# -----------------------------------------------------------------------------
+
+
+class TestMenagerie_RobotSoccerKit(TestMenagerieBase):
+    """Robot Soccer Kit omniwheel base."""
+
+    robot_folder = "robot_soccer_kit"
+    robot_xml = "robot_soccer_kit.xml"
+    floating = True
+    skip_reason = "Not yet implemented"
+
+
+class TestMenagerie_RobotstudioSo101(TestMenagerieBase):
+    """RobotStudio SO-101."""
+
+    robot_folder = "robotstudio_so101"
+    robot_xml = "so101.xml"
+    floating = True
+    skip_reason = "Not yet implemented"
+
+
+# -----------------------------------------------------------------------------
+# Biomechanical (1 robot)
+# -----------------------------------------------------------------------------
+
+
 class TestMenagerie_Flybody(TestMenagerieBase):
-    """Flybody insect model."""
+    """Flybody fruit fly model."""
 
     robot_folder = "flybody"
     robot_xml = "fruitfly.xml"
     floating = True
+    skip_reason = "Not yet implemented"
+
+
+# -----------------------------------------------------------------------------
+# Other (1 robot)
+# -----------------------------------------------------------------------------
+
+
+class TestMenagerie_I2rtYam(TestMenagerieBase):
+    """i2rt YAM (Yet Another Manipulator)."""
+
+    robot_folder = "i2rt_yam"
+    robot_xml = "yam.xml"
+    floating = False
     skip_reason = "Not yet implemented"
 
 
