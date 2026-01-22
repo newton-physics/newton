@@ -2247,6 +2247,53 @@ class TestImportMjcf(unittest.TestCase):
             f"Expected: {expected_quat}\nActual: {body_quat}",
         )
 
+    def test_joint_type_free_with_floating_false(self):
+        """Test that <joint type="free"> respects floating=False parameter.
+
+        MuJoCo supports two syntaxes for free joints:
+        1. <freejoint/>
+        2. <joint type="free"/>
+
+        Both should be treated identically when the floating parameter is set.
+        """
+        # MJCF using <joint type="free"> instead of <freejoint>
+        mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test_joint_type_free">
+    <worldbody>
+        <body name="floating_body" pos="1 2 3">
+            <joint name="free_joint" type="free"/>
+            <geom type="sphere" size="0.1"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        # Test with floating=False - should create a fixed joint
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf_content, floating=False)
+        model = builder.finalize()
+
+        self.assertEqual(model.joint_count, 1)
+        joint_type = model.joint_type.numpy()[0]
+        self.assertEqual(joint_type, newton.JointType.FIXED)
+
+        # Test with floating=True - should create a free joint
+        builder2 = newton.ModelBuilder()
+        builder2.add_mjcf(mjcf_content, floating=True)
+        model2 = builder2.finalize()
+
+        self.assertEqual(model2.joint_count, 1)
+        joint_type2 = model2.joint_type.numpy()[0]
+        self.assertEqual(joint_type2, newton.JointType.FREE)
+
+        # Test with floating=None (default) - should preserve the free joint from MJCF
+        builder3 = newton.ModelBuilder()
+        builder3.add_mjcf(mjcf_content, floating=None)
+        model3 = builder3.finalize()
+
+        self.assertEqual(model3.joint_count, 1)
+        joint_type3 = model3.joint_type.numpy()[0]
+        self.assertEqual(joint_type3, newton.JointType.FREE)
+
     def test_geom_priority_parsing(self):
         """Test parsing of geom priority from MJCF"""
         mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
