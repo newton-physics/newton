@@ -4658,6 +4658,9 @@ class ModelBuilder:
                             continue
                 # note we need to copy the mesh to avoid modifying the original mesh
                 self.shape_source[shape] = self.shape_source[shape].copy(vertices=rmesh.vertices, indices=rmesh.indices)
+                # mark convex_hull result as convex mesh type for efficient collision detection
+                if method == "convex_hull":
+                    self.shape_type[shape] = GeoType.CONVEX_MESH
                 remeshed_shapes.add(shape)
 
         if method == "bounding_box":
