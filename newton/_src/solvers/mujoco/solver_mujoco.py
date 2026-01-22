@@ -479,8 +479,6 @@ class SolverMuJoCo(SolverBase):
         # These are used for general/motor actuators parsed from MJCF
         # All actuator attributes share the "actuator" custom frequency (resolves to "mujoco:actuator" via namespace)
         # Note: actuator_trnid[0] stores the target index, actuator_trntype determines its meaning (joint/tendon/site)
-
-        # Value transformers for enum-like MJCF attributes
         def parse_trntype(s: str) -> int:
             return {"joint": 0, "jointinparent": 1, "tendon": 2, "site": 3, "body": 4, "slidercrank": 5}.get(
                 s.lower(), 0
@@ -546,7 +544,7 @@ class SolverMuJoCo(SolverBase):
                 mjcf_value_transformer=parse_biastype,
             )
         )
-        # trnid is set manually since it requires joint name lookup
+
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="actuator_trnid",
@@ -557,7 +555,7 @@ class SolverMuJoCo(SolverBase):
                 namespace="mujoco",
             )
         )
-        # Track which world each actuator belongs to (for multi-world filtering)
+
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="actuator_world",
@@ -566,7 +564,7 @@ class SolverMuJoCo(SolverBase):
                 dtype=wp.int32,
                 default=-1,
                 namespace="mujoco",
-                references="world",  # Gets replaced with current_world during add_world()
+                references="world",
             )
         )
         builder.add_custom_attribute(
@@ -626,7 +624,7 @@ class SolverMuJoCo(SolverBase):
                 mjcf_attribute_name="gear",
             )
         )
-        # dynprm: 10 elements (MuJoCo uses mjNDYN=10)
+
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="actuator_dynprm",
@@ -638,7 +636,7 @@ class SolverMuJoCo(SolverBase):
                 mjcf_attribute_name="dynprm",
             )
         )
-        # gainprm: 10 elements (MuJoCo uses mjNGAIN=10)
+
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="actuator_gainprm",
@@ -650,7 +648,7 @@ class SolverMuJoCo(SolverBase):
                 mjcf_attribute_name="gainprm",
             )
         )
-        # biasprm: 10 elements (MuJoCo uses mjNBIAS=10)
+
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="actuator_biasprm",
@@ -662,7 +660,7 @@ class SolverMuJoCo(SolverBase):
                 mjcf_attribute_name="biasprm",
             )
         )
-        # actlimited: is activation limited (bool as int)
+
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="actuator_actlimited",
@@ -675,7 +673,7 @@ class SolverMuJoCo(SolverBase):
                 mjcf_value_transformer=parse_bool_int,
             )
         )
-        # actrange: range of activations (2 values)
+
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="actuator_actrange",
@@ -687,7 +685,7 @@ class SolverMuJoCo(SolverBase):
                 mjcf_attribute_name="actrange",
             )
         )
-        # actdim: dimension of activation state (-1 means auto)
+
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="actuator_actdim",
@@ -699,7 +697,7 @@ class SolverMuJoCo(SolverBase):
                 mjcf_attribute_name="actdim",
             )
         )
-        # actearly: step activation before force (bool as int)
+
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="actuator_actearly",
@@ -712,7 +710,7 @@ class SolverMuJoCo(SolverBase):
                 mjcf_value_transformer=parse_bool_int,
             )
         )
-        # group: integer group for custom tags and visualization
+
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="actuator_group",
@@ -725,10 +723,6 @@ class SolverMuJoCo(SolverBase):
             )
         )
 
-        # ctrl: Control input array for ALL MuJoCo actuators
-        # This is a CONTROL assignment attribute, so it gets cloned to Control objects
-        # Accessed as control.mujoco.ctrl
-        # Size matches mj_model.nu (total actuator count) preserving MJCF ordering
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="ctrl",
@@ -740,9 +734,6 @@ class SolverMuJoCo(SolverBase):
             )
         )
 
-        # ctrl_source: Determines where control input comes from for each actuator
-        # JOINT_TARGET (0): Map from joint_target_pos/vel, gains from joint_target_ke/kd
-        # CTRL_DIRECT (1): Use control.mujoco.ctrl directly, gains from actuator_gainprm/biasprm
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="ctrl_source",
@@ -753,14 +744,6 @@ class SolverMuJoCo(SolverBase):
                 namespace="mujoco",
             )
         )
-
-        # Note: ctrl_to_dof is NOT stored as a custom attribute.
-        # The mapping is built directly in solver_mujoco as self.mjc_actuator_to_newton_idx
-        # based on how actuators are actually created in the MuJoCo model.
-
-        # Note: ctrl_type is NOT stored as a custom attribute.
-        # It is computed in solver_mujoco during MuJoCo model construction based on
-        # how actuators are actually created, ensuring correct indexing.
 
     def _init_pairs(self, model: Model, spec, shape_mapping: dict[int, str], template_world: int) -> None:
         """
