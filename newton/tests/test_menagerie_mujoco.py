@@ -216,7 +216,7 @@ class ControlStrategy:
         step: int,
         num_worlds: int,
         num_actuators: int,
-    ) -> np.ndarray:
+    ) -> np.ndarray | wp.array:
         """
         Generate control values for the given timestep.
 
@@ -227,7 +227,7 @@ class ControlStrategy:
             num_actuators: Number of actuators per world
 
         Returns:
-            Control array of shape (num_worlds, num_actuators)
+            Control array of shape (num_worlds, num_actuators) - numpy or warp array
         """
         pass
 
@@ -239,11 +239,29 @@ class ZeroControlStrategy(ControlStrategy):
         return np.zeros((num_worlds, num_actuators))
 
 
+@wp.kernel
+def generate_sinusoidal_control_kernel(
+    frequencies: wp.array(dtype=wp.float64),  # type: ignore[valid-type]
+    phases: wp.array(dtype=wp.float64),  # type: ignore[valid-type]
+    ctrl_out: wp.array(dtype=wp.float64),  # type: ignore[valid-type]
+    t: float,
+    amplitude: float,
+    num_actuators: int,
+):
+    """Generate sinusoidal control pattern on GPU."""
+    i = wp.tid()
+    act_idx = i % num_actuators  # type: ignore[operator]
+    freq = frequencies[act_idx]
+    phase = phases[i]  # phases are stored flat: phases[world_idx * num_actuators + act_idx]
+    val = amplitude * wp.sin(2.0 * 3.14159265358979 * freq * t + phase)
+    ctrl_out[i] = wp.clamp(val, -1.0, 1.0)
+
+
 class StructuredControlStrategy(ControlStrategy):
     """
     Generate structured control patterns designed to explore joint limits.
 
-    Combines sinusoids at different frequencies with occasional step changes.
+    Uses a Warp kernel to generate sinusoidal controls directly on GPU.
     Each world gets a slightly different phase offset for variation.
     """
 
@@ -252,44 +270,45 @@ class StructuredControlStrategy(ControlStrategy):
         seed: int = 42,
         amplitude_scale: float = 0.8,
         frequency_range: tuple[float, float] = (0.5, 2.0),
-        step_probability: float = 0.05,
     ):
         super().__init__(seed)
         self.amplitude_scale = amplitude_scale
         self.frequency_range = frequency_range
-        self.step_probability = step_probability
-        self._frequencies: np.ndarray | None = None
-        self._phases: np.ndarray | None = None  # Shape: (num_worlds, num_actuators)
-        self._step_values: np.ndarray | None = None
+        self._frequencies: wp.array | None = None
+        self._phases: wp.array | None = None
+        self._ctrl: wp.array | None = None
 
     def _init_for_model(self, num_worlds: int, num_actuators: int):
-        """Initialize frequencies and phases."""
-        self._frequencies = self.rng.uniform(self.frequency_range[0], self.frequency_range[1], num_actuators)
-        # Different phase per world for variation
-        self._phases = self.rng.uniform(0, 2 * np.pi, (num_worlds, num_actuators))
-        self._step_values = np.zeros((num_worlds, num_actuators))
+        """Initialize frequencies and phases as Warp arrays."""
+        frequencies_np = self.rng.uniform(self.frequency_range[0], self.frequency_range[1], num_actuators)
+        # Different phase per world for variation - flattened for kernel
+        phases_np = self.rng.uniform(0, 2 * np.pi, (num_worlds, num_actuators)).flatten()
+
+        self._frequencies = wp.array(frequencies_np, dtype=wp.float64)
+        self._phases = wp.array(phases_np, dtype=wp.float64)
+        self._ctrl = wp.zeros(num_worlds * num_actuators, dtype=wp.float64)
 
     def get_control(self, t, step, num_worlds, num_actuators):
-        if self._frequencies is None or self._phases is None or self._phases.shape != (num_worlds, num_actuators):
+        if self._frequencies is None or self._phases is None or self._ctrl is None:
             self._init_for_model(num_worlds, num_actuators)
 
         assert self._frequencies is not None
         assert self._phases is not None
-        assert self._step_values is not None
+        assert self._ctrl is not None
 
-        # Base sinusoidal pattern: broadcast frequencies across worlds
-        # Shape: (num_worlds, num_actuators)
-        control = self.amplitude_scale * np.sin(2 * np.pi * self._frequencies[np.newaxis, :] * t + self._phases)
-
-        # Occasional step changes (random world and actuator)
-        if self.rng.random() < self.step_probability:
-            world_idx = self.rng.integers(0, num_worlds)
-            act_idx = self.rng.integers(0, num_actuators)
-            self._step_values[world_idx, act_idx] = self.rng.uniform(-1, 1)
-
-        control += 0.3 * self._step_values
-
-        return np.clip(control, -1, 1)
+        wp.launch(
+            generate_sinusoidal_control_kernel,
+            dim=num_worlds * num_actuators,
+            inputs=[
+                self._frequencies,
+                self._phases,
+                self._ctrl,
+                t,
+                self.amplitude_scale,
+                num_actuators,
+            ],
+        )
+        return self._ctrl.reshape((num_worlds, num_actuators))
 
 
 class RandomControlStrategy(ControlStrategy):
