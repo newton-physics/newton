@@ -35,7 +35,6 @@ from __future__ import annotations
 
 import unittest
 from abc import abstractmethod
-from dataclasses import dataclass, field
 from enum import Enum, auto
 from pathlib import Path
 from typing import Any
@@ -135,8 +134,7 @@ def create_newton_model_from_mjcf(
         builder.add_ground_plane()
 
     if num_worlds > 1:
-        # Replicate with spacing
-        builder.replicate(robot_builder, num_worlds, spacing=(3.0, 3.0, 0.0))
+        builder.replicate(robot_builder, num_worlds)
     else:
         builder.add_world(robot_builder)
 
@@ -216,7 +214,6 @@ class ControlStrategy:
         step: int,
         model: newton.Model,
         state: newton.State,
-        world_idx: int = 0,
     ) -> np.ndarray:
         """
         Generate control values for the given timestep.
@@ -226,10 +223,9 @@ class ControlStrategy:
             step: Current step number
             model: Newton model
             state: Current Newton state
-            world_idx: Which world this control is for
 
         Returns:
-            Control array of shape (num_actuators,)
+            Control array of shape (num_worlds, num_actuators)
         """
         pass
 
@@ -237,8 +233,10 @@ class ControlStrategy:
 class ZeroControlStrategy(ControlStrategy):
     """Always returns zero control - useful for drop tests."""
 
-    def get_control(self, t, step, model, state, world_idx=0):
-        return np.zeros(model.joint_dof_count // max(model.num_worlds, 1))
+    def get_control(self, t, step, model, state):
+        num_worlds = max(model.num_worlds, 1)
+        num_dofs = model.joint_dof_count // num_worlds
+        return np.zeros((num_worlds, num_dofs))
 
 
 class StructuredControlStrategy(ControlStrategy):
@@ -247,6 +245,7 @@ class StructuredControlStrategy(ControlStrategy):
 
     Combines sinusoids at different frequencies with occasional step changes.
     Control magnitudes are scaled to approach actuator limits.
+    All worlds receive the same control pattern.
     """
 
     def __init__(
@@ -260,25 +259,22 @@ class StructuredControlStrategy(ControlStrategy):
         self.amplitude_scale = amplitude_scale
         self.frequency_range = frequency_range
         self.step_probability = step_probability
-        self._frequencies = None
-        self._phases = None
-        self._step_values = None
+        self._frequencies: np.ndarray | None = None
+        self._phases: np.ndarray | None = None
+        self._step_values: np.ndarray | None = None
 
-    def _init_for_model(self, num_actuators: int, world_idx: int):
+    def _init_for_model(self, num_actuators: int):
         """Initialize frequencies and phases for each actuator."""
-        # Use world_idx to create different patterns per world
-        seed_offset = world_idx * 1000
-        rng = np.random.default_rng(self.rng.integers(0, 2**31) + seed_offset)
-
-        self._frequencies = rng.uniform(self.frequency_range[0], self.frequency_range[1], num_actuators)
-        self._phases = rng.uniform(0, 2 * np.pi, num_actuators)
+        self._frequencies = self.rng.uniform(self.frequency_range[0], self.frequency_range[1], num_actuators)
+        self._phases = self.rng.uniform(0, 2 * np.pi, num_actuators)
         self._step_values = np.zeros(num_actuators)
 
-    def get_control(self, t, step, model, state, world_idx=0):
-        num_dofs = model.joint_dof_count // max(model.num_worlds, 1)
+    def get_control(self, t, step, model, state):
+        num_worlds = max(model.num_worlds, 1)
+        num_dofs = model.joint_dof_count // num_worlds
 
         if self._frequencies is None or len(self._frequencies) != num_dofs:
-            self._init_for_model(num_dofs, world_idx)
+            self._init_for_model(num_dofs)
 
         # Base sinusoidal pattern
         assert self._frequencies is not None
@@ -294,7 +290,10 @@ class StructuredControlStrategy(ControlStrategy):
         control += 0.3 * self._step_values
 
         # Clip to [-1, 1] range (will be scaled by actuator limits later)
-        return np.clip(control, -1, 1)
+        control = np.clip(control, -1, 1)
+
+        # Broadcast to all worlds (same control for all)
+        return np.tile(control, (num_worlds, 1))
 
 
 class RandomControlStrategy(ControlStrategy):
@@ -302,6 +301,7 @@ class RandomControlStrategy(ControlStrategy):
     Generate random control values with configurable noise.
 
     Good for exploring the control space but less structured.
+    All worlds receive the same control pattern.
     """
 
     def __init__(
@@ -313,10 +313,11 @@ class RandomControlStrategy(ControlStrategy):
         super().__init__(seed)
         self.noise_scale = noise_scale
         self.smoothing = smoothing
-        self._prev_control = None
+        self._prev_control: np.ndarray | None = None
 
-    def get_control(self, t, step, model, state, world_idx=0):
-        num_dofs = model.joint_dof_count // max(model.num_worlds, 1)
+    def get_control(self, t, step, model, state):
+        num_worlds = max(model.num_worlds, 1)
+        num_dofs = model.joint_dof_count // num_worlds
 
         if self._prev_control is None or len(self._prev_control) != num_dofs:
             self._prev_control = np.zeros(num_dofs)
@@ -326,151 +327,107 @@ class RandomControlStrategy(ControlStrategy):
         control = self.smoothing * self._prev_control + (1 - self.smoothing) * noise
         self._prev_control = control
 
-        return np.clip(control, -1, 1)
+        control = np.clip(control, -1, 1)
+
+        # Broadcast to all worlds (same control for all)
+        return np.tile(control, (num_worlds, 1))
 
 
 # =============================================================================
-# Comparison Metrics
+# Comparison
 # =============================================================================
 
+# Default tolerances for MjData field comparison
+DEFAULT_TOLERANCES: dict[str, float] = {
+    "qpos": 1e-6,
+    "qvel": 1e-5,
+    "qacc": 1e-4,
+    "xpos": 1e-6,
+    "xquat": 1e-6,
+    "ctrl": 1e-10,
+}
 
-@dataclass
-class ComparisonTolerances:
-    """Tolerance values for MjData comparison."""
-
-    qpos: float = 1e-6  # Joint position tolerance
-    qvel: float = 1e-5  # Joint velocity tolerance
-    qacc: float = 1e-4  # Joint acceleration tolerance
-    xpos: float = 1e-6  # Body position tolerance
-    xquat: float = 1e-6  # Body orientation tolerance
-    ctrl: float = 1e-10  # Control tolerance (should match exactly)
-
-
-@dataclass
-class StepComparisonResult:
-    """Result of comparing one simulation step."""
-
-    step: int
-    passed: bool
-    errors: dict[str, float] = field(default_factory=dict)
-    details: str = ""
-
-
-@dataclass
-class ComparisonConfig:
-    """Configuration for what to compare and how."""
-
-    # Which MjData fields to compare (start simple, expand as needed)
-    fields: list[str] = field(default_factory=lambda: ["qpos", "qvel"])
-
-    tolerances: ComparisonTolerances = field(default_factory=ComparisonTolerances)
+# Default fields to compare
+DEFAULT_COMPARE_FIELDS: list[str] = ["qpos", "qvel"]
 
 
 def compare_mjdata(
     newton_mjw_data: Any,
     native_mj_data: Any,
     step: int,
-    config: ComparisonConfig,
     world_idx: int = 0,
-) -> StepComparisonResult:
+    fields: list[str] | None = None,
+    tolerances: dict[str, float] | None = None,
+) -> tuple[bool, list[str]]:
     """
     Compare MjData from Newton's SolverMuJoCo against native MuJoCo MjData.
 
-    This directly compares the MuJoCo data structures, avoiding any
-    Newton <-> MuJoCo coordinate transformation issues.
-
     Args:
-        newton_mjw_data: MjWarpData from SolverMuJoCo (solver.mjw_data)
-            Arrays have shape [num_worlds, ...] for multi-world
+        newton_mjw_data: MjWarpData from SolverMuJoCo (arrays have shape [num_worlds, ...])
         native_mj_data: MjData from native MuJoCo simulation
         step: Current step number
-        config: Comparison configuration
-        world_idx: Which world to compare (indexes into first dim of warp arrays)
+        world_idx: Which world to compare
+        fields: Fields to compare (default: ["qpos", "qvel"])
+        tolerances: Per-field tolerances (default: see DEFAULT_TOLERANCES)
 
     Returns:
-        StepComparisonResult with pass/fail and error magnitudes
+        (passed, errors) tuple where errors is a list of error messages
     """
-    errors: dict[str, float] = {}
-    passed = True
-    details: list[str] = []
+    fields = fields or DEFAULT_COMPARE_FIELDS
+    tolerances = {**DEFAULT_TOLERANCES, **(tolerances or {})}
 
-    for field_name in config.fields:
-        # Get tolerance for this field
-        tol = getattr(config.tolerances, field_name, 1e-6)
+    errors: list[str] = []
 
-        # Get arrays from both MjData objects
+    for field_name in fields:
+        tol = tolerances.get(field_name, 1e-6)
+
         newton_arr = getattr(newton_mjw_data, field_name, None)
         native_arr = getattr(native_mj_data, field_name, None)
 
         if newton_arr is None or native_arr is None:
             continue
 
-        # Convert to numpy if needed (for mujoco_warp arrays)
+        # Convert to numpy if needed
         if hasattr(newton_arr, "numpy"):
             newton_arr = newton_arr.numpy()
-        if hasattr(native_arr, "numpy"):
-            native_arr = native_arr.numpy()
-
         newton_arr = np.asarray(newton_arr)
         native_arr = np.asarray(native_arr)
 
-        # For multi-world, warp arrays have shape [num_worlds, ...]
-        # Select the specific world for comparison
+        # Select world from batched array
         if newton_arr.ndim > native_arr.ndim:
             newton_arr = newton_arr[world_idx]
 
-        # Flatten for comparison
         newton_flat = newton_arr.flatten()
         native_flat = native_arr.flatten()
 
         if len(newton_flat) != len(native_flat):
-            passed = False
-            details.append(f"{field_name}: size mismatch ({len(newton_flat)} vs {len(native_flat)})")
+            errors.append(f"step {step}, {field_name}: size mismatch ({len(newton_flat)} vs {len(native_flat)})")
             continue
 
         if len(newton_flat) == 0:
             continue
 
         max_error = float(np.max(np.abs(newton_flat - native_flat)))
-        errors[f"{field_name}_max_error"] = max_error
-
         if max_error > tol:
-            passed = False
-            details.append(f"{field_name}: max error {max_error:.2e} > {tol:.2e}")
+            errors.append(f"step {step}, {field_name}: max error {max_error:.2e} > {tol:.2e}")
 
-    return StepComparisonResult(
-        step=step,
-        passed=passed,
-        errors=errors,
-        details="; ".join(details) if details else "OK",
-    )
+    return len(errors) == 0, errors
 
 
 # =============================================================================
-# Randomization
+# Randomization (placeholder for future implementation)
 # =============================================================================
-
-
-@dataclass
-class RandomizationConfig:
-    """Configuration for property randomization across worlds."""
-
-    enabled: bool = False
-    seed: int = 42
-
-    # Property ranges (None = don't randomize)
-    mass_scale: tuple[float, float] | None = None  # e.g., (0.8, 1.2)
-    friction_range: tuple[float, float] | None = None  # e.g., (0.3, 1.0)
-    damping_scale: tuple[float, float] | None = None  # e.g., (0.5, 2.0)
-    armature_scale: tuple[float, float] | None = None  # e.g., (0.5, 2.0)
 
 
 def apply_randomization(
     newton_model: newton.Model,
     mj_solver: SolverMuJoCo,
-    config: RandomizationConfig,
-    world_idx: int,
-) -> dict[str, np.ndarray]:
+    seed: int = 42,
+    mass_scale: tuple[float, float] | None = None,
+    friction_range: tuple[float, float] | None = None,
+    damping_scale: tuple[float, float] | None = None,
+    armature_scale: tuple[float, float] | None = None,
+) -> None:
     """
     Apply randomized properties to both Newton model and MuJoCo solver.
 
@@ -479,24 +436,21 @@ def apply_randomization(
     Args:
         newton_model: Newton model to randomize
         mj_solver: MuJoCo solver (uses its remappings)
-        config: Randomization configuration
-        world_idx: Which world to randomize
-
-    Returns:
-        Dict of randomized values for reproducibility
+        seed: Random seed
+        mass_scale: Scale range for masses, e.g., (0.8, 1.2)
+        friction_range: Range for friction coefficients, e.g., (0.3, 1.0)
+        damping_scale: Scale range for damping, e.g., (0.5, 2.0)
+        armature_scale: Scale range for armature, e.g., (0.5, 2.0)
     """
-    if not config.enabled:
-        return {}
-
-    # rng = np.random.default_rng(config.seed + world_idx)
-    randomized_values = {}
+    # Skip if no randomization requested
+    if all(x is None for x in [mass_scale, friction_range, damping_scale, armature_scale]):
+        return
 
     # TODO: Implement randomization using SolverMuJoCo remappings
     # This requires careful coordination between Newton arrays and MuJoCo arrays
     # The remappings in SolverMuJoCo (e.g., body indices, joint indices) must be used
     # to ensure both sides receive identical randomized values
-
-    return randomized_values
+    _ = newton_model, mj_solver, seed  # Suppress unused warnings for now
 
 
 # =============================================================================
@@ -519,7 +473,8 @@ class TestMenagerieBase(unittest.TestCase):
         - num_steps: int - simulation steps to run (default: 100)
         - dt: float - timestep (default: 0.002)
         - control_strategy: ControlStrategy - how to generate controls
-        - comparison_config: ComparisonConfig - what MjData fields to compare
+        - compare_fields: list[str] - MjData fields to compare
+        - tolerances: dict[str, float] - per-field tolerances
         - skip_reason: str | None - if set, skip this test
     """
 
@@ -533,9 +488,12 @@ class TestMenagerieBase(unittest.TestCase):
     num_steps: int = 100
     dt: float = 0.002
 
-    # Strategy and config (can override in subclass or setUp)
+    # Control strategy (can override in subclass)
     control_strategy: ControlStrategy | None = None
-    comparison_config: ComparisonConfig | None = None
+
+    # Comparison settings (override in subclass as needed)
+    compare_fields: list[str] = DEFAULT_COMPARE_FIELDS
+    tolerances: dict[str, float] = DEFAULT_TOLERANCES
 
     # Skip reason (set to None to enable test)
     skip_reason: str | None = "Not yet implemented"
@@ -568,10 +526,6 @@ class TestMenagerieBase(unittest.TestCase):
         if self.control_strategy is None:
             self.control_strategy = StructuredControlStrategy(seed=42)
 
-        # Default comparison config
-        if self.comparison_config is None:
-            self.comparison_config = ComparisonConfig()
-
     def _create_newton_model(self) -> newton.Model:
         """Create Newton model using the factory."""
         return create_newton_model(
@@ -601,6 +555,7 @@ class TestMenagerieBase(unittest.TestCase):
         All worlds receive the same controls, so all should match the single native simulation.
         """
         assert _mujoco is not None
+        assert self.control_strategy is not None
 
         # Create Newton model and solver (num_worlds is batch dimension)
         newton_model = self._create_newton_model()
@@ -615,23 +570,19 @@ class TestMenagerieBase(unittest.TestCase):
         native_mj_model, native_mj_data = self._create_native_mujoco_model()
 
         # Run simulation and compare
-        failures: list[tuple[int, StepComparisonResult]] = []
-        assert self.control_strategy is not None
-        assert self.comparison_config is not None
+        all_errors: list[str] = []
 
         for step in range(self.num_steps):
             t = step * self.dt
 
-            # Generate control (same for all worlds)
-            ctrl = self.control_strategy.get_control(t, step, newton_model, newton_state_0, 0)
+            # Generate control for all worlds: shape (num_worlds, num_actuators)
+            ctrl = self.control_strategy.get_control(t, step, newton_model, newton_state_0)
 
-            # Apply to native MuJoCo
-            native_mj_data.ctrl[:] = ctrl
+            # Apply to native MuJoCo (use first world's control)
+            native_mj_data.ctrl[:] = ctrl[0]
 
-            # Apply same control to all Newton worlds
-            ctrl_arr = newton_solver.mjw_data.ctrl.numpy()
-            ctrl_arr[:] = ctrl  # Broadcast to all worlds
-            newton_solver.mjw_data.ctrl.assign(ctrl_arr)
+            # Apply to Newton's mujoco_warp (full batched array)
+            newton_solver.mjw_data.ctrl.assign(ctrl)
 
             # Step native MuJoCo
             _mujoco.mj_step(native_mj_model, native_mj_data)
@@ -643,23 +594,23 @@ class TestMenagerieBase(unittest.TestCase):
 
             # Compare each world against native (all should match)
             for world_idx in range(self.num_worlds):
-                result = compare_mjdata(
+                passed, errors = compare_mjdata(
                     newton_solver.mjw_data,
                     native_mj_data,
                     step,
-                    self.comparison_config,
                     world_idx,
+                    fields=self.compare_fields,
+                    tolerances=self.tolerances,
                 )
-
-                if not result.passed:
-                    failures.append((world_idx, result))
+                if not passed:
+                    all_errors.extend([f"world {world_idx}: {e}" for e in errors])
 
         # Report failures
-        if failures:
-            failure_msgs = [f"World {w}, Step {r.step}: {r.details}" for w, r in failures[:10]]
-            if len(failures) > 10:
-                failure_msgs.append(f"... and {len(failures) - 10} more failures")
-            self.fail("Simulation mismatch:\n" + "\n".join(failure_msgs))
+        if all_errors:
+            msg = "\n".join(all_errors[:20])
+            if len(all_errors) > 20:
+                msg += f"\n... and {len(all_errors) - 20} more errors"
+            self.fail(f"Simulation mismatch:\n{msg}")
 
 
 # =============================================================================
