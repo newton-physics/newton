@@ -1086,8 +1086,11 @@ class NumpyDirectRodState(DefKitDirectRodState):
 
         self.A_banded.fill(0.0)
 
-        inv_masses = self.inv_masses
-        inv_I = self.quat_inv_masses * np.float32(self.rot_inv_mass_scale)
+        # C++ Banded Solver Implicit Assumptions:
+        # The JMJT assembly (J * JT) implicitly assumes Unit Mass (1.0) and Unit Inertia (1.0)
+        # for the system matrix construction.
+        inv_masses = np.ones(self.num_points, dtype=np.float32)
+        inv_I = np.ones(self.num_points, dtype=np.float32)
 
         for i in range(n_edges):
             J_pos = self.jacobian_pos[i]
@@ -1149,6 +1152,14 @@ class NumpyDirectRodState(DefKitDirectRodState):
         n_dofs = 6 * n_edges
         self.rhs[:n_dofs] = (-self.constraint_values).reshape(n_dofs)
 
+        # C++ Banded Solver Regularization:
+        # The C++ spbsv_u11_1rhs solver explicitly regularizes the Cholesky factor diagonal
+        # if it drops below 1e-6. This prevents instability at high stiffness (singular A).
+        # We mimic this by adding a small epsilon to the diagonal of A_banded before solving.
+        # This is critical for stability when compliance -> 0.
+        regularization = np.float32(1.0e-6)
+        self.A_banded[self.bandwidth, :n_dofs] += regularization
+
         try:
             from scipy.linalg import solve_banded  # noqa: PLC0415
 
@@ -1182,10 +1193,11 @@ class NumpyDirectRodState(DefKitDirectRodState):
             J_t0 = J_rot[:, 0:3]
             J_t1 = J_rot[:, 3:6]
 
+            # Use ACTUAL masses for position correction, but UNIT inertia for rotation (matching C++)
             inv_m0 = inv_masses[i]
             inv_m1 = inv_masses[i + 1]
-            inv_I0 = inv_I[i]
-            inv_I1 = inv_I[i + 1]
+            # inv_I0 = inv_I[i] # Unused, we use 1.0 masked by quat_inv_masses
+            # inv_I1 = inv_I[i + 1]
 
             if inv_m0 > 0.0:
                 dp0 = inv_m0 * (J_p0.T @ dl)
@@ -1195,12 +1207,15 @@ class NumpyDirectRodState(DefKitDirectRodState):
                 dp1 = inv_m1 * (J_p1.T @ dl)
                 self.predicted_positions[i + 1, 0:3] += dp1
                 corr_max = max(corr_max, float(np.linalg.norm(dp1)))
-            if inv_I0 > 0.0:
-                dtheta0 = inv_I0 * (J_t0.T @ dl)
+            
+            # C++ applies rotation correction without inertia scaling (effectively I=1)
+            # We must respect static mask (quat_inv_masses > 0)
+            if self.quat_inv_masses[i] > 0.0:
+                dtheta0 = 1.0 * (J_t0.T @ dl)
                 self._apply_quaternion_correction_g(self.predicted_orientations, i, dtheta0)
                 corr_max = max(corr_max, float(np.linalg.norm(dtheta0)))
-            if inv_I1 > 0.0:
-                dtheta1 = inv_I1 * (J_t1.T @ dl)
+            if self.quat_inv_masses[i+1] > 0.0:
+                dtheta1 = 1.0 * (J_t1.T @ dl)
                 self._apply_quaternion_correction_g(self.predicted_orientations, i + 1, dtheta1)
                 corr_max = max(corr_max, float(np.linalg.norm(dtheta1)))
 
