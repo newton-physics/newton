@@ -38,7 +38,7 @@ import unittest
 from abc import abstractmethod
 from enum import Enum, auto
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 import numpy as np
 import warp as wp
@@ -591,9 +591,12 @@ class TestMenagerieBase(unittest.TestCase):
     # Control strategy (can override in subclass)
     control_strategy: ControlStrategy | None = None
 
-    # Comparison settings (override in subclass as needed)
-    compare_fields: list[str] = DEFAULT_COMPARE_FIELDS
-    tolerances: dict[str, float] = DEFAULT_TOLERANCES
+    # Data comparison: explicit list of fields TO compare
+    compare_fields: ClassVar[list[str]] = DEFAULT_COMPARE_FIELDS
+    tolerances: ClassVar[dict[str, float]] = DEFAULT_TOLERANCES
+
+    # Model comparison: fields to SKIP (substrings to match)
+    model_skip_fields: ClassVar[set[str]] = {"__", "ptr"}
 
     # Skip reason (set to a string to skip test, leave unset or None to run)
     skip_reason: str | None = None
@@ -683,7 +686,7 @@ class TestMenagerieBase(unittest.TestCase):
         mj_model, mj_data_native, native_mjw_model, native_mjw_data = self._create_native_mujoco_warp()
 
         # Compare mjw_model structures
-        compare_mjw_models(newton_solver.mjw_model, native_mjw_model)
+        compare_mjw_models(newton_solver.mjw_model, native_mjw_model, skip_fields=self.model_skip_fields)
 
         # Get number of actuators from native model (for control generation)
         num_actuators = native_mjw_data.ctrl.shape[1] if native_mjw_data.ctrl.shape[1] > 0 else 0
