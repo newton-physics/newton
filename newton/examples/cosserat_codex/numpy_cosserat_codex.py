@@ -821,20 +821,24 @@ class NumpyDirectRodState(DefKitDirectRodState):
             q0 = orientations[i]
             q1 = orientations[i + 1]
 
-            edge = p1 - p0
             L = rest_lengths[i]
-            if L <= 1.0e-8:
-                L = np.float32(1.0e-8)
+            half_L = np.float32(0.5) * L
 
-            d1 = self._numpy_quat_rotate_vector(q0, np.array([1.0, 0.0, 0.0], dtype=np.float32))
-            d2 = self._numpy_quat_rotate_vector(q0, np.array([0.0, 1.0, 0.0], dtype=np.float32))
-            d3 = self._numpy_quat_rotate_vector(q0, np.array([0.0, 0.0, 1.0], dtype=np.float32))
+            # Local offsets to midpoint (assuming rod aligns with local Z)
+            r0_local = np.array([0.0, 0.0, half_L], dtype=np.float32)
+            r1_local = np.array([0.0, 0.0, -half_L], dtype=np.float32)
 
-            edge_error = edge - d3 * L
+            r0_world = self._numpy_quat_rotate_vector(q0, r0_local)
+            r1_world = self._numpy_quat_rotate_vector(q1, r1_local)
 
-            self.constraint_values[i, 0] = np.dot(edge_error, d3)
-            self.constraint_values[i, 1] = np.dot(edge_error, d1)
-            self.constraint_values[i, 2] = np.dot(edge_error, d2)
+            c0 = p0 + r0_world
+            c1 = p1 + r1_world
+
+            # Stretch violation in World Space (p0 + r0) - (p1 + r1)
+            # C++ uses: connector0 - connector1
+            stretch_error = c0 - c1
+
+            self.constraint_values[i, 0:3] = stretch_error
 
             q_rel = self._numpy_quat_mul_single(self._numpy_quat_conjugate(q0), q1)
             omega = q_rel[:3]
@@ -979,22 +983,34 @@ class NumpyDirectRodState(DefKitDirectRodState):
             q0 = orientations[i]
             q1 = orientations[i + 1]
             L = rest_lengths[i]
-            if L <= 1.0e-8:
-                L = np.float32(1.0e-8)
+            half_L = np.float32(0.5) * L
 
-            d1 = self._numpy_quat_rotate_vector(q0, np.array([1.0, 0.0, 0.0], dtype=np.float32))
-            d2 = self._numpy_quat_rotate_vector(q0, np.array([0.0, 1.0, 0.0], dtype=np.float32))
-            d3 = self._numpy_quat_rotate_vector(q0, np.array([0.0, 0.0, 1.0], dtype=np.float32))
+            # Local offsets
+            r0_local = np.array([0.0, 0.0, half_L], dtype=np.float32)
+            r1_local = np.array([0.0, 0.0, -half_L], dtype=np.float32)
 
-            R = np.column_stack([d1, d2, d3])
-            R_T = R.T
+            r0_world = self._numpy_quat_rotate_vector(q0, r0_local)
+            r1_world = self._numpy_quat_rotate_vector(q1, r1_local)
 
-            self.jacobian_pos[i, 0:3, 0:3] = -R_T
-            self.jacobian_pos[i, 0:3, 3:6] = R_T
+            # Stretch constraint C = (p0 + r0) - (p1 + r1)
+            # J_p0 = I, J_p1 = -I
+            # J_q0 = -skew(r0), J_q1 = skew(r1)  (Note signs: r1 is in negative term but q1 adds to it? Wait)
+            # C = p0 + R0 r0 - p1 - R1 r1
+            # dC/dp0 = I
+            # dC/dp1 = -I
+            # dC/dtheta0 = -skew(R0 r0)
+            # dC/dtheta1 = -(-skew(R1 r1)) = skew(R1 r1)
 
-            d3_skew = self._numpy_skew_symmetric(d3)
-            self.jacobian_rot[i, 0:3, 0:3] = L * (R_T @ d3_skew)
-            self.jacobian_rot[i, 0:3, 3:6] = 0.0
+            I3 = np.eye(3, dtype=np.float32)
+            
+            self.jacobian_pos[i, 0:3, 0:3] = I3
+            self.jacobian_pos[i, 0:3, 3:6] = -I3
+
+            r0_skew = self._numpy_skew_symmetric(r0_world)
+            r1_skew = self._numpy_skew_symmetric(r1_world)
+
+            self.jacobian_rot[i, 0:3, 0:3] = -r0_skew
+            self.jacobian_rot[i, 0:3, 3:6] = r1_skew
 
             jomega0, jomega1 = self._numpy_compute_bending_torsion_jacobians(q0, q1)
             g0 = self._numpy_compute_matrix_g(q0)
