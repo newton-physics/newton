@@ -1043,7 +1043,8 @@ def Xform "Articulation" (
         self.assertEqual(builder.body_count, 0)
         self.assertEqual(builder.shape_count, 4)
         self.assertEqual(
-            builder.shape_type, [newton.GeoType.MESH, newton.GeoType.MESH, newton.GeoType.SPHERE, newton.GeoType.BOX]
+            builder.shape_type,
+            [newton.GeoType.MESH, newton.GeoType.CONVEX_MESH, newton.GeoType.SPHERE, newton.GeoType.BOX],
         )
 
         # original mesh
@@ -1055,6 +1056,7 @@ def Xform "Articulation" (
         # convex hull
         mesh_convex_hull = builder.shape_source[1]
         self.assertEqual(mesh_convex_hull.vertices.shape, (4, 3))
+        self.assertEqual(builder.shape_type[1], newton.GeoType.CONVEX_MESH)
 
         # bounding sphere
         self.assertIsNone(builder.shape_source[2])
