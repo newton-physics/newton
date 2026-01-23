@@ -57,12 +57,11 @@ class DirectCosseratRodSimulationNumPy:
         self.bend_stiffness = np.ones((state.n_edges, 4), dtype=np.float32)
 
         # Stiffness multipliers (for NumPy solver tuning)
-        # Note: The NumPy solver uses simplified scalar inverse inertia, while C++ uses
-        # full 3x3 inertia tensors with proper geometric coupling (computeMatrixK).
-        # This causes an empirical ~8x difference in bend/twist stiffness.
+        # With proper K matrix coupling (J * J^T includes [r]_× * [r]_×^T), the
+        # position-rotation coupling is now handled correctly, so no empirical factor needed.
         self.stretch_stiffness_mult = 1.0
         self.shear_stiffness_mult = 1.0
-        self.bend_stiffness_mult = 8.0  # Empirical factor to match C++ (due to inertia coupling)
+        self.bend_stiffness_mult = 1.0  # No empirical factor needed with proper K matrix
 
         # Initialize the direct solver (needed for DLL fallback)
         self._rod_ptr = self.dll.init_direct_elastic_rod(
@@ -94,11 +93,10 @@ class DirectCosseratRodSimulationNumPy:
         self.current_rest_lengths = state.rest_lengths.copy()
         self.current_rest_darboux = np.zeros((n_edges, 3), dtype=np.float32)
 
-        # Precomputed cross-section properties
-        # For circular cross-section with radius r:
-        # A = pi * r^2 (area)
-        # I = pi * r^4 / 4 (second moment of area for bending)
-        # J = pi * r^4 / 2 (polar moment for torsion)
+        # Note: Cross-section properties (E*I) are NOT used by the direct solver.
+        # The C++ PrepareDirectElasticRodConstraints uses bendStiff * modulus directly.
+        # The _update_cross_section_properties method is kept for potential future use
+        # but doesn't affect the current compliance calculation.
         self._update_cross_section_properties()
 
         # === Implementation flags ===
@@ -200,19 +198,20 @@ class DirectCosseratRodSimulationNumPy:
         2. Computing compliance values from stiffness parameters
         3. Storing current rest shape parameters
 
-        Following C++ reference (initBeforeProjection_StretchBendingTwistingConstraint):
+        Following C++ reference (PrepareDirectElasticRodConstraints):
 
         Stretch compliance:
             - C++ uses near-zero compliance (1e-12 / dt²) for inextensible rods
             - We use the same for consistency
 
-        Bend/twist compliance:
-            - stiffnessK = [E*I, 2*G*I, E*I]  (NOT divided by L)
-            - compliance = (1/dt²) / stiffnessK / L
-            - Final: compliance = 1 / (stiffnessK * L * dt²)
+        Bend/twist stiffness:
+            - C++ PrepareDirectElasticRodConstraints REPLACES stiffnessK with:
+              stiffnessK = [bendStiff.x * youngModulusMult, bendStiff.y * youngModulusMult, bendStiff.z * torsionModulusMult]
+            - This does NOT use E*I formula; it uses bendStiff * modulus directly
+            - Compliance = (1/dt²) / stiffnessK / L
 
-        Note: C++ uses secondMomentOfArea I = π*r⁴/4 for both bending AND torsion
-        (torsion uses 2*G*I, not G*J where J=2I)
+        Note: The stiffness coefficients are user parameters that directly control
+        bending/twist response, NOT derived from material properties and cross-section.
         """
         s = self.state
         n_edges = s.n_edges
@@ -227,13 +226,6 @@ class DirectCosseratRodSimulationNumPy:
         self.current_rest_darboux[:, 2] = self.rest_darboux_vec[:, 2]  # tau
 
         # 3. Compute compliance values following C++ reference
-        # Effective moduli
-        E = self.young_modulus * self.young_modulus_mult
-        G = self.torsion_modulus * self.torsion_modulus_mult
-
-        # Cross-section properties (C++ uses secondMomentOfArea = π*r⁴/4)
-        I = self.second_moment_area  # π*r⁴/4
-
         dt2 = dt * dt
         inv_dt2 = 1.0 / dt2
 
@@ -250,12 +242,13 @@ class DirectCosseratRodSimulationNumPy:
             self.compliance[i, 1] = stretch_compliance  # shear1
             self.compliance[i, 2] = stretch_compliance  # shear2
 
-            # === Bend/twist stiffness coefficients K (NOT divided by L) ===
-            # C++: stiffnessCoefficientK = Vector3r(bendingStiffness, torsionStiffness, bendingStiffness)
-            # where bendingStiffness = E * I, torsionStiffness = 2 * G * I
-            K_bend1 = E * I * self.bend_stiffness[i, 0] * self.bend_stiffness_mult
-            K_bend2 = E * I * self.bend_stiffness[i, 1] * self.bend_stiffness_mult
-            K_twist = 2.0 * G * I * self.bend_stiffness[i, 2] * self.bend_stiffness_mult
+            # === Bend/twist stiffness coefficients K ===
+            # C++ PrepareDirectElasticRodConstraints:
+            #   stiffnessK = [bendStiff.x * youngModulusMult, bendStiff.y * youngModulusMult, bendStiff.z * torsionModulusMult]
+            # This DIRECTLY uses bendStiff * modulus, NOT E*I formula!
+            K_bend1 = self.bend_stiffness[i, 0] * self.young_modulus_mult * self.bend_stiffness_mult
+            K_bend2 = self.bend_stiffness[i, 1] * self.young_modulus_mult * self.bend_stiffness_mult
+            K_twist = self.bend_stiffness[i, 2] * self.torsion_modulus_mult * self.bend_stiffness_mult
 
             # === Bend/twist compliance ===
             # C++: bendingAndTorsionCompliance = (1/dt²) / K / L
@@ -416,20 +409,28 @@ class DirectCosseratRodSimulationNumPy:
     def _jacobians_numpy(self):
         """NumPy implementation of Jacobian computation following C++ reference.
 
-        The Jacobian structure per constraint is a 6x6 matrix for each segment:
-        J = [ I or -I     r_cross    ]  (stretch-shear w.r.t. position and rotation)
-            [ 0           jOmega*G   ]  (bend-twist w.r.t. rotation only)
+        Following the C++ banded solver, we compute a full 6x6 Jacobian matrix J
+        for each segment pair. The J matrix structure is:
 
-        Where:
-        - r_cross is the skew-symmetric matrix of (connector - position)
-          r0 = (L/2) * d3_0, r1 = -(L/2) * d3_1
-        - jOmega*G is the 3x3 bend-twist Jacobian from quaternion formulas
+        J = [ sign*I    -sign*[r]_×  ]  (stretch-shear: rows 0-2)
+            [   0          jOmegaG    ]  (bend-twist: rows 3-5)
+
+        Where columns are [position (3) | rotation (3)], so J maps from
+        segment DOFs (pos, rot) to constraint violations.
+
+        The JMJT computation then naturally produces the K matrix coupling
+        between position and rotation through the [r]_× term.
         """
         s = self.state
         n_edges = s.n_edges
 
-        # Allocate Jacobian storage
-        if not hasattr(self, 'jacobian_pos') or self.jacobian_pos.shape[0] != n_edges:
+        # Allocate full 6x6 Jacobian storage per segment
+        # J_fwd[i]: Jacobian from segment i to constraint i
+        # J_bwd[i]: Jacobian from segment i+1 to constraint i
+        if not hasattr(self, 'J_fwd') or self.J_fwd.shape[0] != n_edges:
+            self.J_fwd = np.zeros((n_edges, 6, 6), dtype=np.float32)
+            self.J_bwd = np.zeros((n_edges, 6, 6), dtype=np.float32)
+            # Keep old storage for compatibility
             self.jacobian_pos = np.zeros((n_edges, 6, 6), dtype=np.float32)
             self.jacobian_rot = np.zeros((n_edges, 6, 6), dtype=np.float32)
 
@@ -441,52 +442,67 @@ class DirectCosseratRodSimulationNumPy:
             if L <= 1e-8:
                 L = 1e-8
 
-            # === Stretch-Shear Jacobians (rows 0-2) ===
-            # C = connector0 - connector1
-            # connector0 = p0 + (L/2) * d3_0
-            # connector1 = p1 - (L/2) * d3_1
-            # ∂C/∂p0 = I, ∂C/∂p1 = -I
-            self.jacobian_pos[i, 0:3, 0:3] = np.eye(3, dtype=np.float32)   # w.r.t. p_i
-            self.jacobian_pos[i, 0:3, 3:6] = -np.eye(3, dtype=np.float32)  # w.r.t. p_{i+1}
-
             # Get rod axis directions d3 from quaternions
             d3_0 = self._quat_rotate_vector(q0, np.array([0, 0, 1], dtype=np.float32))
             d3_1 = self._quat_rotate_vector(q1, np.array([0, 0, 1], dtype=np.float32))
 
-            # Connector offsets from positions
+            # Connector offsets from positions (in world frame)
             # r0 = connector0 - p0 = (L/2) * d3_0
             # r1 = connector1 - p1 = -(L/2) * d3_1
             r0 = 0.5 * L * d3_0
             r1 = -0.5 * L * d3_1
 
-            r0_cross = self._skew_symmetric(r0)
-            r1_cross = self._skew_symmetric(r1)
-
-            # Sign convention from C++: sign=1 for segment0, sign=-1 for segment1
-            # ∂C/∂θ0 = ∂connector0/∂θ0 = -[r0]_× (derivative of rotating r0)
-            # ∂C/∂θ1 = -∂connector1/∂θ1 = +[r1]_× (connector1 has negative contribution)
-            self.jacobian_rot[i, 0:3, 0:3] = -r0_cross  # w.r.t. θ_i
-            self.jacobian_rot[i, 0:3, 3:6] = r1_cross   # w.r.t. θ_{i+1}
-
-            # === Bend-Twist Jacobians (rows 3-5) ===
-            # C_bt = ω - ω_rest, where ω = im(q0^{-1} * q1)
-            # The Jacobian is: ∂ω/∂θ = jOmega * G
-            # where jOmega is 3x4 and G is 4x3
-
-            # Compute G matrices
+            # Compute G matrices for quaternion-to-angular mapping
             G0 = self._compute_matrix_G(q0)  # 4x3
             G1 = self._compute_matrix_G(q1)  # 4x3
 
-            # Compute jOmega matrices (3x4)
+            # Compute jOmega matrices for Darboux vector Jacobians (3x4)
             jOmega0, jOmega1 = self._compute_jOmega(q0, q1)
 
             # Bend-twist Jacobians: jOmega * G (3x3)
-            self.jacobian_rot[i, 3:6, 0:3] = jOmega0 @ G0  # w.r.t. θ_i
-            self.jacobian_rot[i, 3:6, 3:6] = jOmega1 @ G1  # w.r.t. θ_{i+1}
+            jOmegaG0 = jOmega0 @ G0
+            jOmegaG1 = jOmega1 @ G1
 
-            # Bend-twist doesn't depend on positions
+            # === Build forward Jacobian (segment 0 -> constraint) ===
+            # Following C++: sign = 1 for forward
+            sign_fwd = 1.0
+            r0_cross = self._skew_symmetric(r0)
+
+            # Upper-left: sign * I (position contribution to stretch)
+            self.J_fwd[i, 0:3, 0:3] = sign_fwd * np.eye(3, dtype=np.float32)
+            # Upper-right: -sign * [r]_× (rotation contribution to stretch via lever arm)
+            self.J_fwd[i, 0:3, 3:6] = -sign_fwd * r0_cross
+            # Lower-left: zero (bend-twist doesn't depend on position)
+            self.J_fwd[i, 3:6, 0:3] = 0.0
+            # Lower-right: jOmegaG (rotation contribution to bend-twist)
+            self.J_fwd[i, 3:6, 3:6] = jOmegaG0
+
+            # === Build backward Jacobian (segment 1 -> constraint) ===
+            # Following C++: sign = -1 for backward
+            sign_bwd = -1.0
+            r1_cross = self._skew_symmetric(r1)
+
+            # Upper-left: sign * I
+            self.J_bwd[i, 0:3, 0:3] = sign_bwd * np.eye(3, dtype=np.float32)
+            # Upper-right: -sign * [r]_× = +[r1]_×
+            self.J_bwd[i, 0:3, 3:6] = -sign_bwd * r1_cross
+            # Lower-left: zero
+            self.J_bwd[i, 3:6, 0:3] = 0.0
+            # Lower-right: jOmegaG
+            self.J_bwd[i, 3:6, 3:6] = jOmegaG1
+
+            # === Also fill old separate storage for backward compatibility ===
+            # Position Jacobians (just the position columns)
+            self.jacobian_pos[i, 0:3, 0:3] = self.J_fwd[i, 0:3, 0:3]
+            self.jacobian_pos[i, 0:3, 3:6] = self.J_bwd[i, 0:3, 0:3]
             self.jacobian_pos[i, 3:6, 0:3] = 0.0
             self.jacobian_pos[i, 3:6, 3:6] = 0.0
+
+            # Rotation Jacobians (the rotation columns)
+            self.jacobian_rot[i, 0:3, 0:3] = self.J_fwd[i, 0:3, 3:6]
+            self.jacobian_rot[i, 0:3, 3:6] = self.J_bwd[i, 0:3, 3:6]
+            self.jacobian_rot[i, 3:6, 0:3] = self.J_fwd[i, 3:6, 3:6]
+            self.jacobian_rot[i, 3:6, 3:6] = self.J_bwd[i, 3:6, 3:6]
 
     def _skew_symmetric(self, v: np.ndarray) -> np.ndarray:
         """Create skew-symmetric matrix from vector (cross product matrix)."""
@@ -689,9 +705,16 @@ class DirectCosseratRodSimulationNumPy:
     def _project_direct_numpy(self):
         """NumPy implementation of non-banded direct constraint projection.
 
-        This matches the working reference implementation in numpy_cosserat_codex.py.
-        It reuses the constraint update and Jacobian computation methods, then
-        builds and solves a dense system.
+        Following the C++ banded solver approach:
+        1. Compute constraint violations
+        2. Compute full 6x6 Jacobians (J_fwd, J_bwd) for each constraint
+        3. Assemble JMJT using J * J^T with unit mass/inertia
+        4. Solve linear system
+        5. Apply corrections with actual mass/inertia
+
+        The C++ code uses unit mass/inertia in JMJT assembly (implicit in J*J^T),
+        then applies actual masses during correction. This matches the paper's
+        formulation where K matrix naturally emerges from J*J^T.
         """
         s = self.state
         n_edges = s.n_edges
@@ -699,62 +722,46 @@ class DirectCosseratRodSimulationNumPy:
         if n_edges == 0:
             return
 
-        # Step 1: Compute constraint values using existing method
+        # Step 1: Compute constraint values
         self._update_numpy()
 
-        # Step 2: Compute Jacobians using existing method
+        # Step 2: Compute full Jacobians (J_fwd, J_bwd)
         self._jacobians_numpy()
 
-        # Step 3: Build dense JMJT matrix
+        # Step 3: Build dense JMJT matrix following C++ banded solver
+        # C++ uses J * J^T directly (unit mass/inertia in assembly)
         n_dofs = 6 * n_edges
         A = np.zeros((n_dofs, n_dofs), dtype=np.float32)
         rhs = -self.constraint_values.reshape(n_dofs)
 
-        inv_masses = s.inv_masses
-        inv_I = s.quat_inv_masses
-
         for i in range(n_edges):
-            # Get stored Jacobians
-            J_pos = self.jacobian_pos[i]  # (6, 6) - [J_p0 | J_p1]
-            J_rot = self.jacobian_rot[i]  # (6, 6) - [J_t0 | J_t1]
-            J_p0 = J_pos[:, 0:3]  # (6, 3)
-            J_p1 = J_pos[:, 3:6]  # (6, 3)
-            J_t0 = J_rot[:, 0:3]  # (6, 3)
-            J_t1 = J_rot[:, 3:6]  # (6, 3)
+            # Get full 6x6 Jacobians for this constraint
+            J_fwd = self.J_fwd[i]  # (6, 6) - segment i contribution
+            J_bwd = self.J_bwd[i]  # (6, 6) - segment i+1 contribution
 
-            inv_m0 = inv_masses[i]
-            inv_m1 = inv_masses[i + 1]
-            inv_I0 = inv_I[i]
-            inv_I1 = inv_I[i + 1]
+            # Diagonal block: JMJT = J_fwd * J_fwd^T + J_bwd * J_bwd^T
+            # This naturally produces the K matrix with position-rotation coupling!
+            # K = I + [r]_× * [r]_×^T comes from J_fwd[:3,:] * J_fwd[:3,:]^T
+            JMJT_block = J_fwd @ J_fwd.T + J_bwd @ J_bwd.T
 
-            # Build diagonal block: JMJT = J * M^-1 * J^T
-            JMJT = (
-                inv_m0 * (J_p0 @ J_p0.T) +
-                inv_m1 * (J_p1 @ J_p1.T) +
-                inv_I0 * (J_t0 @ J_t0.T) +
-                inv_I1 * (J_t1 @ J_t1.T)
-            )
-
-            # Add compliance to diagonal
-            JMJT += np.diag(self.compliance[i])
+            # Add compliance to diagonal (regularization / inverse stiffness)
+            # C++ stores D = -compliance then does JMJT -= D, which equals JMJT += compliance
+            for k in range(6):
+                JMJT_block[k, k] += self.compliance[i, k]
 
             # Store in global matrix
             block = slice(6 * i, 6 * i + 6)
-            A[block, block] += JMJT
+            A[block, block] = JMJT_block
 
-            # Off-diagonal coupling with previous constraint (shared particle)
-            if i > 0:
-                J_pos_prev = self.jacobian_pos[i - 1]
-                J_rot_prev = self.jacobian_rot[i - 1]
-                J_p1_prev = J_pos_prev[:, 3:6]  # Constraint i-1's Jacobian w.r.t. particle i
-                J_t1_prev = J_rot_prev[:, 3:6]  # Constraint i-1's Jacobian w.r.t. orientation i
-
-                # Coupling through shared particle i (position and orientation)
-                coupling = inv_m0 * (J_p1_prev @ J_p0.T) + inv_I0 * (J_t1_prev @ J_t0.T)
-
-                prev_block = slice(6 * (i - 1), 6 * (i - 1) + 6)
-                A[prev_block, block] += coupling
-                A[block, prev_block] += coupling.T
+            # Off-diagonal coupling: constraint i shares segment i+1 with constraint i+1
+            # J_bwd[i] affects segment i+1, J_fwd[i+1] also affects segment i+1
+            if i < n_edges - 1:
+                J_fwd_next = self.J_fwd[i + 1]  # Next constraint's forward Jacobian
+                # Coupling: J_bwd[i] * J_fwd[i+1]^T (shared segment i+1)
+                coupling = J_bwd @ J_fwd_next.T
+                next_block = slice(6 * (i + 1), 6 * (i + 1) + 6)
+                A[block, next_block] = coupling
+                A[next_block, block] = coupling.T
 
         # Step 4: Solve system A * Δλ = -C
         try:
@@ -763,36 +770,44 @@ class DirectCosseratRodSimulationNumPy:
             # Matrix is singular, use least squares
             delta_lambda = np.linalg.lstsq(A, rhs, rcond=None)[0]
 
-        # Step 5: Apply corrections using stored Jacobians
+        # Step 5: Apply corrections
+        # Following C++ banded solver: corrections use actual masses for position,
+        # but unit inertia for rotation (implicit in G matrix mapping)
+        inv_masses = s.inv_masses
+
         for i in range(n_edges):
             dl = delta_lambda[6 * i: 6 * i + 6]
 
-            J_pos = self.jacobian_pos[i]
-            J_rot = self.jacobian_rot[i]
-            J_p0 = J_pos[:, 0:3]
-            J_p1 = J_pos[:, 3:6]
-            J_t0 = J_rot[:, 0:3]
-            J_t1 = J_rot[:, 3:6]
+            J_fwd = self.J_fwd[i]
+            J_bwd = self.J_bwd[i]
 
+            # Correction for segment i (via J_fwd)
+            # dx = J^T * dl, where x = [pos, rot]
+            # Position correction: top 3 rows of J^T * dl, scaled by inv_mass
             inv_m0 = inv_masses[i]
-            inv_m1 = inv_masses[i + 1]
-            inv_I0 = inv_I[i]
-            inv_I1 = inv_I[i + 1]
-
-            # Position corrections: Δp = inv_m * J_p^T * Δλ
             if inv_m0 > 0.0:
-                dp0 = inv_m0 * (J_p0.T @ dl)
+                # J_fwd^T @ dl gives [dp; dtheta], take position part
+                correction0 = J_fwd.T @ dl
+                dp0 = inv_m0 * correction0[:3]
                 s.predicted_positions[i, :3] += dp0
+
+            # Rotation correction: bottom 3 rows of J^T * dl
+            # C++ uses unit inertia (correction = G * dtheta directly)
+            if s.quat_inv_masses[i] > 0.0:
+                correction0 = J_fwd.T @ dl
+                dtheta0 = correction0[3:6]  # Unit inertia
+                self._apply_quaternion_correction(s.predicted_orientations, i, dtheta0)
+
+            # Correction for segment i+1 (via J_bwd)
+            inv_m1 = inv_masses[i + 1]
             if inv_m1 > 0.0:
-                dp1 = inv_m1 * (J_p1.T @ dl)
+                correction1 = J_bwd.T @ dl
+                dp1 = inv_m1 * correction1[:3]
                 s.predicted_positions[i + 1, :3] += dp1
 
-            # Orientation corrections: Δθ = inv_I * J_t^T * Δλ
-            if inv_I0 > 0.0:
-                dtheta0 = inv_I0 * (J_t0.T @ dl)
-                self._apply_quaternion_correction(s.predicted_orientations, i, dtheta0)
-            if inv_I1 > 0.0:
-                dtheta1 = inv_I1 * (J_t1.T @ dl)
+            if s.quat_inv_masses[i + 1] > 0.0:
+                correction1 = J_bwd.T @ dl
+                dtheta1 = correction1[3:6]  # Unit inertia
                 self._apply_quaternion_correction(s.predicted_orientations, i + 1, dtheta1)
 
     # =========================================================================
