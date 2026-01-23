@@ -704,8 +704,8 @@ class TestMenagerieBase(unittest.TestCase):
             sync_to_viewer()
             viewer.sync()
 
-        # Setup CUDA graphs if not in visual mode
-        use_cuda_graph = not self.debug_visual and wp.get_device().is_cuda and wp.is_mempool_enabled(wp.get_device())
+        # Setup CUDA graphs
+        use_cuda_graph = wp.get_device().is_cuda and wp.is_mempool_enabled(wp.get_device())
         newton_graph = None
         native_graph = None
 
@@ -931,8 +931,8 @@ class TestMenagerie_UniversalRobotsUr5e(TestMenagerieBase):
     floating = False
     control_strategy = ZeroControlStrategy()
     num_worlds = 1  # For debugging
-    debug_visual = False  # Enable viewer
-    debug_view_newton = True  # False=Native, True=Newton
+    debug_visual = True  # Enable viewer
+    debug_view_newton = False  # False=Native, True=Newton
 
 
 class TestMenagerie_UniversalRobotsUr10e(TestMenagerieBase):
