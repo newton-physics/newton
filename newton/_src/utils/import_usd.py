@@ -1338,7 +1338,7 @@ def parse_usd(
             if str(joint_desc.body0) in ignored_body_paths or str(joint_desc.body1) in ignored_body_paths:
                 continue
             try:
-                parse_joint(joint_desc)
+                parse_joint(joint_desc, incoming_xform=incoming_world_xform)
             except ValueError as exc:
                 if verbose:
                     print(f"Skipping joint {joint_key}: {exc}")
