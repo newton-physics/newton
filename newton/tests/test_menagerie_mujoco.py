@@ -571,7 +571,7 @@ class TestMenagerieBase(unittest.TestCase):
             source_type=self.model_source_type,
             floating=self.floating,
             num_worlds=self.num_worlds,
-            add_ground=True,
+            add_ground=False,  # Native MJCF doesn't have ground plane
         )
 
     def _create_native_mujoco_warp(self) -> tuple[Any, Any, Any, Any]:
@@ -648,77 +648,34 @@ class TestMenagerieBase(unittest.TestCase):
                 status = "OK" if max_diff <= tol else "FAIL"
                 print(f"  {field_name}: max_diff={max_diff:.6e} (tol={tol:.0e}) [{status}]")
 
-        def sync_newton_to_viewer():
-            """Copy first world from Newton's mjw_data to Newton's mj_data for viewer."""
+        def sync_to_viewer():
+            """Copy first world from mjw_data to mj_data for viewer."""
             assert _mujoco_warp is not None
-            assert _mujoco is not None
             wp.synchronize()
-            _mujoco_warp.get_data_into(newton_solver.mj_data, newton_solver.mj_model, newton_solver.mjw_data)
-            _mujoco.mj_forward(newton_solver.mj_model, newton_solver.mj_data)
-
-        def sync_native_to_viewer():
-            """Copy first world from native mjw_data to native mj_data for viewer."""
-            assert _mujoco_warp is not None
-            assert _mujoco is not None
-            wp.synchronize()
-            _mujoco_warp.get_data_into(mj_data_native, mj_model, native_mjw_data)
-            _mujoco.mj_forward(mj_model, mj_data_native)
-
-        # Visual debug mode: auto-run with viewer
-        if self.debug_visual:
-            import mujoco.viewer  # noqa: PLC0415
-
-            # Choose view: set debug_view_newton = True to show Newton, False for Native
-            view_name = "NEWTON" if self.debug_view_newton else "NATIVE"
-            print(f"\n=== VISUAL DEBUG MODE ({view_name}) ===")
-            print("Close viewer to exit.\n")
-
             if self.debug_view_newton:
-                viewer = mujoco.viewer.launch_passive(newton_solver.mj_model, newton_solver.mj_data)
-                sync_newton_to_viewer()
+                _mujoco_warp.get_data_into(newton_solver.mj_data, newton_solver.mj_model, newton_solver.mjw_data)
             else:
-                viewer = mujoco.viewer.launch_passive(mj_model, mj_data_native)
-                sync_native_to_viewer()
-            viewer.sync()
+                _mujoco_warp.get_data_into(mj_data_native, mj_model, native_mjw_data)
 
-            print("Initial state:")
-            print_diff(-1)
+        def step_both(step_num: int, newton_graph: Any = None, native_graph: Any = None):
+            """Step both simulations with control assignment."""
+            assert self.control_strategy is not None
+            assert _mujoco_warp is not None
+            t = step_num * self.dt
+            ctrl = self.control_strategy.get_control(t, step_num, self.num_worlds, num_actuators)
 
-            step = 0
-            max_steps = 500
+            # Assign control to both
+            newton_solver.mjw_data.ctrl.assign(ctrl)
+            native_mjw_data.ctrl.assign(ctrl)
 
-            while viewer.is_running() and step < max_steps:
-                t = step * self.dt
-                ctrl = self.control_strategy.get_control(t, step, self.num_worlds, num_actuators)
-                native_mjw_data.ctrl.assign(ctrl)
-
+            # Step both
+            if newton_graph and native_graph:
+                wp.capture_launch(native_graph)
+                wp.capture_launch(newton_graph)
+            else:
                 _mujoco_warp.step(native_mjw_model, native_mjw_data)
                 newton_solver.step(newton_state, newton_state, newton_control, None, self.dt)
 
-                if self.debug_view_newton:
-                    sync_newton_to_viewer()
-                else:
-                    sync_native_to_viewer()
-                viewer.sync()
-                step += 1
-
-                if step % 50 == 0:
-                    print(f"Step {step}:")
-                    print_diff(step - 1)
-
-                time.sleep(self.dt)
-
-            print(f"\nFinal ({step} steps):")
-            print_diff(step - 1)
-
-            while viewer.is_running():
-                time.sleep(0.1)
-
-            viewer.close()
-            self.skipTest("Visual debug mode completed")
-            return
-
-        # Normal test mode (no visual debugging)
         def compare_at_step(step_num: int):
             """Compare mjw_data arrays for all worlds, fail on first mismatch."""
             for field_name in self.compare_fields:
@@ -731,55 +688,82 @@ class TestMenagerieBase(unittest.TestCase):
                     step_num,
                 )
 
-        # Check if CUDA graphs are available
-        use_cuda_graph = wp.get_device().is_cuda and wp.is_mempool_enabled(wp.get_device())
+        # Setup viewer if in debug mode
+        viewer = None
+        if self.debug_visual:
+            import mujoco.viewer  # noqa: PLC0415
 
+            view_name = "NEWTON" if self.debug_view_newton else "NATIVE"
+            print(f"\n=== VISUAL DEBUG MODE ({view_name}) ===")
+            print("Close viewer to exit.\n")
+
+            if self.debug_view_newton:
+                viewer = mujoco.viewer.launch_passive(newton_solver.mj_model, newton_solver.mj_data)
+            else:
+                viewer = mujoco.viewer.launch_passive(mj_model, mj_data_native)
+            sync_to_viewer()
+            viewer.sync()
+
+        # Setup CUDA graphs if not in visual mode
+        use_cuda_graph = not self.debug_visual and wp.get_device().is_cuda and wp.is_mempool_enabled(wp.get_device())
         newton_graph = None
         native_graph = None
 
-        # Compare initial state before any step
-        compare_at_step(-1)
-
-        # Step 0: Run normally and capture graphs
-        ctrl = self.control_strategy.get_control(0, 0, self.num_worlds, num_actuators)
-        newton_solver.mjw_data.ctrl.assign(ctrl)
-        native_mjw_data.ctrl.assign(ctrl)
-
-        if use_cuda_graph:
-            # Capture Newton graph (step 0 runs during capture)
-            with wp.ScopedCapture() as capture:
-                newton_solver.step(newton_state, newton_state, newton_control, None, self.dt)
-            newton_graph = capture.graph
-
-            # Capture native graph (step 0 runs during capture)
-            with wp.ScopedCapture() as capture:
-                _mujoco_warp.step(native_mjw_model, native_mjw_data)
-            native_graph = capture.graph
+        # Compare/print initial state
+        if self.debug_visual:
+            print("Initial state:")
+            print_diff(-1)
         else:
-            _mujoco_warp.step(native_mjw_model, native_mjw_data)
-            newton_solver.step(newton_state, newton_state, newton_control, None, self.dt)
+            compare_at_step(-1)
 
-        # Compare after step 0
-        compare_at_step(0)
+        # Determine number of steps
+        max_steps = 500 if self.debug_visual else self.num_steps
 
-        # Steps 1+: Use captured graphs
-        for step in range(1, self.num_steps):
-            t = step * self.dt
+        # Main simulation loop
+        for step in range(max_steps):
+            # Check viewer still running
+            if viewer and not viewer.is_running():
+                break
 
-            # Generate control: shape (num_worlds, num_actuators)
-            ctrl = self.control_strategy.get_control(t, step, self.num_worlds, num_actuators)
-            newton_solver.mjw_data.ctrl.assign(ctrl)
-            native_mjw_data.ctrl.assign(ctrl)
+            # Step 0 with graph capture, or regular step
+            if step == 0 and use_cuda_graph:
+                ctrl = self.control_strategy.get_control(0, 0, self.num_worlds, num_actuators)
+                newton_solver.mjw_data.ctrl.assign(ctrl)
+                native_mjw_data.ctrl.assign(ctrl)
 
-            # Step both using mujoco_warp
-            if newton_graph and native_graph:
-                wp.capture_launch(native_graph)
-                wp.capture_launch(newton_graph)
+                with wp.ScopedCapture() as capture:
+                    newton_solver.step(newton_state, newton_state, newton_control, None, self.dt)
+                newton_graph = capture.graph
+
+                with wp.ScopedCapture() as capture:
+                    _mujoco_warp.step(native_mjw_model, native_mjw_data)
+                native_graph = capture.graph
             else:
-                _mujoco_warp.step(native_mjw_model, native_mjw_data)
-                newton_solver.step(newton_state, newton_state, newton_control, None, self.dt)
+                step_both(step, newton_graph, native_graph)
 
-            compare_at_step(step)
+            # Viewer sync
+            if viewer:
+                sync_to_viewer()
+                viewer.sync()
+                time.sleep(self.dt)
+
+            # Compare or print diff
+            if self.debug_visual:
+                if (step + 1) % 50 == 0:
+                    print(f"Step {step + 1}:")
+                    print_diff(step)
+            else:
+                compare_at_step(step)
+
+        # Cleanup
+        if viewer:
+            print(f"\nFinal ({max_steps} steps):")
+            print_diff(max_steps - 1)
+
+            while viewer.is_running():
+                time.sleep(0.1)
+            viewer.close()
+            self.skipTest("Visual debug mode completed")
 
 
 # =============================================================================
@@ -947,7 +931,7 @@ class TestMenagerie_UniversalRobotsUr5e(TestMenagerieBase):
     floating = False
     control_strategy = ZeroControlStrategy()
     num_worlds = 1  # For debugging
-    debug_visual = True  # Enable viewer
+    debug_visual = False  # Enable viewer
     debug_view_newton = True  # False=Native, True=Newton
 
 
