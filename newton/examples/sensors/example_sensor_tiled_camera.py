@@ -213,6 +213,7 @@ class Example:
         self.tiled_camera_sensor_depth_image = self.tiled_camera_sensor.create_depth_image_output()
         self.tiled_camera_sensor_normal_image = self.tiled_camera_sensor.create_normal_image_output()
         self.tiled_camera_sensor_shape_index_image = self.tiled_camera_sensor.create_shape_index_image_output()
+        self.tiled_camera_sensor_albedo_image = self.tiled_camera_sensor.create_albedo_image_output()
         self.depth_range = wp.array([1.0, 100.0], dtype=wp.float32)
 
         if isinstance(self.viewer, ViewerGL):
@@ -251,6 +252,7 @@ class Example:
             depth_image=self.tiled_camera_sensor_depth_image,
             normal_image=self.tiled_camera_sensor_normal_image,
             shape_index_image=self.tiled_camera_sensor_shape_index_image,
+            albedo_image=self.tiled_camera_sensor_albedo_image,
         )
         self.update_texture()
 
@@ -340,6 +342,10 @@ class Example:
             self.tiled_camera_sensor.flatten_color_image_to_rgba(
                 self.tiled_camera_sensor_shape_index_image, texture_buffer, self.num_worlds_per_row
             )
+        elif self.image_output == 5:
+            self.tiled_camera_sensor.flatten_color_image_to_rgba(
+                self.tiled_camera_sensor_albedo_image, texture_buffer, self.num_worlds_per_row
+            )
         self.texture_buffer.unmap()
 
         gl.glBindTexture(gl.GL_TEXTURE_2D, self.texture_id)
@@ -380,6 +386,8 @@ class Example:
             self.image_output = 3
         if ui.radio_button("Show Shape Index Output", self.image_output == 4):
             self.image_output = 4
+        if ui.radio_button("Show Albedo Output", self.image_output == 5):
+            self.image_output = 5
 
     def display(self, imgui):
         line_color = imgui.get_color_u32(imgui.Col_.window_bg)

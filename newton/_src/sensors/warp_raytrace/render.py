@@ -168,11 +168,13 @@ def _render_megakernel(
     render_depth: wp.bool,
     render_shape_index: wp.bool,
     render_normal: wp.bool,
+    render_albedo: wp.bool,
     # Outputs
     out_pixels: wp.array3d(dtype=wp.uint32),
     out_depth: wp.array3d(dtype=wp.float32),
     out_shape_index: wp.array3d(dtype=wp.uint32),
     out_normal: wp.array3d(dtype=wp.vec3f),
+    out_albedo: wp.array3d(dtype=wp.uint32),
 ):
     tid = wp.tid()
 
@@ -283,6 +285,19 @@ def _render_megakernel(
                     base_color[2] * tex_color[2],
                 )
 
+    if out_albedo:
+        albedo_color = base_color
+        if closest_hit.shape_index < ray_cast.MAX_SHAPE_ID:
+            albedo_color *= wp.dot(closest_hit.normal, -ray_dir_world)
+            albedo_color = wp.min(wp.max(albedo_color, wp.vec3f(0.0)), wp.vec3f(1.0))
+
+        out_albedo[world_index, camera_index, out_index] = pack_rgba_to_uint32(
+            albedo_color[0] * 255.0,
+            albedo_color[1] * 255.0,
+            albedo_color[2] * 255.0,
+            255.0,
+        )
+
     if enable_ambient_lighting:
         up = wp.vec3f(0.0, 0.0, 1.0)
         len_n = wp.length(closest_hit.normal)
@@ -350,6 +365,7 @@ def render_megakernel(
     depth_image: wp.array(dtype=wp.float32, ndim=3) | None,
     shape_index_image: wp.array(dtype=wp.uint32, ndim=3) | None,
     normal_image: wp.array(dtype=wp.vec3f, ndim=3) | None,
+    albedo_image: wp.array(dtype=wp.uint32, ndim=3) | None,
     clear_data: ClearData | None,
 ):
     if rc.options.render_order == RenderOrder.TILED:
@@ -367,6 +383,9 @@ def render_megakernel(
 
     if clear_data is not None and clear_data.clear_normal is not None and normal_image is not None:
         normal_image.fill_(clear_data.clear_normal)
+
+    if clear_data is not None and clear_data.clear_albedo is not None and albedo_image is not None:
+        albedo_image.fill_(wp.uint32(clear_data.clear_albedo))
 
     wp.launch(
         kernel=_render_megakernel,
@@ -437,9 +456,11 @@ def render_megakernel(
             depth_image is not None,
             shape_index_image is not None,
             normal_image is not None,
+            albedo_image is not None,
             color_image,
             depth_image,
             shape_index_image,
             normal_image,
+            albedo_image,
         ],
     )
