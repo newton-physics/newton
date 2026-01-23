@@ -730,6 +730,10 @@ class ModelBuilder:
         self.up_axis: Axis = Axis.from_any(up_axis)
         self.gravity: float = gravity
 
+        # Per-world gravity vectors, populated when worlds are created via begin_world()
+        # Each entry is a tuple (gx, gy, gz) representing the gravity vector for that world
+        self.world_gravity: list[tuple[float, float, float]] = []
+
         # contacts to be generated within the given distance margin to be generated at
         # every simulation substep (can be 0 if only one PBD solver iteration is used)
         self.rigid_contact_margin = 0.1
@@ -1642,7 +1646,12 @@ class ModelBuilder:
 
     # region World management methods
 
-    def begin_world(self, key: str | None = None, attributes: dict[str, Any] | None = None):
+    def begin_world(
+        self,
+        key: str | None = None,
+        attributes: dict[str, Any] | None = None,
+        gravity: Vec3 | None = None,
+    ):
         """Begin a new world context for adding entities.
 
         This method starts a new world scope where all subsequently added entities
@@ -1657,6 +1666,9 @@ class ModelBuilder:
                 a default key "world_{index}" will be generated.
             attributes (dict[str, Any] | None): Optional custom attributes to associate
                 with this world for later use.
+            gravity (Vec3 | None): Optional gravity vector for this world. If None,
+                the world will use the builder's default gravity (computed from
+                ``self.gravity`` and ``self.up_vector``).
 
         Raises:
             RuntimeError: If called when already inside a world context (current_world != -1).
@@ -1668,14 +1680,14 @@ class ModelBuilder:
             # Add global ground plane
             builder.add_ground_plane()  # Added to world -1 (global)
 
-            # Create world 0
+            # Create world 0 with default gravity
             builder.begin_world(key="robot_0")
             builder.add_body(...)  # Added to world 0
             builder.add_shape_box(...)  # Added to world 0
             builder.end_world()
 
-            # Create world 1
-            builder.begin_world(key="robot_1")
+            # Create world 1 with custom zero gravity
+            builder.begin_world(key="robot_1", gravity=(0.0, 0.0, 0.0))
             builder.add_body(...)  # Added to world 1
             builder.add_shape_box(...)  # Added to world 1
             builder.end_world()
@@ -1693,6 +1705,12 @@ class ModelBuilder:
         # Store world metadata if needed (for future use)
         # Note: We might want to add world_key and world_attributes lists in __init__ if needed
         # For now, we just track the world index
+
+        # Initialize this world's gravity
+        if gravity is not None:
+            self.world_gravity.append(tuple(gravity))
+        else:
+            self.world_gravity.append(tuple(g * self.gravity for g in self.up_vector))
 
     def end_world(self):
         """End the current world context and return to global scope.
@@ -1785,6 +1803,14 @@ class ModelBuilder:
 
         if builder.up_axis != self.up_axis:
             raise ValueError("Cannot add a builder with a different up axis.")
+
+        # Copy gravity from source builder
+        if self.current_world >= 0 and self.current_world < len(self.world_gravity):
+            # We're in a world context, update this world's gravity vector
+            self.world_gravity[self.current_world] = tuple(g * builder.gravity for g in builder.up_vector)
+        elif self.current_world < 0:
+            # No world context (add_builder called directly), copy scalar gravity
+            self.gravity = builder.gravity
 
         self._requested_state_attributes.update(builder._requested_state_attributes)
 
@@ -4638,6 +4664,9 @@ class ModelBuilder:
                             continue
                 # note we need to copy the mesh to avoid modifying the original mesh
                 self.shape_source[shape] = self.shape_source[shape].copy(vertices=rmesh.vertices, indices=rmesh.indices)
+                # mark convex_hull result as convex mesh type for efficient collision detection
+                if method == "convex_hull":
+                    self.shape_type[shape] = GeoType.CONVEX_MESH
                 remeshed_shapes.add(shape)
 
         if method == "bounding_box":
@@ -6716,9 +6745,15 @@ class ModelBuilder:
             m.up_vector = np.array(self.up_vector, dtype=wp.float32)
 
             # set gravity - create per-world gravity array for multi-world support
-            gravity_vec = wp.vec3(*(g * self.gravity for g in self.up_vector))
+            if self.world_gravity:
+                # Use per-world gravity from world_gravity list
+                gravity_vecs = [wp.vec3(*g) for g in self.world_gravity]
+            else:
+                # Fallback: use scalar gravity for all worlds
+                gravity_vec = wp.vec3(*(g * self.gravity for g in self.up_vector))
+                gravity_vecs = [gravity_vec] * self.num_worlds
             m.gravity = wp.array(
-                [gravity_vec] * self.num_worlds,
+                gravity_vecs,
                 dtype=wp.vec3,
                 device=device,
                 requires_grad=requires_grad,

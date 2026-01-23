@@ -335,6 +335,7 @@ class SensorTiledCamera:
         image: wp.array(dtype=wp.float32, ndim=3),
         out_buffer: wp.array(dtype=wp.uint8, ndim=3) | None = None,
         num_worlds_per_row: int | None = None,
+        depth_range: wp.array(dtype=wp.float32) | None = None,
     ):
         """
         Flatten rendered depth image to a tiled grayscale image buffer.
@@ -347,9 +348,10 @@ class SensorTiledCamera:
             image: Depth output array from render(), shape (num_worlds, num_cameras, width*height).
             out_buffer: Optional output array
             num_worlds_per_row: Optional number of rows
+            depth_range: Depth range to normalize to, shape (2) [near, far], will be automatically determined if None
         """
 
-        return self.render_context.utils.flatten_depth_image_to_rgba(image, out_buffer, num_worlds_per_row)
+        return self.render_context.utils.flatten_depth_image_to_rgba(image, out_buffer, num_worlds_per_row, depth_range)
 
     def assign_random_colors_per_world(self, seed: int = 100):
         """
