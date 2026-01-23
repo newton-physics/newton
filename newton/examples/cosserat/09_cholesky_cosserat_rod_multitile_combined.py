@@ -51,6 +51,8 @@
 
 import math
 
+import numpy as np
+
 import warp as wp
 
 import newton
@@ -158,6 +160,341 @@ def compute_bend_jacobian_row(q0: wp.quat, q1: wp.quat, avg_length: float, row: 
             return scale * wp.vec4(-q0[2], q0[3], q0[0], -q0[1])
         else:
             return scale * wp.vec4(q0[1], -q0[0], q0[3], -q0[2])
+
+
+@wp.func
+def dot4(a: wp.vec4, b: wp.vec4) -> float:
+    """Compute dot product of two vec4 values."""
+    return a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3]
+
+
+@wp.func
+def compute_J_bend(q0: wp.quat, q1: wp.quat, avg_length: float, is_q0: int) -> wp.mat33:
+    """Compute 3x3 bend Jacobian block J_bend_q0 or J_bend_q1."""
+    j0 = compute_bend_jacobian_row(q0, q1, avg_length, 0, is_q0)
+    j1 = compute_bend_jacobian_row(q0, q1, avg_length, 1, is_q0)
+    j2 = compute_bend_jacobian_row(q0, q1, avg_length, 2, is_q0)
+
+    if is_q0 == 1:
+        q = q0
+    else:
+        q = q1
+
+    g0 = compute_G_matrix_col(q, 0)
+    g1 = compute_G_matrix_col(q, 1)
+    g2 = compute_G_matrix_col(q, 2)
+
+    return wp.mat33(
+        dot4(j0, g0), dot4(j0, g1), dot4(j0, g2),
+        dot4(j1, g0), dot4(j1, g1), dot4(j1, g2),
+        dot4(j2, g0), dot4(j2, g1), dot4(j2, g2),
+    )
+
+
+@wp.func
+def compute_J_stretch(d3: wp.vec3) -> wp.mat33:
+    """Compute 3x3 stretch Jacobian block for quaternion DOFs."""
+    return wp.mat33(
+        0.0, -2.0 * d3[2], 2.0 * d3[1],
+        2.0 * d3[2], 0.0, -2.0 * d3[0],
+        -2.0 * d3[1], 2.0 * d3[0], 0.0,
+    )
+
+
+@wp.func
+def mat33_add(a: wp.mat33, b: wp.mat33) -> wp.mat33:
+    return wp.mat33(
+        a[0, 0] + b[0, 0], a[0, 1] + b[0, 1], a[0, 2] + b[0, 2],
+        a[1, 0] + b[1, 0], a[1, 1] + b[1, 1], a[1, 2] + b[1, 2],
+        a[2, 0] + b[2, 0], a[2, 1] + b[2, 1], a[2, 2] + b[2, 2],
+    )
+
+
+@wp.func
+def mat33_sub(a: wp.mat33, b: wp.mat33) -> wp.mat33:
+    return wp.mat33(
+        a[0, 0] - b[0, 0], a[0, 1] - b[0, 1], a[0, 2] - b[0, 2],
+        a[1, 0] - b[1, 0], a[1, 1] - b[1, 1], a[1, 2] - b[1, 2],
+        a[2, 0] - b[2, 0], a[2, 1] - b[2, 1], a[2, 2] - b[2, 2],
+    )
+
+
+@wp.func
+def mat33_mul(a: wp.mat33, b: wp.mat33) -> wp.mat33:
+    return wp.mat33(
+        a[0, 0] * b[0, 0] + a[0, 1] * b[1, 0] + a[0, 2] * b[2, 0],
+        a[0, 0] * b[0, 1] + a[0, 1] * b[1, 1] + a[0, 2] * b[2, 1],
+        a[0, 0] * b[0, 2] + a[0, 1] * b[1, 2] + a[0, 2] * b[2, 2],
+        a[1, 0] * b[0, 0] + a[1, 1] * b[1, 0] + a[1, 2] * b[2, 0],
+        a[1, 0] * b[0, 1] + a[1, 1] * b[1, 1] + a[1, 2] * b[2, 1],
+        a[1, 0] * b[0, 2] + a[1, 1] * b[1, 2] + a[1, 2] * b[2, 2],
+        a[2, 0] * b[0, 0] + a[2, 1] * b[1, 0] + a[2, 2] * b[2, 0],
+        a[2, 0] * b[0, 1] + a[2, 1] * b[1, 1] + a[2, 2] * b[2, 1],
+        a[2, 0] * b[0, 2] + a[2, 1] * b[1, 2] + a[2, 2] * b[2, 2],
+    )
+
+
+@wp.func
+def mat33_mul_vec3(a: wp.mat33, v: wp.vec3) -> wp.vec3:
+    return wp.vec3(
+        a[0, 0] * v[0] + a[0, 1] * v[1] + a[0, 2] * v[2],
+        a[1, 0] * v[0] + a[1, 1] * v[1] + a[1, 2] * v[2],
+        a[2, 0] * v[0] + a[2, 1] * v[1] + a[2, 2] * v[2],
+    )
+
+
+@wp.func
+def mat33_inverse(a: wp.mat33) -> wp.mat33:
+    det = (
+        a[0, 0] * (a[1, 1] * a[2, 2] - a[1, 2] * a[2, 1])
+        - a[0, 1] * (a[1, 0] * a[2, 2] - a[1, 2] * a[2, 0])
+        + a[0, 2] * (a[1, 0] * a[2, 1] - a[1, 1] * a[2, 0])
+    )
+    if wp.abs(det) < 1.0e-9:
+        det = 1.0e-9
+    inv_det = 1.0 / det
+
+    return wp.mat33(
+        (a[1, 1] * a[2, 2] - a[1, 2] * a[2, 1]) * inv_det,
+        (a[0, 2] * a[2, 1] - a[0, 1] * a[2, 2]) * inv_det,
+        (a[0, 1] * a[1, 2] - a[0, 2] * a[1, 1]) * inv_det,
+        (a[1, 2] * a[2, 0] - a[1, 0] * a[2, 2]) * inv_det,
+        (a[0, 0] * a[2, 2] - a[0, 2] * a[2, 0]) * inv_det,
+        (a[0, 2] * a[1, 0] - a[0, 0] * a[1, 2]) * inv_det,
+        (a[1, 0] * a[2, 1] - a[1, 1] * a[2, 0]) * inv_det,
+        (a[0, 1] * a[2, 0] - a[0, 0] * a[2, 1]) * inv_det,
+        (a[0, 0] * a[1, 1] - a[0, 1] * a[1, 0]) * inv_det,
+    )
+
+
+@wp.func
+def load_mat33(system_matrices: wp.array3d(dtype=float), tile_idx: int, row_base: int, col_base: int) -> wp.mat33:
+    return wp.mat33(
+        system_matrices[tile_idx, row_base + 0, col_base + 0],
+        system_matrices[tile_idx, row_base + 0, col_base + 1],
+        system_matrices[tile_idx, row_base + 0, col_base + 2],
+        system_matrices[tile_idx, row_base + 1, col_base + 0],
+        system_matrices[tile_idx, row_base + 1, col_base + 1],
+        system_matrices[tile_idx, row_base + 1, col_base + 2],
+        system_matrices[tile_idx, row_base + 2, col_base + 0],
+        system_matrices[tile_idx, row_base + 2, col_base + 1],
+        system_matrices[tile_idx, row_base + 2, col_base + 2],
+    )
+
+
+@wp.func
+def store_mat33(system_matrices: wp.array3d(dtype=float), tile_idx: int, row_base: int, col_base: int, m: wp.mat33):
+    system_matrices[tile_idx, row_base + 0, col_base + 0] = m[0, 0]
+    system_matrices[tile_idx, row_base + 0, col_base + 1] = m[0, 1]
+    system_matrices[tile_idx, row_base + 0, col_base + 2] = m[0, 2]
+    system_matrices[tile_idx, row_base + 1, col_base + 0] = m[1, 0]
+    system_matrices[tile_idx, row_base + 1, col_base + 1] = m[1, 1]
+    system_matrices[tile_idx, row_base + 1, col_base + 2] = m[1, 2]
+    system_matrices[tile_idx, row_base + 2, col_base + 0] = m[2, 0]
+    system_matrices[tile_idx, row_base + 2, col_base + 1] = m[2, 1]
+    system_matrices[tile_idx, row_base + 2, col_base + 2] = m[2, 2]
+
+
+@wp.kernel
+def assemble_combined_tridiagonal_kernel(
+    particle_q: wp.array(dtype=wp.vec3),
+    particle_inv_mass: wp.array(dtype=float),
+    edge_q: wp.array(dtype=wp.quat),
+    edge_inv_mass: wp.array(dtype=float),
+    rest_length: wp.array(dtype=float),
+    rest_darboux: wp.array(dtype=wp.quat),
+    stretch_stiffness: wp.vec3,
+    bend_stiffness: wp.vec3,
+    compliance_factor: float,
+    num_joints: int,
+    num_bend: int,
+    # outputs
+    block_lower: wp.array3d(dtype=float),
+    block_diag: wp.array3d(dtype=float),
+    block_upper: wp.array3d(dtype=float),
+    block_rhs: wp.array2d(dtype=float),
+):
+    """Assemble block tridiagonal system for the full chain."""
+    j = wp.tid()
+    if j >= num_joints:
+        return
+
+    # zero blocks
+    for r in range(JOINT_DOFS):
+        block_rhs[j, r] = 0.0
+        for c in range(JOINT_DOFS):
+            block_lower[j, r, c] = 0.0
+            block_diag[j, r, c] = 0.0
+            block_upper[j, r, c] = 0.0
+
+    p0 = particle_q[j]
+    p1 = particle_q[j + 1]
+    q0 = edge_q[j]
+    L = rest_length[j]
+
+    inv_m0 = particle_inv_mass[j]
+    inv_m1 = particle_inv_mass[j + 1]
+    inv_mq = edge_inv_mass[j]
+
+    # Stretch RHS
+    d3 = quat_rotate_e3(q0)
+    edge_vec = p1 - p0
+    gamma = edge_vec / L - d3
+    gamma_local = wp.quat_rotate_inv(q0, gamma)
+    gamma_local = wp.vec3(
+        gamma_local[0] * stretch_stiffness[0],
+        gamma_local[1] * stretch_stiffness[1],
+        gamma_local[2] * stretch_stiffness[2],
+    )
+    gamma = wp.quat_rotate(q0, gamma_local)
+
+    block_rhs[j, 0] = -gamma[0]
+    block_rhs[j, 1] = -gamma[1]
+    block_rhs[j, 2] = -gamma[2]
+
+    # Stretch-stretch diagonal
+    L_inv = 1.0 / L
+    pos_contrib = (inv_m0 + inv_m1) * L_inv * L_inv
+    quat_factor = 4.0 * inv_mq
+    for i in range(3):
+        for k in range(3):
+            val = pos_contrib if i == k else 0.0
+            val += quat_factor * ((1.0 if i == k else 0.0) - d3[i] * d3[k])
+            if i == k:
+                val += compliance_factor
+            block_diag[j, i, k] = val
+
+    J_stretch = compute_J_stretch(d3)
+
+    # Bend block if present
+    if j < num_bend:
+        q1 = edge_q[j + 1]
+        inv_mq1 = edge_inv_mass[j + 1]
+        rest_d = rest_darboux[j]
+        L_next = rest_length[j + 1]
+        avg_length = 0.5 * (L + L_next)
+
+        q0_conj = wp.quat(-q0[0], -q0[1], -q0[2], q0[3])
+        omega_quat = wp.mul(q0_conj, q1)
+        omega = wp.vec3(omega_quat[0], omega_quat[1], omega_quat[2]) * (2.0 / avg_length)
+
+        rest_vec = wp.vec3(rest_d[0], rest_d[1], rest_d[2])
+        kappa_plus = omega + rest_vec
+        kappa_minus = omega - rest_vec
+        if wp.dot(kappa_minus, kappa_minus) > wp.dot(kappa_plus, kappa_plus):
+            kappa = kappa_plus
+        else:
+            kappa = kappa_minus
+
+        block_rhs[j, 3] = -kappa[0]
+        block_rhs[j, 4] = -kappa[1]
+        block_rhs[j, 5] = -kappa[2]
+
+        bend_compliance = wp.vec3(
+            compliance_factor / wp.max(bend_stiffness[0], 1.0e-6) * (1.0 / avg_length),
+            compliance_factor / wp.max(bend_stiffness[1], 1.0e-6) * (1.0 / avg_length),
+            compliance_factor / wp.max(bend_stiffness[2], 1.0e-6) * (1.0 / avg_length),
+        )
+
+        J_bend_q0 = compute_J_bend(q0, q1, avg_length, 1)
+        J_bend_q1 = compute_J_bend(q0, q1, avg_length, 0)
+
+        for i in range(3):
+            for k in range(3):
+                val = inv_mq * (
+                    J_bend_q0[i, 0] * J_bend_q0[k, 0]
+                    + J_bend_q0[i, 1] * J_bend_q0[k, 1]
+                    + J_bend_q0[i, 2] * J_bend_q0[k, 2]
+                )
+                val += inv_mq1 * (
+                    J_bend_q1[i, 0] * J_bend_q1[k, 0]
+                    + J_bend_q1[i, 1] * J_bend_q1[k, 1]
+                    + J_bend_q1[i, 2] * J_bend_q1[k, 2]
+                )
+                if i == k:
+                    val += bend_compliance[i]
+                block_diag[j, 3 + i, 3 + k] = val
+
+                coupling = inv_mq * (
+                    J_stretch[i, 0] * J_bend_q0[k, 0]
+                    + J_stretch[i, 1] * J_bend_q0[k, 1]
+                    + J_stretch[i, 2] * J_bend_q0[k, 2]
+                )
+                block_diag[j, i, 3 + k] = coupling
+                block_diag[j, 3 + k, i] = coupling
+    else:
+        for i in range(3):
+            block_diag[j, 3 + i, 3 + i] = 1.0
+
+    # Lower coupling (j with j-1)
+    if j > 0:
+        L_prev = rest_length[j - 1]
+        coupling_pos = -particle_inv_mass[j] * (1.0 / L_prev) * (1.0 / L)
+        for i in range(3):
+            block_lower[j, i, i] = coupling_pos
+
+        if j < num_bend and (j - 1) < num_bend:
+            q_prev0 = edge_q[j - 1]
+            q_prev1 = q0
+            avg_length_prev = 0.5 * (L_prev + L)
+            J_bend_q1_prev = compute_J_bend(q_prev0, q_prev1, avg_length_prev, 0)
+            J_bend_q0 = compute_J_bend(q0, edge_q[j + 1], 0.5 * (L + rest_length[j + 1]), 1)
+
+            for i in range(3):
+                for k in range(3):
+                    coupling_bb = inv_mq * (
+                        J_bend_q0[i, 0] * J_bend_q1_prev[k, 0]
+                        + J_bend_q0[i, 1] * J_bend_q1_prev[k, 1]
+                        + J_bend_q0[i, 2] * J_bend_q1_prev[k, 2]
+                    )
+                    block_lower[j, 3 + i, 3 + k] = coupling_bb
+
+                    coupling_sb = inv_mq * (
+                        J_stretch[i, 0] * J_bend_q1_prev[k, 0]
+                        + J_stretch[i, 1] * J_bend_q1_prev[k, 1]
+                        + J_stretch[i, 2] * J_bend_q1_prev[k, 2]
+                    )
+                    block_lower[j, i, 3 + k] = coupling_sb
+
+    # Upper coupling (j with j+1)
+    if j < num_joints - 1:
+        L_next = rest_length[j + 1]
+        coupling_pos = -particle_inv_mass[j + 1] * (1.0 / L) * (1.0 / L_next)
+        for i in range(3):
+            block_upper[j, i, i] = coupling_pos
+
+        if j < num_bend:
+            q1 = edge_q[j + 1]
+            inv_mq1 = edge_inv_mass[j + 1]
+            d3_next = quat_rotate_e3(q1)
+            J_stretch_next = compute_J_stretch(d3_next)
+
+            J_bend_q1 = compute_J_bend(q0, q1, 0.5 * (L + L_next), 0)
+
+            for i in range(3):
+                for k in range(3):
+                    coupling_bs = inv_mq1 * (
+                        J_bend_q1[i, 0] * J_stretch_next[k, 0]
+                        + J_bend_q1[i, 1] * J_stretch_next[k, 1]
+                        + J_bend_q1[i, 2] * J_stretch_next[k, 2]
+                    )
+                    block_upper[j, 3 + i, k] = coupling_bs
+
+            if (j + 1) < num_bend:
+                q_next0 = edge_q[j + 1]
+                q_next1 = edge_q[j + 2]
+                L_next2 = rest_length[j + 2]
+                avg_length_next = 0.5 * (L_next + L_next2)
+                J_bend_q0_next = compute_J_bend(q_next0, q_next1, avg_length_next, 1)
+
+                for i in range(3):
+                    for k in range(3):
+                        coupling_bb = inv_mq1 * (
+                            J_bend_q1[i, 0] * J_bend_q0_next[k, 0]
+                            + J_bend_q1[i, 1] * J_bend_q0_next[k, 1]
+                            + J_bend_q1[i, 2] * J_bend_q0_next[k, 2]
+                        )
+                        block_upper[j, 3 + i, 3 + k] = coupling_bb
 
 
 @wp.func
@@ -313,13 +650,14 @@ def assemble_combined_block_systems_kernel(
             rest_d = rest_darboux[global_j]
 
             # Compute Darboux vector omega = 2/L * Im(conj(q0) * q1)
-            avg_length = L  # Use current edge length as average
+            L_next = rest_length[global_j + 1]
+            avg_length = 0.5 * (L + L_next)
             q0_conj = wp.quat(-q0[0], -q0[1], -q0[2], q0[3])
             omega_quat = wp.mul(q0_conj, q1)
             omega = wp.vec3(omega_quat[0], omega_quat[1], omega_quat[2]) * (2.0 / avg_length)
 
-            # Handle quaternion double cover
-            rest_vec = wp.vec3(rest_d[0], rest_d[1], rest_d[2]) * (2.0 / avg_length)
+            # Handle quaternion double cover (rest vector is in curvature units)
+            rest_vec = wp.vec3(rest_d[0], rest_d[1], rest_d[2])
             kappa_plus = omega + rest_vec
             kappa_minus = omega - rest_vec
 
@@ -331,52 +669,104 @@ def assemble_combined_block_systems_kernel(
             else:
                 kappa = kappa_minus
 
-            # Apply stiffness
-            kappa = wp.vec3(
-                kappa[0] * bend_stiffness[0],
-                kappa[1] * bend_stiffness[1],
-                kappa[2] * bend_stiffness[2],
-            )
-
             # Store bend RHS
             system_rhs[tile_idx, row_base + 3] = -kappa[0]
             system_rhs[tile_idx, row_base + 4] = -kappa[1]
             system_rhs[tile_idx, row_base + 5] = -kappa[2]
 
-            # Bend-bend block: J_omega_q0 * G0 * inv_mq * G0^T * J_omega_q0^T + similar for q1
-            # Simplified: (inv_mq + inv_mq1) * I for the bend part
-            # The full derivation gives: 0.25 * (inv_mq + inv_mq1) for diagonal
-            bend_diag = 0.25 * (inv_mq + inv_mq1)
+            bend_compliance = wp.vec3(
+                compliance_factor / wp.max(bend_stiffness[0], 1.0e-6) * (1.0 / avg_length),
+                compliance_factor / wp.max(bend_stiffness[1], 1.0e-6) * (1.0 / avg_length),
+                compliance_factor / wp.max(bend_stiffness[2], 1.0e-6) * (1.0 / avg_length),
+            )
+
+            # Bend-bend block: J_bend_q0 * inv_mq * J_bend_q0^T + J_bend_q1 * inv_mq1 * J_bend_q1^T
+            J_bend_q0 = compute_J_bend(q0, q1, avg_length, 1)
+            J_bend_q1 = compute_J_bend(q0, q1, avg_length, 0)
 
             for i in range(3):
-                row = row_base + 3 + i
-                col = row_base + 3 + i
-                system_matrices[tile_idx, row, col] = bend_diag + compliance_factor
+                for j in range(3):
+                    val = inv_mq * (
+                        J_bend_q0[i, 0] * J_bend_q0[j, 0]
+                        + J_bend_q0[i, 1] * J_bend_q0[j, 1]
+                        + J_bend_q0[i, 2] * J_bend_q0[j, 2]
+                    )
+                    val += inv_mq1 * (
+                        J_bend_q1[i, 0] * J_bend_q1[j, 0]
+                        + J_bend_q1[i, 1] * J_bend_q1[j, 1]
+                        + J_bend_q1[i, 2] * J_bend_q1[j, 2]
+                    )
+                    if i == j:
+                        val += bend_compliance[i]
+
+                    row = row_base + 3 + i
+                    col = row_base + 3 + j
+                    system_matrices[tile_idx, row, col] = val
 
             # ========== COUPLING BLOCK (stretch-bend) ==========
-            # This is the KEY difference from separate solving!
-            # Coupling arises because both stretch and bend constraints affect q0.
-            #
-            # coupling = J_stretch_q * M_q^{-1} * J_bend_q0^T
-            #
-            # J_stretch_q affects q0 via d3 derivative
-            # J_bend_q0 affects q0 via Darboux vector derivative
-            #
-            # The coupling magnitude is: 2 * inv_mq * cross_term
-            # For simplicity, we use an approximation based on the d3 direction
-            coupling_factor = -inv_mq * 0.5  # Empirical coupling factor
-
-            # The coupling is typically small for nearly straight rods
-            # but becomes significant when the rod bends
+            # coupling = J_stretch_q * inv_mq * J_bend_q0^T
+            J_stretch = compute_J_stretch(d3)
             for i in range(3):
-                # Off-diagonal coupling in the 6x6 block
-                # This creates the (0-2, 3-5) and (3-5, 0-2) blocks
-                stretch_row = row_base + i
-                bend_col = row_base + 3 + i
+                for j in range(3):
+                    coupling = inv_mq * (
+                        J_stretch[i, 0] * J_bend_q0[j, 0]
+                        + J_stretch[i, 1] * J_bend_q0[j, 1]
+                        + J_stretch[i, 2] * J_bend_q0[j, 2]
+                    )
+                    system_matrices[tile_idx, row_base + i, row_base + 3 + j] = coupling
+                    system_matrices[tile_idx, row_base + 3 + j, row_base + i] = coupling
 
-                # Simplified coupling: diagonal approximation
-                system_matrices[tile_idx, stretch_row, bend_col] = coupling_factor * d3[i]
-                system_matrices[tile_idx, bend_col, stretch_row] = coupling_factor * d3[i]
+            # Stretch constraint j couples to bend constraint j-1 via shared q_j
+            if local_j > 0:
+                q_prev0 = edge_q[global_j - 1]
+                q_prev1 = q0
+                L_prev = rest_length[global_j - 1]
+                avg_length_prev = 0.5 * (L_prev + L)
+                J_bend_q1_prev = compute_J_bend(q_prev0, q_prev1, avg_length_prev, 0)
+                prev_row_base = (local_j - 1) * JOINT_DOFS
+                for i in range(3):
+                    for j in range(3):
+                        coupling = inv_mq * (
+                            J_stretch[i, 0] * J_bend_q1_prev[j, 0]
+                            + J_stretch[i, 1] * J_bend_q1_prev[j, 1]
+                            + J_stretch[i, 2] * J_bend_q1_prev[j, 2]
+                        )
+                        system_matrices[tile_idx, row_base + i, prev_row_base + 3 + j] += coupling
+                        system_matrices[tile_idx, prev_row_base + 3 + j, row_base + i] += coupling
+
+            # Stretch constraint j+1 couples to bend constraint j via shared q_{j+1}
+            if local_j + 1 < num_in_tile:
+                d3_next = quat_rotate_e3(q1)
+                J_stretch_next = compute_J_stretch(d3_next)
+                next_row_base = (local_j + 1) * JOINT_DOFS
+                for i in range(3):
+                    for j in range(3):
+                        coupling = inv_mq1 * (
+                            J_stretch_next[i, 0] * J_bend_q1[j, 0]
+                            + J_stretch_next[i, 1] * J_bend_q1[j, 1]
+                            + J_stretch_next[i, 2] * J_bend_q1[j, 2]
+                        )
+                        system_matrices[tile_idx, next_row_base + i, row_base + 3 + j] += coupling
+                        system_matrices[tile_idx, row_base + 3 + j, next_row_base + i] += coupling
+
+            # Bend constraint j couples to bend constraint j+1 via shared edge quaternion
+            if local_j + 1 < num_in_tile and global_j + 1 < num_bend:
+                q_next0 = edge_q[global_j + 1]
+                q_next1 = edge_q[global_j + 2]
+                L_next2 = rest_length[global_j + 2]
+                avg_length_next = 0.5 * (L_next + L_next2)
+
+                J_bend_q0_next = compute_J_bend(q_next0, q_next1, avg_length_next, 1)
+                next_row_base = (local_j + 1) * JOINT_DOFS
+                for i in range(3):
+                    for j in range(3):
+                        coupling = inv_mq1 * (
+                            J_bend_q1[i, 0] * J_bend_q0_next[j, 0]
+                            + J_bend_q1[i, 1] * J_bend_q0_next[j, 1]
+                            + J_bend_q1[i, 2] * J_bend_q0_next[j, 2]
+                        )
+                        system_matrices[tile_idx, row_base + 3 + i, next_row_base + 3 + j] += coupling
+                        system_matrices[tile_idx, next_row_base + 3 + j, row_base + 3 + i] += coupling
         else:
             # Last joint: no bend constraint, just pad with identity
             for i in range(3):
@@ -395,14 +785,18 @@ def assemble_combined_block_systems_kernel(
                 system_matrices[tile_idx, next_row_base + i, row_base + i] += coupling_pos
 
         # Bend constraint j couples to bend constraint j+1 via shared edge quaternion
-        if global_j < num_bend and local_j + 1 < num_in_tile and global_j + 1 < num_bend:
-            coupling_bend = -0.25 * edge_inv_mass[global_j + 1]
+        # (handled above using J_bend matrices)
 
-            next_row_base = (local_j + 1) * JOINT_DOFS
-            for i in range(3):
-                # Quaternion coupling (bend-bend)
-                system_matrices[tile_idx, row_base + 3 + i, next_row_base + 3 + i] += coupling_bend
-                system_matrices[tile_idx, next_row_base + 3 + i, row_base + 3 + i] += coupling_bend
+    # Enforce strict diagonal dominance for active rows (SPD guard for Cholesky)
+    active_rows = num_in_tile * JOINT_DOFS
+    for i in range(active_rows):
+        row_sum = float(0.0)
+        for j in range(active_rows):
+            if i != j:
+                row_sum += wp.abs(system_matrices[tile_idx, i, j])
+        diag = system_matrices[tile_idx, i, i]
+        if diag <= row_sum:
+            system_matrices[tile_idx, i, i] = row_sum + 1.0e-6
 
     # Pad remaining rows with identity
     for i in range(num_in_tile * JOINT_DOFS, TILE):
@@ -426,6 +820,291 @@ def cholesky_solve_batched_kernel(
     x_tile = wp.tile_cholesky_solve(L, b_tile)
 
     wp.tile_store(x[tile_idx], x_tile)
+
+
+@wp.kernel
+def thomas_solve_block_tridiagonal_kernel(
+    system_matrices: wp.array3d(dtype=float),
+    system_rhs: wp.array2d(dtype=float),
+    num_joints: int,
+    joints_per_tile: int,
+    # output
+    x: wp.array2d(dtype=float),
+):
+    """Solve block tridiagonal system using block Thomas (single thread per tile)."""
+    tile_idx = wp.tid()
+
+    joint_start = tile_idx * joints_per_tile
+    joint_end = wp.min(joint_start + joints_per_tile, num_joints)
+    num_in_tile = joint_end - joint_start
+    if num_in_tile <= 0:
+        return
+
+    # Forward elimination: overwrite super-diagonal with C' and RHS with d'
+    for i in range(num_in_tile):
+        row_base = i * JOINT_DOFS
+
+        B11 = load_mat33(system_matrices, tile_idx, row_base + 0, row_base + 0)
+        B12 = load_mat33(system_matrices, tile_idx, row_base + 0, row_base + 3)
+        B21 = load_mat33(system_matrices, tile_idx, row_base + 3, row_base + 0)
+        B22 = load_mat33(system_matrices, tile_idx, row_base + 3, row_base + 3)
+
+        d1 = wp.vec3(
+            system_rhs[tile_idx, row_base + 0],
+            system_rhs[tile_idx, row_base + 1],
+            system_rhs[tile_idx, row_base + 2],
+        )
+        d2 = wp.vec3(
+            system_rhs[tile_idx, row_base + 3],
+            system_rhs[tile_idx, row_base + 4],
+            system_rhs[tile_idx, row_base + 5],
+        )
+
+        if i > 0:
+            # A block from previous row
+            prev_row_base = (i - 1) * JOINT_DOFS
+            A11 = load_mat33(system_matrices, tile_idx, row_base + 0, prev_row_base + 0)
+            A12 = load_mat33(system_matrices, tile_idx, row_base + 0, prev_row_base + 3)
+            A21 = load_mat33(system_matrices, tile_idx, row_base + 3, prev_row_base + 0)
+            A22 = load_mat33(system_matrices, tile_idx, row_base + 3, prev_row_base + 3)
+
+            # C' from previous step (stored in super-diagonal block)
+            C11_prev = load_mat33(system_matrices, tile_idx, prev_row_base + 0, row_base + 0)
+            C12_prev = load_mat33(system_matrices, tile_idx, prev_row_base + 0, row_base + 3)
+            C21_prev = load_mat33(system_matrices, tile_idx, prev_row_base + 3, row_base + 0)
+            C22_prev = load_mat33(system_matrices, tile_idx, prev_row_base + 3, row_base + 3)
+
+            # P = A * C_prev
+            P11 = mat33_add(mat33_mul(A11, C11_prev), mat33_mul(A12, C21_prev))
+            P12 = mat33_add(mat33_mul(A11, C12_prev), mat33_mul(A12, C22_prev))
+            P21 = mat33_add(mat33_mul(A21, C11_prev), mat33_mul(A22, C21_prev))
+            P22 = mat33_add(mat33_mul(A21, C12_prev), mat33_mul(A22, C22_prev))
+
+            # M = B - P
+            B11 = mat33_sub(B11, P11)
+            B12 = mat33_sub(B12, P12)
+            B21 = mat33_sub(B21, P21)
+            B22 = mat33_sub(B22, P22)
+
+            # d_tilde = d - A * d_prev
+            d1_prev = wp.vec3(
+                system_rhs[tile_idx, prev_row_base + 0],
+                system_rhs[tile_idx, prev_row_base + 1],
+                system_rhs[tile_idx, prev_row_base + 2],
+            )
+            d2_prev = wp.vec3(
+                system_rhs[tile_idx, prev_row_base + 3],
+                system_rhs[tile_idx, prev_row_base + 4],
+                system_rhs[tile_idx, prev_row_base + 5],
+            )
+            v1 = mat33_mul_vec3(A11, d1_prev) + mat33_mul_vec3(A12, d2_prev)
+            v2 = mat33_mul_vec3(A21, d1_prev) + mat33_mul_vec3(A22, d2_prev)
+            d1 = d1 - v1
+            d2 = d2 - v2
+
+        invB11 = mat33_inverse(B11)
+        S = mat33_sub(B22, mat33_mul(B21, mat33_mul(invB11, B12)))
+        invS = mat33_inverse(S)
+
+        # Solve for C' if needed
+        if i < num_in_tile - 1:
+            col_base = (i + 1) * JOINT_DOFS
+            C11 = load_mat33(system_matrices, tile_idx, row_base + 0, col_base + 0)
+            C12 = load_mat33(system_matrices, tile_idx, row_base + 0, col_base + 3)
+            C21 = load_mat33(system_matrices, tile_idx, row_base + 3, col_base + 0)
+            C22 = load_mat33(system_matrices, tile_idx, row_base + 3, col_base + 3)
+
+            t11 = mat33_mul(invB11, C11)
+            t12 = mat33_mul(invB11, C12)
+            rhs21 = mat33_sub(C21, mat33_mul(B21, t11))
+            rhs22 = mat33_sub(C22, mat33_mul(B21, t12))
+            X21 = mat33_mul(invS, rhs21)
+            X22 = mat33_mul(invS, rhs22)
+            X11 = mat33_sub(t11, mat33_mul(invB11, mat33_mul(B12, X21)))
+            X12 = mat33_sub(t12, mat33_mul(invB11, mat33_mul(B12, X22)))
+
+            store_mat33(system_matrices, tile_idx, row_base + 0, col_base + 0, X11)
+            store_mat33(system_matrices, tile_idx, row_base + 0, col_base + 3, X12)
+            store_mat33(system_matrices, tile_idx, row_base + 3, col_base + 0, X21)
+            store_mat33(system_matrices, tile_idx, row_base + 3, col_base + 3, X22)
+
+        # Solve for d'
+        t1 = mat33_mul_vec3(invB11, d1)
+        rhs2 = d2 - mat33_mul_vec3(B21, t1)
+        x2 = mat33_mul_vec3(invS, rhs2)
+        x1 = t1 - mat33_mul_vec3(invB11, mat33_mul_vec3(B12, x2))
+
+        system_rhs[tile_idx, row_base + 0] = x1[0]
+        system_rhs[tile_idx, row_base + 1] = x1[1]
+        system_rhs[tile_idx, row_base + 2] = x1[2]
+        system_rhs[tile_idx, row_base + 3] = x2[0]
+        system_rhs[tile_idx, row_base + 4] = x2[1]
+        system_rhs[tile_idx, row_base + 5] = x2[2]
+
+    # Back substitution
+    for i in range(num_in_tile - 1, -1, -1):
+        row_base = i * JOINT_DOFS
+        x1 = wp.vec3(
+            system_rhs[tile_idx, row_base + 0],
+            system_rhs[tile_idx, row_base + 1],
+            system_rhs[tile_idx, row_base + 2],
+        )
+        x2 = wp.vec3(
+            system_rhs[tile_idx, row_base + 3],
+            system_rhs[tile_idx, row_base + 4],
+            system_rhs[tile_idx, row_base + 5],
+        )
+
+        if i < num_in_tile - 1:
+            col_base = (i + 1) * JOINT_DOFS
+            C11 = load_mat33(system_matrices, tile_idx, row_base + 0, col_base + 0)
+            C12 = load_mat33(system_matrices, tile_idx, row_base + 0, col_base + 3)
+            C21 = load_mat33(system_matrices, tile_idx, row_base + 3, col_base + 0)
+            C22 = load_mat33(system_matrices, tile_idx, row_base + 3, col_base + 3)
+
+            x1_next = wp.vec3(
+                x[tile_idx, col_base + 0],
+                x[tile_idx, col_base + 1],
+                x[tile_idx, col_base + 2],
+            )
+            x2_next = wp.vec3(
+                x[tile_idx, col_base + 3],
+                x[tile_idx, col_base + 4],
+                x[tile_idx, col_base + 5],
+            )
+
+            v1 = mat33_mul_vec3(C11, x1_next) + mat33_mul_vec3(C12, x2_next)
+            v2 = mat33_mul_vec3(C21, x1_next) + mat33_mul_vec3(C22, x2_next)
+            x1 = x1 - v1
+            x2 = x2 - v2
+
+        x[tile_idx, row_base + 0] = x1[0]
+        x[tile_idx, row_base + 1] = x1[1]
+        x[tile_idx, row_base + 2] = x1[2]
+        x[tile_idx, row_base + 3] = x2[0]
+        x[tile_idx, row_base + 4] = x2[1]
+        x[tile_idx, row_base + 5] = x2[2]
+
+    # Zero remaining entries
+    active_rows = num_in_tile * JOINT_DOFS
+    for i in range(active_rows, TILE):
+        x[tile_idx, i] = 0.0
+
+
+@wp.kernel
+def thomas_solve_block_tridiagonal_global_kernel(
+    block_lower: wp.array3d(dtype=float),
+    block_diag: wp.array3d(dtype=float),
+    block_upper: wp.array3d(dtype=float),
+    block_rhs: wp.array2d(dtype=float),
+    num_joints: int,
+    # output
+    x: wp.array2d(dtype=float),
+):
+    """Solve global block tridiagonal system using block Thomas (single thread)."""
+    tid = wp.tid()
+    if tid > 0:
+        return
+
+    # Forward elimination
+    for i in range(num_joints):
+        B11 = load_mat33(block_diag, i, 0, 0)
+        B12 = load_mat33(block_diag, i, 0, 3)
+        B21 = load_mat33(block_diag, i, 3, 0)
+        B22 = load_mat33(block_diag, i, 3, 3)
+
+        d1 = wp.vec3(block_rhs[i, 0], block_rhs[i, 1], block_rhs[i, 2])
+        d2 = wp.vec3(block_rhs[i, 3], block_rhs[i, 4], block_rhs[i, 5])
+
+        if i > 0:
+            A11 = load_mat33(block_lower, i, 0, 0)
+            A12 = load_mat33(block_lower, i, 0, 3)
+            A21 = load_mat33(block_lower, i, 3, 0)
+            A22 = load_mat33(block_lower, i, 3, 3)
+
+            C11_prev = load_mat33(block_upper, i - 1, 0, 0)
+            C12_prev = load_mat33(block_upper, i - 1, 0, 3)
+            C21_prev = load_mat33(block_upper, i - 1, 3, 0)
+            C22_prev = load_mat33(block_upper, i - 1, 3, 3)
+
+            P11 = mat33_add(mat33_mul(A11, C11_prev), mat33_mul(A12, C21_prev))
+            P12 = mat33_add(mat33_mul(A11, C12_prev), mat33_mul(A12, C22_prev))
+            P21 = mat33_add(mat33_mul(A21, C11_prev), mat33_mul(A22, C21_prev))
+            P22 = mat33_add(mat33_mul(A21, C12_prev), mat33_mul(A22, C22_prev))
+
+            B11 = mat33_sub(B11, P11)
+            B12 = mat33_sub(B12, P12)
+            B21 = mat33_sub(B21, P21)
+            B22 = mat33_sub(B22, P22)
+
+            d1_prev = wp.vec3(block_rhs[i - 1, 0], block_rhs[i - 1, 1], block_rhs[i - 1, 2])
+            d2_prev = wp.vec3(block_rhs[i - 1, 3], block_rhs[i - 1, 4], block_rhs[i - 1, 5])
+            v1 = mat33_mul_vec3(A11, d1_prev) + mat33_mul_vec3(A12, d2_prev)
+            v2 = mat33_mul_vec3(A21, d1_prev) + mat33_mul_vec3(A22, d2_prev)
+            d1 = d1 - v1
+            d2 = d2 - v2
+
+        invB11 = mat33_inverse(B11)
+        S = mat33_sub(B22, mat33_mul(B21, mat33_mul(invB11, B12)))
+        invS = mat33_inverse(S)
+
+        if i < num_joints - 1:
+            C11 = load_mat33(block_upper, i, 0, 0)
+            C12 = load_mat33(block_upper, i, 0, 3)
+            C21 = load_mat33(block_upper, i, 3, 0)
+            C22 = load_mat33(block_upper, i, 3, 3)
+
+            t11 = mat33_mul(invB11, C11)
+            t12 = mat33_mul(invB11, C12)
+            rhs21 = mat33_sub(C21, mat33_mul(B21, t11))
+            rhs22 = mat33_sub(C22, mat33_mul(B21, t12))
+            X21 = mat33_mul(invS, rhs21)
+            X22 = mat33_mul(invS, rhs22)
+            X11 = mat33_sub(t11, mat33_mul(invB11, mat33_mul(B12, X21)))
+            X12 = mat33_sub(t12, mat33_mul(invB11, mat33_mul(B12, X22)))
+
+            store_mat33(block_upper, i, 0, 0, X11)
+            store_mat33(block_upper, i, 0, 3, X12)
+            store_mat33(block_upper, i, 3, 0, X21)
+            store_mat33(block_upper, i, 3, 3, X22)
+
+        t1 = mat33_mul_vec3(invB11, d1)
+        rhs2 = d2 - mat33_mul_vec3(B21, t1)
+        x2 = mat33_mul_vec3(invS, rhs2)
+        x1 = t1 - mat33_mul_vec3(invB11, mat33_mul_vec3(B12, x2))
+
+        block_rhs[i, 0] = x1[0]
+        block_rhs[i, 1] = x1[1]
+        block_rhs[i, 2] = x1[2]
+        block_rhs[i, 3] = x2[0]
+        block_rhs[i, 4] = x2[1]
+        block_rhs[i, 5] = x2[2]
+
+    # Back substitution
+    for i in range(num_joints - 1, -1, -1):
+        x1 = wp.vec3(block_rhs[i, 0], block_rhs[i, 1], block_rhs[i, 2])
+        x2 = wp.vec3(block_rhs[i, 3], block_rhs[i, 4], block_rhs[i, 5])
+
+        if i < num_joints - 1:
+            C11 = load_mat33(block_upper, i, 0, 0)
+            C12 = load_mat33(block_upper, i, 0, 3)
+            C21 = load_mat33(block_upper, i, 3, 0)
+            C22 = load_mat33(block_upper, i, 3, 3)
+
+            x1_next = wp.vec3(x[i + 1, 0], x[i + 1, 1], x[i + 1, 2])
+            x2_next = wp.vec3(x[i + 1, 3], x[i + 1, 4], x[i + 1, 5])
+
+            v1 = mat33_mul_vec3(C11, x1_next) + mat33_mul_vec3(C12, x2_next)
+            v2 = mat33_mul_vec3(C21, x1_next) + mat33_mul_vec3(C22, x2_next)
+            x1 = x1 - v1
+            x2 = x2 - v2
+
+        x[i, 0] = x1[0]
+        x[i, 1] = x1[1]
+        x[i, 2] = x1[2]
+        x[i, 3] = x2[0]
+        x[i, 4] = x2[1]
+        x[i, 5] = x2[2]
 
 
 @wp.kernel
@@ -504,17 +1183,108 @@ def apply_combined_block_corrections_kernel(
                 delta_lambdas[tile_idx, row_base + 5],
             )
 
+            q1 = edge_q[global_j + 1]
+            L_next = rest_length[global_j + 1]
+            avg_length = 0.5 * (L + L_next)
+            J_bend_q0 = compute_J_bend(q0, q1, avg_length, 1)
+            J_bend_q1 = compute_J_bend(q0, q1, avg_length, 0)
+
             # Apply bend corrections to edge quaternions
             # q0 gets correction from its role as the "first" quaternion
             if inv_mq > 0.0:
-                omega0 = -0.5 * inv_mq * dl_bend
+                omega0 = wp.vec3(
+                    J_bend_q0[0, 0] * dl_bend[0] + J_bend_q0[1, 0] * dl_bend[1] + J_bend_q0[2, 0] * dl_bend[2],
+                    J_bend_q0[0, 1] * dl_bend[0] + J_bend_q0[1, 1] * dl_bend[1] + J_bend_q0[2, 1] * dl_bend[2],
+                    J_bend_q0[0, 2] * dl_bend[0] + J_bend_q0[1, 2] * dl_bend[1] + J_bend_q0[2, 2] * dl_bend[2],
+                )
+                omega0 = omega0 * inv_mq
                 wp.atomic_add(edge_omega, global_j, omega0)
 
             # q1 (next edge) gets correction from its role as the "second" quaternion
             inv_mq1 = edge_inv_mass[global_j + 1]
             if inv_mq1 > 0.0:
-                omega1 = 0.5 * inv_mq1 * dl_bend
+                omega1 = wp.vec3(
+                    J_bend_q1[0, 0] * dl_bend[0] + J_bend_q1[1, 0] * dl_bend[1] + J_bend_q1[2, 0] * dl_bend[2],
+                    J_bend_q1[0, 1] * dl_bend[0] + J_bend_q1[1, 1] * dl_bend[1] + J_bend_q1[2, 1] * dl_bend[2],
+                    J_bend_q1[0, 2] * dl_bend[0] + J_bend_q1[1, 2] * dl_bend[1] + J_bend_q1[2, 2] * dl_bend[2],
+                )
+                omega1 = omega1 * inv_mq1
                 wp.atomic_add(edge_omega, global_j + 1, omega1)
+
+
+@wp.kernel
+def apply_combined_global_corrections_kernel(
+    particle_inv_mass: wp.array(dtype=float),
+    edge_q: wp.array(dtype=wp.quat),
+    edge_inv_mass: wp.array(dtype=float),
+    rest_length: wp.array(dtype=float),
+    delta_lambdas: wp.array2d(dtype=float),
+    num_joints: int,
+    num_bend: int,
+    # outputs (accumulated via atomics)
+    particle_corrections: wp.array(dtype=wp.vec3),
+    edge_omega: wp.array(dtype=wp.vec3),
+):
+    """Apply combined corrections for the global block solve."""
+    j = wp.tid()
+    if j >= num_joints:
+        return
+
+    L = rest_length[j]
+    q0 = edge_q[j]
+    d3 = quat_rotate_e3(q0)
+
+    dl_stretch = wp.vec3(
+        delta_lambdas[j, 0],
+        delta_lambdas[j, 1],
+        delta_lambdas[j, 2],
+    )
+
+    inv_m0 = particle_inv_mass[j]
+    if inv_m0 > 0.0:
+        corr0 = -dl_stretch * (inv_m0 / L)
+        wp.atomic_add(particle_corrections, j, corr0)
+
+    inv_m1 = particle_inv_mass[j + 1]
+    if inv_m1 > 0.0:
+        corr1 = dl_stretch * (inv_m1 / L)
+        wp.atomic_add(particle_corrections, j + 1, corr1)
+
+    inv_mq = edge_inv_mass[j]
+    if inv_mq > 0.0:
+        omega_stretch = 2.0 * inv_mq * wp.cross(dl_stretch, d3)
+        wp.atomic_add(edge_omega, j, omega_stretch)
+
+    if j < num_bend:
+        dl_bend = wp.vec3(
+            delta_lambdas[j, 3],
+            delta_lambdas[j, 4],
+            delta_lambdas[j, 5],
+        )
+        q1 = edge_q[j + 1]
+        L_next = rest_length[j + 1]
+        avg_length = 0.5 * (L + L_next)
+        J_bend_q0 = compute_J_bend(q0, q1, avg_length, 1)
+        J_bend_q1 = compute_J_bend(q0, q1, avg_length, 0)
+
+        if inv_mq > 0.0:
+            omega0 = wp.vec3(
+                J_bend_q0[0, 0] * dl_bend[0] + J_bend_q0[1, 0] * dl_bend[1] + J_bend_q0[2, 0] * dl_bend[2],
+                J_bend_q0[0, 1] * dl_bend[0] + J_bend_q0[1, 1] * dl_bend[1] + J_bend_q0[2, 1] * dl_bend[2],
+                J_bend_q0[0, 2] * dl_bend[0] + J_bend_q0[1, 2] * dl_bend[1] + J_bend_q0[2, 2] * dl_bend[2],
+            )
+            omega0 = omega0 * inv_mq
+            wp.atomic_add(edge_omega, j, omega0)
+
+        inv_mq1 = edge_inv_mass[j + 1]
+        if inv_mq1 > 0.0:
+            omega1 = wp.vec3(
+                J_bend_q1[0, 0] * dl_bend[0] + J_bend_q1[1, 0] * dl_bend[1] + J_bend_q1[2, 0] * dl_bend[2],
+                J_bend_q1[0, 1] * dl_bend[0] + J_bend_q1[1, 1] * dl_bend[1] + J_bend_q1[2, 1] * dl_bend[2],
+                J_bend_q1[0, 2] * dl_bend[0] + J_bend_q1[1, 2] * dl_bend[1] + J_bend_q1[2, 2] * dl_bend[2],
+            )
+            omega1 = omega1 * inv_mq1
+            wp.atomic_add(edge_omega, j + 1, omega1)
 
 
 @wp.kernel
@@ -635,19 +1405,8 @@ def update_rest_darboux_kernel(
     if tid >= num_bend:
         return
 
-    half_bend_d1 = rest_bend_d1 * 0.5
-    half_bend_d2 = rest_bend_d2 * 0.5
-    half_twist = rest_twist * 0.5
-
-    angle_sq = half_bend_d1 * half_bend_d1 + half_bend_d2 * half_bend_d2 + half_twist * half_twist
-    angle = wp.sqrt(angle_sq)
-
-    if angle < 1.0e-8:
-        rest_darboux[tid] = wp.quat(0.0, 0.0, 0.0, 1.0)
-    else:
-        s = wp.sin(angle) / angle
-        c = wp.cos(angle)
-        rest_darboux[tid] = wp.quat(s * half_bend_d1, s * half_bend_d2, s * half_twist, c)
+    # Store rest curvature directly in the vector part (units: 1/length).
+    rest_darboux[tid] = wp.quat(rest_bend_d1, rest_bend_d2, rest_twist, 0.0)
 
 
 @wp.kernel
@@ -791,18 +1550,20 @@ class Example:
         rest_length_np = [particle_spacing] * self.num_joints
         self.rest_length = wp.array(rest_length_np, dtype=float, device=device)
 
-        # Rest Darboux vectors
-        rest_darboux_np = [wp.quat(0.0, 0.0, 0.0, 1.0)] * max(1, self.num_bend)
+        # Rest Darboux vectors (curvature stored in vector part)
+        rest_darboux_np = [wp.quat(0.0, 0.0, 0.0, 0.0)] * max(1, self.num_bend)
         self.rest_darboux = wp.array(rest_darboux_np, dtype=wp.quat, device=device)
 
         # Temporary buffers
         self.particle_q_predicted = wp.zeros(self.num_particles, dtype=wp.vec3, device=device)
         self.particle_q_temp = wp.zeros(self.num_particles, dtype=wp.vec3, device=device)
 
-        # Combined system matrices (6 DOFs per joint)
-        self.system_matrices = wp.zeros((self.num_tiles, TILE, TILE), dtype=float, device=device)
-        self.system_rhs = wp.zeros((self.num_tiles, TILE), dtype=float, device=device)
-        self.delta_lambdas = wp.zeros((self.num_tiles, TILE), dtype=float, device=device)
+        # Global block tridiagonal system for Thomas solver
+        self.block_lower = wp.zeros((self.num_joints, JOINT_DOFS, JOINT_DOFS), dtype=float, device=device)
+        self.block_diag = wp.zeros((self.num_joints, JOINT_DOFS, JOINT_DOFS), dtype=float, device=device)
+        self.block_upper = wp.zeros((self.num_joints, JOINT_DOFS, JOINT_DOFS), dtype=float, device=device)
+        self.block_rhs = wp.zeros((self.num_joints, JOINT_DOFS), dtype=float, device=device)
+        self.delta_lambdas_global = wp.zeros((self.num_joints, JOINT_DOFS), dtype=float, device=device)
 
         # Correction accumulators (for atomic adds)
         self.particle_corrections = wp.zeros(self.num_particles, dtype=wp.vec3, device=device)
@@ -810,6 +1571,11 @@ class Example:
 
         self.viewer.set_model(self.model)
         self.viewer.show_particles = True
+
+        # Keyboard control parameters
+        self.move_speed = 1.0  # units per second
+        self.anchor_min_z = particle_radius
+        self.anchor_pos = wp.vec3(0.0, 0.0, start_height)
 
         # Director visualization buffers
         num_director_lines = self.num_joints * 3
@@ -826,7 +1592,7 @@ class Example:
             wp.copy(self.particle_q_temp, self.state_0.particle_q)
 
             stretch_ks = wp.vec3(self.shear_stiffness, self.shear_stiffness, self.stretch_stiffness)
-            bend_ks = wp.vec3(self.bend_stiffness, self.twist_stiffness, self.bend_stiffness)
+            bend_ks = wp.vec3(self.bend_stiffness, self.bend_stiffness, self.twist_stiffness)
 
             # Step 1: Integrate
             wp.launch(
@@ -846,10 +1612,9 @@ class Example:
 
             # Step 2: Combined constraint solving with Cholesky
             for _ in range(self.constraint_iterations):
-                # Assemble combined 6x6 block system
                 wp.launch(
-                    kernel=assemble_combined_block_systems_kernel,
-                    dim=self.num_tiles,
+                    kernel=assemble_combined_tridiagonal_kernel,
+                    dim=self.num_joints,
                     inputs=[
                         self.state_1.particle_q,
                         self.particle_inv_mass,
@@ -862,19 +1627,27 @@ class Example:
                         self.compliance_factor,
                         self.num_joints,
                         self.num_bend,
-                        self.joints_per_tile,
                     ],
-                    outputs=[self.system_matrices, self.system_rhs],
+                    outputs=[
+                        self.block_lower,
+                        self.block_diag,
+                        self.block_upper,
+                        self.block_rhs,
+                    ],
                     device=self.model.device,
                 )
 
-                # Batched Cholesky solve
-                wp.launch_tiled(
-                    kernel=cholesky_solve_batched_kernel,
-                    dim=[self.num_tiles, 1],
-                    inputs=[self.system_matrices, self.system_rhs],
-                    outputs=[self.delta_lambdas],
-                    block_dim=BLOCK_DIM,
+                wp.launch(
+                    kernel=thomas_solve_block_tridiagonal_global_kernel,
+                    dim=1,
+                    inputs=[
+                        self.block_lower,
+                        self.block_diag,
+                        self.block_upper,
+                        self.block_rhs,
+                        self.num_joints,
+                    ],
+                    outputs=[self.delta_lambdas_global],
                     device=self.model.device,
                 )
 
@@ -892,20 +1665,17 @@ class Example:
                     device=self.model.device,
                 )
 
-                # Apply combined corrections
                 wp.launch(
-                    kernel=apply_combined_block_corrections_kernel,
-                    dim=self.num_tiles,
+                    kernel=apply_combined_global_corrections_kernel,
+                    dim=self.num_joints,
                     inputs=[
                         self.particle_inv_mass,
                         self.edge_q,
                         self.edge_inv_mass,
                         self.rest_length,
-                        self.delta_lambdas,
+                        self.delta_lambdas_global,
                         self.num_joints,
                         self.num_bend,
-                        self.joints_per_tile,
-                        self.num_tiles,
                     ],
                     outputs=[self.particle_corrections, self.edge_omega],
                     device=self.model.device,
@@ -981,6 +1751,7 @@ class Example:
             self.contacts = self.model.collide(self.state_0, collision_pipeline=self.collision_pipeline)
 
     def step(self):
+        self._handle_keyboard_input()
         self.simulate()
         self.sim_time += self.frame_dt
 
@@ -1025,6 +1796,44 @@ class Example:
             device=self.model.device,
         )
 
+    def _handle_keyboard_input(self):
+        """Move the anchor particle using keyboard controls (J/K/L/M)."""
+        if not hasattr(self.viewer, "is_key_down"):
+            return
+
+        try:
+            import pyglet.window.key as key
+        except ImportError:
+            return
+
+        dx, dz = 0.0, 0.0
+
+        if self.viewer.is_key_down(key.L):
+            dx += self.move_speed * self.frame_dt
+        if self.viewer.is_key_down(key.J):
+            dx -= self.move_speed * self.frame_dt
+
+        if self.viewer.is_key_down(key.M):
+            dz += self.move_speed * self.frame_dt
+        if self.viewer.is_key_down(key.K):
+            dz -= self.move_speed * self.frame_dt
+
+        if dx == 0.0 and dz == 0.0:
+            return
+
+        self.anchor_pos = wp.vec3(
+            self.anchor_pos[0] + dx,
+            self.anchor_pos[1],
+            max(self.anchor_pos[2] + dz, self.anchor_min_z),
+        )
+
+        particle_q_np = self.state_0.particle_q.numpy()
+        particle_q_np[0] = [self.anchor_pos[0], self.anchor_pos[1], self.anchor_pos[2]]
+
+        particle_q_wp = wp.array(particle_q_np, dtype=wp.vec3, device=self.model.device)
+        self.state_0.particle_q = particle_q_wp
+        self.state_1.particle_q = particle_q_wp
+
     def gui(self, ui):
         ui.text("Cholesky Cosserat Rod (Combined 6x6 Blocks)")
         ui.text(f"Particles: {self.num_particles}, Tiles: {self.num_tiles}")
@@ -1034,7 +1843,12 @@ class Example:
         _changed, self.bend_stiffness = ui.slider_float("Bend Stiffness", self.bend_stiffness, 0.0, 1.0)
         _changed, self.twist_stiffness = ui.slider_float("Twist Stiffness", self.twist_stiffness, 0.0, 1.0)
         ui.separator()
-        ui.text("Rest Shape (Darboux Vector)")
+        ui.text("Controls")
+        ui.text("  J/L: Move anchor in X")
+        ui.text("  K/M: Move anchor in Z")
+        _changed, self.move_speed = ui.slider_float("Move Speed", self.move_speed, 0.1, 5.0)
+        ui.separator()
+        ui.text("Rest Shape (Curvature)")
         changed_d1, self.rest_bend_d1 = ui.slider_float("Rest Bend d1", self.rest_bend_d1, -0.5, 0.5)
         changed_d2, self.rest_bend_d2 = ui.slider_float("Rest Bend d2", self.rest_bend_d2, -0.5, 0.5)
         changed_twist, self.rest_twist = ui.slider_float("Rest Twist", self.rest_twist, -0.5, 0.5)
