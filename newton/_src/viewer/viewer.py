@@ -1217,7 +1217,7 @@ class ViewerBase:
                 scale=scale,
                 color=color,
                 material=material,
-                shape_index=-1,
+                shape_index=body,
                 world=body_world[body],
             )
 
