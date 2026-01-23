@@ -822,13 +822,8 @@ class NumpyDirectRodState(DefKitDirectRodState):
             self.constraint_values[i, 1] = np.dot(edge_error, d1)
             self.constraint_values[i, 2] = np.dot(edge_error, d2)
 
-            if np.dot(q0, q1) < 0.0:
-                q1 = -q1
-            q0_inv = self._numpy_quat_conjugate(q0)
-            q_rel = self._numpy_quat_mul_single(q0_inv, q1)
-            if q_rel[3] < 0.0:
-                q_rel = -q_rel
-            omega = np.float32(2.0) * q_rel[:3] / L
+            q_rel = self._numpy_quat_mul_single(self._numpy_quat_conjugate(q0), q1)
+            omega = q_rel[:3]
             darboux_error = omega - rest_darboux[i]
             self.constraint_values[i, 3:6] = darboux_error
             max_constraint = max(max_constraint, float(np.linalg.norm(self.constraint_values[i])))
@@ -968,6 +963,7 @@ class NumpyDirectRodState(DefKitDirectRodState):
 
         for i in range(n_edges):
             q0 = orientations[i]
+            q1 = orientations[i + 1]
             L = rest_lengths[i]
             if L <= 1.0e-8:
                 L = np.float32(1.0e-8)
@@ -986,9 +982,11 @@ class NumpyDirectRodState(DefKitDirectRodState):
             self.jacobian_rot[i, 0:3, 0:3] = L * (R_T @ d3_skew)
             self.jacobian_rot[i, 0:3, 3:6] = 0.0
 
-            factor = np.float32(2.0) / L
-            self.jacobian_rot[i, 3:6, 0:3] = -factor * np.eye(3, dtype=np.float32)
-            self.jacobian_rot[i, 3:6, 3:6] = factor * np.eye(3, dtype=np.float32)
+            jomega0, jomega1 = self._numpy_compute_bending_torsion_jacobians(q0, q1)
+            g0 = self._numpy_compute_matrix_g(q0)
+            g1 = self._numpy_compute_matrix_g(q1)
+            self.jacobian_rot[i, 3:6, 0:3] = (jomega0 @ g0).astype(np.float32)
+            self.jacobian_rot[i, 3:6, 3:6] = (jomega1 @ g1).astype(np.float32)
 
             self.jacobian_pos[i, 3:6, 0:3] = 0.0
             self.jacobian_pos[i, 3:6, 3:6] = 0.0
@@ -1138,6 +1136,41 @@ class NumpyDirectRodState(DefKitDirectRodState):
             dtype=np.float32,
         )
 
+    @staticmethod
+    def _numpy_compute_bending_torsion_jacobians(q0: np.ndarray, q1: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        x0, y0, z0, w0 = q0
+        x1, y1, z1, w1 = q1
+        jomega0 = np.array(
+            [
+                [-w1, -z1, y1, x1],
+                [z1, -w1, -x1, y1],
+                [-y1, x1, -w1, z1],
+            ],
+            dtype=np.float32,
+        )
+        jomega1 = np.array(
+            [
+                [w0, z0, -y0, -x0],
+                [-z0, w0, x0, -y0],
+                [y0, -x0, w0, -z0],
+            ],
+            dtype=np.float32,
+        )
+        return jomega0, jomega1
+
+    @staticmethod
+    def _numpy_compute_matrix_g(q: np.ndarray) -> np.ndarray:
+        x, y, z, w = q
+        return np.array(
+            [
+                [0.5 * w, 0.5 * z, -0.5 * y],
+                [-0.5 * z, 0.5 * w, 0.5 * x],
+                [0.5 * y, -0.5 * x, 0.5 * w],
+                [-0.5 * x, -0.5 * y, -0.5 * z],
+            ],
+            dtype=np.float32,
+        )
+
     def _apply_quaternion_correction(self, orientations: np.ndarray, idx: int, dtheta: np.ndarray):
         if np.linalg.norm(dtheta) < 1.0e-10:
             return
@@ -1152,12 +1185,8 @@ class NumpyDirectRodState(DefKitDirectRodState):
         if np.linalg.norm(dtheta) < 1.0e-10:
             return
         q = orientations[idx]
-        x, y, z, w = q
-        g0 = np.array([w, z, -y], dtype=np.float32)
-        g1 = np.array([-z, w, x], dtype=np.float32)
-        g2 = np.array([y, -x, w], dtype=np.float32)
-        corr_vec = 0.5 * (g0 * dtheta[0] + g1 * dtheta[1] + g2 * dtheta[2])
-        corr_q = np.array([corr_vec[0], corr_vec[1], corr_vec[2], 0.0], dtype=np.float32)
+        g = NumpyDirectRodState._numpy_compute_matrix_g(q)
+        corr_q = (g @ dtheta).astype(np.float32)
         q_new = q + corr_q
         q_new /= np.linalg.norm(q_new)
         orientations[idx] = q_new

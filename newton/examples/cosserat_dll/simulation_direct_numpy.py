@@ -56,6 +56,12 @@ class DirectCosseratRodSimulationNumPy:
         # Bend stiffness coefficients (kappa1, kappa2, tau stiffness)
         self.bend_stiffness = np.ones((state.n_edges, 4), dtype=np.float32)
 
+        # Stiffness multipliers (for NumPy solver tuning)
+        # With accurate Jacobians from C++ reference, these should be close to 1.0
+        self.stretch_stiffness_mult = 1.0
+        self.shear_stiffness_mult = 1.0
+        self.bend_stiffness_mult = 1.0  # Now using accurate Jacobians
+
         # Initialize the direct solver (needed for DLL fallback)
         self._rod_ptr = self.dll.init_direct_elastic_rod(
             state.positions,
@@ -238,15 +244,15 @@ class DirectCosseratRodSimulationNumPy:
 
             # Stiffness values
             # Stretch and shear use axial stiffness
-            k_stretch = E * A / L
-            k_shear = k_stretch  # Simplified: same as stretch
+            k_stretch = E * A / L * self.stretch_stiffness_mult
+            k_shear = E * A / L * self.shear_stiffness_mult
 
-            # Bending stiffness (scaled by bend_stiffness coefficients)
-            k_bend1 = E * I / L * self.bend_stiffness[i, 0]
-            k_bend2 = E * I / L * self.bend_stiffness[i, 1]
+            # Bending stiffness (scaled by bend_stiffness coefficients and multiplier)
+            k_bend1 = E * I / L * self.bend_stiffness[i, 0] * self.bend_stiffness_mult
+            k_bend2 = E * I / L * self.bend_stiffness[i, 1] * self.bend_stiffness_mult
 
-            # Twist stiffness (scaled by twist coefficient)
-            k_twist = G * J / L * self.bend_stiffness[i, 2]
+            # Twist stiffness (scaled by twist coefficient and multiplier)
+            k_twist = G * J / L * self.bend_stiffness[i, 2] * self.bend_stiffness_mult
 
             # Compliance = 1 / (stiffness * dt²)
             # Add small epsilon to avoid division by zero
@@ -262,21 +268,16 @@ class DirectCosseratRodSimulationNumPy:
     def _update_numpy(self):
         """NumPy implementation of constraint update.
 
-        This evaluates the current constraint violations:
+        This evaluates the current constraint violations following the C++ reference.
 
         1. Stretch-Shear Constraint (3 DOF per edge):
-           C_ss = (p_{i+1} - p_i) - L_i * d3_i
-           Where d3_i is the tangent director from orientation q_i.
-           - C_ss[0]: stretch error (along d3)
-           - C_ss[1]: shear error along d1
-           - C_ss[2]: shear error along d2
+           connector0 = p0 + (L/2) * d3_0  (point on segment 0 at constraint location)
+           connector1 = p1 - (L/2) * d3_1  (point on segment 1 at constraint location)
+           C_ss = connector0 - connector1 (should be zero at rest)
 
         2. Bend-Twist Constraint (3 DOF per edge):
            C_bt = omega - omega_rest
-           Where omega is the Darboux vector computed from relative rotation.
-           - C_bt[0]: bend around d1 (kappa1)
-           - C_bt[1]: bend around d2 (kappa2)
-           - C_bt[2]: twist around d3 (tau)
+           Where omega = im(q0^{-1} * q1) is the Darboux vector (WITHOUT 2/L factor).
         """
         s = self.state
         n_edges = s.n_edges
@@ -288,37 +289,34 @@ class DirectCosseratRodSimulationNumPy:
             q0 = s.predicted_orientations[i]
             q1 = s.predicted_orientations[i + 1]
 
-            # Edge vector
-            edge = p1 - p0
-
-            # Get directors from quaternion q0
-            d1 = self._quat_rotate_vector(q0, np.array([1.0, 0.0, 0.0], dtype=np.float32))
-            d2 = self._quat_rotate_vector(q0, np.array([0.0, 1.0, 0.0], dtype=np.float32))
-            d3 = self._quat_rotate_vector(q0, np.array([0.0, 0.0, 1.0], dtype=np.float32))
-
-            # Rest length
             L = self.current_rest_lengths[i]
 
             # === Stretch-Shear Constraint ===
-            # Target edge = L * d3 (rod should be aligned with tangent director)
-            # Error = actual_edge - target_edge, projected onto directors
-            edge_error = edge - L * d3
+            # Get rod axis directions d3 from quaternions
+            # d3 is the third column of the rotation matrix (z-axis in local frame)
+            d3_0 = self._quat_rotate_vector(q0, np.array([0, 0, 1], dtype=np.float32))
+            d3_1 = self._quat_rotate_vector(q1, np.array([0, 0, 1], dtype=np.float32))
 
-            # Project error onto material frame
-            self.constraint_values[i, 0] = np.dot(edge_error, d3)  # stretch (along d3)
-            self.constraint_values[i, 1] = np.dot(edge_error, d1)  # shear1 (along d1)
-            self.constraint_values[i, 2] = np.dot(edge_error, d2)  # shear2 (along d2)
+            # Connectors: points on each segment where constraint applies
+            # connector0 = p0 + (L/2) * d3_0 (midpoint from segment 0's perspective)
+            # connector1 = p1 - (L/2) * d3_1 (midpoint from segment 1's perspective)
+            connector0 = p0 + 0.5 * L * d3_0
+            connector1 = p1 - 0.5 * L * d3_1
+
+            stretch_violation = connector0 - connector1
+
+            self.constraint_values[i, 0] = stretch_violation[0]
+            self.constraint_values[i, 1] = stretch_violation[1]
+            self.constraint_values[i, 2] = stretch_violation[2]
 
             # === Bend-Twist Constraint ===
-            # Compute Darboux vector from relative quaternion
-            # q_rel = q0^{-1} * q1
+            # C++ uses: darbouxVector = (q0.conjugate() * q1).vec()
+            # WITHOUT the 2/L factor!
             q0_inv = self._quat_conjugate(q0)
             q_rel = self._quat_multiply(q0_inv, q1)
 
-            # Extract Darboux vector: omega = 2 * im(q_rel) / L
-            # For unit quaternion, im(q) = (x, y, z)
-            # The factor of 2 comes from the quaternion-rotation relationship
-            omega = 2.0 * q_rel[:3] / L
+            # Darboux vector is just the imaginary part (x, y, z) of the relative quaternion
+            omega = q_rel[:3].copy()
 
             # Rest Darboux vector
             omega_rest = self.current_rest_darboux[i]
@@ -365,72 +363,127 @@ class DirectCosseratRodSimulationNumPy:
             w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2,
         ], dtype=np.float32)
 
+    def _compute_matrix_G(self, q: np.ndarray) -> np.ndarray:
+        """Compute the G matrix that converts angular velocity to quaternion derivative.
+
+        From C++: G is a 4x3 matrix where q_dot = G * omega / 2
+        """
+        # Quaternion order: (x, y, z, w)
+        x, y, z, w = q
+        G = np.array([
+            [0.5 * w,  0.5 * z, -0.5 * y],
+            [-0.5 * z, 0.5 * w,  0.5 * x],
+            [0.5 * y, -0.5 * x,  0.5 * w],
+            [-0.5 * x, -0.5 * y, -0.5 * z]
+        ], dtype=np.float32)
+        return G
+
+    def _compute_jOmega(self, q0: np.ndarray, q1: np.ndarray) -> tuple:
+        """Compute the Jacobians of Darboux vector w.r.t. quaternion components.
+
+        From C++:
+        jOmega0 is ∂ω/∂q0 (3x4 matrix)
+        jOmega1 is ∂ω/∂q1 (3x4 matrix)
+
+        Where ω = im(q0^{-1} * q1)
+        """
+        # Quaternion order: (x, y, z, w)
+        x0, y0, z0, w0 = q0
+        x1, y1, z1, w1 = q1
+
+        # From C++ computeBendingAndTorsionJacobians:
+        # jOmega0 <<
+        #     -q1.w(), -q1.z(), q1.y(), q1.x(),
+        #     q1.z(), -q1.w(), -q1.x(), q1.y(),
+        #     -q1.y(), q1.x(), -q1.w(), q1.z();
+        jOmega0 = np.array([
+            [-w1, -z1,  y1, x1],
+            [ z1, -w1, -x1, y1],
+            [-y1,  x1, -w1, z1]
+        ], dtype=np.float32)
+
+        # jOmega1 <<
+        #     q0.w(), q0.z(), -q0.y(), -q0.x(),
+        #     -q0.z(), q0.w(), q0.x(), -q0.y(),
+        #     q0.y(), -q0.x(), q0.w(), -q0.z();
+        jOmega1 = np.array([
+            [ w0,  z0, -y0, -x0],
+            [-z0,  w0,  x0, -y0],
+            [ y0, -x0,  w0, -z0]
+        ], dtype=np.float32)
+
+        return jOmega0, jOmega1
+
     def _jacobians_numpy(self):
-        """NumPy implementation of Jacobian computation.
+        """NumPy implementation of Jacobian computation following C++ reference.
 
-        Computes the Jacobian matrices for each constraint. The Jacobian J
-        relates changes in DOFs to changes in constraint values:
-            δC = J * δx
+        The Jacobian structure per constraint is a 6x6 matrix for each segment:
+        J = [ I or -I     r_cross    ]  (stretch-shear w.r.t. position and rotation)
+            [ 0           jOmega*G   ]  (bend-twist w.r.t. rotation only)
 
-        For each edge constraint, we have:
-        - 6 constraint DOFs (3 stretch-shear + 3 bend-twist)
-        - Affecting 2 positions (6 DOFs) and 2 orientations (6 DOFs for the
-          tangent space representation)
-
-        IMPORTANT: Constraint ordering is [stretch, shear1, shear2] = [d3, d1, d2]
-        which requires a permuted rotation matrix P = [d3, d1, d2] for the Jacobian.
+        Where:
+        - r_cross is the skew-symmetric matrix of (connector - position)
+          r0 = (L/2) * d3_0, r1 = -(L/2) * d3_1
+        - jOmega*G is the 3x3 bend-twist Jacobian from quaternion formulas
         """
         s = self.state
         n_edges = s.n_edges
 
         # Allocate Jacobian storage
-        # Each edge has Jacobians w.r.t. 4 DOF groups: p_i, p_{i+1}, q_i, q_{i+1}
-        # J_pos: (n_edges, 6, 6) - 6 constraints x (3 for p_i + 3 for p_{i+1})
-        # J_rot: (n_edges, 6, 6) - 6 constraints x (3 for θ_i + 3 for θ_{i+1})
         if not hasattr(self, 'jacobian_pos') or self.jacobian_pos.shape[0] != n_edges:
             self.jacobian_pos = np.zeros((n_edges, 6, 6), dtype=np.float32)
             self.jacobian_rot = np.zeros((n_edges, 6, 6), dtype=np.float32)
 
         for i in range(n_edges):
             q0 = s.predicted_orientations[i]
+            q1 = s.predicted_orientations[i + 1]
+
             L = self.current_rest_lengths[i]
             if L <= 1e-8:
                 L = 1e-8
 
-            # Get directors from quaternion
-            d1 = self._quat_rotate_vector(q0, np.array([1.0, 0.0, 0.0], dtype=np.float32))
-            d2 = self._quat_rotate_vector(q0, np.array([0.0, 1.0, 0.0], dtype=np.float32))
-            d3 = self._quat_rotate_vector(q0, np.array([0.0, 0.0, 1.0], dtype=np.float32))
-
-            # Permuted rotation matrix: columns are [d3, d1, d2] to match constraint ordering
-            # C[0] = d3 · edge_error (stretch)
-            # C[1] = d1 · edge_error (shear1)
-            # C[2] = d2 · edge_error (shear2)
-            P = np.column_stack([d3, d1, d2])  # 3x3, permuted columns
-            P_T = P.T  # 3x3
-
             # === Stretch-Shear Jacobians (rows 0-2) ===
-            # C_ss = P^T * (p1 - p0 - L*d3) in permuted local frame
-            # ∂C_ss/∂p0 = -P^T
-            # ∂C_ss/∂p1 = P^T
-            self.jacobian_pos[i, 0:3, 0:3] = -P_T  # w.r.t. p_i
-            self.jacobian_pos[i, 0:3, 3:6] = P_T   # w.r.t. p_{i+1}
+            # C = connector0 - connector1
+            # connector0 = p0 + (L/2) * d3_0
+            # connector1 = p1 - (L/2) * d3_1
+            # ∂C/∂p0 = I, ∂C/∂p1 = -I
+            self.jacobian_pos[i, 0:3, 0:3] = np.eye(3, dtype=np.float32)   # w.r.t. p_i
+            self.jacobian_pos[i, 0:3, 3:6] = -np.eye(3, dtype=np.float32)  # w.r.t. p_{i+1}
 
-            # ∂C_ss/∂θ0: Rotation affects d3 (and the projection frame)
-            # Using the original derivation with P instead of R:
-            # ∂C_ss/∂θ0 = L * P^T * [d3]_×
-            d3_skew = self._skew_symmetric(d3)
-            self.jacobian_rot[i, 0:3, 0:3] = L * P_T @ d3_skew  # w.r.t. θ_i
-            self.jacobian_rot[i, 0:3, 3:6] = 0.0  # C_ss doesn't depend on q_{i+1} directly
+            # Get rod axis directions d3 from quaternions
+            d3_0 = self._quat_rotate_vector(q0, np.array([0, 0, 1], dtype=np.float32))
+            d3_1 = self._quat_rotate_vector(q1, np.array([0, 0, 1], dtype=np.float32))
+
+            # Connector offsets from positions
+            # r0 = connector0 - p0 = (L/2) * d3_0
+            # r1 = connector1 - p1 = -(L/2) * d3_1
+            r0 = 0.5 * L * d3_0
+            r1 = -0.5 * L * d3_1
+
+            r0_cross = self._skew_symmetric(r0)
+            r1_cross = self._skew_symmetric(r1)
+
+            # Sign convention from C++: sign=1 for segment0, sign=-1 for segment1
+            # ∂C/∂θ0 = ∂connector0/∂θ0 = -[r0]_× (derivative of rotating r0)
+            # ∂C/∂θ1 = -∂connector1/∂θ1 = +[r1]_× (connector1 has negative contribution)
+            self.jacobian_rot[i, 0:3, 0:3] = -r0_cross  # w.r.t. θ_i
+            self.jacobian_rot[i, 0:3, 3:6] = r1_cross   # w.r.t. θ_{i+1}
 
             # === Bend-Twist Jacobians (rows 3-5) ===
-            # C_bt = ω - ω_rest, where ω = 2 * im(q0^{-1} * q1) / L
-            # The Darboux vector is already in the material frame
-            # ∂ω/∂θ0 ≈ -2/L * I (simplified for small rotations)
-            # ∂ω/∂θ1 ≈ 2/L * I (simplified)
-            factor = 2.0 / L
-            self.jacobian_rot[i, 3:6, 0:3] = -factor * np.eye(3, dtype=np.float32)  # w.r.t. θ_i
-            self.jacobian_rot[i, 3:6, 3:6] = factor * np.eye(3, dtype=np.float32)   # w.r.t. θ_{i+1}
+            # C_bt = ω - ω_rest, where ω = im(q0^{-1} * q1)
+            # The Jacobian is: ∂ω/∂θ = jOmega * G
+            # where jOmega is 3x4 and G is 4x3
+
+            # Compute G matrices
+            G0 = self._compute_matrix_G(q0)  # 4x3
+            G1 = self._compute_matrix_G(q1)  # 4x3
+
+            # Compute jOmega matrices (3x4)
+            jOmega0, jOmega1 = self._compute_jOmega(q0, q1)
+
+            # Bend-twist Jacobians: jOmega * G (3x3)
+            self.jacobian_rot[i, 3:6, 0:3] = jOmega0 @ G0  # w.r.t. θ_i
+            self.jacobian_rot[i, 3:6, 3:6] = jOmega1 @ G1  # w.r.t. θ_{i+1}
 
             # Bend-twist doesn't depend on positions
             self.jacobian_pos[i, 3:6, 0:3] = 0.0

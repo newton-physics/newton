@@ -167,6 +167,55 @@ Both rods respond to the same UI sliders. Visual comparison shows correctness.
   correction dp = J^T * λ maps λ through the rotation matrix. If the column ordering
   of R doesn't match the constraint ordering, corrections go in the wrong direction.
 
+### Session 2 - Stiffness Parameter Investigation (2026-01-23)
+- **Issue**: NumPy rod stretches/bends more than C++ reference
+- **Investigation**:
+  - Traced parameter flow: both use E = young_modulus * young_modulus_mult = 1e6
+  - Tested stretch stiffness multipliers: didn't fix the bending issue
+  - Tested bend stiffness multipliers: rod stiffness plateaus at ~78% of C++
+  - Root cause: Simplified bend-twist Jacobians (∂C_bt/∂θ ≈ ±2/L * I) are a first-order
+    approximation that doesn't capture the full quaternion-rotation relationship
+- **Solution**: Added tunable stiffness multipliers to the NumPy solver:
+  - `stretch_stiffness_mult` (default 1.0)
+  - `shear_stiffness_mult` (default 1.0)
+  - `bend_stiffness_mult` (default 1e6 to compensate for geometric scaling)
+- **UI changes**:
+  - Added sliders for stretch, shear, and bend multipliers
+  - Bend multiplier uses log10 scale (range 0-9 for values 1 to 1e9)
+- **Known limitation**: NumPy solver achieves ~78% of C++ stiffness even with infinite
+  bend stiffness multiplier, due to simplified Jacobians. Future work could implement
+  accurate Jacobians for better matching.
+
+### Session 3 - Accurate Jacobians from C++ Reference (2026-01-23)
+- **Issue**: NumPy rod became unstable when rotating (7/1 numpad keys) or changing rest bends
+- **Root cause**: Simplified Jacobians didn't match the actual constraint formulation
+- **Solution**: Implemented accurate Jacobians from C++ reference (`PositionBasedElasticRods.cpp`):
+
+  **Constraint Formulation**:
+  - **Stretch-Shear**: `C = connector0 - connector1`
+    - `connector0 = p0 + (L/2) * d3_0` (point on segment 0)
+    - `connector1 = p1 - (L/2) * d3_1` (point on segment 1)
+    - `d3_i` = z-axis of rotation matrix from quaternion qi
+  - **Bend-Twist**: `C = ω - ω_rest` where `ω = im(q0⁻¹ * q1)` (no 2/L factor)
+
+  **Jacobian Computation**:
+  - **Position**: `∂C/∂p0 = I`, `∂C/∂p1 = -I`
+  - **Rotation (stretch-shear)**:
+    - `r0 = (L/2) * d3_0`, `r1 = -(L/2) * d3_1`
+    - `∂C/∂θ0 = -[r0]×`, `∂C/∂θ1 = +[r1]×` (skew-symmetric matrices)
+  - **Rotation (bend-twist)**: `∂ω/∂θ = jOmega @ G`
+    - `G` is 4×3 matrix converting angular velocity to quaternion derivative
+    - `jOmega` is 3×4 Jacobian of Darboux vector w.r.t. quaternion
+
+  **New helper methods**:
+  - `_compute_matrix_G(q)`: Returns 4×3 G matrix for quaternion q
+  - `_compute_jOmega(q0, q1)`: Returns (jOmega0, jOmega1) 3×4 matrices
+
+- **Changes**:
+  - Updated `_update_numpy()`: Uses connector-based constraint formulation
+  - Updated `_jacobians_numpy()`: Uses d3 from quaternions, accurate jOmega @ G
+  - Reset `bend_stiffness_mult = 1.0` (now using accurate Jacobians)
+
 ---
 
 ## Files Created/Modified
@@ -181,13 +230,12 @@ Both rods respond to the same UI sliders. Visual comparison shows correctness.
 
 ## Next Steps
 
-The core constraint solving pipeline is now implemented in NumPy. Remaining tasks:
+The core constraint solving pipeline is now implemented in NumPy with accurate Jacobians. Remaining tasks:
 
 1. **Test the full NumPy solver** - Enable all checkboxes and compare behavior
-   - Note: The NumPy solver may not match C++ exactly due to:
-     - Simplified Jacobian approximations
-     - Missing off-diagonal coupling in banded matrix
-     - Different numerical precision
+   - Compare stability when rotating rod (7/1 numpad keys)
+   - Compare behavior when changing rest bends
+   - NumPy solver should now match C++ more closely
 
 2. **Implement `predict_rotations`** - Quaternion integration:
    ```python
@@ -210,6 +258,6 @@ The core constraint solving pipeline is now implemented in NumPy. Remaining task
    q = q_predicted
    ```
 
-5. **Improve Jacobian accuracy** - Current implementation uses simplified derivatives
+5. ~~**Improve Jacobian accuracy**~~ - ✓ Done (Session 3)
 
-6. **Add off-diagonal coupling** - For more accurate banded matrix assembly
+6. **Add off-diagonal coupling** - For more accurate banded matrix assembly (non-banded already has this)

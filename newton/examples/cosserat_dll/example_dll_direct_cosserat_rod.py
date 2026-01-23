@@ -512,9 +512,24 @@ class Example:
             self.sim_np.rotation_damping = self.sim_cpp.rotation_damping
 
         ui.separator()
-        ui.text("Stiffness:")
-        changed_bend, self.bend_stiffness = ui.slider_float("Bend Stiffness", self.bend_stiffness, 0.0, 1.0)
-        changed_twist_k, self.twist_stiffness = ui.slider_float("Twist Stiffness", self.twist_stiffness, 0.0, 1.0)
+        ui.text("Stiffness Multipliers (NumPy):")
+        changed_stretch, self.sim_np.stretch_stiffness_mult = ui.slider_float(
+            "Stretch Mult", self.sim_np.stretch_stiffness_mult, 0.1, 100.0
+        )
+        changed_shear, self.sim_np.shear_stiffness_mult = ui.slider_float(
+            "Shear Mult", self.sim_np.shear_stiffness_mult, 0.1, 100.0
+        )
+        # Use log scale for bend multiplier (range 1 to 1e9)
+        import math
+        log_bend_mult = math.log10(max(1.0, self.sim_np.bend_stiffness_mult))
+        changed_bend_mult, log_bend_mult = ui.slider_float(
+            "Bend Mult (log10)", log_bend_mult, 0.0, 9.0
+        )
+        if changed_bend_mult:
+            self.sim_np.bend_stiffness_mult = 10.0 ** log_bend_mult
+        ui.text("Bend/Twist Coefficients:")
+        changed_bend, self.bend_stiffness = ui.slider_float("Bend Coeff", self.bend_stiffness, 0.0, 1.0)
+        changed_twist_k, self.twist_stiffness = ui.slider_float("Twist Coeff", self.twist_stiffness, 0.0, 1.0)
         if changed_bend or changed_twist_k:
             self._sync_sim_parameters()
 

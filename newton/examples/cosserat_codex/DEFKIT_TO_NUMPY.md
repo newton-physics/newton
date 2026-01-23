@@ -15,6 +15,9 @@ Stiff Rods from `DefKitAdv.dll` to NumPy in `numpy_cosserat_codex.py`.
 | Predict rotations | `PredictRotationsPBD` | NumPy implemented | Vectorized translation of `DefKit.cpp` |
 | Integrate rotations | `IntegrateRotationsPBD` | NumPy implemented | Vectorized translation of `DefKit.cpp` |
 | Prepare constraints | `PrepareDirectElasticRodConstraints` | NumPy implemented | Compliance/lambda prep |
+| Darboux vector | `DirectPositionBasedSolverForStiffRods::computeDarbouxVector` | NumPy implemented | Matches `q0.conjugate() * q1` vector part |
+| Bending/torsion Jacobians | `DirectPositionBasedSolverForStiffRods::computeBendingAndTorsionJacobians` | NumPy implemented | Uses exact `jOmega * G` (no length scaling) |
+| Quaternion G matrix | `DirectPositionBasedSolverForStiffRods::computeMatrixG` | NumPy implemented | Full 4x3 correction (incl. w) |
 | Update constraints (banded) | `UpdateConstraints_DirectElasticRodConstraintsBanded` | NumPy implemented | Constraint error eval |
 | Compute Jacobians (banded) | `ComputeJacobians_DirectElasticRodConstraintsBanded` | NumPy implemented | Linearized jacobians |
 | Assemble JMJT (banded) | `AssembleJMJT_DirectElasticRodConstraintsBanded` | NumPy implemented | Banded JMJT |
