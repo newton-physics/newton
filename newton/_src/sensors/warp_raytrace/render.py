@@ -90,13 +90,13 @@ def tid_to_coord_view_priority(tid: wp.int32, num_cameras: wp.int32, width: wp.i
 
 
 @wp.func
-def pack_rgba_to_uint32(r: wp.float32, g: wp.float32, b: wp.float32, a: wp.float32) -> wp.uint32:
+def pack_rgba_to_uint32(rgb: wp.vec3f, alpha: wp.float32) -> wp.uint32:
     """Pack RGBA values into a single uint32 for efficient memory access."""
     return (
-        (wp.uint32(a) << wp.uint32(24))
-        | (wp.uint32(b) << wp.uint32(16))
-        | (wp.uint32(g) << wp.uint32(8))
-        | wp.uint32(r)
+        (wp.uint32(alpha * 255.0) << wp.uint32(24))
+        | (wp.uint32(rgb[2] * 255.0) << wp.uint32(16))
+        | (wp.uint32(rgb[1] * 255.0) << wp.uint32(8))
+        | wp.uint32(rgb[0] * 255.0)
     )
 
 
@@ -286,12 +286,7 @@ def _render_megakernel(
                 )
 
     if render_albedo:
-        out_albedo[world_index, camera_index, out_index] = pack_rgba_to_uint32(
-            base_color[0] * 255.0,
-            base_color[1] * 255.0,
-            base_color[2] * 255.0,
-            255.0,
-        )
+        out_albedo[world_index, camera_index, out_index] = pack_rgba_to_uint32(base_color, 1.0)
 
     if not render_color:
         return
@@ -348,10 +343,8 @@ def _render_megakernel(
     out_color = wp.min(wp.max(out_color, wp.vec3f(0.0)), wp.vec3f(1.0))
 
     out_pixels[world_index, camera_index, out_index] = pack_rgba_to_uint32(
-        out_color[0] * 255.0,
-        out_color[1] * 255.0,
-        out_color[2] * 255.0,
-        255.0,
+        out_color,
+        1.0,
     )
 
 
