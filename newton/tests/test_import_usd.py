@@ -22,6 +22,7 @@ import warp as wp
 
 import newton
 import newton.examples
+import newton.usd as usd
 from newton import JointType
 from newton._src.geometry.utils import create_box_mesh, transform_points
 from newton.solvers import SolverMuJoCo
@@ -2178,9 +2179,6 @@ class TestImportSampleAssets(unittest.TestCase):
                         f"Shape {sid} type mismatch: Newton type {newton_type} should map to USD {expected_usd_type}, but found {shape_objtype}",
                     )
 
-        def from_gfquat(gfquat):
-            return wp.normalize(wp.quat(*gfquat.imaginary, gfquat.real))
-
         def quaternions_match(q1, q2, tolerance=1e-5):
             return all(abs(q1[i] - q2[i]) < tolerance for i in range(4)) or all(
                 abs(q1[i] + q2[i]) < tolerance for i in range(4)
@@ -2207,7 +2205,7 @@ class TestImportSampleAssets(unittest.TestCase):
                 f"Shape {sid} collision mismatch: USD={collision_enabled_usd}, Newton={collision_enabled_newton}",
             )
 
-            usd_quat = from_gfquat(shape_spec.localRot)
+            usd_quat = usd.from_gfquat(shape_spec.localRot)
             newton_pos = newton_transform[:3]
             newton_quat = newton_transform[3:7]
 
@@ -3059,4 +3057,4 @@ def Xform "Articulation" (
 
 
 if __name__ == "__main__":
-    unittest.main(verbosity=2, failfast=True)
+    unittest.main(verbosity=2, failfast=False)
