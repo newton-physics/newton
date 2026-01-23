@@ -1332,6 +1332,7 @@ def parse_usd(
             builder.add_articulation([joint_id], key=key)
 
     if no_articulations and has_joints:
+        # parse external joints that are not part of any articulation
         for joint_key, joint_desc in joint_descriptions.items():
             if any(re.match(p, joint_key) for p in ignore_paths):
                 continue
