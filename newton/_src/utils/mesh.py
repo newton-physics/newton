@@ -13,11 +13,125 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import io
+import os
 import warnings
+import xml.etree.ElementTree as ET
 from dataclasses import dataclass
+from urllib.parse import unquote, urlparse
+from urllib.request import urlopen
 
 import numpy as np
 import warp as wp
+
+from ..geometry.types import Mesh
+
+
+@wp.kernel
+def accumulate_vertex_normals(
+    points: wp.array(dtype=wp.vec3),
+    indices: wp.array(dtype=wp.int32),
+    # output
+    normals: wp.array(dtype=wp.vec3),
+):
+    """Accumulate per-face normals into per-vertex normals (not normalized)."""
+    face = wp.tid()
+    i0 = indices[face * 3]
+    i1 = indices[face * 3 + 1]
+    i2 = indices[face * 3 + 2]
+    v0 = points[i0]
+    v1 = points[i1]
+    v2 = points[i2]
+    normal = wp.normalize(wp.cross(v1 - v0, v2 - v0))
+    wp.atomic_add(normals, i0, normal)
+    wp.atomic_add(normals, i1, normal)
+    wp.atomic_add(normals, i2, normal)
+
+
+@wp.kernel
+def normalize_vertex_normals(normals: wp.array(dtype=wp.vec3)):
+    """Normalize per-vertex normals in-place."""
+    tid = wp.tid()
+    normals[tid] = wp.normalize(normals[tid])
+
+
+def compute_vertex_normals_wp(
+    points: wp.array,
+    indices: wp.array,
+    normals: wp.array | None = None,
+    *,
+    device: wp.context.Device | None = None,
+    normalize: bool = True,
+) -> wp.array:
+    """Compute per-vertex normals from triangle indices on a Warp device.
+
+    Args:
+        points: Warp array of vertex positions (wp.vec3).
+        indices: Warp array of triangle indices (int32/uint32, flattened).
+        normals: Optional output array to reuse; if None, a new array is created.
+        device: Warp device to run on (defaults to points.device).
+        normalize: Whether to normalize the accumulated normals.
+
+    Returns:
+        Warp array of per-vertex normals.
+    """
+    if device is None:
+        device = points.device
+    if normals is None:
+        normals = wp.zeros_like(points)
+    else:
+        normals.zero_()
+    if len(indices) == 0:
+        return normals
+    indices_i32 = indices
+    if indices.dtype != wp.int32:
+        indices_i32 = indices.view(dtype=wp.int32)
+    wp.launch(
+        accumulate_vertex_normals,
+        dim=len(indices_i32) // 3,
+        inputs=[points, indices_i32],
+        outputs=[normals],
+        device=device,
+    )
+    if normalize:
+        wp.launch(normalize_vertex_normals, dim=len(normals), inputs=[normals], device=device)
+    return normals
+
+
+def compute_vertex_normals_numpy(mesh_vertices: np.ndarray, mesh_faces: np.ndarray) -> np.ndarray:
+    """Compute per-vertex normals from triangle indices using NumPy."""
+    normals = np.zeros_like(mesh_vertices, dtype=np.float32)
+    v0 = mesh_vertices[mesh_faces[:, 0]]
+    v1 = mesh_vertices[mesh_faces[:, 1]]
+    v2 = mesh_vertices[mesh_faces[:, 2]]
+    face_normals = np.cross(v1 - v0, v2 - v0)
+    # Accumulate face normals per vertex (area-weighted).
+    np.add.at(normals, mesh_faces[:, 0], face_normals)
+    np.add.at(normals, mesh_faces[:, 1], face_normals)
+    np.add.at(normals, mesh_faces[:, 2], face_normals)
+    # Normalize with safe epsilon.
+    lengths = np.linalg.norm(normals, axis=1, keepdims=True)
+    lengths = np.maximum(lengths, 1.0e-8)
+    normals = normals / lengths
+    return normals.astype(np.float32)
+
+
+def smooth_vertex_normals_by_position(
+    mesh_vertices: np.ndarray, mesh_faces: np.ndarray, eps: float = 1.0e-6
+) -> np.ndarray:
+    """Smooth vertex normals by averaging normals of vertices with shared positions."""
+    normals = compute_vertex_normals_numpy(mesh_vertices, mesh_faces)
+    if len(mesh_vertices) == 0:
+        return normals
+    keys = np.round(mesh_vertices / eps).astype(np.int64)
+    unique_keys, inverse = np.unique(keys, axis=0, return_inverse=True)
+    accum = np.zeros((len(unique_keys), 3), dtype=np.float32)
+    np.add.at(accum, inverse, normals)
+    lengths = np.linalg.norm(accum, axis=1, keepdims=True)
+    lengths = np.maximum(lengths, 1.0e-8)
+    accum = accum / lengths
+    return accum[inverse]
+
 
 # Default number of segments for mesh generation
 default_num_segments = 32
@@ -259,6 +373,514 @@ def create_ellipsoid_mesh(
                 indices.extend([first, first + 1, second, second, first + 1, second + 1])
 
     return np.array(vertices, dtype=np.float32), np.array(indices, dtype=np.uint32)
+
+
+_texture_url_cache: dict[str, bytes] = {}
+
+
+def _is_http_url(path: str) -> bool:
+    parsed = urlparse(path)
+    return parsed.scheme in ("http", "https")
+
+
+def _resolve_file_url(path: str) -> str:
+    parsed = urlparse(path)
+    if parsed.scheme != "file":
+        return path
+    return unquote(parsed.path)
+
+
+def _download_texture_bytes(url: str) -> bytes | None:
+    if url in _texture_url_cache:
+        return _texture_url_cache[url]
+    try:
+        with urlopen(url, timeout=10) as response:
+            data = response.read()
+        _texture_url_cache[url] = data
+        return data
+    except Exception as exc:
+        warnings.warn(f"Failed to download texture image: {url} ({exc})", stacklevel=2)
+        return None
+
+
+def load_texture_image(texture_path: str | None) -> np.ndarray | None:
+    """Load a texture image from disk or URL into a numpy array.
+
+    Args:
+        texture_path: Path or URL to the texture image.
+
+    Returns:
+        Texture image as uint8 numpy array (H, W, C), or None if load fails.
+    """
+    if texture_path is None:
+        return None
+    try:
+        from PIL import Image  # noqa: PLC0415
+
+        if _is_http_url(texture_path):
+            data = _download_texture_bytes(texture_path)
+            if data is None:
+                return None
+            with Image.open(io.BytesIO(data)) as source_img:
+                img = source_img.convert("RGBA")
+                return np.array(img)
+
+        texture_path = _resolve_file_url(texture_path)
+        with Image.open(texture_path) as source_img:
+            img = source_img.convert("RGBA")
+            return np.array(img)
+    except Exception as exc:
+        warnings.warn(f"Failed to load texture image: {texture_path} ({exc})", stacklevel=2)
+        return None
+
+
+def _normalize_color(color) -> tuple[float, float, float] | None:
+    if color is None:
+        return None
+    color = np.asarray(color, dtype=np.float32).flatten()
+    if color.size >= 3:
+        if np.max(color) > 1.0:
+            color = color / 255.0
+        return (float(color[0]), float(color[1]), float(color[2]))
+    return None
+
+
+def _extract_trimesh_texture(visual, base_dir: str) -> tuple[np.ndarray | None, str | None]:
+    texture_image = None
+    texture_path = None
+
+    if visual is None or not hasattr(visual, "material"):
+        return None, None
+
+    material = visual.material
+    if material is None:
+        return None, None
+
+    image = getattr(material, "image", None)
+    image_path = getattr(material, "image_path", None)
+
+    if image is None:
+        base_color_texture = getattr(material, "baseColorTexture", None)
+        if base_color_texture is not None:
+            image = getattr(base_color_texture, "image", None)
+            image_path = image_path or getattr(base_color_texture, "image_path", None)
+
+    if image is not None:
+        try:
+            texture_image = np.array(image)
+        except Exception:
+            texture_image = None
+
+    if image_path:
+        if not os.path.isabs(image_path):
+            texture_path = os.path.abspath(os.path.join(base_dir, image_path))
+        else:
+            texture_path = image_path
+
+    return texture_image, texture_path
+
+
+def _extract_trimesh_material_params(
+    material,
+) -> tuple[float | None, float | None, tuple[float, float, float] | None]:
+    if material is None:
+        return None, None, None
+
+    base_color = None
+    metallic = None
+    roughness = None
+
+    color_candidates = [
+        getattr(material, "baseColorFactor", None),
+        getattr(material, "diffuse", None),
+        getattr(material, "diffuseColor", None),
+    ]
+    for candidate in color_candidates:
+        if candidate is not None:
+            base_color = _normalize_color(candidate)
+            break
+
+    for attr_name in ("metallicFactor", "metallic"):
+        value = getattr(material, attr_name, None)
+        if value is not None:
+            metallic = float(value)
+            break
+
+    for attr_name in ("roughnessFactor", "roughness"):
+        value = getattr(material, attr_name, None)
+        if value is not None:
+            roughness = float(value)
+            break
+
+    if roughness is None:
+        for attr_name in ("glossiness", "shininess"):
+            value = getattr(material, attr_name, None)
+            if value is not None:
+                gloss = float(value)
+                if attr_name == "shininess":
+                    gloss = min(max(gloss / 1000.0, 0.0), 1.0)
+                roughness = 1.0 - min(max(gloss, 0.0), 1.0)
+                break
+
+    return roughness, metallic, base_color
+
+
+def load_trimesh_meshes(
+    filename: str,
+    *,
+    scale: np.ndarray | list[float] | tuple[float, ...] = (1.0, 1.0, 1.0),
+    maxhullvert: int,
+    override_color: np.ndarray | list[float] | tuple[float, float, float] | None = None,
+    override_texture_path: str | None = None,
+    override_texture_image: np.ndarray | None = None,
+) -> list[Mesh]:
+    """Load meshes from a file using trimesh and capture texture data if present.
+
+    Args:
+        filename: Path to the mesh file.
+        scale: Per-axis scale to apply to vertices.
+        maxhullvert: Maximum vertices for convex hull approximation.
+        override_color: Optional base color override (RGB).
+        override_texture_path: Optional texture path override.
+        override_texture_image: Optional texture image override.
+
+    Returns:
+        List of Mesh objects.
+    """
+    import trimesh  # noqa: PLC0415
+
+    filename = os.fspath(filename)
+    scale = np.asarray(scale, dtype=np.float32)
+    base_dir = os.path.dirname(filename)
+
+    def _parse_dae_material_colors(
+        path: str,
+    ) -> tuple[list[str], dict[str, dict[str, float | tuple[float, float, float] | None]]]:
+        try:
+            tree = ET.parse(path)
+            root = tree.getroot()
+        except Exception:
+            return [], {}
+
+        def strip(tag: str) -> str:
+            return tag.split("}", 1)[-1] if "}" in tag else tag
+
+        # Map effect id -> material properties
+        effect_props: dict[str, dict[str, float | tuple[float, float, float] | None]] = {}
+        for effect in root.iter():
+            if strip(effect.tag) != "effect":
+                continue
+            effect_id = effect.attrib.get("id")
+            if not effect_id:
+                continue
+            diffuse_color = None
+            specular_color = None
+            specular_intensity = None
+            shininess = None
+            for shader_tag in ("phong", "lambert", "blinn"):
+                shader = None
+                for elem in effect.iter():
+                    if strip(elem.tag) == shader_tag:
+                        shader = elem
+                        break
+                if shader is None:
+                    continue
+                for node in shader.iter():
+                    tag = strip(node.tag)
+                    if tag == "diffuse":
+                        for col in node.iter():
+                            if strip(col.tag) == "color" and col.text:
+                                values = [float(x) for x in col.text.strip().split()]
+                                if len(values) >= 3:
+                                    # DAE diffuse colors are commonly authored in linear space.
+                                    # Convert to sRGB for the viewer shader (which converts to linear).
+                                    diffuse = np.clip(values[:3], 0.0, 1.0)
+                                    srgb = np.power(diffuse, 1.0 / 2.2)
+                                    diffuse_color = (float(srgb[0]), float(srgb[1]), float(srgb[2]))
+                                    break
+                        continue
+                    if tag == "specular":
+                        for col in node.iter():
+                            if strip(col.tag) == "color" and col.text:
+                                values = [float(x) for x in col.text.strip().split()]
+                                if len(values) >= 3:
+                                    specular_color = (values[0], values[1], values[2])
+                                    break
+                        continue
+                    if tag == "reflectivity":
+                        for val in node.iter():
+                            if strip(val.tag) == "float" and val.text:
+                                try:
+                                    specular_intensity = float(val.text.strip())
+                                except ValueError:
+                                    specular_intensity = None
+                                break
+                        continue
+                    if tag == "shininess":
+                        for val in node.iter():
+                            if strip(val.tag) == "float" and val.text:
+                                try:
+                                    shininess = float(val.text.strip())
+                                except ValueError:
+                                    shininess = None
+                                break
+                        continue
+                if diffuse_color is not None:
+                    break
+            metallic = None
+            if specular_color is not None:
+                metallic = float(np.clip(np.max(specular_color), 0.0, 1.0))
+            elif specular_intensity is not None:
+                metallic = float(np.clip(specular_intensity, 0.0, 1.0))
+            roughness = None
+            if shininess is not None:
+                if shininess > 1.0:
+                    shininess = min(shininess / 128.0, 1.0)
+                roughness = float(np.clip(1.0 - shininess, 0.0, 1.0))
+            if diffuse_color is not None:
+                effect_props[effect_id] = {
+                    "color": diffuse_color,
+                    "metallic": metallic,
+                    "roughness": roughness,
+                }
+
+        # Map material id/name -> material properties
+        material_colors: dict[str, dict[str, float | tuple[float, float, float] | None]] = {}
+        for material in root.iter():
+            if strip(material.tag) != "material":
+                continue
+            mat_id = material.attrib.get("id") or material.attrib.get("name")
+            effect_url = None
+            for inst in material.iter():
+                if strip(inst.tag) == "instance_effect":
+                    effect_url = inst.attrib.get("url")
+                    break
+            if mat_id and effect_url and effect_url.startswith("#"):
+                effect_id = effect_url[1:]
+                if effect_id in effect_props:
+                    material_colors[mat_id] = effect_props[effect_id]
+
+        # Collect triangle material assignments in order
+        face_materials: list[str] = []
+        for triangles in root.iter():
+            if strip(triangles.tag) != "triangles":
+                continue
+            mat = triangles.attrib.get("material")
+            count = triangles.attrib.get("count")
+            if not mat or count is None:
+                continue
+            try:
+                tri_count = int(count)
+            except ValueError:
+                continue
+            face_materials.extend([mat] * tri_count)
+
+        return face_materials, material_colors
+
+    dae_face_materials: list[str] = []
+    dae_material_colors: dict[str, dict[str, float | tuple[float, float, float] | None]] = {}
+    if filename.lower().endswith(".dae"):
+        dae_face_materials, dae_material_colors = _parse_dae_material_colors(filename)
+
+    tri = trimesh.load(filename, force="mesh")
+    tri_meshes = tri.geometry.values() if hasattr(tri, "geometry") else [tri]
+
+    meshes = []
+    for tri_mesh in tri_meshes:
+        vertices = np.array(tri_mesh.vertices, dtype=np.float32) * scale
+        faces = np.array(tri_mesh.faces, dtype=np.int32)
+        normals = np.array(tri_mesh.vertex_normals, dtype=np.float32) if tri_mesh.vertex_normals is not None else None
+        if normals is None or not np.isfinite(normals).all() or np.allclose(normals, 0.0):
+            normals = compute_vertex_normals_numpy(vertices, faces)
+
+        uvs = None
+        if hasattr(tri_mesh, "visual") and getattr(tri_mesh.visual, "uv", None) is not None:
+            uvs = np.array(tri_mesh.visual.uv, dtype=np.float32)
+
+        color = _normalize_color(override_color) if override_color is not None else None
+        texture_image = override_texture_image
+        texture_path = override_texture_path
+
+        def add_mesh_from_faces(
+            face_indices,
+            *,
+            mat_color=None,
+            mat_roughness=None,
+            mat_metallic=None,
+            mesh_vertices=None,
+            mesh_normals=None,
+            mesh_uvs=None,
+            mesh_texture_path=None,
+            mesh_texture_image=None,
+        ):
+            used = np.unique(face_indices.flatten())
+            remap = {int(old): i for i, old in enumerate(used)}
+            remapped_faces = np.vectorize(remap.get)(face_indices).astype(np.int32)
+
+            sub_vertices = mesh_vertices[used]
+            sub_normals = mesh_normals[used] if mesh_normals is not None else None
+            force_smooth = False
+            if mat_metallic is not None and mat_metallic > 0.0:
+                force_smooth = True
+            if mat_roughness is not None and mat_roughness < 0.6:
+                force_smooth = True
+            if sub_normals is None or force_smooth:
+                sub_normals = smooth_vertex_normals_by_position(sub_vertices, remapped_faces)
+            sub_uvs = mesh_uvs[used] if mesh_uvs is not None else None
+
+            meshes.append(
+                Mesh(
+                    sub_vertices,
+                    remapped_faces.flatten(),
+                    normals=sub_normals,
+                    uvs=sub_uvs,
+                    maxhullvert=maxhullvert,
+                    color=mat_color,
+                    texture_path=mesh_texture_path,
+                    texture_image=mesh_texture_image,
+                    roughness=mat_roughness,
+                    metallic=mat_metallic,
+                )
+            )
+
+        # If a uniform override is provided, skip per-material splitting.
+        if color is not None or texture_image is not None or texture_path is not None:
+            add_mesh_from_faces(
+                faces,
+                mat_color=color,
+                mesh_vertices=vertices,
+                mesh_normals=normals,
+                mesh_uvs=uvs,
+                mesh_texture_path=texture_path,
+                mesh_texture_image=texture_image,
+            )
+            continue
+
+        # Handle per-face materials if available (e.g. DAE with multiple materials)
+        face_materials = getattr(tri_mesh.visual, "face_materials", None) if hasattr(tri_mesh, "visual") else None
+        materials = getattr(tri_mesh.visual, "materials", None) if hasattr(tri_mesh, "visual") else None
+        if face_materials is not None and materials is not None:
+            face_materials = np.array(face_materials, dtype=np.int32).flatten()
+            for mat_index in np.unique(face_materials):
+                mat_faces = faces[face_materials == mat_index]
+                material = materials[int(mat_index)] if int(mat_index) < len(materials) else None
+                roughness, metallic, base_color = _extract_trimesh_material_params(material)
+                mat_color = base_color
+                if mat_color is None and hasattr(tri_mesh.visual, "main_color"):
+                    mat_color = _normalize_color(tri_mesh.visual.main_color)
+                add_mesh_from_faces(
+                    mat_faces,
+                    mat_color=mat_color,
+                    mat_roughness=roughness,
+                    mat_metallic=metallic,
+                    mesh_vertices=vertices,
+                    mesh_normals=normals,
+                    mesh_uvs=uvs,
+                    mesh_texture_path=texture_path,
+                    mesh_texture_image=texture_image,
+                )
+            continue
+
+        # DAE fallback: use material groups from the source file if trimesh didn't expose them
+        if dae_face_materials and len(dae_face_materials) == len(faces):
+            face_materials = np.array(dae_face_materials, dtype=object)
+            for mat_name in np.unique(face_materials):
+                mat_faces = faces[face_materials == mat_name]
+                mat_props = dae_material_colors.get(str(mat_name), {})
+                mat_color = mat_props.get("color")
+                mat_roughness = mat_props.get("roughness")
+                mat_metallic = mat_props.get("metallic")
+                add_mesh_from_faces(
+                    mat_faces,
+                    mat_color=mat_color,
+                    mat_roughness=mat_roughness,
+                    mat_metallic=mat_metallic,
+                    mesh_vertices=vertices,
+                    mesh_normals=normals,
+                    mesh_uvs=uvs,
+                    mesh_texture_path=texture_path,
+                    mesh_texture_image=texture_image,
+                )
+            continue
+
+        # Handle per-face color visuals (common for DAE via ColorVisuals)
+        face_colors = getattr(tri_mesh.visual, "face_colors", None) if hasattr(tri_mesh, "visual") else None
+        if face_colors is not None:
+            face_colors = np.array(face_colors, dtype=np.float32)
+            if face_colors.shape[0] == faces.shape[0]:
+                # Normalize to 0..1 rgb
+                if np.max(face_colors) > 1.0:
+                    face_colors = face_colors / 255.0
+                rgb = face_colors[:, :3]
+                # quantize to avoid tiny float differences
+                rgb = np.round(rgb, 4)
+                unique_colors, inverse = np.unique(rgb, axis=0, return_inverse=True)
+                for color_idx, mat_color in enumerate(unique_colors):
+                    mat_faces = faces[inverse == color_idx]
+                    add_mesh_from_faces(
+                        mat_faces,
+                        mat_color=(float(mat_color[0]), float(mat_color[1]), float(mat_color[2])),
+                        mesh_vertices=vertices,
+                        mesh_normals=normals,
+                        mesh_uvs=uvs,
+                        mesh_texture_path=texture_path,
+                        mesh_texture_image=texture_image,
+                    )
+                continue
+
+        # Handle per-vertex colors by computing face colors
+        vertex_colors = getattr(tri_mesh.visual, "vertex_colors", None) if hasattr(tri_mesh, "visual") else None
+        if vertex_colors is not None:
+            vertex_colors = np.array(vertex_colors, dtype=np.float32)
+            if np.max(vertex_colors) > 1.0:
+                vertex_colors = vertex_colors / 255.0
+            rgb = vertex_colors[:, :3]
+            face_rgb = rgb[faces].mean(axis=1)
+            face_rgb = np.round(face_rgb, 4)
+            unique_colors, inverse = np.unique(face_rgb, axis=0, return_inverse=True)
+            for color_idx, mat_color in enumerate(unique_colors):
+                mat_faces = faces[inverse == color_idx]
+                add_mesh_from_faces(
+                    mat_faces,
+                    mat_color=(float(mat_color[0]), float(mat_color[1]), float(mat_color[2])),
+                    mesh_vertices=vertices,
+                    mesh_normals=normals,
+                    mesh_uvs=uvs,
+                    mesh_texture_path=texture_path,
+                    mesh_texture_image=texture_image,
+                )
+            continue
+
+        # Single-material mesh fallback
+        roughness = None
+        metallic = None
+        if color is None and hasattr(tri_mesh, "visual") and hasattr(tri_mesh.visual, "main_color"):
+            color = _normalize_color(tri_mesh.visual.main_color)
+
+        if hasattr(tri_mesh, "visual"):
+            if texture_image is None and texture_path is None:
+                texture_image, texture_path = _extract_trimesh_texture(tri_mesh.visual, base_dir)
+            material = getattr(tri_mesh.visual, "material", None)
+            roughness, metallic, base_color = _extract_trimesh_material_params(material)
+            if color is None and base_color is not None:
+                color = base_color
+
+        meshes.append(
+            Mesh(
+                vertices,
+                faces.flatten(),
+                normals=normals,
+                uvs=uvs,
+                maxhullvert=maxhullvert,
+                color=color,
+                texture_path=texture_path,
+                texture_image=texture_image,
+                roughness=roughness,
+                metallic=metallic,
+            )
+        )
+
+    return meshes
 
 
 def create_capsule_mesh(radius, half_height, up_axis=1, segments=default_num_segments):

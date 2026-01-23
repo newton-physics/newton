@@ -28,7 +28,6 @@
 #
 ###########################################################################
 
-import re
 
 import numpy as np
 import warp as wp
@@ -100,13 +99,9 @@ class Example:
             asset_file,
             xform=wp.transform(wp.vec3(0, 0, 0.5)),
             enable_self_collisions=True,
-            ignore_paths=[".*Dummy", ".*CollisionPlane", ".*goal", ".*DexCube/visuals"],
+            ignore_paths=[".*Dummy", ".*CollisionPlane"],
+            hide_collision_shapes=True,
         )
-
-        # hide collision shapes for the hand links
-        for i, key in enumerate(allegro_hand.shape_key):
-            if re.match(".*Robot/.*?/collision", key):
-                allegro_hand.shape_flags[i] &= ~newton.ShapeFlags.VISIBLE
 
         # set joint targets and joint drive gains
         for i in range(allegro_hand.joint_dof_count):

@@ -146,6 +146,10 @@ class Mesh:
         is_solid: bool = True,
         maxhullvert: int = MESH_MAXHULLVERT,
         color: Vec3 | None = None,
+        texture_path: str | None = None,
+        texture_image: nparray | None = None,
+        roughness: float | None = None,
+        metallic: float | None = None,
     ):
         """
         Construct a Mesh object from a triangle mesh.
@@ -163,6 +167,10 @@ class Mesh:
             is_solid (bool, optional): If True, mesh is assumed solid for inertia computation (default: True).
             maxhullvert (int, optional): Max vertices for convex hull approximation (default: 64).
             color (Vec3 | None, optional): Optional per-mesh base color (values in [0, 1]).
+            texture_path (str | None, optional): Optional texture image path for the mesh.
+            texture_image (nparray | None, optional): Optional texture image data (H, W, C).
+            roughness (float | None, optional): Optional mesh roughness in [0, 1].
+            metallic (float | None, optional): Optional mesh metallic in [0, 1].
         """
         from .inertia import compute_mesh_inertia  # noqa: PLC0415
 
@@ -171,11 +179,16 @@ class Mesh:
         self._normals = np.array(normals, dtype=np.float32).reshape(-1, 3) if normals is not None else None
         self._uvs = np.array(uvs, dtype=np.float32).reshape(-1, 2) if uvs is not None else None
         self._color = color
+        self._texture_path = texture_path
+        self._texture_image = np.array(texture_image) if texture_image is not None else None
+        self._roughness = roughness
+        self._metallic = metallic
         self.is_solid = is_solid
         self.has_inertia = compute_inertia
         self.mesh = None
         self.maxhullvert = maxhullvert
         self._cached_hash = None
+        self._texture_hash = None
 
         if compute_inertia:
             self.mass, self.com, self.I, _ = compute_mesh_inertia(1.0, vertices, indices, is_solid=is_solid)
@@ -213,6 +226,11 @@ class Mesh:
             maxhullvert=self.maxhullvert,
             normals=self.normals.copy() if self.normals is not None else None,
             uvs=self.uvs.copy() if self.uvs is not None else None,
+            color=self._color,
+            texture_path=self._texture_path,
+            texture_image=self._texture_image.copy() if self._texture_image is not None else None,
+            roughness=self._roughness,
+            metallic=self._metallic,
         )
         if not recompute_inertia:
             m.I = self.I
@@ -246,6 +264,65 @@ class Mesh:
     @property
     def uvs(self):
         return self._uvs
+
+    @property
+    def texture_path(self) -> str | None:
+        return self._texture_path
+
+    @texture_path.setter
+    def texture_path(self, value: str | None):
+        self._texture_path = value
+        self._texture_hash = None
+        self._cached_hash = None
+
+    @property
+    def texture_image(self) -> nparray | None:
+        return self._texture_image
+
+    @texture_image.setter
+    def texture_image(self, value: nparray | None):
+        self._texture_image = np.asarray(value) if value is not None else None
+        self._texture_hash = None
+        self._cached_hash = None
+
+    def _compute_texture_hash(self) -> int:
+        if self._texture_hash is None:
+            if self._texture_path:
+                self._texture_hash = hash(("path", self._texture_path))
+            elif self._texture_image is not None:
+                texture = np.asarray(self._texture_image)
+                flat_size = texture.size
+                if flat_size == 0:
+                    sample_bytes = b""
+                else:
+                    # Only sample a small portion of the texture to avoid hashing large textures in full.
+                    flat = texture.ravel()
+                    max_samples = 1024
+                    step = max(1, flat.size // max_samples)
+                    sample = flat[::step]
+                    sample_bytes = sample.tobytes()
+                self._texture_hash = hash((texture.shape, texture.dtype.str, sample_bytes))
+            else:
+                self._texture_hash = 0
+        return self._texture_hash
+
+    @property
+    def roughness(self) -> float | None:
+        return self._roughness
+
+    @roughness.setter
+    def roughness(self, value: float | None):
+        self._roughness = value
+        self._cached_hash = None
+
+    @property
+    def metallic(self) -> float | None:
+        return self._metallic
+
+    @metallic.setter
+    def metallic(self, value: float | None):
+        self._metallic = value
+        self._cached_hash = None
 
     # construct simulation ready buffers from points
     def finalize(self, device: Devicelike = None, requires_grad: bool = False) -> wp.uint64:
@@ -309,6 +386,13 @@ class Mesh:
         """
         if self._cached_hash is None:
             self._cached_hash = hash(
-                (tuple(np.array(self.vertices).flatten()), tuple(np.array(self.indices).flatten()), self.is_solid)
+                (
+                    tuple(np.array(self.vertices).flatten()),
+                    tuple(np.array(self.indices).flatten()),
+                    self.is_solid,
+                    self._compute_texture_hash(),
+                    self._roughness,
+                    self._metallic,
+                )
             )
         return self._cached_hash

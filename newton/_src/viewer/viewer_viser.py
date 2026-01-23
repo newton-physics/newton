@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import inspect
 from pathlib import Path
 from typing import ClassVar
 
@@ -23,6 +24,7 @@ import newton
 from newton.utils import create_plane_mesh
 
 from ..core.types import override
+from ..utils.mesh import load_texture_image
 from .viewer import ViewerBase, is_jupyter_notebook
 
 
@@ -137,6 +139,25 @@ class ViewerViser(ViewerBase):
         # remove HDR map
         self._server.scene.configure_environment_map(hdri=None)
 
+    @staticmethod
+    def _call_scene_method(method, **kwargs):
+        """Call a viser scene method with only supported keyword args."""
+        try:
+            signature = inspect.signature(method)
+            allowed = {k: v for k, v in kwargs.items() if k in signature.parameters}
+            return method(**allowed)
+        except Exception:
+            return method(**kwargs)
+
+    @staticmethod
+    def _normalize_texture_image(texture_image: np.ndarray | None) -> np.ndarray | None:
+        if texture_image is None:
+            return None
+        image = np.asarray(texture_image)
+        if image.dtype != np.uint8:
+            image = np.clip(image, 0, 255).astype(np.uint8)
+        return image
+
     @property
     def url(self) -> str:
         """Get the URL of the viser server."""
@@ -150,6 +171,8 @@ class ViewerViser(ViewerBase):
         indices: wp.array,
         normals: wp.array | None = None,
         uvs: wp.array | None = None,
+        texture_image: np.ndarray | None = None,
+        texture_path: str | None = None,
         hidden=False,
         backface_culling=True,
     ):
@@ -161,7 +184,9 @@ class ViewerViser(ViewerBase):
             points (wp.array): Vertex positions (wp.vec3).
             indices (wp.array): Triangle indices (wp.uint32).
             normals (wp.array, optional): Vertex normals, unused in viser (wp.vec3).
-            uvs (wp.array, optional): UV coordinates, unused in viser (wp.vec2).
+            uvs (wp.array, optional): UV coordinates, used for textures if supported.
+            texture_image (np.ndarray, optional): Texture image array (H, W, C).
+            texture_path (str, optional): Texture image path (fallback if image is unavailable).
             hidden (bool): Whether the mesh is hidden.
             backface_culling (bool): Whether to enable backface culling.
         """
@@ -171,6 +196,10 @@ class ViewerViser(ViewerBase):
         # Convert to numpy arrays
         points_np = self._to_numpy(points).astype(np.float32)
         indices_np = self._to_numpy(indices).astype(np.uint32)
+        uvs_np = self._to_numpy(uvs).astype(np.float32) if uvs is not None else None
+        if texture_image is None and texture_path:
+            texture_image = load_texture_image(texture_path)
+        texture_image = self._normalize_texture_image(texture_image)
 
         # Viser expects indices as (N, 3) for triangles
         if indices_np.ndim == 1:
@@ -180,6 +209,9 @@ class ViewerViser(ViewerBase):
         self._meshes[name] = {
             "points": points_np,
             "indices": indices_np,
+            "uvs": uvs_np,
+            "texture_image": texture_image,
+            "texture_path": texture_path,
         }
 
         # Remove existing mesh if present
@@ -193,10 +225,13 @@ class ViewerViser(ViewerBase):
             return
 
         # Add mesh to viser scene
-        handle = self._server.scene.add_mesh_simple(
+        handle = self._call_scene_method(
+            self._server.scene.add_mesh_simple,
             name=name,
             vertices=points_np,
             faces=indices_np,
+            uvs=uvs_np,
+            texture=texture_image,
             color=(180, 180, 180),  # Default gray color
             wireframe=False,
             side="double" if not backface_culling else "front",
@@ -227,6 +262,12 @@ class ViewerViser(ViewerBase):
         mesh_data = self._meshes[mesh]
         base_points = mesh_data["points"]
         base_indices = mesh_data["indices"]
+        base_uvs = mesh_data.get("uvs")
+        texture_image = mesh_data.get("texture_image")
+        texture_path = mesh_data.get("texture_path")
+        if texture_image is None and texture_path:
+            texture_image = load_texture_image(texture_path)
+        texture_image = self._normalize_texture_image(texture_image)
 
         if hidden:
             # Remove existing instances if present
@@ -314,10 +355,13 @@ class ViewerViser(ViewerBase):
             batched_colors = np.full((num_instances, 3), 180, dtype=np.uint8)
 
         # Create new batched mesh
-        handle = self._server.scene.add_batched_meshes_simple(
+        handle = self._call_scene_method(
+            self._server.scene.add_batched_meshes_simple,
             name=name,
             vertices=base_points,
             faces=base_indices,
+            uvs=base_uvs,
+            texture=texture_image,
             batched_positions=positions,
             batched_wxyzs=quats_wxyz,
             batched_scales=batched_scales,

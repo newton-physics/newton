@@ -135,6 +135,9 @@ uniform vec3 sky_color;
 uniform vec3 ground_color;
 uniform vec3 sun_direction;
 uniform sampler2D shadow_map;
+uniform sampler2D env_map;
+uniform float env_intensity;
+uniform sampler2D albedo_map;
 
 uniform vec3 fogColor;
 uniform int up_axis;
@@ -233,8 +236,8 @@ float ShadowCalculation()
 
 float SpotlightAttenuation()
 {
-    // Calculate spotlight position as 20 units from origin in sun direction
-    vec3 spotlight_pos = sun_direction * 20.0;
+    // Calculate spotlight position as 20 units from the camera in sun direction
+    vec3 spotlight_pos = view_pos + sun_direction * 20.0;
 
     // Vector from fragment to spotlight
     vec3 fragToLight = normalize(spotlight_pos - FragPos);
@@ -252,16 +255,30 @@ float SpotlightAttenuation()
     return intensity;
 }
 
+vec3 sample_env_map(vec3 dir, float lod)
+{
+    // dir assumed normalized
+    float u = atan(dir.z, dir.x) / (2.0 * PI) + 0.5;
+    float v = asin(clamp(dir.y, -1.0, 1.0)) / PI + 0.5;
+    return textureLod(env_map, vec2(u, v), lod).rgb;
+}
+
 void main()
 {
     // material properties from vertex shader
     float roughness = Material.x;
     float metallic = Material.y;
     float checker_enable = Material.z;
+    float texture_enable = Material.w;
     float checker_scale = 1.0;
 
     // convert to linear space
     vec3 albedo = pow(ObjectColor, vec3(2.2));
+    if (texture_enable > 0.5)
+    {
+        vec3 tex_color = texture(albedo_map, TexCoord).rgb;
+        albedo *= pow(tex_color, vec3(2.2));
+    }
 
     // Optional checker_enable pattern based on surface UVs
     if (checker_enable > 0.0)
@@ -315,7 +332,19 @@ void main()
     // spotlight attenuation
     float spotlightAttenuation = SpotlightAttenuation();
 
+    // Metals should contribute little diffuse light.
+    diffuse *= 1.0 - metallic;
     vec3 color = ambient + (1.0 - shadow) * spotlightAttenuation * (diffuse + spec);
+
+    // environment reflection for metallic look (fade with roughness)
+    float env_lod = clamp(roughness * 4.0, 0.0, 4.0);
+    vec3 R = reflect(-V, N);
+    vec3 env_color = sample_env_map(R, env_lod);
+    env_color = pow(env_color, vec3(2.2)); // to linear
+    float reflection_strength = clamp(metallic * (1.0 - roughness), 0.0, 1.0);
+    vec3 env_tint = mix(vec3(1.0), albedo, metallic);
+    vec3 env_reflection = env_color * env_tint * env_intensity;
+    color = mix(color, env_reflection, reflection_strength);
 
     // fog
     float dist = length(FragPos - view_pos);
@@ -469,6 +498,9 @@ class ShaderShape(ShaderGL):
             self.loc_view_pos = self._get_uniform_location("view_pos")
             self.loc_light_space_matrix = self._get_uniform_location("light_space_matrix")
             self.loc_shadow_map = self._get_uniform_location("shadow_map")
+            self.loc_albedo_map = self._get_uniform_location("albedo_map")
+            self.loc_env_map = self._get_uniform_location("env_map")
+            self.loc_env_intensity = self._get_uniform_location("env_intensity")
             self.loc_fog_color = self._get_uniform_location("fogColor")
             self.loc_up_axis = self._get_uniform_location("up_axis")
             self.loc_sun_direction = self._get_uniform_location("sun_direction")
@@ -490,6 +522,8 @@ class ShaderShape(ShaderGL):
         enable_shadows: bool = False,
         shadow_texture: int | None = None,
         light_space_matrix: np.ndarray | None = None,
+        env_texture: int | None = None,
+        env_intensity: float = 1.0,
     ):
         """Update all shader uniforms."""
         with self:
@@ -516,6 +550,14 @@ class ShaderShape(ShaderGL):
             self._gl.glUniformMatrix4fv(
                 self.loc_light_space_matrix, 1, self._gl.GL_FALSE, arr_pointer(light_space_matrix)
             )
+            self._gl.glUniform1i(self.loc_albedo_map, 1)
+            self._gl.glActiveTexture(self._gl.GL_TEXTURE2)
+            if env_texture is not None:
+                self._gl.glBindTexture(self._gl.GL_TEXTURE_2D, env_texture)
+            else:
+                self._gl.glBindTexture(self._gl.GL_TEXTURE_2D, 0)
+            self._gl.glUniform1i(self.loc_env_map, 2)
+            self._gl.glUniform1f(self.loc_env_intensity, float(env_intensity))
 
 
 class ShaderSky(ShaderGL):
