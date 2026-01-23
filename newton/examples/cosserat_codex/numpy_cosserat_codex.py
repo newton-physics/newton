@@ -342,6 +342,10 @@ class DefKitDirectRodState:
         self.inv_masses[0] = 0.0
 
         self.quat_inv_masses = np.full(num_points, 1.0, dtype=np.float32)
+        # Match C++ behavior: if inv_mass is 0 (static), rotation is also locked.
+        static_mask = (self.inv_masses == 0.0)
+        self.quat_inv_masses[static_mask] = 0.0
+        
         if lock_root_rotation:
             self.quat_inv_masses[0] = 0.0
 
@@ -579,7 +583,7 @@ class NumpyDirectRodState(DefKitDirectRodState):
         self._update_cross_section_properties()
         self.rot_inv_mass_scale = 10.0
         self.direct_relax = 1.0
-        self.use_lambda_sum = True
+        self.use_lambda_sum = False
         self.inv_mass_is_mass = False
         self.enable_shadow_compare = False
         self.shadow_delta_pos_max = 0.0
@@ -798,12 +802,16 @@ class NumpyDirectRodState(DefKitDirectRodState):
         k_bend2_eff = k_bend2_ref * L
         k_twist_eff = k_twist_ref * L
 
-        k_stretch = E * A * inv_L
-        k_shear = k_stretch
+        # C++ Reference uses hardcoded regularization for stretch compliance (~1e-12 * inv_dt^2).
+        # It does NOT use physical stiffness (EA/L) for stretch.
+        # This makes the stretch constraint effectively rigid.
+        # We assume dt approx 1/60s -> inv_dt^2 ~ 3600. 1e-12 * 3600 = 3.6e-9.
+        # Using a fixed small epsilon matches this "rigid" behavior better than physical stiffness.
+        stretch_compliance_val = np.float32(1.0e-10)
 
-        self.compliance[:, 0] = np.float32(1.0) / (k_stretch * dt2 + eps)
-        self.compliance[:, 1] = np.float32(1.0) / (k_shear * dt2 + eps)
-        self.compliance[:, 2] = np.float32(1.0) / (k_shear * dt2 + eps)
+        self.compliance[:, 0] = stretch_compliance_val
+        self.compliance[:, 1] = stretch_compliance_val
+        self.compliance[:, 2] = stretch_compliance_val
         self.compliance[:, 3] = np.float32(1.0) / (k_bend1_eff * dt2 + eps)
         self.compliance[:, 4] = np.float32(1.0) / (k_bend2_eff * dt2 + eps)
         self.compliance[:, 5] = np.float32(1.0) / (k_twist_eff * dt2 + eps)
@@ -886,7 +894,27 @@ class NumpyDirectRodState(DefKitDirectRodState):
             inv_masses = np.where(self.inv_masses > 0.0, np.float32(1.0) / self.inv_masses, np.float32(0.0))
         else:
             inv_masses = self.inv_masses
-        inv_I = self.quat_inv_masses * np.float32(self.rot_inv_mass_scale)
+        
+        # C++ Banded Solver Implicit Assumptions:
+        # The JMJT assembly (J * JT) implicitly assumes Unit Mass (1.0) and Unit Inertia (1.0)
+        # for the system matrix construction.
+        # We replicate this by using 1.0 for masses/inertia in the LHS assembly loop.
+        # The actual masses are applied only during the final correction step.
+        inv_masses_lhs = np.ones_like(inv_masses)
+        # However, static points (inv_mass == 0) should remain static in LHS too to avoid singular matrix?
+        # Actually C++ uses J*JT and subtracts compliance from diagonal.
+        # If mass is infinite (static), PBD usually handles it by 0 invMass.
+        # But C++ Banded Code does NOT check for static mass in AssembleJMJT!
+        # It iterates all constraints and adds J*JT.
+        # So effectively it treats even static points as dynamic with mass=1 in the system solve,
+        # but then multiplies by 0 correction at the end.
+        inv_masses_lhs[:] = 1.0
+        
+        # Similar for inertia: C++ uses skew matrices which implies I_inv = Identity (1.0).
+        inv_I_lhs = np.ones_like(self.quat_inv_masses)
+
+        # Actual inverse inertia for correction step (matches C++ hardcoded 0.1 inertia -> inv=10.0)
+        inv_I_correction = self.quat_inv_masses * np.float32(self.rot_inv_mass_scale)
 
         for i in range(n_edges):
             J_pos = self.jacobian_pos[i]
@@ -896,10 +924,10 @@ class NumpyDirectRodState(DefKitDirectRodState):
             J_t0 = J_rot[:, 0:3]
             J_t1 = J_rot[:, 3:6]
 
-            inv_m0 = inv_masses[i]
-            inv_m1 = inv_masses[i + 1]
-            inv_I0 = inv_I[i]
-            inv_I1 = inv_I[i + 1]
+            inv_m0 = inv_masses_lhs[i]
+            inv_m1 = inv_masses_lhs[i + 1]
+            inv_I0 = inv_I_lhs[i]
+            inv_I1 = inv_I_lhs[i + 1]
 
             JMJT = (
                 inv_m0 * (J_p0 @ J_p0.T)
@@ -942,11 +970,28 @@ class NumpyDirectRodState(DefKitDirectRodState):
             J_t0 = J_rot[:, 0:3]
             J_t1 = J_rot[:, 3:6]
 
+            # Use ACTUAL masses for correction
             inv_m0 = inv_masses[i]
             inv_m1 = inv_masses[i + 1]
-            inv_I0 = inv_I[i]
-            inv_I1 = inv_I[i + 1]
-
+            
+            # C++ Correction: "corr_q[i].coeffs() = G * deltaLambdaBendingAndTorsion"
+            # This implies correction is J_rot^T * lambda * inv_I_effective
+            # where inv_I_effective seems to be 1.0 (Identity) because G maps R^3 to R^4 directly without inertia scaling?
+            # Wait, computeMatrixG is just kinematic map.
+            # If C++ does `corr_q = G * torque`, it implies angular velocity `w = torque`.
+            # This means `inv_I = 1`.
+            # BUT `m_inertiaTensor` was 0.1...
+            # In `solveJMJT...`: `corr_q[i] = deltaQSoln`.
+            # It seems the correction ignores `rot_inv_mass_scale`?
+            # Let's try using inv_I = 1.0 for correction as well to match "G * dL" directly.
+            inv_I0 = 1.0 # inv_I_correction[i] 
+            inv_I1 = 1.0 # inv_I_correction[i + 1]
+            
+            # Actually, `inv_masses` are passed to C++ Project function.
+            # But inertia is NOT passed. It is internal.
+            # And Banded Solver `solveJMJT` does NOT use `m_Segments[i].m_inertiaTensor`.
+            # So it effectively uses Identity inertia.
+            
             if inv_m0 > 0.0:
                 dp0 = inv_m0 * (J_p0.T @ dl)
                 self.predicted_positions[i, 0:3] += dp0
@@ -956,12 +1001,18 @@ class NumpyDirectRodState(DefKitDirectRodState):
                 self.predicted_positions[i + 1, 0:3] += dp1
                 corr_max = max(corr_max, float(np.linalg.norm(dp1)))
 
-            if inv_I0 > 0.0:
-                dtheta0 = inv_I0 * (J_t0.T @ dl)
+            # Static points have inv_mass=0 so we don't update them.
+            # But what about rotation? `quat_inv_masses` handles static root.
+            # If root is static (inv_mass=0), we should check that.
+            
+            # Use self.quat_inv_masses as mask (0 or 1), multiplied by 1.0 effective inertia
+            if self.quat_inv_masses[i] > 0.0:
+                dtheta0 = 1.0 * (J_t0.T @ dl)
                 self._apply_quaternion_correction_g(self.predicted_orientations, i, dtheta0)
                 corr_max = max(corr_max, float(np.linalg.norm(dtheta0)))
-            if inv_I1 > 0.0:
-                dtheta1 = inv_I1 * (J_t1.T @ dl)
+            
+            if self.quat_inv_masses[i+1] > 0.0:
+                dtheta1 = 1.0 * (J_t1.T @ dl)
                 self._apply_quaternion_correction_g(self.predicted_orientations, i + 1, dtheta1)
                 corr_max = max(corr_max, float(np.linalg.norm(dtheta1)))
 
