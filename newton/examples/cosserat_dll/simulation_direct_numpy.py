@@ -57,10 +57,12 @@ class DirectCosseratRodSimulationNumPy:
         self.bend_stiffness = np.ones((state.n_edges, 4), dtype=np.float32)
 
         # Stiffness multipliers (for NumPy solver tuning)
-        # With accurate Jacobians from C++ reference, these should be close to 1.0
+        # Note: The NumPy solver uses simplified scalar inverse inertia, while C++ uses
+        # full 3x3 inertia tensors with proper geometric coupling (computeMatrixK).
+        # This causes an empirical ~8x difference in bend/twist stiffness.
         self.stretch_stiffness_mult = 1.0
         self.shear_stiffness_mult = 1.0
-        self.bend_stiffness_mult = 1.0  # Now using accurate Jacobians
+        self.bend_stiffness_mult = 8.0  # Empirical factor to match C++ (due to inertia coupling)
 
         # Initialize the direct solver (needed for DLL fallback)
         self._rod_ptr = self.dll.init_direct_elastic_rod(
@@ -198,22 +200,19 @@ class DirectCosseratRodSimulationNumPy:
         2. Computing compliance values from stiffness parameters
         3. Storing current rest shape parameters
 
-        The compliance α is the inverse stiffness scaled by dt²:
-            α = 1 / (k * dt²)
+        Following C++ reference (initBeforeProjection_StretchBendingTwistingConstraint):
 
-        For elastic rods:
-        - Stretch stiffness: k_s = E * A / L  (axial stiffness)
-        - Shear stiffness: same as stretch for isotropic
-        - Bend stiffness: k_b = E * I / L  (flexural stiffness)
-        - Twist stiffness: k_t = G * J / L  (torsional stiffness)
+        Stretch compliance:
+            - C++ uses near-zero compliance (1e-12 / dt²) for inextensible rods
+            - We use the same for consistency
 
-        Where:
-        - E = Young's modulus
-        - G = Torsion/shear modulus
-        - A = cross-section area = π * r²
-        - I = second moment of area = π * r⁴ / 4
-        - J = polar moment = π * r⁴ / 2
-        - L = rest length
+        Bend/twist compliance:
+            - stiffnessK = [E*I, 2*G*I, E*I]  (NOT divided by L)
+            - compliance = (1/dt²) / stiffnessK / L
+            - Final: compliance = 1 / (stiffnessK * L * dt²)
+
+        Note: C++ uses secondMomentOfArea I = π*r⁴/4 for both bending AND torsion
+        (torsion uses 2*G*I, not G*J where J=2I)
         """
         s = self.state
         n_edges = s.n_edges
@@ -227,43 +226,43 @@ class DirectCosseratRodSimulationNumPy:
         self.current_rest_darboux[:, 1] = self.rest_darboux_vec[:, 1]  # kappa2
         self.current_rest_darboux[:, 2] = self.rest_darboux_vec[:, 2]  # tau
 
-        # 3. Compute compliance values
+        # 3. Compute compliance values following C++ reference
         # Effective moduli
         E = self.young_modulus * self.young_modulus_mult
         G = self.torsion_modulus * self.torsion_modulus_mult
 
-        # Cross-section properties
-        A = self.cross_section_area
-        I = self.second_moment_area
-        J = self.polar_moment
+        # Cross-section properties (C++ uses secondMomentOfArea = π*r⁴/4)
+        I = self.second_moment_area  # π*r⁴/4
 
         dt2 = dt * dt
+        inv_dt2 = 1.0 / dt2
+
+        # C++ stretch regularization parameter (nearly inextensible)
+        stretch_regularization = 1e-12
 
         for i in range(n_edges):
             L = self.current_rest_lengths[i]
 
-            # Stiffness values
-            # Stretch and shear use axial stiffness
-            k_stretch = E * A / L * self.stretch_stiffness_mult
-            k_shear = E * A / L * self.shear_stiffness_mult
+            # === Stretch compliance (C++ uses tiny regularization) ===
+            # stretchCompliance = stretchRegularizationParameter * (1/dt²)
+            stretch_compliance = stretch_regularization * inv_dt2 * self.stretch_stiffness_mult
+            self.compliance[i, 0] = stretch_compliance  # stretch
+            self.compliance[i, 1] = stretch_compliance  # shear1
+            self.compliance[i, 2] = stretch_compliance  # shear2
 
-            # Bending stiffness (scaled by bend_stiffness coefficients and multiplier)
-            k_bend1 = E * I / L * self.bend_stiffness[i, 0] * self.bend_stiffness_mult
-            k_bend2 = E * I / L * self.bend_stiffness[i, 1] * self.bend_stiffness_mult
+            # === Bend/twist stiffness coefficients K (NOT divided by L) ===
+            # C++: stiffnessCoefficientK = Vector3r(bendingStiffness, torsionStiffness, bendingStiffness)
+            # where bendingStiffness = E * I, torsionStiffness = 2 * G * I
+            K_bend1 = E * I * self.bend_stiffness[i, 0] * self.bend_stiffness_mult
+            K_bend2 = E * I * self.bend_stiffness[i, 1] * self.bend_stiffness_mult
+            K_twist = 2.0 * G * I * self.bend_stiffness[i, 2] * self.bend_stiffness_mult
 
-            # Twist stiffness (scaled by twist coefficient and multiplier)
-            k_twist = G * J / L * self.bend_stiffness[i, 2] * self.bend_stiffness_mult
-
-            # Compliance = 1 / (stiffness * dt²)
-            # Add small epsilon to avoid division by zero
+            # === Bend/twist compliance ===
+            # C++: bendingAndTorsionCompliance = (1/dt²) / K / L
             eps = 1e-10
-
-            self.compliance[i, 0] = 1.0 / (k_stretch * dt2 + eps)  # stretch
-            self.compliance[i, 1] = 1.0 / (k_shear * dt2 + eps)    # shear1
-            self.compliance[i, 2] = 1.0 / (k_shear * dt2 + eps)    # shear2
-            self.compliance[i, 3] = 1.0 / (k_bend1 * dt2 + eps)    # bend1
-            self.compliance[i, 4] = 1.0 / (k_bend2 * dt2 + eps)    # bend2
-            self.compliance[i, 5] = 1.0 / (k_twist * dt2 + eps)    # twist
+            self.compliance[i, 3] = inv_dt2 / (K_bend1 + eps) / L  # bend1
+            self.compliance[i, 4] = inv_dt2 / (K_bend2 + eps) / L  # bend2
+            self.compliance[i, 5] = inv_dt2 / (K_twist + eps) / L  # twist
 
     def _update_numpy(self):
         """NumPy implementation of constraint update.
@@ -655,25 +654,31 @@ class DirectCosseratRodSimulationNumPy:
             self._apply_quaternion_correction(s.predicted_orientations, i + 1, dtheta1)
 
     def _apply_quaternion_correction(self, orientations: np.ndarray, idx: int, dtheta: np.ndarray):
-        """Apply a small rotation correction to a quaternion.
+        """Apply a rotation correction to a quaternion using the G matrix.
 
-        For small angle δθ, the quaternion update is:
-        q' = q + 0.5 * [δθ_x, δθ_y, δθ_z, 0] * q
+        Following C++ reference: deltaQ = G * dtheta
+        where G is the 4x3 matrix that converts angular velocity to quaternion derivative.
+
+        This properly accounts for the current quaternion orientation.
         """
         if np.linalg.norm(dtheta) < 1e-10:
             return
 
         q = orientations[idx]
 
-        # Quaternion for small rotation: (δθ/2, 1) ≈ (sin(|δθ|/2) * δθ/|δθ|, cos(|δθ|/2))
-        # For small angles: ≈ (δθ/2, 1)
-        dq = np.array([0.5 * dtheta[0], 0.5 * dtheta[1], 0.5 * dtheta[2], 0.0], dtype=np.float32)
+        # Compute G matrix for current quaternion (4x3)
+        G = self._compute_matrix_G(q)
 
-        # q' = q + dq * q (using quaternion multiplication)
-        q_new = q + self._quat_multiply(dq, q)
+        # Convert angular correction to quaternion correction: dq = G * dtheta
+        dq = G @ dtheta
+
+        # Apply correction: q_new = q + dq
+        q_new = q + dq
 
         # Normalize
-        q_new /= np.linalg.norm(q_new)
+        norm = np.linalg.norm(q_new)
+        if norm > 1e-10:
+            q_new /= norm
 
         orientations[idx] = q_new
 

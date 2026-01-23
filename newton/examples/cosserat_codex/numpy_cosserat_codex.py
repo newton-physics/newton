@@ -577,7 +577,7 @@ class NumpyDirectRodState(DefKitDirectRodState):
         self.current_rest_lengths = self.rest_lengths.copy()
         self.current_rest_darboux = np.zeros((self.num_edges, 3), dtype=np.float32)
         self._update_cross_section_properties()
-        self.rot_inv_mass_scale = 1.0
+        self.rot_inv_mass_scale = 10.0
         self.direct_relax = 1.0
         self.use_lambda_sum = True
         self.inv_mass_is_mass = False
@@ -775,24 +775,38 @@ class NumpyDirectRodState(DefKitDirectRodState):
         E = np.float32(self.young_modulus)
         G = np.float32(self.torsion_modulus)
         A = self.cross_section_area
-        I = self.second_moment_area
-        J = self.polar_moment
+        # I = self.second_moment_area  # Unused in C++ reference Prepare logic
+        # J = self.polar_moment        # Unused in C++ reference Prepare logic
 
         L = self.current_rest_lengths.astype(np.float32)
         inv_L = np.where(L > 0.0, np.float32(1.0) / L, np.float32(0.0))
 
+        # C++ Reference "DirectElasticRod" logic:
+        # 1. PrepareDirectElasticRodConstraints overwrites stiffness K with (Modulus * Slider).
+        #    It ignores geometric factors (I, J, 1/L) which are physically required.
+        # 2. Compliance is calculated as: alpha = 1 / (K * dt^2 * L).
+        #    This scales with 1/L instead of L (as expected for alpha = L/EI).
+        # We match this behavior to reproduce the reference simulation.
+
+        k_bend1_ref = E * self.bend_stiffness[:, 0]
+        k_bend2_ref = E * self.bend_stiffness[:, 1]
+        k_twist_ref = G * self.bend_stiffness[:, 2]
+
+        # Effective stiffness for compliance = 1 / (K_eff * dt^2)
+        # 1 / (K_ref * dt^2 * L) = 1 / ( (K_ref * L) * dt^2 )
+        k_bend1_eff = k_bend1_ref * L
+        k_bend2_eff = k_bend2_ref * L
+        k_twist_eff = k_twist_ref * L
+
         k_stretch = E * A * inv_L
         k_shear = k_stretch
-        k_bend1 = E * I * inv_L * self.bend_stiffness[:, 0]
-        k_bend2 = E * I * inv_L * self.bend_stiffness[:, 1]
-        k_twist = G * J * inv_L * self.bend_stiffness[:, 2]
 
         self.compliance[:, 0] = np.float32(1.0) / (k_stretch * dt2 + eps)
         self.compliance[:, 1] = np.float32(1.0) / (k_shear * dt2 + eps)
         self.compliance[:, 2] = np.float32(1.0) / (k_shear * dt2 + eps)
-        self.compliance[:, 3] = np.float32(1.0) / (k_bend1 * dt2 + eps)
-        self.compliance[:, 4] = np.float32(1.0) / (k_bend2 * dt2 + eps)
-        self.compliance[:, 5] = np.float32(1.0) / (k_twist * dt2 + eps)
+        self.compliance[:, 3] = np.float32(1.0) / (k_bend1_eff * dt2 + eps)
+        self.compliance[:, 4] = np.float32(1.0) / (k_bend2_eff * dt2 + eps)
+        self.compliance[:, 5] = np.float32(1.0) / (k_twist_eff * dt2 + eps)
 
     def _numpy_update_constraints_banded(self):
         positions = self.predicted_positions[:, 0:3]

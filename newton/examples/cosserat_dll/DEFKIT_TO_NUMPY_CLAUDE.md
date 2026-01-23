@@ -216,6 +216,48 @@ Both rods respond to the same UI sliders. Visual comparison shows correctness.
   - Updated `_jacobians_numpy()`: Uses d3 from quaternions, accurate jOmega @ G
   - Reset `bend_stiffness_mult = 1.0` (now using accurate Jacobians)
 
+### Session 3 - Fix Compliance Computation (2026-01-23)
+- **Issue**: NumPy rod was ~100x softer than C++ reference, requiring stiffness multipliers
+- **Root cause analysis**:
+
+  **Stretch compliance**:
+  - C++: Uses tiny regularization `1e-12 / dt²` (essentially inextensible)
+  - NumPy (old): Used `1 / (E*A/L * dt²)` (finite extensibility)
+
+  **Bend/twist compliance formula**:
+  - C++: `stiffnessK = [E*I, 2*G*I, E*I]` (NOT divided by L)
+  - C++: `compliance = (1/dt²) / stiffnessK / L` = `1 / (K * L * dt²)`
+  - NumPy (old): `compliance = 1 / (E*I/L * dt²)` = `L / (E*I * dt²)`
+
+  **The difference**: NumPy/C++ = L² (for L=0.1m, NumPy was 100x softer!)
+
+- **Fix applied** in `_prepare_numpy()`:
+  - Stretch: Now uses `1e-12 / dt²` regularization (inextensible)
+  - Bend/twist K: Now `E*I` and `2*G*I` (not divided by L)
+  - Bend/twist compliance: Now `(1/dt²) / K / L` matching C++
+
+- **Result**: Stretch compliance now matches. Bend/twist still ~8x off.
+
+### Session 3 - Inertia Coupling Analysis (2026-01-23)
+- **Issue**: After compliance fix, bend/twist still requires ~8x multiplier to match C++
+- **Root cause discovered**: C++ uses `computeMatrixK()` which computes a full 3x3 coupled
+  effective mass matrix that includes:
+  - Full 3x3 inertia tensor (not scalar)
+  - Geometric coupling through connector offset: `v = connector - x`
+  - Cross-terms: `K(i,j)` includes products of `v` components and inertia tensor elements
+
+  NumPy uses simplified scalar `inv_I` values, ignoring these couplings.
+
+- **Empirical fix**: Set `bend_stiffness_mult = 8.0` as default to approximately match C++
+
+- **Proper fix** (future work): Implement full K matrix computation:
+  ```python
+  def compute_matrix_K(connector, inv_mass, x, inertia_inv):
+      v = connector - x
+      # Full 3x3 K matrix with geometric coupling
+      # K[i,j] includes v components and inertia tensor elements
+  ```
+
 ---
 
 ## Files Created/Modified
