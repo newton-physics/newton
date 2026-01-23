@@ -131,6 +131,57 @@ def _set_kinematic_body_pose(
     body_qd[body_id] = wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
 
 
+@wp.kernel
+def _drive_gripper_boxes_kernel(
+    ramp_time: float,
+    t: float,
+    body_ids: wp.array(dtype=wp.int32),
+    signs: wp.array(dtype=wp.float32),
+    anchor_p: wp.vec3,
+    anchor_q: wp.quat,
+    seg_half_len: float,
+    target_offset_mag: float,
+    initial_offset_mag: float,
+    pull_start_time: float,
+    pull_ramp_time: float,
+    pull_distance: float,
+    body_q: wp.array(dtype=wp.transform),
+):
+    """Kinematically move two gripper boxes toward an anchor frame, then pull along anchor +Z.
+
+    Used by `test_cable_kinematic_gripper_picks_capsule` to validate that **friction with kinematic
+    bodies** transfers motion to a dynamic payload (i.e., the payload can be lifted without gravity).
+
+    Notes:
+        - This kernel is purely a scripted pose driver (no joints/constraints involved).
+        - It writes only `body_q` (poses).
+    """
+    tid = wp.tid()
+    b = body_ids[tid]
+    sgn = signs[tid]
+
+    rot = anchor_q
+    center = anchor_p + wp.quat_rotate(rot, wp.vec3(0.0, 0.0, seg_half_len))
+
+    t = wp.float32(t)
+    pull_end_time = wp.float32(pull_start_time + pull_ramp_time)
+    t_eff = wp.min(t, pull_end_time)
+
+    # Linear close-in: ramp from initial_offset_mag -> target_offset_mag over ramp_time.
+    u = wp.clamp(t_eff / wp.float32(ramp_time), 0.0, 1.0)
+    offset_mag = (1.0 - u) * initial_offset_mag + u * target_offset_mag
+
+    # Linear lift: ramp from 0 -> pull_distance over pull_ramp_time starting at pull_start_time.
+    tp = wp.clamp((t_eff - wp.float32(pull_start_time)) / wp.float32(pull_ramp_time), 0.0, 1.0)
+    pull = wp.float32(pull_distance) * tp
+
+    pull_dir = wp.quat_rotate(rot, wp.vec3(0.0, 0.0, 1.0))
+    local_off = wp.vec3(0.0, sgn * offset_mag, 0.0)
+    pos = center + pull_dir * pull + wp.quat_rotate(rot, local_off)
+
+    body_q[b] = wp.transform(pos, rot)
+
+
 # -----------------------------------------------------------------------------
 # Geometry helpers
 # -----------------------------------------------------------------------------
@@ -1155,6 +1206,171 @@ def _cable_fixed_joint_attaches_rod_endpoint_impl(test: unittest.TestCase, devic
     )
 
 
+def _cable_kinematic_gripper_picks_capsule_impl(test: unittest.TestCase, device):
+    """Kinematic friction regression: moving kinematic grippers should lift a dynamic capsule.
+
+    - two kinematic box "fingers" close on a capsule and then lift upward
+    - gravity is disabled, so any lift must come from kinematic contact/friction transfer
+
+    Assertions:
+    - the capsule must be lifted upward by a non-trivial amount
+    - the capsule final z should roughly track the grippers' final z (within tolerance)
+    """
+    builder = newton.ModelBuilder()
+
+    # Contact/friction: large mu to encourage sticking if kinematic friction is working.
+    builder.default_shape_cfg.mu = 1.0e3
+
+    # Payload: capsule sized to match old box AABB (0.20, 0.10, 0.10) in (X,Y,Z)
+    box_hx = 0.10
+    box_hy = 0.05
+    capsule_radius = float(box_hy)
+    capsule_half_height = float(box_hx - capsule_radius)
+    capsule_rot_z_to_x = wp.quat_between_vectors(wp.vec3(0.0, 0.0, 1.0), wp.vec3(1.0, 0.0, 0.0))
+
+    capsule_center = wp.vec3(0.0, 0.015, capsule_radius)
+    capsule_body = builder.add_body(
+        xform=wp.transform(p=capsule_center, q=wp.quat_identity()),
+        mass=1.0,
+        key="ut_gripper_capsule",
+    )
+    payload_cfg = builder.default_shape_cfg.copy()
+    payload_cfg.mu = 1.0e3
+    builder.add_shape_capsule(
+        body=capsule_body,
+        xform=wp.transform(p=wp.vec3(0.0, 0.0, 0.0), q=capsule_rot_z_to_x),
+        radius=capsule_radius,
+        half_height=capsule_half_height,
+        cfg=payload_cfg,
+        key="ut_gripper_capsule_shape",
+    )
+
+    # Kinematic box grippers
+    grip_hx = 0.52
+    grip_hy = 0.02
+    grip_hz = 0.56
+
+    anchor_p = wp.vec3(0.0, 0.0, float(capsule_center[2]))
+    anchor_q = wp.quat_identity()
+
+    target_offset_mag = float(capsule_radius) + 0.95 * float(grip_hy)
+    initial_offset_mag = target_offset_mag + 3.0 * (2.0 * float(grip_hy))
+
+    g_neg = builder.add_body(
+        xform=wp.transform(p=anchor_p + wp.vec3(0.0, -initial_offset_mag, 0.0), q=anchor_q),
+        mass=0.0,
+        key="ut_gripper_neg",
+    )
+    g_pos = builder.add_body(
+        xform=wp.transform(p=anchor_p + wp.vec3(0.0, initial_offset_mag, 0.0), q=anchor_q),
+        mass=0.0,
+        key="ut_gripper_pos",
+    )
+
+    builder.body_mass[g_neg] = 0.0
+    builder.body_inv_mass[g_neg] = 0.0
+    builder.body_inv_inertia[g_neg] = wp.mat33(0.0)
+    builder.body_mass[g_pos] = 0.0
+    builder.body_inv_mass[g_pos] = 0.0
+    builder.body_inv_inertia[g_pos] = wp.mat33(0.0)
+
+    grip_cfg = builder.default_shape_cfg.copy()
+    grip_cfg.mu = 1.0e3
+
+    # Keep grippers kinematic (no mass contribution from density)
+    grip_cfg.density = 0.0
+    builder.add_shape_box(body=g_neg, hx=float(grip_hx), hy=float(grip_hy), hz=float(grip_hz), cfg=grip_cfg)
+    builder.add_shape_box(body=g_pos, hx=float(grip_hx), hy=float(grip_hy), hz=float(grip_hz), cfg=grip_cfg)
+
+    builder.color()
+    model = builder.finalize(device=device)
+    # Disable gravity: any upward motion must be due to kinematic friction/contact transfer.
+    model.set_gravity((0.0, 0.0, 0.0))
+
+    state0 = model.state()
+    state1 = model.state()
+    control = model.control()
+
+    solver = newton.solvers.SolverVBD(
+        model,
+        iterations=5,
+    )
+
+    # Drive arrays
+    gripper_body_ids = wp.array([g_neg, g_pos], dtype=wp.int32, device=device)
+    gripper_signs = wp.array([-1.0, 1.0], dtype=wp.float32, device=device)
+
+    # Timeline
+    ramp_time = 0.25
+    pull_start_time = 0.25
+    pull_ramp_time = 1.0
+    pull_distance = 0.75
+
+    fps = 60.0
+    frame_dt = 1.0 / fps
+    sim_substeps = 1
+    sim_dt = frame_dt / sim_substeps
+
+    # Record initial pose
+    q0 = state0.body_q.numpy()
+    capsule_z0 = float(q0[capsule_body, 2])
+
+    # Run a fixed number of frames for a lightweight regression test.
+    num_frames = 100
+    sim_time = 0.0
+    num_steps = num_frames * sim_substeps
+    for _step in range(num_steps):
+        state0.clear_forces()
+
+        wp.launch(
+            kernel=_drive_gripper_boxes_kernel,
+            dim=2,
+            inputs=[
+                float(ramp_time),
+                float(sim_time),
+                gripper_body_ids,
+                gripper_signs,
+                anchor_p,
+                anchor_q,
+                0.0,  # seg_half_len
+                float(target_offset_mag),
+                float(initial_offset_mag),
+                float(pull_start_time),
+                float(pull_ramp_time),
+                float(pull_distance),
+                state0.body_q,
+            ],
+            device=device,
+        )
+
+        contacts = model.collide(state0)
+        solver.step(state0, state1, control, contacts, sim_dt)
+        state0, state1 = state1, state0
+
+        sim_time += sim_dt
+
+    qf = state0.body_q.numpy()
+    test.assertTrue(np.isfinite(qf).all(), "Non-finite body transforms detected in gripper friction test")
+
+    capsule_zf = float(qf[capsule_body, 2])
+    z_lift = capsule_zf - capsule_z0
+
+    # 1) Must lift upward significantly.
+    test.assertGreater(
+        z_lift,
+        0.25,
+        msg=f"Capsule was not lifted enough by kinematic friction: dz={z_lift:.4f} (z0={capsule_z0:.4f}, zf={capsule_zf:.4f})",
+    )
+
+    # 2) Capsule should roughly track the grippers' final lift height.
+    gripper_z = 0.5 * (float(qf[g_neg, 2]) + float(qf[g_pos, 2]))
+    test.assertLess(
+        abs(capsule_zf - gripper_z),
+        0.01,
+        msg=f"Capsule Z does not track grippers: capsule_z={capsule_zf:.4f}, gripper_z={gripper_z:.4f}",
+    )
+
+
 class TestCable(unittest.TestCase):
     pass
 
@@ -1205,6 +1421,12 @@ add_function_test(
     TestCable,
     "test_cable_fixed_joint_attaches_rod_endpoint",
     _cable_fixed_joint_attaches_rod_endpoint_impl,
+    devices=devices,
+)
+add_function_test(
+    TestCable,
+    "test_cable_kinematic_gripper_picks_capsule",
+    _cable_kinematic_gripper_picks_capsule_impl,
     devices=devices,
 )
 
