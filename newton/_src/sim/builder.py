@@ -63,6 +63,7 @@ from .graph_coloring import ColoringAlgorithm, color_rigid_bodies, color_trimesh
 from .joints import (
     EqType,
     JointType,
+    get_joint_constraint_count,
     get_joint_dof_count,
 )
 from .model import Model, ModelAttributeAssignment, ModelAttributeFrequency
@@ -712,6 +713,7 @@ class ModelBuilder:
 
         self.joint_q_start = []
         self.joint_qd_start = []
+        self.joint_cts_start = []
         self.joint_dof_dim = []
         self.joint_world = []  # world index for each joint
         self.joint_articulation = []  # articulation index for each joint, -1 if not in any articulation
@@ -722,6 +724,7 @@ class ModelBuilder:
 
         self.joint_dof_count = 0
         self.joint_coord_count = 0
+        self.joint_constraint_count = 0
 
         # current world index for entities being added to this builder.
         # set to -1 to create global entities shared across all worlds.
@@ -1092,6 +1095,54 @@ class ModelBuilder:
                             entity_index=coord_start + i,
                             custom_attrs=single_attr,
                             expected_frequency=ModelAttributeFrequency.JOINT_COORD,
+                        )
+
+            elif custom_attr.frequency == ModelAttributeFrequency.JOINT_CONSTRAINT:
+                # Values per constraint - can be list or dict
+                cts_start = self.joint_cts_start[joint_index]
+                if joint_index + 1 < len(self.joint_cts_start):
+                    cts_end = self.joint_cts_start[joint_index + 1]
+                else:
+                    cts_end = self.joint_constraint_count
+
+                cts_count = cts_end - cts_start
+
+                # Check if value is a dict (mapping cts index to value)
+                if isinstance(value, dict):
+                    # Dict format: only specified cts indices have values, rest use defaults
+                    for cts_offset, cts_value in value.items():
+                        if not isinstance(cts_offset, int):
+                            raise TypeError(
+                                f"JOINT_CONSTRAINT attribute '{attr_key}' dict keys must be integers (constraint indices), got {type(cts_offset)}"
+                            )
+                        if cts_offset < 0 or cts_offset >= cts_count:
+                            raise ValueError(
+                                f"JOINT_CONSTRAINT attribute '{attr_key}' has invalid constraint index {cts_offset} (joint has {cts_count} constraints)"
+                            )
+                        single_attr = {attr_key: cts_value}
+                        self._process_custom_attributes(
+                            entity_index=cts_start + cts_offset,
+                            custom_attrs=single_attr,
+                            expected_frequency=ModelAttributeFrequency.JOINT_CONSTRAINT,
+                        )
+                else:
+                    # List format or single value for single-constraint joints
+                    value_sanitized = value
+                    if not isinstance(value_sanitized, (list, tuple)) and cts_count == 1:
+                        value_sanitized = [value_sanitized]
+
+                    if len(value_sanitized) != cts_count:
+                        raise ValueError(
+                            f"JOINT_CONSTRAINT attribute '{attr_key}' has {len(value_sanitized)} values but joint has {cts_count} constraints"
+                        )
+
+                    # Apply each value to its corresponding constraint
+                    for i, cts_value in enumerate(value_sanitized):
+                        single_attr = {attr_key: cts_value}
+                        self._process_custom_attributes(
+                            entity_index=cts_start + i,
+                            custom_attrs=single_attr,
+                            expected_frequency=ModelAttributeFrequency.JOINT_CONSTRAINT,
                         )
 
             else:
@@ -1898,6 +1949,7 @@ class ModelBuilder:
 
             self.joint_q_start.extend([c + self.joint_coord_count for c in builder.joint_q_start])
             self.joint_qd_start.extend([c + self.joint_dof_count for c in builder.joint_qd_start])
+            self.joint_cts_start.extend([c + self.joint_constraint_count for c in builder.joint_cts_start])
 
         if xform is not None:
             for i in range(builder.body_count):
@@ -2464,6 +2516,7 @@ class ModelBuilder:
             add_axis_dim(dim)
 
         dof_count, coord_count = get_joint_dof_count(joint_type, len(linear_axes) + len(angular_axes))
+        cts_count = get_joint_constraint_count(joint_type, len(linear_axes) + len(angular_axes))
 
         for _ in range(coord_count):
             self.joint_q.append(0.0)
@@ -2477,9 +2530,11 @@ class ModelBuilder:
 
         self.joint_q_start.append(self.joint_coord_count)
         self.joint_qd_start.append(self.joint_dof_count)
+        self.joint_cts_start.append(self.joint_constraint_count)
 
         self.joint_dof_count += dof_count
         self.joint_coord_count += coord_count
+        self.joint_constraint_count += cts_count
 
         if collision_filter_parent and parent > -1:
             for child_shape in self.body_shapes[child]:
@@ -3390,6 +3445,7 @@ class ModelBuilder:
 
             q_start = self.joint_q_start[i]
             qd_start = self.joint_qd_start[i]
+            cts_start = self.joint_cts_start[i]
             if i < self.joint_count - 1:
                 q_dim = self.joint_q_start[i + 1] - q_start
                 qd_dim = self.joint_qd_start[i + 1] - qd_start
@@ -3404,6 +3460,7 @@ class ModelBuilder:
                 "armature": self.joint_armature[qd_start : qd_start + qd_dim],
                 "q_start": q_start,
                 "qd_start": qd_start,
+                "cts_start": cts_start,
                 "key": key,
                 "parent_xform": wp.transform_expand(self.joint_X_p[i]),
                 "child_xform": wp.transform_expand(self.joint_X_c[i]),
@@ -6757,6 +6814,7 @@ class ModelBuilder:
             m.joint_count = self.joint_count
             m.joint_dof_count = self.joint_dof_count
             m.joint_coord_count = self.joint_coord_count
+            m.joint_constraint_count = self.joint_constraint_count
             m.particle_count = len(self.particle_q)
             m.body_count = self.body_count
             m.shape_count = len(self.shape_type)
@@ -6853,6 +6911,8 @@ class ModelBuilder:
                     count = m.joint_dof_count
                 elif freq_key == ModelAttributeFrequency.JOINT_COORD:
                     count = m.joint_coord_count
+                elif freq_key == ModelAttributeFrequency.JOINT_CONSTRAINT:
+                    count = m.joint_constraint_count
                 elif freq_key == ModelAttributeFrequency.ARTICULATION:
                     count = m.articulation_count
                 elif freq_key == ModelAttributeFrequency.WORLD:
