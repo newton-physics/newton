@@ -418,7 +418,7 @@ class TestCustomAttributes(unittest.TestCase):
 
         model = builder.finalize(device=self.device)
 
-        # Verify DOF attributes
+        # Verify constraint attributes
         cts_float_numpy = model.custom_float_cts.numpy()
         self.assertEqual(len(cts_float_numpy), 15)  # 10 from previous joints + 5 from this joint
         np.testing.assert_allclose(cts_float_numpy[0:10], np.zeros(10, dtype=np.float32))
@@ -519,7 +519,7 @@ class TestCustomAttributes(unittest.TestCase):
 
         model = builder.finalize(device=self.device)
 
-        # Verify DOF attributes
+        # Verify constraint attributes
         cts_float_numpy = model.custom_float_cts.numpy()
         self.assertEqual(len(cts_float_numpy), 13)  # 10 from previous joints + 3 from this joint
         np.testing.assert_allclose(cts_float_numpy[0:10], np.zeros(10, dtype=np.float32))
@@ -661,7 +661,7 @@ class TestCustomAttributes(unittest.TestCase):
                 custom_attributes={"custom_float_cts": [0.1, 0.2]},  # 2 values for 3-constraint joint
             )
 
-        # Test wrong constraint list length (value error) - scalar for multi-coord joint
+        # Test wrong constraint list length (type error) - scalar for multi-constraint joint
         body5 = builder.add_body(mass=1.0)
         with self.assertRaises(TypeError):
             builder.add_joint_d6(
