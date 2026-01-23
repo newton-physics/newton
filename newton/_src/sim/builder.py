@@ -6607,7 +6607,7 @@ class ModelBuilder:
                 self.world_equality_constraint_start,
                 len(self.equality_constraint_type),
                 self.equality_constraint_world,
-                "equality constraints",
+                "equality constraint",
             ),
         ]
 
