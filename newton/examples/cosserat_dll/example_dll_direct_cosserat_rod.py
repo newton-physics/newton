@@ -1,11 +1,13 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Direct Position-Based Solver for Stiff Rods using DefKit DLL with Newton viewer.
+"""Direct Position-Based Solver for Stiff Rods - C/C++ vs NumPy comparison.
 
-This example demonstrates the Direct Position-Based Solver for Stiff Rods
-(Deul et al.) from the DefKit native library. Unlike the iterative solver,
-this uses a global banded matrix solve for better handling of stiff materials.
+This example shows two rods side by side:
+- Orange rod (Y=0): C/C++ DLL reference implementation
+- Cyan rod (Y=1): NumPy implementation (being ported)
+
+Both rods respond to the same UI sliders for comparison.
 
 Command: uv run python -m newton.examples.cosserat_dll.example_dll_direct_cosserat_rod
 """
@@ -18,10 +20,11 @@ import newton.examples
 
 from .rod_state import create_straight_rod
 from .simulation_direct import DirectCosseratRodSimulation
+from .simulation_direct_numpy import DirectCosseratRodSimulationNumPy
 
 
 class Example:
-    """Demo of Direct Cosserat rod solver using DefKit DLL backend."""
+    """Demo comparing C/C++ and NumPy direct rod solvers side by side."""
 
     def __init__(self, viewer, args=None):
         self.fps = 60
@@ -40,36 +43,69 @@ class Example:
         self.segment_length = 0.05
         self.particle_radius = 0.01
 
-        # Create rod state (horizontal cantilever along X axis)
-        self.state = create_straight_rod(
+        # Y-offset for the two rods
+        self.y_offset_cpp = 0.0
+        self.y_offset_numpy = 1.0
+
+        # =========================================================================
+        # Rod 1: C/C++ DLL Reference (orange, at Y=0)
+        # =========================================================================
+        self.state_cpp = create_straight_rod(
             n_particles=self.n_particles,
-            start_pos=(0.0, 0.0, 1.0),
+            start_pos=(0.0, self.y_offset_cpp, 1.0),
             direction=(1.0, 0.0, 0.0),
             segment_length=self.segment_length,
             fix_first=True,
         )
+        self.sim_cpp = DirectCosseratRodSimulation(self.state_cpp, dll_path)
 
-        # Create direct simulation
-        self.sim = DirectCosseratRodSimulation(self.state, dll_path)
+        # =========================================================================
+        # Rod 2: NumPy Implementation (cyan, at Y=1)
+        # =========================================================================
+        self.state_np = create_straight_rod(
+            n_particles=self.n_particles,
+            start_pos=(0.0, self.y_offset_numpy, 1.0),
+            direction=(1.0, 0.0, 0.0),
+            segment_length=self.segment_length,
+            fix_first=True,
+        )
+        self.sim_np = DirectCosseratRodSimulationNumPy(self.state_np, dll_path)
 
-        # Material parameters (modulus values controlled via GUI sliders)
-        self.sim.radius = 0.01
-
-        # Set uniform bend stiffness
-        self.sim.set_bend_stiffness(1.0, 1.0, 1.0)
-
-        # Rest curvature parameters (for GUI)
+        # =========================================================================
+        # Shared parameters (controlled by UI)
+        # =========================================================================
+        self.young_modulus_scale = 1.0  # x1e6
+        self.torsion_modulus_scale = 1.0  # x1e6
+        self.bend_stiffness = 0.5
+        self.twist_stiffness = 0.5
         self.rest_bend_x = 0.0
         self.rest_bend_y = 0.0
         self.rest_twist = 0.0
+        self.gravity_scale = 1.0
+        self.gravity_enabled = True
 
-        # Build Newton model for visualization
+        # Apply initial settings to both simulations
+        self._sync_sim_parameters()
+
+        # Visualization options
+        self.show_segments = True
+        self.show_directors = False
+        self.director_scale = 0.05
+
+        # Build Newton model for visualization (particles from both rods)
         builder = newton.ModelBuilder()
         builder.add_ground_plane()
 
+        # Add particles for C++ rod
         for i in range(self.n_particles):
             mass = 0.0 if i == 0 else 1.0
-            pos = tuple(self.state.positions[i, :3])
+            pos = tuple(self.state_cpp.positions[i, :3])
+            builder.add_particle(pos=pos, vel=(0.0, 0.0, 0.0), mass=mass, radius=self.particle_radius)
+
+        # Add particles for NumPy rod
+        for i in range(self.n_particles):
+            mass = 0.0 if i == 0 else 1.0
+            pos = tuple(self.state_np.positions[i, :3])
             builder.add_particle(pos=pos, vel=(0.0, 0.0, 0.0), mass=mass, radius=self.particle_radius)
 
         self.model = builder.finalize()
@@ -79,32 +115,63 @@ class Example:
 
         self.viewer.set_model(self.model)
 
-        # Enable particle rendering
         if hasattr(self.viewer, "show_particles"):
             self.viewer.show_particles = True
 
         # Store initial state for reset
-        self._initial_positions = self.state.positions.copy()
-        self._initial_orientations = self.state.orientations.copy()
+        self._initial_positions_cpp = self.state_cpp.positions.copy()
+        self._initial_orientations_cpp = self.state_cpp.orientations.copy()
+        self._initial_positions_np = self.state_np.positions.copy()
+        self._initial_orientations_np = self.state_np.orientations.copy()
 
         # Keyboard state
         self._g_key_was_down = False
         self._r_key_was_down = False
-        self.gravity_enabled = True
 
-        # Movement/rotation parameters for first particle
-        self.move_speed = 0.5  # units per second
-        self.rotate_speed = 1.0  # radians per second
+        # Movement/rotation parameters
+        self.move_speed = 1.0
+        self.rotate_speed = 1.0
+        self.root_rotation = 0.0
+        self._root_base_orientation_cpp = self.state_cpp.orientations[0].copy()
+        self._root_base_orientation_np = self.state_np.orientations[0].copy()
+
+    def _sync_sim_parameters(self):
+        """Sync shared parameters to both simulations."""
+        # Material moduli
+        young_mod = self.young_modulus_scale * 1.0e6
+        torsion_mod = self.torsion_modulus_scale * 1.0e6
+
+        self.sim_cpp.young_modulus_mult = young_mod
+        self.sim_cpp.torsion_modulus_mult = torsion_mod
+        self.sim_np.young_modulus_mult = young_mod
+        self.sim_np.torsion_modulus_mult = torsion_mod
+
+        # Bend/twist stiffness
+        self.sim_cpp.set_bend_stiffness(self.bend_stiffness, self.bend_stiffness, self.twist_stiffness)
+        self.sim_np.set_bend_stiffness(self.bend_stiffness, self.bend_stiffness, self.twist_stiffness)
+
+        # Rest curvature
+        self.sim_cpp.set_rest_curvature(self.rest_bend_x, self.rest_bend_y, self.rest_twist)
+        self.sim_np.set_rest_curvature(self.rest_bend_x, self.rest_bend_y, self.rest_twist)
+
+        # Gravity
+        if self.gravity_enabled:
+            g = -9.81 * self.gravity_scale
+            self.sim_cpp.set_gravity(0.0, 0.0, g)
+            self.sim_np.set_gravity(0.0, 0.0, g)
+        else:
+            self.sim_cpp.set_gravity(0.0, 0.0, 0.0)
+            self.sim_np.set_gravity(0.0, 0.0, 0.0)
 
     def _sync_state(self):
-        """Sync DLL state to Newton state for visualization."""
-        positions_3d = self.state.get_positions_3d().astype(np.float32)
-        positions_wp = wp.array(positions_3d, dtype=wp.vec3, device=self.model.device)
-        self.newton_state.particle_q.assign(positions_wp)
+        """Sync both rod states to Newton state for visualization."""
+        # Combine positions from both rods
+        positions_cpp = self.state_cpp.get_positions_3d().astype(np.float32)
+        positions_np = self.state_np.get_positions_3d().astype(np.float32)
+        all_positions = np.vstack([positions_cpp, positions_np])
 
-    def _update_rest_curvature(self):
-        """Update rest Darboux vector from GUI sliders."""
-        self.sim.set_rest_curvature(self.rest_bend_x, self.rest_bend_y, self.rest_twist)
+        positions_wp = wp.array(all_positions, dtype=wp.vec3, device=self.model.device)
+        self.newton_state.particle_q.assign(positions_wp)
 
     def _handle_keyboard(self):
         """Handle keyboard input for interactive controls."""
@@ -120,10 +187,7 @@ class Example:
         g_down = self.viewer.is_key_down(key.G)
         if g_down and not self._g_key_was_down:
             self.gravity_enabled = not self.gravity_enabled
-            if self.gravity_enabled:
-                self.sim.set_gravity(0.0, 0.0, -9.81)
-            else:
-                self.sim.set_gravity(0.0, 0.0, 0.0)
+            self._sync_sim_parameters()
             print(f"Gravity: {'ON' if self.gravity_enabled else 'OFF'}")
         self._g_key_was_down = g_down
 
@@ -134,86 +198,138 @@ class Example:
             print("Reset simulation")
         self._r_key_was_down = r_down
 
-        # Move first particle with numpad keys
+        # Move first particle with numpad keys (affects both rods)
         move_delta = self.move_speed * self.frame_dt
         rotate_delta = self.rotate_speed * self.frame_dt
 
-        # Numpad 4/6: Move X
         if self.viewer.is_key_down(key.NUM_4):
             self._move_first_particle(-move_delta, 0.0, 0.0)
         if self.viewer.is_key_down(key.NUM_6):
             self._move_first_particle(move_delta, 0.0, 0.0)
-
-        # Numpad 2/8: Move Y
         if self.viewer.is_key_down(key.NUM_2):
             self._move_first_particle(0.0, -move_delta, 0.0)
         if self.viewer.is_key_down(key.NUM_8):
             self._move_first_particle(0.0, move_delta, 0.0)
-
-        # Numpad 9/3: Move Z (up/down)
         if self.viewer.is_key_down(key.NUM_9):
             self._move_first_particle(0.0, 0.0, move_delta)
         if self.viewer.is_key_down(key.NUM_3):
             self._move_first_particle(0.0, 0.0, -move_delta)
 
-        # Numpad 7/1: Rotate around Z axis
+        # Rotation
+        rotation_changed = False
         if self.viewer.is_key_down(key.NUM_7):
-            self._rotate_first_particle_z(rotate_delta)
+            self.root_rotation += rotate_delta
+            rotation_changed = True
         if self.viewer.is_key_down(key.NUM_1):
-            self._rotate_first_particle_z(-rotate_delta)
+            self.root_rotation -= rotate_delta
+            rotation_changed = True
+        if rotation_changed:
+            self._apply_root_rotation()
 
     def _move_first_particle(self, dx: float, dy: float, dz: float):
-        """Move the first (fixed) particle by the given delta."""
-        self.state.positions[0, 0] += dx
-        self.state.positions[0, 1] += dy
-        self.state.positions[0, 2] += dz
-        self.state.predicted_positions[0, 0] += dx
-        self.state.predicted_positions[0, 1] += dy
-        self.state.predicted_positions[0, 2] += dz
+        """Move the first (fixed) particle of both rods."""
+        for state in [self.state_cpp, self.state_np]:
+            state.positions[0, 0] += dx
+            state.positions[0, 1] += dy
+            state.positions[0, 2] += dz
+            state.predicted_positions[0, 0] += dx
+            state.predicted_positions[0, 1] += dy
+            state.predicted_positions[0, 2] += dz
 
-    def _rotate_first_particle_z(self, angle: float):
-        """Rotate the first particle's orientation around its local Z axis (rod tangent)."""
-        # Current quaternion (x, y, z, w)
-        q = self.state.orientations[0].copy()
-
-        # Rotation quaternion for local Z axis: (0, 0, sin(a/2), cos(a/2))
-        half_angle = angle * 0.5
+    def _apply_root_rotation(self):
+        """Apply accumulated rotation around the local Z axis to both rods."""
+        half_angle = self.root_rotation * 0.5
         rz = np.array([0.0, 0.0, np.sin(half_angle), np.cos(half_angle)], dtype=np.float32)
 
-        # Quaternion multiplication: q * rz (post-multiply to rotate in local frame)
-        # q1 * q2 = (w1*x2 + x1*w2 + y1*z2 - z1*y2,
-        #            w1*y2 - x1*z2 + y1*w2 + z1*x2,
-        #            w1*z2 + x1*y2 - y1*x2 + z1*w2,
-        #            w1*w2 - x1*x2 - y1*y2 - z1*z2)
-        new_q = np.array([
-            q[3] * rz[0] + q[0] * rz[3] + q[1] * rz[2] - q[2] * rz[1],
-            q[3] * rz[1] - q[0] * rz[2] + q[1] * rz[3] + q[2] * rz[0],
-            q[3] * rz[2] + q[0] * rz[1] - q[1] * rz[0] + q[2] * rz[3],
-            q[3] * rz[3] - q[0] * rz[0] - q[1] * rz[1] - q[2] * rz[2],
+        for state, base_orient in [(self.state_cpp, self._root_base_orientation_cpp),
+                                    (self.state_np, self._root_base_orientation_np)]:
+            q = base_orient
+            new_q = np.array([
+                q[3] * rz[0] + q[0] * rz[3] + q[1] * rz[2] - q[2] * rz[1],
+                q[3] * rz[1] - q[0] * rz[2] + q[1] * rz[3] + q[2] * rz[0],
+                q[3] * rz[2] + q[0] * rz[1] - q[1] * rz[0] + q[2] * rz[3],
+                q[3] * rz[3] - q[0] * rz[0] - q[1] * rz[1] - q[2] * rz[2],
+            ], dtype=np.float32)
+            new_q /= np.linalg.norm(new_q)
+
+            state.orientations[0] = new_q
+            state.predicted_orientations[0] = new_q
+            state.prev_orientations[0] = new_q
+
+    def _rotate_vector_by_quat(self, v: np.ndarray, q: np.ndarray) -> np.ndarray:
+        """Rotate a vector by a quaternion."""
+        x, y, z, w = q
+        vx, vy, vz = v
+        tx = 2.0 * (y * vz - z * vy)
+        ty = 2.0 * (z * vx - x * vz)
+        tz = 2.0 * (x * vy - y * vx)
+        return np.array([
+            vx + w * tx + y * tz - z * ty,
+            vy + w * ty + z * tx - x * tz,
+            vz + w * tz + x * ty - y * tx,
         ], dtype=np.float32)
 
-        # Normalize
-        new_q /= np.linalg.norm(new_q)
+    def _build_director_lines(self, state):
+        """Build line segments for visualizing material frame directors."""
+        n_edges = self.n_particles - 1
+        positions = state.get_positions_3d()
+        orientations = state.orientations
 
-        # Update orientations
-        self.state.orientations[0] = new_q
-        self.state.predicted_orientations[0] = new_q
-        self.state.prev_orientations[0] = new_q
+        starts = np.zeros((n_edges * 3, 3), dtype=np.float32)
+        ends = np.zeros((n_edges * 3, 3), dtype=np.float32)
+        colors = np.zeros((n_edges * 3, 3), dtype=np.float32)
+
+        for i in range(n_edges):
+            midpoint = 0.5 * (positions[i] + positions[i + 1])
+            q = orientations[i]
+
+            d1 = self._rotate_vector_by_quat(np.array([1.0, 0.0, 0.0], dtype=np.float32), q)
+            d2 = self._rotate_vector_by_quat(np.array([0.0, 1.0, 0.0], dtype=np.float32), q)
+            d3 = self._rotate_vector_by_quat(np.array([0.0, 0.0, 1.0], dtype=np.float32), q)
+
+            base = i * 3
+            starts[base] = midpoint
+            ends[base] = midpoint + d1 * self.director_scale
+            colors[base] = [1.0, 0.0, 0.0]
+
+            starts[base + 1] = midpoint
+            ends[base + 1] = midpoint + d2 * self.director_scale
+            colors[base + 1] = [0.0, 1.0, 0.0]
+
+            starts[base + 2] = midpoint
+            ends[base + 2] = midpoint + d3 * self.director_scale
+            colors[base + 2] = [0.0, 0.0, 1.0]
+
+        return starts, ends, colors
 
     def _reset(self):
-        """Reset simulation to initial state."""
-        np.copyto(self.state.positions, self._initial_positions)
-        np.copyto(self.state.predicted_positions, self._initial_positions)
-        np.copyto(self.state.orientations, self._initial_orientations)
-        np.copyto(self.state.predicted_orientations, self._initial_orientations)
-        np.copyto(self.state.prev_orientations, self._initial_orientations)
-        self.state.velocities.fill(0)
-        self.state.angular_velocities.fill(0)
-        self.state.clear_forces()
+        """Reset both simulations to initial state."""
+        # Reset C++ rod
+        np.copyto(self.state_cpp.positions, self._initial_positions_cpp)
+        np.copyto(self.state_cpp.predicted_positions, self._initial_positions_cpp)
+        np.copyto(self.state_cpp.orientations, self._initial_orientations_cpp)
+        np.copyto(self.state_cpp.predicted_orientations, self._initial_orientations_cpp)
+        np.copyto(self.state_cpp.prev_orientations, self._initial_orientations_cpp)
+        self.state_cpp.velocities.fill(0)
+        self.state_cpp.angular_velocities.fill(0)
+        self.state_cpp.clear_forces()
+
+        # Reset NumPy rod
+        np.copyto(self.state_np.positions, self._initial_positions_np)
+        np.copyto(self.state_np.predicted_positions, self._initial_positions_np)
+        np.copyto(self.state_np.orientations, self._initial_orientations_np)
+        np.copyto(self.state_np.predicted_orientations, self._initial_orientations_np)
+        np.copyto(self.state_np.prev_orientations, self._initial_orientations_np)
+        self.state_np.velocities.fill(0)
+        self.state_np.angular_velocities.fill(0)
+        self.state_np.clear_forces()
+
+        # Reset shared state
         self.rest_bend_x = 0.0
         self.rest_bend_y = 0.0
         self.rest_twist = 0.0
-        self._update_rest_curvature()
+        self.root_rotation = 0.0
+        self._sync_sim_parameters()
         self.sim_time = 0.0
         self._sync_state()
 
@@ -223,7 +339,8 @@ class Example:
         sub_dt = self.frame_dt / self.substeps
 
         for _ in range(self.substeps):
-            self.sim.step(sub_dt)
+            self.sim_cpp.step(sub_dt)
+            self.sim_np.step(sub_dt)
 
         self._sync_state()
         self.sim_time += self.frame_dt
@@ -232,114 +349,199 @@ class Example:
         self.viewer.begin_frame(self.sim_time)
         self.viewer.log_state(self.newton_state)
 
-        # Draw rod segments as lines
-        positions_3d = self.state.get_positions_3d().astype(np.float32)
-        starts = wp.array(positions_3d[:-1], dtype=wp.vec3, device=self.model.device)
-        ends = wp.array(positions_3d[1:], dtype=wp.vec3, device=self.model.device)
-        colors = wp.array([[0.8, 0.4, 0.1]] * (self.n_particles - 1), dtype=wp.vec3, device=self.model.device)
-        self.viewer.log_lines("/rod", starts, ends, colors)
+        # =========================================================================
+        # C++ Rod (orange)
+        # =========================================================================
+        positions_cpp = self.state_cpp.get_positions_3d().astype(np.float32)
 
-        # Draw particles as spheres
+        if self.show_segments:
+            starts = wp.array(positions_cpp[:-1], dtype=wp.vec3, device=self.model.device)
+            ends = wp.array(positions_cpp[1:], dtype=wp.vec3, device=self.model.device)
+            colors = wp.array([[0.8, 0.4, 0.1]] * (self.n_particles - 1), dtype=wp.vec3, device=self.model.device)
+            self.viewer.log_lines("/rod_cpp", starts, ends, colors)
+
+        if self.show_directors:
+            dir_starts, dir_ends, dir_colors = self._build_director_lines(self.state_cpp)
+            self.viewer.log_lines(
+                "/directors_cpp",
+                wp.array(dir_starts, dtype=wp.vec3, device=self.model.device),
+                wp.array(dir_ends, dtype=wp.vec3, device=self.model.device),
+                wp.array(dir_colors, dtype=wp.vec3, device=self.model.device),
+            )
+
         if hasattr(self.viewer, "log_spheres"):
-            positions_wp = wp.array(positions_3d, dtype=wp.vec3, device=self.model.device)
+            positions_wp = wp.array(positions_cpp, dtype=wp.vec3, device=self.model.device)
             radii = wp.array([self.particle_radius] * self.n_particles, dtype=float, device=self.model.device)
-            # Color: fixed particle (red) vs dynamic (orange)
             particle_colors = []
             for i in range(self.n_particles):
-                if self.state.inv_masses[i] == 0:
+                if self.state_cpp.inv_masses[i] == 0:
                     particle_colors.append([0.8, 0.2, 0.2])  # Red for fixed
                 else:
                     particle_colors.append([1.0, 0.6, 0.2])  # Orange for dynamic
             colors_wp = wp.array(particle_colors, dtype=wp.vec3, device=self.model.device)
-            self.viewer.log_spheres("/particles", positions_wp, radii, colors_wp)
+            self.viewer.log_spheres("/particles_cpp", positions_wp, radii, colors_wp)
+
+        # =========================================================================
+        # NumPy Rod (cyan)
+        # =========================================================================
+        positions_np = self.state_np.get_positions_3d().astype(np.float32)
+
+        if self.show_segments:
+            starts = wp.array(positions_np[:-1], dtype=wp.vec3, device=self.model.device)
+            ends = wp.array(positions_np[1:], dtype=wp.vec3, device=self.model.device)
+            colors = wp.array([[0.1, 0.6, 0.8]] * (self.n_particles - 1), dtype=wp.vec3, device=self.model.device)
+            self.viewer.log_lines("/rod_numpy", starts, ends, colors)
+
+        if self.show_directors:
+            dir_starts, dir_ends, dir_colors = self._build_director_lines(self.state_np)
+            self.viewer.log_lines(
+                "/directors_numpy",
+                wp.array(dir_starts, dtype=wp.vec3, device=self.model.device),
+                wp.array(dir_ends, dtype=wp.vec3, device=self.model.device),
+                wp.array(dir_colors, dtype=wp.vec3, device=self.model.device),
+            )
+
+        if hasattr(self.viewer, "log_spheres"):
+            positions_wp = wp.array(positions_np, dtype=wp.vec3, device=self.model.device)
+            radii = wp.array([self.particle_radius] * self.n_particles, dtype=float, device=self.model.device)
+            particle_colors = []
+            for i in range(self.n_particles):
+                if self.state_np.inv_masses[i] == 0:
+                    particle_colors.append([0.2, 0.2, 0.8])  # Blue for fixed
+                else:
+                    particle_colors.append([0.2, 0.8, 0.8])  # Cyan for dynamic
+            colors_wp = wp.array(particle_colors, dtype=wp.vec3, device=self.model.device)
+            self.viewer.log_spheres("/particles_numpy", positions_wp, radii, colors_wp)
 
         self.viewer.end_frame()
 
     def gui(self, ui):
-        ui.text("Direct Solver - Stiff Rods")
-        ui.text(f"Particles: {self.n_particles}")
+        ui.text("Direct Solver Comparison")
+        ui.text("  Orange (Y=0): C/C++ DLL")
+        ui.text("  Cyan (Y=1): NumPy")
+        ui.text(f"Particles: {self.n_particles} x 2")
         ui.text(f"Time: {self.sim_time:.2f}s")
         ui.separator()
 
+        # NumPy implementation flags
+        ui.text("NumPy Implementations:")
+        changed_pp, self.sim_np.use_numpy_predict_positions = ui.checkbox(
+            "predict_positions", self.sim_np.use_numpy_predict_positions
+        )
+        changed_pr, self.sim_np.use_numpy_predict_rotations = ui.checkbox(
+            "predict_rotations", self.sim_np.use_numpy_predict_rotations
+        )
+        changed_prep, self.sim_np.use_numpy_prepare = ui.checkbox(
+            "prepare_constraints", self.sim_np.use_numpy_prepare
+        )
+        changed_upd, self.sim_np.use_numpy_update = ui.checkbox(
+            "update_constraints", self.sim_np.use_numpy_update
+        )
+        changed_jac, self.sim_np.use_numpy_jacobians = ui.checkbox(
+            "compute_jacobians", self.sim_np.use_numpy_jacobians
+        )
+        changed_asm, self.sim_np.use_numpy_assemble = ui.checkbox(
+            "assemble_jmjt", self.sim_np.use_numpy_assemble
+        )
+        changed_slv, self.sim_np.use_numpy_solve = ui.checkbox(
+            "solve_constraints", self.sim_np.use_numpy_solve
+        )
+        changed_ip, self.sim_np.use_numpy_integrate_positions = ui.checkbox(
+            "integrate_positions", self.sim_np.use_numpy_integrate_positions
+        )
+        changed_ir, self.sim_np.use_numpy_integrate_rotations = ui.checkbox(
+            "integrate_rotations", self.sim_np.use_numpy_integrate_rotations
+        )
+
+        ui.separator()
         _, self.substeps = ui.slider_int("Substeps", self.substeps, 1, 16)
 
-        ui.separator()
-        ui.text("Material Properties:")
-        _, self.sim.young_modulus_mult = ui.slider_float(
-            "Young's Mod", self.sim.young_modulus_mult, 0.0, 1.0e6
+        # Sync damping to both
+        changed_pd, self.sim_cpp.position_damping = ui.slider_float(
+            "Linear Damping", self.sim_cpp.position_damping, 0.0, 0.05
         )
-        _, self.sim.torsion_modulus_mult = ui.slider_float(
-            "Torsion Mod", self.sim.torsion_modulus_mult, 0.0, 1.0e6
+        changed_rd, self.sim_cpp.rotation_damping = ui.slider_float(
+            "Angular Damping", self.sim_cpp.rotation_damping, 0.0, 0.05
         )
+        if changed_pd:
+            self.sim_np.position_damping = self.sim_cpp.position_damping
+        if changed_rd:
+            self.sim_np.rotation_damping = self.sim_cpp.rotation_damping
 
         ui.separator()
-        ui.text("Bend Stiffness:")
-        bend_k1 = self.sim.bend_stiffness[0, 0]
-        bend_k2 = self.sim.bend_stiffness[0, 1]
-        bend_kt = self.sim.bend_stiffness[0, 2]
-        changed_k1, bend_k1 = ui.slider_float("Bend K1", bend_k1, 0.0, 2.0)
-        changed_k2, bend_k2 = ui.slider_float("Bend K2", bend_k2, 0.0, 2.0)
-        changed_kt, bend_kt = ui.slider_float("Twist K", bend_kt, 0.0, 2.0)
-        if changed_k1 or changed_k2 or changed_kt:
-            self.sim.set_bend_stiffness(bend_k1, bend_k2, bend_kt)
+        ui.text("Stiffness:")
+        changed_bend, self.bend_stiffness = ui.slider_float("Bend Stiffness", self.bend_stiffness, 0.0, 1.0)
+        changed_twist_k, self.twist_stiffness = ui.slider_float("Twist Stiffness", self.twist_stiffness, 0.0, 1.0)
+        if changed_bend or changed_twist_k:
+            self._sync_sim_parameters()
 
         ui.separator()
-        ui.text("Rest Shape (intrinsic curvature):")
-        changed_bend_x, self.rest_bend_x = ui.slider_float("Rest Bend X", self.rest_bend_x, -1.0, 1.0)
-        changed_bend_y, self.rest_bend_y = ui.slider_float("Rest Bend Y", self.rest_bend_y, -1.0, 1.0)
-        changed_twist, self.rest_twist = ui.slider_float("Rest Twist", self.rest_twist, -1.0, 1.0)
-
-        if changed_bend_x or changed_bend_y or changed_twist:
-            self._update_rest_curvature()
-
-        ui.separator()
-        ui.text("Damping:")
-        _, self.sim.position_damping = ui.slider_float("Position", self.sim.position_damping, 0.0, 0.1)
-        _, self.sim.rotation_damping = ui.slider_float("Rotation", self.sim.rotation_damping, 0.0, 0.1)
+        ui.text("Material Moduli:")
+        changed_young, self.young_modulus_scale = ui.slider_float(
+            "Young Mod (x1e6)", self.young_modulus_scale, 0.01, 100.0
+        )
+        changed_torsion, self.torsion_modulus_scale = ui.slider_float(
+            "Torsion Mod (x1e6)", self.torsion_modulus_scale, 0.01, 100.0
+        )
+        if changed_young or changed_torsion:
+            self._sync_sim_parameters()
 
         ui.separator()
-        _, self.gravity_enabled = ui.checkbox("Gravity (G)", self.gravity_enabled)
-        if self.gravity_enabled:
-            self.sim.set_gravity(0.0, 0.0, -9.81)
-        else:
-            self.sim.set_gravity(0.0, 0.0, 0.0)
+        ui.text("Rest Shape (Darboux Vector):")
+        changed_bx, self.rest_bend_x = ui.slider_float("Rest Bend d1", self.rest_bend_x, -0.5, 0.5)
+        changed_by, self.rest_bend_y = ui.slider_float("Rest Bend d2", self.rest_bend_y, -0.5, 0.5)
+        changed_tw, self.rest_twist = ui.slider_float("Rest Twist", self.rest_twist, -0.5, 0.5)
+        if changed_bx or changed_by or changed_tw:
+            self._sync_sim_parameters()
 
         ui.separator()
-        ui.text("Controls:")
-        ui.text("  G: Toggle gravity")
-        ui.text("  R: Reset simulation")
-        ui.text("  Numpad 4/6: Move X")
-        ui.text("  Numpad 2/8: Move Y")
-        ui.text("  Numpad 3/9: Move Z")
-        ui.text("  Numpad 1/7: Rotate Z")
+        gravity_changed, self.gravity_enabled = ui.checkbox("Gravity (G)", self.gravity_enabled)
+        scale_changed, self.gravity_scale = ui.slider_float("Gravity Scale", self.gravity_scale, 0.0, 2.0)
+        if gravity_changed or scale_changed:
+            self._sync_sim_parameters()
 
         ui.separator()
-        base_pos = self.state.positions[0, :3]
-        ui.text(f"Base: ({base_pos[0]:.3f}, {base_pos[1]:.3f}, {base_pos[2]:.3f})")
-        tip_pos = self.state.positions[-1, :3]
-        ui.text(f"Tip: ({tip_pos[0]:.3f}, {tip_pos[1]:.3f}, {tip_pos[2]:.3f})")
+        ui.text("Visualization:")
+        _, self.show_segments = ui.checkbox("Show Rod Segments", self.show_segments)
+        _, self.show_directors = ui.checkbox("Show Directors", self.show_directors)
+        _, self.director_scale = ui.slider_float("Director Scale", self.director_scale, 0.01, 0.2)
 
-        # Show segment length stats
-        lengths = []
-        for i in range(self.n_particles - 1):
-            length = np.linalg.norm(self.state.positions[i + 1, :3] - self.state.positions[i, :3])
-            lengths.append(length)
-        avg_len = np.mean(lengths)
-        max_err = max(abs(l - self.segment_length) / self.segment_length for l in lengths) * 100
-        ui.text(f"Avg segment: {avg_len:.4f} (rest: {self.segment_length:.4f})")
-        ui.text(f"Max length error: {max_err:.1f}%")
+        ui.separator()
+        ui.text("Root Control (Numpad):")
+        _, self.move_speed = ui.slider_float("Move Speed", self.move_speed, 0.1, 5.0)
+        _, self.rotate_speed = ui.slider_float("Rotate Speed", self.rotate_speed, 0.1, 3.0)
+        ui.text(f"  Rotation: {self.root_rotation:.2f} rad")
+        ui.text("  4/6: X  2/8: Y  3/9: Z  1/7: Twist")
+
+        ui.separator()
+        ui.text("Keyboard: G=Gravity, R=Reset")
+
+        ui.separator()
+        # Show tip positions for both rods
+        tip_cpp = self.state_cpp.positions[-1, :3]
+        tip_np = self.state_np.positions[-1, :3]
+        ui.text(f"C++ Tip: ({tip_cpp[0]:.3f}, {tip_cpp[1]:.3f}, {tip_cpp[2]:.3f})")
+        ui.text(f"NP  Tip: ({tip_np[0]:.3f}, {tip_np[1]:.3f}, {tip_np[2]:.3f})")
+
+        # Show difference
+        diff = np.linalg.norm(tip_cpp - tip_np)
+        ui.text(f"Tip Difference: {diff:.6f}")
 
     def test_final(self):
         """Validation after simulation."""
-        # Check tip has dropped under gravity
-        tip_z = self.state.positions[-1, 2]
-        assert tip_z < 0.95, f"Tip should drop below 0.95, got {tip_z}"
+        # Check C++ tip has dropped under gravity
+        tip_z_cpp = self.state_cpp.positions[-1, 2]
+        assert tip_z_cpp < 0.95, f"C++ tip should drop below 0.95, got {tip_z_cpp}"
 
-        # Check segment lengths are preserved within 20%
+        # Check NumPy tip has dropped under gravity
+        tip_z_np = self.state_np.positions[-1, 2]
+        assert tip_z_np < 0.95, f"NumPy tip should drop below 0.95, got {tip_z_np}"
+
+        # Check segment lengths for C++ rod
         for i in range(self.n_particles - 1):
-            actual = np.linalg.norm(self.state.positions[i + 1, :3] - self.state.positions[i, :3])
+            actual = np.linalg.norm(self.state_cpp.positions[i + 1, :3] - self.state_cpp.positions[i, :3])
             error = abs(actual - self.segment_length) / self.segment_length
-            assert error < 0.2, f"Segment {i} length error {error * 100:.1f}% exceeds 20%"
+            assert error < 0.2, f"C++ Segment {i} length error {error * 100:.1f}% exceeds 20%"
 
 
 if __name__ == "__main__":
