@@ -348,7 +348,7 @@ class SensorTiledCamera:
             image: Depth output array from render(), shape (num_worlds, num_cameras, width*height).
             out_buffer: Optional output array
             num_worlds_per_row: Optional number of rows
-            depth_range: Depth range to normalize to, shape (2) [near, far]
+            depth_range: Depth range to normalize to, shape (2) [near, far], will be automatically determined if None
         """
 
         return self.render_context.utils.flatten_depth_image_to_rgba(image, out_buffer, num_worlds_per_row, depth_range)

@@ -250,7 +250,7 @@ class Utils:
         out_buffer, num_worlds_per_row = self.__reshape_buffer_for_flatten(out_buffer, num_worlds_per_row)
 
         if depth_range is None:
-            depth_range = wp.array([100000000.0, 0.0], dtype=wp.float32)
+            depth_range = wp.array([MAXVAL, 0.0], dtype=wp.float32)
             wp.launch(find_depth_range, image.shape, [image, depth_range])
 
         wp.launch(
