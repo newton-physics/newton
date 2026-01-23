@@ -52,6 +52,7 @@ newton
    eval_fk
    eval_ik
    get_joint_dof_count
+   get_joint_constraint_count
 
 .. rubric:: Constants
 
