@@ -268,7 +268,7 @@ def parse_usd(
 
     def _xform_to_row_mat(xform: wp.transform) -> np.ndarray:
         mat = wp.transform_compose(xform.p, xform.q, wp.vec3(1.0))
-        return np.array(mat, dtype=np.float32).reshape(4,4).T
+        return np.array(mat, dtype=np.float32).reshape(4, 4).T
 
     def _load_visual_shapes_impl(parent_body_id: int, prim: Usd.Prim):
         """Load visual-only shapes (no collision shapes, no rigid body or mass API schemas applied) for a given prim and its children."""
