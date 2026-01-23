@@ -1330,7 +1330,15 @@ def parse_usd(
             )
             articulation_id += 1
     no_articulations = UsdPhysics.ObjectType.Articulation not in ret_dict
-    has_joints = bool(joint_descriptions)
+    has_joints = any(
+        (
+            not (only_load_enabled_joints and not joint_desc.jointEnabled)
+            and not any(re.match(p, joint_key) for p in ignore_paths)
+            and str(joint_desc.body0) not in ignored_body_paths
+            and str(joint_desc.body1) not in ignored_body_paths
+        )
+        for joint_key, joint_desc in joint_descriptions.items()
+    )
 
     # insert remaining bodies that were not part of any articulation so far
     for path, rigid_body_desc in body_specs.items():
