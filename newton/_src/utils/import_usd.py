@@ -261,24 +261,49 @@ def parse_usd(
         has_particle_collision=False,
     )
 
-    def _load_visual_shapes_impl(
-        parent_body_id: int, prim: Usd.Prim, incoming_xform: wp.transform, incoming_scale: wp.vec3
-    ):
+    def _is_enabled_collider(prim: Usd.Prim) -> bool:
+        if not prim.HasAPI(UsdPhysics.CollisionAPI):
+            return False
+        return usd.get_attribute(prim, "physics:collisionEnabled", True)
+
+    def _xform_to_row_mat(xform: wp.transform) -> np.ndarray:
+        mat = wp.transform_compose(xform.p, xform.q, wp.vec3(1.0))
+        return np.array(mat, dtype=np.float32).reshape(4,4).T
+
+    def _load_visual_shapes_impl(parent_body_id: int, prim: Usd.Prim):
         """Load visual-only shapes (no collision shapes, no rigid body or mass API schemas applied) for a given prim and its children."""
-        if (
-            prim.HasAPI(UsdPhysics.RigidBodyAPI)
-            or prim.HasAPI(UsdPhysics.MassAPI)
-            or prim.HasAPI(UsdPhysics.CollisionAPI)
-            or prim.HasAPI(UsdPhysics.MeshCollisionAPI)
-        ):
+        if _is_enabled_collider(prim):
             return
         path_name = str(prim.GetPath())
         if any(re.match(path, path_name) for path in ignore_paths):
             return
 
-        incoming_xform_mat = wp.transform_compose(incoming_xform.p, incoming_xform.q, incoming_scale)
-        xform_mat = incoming_xform_mat @ usd.get_transform_matrix(prim)
-        xform_pos, xform_rot, scale = wp.transform_decompose(xform_mat)
+        def _find_body_prim(start_prim: Usd.Prim) -> Usd.Prim | None:
+            current = start_prim
+            while current and current.IsValid():
+                if current.HasAPI(UsdPhysics.RigidBodyAPI) or current.HasAPI(UsdPhysics.MassAPI):
+                    return current
+                current = current.GetParent()
+            return None
+
+        def _get_world_xform_matrix(target_prim: Usd.Prim) -> np.ndarray:
+            time = Usd.TimeCode.Default()
+            mat = UsdGeom.Xformable(target_prim).ComputeLocalToWorldTransform(time)
+            return np.array(mat, dtype=np.float32)
+
+        prim_world_mat = _get_world_xform_matrix(prim)
+        if parent_body_id == -1 and incoming_world_xform is not None:
+            incoming_mat = _xform_to_row_mat(incoming_world_xform)
+            prim_world_mat = prim_world_mat @ incoming_mat
+        body_prim = _find_body_prim(prim) if parent_body_id != -1 else None
+        if body_prim is not None:
+            body_world_xform = usd.get_transform(body_prim, local=False)
+            body_world_mat = _xform_to_row_mat(body_world_xform)
+            rel_mat = prim_world_mat @ np.linalg.inv(body_world_mat)
+        else:
+            rel_mat = prim_world_mat
+
+        xform_pos, xform_rot, scale = wp.transform_decompose(wp.mat44(rel_mat.T))
         xform = wp.transform(xform_pos, xform_rot)
 
         if prim.IsInstance():
@@ -287,7 +312,7 @@ def parse_usd(
                 # remap prototype child path to this instance's path (instance proxy)
                 inst_path = child.GetPath().ReplacePrefix(proto.GetPath(), prim.GetPath())
                 inst_child = stage.GetPrimAtPath(inst_path)
-                _load_visual_shapes_impl(parent_body_id, inst_child, xform, scale)
+                _load_visual_shapes_impl(parent_body_id, inst_child)
             return
         type_name = str(prim.GetTypeName()).lower()
         if type_name.endswith("joint"):
@@ -440,7 +465,7 @@ def parse_usd(
                     print(f"Added visual shape {path_name} ({type_name}) with id {shape_id}.")
 
         for child in prim.GetChildren():
-            _load_visual_shapes_impl(parent_body_id, child, xform, scale)
+            _load_visual_shapes_impl(parent_body_id, child)
 
     def add_body(prim: Usd.Prim, xform: wp.transform, key: str, armature: float) -> int:
         """Add a rigid body to the builder and optionally load its visual shapes and sites among the body prim's children. Returns the resulting body index."""
@@ -456,7 +481,7 @@ def parse_usd(
         path_body_map[key] = b
         if load_sites or load_visual_shapes:
             for child in prim.GetChildren():
-                _load_visual_shapes_impl(b, child, wp.transform_identity(), wp.vec3(1.0))
+                _load_visual_shapes_impl(b, child)
         return b
 
     def parse_body(
@@ -1377,9 +1402,19 @@ def parse_usd(
                 body_path = str(shape_spec.rigidBody)
                 # print("shape ", prim, "body =" , body_path)
                 body_id = path_body_map.get(body_path, -1)
-                scale = wp.vec3(shape_spec.localScale)
-                prim_scale = usd.get_scale(prim, local=False)
-                scale = wp.vec3(scale[0] * prim_scale[0], scale[1] * prim_scale[1], scale[2] * prim_scale[2])
+                prim_local_scale = usd.get_scale(prim, local=True)
+                prim_world_scale = usd.get_scale(prim, local=False)
+                local_scale = wp.vec3(shape_spec.localScale)
+                extra_scale = wp.vec3(
+                    local_scale[0] / prim_local_scale[0] if prim_local_scale[0] != 0.0 else local_scale[0],
+                    local_scale[1] / prim_local_scale[1] if prim_local_scale[1] != 0.0 else local_scale[1],
+                    local_scale[2] / prim_local_scale[2] if prim_local_scale[2] != 0.0 else local_scale[2],
+                )
+                scale = wp.vec3(
+                    prim_world_scale[0] * extra_scale[0],
+                    prim_world_scale[1] * extra_scale[1],
+                    prim_world_scale[2] * extra_scale[2],
+                )
                 collision_group = builder.default_shape_cfg.collision_group
 
                 if len(shape_spec.collisionGroups) > 0:
