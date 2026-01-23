@@ -1399,8 +1399,8 @@ class TestSchemaResolver(unittest.TestCase):
         # there is no authored value, so it should return the default (0)
         rolling = resolver.get_value(material, PrimType.MATERIAL, "rolling_friction")
         torsional = resolver.get_value(material, PrimType.MATERIAL, "torsional_friction")
-        self.assertEqual(rolling, 0)
-        self.assertEqual(torsional, 0)
+        self.assertEqual(rolling, 0.0005)
+        self.assertEqual(torsional, 0.25)
 
         # an explicit newton value should be used
         material.GetAttribute("newton:rollingFriction").Set(0.1)

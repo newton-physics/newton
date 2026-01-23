@@ -70,8 +70,8 @@ class SchemaResolverNewton(SchemaResolver):
         },
         PrimType.BODY: {},
         PrimType.MATERIAL: {
-            "torsional_friction": SchemaAttribute("newton:torsionalFriction", 0),
-            "rolling_friction": SchemaAttribute("newton:rollingFriction", 0),
+            "torsional_friction": SchemaAttribute("newton:torsionalFriction", 0.25),
+            "rolling_friction": SchemaAttribute("newton:rollingFriction", 0.0005),
         },
         PrimType.ACTUATOR: {},
     }
