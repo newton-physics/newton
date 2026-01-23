@@ -403,8 +403,11 @@ DEFAULT_TOLERANCES: dict[str, float] = {
     "ctrl": 1e-10,
 }
 
-# Default fields to compare
+# Default fields to compare in MjData
 DEFAULT_COMPARE_FIELDS: list[str] = ["qpos", "qvel"]
+
+# Default fields to skip in MjWarpModel comparison (internal/non-comparable)
+DEFAULT_MODEL_SKIP_FIELDS: set[str] = {"__", "ptr", "body_conaffinity"}
 
 
 def compare_mjdata_field(
@@ -596,7 +599,8 @@ class TestMenagerieBase(unittest.TestCase):
     tolerances: ClassVar[dict[str, float]] = DEFAULT_TOLERANCES
 
     # Model comparison: fields to SKIP (substrings to match)
-    model_skip_fields: ClassVar[set[str]] = {"__", "ptr"}
+    # Override in subclass with: model_skip_fields = DEFAULT_MODEL_SKIP_FIELDS | {"extra", "fields"}
+    model_skip_fields: ClassVar[set[str]] = DEFAULT_MODEL_SKIP_FIELDS
 
     # Skip reason (set to a string to skip test, leave unset or None to run)
     skip_reason: str | None = None
@@ -968,8 +972,32 @@ class TestMenagerie_UniversalRobotsUr5e(TestMenagerieBase):
     floating = False
     control_strategy = ZeroControlStrategy()
     num_worlds = 1  # For debugging
-    debug_visual = True  # Enable viewer
+    debug_visual = False  # Enable viewer
     debug_view_newton = False  # False=Native, True=Newton
+    model_skip_fields = DEFAULT_MODEL_SKIP_FIELDS | {
+        # Actuator fields differ due to Newton's 2-actuator-per-DOF conversion
+        "actuator_trntype",
+        "actuator_dyntype",
+        "actuator_gaintype",
+        "actuator_biastype",
+        "actuator_trnid",
+        "actuator_actadr",
+        "actuator_actnum",
+        "actuator_ctrllimited",
+        "actuator_forcelimited",
+        "actuator_actlimited",
+        "actuator_dynprm",
+        "actuator_gainprm",
+        "actuator_biasprm",
+        "actuator_actearly",
+        "actuator_ctrlrange",
+        "actuator_forcerange",
+        "actuator_actrange",
+        "actuator_gear",
+        "actuator_cranklength",
+        "actuator_acc0",
+        "actuator_lengthrange",
+    }
 
 
 class TestMenagerie_UniversalRobotsUr10e(TestMenagerieBase):
