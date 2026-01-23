@@ -405,6 +405,8 @@ def get_custom_attribute_declarations(prim: Usd.Prim) -> dict[str, ModelBuilder.
             if api_def and attr_name in api_def.GetPropertyNames():
                 return True
 
+        # TODO: handle multi-apply schemas once newton-usd-schemas has support for them
+
         return False
 
     def parse_custom_attr_name(name: str) -> tuple[str | None, str | None]:
