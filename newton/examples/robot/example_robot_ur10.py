@@ -39,7 +39,7 @@ def update_joint_target_trajectory_kernel(
     time: wp.array(dtype=wp.float32),
     dt: wp.float32,
     # output
-    joint_target: wp.array2d(dtype=wp.float32),
+    joint_target: wp.array3d(dtype=wp.float32),
 ):
     world_idx = wp.tid()
     t = time[world_idx]
@@ -51,7 +51,7 @@ def update_joint_target_trajectory_kernel(
     for dof in range(num_dofs):
         # add world_idx here to make the sequence of dofs different for each world
         di = (dof + world_idx) % num_dofs
-        joint_target[world_idx, dof] = wp.lerp(
+        joint_target[world_idx, 0, dof] = wp.lerp(
             joint_target_trajectory[step, world_idx, di],
             joint_target_trajectory[step + 1, world_idx, di],
             wp.frac(t),
@@ -121,9 +121,9 @@ class Example:
 
         self.control_speed = 50.0
 
-        dof_lower = self.articulation_view.get_attribute("joint_limit_lower", self.model)[0].numpy()
-        dof_upper = self.articulation_view.get_attribute("joint_limit_upper", self.model)[0].numpy()
-        joint_q = self.articulation_view.get_attribute("joint_q", self.state_0).numpy()
+        dof_lower = self.articulation_view.get_attribute("joint_limit_lower", self.model)[0, 0].numpy()
+        dof_upper = self.articulation_view.get_attribute("joint_limit_upper", self.model)[0, 0].numpy()
+        joint_q = self.articulation_view.get_attribute("joint_q", self.state_0).numpy().squeeze(axis=1)
         for i in range(dof_count):
             # generate sinusoidal control signal for this dof
             lower = dof_lower[i]

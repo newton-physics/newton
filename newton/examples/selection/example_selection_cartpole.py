@@ -38,21 +38,21 @@ COLLAPSE_FIXED_JOINTS = False
 
 
 @wp.kernel
-def randomize_states_kernel(joint_q: wp.array2d(dtype=float), seed: int):
+def randomize_states_kernel(joint_q: wp.array3d(dtype=float), seed: int):
     tid = wp.tid()
     rng = wp.rand_init(seed, tid)
-    joint_q[tid, 0] = 2.0 - 4.0 * wp.randf(rng)
-    joint_q[tid, 1] = wp.pi / 8.0 - wp.pi / 4.0 * wp.randf(rng)
-    joint_q[tid, 2] = wp.pi / 8.0 - wp.pi / 4.0 * wp.randf(rng)
+    joint_q[tid, 0, 0] = 2.0 - 4.0 * wp.randf(rng)
+    joint_q[tid, 0, 1] = wp.pi / 8.0 - wp.pi / 4.0 * wp.randf(rng)
+    joint_q[tid, 0, 2] = wp.pi / 8.0 - wp.pi / 4.0 * wp.randf(rng)
 
 
 @wp.kernel
-def apply_forces_kernel(joint_q: wp.array2d(dtype=float), joint_f: wp.array2d(dtype=float)):
+def apply_forces_kernel(joint_q: wp.array3d(dtype=float), joint_f: wp.array3d(dtype=float)):
     tid = wp.tid()
-    if joint_q[tid, 0] > 0.0:
-        joint_f[tid, 0] = -20.0
+    if joint_q[tid, 0, 0] > 0.0:
+        joint_f[tid, 0, 0] = -20.0
     else:
-        joint_f[tid, 0] = 20.0
+        joint_f[tid, 0, 0] = 20.0
 
 
 class Example:
@@ -150,7 +150,7 @@ class Example:
 
             joint_q = wp.to_torch(self.cartpoles.get_attribute("joint_q", self.state_0))
             joint_f = wp.to_torch(self.cartpoles.get_attribute("joint_f", self.control))
-            joint_f[:, 0] = torch.where(joint_q[:, 0] > 0, -20, 20)
+            joint_f[..., 0] = torch.where(joint_q[..., 0] > 0, -20, 20)
         else:
             joint_q = self.cartpoles.get_attribute("joint_q", self.state_0)
             joint_f = self.cartpoles.get_attribute("joint_f", self.control)
@@ -234,7 +234,7 @@ if __name__ == "__main__":
     if USE_TORCH:
         import torch
 
-        torch.set_device(args.device)
+        torch.set_default_device(args.device)
 
     example = Example(viewer, num_worlds=args.num_worlds, max_worlds=args.max_worlds)
 
