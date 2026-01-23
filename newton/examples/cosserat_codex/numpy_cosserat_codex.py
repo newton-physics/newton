@@ -553,10 +553,10 @@ class NumpyDirectRodState(DefKitDirectRodState):
             "integrate_rotations": True,
             "prepare_constraints": True,
             "update_constraints_banded": True,
-            "compute_jacobians_banded": False,
-            "assemble_jmjt_banded": False,
-            "project_jmjt_banded": False,
-            "project_direct": False,
+            "compute_jacobians_banded": True,
+            "assemble_jmjt_banded": True,
+            "project_jmjt_banded": True,
+            "project_direct": True,
         }
         self.numpy_enabled = {
             "predict_positions": True,
@@ -565,17 +565,28 @@ class NumpyDirectRodState(DefKitDirectRodState):
             "integrate_rotations": True,
             "prepare_constraints": True,
             "update_constraints_banded": True,
-            "compute_jacobians_banded": False,
-            "assemble_jmjt_banded": False,
-            "project_jmjt_banded": False,
-            "project_direct": False,
+            "compute_jacobians_banded": True,
+            "assemble_jmjt_banded": True,
+            "project_jmjt_banded": True,
+            "project_direct": True,
         }
         self.lambdas = np.zeros((self.num_edges, 6), dtype=np.float32)
         self.compliance = np.zeros((self.num_edges, 6), dtype=np.float32)
         self.constraint_values = np.zeros((self.num_edges, 6), dtype=np.float32)
+        self.lambda_sum = np.zeros((self.num_edges, 6), dtype=np.float32)
         self.current_rest_lengths = self.rest_lengths.copy()
         self.current_rest_darboux = np.zeros((self.num_edges, 3), dtype=np.float32)
         self._update_cross_section_properties()
+        self.rot_inv_mass_scale = 1.0
+        self.direct_relax = 1.0
+        self.use_lambda_sum = True
+        self.inv_mass_is_mass = False
+        self.enable_shadow_compare = False
+        self.shadow_delta_pos_max = 0.0
+        self.shadow_delta_rot_max = 0.0
+        self.last_constraint_max = 0.0
+        self.last_delta_lambda_max = 0.0
+        self.last_correction_max = 0.0
 
     def set_numpy_override(self, step_name: str, enabled: bool):
         if step_name not in self.numpy_available:
@@ -628,23 +639,31 @@ class NumpyDirectRodState(DefKitDirectRodState):
 
     def compute_jacobians_banded(self):
         if self.numpy_enabled["compute_jacobians_banded"]:
-            raise NotImplementedError("NumPy ComputeJacobians_Banded is not implemented yet.")
-        super().compute_jacobians_banded()
+            self._numpy_compute_jacobians_direct()
+            if self._requires_native_constraint_pipeline():
+                super().compute_jacobians_banded()
+        else:
+            super().compute_jacobians_banded()
 
     def assemble_jmjt_banded(self):
         if self.numpy_enabled["assemble_jmjt_banded"]:
-            raise NotImplementedError("NumPy AssembleJMJT_Banded is not implemented yet.")
-        super().assemble_jmjt_banded()
+            self._numpy_assemble_jmjt_banded()
+            if self._requires_native_constraint_pipeline():
+                super().assemble_jmjt_banded()
+        else:
+            super().assemble_jmjt_banded()
 
     def project_jmjt_banded(self):
         if self.numpy_enabled["project_jmjt_banded"]:
-            raise NotImplementedError("NumPy ProjectJMJT_Banded is not implemented yet.")
-        super().project_jmjt_banded()
+            self._numpy_project_jmjt_banded()
+        else:
+            super().project_jmjt_banded()
 
     def project_direct(self):
         if self.numpy_enabled["project_direct"]:
-            raise NotImplementedError("NumPy ProjectDirectElasticRodConstraints is not implemented yet.")
-        super().project_direct()
+            self._numpy_project_direct()
+        else:
+            super().project_direct()
 
     def _numpy_predict_positions(self, dt: float, linear_damping: float):
         dt = np.float32(dt)
@@ -743,6 +762,7 @@ class NumpyDirectRodState(DefKitDirectRodState):
 
     def _numpy_prepare_constraints(self, dt: float):
         self.lambdas.fill(0.0)
+        self.lambda_sum.fill(0.0)
 
         self.current_rest_lengths = self.rest_lengths.copy()
         self.current_rest_darboux[:, 0] = self.rest_darboux[:, 0]
@@ -780,6 +800,7 @@ class NumpyDirectRodState(DefKitDirectRodState):
         rest_lengths = self.current_rest_lengths
         rest_darboux = self.current_rest_darboux
 
+        max_constraint = 0.0
         for i in range(self.num_edges):
             p0 = positions[i]
             p1 = positions[i + 1]
@@ -801,11 +822,345 @@ class NumpyDirectRodState(DefKitDirectRodState):
             self.constraint_values[i, 1] = np.dot(edge_error, d1)
             self.constraint_values[i, 2] = np.dot(edge_error, d2)
 
+            if np.dot(q0, q1) < 0.0:
+                q1 = -q1
             q0_inv = self._numpy_quat_conjugate(q0)
             q_rel = self._numpy_quat_mul_single(q0_inv, q1)
+            if q_rel[3] < 0.0:
+                q_rel = -q_rel
             omega = np.float32(2.0) * q_rel[:3] / L
             darboux_error = omega - rest_darboux[i]
             self.constraint_values[i, 3:6] = darboux_error
+            max_constraint = max(max_constraint, float(np.linalg.norm(self.constraint_values[i])))
+
+        self.last_constraint_max = max_constraint
+
+    def _numpy_project_direct(self):
+        n_edges = self.num_edges
+        if n_edges == 0:
+            return
+
+        if self.enable_shadow_compare and self.lib.ProjectDirectElasticRodConstraints is not None:
+            pos_clone = self.predicted_positions.copy()
+            rot_clone = self.predicted_orientations.copy()
+            self.lib.ProjectDirectElasticRodConstraints(
+                self.rod_ptr,
+                ctypes.c_int(self.num_points),
+                _as_ptr(pos_clone, BtVector3),
+                _as_ptr(rot_clone, BtQuaternion),
+                _as_float_ptr(self.inv_masses),
+                _as_ptr(self.pos_corrections, BtVector3),
+                _as_ptr(self.rot_corrections, BtQuaternion),
+            )
+            self.shadow_delta_pos_max = float(np.max(np.linalg.norm(pos_clone[:, 0:3] - self.predicted_positions[:, 0:3], axis=1)))
+            self.shadow_delta_rot_max = float(
+                np.max(np.linalg.norm(rot_clone[:, 0:3] - self.predicted_orientations[:, 0:3], axis=1))
+            )
+        else:
+            self.shadow_delta_pos_max = 0.0
+            self.shadow_delta_rot_max = 0.0
+
+        self._numpy_update_constraints_banded()
+        self._numpy_compute_jacobians_direct()
+
+        n_dofs = 6 * n_edges
+        A = np.zeros((n_dofs, n_dofs), dtype=np.float32)
+        rhs = (-self.constraint_values).reshape(n_dofs)
+        if self.use_lambda_sum:
+            rhs -= (self.compliance * self.lambda_sum).reshape(n_dofs)
+
+        if self.inv_mass_is_mass:
+            inv_masses = np.where(self.inv_masses > 0.0, np.float32(1.0) / self.inv_masses, np.float32(0.0))
+        else:
+            inv_masses = self.inv_masses
+        inv_I = self.quat_inv_masses * np.float32(self.rot_inv_mass_scale)
+
+        for i in range(n_edges):
+            J_pos = self.jacobian_pos[i]
+            J_rot = self.jacobian_rot[i]
+            J_p0 = J_pos[:, 0:3]
+            J_p1 = J_pos[:, 3:6]
+            J_t0 = J_rot[:, 0:3]
+            J_t1 = J_rot[:, 3:6]
+
+            inv_m0 = inv_masses[i]
+            inv_m1 = inv_masses[i + 1]
+            inv_I0 = inv_I[i]
+            inv_I1 = inv_I[i + 1]
+
+            JMJT = (
+                inv_m0 * (J_p0 @ J_p0.T)
+                + inv_m1 * (J_p1 @ J_p1.T)
+                + inv_I0 * (J_t0 @ J_t0.T)
+                + inv_I1 * (J_t1 @ J_t1.T)
+            )
+            JMJT += np.diag(self.compliance[i])
+
+            block = slice(6 * i, 6 * i + 6)
+            A[block, block] += JMJT
+
+            if i > 0:
+                J_pos_prev = self.jacobian_pos[i - 1]
+                J_rot_prev = self.jacobian_rot[i - 1]
+                J_p1_prev = J_pos_prev[:, 3:6]
+                J_t1_prev = J_rot_prev[:, 3:6]
+
+                coupling = inv_m0 * (J_p1_prev @ J_p0.T) + inv_I0 * (J_t1_prev @ J_t0.T)
+                prev_block = slice(6 * (i - 1), 6 * (i - 1) + 6)
+                A[prev_block, block] += coupling
+                A[block, prev_block] += coupling.T
+
+        try:
+            delta_lambda = np.linalg.solve(A, rhs)
+        except np.linalg.LinAlgError:
+            delta_lambda = np.linalg.lstsq(A, rhs, rcond=None)[0]
+
+        self.last_delta_lambda_max = float(np.max(np.abs(delta_lambda))) if delta_lambda.size > 0 else 0.0
+        if self.use_lambda_sum:
+            self.lambda_sum += delta_lambda.reshape(n_edges, 6)
+
+        corr_max = 0.0
+        for i in range(n_edges):
+            dl = self.direct_relax * delta_lambda[6 * i : 6 * i + 6]
+            J_pos = self.jacobian_pos[i]
+            J_rot = self.jacobian_rot[i]
+            J_p0 = J_pos[:, 0:3]
+            J_p1 = J_pos[:, 3:6]
+            J_t0 = J_rot[:, 0:3]
+            J_t1 = J_rot[:, 3:6]
+
+            inv_m0 = inv_masses[i]
+            inv_m1 = inv_masses[i + 1]
+            inv_I0 = inv_I[i]
+            inv_I1 = inv_I[i + 1]
+
+            if inv_m0 > 0.0:
+                dp0 = inv_m0 * (J_p0.T @ dl)
+                self.predicted_positions[i, 0:3] += dp0
+                corr_max = max(corr_max, float(np.linalg.norm(dp0)))
+            if inv_m1 > 0.0:
+                dp1 = inv_m1 * (J_p1.T @ dl)
+                self.predicted_positions[i + 1, 0:3] += dp1
+                corr_max = max(corr_max, float(np.linalg.norm(dp1)))
+
+            if inv_I0 > 0.0:
+                dtheta0 = inv_I0 * (J_t0.T @ dl)
+                self._apply_quaternion_correction_g(self.predicted_orientations, i, dtheta0)
+                corr_max = max(corr_max, float(np.linalg.norm(dtheta0)))
+            if inv_I1 > 0.0:
+                dtheta1 = inv_I1 * (J_t1.T @ dl)
+                self._apply_quaternion_correction_g(self.predicted_orientations, i + 1, dtheta1)
+                corr_max = max(corr_max, float(np.linalg.norm(dtheta1)))
+
+        self.last_correction_max = corr_max
+
+    def _numpy_compute_jacobians_direct(self):
+        n_edges = self.num_edges
+        if n_edges == 0:
+            return
+
+        if not hasattr(self, "jacobian_pos") or self.jacobian_pos.shape[0] != n_edges:
+            self.jacobian_pos = np.zeros((n_edges, 6, 6), dtype=np.float32)
+            self.jacobian_rot = np.zeros((n_edges, 6, 6), dtype=np.float32)
+
+        orientations = self.predicted_orientations
+        rest_lengths = self.current_rest_lengths
+
+        for i in range(n_edges):
+            q0 = orientations[i]
+            L = rest_lengths[i]
+            if L <= 1.0e-8:
+                L = np.float32(1.0e-8)
+
+            d1 = self._numpy_quat_rotate_vector(q0, np.array([1.0, 0.0, 0.0], dtype=np.float32))
+            d2 = self._numpy_quat_rotate_vector(q0, np.array([0.0, 1.0, 0.0], dtype=np.float32))
+            d3 = self._numpy_quat_rotate_vector(q0, np.array([0.0, 0.0, 1.0], dtype=np.float32))
+
+            R = np.column_stack([d1, d2, d3])
+            R_T = R.T
+
+            self.jacobian_pos[i, 0:3, 0:3] = -R_T
+            self.jacobian_pos[i, 0:3, 3:6] = R_T
+
+            d3_skew = self._numpy_skew_symmetric(d3)
+            self.jacobian_rot[i, 0:3, 0:3] = L * (R_T @ d3_skew)
+            self.jacobian_rot[i, 0:3, 3:6] = 0.0
+
+            factor = np.float32(2.0) / L
+            self.jacobian_rot[i, 3:6, 0:3] = -factor * np.eye(3, dtype=np.float32)
+            self.jacobian_rot[i, 3:6, 3:6] = factor * np.eye(3, dtype=np.float32)
+
+            self.jacobian_pos[i, 3:6, 0:3] = 0.0
+            self.jacobian_pos[i, 3:6, 3:6] = 0.0
+
+    def _numpy_assemble_jmjt_banded(self):
+        n_edges = self.num_edges
+        if n_edges == 0:
+            return
+        n_dofs = 6 * n_edges
+        bandwidth = 6
+        self.bandwidth = bandwidth
+
+        if not hasattr(self, "A_banded") or self.A_banded.shape[1] != n_dofs:
+            self.A_banded = np.zeros((2 * bandwidth + 1, n_dofs), dtype=np.float32)
+            self.rhs = np.zeros(n_dofs, dtype=np.float32)
+
+        self.A_banded.fill(0.0)
+
+        inv_masses = self.inv_masses
+        inv_I = self.quat_inv_masses * np.float32(self.rot_inv_mass_scale)
+
+        for i in range(n_edges):
+            J_pos = self.jacobian_pos[i]
+            J_rot = self.jacobian_rot[i]
+            J_p0 = J_pos[:, 0:3]
+            J_p1 = J_pos[:, 3:6]
+            J_t0 = J_rot[:, 0:3]
+            J_t1 = J_rot[:, 3:6]
+
+            inv_m0 = inv_masses[i]
+            inv_m1 = inv_masses[i + 1]
+            inv_I0 = inv_I[i]
+            inv_I1 = inv_I[i + 1]
+
+            JMJT = (
+                inv_m0 * (J_p0 @ J_p0.T)
+                + inv_m1 * (J_p1 @ J_p1.T)
+                + inv_I0 * (J_t0 @ J_t0.T)
+                + inv_I1 * (J_t1 @ J_t1.T)
+            )
+            JMJT += np.diag(self.compliance[i])
+
+            block_start = 6 * i
+            for row in range(6):
+                for col in range(6):
+                    global_row = block_start + row
+                    global_col = block_start + col
+                    band_row = bandwidth + global_row - global_col
+                    if 0 <= band_row < 2 * bandwidth + 1:
+                        self.A_banded[band_row, global_col] += JMJT[row, col]
+
+            if i > 0:
+                J_pos_prev = self.jacobian_pos[i - 1]
+                J_rot_prev = self.jacobian_rot[i - 1]
+                J_p1_prev = J_pos_prev[:, 3:6]
+                J_t1_prev = J_rot_prev[:, 3:6]
+                coupling = inv_m0 * (J_p1_prev @ J_p0.T) + inv_I0 * (J_t1_prev @ J_t0.T)
+
+                prev_block = 6 * (i - 1)
+                for row in range(6):
+                    for col in range(6):
+                        global_row = prev_block + row
+                        global_col = block_start + col
+                        band_row = bandwidth + global_row - global_col
+                        if 0 <= band_row < 2 * bandwidth + 1:
+                            self.A_banded[band_row, global_col] += coupling[row, col]
+
+                        global_row = block_start + col
+                        global_col = prev_block + row
+                        band_row = bandwidth + global_row - global_col
+                        if 0 <= band_row < 2 * bandwidth + 1:
+                            self.A_banded[band_row, global_col] += coupling[row, col]
+
+    def _numpy_project_jmjt_banded(self):
+        n_edges = self.num_edges
+        if n_edges == 0:
+            return
+
+        n_dofs = 6 * n_edges
+        self.rhs[:n_dofs] = (-self.constraint_values).reshape(n_dofs)
+
+        try:
+            from scipy.linalg import solve_banded  # noqa: PLC0415
+
+            delta_lambda = solve_banded(
+                (self.bandwidth, self.bandwidth),
+                self.A_banded,
+                self.rhs[:n_dofs],
+                overwrite_ab=False,
+                overwrite_b=False,
+            )
+        except Exception:
+            A_dense = np.zeros((n_dofs, n_dofs), dtype=np.float32)
+            for col in range(n_dofs):
+                for band_row in range(2 * self.bandwidth + 1):
+                    row = col + band_row - self.bandwidth
+                    if 0 <= row < n_dofs:
+                        A_dense[row, col] = self.A_banded[band_row, col]
+            delta_lambda = np.linalg.solve(A_dense, self.rhs[:n_dofs])
+
+        inv_masses = self.inv_masses
+        inv_I = self.quat_inv_masses * np.float32(self.rot_inv_mass_scale)
+
+        self.last_delta_lambda_max = float(np.max(np.abs(delta_lambda))) if delta_lambda.size > 0 else 0.0
+        corr_max = 0.0
+        for i in range(n_edges):
+            dl = self.direct_relax * delta_lambda[6 * i : 6 * i + 6]
+            J_pos = self.jacobian_pos[i]
+            J_rot = self.jacobian_rot[i]
+            J_p0 = J_pos[:, 0:3]
+            J_p1 = J_pos[:, 3:6]
+            J_t0 = J_rot[:, 0:3]
+            J_t1 = J_rot[:, 3:6]
+
+            inv_m0 = inv_masses[i]
+            inv_m1 = inv_masses[i + 1]
+            inv_I0 = inv_I[i]
+            inv_I1 = inv_I[i + 1]
+
+            if inv_m0 > 0.0:
+                dp0 = inv_m0 * (J_p0.T @ dl)
+                self.predicted_positions[i, 0:3] += dp0
+                corr_max = max(corr_max, float(np.linalg.norm(dp0)))
+            if inv_m1 > 0.0:
+                dp1 = inv_m1 * (J_p1.T @ dl)
+                self.predicted_positions[i + 1, 0:3] += dp1
+                corr_max = max(corr_max, float(np.linalg.norm(dp1)))
+            if inv_I0 > 0.0:
+                dtheta0 = inv_I0 * (J_t0.T @ dl)
+                self._apply_quaternion_correction_g(self.predicted_orientations, i, dtheta0)
+                corr_max = max(corr_max, float(np.linalg.norm(dtheta0)))
+            if inv_I1 > 0.0:
+                dtheta1 = inv_I1 * (J_t1.T @ dl)
+                self._apply_quaternion_correction_g(self.predicted_orientations, i + 1, dtheta1)
+                corr_max = max(corr_max, float(np.linalg.norm(dtheta1)))
+
+        self.last_correction_max = corr_max
+
+    @staticmethod
+    def _numpy_skew_symmetric(v: np.ndarray) -> np.ndarray:
+        return np.array(
+            [
+                [0.0, -v[2], v[1]],
+                [v[2], 0.0, -v[0]],
+                [-v[1], v[0], 0.0],
+            ],
+            dtype=np.float32,
+        )
+
+    def _apply_quaternion_correction(self, orientations: np.ndarray, idx: int, dtheta: np.ndarray):
+        if np.linalg.norm(dtheta) < 1.0e-10:
+            return
+        q = orientations[idx]
+        dq = np.array([0.5 * dtheta[0], 0.5 * dtheta[1], 0.5 * dtheta[2], 0.0], dtype=np.float32)
+        q_new = q + self._numpy_quat_mul_single(dq, q)
+        q_new /= np.linalg.norm(q_new)
+        orientations[idx] = q_new
+
+    @staticmethod
+    def _apply_quaternion_correction_g(orientations: np.ndarray, idx: int, dtheta: np.ndarray):
+        if np.linalg.norm(dtheta) < 1.0e-10:
+            return
+        q = orientations[idx]
+        x, y, z, w = q
+        g0 = np.array([w, z, -y], dtype=np.float32)
+        g1 = np.array([-z, w, x], dtype=np.float32)
+        g2 = np.array([y, -x, w], dtype=np.float32)
+        corr_vec = 0.5 * (g0 * dtheta[0] + g1 * dtheta[1] + g2 * dtheta[2])
+        corr_q = np.array([corr_vec[0], corr_vec[1], corr_vec[2], 0.0], dtype=np.float32)
+        q_new = q + corr_q
+        q_new /= np.linalg.norm(q_new)
+        orientations[idx] = q_new
 
     @staticmethod
     def _numpy_quat_rotate_vector(q: np.ndarray, v: np.ndarray) -> np.ndarray:
@@ -907,6 +1262,7 @@ class Example:
 
         self._gravity_key_was_down = False
         self._reset_key_was_down = False
+        self._banded_key_was_down = False
 
         self.lib = DefKitDirectLibrary(args.dll_path, args.calling_convention)
         self.supports_non_banded = self.lib.ProjectDirectElasticRodConstraints is not None
@@ -1029,6 +1385,15 @@ class Example:
             self.gravity_enabled = not self.gravity_enabled
             self._update_gravity()
         self._gravity_key_was_down = g_down
+
+        b_down = self.viewer.is_key_down(key.B)
+        if b_down and not self._banded_key_was_down:
+            if self.supports_non_banded:
+                self.use_banded = not self.use_banded
+                self.ref_rod.set_solver_mode(self.use_banded)
+                self.numpy_rod.set_solver_mode(self.use_banded)
+                self.use_banded = self.ref_rod.use_banded
+        self._banded_key_was_down = b_down
 
         r_down = self.viewer.is_key_down(key.R)
         if r_down and not self._reset_key_was_down:
@@ -1280,6 +1645,24 @@ class Example:
             ui.text(f"Pending NumPy steps: {pending_count} (see DEFKIT_TO_NUMPY.md)")
 
         ui.separator()
+        ui.text("NumPy Direct Stabilization")
+        _changed, self.numpy_rod.rot_inv_mass_scale = ui.slider_float(
+            "Rot Inv Mass Scale", self.numpy_rod.rot_inv_mass_scale, 0.01, 10.0
+        )
+        _changed, self.numpy_rod.direct_relax = ui.slider_float("Direct Relax", self.numpy_rod.direct_relax, 0.1, 1.0)
+        _changed, self.numpy_rod.use_lambda_sum = ui.checkbox("Use Lambda Sum", self.numpy_rod.use_lambda_sum)
+        _changed, self.numpy_rod.inv_mass_is_mass = ui.checkbox("InvMass Is Mass", self.numpy_rod.inv_mass_is_mass)
+        _changed, self.numpy_rod.enable_shadow_compare = ui.checkbox(
+            "Shadow Compare (DLL)", self.numpy_rod.enable_shadow_compare
+        )
+        ui.text(f"NumPy max |C|: {self.numpy_rod.last_constraint_max:.3e}")
+        ui.text(f"NumPy max |Δλ|: {self.numpy_rod.last_delta_lambda_max:.3e}")
+        ui.text(f"NumPy max correction: {self.numpy_rod.last_correction_max:.3e}")
+        if self.numpy_rod.enable_shadow_compare:
+            ui.text(f"Shadow max Δp: {self.numpy_rod.shadow_delta_pos_max:.3e}")
+            ui.text(f"Shadow max Δq: {self.numpy_rod.shadow_delta_rot_max:.3e}")
+
+        ui.separator()
         _changed, self.show_segments = ui.checkbox("Show Rod Segments", self.show_segments)
         _changed, self.show_directors = ui.checkbox("Show Directors", self.show_directors)
         _changed, self.director_scale = ui.slider_float("Director Scale", self.director_scale, 0.01, 0.3)
@@ -1295,6 +1678,7 @@ class Example:
         ui.separator()
         ui.text("Controls:")
         ui.text("  G: Toggle gravity")
+        ui.text("  B: Toggle banded solver")
         ui.text("  R: Reset")
 
     def test_final(self):

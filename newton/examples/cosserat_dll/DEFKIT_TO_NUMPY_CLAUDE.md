@@ -25,8 +25,11 @@ The direct solver implements the algorithm from "Direct Position-Based Solver fo
 | `integrate_positions` | DLL | Position update and velocity derivation (placeholder) |
 | `integrate_rotations` | DLL | Quaternion update and angular velocity derivation (placeholder) |
 | `prepare_direct_elastic_rod_constraints` | **NumPy** | Reset lambdas, compute compliance |
+| **Non-banded solver:** | | |
+| `ProjectDirectElasticRodConstraints` | **NumPy ✓** | Working! All-in-one: update+jacobians+assemble+solve |
+| **Banded solver (alternative):** | | |
 | `update_direct_constraints` | **NumPy** | Compute stretch-shear and bend-twist errors |
-| `compute_jacobians_direct` | **NumPy** | Compute J matrices for constraints |
+| `compute_jacobians_direct` | **NumPy ✓** | Fixed: uses permuted rotation matrix P=[d3,d1,d2] |
 | `assemble_jmjt_direct` | **NumPy** | Build banded matrix system |
 | `solve_direct_constraints` | **NumPy** | Banded matrix solve (scipy) + apply corrections |
 
@@ -128,6 +131,41 @@ Both rods respond to the same UI sliders. Visual comparison shows correctness.
     - Position: Δp = M⁻¹ * J_pos^T * Δλ
     - Orientation: Δθ = I⁻¹ * J_rot^T * Δλ
   - `_apply_quaternion_correction()`: Converts tangent vector to quaternion update
+
+### Session 1 - ProjectDirectElasticRodConstraints (2026-01-23)
+- Implemented `_project_direct_numpy()` - non-banded all-in-one solver:
+  - **Step 1**: Compute constraint values (violations)
+    - Stretch-shear: C_ss = R^T * (edge - L * d3)
+    - Bend-twist: C_bt = ω - ω_rest
+  - **Step 2**: Build dense Jacobian matrices
+    - Stretch-shear: ∂C/∂p and ∂C/∂θ
+    - Bend-twist: ∂C/∂θ₀ and ∂C/∂θ₁
+  - **Step 3**: Assemble dense JMJT matrix
+    - Includes diagonal blocks (self-coupling)
+    - Includes off-diagonal blocks (adjacent constraint coupling)
+    - Adds compliance regularization to diagonal
+  - **Step 4**: Solve using `np.linalg.solve(A, -C)`
+    - Falls back to lstsq if matrix is singular
+  - **Step 5**: Apply corrections to positions and orientations
+- Modified `step()` to use non-banded when `use_numpy_project_direct=True`
+- GUI shows "project_direct (non-banded)" checkbox
+  - When enabled, hides banded solver options
+
+### Session 2 - Fix Non-Banded Solver Explosion (2026-01-23)
+- **Bug identified**: Rod explosion caused by Jacobian/constraint ordering mismatch
+  - Constraint values use ordering: [stretch=d3, shear1=d1, shear2=d2]
+  - Original Jacobian used R^T where R = [d1, d2, d3] (standard column ordering)
+  - This caused corrections to be applied in wrong directions (Y instead of Z)
+- **Fix applied**: Use permuted rotation matrix P = [d3, d1, d2] in Jacobians
+  - `_jacobians_numpy()` now uses P^T instead of R^T for stretch-shear Jacobians
+  - Position corrections now correctly map to the constraint error directions
+- **Results**:
+  - Rod no longer explodes (stable for 500+ steps)
+  - Some drift compared to C++ reference (10-20%) due to simplified bend-twist Jacobians
+  - Qualitative behavior is correct (rod hangs down under gravity)
+- **Root cause analysis**: The constraint C[i] measures error in direction d_i, but the
+  correction dp = J^T * λ maps λ through the rotation matrix. If the column ordering
+  of R doesn't match the constraint ordering, corrections go in the wrong direction.
 
 ---
 

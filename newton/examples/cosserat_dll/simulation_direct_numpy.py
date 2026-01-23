@@ -105,6 +105,9 @@ class DirectCosseratRodSimulationNumPy:
         self.use_numpy_assemble = False
         self.use_numpy_solve = False
 
+        # Non-banded solver flag (replaces update+jacobians+assemble+solve)
+        self.use_numpy_project_direct = False
+
     def _update_cross_section_properties(self):
         """Update cross-section properties based on current radius."""
         r = self.radius
@@ -374,27 +377,14 @@ class DirectCosseratRodSimulationNumPy:
         - Affecting 2 positions (6 DOFs) and 2 orientations (6 DOFs for the
           tangent space representation)
 
-        Jacobian structure per edge:
-        - J_pos_i: ∂C/∂p_i (6x3)
-        - J_pos_i1: ∂C/∂p_{i+1} (6x3)
-        - J_rot_i: ∂C/∂θ_i (6x3, where θ is axis-angle tangent space)
-        - J_rot_i1: ∂C/∂θ_{i+1} (6x3)
-
-        For stretch-shear constraint C_ss = (p1 - p0) - L * d3:
-        - ∂C_ss/∂p0 = -R^T (project into local frame)
-        - ∂C_ss/∂p1 = R^T
-        - ∂C_ss/∂θ0 = -L * [d3]_× * R^T (skew-symmetric cross product)
-
-        For bend-twist constraint C_bt = ω - ω_rest:
-        - ∂C_bt/∂θ0 = -2/L * (something from quaternion derivative)
-        - ∂C_bt/∂θ1 = 2/L * (...)
+        IMPORTANT: Constraint ordering is [stretch, shear1, shear2] = [d3, d1, d2]
+        which requires a permuted rotation matrix P = [d3, d1, d2] for the Jacobian.
         """
         s = self.state
         n_edges = s.n_edges
 
         # Allocate Jacobian storage
         # Each edge has Jacobians w.r.t. 4 DOF groups: p_i, p_{i+1}, q_i, q_{i+1}
-        # For simplicity, store as dense matrices per constraint
         # J_pos: (n_edges, 6, 6) - 6 constraints x (3 for p_i + 3 for p_{i+1})
         # J_rot: (n_edges, 6, 6) - 6 constraints x (3 for θ_i + 3 for θ_{i+1})
         if not hasattr(self, 'jacobian_pos') or self.jacobian_pos.shape[0] != n_edges:
@@ -403,37 +393,39 @@ class DirectCosseratRodSimulationNumPy:
 
         for i in range(n_edges):
             q0 = s.predicted_orientations[i]
-            q1 = s.predicted_orientations[i + 1]
             L = self.current_rest_lengths[i]
+            if L <= 1e-8:
+                L = 1e-8
 
-            # Get rotation matrix columns (directors)
+            # Get directors from quaternion
             d1 = self._quat_rotate_vector(q0, np.array([1.0, 0.0, 0.0], dtype=np.float32))
             d2 = self._quat_rotate_vector(q0, np.array([0.0, 1.0, 0.0], dtype=np.float32))
             d3 = self._quat_rotate_vector(q0, np.array([0.0, 0.0, 1.0], dtype=np.float32))
 
-            # Rotation matrix R (columns are directors)
-            R = np.column_stack([d1, d2, d3])  # 3x3
-            R_T = R.T  # 3x3
+            # Permuted rotation matrix: columns are [d3, d1, d2] to match constraint ordering
+            # C[0] = d3 · edge_error (stretch)
+            # C[1] = d1 · edge_error (shear1)
+            # C[2] = d2 · edge_error (shear2)
+            P = np.column_stack([d3, d1, d2])  # 3x3, permuted columns
+            P_T = P.T  # 3x3
 
             # === Stretch-Shear Jacobians (rows 0-2) ===
-            # C_ss is expressed in local frame: R^T * (p1 - p0 - L*d3)
-            # ∂C_ss/∂p0 = -R^T
-            # ∂C_ss/∂p1 = R^T
-            self.jacobian_pos[i, 0:3, 0:3] = -R_T  # w.r.t. p_i
-            self.jacobian_pos[i, 0:3, 3:6] = R_T   # w.r.t. p_{i+1}
+            # C_ss = P^T * (p1 - p0 - L*d3) in permuted local frame
+            # ∂C_ss/∂p0 = -P^T
+            # ∂C_ss/∂p1 = P^T
+            self.jacobian_pos[i, 0:3, 0:3] = -P_T  # w.r.t. p_i
+            self.jacobian_pos[i, 0:3, 3:6] = P_T   # w.r.t. p_{i+1}
 
-            # ∂C_ss/∂θ0: The constraint depends on d3 which changes with rotation
-            # d3 = R * e3, so ∂d3/∂θ = -[d3]_× (skew-symmetric)
-            # ∂C_ss/∂θ0 = -L * R^T * ∂d3/∂θ0 = L * R^T * [d3]_×
+            # ∂C_ss/∂θ0: Rotation affects d3 (and the projection frame)
+            # Using the original derivation with P instead of R:
+            # ∂C_ss/∂θ0 = L * P^T * [d3]_×
             d3_skew = self._skew_symmetric(d3)
-            self.jacobian_rot[i, 0:3, 0:3] = L * R_T @ d3_skew  # w.r.t. θ_i
+            self.jacobian_rot[i, 0:3, 0:3] = L * P_T @ d3_skew  # w.r.t. θ_i
             self.jacobian_rot[i, 0:3, 3:6] = 0.0  # C_ss doesn't depend on q_{i+1} directly
 
             # === Bend-Twist Jacobians (rows 3-5) ===
             # C_bt = ω - ω_rest, where ω = 2 * im(q0^{-1} * q1) / L
-            # This is more complex - using simplified linearization
-
-            # For the Darboux vector derivative:
+            # The Darboux vector is already in the material frame
             # ∂ω/∂θ0 ≈ -2/L * I (simplified for small rotations)
             # ∂ω/∂θ1 ≈ 2/L * I (simplified)
             factor = 2.0 / L
@@ -633,6 +625,119 @@ class DirectCosseratRodSimulationNumPy:
         orientations[idx] = q_new
 
     # =========================================================================
+    # Non-banded direct solver (single method replacing update+jacobians+assemble+solve)
+    # =========================================================================
+
+    def _project_direct_numpy(self):
+        """NumPy implementation of non-banded direct constraint projection.
+
+        This matches the working reference implementation in numpy_cosserat_codex.py.
+        It reuses the constraint update and Jacobian computation methods, then
+        builds and solves a dense system.
+        """
+        s = self.state
+        n_edges = s.n_edges
+
+        if n_edges == 0:
+            return
+
+        # Step 1: Compute constraint values using existing method
+        self._update_numpy()
+
+        # Step 2: Compute Jacobians using existing method
+        self._jacobians_numpy()
+
+        # Step 3: Build dense JMJT matrix
+        n_dofs = 6 * n_edges
+        A = np.zeros((n_dofs, n_dofs), dtype=np.float32)
+        rhs = -self.constraint_values.reshape(n_dofs)
+
+        inv_masses = s.inv_masses
+        inv_I = s.quat_inv_masses
+
+        for i in range(n_edges):
+            # Get stored Jacobians
+            J_pos = self.jacobian_pos[i]  # (6, 6) - [J_p0 | J_p1]
+            J_rot = self.jacobian_rot[i]  # (6, 6) - [J_t0 | J_t1]
+            J_p0 = J_pos[:, 0:3]  # (6, 3)
+            J_p1 = J_pos[:, 3:6]  # (6, 3)
+            J_t0 = J_rot[:, 0:3]  # (6, 3)
+            J_t1 = J_rot[:, 3:6]  # (6, 3)
+
+            inv_m0 = inv_masses[i]
+            inv_m1 = inv_masses[i + 1]
+            inv_I0 = inv_I[i]
+            inv_I1 = inv_I[i + 1]
+
+            # Build diagonal block: JMJT = J * M^-1 * J^T
+            JMJT = (
+                inv_m0 * (J_p0 @ J_p0.T) +
+                inv_m1 * (J_p1 @ J_p1.T) +
+                inv_I0 * (J_t0 @ J_t0.T) +
+                inv_I1 * (J_t1 @ J_t1.T)
+            )
+
+            # Add compliance to diagonal
+            JMJT += np.diag(self.compliance[i])
+
+            # Store in global matrix
+            block = slice(6 * i, 6 * i + 6)
+            A[block, block] += JMJT
+
+            # Off-diagonal coupling with previous constraint (shared particle)
+            if i > 0:
+                J_pos_prev = self.jacobian_pos[i - 1]
+                J_rot_prev = self.jacobian_rot[i - 1]
+                J_p1_prev = J_pos_prev[:, 3:6]  # Constraint i-1's Jacobian w.r.t. particle i
+                J_t1_prev = J_rot_prev[:, 3:6]  # Constraint i-1's Jacobian w.r.t. orientation i
+
+                # Coupling through shared particle i (position and orientation)
+                coupling = inv_m0 * (J_p1_prev @ J_p0.T) + inv_I0 * (J_t1_prev @ J_t0.T)
+
+                prev_block = slice(6 * (i - 1), 6 * (i - 1) + 6)
+                A[prev_block, block] += coupling
+                A[block, prev_block] += coupling.T
+
+        # Step 4: Solve system A * Δλ = -C
+        try:
+            delta_lambda = np.linalg.solve(A, rhs)
+        except np.linalg.LinAlgError:
+            # Matrix is singular, use least squares
+            delta_lambda = np.linalg.lstsq(A, rhs, rcond=None)[0]
+
+        # Step 5: Apply corrections using stored Jacobians
+        for i in range(n_edges):
+            dl = delta_lambda[6 * i: 6 * i + 6]
+
+            J_pos = self.jacobian_pos[i]
+            J_rot = self.jacobian_rot[i]
+            J_p0 = J_pos[:, 0:3]
+            J_p1 = J_pos[:, 3:6]
+            J_t0 = J_rot[:, 0:3]
+            J_t1 = J_rot[:, 3:6]
+
+            inv_m0 = inv_masses[i]
+            inv_m1 = inv_masses[i + 1]
+            inv_I0 = inv_I[i]
+            inv_I1 = inv_I[i + 1]
+
+            # Position corrections: Δp = inv_m * J_p^T * Δλ
+            if inv_m0 > 0.0:
+                dp0 = inv_m0 * (J_p0.T @ dl)
+                s.predicted_positions[i, :3] += dp0
+            if inv_m1 > 0.0:
+                dp1 = inv_m1 * (J_p1.T @ dl)
+                s.predicted_positions[i + 1, :3] += dp1
+
+            # Orientation corrections: Δθ = inv_I * J_t^T * Δλ
+            if inv_I0 > 0.0:
+                dtheta0 = inv_I0 * (J_t0.T @ dl)
+                self._apply_quaternion_correction(s.predicted_orientations, i, dtheta0)
+            if inv_I1 > 0.0:
+                dtheta1 = inv_I1 * (J_t1.T @ dl)
+                self._apply_quaternion_correction(s.predicted_orientations, i + 1, dtheta1)
+
+    # =========================================================================
     # Main step function
     # =========================================================================
 
@@ -674,8 +779,8 @@ class DirectCosseratRodSimulationNumPy:
                 s.quat_inv_masses,
             )
 
-        # 3. Prepare direct solver
-        if self.use_numpy_prepare:
+        # 3. Prepare direct solver (always needed for compliance computation)
+        if self.use_numpy_prepare or self.use_numpy_project_direct:
             self._prepare_numpy(dt)
         else:
             self.dll.prepare_direct_elastic_rod_constraints(
@@ -689,51 +794,58 @@ class DirectCosseratRodSimulationNumPy:
                 self.torsion_modulus_mult,
             )
 
-        # 4. Update constraint state
-        if self.use_numpy_update:
-            self._update_numpy()
+        # Steps 4-7: Either use non-banded (single call) or banded (separate steps)
+        if self.use_numpy_project_direct:
+            # Non-banded: single method does update+jacobians+assemble+solve
+            self._project_direct_numpy()
         else:
-            self.dll.update_direct_constraints(
-                self._rod_ptr,
-                s.predicted_positions,
-                s.predicted_orientations,
-                s.inv_masses,
-            )
+            # Banded approach: separate steps
 
-        # 5. Compute Jacobians
-        if self.use_numpy_jacobians:
-            self._jacobians_numpy()
-        else:
-            self.dll.compute_jacobians_direct(
-                self._rod_ptr,
-                0,
-                n_constraints,
-                s.predicted_positions,
-                s.predicted_orientations,
-                s.inv_masses,
-            )
+            # 4. Update constraint state
+            if self.use_numpy_update:
+                self._update_numpy()
+            else:
+                self.dll.update_direct_constraints(
+                    self._rod_ptr,
+                    s.predicted_positions,
+                    s.predicted_orientations,
+                    s.inv_masses,
+                )
 
-        # 6. Assemble JMJT banded matrix
-        if self.use_numpy_assemble:
-            self._assemble_numpy()
-        else:
-            self.dll.assemble_jmjt_direct(
-                self._rod_ptr,
-                0,
-                n_constraints,
-                s.predicted_positions,
-                s.predicted_orientations,
-                s.inv_masses,
-            )
+            # 5. Compute Jacobians
+            if self.use_numpy_jacobians:
+                self._jacobians_numpy()
+            else:
+                self.dll.compute_jacobians_direct(
+                    self._rod_ptr,
+                    0,
+                    n_constraints,
+                    s.predicted_positions,
+                    s.predicted_orientations,
+                    s.inv_masses,
+                )
 
-        # 7. Solve and apply corrections
-        if self.use_numpy_solve:
-            self._solve_numpy()
-        else:
-            self.dll.solve_direct_constraints(
-                self._rod_ptr,
-                s.predicted_positions,
-                s.predicted_orientations,
+            # 6. Assemble JMJT banded matrix
+            if self.use_numpy_assemble:
+                self._assemble_numpy()
+            else:
+                self.dll.assemble_jmjt_direct(
+                    self._rod_ptr,
+                    0,
+                    n_constraints,
+                    s.predicted_positions,
+                    s.predicted_orientations,
+                    s.inv_masses,
+                )
+
+            # 7. Solve and apply corrections
+            if self.use_numpy_solve:
+                self._solve_numpy()
+            else:
+                self.dll.solve_direct_constraints(
+                    self._rod_ptr,
+                    s.predicted_positions,
+                    s.predicted_orientations,
                 s.inv_masses,
             )
 

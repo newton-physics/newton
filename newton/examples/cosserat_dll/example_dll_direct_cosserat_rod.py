@@ -71,6 +71,11 @@ class Example:
         )
         self.sim_np = DirectCosseratRodSimulationNumPy(self.state_np, dll_path)
 
+        # Enable NumPy implementations by default
+        self.sim_np.use_numpy_predict_positions = True
+        self.sim_np.use_numpy_predict_rotations = True
+        self.sim_np.use_numpy_project_direct = True  # Non-banded solver
+
         # =========================================================================
         # Shared parameters (controlled by UI)
         # =========================================================================
@@ -127,6 +132,7 @@ class Example:
         # Keyboard state
         self._g_key_was_down = False
         self._r_key_was_down = False
+        self._b_key_was_down = False
 
         # Movement/rotation parameters
         self.move_speed = 1.0
@@ -197,6 +203,12 @@ class Example:
             self._reset()
             print("Reset simulation")
         self._r_key_was_down = r_down
+
+        # Toggle banded/non-banded with B key
+        b_down = self.viewer.is_key_down(key.B)
+        if b_down and not self._b_key_was_down:
+            self._toggle_banded_mode()
+        self._b_key_was_down = b_down
 
         # Move first particle with numpad keys (affects both rods)
         move_delta = self.move_speed * self.frame_dt
@@ -301,6 +313,27 @@ class Example:
             colors[base + 2] = [0.0, 0.0, 1.0]
 
         return starts, ends, colors
+
+    def _toggle_banded_mode(self):
+        """Toggle between banded and non-banded constraint solving."""
+        if self.sim_np.use_numpy_project_direct:
+            # Switch to banded mode
+            self.sim_np.use_numpy_project_direct = False
+            self.sim_np.use_numpy_prepare = True
+            self.sim_np.use_numpy_update = True
+            self.sim_np.use_numpy_jacobians = True
+            self.sim_np.use_numpy_assemble = True
+            self.sim_np.use_numpy_solve = True
+            print("Switched to BANDED solver (NumPy)")
+        else:
+            # Switch to non-banded mode
+            self.sim_np.use_numpy_project_direct = True
+            self.sim_np.use_numpy_prepare = False
+            self.sim_np.use_numpy_update = False
+            self.sim_np.use_numpy_jacobians = False
+            self.sim_np.use_numpy_assemble = False
+            self.sim_np.use_numpy_solve = False
+            print("Switched to NON-BANDED solver (NumPy)")
 
     def _reset(self):
         """Reset both simulations to initial state."""
@@ -431,21 +464,31 @@ class Example:
         changed_pr, self.sim_np.use_numpy_predict_rotations = ui.checkbox(
             "predict_rotations", self.sim_np.use_numpy_predict_rotations
         )
-        changed_prep, self.sim_np.use_numpy_prepare = ui.checkbox(
-            "prepare_constraints", self.sim_np.use_numpy_prepare
-        )
-        changed_upd, self.sim_np.use_numpy_update = ui.checkbox(
-            "update_constraints", self.sim_np.use_numpy_update
-        )
-        changed_jac, self.sim_np.use_numpy_jacobians = ui.checkbox(
-            "compute_jacobians", self.sim_np.use_numpy_jacobians
-        )
-        changed_asm, self.sim_np.use_numpy_assemble = ui.checkbox(
-            "assemble_jmjt", self.sim_np.use_numpy_assemble
-        )
-        changed_slv, self.sim_np.use_numpy_solve = ui.checkbox(
-            "solve_constraints", self.sim_np.use_numpy_solve
-        )
+
+        ui.text("Constraint Solving (B to toggle):")
+        use_non_banded = self.sim_np.use_numpy_project_direct
+        changed_mode, new_use_non_banded = ui.checkbox("Non-banded solver", use_non_banded)
+        if changed_mode and new_use_non_banded != use_non_banded:
+            self._toggle_banded_mode()
+
+        # Show banded options only when non-banded is disabled
+        if not self.sim_np.use_numpy_project_direct:
+            ui.text("  Banded solver steps:")
+            changed_prep, self.sim_np.use_numpy_prepare = ui.checkbox(
+                "    prepare_constraints", self.sim_np.use_numpy_prepare
+            )
+            changed_upd, self.sim_np.use_numpy_update = ui.checkbox(
+                "    update_constraints", self.sim_np.use_numpy_update
+            )
+            changed_jac, self.sim_np.use_numpy_jacobians = ui.checkbox(
+                "    compute_jacobians", self.sim_np.use_numpy_jacobians
+            )
+            changed_asm, self.sim_np.use_numpy_assemble = ui.checkbox(
+                "    assemble_jmjt", self.sim_np.use_numpy_assemble
+            )
+            changed_slv, self.sim_np.use_numpy_solve = ui.checkbox(
+                "    solve_constraints", self.sim_np.use_numpy_solve
+            )
         changed_ip, self.sim_np.use_numpy_integrate_positions = ui.checkbox(
             "integrate_positions", self.sim_np.use_numpy_integrate_positions
         )
@@ -514,7 +557,7 @@ class Example:
         ui.text("  4/6: X  2/8: Y  3/9: Z  1/7: Twist")
 
         ui.separator()
-        ui.text("Keyboard: G=Gravity, R=Reset")
+        ui.text("Keyboard: G=Gravity, R=Reset, B=Banded/Non-banded")
 
         ui.separator()
         # Show tip positions for both rods
