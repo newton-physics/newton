@@ -6684,8 +6684,8 @@ class ModelBuilder:
 
         # List of world start arrays of coord/DOF/constraint space arrays
         world_joint_space_start_arrays = [
-            (self.world_joint_q_start, self.joint_q_start, self.joint_coord_count, "joint coordinates"),
-            (self.world_joint_qd_start, self.joint_qd_start, self.joint_dof_count, "joint DOFs"),
+            (self.world_joint_q_start, self.joint_q_start, self.joint_coord_count, "joint coordinate"),
+            (self.world_joint_qd_start, self.joint_qd_start, self.joint_dof_count, "joint DOF"),
         ]
 
         def finalize_joint_space_start_array(
