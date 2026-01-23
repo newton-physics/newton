@@ -1378,6 +1378,8 @@ def parse_usd(
                 # print("shape ", prim, "body =" , body_path)
                 body_id = path_body_map.get(body_path, -1)
                 scale = wp.vec3(shape_spec.localScale)
+                prim_scale = usd.get_scale(prim, local=False)
+                scale = wp.vec3(scale[0] * prim_scale[0], scale[1] * prim_scale[1], scale[2] * prim_scale[2])
                 collision_group = builder.default_shape_cfg.collision_group
 
                 if len(shape_spec.collisionGroups) > 0:
@@ -1437,6 +1439,9 @@ def parse_usd(
                 # print(path, shape_params)
                 if key == UsdPhysics.ObjectType.CubeShape:
                     hx, hy, hz = shape_spec.halfExtents
+                    hx *= scale[0]
+                    hy *= scale[1]
+                    hz *= scale[2]
                     shape_id = builder.add_shape_box(
                         **shape_params,
                         hx=hx,
@@ -1444,9 +1449,12 @@ def parse_usd(
                         hz=hz,
                     )
                 elif key == UsdPhysics.ObjectType.SphereShape:
+                    if not (scale[0] == scale[1] == scale[2]):
+                        print("Warning: Non-uniform scaling of spheres is not supported.")
+                    radius = shape_spec.radius * max(scale)
                     shape_id = builder.add_shape_sphere(
                         **shape_params,
-                        radius=shape_spec.radius,
+                        radius=radius,
                     )
                 elif key == UsdPhysics.ObjectType.CapsuleShape:
                     # Apply axis rotation to transform
@@ -1454,10 +1462,12 @@ def parse_usd(
                     shape_params["xform"] = wp.transform(
                         shape_params["xform"].p, shape_params["xform"].q * quat_between_axes(Axis.Z, axis)
                     )
+                    radius = shape_spec.radius * scale[0]
+                    half_height = shape_spec.halfHeight * scale[1]
                     shape_id = builder.add_shape_capsule(
                         **shape_params,
-                        radius=shape_spec.radius,
-                        half_height=shape_spec.halfHeight,
+                        radius=radius,
+                        half_height=half_height,
                     )
                 elif key == UsdPhysics.ObjectType.CylinderShape:
                     # Apply axis rotation to transform
@@ -1465,10 +1475,12 @@ def parse_usd(
                     shape_params["xform"] = wp.transform(
                         shape_params["xform"].p, shape_params["xform"].q * quat_between_axes(Axis.Z, axis)
                     )
+                    radius = shape_spec.radius * scale[0]
+                    half_height = shape_spec.halfHeight * scale[1]
                     shape_id = builder.add_shape_cylinder(
                         **shape_params,
-                        radius=shape_spec.radius,
-                        half_height=shape_spec.halfHeight,
+                        radius=radius,
+                        half_height=half_height,
                     )
                 elif key == UsdPhysics.ObjectType.ConeShape:
                     # Apply axis rotation to transform
@@ -1476,10 +1488,12 @@ def parse_usd(
                     shape_params["xform"] = wp.transform(
                         shape_params["xform"].p, shape_params["xform"].q * quat_between_axes(Axis.Z, axis)
                     )
+                    radius = shape_spec.radius * scale[0]
+                    half_height = shape_spec.halfHeight * scale[1]
                     shape_id = builder.add_shape_cone(
                         **shape_params,
-                        radius=shape_spec.radius,
-                        half_height=shape_spec.halfHeight,
+                        radius=radius,
+                        half_height=half_height,
                     )
                 elif key == UsdPhysics.ObjectType.MeshShape:
                     # Resolve mesh hull vertex limit from schema with fallback to parameter

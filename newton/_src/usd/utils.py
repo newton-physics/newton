@@ -226,20 +226,42 @@ def get_vector(prim: Usd.Prim, name: str, default: nparray | None = None) -> npa
     return default
 
 
-def get_scale(prim: Usd.Prim) -> wp.vec3:
+def get_xform_matrix(prim: Usd.Prim, local: bool = True) -> np.ndarray:
     """
-    Extract the scale component from a USD prim's local transformation.
+    Get the transformation matrix for a USD prim.
+
+    Args:
+        prim: The USD prim to query.
+        local: If True, get the local transformation; if False, get the world transformation.
+
+    Returns:
+        The transformation matrix as a numpy array (float32).
+    """
+    xform = UsdGeom.Xformable(prim)
+    if local:
+        mat = xform.GetLocalTransformation()
+        # USD may return (matrix, resetXformStack)
+        if isinstance(mat, tuple):
+            mat = mat[0]
+    else:
+        time = Usd.TimeCode.Default()
+        mat = xform.ComputeLocalToWorldTransform(time)
+    return np.array(mat, dtype=np.float32)
+
+
+def get_scale(prim: Usd.Prim, local: bool = True) -> wp.vec3:
+    """
+    Extract the scale component from a USD prim's transformation.
 
     Args:
         prim: The USD prim to query for scale information.
+        local: If True, get the local scale; if False, get the world scale.
 
     Returns:
         The scale as a Warp vec3.
     """
-    # first get local transform matrix
-    local_mat = np.array(UsdGeom.Xform(prim).GetLocalTransformation(), dtype=np.float32)
-    # then get scale from the matrix
-    scale = np.sqrt(np.sum(local_mat[:3, :3] ** 2, axis=0))
+    mat = get_xform_matrix(prim, local=local)
+    _pos, _rot, scale = wp.transform_decompose(wp.mat44(mat.T))
     return wp.vec3(*scale)
 
 
@@ -270,13 +292,7 @@ def get_transform_matrix(prim: Usd.Prim, local: bool = True) -> wp.mat44:
     Returns:
         A Warp 4x4 transform matrix.
     """
-    xform = UsdGeom.Xformable(prim)
-
-    if local:
-        mat = np.array(xform.GetLocalTransformation(), dtype=np.float32)
-    else:
-        time = Usd.TimeCode.Default()
-        mat = np.array(xform.ComputeLocalToWorldTransform(time), dtype=np.float32)
+    mat = get_xform_matrix(prim, local=local)
     return wp.mat44(mat.T)
 
 
@@ -291,15 +307,9 @@ def get_transform(prim: Usd.Prim, local: bool = True) -> wp.transform:
     Returns:
         A Warp transform containing the position and rotation extracted from the prim.
     """
-    xform = UsdGeom.Xform(prim)
-    if local:
-        mat = np.array(xform.GetLocalTransformation(), dtype=np.float32)
-    else:
-        time = Usd.TimeCode.Default()
-        mat = np.array(xform.ComputeLocalToWorldTransform(time), dtype=np.float32)
-    rot = wp.quat_from_matrix(wp.mat33(mat[:3, :3].T.flatten()))
-    pos = mat[3, :3]
-    return wp.transform(pos, rot)
+    mat = get_xform_matrix(prim, local=local)
+    xform_pos, xform_rot, _scale = wp.transform_decompose(wp.mat44(mat.T))
+    return wp.transform(xform_pos, xform_rot)
 
 
 def convert_warp_value(v: Any, warp_dtype: Any | None = None) -> Any:
