@@ -1929,7 +1929,12 @@ class SolverVBD(SolverBase):
         # Velocity update (BDF1) after all iterations
         wp.launch(
             kernel=update_body_velocity,
-            inputs=[dt, state_out.body_q, self.body_q_prev, model.body_com],
+            inputs=[
+                dt,
+                state_out.body_q,
+                model.body_com,
+                self.body_q_prev,  # input/output
+            ],
             outputs=[state_out.body_qd],
             dim=model.body_count,
             device=self.device,
@@ -1951,8 +1956,6 @@ class SolverVBD(SolverBase):
                     model.body_q,
                     self.joint_dahl_eps_max,
                     self.joint_dahl_tau,
-                ],
-                outputs=[
                     self.joint_sigma_prev,  # input/output
                     self.joint_kappa_prev,  # input/output
                     self.joint_dkappa_prev,  # input/output
