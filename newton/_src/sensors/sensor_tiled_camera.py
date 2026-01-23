@@ -24,7 +24,7 @@ from ..geometry import ShapeFlags
 from ..sim import Model, State
 from .warp_raytrace import ClearData, RenderContext, RenderLightType, RenderShapeType
 
-DEFAULT_CLEAR_DATA = ClearData(0xFF666666)
+DEFAULT_CLEAR_DATA = ClearData(clear_color=0xFF666666, clear_albedo=0xFF000000)
 
 
 @wp.kernel(enable_backward=False)

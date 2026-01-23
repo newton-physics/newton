@@ -199,7 +199,7 @@ class Example:
                 default_light=True,
                 default_light_shadows=True,
                 colors_per_shape=True,
-                checkerboard_texture=True,
+                checkerboard_texture=False,
                 backface_culling=True,
             ),
         )

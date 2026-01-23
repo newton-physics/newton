@@ -285,7 +285,7 @@ def _render_megakernel(
                     base_color[2] * tex_color[2],
                 )
 
-    if out_albedo:
+    if render_albedo:
         albedo_color = base_color
         if closest_hit.shape_index < ray_cast.MAX_SHAPE_ID:
             albedo_color *= wp.dot(closest_hit.normal, -ray_dir_world)
