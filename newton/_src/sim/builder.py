@@ -6634,11 +6634,10 @@ class ModelBuilder:
             world_entity_start[0] = front_global_entity_count
 
             # Compute per-world cumulative counts
+            entity_world_np = np.asarray(entity_world, dtype=np.int32)
+            world_counts = np.bincount(entity_world_np[entity_world_np >= 0], minlength=self.num_worlds)
             for w in range(self.num_worlds):
-                # Count entities in world w
-                count_in_world = sum(1 for _, world in enumerate(entity_world) if world == w)
-                # Compute cumulative start index for world w+1
-                world_entity_start[w + 1] = world_entity_start[w] + count_in_world
+                world_entity_start[w + 1] = world_entity_start[w] + int(world_counts[w])
 
             # Set the last element to the total entity counts over all worlds in the model
             world_entity_start[-1] = entity_count
