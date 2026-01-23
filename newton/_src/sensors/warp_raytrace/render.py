@@ -286,15 +286,10 @@ def _render_megakernel(
                 )
 
     if render_albedo:
-        albedo_color = base_color
-        if closest_hit.shape_index < ray_cast.MAX_SHAPE_ID:
-            albedo_color *= wp.dot(closest_hit.normal, -ray_dir_world)
-            albedo_color = wp.min(wp.max(albedo_color, wp.vec3f(0.0)), wp.vec3f(1.0))
-
         out_albedo[world_index, camera_index, out_index] = pack_rgba_to_uint32(
-            albedo_color[0] * 255.0,
-            albedo_color[1] * 255.0,
-            albedo_color[2] * 255.0,
+            base_color[0] * 255.0,
+            base_color[1] * 255.0,
+            base_color[2] * 255.0,
             255.0,
         )
 
