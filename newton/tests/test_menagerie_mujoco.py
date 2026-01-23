@@ -448,6 +448,136 @@ def compare_mjdata_field(
         )
 
 
+def compare_mj_models(newton_mj: Any, native_mj: Any) -> tuple[int, int, int]:
+    """
+    Compare ALL fields of two MjModel objects.
+
+    Returns:
+        (ok_count, mismatch_count, skip_count)
+    """
+    print("\n=== MODEL COMPARISON (ALL FIELDS) ===\n")
+
+    # Fields to skip (methods, private, or non-comparable)
+    skip_fields = {"__", "ptr", "stat", "names", "paths", "text", "names_map"}
+
+    # Get all attributes from native model
+    all_attrs = [a for a in dir(native_mj) if not any(s in a for s in skip_fields)]
+
+    ok_count = 0
+    mismatch_count = 0
+    skip_count = 0
+
+    for attr in sorted(all_attrs):
+        try:
+            native_val = getattr(native_mj, attr, None)
+            newton_val = getattr(newton_mj, attr, None)
+
+            # Skip callables/methods
+            if callable(native_val):
+                continue
+
+            # Skip None values
+            if native_val is None and newton_val is None:
+                continue
+
+            # Handle numpy arrays
+            if isinstance(native_val, np.ndarray):
+                if newton_val is None or not isinstance(newton_val, np.ndarray):
+                    print(f"  {attr}: TYPE MISMATCH (newton={type(newton_val)}, native=ndarray) [MISMATCH]")
+                    mismatch_count += 1
+                    continue
+
+                if native_val.shape != newton_val.shape:
+                    print(f"  {attr}: SHAPE MISMATCH newton={newton_val.shape}, native={native_val.shape} [MISMATCH]")
+                    mismatch_count += 1
+                    continue
+
+                if native_val.size == 0:
+                    print(f"  {attr}: empty array [OK]")
+                    ok_count += 1
+                    continue
+
+                # Compare arrays
+                try:
+                    if native_val.dtype.kind in ("i", "u"):  # integer types
+                        match = np.array_equal(native_val, newton_val)
+                        max_diff = 0 if match else np.max(np.abs(native_val.astype(float) - newton_val.astype(float)))
+                    else:
+                        max_diff = float(np.max(np.abs(native_val - newton_val)))
+                        match = max_diff < 1e-6
+
+                    if match:
+                        print(f"  {attr}: shape={native_val.shape} [OK]")
+                        ok_count += 1
+                    else:
+                        print(f"  {attr}: shape={native_val.shape}, max_diff={max_diff:.6e} [MISMATCH]")
+                        # Print first few differing values
+                        if native_val.ndim == 1 and native_val.size <= 20:
+                            print(f"    newton: {newton_val}")
+                            print(f"    native: {native_val}")
+                        elif native_val.ndim == 1:
+                            diff_idx = np.where(np.abs(native_val - newton_val) > 1e-6)[0]
+                            if len(diff_idx) > 0:
+                                idx = diff_idx[0]
+                                print(f"    first diff at [{idx}]: newton={newton_val[idx]}, native={native_val[idx]}")
+                        mismatch_count += 1
+                except Exception as e:
+                    print(f"  {attr}: comparison error: {e} [SKIP]")
+                    skip_count += 1
+
+            # Handle scalars
+            elif isinstance(native_val, (int, float, np.number)):
+                if native_val == newton_val:
+                    print(f"  {attr}: {native_val} [OK]")
+                    ok_count += 1
+                else:
+                    diff = abs(float(native_val) - float(newton_val)) if newton_val is not None else float("inf")
+                    print(f"  {attr}: newton={newton_val}, native={native_val}, diff={diff:.6e} [MISMATCH]")
+                    mismatch_count += 1
+
+            # Handle other types (strings, etc.)
+            else:
+                if native_val == newton_val:
+                    print(f"  {attr}: {type(native_val).__name__} [OK]")
+                    ok_count += 1
+                else:
+                    print(f"  {attr}: newton={newton_val}, native={native_val} [MISMATCH]")
+                    mismatch_count += 1
+
+        except Exception as e:
+            print(f"  {attr}: error accessing: {e} [SKIP]")
+            skip_count += 1
+
+    print(f"\n=== SUMMARY: {ok_count} OK, {mismatch_count} MISMATCH, {skip_count} SKIP ===\n")
+    return ok_count, mismatch_count, skip_count
+
+
+def print_mjdata_diff(
+    newton_mjw_data: Any,
+    native_mjw_data: Any,
+    compare_fields: list[str],
+    tolerances: dict[str, float],
+    step_num: int,
+) -> None:
+    """Print max difference for each MjData field."""
+    wp.synchronize()
+    for field_name in compare_fields:
+        newton_arr = getattr(newton_mjw_data, field_name, None)
+        native_arr = getattr(native_mjw_data, field_name, None)
+        if newton_arr is None or native_arr is None or newton_arr.size == 0:
+            continue
+        newton_np = newton_arr.numpy()
+        native_np = native_arr.numpy()
+        # Handle shape mismatch
+        if newton_np.shape != native_np.shape:
+            print(f"  {field_name}: SHAPE MISMATCH newton={newton_np.shape} vs native={native_np.shape}")
+            continue
+        max_diff = float(np.max(np.abs(newton_np - native_np)))
+        tol = tolerances.get(field_name, 1e-6)
+        status = "OK" if max_diff <= tol else "FAIL"
+        print(f"  {field_name}: max_diff={max_diff:.6e} (tol={tol:.0e}) [{status}]")
+
+
 # =============================================================================
 # Randomization (placeholder for future implementation)
 # =============================================================================
@@ -608,85 +738,19 @@ class TestMenagerieBase(unittest.TestCase):
         assert _mujoco_warp is not None
         assert self.control_strategy is not None
 
-        # Create Newton model and solver (num_worlds is batch dimension)
+        # Create models and solvers
         newton_model = self._create_newton_model()
         newton_state = newton_model.state()
         newton_control = newton_model.control()
-
-        # Create Newton's MuJoCo solver (uses warp backend with batched worlds)
         newton_solver = SolverMuJoCo(newton_model)
 
-        # Create native mujoco_warp model/data with same number of worlds
         mj_model, mj_data_native, native_mjw_model, native_mjw_data = self._create_native_mujoco_warp()
 
-        if self.debug_visual:
-            print(f"[DEBUG] Newton model.num_worlds = {newton_model.num_worlds}")
-            print(f"[DEBUG] Newton mjw_data.ctrl.shape = {newton_solver.mjw_data.ctrl.shape}")
-            print(f"[DEBUG] Newton mj_model.nu = {newton_solver.mj_model.nu}")
-            print(f"[DEBUG] Native mjw_data.ctrl.shape = {native_mjw_data.ctrl.shape}")
-            print(f"[DEBUG] Native mj_model.nu = {mj_model.nu}")
+        # Compare MjModel structure
+        compare_mj_models(newton_solver.mj_model, mj_model)
 
         # Get number of actuators from native model (for control generation)
         num_actuators = native_mjw_data.ctrl.shape[1] if native_mjw_data.ctrl.shape[1] > 0 else 0
-
-        def print_diff(step_num: int):
-            """Print max difference for each field."""
-            wp.synchronize()
-            for field_name in self.compare_fields:
-                newton_arr = getattr(newton_solver.mjw_data, field_name, None)
-                native_arr = getattr(native_mjw_data, field_name, None)
-                if newton_arr is None or native_arr is None or newton_arr.size == 0:
-                    continue
-                newton_np = newton_arr.numpy()
-                native_np = native_arr.numpy()
-                # Handle shape mismatch (e.g., ctrl has different sizes due to Newton's 2-actuator-per-DOF)
-                if newton_np.shape != native_np.shape:
-                    print(f"  {field_name}: SHAPE MISMATCH newton={newton_np.shape} vs native={native_np.shape}")
-                    continue
-                max_diff = float(np.max(np.abs(newton_np - native_np)))
-                tol = self.tolerances.get(field_name, 1e-6)
-                status = "OK" if max_diff <= tol else "FAIL"
-                print(f"  {field_name}: max_diff={max_diff:.6e} (tol={tol:.0e}) [{status}]")
-
-        def sync_to_viewer():
-            """Copy first world from mjw_data to mj_data for viewer."""
-            assert _mujoco_warp is not None
-            wp.synchronize()
-            if self.debug_view_newton:
-                _mujoco_warp.get_data_into(newton_solver.mj_data, newton_solver.mj_model, newton_solver.mjw_data)
-            else:
-                _mujoco_warp.get_data_into(mj_data_native, mj_model, native_mjw_data)
-
-        def step_both(step_num: int, newton_graph: Any = None, native_graph: Any = None):
-            """Step both simulations with control assignment."""
-            assert self.control_strategy is not None
-            assert _mujoco_warp is not None
-            t = step_num * self.dt
-            ctrl = self.control_strategy.get_control(t, step_num, self.num_worlds, num_actuators)
-
-            # Assign control to both
-            newton_solver.mjw_data.ctrl.assign(ctrl)
-            native_mjw_data.ctrl.assign(ctrl)
-
-            # Step both
-            if newton_graph and native_graph:
-                wp.capture_launch(native_graph)
-                wp.capture_launch(newton_graph)
-            else:
-                _mujoco_warp.step(native_mjw_model, native_mjw_data)
-                newton_solver.step(newton_state, newton_state, newton_control, None, self.dt)
-
-        def compare_at_step(step_num: int):
-            """Compare mjw_data arrays for all worlds, fail on first mismatch."""
-            for field_name in self.compare_fields:
-                tol = self.tolerances.get(field_name, 1e-6)
-                compare_mjdata_field(
-                    newton_solver.mjw_data,
-                    native_mjw_data,
-                    field_name,
-                    tol,
-                    step_num,
-                )
 
         # Setup viewer if in debug mode
         viewer = None
@@ -701,6 +765,38 @@ class TestMenagerieBase(unittest.TestCase):
                 viewer = mujoco.viewer.launch_passive(newton_solver.mj_model, newton_solver.mj_data)
             else:
                 viewer = mujoco.viewer.launch_passive(mj_model, mj_data_native)
+
+        # Helper: sync mjw_data to mj_data for viewer
+        def sync_to_viewer():
+            assert _mujoco_warp is not None
+            wp.synchronize()
+            if self.debug_view_newton:
+                _mujoco_warp.get_data_into(newton_solver.mj_data, newton_solver.mj_model, newton_solver.mjw_data)
+            else:
+                _mujoco_warp.get_data_into(mj_data_native, mj_model, native_mjw_data)
+
+        # Helper: step both simulations
+        def step_both(step_num: int, newton_graph: Any = None, native_graph: Any = None):
+            t = step_num * self.dt
+            ctrl = self.control_strategy.get_control(t, step_num, self.num_worlds, num_actuators)  # type: ignore[union-attr]
+            newton_solver.mjw_data.ctrl.assign(ctrl)
+            native_mjw_data.ctrl.assign(ctrl)
+
+            if newton_graph and native_graph:
+                wp.capture_launch(native_graph)
+                wp.capture_launch(newton_graph)
+            else:
+                _mujoco_warp.step(native_mjw_model, native_mjw_data)  # type: ignore[union-attr]
+                newton_solver.step(newton_state, newton_state, newton_control, None, self.dt)
+
+        # Helper: compare at step (for non-visual mode)
+        def compare_at_step(step_num: int):
+            for field_name in self.compare_fields:
+                tol = self.tolerances.get(field_name, 1e-6)
+                compare_mjdata_field(newton_solver.mjw_data, native_mjw_data, field_name, tol, step_num)
+
+        # Initial viewer sync
+        if viewer:
             sync_to_viewer()
             viewer.sync()
 
@@ -712,20 +808,18 @@ class TestMenagerieBase(unittest.TestCase):
         # Compare/print initial state
         if self.debug_visual:
             print("Initial state:")
-            print_diff(-1)
+            print_mjdata_diff(newton_solver.mjw_data, native_mjw_data, self.compare_fields, self.tolerances, -1)
         else:
             compare_at_step(-1)
 
-        # Determine number of steps
+        # Main simulation loop
         max_steps = 500 if self.debug_visual else self.num_steps
 
-        # Main simulation loop
         for step in range(max_steps):
-            # Check viewer still running
             if viewer and not viewer.is_running():
                 break
 
-            # Step 0 with graph capture, or regular step
+            # Step 0: capture CUDA graphs if available
             if step == 0 and use_cuda_graph:
                 ctrl = self.control_strategy.get_control(0, 0, self.num_worlds, num_actuators)
                 newton_solver.mjw_data.ctrl.assign(ctrl)
@@ -751,14 +845,18 @@ class TestMenagerieBase(unittest.TestCase):
             if self.debug_visual:
                 if (step + 1) % 50 == 0:
                     print(f"Step {step + 1}:")
-                    print_diff(step)
+                    print_mjdata_diff(
+                        newton_solver.mjw_data, native_mjw_data, self.compare_fields, self.tolerances, step
+                    )
             else:
                 compare_at_step(step)
 
         # Cleanup
         if viewer:
             print(f"\nFinal ({max_steps} steps):")
-            print_diff(max_steps - 1)
+            print_mjdata_diff(
+                newton_solver.mjw_data, native_mjw_data, self.compare_fields, self.tolerances, max_steps - 1
+            )
 
             while viewer.is_running():
                 time.sleep(0.1)
