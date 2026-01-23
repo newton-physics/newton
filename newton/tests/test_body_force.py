@@ -67,12 +67,14 @@ def test_floating_body(
 ):
     builder = newton.ModelBuilder(gravity=0.0, up_axis=up_axis)
 
-    # easy case: identity transform, zero center of mass
+    # easy case: zero center of mass offset
     pos = wp.vec3(1.0, 2.0, 3.0)
-    rot = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), wp.pi * 0.0)
+    # use non-identity rotation to test that the wrench is applied correctly in world frame
+    rot = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), wp.pi * 0.5) 
 
     body_index = builder.add_body(xform=wp.transform(pos, rot))
-    builder.add_shape_box(body_index, hx=0.25, hy=0.5, hz=1.0)
+    # use a symmetric inertia to remove any gyro effects on angular velocity
+    builder.add_shape_box(body_index, hx=0.5, hy=0.5, hz=0.5)
     builder.joint_q = [*pos, *rot]
 
     model = builder.finalize(device=device)
@@ -93,8 +95,10 @@ def test_floating_body(
 
     if test_angular:
         test_index = 5  # torque about z-axis
-        inertia_zz = model.body_inertia.numpy()[body_index][2, 2]
-        expected_velocity = test_force_torque / inertia_zz * sim_dt
+        inertia = model.body_inertia.numpy()[body_index]
+        test.assertAlmostEqual(inertia[0, 0], inertia[1, 1], delta=1e-6)
+        test.assertAlmostEqual(inertia[1, 1], inertia[2, 2], delta=1e-6)
+        expected_velocity = test_force_torque / inertia[2, 2] * sim_dt
     else:
         test_index = 1  # force in y-direction
         mass = model.body_mass.numpy()[body_index]
@@ -363,7 +367,9 @@ def test_force_no_rotation(
     builder = newton.ModelBuilder(gravity=0.0)
 
     initial_pos = wp.vec3(0.0, 0.0, 1.0)
-    body_index = builder.add_body(xform=wp.transform(initial_pos, wp.quat_identity()))
+    # use non-identity rotation to test that the wrench is applied correctly in world frame
+    rot = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), wp.pi * 0.5) 
+    body_index = builder.add_body(xform=wp.transform(initial_pos, rot))
     builder.add_shape_box(body_index, hx=0.1, hy=0.1, hz=0.1)
     builder.body_com[body_index] = wp.vec3(*com_offset)
 
@@ -449,7 +455,9 @@ def test_combined_force_torque(
     builder = newton.ModelBuilder(gravity=0.0)
 
     initial_pos = wp.vec3(0.0, 0.0, 1.0)
-    body_index = builder.add_body(xform=wp.transform(initial_pos, wp.quat_identity()))
+    # use non-identity rotation to test that the wrench is applied correctly in world frame
+    rot = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), wp.pi * 0.5) 
+    body_index = builder.add_body(xform=wp.transform(initial_pos, rot))
     builder.add_shape_box(body_index, hx=0.1, hy=0.1, hz=0.1)
     builder.body_com[body_index] = wp.vec3(*com_offset)
 
