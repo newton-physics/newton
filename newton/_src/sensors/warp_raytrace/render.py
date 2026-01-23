@@ -238,7 +238,7 @@ def _render_megakernel(
     if render_shape_index:
         out_shape_index[world_index, camera_index, out_index] = closest_hit.shape_index
 
-    if not render_color:
+    if not render_color and not render_albedo:
         return
 
     # Shade the pixel
@@ -292,6 +292,9 @@ def _render_megakernel(
             base_color[2] * 255.0,
             255.0,
         )
+
+    if not render_color:
+        return
 
     if enable_ambient_lighting:
         up = wp.vec3f(0.0, 0.0, 1.0)
