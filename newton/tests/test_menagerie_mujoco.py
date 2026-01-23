@@ -448,108 +448,44 @@ def compare_mjdata_field(
         )
 
 
-def compare_mj_models(newton_mj: Any, native_mj: Any) -> tuple[int, int, int]:
-    """
-    Compare ALL fields of two MjModel objects.
+def compare_mjw_models(
+    newton_mjw: Any,
+    native_mjw: Any,
+    skip_fields: set[str] | None = None,
+    tol: float = 1e-6,
+) -> None:
+    """Compare ALL fields of two MjWarpModel objects. Asserts on first mismatch."""
+    if skip_fields is None:
+        skip_fields = {"__", "ptr"}
 
-    Returns:
-        (ok_count, mismatch_count, skip_count)
-    """
-    print("\n=== MODEL COMPARISON (ALL FIELDS) ===\n")
+    for attr in dir(native_mjw):
+        if any(s in attr for s in skip_fields):
+            continue
 
-    # Fields to skip (methods, private, or non-comparable)
-    skip_fields = {"__", "ptr", "stat", "names", "paths", "text", "names_map"}
+        native_val = getattr(native_mjw, attr, None)
+        newton_val = getattr(newton_mjw, attr, None)
 
-    # Get all attributes from native model
-    all_attrs = [a for a in dir(native_mj) if not any(s in a for s in skip_fields)]
+        if callable(native_val) or (native_val is None and newton_val is None):
+            continue
 
-    ok_count = 0
-    mismatch_count = 0
-    skip_count = 0
-
-    for attr in sorted(all_attrs):
-        try:
-            native_val = getattr(native_mj, attr, None)
-            newton_val = getattr(newton_mj, attr, None)
-
-            # Skip callables/methods
-            if callable(native_val):
-                continue
-
-            # Skip None values
-            if native_val is None and newton_val is None:
-                continue
-
-            # Handle numpy arrays
-            if isinstance(native_val, np.ndarray):
-                if newton_val is None or not isinstance(newton_val, np.ndarray):
-                    print(f"  {attr}: TYPE MISMATCH (newton={type(newton_val)}, native=ndarray) [MISMATCH]")
-                    mismatch_count += 1
-                    continue
-
-                if native_val.shape != newton_val.shape:
-                    print(f"  {attr}: SHAPE MISMATCH newton={newton_val.shape}, native={native_val.shape} [MISMATCH]")
-                    mismatch_count += 1
-                    continue
-
-                if native_val.size == 0:
-                    print(f"  {attr}: empty array [OK]")
-                    ok_count += 1
-                    continue
-
-                # Compare arrays
-                try:
-                    if native_val.dtype.kind in ("i", "u"):  # integer types
-                        match = np.array_equal(native_val, newton_val)
-                        max_diff = 0 if match else np.max(np.abs(native_val.astype(float) - newton_val.astype(float)))
-                    else:
-                        max_diff = float(np.max(np.abs(native_val - newton_val)))
-                        match = max_diff < 1e-6
-
-                    if match:
-                        print(f"  {attr}: shape={native_val.shape} [OK]")
-                        ok_count += 1
-                    else:
-                        print(f"  {attr}: shape={native_val.shape}, max_diff={max_diff:.6e} [MISMATCH]")
-                        # Print first few differing values
-                        if native_val.ndim == 1 and native_val.size <= 20:
-                            print(f"    newton: {newton_val}")
-                            print(f"    native: {native_val}")
-                        elif native_val.ndim == 1:
-                            diff_idx = np.where(np.abs(native_val - newton_val) > 1e-6)[0]
-                            if len(diff_idx) > 0:
-                                idx = diff_idx[0]
-                                print(f"    first diff at [{idx}]: newton={newton_val[idx]}, native={native_val[idx]}")
-                        mismatch_count += 1
-                except Exception as e:
-                    print(f"  {attr}: comparison error: {e} [SKIP]")
-                    skip_count += 1
-
-            # Handle scalars
-            elif isinstance(native_val, (int, float, np.number)):
-                if native_val == newton_val:
-                    print(f"  {attr}: {native_val} [OK]")
-                    ok_count += 1
-                else:
-                    diff = abs(float(native_val) - float(newton_val)) if newton_val is not None else float("inf")
-                    print(f"  {attr}: newton={newton_val}, native={native_val}, diff={diff:.6e} [MISMATCH]")
-                    mismatch_count += 1
-
-            # Handle other types (strings, etc.)
-            else:
-                if native_val == newton_val:
-                    print(f"  {attr}: {type(native_val).__name__} [OK]")
-                    ok_count += 1
-                else:
-                    print(f"  {attr}: newton={newton_val}, native={native_val} [MISMATCH]")
-                    mismatch_count += 1
-
-        except Exception as e:
-            print(f"  {attr}: error accessing: {e} [SKIP]")
-            skip_count += 1
-
-    print(f"\n=== SUMMARY: {ok_count} OK, {mismatch_count} MISMATCH, {skip_count} SKIP ===\n")
-    return ok_count, mismatch_count, skip_count
+        # Handle warp arrays (have .numpy() method)
+        if hasattr(native_val, "numpy"):
+            assert newton_val is not None and hasattr(newton_val, "numpy"), f"{attr}: type mismatch"
+            native_np: np.ndarray = native_val.numpy()  # type: ignore[union-attr]
+            newton_np: np.ndarray = newton_val.numpy()  # type: ignore[union-attr]
+            assert native_np.shape == newton_np.shape, f"{attr}: shape {newton_np.shape} != {native_np.shape}"
+            if native_np.size > 0:
+                np.testing.assert_allclose(newton_np, native_np, rtol=tol, atol=tol, err_msg=attr)
+        elif isinstance(native_val, np.ndarray):
+            assert isinstance(newton_val, np.ndarray), f"{attr}: type mismatch"
+            assert native_val.shape == newton_val.shape, f"{attr}: shape {newton_val.shape} != {native_val.shape}"
+            if native_val.size > 0:
+                np.testing.assert_allclose(newton_val, native_val, rtol=tol, atol=tol, err_msg=attr)
+        elif isinstance(native_val, (int, float, np.number)):
+            assert newton_val is not None, f"{attr}: newton is None"
+            assert abs(float(newton_val) - float(native_val)) < tol, f"{attr}: {newton_val} != {native_val}"
+        else:
+            assert newton_val == native_val, f"{attr}: {newton_val} != {native_val}"
 
 
 def print_mjdata_diff(
@@ -746,8 +682,8 @@ class TestMenagerieBase(unittest.TestCase):
 
         mj_model, mj_data_native, native_mjw_model, native_mjw_data = self._create_native_mujoco_warp()
 
-        # Compare MjModel structure
-        compare_mj_models(newton_solver.mj_model, mj_model)
+        # Compare mjw_model structures
+        compare_mjw_models(newton_solver.mjw_model, native_mjw_model)
 
         # Get number of actuators from native model (for control generation)
         num_actuators = native_mjw_data.ctrl.shape[1] if native_mjw_data.ctrl.shape[1] > 0 else 0
