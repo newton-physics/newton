@@ -581,13 +581,6 @@ class NumpyDirectRodState(DefKitDirectRodState):
         self.current_rest_lengths = self.rest_lengths.copy()
         self.current_rest_darboux = np.zeros((self.num_edges, 3), dtype=np.float32)
         self._update_cross_section_properties()
-        self.rot_inv_mass_scale = 10.0
-        self.direct_relax = 1.0
-        self.use_lambda_sum = False
-        self.inv_mass_is_mass = False
-        self.enable_shadow_compare = False
-        self.shadow_delta_pos_max = 0.0
-        self.shadow_delta_rot_max = 0.0
         self.last_constraint_max = 0.0
         self.last_delta_lambda_max = 0.0
         self.last_correction_max = 0.0
@@ -861,39 +854,16 @@ class NumpyDirectRodState(DefKitDirectRodState):
         if n_edges == 0:
             return
 
-        if self.enable_shadow_compare and self.lib.ProjectDirectElasticRodConstraints is not None:
-            pos_clone = self.predicted_positions.copy()
-            rot_clone = self.predicted_orientations.copy()
-            self.lib.ProjectDirectElasticRodConstraints(
-                self.rod_ptr,
-                ctypes.c_int(self.num_points),
-                _as_ptr(pos_clone, BtVector3),
-                _as_ptr(rot_clone, BtQuaternion),
-                _as_float_ptr(self.inv_masses),
-                _as_ptr(self.pos_corrections, BtVector3),
-                _as_ptr(self.rot_corrections, BtQuaternion),
-            )
-            self.shadow_delta_pos_max = float(np.max(np.linalg.norm(pos_clone[:, 0:3] - self.predicted_positions[:, 0:3], axis=1)))
-            self.shadow_delta_rot_max = float(
-                np.max(np.linalg.norm(rot_clone[:, 0:3] - self.predicted_orientations[:, 0:3], axis=1))
-            )
-        else:
-            self.shadow_delta_pos_max = 0.0
-            self.shadow_delta_rot_max = 0.0
-
         self._numpy_update_constraints_banded()
         self._numpy_compute_jacobians_direct()
 
         n_dofs = 6 * n_edges
         A = np.zeros((n_dofs, n_dofs), dtype=np.float32)
         rhs = (-self.constraint_values).reshape(n_dofs)
-        if self.use_lambda_sum:
-            rhs -= (self.compliance * self.lambda_sum).reshape(n_dofs)
+        # C++ Non-Banded solver uses lambda sum (XPBD)
+        rhs -= (self.compliance * self.lambda_sum).reshape(n_dofs)
 
-        if self.inv_mass_is_mass:
-            inv_masses = np.where(self.inv_masses > 0.0, np.float32(1.0) / self.inv_masses, np.float32(0.0))
-        else:
-            inv_masses = self.inv_masses
+        inv_masses = self.inv_masses
         
         # C++ Banded Solver Implicit Assumptions:
         # The JMJT assembly (J * JT) implicitly assumes Unit Mass (1.0) and Unit Inertia (1.0)
@@ -914,7 +884,7 @@ class NumpyDirectRodState(DefKitDirectRodState):
         inv_I_lhs = np.ones_like(self.quat_inv_masses)
 
         # Actual inverse inertia for correction step (matches C++ hardcoded 0.1 inertia -> inv=10.0)
-        inv_I_correction = self.quat_inv_masses * np.float32(self.rot_inv_mass_scale)
+        inv_I_correction = self.quat_inv_masses * np.float32(10.0)
 
         for i in range(n_edges):
             J_pos = self.jacobian_pos[i]
@@ -957,12 +927,11 @@ class NumpyDirectRodState(DefKitDirectRodState):
             delta_lambda = np.linalg.lstsq(A, rhs, rcond=None)[0]
 
         self.last_delta_lambda_max = float(np.max(np.abs(delta_lambda))) if delta_lambda.size > 0 else 0.0
-        if self.use_lambda_sum:
-            self.lambda_sum += delta_lambda.reshape(n_edges, 6)
+        self.lambda_sum += delta_lambda.reshape(n_edges, 6)
 
         corr_max = 0.0
         for i in range(n_edges):
-            dl = self.direct_relax * delta_lambda[6 * i : 6 * i + 6]
+            dl = delta_lambda[6 * i : 6 * i + 6]
             J_pos = self.jacobian_pos[i]
             J_rot = self.jacobian_rot[i]
             J_p0 = J_pos[:, 0:3]
@@ -1180,12 +1149,12 @@ class NumpyDirectRodState(DefKitDirectRodState):
             delta_lambda = np.linalg.solve(A_dense, self.rhs[:n_dofs])
 
         inv_masses = self.inv_masses
-        inv_I = self.quat_inv_masses * np.float32(self.rot_inv_mass_scale)
+        # inv_I removed (unused)
 
         self.last_delta_lambda_max = float(np.max(np.abs(delta_lambda))) if delta_lambda.size > 0 else 0.0
         corr_max = 0.0
         for i in range(n_edges):
-            dl = self.direct_relax * delta_lambda[6 * i : 6 * i + 6]
+            dl = delta_lambda[6 * i : 6 * i + 6]
             J_pos = self.jacobian_pos[i]
             J_rot = self.jacobian_rot[i]
             J_p0 = J_pos[:, 0:3]
@@ -1771,21 +1740,9 @@ class Example:
 
         ui.separator()
         ui.text("NumPy Direct Stabilization")
-        _changed, self.numpy_rod.rot_inv_mass_scale = ui.slider_float(
-            "Rot Inv Mass Scale", self.numpy_rod.rot_inv_mass_scale, 0.01, 10.0
-        )
-        _changed, self.numpy_rod.direct_relax = ui.slider_float("Direct Relax", self.numpy_rod.direct_relax, 0.1, 1.0)
-        _changed, self.numpy_rod.use_lambda_sum = ui.checkbox("Use Lambda Sum", self.numpy_rod.use_lambda_sum)
-        _changed, self.numpy_rod.inv_mass_is_mass = ui.checkbox("InvMass Is Mass", self.numpy_rod.inv_mass_is_mass)
-        _changed, self.numpy_rod.enable_shadow_compare = ui.checkbox(
-            "Shadow Compare (DLL)", self.numpy_rod.enable_shadow_compare
-        )
         ui.text(f"NumPy max |C|: {self.numpy_rod.last_constraint_max:.3e}")
         ui.text(f"NumPy max |Δλ|: {self.numpy_rod.last_delta_lambda_max:.3e}")
         ui.text(f"NumPy max correction: {self.numpy_rod.last_correction_max:.3e}")
-        if self.numpy_rod.enable_shadow_compare:
-            ui.text(f"Shadow max Δp: {self.numpy_rod.shadow_delta_pos_max:.3e}")
-            ui.text(f"Shadow max Δq: {self.numpy_rod.shadow_delta_rot_max:.3e}")
 
         ui.separator()
         _changed, self.show_segments = ui.checkbox("Show Rod Segments", self.show_segments)

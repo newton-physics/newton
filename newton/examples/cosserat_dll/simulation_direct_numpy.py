@@ -513,34 +513,28 @@ class DirectCosseratRodSimulationNumPy:
         ], dtype=np.float32)
 
     def _assemble_numpy(self):
-        """NumPy implementation of JMJT assembly.
+        """NumPy implementation of JMJT assembly for banded solver.
 
-        Assembles the system matrix A = J * M^{-1} * J^T + α
-        where:
-        - J is the constraint Jacobian
-        - M^{-1} is the inverse mass matrix
-        - α is the compliance (regularization)
+        Following the C++ banded solver approach:
+        - Uses full 6x6 Jacobians (J_fwd, J_bwd)
+        - JMJT = J_fwd * J_fwd^T + J_bwd * J_bwd^T (unit mass/inertia)
+        - Compliance added to diagonal
+        - Off-diagonal coupling for adjacent constraints
 
-        For a rod with n_edges constraints and 6 DOFs per constraint,
-        the system has size 6*n_edges x 6*n_edges.
-
-        The matrix has banded structure due to local connectivity:
-        - Each constraint only affects adjacent particles
-        - Bandwidth = 12 (6 DOFs overlap with previous + 6 with next)
-
-        We store in banded format for scipy.linalg.solve_banded.
+        The matrix has block tri-diagonal structure:
+        - Diagonal blocks: 6x6 (constraint with itself)
+        - Super/sub-diagonal blocks: 6x6 (coupling between adjacent constraints)
+        - Total bandwidth = 11 (block_size + block_size - 1 = 6 + 6 - 1)
         """
         s = self.state
         n_edges = s.n_edges
-        n_dofs = 6 * n_edges  # Total constraint DOFs
+        n_dofs = 6 * n_edges
 
-        # Bandwidth: each constraint block (6x6) overlaps with neighbors
-        # Upper bandwidth = lower bandwidth = 6 (one constraint block)
-        self.bandwidth = 6
+        # Bandwidth: block tridiagonal with 6x6 blocks requires bandwidth = 11
+        # (diagonal spans -5 to +5, super-diagonal spans +1 to +11)
+        self.bandwidth = 11
 
         # Allocate banded matrix storage
-        # Format for solve_banded: (l+u+1, n) where l=u=bandwidth
-        # Row i contains diagonal offset i-bandwidth
         if not hasattr(self, 'A_banded') or self.A_banded.shape[1] != n_dofs:
             self.A_banded = np.zeros((2 * self.bandwidth + 1, n_dofs), dtype=np.float32)
             self.rhs = np.zeros(n_dofs, dtype=np.float32)
@@ -548,64 +542,60 @@ class DirectCosseratRodSimulationNumPy:
         self.A_banded.fill(0.0)
 
         for i in range(n_edges):
-            # Get inverse masses
-            inv_m0 = s.inv_masses[i]
-            inv_m1 = s.inv_masses[i + 1]
-            inv_I0 = s.quat_inv_masses[i]  # Rotational inverse mass
-            inv_I1 = s.quat_inv_masses[i + 1]
+            # Get full 6x6 Jacobians (computed by _jacobians_numpy)
+            J_fwd = self.J_fwd[i]
+            J_bwd = self.J_bwd[i]
 
-            # Get Jacobians for this constraint
-            J_pos = self.jacobian_pos[i]  # (6, 6) - [J_p0 | J_p1]
-            J_rot = self.jacobian_rot[i]  # (6, 6) - [J_θ0 | J_θ1]
-
-            # Build local JMJT block
-            # JMJT = J_p0 * inv_m0 * J_p0^T + J_p1 * inv_m1 * J_p1^T
-            #      + J_θ0 * inv_I0 * J_θ0^T + J_θ1 * inv_I1 * J_θ1^T
-            J_p0 = J_pos[:, 0:3]
-            J_p1 = J_pos[:, 3:6]
-            J_t0 = J_rot[:, 0:3]
-            J_t1 = J_rot[:, 3:6]
-
-            JMJT = (inv_m0 * J_p0 @ J_p0.T +
-                    inv_m1 * J_p1 @ J_p1.T +
-                    inv_I0 * J_t0 @ J_t0.T +
-                    inv_I1 * J_t1 @ J_t1.T)
+            # Diagonal block: JMJT = J_fwd * J_fwd^T + J_bwd * J_bwd^T
+            # This uses implicit unit mass/inertia (same as C++ banded solver)
+            JMJT_block = J_fwd @ J_fwd.T + J_bwd @ J_bwd.T
 
             # Add compliance to diagonal
             for k in range(6):
-                JMJT[k, k] += self.compliance[i, k]
+                JMJT_block[k, k] += self.compliance[i, k]
 
-            # Store in banded format
-            # The block for constraint i starts at row/col 6*i
+            # Store diagonal block in banded format
+            # scipy banded format: ab[u + i - j, j] = a[i, j] where u = upper bandwidth
             block_start = 6 * i
-
             for row in range(6):
                 for col in range(6):
                     global_row = block_start + row
                     global_col = block_start + col
-
-                    # Banded storage: A_banded[bandwidth + row - col, col] = A[row, col]
                     band_row = self.bandwidth + global_row - global_col
-                    if 0 <= band_row < 2 * self.bandwidth + 1:
-                        self.A_banded[band_row, global_col] += JMJT[row, col]
+                    self.A_banded[band_row, global_col] = JMJT_block[row, col]
 
-            # Add coupling with previous constraint (if exists)
-            if i > 0:
-                # The coupling comes from shared particles between constraints
-                # Constraint i-1 affects particle i, constraint i also affects particle i
-                # This creates off-diagonal blocks
-                # For simplicity, we approximate this coupling
-                pass  # TODO: Add off-diagonal coupling for better accuracy
+            # Off-diagonal coupling: constraint i shares segment i+1 with constraint i+1
+            if i < n_edges - 1:
+                J_fwd_next = self.J_fwd[i + 1]
+                # Super-diagonal: A[i, i+1] = J_bwd[i] @ J_fwd[i+1]^T
+                coupling = J_bwd @ J_fwd_next.T
+
+                # Store super-diagonal block (rows i*6:(i+1)*6, cols (i+1)*6:(i+2)*6)
+                for row in range(6):
+                    for col in range(6):
+                        global_row = block_start + row
+                        global_col = block_start + 6 + col
+                        band_row = self.bandwidth + global_row - global_col
+                        self.A_banded[band_row, global_col] = coupling[row, col]
+
+                # Store sub-diagonal block (transpose of super-diagonal for symmetric matrix)
+                # Sub-diagonal: A[i+1, i] = coupling^T
+                for row in range(6):
+                    for col in range(6):
+                        global_row = block_start + 6 + row
+                        global_col = block_start + col
+                        band_row = self.bandwidth + global_row - global_col
+                        self.A_banded[band_row, global_col] = coupling[col, row]
 
     def _solve_numpy(self):
-        """NumPy implementation of constraint solve.
+        """NumPy implementation of constraint solve for banded system.
 
         Solves the system: A * Δλ = -C
         where A = JMJT + α (assembled matrix), C = constraint values
 
-        Then applies corrections:
-        - Δp = M^{-1} * J_pos^T * Δλ
-        - Δθ = I^{-1} * J_rot^T * Δλ (in tangent space)
+        Following C++ banded solver:
+        - Position corrections use actual inv_mass
+        - Rotation corrections use unit inertia (matching assembly)
         """
         s = self.state
         n_edges = s.n_edges
@@ -636,38 +626,39 @@ class DirectCosseratRodSimulationNumPy:
                         A_dense[row, col] = self.A_banded[band_row, col]
             delta_lambda = np.linalg.solve(A_dense, self.rhs)
 
-        # Apply corrections
+        # Apply corrections using full J matrices (matching non-banded approach)
+        inv_masses = s.inv_masses
+
         for i in range(n_edges):
-            # Get delta lambda for this constraint
             dl = delta_lambda[6 * i: 6 * i + 6]
 
-            # Get inverse masses
-            inv_m0 = s.inv_masses[i]
-            inv_m1 = s.inv_masses[i + 1]
-            inv_I0 = s.quat_inv_masses[i]
-            inv_I1 = s.quat_inv_masses[i + 1]
+            J_fwd = self.J_fwd[i]
+            J_bwd = self.J_bwd[i]
 
-            # Get Jacobians
-            J_p0 = self.jacobian_pos[i, :, 0:3]
-            J_p1 = self.jacobian_pos[i, :, 3:6]
-            J_t0 = self.jacobian_rot[i, :, 0:3]
-            J_t1 = self.jacobian_rot[i, :, 3:6]
+            # Correction for segment i (via J_fwd)
+            inv_m0 = inv_masses[i]
+            if inv_m0 > 0.0:
+                correction0 = J_fwd.T @ dl
+                dp0 = inv_m0 * correction0[:3]
+                s.predicted_positions[i, :3] += dp0
 
-            # Position corrections: Δp = inv_m * J^T * Δλ
-            dp0 = inv_m0 * (J_p0.T @ dl)
-            dp1 = inv_m1 * (J_p1.T @ dl)
+            # Rotation correction: unit inertia (matching C++ banded solver)
+            if s.quat_inv_masses[i] > 0.0:
+                correction0 = J_fwd.T @ dl
+                dtheta0 = correction0[3:6]
+                self._apply_quaternion_correction(s.predicted_orientations, i, dtheta0)
 
-            # Orientation corrections (in tangent space): Δθ = inv_I * J^T * Δλ
-            dtheta0 = inv_I0 * (J_t0.T @ dl)
-            dtheta1 = inv_I1 * (J_t1.T @ dl)
+            # Correction for segment i+1 (via J_bwd)
+            inv_m1 = inv_masses[i + 1]
+            if inv_m1 > 0.0:
+                correction1 = J_bwd.T @ dl
+                dp1 = inv_m1 * correction1[:3]
+                s.predicted_positions[i + 1, :3] += dp1
 
-            # Apply position corrections
-            s.predicted_positions[i, :3] += dp0
-            s.predicted_positions[i + 1, :3] += dp1
-
-            # Apply orientation corrections (convert tangent vector to quaternion update)
-            self._apply_quaternion_correction(s.predicted_orientations, i, dtheta0)
-            self._apply_quaternion_correction(s.predicted_orientations, i + 1, dtheta1)
+            if s.quat_inv_masses[i + 1] > 0.0:
+                correction1 = J_bwd.T @ dl
+                dtheta1 = correction1[3:6]
+                self._apply_quaternion_correction(s.predicted_orientations, i + 1, dtheta1)
 
     def _apply_quaternion_correction(self, orientations: np.ndarray, idx: int, dtheta: np.ndarray):
         """Apply a rotation correction to a quaternion using the G matrix.
