@@ -270,8 +270,21 @@ def parse_usd(
         mat = wp.transform_compose(xform.p, xform.q, wp.vec3(1.0))
         return np.array(mat, dtype=np.float32).reshape(4, 4).T
 
-    def _load_visual_shapes_impl(parent_body_id: int, prim: Usd.Prim, body_prim: Usd.Prim | None = None):
-        """Load visual-only shapes (no collision shapes, no rigid body or mass API schemas applied) for a given prim and its children."""
+    def _load_visual_shapes_impl(
+        parent_body_id: int,
+        prim: Usd.Prim,
+        body_xform: wp.transform | None = None,
+    ):
+        """Load visual-only shapes (non-physics) for a prim subtree.
+
+        Args:
+            parent_body_id: ModelBuilder body id to attach shapes to. Use -1 for
+                static shapes that are not bound to any rigid body.
+            prim: USD prim to inspect for visual geometry and recurse into.
+            body_xform: Rigid body transform actually used by the builder.
+                This matches any physics-authored pose, scene-level transforms,
+                and incoming transforms that were applied when the body was created.
+        """
         if _is_enabled_collider(prim):
             return
         path_name = str(prim.GetPath())
@@ -279,12 +292,13 @@ def parse_usd(
             return
 
         prim_world_mat = usd.get_xform_matrix(prim, local=False)
-        if parent_body_id == -1 and incoming_world_xform is not None:
-            # This visual shape is a static shape, so we need to apply the incoming world transform to it
+        if incoming_world_xform is not None and (parent_body_id == -1 or body_xform is not None):
+            # Apply the incoming world transform in model space (static shapes or when using body_xform).
             incoming_mat = _xform_to_row_mat(incoming_world_xform)
             prim_world_mat = prim_world_mat @ incoming_mat
-        if body_prim is not None:
-            body_world_mat = usd.get_xform_matrix(body_prim, local=False)
+        if body_xform is not None:
+            # Use the body transform used by the builder to avoid USD/physics pose mismatches.
+            body_world_mat = _xform_to_row_mat(body_xform)
             rel_mat = prim_world_mat @ np.linalg.inv(body_world_mat)
         else:
             rel_mat = prim_world_mat
@@ -298,7 +312,7 @@ def parse_usd(
                 # remap prototype child path to this instance's path (instance proxy)
                 inst_path = child.GetPath().ReplacePrefix(proto.GetPath(), prim.GetPath())
                 inst_child = stage.GetPrimAtPath(inst_path)
-                _load_visual_shapes_impl(parent_body_id, inst_child, body_prim)
+                _load_visual_shapes_impl(parent_body_id, inst_child, body_xform)
             return
         type_name = str(prim.GetTypeName()).lower()
         if type_name.endswith("joint"):
@@ -432,7 +446,7 @@ def parse_usd(
                     print(f"Added visual shape {path_name} ({type_name}) with id {shape_id}.")
 
         for child in prim.GetChildren():
-            _load_visual_shapes_impl(parent_body_id, child, body_prim)
+            _load_visual_shapes_impl(parent_body_id, child, body_xform)
 
     def add_body(prim: Usd.Prim, xform: wp.transform, key: str, armature: float) -> int:
         """Add a rigid body to the builder and optionally load its visual shapes and sites among the body prim's children. Returns the resulting body index."""
@@ -448,7 +462,7 @@ def parse_usd(
         path_body_map[key] = b
         if load_sites or load_visual_shapes:
             for child in prim.GetChildren():
-                _load_visual_shapes_impl(b, child, prim)
+                _load_visual_shapes_impl(b, child, body_xform=xform)
         return b
 
     def parse_body(
