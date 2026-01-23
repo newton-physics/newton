@@ -1147,9 +1147,6 @@ def forward_step_rigid_bodies(
         body_inertia_q[tid] = q_current
         return
 
-    # Store previous transform for velocity computation (dynamic bodies only)
-    body_q_prev[tid] = q_current
-
     # Read body state (only for dynamic bodies)
     qd_current = body_qd[tid]
     f_current = body_f[tid]

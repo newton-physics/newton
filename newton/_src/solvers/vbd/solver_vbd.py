@@ -454,9 +454,9 @@ class SolverVBD(SolverBase):
         # -------------------------------------------------------------
         if not self.integrate_with_external_rigid_solver and model.body_count > 0:
             # State storage
-            self.body_q_prev = wp.zeros_like(
-                model.body_q, device=self.device
-            )  # per-substep previous body pose (for velocity)
+            # Initialize to the current poses for the first step to avoid spurious finite-difference
+            # velocities/friction impulses.
+            self.body_q_prev = wp.clone(model.body_q).to(self.device)
             self.body_inertia_q = wp.zeros_like(model.body_q, device=self.device)  # inertial target poses for AVBD
 
             # Adjacency and dimensions
