@@ -54,6 +54,11 @@ class Example:
         self.state.bend_twist_ks_mult = 1.0
         self.state.bend_twist_ks[:, :3] = 1.0  # Uniform bending stiffness
 
+        # Rest bend and twist parameters (in radians per segment)
+        self.rest_bend_x = 0.0  # Bending around local X axis
+        self.rest_bend_y = 0.0  # Bending around local Y axis
+        self.rest_twist = 0.0   # Twist around local Z axis
+
         # Create simulation
         self.sim = CosseratRodSimulation(self.state, dll_path)
         self.sim.constraint_iterations = 8
@@ -74,9 +79,14 @@ class Example:
 
         self.viewer.set_model(self.model)
 
+        # Enable particle rendering
+        if hasattr(self.viewer, "show_particles"):
+            self.viewer.show_particles = True
+
         # Store initial state for reset
         self._initial_positions = self.state.positions.copy()
         self._initial_orientations = self.state.orientations.copy()
+        self._initial_rest_darboux = self.state.rest_darboux.copy()
 
         # Keyboard state
         self._g_key_was_down = False
@@ -88,6 +98,42 @@ class Example:
         positions_3d = self.state.get_positions_3d().astype(np.float32)
         positions_wp = wp.array(positions_3d, dtype=wp.vec3, device=self.model.device)
         self.newton_state.particle_q.assign(positions_wp)
+
+    def _update_rest_darboux(self):
+        """Update rest Darboux vector from bend/twist angles.
+
+        The rest Darboux vector is represented as a quaternion encoding the
+        intrinsic curvature between adjacent material frames. For small angles:
+        - bend_x: curvature around local X axis (kappa1)
+        - bend_y: curvature around local Y axis (kappa2)
+        - twist: torsion around local Z axis (tau)
+
+        The quaternion is constructed from the Darboux vector omega = (kappa1, kappa2, tau).
+        """
+        # Darboux vector components (curvature per unit length)
+        kappa1 = self.rest_bend_x
+        kappa2 = self.rest_bend_y
+        tau = self.rest_twist
+
+        # Convert to quaternion: q = exp(omega/2) for small angles
+        # For the Cosserat rod formulation, rest Darboux is stored as quaternion
+        # where (x,y,z) = omega/2 and w = sqrt(1 - |omega/2|^2)
+        half_omega = np.array([kappa1, kappa2, tau], dtype=np.float32) * 0.5
+        half_omega_norm_sq = np.dot(half_omega, half_omega)
+
+        if half_omega_norm_sq < 1.0:
+            w = np.sqrt(1.0 - half_omega_norm_sq)
+        else:
+            # Normalize if too large
+            half_omega = half_omega / np.sqrt(half_omega_norm_sq)
+            w = 0.0
+
+        # Set rest Darboux for all edges
+        for i in range(self.state.n_edges):
+            self.state.rest_darboux[i, 0] = half_omega[0]
+            self.state.rest_darboux[i, 1] = half_omega[1]
+            self.state.rest_darboux[i, 2] = half_omega[2]
+            self.state.rest_darboux[i, 3] = w
 
     def _handle_keyboard(self):
         """Handle keyboard input for interactive controls."""
@@ -124,9 +170,13 @@ class Example:
         np.copyto(self.state.orientations, self._initial_orientations)
         np.copyto(self.state.predicted_orientations, self._initial_orientations)
         np.copyto(self.state.prev_orientations, self._initial_orientations)
+        np.copyto(self.state.rest_darboux, self._initial_rest_darboux)
         self.state.velocities.fill(0)
         self.state.angular_velocities.fill(0)
         self.state.clear_forces()
+        self.rest_bend_x = 0.0
+        self.rest_bend_y = 0.0
+        self.rest_twist = 0.0
         self.sim_time = 0.0
         self._sync_state()
 
@@ -152,6 +202,20 @@ class Example:
         colors = wp.array([[0.2, 0.6, 1.0]] * (self.n_particles - 1), dtype=wp.vec3, device=self.model.device)
         self.viewer.log_lines("/rod", starts, ends, colors)
 
+        # Draw particles as spheres
+        if hasattr(self.viewer, "log_spheres"):
+            positions_wp = wp.array(positions_3d, dtype=wp.vec3, device=self.model.device)
+            radii = wp.array([self.particle_radius] * self.n_particles, dtype=float, device=self.model.device)
+            # Color: fixed particle (red) vs dynamic (cyan)
+            particle_colors = []
+            for i in range(self.n_particles):
+                if self.state.inv_masses[i] == 0:
+                    particle_colors.append([0.8, 0.2, 0.2])  # Red for fixed
+                else:
+                    particle_colors.append([0.2, 0.8, 0.8])  # Cyan for dynamic
+            colors_wp = wp.array(particle_colors, dtype=wp.vec3, device=self.model.device)
+            self.viewer.log_spheres("/particles", positions_wp, radii, colors_wp)
+
         self.viewer.end_frame()
 
     def gui(self, ui):
@@ -167,6 +231,16 @@ class Example:
         ui.text("Stiffness:")
         _, self.state.stretch_ks = ui.slider_float("Stretch Ks", self.state.stretch_ks, 0.0, 2.0)
         _, self.state.bend_twist_ks_mult = ui.slider_float("Bend/Twist Ks", self.state.bend_twist_ks_mult, 0.0, 2.0)
+
+        ui.separator()
+        ui.text("Rest Shape (intrinsic curvature):")
+        changed_bend_x, self.rest_bend_x = ui.slider_float("Rest Bend X", self.rest_bend_x, -1.0, 1.0)
+        changed_bend_y, self.rest_bend_y = ui.slider_float("Rest Bend Y", self.rest_bend_y, -1.0, 1.0)
+        changed_twist, self.rest_twist = ui.slider_float("Rest Twist", self.rest_twist, -1.0, 1.0)
+
+        # Update rest Darboux if any slider changed
+        if changed_bend_x or changed_bend_y or changed_twist:
+            self._update_rest_darboux()
 
         ui.separator()
         ui.text("Damping:")

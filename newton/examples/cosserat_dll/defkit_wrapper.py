@@ -130,6 +130,97 @@ class DefKitWrapper:
         ]
         self.defkit_adv.ProjectElasticRodConstraints.restype = None
 
+        # ===== Direct Solver Functions =====
+
+        # InitDirectElasticRod
+        # DirectPositionBasedSolverForStiffRodsConstraint* InitDirectElasticRod(
+        #     int pointsCount, btVector3* positions, btQuaternion* orientations,
+        #     float radius, float* restLengths, float youngModulus, float torsionModulus)
+        self.defkit_adv.InitDirectElasticRod.argtypes = [
+            ctypes.c_int,  # pointsCount
+            ctypes.POINTER(ctypes.c_float),  # positions (btVector3*)
+            ctypes.POINTER(ctypes.c_float),  # orientations (btQuaternion*)
+            ctypes.c_float,  # radius
+            ctypes.POINTER(ctypes.c_float),  # restLengths
+            ctypes.c_float,  # youngModulus
+            ctypes.c_float,  # torsionModulus
+        ]
+        self.defkit_adv.InitDirectElasticRod.restype = ctypes.c_void_p
+
+        # PrepareDirectElasticRodConstraints
+        # void PrepareDirectElasticRodConstraints(void* rod, int pointsCount, float dt,
+        #     btVector3* bendStiffness, btVector3* restDarboux, float* restLengths,
+        #     float youngModulusMult, float torsionModulusMult)
+        self.defkit_adv.PrepareDirectElasticRodConstraints.argtypes = [
+            ctypes.c_void_p,  # rod
+            ctypes.c_int,  # pointsCount (number of constraints = n_particles - 1)
+            ctypes.c_float,  # dt
+            ctypes.POINTER(ctypes.c_float),  # bendStiffness (btVector3*)
+            ctypes.POINTER(ctypes.c_float),  # restDarboux (btVector3*)
+            ctypes.POINTER(ctypes.c_float),  # restLengths
+            ctypes.c_float,  # youngModulusMult
+            ctypes.c_float,  # torsionModulusMult
+        ]
+        self.defkit_adv.PrepareDirectElasticRodConstraints.restype = None
+
+        # UpdateConstraints_DirectElasticRodConstraintsBanded
+        # void UpdateConstraints_DirectElasticRodConstraintsBanded(void* rod, int pointsCount,
+        #     btVector3* positions, btQuaternion* orientations, float* invMasses)
+        self.defkit_adv.UpdateConstraints_DirectElasticRodConstraintsBanded.argtypes = [
+            ctypes.c_void_p,  # rod
+            ctypes.c_int,  # pointsCount
+            ctypes.POINTER(ctypes.c_float),  # positions (btVector3*)
+            ctypes.POINTER(ctypes.c_float),  # orientations (btQuaternion*)
+            ctypes.POINTER(ctypes.c_float),  # invMasses
+        ]
+        self.defkit_adv.UpdateConstraints_DirectElasticRodConstraintsBanded.restype = None
+
+        # ComputeJacobians_DirectElasticRodConstraintsBanded
+        # void ComputeJacobians_DirectElasticRodConstraintsBanded(void* rod, int startId, int count,
+        #     btVector3* positions, btQuaternion* orientations, float* invMasses)
+        self.defkit_adv.ComputeJacobians_DirectElasticRodConstraintsBanded.argtypes = [
+            ctypes.c_void_p,  # rod
+            ctypes.c_int,  # startId
+            ctypes.c_int,  # count
+            ctypes.POINTER(ctypes.c_float),  # positions
+            ctypes.POINTER(ctypes.c_float),  # orientations
+            ctypes.POINTER(ctypes.c_float),  # invMasses
+        ]
+        self.defkit_adv.ComputeJacobians_DirectElasticRodConstraintsBanded.restype = None
+
+        # AssembleJMJT_DirectElasticRodConstraintsBanded
+        # void AssembleJMJT_DirectElasticRodConstraintsBanded(void* rod, int startId, int count,
+        #     btVector3* positions, btQuaternion* orientations, float* invMasses)
+        self.defkit_adv.AssembleJMJT_DirectElasticRodConstraintsBanded.argtypes = [
+            ctypes.c_void_p,  # rod
+            ctypes.c_int,  # startId
+            ctypes.c_int,  # count
+            ctypes.POINTER(ctypes.c_float),  # positions
+            ctypes.POINTER(ctypes.c_float),  # orientations
+            ctypes.POINTER(ctypes.c_float),  # invMasses
+        ]
+        self.defkit_adv.AssembleJMJT_DirectElasticRodConstraintsBanded.restype = None
+
+        # ProjectJMJT_DirectElasticRodConstraintsBanded
+        # void ProjectJMJT_DirectElasticRodConstraintsBanded(void* rod, int pointsCount,
+        #     btVector3* positions, btQuaternion* orientations, float* invMasses,
+        #     btVector3* posCorr, btQuaternion* rotCorr)
+        self.defkit_adv.ProjectJMJT_DirectElasticRodConstraintsBanded.argtypes = [
+            ctypes.c_void_p,  # rod
+            ctypes.c_int,  # pointsCount
+            ctypes.POINTER(ctypes.c_float),  # positions
+            ctypes.POINTER(ctypes.c_float),  # orientations
+            ctypes.POINTER(ctypes.c_float),  # invMasses
+            ctypes.POINTER(ctypes.c_float),  # posCorr (output)
+            ctypes.POINTER(ctypes.c_float),  # rotCorr (output)
+        ]
+        self.defkit_adv.ProjectJMJT_DirectElasticRodConstraintsBanded.restype = None
+
+        # DestroyDirectElasticRod
+        # void DestroyDirectElasticRod(void* rod)
+        self.defkit_adv.DestroyDirectElasticRod.argtypes = [ctypes.c_void_p]
+        self.defkit_adv.DestroyDirectElasticRod.restype = None
+
     def predict_positions(self, dt, damping, positions, predicted_positions, velocities, forces, inv_masses, gravity):
         """Predict particle positions using semi-implicit Euler integration.
 
@@ -263,3 +354,176 @@ class DefKitWrapper:
             ctypes.c_float(stretch_ks),
             ctypes.c_float(bend_twist_ks_mult),
         )
+
+    # ===== Direct Solver Methods =====
+
+    def init_direct_elastic_rod(
+        self,
+        positions,
+        orientations,
+        radius,
+        rest_lengths,
+        young_modulus,
+        torsion_modulus,
+    ):
+        """Initialize the direct elastic rod solver.
+
+        This creates internal data structures for the direct (global) solver
+        including the banded matrix system.
+
+        Args:
+            positions: Initial positions, shape (n, 4), float32
+            orientations: Initial orientations (x,y,z,w), shape (n, 4), float32
+            radius: Rod cross-section radius
+            rest_lengths: Rest lengths per edge, shape (n-1,), float32
+            young_modulus: Young's modulus (bending stiffness)
+            torsion_modulus: Torsion modulus (twist stiffness)
+
+        Returns:
+            Opaque pointer to the rod constraint object (store this for later calls)
+        """
+        n = len(positions)
+        rod_ptr = self.defkit_adv.InitDirectElasticRod(
+            ctypes.c_int(n),
+            positions.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
+            orientations.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
+            ctypes.c_float(radius),
+            rest_lengths.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
+            ctypes.c_float(young_modulus),
+            ctypes.c_float(torsion_modulus),
+        )
+        return rod_ptr
+
+    def prepare_direct_elastic_rod_constraints(
+        self,
+        rod_ptr,
+        n_constraints,
+        dt,
+        bend_stiffness,
+        rest_darboux,
+        rest_lengths,
+        young_modulus_mult,
+        torsion_modulus_mult,
+    ):
+        """Prepare direct solver for a new timestep.
+
+        Resets lambda accumulators and updates stiffness/rest shape parameters.
+
+        Args:
+            rod_ptr: Pointer from init_direct_elastic_rod
+            n_constraints: Number of constraints (n_particles - 1)
+            dt: Time step size
+            bend_stiffness: Bending stiffness per constraint, shape (n_constraints, 4), float32
+                           (x=kappa1_stiffness, y=kappa2_stiffness, z=tau_stiffness)
+            rest_darboux: Rest Darboux vector per constraint, shape (n_constraints, 4), float32
+                         (x=kappa1, y=kappa2, z=tau) - NOTE: Vector3, not quaternion!
+            rest_lengths: Rest lengths per constraint, shape (n_constraints,), float32
+            young_modulus_mult: Multiplier for Young's modulus
+            torsion_modulus_mult: Multiplier for torsion modulus
+        """
+        self.defkit_adv.PrepareDirectElasticRodConstraints(
+            ctypes.c_void_p(rod_ptr),
+            ctypes.c_int(n_constraints),
+            ctypes.c_float(dt),
+            bend_stiffness.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
+            rest_darboux.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
+            rest_lengths.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
+            ctypes.c_float(young_modulus_mult),
+            ctypes.c_float(torsion_modulus_mult),
+        )
+
+    def update_direct_constraints(self, rod_ptr, positions, orientations, inv_masses):
+        """Update constraint state with current positions and orientations.
+
+        Args:
+            rod_ptr: Pointer from init_direct_elastic_rod
+            positions: Current (predicted) positions, shape (n, 4), float32
+            orientations: Current (predicted) orientations, shape (n, 4), float32
+            inv_masses: Inverse masses, shape (n,), float32
+        """
+        n = len(positions)
+        self.defkit_adv.UpdateConstraints_DirectElasticRodConstraintsBanded(
+            ctypes.c_void_p(rod_ptr),
+            ctypes.c_int(n),
+            positions.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
+            orientations.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
+            inv_masses.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
+        )
+
+    def compute_jacobians_direct(self, rod_ptr, start_id, count, positions, orientations, inv_masses):
+        """Compute Jacobian matrices for a range of constraints.
+
+        Args:
+            rod_ptr: Pointer from init_direct_elastic_rod
+            start_id: Starting constraint index
+            count: Number of constraints to process
+            positions: Current positions, shape (n, 4), float32
+            orientations: Current orientations, shape (n, 4), float32
+            inv_masses: Inverse masses, shape (n,), float32
+        """
+        self.defkit_adv.ComputeJacobians_DirectElasticRodConstraintsBanded(
+            ctypes.c_void_p(rod_ptr),
+            ctypes.c_int(start_id),
+            ctypes.c_int(count),
+            positions.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
+            orientations.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
+            inv_masses.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
+        )
+
+    def assemble_jmjt_direct(self, rod_ptr, start_id, count, positions, orientations, inv_masses):
+        """Assemble the JMJT banded matrix for a range of constraints.
+
+        Args:
+            rod_ptr: Pointer from init_direct_elastic_rod
+            start_id: Starting constraint index
+            count: Number of constraints to process
+            positions: Current positions, shape (n, 4), float32
+            orientations: Current orientations, shape (n, 4), float32
+            inv_masses: Inverse masses, shape (n,), float32
+        """
+        self.defkit_adv.AssembleJMJT_DirectElasticRodConstraintsBanded(
+            ctypes.c_void_p(rod_ptr),
+            ctypes.c_int(start_id),
+            ctypes.c_int(count),
+            positions.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
+            orientations.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
+            inv_masses.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
+        )
+
+    def solve_direct_constraints(self, rod_ptr, positions, orientations, inv_masses):
+        """Solve the constraint system and apply corrections.
+
+        This solves the banded matrix system and directly updates positions
+        and orientations in-place.
+
+        Args:
+            rod_ptr: Pointer from init_direct_elastic_rod
+            positions: Positions to update in-place, shape (n, 4), float32
+            orientations: Orientations to update in-place, shape (n, 4), float32
+            inv_masses: Inverse masses, shape (n,), float32
+        """
+        import numpy as np
+
+        n = len(positions)
+        # Allocate output arrays for corrections (not used but required by API)
+        pos_corr = np.zeros((n, 4), dtype=np.float32)
+        rot_corr = np.zeros((n, 4), dtype=np.float32)
+
+        self.defkit_adv.ProjectJMJT_DirectElasticRodConstraintsBanded(
+            ctypes.c_void_p(rod_ptr),
+            ctypes.c_int(n),
+            positions.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
+            orientations.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
+            inv_masses.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
+            pos_corr.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
+            rot_corr.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
+        )
+
+    def destroy_direct_elastic_rod(self, rod_ptr):
+        """Destroy the direct elastic rod solver and free memory.
+
+        Args:
+            rod_ptr: Pointer from init_direct_elastic_rod
+        """
+        if rod_ptr is not None:
+            self.defkit_adv.DestroyDirectElasticRod(ctypes.c_void_p(rod_ptr))

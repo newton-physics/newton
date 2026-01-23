@@ -6,5 +6,6 @@
 from .defkit_wrapper import DefKitWrapper
 from .rod_state import RodState
 from .simulation import CosseratRodSimulation
+from .simulation_direct import DirectCosseratRodSimulation
 
-__all__ = ["DefKitWrapper", "RodState", "CosseratRodSimulation"]
+__all__ = ["DefKitWrapper", "RodState", "CosseratRodSimulation", "DirectCosseratRodSimulation"]
