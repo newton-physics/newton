@@ -36,6 +36,10 @@ import warp as wp
 import newton
 import newton.examples
 
+# Warp tile configuration for direct solve
+BLOCK_DIM = 128
+TILE = 64
+
 
 class BtVector3(ctypes.Structure):
     _fields_ = [
@@ -395,7 +399,7 @@ def _warp_assemble_jmjt_dense(
     jacobian_rot: wp.array(dtype=wp.float32),
     compliance: wp.array(dtype=wp.float32),
     n_dofs: int,
-    A: wp.array(dtype=wp.float32),
+    A: wp.array2d(dtype=wp.float32),
 ):
     i = wp.tid()
     block_start = 6 * i
@@ -420,7 +424,10 @@ def _warp_assemble_jmjt_dense(
                 )
             if row == col:
                 val += compliance[i * 6 + row]
-            A[(block_start + row) * n_dofs + (block_start + col)] = val
+            row_idx = block_start + row
+            col_idx = block_start + col
+            if row_idx < n_dofs and col_idx < n_dofs:
+                A[row_idx, col_idx] = val
 
     if i > 0:
         prev = i - 1
@@ -435,8 +442,450 @@ def _warp_assemble_jmjt_dense(
                     j_t0_cur = jacobian_rot[_warp_jacobian_index(i, col, k)]
                     val += j_p1_prev * j_p0_cur + j_t1_prev * j_t0_cur
 
-                A[(prev_block + row) * n_dofs + (block_start + col)] = val
-                A[(block_start + col) * n_dofs + (prev_block + row)] = val
+                row_idx = prev_block + row
+                col_idx = block_start + col
+                if row_idx < n_dofs and col_idx < n_dofs:
+                    A[row_idx, col_idx] = val
+                row_idx = block_start + col
+                col_idx = prev_block + row
+                if row_idx < n_dofs and col_idx < n_dofs:
+                    A[row_idx, col_idx] = val
+
+
+@wp.kernel
+def _warp_build_rhs(
+    constraint_values: wp.array(dtype=wp.float32),
+    compliance: wp.array(dtype=wp.float32),
+    lambda_sum: wp.array(dtype=wp.float32),
+    n_dofs: int,
+    rhs: wp.array(dtype=wp.float32),
+):
+    i = wp.tid()
+    if i < n_dofs:
+        rhs[i] = -constraint_values[i] - compliance[i] * lambda_sum[i]
+    else:
+        rhs[i] = 0.0
+
+
+@wp.kernel
+def _warp_pad_diagonal(
+    A: wp.array2d(dtype=wp.float32),
+    n_dofs: int,
+    tile: int,
+):
+    i = wp.tid()
+    if i >= n_dofs and i < tile:
+        A[i, i] = 1.0
+
+
+@wp.kernel
+def _warp_cholesky_solve_tile(
+    A: wp.array2d(dtype=wp.float32),
+    b: wp.array(dtype=wp.float32),
+    x: wp.array(dtype=wp.float32),
+):
+    a_tile = wp.tile_load(A, shape=(TILE, TILE))
+    b_tile = wp.tile_load(b, shape=TILE)
+    L = wp.tile_cholesky(a_tile)
+    x_tile = wp.tile_cholesky_solve(L, b_tile)
+    wp.tile_store(x, x_tile)
+
+
+@wp.func
+def _mat33_add(a: wp.mat33, b: wp.mat33) -> wp.mat33:
+    return wp.mat33(
+        a[0, 0] + b[0, 0], a[0, 1] + b[0, 1], a[0, 2] + b[0, 2],
+        a[1, 0] + b[1, 0], a[1, 1] + b[1, 1], a[1, 2] + b[1, 2],
+        a[2, 0] + b[2, 0], a[2, 1] + b[2, 1], a[2, 2] + b[2, 2],
+    )
+
+
+@wp.func
+def _mat33_sub(a: wp.mat33, b: wp.mat33) -> wp.mat33:
+    return wp.mat33(
+        a[0, 0] - b[0, 0], a[0, 1] - b[0, 1], a[0, 2] - b[0, 2],
+        a[1, 0] - b[1, 0], a[1, 1] - b[1, 1], a[1, 2] - b[1, 2],
+        a[2, 0] - b[2, 0], a[2, 1] - b[2, 1], a[2, 2] - b[2, 2],
+    )
+
+
+@wp.func
+def _mat33_mul(a: wp.mat33, b: wp.mat33) -> wp.mat33:
+    return wp.mat33(
+        a[0, 0] * b[0, 0] + a[0, 1] * b[1, 0] + a[0, 2] * b[2, 0],
+        a[0, 0] * b[0, 1] + a[0, 1] * b[1, 1] + a[0, 2] * b[2, 1],
+        a[0, 0] * b[0, 2] + a[0, 1] * b[1, 2] + a[0, 2] * b[2, 2],
+        a[1, 0] * b[0, 0] + a[1, 1] * b[1, 0] + a[1, 2] * b[2, 0],
+        a[1, 0] * b[0, 1] + a[1, 1] * b[1, 1] + a[1, 2] * b[2, 1],
+        a[1, 0] * b[0, 2] + a[1, 1] * b[1, 2] + a[1, 2] * b[2, 2],
+        a[2, 0] * b[0, 0] + a[2, 1] * b[1, 0] + a[2, 2] * b[2, 0],
+        a[2, 0] * b[0, 1] + a[2, 1] * b[1, 1] + a[2, 2] * b[2, 1],
+        a[2, 0] * b[0, 2] + a[2, 1] * b[1, 2] + a[2, 2] * b[2, 2],
+    )
+
+
+@wp.func
+def _mat33_mul_vec3(a: wp.mat33, v: wp.vec3) -> wp.vec3:
+    return wp.vec3(
+        a[0, 0] * v[0] + a[0, 1] * v[1] + a[0, 2] * v[2],
+        a[1, 0] * v[0] + a[1, 1] * v[1] + a[1, 2] * v[2],
+        a[2, 0] * v[0] + a[2, 1] * v[1] + a[2, 2] * v[2],
+    )
+
+
+@wp.func
+def _mat33_inverse(a: wp.mat33) -> wp.mat33:
+    det = (
+        a[0, 0] * (a[1, 1] * a[2, 2] - a[1, 2] * a[2, 1])
+        - a[0, 1] * (a[1, 0] * a[2, 2] - a[1, 2] * a[2, 0])
+        + a[0, 2] * (a[1, 0] * a[2, 1] - a[1, 1] * a[2, 0])
+    )
+    if wp.abs(det) < 1.0e-9:
+        det = 1.0e-9
+    inv_det = 1.0 / det
+    return wp.mat33(
+        (a[1, 1] * a[2, 2] - a[1, 2] * a[2, 1]) * inv_det,
+        (a[0, 2] * a[2, 1] - a[0, 1] * a[2, 2]) * inv_det,
+        (a[0, 1] * a[1, 2] - a[0, 2] * a[1, 1]) * inv_det,
+        (a[1, 2] * a[2, 0] - a[1, 0] * a[2, 2]) * inv_det,
+        (a[0, 0] * a[2, 2] - a[0, 2] * a[2, 0]) * inv_det,
+        (a[0, 2] * a[1, 0] - a[0, 0] * a[1, 2]) * inv_det,
+        (a[1, 0] * a[2, 1] - a[1, 1] * a[2, 0]) * inv_det,
+        (a[0, 1] * a[2, 0] - a[0, 0] * a[2, 1]) * inv_det,
+        (a[0, 0] * a[1, 1] - a[0, 1] * a[1, 0]) * inv_det,
+    )
+
+
+@wp.func
+def _block_index(block: int, row: int, col: int) -> int:
+    return block * 36 + row * 6 + col
+
+
+@wp.func
+def _vec_index(block: int, row: int) -> int:
+    return block * 6 + row
+
+
+@wp.func
+def _load_block(blocks: wp.array(dtype=wp.float32), block: int) -> tuple[wp.mat33, wp.mat33, wp.mat33, wp.mat33]:
+    base = block * 36
+    A = wp.mat33(
+        blocks[base + 0], blocks[base + 1], blocks[base + 2],
+        blocks[base + 6], blocks[base + 7], blocks[base + 8],
+        blocks[base + 12], blocks[base + 13], blocks[base + 14],
+    )
+    B = wp.mat33(
+        blocks[base + 3], blocks[base + 4], blocks[base + 5],
+        blocks[base + 9], blocks[base + 10], blocks[base + 11],
+        blocks[base + 15], blocks[base + 16], blocks[base + 17],
+    )
+    C = wp.mat33(
+        blocks[base + 18], blocks[base + 19], blocks[base + 20],
+        blocks[base + 24], blocks[base + 25], blocks[base + 26],
+        blocks[base + 30], blocks[base + 31], blocks[base + 32],
+    )
+    D = wp.mat33(
+        blocks[base + 21], blocks[base + 22], blocks[base + 23],
+        blocks[base + 27], blocks[base + 28], blocks[base + 29],
+        blocks[base + 33], blocks[base + 34], blocks[base + 35],
+    )
+    return A, B, C, D
+
+
+@wp.func
+def _store_block(
+    blocks: wp.array(dtype=wp.float32),
+    block: int,
+    A: wp.mat33,
+    B: wp.mat33,
+    C: wp.mat33,
+    D: wp.mat33,
+):
+    base = block * 36
+    blocks[base + 0] = A[0, 0]
+    blocks[base + 1] = A[0, 1]
+    blocks[base + 2] = A[0, 2]
+    blocks[base + 3] = B[0, 0]
+    blocks[base + 4] = B[0, 1]
+    blocks[base + 5] = B[0, 2]
+    blocks[base + 6] = A[1, 0]
+    blocks[base + 7] = A[1, 1]
+    blocks[base + 8] = A[1, 2]
+    blocks[base + 9] = B[1, 0]
+    blocks[base + 10] = B[1, 1]
+    blocks[base + 11] = B[1, 2]
+    blocks[base + 12] = A[2, 0]
+    blocks[base + 13] = A[2, 1]
+    blocks[base + 14] = A[2, 2]
+    blocks[base + 15] = B[2, 0]
+    blocks[base + 16] = B[2, 1]
+    blocks[base + 17] = B[2, 2]
+    blocks[base + 18] = C[0, 0]
+    blocks[base + 19] = C[0, 1]
+    blocks[base + 20] = C[0, 2]
+    blocks[base + 21] = D[0, 0]
+    blocks[base + 22] = D[0, 1]
+    blocks[base + 23] = D[0, 2]
+    blocks[base + 24] = C[1, 0]
+    blocks[base + 25] = C[1, 1]
+    blocks[base + 26] = C[1, 2]
+    blocks[base + 27] = D[1, 0]
+    blocks[base + 28] = D[1, 1]
+    blocks[base + 29] = D[1, 2]
+    blocks[base + 30] = C[2, 0]
+    blocks[base + 31] = C[2, 1]
+    blocks[base + 32] = C[2, 2]
+    blocks[base + 33] = D[2, 0]
+    blocks[base + 34] = D[2, 1]
+    blocks[base + 35] = D[2, 2]
+
+
+@wp.func
+def _load_vec(values: wp.array(dtype=wp.float32), block: int) -> tuple[wp.vec3, wp.vec3]:
+    base = block * 6
+    v0 = wp.vec3(values[base + 0], values[base + 1], values[base + 2])
+    v1 = wp.vec3(values[base + 3], values[base + 4], values[base + 5])
+    return v0, v1
+
+
+@wp.func
+def _store_vec(values: wp.array(dtype=wp.float32), block: int, v0: wp.vec3, v1: wp.vec3):
+    base = block * 6
+    values[base + 0] = v0[0]
+    values[base + 1] = v0[1]
+    values[base + 2] = v0[2]
+    values[base + 3] = v1[0]
+    values[base + 4] = v1[1]
+    values[base + 5] = v1[2]
+
+
+@wp.func
+def _block_column(
+    blocks: wp.array(dtype=wp.float32), block: int, col: int
+) -> tuple[wp.vec3, wp.vec3]:
+    base = block * 36
+    v0 = wp.vec3(
+        blocks[base + 0 * 6 + col],
+        blocks[base + 1 * 6 + col],
+        blocks[base + 2 * 6 + col],
+    )
+    v1 = wp.vec3(
+        blocks[base + 3 * 6 + col],
+        blocks[base + 4 * 6 + col],
+        blocks[base + 5 * 6 + col],
+    )
+    return v0, v1
+
+
+@wp.func
+def _block_set_column(
+    blocks: wp.array(dtype=wp.float32), block: int, col: int, v0: wp.vec3, v1: wp.vec3
+):
+    base = block * 36
+    blocks[base + 0 * 6 + col] = v0[0]
+    blocks[base + 1 * 6 + col] = v0[1]
+    blocks[base + 2 * 6 + col] = v0[2]
+    blocks[base + 3 * 6 + col] = v1[0]
+    blocks[base + 4 * 6 + col] = v1[1]
+    blocks[base + 5 * 6 + col] = v1[2]
+
+
+@wp.func
+def _block_mul(
+    A: wp.mat33,
+    B: wp.mat33,
+    C: wp.mat33,
+    D: wp.mat33,
+    E: wp.mat33,
+    F: wp.mat33,
+    G: wp.mat33,
+    H: wp.mat33,
+) -> tuple[wp.mat33, wp.mat33, wp.mat33, wp.mat33]:
+    return (
+        _mat33_add(_mat33_mul(A, E), _mat33_mul(B, G)),
+        _mat33_add(_mat33_mul(A, F), _mat33_mul(B, H)),
+        _mat33_add(_mat33_mul(C, E), _mat33_mul(D, G)),
+        _mat33_add(_mat33_mul(C, F), _mat33_mul(D, H)),
+    )
+
+
+@wp.func
+def _block_sub(
+    A: wp.mat33,
+    B: wp.mat33,
+    C: wp.mat33,
+    D: wp.mat33,
+    E: wp.mat33,
+    F: wp.mat33,
+    G: wp.mat33,
+    H: wp.mat33,
+) -> tuple[wp.mat33, wp.mat33, wp.mat33, wp.mat33]:
+    return (
+        _mat33_sub(A, E),
+        _mat33_sub(B, F),
+        _mat33_sub(C, G),
+        _mat33_sub(D, H),
+    )
+
+
+@wp.func
+def _block_mul_vec(
+    A: wp.mat33,
+    B: wp.mat33,
+    C: wp.mat33,
+    D: wp.mat33,
+    v0: wp.vec3,
+    v1: wp.vec3,
+) -> tuple[wp.vec3, wp.vec3]:
+    top = _mat33_mul_vec3(A, v0) + _mat33_mul_vec3(B, v1)
+    bot = _mat33_mul_vec3(C, v0) + _mat33_mul_vec3(D, v1)
+    return top, bot
+
+
+@wp.func
+def _block_solve(
+    A: wp.mat33,
+    B: wp.mat33,
+    C: wp.mat33,
+    D: wp.mat33,
+    b0: wp.vec3,
+    b1: wp.vec3,
+) -> tuple[wp.vec3, wp.vec3]:
+    A_inv = _mat33_inverse(A)
+    CA_inv = _mat33_mul(C, A_inv)
+    S = _mat33_sub(D, _mat33_mul(CA_inv, B))
+    rhs1 = b1 - _mat33_mul_vec3(CA_inv, b0)
+    S_inv = _mat33_inverse(S)
+    x1 = _mat33_mul_vec3(S_inv, rhs1)
+    x0 = _mat33_mul_vec3(A_inv, b0 - _mat33_mul_vec3(B, x1))
+    return x0, x1
+
+
+@wp.kernel
+def _warp_assemble_jmjt_blocks(
+    jacobian_pos: wp.array(dtype=wp.float32),
+    jacobian_rot: wp.array(dtype=wp.float32),
+    compliance: wp.array(dtype=wp.float32),
+    n_edges: int,
+    diag_blocks: wp.array(dtype=wp.float32),
+    offdiag_blocks: wp.array(dtype=wp.float32),
+):
+    i = wp.tid()
+    if i >= n_edges:
+        return
+    regularization = 1.0e-6
+    block_start = 6 * i
+
+    for row in range(6):
+        for col in range(6):
+            val = 0.0
+            for k in range(3):
+                j_p0_r = jacobian_pos[_warp_jacobian_index(i, row, k)]
+                j_p0_c = jacobian_pos[_warp_jacobian_index(i, col, k)]
+                j_p1_r = jacobian_pos[_warp_jacobian_index(i, row, k + 3)]
+                j_p1_c = jacobian_pos[_warp_jacobian_index(i, col, k + 3)]
+                j_t0_r = jacobian_rot[_warp_jacobian_index(i, row, k)]
+                j_t0_c = jacobian_rot[_warp_jacobian_index(i, col, k)]
+                j_t1_r = jacobian_rot[_warp_jacobian_index(i, row, k + 3)]
+                j_t1_c = jacobian_rot[_warp_jacobian_index(i, col, k + 3)]
+                val += (
+                    j_p0_r * j_p0_c
+                    + j_p1_r * j_p1_c
+                    + j_t0_r * j_t0_c
+                    + j_t1_r * j_t1_c
+                )
+            if row == col:
+                val += compliance[i * 6 + row] + regularization
+            diag_blocks[_block_index(i, row, col)] = val
+
+    if i == 0:
+        for row in range(6):
+            for col in range(6):
+                offdiag_blocks[_block_index(i, row, col)] = 0.0
+        return
+
+    prev = i - 1
+    for row in range(6):
+        for col in range(6):
+            val = 0.0
+            for k in range(3):
+                j_p1_prev = jacobian_pos[_warp_jacobian_index(prev, row, k + 3)]
+                j_p0_cur = jacobian_pos[_warp_jacobian_index(i, col, k)]
+                j_t1_prev = jacobian_rot[_warp_jacobian_index(prev, row, k + 3)]
+                j_t0_cur = jacobian_rot[_warp_jacobian_index(i, col, k)]
+                val += j_p1_prev * j_p0_cur + j_t1_prev * j_t0_cur
+            offdiag_blocks[_block_index(i, row, col)] = val
+
+
+@wp.kernel
+def _warp_block_thomas_solve(
+    diag_blocks: wp.array(dtype=wp.float32),
+    offdiag_blocks: wp.array(dtype=wp.float32),
+    rhs: wp.array(dtype=wp.float32),
+    n_edges: int,
+    c_blocks: wp.array(dtype=wp.float32),
+    d_prime: wp.array(dtype=wp.float32),
+    x: wp.array(dtype=wp.float32),
+):
+    tid = wp.tid()
+    if tid != 0:
+        return
+    if n_edges <= 0:
+        return
+
+    A0, B0, C0, D0 = _load_block(diag_blocks, 0)
+    b0, b1 = _load_vec(rhs, 0)
+
+    if n_edges > 1:
+        for col in range(6):
+            u0, u1 = _block_column(offdiag_blocks, 1, col)
+            x0, x1 = _block_solve(A0, B0, C0, D0, u0, u1)
+            _block_set_column(c_blocks, 0, col, x0, x1)
+    else:
+        zero = wp.vec3(0.0, 0.0, 0.0)
+        for col in range(6):
+            _block_set_column(c_blocks, 0, col, zero, zero)
+
+    d0, d1 = _block_solve(A0, B0, C0, D0, b0, b1)
+    _store_vec(d_prime, 0, d0, d1)
+
+    for i in range(1, n_edges):
+        DiA, DiB, DiC, DiD = _load_block(diag_blocks, i)
+        LiA, LiB, LiC, LiD = _load_block(offdiag_blocks, i)
+        CpA, CpB, CpC, CpD = _load_block(c_blocks, i - 1)
+
+        LCA, LCB, LCC, LCD = _block_mul(LiA, LiB, LiC, LiD, CpA, CpB, CpC, CpD)
+        TiA, TiB, TiC, TiD = _block_sub(DiA, DiB, DiC, DiD, LCA, LCB, LCC, LCD)
+
+        bi0, bi1 = _load_vec(rhs, i)
+        dp0, dp1 = _load_vec(d_prime, i - 1)
+        ld0, ld1 = _block_mul_vec(LiA, LiB, LiC, LiD, dp0, dp1)
+        bi0 = bi0 - ld0
+        bi1 = bi1 - ld1
+
+        if i < n_edges - 1:
+            for col in range(6):
+                u0, u1 = _block_column(offdiag_blocks, i + 1, col)
+                x0, x1 = _block_solve(TiA, TiB, TiC, TiD, u0, u1)
+                _block_set_column(c_blocks, i, col, x0, x1)
+        else:
+            zero = wp.vec3(0.0, 0.0, 0.0)
+            for col in range(6):
+                _block_set_column(c_blocks, i, col, zero, zero)
+
+        di0, di1 = _block_solve(TiA, TiB, TiC, TiD, bi0, bi1)
+        _store_vec(d_prime, i, di0, di1)
+
+    dn0, dn1 = _load_vec(d_prime, n_edges - 1)
+    _store_vec(x, n_edges - 1, dn0, dn1)
+    for i in range(n_edges - 2, -1, -1):
+        CiA, CiB, CiC, CiD = _load_block(c_blocks, i)
+        xn0, xn1 = _load_vec(x, i + 1)
+        cx0, cx1 = _block_mul_vec(CiA, CiB, CiC, CiD, xn0, xn1)
+        di0, di1 = _load_vec(d_prime, i)
+        xi0 = di0 - cx0
+        xi1 = di1 - cx1
+        _store_vec(x, i, xi0, xi1)
 
 class DefKitDirectLibrary:
     def __init__(self, dll_path: str | None, calling_convention: str):
@@ -930,6 +1379,7 @@ class NumpyDirectRodState(DefKitDirectRodState):
         ):
             self.warp_available[step_name] = True
             self.warp_enabled[step_name] = warp_default
+        self.use_gpu_block_thomas = True
         self.lambdas = np.zeros((self.num_edges, 6), dtype=np.float32)
         self.compliance = np.zeros((self.num_edges, 6), dtype=np.float32)
         self.constraint_values = np.zeros((self.num_edges, 6), dtype=np.float32)
@@ -958,6 +1408,9 @@ class NumpyDirectRodState(DefKitDirectRodState):
             return False
         self.warp_enabled[step_name] = enabled
         return True
+
+    def set_direct_solve_backend(self, use_gpu_block_thomas: bool):
+        self.use_gpu_block_thomas = use_gpu_block_thomas
 
     def _use_warp_step(self, step_name: str) -> bool:
         return self.warp_available.get(step_name, False) and self.warp_enabled.get(step_name, False)
@@ -1038,7 +1491,10 @@ class NumpyDirectRodState(DefKitDirectRodState):
 
     def project_direct(self):
         if self._use_warp_step("project_direct"):
-            self._warp_project_direct()
+            if self.use_gpu_block_thomas:
+                self._warp_project_direct()
+            else:
+                self._numpy_project_direct()
         elif self.numpy_enabled["project_direct"]:
             self._numpy_project_direct()
         else:
@@ -1343,14 +1799,8 @@ class NumpyDirectRodState(DefKitDirectRodState):
 
         compliance_flat = np.ascontiguousarray(self.compliance.reshape(-1))
         compliance_wp = wp.array(compliance_flat, dtype=wp.float32, device=device)
-        A_wp = wp.array(np.zeros(n_dofs * n_dofs, dtype=np.float32), dtype=wp.float32, device=device)
-
-        wp.launch(
-            _warp_assemble_jmjt_dense,
-            dim=n_edges,
-            inputs=[jacobian_pos_wp, jacobian_rot_wp, compliance_wp, int(n_dofs), A_wp],
-            device=device,
-        )
+        lambda_sum_flat = np.ascontiguousarray(self.lambda_sum.reshape(-1))
+        lambda_sum_wp = wp.array(lambda_sum_flat, dtype=wp.float32, device=device)
 
         constraint_values = constraint_values_wp.numpy().reshape(n_edges, 6)
         self.constraint_values[:, :] = constraint_values
@@ -1362,14 +1812,79 @@ class NumpyDirectRodState(DefKitDirectRodState):
         self.jacobian_pos = jacobian_pos_wp.numpy().reshape(n_edges, 6, 6)
         self.jacobian_rot = jacobian_rot_wp.numpy().reshape(n_edges, 6, 6)
 
-        A = A_wp.numpy().reshape(n_dofs, n_dofs)
-        rhs = (-constraint_values).reshape(n_dofs)
-        rhs -= (self.compliance * self.lambda_sum).reshape(n_dofs)
-
-        try:
-            delta_lambda = np.linalg.solve(A, rhs)
-        except np.linalg.LinAlgError:
-            delta_lambda = np.linalg.lstsq(A, rhs, rcond=None)[0]
+        if n_dofs <= TILE:
+            A_wp = wp.zeros((TILE, TILE), dtype=wp.float32, device=device)
+            wp.launch(
+                _warp_assemble_jmjt_dense,
+                dim=n_edges,
+                inputs=[jacobian_pos_wp, jacobian_rot_wp, compliance_wp, int(n_dofs), A_wp],
+                device=device,
+            )
+            rhs_wp = wp.zeros(TILE, dtype=wp.float32, device=device)
+            wp.launch(
+                _warp_build_rhs,
+                dim=TILE,
+                inputs=[constraint_values_wp, compliance_wp, lambda_sum_wp, int(n_dofs), rhs_wp],
+                device=device,
+            )
+            if n_dofs < TILE:
+                wp.launch(
+                    _warp_pad_diagonal,
+                    dim=TILE,
+                    inputs=[A_wp, int(n_dofs), int(TILE)],
+                    device=device,
+                )
+            delta_lambda_wp = wp.zeros(TILE, dtype=wp.float32, device=device)
+            wp.launch_tiled(
+                _warp_cholesky_solve_tile,
+                dim=[1, 1],
+                inputs=[A_wp, rhs_wp],
+                outputs=[delta_lambda_wp],
+                block_dim=BLOCK_DIM,
+                device=device,
+            )
+            delta_lambda = delta_lambda_wp.numpy()[:n_dofs]
+        else:
+            diag_blocks_wp = wp.zeros(n_edges * 36, dtype=wp.float32, device=device)
+            offdiag_blocks_wp = wp.zeros(n_edges * 36, dtype=wp.float32, device=device)
+            wp.launch(
+                _warp_assemble_jmjt_blocks,
+                dim=n_edges,
+                inputs=[
+                    jacobian_pos_wp,
+                    jacobian_rot_wp,
+                    compliance_wp,
+                    int(n_edges),
+                    diag_blocks_wp,
+                    offdiag_blocks_wp,
+                ],
+                device=device,
+            )
+            rhs_wp = wp.zeros(n_dofs, dtype=wp.float32, device=device)
+            wp.launch(
+                _warp_build_rhs,
+                dim=n_dofs,
+                inputs=[constraint_values_wp, compliance_wp, lambda_sum_wp, int(n_dofs), rhs_wp],
+                device=device,
+            )
+            c_blocks_wp = wp.zeros(n_edges * 36, dtype=wp.float32, device=device)
+            d_prime_wp = wp.zeros(n_edges * 6, dtype=wp.float32, device=device)
+            delta_lambda_wp = wp.zeros(n_edges * 6, dtype=wp.float32, device=device)
+            wp.launch(
+                _warp_block_thomas_solve,
+                dim=1,
+                inputs=[
+                    diag_blocks_wp,
+                    offdiag_blocks_wp,
+                    rhs_wp,
+                    int(n_edges),
+                    c_blocks_wp,
+                    d_prime_wp,
+                    delta_lambda_wp,
+                ],
+                device=device,
+            )
+            delta_lambda = delta_lambda_wp.numpy()
 
         self.last_delta_lambda_max = float(np.max(np.abs(delta_lambda))) if delta_lambda.size > 0 else 0.0
         self.lambda_sum += delta_lambda.reshape(n_edges, 6)
@@ -2409,6 +2924,18 @@ class Example:
         pending_warp = len(self._warp_step_labels) - len(available_warp_steps)
         if pending_warp > 0:
             ui.text(f"Pending Warp steps: {pending_warp}")
+
+        ui.separator()
+        ui.text("Direct Solve Backend (non-banded)")
+        if self.use_banded:
+            ui.text("Disable banded solver to use direct backend.")
+        else:
+            current = self.numpy_rod.use_gpu_block_thomas
+            changed, enabled = ui.checkbox("Use GPU Block-Thomas (Warp)", current)
+            if changed:
+                self.numpy_rod.set_direct_solve_backend(enabled)
+            if not self.numpy_rod.use_gpu_block_thomas:
+                ui.text("CPU NumPy direct solve will be used for Project Direct.")
 
         ui.separator()
         ui.text("NumPy Overrides (candidate rod)")
