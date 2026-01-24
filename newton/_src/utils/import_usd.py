@@ -285,7 +285,7 @@ def parse_usd(
                 This matches any physics-authored pose, scene-level transforms,
                 and incoming transforms that were applied when the body was created.
         """
-        if _is_enabled_collider(prim):
+        if _is_enabled_collider(prim) or prim.HasAPI(UsdPhysics.RigidBodyAPI):
             return
         path_name = str(prim.GetPath())
         if any(re.match(path, path_name) for path in ignore_paths):
