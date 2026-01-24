@@ -463,10 +463,12 @@ class Model:
         """Start index of the first articulation per world, shape [num_worlds + 2], int."""
         self.world_equality_constraint_start = None
         """Start index of the first equality constraint per world, shape [num_worlds + 2], int."""
-        self.world_joint_q_start = None
-        """Start index of the first joint coordinate per world, shape [num_worlds + 2], int."""
-        self.world_joint_qd_start = None
+        self.world_joint_dof_start = None
         """Start index of the first joint degree of freedom per world, shape [num_worlds + 2], int."""
+        self.world_joint_coord_start = None
+        """Start index of the first joint coordinate per world, shape [num_worlds + 2], int."""
+        self.world_joint_constraint_start = None
+        """Start index of the first joint constraint per world, shape [num_worlds + 2], int."""
 
         self.particle_count = 0
         """Total number of particles in the system."""
