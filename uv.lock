@@ -2087,6 +2087,7 @@ dev = [
     { name = "imgui-bundle" },
     { name = "mujoco" },
     { name = "mujoco-warp" },
+    { name = "newton-usd-schemas" },
     { name = "pycollada" },
     { name = "pyglet" },
     { name = "pyyaml" },
@@ -2105,6 +2106,7 @@ docs = [
     { name = "ipykernel" },
     { name = "myst-parser" },
     { name = "nbsphinx" },
+    { name = "newton-usd-schemas" },
     { name = "pycollada" },
     { name = "pydata-sphinx-theme" },
     { name = "pypandoc" },
@@ -2132,6 +2134,7 @@ examples = [
     { name = "imgui-bundle" },
     { name = "mujoco" },
     { name = "mujoco-warp" },
+    { name = "newton-usd-schemas" },
     { name = "pycollada" },
     { name = "pyglet" },
     { name = "pyyaml" },
@@ -2146,6 +2149,7 @@ importers = [
     { name = "alphashape" },
     { name = "coacd" },
     { name = "fast-simplification" },
+    { name = "newton-usd-schemas" },
     { name = "pycollada" },
     { name = "resolve-robotics-uri-py" },
     { name = "scipy", version = "1.15.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
@@ -2164,6 +2168,7 @@ notebook = [
     { name = "jupyterlab" },
     { name = "mujoco" },
     { name = "mujoco-warp" },
+    { name = "newton-usd-schemas" },
     { name = "pycollada" },
     { name = "pyglet" },
     { name = "pyyaml" },
@@ -2190,6 +2195,7 @@ torch-cu12 = [
     { name = "imgui-bundle" },
     { name = "mujoco" },
     { name = "mujoco-warp" },
+    { name = "newton-usd-schemas" },
     { name = "pycollada" },
     { name = "pyglet" },
     { name = "pyyaml" },
@@ -2255,6 +2261,12 @@ requires-dist = [
     { name = "mujoco-warp", marker = "extra == 'torch-cu12'", git = "https://github.com/google-deepmind/mujoco_warp" },
     { name = "myst-parser", marker = "extra == 'docs'", specifier = ">=3.0.1" },
     { name = "nbsphinx", marker = "extra == 'docs'", specifier = ">=0.9.0" },
+    { name = "newton-usd-schemas", marker = "extra == 'dev'", specifier = ">=0.1.0a1" },
+    { name = "newton-usd-schemas", marker = "extra == 'docs'", specifier = ">=0.1.0a1" },
+    { name = "newton-usd-schemas", marker = "extra == 'examples'", specifier = ">=0.1.0a1" },
+    { name = "newton-usd-schemas", marker = "extra == 'importers'", specifier = ">=0.1.0a1" },
+    { name = "newton-usd-schemas", marker = "extra == 'notebook'", specifier = ">=0.1.0a1" },
+    { name = "newton-usd-schemas", marker = "extra == 'torch-cu12'", specifier = ">=0.1.0a1" },
     { name = "pycollada", marker = "extra == 'dev'", specifier = ">=0.9" },
     { name = "pycollada", marker = "extra == 'docs'", specifier = ">=0.9" },
     { name = "pycollada", marker = "extra == 'examples'", specifier = ">=0.9" },
@@ -2318,6 +2330,15 @@ provides-extras = ["dev", "docs", "examples", "importers", "notebook", "sim", "t
 
 [package.metadata.requires-dev]
 dev = [{ name = "asv", specifier = ">=0.6.4" }]
+
+[[package]]
+name = "newton-usd-schemas"
+version = "0.1.0a1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/3d/a3/f708afd807325b28aacce60d318cc6eaffcbc5e205c6c1cbbdc57f1c7d0d/newton_usd_schemas-0.1.0a1.tar.gz", hash = "sha256:84e8d49280ece789a44cabab6e4f9abf567e6d7e32080a7c6a9fefd03ae83986", size = 49655, upload-time = "2025-12-17T21:27:43.676Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/77/11/8a12f800377f102925347160cacb468607efe486a9b3bab4aa325348487a/newton_usd_schemas-0.1.0a1-py3-none-any.whl", hash = "sha256:101cfcc67668de460bf5bc16e31668a2e5660e3aaea6823a0d373496803d26d8", size = 10340, upload-time = "2025-12-17T21:27:42.456Z" },
+]
 
 [[package]]
 name = "nodeenv"
