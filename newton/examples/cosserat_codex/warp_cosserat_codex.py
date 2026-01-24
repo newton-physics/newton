@@ -534,6 +534,50 @@ def _mat33_mul_vec3(a: wp.mat33, v: wp.vec3) -> wp.vec3:
 
 
 @wp.func
+def _mat33_transpose(a: wp.mat33) -> wp.mat33:
+    return wp.mat33(
+        a[0, 0], a[1, 0], a[2, 0],
+        a[0, 1], a[1, 1], a[2, 1],
+        a[0, 2], a[1, 2], a[2, 2],
+    )
+
+
+@wp.func
+def _mat33_cholesky(a: wp.mat33) -> wp.mat33:
+    eps = 1.0e-9
+    l00 = wp.sqrt(wp.max(a[0, 0], eps))
+    l10 = a[1, 0] / l00
+    l20 = a[2, 0] / l00
+
+    l11 = wp.sqrt(wp.max(a[1, 1] - l10 * l10, eps))
+    l21 = (a[2, 1] - l20 * l10) / l11
+
+    l22 = wp.sqrt(wp.max(a[2, 2] - l20 * l20 - l21 * l21, eps))
+
+    return wp.mat33(
+        l00, 0.0, 0.0,
+        l10, l11, 0.0,
+        l20, l21, l22,
+    )
+
+
+@wp.func
+def _mat33_solve_lower(L: wp.mat33, b: wp.vec3) -> wp.vec3:
+    y0 = b[0] / L[0, 0]
+    y1 = (b[1] - L[1, 0] * y0) / L[1, 1]
+    y2 = (b[2] - L[2, 0] * y0 - L[2, 1] * y1) / L[2, 2]
+    return wp.vec3(y0, y1, y2)
+
+
+@wp.func
+def _mat33_solve_upper(L: wp.mat33, b: wp.vec3) -> wp.vec3:
+    x2 = b[2] / L[2, 2]
+    x1 = (b[1] - L[2, 1] * x2) / L[1, 1]
+    x0 = (b[0] - L[1, 0] * x1 - L[2, 0] * x2) / L[0, 0]
+    return wp.vec3(x0, x1, x2)
+
+
+@wp.func
 def _mat33_inverse(a: wp.mat33) -> wp.mat33:
     det = (
         a[0, 0] * (a[1, 1] * a[2, 2] - a[1, 2] * a[2, 1])
@@ -691,6 +735,24 @@ def _block_set_column(
 
 
 @wp.func
+def _block_row(
+    blocks: wp.array(dtype=wp.float32), block: int, row: int
+) -> tuple[wp.vec3, wp.vec3]:
+    base = block * 36 + row * 6
+    v0 = wp.vec3(
+        blocks[base + 0],
+        blocks[base + 1],
+        blocks[base + 2],
+    )
+    v1 = wp.vec3(
+        blocks[base + 3],
+        blocks[base + 4],
+        blocks[base + 5],
+    )
+    return v0, v1
+
+
+@wp.func
 def _block_mul(
     A: wp.mat33,
     B: wp.mat33,
@@ -751,13 +813,28 @@ def _block_solve(
     b0: wp.vec3,
     b1: wp.vec3,
 ) -> tuple[wp.vec3, wp.vec3]:
-    A_inv = _mat33_inverse(A)
-    CA_inv = _mat33_mul(C, A_inv)
-    S = _mat33_sub(D, _mat33_mul(CA_inv, B))
-    rhs1 = b1 - _mat33_mul_vec3(CA_inv, b0)
-    S_inv = _mat33_inverse(S)
-    x1 = _mat33_mul_vec3(S_inv, rhs1)
-    x0 = _mat33_mul_vec3(A_inv, b0 - _mat33_mul_vec3(B, x1))
+    L11 = _mat33_cholesky(A)
+    c0 = wp.vec3(C[0, 0], C[0, 1], C[0, 2])
+    c1 = wp.vec3(C[1, 0], C[1, 1], C[1, 2])
+    c2 = wp.vec3(C[2, 0], C[2, 1], C[2, 2])
+    y0 = _mat33_solve_lower(L11, c0)
+    y1 = _mat33_solve_lower(L11, c1)
+    y2 = _mat33_solve_lower(L11, c2)
+    L21 = wp.mat33(
+        y0[0], y0[1], y0[2],
+        y1[0], y1[1], y1[2],
+        y2[0], y2[1], y2[2],
+    )
+    L21_t = _mat33_transpose(L21)
+    S = _mat33_sub(D, _mat33_mul(L21, L21_t))
+    L22 = _mat33_cholesky(S)
+
+    yb0 = _mat33_solve_lower(L11, b0)
+    tmp = b1 - _mat33_mul_vec3(L21, yb0)
+    yb1 = _mat33_solve_lower(L22, tmp)
+
+    x1 = _mat33_solve_upper(L22, yb1)
+    x0 = _mat33_solve_upper(L11, yb0 - _mat33_mul_vec3(L21_t, x1))
     return x0, x1
 
 
@@ -838,7 +915,7 @@ def _warp_block_thomas_solve(
 
     if n_edges > 1:
         for col in range(6):
-            u0, u1 = _block_column(offdiag_blocks, 1, col)
+            u0, u1 = _block_row(offdiag_blocks, 1, col)
             x0, x1 = _block_solve(A0, B0, C0, D0, u0, u1)
             _block_set_column(c_blocks, 0, col, x0, x1)
     else:
@@ -865,7 +942,7 @@ def _warp_block_thomas_solve(
 
         if i < n_edges - 1:
             for col in range(6):
-                u0, u1 = _block_column(offdiag_blocks, i + 1, col)
+                u0, u1 = _block_row(offdiag_blocks, i + 1, col)
                 x0, x1 = _block_solve(TiA, TiB, TiC, TiD, u0, u1)
                 _block_set_column(c_blocks, i, col, x0, x1)
         else:
@@ -1131,14 +1208,17 @@ class DefKitDirectRodState:
         inv_mass_value = 0.0 if mass == 0.0 else 1.0 / mass
         self.inv_masses = np.full(num_points, inv_mass_value, dtype=np.float32)
         self.inv_masses[0] = 0.0
+        self._root_inv_mass_unlocked = inv_mass_value
 
         self.quat_inv_masses = np.full(num_points, 1.0, dtype=np.float32)
         # Match C++ behavior: if inv_mass is 0 (static), rotation is also locked.
         static_mask = (self.inv_masses == 0.0)
         self.quat_inv_masses[static_mask] = 0.0
+        self._root_quat_inv_mass_unlocked = np.float32(1.0)
         
         if lock_root_rotation:
             self.quat_inv_masses[0] = 0.0
+        self.root_locked = True
 
         self.rest_lengths = np.full(self.num_edges, segment_length, dtype=np.float32)
 
@@ -1194,6 +1274,20 @@ class DefKitDirectRodState:
 
     def set_solver_mode(self, use_banded: bool):
         self.use_banded = use_banded or not self.supports_non_banded
+
+    def set_root_locked(self, locked: bool):
+        self.root_locked = locked
+        if locked:
+            self.inv_masses[0] = 0.0
+            self.quat_inv_masses[0] = 0.0
+            self.velocities[0, 0:3] = 0.0
+            self.angular_velocities[0, 0:3] = 0.0
+        else:
+            self.inv_masses[0] = self._root_inv_mass_unlocked
+            self.quat_inv_masses[0] = self._root_quat_inv_mass_unlocked
+
+    def toggle_root_lock(self):
+        self.set_root_locked(not self.root_locked)
 
     def reset(self):
         self.positions[:] = self._initial_positions
@@ -2542,6 +2636,7 @@ class Example:
         self._gravity_key_was_down = False
         self._reset_key_was_down = False
         self._banded_key_was_down = False
+        self._lock_key_was_down = False
 
         self.lib = DefKitDirectLibrary(args.dll_path, args.calling_convention)
         self.supports_non_banded = self.lib.ProjectDirectElasticRodConstraints is not None
@@ -2674,6 +2769,12 @@ class Example:
                 self.numpy_rod.set_solver_mode(self.use_banded)
                 self.use_banded = self.ref_rod.use_banded
         self._banded_key_was_down = b_down
+
+        l_down = self.viewer.is_key_down(key.L)
+        if l_down and not self._lock_key_was_down:
+            self.ref_rod.toggle_root_lock()
+            self.numpy_rod.toggle_root_lock()
+        self._lock_key_was_down = l_down
 
         r_down = self.viewer.is_key_down(key.R)
         if r_down and not self._reset_key_was_down:
@@ -2975,6 +3076,7 @@ class Example:
         ui.text("Controls:")
         ui.text("  G: Toggle gravity")
         ui.text("  B: Toggle banded solver")
+        ui.text("  L: Toggle root lock (position + rotation)")
         ui.text("  R: Reset")
 
     def test_final(self):
