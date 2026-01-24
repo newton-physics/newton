@@ -79,6 +79,67 @@ def Xform "Root" (
         self.assertEqual(len(collision_shapes), 13)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_import_non_articulated_joints(self):
+        builder = newton.ModelBuilder()
+
+        asset_path = newton.examples.get_asset("boxes_fourbar.usda")
+        builder.add_usd(asset_path)
+
+        self.assertEqual(builder.body_count, 4)
+        self.assertEqual(builder.joint_type.count(newton.JointType.REVOLUTE), 4)
+        self.assertEqual(builder.joint_type.count(newton.JointType.FREE), 0)
+        self.assertTrue(all(art_id == -1 for art_id in builder.joint_articulation))
+
+        # finalize the builder and check the model
+        model = builder.finalize(skip_validation_joints=True)
+        # note we have to skip joint validation here because otherwise a ValueError would be
+        # raised because of the orphan joints that are not part of an articulation
+        self.assertEqual(model.body_count, 4)
+        self.assertEqual(model.joint_type.list().count(newton.JointType.REVOLUTE), 4)
+        self.assertEqual(model.joint_type.list().count(newton.JointType.FREE), 0)
+        self.assertTrue(all(art_id == -1 for art_id in model.joint_articulation.numpy()))
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_import_disabled_joints_create_free_joints(self):
+        from pxr import Gf, Usd, UsdGeom, UsdPhysics  # noqa: PLC0415
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        # Regression test: if all joints are disabled (or filtered out), we still
+        # need to create free joints for floating bodies so each body has DOFs.
+        def define_body(path):
+            body = UsdGeom.Xform.Define(stage, path)
+            UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+            return body
+
+        body0 = define_body("/World/Body0")
+        body1 = define_body("/World/Body1")
+
+        # The only joint in the stage is explicitly disabled.
+        joint = UsdPhysics.RevoluteJoint.Define(stage, "/World/DisabledJoint")
+        joint.CreateBody0Rel().SetTargets([body0.GetPath()])
+        joint.CreateBody1Rel().SetTargets([body1.GetPath()])
+        joint.CreateLocalPos0Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+        joint.CreateLocalPos1Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+        joint.CreateLocalRot0Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+        joint.CreateLocalRot1Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+        joint.CreateAxisAttr().Set("Z")
+        joint.CreateJointEnabledAttr().Set(False)
+
+        builder = newton.ModelBuilder()
+        builder.add_usd(stage)
+
+        # With no enabled joints, we should still get one free joint per body.
+        self.assertEqual(builder.body_count, 2)
+        self.assertEqual(builder.joint_count, 2)
+        self.assertEqual(builder.joint_type.count(newton.JointType.FREE), 2)
+        # Each floating body should get its own single-joint articulation.
+        self.assertEqual(builder.articulation_count, 2)
+        self.assertEqual(set(builder.joint_articulation), {0, 1})
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_import_articulation_parent_offset(self):
         from pxr import Usd  # noqa: PLC0415
 
