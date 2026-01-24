@@ -40,6 +40,19 @@ import newton.examples
 BLOCK_DIM = 128
 TILE = 64
 
+# Banded Cholesky layout (matches spbsv_u11_1rhs in C++)
+BAND_KD = 11
+BAND_LDAB = 34
+
+DIRECT_SOLVE_WARP_BLOCK_THOMAS = "warp_block_thomas"
+DIRECT_SOLVE_WARP_BANDED_CHOLESKY = "warp_banded_cholesky"
+DIRECT_SOLVE_CPU_NUMPY = "cpu_numpy"
+DIRECT_SOLVE_BACKENDS = (
+    DIRECT_SOLVE_WARP_BLOCK_THOMAS,
+    DIRECT_SOLVE_WARP_BANDED_CHOLESKY,
+    DIRECT_SOLVE_CPU_NUMPY,
+)
+
 
 class BtVector3(ctypes.Structure):
     _fields_ = [
@@ -450,6 +463,67 @@ def _warp_assemble_jmjt_dense(
                 col_idx = prev_block + row
                 if row_idx < n_dofs and col_idx < n_dofs:
                     A[row_idx, col_idx] = val
+
+
+@wp.kernel
+def _warp_assemble_jmjt_banded(
+    jacobian_pos: wp.array(dtype=wp.float32),
+    jacobian_rot: wp.array(dtype=wp.float32),
+    compliance: wp.array(dtype=wp.float32),
+    n_dofs: int,
+    ab: wp.array2d(dtype=wp.float32),
+):
+    i = wp.tid()
+    block_start = 6 * i
+    if block_start >= n_dofs:
+        return
+
+    for row in range(6):
+        for col in range(6):
+            val = 0.0
+            for k in range(3):
+                j_p0_r = jacobian_pos[_warp_jacobian_index(i, row, k)]
+                j_p0_c = jacobian_pos[_warp_jacobian_index(i, col, k)]
+                j_p1_r = jacobian_pos[_warp_jacobian_index(i, row, k + 3)]
+                j_p1_c = jacobian_pos[_warp_jacobian_index(i, col, k + 3)]
+                j_t0_r = jacobian_rot[_warp_jacobian_index(i, row, k)]
+                j_t0_c = jacobian_rot[_warp_jacobian_index(i, col, k)]
+                j_t1_r = jacobian_rot[_warp_jacobian_index(i, row, k + 3)]
+                j_t1_c = jacobian_rot[_warp_jacobian_index(i, col, k + 3)]
+                val += (
+                    j_p0_r * j_p0_c
+                    + j_p1_r * j_p1_c
+                    + j_t0_r * j_t0_c
+                    + j_t1_r * j_t1_c
+                )
+            if row == col:
+                val += compliance[i * 6 + row]
+
+            row_idx = block_start + row
+            col_idx = block_start + col
+            if row_idx <= col_idx:
+                band_row = BAND_KD + row_idx - col_idx
+                if band_row >= 0 and band_row <= BAND_KD:
+                    ab[band_row, col_idx] = val
+
+    if i > 0:
+        prev = i - 1
+        prev_block = block_start - 6
+        for row in range(6):
+            for col in range(6):
+                val = 0.0
+                for k in range(3):
+                    j_p1_prev = jacobian_pos[_warp_jacobian_index(prev, row, k + 3)]
+                    j_p0_cur = jacobian_pos[_warp_jacobian_index(i, col, k)]
+                    j_t1_prev = jacobian_rot[_warp_jacobian_index(prev, row, k + 3)]
+                    j_t0_cur = jacobian_rot[_warp_jacobian_index(i, col, k)]
+                    val += j_p1_prev * j_p0_cur + j_t1_prev * j_t0_cur
+
+                row_idx = prev_block + row
+                col_idx = block_start + col
+                band_row = BAND_KD + row_idx - col_idx
+                if band_row >= 0 and band_row <= BAND_KD:
+                    ab[band_row, col_idx] = val
 
 
 @wp.kernel
@@ -964,6 +1038,57 @@ def _warp_block_thomas_solve(
         xi1 = di1 - cx1
         _store_vec(x, i, xi0, xi1)
 
+
+@wp.kernel
+def _warp_spbsv_u11_1rhs(
+    n: int,
+    ab: wp.array2d(dtype=wp.float32),
+    b: wp.array(dtype=wp.float32),
+):
+    tid = wp.tid()
+    if tid != 0:
+        return
+
+    for j in range(n):
+        sum_val = float(0.0)
+        kmax = j if j < BAND_KD else BAND_KD
+        for k in range(1, kmax + 1):
+            u = ab[BAND_KD - k, j]
+            sum_val += u * u
+
+        ajj = ab[BAND_KD, j] - sum_val
+        if ajj <= 1.0e-6:
+            ajj = 1.0e-6
+        ujj = wp.sqrt(ajj)
+        ab[BAND_KD, j] = ujj
+
+        imax = (n - j - 1) if (n - j - 1) < BAND_KD else BAND_KD
+        for i in range(1, imax + 1):
+            dot = float(0.0)
+            k2max = BAND_KD - i
+            if k2max > j:
+                k2max = j
+            if k2max < 0:
+                k2max = 0
+            for k in range(1, k2max + 1):
+                dot += ab[BAND_KD - k, j] * ab[BAND_KD - i - k, j + i]
+            aji = ab[BAND_KD - i, j + i] - dot
+            ab[BAND_KD - i, j + i] = aji / ujj
+
+    for i in range(n):
+        sum_val = float(0.0)
+        k0 = 0 if i < BAND_KD else i - BAND_KD
+        for k in range(k0, i):
+            sum_val += ab[BAND_KD + k - i, i] * b[k]
+        b[i] = (b[i] - sum_val) / ab[BAND_KD, i]
+
+    for i in range(n - 1, -1, -1):
+        sum_val = float(0.0)
+        k1 = i + BAND_KD if i + BAND_KD < n else n - 1
+        for k in range(i + 1, k1 + 1):
+            sum_val += ab[BAND_KD + i - k, k] * b[k]
+        b[i] = (b[i] - sum_val) / ab[BAND_KD, i]
+
 class DefKitDirectLibrary:
     def __init__(self, dll_path: str | None, calling_convention: str):
         self.dll_path = self._resolve_dll_path(dll_path)
@@ -1410,6 +1535,18 @@ class DefKitDirectRodState:
             _as_float_ptr(self.quat_inv_masses),
         )
 
+    def apply_floor_collisions(self, floor_z: float, restitution: float = 0.0):
+        if self.num_points == 0:
+            return
+        min_z = np.float32(floor_z + self.rod_radius)
+        for i in range(self.num_points):
+            z = self.positions[i, 2]
+            if z < min_z:
+                self.positions[i, 2] = min_z
+                self.predicted_positions[i, 2] = min_z
+                if self.velocities[i, 2] < 0.0:
+                    self.velocities[i, 2] = -np.float32(restitution) * self.velocities[i, 2]
+
     def step(
         self,
         dt: float,
@@ -1473,7 +1610,9 @@ class NumpyDirectRodState(DefKitDirectRodState):
         ):
             self.warp_available[step_name] = True
             self.warp_enabled[step_name] = warp_default
-        self.use_gpu_block_thomas = True
+        self.direct_solve_backend = (
+            DIRECT_SOLVE_WARP_BLOCK_THOMAS if warp_default else DIRECT_SOLVE_CPU_NUMPY
+        )
         self.lambdas = np.zeros((self.num_edges, 6), dtype=np.float32)
         self.compliance = np.zeros((self.num_edges, 6), dtype=np.float32)
         self.constraint_values = np.zeros((self.num_edges, 6), dtype=np.float32)
@@ -1503,8 +1642,10 @@ class NumpyDirectRodState(DefKitDirectRodState):
         self.warp_enabled[step_name] = enabled
         return True
 
-    def set_direct_solve_backend(self, use_gpu_block_thomas: bool):
-        self.use_gpu_block_thomas = use_gpu_block_thomas
+    def set_direct_solve_backend(self, backend: str):
+        if backend not in DIRECT_SOLVE_BACKENDS:
+            raise ValueError(f"Unknown direct solve backend: {backend}")
+        self.direct_solve_backend = backend
 
     def _use_warp_step(self, step_name: str) -> bool:
         return self.warp_available.get(step_name, False) and self.warp_enabled.get(step_name, False)
@@ -1585,8 +1726,10 @@ class NumpyDirectRodState(DefKitDirectRodState):
 
     def project_direct(self):
         if self._use_warp_step("project_direct"):
-            if self.use_gpu_block_thomas:
+            if self.direct_solve_backend == DIRECT_SOLVE_WARP_BLOCK_THOMAS:
                 self._warp_project_direct()
+            elif self.direct_solve_backend == DIRECT_SOLVE_WARP_BANDED_CHOLESKY:
+                self._warp_project_direct(use_banded_cholesky=True)
             else:
                 self._numpy_project_direct()
         elif self.numpy_enabled["project_direct"]:
@@ -1845,7 +1988,7 @@ class NumpyDirectRodState(DefKitDirectRodState):
 
         self.compliance[:, :] = compliance_wp.numpy().reshape(self.num_edges, 6)
 
-    def _warp_project_direct(self):
+    def _warp_project_direct(self, use_banded_cholesky: bool = False):
         n_edges = self.num_edges
         if n_edges == 0:
             return
@@ -1906,7 +2049,29 @@ class NumpyDirectRodState(DefKitDirectRodState):
         self.jacobian_pos = jacobian_pos_wp.numpy().reshape(n_edges, 6, 6)
         self.jacobian_rot = jacobian_rot_wp.numpy().reshape(n_edges, 6, 6)
 
-        if n_dofs <= TILE:
+        if use_banded_cholesky:
+            ab_wp = wp.zeros((BAND_LDAB, n_dofs), dtype=wp.float32, device=device)
+            wp.launch(
+                _warp_assemble_jmjt_banded,
+                dim=n_edges,
+                inputs=[jacobian_pos_wp, jacobian_rot_wp, compliance_wp, int(n_dofs), ab_wp],
+                device=device,
+            )
+            rhs_wp = wp.zeros(n_dofs, dtype=wp.float32, device=device)
+            wp.launch(
+                _warp_build_rhs,
+                dim=n_dofs,
+                inputs=[constraint_values_wp, compliance_wp, lambda_sum_wp, int(n_dofs), rhs_wp],
+                device=device,
+            )
+            wp.launch(
+                _warp_spbsv_u11_1rhs,
+                dim=1,
+                inputs=[int(n_dofs), ab_wp, rhs_wp],
+                device=device,
+            )
+            delta_lambda = rhs_wp.numpy()
+        elif n_dofs <= TILE:
             A_wp = wp.zeros((TILE, TILE), dtype=wp.float32, device=device)
             wp.launch(
                 _warp_assemble_jmjt_dense,
@@ -2624,6 +2789,9 @@ class Example:
         self.base_gravity = np.array(args.gravity, dtype=np.float32)
         self.gravity_enabled = True
         self.gravity_scale = 1.0
+        self.floor_collision_enabled = True
+        self.floor_height = 0.0
+        self.floor_restitution = 0.0
 
         self.show_segments = True
         self.show_directors = False
@@ -2823,6 +2991,9 @@ class Example:
         for _ in range(self.substeps):
             self.ref_rod.step(sub_dt, self.linear_damping, self.angular_damping)
             self.numpy_rod.step(sub_dt, self.linear_damping, self.angular_damping)
+            if self.floor_collision_enabled:
+                self.ref_rod.apply_floor_collisions(self.floor_height, self.floor_restitution)
+                self.numpy_rod.apply_floor_collisions(self.floor_height, self.floor_restitution)
 
         self._sync_state_from_rods()
         self.sim_time += self.frame_dt
@@ -3001,6 +3172,16 @@ class Example:
             self._update_gravity()
 
         ui.separator()
+        ui.text("Floor Collision")
+        _changed, self.floor_collision_enabled = ui.checkbox(
+            "Enable Floor Collision", self.floor_collision_enabled
+        )
+        _changed, self.floor_height = ui.slider_float("Floor Height", self.floor_height, -1.0, 1.0)
+        _changed, self.floor_restitution = ui.slider_float(
+            "Floor Restitution", self.floor_restitution, 0.0, 1.0
+        )
+
+        ui.separator()
         if self.supports_non_banded:
             changed_banded, self.use_banded = ui.checkbox("Use Banded Solver", self.use_banded)
             if changed_banded:
@@ -3031,12 +3212,30 @@ class Example:
         if self.use_banded:
             ui.text("Disable banded solver to use direct backend.")
         else:
-            current = self.numpy_rod.use_gpu_block_thomas
-            changed, enabled = ui.checkbox("Use GPU Block-Thomas (Warp)", current)
+            backend_labels = [
+                "Warp Block-Thomas",
+                "Warp Banded Cholesky",
+                "CPU NumPy",
+            ]
+            backend_values = [
+                DIRECT_SOLVE_WARP_BLOCK_THOMAS,
+                DIRECT_SOLVE_WARP_BANDED_CHOLESKY,
+                DIRECT_SOLVE_CPU_NUMPY,
+            ]
+            current_backend = self.numpy_rod.direct_solve_backend
+            try:
+                current_idx = backend_values.index(current_backend)
+            except ValueError:
+                current_idx = 0
+            changed, new_idx = ui.combo("Direct Solve Backend", current_idx, backend_labels)
             if changed:
-                self.numpy_rod.set_direct_solve_backend(enabled)
-            if not self.numpy_rod.use_gpu_block_thomas:
+                self.numpy_rod.set_direct_solve_backend(backend_values[new_idx])
+            if self.numpy_rod.direct_solve_backend == DIRECT_SOLVE_CPU_NUMPY:
                 ui.text("CPU NumPy direct solve will be used for Project Direct.")
+            elif self.numpy_rod.direct_solve_backend == DIRECT_SOLVE_WARP_BANDED_CHOLESKY:
+                ui.text("Warp banded Cholesky (spbsv_u11_1rhs-style).")
+            else:
+                ui.text("Warp block-tridiagonal Thomas solve.")
 
         ui.separator()
         ui.text("NumPy Overrides (candidate rod)")

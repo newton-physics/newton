@@ -110,6 +110,8 @@ class DirectCosseratRodSimulationNumPy:
         self.use_numpy_jacobians = False
         self.use_numpy_assemble = False
         self.use_numpy_solve = False
+        # Use C++-equivalent banded Cholesky solve (spbsv_u11_1rhs)
+        self.use_numpy_solve_spbsv = False
 
         # Non-banded solver flag (replaces update+jacobians+assemble+solve)
         self.use_numpy_project_direct = False
@@ -606,25 +608,28 @@ class DirectCosseratRodSimulationNumPy:
                 self.rhs[6 * i + k] = -self.constraint_values[i, k]
 
         # Solve banded system
-        try:
-            from scipy.linalg import solve_banded
-            delta_lambda = solve_banded(
-                (self.bandwidth, self.bandwidth),
-                self.A_banded,
-                self.rhs,
-                overwrite_ab=False,
-                overwrite_b=False
-            )
-        except ImportError:
-            # Fallback: solve as dense system (slower)
-            n_dofs = 6 * n_edges
-            A_dense = np.zeros((n_dofs, n_dofs), dtype=np.float32)
-            for col in range(n_dofs):
-                for band_row in range(2 * self.bandwidth + 1):
-                    row = col + band_row - self.bandwidth
-                    if 0 <= row < n_dofs:
-                        A_dense[row, col] = self.A_banded[band_row, col]
-            delta_lambda = np.linalg.solve(A_dense, self.rhs)
+        if self.use_numpy_solve_spbsv:
+            delta_lambda = self._solve_banded_spbsv_u11_1rhs()
+        else:
+            try:
+                from scipy.linalg import solve_banded
+                delta_lambda = solve_banded(
+                    (self.bandwidth, self.bandwidth),
+                    self.A_banded,
+                    self.rhs,
+                    overwrite_ab=False,
+                    overwrite_b=False
+                )
+            except ImportError:
+                # Fallback: solve as dense system (slower)
+                n_dofs = 6 * n_edges
+                A_dense = np.zeros((n_dofs, n_dofs), dtype=np.float32)
+                for col in range(n_dofs):
+                    for band_row in range(2 * self.bandwidth + 1):
+                        row = col + band_row - self.bandwidth
+                        if 0 <= row < n_dofs:
+                            A_dense[row, col] = self.A_banded[band_row, col]
+                delta_lambda = np.linalg.solve(A_dense, self.rhs)
 
         # Apply corrections using full J matrices (matching non-banded approach)
         inv_masses = s.inv_masses
@@ -659,6 +664,69 @@ class DirectCosseratRodSimulationNumPy:
                 correction1 = J_bwd.T @ dl
                 dtheta1 = correction1[3:6]
                 self._apply_quaternion_correction(s.predicted_orientations, i + 1, dtheta1)
+
+    def _solve_banded_spbsv_u11_1rhs(self) -> np.ndarray:
+        """Solve the banded system with in-place Cholesky (KD=11).
+
+        Mirrors PositionBasedElasticRods.cpp spbsv_u11_1rhs:
+        - Upper-band storage (rows 0..KD)
+        - In-place Cholesky factorization of the band
+        - Forward/back substitution for a single RHS
+
+        Returns:
+            Solution vector for the banded system.
+        """
+        kd = self.bandwidth
+        n = self.rhs.shape[0]
+
+        if n == 0:
+            return self.rhs.copy()
+
+        # Copy upper band (rows 0..KD) since factorization is in-place
+        ab = self.A_banded[:kd + 1, :].copy()
+        b = self.rhs.copy()
+
+        # 1) In-place Cholesky on AB -> U
+        for j in range(n):
+            sum_sq = 0.0
+            kmax = j if j < kd else kd
+            for k in range(1, kmax + 1):
+                u = ab[kd - k, j]
+                sum_sq += u * u
+
+            ajj = ab[kd, j] - sum_sq
+            if ajj <= 1e-6:
+                # Regularize near-singular diagonals (matches C++ path)
+                ajj = 1e-6
+            ujj = np.sqrt(ajj)
+            ab[kd, j] = ujj
+
+            imax = (n - j - 1) if (n - j - 1) < kd else kd
+            for i in range(1, imax + 1):
+                dot = 0.0
+                k2max = j if j < (kd - i) else (kd - i)
+                for k in range(1, k2max + 1):
+                    dot += ab[kd - k, j] * ab[kd - i - k, j + i]
+                aji = ab[kd - i, j + i] - dot
+                ab[kd - i, j + i] = aji / ujj
+
+        # 2) Forward solve U^T * y = B
+        for i in range(n):
+            sum_val = 0.0
+            k0 = 0 if i < kd else i - kd
+            for k in range(k0, i):
+                sum_val += ab[kd + k - i, i] * b[k]
+            b[i] = (b[i] - sum_val) / ab[kd, i]
+
+        # 3) Backward solve U * x = y
+        for i in range(n - 1, -1, -1):
+            sum_val = 0.0
+            k1 = (i + kd) if (i + kd) < n else (n - 1)
+            for k in range(i + 1, k1 + 1):
+                sum_val += ab[kd + i - k, k] * b[k]
+            b[i] = (b[i] - sum_val) / ab[kd, i]
+
+        return b
 
     def _apply_quaternion_correction(self, orientations: np.ndarray, idx: int, dtheta: np.ndarray):
         """Apply a rotation correction to a quaternion using the G matrix.

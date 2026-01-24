@@ -489,6 +489,10 @@ class Example:
             changed_slv, self.sim_np.use_numpy_solve = ui.checkbox(
                 "    solve_constraints", self.sim_np.use_numpy_solve
             )
+            if self.sim_np.use_numpy_solve:
+                _, self.sim_np.use_numpy_solve_spbsv = ui.checkbox(
+                    "      use_spbsv_u11", self.sim_np.use_numpy_solve_spbsv
+                )
         changed_ip, self.sim_np.use_numpy_integrate_positions = ui.checkbox(
             "integrate_positions", self.sim_np.use_numpy_integrate_positions
         )
