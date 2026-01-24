@@ -257,7 +257,7 @@ class SolverBase:
                 device=model.device,
             )
 
-    def step(self, state_in: State, state_out: State, control: Control, contacts: Contacts, dt: float):
+    def step(self, state_in: State, state_out: State, control: Control, contacts: Contacts, dt: float | None):
         """
         Simulate the model for a given time step using the given control input.
 
@@ -268,7 +268,9 @@ class SolverBase:
                 Defaults to `None` which means the control values from the
                 :class:`Model` are used.
             contacts (Contacts): The contact information.
-            dt (float): The time step (typically in seconds).
+            dt (float, optional): The time step (typically in seconds).
+                If `float`, the time-step is applied uniformly to all worlds.
+                If `None`, the time-step from the :class:`Model` is used.
         """
         raise NotImplementedError()
 

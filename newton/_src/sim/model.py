@@ -417,6 +417,11 @@ class Model:
         self.gravity = None
         """Gravity vector, shape [1], dtype vec3."""
 
+        self.dt = None
+        """Simulation time step, shape [num_worlds], float."""
+        self.inv_dt = None
+        """Inverse simulation time step, shape [num_worlds], float."""
+
         self.equality_constraint_type = None
         """Type of equality constraint, shape [equality_constraint_count], int."""
         self.equality_constraint_body1 = None
@@ -685,6 +690,41 @@ class Model:
             if len(gravity_np) != self.num_worlds:
                 raise ValueError(f"Expected {self.num_worlds} gravity vectors, got {len(gravity_np)}")
             self.gravity.assign(gravity_np)
+
+    def set_timestep(
+        self,
+        dt: float | list | np.ndarray,
+        world: int | None = None,
+    ) -> None:
+        """
+        Set timestep for runtime modification.
+
+        Args:
+            dt: Time-step scalar or per-world array (num_worlds,).
+            world: If provided, set timestep only for this world.
+
+        Note:
+            Call ``solver.notify_model_changed(SolverNotifyFlags.MODEL_PROPERTIES)`` after.
+
+            Global entities (particles/bodies not assigned to a specific world) use
+            time-step from world 0.
+        """
+        dt_np = np.asarray(dt, dtype=np.float32)
+
+        if world is not None:
+            if dt_np.shape != ():
+                raise ValueError("Expected single timestep scalar when world is specified")
+            if world < 0 or world >= self.num_worlds:
+                raise IndexError(f"world {world} out of range [0, {self.num_worlds})")
+            current = self.dt.numpy()
+            current[world] = dt_np[0]
+            self.dt.assign(current)
+        elif dt_np.ndim == 1:
+            self.dt.fill_(dt_np[0])
+        else:
+            if len(dt_np) != self.num_worlds:
+                raise ValueError(f"Expected {self.num_worlds} timestep scalars, got {len(dt_np)}")
+            self.dt.assign(dt_np)
 
     def collide(
         self: Model,
