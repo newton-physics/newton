@@ -6592,9 +6592,9 @@ class ModelBuilder:
 
         This method validates that the per-world start index lists for various entities
         (particles, bodies, shapes, joints, articulations, equality constraints and joint
-        coord/DOFs) are cumulative and match the total counts of those entities. Moreover,
-        it appends the start of tail-end global entities and the overall total counts to
-        the end of each start index lists.
+        coordinates/DOFs/constraints) are cumulative and match the total counts of those
+        entities. Moreover, it appends the start of tail-end global entities and the
+        overall total counts to the end of each start index lists.
 
         The format of the start index lists is as follows (where `*` can be `body`, `shape`, `joint`, etc.):
             .. code-block:: python
