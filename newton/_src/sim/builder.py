@@ -6632,7 +6632,7 @@ class ModelBuilder:
         def build_entity_start_array(
             entity_count: int, entity_world: list[int], world_entity_start: list[int], name: str
         ):
-            # Ensure that joint_space_start has length equal to self.joint_count
+            # Ensure that entity_world has length equal to entity_count
             if len(entity_world) != entity_count:
                 raise ValueError(
                     f"World array for {name}s has incorrect length: expected {entity_count}, found {len(entity_world)}."

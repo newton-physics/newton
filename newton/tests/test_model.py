@@ -426,13 +426,14 @@ class TestModel(unittest.TestCase):
 
         if len(particle_world) > 0:
             # Check global entities
-            self.assertEqual(particle_world[0], -1)  # global particle
-            self.assertEqual(particle_world[-1], -1)  # global particle
+            self.assertEqual(particle_world[0], -1)  # global particle at front
+            self.assertEqual(particle_world[-2], -1)  # global particle at back
+            self.assertEqual(particle_world[-1], -1)  # global particle at back
 
-            # Check world 0 entities (indices 2-3 for particles)
+            # Check world 0 entities (indices for particles)
             self.assertTrue(np.all(particle_world[1:3] == 0))
 
-            # Check world 1 entities
+            # Check world 1 entities (auto-assigned)
             self.assertTrue(np.all(particle_world[3:5] == 1))
 
             # Check world 2 entities (auto-assigned)
@@ -463,6 +464,7 @@ class TestModel(unittest.TestCase):
             self.assertEqual(joint_world[5], 2)
             self.assertEqual(joint_world[6], 2)
             self.assertEqual(joint_world[7], -1)  # floor body's free joint
+            self.assertEqual(joint_world[8], -1)  # ball body's free joint
 
         if len(articulation_world) > 0:
             self.assertEqual(articulation_world[0], -1)  # ground body's articulation
