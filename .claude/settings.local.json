@@ -1,6 +1,7 @@
 {
   "permissions": {
     "allow": [
+	  "Bash",
       "Bash(uv run python:*)",
       "Bash(ln:*)",
       "Bash(uvx pre-commit run:*)",

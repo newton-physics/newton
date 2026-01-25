@@ -1,13 +1,14 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Direct Position-Based Solver for Stiff Rods - C/C++ vs NumPy comparison.
+"""Direct Position-Based Solver for Stiff Rods - C/C++ vs NumPy vs Warp comparison.
 
-This example shows two rods side by side:
+This example shows three rods side by side:
 - Orange rod (Y=0): C/C++ DLL reference implementation
-- Cyan rod (Y=1): NumPy implementation (being ported)
+- Cyan rod (Y=1): NumPy implementation
+- Green rod (Y=2): Warp GPU implementation
 
-Both rods respond to the same UI sliders for comparison.
+All rods respond to the same UI sliders for comparison.
 
 Command: uv run python -m newton.examples.cosserat_dll.example_dll_direct_cosserat_rod
 """
@@ -21,10 +22,11 @@ import newton.examples
 from .rod_state import create_straight_rod
 from .simulation_direct import DirectCosseratRodSimulation
 from .simulation_direct_numpy import DirectCosseratRodSimulationNumPy
+from .simulation_direct_warp import DirectCosseratRodSimulationWarp
 
 
 class Example:
-    """Demo comparing C/C++ and NumPy direct rod solvers side by side."""
+    """Demo comparing C/C++, NumPy, and Warp GPU direct rod solvers side by side."""
 
     def __init__(self, viewer, args=None):
         self.fps = 60
@@ -43,9 +45,10 @@ class Example:
         self.segment_length = 0.05
         self.particle_radius = 0.01
 
-        # Y-offset for the two rods
+        # Y-offset for the three rods
         self.y_offset_cpp = 0.0
         self.y_offset_numpy = 1.0
+        self.y_offset_warp = 2.0
 
         # =========================================================================
         # Rod 1: C/C++ DLL Reference (orange, at Y=0)
@@ -77,6 +80,19 @@ class Example:
         self.sim_np.use_numpy_project_direct = True  # Non-banded solver
 
         # =========================================================================
+        # Rod 3: Warp GPU Implementation (green, at Y=2)
+        # =========================================================================
+        self.state_warp = create_straight_rod(
+            n_particles=self.n_particles,
+            start_pos=(0.0, self.y_offset_warp, 1.0),
+            direction=(1.0, 0.0, 0.0),
+            segment_length=self.segment_length,
+            fix_first=True,
+        )
+        self.sim_warp = DirectCosseratRodSimulationWarp(self.state_warp, device="cuda:0")
+        self.sim_warp.verification_mode = True  # Sync GPU data back to CPU after each step
+
+        # =========================================================================
         # Shared parameters (controlled by UI)
         # =========================================================================
         self.young_modulus_scale = 1.0  # x1e6
@@ -97,7 +113,7 @@ class Example:
         self.show_directors = False
         self.director_scale = 0.05
 
-        # Build Newton model for visualization (particles from both rods)
+        # Build Newton model for visualization (particles from all three rods)
         builder = newton.ModelBuilder()
         builder.add_ground_plane()
 
@@ -111,6 +127,12 @@ class Example:
         for i in range(self.n_particles):
             mass = 0.0 if i == 0 else 1.0
             pos = tuple(self.state_np.positions[i, :3])
+            builder.add_particle(pos=pos, vel=(0.0, 0.0, 0.0), mass=mass, radius=self.particle_radius)
+
+        # Add particles for Warp rod
+        for i in range(self.n_particles):
+            mass = 0.0 if i == 0 else 1.0
+            pos = tuple(self.state_warp.positions[i, :3])
             builder.add_particle(pos=pos, vel=(0.0, 0.0, 0.0), mass=mass, radius=self.particle_radius)
 
         self.model = builder.finalize()
@@ -128,6 +150,8 @@ class Example:
         self._initial_orientations_cpp = self.state_cpp.orientations.copy()
         self._initial_positions_np = self.state_np.positions.copy()
         self._initial_orientations_np = self.state_np.orientations.copy()
+        self._initial_positions_warp = self.state_warp.positions.copy()
+        self._initial_orientations_warp = self.state_warp.orientations.copy()
 
         # Keyboard state
         self._g_key_was_down = False
@@ -140,9 +164,10 @@ class Example:
         self.root_rotation = 0.0
         self._root_base_orientation_cpp = self.state_cpp.orientations[0].copy()
         self._root_base_orientation_np = self.state_np.orientations[0].copy()
+        self._root_base_orientation_warp = self.state_warp.orientations[0].copy()
 
     def _sync_sim_parameters(self):
-        """Sync shared parameters to both simulations."""
+        """Sync shared parameters to all three simulations."""
         # Material moduli
         young_mod = self.young_modulus_scale * 1.0e6
         torsion_mod = self.torsion_modulus_scale * 1.0e6
@@ -151,30 +176,37 @@ class Example:
         self.sim_cpp.torsion_modulus_mult = torsion_mod
         self.sim_np.young_modulus_mult = young_mod
         self.sim_np.torsion_modulus_mult = torsion_mod
+        self.sim_warp.young_modulus = young_mod
+        self.sim_warp.torsion_modulus = torsion_mod
 
         # Bend/twist stiffness
         self.sim_cpp.set_bend_stiffness(self.bend_stiffness, self.bend_stiffness, self.twist_stiffness)
         self.sim_np.set_bend_stiffness(self.bend_stiffness, self.bend_stiffness, self.twist_stiffness)
+        self.sim_warp.set_bend_stiffness(self.bend_stiffness, self.bend_stiffness, self.twist_stiffness)
 
         # Rest curvature
         self.sim_cpp.set_rest_curvature(self.rest_bend_x, self.rest_bend_y, self.rest_twist)
         self.sim_np.set_rest_curvature(self.rest_bend_x, self.rest_bend_y, self.rest_twist)
+        self.sim_warp.set_rest_curvature(self.rest_bend_x, self.rest_bend_y, self.rest_twist)
 
         # Gravity
         if self.gravity_enabled:
             g = -9.81 * self.gravity_scale
             self.sim_cpp.set_gravity(0.0, 0.0, g)
             self.sim_np.set_gravity(0.0, 0.0, g)
+            self.sim_warp.gravity = np.array([0.0, 0.0, g], dtype=np.float32)
         else:
             self.sim_cpp.set_gravity(0.0, 0.0, 0.0)
             self.sim_np.set_gravity(0.0, 0.0, 0.0)
+            self.sim_warp.gravity = np.array([0.0, 0.0, 0.0], dtype=np.float32)
 
     def _sync_state(self):
-        """Sync both rod states to Newton state for visualization."""
-        # Combine positions from both rods
+        """Sync all three rod states to Newton state for visualization."""
+        # Combine positions from all three rods
         positions_cpp = self.state_cpp.get_positions_3d().astype(np.float32)
         positions_np = self.state_np.get_positions_3d().astype(np.float32)
-        all_positions = np.vstack([positions_cpp, positions_np])
+        positions_warp = self.state_warp.get_positions_3d().astype(np.float32)
+        all_positions = np.vstack([positions_cpp, positions_np, positions_warp])
 
         positions_wp = wp.array(all_positions, dtype=wp.vec3, device=self.model.device)
         self.newton_state.particle_q.assign(positions_wp)
@@ -239,8 +271,8 @@ class Example:
             self._apply_root_rotation()
 
     def _move_first_particle(self, dx: float, dy: float, dz: float):
-        """Move the first (fixed) particle of both rods."""
-        for state in [self.state_cpp, self.state_np]:
+        """Move the first (fixed) particle of all three rods."""
+        for state in [self.state_cpp, self.state_np, self.state_warp]:
             state.positions[0, 0] += dx
             state.positions[0, 1] += dy
             state.positions[0, 2] += dz
@@ -249,12 +281,13 @@ class Example:
             state.predicted_positions[0, 2] += dz
 
     def _apply_root_rotation(self):
-        """Apply accumulated rotation around the local Z axis to both rods."""
+        """Apply accumulated rotation around the local Z axis to all three rods."""
         half_angle = self.root_rotation * 0.5
         rz = np.array([0.0, 0.0, np.sin(half_angle), np.cos(half_angle)], dtype=np.float32)
 
         for state, base_orient in [(self.state_cpp, self._root_base_orientation_cpp),
-                                    (self.state_np, self._root_base_orientation_np)]:
+                                    (self.state_np, self._root_base_orientation_np),
+                                    (self.state_warp, self._root_base_orientation_warp)]:
             q = base_orient
             new_q = np.array([
                 q[3] * rz[0] + q[0] * rz[3] + q[1] * rz[2] - q[2] * rz[1],
@@ -336,7 +369,7 @@ class Example:
             print("Switched to NON-BANDED solver (NumPy)")
 
     def _reset(self):
-        """Reset both simulations to initial state."""
+        """Reset all three simulations to initial state."""
         # Reset C++ rod
         np.copyto(self.state_cpp.positions, self._initial_positions_cpp)
         np.copyto(self.state_cpp.predicted_positions, self._initial_positions_cpp)
@@ -357,6 +390,16 @@ class Example:
         self.state_np.angular_velocities.fill(0)
         self.state_np.clear_forces()
 
+        # Reset Warp rod
+        np.copyto(self.state_warp.positions, self._initial_positions_warp)
+        np.copyto(self.state_warp.predicted_positions, self._initial_positions_warp)
+        np.copyto(self.state_warp.orientations, self._initial_orientations_warp)
+        np.copyto(self.state_warp.predicted_orientations, self._initial_orientations_warp)
+        np.copyto(self.state_warp.prev_orientations, self._initial_orientations_warp)
+        self.state_warp.velocities.fill(0)
+        self.state_warp.angular_velocities.fill(0)
+        self.state_warp.clear_forces()
+
         # Reset shared state
         self.rest_bend_x = 0.0
         self.rest_bend_y = 0.0
@@ -374,6 +417,7 @@ class Example:
         for _ in range(self.substeps):
             self.sim_cpp.step(sub_dt)
             self.sim_np.step(sub_dt)
+            self.sim_warp.step(sub_dt)
 
         self._sync_state()
         self.sim_time += self.frame_dt
@@ -446,13 +490,46 @@ class Example:
             colors_wp = wp.array(particle_colors, dtype=wp.vec3, device=self.model.device)
             self.viewer.log_spheres("/particles_numpy", positions_wp, radii, colors_wp)
 
+        # =========================================================================
+        # Warp Rod (green)
+        # =========================================================================
+        positions_warp = self.state_warp.get_positions_3d().astype(np.float32)
+
+        if self.show_segments:
+            starts = wp.array(positions_warp[:-1], dtype=wp.vec3, device=self.model.device)
+            ends = wp.array(positions_warp[1:], dtype=wp.vec3, device=self.model.device)
+            colors = wp.array([[0.2, 0.8, 0.2]] * (self.n_particles - 1), dtype=wp.vec3, device=self.model.device)
+            self.viewer.log_lines("/rod_warp", starts, ends, colors)
+
+        if self.show_directors:
+            dir_starts, dir_ends, dir_colors = self._build_director_lines(self.state_warp)
+            self.viewer.log_lines(
+                "/directors_warp",
+                wp.array(dir_starts, dtype=wp.vec3, device=self.model.device),
+                wp.array(dir_ends, dtype=wp.vec3, device=self.model.device),
+                wp.array(dir_colors, dtype=wp.vec3, device=self.model.device),
+            )
+
+        if hasattr(self.viewer, "log_spheres"):
+            positions_wp = wp.array(positions_warp, dtype=wp.vec3, device=self.model.device)
+            radii = wp.array([self.particle_radius] * self.n_particles, dtype=float, device=self.model.device)
+            particle_colors = []
+            for i in range(self.n_particles):
+                if self.state_warp.inv_masses[i] == 0:
+                    particle_colors.append([0.2, 0.5, 0.2])  # Dark green for fixed
+                else:
+                    particle_colors.append([0.2, 0.9, 0.2])  # Bright green for dynamic
+            colors_wp = wp.array(particle_colors, dtype=wp.vec3, device=self.model.device)
+            self.viewer.log_spheres("/particles_warp", positions_wp, radii, colors_wp)
+
         self.viewer.end_frame()
 
     def gui(self, ui):
         ui.text("Direct Solver Comparison")
         ui.text("  Orange (Y=0): C/C++ DLL")
         ui.text("  Cyan (Y=1): NumPy")
-        ui.text(f"Particles: {self.n_particles} x 2")
+        ui.text("  Green (Y=2): Warp GPU")
+        ui.text(f"Particles: {self.n_particles} x 3")
         ui.text(f"Time: {self.sim_time:.2f}s")
         ui.separator()
 
@@ -503,7 +580,7 @@ class Example:
         ui.separator()
         _, self.substeps = ui.slider_int("Substeps", self.substeps, 1, 16)
 
-        # Sync damping to both
+        # Sync damping to all three
         changed_pd, self.sim_cpp.position_damping = ui.slider_float(
             "Linear Damping", self.sim_cpp.position_damping, 0.0, 0.05
         )
@@ -512,8 +589,10 @@ class Example:
         )
         if changed_pd:
             self.sim_np.position_damping = self.sim_cpp.position_damping
+            self.sim_warp.position_damping = self.sim_cpp.position_damping
         if changed_rd:
             self.sim_np.rotation_damping = self.sim_cpp.rotation_damping
+            self.sim_warp.rotation_damping = self.sim_cpp.rotation_damping
 
         ui.separator()
         ui.text("Stiffness Multipliers (NumPy):")
@@ -579,15 +658,19 @@ class Example:
         ui.text("Keyboard: G=Gravity, R=Reset, B=Banded/Non-banded")
 
         ui.separator()
-        # Show tip positions for both rods
+        # Show tip positions for all three rods
         tip_cpp = self.state_cpp.positions[-1, :3]
         tip_np = self.state_np.positions[-1, :3]
-        ui.text(f"C++ Tip: ({tip_cpp[0]:.3f}, {tip_cpp[1]:.3f}, {tip_cpp[2]:.3f})")
-        ui.text(f"NP  Tip: ({tip_np[0]:.3f}, {tip_np[1]:.3f}, {tip_np[2]:.3f})")
+        tip_warp = self.state_warp.positions[-1, :3]
+        ui.text(f"C++ Tip:  ({tip_cpp[0]:.3f}, {tip_cpp[1]:.3f}, {tip_cpp[2]:.3f})")
+        ui.text(f"NP  Tip:  ({tip_np[0]:.3f}, {tip_np[1]:.3f}, {tip_np[2]:.3f})")
+        ui.text(f"Warp Tip: ({tip_warp[0]:.3f}, {tip_warp[1]:.3f}, {tip_warp[2]:.3f})")
 
-        # Show difference
-        diff = np.linalg.norm(tip_cpp - tip_np)
-        ui.text(f"Tip Difference: {diff:.6f}")
+        # Show differences
+        diff_np = np.linalg.norm(tip_cpp - tip_np)
+        diff_warp = np.linalg.norm(tip_cpp - tip_warp)
+        ui.text(f"Diff C++/NP:   {diff_np:.6f}")
+        ui.text(f"Diff C++/Warp: {diff_warp:.6f}")
 
     def test_final(self):
         """Validation after simulation."""
@@ -599,11 +682,21 @@ class Example:
         tip_z_np = self.state_np.positions[-1, 2]
         assert tip_z_np < 0.95, f"NumPy tip should drop below 0.95, got {tip_z_np}"
 
+        # Check Warp tip has dropped under gravity
+        tip_z_warp = self.state_warp.positions[-1, 2]
+        assert tip_z_warp < 0.95, f"Warp tip should drop below 0.95, got {tip_z_warp}"
+
         # Check segment lengths for C++ rod
         for i in range(self.n_particles - 1):
             actual = np.linalg.norm(self.state_cpp.positions[i + 1, :3] - self.state_cpp.positions[i, :3])
             error = abs(actual - self.segment_length) / self.segment_length
             assert error < 0.2, f"C++ Segment {i} length error {error * 100:.1f}% exceeds 20%"
+
+        # Check Warp rod matches C++ within tolerance
+        tip_cpp = self.state_cpp.positions[-1, :3]
+        tip_warp = self.state_warp.positions[-1, :3]
+        diff = np.linalg.norm(tip_cpp - tip_warp)
+        assert diff < 0.1, f"Warp tip should match C++ within 0.1, got diff {diff}"
 
 
 if __name__ == "__main__":

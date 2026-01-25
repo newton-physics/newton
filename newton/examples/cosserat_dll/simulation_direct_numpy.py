@@ -153,44 +153,127 @@ class DirectCosseratRodSimulationNumPy:
                 s.predicted_positions[i, :3] = s.positions[i, :3]
 
     def _predict_rotations_numpy(self, dt: float):
-        """NumPy implementation of rotation prediction (placeholder)."""
-        # TODO: Implement quaternion integration
-        # For now, fall back to DLL
+        """NumPy implementation of rotation prediction.
+
+        Following C++ PredictRotationsPBD:
+        1. Apply damping to angular velocity
+        2. Add angular acceleration from torques
+        3. Integrate quaternion using: q' = q + 0.5 * dt * omega_quat * q
+           where omega_quat = (omega.x, omega.y, omega.z, 0)
+        4. Normalize the resulting quaternion
+        """
         s = self.state
-        self.dll.predict_rotations(
-            dt,
-            self.rotation_damping,
-            s.orientations,
-            s.predicted_orientations,
-            s.angular_velocities,
-            s.torques,
-            s.quat_inv_masses,
-        )
+        damping = self.rotation_damping
+
+        for i in range(s.n_particles):
+            if s.quat_inv_masses[i] > 0:
+                # Apply damping to angular velocity
+                s.angular_velocities[i, :3] *= (1.0 - damping)
+
+                # Add angular acceleration from torques
+                # For unit inertia: alpha = inv_inertia * torque = torque
+                accel = s.torques[i, :3]
+                s.angular_velocities[i, :3] += dt * accel
+
+                # Get current orientation and angular velocity
+                q = s.orientations[i].copy()  # (x, y, z, w)
+                omega = s.angular_velocities[i, :3]
+
+                # Integrate quaternion: q' = q + 0.5 * dt * omega_quat * q
+                # omega_quat = (omega.x, omega.y, omega.z, 0)
+                # Using quaternion multiplication: omega_quat * q
+                wx, wy, wz = omega
+                qx, qy, qz, qw = q
+
+                # omega_quat * q where omega_quat = (wx, wy, wz, 0)
+                dq = np.array([
+                    0.0 * qw + wx * qw + wy * qz - wz * qy,  # = wx*qw + wy*qz - wz*qy
+                    0.0 * qw - wx * qz + wy * qw + wz * qx,  # = -wx*qz + wy*qw + wz*qx
+                    0.0 * qw + wx * qy - wy * qx + wz * qw,  # = wx*qy - wy*qx + wz*qw
+                    0.0 * qw - wx * qx - wy * qy - wz * qz,  # = -wx*qx - wy*qy - wz*qz
+                ], dtype=np.float32)
+
+                # q_new = q + 0.5 * dt * dq
+                q_new = q + 0.5 * dt * dq
+
+                # Normalize
+                norm = np.linalg.norm(q_new)
+                if norm > 1e-10:
+                    q_new /= norm
+
+                s.predicted_orientations[i] = q_new
+            else:
+                # Fixed orientation
+                s.predicted_orientations[i] = s.orientations[i].copy()
 
     def _integrate_positions_numpy(self, dt: float):
-        """NumPy implementation of position integration (placeholder)."""
-        # TODO: Implement
+        """NumPy implementation of position integration.
+
+        Following C++ Integrate_native:
+        1. For dynamic particles (inv_mass > 0):
+           - velocity = (predicted_position - position) / dt
+           - position = predicted_position
+        2. For fixed particles (inv_mass == 0):
+           - No velocity update
+           - position = predicted_position (in case it was moved externally)
+        """
         s = self.state
-        self.dll.integrate_positions(
-            dt,
-            s.positions,
-            s.predicted_positions,
-            s.velocities,
-            s.inv_masses,
-        )
+        inv_dt = 1.0 / dt if dt > 1e-10 else 0.0
+
+        for i in range(s.n_particles):
+            if s.inv_masses[i] > 0:
+                # Update velocity from position change
+                s.velocities[i, :3] = (s.predicted_positions[i, :3] - s.positions[i, :3]) * inv_dt
+                # Update position
+                s.positions[i, :3] = s.predicted_positions[i, :3]
+            else:
+                # Fixed particle: position might have been moved externally
+                s.positions[i, :3] = s.predicted_positions[i, :3]
+                # Keep velocity at zero
+                s.velocities[i, :3] = 0.0
 
     def _integrate_rotations_numpy(self, dt: float):
-        """NumPy implementation of rotation integration (placeholder)."""
-        # TODO: Implement
+        """NumPy implementation of rotation integration.
+
+        Following C++ IntegrateRotationsPBD:
+        1. Store current orientation as prev_orientation
+        2. Update orientation from predicted_orientation
+        3. Derive angular velocity from orientation change:
+           omega = 2/dt * (q_new * q_old^{-1}).xyz
+           (only the imaginary part of the relative quaternion)
+        """
         s = self.state
-        self.dll.integrate_rotations(
-            dt,
-            s.orientations,
-            s.predicted_orientations,
-            s.prev_orientations,
-            s.angular_velocities,
-            s.quat_inv_masses,
-        )
+        inv_dt = 1.0 / dt if dt > 1e-10 else 0.0
+
+        for i in range(s.n_particles):
+            if s.quat_inv_masses[i] > 0:
+                # Store current as previous
+                q_old = s.orientations[i].copy()
+                s.prev_orientations[i] = q_old
+
+                # Update orientation from predicted
+                q_new = s.predicted_orientations[i].copy()
+                s.orientations[i] = q_new
+
+                # Derive angular velocity from quaternion difference
+                # omega = 2/dt * (q_new * q_old^{-1}).xyz
+                # q_old^{-1} for unit quaternion = conjugate = (-x, -y, -z, w)
+                q_old_inv = self._quat_conjugate(q_old)
+
+                # q_rel = q_new * q_old_inv
+                q_rel = self._quat_multiply(q_new, q_old_inv)
+
+                # Angular velocity = 2/dt * imaginary part
+                # Sign convention: if q_rel.w < 0, flip sign to take shorter path
+                sign = 1.0 if q_rel[3] >= 0 else -1.0
+                s.angular_velocities[i, 0] = sign * 2.0 * inv_dt * q_rel[0]
+                s.angular_velocities[i, 1] = sign * 2.0 * inv_dt * q_rel[1]
+                s.angular_velocities[i, 2] = sign * 2.0 * inv_dt * q_rel[2]
+            else:
+                # Fixed orientation
+                s.prev_orientations[i] = s.orientations[i].copy()
+                s.orientations[i] = s.predicted_orientations[i].copy()
+                s.angular_velocities[i, :3] = 0.0
 
     def _prepare_numpy(self, dt: float):
         """NumPy implementation of constraint preparation.

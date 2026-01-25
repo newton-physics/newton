@@ -25,6 +25,9 @@ Command:
 
 from __future__ import annotations
 
+import time
+from collections import deque
+
 import numpy as np
 import warp as wp
 
@@ -327,6 +330,22 @@ class WarpResidentRodState(base.DefKitDirectRodState):
         self.last_delta_lambda_max = 0.0
         self.last_correction_max = 0.0
 
+        self._enable_timers = True
+        self._timers_use_nvtx = False
+        self._timing_accum = {
+            "integration": 0.0,
+            "constraints_assembly": 0.0,
+            "system_solve": 0.0,
+            "final_position_update": 0.0,
+        }
+        self._timing_count = 0
+        self._timing_last_report = time.perf_counter()
+
+        self.use_cuda_graph = False
+        self._graph = None
+        self._graph_params = None
+        self._graph_capture_active = False
+
         self._init_warp_state()
         self._sync_from_host_all()
         self._warp_ready = True
@@ -375,6 +394,54 @@ class WarpResidentRodState(base.DefKitDirectRodState):
         self._constraint_max_wp = wp.zeros(1, dtype=wp.float32, device=self.device)
         self._delta_lambda_max_wp = wp.zeros(1, dtype=wp.float32, device=self.device)
         self._correction_max_wp = wp.zeros(1, dtype=wp.float32, device=self.device)
+
+    def _timer(self, name: str):
+        return wp.ScopedTimer(
+            f"gpu_rod::{name}",
+            active=self._enable_timers,
+            print=False,
+            use_nvtx=self._timers_use_nvtx,
+            synchronize=not self._timers_use_nvtx,
+        )
+
+    def _record_timing(self, name: str, elapsed: float):
+        if not self._enable_timers:
+            return
+        self._timing_accum[name] = self._timing_accum.get(name, 0.0) + elapsed
+
+    def _maybe_report_timings(self):
+        if not self._enable_timers:
+            return
+        now = time.perf_counter()
+        if now - self._timing_last_report < 5.0:
+            return
+        if self._timing_count == 0:
+            self._timing_last_report = now
+            return
+        scale = 1000.0 / float(self._timing_count)
+        avg_integration = self._timing_accum["integration"] * scale
+        avg_assembly = self._timing_accum["constraints_assembly"] * scale
+        avg_solve = self._timing_accum["system_solve"] * scale
+        avg_update = self._timing_accum["final_position_update"] * scale
+        print(
+            "GPU Warp avg timings (ms): "
+            f"integration={avg_integration:.3f}, "
+            f"assembly={avg_assembly:.3f}, "
+            f"solve={avg_solve:.3f}, "
+            f"final_update={avg_update:.3f}",
+            flush=True,
+        )
+        for key in self._timing_accum:
+            self._timing_accum[key] = 0.0
+        self._timing_count = 0
+        self._timing_last_report = now
+
+    def set_use_cuda_graph(self, enabled: bool):
+        if enabled and not self.device.is_cuda:
+            enabled = False
+        self.use_cuda_graph = enabled
+        self._graph = None
+        self._graph_params = None
 
     def _sync_from_host_all(self):
         self.positions_wp.assign(wp.array(self.positions[:, 0:3], dtype=wp.vec3, device=self.device))
@@ -563,25 +630,28 @@ class WarpResidentRodState(base.DefKitDirectRodState):
     def prepare_constraints(self, dt: float):
         if self.num_edges == 0:
             return
-        wp.launch(
-            _warp_zero_float,
-            dim=self.n_dofs,
-            inputs=[self.lambda_sum_wp],
-            device=self.device,
-        )
-        wp.launch(
-            base._warp_prepare_compliance,
-            dim=self.num_edges,
-            inputs=[
-                self.rest_lengths_wp,
-                self.bend_stiffness_wp,
-                float(self.young_modulus),
-                float(self.torsion_modulus),
-                float(dt),
-                self.compliance_wp,
-            ],
-            device=self.device,
-        )
+        start = time.perf_counter()
+        with self._timer("constraints_assembly"):
+            wp.launch(
+                _warp_zero_float,
+                dim=self.n_dofs,
+                inputs=[self.lambda_sum_wp],
+                device=self.device,
+            )
+            wp.launch(
+                base._warp_prepare_compliance,
+                dim=self.num_edges,
+                inputs=[
+                    self.rest_lengths_wp,
+                    self.bend_stiffness_wp,
+                    float(self.young_modulus),
+                    float(self.torsion_modulus),
+                    float(dt),
+                    self.compliance_wp,
+                ],
+                device=self.device,
+            )
+        self._record_timing("constraints_assembly", time.perf_counter() - start)
 
     def project_direct(self):
         if self.num_edges == 0:
@@ -590,157 +660,216 @@ class WarpResidentRodState(base.DefKitDirectRodState):
             self.last_correction_max = 0.0
             return
 
-        wp.launch(
-            base._warp_update_constraints_direct,
-            dim=self.num_edges,
-            inputs=[
-                self.predicted_positions_wp,
-                self.predicted_orientations_wp,
-                self.rest_lengths_wp,
-                self.rest_darboux_wp,
-                self.constraint_values_wp,
-            ],
-            device=self.device,
-        )
-        wp.launch(
-            _warp_constraint_max,
-            dim=1,
-            inputs=[self.constraint_values_wp, int(self.num_edges), self._constraint_max_wp],
-            device=self.device,
-        )
+        start = time.perf_counter()
+        with self._timer("constraints_assembly"):
+            wp.launch(
+                base._warp_update_constraints_direct,
+                dim=self.num_edges,
+                inputs=[
+                    self.predicted_positions_wp,
+                    self.predicted_orientations_wp,
+                    self.rest_lengths_wp,
+                    self.rest_darboux_wp,
+                    self.constraint_values_wp,
+                ],
+                device=self.device,
+            )
+            wp.launch(
+                _warp_constraint_max,
+                dim=1,
+                inputs=[self.constraint_values_wp, int(self.num_edges), self._constraint_max_wp],
+                device=self.device,
+            )
 
-        wp.launch(
-            base._warp_compute_jacobians_direct,
-            dim=self.num_edges,
-            inputs=[
-                self.predicted_orientations_wp,
-                self.rest_lengths_wp,
-                self.jacobian_pos_wp,
-                self.jacobian_rot_wp,
-            ],
-            device=self.device,
-        )
+            wp.launch(
+                base._warp_compute_jacobians_direct,
+                dim=self.num_edges,
+                inputs=[
+                    self.predicted_orientations_wp,
+                    self.rest_lengths_wp,
+                    self.jacobian_pos_wp,
+                    self.jacobian_rot_wp,
+                ],
+                device=self.device,
+            )
+        self._record_timing("constraints_assembly", time.perf_counter() - start)
 
         n_dofs = self.n_dofs
         if self.direct_solve_backend == DIRECT_SOLVE_WARP_BANDED_CHOLESKY:
-            wp.launch(
-                _warp_zero_2d,
-                dim=BAND_LDAB * max(1, n_dofs),
-                inputs=[self.ab_wp, int(BAND_LDAB), int(max(1, n_dofs))],
-                device=self.device,
-            )
-            wp.launch(
-                base._warp_assemble_jmjt_banded,
-                dim=self.num_edges,
-                inputs=[self.jacobian_pos_wp, self.jacobian_rot_wp, self.compliance_wp, int(n_dofs), self.ab_wp],
-                device=self.device,
-            )
-            wp.launch(
-                base._warp_build_rhs,
-                dim=n_dofs,
-                inputs=[self.constraint_values_wp, self.compliance_wp, self.lambda_sum_wp, int(n_dofs), self.rhs_wp],
-                device=self.device,
-            )
-            wp.launch(
-                base._warp_spbsv_u11_1rhs,
-                dim=1,
-                inputs=[int(n_dofs), self.ab_wp, self.rhs_wp],
-                device=self.device,
-            )
-            delta_lambda = self.rhs_wp
-        elif n_dofs <= TILE:
-            wp.launch(
-                _warp_zero_2d,
-                dim=TILE * TILE,
-                inputs=[self.A_wp, int(TILE), int(TILE)],
-                device=self.device,
-            )
-            wp.launch(
-                base._warp_assemble_jmjt_dense,
-                dim=self.num_edges,
-                inputs=[self.jacobian_pos_wp, self.jacobian_rot_wp, self.compliance_wp, int(n_dofs), self.A_wp],
-                device=self.device,
-            )
-            wp.launch(
-                base._warp_build_rhs,
-                dim=TILE,
-                inputs=[self.constraint_values_wp, self.compliance_wp, self.lambda_sum_wp, int(n_dofs), self.rhs_tile_wp],
-                device=self.device,
-            )
-            if n_dofs < TILE:
+            start = time.perf_counter()
+            with self._timer("constraints_assembly"):
                 wp.launch(
-                    base._warp_pad_diagonal,
-                    dim=TILE,
-                    inputs=[self.A_wp, int(n_dofs), int(TILE)],
+                    _warp_zero_2d,
+                    dim=BAND_LDAB * max(1, n_dofs),
+                    inputs=[self.ab_wp, int(BAND_LDAB), int(max(1, n_dofs))],
                     device=self.device,
                 )
-            wp.launch_tiled(
-                base._warp_cholesky_solve_tile,
-                dim=[1, 1],
-                inputs=[self.A_wp, self.rhs_tile_wp],
-                outputs=[self.delta_lambda_tile_wp],
-                block_dim=BLOCK_DIM,
-                device=self.device,
-            )
+                wp.launch(
+                    base._warp_assemble_jmjt_banded,
+                    dim=self.num_edges,
+                    inputs=[
+                        self.jacobian_pos_wp,
+                        self.jacobian_rot_wp,
+                        self.compliance_wp,
+                        int(n_dofs),
+                        self.ab_wp,
+                    ],
+                    device=self.device,
+                )
+                wp.launch(
+                    base._warp_build_rhs,
+                    dim=n_dofs,
+                    inputs=[
+                        self.constraint_values_wp,
+                        self.compliance_wp,
+                        self.lambda_sum_wp,
+                        int(n_dofs),
+                        self.rhs_wp,
+                    ],
+                    device=self.device,
+                )
+            self._record_timing("constraints_assembly", time.perf_counter() - start)
+            start = time.perf_counter()
+            with self._timer("system_solve"):
+                wp.launch(
+                    base._warp_spbsv_u11_1rhs,
+                    dim=1,
+                    inputs=[int(n_dofs), self.ab_wp, self.rhs_wp],
+                    device=self.device,
+                )
+            self._record_timing("system_solve", time.perf_counter() - start)
+            delta_lambda = self.rhs_wp
+        elif n_dofs <= TILE:
+            start = time.perf_counter()
+            with self._timer("constraints_assembly"):
+                wp.launch(
+                    _warp_zero_2d,
+                    dim=TILE * TILE,
+                    inputs=[self.A_wp, int(TILE), int(TILE)],
+                    device=self.device,
+                )
+                wp.launch(
+                    base._warp_assemble_jmjt_dense,
+                    dim=self.num_edges,
+                    inputs=[
+                        self.jacobian_pos_wp,
+                        self.jacobian_rot_wp,
+                        self.compliance_wp,
+                        int(n_dofs),
+                        self.A_wp,
+                    ],
+                    device=self.device,
+                )
+                wp.launch(
+                    base._warp_build_rhs,
+                    dim=TILE,
+                    inputs=[
+                        self.constraint_values_wp,
+                        self.compliance_wp,
+                        self.lambda_sum_wp,
+                        int(n_dofs),
+                        self.rhs_tile_wp,
+                    ],
+                    device=self.device,
+                )
+                if n_dofs < TILE:
+                    wp.launch(
+                        base._warp_pad_diagonal,
+                        dim=TILE,
+                        inputs=[self.A_wp, int(n_dofs), int(TILE)],
+                        device=self.device,
+                    )
+            self._record_timing("constraints_assembly", time.perf_counter() - start)
+            start = time.perf_counter()
+            with self._timer("system_solve"):
+                wp.launch_tiled(
+                    base._warp_cholesky_solve_tile,
+                    dim=[1, 1],
+                    inputs=[self.A_wp, self.rhs_tile_wp],
+                    outputs=[self.delta_lambda_tile_wp],
+                    block_dim=BLOCK_DIM,
+                    device=self.device,
+                )
+            self._record_timing("system_solve", time.perf_counter() - start)
             delta_lambda = self.delta_lambda_tile_wp
         else:
-            wp.launch(
-                base._warp_assemble_jmjt_blocks,
-                dim=self.num_edges,
-                inputs=[
-                    self.jacobian_pos_wp,
-                    self.jacobian_rot_wp,
-                    self.compliance_wp,
-                    int(self.num_edges),
-                    self.diag_blocks_wp,
-                    self.offdiag_blocks_wp,
-                ],
-                device=self.device,
-            )
-            wp.launch(
-                base._warp_build_rhs,
-                dim=n_dofs,
-                inputs=[self.constraint_values_wp, self.compliance_wp, self.lambda_sum_wp, int(n_dofs), self.rhs_wp],
-                device=self.device,
-            )
-            wp.launch(
-                base._warp_block_thomas_solve,
-                dim=1,
-                inputs=[
-                    self.diag_blocks_wp,
-                    self.offdiag_blocks_wp,
-                    self.rhs_wp,
-                    int(self.num_edges),
-                    self.c_blocks_wp,
-                    self.d_prime_wp,
-                    self.delta_lambda_wp,
-                ],
-                device=self.device,
-            )
+            start = time.perf_counter()
+            with self._timer("constraints_assembly"):
+                wp.launch(
+                    base._warp_assemble_jmjt_blocks,
+                    dim=self.num_edges,
+                    inputs=[
+                        self.jacobian_pos_wp,
+                        self.jacobian_rot_wp,
+                        self.compliance_wp,
+                        int(self.num_edges),
+                        self.diag_blocks_wp,
+                        self.offdiag_blocks_wp,
+                    ],
+                    device=self.device,
+                )
+                wp.launch(
+                    base._warp_build_rhs,
+                    dim=n_dofs,
+                    inputs=[
+                        self.constraint_values_wp,
+                        self.compliance_wp,
+                        self.lambda_sum_wp,
+                        int(n_dofs),
+                        self.rhs_wp,
+                    ],
+                    device=self.device,
+                )
+            self._record_timing("constraints_assembly", time.perf_counter() - start)
+            start = time.perf_counter()
+            with self._timer("system_solve"):
+                wp.launch(
+                    base._warp_block_thomas_solve,
+                    dim=1,
+                    inputs=[
+                        self.diag_blocks_wp,
+                        self.offdiag_blocks_wp,
+                        self.rhs_wp,
+                        int(self.num_edges),
+                        self.c_blocks_wp,
+                        self.d_prime_wp,
+                        self.delta_lambda_wp,
+                    ],
+                    device=self.device,
+                )
+            self._record_timing("system_solve", time.perf_counter() - start)
             delta_lambda = self.delta_lambda_wp
 
-        wp.launch(
-            _warp_apply_direct_corrections,
-            dim=1,
-            inputs=[
-                self.predicted_positions_wp,
-                self.predicted_orientations_wp,
-                self.inv_masses_wp,
-                self.quat_inv_masses_wp,
-                self.jacobian_pos_wp,
-                self.jacobian_rot_wp,
-                delta_lambda,
-                self.lambda_sum_wp,
-                int(self.num_edges),
-                self._delta_lambda_max_wp,
-                self._correction_max_wp,
-            ],
-            device=self.device,
-        )
+        start = time.perf_counter()
+        with self._timer("final_position_update"):
+            wp.launch(
+                _warp_apply_direct_corrections,
+                dim=1,
+                inputs=[
+                    self.predicted_positions_wp,
+                    self.predicted_orientations_wp,
+                    self.inv_masses_wp,
+                    self.quat_inv_masses_wp,
+                    self.jacobian_pos_wp,
+                    self.jacobian_rot_wp,
+                    delta_lambda,
+                    self.lambda_sum_wp,
+                    int(self.num_edges),
+                    self._delta_lambda_max_wp,
+                    self._correction_max_wp,
+                ],
+                device=self.device,
+            )
+        self._record_timing("final_position_update", time.perf_counter() - start)
 
-        self.last_constraint_max = float(self._constraint_max_wp.numpy()[0])
-        self.last_delta_lambda_max = float(self._delta_lambda_max_wp.numpy()[0])
-        self.last_correction_max = float(self._correction_max_wp.numpy()[0])
+        if self._graph_capture_active:
+            self.last_constraint_max = 0.0
+            self.last_delta_lambda_max = 0.0
+            self.last_correction_max = 0.0
+        else:
+            self.last_constraint_max = float(self._constraint_max_wp.numpy()[0])
+            self.last_delta_lambda_max = float(self._delta_lambda_max_wp.numpy()[0])
+            self.last_correction_max = float(self._correction_max_wp.numpy()[0])
 
     def apply_floor_collisions(self, floor_z: float, restitution: float = 0.0):
         if self.num_points == 0:
@@ -753,13 +882,56 @@ class WarpResidentRodState(base.DefKitDirectRodState):
             device=self.device,
         )
 
-    def step(self, dt: float, linear_damping: float, angular_damping: float):
-        self.predict_positions(dt, linear_damping)
-        self.predict_rotations(dt, angular_damping)
+    def _step_impl(self, dt: float, linear_damping: float, angular_damping: float):
+        start = time.perf_counter()
+        with self._timer("integration"):
+            self.predict_positions(dt, linear_damping)
+            self.predict_rotations(dt, angular_damping)
+        self._record_timing("integration", time.perf_counter() - start)
+
         self.prepare_constraints(dt)
         self.project_direct()
-        self.integrate_positions(dt)
-        self.integrate_rotations(dt)
+
+        start = time.perf_counter()
+        with self._timer("final_position_update"):
+            self.integrate_positions(dt)
+            self.integrate_rotations(dt)
+        self._record_timing("final_position_update", time.perf_counter() - start)
+
+        if self._enable_timers:
+            self._timing_count += 1
+            self._maybe_report_timings()
+
+    def _ensure_cuda_graph(self, dt: float, linear_damping: float, angular_damping: float):
+        params = (
+            float(dt),
+            float(linear_damping),
+            float(angular_damping),
+            bool(self.use_banded),
+            str(self.direct_solve_backend),
+        )
+        if self._graph is not None and self._graph_params == params:
+            return
+
+        was_enabled = self._enable_timers
+        self._enable_timers = False
+        self._graph_capture_active = True
+        try:
+            with wp.ScopedCapture(device=self.device, force_module_load=True) as capture:
+                self._step_impl(dt, linear_damping, angular_damping)
+        finally:
+            self._graph_capture_active = False
+        self._enable_timers = was_enabled
+        self._graph = capture.graph
+        self._graph_params = params
+
+    def step(self, dt: float, linear_damping: float, angular_damping: float):
+        if self.use_cuda_graph and self.device.is_cuda:
+            self._ensure_cuda_graph(dt, linear_damping, angular_damping)
+            wp.capture_launch(self._graph)
+            return
+
+        self._step_impl(dt, linear_damping, angular_damping)
 
 
 class Example:
@@ -801,6 +973,16 @@ class Example:
         self.root_move_speed = 1.0
         self.root_rotate_speed = 1.0
         self.root_rotation = 0.0
+
+        self.simulate_reference = True
+        self.simulate_gpu = True
+        self.use_cuda_graph = args.use_cuda_graph
+        self._force_sync_reference = True
+        self._force_sync_gpu = True
+        self._perf_window = 90
+        self._frame_times = deque(maxlen=self._perf_window)
+        self._ref_times = deque(maxlen=self._perf_window)
+        self._gpu_times = deque(maxlen=self._perf_window)
 
         self._gravity_key_was_down = False
         self._reset_key_was_down = False
@@ -849,6 +1031,8 @@ class Example:
             lock_root_rotation=args.lock_root_rotation,
             use_banded=self.use_banded,
         )
+        self.gpu_rod.set_use_cuda_graph(self.use_cuda_graph)
+        self.use_cuda_graph = self.gpu_rod.use_cuda_graph
 
         builder = newton.ModelBuilder()
         builder.add_ground_plane()
@@ -881,7 +1065,7 @@ class Example:
         self._ref_segment_colors_wp = wp.array(self._ref_segment_colors, dtype=wp.vec3, device=device)
         self._gpu_segment_colors_wp = wp.array(self._gpu_segment_colors, dtype=wp.vec3, device=device)
 
-        self._sync_state_from_rods()
+        self._sync_state_from_rods(force=True)
         self._update_gravity()
         self._ref_root_base_orientation = self.ref_rod.orientations[0].copy()
         self._gpu_root_base_orientation = self.gpu_rod.orientations[0].copy()
@@ -900,41 +1084,47 @@ class Example:
         self.ref_rod.set_gravity(gravity)
         self.gpu_rod.set_gravity(gravity)
 
-    def _sync_state_from_rods(self):
-        ref_positions = self.ref_rod.positions[:, 0:3].astype(np.float32)
-        ref_velocities = self.ref_rod.velocities[:, 0:3].astype(np.float32)
-        self._ref_positions_wp.assign(wp.array(ref_positions, dtype=wp.vec3, device=self.model.device))
-        self._ref_velocities_wp.assign(wp.array(ref_velocities, dtype=wp.vec3, device=self.model.device))
+    def _sync_state_from_rods(self, force: bool = False):
+        sync_ref = force or self.simulate_reference or self._force_sync_reference
+        sync_gpu = force or self.simulate_gpu or self._force_sync_gpu
 
         ref_offset = wp.vec3(float(self.ref_offset[0]), float(self.ref_offset[1]), float(self.ref_offset[2]))
         gpu_offset = wp.vec3(float(self.gpu_offset[0]), float(self.gpu_offset[1]), float(self.gpu_offset[2]))
-
-        wp.launch(
-            _warp_copy_with_offset,
-            dim=self.ref_rod.num_points,
-            inputs=[self._ref_positions_wp, ref_offset, 0, self.state.particle_q],
-            device=self.model.device,
-        )
-        wp.launch(
-            _warp_copy_with_offset,
-            dim=self.gpu_rod.num_points,
-            inputs=[self.gpu_rod.positions_wp, gpu_offset, self.ref_rod.num_points, self.state.particle_q],
-            device=self.model.device,
-        )
-
         zero_offset = wp.vec3(0.0, 0.0, 0.0)
-        wp.launch(
-            _warp_copy_with_offset,
-            dim=self.ref_rod.num_points,
-            inputs=[self._ref_velocities_wp, zero_offset, 0, self.state.particle_qd],
-            device=self.model.device,
-        )
-        wp.launch(
-            _warp_copy_with_offset,
-            dim=self.gpu_rod.num_points,
-            inputs=[self.gpu_rod.velocities_wp, zero_offset, self.ref_rod.num_points, self.state.particle_qd],
-            device=self.model.device,
-        )
+
+        if sync_ref:
+            ref_positions = self.ref_rod.positions[:, 0:3].astype(np.float32)
+            ref_velocities = self.ref_rod.velocities[:, 0:3].astype(np.float32)
+            self._ref_positions_wp.assign(wp.array(ref_positions, dtype=wp.vec3, device=self.model.device))
+            self._ref_velocities_wp.assign(wp.array(ref_velocities, dtype=wp.vec3, device=self.model.device))
+            wp.launch(
+                _warp_copy_with_offset,
+                dim=self.ref_rod.num_points,
+                inputs=[self._ref_positions_wp, ref_offset, 0, self.state.particle_q],
+                device=self.model.device,
+            )
+            wp.launch(
+                _warp_copy_with_offset,
+                dim=self.ref_rod.num_points,
+                inputs=[self._ref_velocities_wp, zero_offset, 0, self.state.particle_qd],
+                device=self.model.device,
+            )
+            self._force_sync_reference = False
+
+        if sync_gpu:
+            wp.launch(
+                _warp_copy_with_offset,
+                dim=self.gpu_rod.num_points,
+                inputs=[self.gpu_rod.positions_wp, gpu_offset, self.ref_rod.num_points, self.state.particle_q],
+                device=self.model.device,
+            )
+            wp.launch(
+                _warp_copy_with_offset,
+                dim=self.gpu_rod.num_points,
+                inputs=[self.gpu_rod.velocities_wp, zero_offset, self.ref_rod.num_points, self.state.particle_qd],
+                device=self.model.device,
+            )
+            self._force_sync_gpu = False
 
     def _handle_keyboard_input(self):
         if not hasattr(self.viewer, "is_key_down"):
@@ -1010,15 +1200,31 @@ class Example:
         self._handle_keyboard_input()
 
         sub_dt = self.frame_dt / max(self.substeps, 1)
+        frame_start = time.perf_counter()
+        ref_time = 0.0
+        gpu_time = 0.0
         for _ in range(self.substeps):
-            self.ref_rod.step(sub_dt, self.linear_damping, self.angular_damping)
-            self.gpu_rod.step(sub_dt, self.linear_damping, self.angular_damping)
-            if self.floor_collision_enabled:
-                self.ref_rod.apply_floor_collisions(self.floor_height, self.floor_restitution)
-                self.gpu_rod.apply_floor_collisions(self.floor_height, self.floor_restitution)
+            if self.simulate_reference:
+                t0 = time.perf_counter()
+                self.ref_rod.step(sub_dt, self.linear_damping, self.angular_damping)
+                if self.floor_collision_enabled:
+                    self.ref_rod.apply_floor_collisions(self.floor_height, self.floor_restitution)
+                ref_time += time.perf_counter() - t0
+            if self.simulate_gpu:
+                t0 = time.perf_counter()
+                self.gpu_rod.step(sub_dt, self.linear_damping, self.angular_damping)
+                if self.floor_collision_enabled:
+                    self.gpu_rod.apply_floor_collisions(self.floor_height, self.floor_restitution)
+                gpu_time += time.perf_counter() - t0
 
         self._sync_state_from_rods()
         self.sim_time += self.frame_dt
+        frame_end = time.perf_counter()
+        self._frame_times.append(frame_end - frame_start)
+        if self.simulate_reference:
+            self._ref_times.append(ref_time)
+        if self.simulate_gpu:
+            self._gpu_times.append(gpu_time)
 
     def _apply_root_translation(self, dx: float, dy: float, dz: float):
         delta = np.array([dx, dy, dz], dtype=np.float32)
@@ -1028,8 +1234,10 @@ class Example:
         self.ref_rod.positions[0, 0:3] = new_pos
         self.ref_rod.predicted_positions[0, 0:3] = new_pos
         self.ref_rod.velocities[0, 0:3] = 0.0
+        self._force_sync_reference = True
 
         self.gpu_rod.apply_root_translation(dx, dy, dz)
+        self._force_sync_gpu = True
 
     def _apply_root_rotation(self):
         q_twist = base._quat_from_axis_angle(np.array([0.0, 0.0, 1.0], dtype=np.float32), self.root_rotation)
@@ -1038,7 +1246,9 @@ class Example:
         self.ref_rod.orientations[0] = q_ref
         self.ref_rod.predicted_orientations[0] = q_ref
         self.ref_rod.prev_orientations[0] = q_ref
+        self._force_sync_reference = True
         self.gpu_rod.apply_root_rotation(q_gpu)
+        self._force_sync_gpu = True
 
     def _rotate_vector_by_quaternion(self, v: np.ndarray, q: np.ndarray) -> np.ndarray:
         x, y, z, w = q
@@ -1159,6 +1369,17 @@ class Example:
         ui.text("Reference: blue, GPU: orange")
         ui.separator()
 
+        changed_ref, self.simulate_reference = ui.checkbox("Simulate Reference (C++)", self.simulate_reference)
+        changed_gpu, self.simulate_gpu = ui.checkbox("Simulate GPU (Warp)", self.simulate_gpu)
+        changed_graph, self.use_cuda_graph = ui.checkbox("Use CUDA Graph (GPU rod)", self.use_cuda_graph)
+        if changed_graph:
+            self.gpu_rod.set_use_cuda_graph(self.use_cuda_graph)
+            self.use_cuda_graph = self.gpu_rod.use_cuda_graph
+        if changed_ref or changed_gpu:
+            self._frame_times.clear()
+            self._ref_times.clear()
+            self._gpu_times.clear()
+
         _changed, self.substeps = ui.slider_int("Substeps", self.substeps, 1, 16)
         _changed, self.linear_damping = ui.slider_float("Linear Damping", self.linear_damping, 0.0, 0.05)
         _changed, self.angular_damping = ui.slider_float("Angular Damping", self.angular_damping, 0.0, 0.05)
@@ -1169,7 +1390,7 @@ class Example:
             half_offset = 0.5 * self.compare_offset
             self.ref_offset = np.array([0.0, -half_offset, 0.0], dtype=np.float32)
             self.gpu_offset = np.array([0.0, half_offset, 0.0], dtype=np.float32)
-            self._sync_state_from_rods()
+            self._sync_state_from_rods(force=True)
 
         ui.separator()
         changed_bend_k, self.bend_stiffness = ui.slider_float("Bend Stiffness", self.bend_stiffness, 0.0, 1.0)
@@ -1227,6 +1448,19 @@ class Example:
         ui.text(f"GPU max correction: {self.gpu_rod.last_correction_max:.3e}")
 
         ui.separator()
+        ui.text("Performance (avg over recent frames)")
+        if self._frame_times:
+            avg_frame = sum(self._frame_times) / len(self._frame_times)
+            fps = 1.0 / avg_frame if avg_frame > 0.0 else 0.0
+            ui.text(f"Frame step: {avg_frame * 1000.0:.2f} ms ({fps:.1f} FPS)")
+        if self._ref_times:
+            avg_ref = sum(self._ref_times) / len(self._ref_times)
+            ui.text(f"Reference step: {avg_ref * 1000.0:.2f} ms")
+        if self._gpu_times:
+            avg_gpu = sum(self._gpu_times) / len(self._gpu_times)
+            ui.text(f"GPU step: {avg_gpu * 1000.0:.2f} ms")
+
+        ui.separator()
         _changed, self.show_segments = ui.checkbox("Show Rod Segments", self.show_segments)
         _changed, self.show_directors = ui.checkbox("Show Directors", self.show_directors)
         _changed, self.director_scale = ui.slider_float("Director Scale", self.director_scale, 0.01, 0.3)
@@ -1265,7 +1499,16 @@ class Example:
 
 
 def create_parser():
-    return base.create_parser()
+    import argparse  # noqa: PLC0415
+
+    parser = base.create_parser()
+    parser.add_argument(
+        "--use-cuda-graph",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Enable CUDA graph capture for the GPU rod.",
+    )
+    return parser
 
 
 if __name__ == "__main__":
