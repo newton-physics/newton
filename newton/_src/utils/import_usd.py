@@ -631,10 +631,6 @@ def parse_usd(
                     joint_prim, PrimType.JOINT, "linear_velocity", default=None, verbose=verbose
                 )
 
-            joint_prim.CreateAttribute(f"physics:tensor:{dof_type}:dofOffset", Sdf.ValueTypeNames.UInt).Set(0)
-            # joint_prim.CreateAttribute(f"state:{dof_type}:physics:position", Sdf.ValueTypeNames.Float).Set(0)
-            # joint_prim.CreateAttribute(f"state:{dof_type}:physics:velocity", Sdf.ValueTypeNames.Float).Set(0)
-
             if key == UsdPhysics.ObjectType.PrismaticJoint:
                 joint_index = builder.add_joint_prismatic(**joint_params)
             else:
@@ -822,15 +818,6 @@ def parse_usd(
                     )
                     # Track that this axis was added as a DOF
                     d6_dof_axes.append(rot_name)
-                    joint_prim.CreateAttribute(
-                        f"physics:tensor:{_rot_names[dof]}:dofOffset", Sdf.ValueTypeNames.UInt
-                    ).Set(num_dofs)
-                    # joint_prim.CreateAttribute(
-                    #     f"state:{_rot_names[dof]}:physics:position", Sdf.ValueTypeNames.Float
-                    # ).Set(0)
-                    # joint_prim.CreateAttribute(
-                    #     f"state:{_rot_names[dof]}:physics:velocity", Sdf.ValueTypeNames.Float
-                    # ).Set(0)
                     num_dofs += 1
 
             joint_index = builder.add_joint_d6(**joint_params, linear_axes=linear_axes, angular_axes=angular_axes)
@@ -855,7 +842,6 @@ def parse_usd(
 
         # Apply saved initial joint state after joint creation
         if key in (UsdPhysics.ObjectType.RevoluteJoint, UsdPhysics.ObjectType.PrismaticJoint):
-            # Use the initial values we saved before CreateAttribute overwrote them
             if initial_position is not None:
                 q_start = builder.joint_q_start[joint_index]
                 if key == UsdPhysics.ObjectType.RevoluteJoint:
@@ -1160,11 +1146,6 @@ def parse_usd(
                 if collect_schema_attrs:
                     # Collect on each articulated body prim encountered
                     R.collect_prim_attrs(usd_prim)
-                if "TensorPhysicsArticulationRootAPI" in usd_prim.GetPrimTypeInfo().GetAppliedAPISchemas():
-                    usd_prim.CreateAttribute("physics:newton:articulation_index", Sdf.ValueTypeNames.UInt, True).Set(
-                        articulation_id
-                    )
-                    articulation_roots.append(key)
 
                 if key in body_specs:
                     body_desc = body_specs[key]
