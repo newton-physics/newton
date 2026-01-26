@@ -123,6 +123,9 @@ class ActuatorMode(IntEnum):
     POSITION_VELOCITY = 3
     """Both position and velocity actuators are installed."""
 
+    EFFORT = 4
+    """Direct effort/torque actuator. The joint is actuated but with no position/velocity feedback."""
+
 
 __all__ = [
     "ActuatorMode",

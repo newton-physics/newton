@@ -1284,7 +1284,7 @@ def parse_mjcf(
 
         # Process ALL actuators in MJCF order
         for actuator_elem in actuator_section:
-            actuator_type = actuator_elem.tag  # position, velocity, general. # todo: add motor etc. actuators.
+            actuator_type = actuator_elem.tag  # position, velocity, motor, general
             joint_name = actuator_elem.attrib.get("joint")
             body_name = actuator_elem.attrib.get("body")
 
@@ -1370,6 +1370,18 @@ def parse_mjcf(
                         elif current_mode == int(ActuatorMode.NONE):
                             builder.joint_act_mode[dof_idx] = int(ActuatorMode.VELOCITY)
                         builder.joint_target_kd[dof_idx] = kv
+
+            elif actuator_type == "motor":
+                gainprm = vec10(1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+                biasprm = vec10(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+                if trntype != 0 or total_dofs == 0 or ctrl_direct:
+                    ctrl_source_val = CtrlSource.CTRL_DIRECT
+                else:
+                    ctrl_source_val = CtrlSource.JOINT_TARGET
+                if ctrl_source_val == CtrlSource.JOINT_TARGET:
+                    for i in range(total_dofs):
+                        dof_idx = qd_start + i
+                        builder.joint_act_mode[dof_idx] = int(ActuatorMode.EFFORT)
 
             elif actuator_type == "general":
                 gainprm_str = actuator_elem.attrib.get("gainprm", "1 0 0 0 0 0 0 0 0 0")

@@ -615,9 +615,8 @@ def parse_usd(
                 joint_params["target_kd"] = target_kd
                 joint_params["effort_limit"] = joint_desc.drive.forceLimit
 
-                # Determine actuator mode from gains
                 joint_params["actuator_mode"] = infer_actuator_mode(
-                    target_ke, target_kd, force_position_velocity_actuation
+                    target_ke, target_kd, force_position_velocity_actuation, has_drive=True
                 )
             else:
                 joint_params["actuator_mode"] = ActuatorMode.NONE
@@ -712,11 +711,9 @@ def parse_usd(
                             target_ke = drive.second.stiffness
                             target_kd = drive.second.damping
                             effort_limit = drive.second.forceLimit
-                    # Determine actuator mode from gains
-                    if not has_drive:
-                        actuator_mode = ActuatorMode.NONE
-                    else:
-                        actuator_mode = infer_actuator_mode(target_ke, target_kd, force_position_velocity_actuation)
+                    actuator_mode = infer_actuator_mode(
+                        target_ke, target_kd, force_position_velocity_actuation, has_drive=has_drive
+                    )
                     return target_pos, target_vel, target_ke, target_kd, effort_limit, actuator_mode
 
                 target_pos, target_vel, target_ke, target_kd, effort_limit, actuator_mode = define_joint_targets(

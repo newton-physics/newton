@@ -172,6 +172,7 @@ def infer_actuator_mode(
     target_ke: float,
     target_kd: float,
     force_position_velocity: bool = False,
+    has_drive: bool = True,
 ) -> ActuatorMode:
     """Infer actuator mode from position and velocity gains.
 
@@ -180,11 +181,22 @@ def infer_actuator_mode(
         target_kd: Velocity gain (damping).
         force_position_velocity: If True and both gains are non-zero,
             forces POSITION_VELOCITY mode instead of just POSITION.
+        has_drive: If True, a drive/actuator is applied to the joint.
+            When True but both gains are 0, returns EFFORT mode.
+            When False, returns NONE regardless of gains.
 
     Returns:
-        The inferred ActuatorMode based on which gains are non-zero.
+        The inferred ActuatorMode based on which gains are non-zero:
+        - NONE: No drive applied
+        - EFFORT: Drive applied but both gains are 0 (direct torque control)
+        - POSITION: Only position gain is non-zero
+        - VELOCITY: Only velocity gain is non-zero
+        - POSITION_VELOCITY: Both gains non-zero (or forced)
     """
     from ..sim.joints import ActuatorMode  # noqa: PLC0415
+
+    if not has_drive:
+        return ActuatorMode.NONE
 
     if force_position_velocity and (target_ke != 0.0 and target_kd != 0.0):
         return ActuatorMode.POSITION_VELOCITY
@@ -193,4 +205,4 @@ def infer_actuator_mode(
     elif target_kd != 0.0:
         return ActuatorMode.VELOCITY
     else:
-        return ActuatorMode.NONE
+        return ActuatorMode.EFFORT
