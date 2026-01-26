@@ -1820,7 +1820,9 @@ class TestImportMjcf(unittest.TestCase):
         self.assertEqual(builder.joint_act_mode[get_qd_start(builder, "joint_motor")], int(ActuatorMode.EFFORT))
         self.assertEqual(builder.joint_act_mode[get_qd_start(builder, "joint_position")], int(ActuatorMode.POSITION))
         self.assertEqual(builder.joint_act_mode[get_qd_start(builder, "joint_velocity")], int(ActuatorMode.VELOCITY))
-        self.assertEqual(builder.joint_act_mode[get_qd_start(builder, "joint_pos_vel")], int(ActuatorMode.POSITION_VELOCITY))
+        self.assertEqual(
+            builder.joint_act_mode[get_qd_start(builder, "joint_pos_vel")], int(ActuatorMode.POSITION_VELOCITY)
+        )
         self.assertEqual(builder.joint_act_mode[get_qd_start(builder, "joint_passive")], int(ActuatorMode.NONE))
 
         builder2 = newton.ModelBuilder()
