@@ -166,7 +166,10 @@ class SolverMuJoCo(SolverBase):
         if isinstance(value, int):
             return value
         mapping = {"euler": 0, "rk4": 1, "implicit": 2, "implicitfast": 3}
-        return mapping.get(value.lower().strip(), int(value))
+        lower_value = value.lower().strip()
+        if lower_value in mapping:
+            return mapping[lower_value]
+        return int(value)
 
     @staticmethod
     def _parse_solver(value: str | int) -> int:
@@ -174,7 +177,10 @@ class SolverMuJoCo(SolverBase):
         if isinstance(value, int):
             return value
         mapping = {"pgs": 0, "cg": 1, "newton": 2}
-        return mapping.get(value.lower().strip(), int(value))
+        lower_value = value.lower().strip()
+        if lower_value in mapping:
+            return mapping[lower_value]
+        return int(value)
 
     @staticmethod
     def _parse_cone(value: str | int) -> int:
@@ -182,7 +188,10 @@ class SolverMuJoCo(SolverBase):
         if isinstance(value, int):
             return value
         mapping = {"pyramidal": 0, "elliptic": 1}
-        return mapping.get(value.lower().strip(), int(value))
+        lower_value = value.lower().strip()
+        if lower_value in mapping:
+            return mapping[lower_value]
+        return int(value)
 
     @staticmethod
     def _parse_jacobian(value: str | int) -> int:
@@ -190,7 +199,10 @@ class SolverMuJoCo(SolverBase):
         if isinstance(value, int):
             return value
         mapping = {"dense": 0, "sparse": 1, "auto": 2}
-        return mapping.get(value.lower().strip(), int(value))
+        lower_value = value.lower().strip()
+        if lower_value in mapping:
+            return mapping[lower_value]
+        return int(value)
 
     @classmethod
     def register_custom_attributes(cls, builder: ModelBuilder) -> None:
