@@ -159,7 +159,6 @@ class SolverMuJoCo(SolverBase):
                 ) from e
         return cls._mujoco, cls._mujoco_warp
 
-    @override
     @staticmethod
     def _parse_integrator(value: str | int) -> int:
         """Parse integrator option: Euler=0, RK4=1, implicit=2, implicitfast=3."""
