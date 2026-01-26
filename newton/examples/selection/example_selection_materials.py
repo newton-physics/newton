@@ -48,24 +48,22 @@ RANDOMIZE_PER_WORLD = True
 
 @wp.kernel
 def compute_middle_kernel(
-    lower: wp.array2d(dtype=float),
-    upper: wp.array2d(dtype=float),
-    middle: wp.array2d(dtype=float),
+    lower: wp.array3d(dtype=float), upper: wp.array3d(dtype=float), middle: wp.array3d(dtype=float)
 ):
-    i, j = wp.tid()
-    middle[i, j] = 0.5 * (lower[i, j] + upper[i, j])
+    world, arti, dof = wp.tid()
+    middle[world, arti, dof] = 0.5 * (lower[world, arti, dof] + upper[world, arti, dof])
 
 
 @wp.kernel
-def reset_materials_kernel(mu: wp.array2d(dtype=float), seed: int, shape_count: int):
-    i, j = wp.tid()
+def reset_materials_kernel(mu: wp.array3d(dtype=float), seed: int, shape_count: int):
+    world, arti, shape = wp.tid()
 
     if RANDOMIZE_PER_WORLD:
-        rng = wp.rand_init(seed, i)
+        rng = wp.rand_init(seed, world)
     else:
-        rng = wp.rand_init(seed, i * shape_count + j)
+        rng = wp.rand_init(seed, world * shape_count + shape)
 
-    mu[i, j] = wp.randf(rng)  # random coefficient of friction
+    mu[world, arti, shape] = wp.randf(rng)  # random coefficient of friction
 
 
 class Example:
@@ -202,15 +200,15 @@ class Example:
 
             # flip velocities
             if self.reset_count % 2 == 0:
-                self.default_ant_root_velocities[:, 4] = 5.0
+                self.default_ant_root_velocities[..., 1] = 5.0
             else:
-                self.default_ant_root_velocities[:, 4] = -5.0
+                self.default_ant_root_velocities[..., 1] = -5.0
 
             # randomize materials
             if RANDOMIZE_PER_WORLD:
-                material_mu = torch.rand(self.ants.count).unsqueeze(1).repeat(1, self.ants.shape_count)
+                material_mu = torch.rand(self.ants.count, 1).unsqueeze(1).repeat(1, 1, self.ants.shape_count)
             else:
-                material_mu = torch.rand((self.ants.count, self.ants.shape_count))
+                material_mu = torch.rand((self.ants.count, 1, self.ants.shape_count))
         else:
             # flip velocities
             if self.reset_count % 2 == 0:
@@ -276,7 +274,7 @@ if __name__ == "__main__":
     if USE_TORCH:
         import torch
 
-        torch.set_device(args.device)
+        torch.set_default_device(args.device)
 
     example = Example(viewer, num_worlds=args.num_worlds)
 
