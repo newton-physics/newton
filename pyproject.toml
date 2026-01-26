@@ -50,6 +50,9 @@ importers = [
     # USD core libraries
     "usd-core>=25.5 ; platform_machine != 'aarch64'",
     "usd-exchange>=2.1.0a3 ; platform_machine == 'aarch64'",
+
+    # Newton USD Schemas
+    "newton-usd-schemas>=0.1.0a1",
 ]
 
 # Examples dependencies including visualization

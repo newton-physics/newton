@@ -213,6 +213,7 @@ class Example:
         self.tiled_camera_sensor_depth_image = self.tiled_camera_sensor.create_depth_image_output()
         self.tiled_camera_sensor_normal_image = self.tiled_camera_sensor.create_normal_image_output()
         self.tiled_camera_sensor_shape_index_image = self.tiled_camera_sensor.create_shape_index_image_output()
+        self.depth_range = wp.array([1.0, 100.0], dtype=wp.float32)
 
         if isinstance(self.viewer, ViewerGL):
             self.create_texture()
@@ -310,7 +311,10 @@ class Example:
             )
         elif self.image_output == 1:
             self.tiled_camera_sensor.flatten_depth_image_to_rgba(
-                self.tiled_camera_sensor_depth_image, texture_buffer, self.num_worlds_per_row
+                self.tiled_camera_sensor_depth_image,
+                texture_buffer,
+                self.num_worlds_per_row,
+                self.depth_range,
             )
         elif self.image_output == 2:
             self.tiled_camera_sensor.flatten_normal_image_to_rgba(

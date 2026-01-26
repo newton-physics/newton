@@ -245,11 +245,14 @@ class Utils:
         image: wp.array(dtype=wp.float32, ndim=3),
         out_buffer: wp.array(dtype=wp.uint8, ndim=3) | None = None,
         num_worlds_per_row: int | None = None,
+        depth_range: wp.array(dtype=wp.float32) | None = None,
     ):
         out_buffer, num_worlds_per_row = self.__reshape_buffer_for_flatten(out_buffer, num_worlds_per_row)
 
-        depth_range = wp.array([100000000.0, 0.0], dtype=wp.float32)
-        wp.launch(find_depth_range, image.shape, [image, depth_range])
+        if depth_range is None:
+            depth_range = wp.array([MAXVAL, 0.0], dtype=wp.float32)
+            wp.launch(find_depth_range, image.shape, [image, depth_range])
+
         wp.launch(
             flatten_depth_image,
             (

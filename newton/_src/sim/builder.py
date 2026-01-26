@@ -63,6 +63,7 @@ from .graph_coloring import ColoringAlgorithm, color_rigid_bodies, color_trimesh
 from .joints import (
     EqType,
     JointType,
+    get_joint_constraint_count,
     get_joint_dof_count,
 )
 from .model import Model, ModelAttributeAssignment, ModelAttributeFrequency
@@ -712,6 +713,7 @@ class ModelBuilder:
 
         self.joint_q_start = []
         self.joint_qd_start = []
+        self.joint_cts_start = []
         self.joint_dof_dim = []
         self.joint_world = []  # world index for each joint
         self.joint_articulation = []  # articulation index for each joint, -1 if not in any articulation
@@ -722,6 +724,7 @@ class ModelBuilder:
 
         self.joint_dof_count = 0
         self.joint_coord_count = 0
+        self.joint_constraint_count = 0
 
         # current world index for entities being added to this builder.
         # set to -1 to create global entities shared across all worlds.
@@ -729,6 +732,10 @@ class ModelBuilder:
 
         self.up_axis: Axis = Axis.from_any(up_axis)
         self.gravity: float = gravity
+
+        # Per-world gravity vectors, populated when worlds are created via begin_world()
+        # Each entry is a tuple (gx, gy, gz) representing the gravity vector for that world
+        self.world_gravity: list[tuple[float, float, float]] = []
 
         # contacts to be generated within the given distance margin to be generated at
         # every simulation substep (can be 0 if only one PBD solver iteration is used)
@@ -1088,6 +1095,54 @@ class ModelBuilder:
                             entity_index=coord_start + i,
                             custom_attrs=single_attr,
                             expected_frequency=ModelAttributeFrequency.JOINT_COORD,
+                        )
+
+            elif custom_attr.frequency == ModelAttributeFrequency.JOINT_CONSTRAINT:
+                # Values per constraint - can be list or dict
+                cts_start = self.joint_cts_start[joint_index]
+                if joint_index + 1 < len(self.joint_cts_start):
+                    cts_end = self.joint_cts_start[joint_index + 1]
+                else:
+                    cts_end = self.joint_constraint_count
+
+                cts_count = cts_end - cts_start
+
+                # Check if value is a dict (mapping cts index to value)
+                if isinstance(value, dict):
+                    # Dict format: only specified cts indices have values, rest use defaults
+                    for cts_offset, cts_value in value.items():
+                        if not isinstance(cts_offset, int):
+                            raise TypeError(
+                                f"JOINT_CONSTRAINT attribute '{attr_key}' dict keys must be integers (constraint indices), got {type(cts_offset)}"
+                            )
+                        if cts_offset < 0 or cts_offset >= cts_count:
+                            raise ValueError(
+                                f"JOINT_CONSTRAINT attribute '{attr_key}' has invalid constraint index {cts_offset} (joint has {cts_count} constraints)"
+                            )
+                        single_attr = {attr_key: cts_value}
+                        self._process_custom_attributes(
+                            entity_index=cts_start + cts_offset,
+                            custom_attrs=single_attr,
+                            expected_frequency=ModelAttributeFrequency.JOINT_CONSTRAINT,
+                        )
+                else:
+                    # List format or single value for single-constraint joints
+                    value_sanitized = value
+                    if not isinstance(value_sanitized, (list, tuple)) and cts_count == 1:
+                        value_sanitized = [value_sanitized]
+
+                    if len(value_sanitized) != cts_count:
+                        raise ValueError(
+                            f"JOINT_CONSTRAINT attribute '{attr_key}' has {len(value_sanitized)} values but joint has {cts_count} constraints"
+                        )
+
+                    # Apply each value to its corresponding constraint
+                    for i, cts_value in enumerate(value_sanitized):
+                        single_attr = {attr_key: cts_value}
+                        self._process_custom_attributes(
+                            entity_index=cts_start + i,
+                            custom_attrs=single_attr,
+                            expected_frequency=ModelAttributeFrequency.JOINT_CONSTRAINT,
                         )
 
             else:
@@ -1456,8 +1511,8 @@ class ModelBuilder:
             load_sites (bool): If True, sites (prims with MjcSiteAPI) are loaded as non-colliding reference points. If False, sites are ignored. Default is True.
             load_visual_shapes (bool): If True, non-physics visual geometry is loaded. If False, visual-only shapes are ignored (sites are still controlled by ``load_sites``). Default is True.
             hide_collision_shapes (bool): If True, collision shapes are hidden. Default is False.
-            mesh_maxhullvert (int): Maximum vertices for convex hull approximation of meshes.
-            schema_resolvers (list[SchemaResolver]): Resolver instances in priority order. Default is no schema resolution.
+            mesh_maxhullvert (int): Maximum vertices for convex hull approximation of meshes. Note that an authored ``newton:maxHullVertices`` attribute on any shape with a ``NewtonMeshCollisionAPI`` will take priority over this value.
+            schema_resolvers (list[SchemaResolver]): Resolver instances in priority order. Default is to only parse Newton-specific attributes.
                 Schema resolvers collect per-prim "solver-specific" attributes, see :ref:`schema_resolvers` for more information.
                 These include namespaced attributes such as ``newton:*``, ``physx*``
                 (e.g., ``physxScene:*``, ``physxRigidBody:*``, ``physxSDFMeshCollision:*``), and ``mjc:*`` that
@@ -1636,7 +1691,12 @@ class ModelBuilder:
 
     # region World management methods
 
-    def begin_world(self, key: str | None = None, attributes: dict[str, Any] | None = None):
+    def begin_world(
+        self,
+        key: str | None = None,
+        attributes: dict[str, Any] | None = None,
+        gravity: Vec3 | None = None,
+    ):
         """Begin a new world context for adding entities.
 
         This method starts a new world scope where all subsequently added entities
@@ -1651,6 +1711,9 @@ class ModelBuilder:
                 a default key "world_{index}" will be generated.
             attributes (dict[str, Any] | None): Optional custom attributes to associate
                 with this world for later use.
+            gravity (Vec3 | None): Optional gravity vector for this world. If None,
+                the world will use the builder's default gravity (computed from
+                ``self.gravity`` and ``self.up_vector``).
 
         Raises:
             RuntimeError: If called when already inside a world context (current_world != -1).
@@ -1662,14 +1725,14 @@ class ModelBuilder:
             # Add global ground plane
             builder.add_ground_plane()  # Added to world -1 (global)
 
-            # Create world 0
+            # Create world 0 with default gravity
             builder.begin_world(key="robot_0")
             builder.add_body(...)  # Added to world 0
             builder.add_shape_box(...)  # Added to world 0
             builder.end_world()
 
-            # Create world 1
-            builder.begin_world(key="robot_1")
+            # Create world 1 with custom zero gravity
+            builder.begin_world(key="robot_1", gravity=(0.0, 0.0, 0.0))
             builder.add_body(...)  # Added to world 1
             builder.add_shape_box(...)  # Added to world 1
             builder.end_world()
@@ -1687,6 +1750,12 @@ class ModelBuilder:
         # Store world metadata if needed (for future use)
         # Note: We might want to add world_key and world_attributes lists in __init__ if needed
         # For now, we just track the world index
+
+        # Initialize this world's gravity
+        if gravity is not None:
+            self.world_gravity.append(tuple(gravity))
+        else:
+            self.world_gravity.append(tuple(g * self.gravity for g in self.up_vector))
 
     def end_world(self):
         """End the current world context and return to global scope.
@@ -1780,6 +1849,14 @@ class ModelBuilder:
         if builder.up_axis != self.up_axis:
             raise ValueError("Cannot add a builder with a different up axis.")
 
+        # Copy gravity from source builder
+        if self.current_world >= 0 and self.current_world < len(self.world_gravity):
+            # We're in a world context, update this world's gravity vector
+            self.world_gravity[self.current_world] = tuple(g * builder.gravity for g in builder.up_vector)
+        elif self.current_world < 0:
+            # No world context (add_builder called directly), copy scalar gravity
+            self.gravity = builder.gravity
+
         self._requested_state_attributes.update(builder._requested_state_attributes)
 
         # explicitly resolve the transform multiplication function to avoid
@@ -1872,6 +1949,7 @@ class ModelBuilder:
 
             self.joint_q_start.extend([c + self.joint_coord_count for c in builder.joint_q_start])
             self.joint_qd_start.extend([c + self.joint_dof_count for c in builder.joint_qd_start])
+            self.joint_cts_start.extend([c + self.joint_constraint_count for c in builder.joint_cts_start])
 
         if xform is not None:
             for i in range(builder.body_count):
@@ -2438,6 +2516,7 @@ class ModelBuilder:
             add_axis_dim(dim)
 
         dof_count, coord_count = get_joint_dof_count(joint_type, len(linear_axes) + len(angular_axes))
+        cts_count = get_joint_constraint_count(joint_type, len(linear_axes) + len(angular_axes))
 
         for _ in range(coord_count):
             self.joint_q.append(0.0)
@@ -2451,9 +2530,11 @@ class ModelBuilder:
 
         self.joint_q_start.append(self.joint_coord_count)
         self.joint_qd_start.append(self.joint_dof_count)
+        self.joint_cts_start.append(self.joint_constraint_count)
 
         self.joint_dof_count += dof_count
         self.joint_coord_count += coord_count
+        self.joint_constraint_count += cts_count
 
         if collision_filter_parent and parent > -1:
             for child_shape in self.body_shapes[child]:
@@ -3364,6 +3445,7 @@ class ModelBuilder:
 
             q_start = self.joint_q_start[i]
             qd_start = self.joint_qd_start[i]
+            cts_start = self.joint_cts_start[i]
             if i < self.joint_count - 1:
                 q_dim = self.joint_q_start[i + 1] - q_start
                 qd_dim = self.joint_qd_start[i + 1] - qd_start
@@ -3378,6 +3460,7 @@ class ModelBuilder:
                 "armature": self.joint_armature[qd_start : qd_start + qd_dim],
                 "q_start": q_start,
                 "qd_start": qd_start,
+                "cts_start": cts_start,
                 "key": key,
                 "parent_xform": wp.transform_expand(self.joint_X_p[i]),
                 "child_xform": wp.transform_expand(self.joint_X_c[i]),
@@ -4632,6 +4715,9 @@ class ModelBuilder:
                             continue
                 # note we need to copy the mesh to avoid modifying the original mesh
                 self.shape_source[shape] = self.shape_source[shape].copy(vertices=rmesh.vertices, indices=rmesh.indices)
+                # mark convex_hull result as convex mesh type for efficient collision detection
+                if method == "convex_hull":
+                    self.shape_type[shape] = GeoType.CONVEX_MESH
                 remeshed_shapes.add(shape)
 
         if method == "bounding_box":
@@ -6122,38 +6208,15 @@ class ModelBuilder:
                     f"Found worlds: {world_list}. Worlds must form a continuous sequence starting from 0."
                 )
 
-    def finalize(self, device: Devicelike | None = None, requires_grad: bool = False) -> Model:
+    def _validate_joints(self):
+        """Validate that all joints belong to an articulation, except for "loop joints".
+
+        Loop joints connect two bodies that are already reachable via articulated joints
+        (used to create kinematic loops, converted to equality constraints by MuJoCo solver).
+
+        Raises:
+            ValueError: If any validation check fails.
         """
-        Finalize the builder and create a concrete Model for simulation.
-
-        This method transfers all simulation data from the builder to device memory,
-        returning a Model object ready for simulation. It should be called after all
-        elements (particles, bodies, shapes, joints, etc.) have been added to the builder.
-
-        Args:
-            device: The simulation device to use (e.g., 'cpu', 'cuda'). If None, uses the current Warp device.
-            requires_grad: If True, enables gradient computation for the model (for differentiable simulation).
-
-        Returns:
-            Model: A fully constructed Model object containing all simulation data on the specified device.
-
-        Notes:
-            - Performs validation and correction of rigid body inertia and mass properties.
-            - Closes all start-index arrays (e.g., for muscles, joints, articulations) with sentinel values.
-            - Sets up all arrays and properties required for simulation, including particles, bodies, shapes,
-              joints, springs, muscles, constraints, and collision/contact data.
-        """
-        from .collide import count_rigid_contact_points  # noqa: PLC0415
-
-        # ensure the world count is set correctly
-        self.num_worlds = max(1, self.num_worlds)
-
-        # validate world ordering and contiguity
-        self._validate_world_ordering()
-
-        # validate all joints belong to an articulation, except for "loop joints"
-        # Loop joints connect two bodies that are already reachable via articulated joints
-        # (used to create kinematic loops, converted to equality constraints by MuJoCo solver)
         if self.joint_count > 0:
             # First, find all bodies reachable via articulated joints
             articulated_bodies = set()
@@ -6182,12 +6245,23 @@ class ModelBuilder:
                     + ("..." if len(orphan_joints) > 5 else "")
                 )
 
-        # warn if any shape has thickness > contact_margin (causes unstable contact behavior)
-        # Thickness is an outward offset from each shape's surface. AABBs are expanded by contact_margin.
-        # For proper broad phase detection, each shape must have contact_margin >= thickness.
-        # This ensures that when thickened surfaces are close (sum of thicknesses),
-        # the AABBs overlap (sum of margins >= sum of thicknesses).
-        # Only check shapes that participate in collisions (have COLLIDE_SHAPES or COLLIDE_PARTICLES flag).
+    def _validate_shapes(self) -> bool:
+        """Validate shape contact margins against thickness for stable broad phase detection.
+
+        Thickness is an outward offset from a shape's surface, while AABBs are expanded
+        by `contact_margin`. For reliable broad phase detection, each colliding shape
+        should satisfy `contact_margin >= thickness` so that thickened surfaces produce
+        overlapping AABBs.
+
+        This check only considers shapes that participate in collisions (with the
+        `COLLIDE_SHAPES` or `COLLIDE_PARTICLES` flag).
+
+        Warns:
+            UserWarning: If any colliding shape has `thickness > contact_margin`.
+
+        Returns:
+            bool: True if no shapes with thickness > contact_margin, False otherwise.
+        """
         collision_flags_mask = ShapeFlags.COLLIDE_SHAPES | ShapeFlags.COLLIDE_PARTICLES
         shapes_with_bad_margin = []
         for i in range(self.shape_count):
@@ -6209,6 +6283,55 @@ class ModelBuilder:
                 f"Affected shapes: {example_shapes}" + ("..." if len(shapes_with_bad_margin) > 5 else ""),
                 stacklevel=2,
             )
+        return len(shapes_with_bad_margin) == 0
+
+    def finalize(
+        self,
+        device: Devicelike | None = None,
+        requires_grad: bool = False,
+        skip_validation_worlds: bool = False,
+        skip_validation_joints: bool = False,
+        skip_validation_shapes: bool = False,
+    ) -> Model:
+        """
+        Finalize the builder and create a concrete :class:`~newton.Model` for simulation.
+
+        This method transfers all simulation data from the builder to device memory,
+        returning a Model object ready for simulation. It should be called after all
+        elements (particles, bodies, shapes, joints, etc.) have been added to the builder.
+
+        Args:
+            device: The simulation device to use (e.g., 'cpu', 'cuda'). If None, uses the current Warp device.
+            requires_grad: If True, enables gradient computation for the model (for differentiable simulation).
+            skip_validation_worlds: If True, skips validation of world ordering and contiguity. Default is False.
+            skip_validation_joints: If True, skips validation of joints belonging to an articulation. Default is False.
+            skip_validation_shapes: If True, skips validation of shapes having valid contact margins. Default is False.
+
+        Returns:
+            Model: A fully constructed Model object containing all simulation data on the specified device.
+
+        Notes:
+            - Performs validation and correction of rigid body inertia and mass properties.
+            - Closes all start-index arrays (e.g., for muscles, joints, articulations) with sentinel values.
+            - Sets up all arrays and properties required for simulation, including particles, bodies, shapes,
+              joints, springs, muscles, constraints, and collision/contact data.
+        """
+        from .collide import count_rigid_contact_points  # noqa: PLC0415
+
+        # ensure the world count is set correctly
+        self.num_worlds = max(1, self.num_worlds)
+
+        # validate world ordering and contiguity
+        if not skip_validation_worlds:
+            self._validate_world_ordering()
+
+        # validate joints belong to an articulation
+        if not skip_validation_joints:
+            self._validate_joints()
+
+        # validate shapes have valid contact margins
+        if not skip_validation_shapes:
+            self._validate_shapes()
 
         # construct particle inv masses
         ms = np.array(self.particle_mass, dtype=np.float32)
@@ -6691,6 +6814,7 @@ class ModelBuilder:
             m.joint_count = self.joint_count
             m.joint_dof_count = self.joint_dof_count
             m.joint_coord_count = self.joint_coord_count
+            m.joint_constraint_count = self.joint_constraint_count
             m.particle_count = len(self.particle_q)
             m.body_count = self.body_count
             m.shape_count = len(self.shape_type)
@@ -6710,9 +6834,15 @@ class ModelBuilder:
             m.up_vector = np.array(self.up_vector, dtype=wp.float32)
 
             # set gravity - create per-world gravity array for multi-world support
-            gravity_vec = wp.vec3(*(g * self.gravity for g in self.up_vector))
+            if self.world_gravity:
+                # Use per-world gravity from world_gravity list
+                gravity_vecs = [wp.vec3(*g) for g in self.world_gravity]
+            else:
+                # Fallback: use scalar gravity for all worlds
+                gravity_vec = wp.vec3(*(g * self.gravity for g in self.up_vector))
+                gravity_vecs = [gravity_vec] * self.num_worlds
             m.gravity = wp.array(
-                [gravity_vec] * self.num_worlds,
+                gravity_vecs,
                 dtype=wp.vec3,
                 device=device,
                 requires_grad=requires_grad,
@@ -6781,6 +6911,8 @@ class ModelBuilder:
                     count = m.joint_dof_count
                 elif freq_key == ModelAttributeFrequency.JOINT_COORD:
                     count = m.joint_coord_count
+                elif freq_key == ModelAttributeFrequency.JOINT_CONSTRAINT:
+                    count = m.joint_constraint_count
                 elif freq_key == ModelAttributeFrequency.ARTICULATION:
                     count = m.articulation_count
                 elif freq_key == ModelAttributeFrequency.WORLD:

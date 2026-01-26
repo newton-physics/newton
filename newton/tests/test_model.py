@@ -291,6 +291,7 @@ class TestModel(unittest.TestCase):
         builder.approximate_meshes(method="bounding_sphere", shape_indices=[s2])
         # convex hull
         self.assertEqual(len(builder.shape_source[s0].vertices), 5)
+        self.assertEqual(builder.shape_type[s0], newton.GeoType.CONVEX_MESH)
         # the convex hull maintains the original transform
         assert_np_equal(np.array(builder.shape_transform[s0]), np.array(wp.transform_identity()), tol=1.0e-4)
         # bounding box
@@ -310,6 +311,7 @@ class TestModel(unittest.TestCase):
         builder.approximate_meshes(method="convex_hull", shape_indices=[s3], keep_visual_shapes=True)
         # approximation is created, but not visible
         self.assertEqual(len(builder.shape_source[s3].vertices), 5)
+        self.assertEqual(builder.shape_type[s3], newton.GeoType.CONVEX_MESH)
         self.assertEqual(builder.shape_flags[s3] & newton.ShapeFlags.VISIBLE, 0)
         # a new visual shape is created
         self.assertIs(builder.shape_source[s3 + 1], mesh)
