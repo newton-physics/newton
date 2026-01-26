@@ -2372,6 +2372,193 @@ class TestImportMjcf(unittest.TestCase):
             for i, (a, e) in enumerate(zip(actual, expected, strict=False)):
                 self.assertAlmostEqual(a, e, places=4, msg=f"geom_solimp[{shape_idx}][{i}] should be {e}, got {a}")
 
+    def _create_mjcf_with_option(self, option_attr, option_value):
+        """Helper to create standard MJCF with a single option."""
+        return f"""<?xml version="1.0" ?>
+<mujoco>
+    <option {option_attr}="{option_value}"/>
+    <worldbody>
+        <body name="body1" pos="0 0 1">
+            <joint type="hinge" axis="0 0 1"/>
+            <geom type="sphere" size="0.1"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+
+    def test_option_scalar_world_parsing(self):
+        """Test parsing of WORLD frequency scalar options from MJCF (6 options)."""
+        test_cases = [
+            ("impratio", "1.5", 1.5, 6),
+            ("tolerance", "1e-6", 1e-6, 10),
+            ("ls_tolerance", "0.001", 0.001, 6),
+            ("ccd_tolerance", "1e-5", 1e-5, 10),
+            ("density", "1.225", 1.225, 6),
+            ("viscosity", "1.8e-5", 1.8e-5, 10),
+        ]
+
+        for option_name, mjcf_value, expected, places in test_cases:
+            with self.subTest(option=option_name):
+                mjcf = self._create_mjcf_with_option(option_name, mjcf_value)
+                builder = newton.ModelBuilder()
+                builder.add_mjcf(mjcf)
+                model = builder.finalize()
+
+                self.assertTrue(hasattr(model, "mujoco"))
+                self.assertTrue(hasattr(model.mujoco, option_name))
+                value = getattr(model.mujoco, option_name).numpy()
+                self.assertEqual(len(value), 1)
+                self.assertAlmostEqual(value[0], expected, places=places)
+
+    def test_option_scalar_per_world(self):
+        """Test that scalar options are correctly remapped per world when merging builders."""
+        # Robot A
+        robot_a = newton.ModelBuilder()
+        robot_a.add_mjcf("""
+<mujoco>
+    <option impratio="1.5" tolerance="1e-6" ls_tolerance="0.001"/>
+    <worldbody>
+        <body name="a" pos="0 0 1">
+            <joint type="hinge" axis="0 0 1"/>
+            <geom type="sphere" size="0.1"/>
+        </body>
+    </worldbody>
+</mujoco>
+""")
+
+        # Robot B
+        robot_b = newton.ModelBuilder()
+        robot_b.add_mjcf("""
+<mujoco>
+    <option impratio="2.0" tolerance="1e-7" ls_tolerance="0.002"/>
+    <worldbody>
+        <body name="b" pos="0 0 1">
+            <joint type="hinge" axis="0 0 1"/>
+            <geom type="sphere" size="0.1"/>
+        </body>
+    </worldbody>
+</mujoco>
+""")
+
+        # Merge into main builder
+        main = newton.ModelBuilder()
+        main.add_world(robot_a)
+        main.add_world(robot_b)
+        model = main.finalize()
+
+        self.assertTrue(hasattr(model, "mujoco"))
+        self.assertTrue(hasattr(model.mujoco, "impratio"))
+        self.assertTrue(hasattr(model.mujoco, "tolerance"))
+        self.assertTrue(hasattr(model.mujoco, "ls_tolerance"))
+
+        impratio = model.mujoco.impratio.numpy()
+        tolerance = model.mujoco.tolerance.numpy()
+        ls_tolerance = model.mujoco.ls_tolerance.numpy()
+
+        # Should have 2 worlds with different values
+        self.assertEqual(len(impratio), 2)
+        self.assertEqual(len(tolerance), 2)
+        self.assertEqual(len(ls_tolerance), 2)
+        self.assertAlmostEqual(impratio[0], 1.5, places=4, msg="World 0 should have impratio=1.5")
+        self.assertAlmostEqual(impratio[1], 2.0, places=4, msg="World 1 should have impratio=2.0")
+        self.assertAlmostEqual(tolerance[0], 1e-6, places=10, msg="World 0 should have tolerance=1e-6")
+        self.assertAlmostEqual(tolerance[1], 1e-7, places=10, msg="World 1 should have tolerance=1e-7")
+        self.assertAlmostEqual(ls_tolerance[0], 0.001, places=6, msg="World 0 should have ls_tolerance=0.001")
+        self.assertAlmostEqual(ls_tolerance[1], 0.002, places=6, msg="World 1 should have ls_tolerance=0.002")
+
+    def test_option_vector_world_parsing(self):
+        """Test parsing of WORLD frequency vector options from MJCF (2 options)."""
+        test_cases = [
+            ("wind", "1 0.5 -0.5", [1, 0.5, -0.5]),
+            ("magnetic", "0 -1 0.5", [0, -1, 0.5]),
+        ]
+
+        for option_name, mjcf_value, expected in test_cases:
+            with self.subTest(option=option_name):
+                mjcf = self._create_mjcf_with_option(option_name, mjcf_value)
+                builder = newton.ModelBuilder()
+                builder.add_mjcf(mjcf)
+                model = builder.finalize()
+
+                self.assertTrue(hasattr(model, "mujoco"))
+                self.assertTrue(hasattr(model.mujoco, option_name))
+                value = getattr(model.mujoco, option_name).numpy()
+                self.assertEqual(len(value), 1)
+                self.assertTrue(np.allclose(value[0], expected))
+
+    def test_option_numeric_once_parsing(self):
+        """Test parsing of ONCE frequency numeric options from MJCF (3 options)."""
+        test_cases = [
+            ("ccd_iterations", "25", 25),
+            ("sdf_iterations", "20", 20),
+            ("sdf_initpoints", "50", 50),
+        ]
+
+        for option_name, mjcf_value, expected in test_cases:
+            with self.subTest(option=option_name):
+                mjcf = self._create_mjcf_with_option(option_name, mjcf_value)
+                builder = newton.ModelBuilder()
+                builder.add_mjcf(mjcf)
+                model = builder.finalize()
+
+                self.assertTrue(hasattr(model, "mujoco"))
+                self.assertTrue(hasattr(model.mujoco, option_name))
+                value = getattr(model.mujoco, option_name).numpy()
+                # ONCE frequency: single value, not per-world
+                self.assertEqual(len(value), 1)
+                self.assertEqual(value[0], expected)
+
+    def test_option_enum_once_parsing(self):
+        """Test parsing of ONCE frequency enum options from MJCF (4 options)."""
+        test_cases = [
+            ("integrator", "Euler", 0),
+            ("solver", "Newton", 2),
+            ("cone", "elliptic", 1),
+            ("jacobian", "sparse", 1),
+        ]
+
+        for option_name, mjcf_value, expected_int in test_cases:
+            with self.subTest(option=option_name):
+                mjcf = self._create_mjcf_with_option(option_name, mjcf_value)
+                builder = newton.ModelBuilder()
+                builder.add_mjcf(mjcf)
+                model = builder.finalize()
+
+                self.assertTrue(hasattr(model, "mujoco"))
+                self.assertTrue(hasattr(model.mujoco, option_name))
+                value = getattr(model.mujoco, option_name).numpy()
+                self.assertEqual(len(value), 1)  # ONCE frequency
+                self.assertEqual(value[0], expected_int)
+
+    def test_option_tag_pair_syntax(self):
+        """Test that options work with tag-pair syntax in addition to self-closing tags."""
+        # Test with tag-pair syntax: <option></option>
+        mjcf = """<?xml version="1.0" ?>
+<mujoco>
+    <option impratio="2.5" tolerance="1e-7" integrator="RK4"></option>
+    <worldbody>
+        <body name="body1" pos="0 0 1">
+            <joint type="hinge" axis="0 0 1"/>
+            <geom type="sphere" size="0.1"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf)
+        model = builder.finalize()
+
+        self.assertTrue(hasattr(model, "mujoco"))
+        self.assertTrue(hasattr(model.mujoco, "impratio"))
+        self.assertTrue(hasattr(model.mujoco, "tolerance"))
+        self.assertTrue(hasattr(model.mujoco, "integrator"))
+
+        # Verify values are parsed correctly
+        self.assertAlmostEqual(model.mujoco.impratio.numpy()[0], 2.5, places=4)
+        self.assertAlmostEqual(model.mujoco.tolerance.numpy()[0], 1e-7, places=10)
+        self.assertEqual(model.mujoco.integrator.numpy()[0], 1)  # RK4
+
     def test_geom_solmix_parsing(self):
         """Test that geom_solmix attribute is parsed correctly from MJCF."""
         mjcf = """<?xml version="1.0" ?>
@@ -2621,6 +2808,26 @@ class TestImportMjcf(unittest.TestCase):
             actual = eq_solref[eq_idx].tolist()
             for i, (a, e) in enumerate(zip(actual, expected, strict=False)):
                 self.assertAlmostEqual(a, e, places=4, msg=f"eq_solref[{eq_idx}][{i}] should be {e}, got {a}")
+
+    def test_parse_mujoco_options_disabled(self):
+        """Test that solver options from <option> tag are not parsed when parse_mujoco_options=False."""
+        mjcf = """<?xml version="1.0" ?>
+<mujoco>
+    <option impratio="99.0"/>
+    <worldbody>
+        <body name="body1" pos="0 0 1">
+            <joint type="hinge" axis="0 0 1"/>
+            <geom type="sphere" size="0.1"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf, parse_mujoco_options=False)
+        model = builder.finalize()
+
+        # impratio should remain at default (1.0), not the MJCF value (99.0)
+        self.assertAlmostEqual(model.mujoco.impratio.numpy()[0], 1.0, places=4)
 
     def test_ref_attribute_parsing(self):
         """Test that 'ref' attribute is parsed"""
