@@ -1705,7 +1705,7 @@ class ModelBuilder:
         key: str | None = None,
         attributes: dict[str, Any] | None = None,
         gravity: Vec3 | None = None,
-        dt: float | None = None,
+        dt: float | np.floating | None = None,
     ):
         """Begin a new world context for adding entities.
 
@@ -1724,7 +1724,7 @@ class ModelBuilder:
             gravity (Vec3 | None): Optional gravity vector for this world. If None,
                 the world will use the builder's default gravity (computed from
                 ``self.gravity`` and ``self.up_vector``).
-            dt (float | None): Optional time step for this world. If None, the world's
+            dt (float | np.floating | None): Optional time step for this world. If None, the world's
                 time-step will default to the builder's default time-step (`self.dt`).
 
         Raises:
@@ -1771,11 +1771,11 @@ class ModelBuilder:
 
         # Initialize this world's time-step
         if dt is not None:
-            if not isinstance(dt, float):
+            if not isinstance(dt, (float, np.floating)):
                 raise TypeError(f"Time-step of world {self.current_world} 'dt' must be a float, got {type(dt)}")
-            elif dt <= 0.0:
+            elif float(dt) <= 0.0:
                 raise ValueError(f"Time-step of world {self.current_world} 'dt' must be positive, got {dt}")
-            self.world_dt.append(dt)
+            self.world_dt.append(float(dt))
         else:
             self.world_dt.append(self.dt)
 
