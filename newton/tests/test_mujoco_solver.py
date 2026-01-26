@@ -5210,8 +5210,7 @@ class TestMuJoCoOptions(unittest.TestCase):
 
     def test_jacobian_from_custom_attribute(self):
         """
-        Verify that jacobian option is read from custom attribute and set on MuJoCo model.
-        Jacobian has no constructor parameter, so it's always read from custom attribute or default.
+        Verify that jacobian option is read from custom attribute when not provided to constructor.
         """
         # Create template builder
         template_builder = newton.ModelBuilder()
@@ -5236,6 +5235,34 @@ class TestMuJoCoOptions(unittest.TestCase):
 
         # Verify MuJoCo model uses custom attribute value
         self.assertEqual(solver.mj_model.opt.jacobian, mujoco.mjtJacobian.mjJAC_SPARSE)
+
+    def test_jacobian_constructor_override(self):
+        """
+        Verify that jacobian constructor parameter overrides custom attribute value.
+        """
+        # Create template builder
+        template_builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(template_builder)
+
+        pendulum = template_builder.add_link(mass=1.0, com=wp.vec3(0.0, 0.0, 0.0), I_m=wp.mat33(np.eye(3)))
+        template_builder.add_shape_box(body=pendulum, hx=0.05, hy=0.05, hz=0.05)
+        joint = template_builder.add_joint_revolute(parent=-1, child=pendulum, axis=(0.0, 0.0, 1.0))
+        template_builder.add_articulation([joint])
+
+        builder = newton.ModelBuilder()
+        builder.replicate(template_builder, 2)
+        model = builder.finalize()
+
+        # Set jacobian custom attribute to sparse (1)
+        model.mujoco.jacobian.assign(np.array([1], dtype=np.int32))
+
+        # Create solver with constructor override to dense (0)
+        import mujoco  # noqa: PLC0415
+
+        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True, jacobian="dense")
+
+        # Verify MuJoCo model uses constructor parameter, not custom attribute
+        self.assertEqual(solver.mj_model.opt.jacobian, mujoco.mjtJacobian.mjJAC_DENSE)
 
 
 class TestMuJoCoArticulationConversion(unittest.TestCase):

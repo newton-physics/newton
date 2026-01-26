@@ -173,13 +173,14 @@ class SolverMuJoCo(SolverBase):
 
     @staticmethod
     def _parse_solver(value: str | int) -> int:
-        """Parse solver option: PGS=0, CG=1, Newton=2."""
+        """Parse solver option: CG=1, Newton=2. Note: PGS (0) is not supported and will fail silently."""
         if isinstance(value, int):
             return value
-        mapping = {"pgs": 0, "cg": 1, "newton": 2}
+        mapping = {"cg": 1, "newton": 2}
         lower_value = value.lower().strip()
         if lower_value in mapping:
             return mapping[lower_value]
+        # If PGS or unknown string, try converting to int (will fail silently for PGS)
         return int(value)
 
     @staticmethod
@@ -1296,9 +1297,10 @@ class SolverMuJoCo(SolverBase):
         ccd_iterations: int | None = None,
         sdf_iterations: int | None = None,
         sdf_initpoints: int | None = None,
-        solver: int | str = "cg",
+        solver: int | str = "newton",
         integrator: int | str = "implicitfast",
         cone: int | str = "pyramidal",
+        jacobian: int | str | None = None,
         impratio: float | None = None,
         tolerance: float | None = None,
         ls_tolerance: float | None = None,
@@ -1336,9 +1338,10 @@ class SolverMuJoCo(SolverBase):
             ccd_iterations (int | None): Maximum CCD iterations. If None, uses model custom attribute or MuJoCo's default (50).
             sdf_iterations (int | None): Maximum SDF iterations. If None, uses model custom attribute or MuJoCo's default (10).
             sdf_initpoints (int | None): Number of SDF initialization points. If None, uses model custom attribute or MuJoCo's default (40).
-            solver (int | str): Solver type. Can be "cg" or "newton", or their corresponding MuJoCo integer constants.
-            integrator (int | str): Integrator type. Can be "euler", "rk4", or "implicitfast", or their corresponding MuJoCo integer constants.
-            cone (int | str): The type of contact friction cone. Can be "pyramidal", "elliptic", or their corresponding MuJoCo integer constants.
+            solver (int | str): Solver type. Can be "cg" or "newton", or their corresponding MuJoCo integer constants. If None, uses model custom attribute or Newton's default ("newton").
+            integrator (int | str): Integrator type. Can be "euler", "rk4", or "implicitfast", or their corresponding MuJoCo integer constants. If None, uses model custom attribute or Newton's default ("implicitfast").
+            cone (int | str): The type of contact friction cone. Can be "pyramidal", "elliptic", or their corresponding MuJoCo integer constants. If None, uses model custom attribute or Newton's default ("pyramidal").
+            jacobian (int | str | None): Jacobian computation method. Can be "dense", "sparse", or "auto", or their corresponding MuJoCo integer constants. If None, uses model custom attribute or MuJoCo's default ("auto").
             impratio (float | None): Frictional-to-normal constraint impedance ratio. If None, uses model custom attribute or MuJoCo's default (1.0).
             tolerance (float | None): Solver tolerance for early termination. If None, uses model custom attribute or MuJoCo's default (1e-8).
             ls_tolerance (float | None): Line search tolerance for early termination. If None, uses model custom attribute or MuJoCo's default (0.01).
@@ -1447,6 +1450,7 @@ class SolverMuJoCo(SolverBase):
                     sdf_iterations=sdf_iterations,
                     sdf_initpoints=sdf_initpoints,
                     cone=cone,
+                    jacobian=jacobian,
                     impratio=impratio,
                     tolerance=tolerance,
                     ls_tolerance=ls_tolerance,
@@ -1995,7 +1999,7 @@ class SolverMuJoCo(SolverBase):
         sdf_initpoints: int | None = None,
         njmax: int | None = None,  # number of constraints per world
         nconmax: int | None = None,
-        solver: int | str = "cg",
+        solver: int | str = "newton",
         integrator: int | str = "implicitfast",
         disableflags: int = 0,
         disable_contacts: bool = False,
@@ -2008,6 +2012,7 @@ class SolverMuJoCo(SolverBase):
         wind: tuple | None = None,
         magnetic: tuple | None = None,
         cone: int | str = "pyramidal",
+        jacobian: int | str | None = None,
         target_filename: str | None = None,
         default_actuator_args: dict | None = None,
         default_actuator_gear: float | None = None,
@@ -2048,6 +2053,7 @@ class SolverMuJoCo(SolverBase):
             wind: Wind velocity vector (x, y, z). If None, uses model custom attribute or MuJoCo default (0, 0, 0).
             magnetic: Magnetic flux vector (x, y, z). If None, uses model custom attribute or MuJoCo default (0, -0.5, 0).
             cone: Friction cone type ("pyramidal" or "elliptic").
+            jacobian: Jacobian computation method ("dense", "sparse", or "auto"). If None, uses model custom attribute or MuJoCo default ("auto").
             target_filename: Optional path to save generated MJCF file.
             default_actuator_args: Default actuator parameters.
             default_actuator_gear: Default actuator gear ratio.
@@ -2098,32 +2104,17 @@ class SolverMuJoCo(SolverBase):
         if actuator_gears is None:
             actuator_gears = {}
 
-        def _resolve_mj_opt(val, opts: dict[str, int], kind: str):
-            if isinstance(val, str):
-                key = val.strip().lower()
-                try:
-                    return opts[key]
-                except KeyError as e:
-                    options = "', '".join(sorted(opts))
-                    raise ValueError(f"Unknown {kind} '{val}'. Valid options: '{options}'.") from e
-            return val
-
-        solver = _resolve_mj_opt(
-            solver, {"cg": mujoco.mjtSolver.mjSOL_CG, "newton": mujoco.mjtSolver.mjSOL_NEWTON}, "solver"
-        )
-        integrator = _resolve_mj_opt(
-            integrator,
-            {
-                "euler": mujoco.mjtIntegrator.mjINT_EULER,
-                "rk4": mujoco.mjtIntegrator.mjINT_RK4,
-                "implicit": mujoco.mjtIntegrator.mjINT_IMPLICITFAST,
-                "implicitfast": mujoco.mjtIntegrator.mjINT_IMPLICITFAST,
-            },
-            "integrator",
-        )
-        cone = _resolve_mj_opt(
-            cone, {"pyramidal": mujoco.mjtCone.mjCONE_PYRAMIDAL, "elliptic": mujoco.mjtCone.mjCONE_ELLIPTIC}, "cone"
-        )
+        # Convert string enum values to integers using the static parser methods
+        # (these methods handle both string and int inputs)
+        # Only convert if not None - will check custom attributes later if None
+        if solver is not None:
+            solver = self._parse_solver(solver)
+        if integrator is not None:
+            integrator = self._parse_integrator(integrator)
+        if cone is not None:
+            cone = self._parse_cone(cone)
+        if jacobian is not None:
+            jacobian = self._parse_jacobian(jacobian)
 
         def quat_to_mjc(q):
             # convert from xyzw to wxyz
@@ -2197,10 +2188,26 @@ class SolverMuJoCo(SolverBase):
         if sdf_initpoints is None and mujoco_attrs and hasattr(mujoco_attrs, "sdf_initpoints"):
             sdf_initpoints = int(mujoco_attrs.sdf_initpoints.numpy()[0])
 
-        # Read jacobian from custom attribute if available (not a constructor parameter)
-        jacobian = mujoco.mjtJacobian.mjJAC_AUTO  # default
-        if mujoco_attrs and hasattr(mujoco_attrs, "jacobian"):
+        # Resolve ONCE frequency enum options from custom attributes if not provided
+        # Note: These have defaults, but can be None if explicitly passed
+        if solver is None and mujoco_attrs and hasattr(mujoco_attrs, "solver"):
+            solver = int(mujoco_attrs.solver.numpy()[0])
+        if integrator is None and mujoco_attrs and hasattr(mujoco_attrs, "integrator"):
+            integrator = int(mujoco_attrs.integrator.numpy()[0])
+        if cone is None and mujoco_attrs and hasattr(mujoco_attrs, "cone"):
+            cone = int(mujoco_attrs.cone.numpy()[0])
+        if jacobian is None and mujoco_attrs and hasattr(mujoco_attrs, "jacobian"):
             jacobian = int(mujoco_attrs.jacobian.numpy()[0])
+
+        # Set defaults for enum options if still None (use Newton defaults, not MuJoCo defaults)
+        if solver is None:
+            solver = mujoco.mjtSolver.mjSOL_NEWTON  # Newton default (not CG)
+        if integrator is None:
+            integrator = mujoco.mjtIntegrator.mjINT_IMPLICITFAST  # Newton default (not Euler)
+        if cone is None:
+            cone = mujoco.mjtCone.mjCONE_PYRAMIDAL
+        if jacobian is None:
+            jacobian = mujoco.mjtJacobian.mjJAC_AUTO
 
         spec = mujoco.MjSpec()
         spec.option.disableflags = disableflags
