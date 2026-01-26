@@ -35,6 +35,7 @@ class ClearData:
     clear_depth: float | wp.float32 | None = field(default_factory=lambda: wp.float32(0.0))
     clear_shape_index: int | wp.uint32 | None = field(default_factory=lambda: wp.uint32(0xFFFFFFFF))
     clear_normal: wp.vec3f | None = field(default_factory=lambda: wp.vec3f(0.0))
+    clear_albedo: int | wp.int32 | None = field(default_factory=lambda: wp.int32(0))
 
 
 DEFAULT_CLEAR_DATA = ClearData()
@@ -156,6 +157,9 @@ class RenderContext:
     def create_normal_image_output(self):
         return wp.zeros((self.num_worlds, self.num_cameras, self.width * self.height), dtype=wp.vec3f)
 
+    def create_albedo_image_output(self):
+        return wp.zeros((self.num_worlds, self.num_cameras, self.width * self.height), dtype=wp.uint32)
+
     def refit_bvh(self):
         if self.num_shapes_enabled:
             self.__init_shape_outputs()
@@ -201,6 +205,7 @@ class RenderContext:
         depth_image: wp.array(dtype=wp.float32, ndim=3) | None = None,
         shape_index_image: wp.array(dtype=wp.uint32, ndim=3) | None = None,
         normal_image: wp.array(dtype=wp.vec3f, ndim=3) | None = None,
+        albedo_image: wp.array(dtype=wp.uint32, ndim=3) | None = None,
         refit_bvh: bool = True,
         clear_data: ClearData | None = DEFAULT_CLEAR_DATA,
     ):
@@ -215,6 +220,7 @@ class RenderContext:
                 depth_image,
                 shape_index_image,
                 normal_image,
+                albedo_image,
                 clear_data,
             )
 
