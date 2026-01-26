@@ -261,14 +261,16 @@ def parse_usd(
         has_particle_collision=False,
     )
 
+    # Create a cache for world transforms to avoid recomputing them for each prim.
+    xform_cache = UsdGeom.XformCache(Usd.TimeCode.Default())
+
     def _is_enabled_collider(prim: Usd.Prim) -> bool:
         if not prim.HasAPI(UsdPhysics.CollisionAPI):
             return False
         return usd.get_attribute(prim, "physics:collisionEnabled", True)
 
-    def _xform_to_row_mat(xform: wp.transform) -> np.ndarray:
-        mat = wp.transform_compose(xform.p, xform.q, wp.vec3(1.0))
-        return np.array(mat, dtype=np.float32).reshape(4, 4).T
+    def _xform_to_mat44(xform: wp.transform) -> wp.mat44:
+        return wp.transform_compose(xform.p, xform.q, wp.vec3(1.0))
 
     def _load_visual_shapes_impl(
         parent_body_id: int,
@@ -291,19 +293,19 @@ def parse_usd(
         if any(re.match(path, path_name) for path in ignore_paths):
             return
 
-        prim_world_mat = usd.get_xform_matrix(prim, local=False)
+        prim_world_mat = usd.get_transform_matrix(prim, local=False, xform_cache=xform_cache)
         if incoming_world_xform is not None and (parent_body_id == -1 or body_xform is not None):
             # Apply the incoming world transform in model space (static shapes or when using body_xform).
-            incoming_mat = _xform_to_row_mat(incoming_world_xform)
-            prim_world_mat = prim_world_mat @ incoming_mat
+            incoming_mat = _xform_to_mat44(incoming_world_xform)
+            prim_world_mat = incoming_mat @ prim_world_mat
         if body_xform is not None:
             # Use the body transform used by the builder to avoid USD/physics pose mismatches.
-            body_world_mat = _xform_to_row_mat(body_xform)
-            rel_mat = prim_world_mat @ np.linalg.inv(body_world_mat)
+            body_world_mat = _xform_to_mat44(body_xform)
+            rel_mat = wp.inverse(body_world_mat) @ prim_world_mat
         else:
             rel_mat = prim_world_mat
 
-        xform_pos, xform_rot, scale = wp.transform_decompose(wp.mat44(rel_mat.T))
+        xform_pos, xform_rot, scale = wp.transform_decompose(rel_mat)
         xform = wp.transform(xform_pos, xform_rot)
 
         if prim.IsInstance():
@@ -1092,7 +1094,7 @@ def parse_usd(
             if any(re.match(p, articulation_path) for p in ignore_paths):
                 continue
             articulation_prim = stage.GetPrimAtPath(path)
-            articulation_root_xform = usd.get_transform(articulation_prim, local=False)
+            articulation_root_xform = usd.get_transform(articulation_prim, local=False, xform_cache=xform_cache)
             # Joints are authored in the articulation-root frame, so always compose with it.
             articulation_incoming_xform = incoming_world_xform * articulation_root_xform
             # Collect engine-specific attributes for the articulation root on first encounter
@@ -1150,7 +1152,7 @@ def parse_usd(
                 if key in body_specs:
                     body_desc = body_specs[key]
                     desc_xform = wp.transform(body_desc.position, usd.from_gfquat(body_desc.rotation))
-                    body_world = usd.get_transform(usd_prim, local=False)
+                    body_world = usd.get_transform(usd_prim, local=False, xform_cache=xform_cache)
                     desired_world = incoming_world_xform * body_world
                     body_incoming_xform = desired_world * wp.transform_inverse(desc_xform)
                     if bodies_follow_joint_ordering:
