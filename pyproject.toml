@@ -25,14 +25,14 @@ classifiers = [
 description = "A GPU-accelerated physics engine for robotics simulation"
 readme = "README.md"
 requires-python = ">=3.10"
-dependencies = ["warp-lang>=1.11.0.dev20251205"]
+dependencies = ["warp-lang>=1.12.0.dev20251219"]
 
 [project.optional-dependencies]
 # Core simulation dependencies
 sim = [
     # MuJoCo simulation
-    "mujoco-warp>=0.0.1",         # MuJoCo, warp-accelerated
-    "mujoco>=3.4.0.dev839962392", # MuJoCo physics engine
+    "mujoco-warp>=0.0.2",         # MuJoCo, warp-accelerated
+    "mujoco>=3.4.1.dev856273160", # MuJoCo physics engine
     "cbor2>=5.7.0",
 ]
 
@@ -50,6 +50,9 @@ importers = [
     # USD core libraries
     "usd-core>=25.5 ; platform_machine != 'aarch64'",
     "usd-exchange>=2.1.0a3 ; platform_machine == 'aarch64'",
+
+    # Newton USD Schemas
+    "newton-usd-schemas>=0.1.0a1",
 ]
 
 # Examples dependencies including visualization

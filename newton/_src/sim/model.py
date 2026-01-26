@@ -56,22 +56,24 @@ class ModelAttributeFrequency(IntEnum):
 
     ONCE = 0
     """Attribute frequency is a single value."""
-    JOINT = 1
-    """Attribute frequency follows the number of joints (see :attr:`~newton.Model.joint_count`)."""
-    JOINT_DOF = 2
-    """Attribute frequency follows the number of joint degrees of freedom (see :attr:`~newton.Model.joint_dof_count`)."""
-    JOINT_COORD = 3
-    """Attribute frequency follows the number of joint positional coordinates (see :attr:`~newton.Model.joint_coord_count`)."""
-    BODY = 4
-    """Attribute frequency follows the number of bodies (see :attr:`~newton.Model.body_count`)."""
-    SHAPE = 5
-    """Attribute frequency follows the number of shapes (see :attr:`~newton.Model.shape_count`)."""
-    ARTICULATION = 6
-    """Attribute frequency follows the number of articulations (see :attr:`~newton.Model.articulation_count`)."""
-    EQUALITY_CONSTRAINT = 7
-    """Attribute frequency follows the number of equality constraints (see :attr:`~newton.Model.equality_constraint_count`)."""
-    WORLD = 8
+    WORLD = 1
     """Attribute frequency follows the number of worlds (see :attr:`~newton.Model.num_worlds`)."""
+    ARTICULATION = 2
+    """Attribute frequency follows the number of articulations (see :attr:`~newton.Model.articulation_count`)."""
+    BODY = 3
+    """Attribute frequency follows the number of bodies (see :attr:`~newton.Model.body_count`)."""
+    SHAPE = 4
+    """Attribute frequency follows the number of shapes (see :attr:`~newton.Model.shape_count`)."""
+    JOINT = 5
+    """Attribute frequency follows the number of joints (see :attr:`~newton.Model.joint_count`)."""
+    JOINT_DOF = 6
+    """Attribute frequency follows the number of joint degrees of freedom (see :attr:`~newton.Model.joint_dof_count`)."""
+    JOINT_COORD = 7
+    """Attribute frequency follows the number of joint positional coordinates (see :attr:`~newton.Model.joint_coord_count`)."""
+    JOINT_CONSTRAINT = 8
+    """Attribute frequency follows the number of joint constraints (see :attr:`~newton.Model.joint_constraint_count`)."""
+    EQUALITY_CONSTRAINT = 9
+    """Attribute frequency follows the number of equality constraints (see :attr:`~newton.Model.equality_constraint_count`)."""
 
 
 class AttributeNamespace:
@@ -450,6 +452,8 @@ class Model:
         """Total number of velocity degrees of freedom of all joints. Equals the number of joint axes."""
         self.joint_coord_count = 0
         """Total number of position degrees of freedom of all joints."""
+        self.joint_constraint_count = 0
+        """Total number of joint constraints of all joints."""
         self.equality_constraint_count = 0
         """Total number of equality constraints in the system."""
 
@@ -633,27 +637,40 @@ class Model:
         )
         return c
 
-    def set_gravity(self, gravity: tuple[float, float, float] | list[float] | wp.vec3) -> None:
+    def set_gravity(
+        self,
+        gravity: tuple[float, float, float] | list | wp.vec3 | np.ndarray,
+        world: int | None = None,
+    ) -> None:
         """
         Set gravity for runtime modification.
 
         Args:
-            gravity: Gravity vector as a tuple, list, or wp.vec3.
-                    Common values: (0, 0, -9.81) for Z-up, (0, -9.81, 0) for Y-up.
+            gravity: Gravity vector (3,) or per-world array (num_worlds, 3).
+            world: If provided, set gravity only for this world.
 
         Note:
-            After calling this method, you should notify solvers via
-            `solver.notify_model_changed(SolverNotifyFlags.MODEL_PROPERTIES)`.
-        """
-        if self.gravity is None:
-            raise RuntimeError(
-                "Model gravity not initialized. Ensure the model was created via ModelBuilder.finalize()"
-            )
+            Call ``solver.notify_model_changed(SolverNotifyFlags.MODEL_PROPERTIES)`` after.
 
-        if isinstance(gravity, tuple | list):
-            self.gravity.assign([wp.vec3(gravity[0], gravity[1], gravity[2])])
+            Global entities (particles/bodies not assigned to a specific world) use
+            gravity from world 0.
+        """
+        gravity_np = np.asarray(gravity, dtype=np.float32)
+
+        if world is not None:
+            if gravity_np.shape != (3,):
+                raise ValueError("Expected single gravity vector (3,) when world is specified")
+            if world < 0 or world >= self.num_worlds:
+                raise IndexError(f"world {world} out of range [0, {self.num_worlds})")
+            current = self.gravity.numpy()
+            current[world] = gravity_np
+            self.gravity.assign(current)
+        elif gravity_np.ndim == 1:
+            self.gravity.fill_(gravity_np)
         else:
-            self.gravity.assign([gravity])
+            if len(gravity_np) != self.num_worlds:
+                raise ValueError(f"Expected {self.num_worlds} gravity vectors, got {len(gravity_np)}")
+            self.gravity.assign(gravity_np)
 
     def collide(
         self: Model,

@@ -32,9 +32,10 @@ from newton.utils import (
     create_ellipsoid_mesh,
     create_plane_mesh,
     create_sphere_mesh,
+    solidify_mesh,
 )
 
-from ..core.types import nparray
+from ..core.types import MAXVAL, nparray
 from .kernels import compute_hydro_contact_surface_lines, estimate_world_extents
 
 
@@ -238,8 +239,8 @@ class ViewerBase:
         num_worlds = self.model.num_worlds
 
         # Initialize bounds arrays for all worlds
-        world_bounds_min = wp.full((num_worlds, 3), wp.inf, dtype=wp.float32, device=self.device)
-        world_bounds_max = wp.full((num_worlds, 3), -wp.inf, dtype=wp.float32, device=self.device)
+        world_bounds_min = wp.full((num_worlds, 3), MAXVAL, dtype=wp.float32, device=self.device)
+        world_bounds_max = wp.full((num_worlds, 3), -MAXVAL, dtype=wp.float32, device=self.device)
 
         # Get initial state for body transforms
         state = self.model.state()
@@ -616,8 +617,6 @@ class ViewerBase:
                 raise ValueError(f"log_geo requires geo_src for MESH or CONVEX_MESH (name={name})")
 
             # resolve points/indices from source, solidify if requested
-            from warp.render.utils import solidify_mesh  # noqa: PLC0415
-
             if not geo_is_solid:
                 indices, points = solidify_mesh(geo_src.indices, geo_src.vertices, geo_thickness)
             else:
@@ -994,7 +993,15 @@ class ViewerBase:
                 material = wp.vec4(0.5, 0.5, 1.0, 0.0)
 
             # add render instance
-            batch.add(parent, xform, scale, color, material, s, shape_world[s])
+            batch.add(
+                parent=parent,
+                xform=xform,
+                scale=scale,
+                color=color,
+                material=material,
+                shape_index=s,
+                world=shape_world[s],
+            )
 
         # each shape instance object (batch) is associated with one slice
         batches = list(self._shape_instances.values())
@@ -1114,7 +1121,15 @@ class ViewerBase:
             color = wp.vec3(self._collision_color_map(s))
             material = wp.vec4(0.3, 0.0, 0.0, 0.0)  # roughness, metallic, checker, unused
 
-            batch.add(parent, xform, scale, color, material, s, shape_world[s])
+            batch.add(
+                parent=parent,
+                xform=xform,
+                scale=scale,
+                color=color,
+                material=material,
+                shape_index=s,
+                world=shape_world[s],
+            )
 
         # Finalize all SDF isomesh batches
         for batch in self._sdf_isomesh_instances.values():
@@ -1196,7 +1211,15 @@ class ViewerBase:
             material = wp.vec4(0.5, 0.0, 0.0, 0.0)  # roughness, metallic, checker, unused
 
             # add render instance
-            batch.add(parent, xform, scale, color, material, body_world[body])
+            batch.add(
+                parent=parent,
+                xform=xform,
+                scale=scale,
+                color=color,
+                material=material,
+                shape_index=body,
+                world=body_world[body],
+            )
 
         # batch to the GPU
         batch.finalize()

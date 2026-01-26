@@ -17,12 +17,14 @@
 # core
 # ==================================================================================
 from ._src.core import (
+    MAXVAL,
     Axis,
     AxisType,
 )
 from ._version import __version__
 
 __all__ = [
+    "MAXVAL",
     "Axis",
     "AxisType",
     "__version__",
@@ -53,7 +55,6 @@ __all__ += [
 # sim
 # ==================================================================================
 from ._src.sim import (  # noqa: E402
-    JOINT_LIMIT_UNLIMITED,
     BroadPhaseMode,
     CollisionPipeline,
     CollisionPipelineUnified,
@@ -69,11 +70,11 @@ from ._src.sim import (  # noqa: E402
     count_rigid_contact_points,
     eval_fk,
     eval_ik,
+    get_joint_constraint_count,
     get_joint_dof_count,
 )
 
 __all__ += [
-    "JOINT_LIMIT_UNLIMITED",
     "BroadPhaseMode",
     "CollisionPipeline",
     "CollisionPipelineUnified",
@@ -89,6 +90,7 @@ __all__ += [
     "count_rigid_contact_points",
     "eval_fk",
     "eval_ik",
+    "get_joint_constraint_count",
     "get_joint_dof_count",
 ]
 

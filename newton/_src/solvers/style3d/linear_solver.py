@@ -227,7 +227,7 @@ def array_inner(
     b: wp.array(dtype=wp.vec3),
     out_ptr: wp.uint64,
 ):
-    from warp.context import runtime  # noqa: PLC0415
+    from warp._src.context import runtime  # noqa: PLC0415
 
     if a.device.is_cpu:
         func = runtime.core.wp_array_inner_float_host
@@ -241,7 +241,7 @@ def array_inner(
         len(a),
         wp.types.type_size_in_bytes(a.dtype),
         wp.types.type_size_in_bytes(b.dtype),
-        wp.types.type_length(a.dtype),
+        wp.types.type_size(a.dtype),
     )
 
 

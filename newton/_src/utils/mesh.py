@@ -13,10 +13,102 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import warnings
+from dataclasses import dataclass
+
 import numpy as np
+import warp as wp
 
 # Default number of segments for mesh generation
 default_num_segments = 32
+
+
+@dataclass
+class MeshEdge:
+    """Represents an edge in a triangle mesh with adjacency information.
+
+    Stores the two vertices of the edge, the opposite vertices from each
+    adjacent triangle, and the indices of those triangles. The winding order
+    is consistent: the first triangle is reconstructed as {v0, v1, o0}, and
+    the second triangle as {v1, v0, o1}.
+
+    For boundary edges (edges with only one adjacent triangle), o1 and f1
+    are set to -1.
+    """
+
+    v0: int
+    """Index of the first vertex of the edge."""
+    v1: int
+    """Index of the second vertex of the edge."""
+    o0: int
+    """Index of the vertex opposite to the edge in the first adjacent triangle."""
+    o1: int
+    """Index of the vertex opposite to the edge in the second adjacent triangle, or -1 if boundary."""
+    f0: int
+    """Index of the first adjacent triangle."""
+    f1: int
+    """Index of the second adjacent triangle, or -1 if boundary edge."""
+
+
+class MeshAdjacency:
+    """Builds and stores edge adjacency information for a triangle mesh.
+
+    This class processes triangle indices to create a mapping from edges to
+    their adjacent triangles. Each edge stores references to both adjacent
+    triangles (if they exist) along with the opposite vertices.
+
+    Attributes:
+        edges: Dictionary mapping edge keys (min_vertex, max_vertex) to MeshEdge objects.
+        indices: The original triangle indices used to build the adjacency.
+    """
+
+    def __init__(self, indices, num_tris):
+        """Build edge adjacency from triangle indices.
+
+        Args:
+            indices: Array-like of triangle indices, where each element is a
+                sequence of 3 vertex indices defining a triangle.
+            num_tris: Number of triangles (currently unused, kept for API compatibility).
+        """
+        self.edges = {}
+        self.indices = indices
+
+        for index, tri in enumerate(indices):
+            self.add_edge(tri[0], tri[1], tri[2], index)
+            self.add_edge(tri[1], tri[2], tri[0], index)
+            self.add_edge(tri[2], tri[0], tri[1], index)
+
+    def add_edge(self, i0, i1, o, f):
+        """Add or update an edge in the adjacency structure.
+
+        If the edge already exists, updates it with the second adjacent triangle.
+        If the edge would have more than two adjacent triangles, prints a warning
+        (non-manifold edge).
+
+        Args:
+            i0: Index of the first vertex of the edge.
+            i1: Index of the second vertex of the edge.
+            o: Index of the opposite vertex in the triangle.
+            f: Index of the triangle containing this edge.
+        """
+        key = (min(i0, i1), max(i0, i1))
+        edge = None
+
+        if key in self.edges:
+            edge = self.edges[key]
+
+            if edge.f1 != -1:
+                warnings.warn("Detected non-manifold edge", stacklevel=2)
+                return
+            else:
+                # update other side of the edge
+                edge.o1 = o
+                edge.f1 = f
+        else:
+            # create new edge with opposite yet to be filled
+            edge = MeshEdge(i0, i1, o, -1, f, -1)
+
+        self.edges[key] = edge
 
 
 def create_sphere_mesh(
@@ -530,3 +622,133 @@ def create_plane_mesh(width, length):
     ]
 
     return (np.array(vertices, dtype=np.float32), np.array(indices, dtype=np.uint32))
+
+
+@wp.kernel
+def solidify_mesh_kernel(
+    indices: wp.array(dtype=int, ndim=2),
+    vertices: wp.array(dtype=wp.vec3, ndim=1),
+    thickness: wp.array(dtype=float, ndim=1),
+    # outputs
+    out_vertices: wp.array(dtype=wp.vec3, ndim=1),
+    out_indices: wp.array(dtype=int, ndim=2),
+):
+    """Extrude each triangle into a triangular prism (wedge) for solidification.
+
+    For each input triangle, creates 6 vertices (3 on each side of the surface)
+    and 8 output triangles forming a closed wedge. The extrusion is along the
+    face normal, with per-vertex thickness values.
+
+    Launch with dim=num_triangles.
+
+    Args:
+        indices: Triangle indices of shape (num_triangles, 3).
+        vertices: Vertex positions of shape (num_vertices,).
+        thickness: Per-vertex thickness values of shape (num_vertices,).
+        out_vertices: Output vertices of shape (num_vertices * 2,). Each input
+            vertex produces two output vertices (offset ± thickness along normal).
+        out_indices: Output triangle indices of shape (num_triangles * 8, 3).
+    """
+    tid = wp.tid()
+    i = indices[tid, 0]
+    j = indices[tid, 1]
+    k = indices[tid, 2]
+
+    vi = vertices[i]
+    vj = vertices[j]
+    vk = vertices[k]
+
+    normal = wp.normalize(wp.cross(vj - vi, vk - vi))
+    ti = normal * thickness[i]
+    tj = normal * thickness[j]
+    tk = normal * thickness[k]
+
+    # wedge vertices
+    vi0 = vi + ti
+    vi1 = vi - ti
+    vj0 = vj + tj
+    vj1 = vj - tj
+    vk0 = vk + tk
+    vk1 = vk - tk
+
+    i0 = i * 2
+    i1 = i * 2 + 1
+    j0 = j * 2
+    j1 = j * 2 + 1
+    k0 = k * 2
+    k1 = k * 2 + 1
+
+    out_vertices[i0] = vi0
+    out_vertices[i1] = vi1
+    out_vertices[j0] = vj0
+    out_vertices[j1] = vj1
+    out_vertices[k0] = vk0
+    out_vertices[k1] = vk1
+
+    oid = tid * 8
+    out_indices[oid + 0, 0] = i0
+    out_indices[oid + 0, 1] = j0
+    out_indices[oid + 0, 2] = k0
+    out_indices[oid + 1, 0] = j0
+    out_indices[oid + 1, 1] = k1
+    out_indices[oid + 1, 2] = k0
+    out_indices[oid + 2, 0] = j0
+    out_indices[oid + 2, 1] = j1
+    out_indices[oid + 2, 2] = k1
+    out_indices[oid + 3, 0] = j0
+    out_indices[oid + 3, 1] = i1
+    out_indices[oid + 3, 2] = j1
+    out_indices[oid + 4, 0] = j0
+    out_indices[oid + 4, 1] = i0
+    out_indices[oid + 4, 2] = i1
+    out_indices[oid + 5, 0] = j1
+    out_indices[oid + 5, 1] = i1
+    out_indices[oid + 5, 2] = k1
+    out_indices[oid + 6, 0] = i1
+    out_indices[oid + 6, 1] = i0
+    out_indices[oid + 6, 2] = k0
+    out_indices[oid + 7, 0] = i1
+    out_indices[oid + 7, 1] = k0
+    out_indices[oid + 7, 2] = k1
+
+
+def solidify_mesh(
+    faces: np.ndarray,
+    vertices: np.ndarray,
+    thickness: float | list | np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Convert a surface mesh into a solid mesh by extruding along face normals.
+
+    Takes a triangle mesh representing a surface and creates a closed solid
+    mesh by extruding each triangle into a triangular prism (wedge). Each input
+    triangle produces 8 output triangles forming the top, bottom, and sides
+    of the prism.
+
+    Args:
+        faces: Triangle indices of shape (N, 3), where N is the number of
+            triangles.
+        vertices: Vertex positions of shape (M, 3), where M is the number of
+            vertices.
+        thickness: Extrusion distance from the surface. Can be a single float
+            (uniform thickness), a list, or an array of shape (M,) for
+            per-vertex thickness.
+
+    Returns:
+        A tuple containing:
+            - faces: Output triangle indices of shape (N * 8, 3).
+            - vertices: Output vertex positions of shape (M * 2, 3).
+    """
+    faces = np.array(faces).reshape(-1, 3)
+    out_faces = wp.zeros((len(faces) * 8, 3), dtype=wp.int32)
+    out_vertices = wp.zeros(len(vertices) * 2, dtype=wp.vec3)
+    if not isinstance(thickness, np.ndarray) and not isinstance(thickness, list):
+        thickness = [thickness] * len(vertices)
+    wp.launch(
+        solidify_mesh_kernel,
+        dim=len(faces),
+        inputs=[wp.array(faces, dtype=int), wp.array(vertices, dtype=wp.vec3), wp.array(thickness, dtype=float)],
+        outputs=[out_vertices, out_faces],
+    )
+    faces = out_faces.numpy()
+    vertices = out_vertices.numpy()
+    return faces, vertices

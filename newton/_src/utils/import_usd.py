@@ -33,6 +33,7 @@ from ..sim.builder import ModelBuilder
 from ..sim.model import ModelAttributeFrequency
 from ..usd import utils as usd
 from ..usd.schema_resolver import PrimType, SchemaResolver, SchemaResolverManager
+from ..usd.schemas import SchemaResolverNewton
 
 
 def parse_usd(
@@ -66,7 +67,7 @@ def parse_usd(
     See :ref:`usd_parsing` for more information.
 
     Args:
-        builder (ModelBuilder): The :class:`ModelBuilder` to add the bodies and joints to.
+        builder (ModelBuilder): The :class:`~newton.ModelBuilder` to add the bodies and joints to.
         source (str | pxr.Usd.Stage): The file path to the USD file, or an existing USD stage instance.
         xform (Transform): The transform to apply to the entire scene.
         only_load_enabled_rigid_bodies (bool): If True, only rigid bodies which do not have `physics:rigidBodyEnabled` set to False are loaded.
@@ -85,8 +86,8 @@ def parse_usd(
         load_sites (bool): If True, sites (prims with MjcSiteAPI) are loaded as non-colliding reference points. If False, sites are ignored. Default is True.
         load_visual_shapes (bool): If True, non-physics visual geometry is loaded. If False, visual-only shapes are ignored (sites are still controlled by ``load_sites``). Default is True.
         hide_collision_shapes (bool): If True, collision shapes are hidden. Default is False.
-        mesh_maxhullvert (int): Maximum vertices for convex hull approximation of meshes.
-        schema_resolvers (list[SchemaResolver]): Resolver instances in priority order. Default is no schema resolution.
+        mesh_maxhullvert (int): Maximum vertices for convex hull approximation of meshes. Note that an authored ``newton:maxHullVertices`` attribute on any shape with a ``NewtonMeshCollisionAPI`` will take priority over this value.
+        schema_resolvers (list[SchemaResolver]): Resolver instances in priority order. Default is to only parse Newton-specific attributes.
             Schema resolvers collect per-prim "solver-specific" attributes, see :ref:`schema_resolvers` for more information.
             These include namespaced attributes such as ``newton:*``, ``physx*``
             (e.g., ``physxScene:*``, ``physxRigidBody:*``, ``physxSDFMeshCollision:*``), and ``mjc:*`` that
@@ -103,39 +104,41 @@ def parse_usd(
         .. list-table::
             :widths: 25 75
 
-            * - "fps"
+            * - ``"fps"``
               - USD stage frames per second
-            * - "duration"
+            * - ``"duration"``
               - Difference between end time code and start time code of the USD stage
-            * - "up_axis"
+            * - ``"up_axis"``
               - :class:`Axis` representing the stage's up axis ("X", "Y", or "Z")
-            * - "path_shape_map"
-              - Mapping from prim path (str) of the UsdGeom to the respective shape index in :class:`ModelBuilder`
-            * - "path_body_map"
-              - Mapping from prim path (str) of a rigid body prim (e.g. that implements the PhysicsRigidBodyAPI) to the respective body index in :class:`ModelBuilder`
-            * - "path_shape_scale"
+            * - ``"path_body_map"``
+              - Mapping from prim path (str) of a rigid body prim (e.g. that implements the PhysicsRigidBodyAPI) to the respective body index in :class:`~newton.ModelBuilder`
+            * - ``"path_joint_map"``
+              - Mapping from prim path (str) of a joint prim (e.g. that implements the PhysicsJointAPI) to the respective joint index in :class:`~newton.ModelBuilder`
+            * - ``"path_shape_map"``
+              - Mapping from prim path (str) of the UsdGeom to the respective shape index in :class:`~newton.ModelBuilder`
+            * - ``"path_shape_scale"``
               - Mapping from prim path (str) of the UsdGeom to its respective 3D world scale
-            * - "mass_unit"
+            * - ``"mass_unit"``
               - The stage's Kilograms Per Unit (KGPU) definition (1.0 by default)
-            * - "linear_unit"
+            * - ``"linear_unit"``
               - The stage's Meters Per Unit (MPU) definition (1.0 by default)
-            * - "scene_attributes"
+            * - ``"scene_attributes"``
               - Dictionary of all attributes applied to the PhysicsScene prim
-            * - "collapse_results"
-              - Dictionary returned by :meth:`newton.ModelBuilder.collapse_fixed_joints` if `collapse_fixed_joints` is True, otherwise None.
-            * - "physics_dt"
+            * - ``"collapse_results"``
+              - Dictionary returned by :meth:`newton.ModelBuilder.collapse_fixed_joints` if ``collapse_fixed_joints`` is True, otherwise None.
+            * - ``"physics_dt"``
               - The resolved physics scene time step (float or None)
-            * - "schema_attrs"
+            * - ``"schema_attrs"``
               - Dictionary of collected per-prim schema attributes (dict)
-            * - "max_solver_iterations"
+            * - ``"max_solver_iterations"``
               - The resolved maximum solver iterations (int or None)
-            * - "path_body_relative_transform"
-              - Mapping from prim path to relative transform for bodies merged via `collapse_fixed_joints`
-            * - "path_original_body_map"
-              - Mapping from prim path to original body index before `collapse_fixed_joints`
+            * - ``"path_body_relative_transform"``
+              - Mapping from prim path to relative transform for bodies merged via ``collapse_fixed_joints``
+            * - ``"path_original_body_map"``
+              - Mapping from prim path to original body index before ``collapse_fixed_joints``
     """
     if schema_resolvers is None:
-        schema_resolvers = []
+        schema_resolvers = [SchemaResolverNewton()]
     collect_schema_attrs = len(schema_resolvers) > 0
 
     try:
@@ -143,12 +146,14 @@ def parse_usd(
     except ImportError as e:
         raise ImportError("Failed to import pxr. Please install USD (e.g. via `pip install usd-core`).") from e
 
-    from .topology import topological_sort  # noqa: PLC0415 (circular import)
+    from .topology import topological_sort_undirected  # noqa: PLC0415
 
     @dataclass
     class PhysicsMaterial:
         staticFriction: float = builder.default_shape_cfg.mu
         dynamicFriction: float = builder.default_shape_cfg.mu
+        torsionalFriction: float = builder.default_shape_cfg.torsional_friction
+        rollingFriction: float = builder.default_shape_cfg.rolling_friction
         restitution: float = builder.default_shape_cfg.restitution
         density: float = builder.default_shape_cfg.density
 
@@ -183,10 +188,12 @@ def parse_usd(
 
     if isinstance(source, str):
         stage = Usd.Stage.Open(source, Usd.Stage.LoadAll)
+        _raise_on_stage_errors(stage, source)
     else:
         stage = source
+        _raise_on_stage_errors(stage, "provided stage")
 
-    DegreesToRadian = np.pi / 180
+    DegreesToRadian = float(np.pi / 180)
     mass_unit = 1.0
 
     try:
@@ -239,11 +246,13 @@ def parse_usd(
     # Initialize schema resolver according to precedence
     R = SchemaResolverManager(schema_resolvers)
 
-    # mapping from prim path to body ID in Warp sim
-    path_body_map = {}
-    # mapping from prim path to shape ID in Warp sim
-    path_shape_map = {}
-    path_shape_scale = {}
+    # mapping from prim path to body index in ModelBuilder
+    path_body_map: dict[str, int] = {}
+    # mapping from prim path to shape index in ModelBuilder
+    path_shape_map: dict[str, int] = {}
+    path_shape_scale: dict[str, wp.vec3] = {}
+    # mapping from prim path to joint index in ModelBuilder
+    path_joint_map: dict[str, int] = {}
 
     physics_scene_prim = None
     physics_dt = None
@@ -459,8 +468,9 @@ def parse_usd(
         incoming_xform: wp.transform | None = None,
         add_body_to_builder: bool = True,
     ) -> int | dict[str, Any]:
-        """Parse a rigid body description and add it to the builder. Returns the resulting body index if add_body_to_builder is True,
-        a dictionary of body data that can be passed to ModelBuilder.add_body() otherwise."""
+        """Parses a rigid body description.
+        If `add_body_to_builder` is True, adds it to the builder and returns the resulting body index.
+        Otherwise returns a dictionary of body data that can be passed to ModelBuilder.add_body()."""
         nonlocal path_body_map
         nonlocal physics_scene_prim
 
@@ -488,7 +498,9 @@ def parse_usd(
             }
 
     def resolve_joint_parent_child(
-        joint_desc: UsdPhysics.JointDesc, body_index_map: dict[str, int], get_transforms: bool = True
+        joint_desc: UsdPhysics.JointDesc,
+        body_index_map: dict[str, int],
+        get_transforms: bool = True,
     ):
         """Resolve the parent and child of a joint and return their parent + child transforms if requested."""
         if get_transforms:
@@ -516,7 +528,10 @@ def parse_usd(
         else:
             return parent_id, child_id
 
-    def parse_joint(joint_desc: UsdPhysics.JointDesc, incoming_xform: wp.transform | None = None) -> int | None:
+    def parse_joint(
+        joint_desc: UsdPhysics.JointDesc,
+        incoming_xform: wp.transform | None = None,
+    ) -> int | None:
         """Parse a joint description and add it to the builder. Returns the resulting joint index if successful, None otherwise."""
         if not joint_desc.jointEnabled and only_load_enabled_joints:
             return None
@@ -529,6 +544,7 @@ def parse_usd(
         parent_id, child_id, parent_tf, child_tf = resolve_joint_parent_child(  # pyright: ignore[reportAssignmentType]
             joint_desc, path_body_map, get_transforms=True
         )
+
         if incoming_xform is not None:
             parent_tf = incoming_xform * parent_tf
 
@@ -922,20 +938,17 @@ def parse_usd(
         joint_drive_gains_scaling = usd.get_float(
             physics_scene_prim, "newton:joint_drive_gains_scaling", joint_drive_gains_scaling
         )
-        # Resolve scene time step, gravity settings, and contact margin
-        physics_dt = R.get_value(
-            physics_scene_prim, prim_type=PrimType.SCENE, key="time_step", default=None, verbose=verbose
+
+        time_steps_per_second = R.get_value(
+            physics_scene_prim, prim_type=PrimType.SCENE, key="time_steps_per_second", default=1000, verbose=verbose
         )
+        physics_dt = (1.0 / time_steps_per_second) if time_steps_per_second > 0 else 0.001
+
         gravity_enabled = R.get_value(
-            physics_scene_prim, prim_type=PrimType.SCENE, key="enable_gravity", default=True, verbose=verbose
+            physics_scene_prim, prim_type=PrimType.SCENE, key="gravity_enabled", default=True, verbose=verbose
         )
         if not gravity_enabled:
             builder.gravity = 0.0
-        contact_margin = R.get_value(
-            physics_scene_prim, prim_type=PrimType.SCENE, key="rigid_contact_margin", default=None, verbose=verbose
-        )
-        if contact_margin is not None:
-            builder.rigid_contact_margin = contact_margin
         max_solver_iters = R.get_value(
             physics_scene_prim, prim_type=PrimType.SCENE, key="max_solver_iterations", default=None, verbose=verbose
         )
@@ -986,8 +999,6 @@ def parse_usd(
         scene_attributes.update(scene_custom_attrs)
 
     joint_descriptions = {}
-    # maps from joint prim path to joint index in builder
-    path_joint_map: dict[str, int] = {}
     # stores physics spec for every RigidBody in the selected range
     body_specs = {}
     # set of prim paths of rigid bodies that are ignored
@@ -1025,10 +1036,25 @@ def parse_usd(
     for sdf_path, desc in data_for_key(ret_dict, UsdPhysics.ObjectType.RigidBodyMaterial):
         if warn_invalid_desc(sdf_path, desc):
             continue
+        prim = stage.GetPrimAtPath(sdf_path)
         material_specs[str(sdf_path)] = PhysicsMaterial(
             staticFriction=desc.staticFriction,
             dynamicFriction=desc.dynamicFriction,
             restitution=desc.restitution,
+            torsionalFriction=R.get_value(
+                prim,
+                prim_type=PrimType.MATERIAL,
+                key="torsional_friction",
+                default=builder.default_shape_cfg.torsional_friction,
+                verbose=verbose,
+            ),
+            rollingFriction=R.get_value(
+                prim,
+                prim_type=PrimType.MATERIAL,
+                key="rolling_friction",
+                default=builder.default_shape_cfg.rolling_friction,
+                verbose=verbose,
+            ),
             # TODO: if desc.density is 0, then we should look for mass somewhere
             density=desc.density if desc.density > 0.0 else default_shape_density,
         )
@@ -1060,23 +1086,24 @@ def parse_usd(
                     body_density[body_path] = density
             # <--- Marking for deprecation
 
+    # Collect joint descriptions regardless of whether articulations are authored.
+    for key, value in ret_dict.items():
+        if key in {
+            UsdPhysics.ObjectType.FixedJoint,
+            UsdPhysics.ObjectType.RevoluteJoint,
+            UsdPhysics.ObjectType.PrismaticJoint,
+            UsdPhysics.ObjectType.SphericalJoint,
+            UsdPhysics.ObjectType.D6Joint,
+            UsdPhysics.ObjectType.DistanceJoint,
+        }:
+            paths, joint_specs = value
+            for path, joint_spec in zip(paths, joint_specs, strict=False):
+                joint_descriptions[str(path)] = joint_spec
+
     # maps from articulation_id to bool indicating if self-collisions are enabled
     articulation_has_self_collision = {}
 
     if UsdPhysics.ObjectType.Articulation in ret_dict:
-        for key, value in ret_dict.items():
-            if key in {
-                UsdPhysics.ObjectType.FixedJoint,
-                UsdPhysics.ObjectType.RevoluteJoint,
-                UsdPhysics.ObjectType.PrismaticJoint,
-                UsdPhysics.ObjectType.SphericalJoint,
-                UsdPhysics.ObjectType.D6Joint,
-                UsdPhysics.ObjectType.DistanceJoint,
-            }:
-                paths, joint_specs = value
-                for path, joint_spec in zip(paths, joint_specs, strict=False):
-                    joint_descriptions[str(path)] = joint_spec
-
         paths, articulation_descs = ret_dict[UsdPhysics.ObjectType.Articulation]
 
         articulation_id = builder.articulation_count
@@ -1089,6 +1116,7 @@ def parse_usd(
             if any(re.match(p, articulation_path) for p in ignore_paths):
                 continue
             articulation_prim = stage.GetPrimAtPath(path)
+            articulation_xform = incoming_world_xform * usd.get_transform(articulation_prim, local=False)
             # Collect engine-specific attributes for the articulation root on first encounter
             if collect_schema_attrs:
                 R.collect_prim_attrs(articulation_prim)
@@ -1153,6 +1181,7 @@ def parse_usd(
                         body_data[current_body_id] = parse_body(
                             body_specs[key],
                             stage.GetPrimAtPath(p),
+                            incoming_xform=articulation_xform,
                             add_body_to_builder=False,
                         )
                     else:
@@ -1160,6 +1189,7 @@ def parse_usd(
                         bid: int = parse_body(  # pyright: ignore[reportAssignmentType]
                             body_specs[key],
                             stage.GetPrimAtPath(p),
+                            incoming_xform=articulation_xform,
                             add_body_to_builder=True,
                         )
                         if bid >= 0:
@@ -1199,7 +1229,6 @@ def parse_usd(
                     joint_edges.append((parent_id, child_id))
                     joint_names.append(joint_key)
 
-            articulation_xform = wp.mul(incoming_world_xform, usd.get_transform(articulation_prim))
             articulation_joint_indices = []
 
             if len(joint_edges) == 0:
@@ -1207,8 +1236,6 @@ def parse_usd(
                 if bodies_follow_joint_ordering:
                     for i in body_ids.values():
                         child_body_id = add_body(**body_data[i])
-                        # apply the articulation transform to the body
-                        builder.body_q[child_body_id] = articulation_xform
                         joint_id = builder.add_joint_free(child=child_body_id)
                         # note the free joint's coordinates will be initialized by the body_q of the
                         # child body
@@ -1217,8 +1244,6 @@ def parse_usd(
                         )
                 else:
                     for i, child_body_id in enumerate(art_bodies):
-                        # apply the articulation transform to the body
-                        builder.body_q[child_body_id] = articulation_xform
                         joint_id = builder.add_joint_free(child=child_body_id)
                         # note the free joint's coordinates will be initialized by the body_q of the
                         # child body
@@ -1231,9 +1256,15 @@ def parse_usd(
                 if joint_ordering is not None:
                     if verbose:
                         print(f"Sorting joints using {joint_ordering} ordering...")
-                    sorted_joints = topological_sort(
+                    sorted_joints, reversed_joint_list = topological_sort_undirected(
                         joint_edges, use_dfs=joint_ordering == "dfs", ensure_single_root=True
                     )
+                    if reversed_joint_list:
+                        reversed_joint_paths = [joint_names[joint_id] for joint_id in reversed_joint_list]
+                        reversed_joint_names = ", ".join(reversed_joint_paths)
+                        raise ValueError(
+                            f"Reversed joints are not supported: {reversed_joint_names}. Ensure that the joint parent body is defined as physics:body0 and the child is defined as physics:body1 in the joint prim."
+                        )
                     if verbose:
                         print("Joint ordering:", sorted_joints)
                 else:
@@ -1313,6 +1344,16 @@ def parse_usd(
                 default=enable_self_collisions,
             )
             articulation_id += 1
+    no_articulations = UsdPhysics.ObjectType.Articulation not in ret_dict
+    has_joints = any(
+        (
+            not (only_load_enabled_joints and not joint_desc.jointEnabled)
+            and not any(re.match(p, joint_key) for p in ignore_paths)
+            and str(joint_desc.body0) not in ignored_body_paths
+            and str(joint_desc.body1) not in ignored_body_paths
+        )
+        for joint_key, joint_desc in joint_descriptions.items()
+    )
 
     # insert remaining bodies that were not part of any articulation so far
     for path, rigid_body_desc in body_specs.items():
@@ -1323,9 +1364,23 @@ def parse_usd(
             incoming_xform=incoming_world_xform,
             add_body_to_builder=True,
         )
-        # add articulation and free joint for this body
-        joint_id = builder.add_joint_free(child=body_id)
-        builder.add_articulation([joint_id], key=key)
+        if not (no_articulations and has_joints):
+            # add articulation and free joint for this body
+            joint_id = builder.add_joint_free(child=body_id)
+            builder.add_articulation([joint_id], key=key)
+
+    if no_articulations and has_joints:
+        # parse external joints that are not part of any articulation
+        for joint_key, joint_desc in joint_descriptions.items():
+            if any(re.match(p, joint_key) for p in ignore_paths):
+                continue
+            if str(joint_desc.body0) in ignored_body_paths or str(joint_desc.body1) in ignored_body_paths:
+                continue
+            try:
+                parse_joint(joint_desc, incoming_xform=incoming_world_xform)
+            except ValueError as exc:
+                if verbose:
+                    print(f"Skipping joint {joint_key}: {exc}")
 
     # parse shapes attached to the rigid bodies
     path_collision_filters = set()
@@ -1374,7 +1429,7 @@ def parse_usd(
                     material = material_specs[str(shape_spec.materials[0])]
                     if verbose:
                         print(
-                            f"\tMaterial of '{path}':\tfriction: {material.dynamicFriction},\trestitution: {material.restitution},\tdensity: {material.density}"
+                            f"\tMaterial of '{path}':\tfriction: {material.dynamicFriction},\ttorsional friction: {material.torsionalFriction},\trolling friction: {material.rollingFriction},\trestitution: {material.restitution},\tdensity: {material.density}"
                         )
                 elif verbose:
                     print(f"No material found for shape at '{path}'.")
@@ -1386,6 +1441,12 @@ def parse_usd(
                     shape_xform = local_xform
                 # Extract custom attributes for this shape
                 shape_custom_attrs = usd.get_custom_attribute_values(prim, builder_custom_attr_shape)
+                if collect_schema_attrs:
+                    R.collect_prim_attrs(prim)
+
+                contact_margin = R.get_value(prim, prim_type=PrimType.SHAPE, key="contact_margin", verbose=verbose)
+                if contact_margin == float("-inf"):
+                    contact_margin = builder.default_shape_cfg.contact_margin
 
                 shape_params = {
                     "body": body_id,
@@ -1406,8 +1467,11 @@ def parse_usd(
                         thickness=usd.get_float_with_fallback(
                             prim_and_scene, "newton:contact_thickness", builder.default_shape_cfg.thickness
                         ),
+                        contact_margin=contact_margin,
                         mu=material.dynamicFriction,
                         restitution=material.restitution,
+                        torsional_friction=material.torsionalFriction,
+                        rolling_friction=material.rollingFriction,
                         density=body_density.get(body_path, default_shape_density),
                         collision_group=collision_group,
                         is_visible=not hide_collision_shapes,
@@ -1464,15 +1528,14 @@ def parse_usd(
                     )
                 elif key == UsdPhysics.ObjectType.MeshShape:
                     # Resolve mesh hull vertex limit from schema with fallback to parameter
-                    resolved_maxhullvert = R.get_value(
+                    mesh = usd.get_mesh(prim)
+                    mesh.maxhullvert = R.get_value(
                         prim,
                         prim_type=PrimType.SHAPE,
-                        key="mesh_hull_vertex_limit",
+                        key="max_hull_vertices",
                         default=mesh_maxhullvert,
                         verbose=verbose,
                     )
-                    mesh = usd.get_mesh(prim)
-                    mesh.maxhullvert = resolved_maxhullvert
                     shape_id = builder.add_shape_mesh(
                         scale=scale,
                         mesh=mesh,
@@ -1608,8 +1671,9 @@ def parse_usd(
                     )
 
     # add free joints to floating bodies that's just been added by import_usd
-    new_bodies = path_body_map.values()
-    builder.add_free_joints_to_floating_bodies(new_bodies)
+    if not (no_articulations and has_joints):
+        new_bodies = path_body_map.values()
+        builder.add_free_joints_to_floating_bodies(new_bodies)
 
     # collapsing fixed joints to reduce the number of simulated bodies connected by fixed joints.
     collapse_results = None
@@ -1647,6 +1711,7 @@ def parse_usd(
             # instantiate worlds
             path_shape_map_updates = {}
             path_body_map_updates = {}
+            path_joint_map_updates = {}
             path_shape_scale_updates = {}
             articulation_roots_updates = []
             articulation_bodies_updates = {}
@@ -1657,6 +1722,7 @@ def parse_usd(
             for world_path, world_xform in zip(cloned_world_paths, cloned_world_xforms, strict=False):
                 shape_count = multi_world_builder.shape_count
                 body_count = multi_world_builder.body_count
+                joint_count = multi_world_builder.joint_count
                 original_body_count = multi_world_builder.body_count
                 art_count = multi_world_builder.articulation_count
                 # print("articulation_bodies = ", articulation_bodies)
@@ -1674,6 +1740,9 @@ def parse_usd(
                         parent_path = merged_body_data[path]["parent_body"]
                         new_parent_path = parent_path.replace(cloned_world, world_path)
                         merged_body_data[new_path]["parent_body"] = new_parent_path
+                for path, joint_id in path_joint_map.items():
+                    new_path = path.replace(cloned_world, world_path)
+                    path_joint_map_updates[new_path] = joint_id + joint_count
 
                 for path, scale in path_shape_scale.items():
                     new_path = path.replace(cloned_world, world_path)
@@ -1692,6 +1761,7 @@ def parse_usd(
 
             path_shape_map = path_shape_map_updates
             path_body_map = path_body_map_updates
+            path_joint_map = path_joint_map_updates
             path_shape_scale = path_shape_scale_updates
             articulation_roots = articulation_roots_updates
             articulation_bodies = articulation_bodies_updates
@@ -1702,8 +1772,9 @@ def parse_usd(
         "fps": stage.GetFramesPerSecond(),
         "duration": stage.GetEndTimeCode() - stage.GetStartTimeCode(),
         "up_axis": stage_up_axis,
-        "path_shape_map": path_shape_map,
         "path_body_map": path_body_map,
+        "path_joint_map": path_joint_map,
+        "path_shape_map": path_shape_map,
         "path_shape_scale": path_shape_scale,
         "mass_unit": mass_unit,
         "linear_unit": linear_unit,
@@ -1801,3 +1872,20 @@ def resolve_usd_from_url(url: str, target_folder_name: str | None = None, export
         except Exception:
             print(f"Failed to download {refname}.")
     return target_filename
+
+
+def _raise_on_stage_errors(usd_stage, stage_source: str):
+    get_errors = getattr(usd_stage, "GetCompositionErrors", None)
+    if get_errors is None:
+        return
+    errors = get_errors()
+    if not errors:
+        return
+    messages = []
+    for err in errors:
+        try:
+            messages.append(err.GetMessage())
+        except Exception:
+            messages.append(str(err))
+    formatted = "\n".join(f"- {message}" for message in messages)
+    raise RuntimeError(f"USD stage has composition errors while loading {stage_source}:\n{formatted}")
