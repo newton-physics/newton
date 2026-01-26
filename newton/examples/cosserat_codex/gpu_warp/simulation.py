@@ -78,6 +78,7 @@ class Example:
         self.rest_twist = args.rest_twist
         self.young_modulus_scale = args.young_modulus / 1.0e6
         self.torsion_modulus_scale = args.torsion_modulus / 1.0e6
+        self.segment_length = args.segment_length
         self.use_banded = args.use_banded
         self.compare_offset = args.compare_offset
         self.rod_count = max(int(args.rod_count), 1)
@@ -96,9 +97,28 @@ class Example:
         self.director_scale = 0.1
 
         # Track sliding constraint configuration
-        self.track_enabled = False
+        self.track_enabled = True
         self.track_stiffness = 1.0
         self.track_ignore_tip_count = 0
+        self.use_gauss_seidel = True
+        self.use_two_sided = False
+
+        # Per-rod insertion values (arclength from track start)
+        self.insertion_speed = 0.5  # units per second
+        self.rod_insertions = [0.0 for _ in range(self.rod_count)]
+
+        # Bendable tip configuration
+        self.tip_bend_angle = 0.0  # radians
+        self.tip_num_edges = 20  # number of edges affected by the bend
+        self.tip_bend_speed = 0.5  # radians per second for +/- keys
+
+        # Concentric constraint configuration (guidewire inside catheter)
+        self.concentric_enabled = False
+        self.concentric_stiffness = 1.0
+        self.concentric_weight_inner = 0.5  # weight for inner rod (rod A / guidewire)
+        self.concentric_weight_outer = 0.5  # weight for outer rod (rod B / catheter)
+        self.concentric_use_inv_mass_sq = True  # use squared barycentric weights
+        self.concentric_start_particle = 0  # first particle to apply constraint to
 
         self.root_move_speed = 0.3
         self.root_rotate_speed = 3.0
@@ -119,6 +139,8 @@ class Example:
         self._banded_key_was_down = False
         self._lock_key_was_down = False
         self._track_key_was_down = False
+        self._tip_bend_key_was_down = False
+        self._concentric_key_was_down = False
 
         self.lib = base.DefKitDirectLibrary(args.dll_path, args.calling_convention)
         self.supports_non_banded = self.lib.ProjectDirectElasticRodConstraints is not None
@@ -408,7 +430,8 @@ class Example:
                 self.vessel_vertices,
                 self.vessel_indices,
                 self.vessel_bvh.id,
-                True,
+                self.use_gauss_seidel,
+                self.use_two_sided,
             ],
             outputs=[self.state.particle_q],
             device=self.model.device,
@@ -524,6 +547,24 @@ class Example:
             start = self._gpu_point_starts[idx]
             end = start + gpu_num_constrained
 
+            # Set root position based on insertion for this rod
+            if idx < len(self.rod_insertions):
+                insertion = self.rod_insertions[idx]
+                wp.launch(
+                    kernels._warp_set_root_on_track,
+                    dim=1,
+                    inputs=[
+                        self.state.particle_q,
+                        self.state.particle_q,  # predicted == current for simplicity
+                        self.state.particle_qd,
+                        track_start_wp,
+                        track_end_wp,
+                        float(insertion),
+                        int(start),  # root_idx in global particle array
+                    ],
+                    device=self.model.device,
+                )
+
             wp.launch(
                 kernels._warp_apply_track_sliding,
                 dim=gpu_num_constrained,
@@ -558,6 +599,127 @@ class Example:
 
         self._force_sync_reference = True
         self._force_sync_gpu = True
+
+    def _apply_concentric_constraint(self):
+        """
+        Apply concentric constraint between GPU rods (guidewire inside catheter).
+
+        This constraint makes two rods stay concentric using arclength-based
+        parametrization computed from the insertion difference between rods.
+        For each particle in rod A (inner rod), the corresponding point on rod B's
+        centerline (outer rod) is computed and bilateral corrections are applied.
+
+        The correspondence is purely from insertion values, not closest point search.
+        This models the physical behavior of a guidewire sliding through a catheter.
+        """
+        if not self.concentric_enabled:
+            return
+
+        # Need at least 2 GPU rods to apply concentric constraint
+        if len(self.gpu_state.rods) < 2:
+            return
+
+        # Use first two GPU rods: rod 0 = inner (guidewire), rod 1 = outer (catheter)
+        rod_a = self.gpu_state.rods[0]  # inner rod (guidewire)
+        rod_b = self.gpu_state.rods[1]  # outer rod (catheter)
+
+        # Compute insertion difference from per-rod insertions
+        # insertion_diff = insertion_a - insertion_b
+        insertion_a = self.rod_insertions[0] if len(self.rod_insertions) > 0 else 0.0
+        insertion_b = self.rod_insertions[1] if len(self.rod_insertions) > 1 else 0.0
+        insertion_diff = insertion_a - insertion_b
+
+        # Get rest lengths arrays (if available, otherwise use uniform)
+        if hasattr(rod_a, "rest_lengths_wp") and rod_a.rest_lengths_wp is not None:
+            rest_lengths_a = rod_a.rest_lengths_wp
+        else:
+            # Fallback: create uniform rest lengths if not available
+            if not hasattr(self, "_concentric_rest_lengths_a"):
+                self._concentric_rest_lengths_a = wp.array(
+                    rod_a.rest_lengths, dtype=wp.float32, device=self.model.device
+                )
+            rest_lengths_a = self._concentric_rest_lengths_a
+
+        if hasattr(rod_b, "rest_lengths_wp") and rod_b.rest_lengths_wp is not None:
+            rest_lengths_b = rod_b.rest_lengths_wp
+        else:
+            if not hasattr(self, "_concentric_rest_lengths_b"):
+                self._concentric_rest_lengths_b = wp.array(
+                    rod_b.rest_lengths, dtype=wp.float32, device=self.model.device
+                )
+            rest_lengths_b = self._concentric_rest_lengths_b
+
+        wp.launch(
+            kernels._warp_apply_concentric_constraint,
+            dim=rod_a.num_points,
+            inputs=[
+                rod_a.positions_wp,
+                rod_a.predicted_positions_wp,
+                rod_a.inv_masses_wp,
+                rod_a.num_points,
+                rod_b.positions_wp,
+                rod_b.predicted_positions_wp,
+                rod_b.inv_masses_wp,
+                rod_b.num_points,
+                rest_lengths_a,
+                rest_lengths_b,
+                float(insertion_diff),
+                float(self.concentric_stiffness),
+                float(self.concentric_weight_inner),
+                float(self.concentric_weight_outer),
+                int(1 if self.concentric_use_inv_mass_sq else 0),
+                int(self.concentric_start_particle),
+            ],
+            device=self.model.device,
+        )
+
+        self._force_sync_gpu = True
+
+    def _apply_tip_bend(self):
+        """Apply bend to the tip edges by modifying rest Darboux vector."""
+
+        # Compute the per-edge bend contribution
+        # The total bend angle is distributed across the affected edges
+        num_edges = max(1, self.tip_num_edges)
+        per_edge_bend = self.tip_bend_angle / num_edges
+
+        # For reference rod: modify rest_darboux for tip edges
+        ref_num_edges = self.ref_rod.num_points - 1
+        tip_start_edge = max(0, ref_num_edges - num_edges)
+
+        # Set rest_darboux for tip edges (bend around d1 axis)
+        for e in range(tip_start_edge, ref_num_edges):
+            # Base rest darboux from global settings
+            self.ref_rod.rest_darboux[e, 0] = self.rest_bend_d1 + per_edge_bend
+            self.ref_rod.rest_darboux[e, 1] = self.rest_bend_d2
+            self.ref_rod.rest_darboux[e, 2] = self.rest_twist
+
+        # Reset non-tip edges to base rest darboux
+        for e in range(tip_start_edge):
+            self.ref_rod.rest_darboux[e, 0] = self.rest_bend_d1
+            self.ref_rod.rest_darboux[e, 1] = self.rest_bend_d2
+            self.ref_rod.rest_darboux[e, 2] = self.rest_twist
+
+        # For GPU rods: modify rest_darboux for tip edges
+        for rod in self.gpu_state.rods:
+            gpu_num_edges = rod.num_points - 1
+            gpu_tip_start = max(0, gpu_num_edges - num_edges)
+
+            for e in range(gpu_tip_start, gpu_num_edges):
+                rod.rest_darboux[e, 0] = self.rest_bend_d1 + per_edge_bend
+                rod.rest_darboux[e, 1] = self.rest_bend_d2
+                rod.rest_darboux[e, 2] = self.rest_twist
+
+            for e in range(gpu_tip_start):
+                rod.rest_darboux[e, 0] = self.rest_bend_d1
+                rod.rest_darboux[e, 1] = self.rest_bend_d2
+                rod.rest_darboux[e, 2] = self.rest_twist
+
+            # Sync rest_darboux to GPU
+            if hasattr(rod, "rest_darboux_wp") and rod.num_edges > 0:
+                rod.rest_darboux_wp.assign(
+                    wp.array(rod.rest_darboux[:, 0:3], dtype=wp.vec3, device=rod.device)
+                )
 
     def _handle_keyboard_input(self):
         if not hasattr(self.viewer, "is_key_down"):
@@ -594,12 +756,45 @@ class Example:
             self.track_enabled = not self.track_enabled
         self._track_key_was_down = t_down
 
+        c_down = self.viewer.is_key_down(key.C)
+        if c_down and not self._concentric_key_was_down:
+            if len(self.gpu_state.rods) >= 2:
+                self.concentric_enabled = not self.concentric_enabled
+        self._concentric_key_was_down = c_down
+
+        # +/- keys to adjust tip bend angle (continuous while held)
+        if self.viewer.is_key_down(key.PLUS) or self.viewer.is_key_down(key.EQUAL):
+            self.tip_bend_angle += self.tip_bend_speed * self.frame_dt
+            self._apply_tip_bend()
+
+        if self.viewer.is_key_down(key.MINUS):
+            self.tip_bend_angle -= self.tip_bend_speed * self.frame_dt
+            self._apply_tip_bend()
+
+        # PgUp/PgDown to control rod 0 insertion (continuous while held)
+        if self.viewer.is_key_down(key.PAGEUP):
+            self.rod_insertions[0] += self.insertion_speed * self.frame_dt
+        if self.viewer.is_key_down(key.PAGEDOWN):
+            self.rod_insertions[0] -= self.insertion_speed * self.frame_dt
+            self.rod_insertions[0] = max(0.0, self.rod_insertions[0])
+
+        # Home/End to control rod 1 insertion (continuous while held)
+        if len(self.gpu_state.rods) >= 2:
+            if self.viewer.is_key_down(key.HOME):
+                self.rod_insertions[1] += self.insertion_speed * self.frame_dt
+            if self.viewer.is_key_down(key.END):
+                self.rod_insertions[1] -= self.insertion_speed * self.frame_dt
+                self.rod_insertions[1] = max(0.0, self.rod_insertions[1])
+
         r_down = self.viewer.is_key_down(key.R)
         if r_down and not self._reset_key_was_down:
             self.ref_rod.reset()
             self.gpu_state.reset()
             self.root_rotation = 0.0
+            self.tip_bend_angle = 0.0
+            self.rod_insertions = [0.0 for _ in range(self.rod_count)]
             self._apply_root_rotation()
+            self._apply_tip_bend()
             self.sim_time = 0.0
             self._sync_state_from_rods()
         self._reset_key_was_down = r_down
@@ -658,6 +853,7 @@ class Example:
                 gpu_time += time.perf_counter() - t0
             self._apply_mesh_collisions(sub_dt)
             self._apply_track_constraint()
+            self._apply_concentric_constraint()
 
         self._sync_state_from_rods()
         self.sim_time += self.frame_dt
@@ -821,9 +1017,9 @@ class Example:
             self.gpu_state.set_rest_darboux(self.rest_bend_d1, self.rest_bend_d2, self.rest_twist)
 
         ui.separator()
-        changed_E, self.young_modulus_scale = ui.slider_float("Young Modulus (1e6)", self.young_modulus_scale, 0.1, 5.0)
+        changed_E, self.young_modulus_scale = ui.slider_float("Young Modulus (1e6)", self.young_modulus_scale, 0.1, 100.0)
         changed_G, self.torsion_modulus_scale = ui.slider_float(
-            "Torsion Modulus (1e6)", self.torsion_modulus_scale, 0.1, 5.0
+            "Torsion Modulus (1e6)", self.torsion_modulus_scale, 0.1, 100.0
         )
         if changed_E or changed_G:
             self.ref_rod.young_modulus = self.young_modulus_scale * 1.0e6
@@ -831,6 +1027,18 @@ class Example:
             for rod in self.gpu_state.rods:
                 rod.young_modulus = self.young_modulus_scale * 1.0e6
                 rod.torsion_modulus = self.torsion_modulus_scale * 1.0e6
+
+        changed_seg, self.segment_length = ui.slider_float("Segment Length", self.segment_length, 0.01, 0.2)
+        if changed_seg:
+            # Update rest_lengths for reference rod
+            self.ref_rod.rest_lengths[:] = self.segment_length
+            # Update rest_lengths for GPU rods
+            for rod in self.gpu_state.rods:
+                rod.rest_lengths[:] = self.segment_length
+                if hasattr(rod, "rest_lengths_wp") and rod.num_edges > 0:
+                    rod.rest_lengths_wp.assign(
+                        wp.array(rod.rest_lengths, dtype=wp.float32, device=rod.device)
+                    )
 
         ui.separator()
         _changed, self.gravity_scale = ui.slider_float("Gravity Scale", self.gravity_scale, 0.0, 2.0)
@@ -846,6 +1054,60 @@ class Example:
         )
 
         ui.separator()
+        ui.text("Rod Insertion (PgUp/PgDn: Rod0, Home/End: Rod1)")
+        _changed, self.insertion_speed = ui.slider_float("Insertion Speed", self.insertion_speed, 0.1, 2.0)
+        if len(self.gpu_state.rods) >= 1:
+            _changed, self.rod_insertions[0] = ui.slider_float(
+                "Rod 0 Insertion", self.rod_insertions[0], 0.0, 5.0
+            )
+        if len(self.gpu_state.rods) >= 2:
+            _changed, self.rod_insertions[1] = ui.slider_float(
+                "Rod 1 Insertion", self.rod_insertions[1], 0.0, 5.0
+            )
+            insertion_diff = self.rod_insertions[0] - self.rod_insertions[1]
+            ui.text(f"Insertion Diff: {insertion_diff:.3f}")
+
+        ui.separator()
+        ui.text("Concentric Constraint (Guidewire/Catheter)")
+        if len(self.gpu_state.rods) >= 2:
+            _changed, self.concentric_enabled = ui.checkbox("Enable Concentric", self.concentric_enabled)
+            _changed, self.concentric_stiffness = ui.slider_float(
+                "Concentric Stiffness", self.concentric_stiffness, 0.0, 1.0
+            )
+            _changed, self.concentric_weight_inner = ui.slider_float(
+                "Inner Rod Weight", self.concentric_weight_inner, 0.0, 1.0
+            )
+            _changed, self.concentric_weight_outer = ui.slider_float(
+                "Outer Rod Weight", self.concentric_weight_outer, 0.0, 1.0
+            )
+            _changed, self.concentric_start_particle = ui.slider_int(
+                "Start Particle", self.concentric_start_particle, 0, 20
+            )
+            _changed, self.concentric_use_inv_mass_sq = ui.checkbox(
+                "Use Inv Mass Squared", self.concentric_use_inv_mass_sq
+            )
+        else:
+            ui.text("(Requires 2+ GPU rods)")
+
+        ui.separator()
+        ui.text("Bendable Tip")
+        
+        changed_tip_angle, self.tip_bend_angle = ui.slider_float(
+            "Tip Bend Angle (rad)", self.tip_bend_angle, -1.5, 1.5
+        )
+        changed_tip_edges, self.tip_num_edges = ui.slider_int(
+            "Tip Edges Affected", self.tip_num_edges, 1, 10
+        )
+        _changed, self.tip_bend_speed = ui.slider_float("Tip Bend Speed", self.tip_bend_speed, 0.1, 2.0)
+        if changed_tip_angle or changed_tip_edges:
+                self._apply_tip_bend()
+
+        ui.separator()
+        ui.text("Collisions")
+        _changed, self.use_gauss_seidel = ui.checkbox("Use Gauss-Seidel", self.use_gauss_seidel)
+        _changed, self.use_two_sided = ui.checkbox("Use Two-Sided Collisions", self.use_two_sided)
+        ui.separator()
+        ui.text("Rod Solver")
         if self.supports_non_banded:
             changed_banded, self.use_banded = ui.checkbox("Use Banded Solver", self.use_banded)
             if changed_banded:
@@ -893,6 +1155,11 @@ class Example:
         ui.text("  B: Toggle banded solver")
         ui.text("  L: Toggle root lock (position + rotation)")
         ui.text("  T: Toggle track sliding constraint")
+        ui.text("  C: Toggle concentric constraint")
+        ui.text("  P: Toggle bendable tip")
+        ui.text("  +/-: Adjust tip bend angle")
+        ui.text("  PgUp/PgDn: Rod 0 insertion +/-")
+        ui.text("  Home/End: Rod 1 insertion +/-")
         ui.text("  R: Reset")
 
     def test_final(self):
