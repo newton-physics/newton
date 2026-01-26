@@ -1990,7 +1990,7 @@ class SolverMuJoCo(SolverBase):
         model: Model,
         state: State | None = None,
         *,
-        separate_worlds: bool = True,
+        separate_worlds: bool | None = None,
         iterations: int | None = None,
         ls_iterations: int | None = None,
         ccd_iterations: int | None = None,
@@ -1998,8 +1998,8 @@ class SolverMuJoCo(SolverBase):
         sdf_initpoints: int | None = None,
         njmax: int | None = None,  # number of constraints per world
         nconmax: int | None = None,
-        solver: int | str = "newton",
-        integrator: int | str = "implicitfast",
+        solver: int | str | None = None,
+        integrator: int | str | None = None,
         disableflags: int = 0,
         disable_contacts: bool = False,
         impratio: float | None = None,
@@ -2010,7 +2010,7 @@ class SolverMuJoCo(SolverBase):
         viscosity: float | None = None,
         wind: tuple | None = None,
         magnetic: tuple | None = None,
-        cone: int | str = "pyramidal",
+        cone: int | str | None = None,
         jacobian: int | str | None = None,
         target_filename: str | None = None,
         default_actuator_args: dict | None = None,
@@ -2034,13 +2034,13 @@ class SolverMuJoCo(SolverBase):
         Args:
             model: The Newton model to convert.
             state: The Newton state to convert (optional).
-            separate_worlds: If True, each world is a separate MuJoCo simulation.
+            separate_worlds: If True, each world is a separate MuJoCo simulation. If None, defaults to True for GPU mode (not use_mujoco_cpu).
             iterations: Maximum solver iterations. If None, uses model custom attribute or MuJoCo's default (100).
             ls_iterations: Maximum line search iterations. If None, uses model custom attribute or MuJoCo's default (50).
             njmax: Maximum number of constraints per world.
             nconmax: Maximum number of contacts.
-            solver: Constraint solver type ("cg" or "newton").
-            integrator: Integration method ("euler", "rk4", "implicit", "implicitfast").
+            solver: Constraint solver type ("cg" or "newton"). If None, uses model custom attribute or Newton's default ("newton").
+            integrator: Integration method ("euler", "rk4", "implicit", "implicitfast"). If None, uses model custom attribute or Newton's default ("implicitfast").
             disableflags: MuJoCo disable flags bitmask.
             disable_contacts: If True, disable contact computation.
             impratio: Impedance ratio for contacts. If None, uses model custom attribute or MuJoCo default (1.0).
@@ -2051,7 +2051,7 @@ class SolverMuJoCo(SolverBase):
             viscosity: Medium viscosity. If None, uses model custom attribute or MuJoCo default (0.0).
             wind: Wind velocity vector (x, y, z). If None, uses model custom attribute or MuJoCo default (0, 0, 0).
             magnetic: Magnetic flux vector (x, y, z). If None, uses model custom attribute or MuJoCo default (0, -0.5, 0).
-            cone: Friction cone type ("pyramidal" or "elliptic").
+            cone: Friction cone type ("pyramidal" or "elliptic"). If None, uses model custom attribute or Newton's default ("pyramidal").
             jacobian: Jacobian computation method ("dense", "sparse", or "auto"). If None, uses model custom attribute or MuJoCo default ("auto").
             target_filename: Optional path to save generated MJCF file.
             default_actuator_args: Default actuator parameters.
@@ -2070,6 +2070,10 @@ class SolverMuJoCo(SolverBase):
 
         if not model.joint_count:
             raise ValueError("The model must have at least one joint to be able to convert it to MuJoCo.")
+
+        # Set default for separate_worlds if None
+        if separate_worlds is None:
+            separate_worlds = True
 
         # Validate that separate_worlds=False is only used with single world
         if not separate_worlds and model.num_worlds > 1:
