@@ -5223,8 +5223,7 @@ class TestMuJoCoOptions(unittest.TestCase):
         model = self._create_multiworld_model(num_worlds=2)
 
         # Set custom attributes to non-default values
-        # Custom attribute defaults: iterations=100, ls_iterations=50
-        # Newton defaults: iterations=20, ls_iterations=10
+        # MuJoCo defaults: iterations=100, ls_iterations=50
         # Set to: iterations=150, ls_iterations=75
         model.mujoco.iterations.assign(np.array([150], dtype=np.int32))
         model.mujoco.ls_iterations.assign(np.array([75], dtype=np.int32))
@@ -5232,13 +5231,13 @@ class TestMuJoCoOptions(unittest.TestCase):
         # Create solver WITHOUT specifying these options - should use custom attributes
         solver = SolverMuJoCo(model, disable_contacts=True)
 
-        # Verify MuJoCo model uses custom attribute values, not Newton defaults
-        self.assertEqual(solver.mj_model.opt.iterations, 150, "Should use custom attribute 150, not Newton default 20")
-        self.assertEqual(solver.mj_model.opt.ls_iterations, 75, "Should use custom attribute 75, not Newton default 10")
+        # Verify MuJoCo model uses custom attribute values, not defaults
+        self.assertEqual(solver.mj_model.opt.iterations, 150, "Should use custom attribute 150, not default 100")
+        self.assertEqual(solver.mj_model.opt.ls_iterations, 75, "Should use custom attribute 75, not default 50")
 
     def test_iterations_use_defaults_when_no_custom_attribute(self):
         """
-        Verify that iterations and ls_iterations use Newton defaults when no
+        Verify that iterations and ls_iterations use MuJoCo defaults when no
         constructor parameter or custom attribute is provided.
         """
         # Create model WITHOUT registering custom attributes
@@ -5249,12 +5248,12 @@ class TestMuJoCoOptions(unittest.TestCase):
         builder.add_articulation([joint])
         model = builder.finalize()
 
-        # Create solver without specifying iterations - should use Newton defaults
+        # Create solver without specifying iterations - should use MuJoCo defaults
         solver = SolverMuJoCo(model, disable_contacts=True)
 
-        # Verify Newton defaults are used: iterations=20, ls_iterations=10
-        self.assertEqual(solver.mj_model.opt.iterations, 20, "Should use Newton default (20)")
-        self.assertEqual(solver.mj_model.opt.ls_iterations, 10, "Should use Newton default (10)")
+        # Verify MuJoCo defaults are used: iterations=100, ls_iterations=50
+        self.assertEqual(solver.mj_model.opt.iterations, 100, "Should use MuJoCo default (100)")
+        self.assertEqual(solver.mj_model.opt.ls_iterations, 50, "Should use MuJoCo default (50)")
 
     def test_iterations_constructor_override(self):
         """

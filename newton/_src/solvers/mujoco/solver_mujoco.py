@@ -1332,8 +1332,8 @@ class SolverMuJoCo(SolverBase):
             separate_worlds (bool | None): If True, each Newton world is mapped to a separate MuJoCo world. Defaults to `not use_mujoco_cpu`.
             njmax (int | None): Maximum number of constraints per world. If None, a default value is estimated from the initial state. Note that the larger of the user-provided value or the default value is used.
             nconmax (int | None): Number of contact points per world. If None, a default value is estimated from the initial state. Note that the larger of the user-provided value or the default value is used.
-            iterations (int | None): Number of solver iterations. If None, uses model custom attribute or Newton's default (20).
-            ls_iterations (int | None): Number of line search iterations for the solver. If None, uses model custom attribute or Newton's default (10).
+            iterations (int | None): Number of solver iterations. If None, uses model custom attribute or MuJoCo's default (100).
+            ls_iterations (int | None): Number of line search iterations for the solver. If None, uses model custom attribute or MuJoCo's default (50).
             ccd_iterations (int | None): Maximum CCD iterations. If None, uses model custom attribute or MuJoCo's default (50).
             sdf_iterations (int | None): Maximum SDF iterations. If None, uses model custom attribute or MuJoCo's default (10).
             sdf_initpoints (int | None): Number of SDF initialization points. If None, uses model custom attribute or MuJoCo's default (40).
@@ -2035,8 +2035,8 @@ class SolverMuJoCo(SolverBase):
             model: The Newton model to convert.
             state: The Newton state to convert (optional).
             separate_worlds: If True, each world is a separate MuJoCo simulation.
-            iterations: Maximum solver iterations. If None, uses model custom attribute or Newton's default (20).
-            ls_iterations: Maximum line search iterations. If None, uses model custom attribute or Newton's default (10).
+            iterations: Maximum solver iterations. If None, uses model custom attribute or MuJoCo's default (100).
+            ls_iterations: Maximum line search iterations. If None, uses model custom attribute or MuJoCo's default (50).
             njmax: Maximum number of constraints per world.
             nconmax: Maximum number of contacts.
             solver: Constraint solver type ("cg" or "newton").
@@ -2191,11 +2191,11 @@ class SolverMuJoCo(SolverBase):
         if sdf_initpoints is None and mujoco_attrs and hasattr(mujoco_attrs, "sdf_initpoints"):
             sdf_initpoints = int(mujoco_attrs.sdf_initpoints.numpy()[0])
 
-        # Set defaults for numeric options if still None
+        # Set defaults for numeric options if still None (use MuJoCo defaults)
         if iterations is None:
-            iterations = 20  # Newton default
+            iterations = 100
         if ls_iterations is None:
-            ls_iterations = 10  # Newton default
+            ls_iterations = 50
 
         # Resolve ONCE frequency enum options from custom attributes if not provided
         if solver is None and mujoco_attrs and hasattr(mujoco_attrs, "solver"):
