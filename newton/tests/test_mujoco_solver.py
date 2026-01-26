@@ -4855,110 +4855,16 @@ class TestMuJoCoOptions(unittest.TestCase):
                 msg=f"MuJoCo Warp impratio_invsqrt[{world_idx}] should be {expected_invsqrt}",
             )
 
-    def test_impratio_constructor_override(self):
-        """
-        Verify that passing impratio to the SolverMuJoCo constructor
-        overrides any per-world values from custom attributes.
-        """
-        num_worlds = 2
-        model = self._create_multiworld_model(num_worlds)
-
-        # Set impratio values per world
-        initial_impratio = np.array([1.5, 1.5], dtype=np.float32)
-        model.mujoco.impratio.assign(initial_impratio)
-
-        # Verify model has the assigned values
-        impratio = model.mujoco.impratio.numpy()
-        self.assertAlmostEqual(impratio[0], 1.5, places=4)
-        self.assertAlmostEqual(impratio[1], 1.5, places=4)
-
-        # Create solver WITH constructor override - should use 3.0
-        solver = SolverMuJoCo(model, impratio=3.0, iterations=1, disable_contacts=True)
-
-        # Verify MuJoCo model uses the constructor-provided value
-        # mj_model (regular MuJoCo) stores impratio directly
-        self.assertAlmostEqual(
-            solver.mj_model.opt.impratio,
-            3.0,
-            places=4,
-            msg="Constructor impratio=3.0 should override custom attribute value 1.5",
-        )
-
-        # Verify that mjw_model (mujoco_warp) also has the correct value for all worlds
-        # mjw_model stores impratio_invsqrt = 1/sqrt(impratio), tiled to all worlds
-        expected_invsqrt = 1.0 / np.sqrt(3.0)
-        mjw_impratio_invsqrt = solver.mjw_model.opt.impratio_invsqrt.numpy()
-        self.assertEqual(
-            len(mjw_impratio_invsqrt),
-            num_worlds,
-            f"MuJoCo Warp opt.impratio_invsqrt should have {num_worlds} values (one per world)",
-        )
-        for world_idx in range(num_worlds):
-            self.assertAlmostEqual(
-                mjw_impratio_invsqrt[world_idx],
-                expected_invsqrt,
-                places=4,
-                msg=f"MuJoCo Warp impratio_invsqrt[{world_idx}] should be {expected_invsqrt} (constructor override)",
-            )
-
-    def test_tolerance_multiworld_conversion(self):
-        """
-        Verify that tolerance custom attribute with WORLD frequency:
-        1. Is properly registered and exists on the model.
-        2. The array has correct shape (one value per world).
-        3. Different per-world values are stored correctly in the Newton model.
-        4. Solver expands per-world values to MuJoCo Warp.
-        """
-        num_worlds = 3
-        model = self._create_multiworld_model(num_worlds)
-
-        # Verify the array has correct shape (one value per world)
-        tolerance = model.mujoco.tolerance.numpy()
-        self.assertEqual(len(tolerance), num_worlds, "tolerance array should have one entry per world")
-
-        # Set different tolerance values per world
-        initial_tolerance = np.array([1e-6, 1e-7, 1e-8], dtype=np.float32)
-        model.mujoco.tolerance.assign(initial_tolerance)
-
-        # Verify all per-world values are stored correctly in Newton model
-        updated_tolerance = model.mujoco.tolerance.numpy()
-        for world_idx in range(num_worlds):
-            self.assertAlmostEqual(
-                updated_tolerance[world_idx],
-                initial_tolerance[world_idx],
-                places=10,
-                msg=f"Newton model tolerance[{world_idx}] should be {initial_tolerance[world_idx]}",
-            )
-
-        # Create solver without constructor override
-        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
-
-        # Verify MuJoCo Warp model has per-world tolerance values
-        mjw_tolerance = solver.mjw_model.opt.tolerance.numpy()
-        self.assertEqual(
-            len(mjw_tolerance),
-            num_worlds,
-            f"MuJoCo Warp opt.tolerance should have {num_worlds} values (one per world)",
-        )
-
-        # Verify each world has the correct tolerance value
-        for world_idx in range(num_worlds):
-            self.assertAlmostEqual(
-                mjw_tolerance[world_idx],
-                initial_tolerance[world_idx],
-                places=10,
-                msg=f"MuJoCo Warp tolerance[{world_idx}] should be {initial_tolerance[world_idx]}",
-            )
-
     def test_scalar_options_constructor_override(self):
         """
-        Verify that passing scalar options (tolerance, ls_tolerance, ccd_tolerance, density, viscosity)
+        Verify that passing scalar options (impratio, tolerance, ls_tolerance, ccd_tolerance, density, viscosity)
         to the SolverMuJoCo constructor overrides any per-world values from custom attributes.
         """
         num_worlds = 2
         model = self._create_multiworld_model(num_worlds)
 
         # Set custom attribute values per world
+        model.mujoco.impratio.assign(np.array([1.5, 1.5], dtype=np.float32))
         model.mujoco.tolerance.assign(np.array([1e-6, 1e-7], dtype=np.float32))
         model.mujoco.ls_tolerance.assign(np.array([0.01, 0.02], dtype=np.float32))
         model.mujoco.ccd_tolerance.assign(np.array([1e-6, 1e-7], dtype=np.float32))
@@ -4970,6 +4876,7 @@ class TestMuJoCoOptions(unittest.TestCase):
         # "fluid model not implemented" error. Non-zero values enable fluid dynamics.
         solver = SolverMuJoCo(
             model,
+            impratio=3.0,
             tolerance=1e-5,
             ls_tolerance=0.001,
             ccd_tolerance=1e-4,
@@ -4980,12 +4887,14 @@ class TestMuJoCoOptions(unittest.TestCase):
         )
 
         # Verify MuJoCo Warp uses constructor-provided values (tiled to all worlds)
+        mjw_impratio_invsqrt = solver.mjw_model.opt.impratio_invsqrt.numpy()
         mjw_tolerance = solver.mjw_model.opt.tolerance.numpy()
         mjw_ls_tolerance = solver.mjw_model.opt.ls_tolerance.numpy()
         mjw_ccd_tolerance = solver.mjw_model.opt.ccd_tolerance.numpy()
         mjw_density = solver.mjw_model.opt.density.numpy()
         mjw_viscosity = solver.mjw_model.opt.viscosity.numpy()
 
+        self.assertEqual(len(mjw_impratio_invsqrt), num_worlds)
         self.assertEqual(len(mjw_tolerance), num_worlds)
         self.assertEqual(len(mjw_ls_tolerance), num_worlds)
         self.assertEqual(len(mjw_ccd_tolerance), num_worlds)
@@ -4993,7 +4902,14 @@ class TestMuJoCoOptions(unittest.TestCase):
         self.assertEqual(len(mjw_viscosity), num_worlds)
 
         # All worlds should have the same constructor-provided values
+        expected_impratio_invsqrt = 1.0 / np.sqrt(3.0)
         for world_idx in range(num_worlds):
+            self.assertAlmostEqual(
+                mjw_impratio_invsqrt[world_idx],
+                expected_impratio_invsqrt,
+                places=4,
+                msg=f"impratio_invsqrt[{world_idx}] should be {expected_impratio_invsqrt}",
+            )
             self.assertAlmostEqual(
                 mjw_tolerance[world_idx], 1e-5, places=10, msg=f"tolerance[{world_idx}] should be 1e-5"
             )
