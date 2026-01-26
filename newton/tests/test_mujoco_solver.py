@@ -5144,10 +5144,24 @@ class TestMuJoCoOptions(unittest.TestCase):
         solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
 
         # Verify MuJoCo model uses custom attribute values, not Newton defaults
-        self.assertEqual(solver.mj_model.opt.solver, mujoco.mjtSolver.mjSOL_CG, "Should use custom attribute CG, not Newton default")
-        self.assertEqual(solver.mj_model.opt.integrator, mujoco.mjtIntegrator.mjINT_EULER, "Should use custom attribute Euler, not Newton default implicitfast")
-        self.assertEqual(solver.mj_model.opt.cone, mujoco.mjtCone.mjCONE_ELLIPTIC, "Should use custom attribute elliptic, not Newton default pyramidal")
-        self.assertEqual(solver.mj_model.opt.jacobian, mujoco.mjtJacobian.mjJAC_SPARSE, "Should use custom attribute sparse, not Newton default auto")
+        self.assertEqual(
+            solver.mj_model.opt.solver, mujoco.mjtSolver.mjSOL_CG, "Should use custom attribute CG, not Newton default"
+        )
+        self.assertEqual(
+            solver.mj_model.opt.integrator,
+            mujoco.mjtIntegrator.mjINT_EULER,
+            "Should use custom attribute Euler, not Newton default implicitfast",
+        )
+        self.assertEqual(
+            solver.mj_model.opt.cone,
+            mujoco.mjtCone.mjCONE_ELLIPTIC,
+            "Should use custom attribute elliptic, not Newton default pyramidal",
+        )
+        self.assertEqual(
+            solver.mj_model.opt.jacobian,
+            mujoco.mjtJacobian.mjJAC_SPARSE,
+            "Should use custom attribute sparse, not Newton default auto",
+        )
 
     def test_enum_options_use_defaults_when_no_custom_attribute(self):
         """
@@ -5169,10 +5183,20 @@ class TestMuJoCoOptions(unittest.TestCase):
 
         # Verify Newton defaults are used
         # Newton defaults: solver=Newton(2), integrator=implicitfast(3), cone=pyramidal(0), jacobian=auto(2)
-        self.assertEqual(solver.mj_model.opt.solver, mujoco.mjtSolver.mjSOL_NEWTON, "Should use Newton default (Newton solver)")
-        self.assertEqual(solver.mj_model.opt.integrator, mujoco.mjtIntegrator.mjINT_IMPLICITFAST, "Should use Newton default (implicitfast)")
-        self.assertEqual(solver.mj_model.opt.cone, mujoco.mjtCone.mjCONE_PYRAMIDAL, "Should use Newton default (pyramidal)")
-        self.assertEqual(solver.mj_model.opt.jacobian, mujoco.mjtJacobian.mjJAC_AUTO, "Should use Newton default (auto)")
+        self.assertEqual(
+            solver.mj_model.opt.solver, mujoco.mjtSolver.mjSOL_NEWTON, "Should use Newton default (Newton solver)"
+        )
+        self.assertEqual(
+            solver.mj_model.opt.integrator,
+            mujoco.mjtIntegrator.mjINT_IMPLICITFAST,
+            "Should use Newton default (implicitfast)",
+        )
+        self.assertEqual(
+            solver.mj_model.opt.cone, mujoco.mjtCone.mjCONE_PYRAMIDAL, "Should use Newton default (pyramidal)"
+        )
+        self.assertEqual(
+            solver.mj_model.opt.jacobian, mujoco.mjtJacobian.mjJAC_AUTO, "Should use Newton default (auto)"
+        )
 
     def test_iterations_use_custom_attributes_when_not_provided(self):
         """
