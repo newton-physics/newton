@@ -126,6 +126,12 @@ def create_newton_model_from_mjcf(
     robot_builder = newton.ModelBuilder()
     SolverMuJoCo.register_custom_attributes(robot_builder)
 
+    # Use MuJoCo's default friction values for comparison testing
+    # MuJoCo defaults: [slide=1.0, torsion=0.005, roll=0.0001]
+    robot_builder.default_shape_cfg.mu = 1.0
+    robot_builder.default_shape_cfg.torsional_friction = 0.005
+    robot_builder.default_shape_cfg.rolling_friction = 0.0001
+
     robot_builder.add_mjcf(
         str(mjcf_path),
         floating=floating,
@@ -420,6 +426,8 @@ DEFAULT_MODEL_SKIP_FIELDS: set[str] = {
     "qM_tiles",
     "qLD_tiles",
     "qLDiagInv_tiles",
+    # Visualization group: Newton defaults to 0, native may use other groups
+    "geom_group",
 }
 
 
@@ -1103,10 +1111,6 @@ class TestMenagerie_UniversalRobotsUr5e(TestMenagerieBase):
         # Collision filtering: Newton uses different defaults
         "geom_conaffinity",
         "geom_contype",
-        # Friction: Newton uses different default coefficients
-        "geom_friction",
-        # Visualization group: Newton defaults to 0, native may use other groups
-        "geom_group",
         # Collision pair type counts: differs due to collision setup
         "geom_pair_type_count",
         # Bounding radius: small differences in computation
