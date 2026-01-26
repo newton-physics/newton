@@ -377,6 +377,67 @@ class SolverMuJoCo(SolverBase):
                 default=1.0,
                 namespace="mujoco",
                 usd_attribute_name="mjc:option:impratio",
+                mjcf_attribute_name="impratio",
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="tolerance",
+                frequency=ModelAttributeFrequency.WORLD,
+                assignment=ModelAttributeAssignment.MODEL,
+                dtype=wp.float32,
+                default=1e-8,
+                namespace="mujoco",
+                usd_attribute_name="mjc:option:tolerance",
+                mjcf_attribute_name="tolerance",
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="ls_tolerance",
+                frequency=ModelAttributeFrequency.WORLD,
+                assignment=ModelAttributeAssignment.MODEL,
+                dtype=wp.float32,
+                default=0.01,
+                namespace="mujoco",
+                usd_attribute_name="mjc:option:ls_tolerance",
+                mjcf_attribute_name="ls_tolerance",
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="ccd_tolerance",
+                frequency=ModelAttributeFrequency.WORLD,
+                assignment=ModelAttributeAssignment.MODEL,
+                dtype=wp.float32,
+                default=1e-6,
+                namespace="mujoco",
+                usd_attribute_name="mjc:option:ccd_tolerance",
+                mjcf_attribute_name="ccd_tolerance",
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="density",
+                frequency=ModelAttributeFrequency.WORLD,
+                assignment=ModelAttributeAssignment.MODEL,
+                dtype=wp.float32,
+                default=0.0,
+                namespace="mujoco",
+                usd_attribute_name="mjc:option:density",
+                mjcf_attribute_name="density",
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="viscosity",
+                frequency=ModelAttributeFrequency.WORLD,
+                assignment=ModelAttributeAssignment.MODEL,
+                dtype=wp.float32,
+                default=0.0,
+                namespace="mujoco",
+                usd_attribute_name="mjc:option:viscosity",
+                mjcf_attribute_name="viscosity",
             )
         )
 
@@ -1054,6 +1115,11 @@ class SolverMuJoCo(SolverBase):
         integrator: int | str = "implicitfast",
         cone: int | str = "pyramidal",
         impratio: float | None = None,
+        tolerance: float | None = None,
+        ls_tolerance: float | None = None,
+        ccd_tolerance: float | None = None,
+        density: float | None = None,
+        viscosity: float | None = None,
         use_mujoco_cpu: bool = False,
         disable_contacts: bool = False,
         default_actuator_gear: float | None = None,
@@ -1062,8 +1128,6 @@ class SolverMuJoCo(SolverBase):
         save_to_mjcf: str | None = None,
         ls_parallel: bool = False,
         use_mujoco_contacts: bool = True,
-        tolerance: float = 1e-6,
-        ls_tolerance: float = 0.01,
         include_sites: bool = True,
     ):
         """
@@ -1085,7 +1149,12 @@ class SolverMuJoCo(SolverBase):
             solver (int | str): Solver type. Can be "cg" or "newton", or their corresponding MuJoCo integer constants.
             integrator (int | str): Integrator type. Can be "euler", "rk4", or "implicitfast", or their corresponding MuJoCo integer constants.
             cone (int | str): The type of contact friction cone. Can be "pyramidal", "elliptic", or their corresponding MuJoCo integer constants.
-            impratio (float | None): Frictional-to-normal constraint impedance ratio. Defaults to MuJoCo's default (1.0).
+            impratio (float | None): Frictional-to-normal constraint impedance ratio. If None, uses model custom attribute or MuJoCo's default (1.0).
+            tolerance (float | None): Solver tolerance for early termination. If None, uses model custom attribute or MuJoCo's default (1e-8).
+            ls_tolerance (float | None): Line search tolerance for early termination. If None, uses model custom attribute or MuJoCo's default (0.01).
+            ccd_tolerance (float | None): Continuous collision detection tolerance. If None, uses model custom attribute or MuJoCo's default (1e-6).
+            density (float | None): Medium density for lift and drag forces. If None, uses model custom attribute or MuJoCo's default (0.0).
+            viscosity (float | None): Medium viscosity for lift and drag forces. If None, uses model custom attribute or MuJoCo's default (0.0).
             use_mujoco_cpu (bool): If True, use the MuJoCo-C CPU backend instead of `mujoco_warp`.
             disable_contacts (bool): If True, disable contact computation in MuJoCo.
             register_collision_groups (bool): If True, register collision groups from the Newton model in MuJoCo.
@@ -1095,8 +1164,6 @@ class SolverMuJoCo(SolverBase):
             save_to_mjcf (str | None): Optional path to save the generated MJCF model file.
             ls_parallel (bool): If True, enable parallel line search in MuJoCo. Defaults to False.
             use_mujoco_contacts (bool): If True, use the MuJoCo contact solver. If False, use the Newton contact solver (newton contacts must be passed in through the step function in that case).
-            tolerance (float | None): Solver tolerance for early termination of the iterative solver. Defaults to 1e-6 and will be increased to 1e-6 by the MuJoCo solver if a smaller value is provided.
-            ls_tolerance (float | None): Solver tolerance for early termination of the line search. Defaults to 0.01.
             include_sites (bool): If ``True`` (default), Newton shapes marked with ``ShapeFlags.SITE`` are exported as MuJoCo sites. Sites are non-colliding reference points used for sensor attachment, debugging, or as frames of reference. If ``False``, sites are skipped during export. Defaults to ``True``.
         """
         super().__init__(model)
@@ -1186,14 +1253,17 @@ class SolverMuJoCo(SolverBase):
                     ls_iterations=ls_iterations,
                     cone=cone,
                     impratio=impratio,
+                    tolerance=tolerance,
+                    ls_tolerance=ls_tolerance,
+                    ccd_tolerance=ccd_tolerance,
+                    density=density,
+                    viscosity=viscosity,
                     solver=solver,
                     integrator=integrator,
                     default_actuator_gear=default_actuator_gear,
                     actuator_gears=actuator_gears,
                     target_filename=save_to_mjcf,
                     ls_parallel=ls_parallel,
-                    tolerance=tolerance,
-                    ls_tolerance=ls_tolerance,
                     include_sites=include_sites,
                 )
         self.update_data_interval = update_data_interval
@@ -1730,8 +1800,11 @@ class SolverMuJoCo(SolverBase):
         disableflags: int = 0,
         disable_contacts: bool = False,
         impratio: float | None = None,
-        tolerance: float = 1e-6,
-        ls_tolerance: float = 0.01,
+        tolerance: float | None = None,
+        ls_tolerance: float | None = None,
+        ccd_tolerance: float | None = None,
+        density: float | None = None,
+        viscosity: float | None = None,
         cone: int | str = "pyramidal",
         target_filename: str | None = None,
         default_actuator_args: dict | None = None,
@@ -1764,9 +1837,12 @@ class SolverMuJoCo(SolverBase):
             integrator: Integration method ("euler", "rk4", "implicit", "implicitfast").
             disableflags: MuJoCo disable flags bitmask.
             disable_contacts: If True, disable contact computation.
-            impratio: Impedance ratio for contacts. Defaults to MuJoCo default.
-            tolerance: Solver tolerance.
-            ls_tolerance: Line search tolerance.
+            impratio: Impedance ratio for contacts. If None, uses model custom attribute or MuJoCo default (1.0).
+            tolerance: Solver tolerance. If None, uses model custom attribute or MuJoCo default (1e-8).
+            ls_tolerance: Line search tolerance. If None, uses model custom attribute or MuJoCo default (0.01).
+            ccd_tolerance: CCD tolerance. If None, uses model custom attribute or MuJoCo default (1e-6).
+            density: Medium density. If None, uses model custom attribute or MuJoCo default (0.0).
+            viscosity: Medium viscosity. If None, uses model custom attribute or MuJoCo default (0.0).
             cone: Friction cone type ("pyramidal" or "elliptic").
             target_filename: Optional path to save generated MJCF file.
             default_actuator_args: Default actuator parameters.
@@ -1867,11 +1943,31 @@ class SolverMuJoCo(SolverBase):
         #   1. Constructor argument (e.g., impratio=5.0) - same value for all worlds
         #   2. Newton model custom attribute (model.mujoco.<option>) - supports per-world values
         #   3. MuJoCo default
-        impratio_overridden = impratio is not None
-        if impratio is None:
-            mujoco_attrs = getattr(model, "mujoco", None)
-            if mujoco_attrs and hasattr(mujoco_attrs, "impratio"):
-                impratio = float(mujoco_attrs.impratio.numpy()[0])
+
+        # Track which WORLD frequency options were overridden by constructor
+        overridden_options = set()
+
+        # Get mujoco custom attributes once
+        mujoco_attrs = getattr(model, "mujoco", None)
+
+        # Helper to resolve option value
+        def resolve_option(name: str, constructor_value):
+            """Resolve option from constructor > model attribute > None (use MuJoCo default)."""
+            if constructor_value is not None:
+                overridden_options.add(name)
+                return constructor_value
+            if mujoco_attrs and hasattr(mujoco_attrs, name):
+                # Read from index 0 (template world) for initialization
+                return float(getattr(mujoco_attrs, name).numpy()[0])
+            return None
+
+        # Resolve all WORLD frequency scalar options
+        impratio = resolve_option("impratio", impratio)
+        tolerance = resolve_option("tolerance", tolerance)
+        ls_tolerance = resolve_option("ls_tolerance", ls_tolerance)
+        ccd_tolerance = resolve_option("ccd_tolerance", ccd_tolerance)
+        density = resolve_option("density", density)
+        viscosity = resolve_option("viscosity", viscosity)
 
         spec = mujoco.MjSpec()
         spec.option.disableflags = disableflags
@@ -1881,11 +1977,21 @@ class SolverMuJoCo(SolverBase):
         spec.option.iterations = iterations
         spec.option.ls_iterations = ls_iterations
         spec.option.cone = cone
+        spec.option.jacobian = mujoco.mjtJacobian.mjJAC_AUTO
+
+        # Set WORLD frequency options (use MuJoCo defaults if None)
         if impratio is not None:
             spec.option.impratio = impratio
-        spec.option.tolerance = tolerance
-        spec.option.ls_tolerance = ls_tolerance
-        spec.option.jacobian = mujoco.mjtJacobian.mjJAC_AUTO
+        if tolerance is not None:
+            spec.option.tolerance = tolerance
+        if ls_tolerance is not None:
+            spec.option.ls_tolerance = ls_tolerance
+        if ccd_tolerance is not None:
+            spec.option.ccd_tolerance = ccd_tolerance
+        if density is not None:
+            spec.option.density = density
+        if viscosity is not None:
+            spec.option.viscosity = viscosity
 
         spec.compiler.inertiafromgeom = mujoco.mjtInertiaFromGeom.mjINERTIAFROMGEOM_AUTO
 
@@ -2858,7 +2964,7 @@ class SolverMuJoCo(SolverBase):
             self.expand_model_fields(self.mjw_model, nworld)
 
             # update solver options from Newton model (only if not overridden by constructor)
-            self._update_solver_options(impratio_overridden=impratio_overridden)
+            self._update_solver_options(overridden_options=overridden_options)
 
             # so far we have only defined the first world,
             # now complete the data from the Newton model
@@ -2997,34 +3103,70 @@ class SolverMuJoCo(SolverBase):
                 array = getattr(mj_model.opt, field)
                 setattr(mj_model.opt, field, tile(array))
 
-    def _update_solver_options(self, impratio_overridden: bool = False):
-        """Update solver options from Newton model to MuJoCo Warp.
+    def _update_solver_options(self, overridden_options: set[str] | None = None):
+        """Update WORLD frequency solver options from Newton model to MuJoCo Warp.
 
-        Copies per-world values from Newton custom attributes to the MuJoCo Warp model.
-        If a value was overridden by constructor, tile() already handled expansion so we skip it.
+        Called after tile() to update per-world option arrays in mjw_model.opt.
+        Only updates WORLD frequency options; ONCE frequency options are already
+        set on MjSpec before put_model() and shared across all worlds.
 
         Args:
-            impratio_overridden: If True, impratio was set by constructor and tile() handled it.
+            overridden_options: Set of option names that were overridden by constructor.
+                These options should not be updated from model custom attributes.
         """
+        if overridden_options is None:
+            overridden_options = set()
+
         mujoco_attrs = getattr(self.model, "mujoco", None)
         nworld = self.model.num_worlds
 
-        # Get Newton arrays - pass None if overridden or not available (kernel checks for None)
-        if not impratio_overridden and mujoco_attrs and hasattr(mujoco_attrs, "impratio"):
-            newton_impratio = mujoco_attrs.impratio
-        else:
-            newton_impratio = None
+        # Helper to get WORLD frequency option array or None
+        def get_option(name: str):
+            if name in overridden_options or not mujoco_attrs or not hasattr(mujoco_attrs, name):
+                return None
+            return getattr(mujoco_attrs, name)
 
-        # Skip kernel if all options are None (add more checks here as options are added)
-        all_none = newton_impratio is None  # and other_option is None and ...
-        if all_none:
+        # Get all WORLD frequency scalar arrays
+        newton_impratio = get_option("impratio")
+        newton_tolerance = get_option("tolerance")
+        newton_ls_tolerance = get_option("ls_tolerance")
+        newton_ccd_tolerance = get_option("ccd_tolerance")
+        newton_density = get_option("density")
+        newton_viscosity = get_option("viscosity")
+
+        # Skip kernel if all options are None
+        if all(
+            x is None
+            for x in [
+                newton_impratio,
+                newton_tolerance,
+                newton_ls_tolerance,
+                newton_ccd_tolerance,
+                newton_density,
+                newton_viscosity,
+            ]
+        ):
             return
 
         wp.launch(
             update_solver_options_kernel,
             dim=nworld,
-            inputs=[newton_impratio],
-            outputs=[self.mjw_model.opt.impratio_invsqrt],
+            inputs=[
+                newton_impratio,
+                newton_tolerance,
+                newton_ls_tolerance,
+                newton_ccd_tolerance,
+                newton_density,
+                newton_viscosity,
+            ],
+            outputs=[
+                self.mjw_model.opt.impratio_invsqrt,
+                self.mjw_model.opt.tolerance,
+                self.mjw_model.opt.ls_tolerance,
+                self.mjw_model.opt.ccd_tolerance,
+                self.mjw_model.opt.density,
+                self.mjw_model.opt.viscosity,
+            ],
             device=self.model.device,
         )
 
