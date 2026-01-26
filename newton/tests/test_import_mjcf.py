@@ -2727,6 +2727,98 @@ class TestImportMjcf(unittest.TestCase):
         self.assertEqual(len(sdf_initpoints), 1)
         self.assertEqual(sdf_initpoints[0], 50)
 
+    def test_option_integrator_parsing(self):
+        """Test parsing of integrator enum from MJCF option tag."""
+        mjcf_euler = """<?xml version="1.0" ?>
+<mujoco>
+    <option integrator="Euler"/>
+    <worldbody>
+        <body name="body1" pos="0 0 1">
+            <joint type="hinge" axis="0 0 1"/>
+            <geom type="sphere" size="0.1"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf_euler)
+        model = builder.finalize()
+
+        self.assertTrue(hasattr(model, "mujoco"))
+        self.assertTrue(hasattr(model.mujoco, "integrator"))
+        integrator = model.mujoco.integrator.numpy()
+        self.assertEqual(len(integrator), 1)  # ONCE frequency
+        self.assertEqual(integrator[0], 0)  # Euler = 0
+
+    def test_option_solver_parsing(self):
+        """Test parsing of solver enum from MJCF option tag."""
+        mjcf = """<?xml version="1.0" ?>
+<mujoco>
+    <option solver="Newton"/>
+    <worldbody>
+        <body name="body1" pos="0 0 1">
+            <joint type="hinge" axis="0 0 1"/>
+            <geom type="sphere" size="0.1"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf)
+        model = builder.finalize()
+
+        self.assertTrue(hasattr(model, "mujoco"))
+        self.assertTrue(hasattr(model.mujoco, "solver"))
+        solver = model.mujoco.solver.numpy()
+        self.assertEqual(len(solver), 1)
+        self.assertEqual(solver[0], 2)  # Newton = 2
+
+    def test_option_cone_parsing(self):
+        """Test parsing of cone enum from MJCF option tag."""
+        mjcf = """<?xml version="1.0" ?>
+<mujoco>
+    <option cone="elliptic"/>
+    <worldbody>
+        <body name="body1" pos="0 0 1">
+            <joint type="hinge" axis="0 0 1"/>
+            <geom type="sphere" size="0.1"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf)
+        model = builder.finalize()
+
+        self.assertTrue(hasattr(model, "mujoco"))
+        self.assertTrue(hasattr(model.mujoco, "cone"))
+        cone = model.mujoco.cone.numpy()
+        self.assertEqual(len(cone), 1)
+        self.assertEqual(cone[0], 1)  # elliptic = 1
+
+    def test_option_jacobian_parsing(self):
+        """Test parsing of jacobian enum from MJCF option tag."""
+        mjcf = """<?xml version="1.0" ?>
+<mujoco>
+    <option jacobian="sparse"/>
+    <worldbody>
+        <body name="body1" pos="0 0 1">
+            <joint type="hinge" axis="0 0 1"/>
+            <geom type="sphere" size="0.1"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf)
+        model = builder.finalize()
+
+        self.assertTrue(hasattr(model, "mujoco"))
+        self.assertTrue(hasattr(model.mujoco, "jacobian"))
+        jacobian = model.mujoco.jacobian.numpy()
+        self.assertEqual(len(jacobian), 1)
+        self.assertEqual(jacobian[0], 1)  # sparse = 1
+
     def test_geom_solmix_parsing(self):
         """Test that geom_solmix attribute is parsed correctly from MJCF."""
         mjcf = """<?xml version="1.0" ?>
