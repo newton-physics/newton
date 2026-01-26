@@ -163,7 +163,9 @@ class SolverSemiImplicit(SolverBase):
                 eval_triangle_contact_forces(model, state_in, particle_f)
 
             # body contacts
-            eval_body_contact_forces(model, state_in, contacts, friction_smoothing=self.friction_smoothing)
+            eval_body_contact_forces(
+                model, state_in, contacts, friction_smoothing=self.friction_smoothing, body_f_out=body_f_work
+            )
 
             # particle shape contact
             eval_particle_body_contact_forces(
