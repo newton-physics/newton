@@ -440,6 +440,30 @@ class SolverMuJoCo(SolverBase):
                 mjcf_attribute_name="viscosity",
             )
         )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="wind",
+                frequency=ModelAttributeFrequency.WORLD,
+                assignment=ModelAttributeAssignment.MODEL,
+                dtype=wp.vec3,
+                default=wp.vec3(0.0, 0.0, 0.0),
+                namespace="mujoco",
+                usd_attribute_name="mjc:option:wind",
+                mjcf_attribute_name="wind",
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="magnetic",
+                frequency=ModelAttributeFrequency.WORLD,
+                assignment=ModelAttributeAssignment.MODEL,
+                dtype=wp.vec3,
+                default=wp.vec3(0.0, -0.5, 0.0),
+                namespace="mujoco",
+                usd_attribute_name="mjc:option:magnetic",
+                mjcf_attribute_name="magnetic",
+            )
+        )
 
         # --- Pair attributes (from MJCF <pair> tag) ---
         # Explicit contact pairs with custom properties. Only pairs from the template world are used.
@@ -1120,6 +1144,8 @@ class SolverMuJoCo(SolverBase):
         ccd_tolerance: float | None = None,
         density: float | None = None,
         viscosity: float | None = None,
+        wind: tuple | None = None,
+        magnetic: tuple | None = None,
         use_mujoco_cpu: bool = False,
         disable_contacts: bool = False,
         default_actuator_gear: float | None = None,
@@ -1155,6 +1181,8 @@ class SolverMuJoCo(SolverBase):
             ccd_tolerance (float | None): Continuous collision detection tolerance. If None, uses model custom attribute or MuJoCo's default (1e-6).
             density (float | None): Medium density for lift and drag forces. If None, uses model custom attribute or MuJoCo's default (0.0).
             viscosity (float | None): Medium viscosity for lift and drag forces. If None, uses model custom attribute or MuJoCo's default (0.0).
+            wind (tuple | None): Wind velocity vector (x, y, z) for lift and drag forces. If None, uses model custom attribute or MuJoCo's default (0, 0, 0).
+            magnetic (tuple | None): Global magnetic flux vector (x, y, z). If None, uses model custom attribute or MuJoCo's default (0, -0.5, 0).
             use_mujoco_cpu (bool): If True, use the MuJoCo-C CPU backend instead of `mujoco_warp`.
             disable_contacts (bool): If True, disable contact computation in MuJoCo.
             register_collision_groups (bool): If True, register collision groups from the Newton model in MuJoCo.
@@ -1258,6 +1286,8 @@ class SolverMuJoCo(SolverBase):
                     ccd_tolerance=ccd_tolerance,
                     density=density,
                     viscosity=viscosity,
+                    wind=wind,
+                    magnetic=magnetic,
                     solver=solver,
                     integrator=integrator,
                     default_actuator_gear=default_actuator_gear,
@@ -1805,6 +1835,8 @@ class SolverMuJoCo(SolverBase):
         ccd_tolerance: float | None = None,
         density: float | None = None,
         viscosity: float | None = None,
+        wind: tuple | None = None,
+        magnetic: tuple | None = None,
         cone: int | str = "pyramidal",
         target_filename: str | None = None,
         default_actuator_args: dict | None = None,
@@ -1843,6 +1875,8 @@ class SolverMuJoCo(SolverBase):
             ccd_tolerance: CCD tolerance. If None, uses model custom attribute or MuJoCo default (1e-6).
             density: Medium density. If None, uses model custom attribute or MuJoCo default (0.0).
             viscosity: Medium viscosity. If None, uses model custom attribute or MuJoCo default (0.0).
+            wind: Wind velocity vector (x, y, z). If None, uses model custom attribute or MuJoCo default (0, 0, 0).
+            magnetic: Magnetic flux vector (x, y, z). If None, uses model custom attribute or MuJoCo default (0, -0.5, 0).
             cone: Friction cone type ("pyramidal" or "elliptic").
             target_filename: Optional path to save generated MJCF file.
             default_actuator_args: Default actuator parameters.
@@ -1950,15 +1984,27 @@ class SolverMuJoCo(SolverBase):
         # Get mujoco custom attributes once
         mujoco_attrs = getattr(model, "mujoco", None)
 
-        # Helper to resolve option value
+        # Helper to resolve scalar option value
         def resolve_option(name: str, constructor_value):
-            """Resolve option from constructor > model attribute > None (use MuJoCo default)."""
+            """Resolve scalar option from constructor > model attribute > None (use MuJoCo default)."""
             if constructor_value is not None:
                 overridden_options.add(name)
                 return constructor_value
             if mujoco_attrs and hasattr(mujoco_attrs, name):
                 # Read from index 0 (template world) for initialization
                 return float(getattr(mujoco_attrs, name).numpy()[0])
+            return None
+
+        # Helper to resolve vector option value
+        def resolve_vector_option(name: str, constructor_value):
+            """Resolve vector option from constructor > model attribute > None (use MuJoCo default)."""
+            if constructor_value is not None:
+                overridden_options.add(name)
+                return constructor_value
+            if mujoco_attrs and hasattr(mujoco_attrs, name):
+                # Read from index 0 (template world) for initialization
+                vec = getattr(mujoco_attrs, name).numpy()[0]
+                return tuple(vec)
             return None
 
         # Resolve all WORLD frequency scalar options
@@ -1968,6 +2014,10 @@ class SolverMuJoCo(SolverBase):
         ccd_tolerance = resolve_option("ccd_tolerance", ccd_tolerance)
         density = resolve_option("density", density)
         viscosity = resolve_option("viscosity", viscosity)
+
+        # Resolve WORLD frequency vector options
+        wind = resolve_vector_option("wind", wind)
+        magnetic = resolve_vector_option("magnetic", magnetic)
 
         spec = mujoco.MjSpec()
         spec.option.disableflags = disableflags
@@ -1992,6 +2042,10 @@ class SolverMuJoCo(SolverBase):
             spec.option.density = density
         if viscosity is not None:
             spec.option.viscosity = viscosity
+        if wind is not None:
+            spec.option.wind = np.array(wind)
+        if magnetic is not None:
+            spec.option.magnetic = np.array(magnetic)
 
         spec.compiler.inertiafromgeom = mujoco.mjtInertiaFromGeom.mjINERTIAFROMGEOM_AUTO
 
@@ -3067,8 +3121,8 @@ class SolverMuJoCo(SolverBase):
             "density",
             "viscosity",
             "gravity",
-            # "wind",
-            # "magnetic",
+            "wind",
+            "magnetic",
         }
 
         def tile(x: wp.array):
@@ -3134,6 +3188,10 @@ class SolverMuJoCo(SolverBase):
         newton_density = get_option("density")
         newton_viscosity = get_option("viscosity")
 
+        # Get WORLD frequency vector arrays
+        newton_wind = get_option("wind")
+        newton_magnetic = get_option("magnetic")
+
         # Skip kernel if all options are None
         if all(
             x is None
@@ -3144,6 +3202,8 @@ class SolverMuJoCo(SolverBase):
                 newton_ccd_tolerance,
                 newton_density,
                 newton_viscosity,
+                newton_wind,
+                newton_magnetic,
             ]
         ):
             return
@@ -3158,6 +3218,8 @@ class SolverMuJoCo(SolverBase):
                 newton_ccd_tolerance,
                 newton_density,
                 newton_viscosity,
+                newton_wind,
+                newton_magnetic,
             ],
             outputs=[
                 self.mjw_model.opt.impratio_invsqrt,
@@ -3166,6 +3228,8 @@ class SolverMuJoCo(SolverBase):
                 self.mjw_model.opt.ccd_tolerance,
                 self.mjw_model.opt.density,
                 self.mjw_model.opt.viscosity,
+                self.mjw_model.opt.wind,
+                self.mjw_model.opt.magnetic,
             ],
             device=self.model.device,
         )
