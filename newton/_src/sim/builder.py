@@ -1771,8 +1771,10 @@ class ModelBuilder:
 
         # Initialize this world's time-step
         if dt is not None:
-            if dt <= 0.0:
-                raise ValueError("World time-step 'dt' must be positive")
+            if not isinstance(dt, float):
+                raise TypeError(f"Time-step of world {self.current_world} 'dt' must be a float, got {type(dt)}")
+            elif dt <= 0.0:
+                raise ValueError(f"Time-step of world {self.current_world} 'dt' must be positive, got {dt}")
             self.world_dt.append(dt)
         else:
             self.world_dt.append(self.dt)
@@ -6324,17 +6326,21 @@ class ModelBuilder:
         Returns:
             bool: `True` if all time-steps are valid, `False` otherwise.
         """
+        # NOTE: `dt` must be a positive float value since it will almost always be
+        # less than 1.0, thus checking for integer type is not appropriate here.
         if self.world_dt:
-            for i, dt in enumerate(self.world_dt):
-                if dt <= 0.0:
-                    raise ValueError(f"Invalid time-step for world {i}: {dt}. Must be a positive float value.")
+            for w, dt in enumerate(self.world_dt):
+                if not isinstance(dt, (float, np.floating)):
+                    raise ValueError(f"Time-step of world {w} must be a float value, got: {dt} (type={type(dt)})")
+                if float(dt) <= 0.0:
+                    raise ValueError(f"Invalid time-step for world {w}: {dt}. Must be a positive float value.")
         else:
-            if not isinstance(self.dt, float):
+            if not isinstance(self.dt, (float, np.floating)):
                 raise ValueError(
                     f"Global time-step must be a float value when per-world time-steps "
-                    f"are not specified. Got: {self.dt} (type={type(self.dt)})"
+                    f"are not specified, got: {self.dt} (type={type(self.dt)})"
                 )
-            if self.dt <= 0.0:
+            if float(self.dt) <= 0.0:
                 raise ValueError(f"Invalid global time-step: {self.dt}. Must be a positive float value.")
         return True
 
@@ -6982,7 +6988,7 @@ class ModelBuilder:
                 dt_vecs = self.world_dt
                 inv_dt_vecs = [1.0 / dt for dt in dt_vecs]
             else:
-                # Fallback: use scalar gravity for all worlds
+                # Fallback: use single scalar time-step uniformly across all worlds
                 dt_vecs = [self.dt] * self.num_worlds
                 inv_dt_vecs = [1.0 / dt for dt in dt_vecs]
             m.dt = wp.array(
