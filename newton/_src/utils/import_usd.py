@@ -343,13 +343,13 @@ def parse_usd(
         if path_name not in path_shape_map:
             if type_name == "cube":
                 size = usd.get_float(prim, "size", 2.0)
-                extents = scale * size
+                side_lengths = scale * size
                 shape_id = builder.add_shape_box(
                     parent_body_id,
                     xform,
-                    hx=extents[0] / 2,
-                    hy=extents[1] / 2,
-                    hz=extents[2] / 2,
+                    hx=side_lengths[0] / 2,
+                    hy=side_lengths[1] / 2,
+                    hz=side_lengths[2] / 2,
                     cfg=visual_shape_cfg,
                     as_site=is_site,
                     key=path_name,
