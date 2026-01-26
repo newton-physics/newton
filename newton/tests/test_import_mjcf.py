@@ -2445,11 +2445,11 @@ class TestImportMjcf(unittest.TestCase):
         self.assertAlmostEqual(impratio[0], 1.5, places=4, msg="World 0 should have impratio=1.5")
         self.assertAlmostEqual(impratio[1], 2.0, places=4, msg="World 1 should have impratio=2.0")
 
-    def test_option_tolerance_parsing(self):
-        """Test parsing of tolerance from MJCF option tag."""
-        mjcf = """<?xml version="1.0" ?>
+    def _create_mjcf_with_option(self, option_attr, option_value):
+        """Helper to create standard MJCF with a single option."""
+        return f"""<?xml version="1.0" ?>
 <mujoco>
-    <option tolerance="1e-6"/>
+    <option {option_attr}="{option_value}"/>
     <worldbody>
         <body name="body1" pos="0 0 1">
             <joint type="hinge" axis="0 0 1"/>
@@ -2458,107 +2458,29 @@ class TestImportMjcf(unittest.TestCase):
     </worldbody>
 </mujoco>
 """
-        builder = newton.ModelBuilder()
-        builder.add_mjcf(mjcf)
-        model = builder.finalize()
 
-        self.assertTrue(hasattr(model, "mujoco"))
-        self.assertTrue(hasattr(model.mujoco, "tolerance"))
-        tolerance = model.mujoco.tolerance.numpy()
-        self.assertEqual(len(tolerance), 1)
-        self.assertAlmostEqual(tolerance[0], 1e-6, places=10)
+    def test_option_scalar_world_parsing(self):
+        """Test parsing of WORLD frequency scalar options from MJCF (5 options)."""
+        test_cases = [
+            ("tolerance", "1e-6", 1e-6, 10),
+            ("ls_tolerance", "0.001", 0.001, 6),
+            ("ccd_tolerance", "1e-5", 1e-5, 10),
+            ("density", "1.225", 1.225, 6),
+            ("viscosity", "1.8e-5", 1.8e-5, 10),
+        ]
 
-    def test_option_ls_tolerance_parsing(self):
-        """Test parsing of ls_tolerance from MJCF option tag."""
-        mjcf = """<?xml version="1.0" ?>
-<mujoco>
-    <option ls_tolerance="0.001"/>
-    <worldbody>
-        <body name="body1" pos="0 0 1">
-            <joint type="hinge" axis="0 0 1"/>
-            <geom type="sphere" size="0.1"/>
-        </body>
-    </worldbody>
-</mujoco>
-"""
-        builder = newton.ModelBuilder()
-        builder.add_mjcf(mjcf)
-        model = builder.finalize()
+        for option_name, mjcf_value, expected, places in test_cases:
+            with self.subTest(option=option_name):
+                mjcf = self._create_mjcf_with_option(option_name, mjcf_value)
+                builder = newton.ModelBuilder()
+                builder.add_mjcf(mjcf)
+                model = builder.finalize()
 
-        self.assertTrue(hasattr(model, "mujoco"))
-        self.assertTrue(hasattr(model.mujoco, "ls_tolerance"))
-        ls_tolerance = model.mujoco.ls_tolerance.numpy()
-        self.assertEqual(len(ls_tolerance), 1)
-        self.assertAlmostEqual(ls_tolerance[0], 0.001, places=6)
-
-    def test_option_ccd_tolerance_parsing(self):
-        """Test parsing of ccd_tolerance from MJCF option tag."""
-        mjcf = """<?xml version="1.0" ?>
-<mujoco>
-    <option ccd_tolerance="1e-5"/>
-    <worldbody>
-        <body name="body1" pos="0 0 1">
-            <joint type="hinge" axis="0 0 1"/>
-            <geom type="sphere" size="0.1"/>
-        </body>
-    </worldbody>
-</mujoco>
-"""
-        builder = newton.ModelBuilder()
-        builder.add_mjcf(mjcf)
-        model = builder.finalize()
-
-        self.assertTrue(hasattr(model, "mujoco"))
-        self.assertTrue(hasattr(model.mujoco, "ccd_tolerance"))
-        ccd_tolerance = model.mujoco.ccd_tolerance.numpy()
-        self.assertEqual(len(ccd_tolerance), 1)
-        self.assertAlmostEqual(ccd_tolerance[0], 1e-5, places=10)
-
-    def test_option_density_parsing(self):
-        """Test parsing of density from MJCF option tag."""
-        mjcf = """<?xml version="1.0" ?>
-<mujoco>
-    <option density="1.225"/>
-    <worldbody>
-        <body name="body1" pos="0 0 1">
-            <joint type="hinge" axis="0 0 1"/>
-            <geom type="sphere" size="0.1"/>
-        </body>
-    </worldbody>
-</mujoco>
-"""
-        builder = newton.ModelBuilder()
-        builder.add_mjcf(mjcf)
-        model = builder.finalize()
-
-        self.assertTrue(hasattr(model, "mujoco"))
-        self.assertTrue(hasattr(model.mujoco, "density"))
-        density = model.mujoco.density.numpy()
-        self.assertEqual(len(density), 1)
-        self.assertAlmostEqual(density[0], 1.225, places=6)
-
-    def test_option_viscosity_parsing(self):
-        """Test parsing of viscosity from MJCF option tag."""
-        mjcf = """<?xml version="1.0" ?>
-<mujoco>
-    <option viscosity="1.8e-5"/>
-    <worldbody>
-        <body name="body1" pos="0 0 1">
-            <joint type="hinge" axis="0 0 1"/>
-            <geom type="sphere" size="0.1"/>
-        </body>
-    </worldbody>
-</mujoco>
-"""
-        builder = newton.ModelBuilder()
-        builder.add_mjcf(mjcf)
-        model = builder.finalize()
-
-        self.assertTrue(hasattr(model, "mujoco"))
-        self.assertTrue(hasattr(model.mujoco, "viscosity"))
-        viscosity = model.mujoco.viscosity.numpy()
-        self.assertEqual(len(viscosity), 1)
-        self.assertAlmostEqual(viscosity[0], 1.8e-5, places=10)
+                self.assertTrue(hasattr(model, "mujoco"))
+                self.assertTrue(hasattr(model.mujoco, option_name))
+                value = getattr(model.mujoco, option_name).numpy()
+                self.assertEqual(len(value), 1)
+                self.assertAlmostEqual(value[0], expected, places=places)
 
     def test_option_scalar_per_world(self):
         """Test that scalar options are correctly remapped per world when merging builders."""
@@ -2611,213 +2533,69 @@ class TestImportMjcf(unittest.TestCase):
         self.assertAlmostEqual(ls_tolerance[0], 0.001, places=6, msg="World 0 should have ls_tolerance=0.001")
         self.assertAlmostEqual(ls_tolerance[1], 0.002, places=6, msg="World 1 should have ls_tolerance=0.002")
 
-    def test_option_wind_parsing(self):
-        """Test parsing of wind vector from MJCF option tag."""
-        mjcf = """<?xml version="1.0" ?>
-<mujoco>
-    <option wind="1 0.5 -0.5"/>
-    <worldbody>
-        <body name="body1" pos="0 0 1">
-            <joint type="hinge" axis="0 0 1"/>
-            <geom type="sphere" size="0.1"/>
-        </body>
-    </worldbody>
-</mujoco>
-"""
-        builder = newton.ModelBuilder()
-        builder.add_mjcf(mjcf)
-        model = builder.finalize()
+    def test_option_vector_world_parsing(self):
+        """Test parsing of WORLD frequency vector options from MJCF (2 options)."""
+        test_cases = [
+            ("wind", "1 0.5 -0.5", [1, 0.5, -0.5]),
+            ("magnetic", "0 -1 0.5", [0, -1, 0.5]),
+        ]
 
-        self.assertTrue(hasattr(model, "mujoco"))
-        self.assertTrue(hasattr(model.mujoco, "wind"))
-        wind = model.mujoco.wind.numpy()
-        self.assertEqual(len(wind), 1)
-        self.assertTrue(np.allclose(wind[0], [1, 0.5, -0.5]))
+        for option_name, mjcf_value, expected in test_cases:
+            with self.subTest(option=option_name):
+                mjcf = self._create_mjcf_with_option(option_name, mjcf_value)
+                builder = newton.ModelBuilder()
+                builder.add_mjcf(mjcf)
+                model = builder.finalize()
 
-    def test_option_magnetic_parsing(self):
-        """Test parsing of magnetic vector from MJCF option tag."""
-        mjcf = """<?xml version="1.0" ?>
-<mujoco>
-    <option magnetic="0 -1 0.5"/>
-    <worldbody>
-        <body name="body1" pos="0 0 1">
-            <joint type="hinge" axis="0 0 1"/>
-            <geom type="sphere" size="0.1"/>
-        </body>
-    </worldbody>
-</mujoco>
-"""
-        builder = newton.ModelBuilder()
-        builder.add_mjcf(mjcf)
-        model = builder.finalize()
+                self.assertTrue(hasattr(model, "mujoco"))
+                self.assertTrue(hasattr(model.mujoco, option_name))
+                value = getattr(model.mujoco, option_name).numpy()
+                self.assertEqual(len(value), 1)
+                self.assertTrue(np.allclose(value[0], expected))
 
-        self.assertTrue(hasattr(model, "mujoco"))
-        self.assertTrue(hasattr(model.mujoco, "magnetic"))
-        magnetic = model.mujoco.magnetic.numpy()
-        self.assertEqual(len(magnetic), 1)
-        self.assertTrue(np.allclose(magnetic[0], [0, -1, 0.5]))
+    def test_option_numeric_once_parsing(self):
+        """Test parsing of ONCE frequency numeric options from MJCF (3 options)."""
+        test_cases = [
+            ("ccd_iterations", "25", 25),
+            ("sdf_iterations", "20", 20),
+            ("sdf_initpoints", "50", 50),
+        ]
 
-    def test_option_ccd_iterations_parsing(self):
-        """Test parsing of ccd_iterations from MJCF option tag."""
-        mjcf = """<?xml version="1.0" ?>
-<mujoco>
-    <option ccd_iterations="25"/>
-    <worldbody>
-        <body name="body1" pos="0 0 1">
-            <joint type="hinge" axis="0 0 1"/>
-            <geom type="sphere" size="0.1"/>
-        </body>
-    </worldbody>
-</mujoco>
-"""
-        builder = newton.ModelBuilder()
-        builder.add_mjcf(mjcf)
-        model = builder.finalize()
+        for option_name, mjcf_value, expected in test_cases:
+            with self.subTest(option=option_name):
+                mjcf = self._create_mjcf_with_option(option_name, mjcf_value)
+                builder = newton.ModelBuilder()
+                builder.add_mjcf(mjcf)
+                model = builder.finalize()
 
-        self.assertTrue(hasattr(model, "mujoco"))
-        self.assertTrue(hasattr(model.mujoco, "ccd_iterations"))
-        ccd_iterations = model.mujoco.ccd_iterations.numpy()
-        # ONCE frequency: single value, not per-world
-        self.assertEqual(len(ccd_iterations), 1)
-        self.assertEqual(ccd_iterations[0], 25)
+                self.assertTrue(hasattr(model, "mujoco"))
+                self.assertTrue(hasattr(model.mujoco, option_name))
+                value = getattr(model.mujoco, option_name).numpy()
+                # ONCE frequency: single value, not per-world
+                self.assertEqual(len(value), 1)
+                self.assertEqual(value[0], expected)
 
-    def test_option_sdf_iterations_parsing(self):
-        """Test parsing of sdf_iterations from MJCF option tag."""
-        mjcf = """<?xml version="1.0" ?>
-<mujoco>
-    <option sdf_iterations="20"/>
-    <worldbody>
-        <body name="body1" pos="0 0 1">
-            <joint type="hinge" axis="0 0 1"/>
-            <geom type="sphere" size="0.1"/>
-        </body>
-    </worldbody>
-</mujoco>
-"""
-        builder = newton.ModelBuilder()
-        builder.add_mjcf(mjcf)
-        model = builder.finalize()
+    def test_option_enum_once_parsing(self):
+        """Test parsing of ONCE frequency enum options from MJCF (4 options)."""
+        test_cases = [
+            ("integrator", "Euler", 0),
+            ("solver", "Newton", 2),
+            ("cone", "elliptic", 1),
+            ("jacobian", "sparse", 1),
+        ]
 
-        self.assertTrue(hasattr(model, "mujoco"))
-        self.assertTrue(hasattr(model.mujoco, "sdf_iterations"))
-        sdf_iterations = model.mujoco.sdf_iterations.numpy()
-        self.assertEqual(len(sdf_iterations), 1)
-        self.assertEqual(sdf_iterations[0], 20)
+        for option_name, mjcf_value, expected_int in test_cases:
+            with self.subTest(option=option_name):
+                mjcf = self._create_mjcf_with_option(option_name, mjcf_value)
+                builder = newton.ModelBuilder()
+                builder.add_mjcf(mjcf)
+                model = builder.finalize()
 
-    def test_option_sdf_initpoints_parsing(self):
-        """Test parsing of sdf_initpoints from MJCF option tag."""
-        mjcf = """<?xml version="1.0" ?>
-<mujoco>
-    <option sdf_initpoints="50"/>
-    <worldbody>
-        <body name="body1" pos="0 0 1">
-            <joint type="hinge" axis="0 0 1"/>
-            <geom type="sphere" size="0.1"/>
-        </body>
-    </worldbody>
-</mujoco>
-"""
-        builder = newton.ModelBuilder()
-        builder.add_mjcf(mjcf)
-        model = builder.finalize()
-
-        self.assertTrue(hasattr(model, "mujoco"))
-        self.assertTrue(hasattr(model.mujoco, "sdf_initpoints"))
-        sdf_initpoints = model.mujoco.sdf_initpoints.numpy()
-        self.assertEqual(len(sdf_initpoints), 1)
-        self.assertEqual(sdf_initpoints[0], 50)
-
-    def test_option_integrator_parsing(self):
-        """Test parsing of integrator enum from MJCF option tag."""
-        mjcf_euler = """<?xml version="1.0" ?>
-<mujoco>
-    <option integrator="Euler"/>
-    <worldbody>
-        <body name="body1" pos="0 0 1">
-            <joint type="hinge" axis="0 0 1"/>
-            <geom type="sphere" size="0.1"/>
-        </body>
-    </worldbody>
-</mujoco>
-"""
-        builder = newton.ModelBuilder()
-        builder.add_mjcf(mjcf_euler)
-        model = builder.finalize()
-
-        self.assertTrue(hasattr(model, "mujoco"))
-        self.assertTrue(hasattr(model.mujoco, "integrator"))
-        integrator = model.mujoco.integrator.numpy()
-        self.assertEqual(len(integrator), 1)  # ONCE frequency
-        self.assertEqual(integrator[0], 0)  # Euler = 0
-
-    def test_option_solver_parsing(self):
-        """Test parsing of solver enum from MJCF option tag."""
-        mjcf = """<?xml version="1.0" ?>
-<mujoco>
-    <option solver="Newton"/>
-    <worldbody>
-        <body name="body1" pos="0 0 1">
-            <joint type="hinge" axis="0 0 1"/>
-            <geom type="sphere" size="0.1"/>
-        </body>
-    </worldbody>
-</mujoco>
-"""
-        builder = newton.ModelBuilder()
-        builder.add_mjcf(mjcf)
-        model = builder.finalize()
-
-        self.assertTrue(hasattr(model, "mujoco"))
-        self.assertTrue(hasattr(model.mujoco, "solver"))
-        solver = model.mujoco.solver.numpy()
-        self.assertEqual(len(solver), 1)
-        self.assertEqual(solver[0], 2)  # Newton = 2
-
-    def test_option_cone_parsing(self):
-        """Test parsing of cone enum from MJCF option tag."""
-        mjcf = """<?xml version="1.0" ?>
-<mujoco>
-    <option cone="elliptic"/>
-    <worldbody>
-        <body name="body1" pos="0 0 1">
-            <joint type="hinge" axis="0 0 1"/>
-            <geom type="sphere" size="0.1"/>
-        </body>
-    </worldbody>
-</mujoco>
-"""
-        builder = newton.ModelBuilder()
-        builder.add_mjcf(mjcf)
-        model = builder.finalize()
-
-        self.assertTrue(hasattr(model, "mujoco"))
-        self.assertTrue(hasattr(model.mujoco, "cone"))
-        cone = model.mujoco.cone.numpy()
-        self.assertEqual(len(cone), 1)
-        self.assertEqual(cone[0], 1)  # elliptic = 1
-
-    def test_option_jacobian_parsing(self):
-        """Test parsing of jacobian enum from MJCF option tag."""
-        mjcf = """<?xml version="1.0" ?>
-<mujoco>
-    <option jacobian="sparse"/>
-    <worldbody>
-        <body name="body1" pos="0 0 1">
-            <joint type="hinge" axis="0 0 1"/>
-            <geom type="sphere" size="0.1"/>
-        </body>
-    </worldbody>
-</mujoco>
-"""
-        builder = newton.ModelBuilder()
-        builder.add_mjcf(mjcf)
-        model = builder.finalize()
-
-        self.assertTrue(hasattr(model, "mujoco"))
-        self.assertTrue(hasattr(model.mujoco, "jacobian"))
-        jacobian = model.mujoco.jacobian.numpy()
-        self.assertEqual(len(jacobian), 1)
-        self.assertEqual(jacobian[0], 1)  # sparse = 1
+                self.assertTrue(hasattr(model, "mujoco"))
+                self.assertTrue(hasattr(model.mujoco, option_name))
+                value = getattr(model.mujoco, option_name).numpy()
+                self.assertEqual(len(value), 1)  # ONCE frequency
+                self.assertEqual(value[0], expected_int)
 
     def test_geom_solmix_parsing(self):
         """Test that geom_solmix attribute is parsed correctly from MJCF."""

@@ -4787,15 +4787,8 @@ class TestMuJoCoAttributes(unittest.TestCase):
 class TestMuJoCoOptions(unittest.TestCase):
     """Tests for MuJoCo solver options (impratio, etc.) with WORLD frequency."""
 
-    def test_impratio_multiworld_conversion(self):
-        """
-        Verify that impratio custom attribute with WORLD frequency:
-        1. Is properly registered and exists on the model.
-        2. The array has correct shape (one value per world).
-        3. Different per-world values are stored correctly in the Newton model.
-        4. Solver expands per-world values to MuJoCo Warp.
-        """
-        # Create template builder
+    def _create_multiworld_model(self, num_worlds=3):
+        """Helper to create a multi-world model with MuJoCo custom attributes registered."""
         template_builder = newton.ModelBuilder()
         SolverMuJoCo.register_custom_attributes(template_builder)
 
@@ -4804,11 +4797,20 @@ class TestMuJoCoOptions(unittest.TestCase):
         joint = template_builder.add_joint_revolute(parent=-1, child=pendulum, axis=(0.0, 0.0, 1.0))
         template_builder.add_articulation([joint])
 
-        # Create multi-world model
-        num_worlds = 3
         builder = newton.ModelBuilder()
         builder.replicate(template_builder, num_worlds)
-        model = builder.finalize()
+        return builder.finalize()
+
+    def test_impratio_multiworld_conversion(self):
+        """
+        Verify that impratio custom attribute with WORLD frequency:
+        1. Is properly registered and exists on the model.
+        2. The array has correct shape (one value per world).
+        3. Different per-world values are stored correctly in the Newton model.
+        4. Solver expands per-world values to MuJoCo Warp.
+        """
+        num_worlds = 3
+        model = self._create_multiworld_model(num_worlds)
 
         # Verify the custom attribute is registered and exists on the model
         self.assertTrue(hasattr(model, "mujoco"))
@@ -4858,24 +4860,8 @@ class TestMuJoCoOptions(unittest.TestCase):
         Verify that passing impratio to the SolverMuJoCo constructor
         overrides any per-world values from custom attributes.
         """
-        # Create template builder
-        template_builder = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(template_builder)
-
-        pendulum = template_builder.add_link(mass=1.0, com=wp.vec3(0.0, 0.0, 0.0), I_m=wp.mat33(np.eye(3)))
-        template_builder.add_shape_box(body=pendulum, hx=0.05, hy=0.05, hz=0.05)
-        joint = template_builder.add_joint_revolute(parent=-1, child=pendulum, axis=(0.0, 0.0, 1.0))
-        template_builder.add_articulation([joint])
-
-        # Create multi-world model
         num_worlds = 2
-        builder = newton.ModelBuilder()
-        builder.replicate(template_builder, num_worlds)
-        model = builder.finalize()
-
-        # Verify the custom attribute exists
-        self.assertTrue(hasattr(model, "mujoco"))
-        self.assertTrue(hasattr(model.mujoco, "impratio"))
+        model = self._create_multiworld_model(num_worlds)
 
         # Set impratio values per world
         initial_impratio = np.array([1.5, 1.5], dtype=np.float32)
@@ -4923,24 +4909,8 @@ class TestMuJoCoOptions(unittest.TestCase):
         3. Different per-world values are stored correctly in the Newton model.
         4. Solver expands per-world values to MuJoCo Warp.
         """
-        # Create template builder
-        template_builder = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(template_builder)
-
-        pendulum = template_builder.add_link(mass=1.0, com=wp.vec3(0.0, 0.0, 0.0), I_m=wp.mat33(np.eye(3)))
-        template_builder.add_shape_box(body=pendulum, hx=0.05, hy=0.05, hz=0.05)
-        joint = template_builder.add_joint_revolute(parent=-1, child=pendulum, axis=(0.0, 0.0, 1.0))
-        template_builder.add_articulation([joint])
-
-        # Create multi-world model
         num_worlds = 3
-        builder = newton.ModelBuilder()
-        builder.replicate(template_builder, num_worlds)
-        model = builder.finalize()
-
-        # Verify the custom attribute is registered and exists on the model
-        self.assertTrue(hasattr(model, "mujoco"))
-        self.assertTrue(hasattr(model.mujoco, "tolerance"))
+        model = self._create_multiworld_model(num_worlds)
 
         # Verify the array has correct shape (one value per world)
         tolerance = model.mujoco.tolerance.numpy()
@@ -4985,20 +4955,8 @@ class TestMuJoCoOptions(unittest.TestCase):
         Verify that passing scalar options (tolerance, ls_tolerance, ccd_tolerance, density, viscosity)
         to the SolverMuJoCo constructor overrides any per-world values from custom attributes.
         """
-        # Create template builder
-        template_builder = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(template_builder)
-
-        pendulum = template_builder.add_link(mass=1.0, com=wp.vec3(0.0, 0.0, 0.0), I_m=wp.mat33(np.eye(3)))
-        template_builder.add_shape_box(body=pendulum, hx=0.05, hy=0.05, hz=0.05)
-        joint = template_builder.add_joint_revolute(parent=-1, child=pendulum, axis=(0.0, 0.0, 1.0))
-        template_builder.add_articulation([joint])
-
-        # Create multi-world model
         num_worlds = 2
-        builder = newton.ModelBuilder()
-        builder.replicate(template_builder, num_worlds)
-        model = builder.finalize()
+        model = self._create_multiworld_model(num_worlds)
 
         # Set custom attribute values per world
         model.mujoco.tolerance.assign(np.array([1e-6, 1e-7], dtype=np.float32))
@@ -5058,25 +5016,8 @@ class TestMuJoCoOptions(unittest.TestCase):
         3. Different per-world vector values are stored correctly.
         4. Solver expands per-world vectors to MuJoCo Warp.
         """
-        # Create template builder
-        template_builder = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(template_builder)
-
-        pendulum = template_builder.add_link(mass=1.0, com=wp.vec3(0.0, 0.0, 0.0), I_m=wp.mat33(np.eye(3)))
-        template_builder.add_shape_box(body=pendulum, hx=0.05, hy=0.05, hz=0.05)
-        joint = template_builder.add_joint_revolute(parent=-1, child=pendulum, axis=(0.0, 0.0, 1.0))
-        template_builder.add_articulation([joint])
-
-        # Create multi-world model
         num_worlds = 3
-        builder = newton.ModelBuilder()
-        builder.replicate(template_builder, num_worlds)
-        model = builder.finalize()
-
-        # Verify custom attributes exist
-        self.assertTrue(hasattr(model, "mujoco"))
-        self.assertTrue(hasattr(model.mujoco, "wind"))
-        self.assertTrue(hasattr(model.mujoco, "magnetic"))
+        model = self._create_multiworld_model(num_worlds)
 
         # Verify arrays have correct shape
         wind = model.mujoco.wind.numpy()
@@ -5128,26 +5069,8 @@ class TestMuJoCoOptions(unittest.TestCase):
         Verify that ONCE frequency numeric options (ccd_iterations, sdf_iterations, sdf_initpoints)
         are shared across all worlds (not per-world arrays).
         """
-        # Create template builder
-        template_builder = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(template_builder)
-
-        pendulum = template_builder.add_link(mass=1.0, com=wp.vec3(0.0, 0.0, 0.0), I_m=wp.mat33(np.eye(3)))
-        template_builder.add_shape_box(body=pendulum, hx=0.05, hy=0.05, hz=0.05)
-        joint = template_builder.add_joint_revolute(parent=-1, child=pendulum, axis=(0.0, 0.0, 1.0))
-        template_builder.add_articulation([joint])
-
-        # Create multi-world model
         num_worlds = 3
-        builder = newton.ModelBuilder()
-        builder.replicate(template_builder, num_worlds)
-        model = builder.finalize()
-
-        # Verify custom attributes exist
-        self.assertTrue(hasattr(model, "mujoco"))
-        self.assertTrue(hasattr(model.mujoco, "ccd_iterations"))
-        self.assertTrue(hasattr(model.mujoco, "sdf_iterations"))
-        self.assertTrue(hasattr(model.mujoco, "sdf_initpoints"))
+        model = self._create_multiworld_model(num_worlds)
 
         # ONCE frequency: single value, not per-world array
         ccd_iterations = model.mujoco.ccd_iterations.numpy()
@@ -5175,18 +5098,7 @@ class TestMuJoCoOptions(unittest.TestCase):
         Verify that constructor parameters override custom attribute values
         for ONCE frequency numeric options.
         """
-        # Create template builder
-        template_builder = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(template_builder)
-
-        pendulum = template_builder.add_link(mass=1.0, com=wp.vec3(0.0, 0.0, 0.0), I_m=wp.mat33(np.eye(3)))
-        template_builder.add_shape_box(body=pendulum, hx=0.05, hy=0.05, hz=0.05)
-        joint = template_builder.add_joint_revolute(parent=-1, child=pendulum, axis=(0.0, 0.0, 1.0))
-        template_builder.add_articulation([joint])
-
-        builder = newton.ModelBuilder()
-        builder.replicate(template_builder, 2)
-        model = builder.finalize()
+        model = self._create_multiworld_model(num_worlds=2)
 
         # Set custom attribute values
         model.mujoco.ccd_iterations.assign(np.array([25], dtype=np.int32))
@@ -5212,18 +5124,7 @@ class TestMuJoCoOptions(unittest.TestCase):
         """
         Verify that jacobian option is read from custom attribute when not provided to constructor.
         """
-        # Create template builder
-        template_builder = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(template_builder)
-
-        pendulum = template_builder.add_link(mass=1.0, com=wp.vec3(0.0, 0.0, 0.0), I_m=wp.mat33(np.eye(3)))
-        template_builder.add_shape_box(body=pendulum, hx=0.05, hy=0.05, hz=0.05)
-        joint = template_builder.add_joint_revolute(parent=-1, child=pendulum, axis=(0.0, 0.0, 1.0))
-        template_builder.add_articulation([joint])
-
-        builder = newton.ModelBuilder()
-        builder.replicate(template_builder, 2)
-        model = builder.finalize()
+        model = self._create_multiworld_model(num_worlds=2)
 
         # Set jacobian to sparse (1)
         model.mujoco.jacobian.assign(np.array([1], dtype=np.int32))
@@ -5240,18 +5141,7 @@ class TestMuJoCoOptions(unittest.TestCase):
         """
         Verify that jacobian constructor parameter overrides custom attribute value.
         """
-        # Create template builder
-        template_builder = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(template_builder)
-
-        pendulum = template_builder.add_link(mass=1.0, com=wp.vec3(0.0, 0.0, 0.0), I_m=wp.mat33(np.eye(3)))
-        template_builder.add_shape_box(body=pendulum, hx=0.05, hy=0.05, hz=0.05)
-        joint = template_builder.add_joint_revolute(parent=-1, child=pendulum, axis=(0.0, 0.0, 1.0))
-        template_builder.add_articulation([joint])
-
-        builder = newton.ModelBuilder()
-        builder.replicate(template_builder, 2)
-        model = builder.finalize()
+        model = self._create_multiworld_model(num_worlds=2)
 
         # Set jacobian custom attribute to sparse (1)
         model.mujoco.jacobian.assign(np.array([1], dtype=np.int32))
@@ -5276,18 +5166,7 @@ class TestMuJoCoOptions(unittest.TestCase):
         """
         import mujoco  # noqa: PLC0415
 
-        # Create model with custom attributes set to non-default values
-        template_builder = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(template_builder)
-
-        pendulum = template_builder.add_link(mass=1.0, com=wp.vec3(0.0, 0.0, 0.0), I_m=wp.mat33(np.eye(3)))
-        template_builder.add_shape_box(body=pendulum, hx=0.05, hy=0.05, hz=0.05)
-        joint = template_builder.add_joint_revolute(parent=-1, child=pendulum, axis=(0.0, 0.0, 1.0))
-        template_builder.add_articulation([joint])
-
-        builder = newton.ModelBuilder()
-        builder.replicate(template_builder, 2)
-        model = builder.finalize()
+        model = self._create_multiworld_model(num_worlds=2)
 
         # Set custom attributes to non-default values
         # Newton defaults: solver=2 (Newton), integrator=3 (implicitfast), cone=0 (pyramidal), jacobian=2 (auto)
