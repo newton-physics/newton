@@ -1092,8 +1092,6 @@ class TestMenagerie_UniversalRobotsUr5e(TestMenagerieBase):
         "actuator_cranklength",
         "actuator_acc0",
         "actuator_lengthrange",
-        "body_geomadr",  # fails for some reason, not sure why
-        "body_geomnum",  # what the hell
         "body_inertia",  # also failing
         "body_invweight0",  # also failing
         "body_ipos",  # potentially connected to the 2 above
