@@ -2530,6 +2530,35 @@ class TestImportMjcf(unittest.TestCase):
                 self.assertEqual(len(value), 1)  # ONCE frequency
                 self.assertEqual(value[0], expected_int)
 
+    def test_option_tag_pair_syntax(self):
+        """Test that options work with tag-pair syntax in addition to self-closing tags."""
+        # Test with tag-pair syntax: <option></option>
+        mjcf = """<?xml version="1.0" ?>
+<mujoco>
+    <option impratio="2.5" tolerance="1e-7" integrator="RK4"></option>
+    <worldbody>
+        <body name="body1" pos="0 0 1">
+            <joint type="hinge" axis="0 0 1"/>
+            <geom type="sphere" size="0.1"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf)
+        model = builder.finalize()
+
+        self.assertTrue(hasattr(model, "mujoco"))
+        self.assertTrue(hasattr(model.mujoco, "impratio"))
+        self.assertTrue(hasattr(model.mujoco, "tolerance"))
+        self.assertTrue(hasattr(model.mujoco, "integrator"))
+
+        # Verify values are parsed correctly
+        self.assertAlmostEqual(model.mujoco.impratio.numpy()[0], 2.5, places=4)
+        self.assertAlmostEqual(model.mujoco.tolerance.numpy()[0], 1e-7, places=10)
+        self.assertEqual(model.mujoco.integrator.numpy()[0], 1)  # RK4
+
     def test_geom_solmix_parsing(self):
         """Test that geom_solmix attribute is parsed correctly from MJCF."""
         mjcf = """<?xml version="1.0" ?>
