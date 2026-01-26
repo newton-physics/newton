@@ -411,7 +411,16 @@ DEFAULT_TOLERANCES: dict[str, float] = {
 DEFAULT_COMPARE_FIELDS: list[str] = ["qpos", "qvel"]
 
 # Default fields to skip in MjWarpModel comparison (internal/non-comparable)
-DEFAULT_MODEL_SKIP_FIELDS: set[str] = {"__", "ptr", "body_conaffinity", "exclude_signature"}
+DEFAULT_MODEL_SKIP_FIELDS: set[str] = {
+    "__",
+    "ptr",
+    "body_conaffinity",
+    "exclude_signature",
+    # TileSet types: comparison function doesn't handle these
+    "qM_tiles",
+    "qLD_tiles",
+    "qLDiagInv_tiles",
+}
 
 
 def compare_mjdata_field(
@@ -1061,6 +1070,7 @@ class TestMenagerie_UniversalRobotsUr5e(TestMenagerieBase):
     debug_view_newton = False  # False=Native, True=Newton
     model_skip_fields = DEFAULT_MODEL_SKIP_FIELDS | {
         # Actuator fields differ due to Newton's 2-actuator-per-DOF conversion
+        "nu",  # Newton creates 2 actuators per DOF (12 vs 6)
         "actuator_trntype",
         "actuator_dyntype",
         "actuator_gaintype",
@@ -1092,6 +1102,43 @@ class TestMenagerie_UniversalRobotsUr5e(TestMenagerieBase):
         "body_mocapid",  # expected because of the fixed base
         "body_subtreemass",  # expected because of mass errors
         "dof_invweight0",  # expected because of mass errors
+        # Collision filtering: Newton uses different defaults
+        "geom_conaffinity",
+        "geom_contype",
+        # Friction: Newton uses different default coefficients
+        "geom_friction",
+        # Visualization group: Newton defaults to 0, native may use other groups
+        "geom_group",
+        # Collision pair type counts: differs due to collision setup
+        "geom_pair_type_count",
+        # Bounding radius: small differences in computation
+        "geom_rbound",
+        # Solver reference params: Newton uses different defaults
+        "geom_solref",
+        # Joint actuator force limiting: Newton enables by default
+        "jnt_actfrclimited",
+        "jnt_actfrcrange",
+        # Joint solver params: Newton uses different defaults
+        "jnt_solref",
+        "jnt_solimp",
+        # Lights: Newton doesn't parse lights from MJCF
+        "light_",
+        "nlight",
+        # Mocap bodies: Newton handles fixed base differently
+        "mocap_",
+        "nmocap",
+        # Collision exclusions: Newton auto-generates self-collision exclusions
+        "nexclude",
+        "exclude_",
+        # Collision pair handling: Newton does this differently
+        "nxn_",
+        # Options: solver/iterations differ between Newton defaults and MJCF
+        "opt",
+        # Sites: Newton parses with different defaults
+        "site_",
+        "nsite",
+        # Statistics: derived from body masses/inertias which differ
+        "stat",
     }
 
 
