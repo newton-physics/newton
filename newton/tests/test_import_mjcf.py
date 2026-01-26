@@ -2611,6 +2611,52 @@ class TestImportMjcf(unittest.TestCase):
         self.assertAlmostEqual(ls_tolerance[0], 0.001, places=6, msg="World 0 should have ls_tolerance=0.001")
         self.assertAlmostEqual(ls_tolerance[1], 0.002, places=6, msg="World 1 should have ls_tolerance=0.002")
 
+    def test_option_wind_parsing(self):
+        """Test parsing of wind vector from MJCF option tag."""
+        mjcf = """<?xml version="1.0" ?>
+<mujoco>
+    <option wind="1 0.5 -0.5"/>
+    <worldbody>
+        <body name="body1" pos="0 0 1">
+            <joint type="hinge" axis="0 0 1"/>
+            <geom type="sphere" size="0.1"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf)
+        model = builder.finalize()
+
+        self.assertTrue(hasattr(model, "mujoco"))
+        self.assertTrue(hasattr(model.mujoco, "wind"))
+        wind = model.mujoco.wind.numpy()
+        self.assertEqual(len(wind), 1)
+        self.assertTrue(np.allclose(wind[0], [1, 0.5, -0.5]))
+
+    def test_option_magnetic_parsing(self):
+        """Test parsing of magnetic vector from MJCF option tag."""
+        mjcf = """<?xml version="1.0" ?>
+<mujoco>
+    <option magnetic="0 -1 0.5"/>
+    <worldbody>
+        <body name="body1" pos="0 0 1">
+            <joint type="hinge" axis="0 0 1"/>
+            <geom type="sphere" size="0.1"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf)
+        model = builder.finalize()
+
+        self.assertTrue(hasattr(model, "mujoco"))
+        self.assertTrue(hasattr(model.mujoco, "magnetic"))
+        magnetic = model.mujoco.magnetic.numpy()
+        self.assertEqual(len(magnetic), 1)
+        self.assertTrue(np.allclose(magnetic[0], [0, -1, 0.5]))
+
     def test_geom_solmix_parsing(self):
         """Test that geom_solmix attribute is parsed correctly from MJCF."""
         mjcf = """<?xml version="1.0" ?>

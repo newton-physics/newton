@@ -5050,6 +5050,79 @@ class TestMuJoCoOptions(unittest.TestCase):
                 mjw_viscosity[world_idx], 0.0, places=10, msg=f"viscosity[{world_idx}] should be 0.0"
             )
 
+    def test_vector_options_multiworld_conversion(self):
+        """
+        Verify that vector options (wind, magnetic) with WORLD frequency:
+        1. Are properly registered and exist on the model.
+        2. Arrays have correct shape (one vec3 per world).
+        3. Different per-world vector values are stored correctly.
+        4. Solver expands per-world vectors to MuJoCo Warp.
+        """
+        # Create template builder
+        template_builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(template_builder)
+
+        pendulum = template_builder.add_link(mass=1.0, com=wp.vec3(0.0, 0.0, 0.0), I_m=wp.mat33(np.eye(3)))
+        template_builder.add_shape_box(body=pendulum, hx=0.05, hy=0.05, hz=0.05)
+        joint = template_builder.add_joint_revolute(parent=-1, child=pendulum, axis=(0.0, 0.0, 1.0))
+        template_builder.add_articulation([joint])
+
+        # Create multi-world model
+        num_worlds = 3
+        builder = newton.ModelBuilder()
+        builder.replicate(template_builder, num_worlds)
+        model = builder.finalize()
+
+        # Verify custom attributes exist
+        self.assertTrue(hasattr(model, "mujoco"))
+        self.assertTrue(hasattr(model.mujoco, "wind"))
+        self.assertTrue(hasattr(model.mujoco, "magnetic"))
+
+        # Verify arrays have correct shape
+        wind = model.mujoco.wind.numpy()
+        magnetic = model.mujoco.magnetic.numpy()
+        self.assertEqual(len(wind), num_worlds, "wind array should have one entry per world")
+        self.assertEqual(len(magnetic), num_worlds, "magnetic array should have one entry per world")
+
+        # Set different vector values per world
+        initial_wind = np.array([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]], dtype=np.float32)
+        initial_magnetic = np.array([[0.0, -0.5, 0.0], [0.0, -1.0, 0.0], [0.5, 0.0, 0.0]], dtype=np.float32)
+        model.mujoco.wind.assign(initial_wind)
+        model.mujoco.magnetic.assign(initial_magnetic)
+
+        # Verify values stored correctly
+        updated_wind = model.mujoco.wind.numpy()
+        updated_magnetic = model.mujoco.magnetic.numpy()
+        for world_idx in range(num_worlds):
+            self.assertTrue(
+                np.allclose(updated_wind[world_idx], initial_wind[world_idx]),
+                msg=f"Newton model wind[{world_idx}] should be {initial_wind[world_idx]}",
+            )
+            self.assertTrue(
+                np.allclose(updated_magnetic[world_idx], initial_magnetic[world_idx]),
+                msg=f"Newton model magnetic[{world_idx}] should be {initial_magnetic[world_idx]}",
+            )
+
+        # Create solver without constructor override
+        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
+
+        # Verify MuJoCo Warp has per-world vector values
+        mjw_wind = solver.mjw_model.opt.wind.numpy()
+        mjw_magnetic = solver.mjw_model.opt.magnetic.numpy()
+        self.assertEqual(len(mjw_wind), num_worlds, f"MuJoCo Warp opt.wind should have {num_worlds} values")
+        self.assertEqual(len(mjw_magnetic), num_worlds, f"MuJoCo Warp opt.magnetic should have {num_worlds} values")
+
+        # Verify each world has correct values
+        for world_idx in range(num_worlds):
+            self.assertTrue(
+                np.allclose(mjw_wind[world_idx], initial_wind[world_idx]),
+                msg=f"MuJoCo Warp wind[{world_idx}] should be {initial_wind[world_idx]}",
+            )
+            self.assertTrue(
+                np.allclose(mjw_magnetic[world_idx], initial_magnetic[world_idx]),
+                msg=f"MuJoCo Warp magnetic[{world_idx}] should be {initial_magnetic[world_idx]}",
+            )
+
 
 class TestMuJoCoArticulationConversion(unittest.TestCase):
     def test_loop_joints_only(self):
