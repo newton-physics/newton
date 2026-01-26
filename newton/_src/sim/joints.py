@@ -81,6 +81,32 @@ def get_joint_dof_count(joint_type: int, num_axes: int) -> tuple[int, int]:
     return dof_count, coord_count
 
 
+def get_joint_constraint_count(joint_type: int, num_axes: int) -> int:
+    """
+    Returns the number of velocity-level bilateral kinematic constraints for a given joint type.
+
+    Args:
+        joint_type (int): The type of the joint (see :class:`JointType`).
+        num_axes (int): The number of DoF axes for the joint.
+
+    Returns:
+        int: The number of bilateral kinematic constraints for the joint.
+
+    Notes:
+        - For PRISMATIC and REVOLUTE joints, this equals 5 (single DoF axis).
+        - For FREE and DISTANCE joints, `cts_count = 0` since it yields no constraints.
+        - For FIXED joints, `cts_count = 6` since it fully constrains the associated bodies.
+    """
+    cts_count = 6 - num_axes
+    if joint_type == JointType.BALL:
+        cts_count = 3
+    elif joint_type == JointType.FREE or joint_type == JointType.DISTANCE:
+        cts_count = 0
+    elif joint_type == JointType.FIXED:
+        cts_count = 6
+    return cts_count
+
+
 # (temporary) equality constraint types
 class EqType(IntEnum):
     """
@@ -135,5 +161,6 @@ __all__ = [
     "ActuatorMode",
     "EqType",
     "JointType",
+    "get_joint_constraint_count",
     "get_joint_dof_count",
 ]

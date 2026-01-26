@@ -71,6 +71,7 @@ from ._src.sim import (  # noqa: E402
     count_rigid_contact_points,
     eval_fk,
     eval_ik,
+    get_joint_constraint_count,
     get_joint_dof_count,
 )
 
@@ -91,6 +92,7 @@ __all__ += [
     "count_rigid_contact_points",
     "eval_fk",
     "eval_ik",
+    "get_joint_constraint_count",
     "get_joint_dof_count",
 ]
 

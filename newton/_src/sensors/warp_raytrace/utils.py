@@ -245,11 +245,14 @@ class Utils:
         image: wp.array(dtype=wp.float32, ndim=3),
         out_buffer: wp.array(dtype=wp.uint8, ndim=3) | None = None,
         num_worlds_per_row: int | None = None,
+        depth_range: wp.array(dtype=wp.float32) | None = None,
     ):
         out_buffer, num_worlds_per_row = self.__reshape_buffer_for_flatten(out_buffer, num_worlds_per_row)
 
-        depth_range = wp.array([100000000.0, 0.0], dtype=wp.float32)
-        wp.launch(find_depth_range, image.shape, [image, depth_range])
+        if depth_range is None:
+            depth_range = wp.array([MAXVAL, 0.0], dtype=wp.float32)
+            wp.launch(find_depth_range, image.shape, [image, depth_range])
+
         wp.launch(
             flatten_depth_image,
             (
@@ -285,7 +288,7 @@ class Utils:
         self.__render_context.shape_colors = wp.array(colors, dtype=wp.vec4f)
 
     def create_default_light(self, enable_shadows: bool = True, direction: wp.vec3f | None = None):
-        self.__render_context.enable_shadows = enable_shadows
+        self.__render_context.options.enable_shadows = enable_shadows
         self.__render_context.lights_active = wp.array([True], dtype=wp.bool)
         self.__render_context.lights_type = wp.array([RenderLightType.DIRECTIONAL], dtype=wp.int32)
         self.__render_context.lights_cast_shadow = wp.array([True], dtype=wp.bool)
@@ -300,7 +303,7 @@ class Utils:
         ) % 2 == 0
         pixels = np.where(checkerboard, 0xFF808080, 0xFFBFBFBF).astype(np.uint32).flatten()
 
-        self.__render_context.enable_textures = True
+        self.__render_context.options.enable_textures = True
         self.__render_context.texture_data = wp.array(pixels, dtype=wp.uint32)
         self.__render_context.texture_offsets = wp.array([0], dtype=wp.int32)
         self.__render_context.texture_width = wp.array([resolution], dtype=wp.int32)

@@ -34,6 +34,7 @@ from ..sim.joints import ActuatorMode
 from ..sim.model import ModelAttributeFrequency
 from ..usd import utils as usd
 from ..usd.schema_resolver import PrimType, SchemaResolver, SchemaResolverManager
+from ..usd.schemas import SchemaResolverNewton
 from .import_utils import infer_actuator_mode
 
 
@@ -88,8 +89,8 @@ def parse_usd(
         load_sites (bool): If True, sites (prims with MjcSiteAPI) are loaded as non-colliding reference points. If False, sites are ignored. Default is True.
         load_visual_shapes (bool): If True, non-physics visual geometry is loaded. If False, visual-only shapes are ignored (sites are still controlled by ``load_sites``). Default is True.
         hide_collision_shapes (bool): If True, collision shapes are hidden. Default is False.
-        mesh_maxhullvert (int): Maximum vertices for convex hull approximation of meshes.
-        schema_resolvers (list[SchemaResolver]): Resolver instances in priority order. Default is no schema resolution.
+        mesh_maxhullvert (int): Maximum vertices for convex hull approximation of meshes. Note that an authored ``newton:maxHullVertices`` attribute on any shape with a ``NewtonMeshCollisionAPI`` will take priority over this value.
+        schema_resolvers (list[SchemaResolver]): Resolver instances in priority order. Default is to only parse Newton-specific attributes.
             Schema resolvers collect per-prim "solver-specific" attributes, see :ref:`schema_resolvers` for more information.
             These include namespaced attributes such as ``newton:*``, ``physx*``
             (e.g., ``physxScene:*``, ``physxRigidBody:*``, ``physxSDFMeshCollision:*``), and ``mjc:*`` that
@@ -144,7 +145,7 @@ def parse_usd(
               - Mapping from prim path to original body index before ``collapse_fixed_joints``
     """
     if schema_resolvers is None:
-        schema_resolvers = []
+        schema_resolvers = [SchemaResolverNewton()]
     collect_schema_attrs = len(schema_resolvers) > 0
 
     try:
@@ -158,6 +159,8 @@ def parse_usd(
     class PhysicsMaterial:
         staticFriction: float = builder.default_shape_cfg.mu
         dynamicFriction: float = builder.default_shape_cfg.mu
+        torsionalFriction: float = builder.default_shape_cfg.torsional_friction
+        rollingFriction: float = builder.default_shape_cfg.rolling_friction
         restitution: float = builder.default_shape_cfg.restitution
         density: float = builder.default_shape_cfg.density
 
@@ -961,20 +964,17 @@ def parse_usd(
         joint_drive_gains_scaling = usd.get_float(
             physics_scene_prim, "newton:joint_drive_gains_scaling", joint_drive_gains_scaling
         )
-        # Resolve scene time step, gravity settings, and contact margin
-        physics_dt = R.get_value(
-            physics_scene_prim, prim_type=PrimType.SCENE, key="time_step", default=None, verbose=verbose
+
+        time_steps_per_second = R.get_value(
+            physics_scene_prim, prim_type=PrimType.SCENE, key="time_steps_per_second", default=1000, verbose=verbose
         )
+        physics_dt = (1.0 / time_steps_per_second) if time_steps_per_second > 0 else 0.001
+
         gravity_enabled = R.get_value(
-            physics_scene_prim, prim_type=PrimType.SCENE, key="enable_gravity", default=True, verbose=verbose
+            physics_scene_prim, prim_type=PrimType.SCENE, key="gravity_enabled", default=True, verbose=verbose
         )
         if not gravity_enabled:
             builder.gravity = 0.0
-        contact_margin = R.get_value(
-            physics_scene_prim, prim_type=PrimType.SCENE, key="rigid_contact_margin", default=None, verbose=verbose
-        )
-        if contact_margin is not None:
-            builder.rigid_contact_margin = contact_margin
         max_solver_iters = R.get_value(
             physics_scene_prim, prim_type=PrimType.SCENE, key="max_solver_iterations", default=None, verbose=verbose
         )
@@ -1062,10 +1062,25 @@ def parse_usd(
     for sdf_path, desc in data_for_key(ret_dict, UsdPhysics.ObjectType.RigidBodyMaterial):
         if warn_invalid_desc(sdf_path, desc):
             continue
+        prim = stage.GetPrimAtPath(sdf_path)
         material_specs[str(sdf_path)] = PhysicsMaterial(
             staticFriction=desc.staticFriction,
             dynamicFriction=desc.dynamicFriction,
             restitution=desc.restitution,
+            torsionalFriction=R.get_value(
+                prim,
+                prim_type=PrimType.MATERIAL,
+                key="torsional_friction",
+                default=builder.default_shape_cfg.torsional_friction,
+                verbose=verbose,
+            ),
+            rollingFriction=R.get_value(
+                prim,
+                prim_type=PrimType.MATERIAL,
+                key="rolling_friction",
+                default=builder.default_shape_cfg.rolling_friction,
+                verbose=verbose,
+            ),
             # TODO: if desc.density is 0, then we should look for mass somewhere
             density=desc.density if desc.density > 0.0 else default_shape_density,
         )
@@ -1097,23 +1112,24 @@ def parse_usd(
                     body_density[body_path] = density
             # <--- Marking for deprecation
 
+    # Collect joint descriptions regardless of whether articulations are authored.
+    for key, value in ret_dict.items():
+        if key in {
+            UsdPhysics.ObjectType.FixedJoint,
+            UsdPhysics.ObjectType.RevoluteJoint,
+            UsdPhysics.ObjectType.PrismaticJoint,
+            UsdPhysics.ObjectType.SphericalJoint,
+            UsdPhysics.ObjectType.D6Joint,
+            UsdPhysics.ObjectType.DistanceJoint,
+        }:
+            paths, joint_specs = value
+            for path, joint_spec in zip(paths, joint_specs, strict=False):
+                joint_descriptions[str(path)] = joint_spec
+
     # maps from articulation_id to bool indicating if self-collisions are enabled
     articulation_has_self_collision = {}
 
     if UsdPhysics.ObjectType.Articulation in ret_dict:
-        for key, value in ret_dict.items():
-            if key in {
-                UsdPhysics.ObjectType.FixedJoint,
-                UsdPhysics.ObjectType.RevoluteJoint,
-                UsdPhysics.ObjectType.PrismaticJoint,
-                UsdPhysics.ObjectType.SphericalJoint,
-                UsdPhysics.ObjectType.D6Joint,
-                UsdPhysics.ObjectType.DistanceJoint,
-            }:
-                paths, joint_specs = value
-                for path, joint_spec in zip(paths, joint_specs, strict=False):
-                    joint_descriptions[str(path)] = joint_spec
-
         paths, articulation_descs = ret_dict[UsdPhysics.ObjectType.Articulation]
 
         articulation_id = builder.articulation_count
@@ -1354,6 +1370,16 @@ def parse_usd(
                 default=enable_self_collisions,
             )
             articulation_id += 1
+    no_articulations = UsdPhysics.ObjectType.Articulation not in ret_dict
+    has_joints = any(
+        (
+            not (only_load_enabled_joints and not joint_desc.jointEnabled)
+            and not any(re.match(p, joint_key) for p in ignore_paths)
+            and str(joint_desc.body0) not in ignored_body_paths
+            and str(joint_desc.body1) not in ignored_body_paths
+        )
+        for joint_key, joint_desc in joint_descriptions.items()
+    )
 
     # insert remaining bodies that were not part of any articulation so far
     for path, rigid_body_desc in body_specs.items():
@@ -1364,9 +1390,23 @@ def parse_usd(
             incoming_xform=incoming_world_xform,
             add_body_to_builder=True,
         )
-        # add articulation and free joint for this body
-        joint_id = builder.add_joint_free(child=body_id)
-        builder.add_articulation([joint_id], key=key)
+        if not (no_articulations and has_joints):
+            # add articulation and free joint for this body
+            joint_id = builder.add_joint_free(child=body_id)
+            builder.add_articulation([joint_id], key=key)
+
+    if no_articulations and has_joints:
+        # parse external joints that are not part of any articulation
+        for joint_key, joint_desc in joint_descriptions.items():
+            if any(re.match(p, joint_key) for p in ignore_paths):
+                continue
+            if str(joint_desc.body0) in ignored_body_paths or str(joint_desc.body1) in ignored_body_paths:
+                continue
+            try:
+                parse_joint(joint_desc, incoming_xform=incoming_world_xform)
+            except ValueError as exc:
+                if verbose:
+                    print(f"Skipping joint {joint_key}: {exc}")
 
     # parse shapes attached to the rigid bodies
     path_collision_filters = set()
@@ -1415,7 +1455,7 @@ def parse_usd(
                     material = material_specs[str(shape_spec.materials[0])]
                     if verbose:
                         print(
-                            f"\tMaterial of '{path}':\tfriction: {material.dynamicFriction},\trestitution: {material.restitution},\tdensity: {material.density}"
+                            f"\tMaterial of '{path}':\tfriction: {material.dynamicFriction},\ttorsional friction: {material.torsionalFriction},\trolling friction: {material.rollingFriction},\trestitution: {material.restitution},\tdensity: {material.density}"
                         )
                 elif verbose:
                     print(f"No material found for shape at '{path}'.")
@@ -1427,6 +1467,12 @@ def parse_usd(
                     shape_xform = local_xform
                 # Extract custom attributes for this shape
                 shape_custom_attrs = usd.get_custom_attribute_values(prim, builder_custom_attr_shape)
+                if collect_schema_attrs:
+                    R.collect_prim_attrs(prim)
+
+                contact_margin = R.get_value(prim, prim_type=PrimType.SHAPE, key="contact_margin", verbose=verbose)
+                if contact_margin == float("-inf"):
+                    contact_margin = builder.default_shape_cfg.contact_margin
 
                 shape_params = {
                     "body": body_id,
@@ -1447,8 +1493,11 @@ def parse_usd(
                         thickness=usd.get_float_with_fallback(
                             prim_and_scene, "newton:contact_thickness", builder.default_shape_cfg.thickness
                         ),
+                        contact_margin=contact_margin,
                         mu=material.dynamicFriction,
                         restitution=material.restitution,
+                        torsional_friction=material.torsionalFriction,
+                        rolling_friction=material.rollingFriction,
                         density=body_density.get(body_path, default_shape_density),
                         collision_group=collision_group,
                         is_visible=not hide_collision_shapes,
@@ -1505,15 +1554,14 @@ def parse_usd(
                     )
                 elif key == UsdPhysics.ObjectType.MeshShape:
                     # Resolve mesh hull vertex limit from schema with fallback to parameter
-                    resolved_maxhullvert = R.get_value(
+                    mesh = usd.get_mesh(prim)
+                    mesh.maxhullvert = R.get_value(
                         prim,
                         prim_type=PrimType.SHAPE,
-                        key="mesh_hull_vertex_limit",
+                        key="max_hull_vertices",
                         default=mesh_maxhullvert,
                         verbose=verbose,
                     )
-                    mesh = usd.get_mesh(prim)
-                    mesh.maxhullvert = resolved_maxhullvert
                     shape_id = builder.add_shape_mesh(
                         scale=scale,
                         mesh=mesh,
@@ -1649,8 +1697,9 @@ def parse_usd(
                     )
 
     # add free joints to floating bodies that's just been added by import_usd
-    new_bodies = path_body_map.values()
-    builder.add_free_joints_to_floating_bodies(new_bodies)
+    if not (no_articulations and has_joints):
+        new_bodies = path_body_map.values()
+        builder.add_free_joints_to_floating_bodies(new_bodies)
 
     # collapsing fixed joints to reduce the number of simulated bodies connected by fixed joints.
     collapse_results = None

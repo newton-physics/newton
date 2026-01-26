@@ -56,22 +56,24 @@ class ModelAttributeFrequency(IntEnum):
 
     ONCE = 0
     """Attribute frequency is a single value."""
-    JOINT = 1
-    """Attribute frequency follows the number of joints (see :attr:`~newton.Model.joint_count`)."""
-    JOINT_DOF = 2
-    """Attribute frequency follows the number of joint degrees of freedom (see :attr:`~newton.Model.joint_dof_count`)."""
-    JOINT_COORD = 3
-    """Attribute frequency follows the number of joint positional coordinates (see :attr:`~newton.Model.joint_coord_count`)."""
-    BODY = 4
-    """Attribute frequency follows the number of bodies (see :attr:`~newton.Model.body_count`)."""
-    SHAPE = 5
-    """Attribute frequency follows the number of shapes (see :attr:`~newton.Model.shape_count`)."""
-    ARTICULATION = 6
-    """Attribute frequency follows the number of articulations (see :attr:`~newton.Model.articulation_count`)."""
-    EQUALITY_CONSTRAINT = 7
-    """Attribute frequency follows the number of equality constraints (see :attr:`~newton.Model.equality_constraint_count`)."""
-    WORLD = 8
+    WORLD = 1
     """Attribute frequency follows the number of worlds (see :attr:`~newton.Model.num_worlds`)."""
+    ARTICULATION = 2
+    """Attribute frequency follows the number of articulations (see :attr:`~newton.Model.articulation_count`)."""
+    BODY = 3
+    """Attribute frequency follows the number of bodies (see :attr:`~newton.Model.body_count`)."""
+    SHAPE = 4
+    """Attribute frequency follows the number of shapes (see :attr:`~newton.Model.shape_count`)."""
+    JOINT = 5
+    """Attribute frequency follows the number of joints (see :attr:`~newton.Model.joint_count`)."""
+    JOINT_DOF = 6
+    """Attribute frequency follows the number of joint degrees of freedom (see :attr:`~newton.Model.joint_dof_count`)."""
+    JOINT_COORD = 7
+    """Attribute frequency follows the number of joint positional coordinates (see :attr:`~newton.Model.joint_coord_count`)."""
+    JOINT_CONSTRAINT = 8
+    """Attribute frequency follows the number of joint constraints (see :attr:`~newton.Model.joint_constraint_count`)."""
+    EQUALITY_CONSTRAINT = 9
+    """Attribute frequency follows the number of equality constraints (see :attr:`~newton.Model.equality_constraint_count`)."""
 
 
 class AttributeNamespace:
@@ -452,6 +454,8 @@ class Model:
         """Total number of velocity degrees of freedom of all joints. Equals the number of joint axes."""
         self.joint_coord_count = 0
         """Total number of position degrees of freedom of all joints."""
+        self.joint_constraint_count = 0
+        """Total number of joint constraints of all joints."""
         self.equality_constraint_count = 0
         """Total number of equality constraints in the system."""
 

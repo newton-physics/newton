@@ -122,7 +122,18 @@ class SensorTiledCamera:
         self.model = model
 
         self.render_context = RenderContext(
-            width, height, False, False, True, True, True, self.model.num_worlds, num_cameras, True
+            width=width,
+            height=height,
+            num_worlds=self.model.num_worlds,
+            num_cameras=num_cameras,
+            options=RenderContext.Options(
+                enable_global_world=True,
+                enable_textures=False,
+                enable_shadows=False,
+                enable_ambient_lighting=True,
+                enable_particles=True,
+                enable_backface_culling=True,
+            ),
         )
         self.render_context.mesh_ids = model.shape_source_ptr
         self.render_context.shape_mesh_indices = wp.empty(self.model.shape_count, dtype=wp.int32)
@@ -135,7 +146,7 @@ class SensorTiledCamera:
             if model.tri_indices is not None and model.tri_indices.shape[0]:
                 self.render_context.triangle_points = model.particle_q
                 self.render_context.triangle_indices = model.tri_indices.flatten()
-                self.render_context.enable_particles = False
+                self.render_context.options.enable_particles = False
 
         self.render_context.shape_enabled = wp.empty(self.model.shape_count, dtype=wp.uint32)
         self.render_context.shape_types = model.shape_type
@@ -167,7 +178,7 @@ class SensorTiledCamera:
         self.render_context.utils.compute_mesh_bounds()
 
         if options is not None:
-            self.render_context.enable_backface_culling = options.backface_culling
+            self.render_context.options.enable_backface_culling = options.backface_culling
             if options.checkerboard_texture:
                 self.assign_checkerboard_material_to_all_shapes()
             if options.default_light:
@@ -324,6 +335,7 @@ class SensorTiledCamera:
         image: wp.array(dtype=wp.float32, ndim=3),
         out_buffer: wp.array(dtype=wp.uint8, ndim=3) | None = None,
         num_worlds_per_row: int | None = None,
+        depth_range: wp.array(dtype=wp.float32) | None = None,
     ):
         """
         Flatten rendered depth image to a tiled grayscale image buffer.
@@ -336,9 +348,10 @@ class SensorTiledCamera:
             image: Depth output array from render(), shape (num_worlds, num_cameras, width*height).
             out_buffer: Optional output array
             num_worlds_per_row: Optional number of rows
+            depth_range: Depth range to normalize to, shape (2) [near, far], will be automatically determined if None
         """
 
-        return self.render_context.utils.flatten_depth_image_to_rgba(image, out_buffer, num_worlds_per_row)
+        return self.render_context.utils.flatten_depth_image_to_rgba(image, out_buffer, num_worlds_per_row, depth_range)
 
     def assign_random_colors_per_world(self, seed: int = 100):
         """
