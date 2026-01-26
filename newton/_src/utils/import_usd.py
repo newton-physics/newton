@@ -246,6 +246,10 @@ def parse_usd(
     # Initialize schema resolver according to precedence
     R = SchemaResolverManager(schema_resolvers)
 
+    # Register solver-specific custom attributes from each resolver
+    for resolver in schema_resolvers:
+        resolver.register_custom_attributes(builder)
+
     # mapping from prim path to body index in ModelBuilder
     path_body_map: dict[str, int] = {}
     # mapping from prim path to shape index in ModelBuilder
