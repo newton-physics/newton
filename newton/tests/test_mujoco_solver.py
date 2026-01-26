@@ -5264,6 +5264,73 @@ class TestMuJoCoOptions(unittest.TestCase):
         # Verify MuJoCo model uses constructor parameter, not custom attribute
         self.assertEqual(solver.mj_model.opt.jacobian, mujoco.mjtJacobian.mjJAC_DENSE)
 
+    def test_enum_options_use_custom_attributes_when_not_provided(self):
+        """
+        Verify that solver, integrator, cone, and jacobian options use custom attribute
+        values when no constructor parameter is provided.
+
+        This tests the resolution priority:
+        1. Constructor parameter (if provided)
+        2. Custom attribute (if exists)
+        3. Default value
+        """
+        import mujoco  # noqa: PLC0415
+
+        # Create model with custom attributes set to non-default values
+        template_builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(template_builder)
+
+        pendulum = template_builder.add_link(mass=1.0, com=wp.vec3(0.0, 0.0, 0.0), I_m=wp.mat33(np.eye(3)))
+        template_builder.add_shape_box(body=pendulum, hx=0.05, hy=0.05, hz=0.05)
+        joint = template_builder.add_joint_revolute(parent=-1, child=pendulum, axis=(0.0, 0.0, 1.0))
+        template_builder.add_articulation([joint])
+
+        builder = newton.ModelBuilder()
+        builder.replicate(template_builder, 2)
+        model = builder.finalize()
+
+        # Set custom attributes to non-default values
+        # Newton defaults: solver=2 (Newton), integrator=3 (implicitfast), cone=0 (pyramidal), jacobian=2 (auto)
+        # Set to: solver=1 (CG), integrator=0 (Euler), cone=1 (elliptic), jacobian=1 (sparse)
+        model.mujoco.solver.assign(np.array([1], dtype=np.int32))  # CG
+        model.mujoco.integrator.assign(np.array([0], dtype=np.int32))  # Euler
+        model.mujoco.cone.assign(np.array([1], dtype=np.int32))  # elliptic
+        model.mujoco.jacobian.assign(np.array([1], dtype=np.int32))  # sparse
+
+        # Create solver WITHOUT specifying these options - should use custom attributes
+        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
+
+        # Verify MuJoCo model uses custom attribute values, not Newton defaults
+        self.assertEqual(solver.mj_model.opt.solver, mujoco.mjtSolver.mjSOL_CG, "Should use custom attribute CG, not Newton default")
+        self.assertEqual(solver.mj_model.opt.integrator, mujoco.mjtIntegrator.mjINT_EULER, "Should use custom attribute Euler, not Newton default implicitfast")
+        self.assertEqual(solver.mj_model.opt.cone, mujoco.mjtCone.mjCONE_ELLIPTIC, "Should use custom attribute elliptic, not Newton default pyramidal")
+        self.assertEqual(solver.mj_model.opt.jacobian, mujoco.mjtJacobian.mjJAC_SPARSE, "Should use custom attribute sparse, not Newton default auto")
+
+    def test_enum_options_use_defaults_when_no_custom_attribute(self):
+        """
+        Verify that solver, integrator, cone, and jacobian use Newton defaults
+        when no constructor parameter or custom attribute is provided.
+        """
+        import mujoco  # noqa: PLC0415
+
+        # Create model WITHOUT registering custom attributes
+        builder = newton.ModelBuilder()
+        pendulum = builder.add_link(mass=1.0, com=wp.vec3(0.0, 0.0, 0.0), I_m=wp.mat33(np.eye(3)))
+        builder.add_shape_box(body=pendulum, hx=0.05, hy=0.05, hz=0.05)
+        joint = builder.add_joint_revolute(parent=-1, child=pendulum, axis=(0.0, 0.0, 1.0))
+        builder.add_articulation([joint])
+        model = builder.finalize()
+
+        # Create solver without specifying enum options - should use Newton defaults
+        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
+
+        # Verify Newton defaults are used
+        # Newton defaults: solver=Newton(2), integrator=implicitfast(3), cone=pyramidal(0), jacobian=auto(2)
+        self.assertEqual(solver.mj_model.opt.solver, mujoco.mjtSolver.mjSOL_NEWTON, "Should use Newton default (Newton solver)")
+        self.assertEqual(solver.mj_model.opt.integrator, mujoco.mjtIntegrator.mjINT_IMPLICITFAST, "Should use Newton default (implicitfast)")
+        self.assertEqual(solver.mj_model.opt.cone, mujoco.mjtCone.mjCONE_PYRAMIDAL, "Should use Newton default (pyramidal)")
+        self.assertEqual(solver.mj_model.opt.jacobian, mujoco.mjtJacobian.mjJAC_AUTO, "Should use Newton default (auto)")
+
 
 class TestMuJoCoArticulationConversion(unittest.TestCase):
     def test_loop_joints_only(self):
