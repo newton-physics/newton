@@ -3059,13 +3059,13 @@ class SolverMuJoCo(SolverBase):
 
         # Solver option fields to expand (nested in mj_model.opt)
         opt_fields_to_expand = {
-            # "timestep",
+            # "timestep",  # Excluded: conflicts with step() function parameter
             "impratio_invsqrt",
-            # "tolerance",
-            # "ls_tolerance",
-            # "ccd_tolerance",
-            # "density",
-            # "viscosity",
+            "tolerance",
+            "ls_tolerance",
+            "ccd_tolerance",
+            "density",
+            "viscosity",
             "gravity",
             # "wind",
             # "magnetic",

@@ -4915,6 +4915,141 @@ class TestMuJoCoOptions(unittest.TestCase):
                 msg=f"MuJoCo Warp impratio_invsqrt[{world_idx}] should be {expected_invsqrt} (constructor override)",
             )
 
+    def test_tolerance_multiworld_conversion(self):
+        """
+        Verify that tolerance custom attribute with WORLD frequency:
+        1. Is properly registered and exists on the model.
+        2. The array has correct shape (one value per world).
+        3. Different per-world values are stored correctly in the Newton model.
+        4. Solver expands per-world values to MuJoCo Warp.
+        """
+        # Create template builder
+        template_builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(template_builder)
+
+        pendulum = template_builder.add_link(mass=1.0, com=wp.vec3(0.0, 0.0, 0.0), I_m=wp.mat33(np.eye(3)))
+        template_builder.add_shape_box(body=pendulum, hx=0.05, hy=0.05, hz=0.05)
+        joint = template_builder.add_joint_revolute(parent=-1, child=pendulum, axis=(0.0, 0.0, 1.0))
+        template_builder.add_articulation([joint])
+
+        # Create multi-world model
+        num_worlds = 3
+        builder = newton.ModelBuilder()
+        builder.replicate(template_builder, num_worlds)
+        model = builder.finalize()
+
+        # Verify the custom attribute is registered and exists on the model
+        self.assertTrue(hasattr(model, "mujoco"))
+        self.assertTrue(hasattr(model.mujoco, "tolerance"))
+
+        # Verify the array has correct shape (one value per world)
+        tolerance = model.mujoco.tolerance.numpy()
+        self.assertEqual(len(tolerance), num_worlds, "tolerance array should have one entry per world")
+
+        # Set different tolerance values per world
+        initial_tolerance = np.array([1e-6, 1e-7, 1e-8], dtype=np.float32)
+        model.mujoco.tolerance.assign(initial_tolerance)
+
+        # Verify all per-world values are stored correctly in Newton model
+        updated_tolerance = model.mujoco.tolerance.numpy()
+        for world_idx in range(num_worlds):
+            self.assertAlmostEqual(
+                updated_tolerance[world_idx],
+                initial_tolerance[world_idx],
+                places=10,
+                msg=f"Newton model tolerance[{world_idx}] should be {initial_tolerance[world_idx]}",
+            )
+
+        # Create solver without constructor override
+        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
+
+        # Verify MuJoCo Warp model has per-world tolerance values
+        mjw_tolerance = solver.mjw_model.opt.tolerance.numpy()
+        self.assertEqual(
+            len(mjw_tolerance),
+            num_worlds,
+            f"MuJoCo Warp opt.tolerance should have {num_worlds} values (one per world)",
+        )
+
+        # Verify each world has the correct tolerance value
+        for world_idx in range(num_worlds):
+            self.assertAlmostEqual(
+                mjw_tolerance[world_idx],
+                initial_tolerance[world_idx],
+                places=10,
+                msg=f"MuJoCo Warp tolerance[{world_idx}] should be {initial_tolerance[world_idx]}",
+            )
+
+    def test_scalar_options_constructor_override(self):
+        """
+        Verify that passing scalar options (tolerance, ls_tolerance, ccd_tolerance, density, viscosity)
+        to the SolverMuJoCo constructor overrides any per-world values from custom attributes.
+        """
+        # Create template builder
+        template_builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(template_builder)
+
+        pendulum = template_builder.add_link(mass=1.0, com=wp.vec3(0.0, 0.0, 0.0), I_m=wp.mat33(np.eye(3)))
+        template_builder.add_shape_box(body=pendulum, hx=0.05, hy=0.05, hz=0.05)
+        joint = template_builder.add_joint_revolute(parent=-1, child=pendulum, axis=(0.0, 0.0, 1.0))
+        template_builder.add_articulation([joint])
+
+        # Create multi-world model
+        num_worlds = 2
+        builder = newton.ModelBuilder()
+        builder.replicate(template_builder, num_worlds)
+        model = builder.finalize()
+
+        # Set custom attribute values per world
+        model.mujoco.tolerance.assign(np.array([1e-6, 1e-7], dtype=np.float32))
+        model.mujoco.ls_tolerance.assign(np.array([0.01, 0.02], dtype=np.float32))
+        model.mujoco.ccd_tolerance.assign(np.array([1e-6, 1e-7], dtype=np.float32))
+        model.mujoco.density.assign(np.array([0.0, 0.0], dtype=np.float32))
+        model.mujoco.viscosity.assign(np.array([0.0, 0.0], dtype=np.float32))
+
+        # Create solver WITH constructor overrides
+        # NOTE: density and viscosity must be 0 to avoid triggering MuJoCo Warp's
+        # "fluid model not implemented" error. Non-zero values enable fluid dynamics.
+        solver = SolverMuJoCo(
+            model,
+            tolerance=1e-5,
+            ls_tolerance=0.001,
+            ccd_tolerance=1e-4,
+            density=0.0,
+            viscosity=0.0,
+            iterations=1,
+            disable_contacts=True,
+        )
+
+        # Verify MuJoCo Warp uses constructor-provided values (tiled to all worlds)
+        mjw_tolerance = solver.mjw_model.opt.tolerance.numpy()
+        mjw_ls_tolerance = solver.mjw_model.opt.ls_tolerance.numpy()
+        mjw_ccd_tolerance = solver.mjw_model.opt.ccd_tolerance.numpy()
+        mjw_density = solver.mjw_model.opt.density.numpy()
+        mjw_viscosity = solver.mjw_model.opt.viscosity.numpy()
+
+        self.assertEqual(len(mjw_tolerance), num_worlds)
+        self.assertEqual(len(mjw_ls_tolerance), num_worlds)
+        self.assertEqual(len(mjw_ccd_tolerance), num_worlds)
+        self.assertEqual(len(mjw_density), num_worlds)
+        self.assertEqual(len(mjw_viscosity), num_worlds)
+
+        # All worlds should have the same constructor-provided values
+        for world_idx in range(num_worlds):
+            self.assertAlmostEqual(
+                mjw_tolerance[world_idx], 1e-5, places=10, msg=f"tolerance[{world_idx}] should be 1e-5"
+            )
+            self.assertAlmostEqual(
+                mjw_ls_tolerance[world_idx], 0.001, places=6, msg=f"ls_tolerance[{world_idx}] should be 0.001"
+            )
+            self.assertAlmostEqual(
+                mjw_ccd_tolerance[world_idx], 1e-4, places=10, msg=f"ccd_tolerance[{world_idx}] should be 1e-4"
+            )
+            self.assertAlmostEqual(mjw_density[world_idx], 0.0, places=6, msg=f"density[{world_idx}] should be 0.0")
+            self.assertAlmostEqual(
+                mjw_viscosity[world_idx], 0.0, places=10, msg=f"viscosity[{world_idx}] should be 0.0"
+            )
+
 
 class TestMuJoCoArticulationConversion(unittest.TestCase):
     def test_loop_joints_only(self):

@@ -2445,6 +2445,172 @@ class TestImportMjcf(unittest.TestCase):
         self.assertAlmostEqual(impratio[0], 1.5, places=4, msg="World 0 should have impratio=1.5")
         self.assertAlmostEqual(impratio[1], 2.0, places=4, msg="World 1 should have impratio=2.0")
 
+    def test_option_tolerance_parsing(self):
+        """Test parsing of tolerance from MJCF option tag."""
+        mjcf = """<?xml version="1.0" ?>
+<mujoco>
+    <option tolerance="1e-6"/>
+    <worldbody>
+        <body name="body1" pos="0 0 1">
+            <joint type="hinge" axis="0 0 1"/>
+            <geom type="sphere" size="0.1"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf)
+        model = builder.finalize()
+
+        self.assertTrue(hasattr(model, "mujoco"))
+        self.assertTrue(hasattr(model.mujoco, "tolerance"))
+        tolerance = model.mujoco.tolerance.numpy()
+        self.assertEqual(len(tolerance), 1)
+        self.assertAlmostEqual(tolerance[0], 1e-6, places=10)
+
+    def test_option_ls_tolerance_parsing(self):
+        """Test parsing of ls_tolerance from MJCF option tag."""
+        mjcf = """<?xml version="1.0" ?>
+<mujoco>
+    <option ls_tolerance="0.001"/>
+    <worldbody>
+        <body name="body1" pos="0 0 1">
+            <joint type="hinge" axis="0 0 1"/>
+            <geom type="sphere" size="0.1"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf)
+        model = builder.finalize()
+
+        self.assertTrue(hasattr(model, "mujoco"))
+        self.assertTrue(hasattr(model.mujoco, "ls_tolerance"))
+        ls_tolerance = model.mujoco.ls_tolerance.numpy()
+        self.assertEqual(len(ls_tolerance), 1)
+        self.assertAlmostEqual(ls_tolerance[0], 0.001, places=6)
+
+    def test_option_ccd_tolerance_parsing(self):
+        """Test parsing of ccd_tolerance from MJCF option tag."""
+        mjcf = """<?xml version="1.0" ?>
+<mujoco>
+    <option ccd_tolerance="1e-5"/>
+    <worldbody>
+        <body name="body1" pos="0 0 1">
+            <joint type="hinge" axis="0 0 1"/>
+            <geom type="sphere" size="0.1"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf)
+        model = builder.finalize()
+
+        self.assertTrue(hasattr(model, "mujoco"))
+        self.assertTrue(hasattr(model.mujoco, "ccd_tolerance"))
+        ccd_tolerance = model.mujoco.ccd_tolerance.numpy()
+        self.assertEqual(len(ccd_tolerance), 1)
+        self.assertAlmostEqual(ccd_tolerance[0], 1e-5, places=10)
+
+    def test_option_density_parsing(self):
+        """Test parsing of density from MJCF option tag."""
+        mjcf = """<?xml version="1.0" ?>
+<mujoco>
+    <option density="1.225"/>
+    <worldbody>
+        <body name="body1" pos="0 0 1">
+            <joint type="hinge" axis="0 0 1"/>
+            <geom type="sphere" size="0.1"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf)
+        model = builder.finalize()
+
+        self.assertTrue(hasattr(model, "mujoco"))
+        self.assertTrue(hasattr(model.mujoco, "density"))
+        density = model.mujoco.density.numpy()
+        self.assertEqual(len(density), 1)
+        self.assertAlmostEqual(density[0], 1.225, places=6)
+
+    def test_option_viscosity_parsing(self):
+        """Test parsing of viscosity from MJCF option tag."""
+        mjcf = """<?xml version="1.0" ?>
+<mujoco>
+    <option viscosity="1.8e-5"/>
+    <worldbody>
+        <body name="body1" pos="0 0 1">
+            <joint type="hinge" axis="0 0 1"/>
+            <geom type="sphere" size="0.1"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf)
+        model = builder.finalize()
+
+        self.assertTrue(hasattr(model, "mujoco"))
+        self.assertTrue(hasattr(model.mujoco, "viscosity"))
+        viscosity = model.mujoco.viscosity.numpy()
+        self.assertEqual(len(viscosity), 1)
+        self.assertAlmostEqual(viscosity[0], 1.8e-5, places=10)
+
+    def test_option_scalar_per_world(self):
+        """Test that scalar options are correctly remapped per world when merging builders."""
+        # Robot A with tolerance=1e-6
+        robot_a = newton.ModelBuilder()
+        robot_a.add_mjcf("""
+<mujoco>
+    <option tolerance="1e-6" ls_tolerance="0.001"/>
+    <worldbody>
+        <body name="a" pos="0 0 1">
+            <joint type="hinge" axis="0 0 1"/>
+            <geom type="sphere" size="0.1"/>
+        </body>
+    </worldbody>
+</mujoco>
+""")
+
+        # Robot B with tolerance=1e-7
+        robot_b = newton.ModelBuilder()
+        robot_b.add_mjcf("""
+<mujoco>
+    <option tolerance="1e-7" ls_tolerance="0.002"/>
+    <worldbody>
+        <body name="b" pos="0 0 1">
+            <joint type="hinge" axis="0 0 1"/>
+            <geom type="sphere" size="0.1"/>
+        </body>
+    </worldbody>
+</mujoco>
+""")
+
+        # Merge into main builder
+        main = newton.ModelBuilder()
+        main.add_world(robot_a)
+        main.add_world(robot_b)
+        model = main.finalize()
+
+        self.assertTrue(hasattr(model, "mujoco"))
+        self.assertTrue(hasattr(model.mujoco, "tolerance"))
+        self.assertTrue(hasattr(model.mujoco, "ls_tolerance"))
+
+        tolerance = model.mujoco.tolerance.numpy()
+        ls_tolerance = model.mujoco.ls_tolerance.numpy()
+
+        # Should have 2 worlds with different values
+        self.assertEqual(len(tolerance), 2)
+        self.assertEqual(len(ls_tolerance), 2)
+        self.assertAlmostEqual(tolerance[0], 1e-6, places=10, msg="World 0 should have tolerance=1e-6")
+        self.assertAlmostEqual(tolerance[1], 1e-7, places=10, msg="World 1 should have tolerance=1e-7")
+        self.assertAlmostEqual(ls_tolerance[0], 0.001, places=6, msg="World 0 should have ls_tolerance=0.001")
+        self.assertAlmostEqual(ls_tolerance[1], 0.002, places=6, msg="World 1 should have ls_tolerance=0.002")
+
     def test_geom_solmix_parsing(self):
         """Test that geom_solmix attribute is parsed correctly from MJCF."""
         mjcf = """<?xml version="1.0" ?>
