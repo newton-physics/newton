@@ -1833,8 +1833,9 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
 
     def test_geom_property_update(self):
         """
-        Test that ALL geom properties can be dynamically updated during simulation.
-        This includes: friction, contact parameters (solref), collision radius (rbound), size, position, and orientation.
+        Test that geom properties can be dynamically updated during simulation.
+        This includes: friction, contact parameters (solref), size, position, and orientation.
+        Note: collision radius (rbound) is not updated from Newton's shape_collision_radius as MuJoCo computes it internally.
         """
         # Create solver with initial values
         solver = SolverMuJoCo(self.model, iterations=1, disable_contacts=True)
@@ -1850,7 +1851,6 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
         # Store initial values for comparison
         initial_friction = solver.mjw_model.geom_friction.numpy().copy()
         initial_solref = solver.mjw_model.geom_solref.numpy().copy()
-        initial_rbound = solver.mjw_model.geom_rbound.numpy().copy()
         initial_size = solver.mjw_model.geom_size.numpy().copy()
         initial_pos = solver.mjw_model.geom_pos.numpy().copy()
         initial_quat = solver.mjw_model.geom_quat.numpy().copy()
@@ -1876,11 +1876,7 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
         self.model.shape_material_ke.assign(new_ke)
         self.model.shape_material_kd.assign(new_kd)
 
-        # 3. Update collision radius
-        new_radii = self.model.shape_collision_radius.numpy() * 1.5
-        self.model.shape_collision_radius.assign(new_radii)
-
-        # 4. Update sizes
+        # 3. Update sizes
         new_sizes = []
         for i in range(shape_count):
             old_size = self.model.shape_scale.numpy()[i]
@@ -1888,7 +1884,7 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
             new_sizes.append(new_size)
         self.model.shape_scale.assign(wp.array(new_sizes, dtype=wp.vec3, device=self.model.device))
 
-        # 5. Update transforms (position and orientation)
+        # 4. Update transforms (position and orientation)
         new_transforms = []
         for i in range(shape_count):
             # New position with offset
@@ -1903,10 +1899,9 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
         # Notify solver of all shape property changes
         solver.notify_model_changed(SolverNotifyFlags.SHAPE_PROPERTIES)
 
-        # Verify ALL properties were updated
+        # Verify properties were updated
         updated_friction = solver.mjw_model.geom_friction.numpy()
         updated_solref = solver.mjw_model.geom_solref.numpy()
-        updated_rbound = solver.mjw_model.geom_rbound.numpy()
         updated_size = solver.mjw_model.geom_size.numpy()
         updated_pos = solver.mjw_model.geom_pos.numpy()
         updated_quat = solver.mjw_model.geom_quat.numpy()
@@ -1999,24 +1994,7 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
                     f"Contact parameters should have changed for shape {shape_idx}",
                 )
 
-                # Verify 3: Collision radius updated (for all geoms)
-                # Newton's collision_radius is used as geom_rbound for all shapes
-                expected_radius = new_radii[shape_idx]
-                self.assertAlmostEqual(
-                    float(updated_rbound[world_idx, geom_idx]),
-                    expected_radius,
-                    places=5,
-                    msg=f"Updated bounding radius should match new collision_radius for shape {shape_idx}",
-                )
-                # Verify it changed from initial
-                self.assertNotAlmostEqual(
-                    float(updated_rbound[world_idx, geom_idx]),
-                    float(initial_rbound[world_idx, geom_idx]),
-                    places=5,
-                    msg=f"Bounding radius should have changed for shape {shape_idx}",
-                )
-
-                # Verify 4: Size updated
+                # Verify 3: Size updated
                 # Verify the size matches the expected new size
                 expected_size = new_sizes[shape_idx]
                 for dim in range(3):
@@ -2035,7 +2013,7 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
                         break
                 self.assertTrue(size_changed, f"Size should have changed for shape {shape_idx}")
 
-                # Verify 5: Position and orientation updated (body-local coordinates)
+                # Verify 4: Position and orientation updated (body-local coordinates)
                 # Compute expected values based on new transforms
                 new_transform = wp.transform(*new_transforms[shape_idx])
                 expected_pos = new_transform.p
