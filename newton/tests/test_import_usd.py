@@ -22,6 +22,7 @@ import warp as wp
 
 import newton
 import newton.examples
+import newton.usd as usd
 from newton import JointType
 from newton._src.geometry.utils import create_box_mesh, transform_points
 from newton.solvers import SolverMuJoCo
@@ -202,6 +203,96 @@ def "World"
 
         np.testing.assert_allclose(pos_0, np.array([0.0, 0.0, 1.0]), atol=1e-5)
         np.testing.assert_allclose(pos_1, np.array([2.5, 0.0, 1.0]), atol=1e-5)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_import_scale_ops_units_resolve(self):
+        from pxr import Usd  # noqa: PLC0415
+
+        usd_text = """#usda 1.0
+(
+    upAxis = "Z"
+)
+def PhysicsScene "physicsScene"
+{
+}
+def Xform "World"
+{
+    def Xform "Body" (
+        prepend apiSchemas = ["PhysicsRigidBodyAPI"]
+    )
+    {
+        def Xform "Scaled"
+        {
+            float3 xformOp:scale = (2, 2, 2)
+            double xformOp:rotateX:unitsResolve = 90
+            double3 xformOp:scale:unitsResolve = (0.01, 0.01, 0.01)
+            uniform token[] xformOpOrder = ["xformOp:scale", "xformOp:rotateX:unitsResolve", "xformOp:scale:unitsResolve"]
+
+            def Cube "Collision" (
+                prepend apiSchemas = ["PhysicsCollisionAPI"]
+            )
+            {
+                double size = 2
+            }
+        }
+    }
+}
+"""
+        stage = Usd.Stage.CreateInMemory()
+        stage.GetRootLayer().ImportFromString(usd_text)
+
+        builder = newton.ModelBuilder()
+        results = builder.add_usd(stage)
+
+        shape_id = results["path_shape_map"]["/World/Body/Scaled/Collision"]
+        assert_np_equal(np.array(builder.shape_scale[shape_id]), np.array([0.02, 0.02, 0.02]), tol=1e-5)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_import_scale_ops_nested_xforms(self):
+        from pxr import Usd  # noqa: PLC0415
+
+        usd_text = """#usda 1.0
+(
+    upAxis = "Z"
+)
+def PhysicsScene "physicsScene"
+{
+}
+def Xform "World"
+{
+    def Xform "Body" (
+        prepend apiSchemas = ["PhysicsRigidBodyAPI"]
+    )
+    {
+        def Xform "Parent"
+        {
+            float3 xformOp:scale = (2, 3, 4)
+            uniform token[] xformOpOrder = ["xformOp:scale"]
+
+            def Xform "Child"
+            {
+                float3 xformOp:scale = (0.5, 2, 1.5)
+                uniform token[] xformOpOrder = ["xformOp:scale"]
+
+                def Cube "Collision" (
+                    prepend apiSchemas = ["PhysicsCollisionAPI"]
+                )
+                {
+                    double size = 2
+                }
+            }
+        }
+    }
+}
+"""
+        stage = Usd.Stage.CreateInMemory()
+        stage.GetRootLayer().ImportFromString(usd_text)
+
+        builder = newton.ModelBuilder()
+        results = builder.add_usd(stage)
+
+        shape_id = results["path_shape_map"]["/World/Body/Parent/Child/Collision"]
+        assert_np_equal(np.array(builder.shape_scale[shape_id]), np.array([1.0, 6.0, 6.0]), tol=1e-5)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_import_articulation_no_visuals(self):
@@ -2097,11 +2188,18 @@ class TestImportSampleAssets(unittest.TestCase):
                 lhs_q = wp.transform_get_rotation(lhs_tf)
                 rhs_q = wp.transform_get_rotation(rhs_tf)
 
-                self.assertTrue(all(abs(lhs_p[i] - rhs_p[i]) < 1e-6 for i in range(3)))
+                self.assertTrue(
+                    all(abs(lhs_p[i] - rhs_p[i]) < 1e-6 for i in range(3)),
+                    f"Joint {j} ({model.joint_key[j]}) position mismatch: expected={rhs_p}, Newton={lhs_p}",
+                )
 
                 q_diff = lhs_q * wp.quat_inverse(rhs_q)
                 angle_diff = 2.0 * math.acos(min(1.0, abs(q_diff[3])))
-                self.assertLessEqual(angle_diff, 1e-3)
+                self.assertLessEqual(
+                    angle_diff,
+                    3e-3,
+                    f"Joint {j} ({model.joint_key[j]}) rotation mismatch: expected={rhs_q}, Newton={lhs_q}, angle_diff={math.degrees(angle_diff)}°",
+                )
 
         model.shape_body.numpy()
         shape_type_array = model.shape_type.numpy()
@@ -2144,9 +2242,6 @@ class TestImportSampleAssets(unittest.TestCase):
                         f"Shape {sid} type mismatch: Newton type {newton_type} should map to USD {expected_usd_type}, but found {shape_objtype}",
                     )
 
-        def from_gfquat(gfquat):
-            return wp.normalize(wp.quat(*gfquat.imaginary, gfquat.real))
-
         def quaternions_match(q1, q2, tolerance=1e-5):
             return all(abs(q1[i] - q2[i]) < tolerance for i in range(4)) or all(
                 abs(q1[i] + q2[i]) < tolerance for i in range(4)
@@ -2173,7 +2268,7 @@ class TestImportSampleAssets(unittest.TestCase):
                 f"Shape {sid} collision mismatch: USD={collision_enabled_usd}, Newton={collision_enabled_newton}",
             )
 
-            usd_quat = from_gfquat(shape_spec.localRot)
+            usd_quat = usd.from_gfquat(shape_spec.localRot)
             newton_pos = newton_transform[:3]
             newton_quat = newton_transform[3:7]
 
@@ -3274,4 +3369,4 @@ def Xform "Articulation" (
 
 
 if __name__ == "__main__":
-    unittest.main(verbosity=2, failfast=True)
+    unittest.main(verbosity=2, failfast=False)

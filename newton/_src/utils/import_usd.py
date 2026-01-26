@@ -264,24 +264,51 @@ def parse_usd(
         has_particle_collision=False,
     )
 
+    # Create a cache for world transforms to avoid recomputing them for each prim.
+    xform_cache = UsdGeom.XformCache(Usd.TimeCode.Default())
+
+    def _is_enabled_collider(prim: Usd.Prim) -> bool:
+        if not prim.HasAPI(UsdPhysics.CollisionAPI):
+            return False
+        return usd.get_attribute(prim, "physics:collisionEnabled", True)
+
+    def _xform_to_mat44(xform: wp.transform) -> wp.mat44:
+        return wp.transform_compose(xform.p, xform.q, wp.vec3(1.0))
+
     def _load_visual_shapes_impl(
-        parent_body_id: int, prim: Usd.Prim, incoming_xform: wp.transform, incoming_scale: wp.vec3
+        parent_body_id: int,
+        prim: Usd.Prim,
+        body_xform: wp.transform | None = None,
     ):
-        """Load visual-only shapes (no collision shapes, no rigid body or mass API schemas applied) for a given prim and its children."""
-        if (
-            prim.HasAPI(UsdPhysics.RigidBodyAPI)
-            or prim.HasAPI(UsdPhysics.MassAPI)
-            or prim.HasAPI(UsdPhysics.CollisionAPI)
-            or prim.HasAPI(UsdPhysics.MeshCollisionAPI)
-        ):
+        """Load visual-only shapes (non-physics) for a prim subtree.
+
+        Args:
+            parent_body_id: ModelBuilder body id to attach shapes to. Use -1 for
+                static shapes that are not bound to any rigid body.
+            prim: USD prim to inspect for visual geometry and recurse into.
+            body_xform: Rigid body transform actually used by the builder.
+                This matches any physics-authored pose, scene-level transforms,
+                and incoming transforms that were applied when the body was created.
+        """
+        if _is_enabled_collider(prim) or prim.HasAPI(UsdPhysics.RigidBodyAPI):
             return
         path_name = str(prim.GetPath())
         if any(re.match(path, path_name) for path in ignore_paths):
             return
 
-        incoming_xform_mat = wp.transform_compose(incoming_xform.p, incoming_xform.q, incoming_scale)
-        xform_mat = incoming_xform_mat @ usd.get_transform_matrix(prim)
-        xform_pos, xform_rot, scale = wp.transform_decompose(xform_mat)
+        prim_world_mat = usd.get_transform_matrix(prim, local=False, xform_cache=xform_cache)
+        if incoming_world_xform is not None and (parent_body_id == -1 or body_xform is not None):
+            # Apply the incoming world transform in model space (static shapes or when using body_xform).
+            incoming_mat = _xform_to_mat44(incoming_world_xform)
+            prim_world_mat = incoming_mat @ prim_world_mat
+        if body_xform is not None:
+            # Use the body transform used by the builder to avoid USD/physics pose mismatches.
+            body_world_mat = _xform_to_mat44(body_xform)
+            rel_mat = wp.inverse(body_world_mat) @ prim_world_mat
+        else:
+            rel_mat = prim_world_mat
+
+        xform_pos, xform_rot, scale = wp.transform_decompose(rel_mat)
         xform = wp.transform(xform_pos, xform_rot)
 
         if prim.IsInstance():
@@ -290,7 +317,7 @@ def parse_usd(
                 # remap prototype child path to this instance's path (instance proxy)
                 inst_path = child.GetPath().ReplacePrefix(proto.GetPath(), prim.GetPath())
                 inst_child = stage.GetPrimAtPath(inst_path)
-                _load_visual_shapes_impl(parent_body_id, inst_child, xform, scale)
+                _load_visual_shapes_impl(parent_body_id, inst_child, body_xform)
             return
         type_name = str(prim.GetTypeName()).lower()
         if type_name.endswith("joint"):
@@ -321,20 +348,13 @@ def parse_usd(
         if path_name not in path_shape_map:
             if type_name == "cube":
                 size = usd.get_float(prim, "size", 2.0)
-                if usd.has_attribute(prim, "extents"):
-                    extents = usd.get_vector(prim, "extents") * scale
-                    # TODO position geom at extents center?
-                    # geo_pos = 0.5 * (extents[0] + extents[1])
-                    extents = extents[1] - extents[0]
-                else:
-                    extents = scale * size
-
+                side_lengths = scale * size
                 shape_id = builder.add_shape_box(
                     parent_body_id,
                     xform,
-                    hx=extents[0] / 2,
-                    hy=extents[1] / 2,
-                    hz=extents[2] / 2,
+                    hx=side_lengths[0] / 2,
+                    hy=side_lengths[1] / 2,
+                    hz=side_lengths[2] / 2,
                     cfg=visual_shape_cfg,
                     as_site=is_site,
                     key=path_name,
@@ -342,16 +362,7 @@ def parse_usd(
             elif type_name == "sphere":
                 if not (scale[0] == scale[1] == scale[2]):
                     print("Warning: Non-uniform scaling of spheres is not supported.")
-                if usd.has_attribute(prim, "extents"):
-                    extents = usd.get_vector(prim, "extents") * scale
-                    # TODO position geom at extents center?
-                    # geo_pos = 0.5 * (extents[0] + extents[1])
-                    extents = extents[1] - extents[0]
-                    if not (extents[0] == extents[1] == extents[2]):
-                        print("Warning: Non-uniform extents of spheres are not supported.")
-                    radius = extents[0]
-                else:
-                    radius = usd.get_float(prim, "radius", 1.0) * max(scale)
+                radius = usd.get_float(prim, "radius", 1.0) * max(scale)
                 shape_id = builder.add_shape_sphere(
                     parent_body_id,
                     xform,
@@ -379,7 +390,6 @@ def parse_usd(
                 axis = usd.get_gprim_axis(prim)
                 radius = usd.get_float(prim, "radius", 0.5) * scale[0]
                 half_height = usd.get_float(prim, "height", 2.0) / 2 * scale[1]
-                assert not usd.has_attribute(prim, "extents"), "Capsule extents are not supported."
                 # Apply axis rotation to transform
                 xform = wp.transform(xform.p, xform.q * quat_between_axes(Axis.Z, axis))
                 shape_id = builder.add_shape_capsule(
@@ -395,7 +405,6 @@ def parse_usd(
                 axis = usd.get_gprim_axis(prim)
                 radius = usd.get_float(prim, "radius", 0.5) * scale[0]
                 half_height = usd.get_float(prim, "height", 2.0) / 2 * scale[1]
-                assert not usd.has_attribute(prim, "extents"), "Cylinder extents are not supported."
                 # Apply axis rotation to transform
                 xform = wp.transform(xform.p, xform.q * quat_between_axes(Axis.Z, axis))
                 shape_id = builder.add_shape_cylinder(
@@ -411,7 +420,6 @@ def parse_usd(
                 axis = usd.get_gprim_axis(prim)
                 radius = usd.get_float(prim, "radius", 0.5) * scale[0]
                 half_height = usd.get_float(prim, "height", 2.0) / 2 * scale[1]
-                assert not usd.has_attribute(prim, "extents"), "Cone extents are not supported."
                 # Apply axis rotation to transform
                 xform = wp.transform(xform.p, xform.q * quat_between_axes(Axis.Z, axis))
                 shape_id = builder.add_shape_cone(
@@ -443,7 +451,7 @@ def parse_usd(
                     print(f"Added visual shape {path_name} ({type_name}) with id {shape_id}.")
 
         for child in prim.GetChildren():
-            _load_visual_shapes_impl(parent_body_id, child, xform, scale)
+            _load_visual_shapes_impl(parent_body_id, child, body_xform)
 
     def add_body(prim: Usd.Prim, xform: wp.transform, key: str, armature: float) -> int:
         """Add a rigid body to the builder and optionally load its visual shapes and sites among the body prim's children. Returns the resulting body index."""
@@ -459,7 +467,7 @@ def parse_usd(
         path_body_map[key] = b
         if load_sites or load_visual_shapes:
             for child in prim.GetChildren():
-                _load_visual_shapes_impl(b, child, wp.transform_identity(), wp.vec3(1.0))
+                _load_visual_shapes_impl(b, child, body_xform=xform)
         return b
 
     def parse_body(
@@ -627,10 +635,6 @@ def parse_usd(
                 initial_velocity = R.get_value(
                     joint_prim, PrimType.JOINT, "linear_velocity", default=None, verbose=verbose
                 )
-
-            joint_prim.CreateAttribute(f"physics:tensor:{dof_type}:dofOffset", Sdf.ValueTypeNames.UInt).Set(0)
-            # joint_prim.CreateAttribute(f"state:{dof_type}:physics:position", Sdf.ValueTypeNames.Float).Set(0)
-            # joint_prim.CreateAttribute(f"state:{dof_type}:physics:velocity", Sdf.ValueTypeNames.Float).Set(0)
 
             if key == UsdPhysics.ObjectType.PrismaticJoint:
                 joint_index = builder.add_joint_prismatic(**joint_params)
@@ -819,15 +823,6 @@ def parse_usd(
                     )
                     # Track that this axis was added as a DOF
                     d6_dof_axes.append(rot_name)
-                    joint_prim.CreateAttribute(
-                        f"physics:tensor:{_rot_names[dof]}:dofOffset", Sdf.ValueTypeNames.UInt
-                    ).Set(num_dofs)
-                    # joint_prim.CreateAttribute(
-                    #     f"state:{_rot_names[dof]}:physics:position", Sdf.ValueTypeNames.Float
-                    # ).Set(0)
-                    # joint_prim.CreateAttribute(
-                    #     f"state:{_rot_names[dof]}:physics:velocity", Sdf.ValueTypeNames.Float
-                    # ).Set(0)
                     num_dofs += 1
 
             joint_index = builder.add_joint_d6(**joint_params, linear_axes=linear_axes, angular_axes=angular_axes)
@@ -852,7 +847,6 @@ def parse_usd(
 
         # Apply saved initial joint state after joint creation
         if key in (UsdPhysics.ObjectType.RevoluteJoint, UsdPhysics.ObjectType.PrismaticJoint):
-            # Use the initial values we saved before CreateAttribute overwrote them
             if initial_position is not None:
                 q_start = builder.joint_q_start[joint_index]
                 if key == UsdPhysics.ObjectType.RevoluteJoint:
@@ -1116,7 +1110,9 @@ def parse_usd(
             if any(re.match(p, articulation_path) for p in ignore_paths):
                 continue
             articulation_prim = stage.GetPrimAtPath(path)
-            articulation_xform = incoming_world_xform * usd.get_transform(articulation_prim, local=False)
+            articulation_root_xform = usd.get_transform(articulation_prim, local=False, xform_cache=xform_cache)
+            # Joints are authored in the articulation-root frame, so always compose with it.
+            articulation_incoming_xform = incoming_world_xform * articulation_root_xform
             # Collect engine-specific attributes for the articulation root on first encounter
             if collect_schema_attrs:
                 R.collect_prim_attrs(articulation_prim)
@@ -1158,38 +1154,37 @@ def parse_usd(
             for p in desc.articulatedBodies:
                 if verbose:
                     print(f"\t{p!s}")
+                if p == Sdf.Path.emptyPath:
+                    continue
                 key = str(p)
                 if key in ignored_body_paths:
                     continue
 
-                if p == Sdf.Path.emptyPath:
-                    continue
-                else:
-                    usd_prim = stage.GetPrimAtPath(p)
-                    if collect_schema_attrs:
-                        # Collect on each articulated body prim encountered
-                        R.collect_prim_attrs(usd_prim)
-                    if "TensorPhysicsArticulationRootAPI" in usd_prim.GetPrimTypeInfo().GetAppliedAPISchemas():
-                        usd_prim.CreateAttribute(
-                            "physics:newton:articulation_index", Sdf.ValueTypeNames.UInt, True
-                        ).Set(articulation_id)
-                        articulation_roots.append(key)
+                usd_prim = stage.GetPrimAtPath(p)
+                if collect_schema_attrs:
+                    # Collect on each articulated body prim encountered
+                    R.collect_prim_attrs(usd_prim)
 
                 if key in body_specs:
+                    body_desc = body_specs[key]
+                    desc_xform = wp.transform(body_desc.position, usd.from_gfquat(body_desc.rotation))
+                    body_world = usd.get_transform(usd_prim, local=False, xform_cache=xform_cache)
+                    desired_world = incoming_world_xform * body_world
+                    body_incoming_xform = desired_world * wp.transform_inverse(desc_xform)
                     if bodies_follow_joint_ordering:
                         # we just parse the body information without yet adding it to the builder
                         body_data[current_body_id] = parse_body(
-                            body_specs[key],
+                            body_desc,
                             stage.GetPrimAtPath(p),
-                            incoming_xform=articulation_xform,
+                            incoming_xform=body_incoming_xform,
                             add_body_to_builder=False,
                         )
                     else:
                         # look up description and add body to builder
                         bid: int = parse_body(  # pyright: ignore[reportAssignmentType]
-                            body_specs[key],
+                            body_desc,
                             stage.GetPrimAtPath(p),
-                            incoming_xform=articulation_xform,
+                            incoming_xform=body_incoming_xform,
                             add_body_to_builder=True,
                         )
                         if bid >= 0:
@@ -1299,11 +1294,8 @@ def parse_usd(
                     else:
                         child_body_id = art_bodies[first_joint_parent]
                     # apply the articulation transform to the body
-                    #! investigate why assigning body_q (joint_q) by art_xform * body_q is breaking the tests
-                    # builder.body_q[child_body_id] = articulation_xform * builder.body_q[child_body_id]
                     free_joint_id = builder.add_joint_free(child=child_body_id)
                     articulation_joint_indices.append(free_joint_id)
-                    builder.joint_q[-7:] = articulation_xform
 
                 # insert the remaining joints in topological order
                 for joint_id, i in enumerate(sorted_joints):
@@ -1312,7 +1304,7 @@ def parse_usd(
                         # except if we already inserted a floating-base joint
                         joint = parse_joint(
                             joint_descriptions[joint_names[i]],
-                            incoming_xform=articulation_xform,
+                            incoming_xform=articulation_incoming_xform,
                         )
                     else:
                         joint = parse_joint(
@@ -1325,7 +1317,7 @@ def parse_usd(
                 for joint_key in joint_excluded:
                     joint = parse_joint(
                         joint_descriptions[joint_key],
-                        incoming_xform=articulation_xform,
+                        incoming_xform=articulation_incoming_xform,
                     )
 
             # Create the articulation from all collected joints
@@ -1404,16 +1396,15 @@ def parse_usd(
                 if any(re.match(p, path) for p in ignore_paths):
                     continue
                 prim = stage.GetPrimAtPath(xpath)
-                # print(prim)
-                # print(shape_spec)
                 if path in path_shape_map:
                     if verbose:
                         print(f"Shape at {path} already added, skipping.")
                     continue
                 body_path = str(shape_spec.rigidBody)
-                # print("shape ", prim, "body =" , body_path)
+                if verbose:
+                    print(f"collision shape {prim.GetPath()} ({prim.GetTypeName()}), body = {body_path}")
                 body_id = path_body_map.get(body_path, -1)
-                scale = wp.vec3(shape_spec.localScale)
+                scale = usd.get_scale(prim, local=False)
                 collision_group = builder.default_shape_cfg.collision_group
 
                 if len(shape_spec.collisionGroups) > 0:
@@ -1489,9 +1480,12 @@ def parse_usd(
                         hz=hz,
                     )
                 elif key == UsdPhysics.ObjectType.SphereShape:
+                    if not (scale[0] == scale[1] == scale[2]):
+                        print("Warning: Non-uniform scaling of spheres is not supported.")
+                    radius = shape_spec.radius
                     shape_id = builder.add_shape_sphere(
                         **shape_params,
-                        radius=shape_spec.radius,
+                        radius=radius,
                     )
                 elif key == UsdPhysics.ObjectType.CapsuleShape:
                     # Apply axis rotation to transform
@@ -1499,10 +1493,12 @@ def parse_usd(
                     shape_params["xform"] = wp.transform(
                         shape_params["xform"].p, shape_params["xform"].q * quat_between_axes(Axis.Z, axis)
                     )
+                    radius = shape_spec.radius
+                    half_height = shape_spec.halfHeight
                     shape_id = builder.add_shape_capsule(
                         **shape_params,
-                        radius=shape_spec.radius,
-                        half_height=shape_spec.halfHeight,
+                        radius=radius,
+                        half_height=half_height,
                     )
                 elif key == UsdPhysics.ObjectType.CylinderShape:
                     # Apply axis rotation to transform
@@ -1510,10 +1506,12 @@ def parse_usd(
                     shape_params["xform"] = wp.transform(
                         shape_params["xform"].p, shape_params["xform"].q * quat_between_axes(Axis.Z, axis)
                     )
+                    radius = shape_spec.radius
+                    half_height = shape_spec.halfHeight
                     shape_id = builder.add_shape_cylinder(
                         **shape_params,
-                        radius=shape_spec.radius,
-                        half_height=shape_spec.halfHeight,
+                        radius=radius,
+                        half_height=half_height,
                     )
                 elif key == UsdPhysics.ObjectType.ConeShape:
                     # Apply axis rotation to transform
@@ -1521,10 +1519,12 @@ def parse_usd(
                     shape_params["xform"] = wp.transform(
                         shape_params["xform"].p, shape_params["xform"].q * quat_between_axes(Axis.Z, axis)
                     )
+                    radius = shape_spec.radius
+                    half_height = shape_spec.halfHeight
                     shape_id = builder.add_shape_cone(
                         **shape_params,
-                        radius=shape_spec.radius,
-                        half_height=shape_spec.halfHeight,
+                        radius=radius,
+                        half_height=half_height,
                     )
                 elif key == UsdPhysics.ObjectType.MeshShape:
                     # Resolve mesh hull vertex limit from schema with fallback to parameter
@@ -1537,7 +1537,7 @@ def parse_usd(
                         verbose=verbose,
                     )
                     shape_id = builder.add_shape_mesh(
-                        scale=scale,
+                        scale=wp.vec3(*shape_spec.meshScale),
                         mesh=mesh,
                         **shape_params,
                     )
@@ -1577,9 +1577,7 @@ def parse_usd(
                     for other_path in other_paths:
                         path_collision_filters.add((path, str(other_path)))
 
-                if not prim.HasAPI(UsdPhysics.CollisionAPI) or not usd.get_attribute(
-                    prim, "physics:collisionEnabled", True
-                ):
+                if not _is_enabled_collider(prim):
                     no_collision_shapes.add(shape_id)
                     builder.shape_flags[shape_id] &= ~ShapeFlags.COLLIDE_SHAPES
 
