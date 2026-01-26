@@ -585,7 +585,7 @@ class Example:
             )
 
             # Custom cable vs vessel mesh collision is disabled - using VBD built-in collisions instead
-            # self._apply_mesh_collision(self.state_1)
+            self._apply_mesh_collision(self.state_1)
 
             # Swap states
             self.state_0, self.state_1 = self.state_1, self.state_0

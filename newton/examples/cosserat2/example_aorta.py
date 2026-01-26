@@ -38,6 +38,24 @@ DEFAULT_NUM_PARTICLES = 129
 DEFAULT_PARTICLE_SPACING = 0.025
 
 
+def _resolve_models_dir() -> str:
+    """Resolve the models directory, following pointer files if needed."""
+    base_dir = os.path.dirname(__file__)
+    models_path = os.path.join(base_dir, "models")
+    if os.path.isdir(models_path):
+        return models_path
+
+    if os.path.isfile(models_path):
+        with open(models_path, "r", encoding="utf-8") as handle:
+            target = handle.read().strip()
+        if target:
+            resolved = os.path.abspath(os.path.join(base_dir, target))
+            if os.path.isdir(resolved):
+                return resolved
+
+    return models_path
+
+
 class Example:
     """Cosserat rod example with pluggable constraint solvers.
 
@@ -98,7 +116,14 @@ class Example:
         builder.add_ground_plane()
 
         # Load the aorta vessel mesh
-        usd_path = os.path.join(os.path.dirname(__file__), "models", "DynamicAorta.usdc")
+        models_dir = _resolve_models_dir()
+        usd_path = os.path.join(models_dir, "DynamicAorta.usdc")
+        if not os.path.isfile(usd_path):
+            raise FileNotFoundError(
+                "Unable to find DynamicAorta.usdc. "
+                f"Expected at '{usd_path}'. If you're using the pointer file "
+                "at 'cosserat2/models', ensure it targets the cosserat models folder."
+            )
         usd_stage = Usd.Stage.Open(usd_path)
         mesh_prim = usd_stage.GetPrimAtPath("/root/A4009/A4007/Xueguan_rudong/Dynamic_vessels/Mesh")
 
