@@ -268,9 +268,9 @@ def parse_usd(
     xform_cache = UsdGeom.XformCache(Usd.TimeCode.Default())
 
     def _is_enabled_collider(prim: Usd.Prim) -> bool:
-        if not prim.HasAPI(UsdPhysics.CollisionAPI):
-            return False
-        return usd.get_attribute(prim, "physics:collisionEnabled", True)
+        if collider := UsdPhysics.CollisionAPI(prim):
+            return collider.GetCollisionEnabledAttr().Get()
+        return False
 
     def _xform_to_mat44(xform: wp.transform) -> wp.mat44:
         return wp.transform_compose(xform.p, xform.q, wp.vec3(1.0))
