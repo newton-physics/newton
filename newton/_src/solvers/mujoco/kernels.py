@@ -1297,7 +1297,6 @@ def update_model_properties_kernel(
 
 @wp.kernel
 def update_geom_properties_kernel(
-    shape_collision_radius: wp.array(dtype=float),
     shape_mu: wp.array(dtype=float),
     shape_ke: wp.array(dtype=float),
     shape_kd: wp.array(dtype=float),
@@ -1315,7 +1314,6 @@ def update_geom_properties_kernel(
     shape_geom_solmix: wp.array(dtype=float),
     shape_geom_gap: wp.array(dtype=float),
     # outputs
-    geom_rbound: wp.array2d(dtype=float),
     geom_friction: wp.array2d(dtype=wp.vec3f),
     geom_solref: wp.array2d(dtype=wp.vec2f),
     geom_size: wp.array2d(dtype=wp.vec3f),
@@ -1329,15 +1327,16 @@ def update_geom_properties_kernel(
 
     Iterates over MuJoCo geoms [world, geom], looks up Newton shape index,
     and copies shape properties to geom properties.
+
+    Note: geom_rbound (collision radius) is not updated here. MuJoCo computes
+    this internally based on the geometry, and Newton's shape_collision_radius
+    is not compatible with MuJoCo's bounding sphere calculation.
     """
     world, geom_idx = wp.tid()
 
     shape_idx = mjc_geom_to_newton_shape[world, geom_idx]
     if shape_idx < 0:
         return
-
-    # update bounding radius
-    geom_rbound[world, geom_idx] = shape_collision_radius[shape_idx]
 
     # update friction (slide, torsion, roll)
     mu = shape_mu[shape_idx]
