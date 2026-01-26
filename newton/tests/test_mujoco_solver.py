@@ -5210,6 +5210,69 @@ class TestMuJoCoOptions(unittest.TestCase):
         self.assertEqual(solver.mj_model.opt.cone, mujoco.mjtCone.mjCONE_PYRAMIDAL, "Should use Newton default (pyramidal)")
         self.assertEqual(solver.mj_model.opt.jacobian, mujoco.mjtJacobian.mjJAC_AUTO, "Should use Newton default (auto)")
 
+    def test_iterations_use_custom_attributes_when_not_provided(self):
+        """
+        Verify that iterations and ls_iterations use custom attribute values
+        when no constructor parameter is provided.
+
+        This tests the resolution priority:
+        1. Constructor parameter (if provided)
+        2. Custom attribute (if exists)
+        3. Default value
+        """
+        model = self._create_multiworld_model(num_worlds=2)
+
+        # Set custom attributes to non-default values
+        # Custom attribute defaults: iterations=100, ls_iterations=50
+        # Newton defaults: iterations=20, ls_iterations=10
+        # Set to: iterations=150, ls_iterations=75
+        model.mujoco.iterations.assign(np.array([150], dtype=np.int32))
+        model.mujoco.ls_iterations.assign(np.array([75], dtype=np.int32))
+
+        # Create solver WITHOUT specifying these options - should use custom attributes
+        solver = SolverMuJoCo(model, disable_contacts=True)
+
+        # Verify MuJoCo model uses custom attribute values, not Newton defaults
+        self.assertEqual(solver.mj_model.opt.iterations, 150, "Should use custom attribute 150, not Newton default 20")
+        self.assertEqual(solver.mj_model.opt.ls_iterations, 75, "Should use custom attribute 75, not Newton default 10")
+
+    def test_iterations_use_defaults_when_no_custom_attribute(self):
+        """
+        Verify that iterations and ls_iterations use Newton defaults when no
+        constructor parameter or custom attribute is provided.
+        """
+        # Create model WITHOUT registering custom attributes
+        builder = newton.ModelBuilder()
+        pendulum = builder.add_link(mass=1.0, com=wp.vec3(0.0, 0.0, 0.0), I_m=wp.mat33(np.eye(3)))
+        builder.add_shape_box(body=pendulum, hx=0.05, hy=0.05, hz=0.05)
+        joint = builder.add_joint_revolute(parent=-1, child=pendulum, axis=(0.0, 0.0, 1.0))
+        builder.add_articulation([joint])
+        model = builder.finalize()
+
+        # Create solver without specifying iterations - should use Newton defaults
+        solver = SolverMuJoCo(model, disable_contacts=True)
+
+        # Verify Newton defaults are used: iterations=20, ls_iterations=10
+        self.assertEqual(solver.mj_model.opt.iterations, 20, "Should use Newton default (20)")
+        self.assertEqual(solver.mj_model.opt.ls_iterations, 10, "Should use Newton default (10)")
+
+    def test_iterations_constructor_override(self):
+        """
+        Verify that constructor parameters override custom attributes for iterations.
+        """
+        model = self._create_multiworld_model(num_worlds=2)
+
+        # Set custom attributes
+        model.mujoco.iterations.assign(np.array([150], dtype=np.int32))
+        model.mujoco.ls_iterations.assign(np.array([75], dtype=np.int32))
+
+        # Create solver with explicit constructor values - should override custom attributes
+        solver = SolverMuJoCo(model, iterations=5, ls_iterations=3, disable_contacts=True)
+
+        # Verify constructor values override custom attributes
+        self.assertEqual(solver.mj_model.opt.iterations, 5, "Constructor value should override custom attribute")
+        self.assertEqual(solver.mj_model.opt.ls_iterations, 3, "Constructor value should override custom attribute")
+
 
 class TestMuJoCoArticulationConversion(unittest.TestCase):
     def test_loop_joints_only(self):
