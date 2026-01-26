@@ -465,6 +465,68 @@ class SolverMuJoCo(SolverBase):
             )
         )
 
+        # Solver options (frequency ONCE for single value shared across all worlds)
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="iterations",
+                frequency=ModelAttributeFrequency.ONCE,
+                assignment=ModelAttributeAssignment.MODEL,
+                dtype=wp.int32,
+                default=100,
+                namespace="mujoco",
+                usd_attribute_name="mjc:option:iterations",
+                mjcf_attribute_name="iterations",
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="ls_iterations",
+                frequency=ModelAttributeFrequency.ONCE,
+                assignment=ModelAttributeAssignment.MODEL,
+                dtype=wp.int32,
+                default=50,
+                namespace="mujoco",
+                usd_attribute_name="mjc:option:ls_iterations",
+                mjcf_attribute_name="ls_iterations",
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="ccd_iterations",
+                frequency=ModelAttributeFrequency.ONCE,
+                assignment=ModelAttributeAssignment.MODEL,
+                dtype=wp.int32,
+                default=50,
+                namespace="mujoco",
+                usd_attribute_name="mjc:option:ccd_iterations",
+                mjcf_attribute_name="ccd_iterations",
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="sdf_iterations",
+                frequency=ModelAttributeFrequency.ONCE,
+                assignment=ModelAttributeAssignment.MODEL,
+                dtype=wp.int32,
+                default=10,
+                namespace="mujoco",
+                usd_attribute_name="mjc:option:sdf_iterations",
+                mjcf_attribute_name="sdf_iterations",
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="sdf_initpoints",
+                frequency=ModelAttributeFrequency.ONCE,
+                assignment=ModelAttributeAssignment.MODEL,
+                dtype=wp.int32,
+                default=40,
+                namespace="mujoco",
+                usd_attribute_name="mjc:option:sdf_initpoints",
+                mjcf_attribute_name="sdf_initpoints",
+            )
+        )
+
         # --- Pair attributes (from MJCF <pair> tag) ---
         # Explicit contact pairs with custom properties. Only pairs from the template world are used.
         # These are parsed automatically from MJCF <contact><pair> elements.
@@ -1135,6 +1197,9 @@ class SolverMuJoCo(SolverBase):
         nconmax: int | None = None,
         iterations: int = 20,
         ls_iterations: int = 10,
+        ccd_iterations: int | None = None,
+        sdf_iterations: int | None = None,
+        sdf_initpoints: int | None = None,
         solver: int | str = "cg",
         integrator: int | str = "implicitfast",
         cone: int | str = "pyramidal",
@@ -1172,6 +1237,9 @@ class SolverMuJoCo(SolverBase):
             nconmax (int | None): Number of contact points per world. If None, a default value is estimated from the initial state. Note that the larger of the user-provided value or the default value is used.
             iterations (int): Number of solver iterations.
             ls_iterations (int): Number of line search iterations for the solver.
+            ccd_iterations (int | None): Maximum CCD iterations. If None, uses model custom attribute or MuJoCo's default (50).
+            sdf_iterations (int | None): Maximum SDF iterations. If None, uses model custom attribute or MuJoCo's default (10).
+            sdf_initpoints (int | None): Number of SDF initialization points. If None, uses model custom attribute or MuJoCo's default (40).
             solver (int | str): Solver type. Can be "cg" or "newton", or their corresponding MuJoCo integer constants.
             integrator (int | str): Integrator type. Can be "euler", "rk4", or "implicitfast", or their corresponding MuJoCo integer constants.
             cone (int | str): The type of contact friction cone. Can be "pyramidal", "elliptic", or their corresponding MuJoCo integer constants.
@@ -1279,6 +1347,9 @@ class SolverMuJoCo(SolverBase):
                     nconmax=nconmax,
                     iterations=iterations,
                     ls_iterations=ls_iterations,
+                    ccd_iterations=ccd_iterations,
+                    sdf_iterations=sdf_iterations,
+                    sdf_initpoints=sdf_initpoints,
                     cone=cone,
                     impratio=impratio,
                     tolerance=tolerance,
@@ -1823,6 +1894,9 @@ class SolverMuJoCo(SolverBase):
         separate_worlds: bool = True,
         iterations: int = 20,
         ls_iterations: int = 10,
+        ccd_iterations: int | None = None,
+        sdf_iterations: int | None = None,
+        sdf_initpoints: int | None = None,
         njmax: int | None = None,  # number of constraints per world
         nconmax: int | None = None,
         solver: int | str = "cg",
@@ -2019,6 +2093,14 @@ class SolverMuJoCo(SolverBase):
         wind = resolve_vector_option("wind", wind)
         magnetic = resolve_vector_option("magnetic", magnetic)
 
+        # Resolve ONCE frequency numeric options from custom attributes if not provided
+        if ccd_iterations is None and mujoco_attrs and hasattr(mujoco_attrs, "ccd_iterations"):
+            ccd_iterations = int(mujoco_attrs.ccd_iterations.numpy()[0])
+        if sdf_iterations is None and mujoco_attrs and hasattr(mujoco_attrs, "sdf_iterations"):
+            sdf_iterations = int(mujoco_attrs.sdf_iterations.numpy()[0])
+        if sdf_initpoints is None and mujoco_attrs and hasattr(mujoco_attrs, "sdf_initpoints"):
+            sdf_initpoints = int(mujoco_attrs.sdf_initpoints.numpy()[0])
+
         spec = mujoco.MjSpec()
         spec.option.disableflags = disableflags
         spec.option.gravity = np.array([*model.gravity.numpy()[0]])
@@ -2028,6 +2110,14 @@ class SolverMuJoCo(SolverBase):
         spec.option.ls_iterations = ls_iterations
         spec.option.cone = cone
         spec.option.jacobian = mujoco.mjtJacobian.mjJAC_AUTO
+
+        # Set ONCE frequency numeric options (use MuJoCo defaults if None)
+        if ccd_iterations is not None:
+            spec.option.ccd_iterations = ccd_iterations
+        if sdf_iterations is not None:
+            spec.option.sdf_iterations = sdf_iterations
+        if sdf_initpoints is not None:
+            spec.option.sdf_initpoints = sdf_initpoints
 
         # Set WORLD frequency options (use MuJoCo defaults if None)
         if impratio is not None:
