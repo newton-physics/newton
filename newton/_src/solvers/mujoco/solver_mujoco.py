@@ -160,6 +160,38 @@ class SolverMuJoCo(SolverBase):
         return cls._mujoco, cls._mujoco_warp
 
     @override
+    @staticmethod
+    def _parse_integrator(value: str | int) -> int:
+        """Parse integrator option: Euler=0, RK4=1, implicit=2, implicitfast=3."""
+        if isinstance(value, int):
+            return value
+        mapping = {"euler": 0, "rk4": 1, "implicit": 2, "implicitfast": 3}
+        return mapping.get(value.lower().strip(), int(value))
+
+    @staticmethod
+    def _parse_solver(value: str | int) -> int:
+        """Parse solver option: PGS=0, CG=1, Newton=2."""
+        if isinstance(value, int):
+            return value
+        mapping = {"pgs": 0, "cg": 1, "newton": 2}
+        return mapping.get(value.lower().strip(), int(value))
+
+    @staticmethod
+    def _parse_cone(value: str | int) -> int:
+        """Parse cone option: pyramidal=0, elliptic=1."""
+        if isinstance(value, int):
+            return value
+        mapping = {"pyramidal": 0, "elliptic": 1}
+        return mapping.get(value.lower().strip(), int(value))
+
+    @staticmethod
+    def _parse_jacobian(value: str | int) -> int:
+        """Parse jacobian option: dense=0, sparse=1, auto=2."""
+        if isinstance(value, int):
+            return value
+        mapping = {"dense": 0, "sparse": 1, "auto": 2}
+        return mapping.get(value.lower().strip(), int(value))
+
     @classmethod
     def register_custom_attributes(cls, builder: ModelBuilder) -> None:
         """
@@ -524,6 +556,58 @@ class SolverMuJoCo(SolverBase):
                 namespace="mujoco",
                 usd_attribute_name="mjc:option:sdf_initpoints",
                 mjcf_attribute_name="sdf_initpoints",
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="integrator",
+                frequency=ModelAttributeFrequency.ONCE,
+                assignment=ModelAttributeAssignment.MODEL,
+                dtype=wp.int32,
+                default=3,  # Newton default: implicitfast (not MuJoCo's 0/Euler)
+                namespace="mujoco",
+                usd_attribute_name="mjc:option:integrator",
+                mjcf_attribute_name="integrator",
+                mjcf_value_transformer=cls._parse_integrator,
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="solver",
+                frequency=ModelAttributeFrequency.ONCE,
+                assignment=ModelAttributeAssignment.MODEL,
+                dtype=wp.int32,
+                default=2,  # Newton
+                namespace="mujoco",
+                usd_attribute_name="mjc:option:solver",
+                mjcf_attribute_name="solver",
+                mjcf_value_transformer=cls._parse_solver,
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="cone",
+                frequency=ModelAttributeFrequency.ONCE,
+                assignment=ModelAttributeAssignment.MODEL,
+                dtype=wp.int32,
+                default=0,  # pyramidal
+                namespace="mujoco",
+                usd_attribute_name="mjc:option:cone",
+                mjcf_attribute_name="cone",
+                mjcf_value_transformer=cls._parse_cone,
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="jacobian",
+                frequency=ModelAttributeFrequency.ONCE,
+                assignment=ModelAttributeAssignment.MODEL,
+                dtype=wp.int32,
+                default=2,  # auto
+                namespace="mujoco",
+                usd_attribute_name="mjc:option:jacobian",
+                mjcf_attribute_name="jacobian",
+                mjcf_value_transformer=cls._parse_jacobian,
             )
         )
 
@@ -2101,6 +2185,11 @@ class SolverMuJoCo(SolverBase):
         if sdf_initpoints is None and mujoco_attrs and hasattr(mujoco_attrs, "sdf_initpoints"):
             sdf_initpoints = int(mujoco_attrs.sdf_initpoints.numpy()[0])
 
+        # Read jacobian from custom attribute if available (not a constructor parameter)
+        jacobian = mujoco.mjtJacobian.mjJAC_AUTO  # default
+        if mujoco_attrs and hasattr(mujoco_attrs, "jacobian"):
+            jacobian = int(mujoco_attrs.jacobian.numpy()[0])
+
         spec = mujoco.MjSpec()
         spec.option.disableflags = disableflags
         spec.option.gravity = np.array([*model.gravity.numpy()[0]])
@@ -2109,7 +2198,7 @@ class SolverMuJoCo(SolverBase):
         spec.option.iterations = iterations
         spec.option.ls_iterations = ls_iterations
         spec.option.cone = cone
-        spec.option.jacobian = mujoco.mjtJacobian.mjJAC_AUTO
+        spec.option.jacobian = jacobian
 
         # Set ONCE frequency numeric options (use MuJoCo defaults if None)
         if ccd_iterations is not None:
