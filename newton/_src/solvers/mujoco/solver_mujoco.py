@@ -173,14 +173,13 @@ class SolverMuJoCo(SolverBase):
 
     @staticmethod
     def _parse_solver(value: str | int) -> int:
-        """Parse solver option: CG=1, Newton=2. Note: PGS (0) is not supported and will fail silently."""
+        """Parse solver option: CG=1, Newton=2. PGS (0) is not supported."""
         if isinstance(value, int):
             return value
         mapping = {"cg": 1, "newton": 2}
         lower_value = value.lower().strip()
         if lower_value in mapping:
             return mapping[lower_value]
-        # If PGS or unknown string, try converting to int (will fail silently for PGS)
         return int(value)
 
     @staticmethod
@@ -1331,10 +1330,10 @@ class SolverMuJoCo(SolverBase):
             mjw_model (MjWarpModel | None): Optional pre-existing MuJoCo Warp model. If provided with `mjw_data`, conversion from Newton model is skipped.
             mjw_data (MjWarpData | None): Optional pre-existing MuJoCo Warp data. If provided with `mjw_model`, conversion from Newton model is skipped.
             separate_worlds (bool | None): If True, each Newton world is mapped to a separate MuJoCo world. Defaults to `not use_mujoco_cpu`.
-            njmax (int): Maximum number of constraints per world. If None, a default value is estimated from the initial state. Note that the larger of the user-provided value or the default value is used.
+            njmax (int | None): Maximum number of constraints per world. If None, a default value is estimated from the initial state. Note that the larger of the user-provided value or the default value is used.
             nconmax (int | None): Number of contact points per world. If None, a default value is estimated from the initial state. Note that the larger of the user-provided value or the default value is used.
-            iterations (int): Number of solver iterations.
-            ls_iterations (int): Number of line search iterations for the solver.
+            iterations (int): Number of solver iterations. Defaults to 20.
+            ls_iterations (int): Number of line search iterations for the solver. Defaults to 10.
             ccd_iterations (int | None): Maximum CCD iterations. If None, uses model custom attribute or MuJoCo's default (50).
             sdf_iterations (int | None): Maximum SDF iterations. If None, uses model custom attribute or MuJoCo's default (10).
             sdf_initpoints (int | None): Number of SDF initialization points. If None, uses model custom attribute or MuJoCo's default (40).
@@ -2189,7 +2188,6 @@ class SolverMuJoCo(SolverBase):
             sdf_initpoints = int(mujoco_attrs.sdf_initpoints.numpy()[0])
 
         # Resolve ONCE frequency enum options from custom attributes if not provided
-        # Note: These have defaults, but can be None if explicitly passed
         if solver is None and mujoco_attrs and hasattr(mujoco_attrs, "solver"):
             solver = int(mujoco_attrs.solver.numpy()[0])
         if integrator is None and mujoco_attrs and hasattr(mujoco_attrs, "integrator"):
