@@ -709,22 +709,43 @@ class Model:
             Global entities (particles/bodies not assigned to a specific world) use
             time-step from world 0.
         """
-        dt_np = np.asarray(dt, dtype=np.float32)
+        dt_array = np.asarray(dt, dtype=np.float32)
 
         if world is not None:
-            if dt_np.shape != ():
+            # setting for a specific world
+            if dt_array.shape != ():
                 raise ValueError("Expected single timestep scalar when world is specified")
             if world < 0 or world >= self.num_worlds:
                 raise IndexError(f"world {world} out of range [0, {self.num_worlds})")
-            current = self.dt.numpy()
-            current[world] = dt_np[0]
-            self.dt.assign(current)
-        elif dt_np.ndim == 1:
-            self.dt.fill_(dt_np[0])
-        else:
-            if len(dt_np) != self.num_worlds:
-                raise ValueError(f"Expected {self.num_worlds} timestep scalars, got {len(dt_np)}")
+            dt_value = float(dt_array)
+            if dt_value <= 0.0:
+                raise ValueError("Timestep must be positive")
+            inv_dt_value = 1.0 / dt_value
+            dt_np = self.dt.numpy()
+            inv_dt_np = self.inv_dt.numpy()
+            dt_np[world] = dt_value
+            inv_dt_np[world] = inv_dt_value
             self.dt.assign(dt_np)
+            self.inv_dt.assign(inv_dt_np)
+        elif dt_array.ndim == 0:
+            # setting uniformly for all worlds
+            dt_value = float(dt_array)
+            if dt_value <= 0.0:
+                raise ValueError("Timestep must be positive")
+            self.dt.fill_(dt_value)
+            self.inv_dt.fill_(1.0 / dt_value)
+        else:
+            # setting per-world
+            if len(dt_array) != self.num_worlds:
+                raise ValueError(f"Expected {self.num_worlds} timestep scalars, got {len(dt_array)}")
+            for w in range(self.num_worlds):
+                if dt_array[w] <= 0.0:
+                    raise ValueError(
+                        f"Timestep must be positive, but got non-positive value {dt_array[w]} for world {w}"
+                    )
+            inv_dt_array = 1.0 / dt_array
+            self.dt.assign(dt_array)
+            self.inv_dt.assign(inv_dt_array)
 
     def collide(
         self: Model,

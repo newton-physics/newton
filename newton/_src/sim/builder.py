@@ -1771,6 +1771,8 @@ class ModelBuilder:
 
         # Initialize this world's time-step
         if dt is not None:
+            if dt <= 0.0:
+                raise ValueError("World time-step 'dt' must be positive")
             self.world_dt.append(dt)
         else:
             self.world_dt.append(self.dt)
@@ -6311,6 +6313,31 @@ class ModelBuilder:
             )
         return len(shapes_with_bad_margin) == 0
 
+    def _validate_timesteps(self) -> bool:
+        """
+        Validate specified time-steps specified either as single scalar to be applied uniformly
+        across all worlds, or as per-world time-steps, ensuring all time-steps are positive.
+
+        Raises:
+            ValueError: If any time-step is non-positive (<= 0.0).
+
+        Returns:
+            bool: `True` if all time-steps are valid, `False` otherwise.
+        """
+        if self.world_dt:
+            for i, dt in enumerate(self.world_dt):
+                if dt <= 0.0:
+                    raise ValueError(f"Invalid time-step for world {i}: {dt}. Must be a positive float value.")
+        else:
+            if not isinstance(self.dt, float):
+                raise ValueError(
+                    f"Global time-step must be a float value when per-world time-steps "
+                    f"are not specified. Got: {self.dt} (type={type(self.dt)})"
+                )
+            if self.dt <= 0.0:
+                raise ValueError(f"Invalid global time-step: {self.dt}. Must be a positive float value.")
+        return True
+
     def finalize(
         self,
         device: Devicelike | None = None,
@@ -6358,6 +6385,9 @@ class ModelBuilder:
         # validate shapes have valid contact margins
         if not skip_validation_shapes:
             self._validate_shapes()
+
+        # validate timesteps
+        self._validate_timesteps()
 
         # construct particle inv masses
         ms = np.array(self.particle_mass, dtype=np.float32)
