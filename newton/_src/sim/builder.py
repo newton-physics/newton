@@ -700,7 +700,7 @@ class ModelBuilder:
         self.joint_type = []
         self.joint_key = []
         self.joint_armature = []
-        self.joint_act_mode = []  # Actuator mode per DOF (ActuatorMode.NONE=0, POSITION=1, VELOCITY=2, POSITION_VELOCITY=3)
+        self.joint_act_mode = []  # Actuator mode per DOF (ActuatorMode.NONE=0, POSITION=1, VELOCITY=2, POSITION_VELOCITY=3, EFFORT=4)
         self.joint_target_ke = []
         self.joint_target_kd = []
         self.joint_limit_lower = []
@@ -2523,7 +2523,10 @@ class ModelBuilder:
             if dim.actuator_mode is not None:
                 mode = int(dim.actuator_mode)
             else:
-                mode = int(infer_actuator_mode(dim.target_ke, dim.target_kd))
+                # Infer has_drive from whether gains are non-zero: non-zero gains imply a drive exists.
+                # This ensures freejoints (gains=0) get NONE, while joints with gains get appropriate mode.
+                has_drive = dim.target_ke != 0.0 or dim.target_kd != 0.0
+                mode = int(infer_actuator_mode(dim.target_ke, dim.target_kd, has_drive=has_drive))
 
             # Store per-DOF actuator properties
             self.joint_act_mode.append(mode)

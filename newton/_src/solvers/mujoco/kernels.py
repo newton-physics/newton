@@ -1057,6 +1057,45 @@ def update_axis_properties_kernel(
 
 
 @wp.kernel
+def update_ctrl_direct_actuator_properties_kernel(
+    mjc_actuator_ctrl_source: wp.array(dtype=wp.int32),
+    mjc_actuator_to_newton_idx: wp.array(dtype=wp.int32),
+    newton_actuator_gainprm: wp.array(dtype=vec10),
+    newton_actuator_biasprm: wp.array(dtype=vec10),
+    actuators_per_world: wp.int32,
+    # outputs
+    actuator_gain: wp.array2d(dtype=vec10),
+    actuator_bias: wp.array2d(dtype=vec10),
+):
+    """Update MuJoCo actuator gains/biases for CTRL_DIRECT actuators from Newton custom attributes.
+
+    Only updates actuators where mjc_actuator_ctrl_source == CTRL_DIRECT.
+    Uses mjc_actuator_to_newton_idx to map from MuJoCo actuator index to Newton's
+    mujoco:actuator frequency index.
+
+    Args:
+        mjc_actuator_ctrl_source: 0=JOINT_TARGET, 1=CTRL_DIRECT
+        mjc_actuator_to_newton_idx: Index into Newton's mujoco:actuator arrays
+        newton_actuator_gainprm: Newton's model.mujoco.actuator_gainprm
+        newton_actuator_biasprm: Newton's model.mujoco.actuator_biasprm
+        actuators_per_world: Number of actuators per world in Newton model
+    """
+    world, actuator = wp.tid()
+    source = mjc_actuator_ctrl_source[actuator]
+
+    if source != CTRL_SOURCE_CTRL_DIRECT:
+        return
+
+    newton_idx = mjc_actuator_to_newton_idx[actuator]
+    if newton_idx < 0:
+        return
+
+    world_newton_idx = world * actuators_per_world + newton_idx
+    actuator_gain[world, actuator] = newton_actuator_gainprm[world_newton_idx]
+    actuator_bias[world, actuator] = newton_actuator_biasprm[world_newton_idx]
+
+
+@wp.kernel
 def update_dof_properties_kernel(
     mjc_dof_to_newton_dof: wp.array2d(dtype=wp.int32),
     joint_armature: wp.array(dtype=float),

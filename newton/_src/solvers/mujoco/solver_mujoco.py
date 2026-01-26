@@ -60,6 +60,7 @@ from .kernels import (
     update_axis_properties_kernel,
     update_body_inertia_kernel,
     update_body_mass_ipos_kernel,
+    update_ctrl_direct_actuator_properties_kernel,
     update_dof_properties_kernel,
     update_eq_data_and_active_kernel,
     update_eq_properties_kernel,
@@ -376,7 +377,7 @@ class SolverMuJoCo(SolverBase):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="pair_world",
-                frequency="pair",
+                frequency="pair",  # Resolves to "mujoco:pair" via namespace
                 dtype=wp.int32,
                 default=0,
                 namespace="mujoco",
@@ -1571,6 +1572,8 @@ class SolverMuJoCo(SolverBase):
             self.update_eq_properties()
         if flags & SolverNotifyFlags.TENDON_PROPERTIES:
             self.update_tendon_properties()
+        if flags & SolverNotifyFlags.ACTUATOR_PROPERTIES:
+            self.update_actuator_properties()
 
     def _create_inverse_shape_mapping(self):
         """
@@ -2683,9 +2686,6 @@ class SolverMuJoCo(SolverBase):
                             mjc_actuator_to_newton_idx_list.append(-(template_dof + 2))  # negative = velocity
                             actuator_count += 1
 
-                        # Note: MuJoCo general actuators are handled separately via custom attributes
-                        # They are processed after all joints are created
-
                 # angular dofs
                 for i in range(lin_axis_count, lin_axis_count + ang_axis_count):
                     ai = qd_start + i
@@ -3766,6 +3766,48 @@ class SolverMuJoCo(SolverBase):
                 self.mjw_model.tendon_solimp_fri,
                 self.mjw_model.tendon_armature,
                 self.mjw_model.tendon_actfrcrange,
+            ],
+            device=self.model.device,
+        )
+
+    def update_actuator_properties(self):
+        """Update CTRL_DIRECT actuator properties (gainprm, biasprm) in the MuJoCo model.
+
+        Only updates actuators that use CTRL_DIRECT mode. JOINT_TARGET actuators are
+        updated via update_joint_dof_properties() using joint_target_ke/kd.
+        """
+        if self.mjc_actuator_ctrl_source is None or self.mjc_actuator_to_newton_idx is None:
+            return
+
+        nu = self.mjc_actuator_ctrl_source.shape[0]
+        if nu == 0:
+            return
+
+        mujoco_attrs = getattr(self.model, "mujoco", None)
+        if mujoco_attrs is None:
+            return
+
+        actuator_gainprm = getattr(mujoco_attrs, "actuator_gainprm", None)
+        actuator_biasprm = getattr(mujoco_attrs, "actuator_biasprm", None)
+        if actuator_gainprm is None or actuator_biasprm is None:
+            return
+
+        nworld = self.mjw_model.actuator_biasprm.shape[0]
+        actuators_per_world = actuator_gainprm.shape[0] // nworld if nworld > 0 else actuator_gainprm.shape[0]
+
+        wp.launch(
+            update_ctrl_direct_actuator_properties_kernel,
+            dim=(nworld, nu),
+            inputs=[
+                self.mjc_actuator_ctrl_source,
+                self.mjc_actuator_to_newton_idx,
+                actuator_gainprm,
+                actuator_biasprm,
+                actuators_per_world,
+            ],
+            outputs=[
+                self.mjw_model.actuator_gainprm,
+                self.mjw_model.actuator_biasprm,
             ],
             device=self.model.device,
         )

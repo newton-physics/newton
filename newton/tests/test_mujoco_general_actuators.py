@@ -436,6 +436,61 @@ class TestMuJoCoActuators(unittest.TestCase):
             np.testing.assert_allclose(updated_gainprm[world, 4, 0], initial_gainprm[world, 4, 0], atol=1e-5)
             np.testing.assert_allclose(updated_gainprm[world, 5, 0], initial_gainprm[world, 5, 0], atol=1e-5)
 
+    def test_multiworld_ctrl_direct_gains_update(self):
+        """Test that CTRL_DIRECT actuator gains update correctly in multiworld setup."""
+        robot_builder = newton.ModelBuilder()
+        robot_builder.add_mjcf(MJCF_ACTUATORS, ctrl_direct=False)
+
+        main_builder = newton.ModelBuilder()
+        main_builder.add_world(robot_builder)
+        main_builder.add_world(robot_builder)
+        model = main_builder.finalize()
+
+        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True, separate_worlds=True)
+
+        initial_gainprm = solver.mjw_model.actuator_gainprm.numpy().copy()
+        initial_biasprm = solver.mjw_model.actuator_biasprm.numpy().copy()
+
+        for world in range(2):
+            np.testing.assert_allclose(initial_gainprm[world, 4, 0], 50.0, atol=1e-5)
+            np.testing.assert_allclose(initial_biasprm[world, 4, 1], -50.0, atol=1e-5)
+            np.testing.assert_allclose(initial_gainprm[world, 5, 0], 30.0, atol=1e-5)
+
+        new_gainprm = model.mujoco.actuator_gainprm.numpy()
+        new_biasprm = model.mujoco.actuator_biasprm.numpy()
+
+        actuators_per_world = 7
+        for world in range(2):
+            offset = world * actuators_per_world
+            new_gainprm[offset + 5, 0] = 150.0 + world * 50
+            new_biasprm[offset + 5, 1] = -150.0 - world * 50
+            new_biasprm[offset + 5, 2] = -15.0 - world * 5
+            new_gainprm[offset + 6, 0] = 90.0 + world * 30
+
+        model.mujoco.actuator_gainprm.assign(new_gainprm)
+        model.mujoco.actuator_biasprm.assign(new_biasprm)
+
+        solver.notify_model_changed(SolverNotifyFlags.ACTUATOR_PROPERTIES)
+
+        updated_gainprm = solver.mjw_model.actuator_gainprm.numpy()
+        updated_biasprm = solver.mjw_model.actuator_biasprm.numpy()
+
+        np.testing.assert_allclose(updated_gainprm[0, 4, 0], 150.0, atol=1e-5)
+        np.testing.assert_allclose(updated_biasprm[0, 4, 1], -150.0, atol=1e-5)
+        np.testing.assert_allclose(updated_biasprm[0, 4, 2], -15.0, atol=1e-5)
+        np.testing.assert_allclose(updated_gainprm[0, 5, 0], 90.0, atol=1e-5)
+
+        np.testing.assert_allclose(updated_gainprm[1, 4, 0], 200.0, atol=1e-5)
+        np.testing.assert_allclose(updated_biasprm[1, 4, 1], -200.0, atol=1e-5)
+        np.testing.assert_allclose(updated_biasprm[1, 4, 2], -20.0, atol=1e-5)
+        np.testing.assert_allclose(updated_gainprm[1, 5, 0], 120.0, atol=1e-5)
+
+        for world in range(2):
+            np.testing.assert_allclose(updated_gainprm[world, 0, 0], initial_gainprm[world, 0, 0], atol=1e-5)
+            np.testing.assert_allclose(updated_gainprm[world, 1, 0], initial_gainprm[world, 1, 0], atol=1e-5)
+            np.testing.assert_allclose(updated_gainprm[world, 2, 0], initial_gainprm[world, 2, 0], atol=1e-5)
+            np.testing.assert_allclose(updated_gainprm[world, 3, 0], initial_gainprm[world, 3, 0], atol=1e-5)
+
 
 if __name__ == "__main__":
     unittest.main()

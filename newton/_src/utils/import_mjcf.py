@@ -1518,9 +1518,6 @@ def parse_mjcf(
         Args:
             actuator_section: The <actuator> XML element
         """
-        # Check if custom attributes are registered (via SolverMuJoCo.register_custom_attributes())
-        has_custom_attrs = "mujoco:ctrl_source" in builder.custom_attributes
-
         # Process ALL actuators in MJCF order
         for actuator_elem in actuator_section:
             actuator_type = actuator_elem.tag  # position, velocity, motor, general
@@ -1639,41 +1636,40 @@ def parse_mjcf(
                     print(f"Warning: Unknown actuator type '{actuator_type}', skipping")
                 continue
 
-            # Add actuator via custom attributes (if registered)
-            if has_custom_attrs:
-                parsed_attrs = parse_custom_attributes(
-                    actuator_elem.attrib, builder_custom_attr_actuator, parsing_mode="mjcf"
+            # Add actuator via custom attributes
+            parsed_attrs = parse_custom_attributes(
+                actuator_elem.attrib, builder_custom_attr_actuator, parsing_mode="mjcf"
+            )
+
+            # Build full values dict
+            actuator_values: dict[str, Any] = {}
+            for attr in builder_custom_attr_actuator:
+                if attr.key in (
+                    "mujoco:ctrl_source",
+                    "mujoco:actuator_trntype",
+                    "mujoco:actuator_gainprm",
+                    "mujoco:actuator_biasprm",
+                    "mujoco:ctrl",
+                ):
+                    continue
+                actuator_values[attr.key] = parsed_attrs.get(attr.key, attr.default)
+
+            actuator_values["mujoco:ctrl_source"] = ctrl_source_val
+            actuator_values["mujoco:actuator_gainprm"] = gainprm
+            actuator_values["mujoco:actuator_biasprm"] = biasprm
+            actuator_values["mujoco:actuator_trnid"] = wp.vec2i(target_idx, 0)
+            actuator_values["mujoco:actuator_trntype"] = trntype
+            actuator_values["mujoco:actuator_world"] = builder.current_world
+
+            builder.add_custom_values(**actuator_values)
+
+            if verbose:
+                source_name = "CTRL_DIRECT" if ctrl_source_val == CtrlSource.CTRL_DIRECT else "JOINT_TARGET"
+                trn_name = "body" if trntype == 4 else "joint"
+                print(
+                    f"{actuator_type.capitalize()} actuator '{act_name}' on {trn_name} '{target_name_for_log}': "
+                    f"trntype={trntype}, source={source_name}"
                 )
-
-                # Build full values dict
-                actuator_values: dict[str, Any] = {}
-                for attr in builder_custom_attr_actuator:
-                    if attr.key in (
-                        "mujoco:ctrl_source",
-                        "mujoco:actuator_trntype",
-                        "mujoco:actuator_gainprm",
-                        "mujoco:actuator_biasprm",
-                        "mujoco:ctrl",
-                    ):
-                        continue  # We set these manually
-                    actuator_values[attr.key] = parsed_attrs.get(attr.key, attr.default)
-
-                actuator_values["mujoco:ctrl_source"] = ctrl_source_val
-                actuator_values["mujoco:actuator_gainprm"] = gainprm
-                actuator_values["mujoco:actuator_biasprm"] = biasprm
-                actuator_values["mujoco:actuator_trnid"] = wp.vec2i(target_idx, 0)
-                actuator_values["mujoco:actuator_trntype"] = trntype
-                actuator_values["mujoco:actuator_world"] = builder.current_world
-
-                builder.add_custom_values(**actuator_values)
-
-                if verbose:
-                    source_name = "CTRL_DIRECT" if ctrl_source_val == CtrlSource.CTRL_DIRECT else "JOINT_TARGET"
-                    trn_name = "body" if trntype == 4 else "joint"
-                    print(
-                        f"{actuator_type.capitalize()} actuator '{act_name}' on {trn_name} '{target_name_for_log}': "
-                        f"trntype={trntype}, source={source_name}"
-                    )
 
     # Only parse tendons if custom tendon attributes are registered
     has_tendon_attrs = "mujoco:tendon_world" in builder.custom_attributes
