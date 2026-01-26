@@ -95,9 +95,20 @@ def test_basic_contact_storage(test, device):
     """Test basic contact storage and retrieval."""
     reducer = GlobalContactReducer(capacity=100, device=device)
 
+    # Create dummy arrays for the required parameters
+    num_shapes = 200
+    shape_transform = wp.zeros(num_shapes, dtype=wp.transform, device=device)
+    shape_local_aabb_lower = wp.zeros(num_shapes, dtype=wp.vec3, device=device)
+    shape_local_aabb_upper = wp.ones(num_shapes, dtype=wp.vec3, device=device)
+    shape_voxel_resolution = wp.full(num_shapes, wp.vec3i(4, 4, 4), dtype=wp.vec3i, device=device)
+
     @wp.kernel
     def store_contact_kernel(
         reducer_data: GlobalContactReducerData,
+        xform: wp.array(dtype=wp.transform),
+        aabb_lower: wp.array(dtype=wp.vec3),
+        aabb_upper: wp.array(dtype=wp.vec3),
+        voxel_res: wp.array(dtype=wp.vec3i),
     ):
         _ = export_and_reduce_contact(
             shape_a=0,
@@ -106,15 +117,18 @@ def test_basic_contact_storage(test, device):
             normal=wp.vec3(0.0, 1.0, 0.0),
             depth=-0.01,
             reducer_data=reducer_data,
-            beta0=1000.0,
-            beta1=0.001,
+            beta=0.001,
+            shape_transform=xform,
+            shape_local_aabb_lower=aabb_lower,
+            shape_local_aabb_upper=aabb_upper,
+            shape_voxel_resolution=voxel_res,
         )
 
     reducer_data = reducer.get_data_struct()
     wp.launch(
         store_contact_kernel,
         dim=1,
-        inputs=[reducer_data],
+        inputs=[reducer_data, shape_transform, shape_local_aabb_lower, shape_local_aabb_upper, shape_voxel_resolution],
         device=device,
     )
 
@@ -132,9 +146,20 @@ def test_multiple_contacts_same_pair(test, device):
     """Test that multiple contacts for same shape pair get reduced."""
     reducer = GlobalContactReducer(capacity=100, device=device)
 
+    # Create dummy arrays for the required parameters
+    num_shapes = 200
+    shape_transform = wp.zeros(num_shapes, dtype=wp.transform, device=device)
+    shape_local_aabb_lower = wp.zeros(num_shapes, dtype=wp.vec3, device=device)
+    shape_local_aabb_upper = wp.ones(num_shapes, dtype=wp.vec3, device=device)
+    shape_voxel_resolution = wp.full(num_shapes, wp.vec3i(4, 4, 4), dtype=wp.vec3i, device=device)
+
     @wp.kernel
     def store_multiple_contacts_kernel(
         reducer_data: GlobalContactReducerData,
+        xform: wp.array(dtype=wp.transform),
+        aabb_lower: wp.array(dtype=wp.vec3),
+        aabb_upper: wp.array(dtype=wp.vec3),
+        voxel_res: wp.array(dtype=wp.vec3i),
     ):
         tid = wp.tid()
         # All contacts have same shape pair and similar normal (pointing up)
@@ -147,15 +172,18 @@ def test_multiple_contacts_same_pair(test, device):
             normal=wp.vec3(0.0, 1.0, 0.0),
             depth=-0.01,
             reducer_data=reducer_data,
-            beta0=1000.0,
-            beta1=0.001,
+            beta=0.001,
+            shape_transform=xform,
+            shape_local_aabb_lower=aabb_lower,
+            shape_local_aabb_upper=aabb_upper,
+            shape_voxel_resolution=voxel_res,
         )
 
     reducer_data = reducer.get_data_struct()
     wp.launch(
         store_multiple_contacts_kernel,
         dim=10,
-        inputs=[reducer_data],
+        inputs=[reducer_data, shape_transform, shape_local_aabb_lower, shape_local_aabb_upper, shape_voxel_resolution],
         device=device,
     )
 
@@ -173,9 +201,20 @@ def test_different_shape_pairs(test, device):
     """Test that different shape pairs are tracked separately."""
     reducer = GlobalContactReducer(capacity=100, device=device)
 
+    # Create dummy arrays for the required parameters
+    num_shapes = 200
+    shape_transform = wp.zeros(num_shapes, dtype=wp.transform, device=device)
+    shape_local_aabb_lower = wp.zeros(num_shapes, dtype=wp.vec3, device=device)
+    shape_local_aabb_upper = wp.ones(num_shapes, dtype=wp.vec3, device=device)
+    shape_voxel_resolution = wp.full(num_shapes, wp.vec3i(4, 4, 4), dtype=wp.vec3i, device=device)
+
     @wp.kernel
     def store_different_pairs_kernel(
         reducer_data: GlobalContactReducerData,
+        xform: wp.array(dtype=wp.transform),
+        aabb_lower: wp.array(dtype=wp.vec3),
+        aabb_upper: wp.array(dtype=wp.vec3),
+        voxel_res: wp.array(dtype=wp.vec3i),
     ):
         tid = wp.tid()
         # Each thread represents a different shape pair
@@ -186,15 +225,18 @@ def test_different_shape_pairs(test, device):
             normal=wp.vec3(0.0, 1.0, 0.0),
             depth=-0.01,
             reducer_data=reducer_data,
-            beta0=1000.0,
-            beta1=0.001,
+            beta=0.001,
+            shape_transform=xform,
+            shape_local_aabb_lower=aabb_lower,
+            shape_local_aabb_upper=aabb_upper,
+            shape_voxel_resolution=voxel_res,
         )
 
     reducer_data = reducer.get_data_struct()
     wp.launch(
         store_different_pairs_kernel,
         dim=5,
-        inputs=[reducer_data],
+        inputs=[reducer_data, shape_transform, shape_local_aabb_lower, shape_local_aabb_upper, shape_voxel_resolution],
         device=device,
     )
 
@@ -211,9 +253,20 @@ def test_clear(test, device):
     """Test that clear resets the reducer."""
     reducer = GlobalContactReducer(capacity=100, device=device)
 
+    # Create dummy arrays for the required parameters
+    num_shapes = 200
+    shape_transform = wp.zeros(num_shapes, dtype=wp.transform, device=device)
+    shape_local_aabb_lower = wp.zeros(num_shapes, dtype=wp.vec3, device=device)
+    shape_local_aabb_upper = wp.ones(num_shapes, dtype=wp.vec3, device=device)
+    shape_voxel_resolution = wp.full(num_shapes, wp.vec3i(4, 4, 4), dtype=wp.vec3i, device=device)
+
     @wp.kernel
     def store_one_contact_kernel(
         reducer_data: GlobalContactReducerData,
+        xform: wp.array(dtype=wp.transform),
+        aabb_lower: wp.array(dtype=wp.vec3),
+        aabb_upper: wp.array(dtype=wp.vec3),
+        voxel_res: wp.array(dtype=wp.vec3i),
     ):
         export_and_reduce_contact(
             shape_a=0,
@@ -222,15 +275,18 @@ def test_clear(test, device):
             normal=wp.vec3(0.0, 1.0, 0.0),
             depth=-0.01,
             reducer_data=reducer_data,
-            beta0=1000.0,
-            beta1=0.001,
+            beta=0.001,
+            shape_transform=xform,
+            shape_local_aabb_lower=aabb_lower,
+            shape_local_aabb_upper=aabb_upper,
+            shape_voxel_resolution=voxel_res,
         )
 
     reducer_data = reducer.get_data_struct()
     wp.launch(
         store_one_contact_kernel,
         dim=1,
-        inputs=[reducer_data],
+        inputs=[reducer_data, shape_transform, shape_local_aabb_lower, shape_local_aabb_upper, shape_voxel_resolution],
         device=device,
     )
 
@@ -247,9 +303,20 @@ def test_stress_many_contacts(test, device):
     """Stress test with many contacts from many shape pairs."""
     reducer = GlobalContactReducer(capacity=10000, device=device)
 
+    # Create dummy arrays for the required parameters
+    num_shapes = 2000
+    shape_transform = wp.zeros(num_shapes, dtype=wp.transform, device=device)
+    shape_local_aabb_lower = wp.zeros(num_shapes, dtype=wp.vec3, device=device)
+    shape_local_aabb_upper = wp.ones(num_shapes, dtype=wp.vec3, device=device)
+    shape_voxel_resolution = wp.full(num_shapes, wp.vec3i(4, 4, 4), dtype=wp.vec3i, device=device)
+
     @wp.kernel
     def stress_kernel(
         reducer_data: GlobalContactReducerData,
+        xform: wp.array(dtype=wp.transform),
+        aabb_lower: wp.array(dtype=wp.vec3),
+        aabb_upper: wp.array(dtype=wp.vec3),
+        voxel_res: wp.array(dtype=wp.vec3i),
     ):
         tid = wp.tid()
         # 100 shape pairs, 50 contacts each = 5000 total
@@ -276,15 +343,18 @@ def test_stress_many_contacts(test, device):
             normal=wp.vec3(nx / n_len, ny / n_len, nz / n_len),
             depth=-0.01,
             reducer_data=reducer_data,
-            beta0=1000.0,
-            beta1=0.001,
+            beta=0.001,
+            shape_transform=xform,
+            shape_local_aabb_lower=aabb_lower,
+            shape_local_aabb_upper=aabb_upper,
+            shape_voxel_resolution=voxel_res,
         )
 
     reducer_data = reducer.get_data_struct()
     wp.launch(
         stress_kernel,
         dim=5000,
-        inputs=[reducer_data],
+        inputs=[reducer_data, shape_transform, shape_local_aabb_lower, shape_local_aabb_upper, shape_voxel_resolution],
         device=device,
     )
 
@@ -301,9 +371,20 @@ def test_clear_active(test, device):
     """Test that clear_active only clears used slots."""
     reducer = GlobalContactReducer(capacity=100, device=device)
 
+    # Create dummy arrays for the required parameters
+    num_shapes = 200
+    shape_transform = wp.zeros(num_shapes, dtype=wp.transform, device=device)
+    shape_local_aabb_lower = wp.zeros(num_shapes, dtype=wp.vec3, device=device)
+    shape_local_aabb_upper = wp.ones(num_shapes, dtype=wp.vec3, device=device)
+    shape_voxel_resolution = wp.full(num_shapes, wp.vec3i(4, 4, 4), dtype=wp.vec3i, device=device)
+
     @wp.kernel
     def store_contact_kernel(
         reducer_data: GlobalContactReducerData,
+        xform: wp.array(dtype=wp.transform),
+        aabb_lower: wp.array(dtype=wp.vec3),
+        aabb_upper: wp.array(dtype=wp.vec3),
+        voxel_res: wp.array(dtype=wp.vec3i),
     ):
         export_and_reduce_contact(
             shape_a=0,
@@ -312,8 +393,11 @@ def test_clear_active(test, device):
             normal=wp.vec3(0.0, 1.0, 0.0),
             depth=-0.01,
             reducer_data=reducer_data,
-            beta0=1000.0,
-            beta1=0.001,
+            beta=0.001,
+            shape_transform=xform,
+            shape_local_aabb_lower=aabb_lower,
+            shape_local_aabb_upper=aabb_upper,
+            shape_voxel_resolution=voxel_res,
         )
 
     reducer_data = reducer.get_data_struct()
@@ -321,7 +405,7 @@ def test_clear_active(test, device):
     wp.launch(
         store_contact_kernel,
         dim=1,
-        inputs=[reducer_data],
+        inputs=[reducer_data, shape_transform, shape_local_aabb_lower, shape_local_aabb_upper, shape_voxel_resolution],
         device=device,
     )
 
@@ -337,7 +421,7 @@ def test_clear_active(test, device):
     wp.launch(
         store_contact_kernel,
         dim=1,
-        inputs=[reducer_data],
+        inputs=[reducer_data, shape_transform, shape_local_aabb_lower, shape_local_aabb_upper, shape_voxel_resolution],
         device=device,
     )
 
@@ -347,6 +431,13 @@ def test_clear_active(test, device):
 def test_export_reduced_contacts_kernel(test, device):
     """Test the export_reduced_contacts_kernel with a custom writer."""
     reducer = GlobalContactReducer(capacity=100, device=device)
+
+    # Create dummy arrays for the required parameters
+    num_shapes = 200
+    shape_transform = wp.zeros(num_shapes, dtype=wp.transform, device=device)
+    shape_local_aabb_lower = wp.zeros(num_shapes, dtype=wp.vec3, device=device)
+    shape_local_aabb_upper = wp.ones(num_shapes, dtype=wp.vec3, device=device)
+    shape_voxel_resolution = wp.full(num_shapes, wp.vec3i(4, 4, 4), dtype=wp.vec3i, device=device)
 
     # Define a simple writer function
     @wp.func
@@ -365,6 +456,10 @@ def test_export_reduced_contacts_kernel(test, device):
     @wp.kernel
     def store_contacts_kernel(
         reducer_data: GlobalContactReducerData,
+        xform: wp.array(dtype=wp.transform),
+        aabb_lower: wp.array(dtype=wp.vec3),
+        aabb_upper: wp.array(dtype=wp.vec3),
+        voxel_res: wp.array(dtype=wp.vec3i),
     ):
         tid = wp.tid()
         # Different shape pairs so all contacts win
@@ -375,15 +470,18 @@ def test_export_reduced_contacts_kernel(test, device):
             normal=wp.vec3(0.0, 1.0, 0.0),
             depth=-0.01,
             reducer_data=reducer_data,
-            beta0=1000.0,
-            beta1=0.001,
+            beta=0.001,
+            shape_transform=xform,
+            shape_local_aabb_lower=aabb_lower,
+            shape_local_aabb_upper=aabb_upper,
+            shape_voxel_resolution=voxel_res,
         )
 
     reducer_data = reducer.get_data_struct()
     wp.launch(
         store_contacts_kernel,
         dim=5,
-        inputs=[reducer_data],
+        inputs=[reducer_data, shape_transform, shape_local_aabb_lower, shape_local_aabb_upper, shape_voxel_resolution],
         device=device,
     )
 

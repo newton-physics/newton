@@ -6431,6 +6431,78 @@ class ModelBuilder:
             m.shape_collision_group = wp.array(self.shape_collision_group, dtype=wp.int32)
 
             # ---------------------
+            # Compute local AABBs and voxel resolutions for contact reduction
+            local_aabb_lower = []
+            local_aabb_upper = []
+            voxel_resolution = []
+            voxel_budget = 100  # Maximum voxels per shape for contact reduction
+
+            # Cache per unique (mesh_id, scale) to avoid redundant AABB computation
+            # for instanced meshes (e.g., 256 robots sharing the same mesh sources)
+            mesh_aabb_cache = {}
+
+            for shape_type, shape_src, shape_scale in zip(
+                self.shape_type, self.shape_source, self.shape_scale, strict=True
+            ):
+                if shape_type == GeoType.MESH and shape_src is not None:
+                    # Use mesh id and scale as cache key
+                    cache_key = (id(shape_src), tuple(shape_scale))
+
+                    if cache_key in mesh_aabb_cache:
+                        # Reuse cached result
+                        aabb_lower, aabb_upper, nx, ny, nz = mesh_aabb_cache[cache_key]
+                    else:
+                        # Compute local AABB from mesh vertices
+                        vertices = shape_src.vertices
+                        aabb_lower = vertices.min(axis=0)
+                        aabb_upper = vertices.max(axis=0)
+
+                        # Apply scale to get the actual local-space bounds
+                        aabb_lower = aabb_lower * np.array(shape_scale)
+                        aabb_upper = aabb_upper * np.array(shape_scale)
+
+                        # Compute voxel resolution
+                        size = aabb_upper - aabb_lower
+                        size = np.maximum(size, 1e-6)  # Avoid division by zero
+
+                        # Target voxel size for approximately cubic voxels
+                        volume = size[0] * size[1] * size[2]
+                        v = (volume / voxel_budget) ** (1.0 / 3.0)
+                        v = max(v, 1e-6)
+
+                        # Initial resolution
+                        nx = max(1, round(size[0] / v))
+                        ny = max(1, round(size[1] / v))
+                        nz = max(1, round(size[2] / v))
+
+                        # Reduce until under budget (reduce largest axis first for more cubic voxels)
+                        while nx * ny * nz > voxel_budget:
+                            if nx >= ny and nx >= nz and nx > 1:
+                                nx -= 1
+                            elif ny >= nz and ny > 1:
+                                ny -= 1
+                            elif nz > 1:
+                                nz -= 1
+                            else:
+                                break
+
+                        # Cache the result
+                        mesh_aabb_cache[cache_key] = (aabb_lower, aabb_upper, nx, ny, nz)
+                else:
+                    # Non-mesh shapes: use a default 1x1x1 voxel grid (effectively no voxel binning)
+                    aabb_lower = np.array([-1.0, -1.0, -1.0])
+                    aabb_upper = np.array([1.0, 1.0, 1.0])
+                    nx, ny, nz = 1, 1, 1
+
+                local_aabb_lower.append(aabb_lower)
+                local_aabb_upper.append(aabb_upper)
+                voxel_resolution.append([nx, ny, nz])
+
+            m.shape_local_aabb_lower = wp.array(local_aabb_lower, dtype=wp.vec3, device=device)
+            m.shape_local_aabb_upper = wp.array(local_aabb_upper, dtype=wp.vec3, device=device)
+            m.shape_voxel_resolution = wp.array(voxel_resolution, dtype=wp.vec3i, device=device)
+
+            # ---------------------
             # Compute SDFs for mesh shapes (per-shape opt-in via sdf_max_resolution, sdf_target_voxel_size or is_hydroelastic)
             from ..geometry.sdf_utils import (  # noqa: PLC0415
                 SDFData,
