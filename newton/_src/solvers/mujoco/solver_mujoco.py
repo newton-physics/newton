@@ -162,8 +162,8 @@ class SolverMuJoCo(SolverBase):
     @staticmethod
     def _parse_integrator(value: str | int) -> int:
         """Parse integrator option: Euler=0, RK4=1, implicit=2, implicitfast=3."""
-        if isinstance(value, int):
-            return value
+        if not isinstance(value, str):
+            return int(value)
         mapping = {"euler": 0, "rk4": 1, "implicit": 2, "implicitfast": 3}
         lower_value = value.lower().strip()
         if lower_value in mapping:
@@ -173,8 +173,8 @@ class SolverMuJoCo(SolverBase):
     @staticmethod
     def _parse_solver(value: str | int) -> int:
         """Parse solver option: CG=1, Newton=2. PGS (0) is not supported."""
-        if isinstance(value, int):
-            return value
+        if not isinstance(value, str):
+            return int(value)
         mapping = {"cg": 1, "newton": 2}
         lower_value = value.lower().strip()
         if lower_value in mapping:
@@ -184,8 +184,8 @@ class SolverMuJoCo(SolverBase):
     @staticmethod
     def _parse_cone(value: str | int) -> int:
         """Parse cone option: pyramidal=0, elliptic=1."""
-        if isinstance(value, int):
-            return value
+        if not isinstance(value, str):
+            return int(value)
         mapping = {"pyramidal": 0, "elliptic": 1}
         lower_value = value.lower().strip()
         if lower_value in mapping:
@@ -195,8 +195,8 @@ class SolverMuJoCo(SolverBase):
     @staticmethod
     def _parse_jacobian(value: str | int) -> int:
         """Parse jacobian option: dense=0, sparse=1, auto=2."""
-        if isinstance(value, int):
-            return value
+        if not isinstance(value, str):
+            return int(value)
         mapping = {"dense": 0, "sparse": 1, "auto": 2}
         lower_value = value.lower().strip()
         if lower_value in mapping:
