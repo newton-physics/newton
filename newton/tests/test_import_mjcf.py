@@ -2657,6 +2657,76 @@ class TestImportMjcf(unittest.TestCase):
         self.assertEqual(len(magnetic), 1)
         self.assertTrue(np.allclose(magnetic[0], [0, -1, 0.5]))
 
+    def test_option_ccd_iterations_parsing(self):
+        """Test parsing of ccd_iterations from MJCF option tag."""
+        mjcf = """<?xml version="1.0" ?>
+<mujoco>
+    <option ccd_iterations="25"/>
+    <worldbody>
+        <body name="body1" pos="0 0 1">
+            <joint type="hinge" axis="0 0 1"/>
+            <geom type="sphere" size="0.1"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf)
+        model = builder.finalize()
+
+        self.assertTrue(hasattr(model, "mujoco"))
+        self.assertTrue(hasattr(model.mujoco, "ccd_iterations"))
+        ccd_iterations = model.mujoco.ccd_iterations.numpy()
+        # ONCE frequency: single value, not per-world
+        self.assertEqual(len(ccd_iterations), 1)
+        self.assertEqual(ccd_iterations[0], 25)
+
+    def test_option_sdf_iterations_parsing(self):
+        """Test parsing of sdf_iterations from MJCF option tag."""
+        mjcf = """<?xml version="1.0" ?>
+<mujoco>
+    <option sdf_iterations="20"/>
+    <worldbody>
+        <body name="body1" pos="0 0 1">
+            <joint type="hinge" axis="0 0 1"/>
+            <geom type="sphere" size="0.1"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf)
+        model = builder.finalize()
+
+        self.assertTrue(hasattr(model, "mujoco"))
+        self.assertTrue(hasattr(model.mujoco, "sdf_iterations"))
+        sdf_iterations = model.mujoco.sdf_iterations.numpy()
+        self.assertEqual(len(sdf_iterations), 1)
+        self.assertEqual(sdf_iterations[0], 20)
+
+    def test_option_sdf_initpoints_parsing(self):
+        """Test parsing of sdf_initpoints from MJCF option tag."""
+        mjcf = """<?xml version="1.0" ?>
+<mujoco>
+    <option sdf_initpoints="50"/>
+    <worldbody>
+        <body name="body1" pos="0 0 1">
+            <joint type="hinge" axis="0 0 1"/>
+            <geom type="sphere" size="0.1"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf)
+        model = builder.finalize()
+
+        self.assertTrue(hasattr(model, "mujoco"))
+        self.assertTrue(hasattr(model.mujoco, "sdf_initpoints"))
+        sdf_initpoints = model.mujoco.sdf_initpoints.numpy()
+        self.assertEqual(len(sdf_initpoints), 1)
+        self.assertEqual(sdf_initpoints[0], 50)
+
     def test_geom_solmix_parsing(self):
         """Test that geom_solmix attribute is parsed correctly from MJCF."""
         mjcf = """<?xml version="1.0" ?>

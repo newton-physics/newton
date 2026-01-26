@@ -5123,6 +5123,91 @@ class TestMuJoCoOptions(unittest.TestCase):
                 msg=f"MuJoCo Warp magnetic[{world_idx}] should be {initial_magnetic[world_idx]}",
             )
 
+    def test_once_numeric_options_shared_across_worlds(self):
+        """
+        Verify that ONCE frequency numeric options (ccd_iterations, sdf_iterations, sdf_initpoints)
+        are shared across all worlds (not per-world arrays).
+        """
+        # Create template builder
+        template_builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(template_builder)
+
+        pendulum = template_builder.add_link(mass=1.0, com=wp.vec3(0.0, 0.0, 0.0), I_m=wp.mat33(np.eye(3)))
+        template_builder.add_shape_box(body=pendulum, hx=0.05, hy=0.05, hz=0.05)
+        joint = template_builder.add_joint_revolute(parent=-1, child=pendulum, axis=(0.0, 0.0, 1.0))
+        template_builder.add_articulation([joint])
+
+        # Create multi-world model
+        num_worlds = 3
+        builder = newton.ModelBuilder()
+        builder.replicate(template_builder, num_worlds)
+        model = builder.finalize()
+
+        # Verify custom attributes exist
+        self.assertTrue(hasattr(model, "mujoco"))
+        self.assertTrue(hasattr(model.mujoco, "ccd_iterations"))
+        self.assertTrue(hasattr(model.mujoco, "sdf_iterations"))
+        self.assertTrue(hasattr(model.mujoco, "sdf_initpoints"))
+
+        # ONCE frequency: single value, not per-world array
+        ccd_iterations = model.mujoco.ccd_iterations.numpy()
+        sdf_iterations = model.mujoco.sdf_iterations.numpy()
+        sdf_initpoints = model.mujoco.sdf_initpoints.numpy()
+        self.assertEqual(len(ccd_iterations), 1, "ONCE frequency should have single value")
+        self.assertEqual(len(sdf_iterations), 1, "ONCE frequency should have single value")
+        self.assertEqual(len(sdf_initpoints), 1, "ONCE frequency should have single value")
+
+        # Set values
+        model.mujoco.ccd_iterations.assign(np.array([25], dtype=np.int32))
+        model.mujoco.sdf_iterations.assign(np.array([20], dtype=np.int32))
+        model.mujoco.sdf_initpoints.assign(np.array([50], dtype=np.int32))
+
+        # Create solver without constructor override
+        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
+
+        # Verify MuJoCo model uses the custom attribute values
+        self.assertEqual(solver.mj_model.opt.ccd_iterations, 25)
+        self.assertEqual(solver.mj_model.opt.sdf_iterations, 20)
+        self.assertEqual(solver.mj_model.opt.sdf_initpoints, 50)
+
+    def test_once_numeric_options_constructor_override(self):
+        """
+        Verify that constructor parameters override custom attribute values
+        for ONCE frequency numeric options.
+        """
+        # Create template builder
+        template_builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(template_builder)
+
+        pendulum = template_builder.add_link(mass=1.0, com=wp.vec3(0.0, 0.0, 0.0), I_m=wp.mat33(np.eye(3)))
+        template_builder.add_shape_box(body=pendulum, hx=0.05, hy=0.05, hz=0.05)
+        joint = template_builder.add_joint_revolute(parent=-1, child=pendulum, axis=(0.0, 0.0, 1.0))
+        template_builder.add_articulation([joint])
+
+        builder = newton.ModelBuilder()
+        builder.replicate(template_builder, 2)
+        model = builder.finalize()
+
+        # Set custom attribute values
+        model.mujoco.ccd_iterations.assign(np.array([25], dtype=np.int32))
+        model.mujoco.sdf_iterations.assign(np.array([20], dtype=np.int32))
+        model.mujoco.sdf_initpoints.assign(np.array([50], dtype=np.int32))
+
+        # Create solver WITH constructor overrides
+        solver = SolverMuJoCo(
+            model,
+            ccd_iterations=100,
+            sdf_iterations=30,
+            sdf_initpoints=80,
+            iterations=1,
+            disable_contacts=True,
+        )
+
+        # Verify MuJoCo model uses constructor-provided values
+        self.assertEqual(solver.mj_model.opt.ccd_iterations, 100, "Constructor should override custom attribute")
+        self.assertEqual(solver.mj_model.opt.sdf_iterations, 30, "Constructor should override custom attribute")
+        self.assertEqual(solver.mj_model.opt.sdf_initpoints, 80, "Constructor should override custom attribute")
+
 
 class TestMuJoCoArticulationConversion(unittest.TestCase):
     def test_loop_joints_only(self):
