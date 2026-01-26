@@ -4855,6 +4855,54 @@ class TestMuJoCoOptions(unittest.TestCase):
                 msg=f"MuJoCo Warp impratio_invsqrt[{world_idx}] should be {expected_invsqrt}",
             )
 
+    def test_impratio_invalid_values_guarded(self):
+        """
+        Verify that zero or negative impratio values are guarded against
+        to prevent NaN/Inf in opt_impratio_invsqrt computation.
+        """
+        num_worlds = 3
+        model = self._create_multiworld_model(num_worlds)
+
+        # Set impratio with invalid values: 0, negative, and positive
+        initial_impratio = np.array([0.0, -1.0, 2.0], dtype=np.float32)
+        model.mujoco.impratio.assign(initial_impratio)
+
+        # Create solver - should not crash or produce NaN/Inf
+        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
+
+        # Verify MuJoCo Warp model has valid impratio_invsqrt values
+        mjw_impratio_invsqrt = solver.mjw_model.opt.impratio_invsqrt.numpy()
+        self.assertEqual(len(mjw_impratio_invsqrt), num_worlds)
+
+        # World 0 (impratio=0): should keep MuJoCo default (not update)
+        self.assertFalse(
+            np.isnan(mjw_impratio_invsqrt[0]),
+            "impratio=0 should not produce NaN",
+        )
+        self.assertFalse(
+            np.isinf(mjw_impratio_invsqrt[0]),
+            "impratio=0 should not produce Inf",
+        )
+
+        # World 1 (impratio=-1): should keep MuJoCo default (not update)
+        self.assertFalse(
+            np.isnan(mjw_impratio_invsqrt[1]),
+            "impratio=-1 should not produce NaN",
+        )
+        self.assertFalse(
+            np.isinf(mjw_impratio_invsqrt[1]),
+            "impratio=-1 should not produce Inf",
+        )
+
+        # World 2 (impratio=2): should compute correctly
+        expected_invsqrt = 1.0 / np.sqrt(2.0)
+        self.assertAlmostEqual(
+            mjw_impratio_invsqrt[2],
+            expected_invsqrt,
+            places=4,
+            msg=f"impratio=2.0 should produce valid impratio_invsqrt={expected_invsqrt}",
+        )
+
     def test_scalar_options_constructor_override(self):
         """
         Verify that passing scalar options (impratio, tolerance, ls_tolerance, ccd_tolerance, density, viscosity)

@@ -1017,7 +1017,11 @@ def update_solver_options_kernel(
     # Only update if Newton array exists (None means overridden or not available)
     if newton_impratio:
         # MuJoCo stores impratio as inverse square root
-        opt_impratio_invsqrt[worldid] = 1.0 / wp.sqrt(newton_impratio[worldid])
+        # Guard against zero/negative values to avoid NaN/Inf
+        impratio_val = newton_impratio[worldid]
+        if impratio_val > 0.0:
+            opt_impratio_invsqrt[worldid] = 1.0 / wp.sqrt(impratio_val)
+        # else: skip update, keep existing MuJoCo default value
 
     if newton_tolerance:
         opt_tolerance[worldid] = newton_tolerance[worldid]
