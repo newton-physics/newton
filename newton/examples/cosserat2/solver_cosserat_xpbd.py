@@ -323,6 +323,7 @@ class SolverCosseratXPBD:
                     self._mesh_vertices,
                     self._mesh_indices,
                     self._mesh_bvh.id,
+                    False,
                 ],
                 outputs=[self.particle_q_predicted],
                 device=self.device,

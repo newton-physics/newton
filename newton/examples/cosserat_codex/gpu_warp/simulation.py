@@ -95,8 +95,13 @@ class Example:
         self.show_directors = False
         self.director_scale = 0.1
 
-        self.root_move_speed = 1.0
-        self.root_rotate_speed = 1.0
+        # Track sliding constraint configuration
+        self.track_enabled = False
+        self.track_stiffness = 1.0
+        self.track_ignore_tip_count = 0
+
+        self.root_move_speed = 0.3
+        self.root_rotate_speed = 3.0
         self.root_rotation = 0.0
 
         self.simulate_reference = True
@@ -113,6 +118,7 @@ class Example:
         self._reset_key_was_down = False
         self._banded_key_was_down = False
         self._lock_key_was_down = False
+        self._track_key_was_down = False
 
         self.lib = base.DefKitDirectLibrary(args.dll_path, args.calling_convention)
         self.supports_non_banded = self.lib.ProjectDirectElasticRodConstraints is not None
@@ -189,7 +195,7 @@ class Example:
             kd=1.0e2,
             mu=0.1,
             has_shape_collision=False,
-            has_particle_collision=True,
+            has_particle_collision=False,
         )
         builder.add_shape_mesh(
             body=-1,
@@ -285,6 +291,20 @@ class Example:
         self._gpu_root_base_orientations = [
             rod.orientations[0].copy() for rod in self.gpu_state.rods
         ]
+
+        # Initialize track start/end from rod first/last particle positions
+        ref_first_pos = self.ref_rod.positions[0, 0:3].astype(np.float32)
+        ref_last_pos = self.ref_rod.positions[-1, 0:3].astype(np.float32)
+        self._ref_track_start = ref_first_pos.copy()
+        self._ref_track_end = ref_last_pos.copy()
+
+        # For GPU rods, store track per rod
+        self._gpu_track_starts = []
+        self._gpu_track_ends = []
+        for rod in self.gpu_state.rods:
+            gpu_positions = rod.positions_numpy()
+            self._gpu_track_starts.append(gpu_positions[0].copy())
+            self._gpu_track_ends.append(gpu_positions[-1].copy())
 
     def __del__(self):
         if hasattr(self, "ref_rod"):
@@ -388,6 +408,7 @@ class Example:
                 self.vessel_vertices,
                 self.vessel_indices,
                 self.vessel_bvh.id,
+                True,
             ],
             outputs=[self.state.particle_q],
             device=self.model.device,
@@ -440,6 +461,104 @@ class Example:
         self._force_sync_reference = True
         self._force_sync_gpu = True
 
+    def _apply_track_constraint(self):
+        """Apply track sliding constraint to keep particles on a line segment."""
+        if not self.track_enabled:
+            return
+
+        # Ensure inverse masses and positions are synced
+        self._update_collision_inv_masses()
+        self._sync_state_from_rods(force=True)
+
+        # Reference rod track constraint
+        ref_num_constrained = self.ref_rod.num_points - self.track_ignore_tip_count
+        if ref_num_constrained > 0:
+            # Apply track constraint to reference rod positions via Warp
+            track_start = self._ref_track_start + self.ref_offset
+            track_end = self._ref_track_end + self.ref_offset
+            track_start_wp = wp.vec3(float(track_start[0]), float(track_start[1]), float(track_start[2]))
+            track_end_wp = wp.vec3(float(track_end[0]), float(track_end[1]), float(track_end[2]))
+
+            # Update positions via the kernel using particle_q
+            wp.launch(
+                kernels._warp_apply_track_sliding,
+                dim=ref_num_constrained,
+                inputs=[
+                    self.state.particle_q,
+                    self.state.particle_q,  # predicted == current for simplicity
+                    self._collision_inv_masses_wp,
+                    track_start_wp,
+                    track_end_wp,
+                    float(self.track_stiffness),
+                    0,
+                    ref_num_constrained,
+                ],
+                device=self.model.device,
+            )
+
+            # Sync back to reference rod
+            ref_offset_wp = wp.vec3(
+                float(self.ref_offset[0]), float(self.ref_offset[1]), float(self.ref_offset[2])
+            )
+            wp.launch(
+                kernels._warp_copy_from_offset,
+                dim=self.ref_rod.num_points,
+                inputs=[self.state.particle_q, ref_offset_wp, 0, self._ref_positions_wp],
+                device=self.model.device,
+            )
+            ref_positions = self._ref_positions_wp.numpy()
+            self.ref_rod.positions[:, 0:3] = ref_positions
+            self.ref_rod.predicted_positions[:, 0:3] = ref_positions
+
+        # GPU rods track constraint
+        for idx, rod in enumerate(self.gpu_state.rods):
+            gpu_num_constrained = rod.num_points - self.track_ignore_tip_count
+            if gpu_num_constrained <= 0:
+                continue
+
+            track_start = self._gpu_track_starts[idx] + self.gpu_offsets[idx]
+            track_end = self._gpu_track_ends[idx] + self.gpu_offsets[idx]
+            track_start_wp = wp.vec3(float(track_start[0]), float(track_start[1]), float(track_start[2]))
+            track_end_wp = wp.vec3(float(track_end[0]), float(track_end[1]), float(track_end[2]))
+
+            start = self._gpu_point_starts[idx]
+            end = start + gpu_num_constrained
+
+            wp.launch(
+                kernels._warp_apply_track_sliding,
+                dim=gpu_num_constrained,
+                inputs=[
+                    self.state.particle_q,
+                    self.state.particle_q,
+                    self._collision_inv_masses_wp,
+                    track_start_wp,
+                    track_end_wp,
+                    float(self.track_stiffness),
+                    start,
+                    end,
+                ],
+                device=self.model.device,
+            )
+
+            # Sync back to GPU rod
+            gpu_offset = self.gpu_offsets[idx]
+            offset_wp = wp.vec3(float(gpu_offset[0]), float(gpu_offset[1]), float(gpu_offset[2]))
+            wp.launch(
+                kernels._warp_copy_from_offset,
+                dim=rod.num_points,
+                inputs=[self.state.particle_q, offset_wp, start, rod.positions_wp],
+                device=self.model.device,
+            )
+            wp.launch(
+                kernels._warp_copy_from_offset,
+                dim=rod.num_points,
+                inputs=[self.state.particle_q, offset_wp, start, rod.predicted_positions_wp],
+                device=self.model.device,
+            )
+
+        self._force_sync_reference = True
+        self._force_sync_gpu = True
+
     def _handle_keyboard_input(self):
         if not hasattr(self.viewer, "is_key_down"):
             return
@@ -469,6 +588,11 @@ class Example:
             for rod in self.gpu_state.rods:
                 rod.toggle_root_lock()
         self._lock_key_was_down = l_down
+
+        t_down = self.viewer.is_key_down(key.T)
+        if t_down and not self._track_key_was_down:
+            self.track_enabled = not self.track_enabled
+        self._track_key_was_down = t_down
 
         r_down = self.viewer.is_key_down(key.R)
         if r_down and not self._reset_key_was_down:
@@ -533,6 +657,7 @@ class Example:
                     self.gpu_state.apply_floor_collisions(self.floor_height, self.floor_restitution)
                 gpu_time += time.perf_counter() - t0
             self._apply_mesh_collisions(sub_dt)
+            self._apply_track_constraint()
 
         self._sync_state_from_rods()
         self.sim_time += self.frame_dt
@@ -673,7 +798,7 @@ class Example:
         _changed, self.angular_damping = ui.slider_float("Angular Damping", self.angular_damping, 0.0, 0.05)
 
         ui.separator()
-        offset_changed, self.compare_offset = ui.slider_float("Compare Offset", self.compare_offset, 0.1, 5.0)
+        offset_changed, self.compare_offset = ui.slider_float("Compare Offset", self.compare_offset, 0.0, 5.0)
         if offset_changed:
             self._update_offsets()
             self._sync_state_from_rods(force=True)
@@ -711,6 +836,14 @@ class Example:
         _changed, self.gravity_scale = ui.slider_float("Gravity Scale", self.gravity_scale, 0.0, 2.0)
         _changed, self.floor_height = ui.slider_float("Floor Height", self.floor_height, -1.0, 1.0)
         _changed, self.floor_restitution = ui.slider_float("Floor Restitution", self.floor_restitution, 0.0, 1.0)
+
+        ui.separator()
+        ui.text("Track Sliding Constraint")
+        _changed, self.track_enabled = ui.checkbox("Enable Track", self.track_enabled)
+        _changed, self.track_stiffness = ui.slider_float("Track Stiffness", self.track_stiffness, 0.0, 1.0)
+        _changed, self.track_ignore_tip_count = ui.slider_int(
+            "Ignore Tip Particles", self.track_ignore_tip_count, 0, 10
+        )
 
         ui.separator()
         if self.supports_non_banded:
@@ -759,6 +892,7 @@ class Example:
         ui.text("  G: Toggle gravity")
         ui.text("  B: Toggle banded solver")
         ui.text("  L: Toggle root lock (position + rotation)")
+        ui.text("  T: Toggle track sliding constraint")
         ui.text("  R: Reset")
 
     def test_final(self):

@@ -315,10 +315,77 @@ def _warp_update_velocities_from_positions(
     velocities[tid] = (new_positions[tid] - old_positions[tid]) / dt
 
 
+@wp.func
+def _closest_point_on_edge(
+    point: wp.vec3,
+    edge_start: wp.vec3,
+    edge_end: wp.vec3,
+) -> wp.vec2:
+    """Return (t, distance_sq) where t is parameter along edge and distance_sq is squared distance."""
+    edge = edge_end - edge_start
+    edge_len_sq = wp.dot(edge, edge)
+    if edge_len_sq < 1.0e-12:
+        # Degenerate edge - return midpoint
+        return wp.vec2(0.5, wp.length_sq(point - edge_start))
+    t = wp.dot(point - edge_start, edge) / edge_len_sq
+    # Clamp t to [0, 1] for closest point on segment
+    t_clamped = wp.clamp(t, 0.0, 1.0)
+    closest = edge_start + t_clamped * edge
+    dist_sq = wp.length_sq(point - closest)
+    return wp.vec2(t, dist_sq)
+
+
+@wp.kernel
+def _warp_apply_track_sliding(
+    positions: wp.array(dtype=wp.vec3),
+    predicted_positions: wp.array(dtype=wp.vec3),
+    inv_masses: wp.array(dtype=wp.float32),
+    track_start: wp.vec3,
+    track_end: wp.vec3,
+    stiffness: float,
+    start_idx: int,
+    end_idx: int,
+):
+    """
+    Constrain particles to slide along a track (line segment).
+
+    For each particle between start_idx and end_idx, project it onto the track
+    and apply a correction scaled by stiffness. Only applies correction if the
+    particle's projection is interior to the track (0 < t < 1).
+    """
+    tid = wp.tid()
+    idx = start_idx + tid
+    if idx >= end_idx:
+        return
+
+    # Skip fixed particles
+    if inv_masses[idx] <= 0.0:
+        return
+
+    pos = positions[idx]
+    result = _closest_point_on_edge(pos, track_start, track_end)
+    t = result.x
+    dist_sq = result.y
+
+    # Only apply constraint if particle projects to interior of track
+    # and has some distance from the track
+    if t > 0.0 and t < 1.0 and dist_sq > 1.0e-10:
+        # Compute closest point on track
+        edge = track_end - track_start
+        closest = track_start + t * edge
+        # Correction vector from particle to track
+        correction = closest - pos
+        # Apply correction scaled by stiffness
+        new_pos = pos + correction * stiffness
+        positions[idx] = new_pos
+        predicted_positions[idx] = new_pos
+
+
 __all__ = [
     "_warp_apply_direct_corrections",
     "_warp_apply_floor_collisions",
     "_warp_apply_root_translation",
+    "_warp_apply_track_sliding",
     "_warp_build_segment_lines",
     "_warp_constraint_max",
     "_warp_copy_from_offset",

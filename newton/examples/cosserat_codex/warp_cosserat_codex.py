@@ -3326,12 +3326,12 @@ def create_parser():
     parser.add_argument(
         "--compare-offset",
         type=float,
-        default=0.5,
+        default=0.0,
         help="Y-offset separating reference and NumPy rods.",
     )
     parser.add_argument("--substeps", type=int, default=4, help="Integration substeps per frame.")
-    parser.add_argument("--bend-stiffness", type=float, default=0.1, help="Per-edge bend stiffness.")
-    parser.add_argument("--twist-stiffness", type=float, default=0.1, help="Per-edge twist stiffness.")
+    parser.add_argument("--bend-stiffness", type=float, default=1.0, help="Per-edge bend stiffness.")
+    parser.add_argument("--twist-stiffness", type=float, default=1.0, help="Per-edge twist stiffness.")
     parser.add_argument("--rest-bend-d1", type=float, default=0.0, help="Rest bend around d1 axis (rad/segment).")
     parser.add_argument("--rest-bend-d2", type=float, default=0.0, help="Rest bend around d2 axis (rad/segment).")
     parser.add_argument("--rest-twist", type=float, default=0.0, help="Rest twist around d3 axis (rad/segment).")

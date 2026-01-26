@@ -1,7 +1,7 @@
 {
   "permissions": {
     "allow": [
-	  "Bash",
+      "Bash",
       "Bash(uv run python:*)",
       "Bash(ln:*)",
       "Bash(uvx pre-commit run:*)",
@@ -9,5 +9,9 @@
       "Bash(wc:*)",
       "Bash(tree:*)"
     ]
+  },
+  "sandbox": {
+    "enabled": true,
+    "autoAllowBashIfSandboxed": true
   }
 }
