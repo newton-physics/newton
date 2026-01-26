@@ -688,7 +688,7 @@ def apply_mjc_qfrc_kernel(
         r_com = com_world - origin
         w = w + wp.cross(r_com, v)
 
-        # rotate angular torque to world frame
+        # rotate angular torque to body frame
         w = wp.quat_rotate_inv(rot, w)
 
         qfrc_applied[worldid, qd_i + 0] = v[0]
