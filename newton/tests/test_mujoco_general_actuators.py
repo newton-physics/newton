@@ -374,57 +374,6 @@ class TestMuJoCoActuators(unittest.TestCase):
                 newton_mj.actuator_trnid[i, 0],
             )
 
-    def test_joint_target_gains_update_with_notify_changes(self):
-        """Test that JOINT_TARGET actuator gains update when joint_target_ke/kd change."""
-        builder = newton.ModelBuilder()
-        builder.add_mjcf(MJCF_ACTUATORS, ctrl_direct=False)
-        model = builder.finalize()
-
-        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
-
-        initial_gainprm = solver.mjw_model.actuator_gainprm.numpy().copy()
-        initial_biasprm = solver.mjw_model.actuator_biasprm.numpy().copy()
-
-        pos_vel_dof = get_qd_start(builder, "joint_pos_vel")
-        position_dof = get_qd_start(builder, "joint_position")
-        velocity_dof = get_qd_start(builder, "joint_velocity")
-
-        np.testing.assert_allclose(initial_gainprm[0, 0, 0], 100.0, atol=1e-5)
-        np.testing.assert_allclose(initial_biasprm[0, 0, 1], -100.0, atol=1e-5)
-        np.testing.assert_allclose(initial_gainprm[0, 1, 0], 10.0, atol=1e-5)
-        np.testing.assert_allclose(initial_biasprm[0, 1, 2], -10.0, atol=1e-5)
-        np.testing.assert_allclose(initial_gainprm[0, 2, 0], 200.0, atol=1e-5)
-        np.testing.assert_allclose(initial_biasprm[0, 2, 1], -200.0, atol=1e-5)
-        np.testing.assert_allclose(initial_gainprm[0, 3, 0], 20.0, atol=1e-5)
-        np.testing.assert_allclose(initial_biasprm[0, 3, 2], -20.0, atol=1e-5)
-
-        new_ke = model.joint_target_ke.numpy()
-        new_kd = model.joint_target_kd.numpy()
-        new_ke[pos_vel_dof] = 500.0
-        new_kd[pos_vel_dof] = 50.0
-        new_ke[position_dof] = 800.0
-        new_kd[velocity_dof] = 80.0
-        model.joint_target_ke.assign(new_ke)
-        model.joint_target_kd.assign(new_kd)
-
-        solver.notify_model_changed(SolverNotifyFlags.JOINT_DOF_PROPERTIES)
-
-        updated_gainprm = solver.mjw_model.actuator_gainprm.numpy()
-        updated_biasprm = solver.mjw_model.actuator_biasprm.numpy()
-
-        np.testing.assert_allclose(updated_gainprm[0, 0, 0], 500.0, atol=1e-5)
-        np.testing.assert_allclose(updated_biasprm[0, 0, 1], -500.0, atol=1e-5)
-        np.testing.assert_allclose(updated_gainprm[0, 1, 0], 50.0, atol=1e-5)
-        np.testing.assert_allclose(updated_biasprm[0, 1, 2], -50.0, atol=1e-5)
-        np.testing.assert_allclose(updated_gainprm[0, 2, 0], 800.0, atol=1e-5)
-        np.testing.assert_allclose(updated_biasprm[0, 2, 1], -800.0, atol=1e-5)
-        np.testing.assert_allclose(updated_gainprm[0, 3, 0], 80.0, atol=1e-5)
-        np.testing.assert_allclose(updated_biasprm[0, 3, 2], -80.0, atol=1e-5)
-
-        ctrl_direct_gainprm_before = initial_gainprm[0, 4, 0]
-        ctrl_direct_gainprm_after = updated_gainprm[0, 4, 0]
-        np.testing.assert_allclose(ctrl_direct_gainprm_before, ctrl_direct_gainprm_after, atol=1e-5)
-
     def test_multiworld_joint_target_gains_update(self):
         """Test that JOINT_TARGET gains update correctly in multiworld setup."""
         robot_builder = newton.ModelBuilder()
@@ -451,9 +400,11 @@ class TestMuJoCoActuators(unittest.TestCase):
             offset = world * dofs_per_world
             pos_vel_dof = offset + get_qd_start(robot_builder, "joint_pos_vel")
             position_dof = offset + get_qd_start(robot_builder, "joint_position")
+            velocity_dof = offset + get_qd_start(robot_builder, "joint_velocity")
             new_ke[pos_vel_dof] = 500.0 + world * 100
             new_kd[pos_vel_dof] = 50.0 + world * 10
             new_ke[position_dof] = 800.0 + world * 100
+            new_kd[velocity_dof] = 80.0 + world * 10
 
         model.joint_target_ke.assign(new_ke)
         model.joint_target_kd.assign(new_kd)
@@ -469,6 +420,8 @@ class TestMuJoCoActuators(unittest.TestCase):
         np.testing.assert_allclose(updated_biasprm[0, 1, 2], -50.0, atol=1e-5)
         np.testing.assert_allclose(updated_gainprm[0, 2, 0], 800.0, atol=1e-5)
         np.testing.assert_allclose(updated_biasprm[0, 2, 1], -800.0, atol=1e-5)
+        np.testing.assert_allclose(updated_gainprm[0, 3, 0], 80.0, atol=1e-5)
+        np.testing.assert_allclose(updated_biasprm[0, 3, 2], -80.0, atol=1e-5)
 
         np.testing.assert_allclose(updated_gainprm[1, 0, 0], 600.0, atol=1e-5)
         np.testing.assert_allclose(updated_biasprm[1, 0, 1], -600.0, atol=1e-5)
@@ -476,6 +429,8 @@ class TestMuJoCoActuators(unittest.TestCase):
         np.testing.assert_allclose(updated_biasprm[1, 1, 2], -60.0, atol=1e-5)
         np.testing.assert_allclose(updated_gainprm[1, 2, 0], 900.0, atol=1e-5)
         np.testing.assert_allclose(updated_biasprm[1, 2, 1], -900.0, atol=1e-5)
+        np.testing.assert_allclose(updated_gainprm[1, 3, 0], 90.0, atol=1e-5)
+        np.testing.assert_allclose(updated_biasprm[1, 3, 2], -90.0, atol=1e-5)
 
         for world in range(2):
             np.testing.assert_allclose(updated_gainprm[world, 4, 0], initial_gainprm[world, 4, 0], atol=1e-5)
