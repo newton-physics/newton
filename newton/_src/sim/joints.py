@@ -104,27 +104,31 @@ class ActuatorMode(IntEnum):
     """
     Enumeration of actuator modes for joint degrees of freedom.
 
-    Determines which actuators are installed for a DOF when using solvers that
-    require explicit actuator definitions (e.g., MuJoCo solver).
+    This enum manages UsdPhysics compliance by specifying whether joint_target_pos/vel
+    inputs are active for a given DOF. It determines which actuators are installed when
+    using solvers that require explicit actuator definitions (e.g., MuJoCo solver).
 
-    Note: MuJoCo general actuators are handled separately via
-    custom attributes with "mujoco:actuator" frequency and control.mujoco.ctrl, not through this enum.
+    Note:
+        MuJoCo general actuators (motor, general, etc.) are handled separately via
+        custom attributes with "mujoco:actuator" frequency and control.mujoco.ctrl,
+        not through this enum.
     """
 
     NONE = 0
     """No actuators are installed for this DOF. The joint is passive/unactuated."""
 
     POSITION = 1
-    """Only a position actuator is installed for this DOF. Tracks position targets."""
+    """Only a position actuator is installed for this DOF. Tracks joint_target_pos."""
 
     VELOCITY = 2
-    """Only a velocity actuator is installed for this DOF. Tracks velocity targets."""
+    """Only a velocity actuator is installed for this DOF. Tracks joint_target_vel."""
 
     POSITION_VELOCITY = 3
-    """Both position and velocity actuators are installed."""
+    """Both position and velocity actuators are installed. Tracks both joint_target_pos and joint_target_vel."""
 
     EFFORT = 4
-    """Direct effort/torque actuator. The joint is actuated but with no position/velocity feedback."""
+    """A drive is applied but no gains are configured. No MuJoCo actuator is created for this DOF.
+    The user is expected to supply force via joint_f."""
 
 
 __all__ = [

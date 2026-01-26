@@ -172,7 +172,7 @@ def infer_actuator_mode(
     target_ke: float,
     target_kd: float,
     force_position_velocity: bool = False,
-    has_drive: bool = True,
+    has_drive: bool = False,
 ) -> ActuatorMode:
     """Infer actuator mode from position and velocity gains.
 

@@ -584,7 +584,8 @@ def parse_urdf(
             "custom_attributes": joint["custom_attributes"],
         }
 
-        # Determine actuator mode based on flag
+        # URDF doesn't contain gain information (only damping, no stiffness), so we can't infer
+        # actuator mode. Default to POSITION.
         actuator_mode = ActuatorMode.POSITION_VELOCITY if force_position_velocity_actuation else ActuatorMode.POSITION
 
         if joint["type"] == "revolute" or joint["type"] == "continuous":
