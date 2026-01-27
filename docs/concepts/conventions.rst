@@ -276,6 +276,14 @@ The array of joint forces (torques) in generalized coordinates is stored in :att
 For free joints, the corresponding 6 dimensions in this array are the spatial wrench applied at the body's center of mass (COM)
 in world frame, following exactly the same convention as :attr:`State.body_f <newton.State.body_f>`.
 
+.. note::
+
+  MuJoCo applies a mixed frame convention for free-joint generalized forces: in ``qfrc_applied`` the force is expressed in
+  the world frame while the torque is expressed in the body (local) frame. In :class:`~newton.solvers.SolverMuJoCo`, we convert
+  this so that for free joints :attr:`Control.joint_f <newton.Control.joint_f>` matches exactly
+  :attr:`State.body_f <newton.State.body_f>`: force in the world frame and torque
+  in the world frame about the COM.
+
 Quaternion Ordering Conventions
 --------------------------------
 
