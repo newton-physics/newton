@@ -27,6 +27,8 @@ from __future__ import annotations
 import numpy as np
 import warp as wp
 
+from newton._src.math import build_orthonormal_basis
+
 from newton._src.solvers.vbd.rigid_vbd_kernels import evaluate_body_particle_contact
 
 from ...geometry import ParticleFlags
@@ -304,39 +306,6 @@ def _test_compute_force_element_adjacency(
                     face_indices[face, 1],
                     face_indices[face, 2],
                 )
-
-
-@wp.func
-def build_orthonormal_basis(n: wp.vec3):
-    """
-    Builds an orthonormal basis given a normal vector `n`. Return the two axes that is perpendicular to `n`.
-
-    :param n: A 3D vector (list or array-like) representing the normal vector
-    """
-    b1 = wp.vec3()
-    b2 = wp.vec3()
-    if n[2] < 0.0:
-        a = 1.0 / (1.0 - n[2])
-        b = n[0] * n[1] * a
-        b1[0] = 1.0 - n[0] * n[0] * a
-        b1[1] = -b
-        b1[2] = n[0]
-
-        b2[0] = b
-        b2[1] = n[1] * n[1] * a - 1.0
-        b2[2] = -n[1]
-    else:
-        a = 1.0 / (1.0 + n[2])
-        b = -n[0] * n[1] * a
-        b1[0] = 1.0 - n[0] * n[0] * a
-        b1[1] = b
-        b1[2] = -n[0]
-
-        b2[0] = b
-        b2[1] = 1.0 - n[1] * n[1] * a
-        b2[2] = -n[1]
-
-    return b1, b2
 
 
 @wp.func

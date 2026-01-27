@@ -214,6 +214,61 @@ def vec_inside_limits(a: Any, lower: Any, upper: Any) -> bool:
     return True
 
 
+@wp.func
+def build_orthonormal_basis(n: wp.vec3):
+    """Build an orthonormal basis given a (typically unit-length) normal vector `n`."""
+    b1 = wp.vec3()
+    b2 = wp.vec3()
+    if n[2] < 0.0:
+        a = 1.0 / (1.0 - n[2])
+        b = n[0] * n[1] * a
+        b1[0] = 1.0 - n[0] * n[0] * a
+        b1[1] = -b
+        b1[2] = n[0]
+
+        b2[0] = b
+        b2[1] = n[1] * n[1] * a - 1.0
+        b2[2] = -n[1]
+    else:
+        a = 1.0 / (1.0 + n[2])
+        b = -n[0] * n[1] * a
+        b1[0] = 1.0 - n[0] * n[0] * a
+        b1[1] = b
+        b1[2] = -n[0]
+
+        b2[0] = b
+        b2[1] = 1.0 - n[1] * n[1] * a
+        b2[2] = -n[1]
+
+    return b1, b2
+
+EPSILON = 1e-15
+
+
+@wp.func
+def safe_div(x: Any, y: Any, eps: float = EPSILON) -> Any:
+    """Safe division that avoids division-by-zero."""
+    return x / wp.where(y != 0.0, y, eps)
+
+
+@wp.func
+def safe_div_vec3(x: wp.vec3f, y: wp.vec3f, eps: float = EPSILON) -> wp.vec3f:
+    """Component-wise safe division for vec3f."""
+    return wp.vec3f(
+        x[0] / wp.where(y[0] != 0.0, y[0], eps),
+        x[1] / wp.where(y[1] != 0.0, y[1], eps),
+        x[2] / wp.where(y[2] != 0.0, y[2], eps),
+    )
+
+
+@wp.func
+def normalize_with_norm(x: Any):
+    """Normalize a vector and return both the normalized vector and the original norm."""
+    norm = wp.length(x)
+    if norm == 0.0:
+        return x, 0.0
+    return x / norm, norm
+
 __all__ = [
     "boltzmann",
     "leaky_max",
@@ -227,4 +282,9 @@ __all__ = [
     "vec_leaky_min",
     "vec_max",
     "vec_min",
+    "build_orthonormal_basis",
+
+    "safe_div",
+    "safe_div_vec3",
+    "normalize_with_norm",
 ]
