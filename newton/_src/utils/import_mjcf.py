@@ -19,6 +19,7 @@ import math
 import os
 import re
 import xml.etree.ElementTree as ET
+from collections.abc import Callable
 from typing import Any
 
 import numpy as np
@@ -30,7 +31,87 @@ from ..geometry import MESH_MAXHULLVERT, Mesh, ShapeFlags
 from ..sim import JointType, ModelBuilder
 from ..sim.model import ModelAttributeFrequency
 from ..usd.schemas import solref_to_stiffness_damping
-from .import_utils import parse_custom_attributes, sanitize_xml_content
+from .import_utils import is_xml_content, parse_custom_attributes, sanitize_xml_content
+
+
+def _default_resolve_include(base_dir: str | None, include_file: str) -> str:
+    """Default include resolver - returns file path.
+
+    Args:
+        base_dir: Directory of the file containing the <include> (None for XML string input)
+        include_file: The 'file' attribute value from the <include> tag
+
+    Returns:
+        Resolved file path
+
+    Raises:
+        ValueError: If include_file is relative and base_dir is None
+    """
+    if os.path.isabs(include_file):
+        return os.path.normpath(include_file)
+    elif base_dir:
+        return os.path.normpath(os.path.join(base_dir, include_file))
+    else:
+        raise ValueError(f"Cannot resolve relative include '{include_file}' without base directory")
+
+
+def _load_and_expand_mjcf(
+    source: str,
+    resolve_include: Callable[[str | None, str], str] = _default_resolve_include,
+    included_files: set[str] | None = None,
+) -> tuple[ET.Element, str | None]:
+    """Load MJCF source and recursively expand <include> elements.
+
+    Args:
+        source: File path or XML string
+        resolve_include: Callback to resolve include paths. Takes (base_dir, include_file) and
+            returns either a file path or XML content directly. Default resolver returns file paths.
+        included_files: Set of already-included file paths for cycle detection
+
+    Returns:
+        Tuple of (root element, base directory or None for XML string input)
+
+    Raises:
+        ValueError: If a circular include is detected
+    """
+    if included_files is None:
+        included_files = set()
+
+    # Load source
+    if is_xml_content(source):
+        base_dir = None  # No base directory for XML strings
+        root = ET.fromstring(sanitize_xml_content(source))
+    else:
+        # Treat as file path
+        base_dir = os.path.dirname(source) or "."
+        root = ET.parse(source).getroot()
+
+    # Find all (parent, include) pairs in a single pass
+    include_pairs = [(parent, child) for parent in root.iter() for child in parent if child.tag == "include"]
+
+    for parent, include in include_pairs:
+        file_attr = include.get("file")
+        if not file_attr:
+            continue
+
+        resolved = resolve_include(base_dir, file_attr)
+
+        if not is_xml_content(resolved):
+            # Cycle detection for file paths
+            if resolved in included_files:
+                raise ValueError(f"Circular include detected: {resolved}")
+            included_files.add(resolved)
+
+        # Recursive call - handles both file paths and XML content
+        included_root, _ = _load_and_expand_mjcf(resolved, resolve_include, included_files)
+
+        # Replace include element with children of included root
+        idx = list(parent).index(include)
+        parent.remove(include)
+        for i, child in enumerate(included_root):
+            parent.insert(idx + i, child)
+
+    return root, base_dir
 
 
 def parse_mjcf(
@@ -64,6 +145,7 @@ def parse_mjcf(
     skip_equality_constraints: bool = False,
     convert_3d_hinge_to_ball_joints: bool = False,
     mesh_maxhullvert: int = MESH_MAXHULLVERT,
+    resolve_include: Callable[[str | None, str], str] = _default_resolve_include,
 ):
     """
     Parses MuJoCo XML (MJCF) file and adds the bodies and joints to the given ModelBuilder.
@@ -99,20 +181,15 @@ def parse_mjcf(
         skip_equality_constraints (bool): Whether <equality> tags should be parsed. If True, equality constraints are ignored.
         convert_3d_hinge_to_ball_joints (bool): If True, series of three hinge joints are converted to a single ball joint. Default is False.
         mesh_maxhullvert (int): Maximum vertices for convex hull approximation of meshes.
+        resolve_include (Callable): Callback to resolve <include> file paths. Takes (base_dir, include_file) and returns either a file path or XML content directly. The default resolver concatenates paths and returns file paths.
     """
     if xform is None:
         xform = wp.transform_identity()
     else:
         xform = wp.transform(*xform)
 
-    if os.path.isfile(source):
-        mjcf_dirname = os.path.dirname(source)
-        file = ET.parse(source)
-        root = file.getroot()
-    else:
-        xml_content = sanitize_xml_content(source)
-        root = ET.fromstring(xml_content)
-        mjcf_dirname = "."
+    root, base_dir = _load_and_expand_mjcf(source, resolve_include)
+    mjcf_dirname = base_dir or "."  # Backward compatible fallback for mesh paths
 
     use_degrees = True  # angles are in degrees by default
     euler_seq = [0, 1, 2]  # XYZ by default
