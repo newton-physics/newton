@@ -105,7 +105,7 @@ class Example:
 
         # Per-rod insertion values (arclength from track start)
         self.insertion_speed = 0.5  # units per second
-        self.rod_insertions = [0.0 for _ in range(self.rod_count)]
+        self.rod_insertions = [0.0, 0.0]  # insertion for rod 0 and rod 1
 
         # Bendable tip configuration
         self.tip_bend_angle = 0.0  # radians
@@ -554,13 +554,13 @@ class Example:
                     kernels._warp_set_root_on_track,
                     dim=1,
                     inputs=[
-                        self.state.particle_q,
-                        self.state.particle_q,  # predicted == current for simplicity
-                        self.state.particle_qd,
+                        rod.positions_wp,
+                        rod.predicted_positions_wp,
+                        rod.velocities_wp,
                         track_start_wp,
                         track_end_wp,
                         float(insertion),
-                        int(start),  # root_idx in global particle array
+                        0,  # root_idx
                     ],
                     device=self.model.device,
                 )
@@ -792,7 +792,7 @@ class Example:
             self.gpu_state.reset()
             self.root_rotation = 0.0
             self.tip_bend_angle = 0.0
-            self.rod_insertions = [0.0 for _ in range(self.rod_count)]
+            self.rod_insertions = [0.0, 0.0]
             self._apply_root_rotation()
             self._apply_tip_bend()
             self.sim_time = 0.0
@@ -1017,9 +1017,9 @@ class Example:
             self.gpu_state.set_rest_darboux(self.rest_bend_d1, self.rest_bend_d2, self.rest_twist)
 
         ui.separator()
-        changed_E, self.young_modulus_scale = ui.slider_float("Young Modulus (1e6)", self.young_modulus_scale, 0.1, 100.0)
+        changed_E, self.young_modulus_scale = ui.slider_float("Young Modulus (1e6)", self.young_modulus_scale, 0.1, 1000.0)
         changed_G, self.torsion_modulus_scale = ui.slider_float(
-            "Torsion Modulus (1e6)", self.torsion_modulus_scale, 0.1, 100.0
+            "Torsion Modulus (1e6)", self.torsion_modulus_scale, 0.1, 1000.0
         )
         if changed_E or changed_G:
             self.ref_rod.young_modulus = self.young_modulus_scale * 1.0e6

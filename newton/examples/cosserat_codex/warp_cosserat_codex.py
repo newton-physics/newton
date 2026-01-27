@@ -1049,6 +1049,13 @@ def _warp_spbsv_u11_1rhs(
     if tid != 0:
         return
 
+    # Relative tolerance for regularization
+    REL_TOL = float(1.0e-8)
+    ABS_FLOOR = float(1.0e-12)
+    
+    # Track maximum diagonal for relative thresholding
+    max_diag = float(0.0)
+
     for j in range(n):
         sum_val = float(0.0)
         kmax = j if j < BAND_KD else BAND_KD
@@ -1057,8 +1064,19 @@ def _warp_spbsv_u11_1rhs(
             sum_val += u * u
 
         ajj = ab[BAND_KD, j] - sum_val
-        if ajj <= 1.0e-8:
-            ajj = 1.0e-8
+        
+        # Update max diagonal before any modification (use original diagonal for scaling reference)
+        orig_diag = ab[BAND_KD, j]
+        if orig_diag > max_diag:
+            max_diag = orig_diag
+        
+        # Relative thresholding: tolerance scales with matrix magnitude
+        tol = REL_TOL * max_diag
+        if tol < ABS_FLOOR:
+            tol = ABS_FLOOR
+        
+        if ajj <= tol:
+            ajj = tol
             
         ujj = wp.sqrt(ajj)
         ab[BAND_KD, j] = ujj
@@ -1089,6 +1107,152 @@ def _warp_spbsv_u11_1rhs(
         for k in range(i + 1, k1 + 1):
             sum_val += ab[BAND_KD + i - k, k] * b[k]
         b[i] = (b[i] - sum_val) / ab[BAND_KD, i]
+
+@wp.kernel
+def _warp_spbsv_u11_1rhs_iter_ref(
+    n: int,
+    ab: wp.array2d(dtype=wp.float32),       # Will be overwritten with Cholesky factor U
+    b: wp.array(dtype=wp.float32),           # RHS, overwritten with solution x
+    ab_orig: wp.array2d(dtype=wp.float32),  # Original matrix (preserved for residual computation)
+    b_orig: wp.array(dtype=wp.float32),      # Original RHS (preserved for residual computation)
+    r: wp.array(dtype=wp.float32),           # Workspace for residual/correction
+    max_iters: int,                          # Number of refinement iterations (typically 1-3)
+):
+    """Banded Cholesky solver with iterative refinement for improved accuracy.
+    
+    Uses double-precision accumulation for residual computation to recover
+    accuracy lost during single-precision factorization.
+    """
+    tid = wp.tid()
+    if tid != 0:
+        return
+
+    # Relative tolerance for regularization
+    REL_TOL = float(1.0e-8)
+    ABS_FLOOR = float(1.0e-12)
+    
+    # Track maximum diagonal for relative thresholding
+    max_diag = float(0.0)
+
+    # ========================================================================
+    # 1) In-place Cholesky factorization: AB -> U
+    # ========================================================================
+    for j in range(n):
+        sum_val = float(0.0)
+        kmax = j if j < BAND_KD else BAND_KD
+        for k in range(1, kmax + 1):
+            u = ab[BAND_KD - k, j]
+            sum_val += u * u
+
+        ajj = ab[BAND_KD, j] - sum_val
+        
+        # Update max diagonal before any modification
+        orig_diag = ab[BAND_KD, j]
+        if orig_diag > max_diag:
+            max_diag = orig_diag
+        
+        # Relative thresholding
+        tol = REL_TOL * max_diag
+        if tol < ABS_FLOOR:
+            tol = ABS_FLOOR
+        
+        if ajj <= tol:
+            ajj = tol
+            
+        ujj = wp.sqrt(ajj)
+        ab[BAND_KD, j] = ujj
+
+        imax = (n - j - 1) if (n - j - 1) < BAND_KD else BAND_KD
+        for i in range(1, imax + 1):
+            dot = float(0.0)
+            k2max = BAND_KD - i
+            if k2max > j:
+                k2max = j
+            if k2max < 0:
+                k2max = 0
+            for k in range(1, k2max + 1):
+                dot += ab[BAND_KD - k, j] * ab[BAND_KD - i - k, j + i]
+            aji = ab[BAND_KD - i, j + i] - dot
+            ab[BAND_KD - i, j + i] = aji / ujj
+
+    # ========================================================================
+    # 2) Initial solve: forward substitution U^T y = b
+    # ========================================================================
+    for i in range(n):
+        sum_val = float(0.0)
+        k0 = 0 if i < BAND_KD else i - BAND_KD
+        for k in range(k0, i):
+            sum_val += ab[BAND_KD + k - i, i] * b[k]
+        b[i] = (b[i] - sum_val) / ab[BAND_KD, i]
+
+    # ========================================================================
+    # 3) Initial solve: backward substitution U x = y
+    # ========================================================================
+    for i in range(n - 1, -1, -1):
+        sum_val = float(0.0)
+        k1 = i + BAND_KD if i + BAND_KD < n else n - 1
+        for k in range(i + 1, k1 + 1):
+            sum_val += ab[BAND_KD + i - k, k] * b[k]
+        b[i] = (b[i] - sum_val) / ab[BAND_KD, i]
+
+    # ========================================================================
+    # 4) Iterative refinement loop
+    # ========================================================================
+    for iteration in range(max_iters):
+        # --------------------------------------------------------------------
+        # 4a) Compute residual: r = b_orig - A_orig * x
+        #     Use double precision accumulation for better accuracy
+        # --------------------------------------------------------------------
+        for i in range(n):
+            # Start with original RHS (cast to double for accumulation)
+            acc = wp.float64(b_orig[i])
+            
+            # Subtract A_orig[i,:] * x using banded structure
+            # For symmetric banded matrix: A(i,j) = A(j,i)
+            # Diagonal element
+            acc -= wp.float64(ab_orig[BAND_KD, i]) * wp.float64(b[i])
+            
+            # Off-diagonal elements (both upper and lower by symmetry)
+            j_start = 0 if i < BAND_KD else i - BAND_KD
+            j_end = i + BAND_KD + 1 if i + BAND_KD < n else n
+            
+            for j in range(j_start, i):
+                # A(i,j) where j < i: stored at ab_orig[BAND_KD + j - i, i]
+                aij = wp.float64(ab_orig[BAND_KD + j - i, i])
+                acc -= aij * wp.float64(b[j])
+            
+            for j in range(i + 1, j_end):
+                # A(i,j) where j > i: stored at ab_orig[BAND_KD + i - j, j]
+                aij = wp.float64(ab_orig[BAND_KD + i - j, j])
+                acc -= aij * wp.float64(b[j])
+            
+            r[i] = wp.float32(acc)
+        
+        # --------------------------------------------------------------------
+        # 4b) Solve for correction: U^T U d = r (reuse factorization)
+        # --------------------------------------------------------------------
+        # Forward substitution: U^T d = r
+        for i in range(n):
+            sum_val = float(0.0)
+            k0 = 0 if i < BAND_KD else i - BAND_KD
+            for k in range(k0, i):
+                sum_val += ab[BAND_KD + k - i, i] * r[k]
+            r[i] = (r[i] - sum_val) / ab[BAND_KD, i]
+
+        # Backward substitution: U d = (U^T)^{-1} r
+        for i in range(n - 1, -1, -1):
+            sum_val = float(0.0)
+            k1 = i + BAND_KD if i + BAND_KD < n else n - 1
+            for k in range(i + 1, k1 + 1):
+                sum_val += ab[BAND_KD + i - k, k] * r[k]
+            r[i] = (r[i] - sum_val) / ab[BAND_KD, i]
+
+        # --------------------------------------------------------------------
+        # 4c) Update solution: x = x + d
+        # --------------------------------------------------------------------
+        for i in range(n):
+            b[i] = b[i] + r[i]
+
 
 class DefKitDirectLibrary:
     def __init__(self, dll_path: str | None, calling_convention: str):
@@ -1276,6 +1440,18 @@ class DefKitDirectLibrary:
                 ctypes.POINTER(BtQuaternion),
             ],
         )
+        self.ProjectDirectElasticRodConstraintsBanded = self._get_optional_function(
+            "ProjectDirectElasticRodConstraintsBanded",
+            [
+                ctypes.c_void_p,
+                ctypes.c_int,
+                ctypes.POINTER(BtVector3),
+                ctypes.POINTER(BtQuaternion),
+                ctypes.POINTER(ctypes.c_float),
+                ctypes.POINTER(BtVector3),
+                ctypes.POINTER(BtQuaternion),
+            ],
+        )
         self.DestroyDirectElasticRod = self._get_function(
             "DestroyDirectElasticRod",
             [ctypes.c_void_p],
@@ -1311,6 +1487,8 @@ class DefKitDirectRodState:
         self.rod_radius = rod_radius
         self.supports_non_banded = self.lib.ProjectDirectElasticRodConstraints is not None
         self.use_banded = use_banded or not self.supports_non_banded
+        self.use_iterative_refinement = False
+        self.iterative_refinement_iters = 2
 
         self.positions = np.zeros((num_points, 4), dtype=np.float32)
         self.predicted_positions = np.zeros((num_points, 4), dtype=np.float32)
@@ -1400,6 +1578,11 @@ class DefKitDirectRodState:
 
     def set_solver_mode(self, use_banded: bool):
         self.use_banded = use_banded or not self.supports_non_banded
+
+    def set_iterative_refinement(self, enabled: bool, iters: int = 2):
+        """Enable/disable iterative refinement for banded Cholesky solver."""
+        self.use_iterative_refinement = enabled
+        self.iterative_refinement_iters = max(1, iters)
 
     def set_root_locked(self, locked: bool):
         self.root_locked = locked
@@ -1515,6 +1698,17 @@ class DefKitDirectRodState:
             _as_ptr(self.rot_corrections, BtQuaternion),
         )
 
+    def project_direct_banded(self):
+        self.lib.ProjectDirectElasticRodConstraintsBanded(
+            self.rod_ptr,
+            ctypes.c_int(self.num_points),
+            _as_ptr(self.predicted_positions, BtVector3),
+            _as_ptr(self.predicted_orientations, BtQuaternion),
+            _as_float_ptr(self.inv_masses),
+            _as_ptr(self.pos_corrections, BtVector3),
+            _as_ptr(self.rot_corrections, BtQuaternion),
+        )
+
     def integrate_positions(self, dt: float):
         self.lib.Integrate_native(
             ctypes.c_float(dt),
@@ -1559,12 +1753,14 @@ class DefKitDirectRodState:
         self.prepare_constraints(dt)
 
         if self.use_banded or not self.supports_non_banded:
-            self.update_constraints_banded()
-            self.compute_jacobians_banded()
-            self.assemble_jmjt_banded()
-            self.project_jmjt_banded()
+             self.update_constraints_banded()
+             self.compute_jacobians_banded()
+             self.assemble_jmjt_banded()
+             self.project_jmjt_banded()
+            # self.project_direct_banded()
         else:
             self.project_direct()
+
 
         self.integrate_positions(dt)
         self.integrate_rotations(dt)
@@ -2065,12 +2261,33 @@ class NumpyDirectRodState(DefKitDirectRodState):
                 inputs=[constraint_values_wp, compliance_wp, lambda_sum_wp, int(n_dofs), rhs_wp],
                 device=device,
             )
-            wp.launch(
-                _warp_spbsv_u11_1rhs,
-                dim=1,
-                inputs=[int(n_dofs), ab_wp, rhs_wp],
-                device=device,
-            )
+            if self.use_iterative_refinement:
+                # Allocate workspace for iterative refinement
+                ab_orig_wp = wp.clone(ab_wp)
+                b_orig_wp = wp.clone(rhs_wp)
+                r_wp = wp.zeros(n_dofs, dtype=wp.float32, device=device)
+                wp.launch(
+                    _warp_spbsv_u11_1rhs_iter_ref,
+                    dim=1,
+                    inputs=[
+                        int(n_dofs),
+                        ab_wp,
+                        rhs_wp,
+                        ab_orig_wp,
+                        b_orig_wp,
+                        r_wp,
+                        int(self.iterative_refinement_iters),
+                    ],
+                    device=device,
+                )
+            else:
+                
+                wp.launch(
+                    _warp_spbsv_u11_1rhs,
+                    dim=1,
+                    inputs=[int(n_dofs), ab_wp, rhs_wp],
+                    device=device,
+                )
             delta_lambda = rhs_wp.numpy()
         elif n_dofs <= TILE:
             A_wp = wp.zeros((TILE, TILE), dtype=wp.float32, device=device)
@@ -2130,6 +2347,7 @@ class NumpyDirectRodState(DefKitDirectRodState):
             c_blocks_wp = wp.zeros(n_edges * 36, dtype=wp.float32, device=device)
             d_prime_wp = wp.zeros(n_edges * 6, dtype=wp.float32, device=device)
             delta_lambda_wp = wp.zeros(n_edges * 6, dtype=wp.float32, device=device)
+            print("Thomas solve")
             wp.launch(
                 _warp_block_thomas_solve,
                 dim=1,
@@ -2782,6 +3000,8 @@ class Example:
         self.young_modulus_scale = args.young_modulus / 1.0e6
         self.torsion_modulus_scale = args.torsion_modulus / 1.0e6
         self.use_banded = args.use_banded
+        self.use_iterative_refinement = False
+        self.iterative_refinement_iters = 2
         self.compare_offset = args.compare_offset
         half_offset = 0.5 * self.compare_offset
         self.ref_offset = np.array([0.0, -half_offset, 0.0], dtype=np.float32)
@@ -3191,6 +3411,29 @@ class Example:
                 self.use_banded = self.ref_rod.use_banded
         else:
             ui.text("Non-banded solver not available in this DLL build.")
+
+        if self.use_banded:
+            changed_iter, self.use_iterative_refinement = ui.checkbox(
+                "Iterative Refinement", self.use_iterative_refinement
+            )
+            if changed_iter:
+                self.ref_rod.set_iterative_refinement(
+                    self.use_iterative_refinement, self.iterative_refinement_iters
+                )
+                self.numpy_rod.set_iterative_refinement(
+                    self.use_iterative_refinement, self.iterative_refinement_iters
+                )
+            if self.use_iterative_refinement:
+                changed_iters, self.iterative_refinement_iters = ui.slider_int(
+                    "Refinement Iterations", self.iterative_refinement_iters, 1, 5
+                )
+                if changed_iters:
+                    self.ref_rod.set_iterative_refinement(
+                        self.use_iterative_refinement, self.iterative_refinement_iters
+                    )
+                    self.numpy_rod.set_iterative_refinement(
+                        self.use_iterative_refinement, self.iterative_refinement_iters
+                    )
 
         ui.separator()
         ui.text("Warp Overrides (candidate rod)")

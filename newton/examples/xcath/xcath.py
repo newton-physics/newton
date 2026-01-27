@@ -25,11 +25,25 @@ Command:
 
 from __future__ import annotations
 
+import argparse
+
 import newton
 import newton.examples
 
-from newton.examples.cosserat_codex.gpu_warp.cli import create_parser
+from newton.examples.cosserat_codex.gpu_warp.cli import create_parser as create_base_parser
 from newton.examples.cosserat_codex.gpu_warp.simulation import Example
+
+
+def create_parser():
+    """Create argument parser with vsync toggle."""
+    parser = create_base_parser()
+    parser.add_argument(
+        "--vsync",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Enable vertical sync.",
+    )
+    return parser
 
 
 if __name__ == "__main__":
@@ -37,6 +51,7 @@ if __name__ == "__main__":
 
     if isinstance(viewer, newton.viewer.ViewerGL):
         viewer.show_particles = True
+        viewer.vsync = args.vsync
 
     example = Example(viewer, args)
     newton.examples.run(example, args)

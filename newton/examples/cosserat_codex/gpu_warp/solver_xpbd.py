@@ -68,6 +68,8 @@ class WarpResidentRodState(base.DefKitDirectRodState):
         self._timing_last_report = time.perf_counter()
 
         self.use_cuda_graph = False
+        self.use_iterative_refinement = False
+        self.iterative_refinement_iters = 2
         self._graph = None
         self._graph_params = None
         self._graph_capture_active = False
@@ -111,6 +113,11 @@ class WarpResidentRodState(base.DefKitDirectRodState):
         self.rhs_tile_wp = wp.zeros(TILE, dtype=wp.float32, device=self.device)
         self.delta_lambda_wp = wp.zeros(alloc_dofs, dtype=wp.float32, device=self.device)
         self.delta_lambda_tile_wp = wp.zeros(TILE, dtype=wp.float32, device=self.device)
+
+        # Iterative refinement workspace arrays
+        self.ab_orig_wp = wp.zeros((BAND_LDAB, alloc_dofs), dtype=wp.float32, device=self.device)
+        self.b_orig_wp = wp.zeros(alloc_dofs, dtype=wp.float32, device=self.device)
+        self.r_wp = wp.zeros(alloc_dofs, dtype=wp.float32, device=self.device)
 
         self.diag_blocks_wp = wp.zeros(alloc_edges * 36, dtype=wp.float32, device=self.device)
         self.offdiag_blocks_wp = wp.zeros(alloc_edges * 36, dtype=wp.float32, device=self.device)
@@ -210,6 +217,19 @@ class WarpResidentRodState(base.DefKitDirectRodState):
         if backend not in DIRECT_SOLVE_BACKENDS:
             raise ValueError(f"Unknown direct solve backend: {backend}")
         self.direct_solve_backend = backend
+
+    def set_iterative_refinement(self, enabled: bool, iters: int = 2):
+        """Enable/disable iterative refinement for banded Cholesky solver.
+        
+        Args:
+            enabled: Whether to use iterative refinement.
+            iters: Number of refinement iterations (typically 1-3).
+        """
+        self.use_iterative_refinement = enabled
+        self.iterative_refinement_iters = max(1, iters)
+        # Invalidate CUDA graph when solver settings change
+        self._graph = None
+        self._graph_params = None
 
     def set_gravity(self, gravity: np.ndarray):
         super().set_gravity(gravity)
@@ -457,12 +477,31 @@ class WarpResidentRodState(base.DefKitDirectRodState):
             self._record_timing("constraints_assembly", time.perf_counter() - start)
             start = time.perf_counter()
             with self._timer("system_solve"):
-                wp.launch(
-                    base._warp_spbsv_u11_1rhs,
-                    dim=1,
-                    inputs=[int(n_dofs), self.ab_wp, self.rhs_wp],
-                    device=self.device,
-                )
+                if self.use_iterative_refinement:
+                    # Copy matrix and RHS for iterative refinement
+                    wp.copy(self.ab_orig_wp, self.ab_wp)
+                    wp.copy(self.b_orig_wp, self.rhs_wp)
+                    wp.launch(
+                        base._warp_spbsv_u11_1rhs_iter_ref,
+                        dim=1,
+                        inputs=[
+                            int(n_dofs),
+                            self.ab_wp,
+                            self.rhs_wp,
+                            self.ab_orig_wp,
+                            self.b_orig_wp,
+                            self.r_wp,
+                            int(self.iterative_refinement_iters),
+                        ],
+                        device=self.device,
+                    )
+                else:
+                    wp.launch(
+                        base._warp_spbsv_u11_1rhs,
+                        dim=1,
+                        inputs=[int(n_dofs), self.ab_wp, self.rhs_wp],
+                        device=self.device,
+                    )
             self._record_timing("system_solve", time.perf_counter() - start)
             delta_lambda = self.rhs_wp
         elif n_dofs <= TILE:
