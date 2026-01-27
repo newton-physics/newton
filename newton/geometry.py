@@ -32,6 +32,10 @@ from ._src.geometry import (
     create_mesh_heightfield,
     create_mesh_terrain,
 )
+
+# Backwards-compatible aliases (docs/autosummary refer to these names)
+heightfield_to_mesh = create_mesh_heightfield
+generate_terrain_grid = create_mesh_terrain
 from ._src.geometry.inertia import compute_shape_inertia, transform_inertia
 from ._src.geometry.sdf_hydroelastic import SDFHydroelasticConfig
 from ._src.geometry.sdf_utils import SDFData, compute_sdf, create_empty_sdf_data
@@ -61,6 +65,8 @@ __all__ = [
     "create_empty_sdf_data",
     "create_mesh_heightfield",
     "create_mesh_terrain",
+    "heightfield_to_mesh",
+    "generate_terrain_grid",
     "remesh_mesh",
     "transform_inertia",
 ]
