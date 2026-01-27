@@ -679,14 +679,13 @@ def apply_mjc_qfrc_kernel(
     if jtype == JointType.FREE or jtype == JointType.DISTANCE:
         tf = body_q[worldid * bodies_per_world + child]
         rot = wp.transform_get_rotation(tf)
-        com_world = wp.transform_point(tf, body_com[child])
-        origin = wp.transform_get_translation(tf)
         v = wp.vec3(joint_f[wqd_i + 0], joint_f[wqd_i + 1], joint_f[wqd_i + 2])
         w = wp.vec3(joint_f[wqd_i + 3], joint_f[wqd_i + 4], joint_f[wqd_i + 5])
 
         # Treat joint_f as a spatial wrench applied at the COM (same as body_f).
         # Convert to an equivalent torque about the joint frame origin.
-        r_com = com_world - origin
+        # body_com is expressed in the body frame; rotate into world to get the COM offset.
+        r_com = wp.quat_rotate(rot, body_com[child])
         w = w + wp.cross(r_com, v)
 
         # rotate angular torque to body frame
