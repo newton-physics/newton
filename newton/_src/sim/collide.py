@@ -16,6 +16,8 @@
 
 from __future__ import annotations
 
+from enum import IntEnum
+
 import warp as wp
 
 from ..core.types import Devicelike
@@ -28,6 +30,33 @@ from ..geometry.kernels import (
 from .contacts import Contacts
 from .model import Model
 from .state import State
+
+
+class CollisionPipelineType(IntEnum):
+    """
+    Selects which collision pipeline implementation to use.
+
+    The collision pipeline determines how collision detection is performed between
+    shapes in the simulation. Different pipelines offer different trade-offs between
+    features, performance, and flexibility.
+    """
+
+    UNIFIED = 0
+    """
+    Uses :class:`CollisionPipelineUnified` with GJK/MPR-based narrow phase.
+
+    Features pluggable broad phase modes (:class:`BroadPhaseMode`), mesh-mesh collision
+    via SDF with contact reduction, and optional hydroelastic contact model.
+    This is the default and recommended pipeline for most use cases.
+    """
+
+    STANDARD = 1
+    """
+    Uses :class:`CollisionPipeline` with precomputed explicit shape pairs.
+
+    A simpler pipeline that uses the shape contact pairs defined on the model.
+    May be preferred when collision pairs are known ahead of time and don't change.
+    """
 
 
 def count_rigid_contact_points(model: Model, rigid_contact_max_per_pair: int | None = None) -> int:

@@ -16,7 +16,7 @@
 from . import ik
 from .articulation import eval_fk, eval_ik
 from .builder import ModelBuilder
-from .collide import CollisionPipeline, count_rigid_contact_points
+from .collide import CollisionPipeline, CollisionPipelineType, count_rigid_contact_points
 from .collide_unified import BroadPhaseMode, CollisionPipelineUnified
 from .contacts import Contacts
 from .control import Control
@@ -37,6 +37,7 @@ __all__ = [
     "ActuatorMode",
     "BroadPhaseMode",
     "CollisionPipeline",
+    "CollisionPipelineType",
     "CollisionPipelineUnified",
     "Contacts",
     "Control",

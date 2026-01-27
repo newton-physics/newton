@@ -68,16 +68,40 @@ class UnifiedContactWriterData:
 
 
 class BroadPhaseMode(IntEnum):
-    """Broad phase collision detection mode."""
+    """
+    Selects the broad phase algorithm for :class:`CollisionPipelineUnified`.
+
+    The broad phase quickly identifies potentially colliding shape pairs before
+    the more expensive narrow phase tests. Different algorithms offer different
+    trade-offs between setup cost, per-frame cost, and scalability.
+    """
 
     NXN = 0
-    """All-pairs broad phase with AABB checks (simple, O(N²) but good for small scenes)"""
+    """
+    All-pairs broad phase with AABB overlap checks.
+
+    Tests all shape pairs against each other using axis-aligned bounding boxes.
+    Simple implementation with O(N²) complexity. Best suited for small scenes
+    with few shapes where the quadratic cost is acceptable.
+    """
 
     SAP = 1
-    """Sweep and Prune broad phase with AABB sorting (faster for larger scenes, O(N log N))"""
+    """
+    Sweep and Prune broad phase with AABB sorting.
+
+    Sorts shapes along axes and sweeps to find overlapping pairs.
+    O(N log N) complexity makes it more efficient for larger scenes.
+    Recommended for simulations with many shapes.
+    """
 
     EXPLICIT = 2
-    """Use precomputed shape pairs (most efficient when pairs are known ahead of time)"""
+    """
+    Uses precomputed shape pairs from the model.
+
+    Skips broad phase entirely and uses ``model.shape_contact_pairs`` directly.
+    Most efficient when collision pairs are known ahead of time and static.
+    Requires shape pairs to be defined on the model.
+    """
 
 
 @wp.func
