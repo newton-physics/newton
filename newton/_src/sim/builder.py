@@ -1619,7 +1619,7 @@ class ModelBuilder:
         skip_equality_constraints: bool = False,
         convert_3d_hinge_to_ball_joints: bool = False,
         mesh_maxhullvert: int = MESH_MAXHULLVERT,
-        resolve_include=None,
+        resolve_include: Callable[[str | None, str], str] | None = None,
     ):
         """
         Parses MuJoCo XML (MJCF) file and adds the bodies and joints to the given ModelBuilder.
@@ -1657,10 +1657,7 @@ class ModelBuilder:
             resolve_include (Callable): Callback to resolve <include> file paths. Takes (base_dir, include_file) and returns either a file path or XML content directly. The default resolver concatenates paths and returns file paths.
         """
         from ..solvers.mujoco.solver_mujoco import SolverMuJoCo  # noqa: PLC0415
-        from ..utils.import_mjcf import _default_resolve_include, parse_mjcf  # noqa: PLC0415
-
-        if resolve_include is None:
-            resolve_include = _default_resolve_include
+        from ..utils.import_mjcf import parse_mjcf  # noqa: PLC0415
 
         SolverMuJoCo.register_custom_attributes(self)
         return parse_mjcf(

@@ -145,7 +145,7 @@ def parse_mjcf(
     skip_equality_constraints: bool = False,
     convert_3d_hinge_to_ball_joints: bool = False,
     mesh_maxhullvert: int = MESH_MAXHULLVERT,
-    resolve_include: Callable[[str | None, str], str] = _default_resolve_include,
+    resolve_include: Callable[[str | None, str], str] | None = None,
 ):
     """
     Parses MuJoCo XML (MJCF) file and adds the bodies and joints to the given ModelBuilder.
@@ -187,6 +187,12 @@ def parse_mjcf(
         xform = wp.transform_identity()
     else:
         xform = wp.transform(*xform)
+
+    if resolve_include is None:
+        resolve_include = _default_resolve_include
+
+    # Convert Path objects to string
+    source = os.fspath(source) if hasattr(source, "__fspath__") else source
 
     root, base_dir = _load_and_expand_mjcf(source, resolve_include)
     mjcf_dirname = base_dir or "."  # Backward compatible fallback for mesh paths
