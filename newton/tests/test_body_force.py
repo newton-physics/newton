@@ -36,25 +36,11 @@ import numpy as np
 import warp as wp
 
 import newton
-from newton._src.viewer.kernels import compute_com_positions
 from newton.tests.unittest_utils import add_function_test, get_test_devices
 
 
 class TestBodyForce(unittest.TestCase):
     pass
-
-
-def compute_com_world_position(body_q, body_com, body_world, world_offsets=None, body_index: int = 0) -> np.ndarray:
-    """Compute the center of mass position in world frame."""
-    com_world = wp.zeros(body_q.shape[0], dtype=wp.vec3, device=body_q.device)
-    wp.launch(
-        kernel=compute_com_positions,
-        dim=body_q.shape[0],
-        inputs=[body_q, body_com, body_world, world_offsets],
-        outputs=[com_world],
-        device=body_q.device,
-    )
-    return com_world.numpy()[body_index]
 
 
 def test_floating_body(
