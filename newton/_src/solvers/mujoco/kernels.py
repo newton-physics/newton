@@ -379,11 +379,12 @@ def convert_mj_coords_to_warp_kernel(
     qpos: wp.array2d(dtype=wp.float32),
     qvel: wp.array2d(dtype=wp.float32),
     joints_per_world: int,
-    up_axis: int,
     joint_type: wp.array(dtype=wp.int32),
     joint_q_start: wp.array(dtype=wp.int32),
     joint_qd_start: wp.array(dtype=wp.int32),
     joint_dof_dim: wp.array(dtype=wp.int32, ndim=2),
+    joint_child: wp.array(dtype=wp.int32),
+    body_com: wp.array(dtype=wp.vec3),
     # outputs
     joint_q: wp.array(dtype=wp.float32),
     joint_qd: wp.array(dtype=wp.float32),
@@ -412,19 +413,35 @@ def convert_mj_coords_to_warp_kernel(
         joint_q[wq_i + 4] = rot[1]
         joint_q[wq_i + 5] = rot[2]
         joint_q[wq_i + 6] = rot[3]
-        # for i in range(6):
-        #     # convert velocity components
-        #     joint_qd[wqd_i + i] = qvel[worldid, qd_i + i]
 
-        joint_qd[wqd_i + 0] = qvel[worldid, qd_i + 0]
-        joint_qd[wqd_i + 1] = qvel[worldid, qd_i + 1]
-        joint_qd[wqd_i + 2] = qvel[worldid, qd_i + 2]
+        # MuJoCo qvel: linear velocity of body ORIGIN (world frame), angular velocity (body frame)
+        # Newton joint_qd: linear velocity of CoM (world frame), angular velocity (world frame)
+        #
+        # Relationship: v_com = v_origin + ω x com_offset_world
+        # where com_offset_world = quat_rotate(body_rotation, body_com)
 
-        w = wp.vec3(qvel[worldid, qd_i + 3], qvel[worldid, qd_i + 4], qvel[worldid, qd_i + 5])
-        w = wp.quat_rotate(rot, w)
-        joint_qd[wqd_i + 3] = w[0]
-        joint_qd[wqd_i + 4] = w[1]
-        joint_qd[wqd_i + 5] = w[2]
+        # Get angular velocity in body frame from MuJoCo and convert to world frame
+        w_body = wp.vec3(qvel[worldid, qd_i + 3], qvel[worldid, qd_i + 4], qvel[worldid, qd_i + 5])
+        w_world = wp.quat_rotate(rot, w_body)
+
+        # Get CoM offset in world frame
+        child = joint_child[jntid]
+        com_local = body_com[child]
+        com_world = wp.quat_rotate(rot, com_local)
+
+        # Get body origin velocity from MuJoCo
+        v_origin = wp.vec3(qvel[worldid, qd_i + 0], qvel[worldid, qd_i + 1], qvel[worldid, qd_i + 2])
+
+        # Convert to CoM velocity for Newton: v_com = v_origin + ω x com_offset
+        v_com = v_origin + wp.cross(w_world, com_world)
+        joint_qd[wqd_i + 0] = v_com[0]
+        joint_qd[wqd_i + 1] = v_com[1]
+        joint_qd[wqd_i + 2] = v_com[2]
+
+        # Angular velocity: convert from body frame (MuJoCo) to world frame (Newton)
+        joint_qd[wqd_i + 3] = w_world[0]
+        joint_qd[wqd_i + 4] = w_world[1]
+        joint_qd[wqd_i + 5] = w_world[2]
     elif type == JointType.BALL:
         # change quaternion order from wxyz to xyzw
         rot = wp.quat(
@@ -455,11 +472,12 @@ def convert_warp_coords_to_mj_kernel(
     joint_q: wp.array(dtype=wp.float32),
     joint_qd: wp.array(dtype=wp.float32),
     joints_per_world: int,
-    up_axis: int,
     joint_type: wp.array(dtype=wp.int32),
     joint_q_start: wp.array(dtype=wp.int32),
     joint_qd_start: wp.array(dtype=wp.int32),
     joint_dof_dim: wp.array(dtype=wp.int32, ndim=2),
+    joint_child: wp.array(dtype=wp.int32),
+    body_com: wp.array(dtype=wp.vec3),
     # outputs
     qpos: wp.array2d(dtype=wp.float32),
     qvel: wp.array2d(dtype=wp.float32),
@@ -488,19 +506,35 @@ def convert_warp_coords_to_mj_kernel(
         qpos[worldid, q_i + 4] = rot[0]
         qpos[worldid, q_i + 5] = rot[1]
         qpos[worldid, q_i + 6] = rot[2]
-        # for i in range(6):
-        #     # convert velocity components
-        #     qvel[worldid, qd_i + i] = joint_qd[qd_i + i]
 
-        qvel[worldid, qd_i + 0] = joint_qd[wqd_i + 0]
-        qvel[worldid, qd_i + 1] = joint_qd[wqd_i + 1]
-        qvel[worldid, qd_i + 2] = joint_qd[wqd_i + 2]
+        # Newton joint_qd: linear velocity of CoM (world frame), angular velocity (world frame)
+        # MuJoCo qvel: linear velocity of body ORIGIN (world frame), angular velocity (body frame)
+        #
+        # Relationship: v_origin = v_com - ω x com_offset_world
+        # where com_offset_world = quat_rotate(body_rotation, body_com)
 
-        w = wp.vec3(joint_qd[wqd_i + 3], joint_qd[wqd_i + 4], joint_qd[wqd_i + 5])
-        w = wp.quat_rotate_inv(rot, w)
-        qvel[worldid, qd_i + 3] = w[0]
-        qvel[worldid, qd_i + 4] = w[1]
-        qvel[worldid, qd_i + 5] = w[2]
+        # Get angular velocity in world frame
+        w_world = wp.vec3(joint_qd[wqd_i + 3], joint_qd[wqd_i + 4], joint_qd[wqd_i + 5])
+
+        # Get CoM offset in world frame
+        child = joint_child[jntid]
+        com_local = body_com[child]
+        com_world = wp.quat_rotate(rot, com_local)
+
+        # Get CoM velocity from Newton
+        v_com = wp.vec3(joint_qd[wqd_i + 0], joint_qd[wqd_i + 1], joint_qd[wqd_i + 2])
+
+        # Convert to body origin velocity for MuJoCo: v_origin = v_com - ω x com_offset
+        v_origin = v_com - wp.cross(w_world, com_world)
+        qvel[worldid, qd_i + 0] = v_origin[0]
+        qvel[worldid, qd_i + 1] = v_origin[1]
+        qvel[worldid, qd_i + 2] = v_origin[2]
+
+        # Angular velocity: convert from world frame (Newton) to body frame (MuJoCo)
+        w_body = wp.quat_rotate_inv(rot, w_world)
+        qvel[worldid, qd_i + 3] = w_body[0]
+        qvel[worldid, qd_i + 4] = w_body[1]
+        qvel[worldid, qd_i + 5] = w_body[2]
 
     elif type == JointType.BALL:
         # change quaternion order from xyzw to wxyz
@@ -622,42 +656,24 @@ def apply_mjc_body_f_kernel(
 
 @wp.kernel
 def apply_mjc_qfrc_kernel(
-    body_q: wp.array(dtype=wp.transform),
     joint_f: wp.array(dtype=wp.float32),
     joint_type: wp.array(dtype=wp.int32),
-    body_com: wp.array(dtype=wp.vec3),
-    joint_child: wp.array(dtype=wp.int32),
-    joint_q_start: wp.array(dtype=wp.int32),
     joint_qd_start: wp.array(dtype=wp.int32),
     joint_dof_dim: wp.array2d(dtype=wp.int32),
     joints_per_world: int,
-    bodies_per_world: int,
     # outputs
     qfrc_applied: wp.array2d(dtype=wp.float32),
 ):
     worldid, jntid = wp.tid()
-    child = joint_child[jntid]
     # q_i = joint_q_start[jntid]
     qd_i = joint_qd_start[jntid]
     # wq_i = joint_q_start[joints_per_world * worldid + jntid]
     wqd_i = joint_qd_start[joints_per_world * worldid + jntid]
     jtype = joint_type[jntid]
+    # Free/DISTANCE joint forces are routed via xfrc_applied in a separate kernel
+    # to preserve COM-wrench semantics; skip them here.
     if jtype == JointType.FREE or jtype == JointType.DISTANCE:
-        tf = body_q[worldid * bodies_per_world + child]
-        rot = wp.transform_get_rotation(tf)
-        # com_world = wp.transform_point(tf, body_com[child])
-        v = wp.vec3(joint_f[wqd_i + 0], joint_f[wqd_i + 1], joint_f[wqd_i + 2])
-        w = wp.vec3(joint_f[wqd_i + 3], joint_f[wqd_i + 4], joint_f[wqd_i + 5])
-
-        # rotate angular torque to world frame
-        w = wp.quat_rotate_inv(rot, w)
-
-        qfrc_applied[worldid, qd_i + 0] = v[0]
-        qfrc_applied[worldid, qd_i + 1] = v[1]
-        qfrc_applied[worldid, qd_i + 2] = v[2]
-        qfrc_applied[worldid, qd_i + 3] = w[0]
-        qfrc_applied[worldid, qd_i + 4] = w[1]
-        qfrc_applied[worldid, qd_i + 5] = w[2]
+        return
     elif jtype == JointType.BALL:
         qfrc_applied[worldid, qd_i + 0] = joint_f[wqd_i + 0]
         qfrc_applied[worldid, qd_i + 1] = joint_f[wqd_i + 1]
@@ -665,6 +681,32 @@ def apply_mjc_qfrc_kernel(
     else:
         for i in range(joint_dof_dim[jntid, 0] + joint_dof_dim[jntid, 1]):
             qfrc_applied[worldid, qd_i + i] = joint_f[wqd_i + i]
+
+
+@wp.kernel
+def apply_mjc_free_joint_f_to_body_f_kernel(
+    mjc_body_to_newton: wp.array2d(dtype=wp.int32),
+    body_free_qd_start: wp.array(dtype=wp.int32),
+    joint_f: wp.array(dtype=wp.float32),
+    # outputs
+    xfrc_applied: wp.array2d(dtype=wp.spatial_vector),
+):
+    worldid, mjc_body = wp.tid()
+    newton_body = mjc_body_to_newton[worldid, mjc_body]
+    if newton_body < 0:
+        return
+
+    qd_start = body_free_qd_start[newton_body]
+    if qd_start < 0:
+        return
+
+    v = wp.vec3(joint_f[qd_start + 0], joint_f[qd_start + 1], joint_f[qd_start + 2])
+    w = wp.vec3(joint_f[qd_start + 3], joint_f[qd_start + 4], joint_f[qd_start + 5])
+    xfrc = xfrc_applied[worldid, mjc_body]
+    xfrc_applied[worldid, mjc_body] = wp.spatial_vector(
+        wp.spatial_top(xfrc) + v,
+        wp.spatial_bottom(xfrc) + w,
+    )
 
 
 @wp.func
