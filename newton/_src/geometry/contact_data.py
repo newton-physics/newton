@@ -42,8 +42,6 @@ class ContactData:
         shape_a: Index of the first shape in the collision pair
         shape_b: Index of the second shape in the collision pair
         margin: Contact detection margin/threshold
-        feature: Shape-specific feature identifier (e.g., vertex, edge, or face ID)
-        feature_pair_key: Unique key for contact pair matching across timesteps
         contact_stiffness: Contact stiffness. 0.0 means no stiffness was set.
         contact_damping: Contact damping scale. 0.0 means no damping was set.
         contact_friction_scale: Friction scaling factor. 0.0 means no friction was set.
@@ -59,8 +57,40 @@ class ContactData:
     shape_a: int
     shape_b: int
     margin: float
-    feature: wp.uint32
-    feature_pair_key: wp.uint64
     contact_stiffness: float
     contact_damping: float
     contact_friction_scale: float
+
+
+@wp.func
+def contact_passes_margin_check(
+    contact_data: ContactData,
+) -> bool:
+    """
+    Check if a contact passes the margin check and should be written.
+
+    Args:
+        contact_data: ContactData struct containing contact information
+
+    Returns:
+        True if the contact distance is within the contact margin, False otherwise
+    """
+    total_separation_needed = (
+        contact_data.radius_eff_a + contact_data.radius_eff_b + contact_data.thickness_a + contact_data.thickness_b
+    )
+
+    # Distance calculation matching box_plane_collision
+    contact_normal_a_to_b = wp.normalize(contact_data.contact_normal_a_to_b)
+
+    a_contact_world = contact_data.contact_point_center - contact_normal_a_to_b * (
+        0.5 * contact_data.contact_distance + contact_data.radius_eff_a
+    )
+    b_contact_world = contact_data.contact_point_center + contact_normal_a_to_b * (
+        0.5 * contact_data.contact_distance + contact_data.radius_eff_b
+    )
+
+    diff = b_contact_world - a_contact_world
+    distance = wp.dot(diff, contact_normal_a_to_b)
+    d = distance - total_separation_needed
+
+    return d <= contact_data.margin

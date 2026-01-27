@@ -98,6 +98,24 @@ class SolverSemiImplicit(SolverBase):
         contacts: Contacts | None,
         dt: float,
     ):
+        """
+        Simulate the model for a given time step using the given control input.
+
+        Args:
+            state_in: The input state.
+            state_out: The output state.
+            control: The control input.
+                Defaults to `None` which means the control values from the
+                :class:`Model` are used.
+            contacts: The contact information.
+                Defaults to `None` which means no contacts are used.
+            dt: The time step (typically in seconds).
+
+        .. warning::
+            The ``eval_particle_contact`` kernel for particle-particle contact handling may corrupt the gradient computation
+            for simulations involving particle collisions.
+            To disable it, set :attr:`newton.Model.particle_grid` to `None` prior to calling :meth:`step`.
+        """
         with wp.ScopedTimer("simulate", False):
             particle_f = None
             body_f = None
@@ -150,5 +168,3 @@ class SolverSemiImplicit(SolverBase):
             self.integrate_particles(model, state_in, state_out, dt)
 
             self.integrate_bodies(model, state_in, state_out, dt, self.angular_damping)
-
-            return state_out

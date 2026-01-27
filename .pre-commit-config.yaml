@@ -31,3 +31,4 @@ repos:
     hooks:
       - id: typos
         args: []
+        exclude: \.(js|css)$

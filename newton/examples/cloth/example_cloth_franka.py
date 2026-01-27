@@ -130,7 +130,7 @@ def compute_body_jacobian(
 
 
 class Example:
-    def __init__(self, viewer):
+    def __init__(self, viewer, args=None):
         # parameters
         #   simulation
         self.add_cloth = True
@@ -244,7 +244,10 @@ class Example:
         self.target_joint_qd = wp.empty_like(self.state_0.joint_qd)
 
         self.control = self.model.control()
-        self.contacts = self.model.collide(self.state_0)
+
+        # Create collision pipeline (default: unified)
+        self.collision_pipeline = newton.examples.create_collision_pipeline(self.model, args)
+        self.contacts = self.model.collide(self.state_0, collision_pipeline=self.collision_pipeline)
 
         self.sim_time = 0.0
 
@@ -538,7 +541,13 @@ class Example:
                 self.model.gravity.assign(self.gravity_earth)
 
             # cloth sim
-            self.contacts = self.model.collide(self.state_0, soft_contact_margin=self.cloth_body_contact_margin)
+            if self.collision_pipeline is not None:
+                self.collision_pipeline.soft_contact_margin = self.cloth_body_contact_margin
+            self.contacts = self.model.collide(
+                self.state_0,
+                collision_pipeline=self.collision_pipeline,
+                soft_contact_margin=self.cloth_body_contact_margin,
+            )
 
             if self.add_cloth:
                 self.cloth_solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
@@ -583,6 +592,6 @@ if __name__ == "__main__":
     viewer, args = newton.examples.init(parser)
 
     # Create example and run
-    example = Example(viewer)
+    example = Example(viewer, args)
 
     newton.examples.run(example, args)

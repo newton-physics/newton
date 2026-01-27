@@ -40,10 +40,10 @@ VERBOSE = True
 
 @wp.kernel
 def compute_middle_kernel(
-    lower: wp.array2d(dtype=float), upper: wp.array2d(dtype=float), middle: wp.array2d(dtype=float)
+    lower: wp.array3d(dtype=float), upper: wp.array3d(dtype=float), middle: wp.array3d(dtype=float)
 ):
-    i, j = wp.tid()
-    middle[i, j] = 0.5 * (lower[i, j] + upper[i, j])
+    world, arti, dof = wp.tid()
+    middle[world, arti, dof] = 0.5 * (lower[world, arti, dof] + upper[world, arti, dof])
 
 
 @wp.kernel
@@ -56,31 +56,36 @@ def init_masks(mask_0: wp.array(dtype=bool), mask_1: wp.array(dtype=bool)):
 
 @wp.kernel
 def reset_kernel(
-    ant_root_velocities: wp.array(dtype=wp.spatial_vector),
-    hum_root_velocities: wp.array(dtype=wp.spatial_vector),
+    ant_root_velocities: wp.array2d(dtype=wp.spatial_vector),
+    hum_root_velocities: wp.array2d(dtype=wp.spatial_vector),
     mask: wp.array(dtype=bool),  # optional, can be None
     seed: int,
 ):
-    tid = wp.tid()
+    world = wp.tid()
 
     if mask:
-        do_it = mask[tid]
+        do_it = mask[world]
     else:
         do_it = True
 
     if do_it:
-        rng = wp.rand_init(seed, tid)
+        rng = wp.rand_init(seed, world)
         spin_vel = 4.0 * wp.pi * (0.5 - wp.randf(rng))
         jump_vel = 3.0 * wp.randf(rng)
-        ant_root_velocities[tid] = wp.spatial_vector(0.0, 0.0, jump_vel, 0.0, 0.0, spin_vel)
-        hum_root_velocities[tid] = wp.spatial_vector(0.0, 0.0, jump_vel, 0.0, 0.0, -spin_vel)
+        ant_root_velocities[world, 0] = wp.spatial_vector(0.0, 0.0, jump_vel, 0.0, 0.0, spin_vel)
+        hum_root_velocities[world, 0] = wp.spatial_vector(0.0, 0.0, jump_vel, 0.0, 0.0, -spin_vel)
 
 
 @wp.kernel
-def random_forces_kernel(dof_forces: wp.array2d(dtype=float), seed: int, num_worlds: int):
-    i, j = wp.tid()
-    rng = wp.rand_init(seed, i * num_worlds + j)
-    dof_forces[i, j] = 5.0 - 10.0 * wp.randf(rng)
+def random_forces_kernel(
+    dof_forces: wp.array3d(dtype=float),  # dof forces (output)
+    max_magnitude: float,  # maximum force magnitude
+    seed: int,  # random seed
+):
+    world, arti, dof = wp.tid()
+    num_artis, num_dofs = dof_forces.shape[1], dof_forces.shape[2]
+    rng = wp.rand_init(seed, num_dofs * (world * num_artis + arti) + dof)
+    dof_forces[world, arti, dof] = max_magnitude * (1.0 - 2.0 * wp.randf(rng))
 
 
 class Example:
@@ -95,7 +100,6 @@ class Example:
         self.num_worlds = num_worlds
 
         world = newton.ModelBuilder()
-        newton.solvers.SolverMuJoCo.register_custom_attributes(world)
         world.add_mjcf(
             newton.examples.get_asset("nv_ant.xml"),
             ignore_names=["floor", "ground"],
@@ -118,7 +122,7 @@ class Example:
         # finalize model
         self.model = scene.finalize()
 
-        self.solver = newton.solvers.SolverMuJoCo(self.model, njmax=100, nconmax=50)
+        self.solver = newton.solvers.SolverMuJoCo(self.model, njmax=200, nconmax=50)
 
         self.viewer = viewer
 
@@ -232,7 +236,11 @@ class Example:
             dof_forces = 5.0 - 10.0 * torch.rand((self.num_worlds, self.ants.joint_dof_count))
         else:
             dof_forces = self.ants.get_dof_forces(self.control)
-            wp.launch(random_forces_kernel, dim=dof_forces.shape, inputs=[dof_forces, self.step_count, self.num_worlds])
+            wp.launch(
+                random_forces_kernel,
+                dim=dof_forces.shape,
+                inputs=[dof_forces, 2.0, self.step_count],
+            )
 
         self.ants.set_dof_forces(self.control, dof_forces)
 
@@ -253,13 +261,13 @@ class Example:
             import torch  # noqa: PLC0415
 
             # randomize ant velocities
-            self.default_ant_root_velocities[:, 2] = 4.0 * torch.pi * (0.5 - torch.rand(self.num_worlds))
-            self.default_ant_root_velocities[:, 5] = 3.0 * torch.rand(self.num_worlds)
+            self.default_ant_root_velocities[..., 2] = 3.0 * torch.rand(self.num_worlds, 1)
+            self.default_ant_root_velocities[..., 5] = 4.0 * torch.pi * (0.5 - torch.rand(self.num_worlds, 1))
 
-            # humanoids spin in the opposite direction
-            self.default_hum_root_velocities[:, 2] = -self.default_ant_root_velocities[:, 2]
             # humanoids move up at the same speed
-            self.default_hum_root_velocities[:, 5] = self.default_ant_root_velocities[:, 5]
+            self.default_hum_root_velocities[..., 2] = self.default_ant_root_velocities[..., 2]
+            # humanoids spin in the opposite direction
+            self.default_hum_root_velocities[..., 5] = -self.default_ant_root_velocities[..., 5]
         else:
             wp.launch(
                 reset_kernel,
@@ -304,7 +312,7 @@ if __name__ == "__main__":
     if USE_TORCH:
         import torch
 
-        torch.set_device(args.device)
+        torch.set_default_device(args.device)
 
     example = Example(viewer, num_worlds=args.num_worlds)
 

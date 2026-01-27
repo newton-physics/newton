@@ -16,14 +16,16 @@
 import warp as wp
 
 from . import ray_cast
+from .ray import MAXVAL
 
 
 @wp.func
 def compute_lighting(
     enable_shadows: wp.bool,
     enable_particles: wp.bool,
+    enable_backface_culling: wp.bool,
     world_index: wp.int32,
-    has_global_world: wp.bool,
+    enable_global_world: wp.bool,
     bvh_shapes_size: wp.int32,
     bvh_shapes_id: wp.uint64,
     bvh_shapes_group_roots: wp.array(dtype=wp.int32),
@@ -53,7 +55,7 @@ def compute_lighting(
         return light_contribution
 
     L = wp.vec3f(0.0, 0.0, 0.0)
-    dist_to_light = wp.float32(wp.inf)
+    dist_to_light = wp.float32(MAXVAL)
     attenuation = wp.float32(1.0)
 
     if light_type == 1:  # directional light
@@ -97,8 +99,9 @@ def compute_lighting(
             bvh_particles_id,
             bvh_particles_group_roots,
             world_index,
-            has_global_world,
+            enable_global_world,
             enable_particles,
+            enable_backface_culling,
             shape_enabled,
             shape_types,
             shape_mesh_indices,

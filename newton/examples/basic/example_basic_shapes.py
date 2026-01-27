@@ -121,11 +121,9 @@ class Example:
         self.control = self.model.control()
 
         # Create collision pipeline from command-line args (default: CollisionPipelineUnified with EXPLICIT)
-        # Override rigid_contact_max_per_pair because mesh vs plane creates a lot of contacts
         self.collision_pipeline = newton.examples.create_collision_pipeline(
             self.model,
             args,
-            rigid_contact_max_per_pair=100,
         )
         self.contacts = self.model.collide(self.state_0, collision_pipeline=self.collision_pipeline)
 

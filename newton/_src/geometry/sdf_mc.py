@@ -27,6 +27,8 @@ triangles per voxel along the zero-crossing.
 import numpy as np
 import warp as wp
 
+from newton._src.core.types import MAXVAL
+
 #: Corner values for a single voxel (8 corners)
 vec8f = wp.types.vector(length=8, dtype=wp.float32)
 
@@ -60,9 +62,9 @@ def get_mc_tables(device):
         ]
     )
 
-    tri_range_table = wp.marching_cubes._get_mc_case_to_tri_range_table(device)
-    tri_local_inds_table = wp.marching_cubes._get_mc_tri_local_inds_table(device)
-    corner_offsets_table = wp.array(wp.marching_cubes.mc_cube_corner_offsets, dtype=wp.vec3ub, device=device)
+    tri_range_table = wp._src.marching_cubes._get_mc_case_to_tri_range_table(device)
+    tri_local_inds_table = wp._src.marching_cubes._get_mc_tri_local_inds_table(device)
+    corner_offsets_table = wp.array(wp._src.marching_cubes.mc_cube_corner_offsets, dtype=wp.vec3ub, device=device)
     edge_to_verts_table = wp.array(edge_to_verts, dtype=wp.vec2ub, device=device)
 
     # Create flattened table:
@@ -183,7 +185,7 @@ def mc_calc_face(
         p_scaled = wp.volume_index_to_world(sdf_a, vol_idx)
         face_verts[vi] = p_scaled
         depth = wp.volume_sample_f(sdf_a, vol_idx, wp.Volume.LINEAR)
-        if depth >= wp.inf or wp.isnan(depth):
+        if depth >= wp.static(MAXVAL * 0.99) or wp.isnan(depth):
             depth = 0.0
         vert_depths[vi] = -depth
         if depth < 0.0:

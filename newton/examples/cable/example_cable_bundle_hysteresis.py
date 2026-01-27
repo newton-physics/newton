@@ -193,6 +193,10 @@ class Example:
         stretch_damping = 0.0
 
         builder = newton.ModelBuilder()
+        builder.rigid_contact_margin = 0.05
+
+        # Register solver-specific custom attributes (Dahl plasticity parameters live on the Model)
+        newton.solvers.SolverVBD.register_custom_attributes(builder)
         builder.gravity = -9.81
 
         # Set default material properties for cables (cable-to-cable contact)
@@ -274,9 +278,11 @@ class Example:
                 body=body, radius=obstacle_radius, half_height=obstacle_half_height, cfg=obstacle_cfg
             )
 
-            # Make obstacle kinematic (zero mass)
+            # Make obstacle kinematic
             builder.body_mass[body] = 0.0
             builder.body_inv_mass[body] = 0.0
+            builder.body_inertia[body] = wp.mat33(0.0)
+            builder.body_inv_inertia[body] = wp.mat33(0.0)
 
             self.obstacle_bodies.append(body)
             obstacle_init_z_list.append(float(z))
@@ -299,21 +305,28 @@ class Example:
         # Finalize model
         self.model = builder.finalize()
 
+        # Author Dahl friction parameters (per-joint) via custom model attributes.
+        # These are read by SolverVBD when rigid_enable_dahl_friction=True.
+        if hasattr(self.model, "vbd"):
+            self.model.vbd.dahl_eps_max.fill_(float(eps_max))
+            self.model.vbd.dahl_tau.fill_(float(tau))
+
         # Create VBD solver with Dahl friction (cable bending hysteresis)
         self.solver = newton.solvers.SolverVBD(
             self.model,
             iterations=self.sim_iterations,
             friction_epsilon=0.1,
             rigid_enable_dahl_friction=with_dahl,
-            rigid_dahl_eps_max=eps_max,
-            rigid_dahl_tau=tau,
         )
 
         # Initialize states and contacts
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.control = self.model.control()
-        self.contacts = self.model.collide(self.state_0)
+
+        # Create collision pipeline (default: unified)
+        self.collision_pipeline = newton.examples.create_collision_pipeline(self.model, args)
+        self.contacts = self.model.collide(self.state_0, collision_pipeline=self.collision_pipeline)
         self.viewer.set_model(self.model)
 
         # Obstacle kinematics parameters
@@ -393,7 +406,7 @@ class Example:
 
             # Collide for contact detection
             if update_step_history:
-                self.contacts = self.model.collide(self.state_0)
+                self.contacts = self.model.collide(self.state_0, collision_pipeline=self.collision_pipeline)
 
             self.solver.set_rigid_history_update(update_step_history)
             self.solver.step(

@@ -23,7 +23,6 @@ import numpy as np
 import warp as wp
 import warp.fem as fem
 import warp.sparse as sp
-from warp.context import assert_conditional_graph_support
 
 import newton
 import newton.utils
@@ -148,15 +147,18 @@ def integrate_velocity(
     velocities: wp.array(dtype=wp.vec3),
     dt: float,
     gravity: wp.array(dtype=wp.vec3),
+    particle_world: wp.array(dtype=wp.int32),
     inv_cell_volume: float,
     particle_density: wp.array(dtype=float),
     particle_flags: wp.array(dtype=wp.int32),
 ):
     vel_adv = velocities[s.qp_index]
+    world_idx = particle_world[s.qp_index]
+    world_g = gravity[wp.max(world_idx, 0)]
 
     vel_adv = wp.where(
         particle_flags[s.qp_index] & newton.ParticleFlags.ACTIVE,
-        particle_density[s.qp_index] * (vel_adv + dt * gravity[0]),
+        particle_density[s.qp_index] * (vel_adv + dt * world_g),
         _INFINITY * vel_adv,
     )
     return wp.dot(u(s), vel_adv) * inv_cell_volume
@@ -1739,13 +1741,7 @@ class SolverImplicitMPM(SolverBase):
 
         self.temporary_store = fem.TemporaryStore()
 
-        self._use_cuda_graph = False
-        if self.model.device.is_cuda:
-            try:
-                assert_conditional_graph_support()
-                self._use_cuda_graph = True
-            except Exception:
-                pass
+        self._use_cuda_graph = self.model.device.is_cuda and wp.is_conditional_graph_supported()
 
         self._enable_timers = False
         self._timers_use_nvtx = False
@@ -2209,6 +2205,7 @@ class SolverImplicitMPM(SolverBase):
                     "velocities": state_in.particle_qd,
                     "dt": dt,
                     "gravity": model.gravity,
+                    "particle_world": model.particle_world,
                     "particle_density": mpm_model.particle_density,
                     "particle_flags": model.particle_flags,
                     "inv_cell_volume": inv_cell_volume,
