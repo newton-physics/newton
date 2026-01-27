@@ -3194,6 +3194,59 @@ class TestMuJoCoSolverEqualityConstraintProperties(TestMuJoCoSolverPropertiesBas
                     f"Re-enabled eq_active mismatch at World {w}, MuJoCo eq {mjc_eq}: expected True, got {actual}",
                 )
 
+    def test_eq_data_connect_preserves_second_anchor(self):
+        """
+        Test that updating CONNECT constraint properties does not reset
+        data[3:6] (second anchor) to zero.
+        """
+        # Create template with a CONNECT constraint
+        template_builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(template_builder)
+
+        # Articulation 1: free joint from world
+        b1 = template_builder.add_link(mass=1.0, com=wp.vec3(0.0), I_m=wp.mat33(np.eye(3)))
+        j1 = template_builder.add_joint_free(child=b1)
+        template_builder.add_shape_box(body=b1, hx=0.1, hy=0.1, hz=0.1)
+        template_builder.add_articulation([j1])
+
+        # Articulation 2: free joint from world (separate chain)
+        b2 = template_builder.add_link(mass=1.0, com=wp.vec3(0.0), I_m=wp.mat33(np.eye(3)))
+        j2 = template_builder.add_joint_free(child=b2)
+        template_builder.add_shape_box(body=b2, hx=0.1, hy=0.1, hz=0.1)
+        template_builder.add_articulation([j2])
+
+        # Add a CONNECT constraint between the two bodies
+        template_builder.add_equality_constraint_connect(
+            body1=b1,
+            body2=b2,
+            anchor=wp.vec3(0.1, 0.2, 0.3),
+        )
+
+        # Create main builder
+        num_worlds = 2
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.replicate(template_builder, num_worlds)
+        model = builder.finalize()
+
+        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
+
+        # Capture the initial eq_data values computed by MuJoCo
+        initial_eq_data = solver.mjw_model.eq_data.numpy().copy()
+
+        # Notify solver to trigger the update kernel
+        solver.notify_model_changed(SolverNotifyFlags.EQUALITY_CONSTRAINT_PROPERTIES)
+
+        # Verify data[3:6] (second anchor) was NOT overwritten
+        updated_eq_data = solver.mjw_model.eq_data.numpy()
+        for w in range(num_worlds):
+            np.testing.assert_allclose(
+                updated_eq_data[w, 0, 3:6],
+                initial_eq_data[w, 0, 3:6],
+                rtol=1e-5,
+                err_msg=f"World {w}: CONNECT second anchor (data[3:6]) was incorrectly overwritten",
+            )
+
 
 class TestMuJoCoSolverFixedTendonProperties(TestMuJoCoSolverPropertiesBase):
     """Test fixed tendon property replication and runtime updates across multiple worlds."""

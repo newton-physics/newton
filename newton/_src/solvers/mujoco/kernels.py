@@ -1505,8 +1505,8 @@ def update_eq_data_and_active_kernel(
 
     constraint_type = eq_constraint_type[newton_eq]
 
-    # Initialize output data
-    data = vec11(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+    # Read existing data to preserve fields we don't update
+    data = eq_data_out[world, mjc_eq]
 
     if constraint_type == int(EqType.CONNECT):
         # CONNECT: data[0:3] = anchor
