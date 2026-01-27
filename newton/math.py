@@ -16,6 +16,7 @@
 
 from ._src.math import (
     boltzmann,
+    build_orthonormal_basis,
     leaky_max,
     leaky_min,
     smooth_max,
@@ -31,6 +32,7 @@ from ._src.math import (
 
 __all__ = [
     "boltzmann",
+    "build_orthonormal_basis",
     "leaky_max",
     "leaky_min",
     "smooth_max",
