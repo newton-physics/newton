@@ -278,11 +278,18 @@ in world frame, following exactly the same convention as :attr:`State.body_f <ne
 
 .. note::
 
-  MuJoCo applies a mixed frame convention for free-joint generalized forces: in ``qfrc_applied`` the force is expressed in
-  the world frame while the torque is expressed in the body (local) frame. In :class:`~newton.solvers.SolverMuJoCo`, we convert
-  this so that for free joints :attr:`Control.joint_f <newton.Control.joint_f>` matches exactly
-  :attr:`State.body_f <newton.State.body_f>`: force in the world frame and torque
-  in the world frame about the COM.
+  MuJoCo represents free-joint generalized forces in a mixed-frame convention in ``qfrc_applied``. To preserve Newton's
+  COM-wrench semantics, :class:`~newton.solvers.SolverMuJoCo` applies free-joint
+  :attr:`Control.joint_f <newton.Control.joint_f>` through ``xfrc_applied`` (world-frame wrench at the COM) and
+  uses ``qfrc_applied`` only for non-free joints. This keeps free-joint ``joint_f`` behavior aligned with
+  :attr:`State.body_f <newton.State.body_f>`.
+
+  We avoid converting free-joint wrenches into ``qfrc_applied`` directly because ``qfrc_applied`` is **generalized-force
+  space**, not a physical wrench. For free joints the 6-DOF basis depends on the current ``cdof`` (subtree COM frame),
+  and the rotational components are expressed in the body frame. A naive world-to-body rotation is insufficient because
+  the correct mapping is the Jacobian-transpose operation used internally by MuJoCo (the same path as ``xfrc_applied``).
+  Routing through ``xfrc_applied`` ensures the wrench is interpreted at the COM in world coordinates and then mapped to
+  generalized forces consistently with MuJoCo's own dynamics.
 
 Quaternion Ordering Conventions
 --------------------------------

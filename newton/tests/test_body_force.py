@@ -469,14 +469,7 @@ def test_combined_force_torque(
         state_0.body_f.assign(wrench)
         state_1.body_f.assign(wrench)
 
-    # Step simulation
-    # Note: Decreased timestep and increased tolerance to make the test pass.
-    # Two potential reasons for the original test failing:
-    # 1. MuJoCo stores velocity at the body origin, not at COM. For freely rotating
-    #    bodies with COM offset, this causes the COM to naturally drift over time.
-    # 2. Our velocity conversion (origin <-> COM) may cause issues for fast-rotating
-    #    bodies due to orientation mismatch between position and velocity updates.
-    sim_dt = 0.001
+    sim_dt = 0.01
     num_steps = 10
     mass = model.body_mass.numpy()[body_index]
     expected_velocity = force_magnitude / mass * sim_dt * num_steps

@@ -656,47 +656,24 @@ def apply_mjc_body_f_kernel(
 
 @wp.kernel
 def apply_mjc_qfrc_kernel(
-    body_q: wp.array(dtype=wp.transform),
     joint_f: wp.array(dtype=wp.float32),
     joint_type: wp.array(dtype=wp.int32),
-    body_com: wp.array(dtype=wp.vec3),
-    joint_child: wp.array(dtype=wp.int32),
-    joint_q_start: wp.array(dtype=wp.int32),
     joint_qd_start: wp.array(dtype=wp.int32),
     joint_dof_dim: wp.array2d(dtype=wp.int32),
     joints_per_world: int,
-    bodies_per_world: int,
     # outputs
     qfrc_applied: wp.array2d(dtype=wp.float32),
 ):
     worldid, jntid = wp.tid()
-    child = joint_child[jntid]
     # q_i = joint_q_start[jntid]
     qd_i = joint_qd_start[jntid]
     # wq_i = joint_q_start[joints_per_world * worldid + jntid]
     wqd_i = joint_qd_start[joints_per_world * worldid + jntid]
     jtype = joint_type[jntid]
+    # Free/DISTANCE joint forces are routed via xfrc_applied in a separate kernel
+    # to preserve COM-wrench semantics; skip them here.
     if jtype == JointType.FREE or jtype == JointType.DISTANCE:
-        tf = body_q[worldid * bodies_per_world + child]
-        rot = wp.transform_get_rotation(tf)
-        v = wp.vec3(joint_f[wqd_i + 0], joint_f[wqd_i + 1], joint_f[wqd_i + 2])
-        w = wp.vec3(joint_f[wqd_i + 3], joint_f[wqd_i + 4], joint_f[wqd_i + 5])
-
-        # Treat joint_f as a spatial wrench applied at the COM (same as body_f).
-        # Convert to an equivalent torque about the joint frame origin.
-        # body_com is expressed in the body frame; rotate into world to get the COM offset.
-        r_com = wp.quat_rotate(rot, body_com[child])
-        w = w + wp.cross(r_com, v)
-
-        # rotate angular torque to body frame
-        w = wp.quat_rotate_inv(rot, w)
-
-        qfrc_applied[worldid, qd_i + 0] = v[0]
-        qfrc_applied[worldid, qd_i + 1] = v[1]
-        qfrc_applied[worldid, qd_i + 2] = v[2]
-        qfrc_applied[worldid, qd_i + 3] = w[0]
-        qfrc_applied[worldid, qd_i + 4] = w[1]
-        qfrc_applied[worldid, qd_i + 5] = w[2]
+        return
     elif jtype == JointType.BALL:
         qfrc_applied[worldid, qd_i + 0] = joint_f[wqd_i + 0]
         qfrc_applied[worldid, qd_i + 1] = joint_f[wqd_i + 1]
@@ -704,6 +681,32 @@ def apply_mjc_qfrc_kernel(
     else:
         for i in range(joint_dof_dim[jntid, 0] + joint_dof_dim[jntid, 1]):
             qfrc_applied[worldid, qd_i + i] = joint_f[wqd_i + i]
+
+
+@wp.kernel
+def apply_mjc_free_joint_f_to_body_f_kernel(
+    mjc_body_to_newton: wp.array2d(dtype=wp.int32),
+    body_free_qd_start: wp.array(dtype=wp.int32),
+    joint_f: wp.array(dtype=wp.float32),
+    # outputs
+    xfrc_applied: wp.array2d(dtype=wp.spatial_vector),
+):
+    worldid, mjc_body = wp.tid()
+    newton_body = mjc_body_to_newton[worldid, mjc_body]
+    if newton_body < 0:
+        return
+
+    qd_start = body_free_qd_start[newton_body]
+    if qd_start < 0:
+        return
+
+    v = wp.vec3(joint_f[qd_start + 0], joint_f[qd_start + 1], joint_f[qd_start + 2])
+    w = wp.vec3(joint_f[qd_start + 3], joint_f[qd_start + 4], joint_f[qd_start + 5])
+    xfrc = xfrc_applied[worldid, mjc_body]
+    xfrc_applied[worldid, mjc_body] = wp.spatial_vector(
+        wp.spatial_top(xfrc) + v,
+        wp.spatial_bottom(xfrc) + w,
+    )
 
 
 @wp.func
