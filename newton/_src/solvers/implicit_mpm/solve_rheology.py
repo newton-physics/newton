@@ -42,12 +42,12 @@ class YieldParamVec(wp.vec4):
 
     @wp.func
     def from_values(friction_coeff: float, yield_pressure: float, tensile_yield_ratio: float, yield_stress: float):
-        tangential_scale = wp.sqrt(3.0 / 2.0)
+        pressure_scale = wp.sqrt(3.0 / 2.0)
         return YieldParamVec(
-            yield_pressure,
-            tensile_yield_ratio * yield_pressure,
-            yield_stress * tangential_scale,
-            friction_coeff * yield_pressure * tangential_scale,
+            yield_pressure * pressure_scale,
+            tensile_yield_ratio * yield_pressure * pressure_scale,
+            yield_stress,
+            friction_coeff * yield_pressure,
         )
 
 
