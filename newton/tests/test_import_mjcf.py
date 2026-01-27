@@ -3547,6 +3547,71 @@ class TestMjcfInclude(unittest.TestCase):
             builder.add_mjcf(main_path)
             self.assertEqual(builder.body_count, 1)
 
+    def test_include_resolves_asset_paths(self):
+        """Test that asset paths in included files are resolved relative to the included file."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Create robot subdirectory with mesh subdirectory
+            robot_dir = os.path.join(tmpdir, "robot")
+            mesh_dir = os.path.join(robot_dir, "meshes")
+            os.makedirs(mesh_dir)
+
+            # Create a simple OBJ mesh file
+            mesh_content = """# Simple cube
+v -0.5 -0.5 -0.5
+v  0.5 -0.5 -0.5
+v  0.5  0.5 -0.5
+v -0.5  0.5 -0.5
+v -0.5 -0.5  0.5
+v  0.5 -0.5  0.5
+v  0.5  0.5  0.5
+v -0.5  0.5  0.5
+f 1 2 3 4
+f 5 6 7 8
+f 1 2 6 5
+f 2 3 7 6
+f 3 4 8 7
+f 4 1 5 8
+"""
+            mesh_path = os.path.join(mesh_dir, "cube.obj")
+            with open(mesh_path, "w") as f:
+                f.write(mesh_content)
+
+            # Create robot.xml that references mesh relative to its location
+            robot_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco>
+    <asset>
+        <mesh name="cube_mesh" file="meshes/cube.obj"/>
+    </asset>
+    <worldbody>
+        <body name="robot_body">
+            <geom type="mesh" mesh="cube_mesh"/>
+        </body>
+    </worldbody>
+</mujoco>"""
+            robot_path = os.path.join(robot_dir, "robot.xml")
+            with open(robot_path, "w") as f:
+                f.write(robot_content)
+
+            # Create main scene.xml that includes robot/robot.xml
+            main_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="scene">
+    <include file="robot/robot.xml"/>
+</mujoco>"""
+            main_path = os.path.join(tmpdir, "scene.xml")
+            with open(main_path, "w") as f:
+                f.write(main_content)
+
+            # Parse - this should work because mesh path is resolved relative to robot.xml
+            builder = newton.ModelBuilder()
+            builder.add_mjcf(main_path)
+            self.assertEqual(builder.body_count, 1)
+            self.assertEqual(builder.shape_count, 1)  # Verify mesh shape was created
+
+            # Verify mesh vertices were actually loaded (cube has 8 vertices)
+            model = builder.finalize()
+            mesh = model.shape_source[0]
+            self.assertEqual(len(mesh.vertices), 8)
+
 
 class TestMjcfIncludeNested(unittest.TestCase):
     """Tests for nested includes and cycle detection."""
@@ -3617,6 +3682,28 @@ class TestMjcfIncludeNested(unittest.TestCase):
                 builder.add_mjcf(file_a_path)
             self.assertIn("Circular include", str(context.exception))
 
+    def test_include_without_file_attribute(self):
+        """Test that include elements without file attribute are skipped."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Create main file with an include that has no file attribute
+            main_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test">
+    <include/>
+    <worldbody>
+        <body name="body1">
+            <geom type="sphere" size="0.1"/>
+        </body>
+    </worldbody>
+</mujoco>"""
+            main_path = os.path.join(tmpdir, "main.xml")
+            with open(main_path, "w") as f:
+                f.write(main_content)
+
+            # Should parse successfully, ignoring the empty include
+            builder = newton.ModelBuilder()
+            builder.add_mjcf(main_path)
+            self.assertEqual(builder.body_count, 1)
+
     def test_self_include_detection(self):
         """Test that a file including itself is detected."""
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -3662,7 +3749,7 @@ class TestMjcfIncludeNested(unittest.TestCase):
         builder = newton.ModelBuilder()
         with self.assertRaises(ValueError) as context:
             builder.add_mjcf(main_xml)
-        self.assertIn("Cannot resolve relative include", str(context.exception))
+        self.assertIn("Cannot resolve relative path", str(context.exception))
         self.assertIn("without base directory", str(context.exception))
 
     def test_invalid_source_not_file_not_xml(self):
@@ -3673,10 +3760,10 @@ class TestMjcfIncludeNested(unittest.TestCase):
 
 
 class TestMjcfIncludeCallback(unittest.TestCase):
-    """Tests for custom resolve_include callback."""
+    """Tests for custom path_resolver callback."""
 
-    def test_custom_resolve_include_returns_xml(self):
-        """Test custom callback that returns XML content directly."""
+    def test_custom_path_resolver_returns_xml(self):
+        """Test custom callback that returns XML content directly for includes."""
         # XML content to be "included"
         included_xml = """<?xml version="1.0" encoding="utf-8"?>
 <mujoco>
@@ -3687,10 +3774,10 @@ class TestMjcfIncludeCallback(unittest.TestCase):
     </worldbody>
 </mujoco>"""
 
-        def custom_resolver(base_dir, include_file):
-            if include_file == "virtual.xml":
+        def custom_resolver(_base_dir, file_path):
+            if file_path == "virtual.xml":
                 return included_xml
-            raise ValueError(f"Unknown include: {include_file}")
+            raise ValueError(f"Unknown file: {file_path}")
 
         # Main MJCF as string
         main_xml = """<?xml version="1.0" encoding="utf-8"?>
@@ -3700,15 +3787,15 @@ class TestMjcfIncludeCallback(unittest.TestCase):
 
         # Parse with custom resolver
         builder = newton.ModelBuilder()
-        builder.add_mjcf(main_xml, resolve_include=custom_resolver)
+        builder.add_mjcf(main_xml, path_resolver=custom_resolver)
         self.assertEqual(builder.body_count, 1)
 
-    def test_custom_resolve_include_with_base_dir(self):
+    def test_custom_path_resolver_with_base_dir(self):
         """Test that custom callback receives correct base_dir."""
         received_args = []
 
-        def tracking_resolver(base_dir, include_file):
-            received_args.append((base_dir, include_file))
+        def tracking_resolver(base_dir, file_path):
+            received_args.append((base_dir, file_path))
             return """<?xml version="1.0" encoding="utf-8"?>
 <mujoco>
     <worldbody>
@@ -3728,7 +3815,7 @@ class TestMjcfIncludeCallback(unittest.TestCase):
                 f.write(main_content)
 
             builder = newton.ModelBuilder()
-            builder.add_mjcf(main_path, resolve_include=tracking_resolver)
+            builder.add_mjcf(main_path, path_resolver=tracking_resolver)
 
             # Verify callback received correct arguments
             self.assertEqual(len(received_args), 1)
@@ -3739,7 +3826,7 @@ class TestMjcfIncludeCallback(unittest.TestCase):
         """Test that XML string input works with custom resolver (base_dir is None)."""
         received_base_dirs = []
 
-        def tracking_resolver(base_dir, include_file):
+        def tracking_resolver(base_dir, _file_path):
             received_base_dirs.append(base_dir)
             return """<?xml version="1.0" encoding="utf-8"?>
 <mujoco>
@@ -3756,7 +3843,7 @@ class TestMjcfIncludeCallback(unittest.TestCase):
 </mujoco>"""
 
         builder = newton.ModelBuilder()
-        builder.add_mjcf(main_xml, resolve_include=tracking_resolver)
+        builder.add_mjcf(main_xml, path_resolver=tracking_resolver)
 
         # base_dir should be None for XML string input
         self.assertEqual(len(received_base_dirs), 1)
