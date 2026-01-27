@@ -267,6 +267,9 @@ class TestNarrowPhase(unittest.TestCase):
             wp.full(
                 len(geom_list), ShapeFlags.COLLIDE_SHAPES, dtype=wp.int32
             ),  # shape_flags - collision enabled, no hydroelastic
+            wp.zeros(len(geom_list), dtype=wp.vec3),  # shape_local_aabb_lower - dummy for non-mesh tests
+            wp.ones(len(geom_list), dtype=wp.vec3),  # shape_local_aabb_upper - dummy for non-mesh tests
+            wp.full(len(geom_list), wp.vec3i(4, 4, 4), dtype=wp.vec3i),  # shape_voxel_resolution - dummy
         )
 
     def _run_narrow_phase(self, geom_list, pairs):
@@ -288,6 +291,9 @@ class TestNarrowPhase(unittest.TestCase):
             geom_collision_radius,
             shape_sdf_data,
             shape_flags,
+            shape_local_aabb_lower,
+            shape_local_aabb_upper,
+            shape_voxel_resolution,
         ) = self._create_geometry_arrays(geom_list)
 
         # Create candidate pairs
@@ -315,12 +321,15 @@ class TestNarrowPhase(unittest.TestCase):
             shape_contact_margin=shape_contact_margin,
             shape_collision_radius=geom_collision_radius,
             shape_flags=shape_flags,
+            shape_local_aabb_lower=shape_local_aabb_lower,
+            shape_local_aabb_upper=shape_local_aabb_upper,
+            shape_voxel_resolution=shape_voxel_resolution,
             contact_pair=contact_pair,
             contact_position=contact_position,
             contact_normal=contact_normal,
             contact_penetration=contact_penetration,
-            contact_tangent=contact_tangent,
             contact_count=contact_count,
+            contact_tangent=contact_tangent,
         )
 
         wp.synchronize()
@@ -1286,6 +1295,11 @@ class TestNarrowPhase(unittest.TestCase):
         # Contact margins: plane=0.01, sphereA=0.02, sphereB=0.06
         shape_contact_margin = wp.array([0.01, 0.02, 0.06], dtype=wp.float32)
 
+        # Dummy AABB arrays (not used for primitive tests)
+        shape_local_aabb_lower = wp.zeros(3, dtype=wp.vec3)
+        shape_local_aabb_upper = wp.ones(3, dtype=wp.vec3)
+        shape_voxel_resolution = wp.full(3, wp.vec3i(4, 4, 4), dtype=wp.vec3i)
+
         # Allocate output arrays
         max_contacts = 10
         contact_pair = wp.zeros(max_contacts, dtype=wp.vec2i)
@@ -1309,22 +1323,25 @@ class TestNarrowPhase(unittest.TestCase):
 
         contact_count.zero_()
         self.narrow_phase.launch(
-            pairs,
-            num_pairs,
-            geom_types,
-            geom_data,
-            geom_transform,
-            geom_source,
-            shape_sdf_data,
-            shape_contact_margin,
-            geom_collision_radius,
-            shape_flags,
-            contact_pair,
-            contact_position,
-            contact_normal,
-            contact_penetration,
-            contact_count,  # contact_count comes BEFORE contact_tangent
-            contact_tangent,
+            candidate_pair=pairs,
+            num_candidate_pair=num_pairs,
+            shape_types=geom_types,
+            shape_data=geom_data,
+            shape_transform=geom_transform,
+            shape_source=geom_source,
+            shape_sdf_data=shape_sdf_data,
+            shape_contact_margin=shape_contact_margin,
+            shape_collision_radius=geom_collision_radius,
+            shape_flags=shape_flags,
+            shape_local_aabb_lower=shape_local_aabb_lower,
+            shape_local_aabb_upper=shape_local_aabb_upper,
+            shape_voxel_resolution=shape_voxel_resolution,
+            contact_pair=contact_pair,
+            contact_position=contact_position,
+            contact_normal=contact_normal,
+            contact_penetration=contact_penetration,
+            contact_count=contact_count,
+            contact_tangent=contact_tangent,
         )
         wp.synchronize()
         self.assertEqual(contact_count.numpy()[0], 0, "Sphere A outside margin should have no contact")
@@ -1341,22 +1358,25 @@ class TestNarrowPhase(unittest.TestCase):
 
         contact_count.zero_()
         self.narrow_phase.launch(
-            pairs,
-            num_pairs,
-            geom_types,
-            geom_data,
-            geom_transform,
-            geom_source,
-            shape_sdf_data,
-            shape_contact_margin,
-            geom_collision_radius,
-            shape_flags,
-            contact_pair,
-            contact_position,
-            contact_normal,
-            contact_penetration,
-            contact_count,
-            contact_tangent,
+            candidate_pair=pairs,
+            num_candidate_pair=num_pairs,
+            shape_types=geom_types,
+            shape_data=geom_data,
+            shape_transform=geom_transform,
+            shape_source=geom_source,
+            shape_sdf_data=shape_sdf_data,
+            shape_contact_margin=shape_contact_margin,
+            shape_collision_radius=geom_collision_radius,
+            shape_flags=shape_flags,
+            shape_local_aabb_lower=shape_local_aabb_lower,
+            shape_local_aabb_upper=shape_local_aabb_upper,
+            shape_voxel_resolution=shape_voxel_resolution,
+            contact_pair=contact_pair,
+            contact_position=contact_position,
+            contact_normal=contact_normal,
+            contact_penetration=contact_penetration,
+            contact_count=contact_count,
+            contact_tangent=contact_tangent,
         )
         wp.synchronize()
         self.assertGreater(contact_count.numpy()[0], 0, "Sphere A inside margin should have contact")
@@ -1374,22 +1394,25 @@ class TestNarrowPhase(unittest.TestCase):
 
         contact_count.zero_()
         self.narrow_phase.launch(
-            pairs,
-            num_pairs,
-            geom_types,
-            geom_data,
-            geom_transform,
-            geom_source,
-            shape_sdf_data,
-            shape_contact_margin,
-            geom_collision_radius,
-            shape_flags,
-            contact_pair,
-            contact_position,
-            contact_normal,
-            contact_penetration,
-            contact_count,
-            contact_tangent,
+            candidate_pair=pairs,
+            num_candidate_pair=num_pairs,
+            shape_types=geom_types,
+            shape_data=geom_data,
+            shape_transform=geom_transform,
+            shape_source=geom_source,
+            shape_sdf_data=shape_sdf_data,
+            shape_contact_margin=shape_contact_margin,
+            shape_collision_radius=geom_collision_radius,
+            shape_flags=shape_flags,
+            shape_local_aabb_lower=shape_local_aabb_lower,
+            shape_local_aabb_upper=shape_local_aabb_upper,
+            shape_voxel_resolution=shape_voxel_resolution,
+            contact_pair=contact_pair,
+            contact_position=contact_position,
+            contact_normal=contact_normal,
+            contact_penetration=contact_penetration,
+            contact_count=contact_count,
+            contact_tangent=contact_tangent,
         )
         wp.synchronize()
         self.assertGreater(contact_count.numpy()[0], 0, "Sphere B with larger margin should have contact")

@@ -226,20 +226,51 @@ def get_vector(prim: Usd.Prim, name: str, default: nparray | None = None) -> npa
     return default
 
 
-def get_scale(prim: Usd.Prim) -> wp.vec3:
+def _get_xform_matrix(
+    prim: Usd.Prim,
+    local: bool = True,
+    xform_cache: UsdGeom.XformCache | None = None,
+) -> np.ndarray:
     """
-    Extract the scale component from a USD prim's local transformation.
+    Get the transformation matrix for a USD prim.
+
+    Args:
+        prim: The USD prim to query.
+        local: If True, get the local transformation; if False, get the world transformation.
+        xform_cache: Optional USD XformCache to reuse when computing world transforms (only used if ``local`` is False).
+
+    Returns:
+        The transformation matrix as a numpy array (float32).
+    """
+    xform = UsdGeom.Xformable(prim)
+    if local:
+        mat = xform.GetLocalTransformation()
+        # USD may return (matrix, resetXformStack)
+        if isinstance(mat, tuple):
+            mat = mat[0]
+    else:
+        if xform_cache is None:
+            time = Usd.TimeCode.Default()
+            mat = xform.ComputeLocalToWorldTransform(time)
+        else:
+            mat = xform_cache.GetLocalToWorldTransform(prim)
+    return np.array(mat, dtype=np.float32)
+
+
+def get_scale(prim: Usd.Prim, local: bool = True, xform_cache: UsdGeom.XformCache | None = None) -> wp.vec3:
+    """
+    Extract the scale component from a USD prim's transformation.
 
     Args:
         prim: The USD prim to query for scale information.
+        local: If True, get the local scale; if False, get the world scale.
+        xform_cache: Optional USD XformCache to reuse when computing world transforms (only used if ``local`` is False).
 
     Returns:
         The scale as a Warp vec3.
     """
-    # first get local transform matrix
-    local_mat = np.array(UsdGeom.Xform(prim).GetLocalTransformation(), dtype=np.float32)
-    # then get scale from the matrix
-    scale = np.sqrt(np.sum(local_mat[:3, :3] ** 2, axis=0))
+    mat = get_transform_matrix(prim, local=local, xform_cache=xform_cache)
+    _pos, _rot, scale = wp.transform_decompose(mat)
     return wp.vec3(*scale)
 
 
@@ -259,47 +290,38 @@ def get_gprim_axis(prim: Usd.Prim, name: str = "axis", default: AxisType = "Z") 
     return Axis.from_string(axis_str)
 
 
-def get_transform_matrix(prim: Usd.Prim, local: bool = True) -> wp.mat44:
+def get_transform_matrix(prim: Usd.Prim, local: bool = True, xform_cache: UsdGeom.XformCache | None = None) -> wp.mat44:
     """
     Extract the full transformation matrix from a USD Xform prim.
 
     Args:
         prim: The USD prim to query.
         local: If True, get the local transformation; if False, get the world transformation.
+        xform_cache: Optional USD XformCache to reuse when computing world transforms (only used if ``local`` is False).
 
     Returns:
-        A Warp 4x4 transform matrix.
+        A Warp 4x4 transform matrix. This representation composes left-to-right with `@`, matching
+        `wp.transform_decompose` expectations.
     """
-    xform = UsdGeom.Xformable(prim)
-
-    if local:
-        mat = np.array(xform.GetLocalTransformation(), dtype=np.float32)
-    else:
-        time = Usd.TimeCode.Default()
-        mat = np.array(xform.ComputeLocalToWorldTransform(time), dtype=np.float32)
+    mat = _get_xform_matrix(prim, local=local, xform_cache=xform_cache)
     return wp.mat44(mat.T)
 
 
-def get_transform(prim: Usd.Prim, local: bool = True) -> wp.transform:
+def get_transform(prim: Usd.Prim, local: bool = True, xform_cache: UsdGeom.XformCache | None = None) -> wp.transform:
     """
     Extract the transform (position and rotation) from a USD Xform prim.
 
     Args:
         prim: The USD prim to query.
         local: If True, get the local transformation; if False, get the world transformation.
+        xform_cache: Optional USD XformCache to reuse when computing world transforms (only used if ``local`` is False).
 
     Returns:
         A Warp transform containing the position and rotation extracted from the prim.
     """
-    xform = UsdGeom.Xform(prim)
-    if local:
-        mat = np.array(xform.GetLocalTransformation(), dtype=np.float32)
-    else:
-        time = Usd.TimeCode.Default()
-        mat = np.array(xform.ComputeLocalToWorldTransform(time), dtype=np.float32)
-    rot = wp.quat_from_matrix(wp.mat33(mat[:3, :3].T.flatten()))
-    pos = mat[3, :3]
-    return wp.transform(pos, rot)
+    mat = _get_xform_matrix(prim, local=local, xform_cache=xform_cache)
+    xform_pos, xform_rot, _scale = wp.transform_decompose(wp.mat44(mat.T))
+    return wp.transform(xform_pos, xform_rot)
 
 
 def convert_warp_value(v: Any, warp_dtype: Any | None = None) -> Any:
@@ -392,19 +414,33 @@ def get_custom_attribute_declarations(prim: Usd.Prim) -> dict[str, ModelBuilder.
     """
     from ..sim.builder import ModelBuilder  # noqa: PLC0415
 
-    def parse_custom_attr_name(name: str) -> tuple[str | None, str] | None:
+    def is_schema_attribute(prim, attr_name: str) -> bool:
+        """Check if attribute is defined by a registered schema."""
+        # Check the prim's type schema
+        prim_def = Usd.SchemaRegistry().FindConcretePrimDefinition(prim.GetTypeName())
+        if prim_def and attr_name in prim_def.GetPropertyNames():
+            return True
+
+        # Check all applied API schemas
+        for schema_name in prim.GetAppliedSchemas():
+            api_def = Usd.SchemaRegistry().FindAppliedAPIPrimDefinition(schema_name)
+            if api_def and attr_name in api_def.GetPropertyNames():
+                return True
+
+        # TODO: handle multi-apply schemas once newton-usd-schemas has support for them
+
+        return False
+
+    def parse_custom_attr_name(name: str) -> tuple[str | None, str | None]:
         """
         Parse custom attribute names in the format 'newton:namespace:attr_name' or 'newton:attr_name'.
 
         Returns:
             Tuple of (namespace, attr_name) where namespace can be None for default namespace,
-            or None if the name doesn't match the expected format.
+            and attr_name can be None if the name is invalid.
         """
 
         parts = name.split(":")
-        if len(parts) < 2 or parts[0] != "newton":
-            return None
-
         if len(parts) == 2:
             # newton:attr_name (default namespace)
             return None, parts[1]
@@ -413,16 +449,17 @@ def get_custom_attribute_declarations(prim: Usd.Prim) -> dict[str, ModelBuilder.
             return parts[1], parts[2]
         else:
             # Invalid format
-            return None
+            return None, None
 
     out: dict[str, ModelBuilder.CustomAttribute] = {}
-    for attr in prim.GetAttributes():
+    for attr in prim.GetAuthoredPropertiesInNamespace("newton"):
+        if is_schema_attribute(prim, attr.GetName()):
+            continue
         attr_name = attr.GetName()
-        parsed = parse_custom_attr_name(attr_name)
-        if not parsed:
+        namespace, local_name = parse_custom_attr_name(attr_name)
+        if not local_name:
             continue
 
-        namespace, local_name = parsed
         default_value = attr.Get()
 
         # Try to read customData for assignment and frequency

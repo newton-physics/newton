@@ -22,9 +22,9 @@ from .contacts import Contacts
 from .control import Control
 from .graph_coloring import color_graph, plot_graph
 from .joints import (
-    JOINT_LIMIT_UNLIMITED,
     EqType,
     JointType,
+    get_joint_constraint_count,
     get_joint_dof_count,
 )
 from .model import Model, ModelAttributeAssignment, ModelAttributeFrequency
@@ -32,7 +32,6 @@ from .state import State
 from .style3d import Style3DModel, Style3DModelBuilder
 
 __all__ = [
-    "JOINT_LIMIT_UNLIMITED",
     "BroadPhaseMode",
     "CollisionPipeline",
     "CollisionPipelineUnified",
@@ -51,6 +50,7 @@ __all__ = [
     "count_rigid_contact_points",
     "eval_fk",
     "eval_ik",
+    "get_joint_constraint_count",
     "get_joint_dof_count",
     "ik",
     "plot_graph",

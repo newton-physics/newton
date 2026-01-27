@@ -26,7 +26,7 @@ import warp as wp
 
 from ..core import quat_between_axes, quat_from_euler
 from ..core.types import Axis, AxisType, Sequence, Transform
-from ..geometry import MESH_MAXHULLVERT, Mesh
+from ..geometry import MESH_MAXHULLVERT, Mesh, ShapeFlags
 from ..sim import JointType, ModelBuilder
 from ..sim.model import ModelAttributeFrequency
 from ..usd.schemas import solref_to_stiffness_damping
@@ -36,6 +36,7 @@ from .import_utils import parse_custom_attributes, sanitize_xml_content
 def parse_mjcf(
     builder: ModelBuilder,
     source: str,
+    *,
     xform: Transform | None = None,
     floating: bool | None = None,
     base_joint: dict | str | None = None,
@@ -46,6 +47,7 @@ def parse_mjcf(
     parse_meshes: bool = True,
     parse_sites: bool = True,
     parse_visuals: bool = True,
+    parse_mujoco_options: bool = True,
     up_axis: AxisType = Axis.Z,
     ignore_names: Sequence[str] = (),
     ignore_classes: Sequence[str] = (),
@@ -65,6 +67,7 @@ def parse_mjcf(
 ):
     """
     Parses MuJoCo XML (MJCF) file and adds the bodies and joints to the given ModelBuilder.
+    MuJoCo-specific custom attributes are registered on the builder automatically.
 
     Args:
         builder (ModelBuilder): The :class:`ModelBuilder` to add the bodies and joints to.
@@ -79,6 +82,7 @@ def parse_mjcf(
         parse_meshes (bool): Whether geometries of type `"mesh"` should be parsed. If False, geometries of type `"mesh"` are ignored.
         parse_sites (bool): Whether sites (non-colliding reference points) should be parsed. If False, sites are ignored.
         parse_visuals (bool): Whether visual geometries (non-collision shapes) should be loaded. If False, visual shapes are not loaded (different from `hide_visuals` which loads but hides them). Default is True.
+        parse_mujoco_options (bool): Whether solver options from the MJCF `<option>` tag should be parsed. If False, solver options are not loaded and custom attributes retain their default values. Default is True.
         up_axis (AxisType): The up axis of the MuJoCo scene. The default is Z up.
         ignore_names (Sequence[str]): A list of regular expressions. Bodies and joints with a name matching one of the regular expressions will be ignored.
         ignore_classes (Sequence[str]): A list of regular expressions. Bodies and joints with a class matching one of the regular expressions will be ignored.
@@ -148,6 +152,19 @@ def parse_mjcf(
         mesh_dir = compiler.attrib.get("meshdir", ".")
     else:
         mesh_dir = "."
+
+    # Parse MJCF option tag for ONCE and WORLD frequency custom attributes (solver options)
+    # WORLD frequency attributes use index 0 here; they get remapped during add_world()
+    if parse_mujoco_options:
+        builder_custom_attr_option: list[ModelBuilder.CustomAttribute] = builder.get_custom_attributes_by_frequency(
+            [ModelAttributeFrequency.ONCE, ModelAttributeFrequency.WORLD]
+        )
+        option_elem = root.find("option")
+        if option_elem is not None and builder_custom_attr_option:
+            option_attrs = parse_custom_attributes(option_elem.attrib, builder_custom_attr_option, "mjcf")
+            for key, value in option_attrs.items():
+                if key in builder.custom_attributes:
+                    builder.custom_attributes[key].values[0] = value
 
     mesh_assets = {}
     for asset in root.findall("asset"):
@@ -233,9 +250,9 @@ def parse_mjcf(
 
         length = len(out)
         if length == 1:
-            return wp.vec(len(default), wp.float32)(out[0], out[0], out[0])
+            return wp.types.vector(len(default), wp.float32)(out[0], out[0], out[0])
 
-        return wp.vec(length, wp.float32)(out)
+        return wp.types.vector(length, wp.float32)(out)
 
     def parse_orientation(attrib) -> wp.quat:
         if "quat" in attrib:
@@ -306,10 +323,8 @@ def parse_mjcf(
             geom_pos = parse_vec(geom_attrib, "pos", (0.0, 0.0, 0.0)) * scale
             geom_rot = parse_orientation(geom_attrib)
             tf = wp.transform(geom_pos, geom_rot)
-            if link == -1 and incoming_xform is not None:
+            if incoming_xform is not None:
                 tf = incoming_xform * tf
-                geom_pos = tf.p
-                geom_rot = tf.q
 
             geom_density = parse_float(geom_attrib, "density", density)
 
@@ -340,9 +355,6 @@ def parse_mjcf(
                 "cfg": shape_cfg,
                 "custom_attributes": custom_attributes,
             }
-
-            if incoming_xform is not None:
-                tf = incoming_xform * tf
 
             if geom_type == "sphere":
                 s = builder.add_shape_sphere(
@@ -424,6 +436,11 @@ def parse_mjcf(
                     start = wp.vec3(geom_fromto[0:3]) * scale
                     end = wp.vec3(geom_fromto[3:6]) * scale
 
+                    # Apply incoming_xform to fromto coordinates
+                    if incoming_xform is not None:
+                        start = wp.transform_point(incoming_xform, start)
+                        end = wp.transform_point(incoming_xform, end)
+
                     # compute rotation to align the Warp capsule (along x-axis), with mjcf fromto direction
                     axis = wp.normalize(end - start)
                     angle = math.acos(wp.dot(axis, wp.vec3(0.0, 1.0, 0.0)))
@@ -463,8 +480,9 @@ def parse_mjcf(
                     shapes.append(s)
 
             elif geom_type == "plane":
-                normal = wp.quat_rotate(geom_rot, wp.vec3(0.0, 0.0, 1.0))
-                p = wp.dot(geom_pos, normal)
+                # Use tf (which has incoming_xform applied) for plane normal/distance
+                normal = wp.quat_rotate(tf.q, wp.vec3(0.0, 0.0, 1.0))
+                p = wp.dot(tf.p, normal)
                 s = builder.add_shape_plane(
                     plane=(*normal, p),
                     width=geom_size[0],
@@ -559,13 +577,214 @@ def parse_mjcf(
 
         return site_shapes
 
+    def get_frame_xform(frame_element, incoming_xform: wp.transform) -> wp.transform:
+        """Compute composed transform for a frame element."""
+        frame_pos = parse_vec(frame_element.attrib, "pos", (0.0, 0.0, 0.0)) * scale
+        frame_rot = parse_orientation(frame_element.attrib)
+        return incoming_xform * wp.transform(frame_pos, frame_rot)
+
+    def _process_body_geoms(
+        geoms,
+        defaults: dict,
+        body_name: str,
+        link: int,
+        incoming_xform: wp.transform | None = None,
+    ) -> list:
+        """Process geoms for a body, partitioning into visuals and colliders.
+
+        This helper applies the same filtering/partitioning logic for geoms whether
+        they appear directly in a <body> or inside a <frame> within a body.
+
+        Args:
+            geoms: Iterable of geom XML elements to process.
+            defaults: The current defaults dictionary.
+            body_name: Name of the parent body (for naming).
+            link: The body index.
+            incoming_xform: Optional transform to apply to geoms.
+
+        Returns:
+            List of visual shape indices (if parse_visuals is True).
+        """
+        visuals = []
+        colliders = []
+
+        for geo_count, geom in enumerate(geoms):
+            geom_defaults = defaults
+            geom_class = None
+            if "class" in geom.attrib:
+                geom_class = geom.attrib["class"]
+                ignore_geom = False
+                for pattern in ignore_classes:
+                    if re.match(pattern, geom_class):
+                        ignore_geom = True
+                        break
+                if ignore_geom:
+                    continue
+                if geom_class in class_defaults:
+                    geom_defaults = merge_attrib(defaults, class_defaults[geom_class])
+            if "geom" in geom_defaults:
+                geom_attrib = merge_attrib(geom_defaults["geom"], geom.attrib)
+            else:
+                geom_attrib = geom.attrib
+
+            geom_name = geom_attrib.get("name", f"{body_name}_geom_{geo_count}")
+
+            contype = geom_attrib.get("contype", 1)
+            conaffinity = geom_attrib.get("conaffinity", 1)
+            collides_with_anything = not (int(contype) == 0 and int(conaffinity) == 0)
+
+            if geom_class is not None:
+                neither_visual_nor_collider = True
+                for pattern in visual_classes:
+                    if re.match(pattern, geom_class):
+                        visuals.append(geom)
+                        neither_visual_nor_collider = False
+                        break
+                for pattern in collider_classes:
+                    if re.match(pattern, geom_class):
+                        colliders.append(geom)
+                        neither_visual_nor_collider = False
+                        break
+                if neither_visual_nor_collider:
+                    if no_class_as_colliders and collides_with_anything:
+                        colliders.append(geom)
+                    else:
+                        visuals.append(geom)
+            else:
+                no_class_class = "collision" if no_class_as_colliders else "visual"
+                if verbose:
+                    print(f"MJCF parsing shape {geom_name} issue: no class defined for geom, assuming {no_class_class}")
+                if no_class_as_colliders and collides_with_anything:
+                    colliders.append(geom)
+                else:
+                    visuals.append(geom)
+
+        visual_shape_indices = []
+
+        if parse_visuals_as_colliders:
+            colliders = visuals
+        elif parse_visuals:
+            s = parse_shapes(
+                defaults,
+                body_name,
+                link,
+                geoms=visuals,
+                density=0.0,
+                just_visual=True,
+                visible=not hide_visuals,
+                incoming_xform=incoming_xform,
+            )
+            visual_shape_indices.extend(s)
+
+        show_colliders = force_show_colliders
+        if parse_visuals_as_colliders:
+            show_colliders = True
+        elif len(visuals) == 0 or not parse_visuals:
+            # we need to show the collision shapes since there are no visual shapes (or we're not loading them)
+            show_colliders = True
+
+        parse_shapes(
+            defaults,
+            body_name,
+            link,
+            geoms=colliders,
+            density=default_shape_density,
+            visible=show_colliders,
+            incoming_xform=incoming_xform,
+        )
+
+        return visual_shape_indices
+
+    def process_frames(
+        frames,
+        parent_body: int,
+        defaults: dict,
+        childclass: str | None,
+        world_xform: wp.transform,
+        body_relative_xform: wp.transform | None = None,
+    ):
+        """Process frame elements, composing transforms with children.
+
+        Frames are pure coordinate transformations that can wrap bodies, geoms, sites, and nested frames.
+
+        Args:
+            frames: Iterable of frame XML elements to process.
+            parent_body: The parent body index (-1 for world).
+            defaults: The current defaults dictionary.
+            childclass: The current childclass for body inheritance.
+            world_xform: World transform for positioning child bodies.
+            body_relative_xform: Body-relative transform for geoms/sites. If None, uses world_xform
+                (appropriate for static geoms at worldbody level).
+        """
+        # Stack entries: (frame, world_xform, body_relative_xform, frame_defaults, frame_childclass)
+        # For worldbody frames, body_relative equals world (static geoms use world coords)
+        if body_relative_xform is None:
+            frame_stack = [(f, world_xform, world_xform, defaults, childclass) for f in frames]
+        else:
+            frame_stack = [(f, world_xform, body_relative_xform, defaults, childclass) for f in frames]
+
+        while frame_stack:
+            frame, frame_world, frame_body_rel, frame_defaults, frame_childclass = frame_stack.pop()
+            frame_local = get_frame_xform(frame, wp.transform_identity())
+            composed_world = frame_world * frame_local
+            composed_body_rel = frame_body_rel * frame_local
+
+            # Resolve childclass for this frame's children
+            _childclass = frame.get("childclass") or frame_childclass
+
+            # Compute merged defaults for this frame's children
+            if _childclass is None:
+                _defaults = frame_defaults
+            else:
+                _defaults = merge_attrib(frame_defaults, class_defaults.get(_childclass, {}))
+
+            # Process child bodies (need world transform)
+            for child_body in frame.findall("body"):
+                parse_body(child_body, parent_body, _defaults, childclass=_childclass, incoming_xform=composed_world)
+
+            # Process child geoms (need body-relative transform)
+            # Use the same visual/collider partitioning logic as parse_body
+            child_geoms = frame.findall("geom")
+            if child_geoms:
+                body_name = "world" if parent_body == -1 else builder.body_key[parent_body]
+                frame_visual_shapes = _process_body_geoms(
+                    child_geoms,
+                    _defaults,
+                    body_name,
+                    parent_body,
+                    incoming_xform=composed_body_rel,
+                )
+                visual_shapes.extend(frame_visual_shapes)
+
+            # Process child sites (need body-relative transform)
+            if parse_sites:
+                child_sites = frame.findall("site")
+                if child_sites:
+                    body_name = "world" if parent_body == -1 else builder.body_key[parent_body]
+                    _parse_sites_impl(_defaults, body_name, parent_body, child_sites, incoming_xform=composed_body_rel)
+
+            # Add nested frames to stack with current defaults and childclass (in reverse to maintain order)
+            frame_stack.extend(
+                (f, composed_world, composed_body_rel, _defaults, _childclass) for f in reversed(frame.findall("frame"))
+            )
+
     def parse_body(
         body,
         parent,
         incoming_defaults: dict,
         childclass: str | None = None,
-        parent_world_xform: Transform | None = None,
+        incoming_xform: Transform | None = None,
     ):
+        """Parse a body element from MJCF.
+
+        Args:
+            body: The XML body element.
+            parent: Parent body index (-1 for world).
+            incoming_defaults: Default attributes dictionary.
+            childclass: Child class name for inheritance.
+            incoming_xform: Accumulated transform from parent (may include frame offsets).
+                If None, uses the import root xform.
+        """
         body_class = body.get("class") or body.get("childclass")
         if body_class is None:
             body_class = childclass
@@ -587,12 +806,20 @@ def parse_mjcf(
         # Create local transform from parsed position and orientation
         local_xform = wp.transform(body_pos * scale, body_ori)
 
-        # Compose with either the passed parent world transform or the import root xform
-        world_xform = (parent_world_xform or xform) * local_xform
+        # Compose with incoming transform (or import root xform if none)
+        world_xform = (incoming_xform or xform) * local_xform
 
-        # For joint positioning, we need the relative position/orientation scaled
-        body_pos_for_joints = body_pos * scale
-        body_ori_for_joints = body_ori
+        # For joint positioning, compute body position relative to the actual parent body
+        if parent >= 0:
+            # Look up parent body's world transform and compute relative position
+            parent_body_xform = builder.body_q[parent]
+            relative_xform = wp.transform_inverse(parent_body_xform) * world_xform
+            body_pos_for_joints = relative_xform.p
+            body_ori_for_joints = relative_xform.q
+        else:
+            # World parent: use the composed world_xform (includes frame/import root transforms)
+            body_pos_for_joints = world_xform.p
+            body_ori_for_joints = world_xform.q
 
         joint_armature = []
         joint_name = []
@@ -713,9 +940,11 @@ def parse_mjcf(
             elif len(linear_axes) == 1 and len(angular_axes) == 0:
                 joint_type = JointType.PRISMATIC
 
-        if len(freejoint_tags) > 0 and parent == -1 and (base_joint is not None or floating is not None):
+        if joint_type == JointType.FREE and parent == -1 and (base_joint is not None or floating is not None):
             joint_pos = joint_pos[0] if len(joint_pos) > 0 else wp.vec3(0.0, 0.0, 0.0)
-            _xform = wp.transform(body_pos_for_joints + joint_pos, body_ori_for_joints)
+            # Rotate joint_pos by body orientation before adding to body position
+            rotated_joint_pos = wp.quat_rotate(body_ori_for_joints, joint_pos)
+            _xform = wp.transform(body_pos_for_joints + rotated_joint_pos, body_ori_for_joints)
 
             if base_joint is not None:
                 # in case of a given base joint, the position is applied first, the rotation only
@@ -773,12 +1002,13 @@ def parse_mjcf(
                     )
                 )
             else:
-                # TODO parse ref, springref values from joint_attrib
                 # When parent is world (-1), use world_xform to respect the xform argument
                 if parent == -1:
                     parent_xform_for_joint = world_xform * wp.transform(joint_pos, wp.quat_identity())
                 else:
-                    parent_xform_for_joint = wp.transform(body_pos_for_joints + joint_pos, body_ori_for_joints)
+                    # Rotate joint_pos by body orientation before adding to body position
+                    rotated_joint_pos = wp.quat_rotate(body_ori_for_joints, joint_pos)
+                    parent_xform_for_joint = wp.transform(body_pos_for_joints + rotated_joint_pos, body_ori_for_joints)
 
                 joint_indices.append(
                     builder.add_joint(
@@ -795,90 +1025,11 @@ def parse_mjcf(
                 )
 
         # -----------------
-        # add shapes
+        # add shapes (using shared helper for visual/collider partitioning)
 
         geoms = body.findall("geom")
-        visuals = []
-        colliders = []
-        for geo_count, geom in enumerate(geoms):
-            geom_defaults = defaults
-            if "class" in geom.attrib:
-                geom_class = geom.attrib["class"]
-                ignore_geom = False
-                for pattern in ignore_classes:
-                    if re.match(pattern, geom_class):
-                        ignore_geom = True
-                        break
-                if ignore_geom:
-                    continue
-                if geom_class in class_defaults:
-                    geom_defaults = merge_attrib(defaults, class_defaults[geom_class])
-            if "geom" in geom_defaults:
-                geom_attrib = merge_attrib(geom_defaults["geom"], geom.attrib)
-            else:
-                geom_attrib = geom.attrib
-
-            geom_name = geom_attrib.get("name", f"{body_name}_geom_{geo_count}")
-
-            contype = geom_attrib.get("contype", 1)
-            conaffinity = geom_attrib.get("conaffinity", 1)
-            collides_with_anything = not (int(contype) == 0 and int(conaffinity) == 0)
-
-            if "class" in geom.attrib:
-                neither_visual_nor_collider = True
-                for pattern in visual_classes:
-                    if re.match(pattern, geom_class):
-                        visuals.append(geom)
-                        neither_visual_nor_collider = False
-                        break
-                for pattern in collider_classes:
-                    if re.match(pattern, geom_class):
-                        colliders.append(geom)
-                        neither_visual_nor_collider = False
-                        break
-                if neither_visual_nor_collider:
-                    if no_class_as_colliders and collides_with_anything:
-                        colliders.append(geom)
-                    else:
-                        visuals.append(geom)
-            else:
-                no_class_class = "collision" if no_class_as_colliders else "visual"
-                if verbose:
-                    print(f"MJCF parsing shape {geom_name} issue: no class defined for geom, assuming {no_class_class}")
-                if no_class_as_colliders and collides_with_anything:
-                    colliders.append(geom)
-                else:
-                    visuals.append(geom)
-
-        if parse_visuals_as_colliders:
-            colliders = visuals
-        elif parse_visuals:
-            s = parse_shapes(
-                defaults,
-                body_name,
-                link,
-                geoms=visuals,
-                density=0.0,
-                just_visual=True,
-                visible=not hide_visuals,
-            )
-            visual_shapes.extend(s)
-
-        show_colliders = force_show_colliders
-        if parse_visuals_as_colliders:
-            show_colliders = True
-        elif len(visuals) == 0 or not parse_visuals:
-            # we need to show the collision shapes since there are no visual shapes (or we're not loading them)
-            show_colliders = True
-
-        parse_shapes(
-            defaults,
-            body_name,
-            link,
-            geoms=colliders,
-            density=default_shape_density,
-            visible=show_colliders,
-        )
+        body_visual_shapes = _process_body_geoms(geoms, defaults, body_name, link)
+        visual_shapes.extend(body_visual_shapes)
 
         # Parse sites (non-colliding reference points)
         if parse_sites:
@@ -959,7 +1110,22 @@ def parse_mjcf(
                 _incoming_defaults = defaults
             else:
                 _incoming_defaults = merge_attrib(defaults, class_defaults[_childclass])
-            parse_body(child, link, _incoming_defaults, childclass=_childclass, parent_world_xform=world_xform)
+            parse_body(child, link, _incoming_defaults, childclass=_childclass, incoming_xform=world_xform)
+
+        # Process frame elements within this body
+        # Use body's childclass if declared, otherwise inherit from parent
+        frame_childclass = body.get("childclass") or childclass
+        frame_defaults = (
+            merge_attrib(defaults, class_defaults.get(frame_childclass, {})) if frame_childclass else defaults
+        )
+        process_frames(
+            body.findall("frame"),
+            parent_body=link,
+            defaults=frame_defaults,
+            childclass=frame_childclass,
+            world_xform=world_xform,
+            body_relative_xform=wp.transform_identity(),  # Geoms/sites need body-relative coords
+        )
 
     def parse_equality_constraints(equality):
         def parse_common_attributes(element):
@@ -967,6 +1133,26 @@ def parse_mjcf(
                 "name": element.attrib.get("name"),
                 "active": element.attrib.get("active", "true").lower() == "true",
             }
+
+        def get_site_body_and_anchor(site_name: str) -> tuple[int, wp.vec3] | None:
+            """Look up a site by name and return its body index and position (anchor).
+
+            Returns:
+                Tuple of (body_idx, anchor_position) or None if site not found or not a site.
+            """
+            if site_name not in builder.shape_key:
+                if verbose:
+                    print(f"Warning: Site '{site_name}' not found")
+                return None
+            site_idx = builder.shape_key.index(site_name)
+            if not (builder.shape_flags[site_idx] & ShapeFlags.SITE):
+                if verbose:
+                    print(f"Warning: Shape '{site_name}' is not a site")
+                return None
+            body_idx = builder.shape_body[site_idx]
+            site_xform = builder.shape_transform[site_idx]
+            anchor = wp.vec3(site_xform[0], site_xform[1], site_xform[2])
+            return (body_idx, anchor)
 
         for connect in equality.findall("connect"):
             common = parse_common_attributes(connect)
@@ -976,8 +1162,8 @@ def parse_mjcf(
                 connect.attrib.get("body2", "worldbody").replace("-", "_") if connect.attrib.get("body2") else None
             )
             anchor = connect.attrib.get("anchor")
-
             site1 = connect.attrib.get("site1")
+            site2 = connect.attrib.get("site2")
 
             if body1_name and anchor:
                 if verbose:
@@ -996,9 +1182,35 @@ def parse_mjcf(
                     enabled=common["active"],
                     custom_attributes=custom_attrs,
                 )
-
-            if site1:  # Implement site-based connect after Newton supports sites
-                print("Warning: MuJoCo sites are not yet supported in Newton.")
+            elif site1:
+                if site2:
+                    # Site-based connect: both site1 and site2 must be specified
+                    site1_info = get_site_body_and_anchor(site1)
+                    site2_info = get_site_body_and_anchor(site2)
+                    if site1_info is None or site2_info is None:
+                        if verbose:
+                            print(f"Warning: Connect constraint '{common['name']}' failed.")
+                        continue
+                    body1_idx, anchor_vec = site1_info
+                    body2_idx, _ = site2_info
+                    if verbose:
+                        print(
+                            f"Connect constraint (site-based): site '{site1}' on body {body1_idx} to body {body2_idx}"
+                        )
+                    builder.add_equality_constraint_connect(
+                        body1=body1_idx,
+                        body2=body2_idx,
+                        anchor=anchor_vec,
+                        key=common["name"],
+                        enabled=common["active"],
+                        custom_attributes=custom_attrs,
+                    )
+                else:
+                    if verbose:
+                        print(
+                            f"Warning: Connect constraint '{common['name']}' has site1 but no site2. "
+                            "When using sites, both site1 and site2 must be specified. Skipping."
+                        )
 
         for weld in equality.findall("weld"):
             common = parse_common_attributes(weld)
@@ -1008,8 +1220,8 @@ def parse_mjcf(
             anchor = weld.attrib.get("anchor", "0 0 0")
             relpose = weld.attrib.get("relpose", "0 1 0 0 0 0 0")
             torquescale = weld.attrib.get("torquescale")
-
             site1 = weld.attrib.get("site1")
+            site2 = weld.attrib.get("site2")
 
             if body1_name:
                 if verbose:
@@ -1036,9 +1248,40 @@ def parse_mjcf(
                     enabled=common["active"],
                     custom_attributes=custom_attrs,
                 )
-
-            if site1:  # Implement site-based weld after Newton supports sites
-                print("Warning: MuJoCo sites are not yet supported in Newton.")
+            elif site1:
+                if site2:
+                    # Site-based weld: both site1 and site2 must be specified
+                    site1_info = get_site_body_and_anchor(site1)
+                    site2_info = get_site_body_and_anchor(site2)
+                    if site1_info is None or site2_info is None:
+                        if verbose:
+                            print(f"Warning: Weld constraint '{common['name']}' failed.")
+                        continue
+                    body1_idx, _ = site1_info
+                    body2_idx, anchor_vec = site2_info
+                    relpose_list = [float(x) for x in relpose.split()]
+                    relpose_transform = wp.transform(
+                        wp.vec3(relpose_list[0], relpose_list[1], relpose_list[2]),
+                        wp.quat(relpose_list[4], relpose_list[5], relpose_list[6], relpose_list[3]),
+                    )
+                    if verbose:
+                        print(f"Weld constraint (site-based): body {body1_idx} to body {body2_idx}")
+                    builder.add_equality_constraint_weld(
+                        body1=body1_idx,
+                        body2=body2_idx,
+                        anchor=anchor_vec,
+                        relpose=relpose_transform,
+                        torquescale=torquescale,
+                        key=common["name"],
+                        enabled=common["active"],
+                        custom_attributes=custom_attrs,
+                    )
+                else:
+                    if verbose:
+                        print(
+                            f"Warning: Weld constraint '{common['name']}' has site1 but no site2. "
+                            "When using sites, both site1 and site2 must be specified. Skipping."
+                        )
 
         for joint in equality.findall("joint"):
             common = parse_common_attributes(joint)
@@ -1084,7 +1327,7 @@ def parse_mjcf(
     # add bodies
 
     for body in world.findall("body"):
-        parse_body(body, -1, world_defaults, parent_world_xform=xform)
+        parse_body(body, -1, world_defaults, incoming_xform=xform)
 
     # -----------------
     # add static geoms
@@ -1108,11 +1351,161 @@ def parse_mjcf(
         )
 
     # -----------------
+    # process frame elements at worldbody level
+
+    process_frames(
+        world.findall("frame"),
+        parent_body=-1,
+        defaults=world_defaults,
+        childclass=None,
+        world_xform=xform,
+        body_relative_xform=None,  # Static geoms use world coords
+    )
+
+    # -----------------
     # add equality constraints
 
     equality = root.find("equality")
     if equality is not None and not skip_equality_constraints:
         parse_equality_constraints(equality)
+
+    # -----------------
+    # parse contact pairs
+
+    # Get custom attributes with custom frequency for pair parsing
+    # Exclude pair_geom1/pair_geom2/pair_world as they're handled specially (geom name lookup, world assignment)
+    builder_custom_attr_pair: list[ModelBuilder.CustomAttribute] = [
+        attr
+        for attr in builder.custom_attributes.values()
+        if isinstance(attr.frequency_key, str)
+        and attr.name.startswith("pair_")
+        and attr.name not in ("pair_geom1", "pair_geom2", "pair_world")
+    ]
+
+    # Only parse contact pairs if custom attributes are registered
+    has_pair_attrs = "mujoco:pair_geom1" in builder.custom_attributes
+    contact = root.find("contact")
+    if contact is not None and has_pair_attrs:
+        # Parse <pair> elements - explicit contact pairs with custom properties
+        for pair in contact.findall("pair"):
+            geom1_name = pair.attrib.get("geom1")
+            geom2_name = pair.attrib.get("geom2")
+
+            if not geom1_name or not geom2_name:
+                if verbose:
+                    print("Warning: <pair> element missing geom1 or geom2 attribute, skipping")
+                continue
+
+            # Look up shape indices by geom name
+            try:
+                geom1_idx = builder.shape_key.index(geom1_name)
+            except ValueError:
+                if verbose:
+                    print(f"Warning: <pair> references unknown geom '{geom1_name}', skipping")
+                continue
+
+            try:
+                geom2_idx = builder.shape_key.index(geom2_name)
+            except ValueError:
+                if verbose:
+                    print(f"Warning: <pair> references unknown geom '{geom2_name}', skipping")
+                continue
+
+            # Parse attributes using the standard custom attribute parsing
+            pair_attrs = parse_custom_attributes(pair.attrib, builder_custom_attr_pair, parsing_mode="mjcf")
+
+            # Build values dict for all pair attributes
+            pair_values: dict[str, Any] = {
+                "mujoco:pair_world": builder.current_world,
+                "mujoco:pair_geom1": geom1_idx,
+                "mujoco:pair_geom2": geom2_idx,
+            }
+            # Add remaining attributes with parsed values or defaults
+            for attr in builder_custom_attr_pair:
+                pair_values[attr.key] = pair_attrs.get(attr.key, attr.default)
+
+            builder.add_custom_values(**pair_values)
+
+            if verbose:
+                print(f"Parsed contact pair: {geom1_name} ({geom1_idx}) <-> {geom2_name} ({geom2_idx})")
+
+    # -----------------
+    # Parse all fixed tendons in a single tendon section.
+
+    # Get variable-length custom attributes for tendon parsing (frequency="tendon")
+    # Exclude tendon_world, tendon_joint_adr, tendon_joint_num as they're handled specially
+    builder_custom_attr_tendon: list[ModelBuilder.CustomAttribute] = [
+        attr
+        for attr in builder.custom_attributes.values()
+        if isinstance(attr.frequency_key, str)
+        and attr.name.startswith("tendon_")
+        and attr.name not in ("tendon_world", "tendon_joint_adr", "tendon_joint_num", "tendon_joint", "tendon_coef")
+    ]
+
+    def parse_tendons(tendon_section):
+        for fixed in tendon_section.findall("fixed"):
+            tendon_name = fixed.attrib.get("name", "")
+
+            # Parse joint elements within this fixed tendon
+            joint_entries = []
+            for joint_elem in fixed.findall("joint"):
+                joint_name = joint_elem.attrib.get("joint")
+                coef_str = joint_elem.attrib.get("coef", "1.0")
+
+                if not joint_name:
+                    if verbose:
+                        print(f"Warning: <joint> in tendon '{tendon_name}' missing joint attribute, skipping")
+                    continue
+
+                # Look up joint index by name
+                try:
+                    joint_idx = builder.joint_key.index(joint_name)
+                except ValueError:
+                    if verbose:
+                        print(
+                            f"Warning: Tendon '{tendon_name}' references unknown joint '{joint_name}', skipping joint"
+                        )
+                    continue
+
+                coef = float(coef_str)
+                joint_entries.append((joint_idx, coef))
+
+            if not joint_entries:
+                if verbose:
+                    print(f"Warning: Fixed tendon '{tendon_name}' has no valid joint elements, skipping")
+                continue
+
+            # Parse tendon-level attributes using the standard custom attribute parsing
+            tendon_attrs = parse_custom_attributes(fixed.attrib, builder_custom_attr_tendon, parsing_mode="mjcf")
+
+            # Determine wrap array start index
+            tendon_joint_attr = builder.custom_attributes.get("mujoco:tendon_joint")
+            joint_start = len(tendon_joint_attr.values) if tendon_joint_attr and tendon_joint_attr.values else 0
+
+            # Add joints to the joint arrays
+            for joint_idx, coef in joint_entries:
+                builder.add_custom_values(
+                    **{
+                        "mujoco:tendon_joint": joint_idx,
+                        "mujoco:tendon_coef": coef,
+                    }
+                )
+
+            # Build values dict for tendon-level attributes
+            tendon_values: dict[str, Any] = {
+                "mujoco:tendon_world": builder.current_world,
+                "mujoco:tendon_joint_adr": joint_start,
+                "mujoco:tendon_joint_num": len(joint_entries),
+            }
+            # Add remaining attributes with parsed values or defaults
+            for attr in builder_custom_attr_tendon:
+                tendon_values[attr.key] = tendon_attrs.get(attr.key, attr.default)
+
+            builder.add_custom_values(**tendon_values)
+
+            if verbose:
+                joint_names_str = ", ".join(f"{builder.joint_key[j]}*{c}" for j, c in joint_entries)
+                print(f"Parsed fixed tendon: {tendon_name} ({joint_names_str})")
 
     # -----------------
     # parse actuators
@@ -1166,6 +1559,14 @@ def parse_mjcf(
 
             if verbose:
                 print(f"Velocity actuator on joint '{joint_name}': kv={kv}")
+
+    # Only parse tendons if custom tendon attributes are registered
+    has_tendon_attrs = "mujoco:tendon_world" in builder.custom_attributes
+    if has_tendon_attrs:
+        # Find all sections marked <tendon></tendon>
+        tendon_sections = root.findall(".//tendon")
+        for tendon_section in tendon_sections:
+            parse_tendons(tendon_section)
 
     actuator_section = root.find("actuator")
     if actuator_section is not None:

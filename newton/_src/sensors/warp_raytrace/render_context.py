@@ -19,8 +19,14 @@ from dataclasses import dataclass, field
 
 import warp as wp
 
-from .bvh import compute_bvh_group_roots, compute_particle_bvh_bounds, compute_shape_bvh_bounds
+from .bvh import (
+    compute_bvh_group_roots,
+    compute_particle_bvh_bounds,
+    compute_shape_bvh_bounds,
+)
 from .render import render_megakernel
+from .types import RenderOrder
+from .utils import Utils
 
 
 @dataclass
@@ -29,42 +35,46 @@ class ClearData:
     clear_depth: float | wp.float32 | None = field(default_factory=lambda: wp.float32(0.0))
     clear_shape_index: int | wp.uint32 | None = field(default_factory=lambda: wp.uint32(0xFFFFFFFF))
     clear_normal: wp.vec3f | None = field(default_factory=lambda: wp.vec3f(0.0))
+    clear_albedo: int | wp.int32 | None = field(default_factory=lambda: wp.int32(0))
 
 
 DEFAULT_CLEAR_DATA = ClearData()
 
 
 class RenderContext:
+    @dataclass
+    class Options:
+        enable_global_world: bool = True
+        enable_textures: bool = True
+        enable_shadows: bool = True
+        enable_ambient_lighting: bool = True
+        enable_particles: bool = True
+        enable_backface_culling: bool = True
+        render_order: int = RenderOrder.PIXEL_PRIORITY
+        tile_width: int = 16
+        tile_height: int = 8
+        max_distance: float = 1000.0
+
     def __init__(
         self,
         width: int = 512,
         height: int = 512,
-        enable_textures: bool = True,
-        enable_shadows: bool = True,
-        enable_ambient_lighting: bool = True,
-        enable_particles: bool = True,
         num_worlds: int = 1,
         num_cameras: int = 1,
-        has_global_world: bool = False,
-        tile_rendering: bool = False,
-        tile_size: int = 8,
+        options: Options | None = None,
     ):
+        self.utils = Utils(self)
+        self.options = options if options else RenderContext.Options()
+
         self.width = width
         self.height = height
-        self.tile_rendering = tile_rendering
-        self.tile_size = tile_size
-        self.enable_textures = enable_textures
-        self.enable_shadows = enable_shadows
-        self.enable_ambient_lighting = enable_ambient_lighting
         self.num_worlds = num_worlds
-        self.has_global_world = has_global_world
-        self.enable_particles = enable_particles
-        self.max_distance = 1000.0
 
         self.bvh_shapes: wp.Bvh = None
         self.bvh_particles: wp.Bvh = None
         self.triangle_mesh: wp.Mesh = None
-        self.num_shapes = 0
+        self.num_shapes_enabled = 0
+        self.num_shapes_total = 0
 
         self.mesh_bounds: wp.array2d(dtype=wp.vec3f) = None
         self.mesh_texcoord: wp.array(dtype=wp.vec2f) = None
@@ -117,11 +127,11 @@ class RenderContext:
 
     def __init_shape_outputs(self):
         if self.bvh_shapes_lowers is None:
-            self.bvh_shapes_lowers = wp.zeros(self.num_shapes_total, dtype=wp.vec3f)
+            self.bvh_shapes_lowers = wp.zeros(self.num_shapes_enabled, dtype=wp.vec3f)
         if self.bvh_shapes_uppers is None:
-            self.bvh_shapes_uppers = wp.zeros(self.num_shapes_total, dtype=wp.vec3f)
+            self.bvh_shapes_uppers = wp.zeros(self.num_shapes_enabled, dtype=wp.vec3f)
         if self.bvh_shapes_groups is None:
-            self.bvh_shapes_groups = wp.zeros(self.num_shapes_total, dtype=wp.int32)
+            self.bvh_shapes_groups = wp.zeros(self.num_shapes_enabled, dtype=wp.int32)
         if self.bvh_shapes_group_roots is None:
             self.bvh_shapes_group_roots = wp.zeros((self.num_worlds_total), dtype=wp.int32)
 
@@ -147,8 +157,11 @@ class RenderContext:
     def create_normal_image_output(self):
         return wp.zeros((self.num_worlds, self.num_cameras, self.width * self.height), dtype=wp.vec3f)
 
+    def create_albedo_image_output(self):
+        return wp.zeros((self.num_worlds, self.num_cameras, self.width * self.height), dtype=wp.uint32)
+
     def refit_bvh(self):
-        if self.num_shapes_total:
+        if self.num_shapes_enabled:
             self.__init_shape_outputs()
             self.__compute_bvh_shape_bounds()
             if self.bvh_shapes is None:
@@ -192,6 +205,7 @@ class RenderContext:
         depth_image: wp.array(dtype=wp.float32, ndim=3) | None = None,
         shape_index_image: wp.array(dtype=wp.uint32, ndim=3) | None = None,
         normal_image: wp.array(dtype=wp.vec3f, ndim=3) | None = None,
+        albedo_image: wp.array(dtype=wp.uint32, ndim=3) | None = None,
         refit_bvh: bool = True,
         clear_data: ClearData | None = DEFAULT_CLEAR_DATA,
     ):
@@ -206,15 +220,16 @@ class RenderContext:
                 depth_image,
                 shape_index_image,
                 normal_image,
+                albedo_image,
                 clear_data,
             )
 
     def __compute_bvh_shape_bounds(self):
         wp.launch(
             kernel=compute_shape_bvh_bounds,
-            dim=self.num_shapes_total,
+            dim=self.num_shapes_enabled,
             inputs=[
-                self.num_shapes_total,
+                self.num_shapes_enabled,
                 self.num_worlds_total,
                 self.shape_world_index,
                 self.shape_enabled,
@@ -234,7 +249,7 @@ class RenderContext:
             kernel=compute_particle_bvh_bounds,
             dim=self.num_particles_total,
             inputs=[
-                self.particles_position.shape[0],
+                self.num_particles_total,
                 self.num_worlds_total,
                 self.particles_world_index,
                 self.particles_position,
@@ -247,13 +262,9 @@ class RenderContext:
 
     @property
     def num_worlds_total(self) -> int:
-        if self.has_global_world:
+        if self.options.enable_global_world:
             return self.num_worlds + 1
         return self.num_worlds
-
-    @property
-    def num_shapes_total(self) -> int:
-        return self.num_shapes
 
     @property
     def num_particles_total(self) -> int:
@@ -269,7 +280,7 @@ class RenderContext:
 
     @property
     def has_shapes(self) -> bool:
-        return self.num_shapes_total > 0
+        return self.num_shapes_enabled > 0
 
     @property
     def has_particles(self) -> bool:

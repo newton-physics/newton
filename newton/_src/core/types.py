@@ -23,7 +23,7 @@ from typing import Any, Literal
 
 import numpy as np
 import warp as wp
-from warp.context import Devicelike
+from warp import DeviceLike as Devicelike
 
 try:
     from typing import override
@@ -64,6 +64,15 @@ nparray = np.ndarray[Any, np.dtype[Any]]
 
 # Warp vector types
 vec5 = wp.types.vector(length=5, dtype=wp.float32)
+
+# Large finite value used as sentinel (matches MuJoCo's mjMAXVAL)
+MAXVAL = 1e10
+"""Large finite sentinel value for 'no limit' / 'no hit' / 'invalid' markers.
+
+Use this instead of infinity to avoid verify_fp false positives.
+For comparisons with volume-sampled data, use `>= wp.static(MAXVAL * 0.99)` to handle
+interpolation-induced floating-point errors.
+"""
 
 
 class Axis(IntEnum):
@@ -187,6 +196,7 @@ def axis_to_vec3(axis: AxisType | Vec3) -> wp.vec3:
 
 
 __all__ = [
+    "MAXVAL",
     "Axis",
     "AxisType",
     "Devicelike",

@@ -20,37 +20,45 @@ from typing import TYPE_CHECKING
 import warp as wp
 
 from . import lighting, ray_cast, textures
+from .types import RenderOrder
 
 if TYPE_CHECKING:
     from .render_context import ClearData, RenderContext
 
 
 @wp.func
-def tid_to_tile_coord(tid: wp.int32, num_worlds: wp.int32, num_cameras: wp.int32, tile_size: wp.int32, width: wp.int32):
-    num_views_per_pixel = num_worlds * num_cameras
-    num_pixels_per_tile = tile_size * tile_size
-    num_tiles_per_row = width // tile_size
+def tid_to_coord_tiled(
+    tid: wp.int32,
+    num_cameras: wp.int32,
+    width: wp.int32,
+    height: wp.int32,
+    tile_width: wp.int32,
+    tile_height: wp.int32,
+):
+    num_pixels_per_view = width * height
+    num_pixels_per_tile = tile_width * tile_height
+    num_tiles_per_row = width // tile_width
 
-    pixel_idx = tid // num_views_per_pixel
-    view_idx = tid % num_views_per_pixel
+    pixel_idx = tid % num_pixels_per_view
+    view_idx = tid // num_pixels_per_view
 
-    world_index = view_idx % num_worlds
-    camera_index = view_idx // num_worlds
+    world_index = view_idx // num_cameras
+    camera_index = view_idx % num_cameras
 
-    tile_local = pixel_idx % num_pixels_per_tile
-    tile_offset = pixel_idx // num_pixels_per_tile
+    tile_idx = pixel_idx // num_pixels_per_tile
+    tile_pixel_idx = pixel_idx % num_pixels_per_tile
 
-    tile_offset_x = tile_offset % num_tiles_per_row
-    tile_offset_y = tile_offset // num_tiles_per_row
+    tile_y = tile_idx // num_tiles_per_row
+    tile_x = tile_idx % num_tiles_per_row
 
-    py = tile_local % tile_size + tile_offset_y * tile_size
-    px = tile_local // tile_size + tile_offset_x * tile_size
+    py = tile_y * tile_height + tile_pixel_idx // tile_width
+    px = tile_x * tile_width + tile_pixel_idx % tile_width
 
     return world_index, camera_index, py, px
 
 
 @wp.func
-def tid_to_pixel_coord(tid: wp.int32, num_worlds: wp.int32, num_cameras: wp.int32, width: wp.int32):
+def tid_to_coord_pixel_priority(tid: wp.int32, num_worlds: wp.int32, num_cameras: wp.int32, width: wp.int32):
     num_views_per_pixel = num_worlds * num_cameras
 
     pixel_idx = tid // num_views_per_pixel
@@ -66,13 +74,29 @@ def tid_to_pixel_coord(tid: wp.int32, num_worlds: wp.int32, num_cameras: wp.int3
 
 
 @wp.func
-def pack_rgba_to_uint32(r: wp.float32, g: wp.float32, b: wp.float32, a: wp.float32) -> wp.uint32:
+def tid_to_coord_view_priority(tid: wp.int32, num_cameras: wp.int32, width: wp.int32, height: wp.int32):
+    num_pixels_per_view = width * height
+
+    pixel_idx = tid % num_pixels_per_view
+    view_idx = tid // num_pixels_per_view
+
+    world_index = view_idx // num_cameras
+    camera_index = view_idx % num_cameras
+
+    py = pixel_idx // width
+    px = pixel_idx % width
+
+    return world_index, camera_index, py, px
+
+
+@wp.func
+def pack_rgba_to_uint32(rgb: wp.vec3f, alpha: wp.float32) -> wp.uint32:
     """Pack RGBA values into a single uint32 for efficient memory access."""
     return (
-        (wp.uint32(a) << wp.uint32(24))
-        | (wp.uint32(b) << wp.uint32(16))
-        | (wp.uint32(g) << wp.uint32(8))
-        | wp.uint32(r)
+        (wp.uint32(alpha * 255.0) << wp.uint32(24))
+        | (wp.uint32(rgb[2] * 255.0) << wp.uint32(16))
+        | (wp.uint32(rgb[1] * 255.0) << wp.uint32(8))
+        | wp.uint32(rgb[0] * 255.0)
     )
 
 
@@ -84,13 +108,15 @@ def _render_megakernel(
     num_lights: wp.int32,
     img_width: wp.int32,
     img_height: wp.int32,
-    tile_size: wp.int32,
-    tile_rendering: wp.bool,
+    render_order: wp.int32,
+    tile_width: wp.int32,
+    tile_height: wp.int32,
     enable_shadows: wp.bool,
     enable_textures: wp.bool,
     enable_ambient_lighting: wp.bool,
     enable_particles: wp.bool,
-    has_global_world: wp.bool,
+    enable_backface_culling: wp.bool,
+    enable_global_world: wp.bool,
     max_distance: wp.float32,
     # Camera
     camera_rays: wp.array(dtype=wp.vec3f, ndim=4),
@@ -142,18 +168,26 @@ def _render_megakernel(
     render_depth: wp.bool,
     render_shape_index: wp.bool,
     render_normal: wp.bool,
+    render_albedo: wp.bool,
     # Outputs
     out_pixels: wp.array3d(dtype=wp.uint32),
     out_depth: wp.array3d(dtype=wp.float32),
     out_shape_index: wp.array3d(dtype=wp.uint32),
     out_normal: wp.array3d(dtype=wp.vec3f),
+    out_albedo: wp.array3d(dtype=wp.uint32),
 ):
     tid = wp.tid()
 
-    if tile_rendering:
-        world_index, camera_index, py, px = tid_to_tile_coord(tid, num_worlds, num_cameras, tile_size, img_width)
+    if render_order == RenderOrder.PIXEL_PRIORITY:
+        world_index, camera_index, py, px = tid_to_coord_pixel_priority(tid, num_worlds, num_cameras, img_width)
+    elif render_order == RenderOrder.VIEW_PRIORITY:
+        world_index, camera_index, py, px = tid_to_coord_view_priority(tid, num_cameras, img_width, img_height)
+    elif render_order == RenderOrder.TILED:
+        world_index, camera_index, py, px = tid_to_coord_tiled(
+            tid, num_cameras, img_width, img_height, tile_width, tile_height
+        )
     else:
-        world_index, camera_index, py, px = tid_to_pixel_coord(tid, num_worlds, num_cameras, img_width)
+        return
 
     if px >= img_width or py >= img_height:
         return
@@ -175,8 +209,9 @@ def _render_megakernel(
         bvh_particles_id,
         bvh_particles_group_roots,
         world_index,
-        has_global_world,
+        enable_global_world,
         enable_particles,
+        enable_backface_culling,
         max_distance,
         shape_enabled,
         shape_types,
@@ -191,7 +226,6 @@ def _render_megakernel(
         ray_dir_world,
     )
 
-    # Early Out
     if closest_hit.shape_index == ray_cast.NO_HIT_SHAPE_ID:
         return
 
@@ -204,7 +238,7 @@ def _render_megakernel(
     if render_shape_index:
         out_shape_index[world_index, camera_index, out_index] = closest_hit.shape_index
 
-    if not render_color:
+    if not render_color and not render_albedo:
         return
 
     # Shade the pixel
@@ -251,6 +285,12 @@ def _render_megakernel(
                     base_color[2] * tex_color[2],
                 )
 
+    if render_albedo:
+        out_albedo[world_index, camera_index, out_index] = pack_rgba_to_uint32(base_color, 1.0)
+
+    if not render_color:
+        return
+
     if enable_ambient_lighting:
         up = wp.vec3f(0.0, 0.0, 1.0)
         len_n = wp.length(closest_hit.normal)
@@ -272,8 +312,9 @@ def _render_megakernel(
         light_contribution = lighting.compute_lighting(
             enable_shadows,
             enable_particles,
+            enable_backface_culling,
             world_index,
-            has_global_world,
+            enable_global_world,
             bvh_shapes_size,
             bvh_shapes_id,
             bvh_shapes_group_roots,
@@ -302,10 +343,8 @@ def _render_megakernel(
     out_color = wp.min(wp.max(out_color, wp.vec3f(0.0)), wp.vec3f(1.0))
 
     out_pixels[world_index, camera_index, out_index] = pack_rgba_to_uint32(
-        out_color[0] * 255.0,
-        out_color[1] * 255.0,
-        out_color[2] * 255.0,
-        255.0,
+        out_color,
+        1.0,
     )
 
 
@@ -317,11 +356,12 @@ def render_megakernel(
     depth_image: wp.array(dtype=wp.float32, ndim=3) | None,
     shape_index_image: wp.array(dtype=wp.uint32, ndim=3) | None,
     normal_image: wp.array(dtype=wp.vec3f, ndim=3) | None,
+    albedo_image: wp.array(dtype=wp.uint32, ndim=3) | None,
     clear_data: ClearData | None,
 ):
-    if rc.tile_rendering:
-        assert rc.width % rc.tile_size == 0, "render width must be a multiple of tile_size"
-        assert rc.height % rc.tile_size == 0, "render height must be a multiple of tile_size"
+    if rc.options.render_order == RenderOrder.TILED:
+        assert rc.width % rc.options.tile_width == 0, "render width must be a multiple of tile_width"
+        assert rc.height % rc.options.tile_height == 0, "render height must be a multiple of tile_height"
 
     if clear_data is not None and clear_data.clear_color is not None and color_image is not None:
         color_image.fill_(wp.uint32(clear_data.clear_color))
@@ -335,6 +375,9 @@ def render_megakernel(
     if clear_data is not None and clear_data.clear_normal is not None and normal_image is not None:
         normal_image.fill_(clear_data.clear_normal)
 
+    if clear_data is not None and clear_data.clear_albedo is not None and albedo_image is not None:
+        albedo_image.fill_(wp.uint32(clear_data.clear_albedo))
+
     wp.launch(
         kernel=_render_megakernel,
         dim=rc.num_worlds * rc.num_cameras * rc.width * rc.height,
@@ -345,19 +388,21 @@ def render_megakernel(
             rc.num_lights,
             rc.width,
             rc.height,
-            rc.tile_size,
-            rc.tile_rendering,
-            rc.enable_shadows,
-            rc.enable_textures,
-            rc.enable_ambient_lighting,
-            rc.enable_particles,
-            rc.has_global_world,
-            rc.max_distance,
+            rc.options.render_order,
+            rc.options.tile_width,
+            rc.options.tile_height,
+            rc.options.enable_shadows,
+            rc.options.enable_textures,
+            rc.options.enable_ambient_lighting,
+            rc.options.enable_particles and rc.has_particles,
+            rc.options.enable_backface_culling,
+            rc.options.enable_global_world,
+            rc.options.max_distance,
             # Camera
             camera_rays,
             camera_transforms,
             # Shape BVH
-            rc.num_shapes,
+            rc.num_shapes_enabled,
             rc.bvh_shapes.id if rc.bvh_shapes else 0,
             rc.bvh_shapes_group_roots,
             # Shapes
@@ -375,7 +420,7 @@ def render_megakernel(
             rc.mesh_texcoord,
             rc.mesh_texcoord_offsets,
             # Particle BVH
-            rc.particles_position.shape[0] if rc.particles_position else 0,
+            rc.num_particles_total,
             rc.bvh_particles.id if rc.bvh_particles else 0,
             rc.bvh_particles_group_roots,
             # Particles
@@ -402,9 +447,11 @@ def render_megakernel(
             depth_image is not None,
             shape_index_image is not None,
             normal_image is not None,
+            albedo_image is not None,
             color_image,
             depth_image,
             shape_index_image,
             normal_image,
+            albedo_image,
         ],
     )

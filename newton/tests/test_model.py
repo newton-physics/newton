@@ -15,6 +15,7 @@
 
 import math
 import unittest
+import warnings
 
 import numpy as np
 import warp as wp
@@ -196,6 +197,43 @@ class TestModel(unittest.TestCase):
         assert builder2.articulation_count == 2 * builder.articulation_count
         assert builder2.articulation_start == [0, 1, 2, 3]
 
+    def test_lock_inertia_on_shape_addition(self):
+        builder = ModelBuilder()
+        shape_cfg = ModelBuilder.ShapeConfig(density=1000.0)
+        base_com = wp.vec3(0.1, 0.2, 0.3)
+        base_inertia = wp.mat33(0.2, 0.0, 0.0, 0.0, 0.3, 0.0, 0.0, 0.0, 0.4)
+
+        locked_body = builder.add_link(mass=2.0, com=base_com, I_m=base_inertia, lock_inertia=True)
+        unlocked_body = builder.add_link(mass=2.0, com=base_com, I_m=base_inertia, lock_inertia=False)
+
+        locked_mass = builder.body_mass[locked_body]
+        locked_com = builder.body_com[locked_body]
+        locked_inertia = builder.body_inertia[locked_body]
+
+        unlocked_mass = builder.body_mass[unlocked_body]
+
+        builder.add_shape_box(body=locked_body, hx=0.5, hy=0.5, hz=0.5, cfg=shape_cfg)
+        builder.add_shape_box(body=unlocked_body, hx=0.5, hy=0.5, hz=0.5, cfg=shape_cfg)
+
+        self.assertEqual(builder.body_mass[locked_body], locked_mass)
+        assert_np_equal(np.array(builder.body_com[locked_body]), np.array(locked_com))
+        assert_np_equal(np.array(builder.body_inertia[locked_body]), np.array(locked_inertia))
+        self.assertNotEqual(builder.body_mass[unlocked_body], unlocked_mass)
+
+    def test_collapse_fixed_joints_with_locked_inertia(self):
+        builder = ModelBuilder()
+        b0 = builder.add_link(mass=1.0, lock_inertia=True)
+        j0 = builder.add_joint_free(b0)
+        b1 = builder.add_link(mass=2.0, lock_inertia=True)
+        j1 = builder.add_joint_fixed(parent=b0, child=b1)
+        builder.add_articulation([j0, j1])
+
+        builder.collapse_fixed_joints()
+
+        self.assertEqual(builder.body_count, 1)
+        self.assertAlmostEqual(builder.body_mass[0], 3.0)
+        self.assertTrue(builder.body_lock_inertia[0])
+
     def test_add_world_with_open_edges(self):
         builder = ModelBuilder()
 
@@ -253,6 +291,7 @@ class TestModel(unittest.TestCase):
         builder.approximate_meshes(method="bounding_sphere", shape_indices=[s2])
         # convex hull
         self.assertEqual(len(builder.shape_source[s0].vertices), 5)
+        self.assertEqual(builder.shape_type[s0], newton.GeoType.CONVEX_MESH)
         # the convex hull maintains the original transform
         assert_np_equal(np.array(builder.shape_transform[s0]), np.array(wp.transform_identity()), tol=1.0e-4)
         # bounding box
@@ -272,6 +311,7 @@ class TestModel(unittest.TestCase):
         builder.approximate_meshes(method="convex_hull", shape_indices=[s3], keep_visual_shapes=True)
         # approximation is created, but not visible
         self.assertEqual(len(builder.shape_source[s3].vertices), 5)
+        self.assertEqual(builder.shape_type[s3], newton.GeoType.CONVEX_MESH)
         self.assertEqual(builder.shape_flags[s3] & newton.ShapeFlags.VISIBLE, 0)
         # a new visual shape is created
         self.assertIs(builder.shape_source[s3 + 1], mesh)
@@ -829,6 +869,106 @@ class TestModel(unittest.TestCase):
             builder.add_joint_revolute(parent=link1, child=link2)
         self.assertIn("world", str(context.exception).lower())
         builder.end_world()
+
+    def test_articulation_validation_orphan_joint(self):
+        """Test that joints not belonging to an articulation raise an error on finalize."""
+        builder = ModelBuilder()
+        body = builder.add_link()
+
+        # Add joint but do NOT add it to an articulation
+        builder.add_joint_revolute(parent=-1, child=body, key="orphan_joint")
+
+        # finalize() should raise ValueError about orphan joints
+        with self.assertRaises(ValueError) as context:
+            builder.finalize()
+
+        self.assertIn("not belonging to any articulation", str(context.exception))
+        self.assertIn("orphan_joint", str(context.exception))
+
+    def test_articulation_validation_multiple_orphan_joints(self):
+        """Test error message shows multiple orphan joints."""
+        builder = ModelBuilder()
+        body1 = builder.add_link()
+        body2 = builder.add_link()
+
+        # Add multiple joints without articulations
+        builder.add_joint_revolute(parent=-1, child=body1, key="first_joint")
+        builder.add_joint_revolute(parent=body1, child=body2, key="second_joint")
+
+        with self.assertRaises(ValueError) as context:
+            builder.finalize()
+
+        error_msg = str(context.exception)
+        self.assertIn("2 joint(s)", error_msg)
+        self.assertIn("first_joint", error_msg)
+        self.assertIn("second_joint", error_msg)
+
+    def test_shape_thickness_exceeds_contact_margin_warning(self):
+        """Test that a warning is raised when shape thickness > contact_margin."""
+        builder = ModelBuilder()
+        body = builder.add_body(mass=1.0)
+
+        # Create a shape with thickness > contact_margin (should trigger warning)
+        cfg = ModelBuilder.ShapeConfig()
+        cfg.thickness = 0.01
+        cfg.contact_margin = 0.005  # Less than thickness
+        builder.add_shape_sphere(body=body, radius=0.5, cfg=cfg, key="bad_sphere")
+
+        # Should warn about thickness > contact_margin
+        with self.assertWarns(UserWarning) as cm:
+            builder.finalize()
+
+        warning_msg = str(cm.warning)
+        self.assertIn("thickness > contact_margin", warning_msg)
+        self.assertIn("bad_sphere", warning_msg)
+        self.assertIn("missed collisions", warning_msg)
+
+    def test_shape_thickness_within_contact_margin_no_warning(self):
+        """Test that no warning is raised when shape thickness <= contact_margin."""
+        builder = ModelBuilder()
+        body = builder.add_body(mass=1.0)
+
+        # Create a shape with thickness <= contact_margin (should not trigger warning)
+        cfg = ModelBuilder.ShapeConfig()
+        cfg.thickness = 0.005
+        cfg.contact_margin = 0.01  # Greater than thickness
+        builder.add_shape_sphere(body=body, radius=0.5, cfg=cfg)
+
+        # Should NOT warn
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            builder.finalize()
+            # Filter for our specific warning about thickness
+            thickness_warnings = [warning for warning in w if "thickness > contact_margin" in str(warning.message)]
+            self.assertEqual(len(thickness_warnings), 0, "Unexpected warning about thickness > contact_margin")
+
+    def test_shape_thickness_warning_multiple_shapes(self):
+        """Test that the warning correctly reports multiple shapes with thickness > contact_margin."""
+        builder = ModelBuilder()
+        body = builder.add_body(mass=1.0)
+
+        # Create multiple shapes with thickness > contact_margin
+        cfg_bad = ModelBuilder.ShapeConfig()
+        cfg_bad.thickness = 0.02
+        cfg_bad.contact_margin = 0.01
+
+        builder.add_shape_sphere(body=body, radius=0.5, cfg=cfg_bad, key="sphere1")
+        builder.add_shape_box(body=body, hx=0.5, hy=0.5, hz=0.5, cfg=cfg_bad, key="box1")
+
+        # One good shape that should not be in the warning
+        cfg_good = ModelBuilder.ShapeConfig()
+        cfg_good.thickness = 0.005
+        cfg_good.contact_margin = 0.01
+        builder.add_shape_capsule(body=body, radius=0.2, half_height=0.5, cfg=cfg_good, key="good_capsule")
+
+        with self.assertWarns(UserWarning) as cm:
+            builder.finalize()
+
+        warning_msg = str(cm.warning)
+        self.assertIn("2 shape(s)", warning_msg)
+        self.assertIn("sphere1", warning_msg)
+        self.assertIn("box1", warning_msg)
+        self.assertNotIn("good_capsule", warning_msg)
 
 
 if __name__ == "__main__":

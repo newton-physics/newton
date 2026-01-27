@@ -194,6 +194,39 @@ uv sync --extra examples
   </tr>
 </table>
 
+### Cable Examples
+
+<table>
+  <tr>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/cable/example_cable_bend.py">
+        <img src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_cable_bend.jpg" alt="Cable Bend">
+      </a>
+    </td>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/cable/example_cable_twist.py">
+        <img src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_cable_twist.jpg" alt="Cable Twist">
+      </a>
+    </td>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/cable/example_cable_bundle_hysteresis.py">
+        <img src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_cable_bundle_hysteresis.jpg" alt="Cable Bundle Hysteresis">
+      </a>
+    </td>
+  </tr>
+  <tr>
+    <td align="center">
+      <code>uv run -m newton.examples cable_bend</code>
+    </td>
+    <td align="center">
+      <code>uv run -m newton.examples cable_twist</code>
+    </td>
+    <td align="center">
+      <code>uv run -m newton.examples cable_bundle_hysteresis</code>
+    </td>
+  </tr>
+</table>
+
 ### Cloth Examples
 
 <table>
@@ -354,11 +387,13 @@ uv sync --extra examples
     </td>
     <td align="center" width="33%">
       <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/sensors/example_sensor_tiled_camera.py">
-        <img src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_sensor_tiled_camera.jpg" alt="Sensor Contact">
+        <img src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_sensor_tiled_camera.jpg" alt="Sensor Tiled Camera">
       </a>
     </td>
     <td align="center" width="33%">
-      <!-- Future Sensor example -->
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/sensors/example_sensor_imu.py">
+        <img src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_sensor_imu.jpg" alt="Sensor IMU">
+      </a>
     </td>
   </tr>
   <tr>
@@ -369,7 +404,7 @@ uv sync --extra examples
       <code>uv run -m newton.examples sensor_tiled_camera</code>
     </td>
     <td align="center">
-      <!-- Future Sensor example -->
+      <code>uv run -m newton.examples sensor_imu</code>
     </td>
   </tr>
 </table>

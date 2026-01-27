@@ -63,8 +63,9 @@ def broadcast_ik_solution_kernel(
 
 
 class Example:
-    def __init__(self, viewer, scene=SceneType.PEN, num_worlds=1):
+    def __init__(self, viewer, scene=SceneType.PEN, num_worlds=1, test_mode=False):
         self.scene = SceneType(scene)
+        self.test_mode = test_mode
         self.show_isosurface = hasattr(viewer, "renderer")
         self.fps = 60
         self.frame_dt = 1.0 / self.fps
@@ -177,17 +178,17 @@ class Example:
                 wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), np.pi / 2),
             )
             pen_cfg = copy.deepcopy(shape_cfg)
-            object_body = builder.add_body(xform=object_xform, key="object")
-            builder.add_shape_capsule(body=object_body, radius=radius, half_height=length / 2, cfg=pen_cfg)
+            self.object_body_local = builder.add_body(xform=object_xform, key="object")
+            builder.add_shape_capsule(body=self.object_body_local, radius=radius, half_height=length / 2, cfg=pen_cfg)
             self.grasping_offset = [-0.03, 0.0, 0.13]
-            self.place_offset = -0.03
+            self.place_offset = -0.015  # Gripper reaches 1.5cm further into cup
 
         elif self.scene == SceneType.CUBE:
             size = 0.04
             self.object_pos = [0.0, -0.5, 2 * box_size + 0.5 * size]
             object_xform = wp.transform(wp.vec3(self.object_pos), wp.quat_identity())
-            object_body = builder.add_body(xform=object_xform, key="object")
-            builder.add_shape_box(body=object_body, hx=size / 2, hy=size / 2, hz=size / 2)
+            self.object_body_local = builder.add_body(xform=object_xform, key="object")
+            builder.add_shape_box(body=self.object_body_local, hx=size / 2, hy=size / 2, hz=size / 2)
             self.grasping_offset = [0.03, 0.0, 0.14]
             self.place_offset = 0.02
 
@@ -209,6 +210,9 @@ class Example:
         # build model for IK
         self.model_single = copy.deepcopy(builder).finalize()
 
+        # Store bodies per world before replication
+        self.bodies_per_world = builder.body_count
+
         scene = newton.ModelBuilder()
         scene.replicate(builder, self.num_worlds)
         scene.add_ground_plane()
@@ -229,7 +233,6 @@ class Example:
         self.collision_pipeline = newton.CollisionPipelineUnified.from_model(
             self.model,
             reduce_contacts=True,
-            rigid_contact_max_per_pair=100,
             broad_phase_mode=newton.BroadPhaseMode.EXPLICIT,
             sdf_hydroelastic_config=sdf_hydroelastic_config,
         )
@@ -267,6 +270,9 @@ class Example:
         self.joint_target_shape = self.control.joint_target_pos.reshape((self.num_worlds, -1)).shape
         self.joint_targets_2d = wp.zeros(self.joint_target_shape, dtype=wp.float32)
         wp.copy(self.control.joint_target_pos[:9], self.model.joint_q[:9])
+
+        # Track maximum object height for testing (only in test mode)
+        self.object_max_z = [self.object_pos[2]] * self.num_worlds if self.test_mode else None
 
         self.capture()
         self.capture_ik()
@@ -337,6 +343,14 @@ class Example:
 
         self.sim_time += self.frame_dt
 
+        # Track maximum object height for testing (only in test mode)
+        if self.test_mode:
+            body_q = self.state_0.body_q.numpy()
+            for world_idx in range(self.num_worlds):
+                object_body_idx = world_idx * self.bodies_per_world + self.object_body_local
+                z_pos = float(body_q[object_body_idx][2])
+                self.object_max_z[world_idx] = max(self.object_max_z[world_idx], z_pos)
+
     def render(self):
         self.viewer.begin_frame(self.sim_time)
         self.viewer.log_state(self.state_0)
@@ -353,24 +367,19 @@ class Example:
             self.viewer.show_hydro_contact_surface = self.show_isosurface
 
     def test_final(self):
-        if not self.put_in_cup:
-            return
-        object_body_idx = self.model.body_key.index("object")
-        cup_x, cup_y, cup_z = self.cup_pos
-        tolerance_xy = 0.05
-        min_z = cup_z - 0.05
+        # Verify that the object was picked up by checking the maximum height reached
+        initial_z = self.object_pos[2]
+        min_lift_height = 0.25  # Object should be lifted at least 25cm above initial position
 
-        def in_cup(q, qd):
-            x, y, z = q[0], q[1], q[2]
-            return abs(x - cup_x) < tolerance_xy and abs(y - cup_y) < tolerance_xy and z > min_z
+        for world_idx in range(self.num_worlds):
+            max_z = self.object_max_z[world_idx]
+            max_lift = max_z - initial_z
 
-        newton.examples.test_body_state(
-            self.model,
-            self.state_0,
-            "object is in the cup",
-            in_cup,
-            indices=[object_body_idx],
-        )
+            assert max_lift > min_lift_height, (
+                f"World {world_idx}: Object was not picked up high enough. "
+                f"Initial z={initial_z:.3f}, max z reached={max_z:.3f}, "
+                f"max lift={max_lift:.3f} (expected > {min_lift_height})"
+            )
 
     def setup_ik(self):
         self.ee_index = 10
@@ -462,6 +471,6 @@ if __name__ == "__main__":
 
     viewer, args = newton.examples.init(parser)
 
-    example = Example(viewer, scene=args.scene, num_worlds=args.num_worlds)
+    example = Example(viewer, scene=args.scene, num_worlds=args.num_worlds, test_mode=args.test)
 
     newton.examples.run(example, args)

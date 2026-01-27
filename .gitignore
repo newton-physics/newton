@@ -43,3 +43,13 @@ asv/html
 MUJOCO_LOG.TXT
 imgui.ini
 newton/tests/outputs/
+
+# Viser recordings
+docs/_static/recordings/
+*.viser
+
+# Viser static files
+docs/_static/viser/
+
+# Notebook checkpoints
+**/*.ipynb_checkpoints/

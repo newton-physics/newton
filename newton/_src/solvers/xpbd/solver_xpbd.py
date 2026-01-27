@@ -100,6 +100,11 @@ class SolverXPBD(SolverBase):
         self._particle_delta_counter = 0
         self._body_delta_counter = 0
 
+        if model.particle_count > 1 and model.particle_grid is not None:
+            # reserve space for the particle hash grid
+            with wp.ScopedDevice(model.device):
+                model.particle_grid.reserve(model.particle_count)
+
     def apply_particle_deltas(
         self,
         model: Model,
@@ -222,7 +227,7 @@ class SolverXPBD(SolverBase):
 
         if contacts:
             if self.rigid_contact_con_weighting:
-                rigid_contact_inv_weight = wp.zeros_like(contacts.rigid_contact_thickness0)
+                rigid_contact_inv_weight = wp.zeros(model.body_count, dtype=float, device=model.device)
             rigid_contact_inv_weight_init = None
 
         if control is None:
@@ -239,6 +244,13 @@ class SolverXPBD(SolverBase):
                 particle_deltas = wp.empty_like(state_out.particle_qd)
 
                 self.integrate_particles(model, state_in, state_out, dt)
+
+                # Build/update the particle hash grid for particle-particle contact queries
+                if model.particle_count > 1 and model.particle_grid is not None:
+                    # Search radius must cover the maximum interaction distance used by the contact query
+                    search_radius = model.particle_max_radius * 2.0 + model.particle_cohesion
+                    with wp.ScopedDevice(model.device):
+                        model.particle_grid.build(state_out.particle_q, radius=search_radius)
 
             if model.body_count:
                 body_q = state_out.body_q
@@ -330,6 +342,7 @@ class SolverXPBD(SolverBase):
 
                         if model.particle_max_radius > 0.0 and model.particle_count > 1:
                             # assert model.particle_grid.reserved, "model.particle_grid must be built, see HashGrid.build()"
+                            assert model.particle_grid is not None
                             wp.launch(
                                 kernel=solve_particle_particle_contacts,
                                 dim=model.particle_count,
@@ -625,6 +638,7 @@ class SolverXPBD(SolverBase):
                             model.body_com,
                             model.body_inv_mass,
                             model.body_inv_inertia,
+                            model.body_world,
                             model.shape_body,
                             contacts.rigid_contact_count,
                             contacts.rigid_contact_normal,

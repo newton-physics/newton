@@ -1,10 +1,4 @@
-name: Pull Request - AWS GPU
-
-# This workflow triggers GPU tests and benchmarks for pull requests.
-# It replaces the old pr_aws_gpu_tests.yml and pr_aws_gpu_asv.yml workflows.
-# Uses reusable workflows:
-#   - aws_gpu_tests.yml
-#   - aws_gpu_benchmarks.yml
+name: Pull Request - AWS GPU Tests
 
 on:
   pull_request_target:
@@ -57,6 +51,8 @@ jobs:
   require-approval:
     name: Require Manual Approval for External PRs
     runs-on: ubuntu-latest
+    permissions:
+      deployments: write  # Required for creating deployment record when using environment
     needs: check-author-membership
     if: needs.check-author-membership.outputs.membership_status != 'CONFIRMED_MEMBER'
     environment:
@@ -74,17 +70,8 @@ jobs:
     if: github.repository == 'newton-physics/newton' && (!cancelled())
     uses: ./.github/workflows/aws_gpu_tests.yml
     with:
-        ref: ${{ github.event.pull_request.head.sha }}
-    secrets: inherit
-
-  run-gpu-benchmarks:
-    name: Run GPU Benchmarks
-    needs:
-      - check-author-membership
-      - require-approval
-    if: github.repository == 'newton-physics/newton' && (!cancelled())
-    uses: ./.github/workflows/aws_gpu_benchmarks.yml
-    with:
       ref: ${{ github.event.pull_request.head.sha }}
-      base_ref: ${{ github.event.pull_request.base.sha }}
     secrets: inherit
+    permissions:
+      id-token: write   # Required for AWS OIDC authentication in start-runner/stop-runner
+      contents: read    # Required for checkout in all jobs
