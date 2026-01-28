@@ -416,35 +416,35 @@ def _warp_assemble_jmjt_dense(
     n_dofs: int,
     A: wp.array2d(dtype=wp.float32),
 ):
-    """Assemble JMJT dense matrix with mass weighting matching C++ reference.
-    
-    The C++ reference uses:
-    - Segment mass = 1.0 (invMass = 1.0) for ALL segments
-    - Segment inertia from inv_inertia array (world-frame)
+    """Assemble JMJT dense matrix with proper mass weighting.
+
+    Constraint i involves particles i (segment 0) and i+1 (segment 1).
+    Uses actual inverse masses to correctly handle locked particles (inv_mass=0).
     """
     i = wp.tid()
     block_start = 6 * i
 
-    # C++ reference uses unit mass (1.0) for all segments
-    inv_m = 1.0
+    # Use actual inverse masses from the array
+    inv_m0 = inv_masses[i]
+    inv_m1 = inv_masses[i + 1]
 
     # Diagonal block
     for row in range(6):
         for col in range(6):
             val = 0.0
-            
-            # Position contribution from segment 0 (unit mass)
+
+            # Position contribution from segment 0 (particle i)
             for k in range(3):
                 j_p0_r = jacobian_pos[_warp_jacobian_index(i, row, k)]
                 j_p0_c = jacobian_pos[_warp_jacobian_index(i, col, k)]
-                val += j_p0_r * inv_m * j_p0_c
-            
-            # Position contribution from segment 1 (unit mass)
+                val += j_p0_r * inv_m0 * j_p0_c
+
+            # Position contribution from segment 1 (particle i+1)
             for k in range(3):
                 j_p1_r = jacobian_pos[_warp_jacobian_index(i, row, k + 3)]
                 j_p1_c = jacobian_pos[_warp_jacobian_index(i, col, k + 3)]
-                val += j_p1_r * inv_m * j_p1_c
-            
+                val += j_p1_r * inv_m1 * j_p1_c
+
             # Rotation contribution from segment 0
             j_t0_r_vec = wp.vec3(
                 jacobian_rot[_warp_jacobian_index(i, row, 0)],
@@ -458,7 +458,7 @@ def _warp_assemble_jmjt_dense(
             )
             inv_I0_j_t0_c = _inv_inertia_mul_vec(inv_inertia, i, j_t0_c_vec)
             val += wp.dot(j_t0_r_vec, inv_I0_j_t0_c)
-            
+
             # Rotation contribution from segment 1
             j_t1_r_vec = wp.vec3(
                 jacobian_rot[_warp_jacobian_index(i, row, 3)],
@@ -472,7 +472,7 @@ def _warp_assemble_jmjt_dense(
             )
             inv_I1_j_t1_c = _inv_inertia_mul_vec(inv_inertia, i + 1, j_t1_c_vec)
             val += wp.dot(j_t1_r_vec, inv_I1_j_t1_c)
-            
+
             if row == col:
                 val += compliance[i * 6 + row]
             row_idx = block_start + row
@@ -480,21 +480,22 @@ def _warp_assemble_jmjt_dense(
             if row_idx < n_dofs and col_idx < n_dofs:
                 A[row_idx, col_idx] = val
 
-    # Off-diagonal block
+    # Off-diagonal block: coupling between constraint i-1 and i
+    # Shared particle is i (segment 1 of constraint i-1 = segment 0 of constraint i)
     if i > 0:
         prev = i - 1
         prev_block = 6 * prev
-        
+
         for row in range(6):
             for col in range(6):
                 val = 0.0
-                
-                # Position contribution (unit mass)
+
+                # Position contribution using shared particle's inverse mass
                 for k in range(3):
                     j_p1_prev = jacobian_pos[_warp_jacobian_index(prev, row, k + 3)]
                     j_p0_cur = jacobian_pos[_warp_jacobian_index(i, col, k)]
-                    val += j_p1_prev * inv_m * j_p0_cur
-                
+                    val += j_p1_prev * inv_m0 * j_p0_cur
+
                 # Rotation contribution
                 j_t1_prev_vec = wp.vec3(
                     jacobian_rot[_warp_jacobian_index(prev, row, 3)],
@@ -540,16 +541,11 @@ def _warp_assemble_jmjt_banded(
     n_dofs: int,
     ab: wp.array2d(dtype=wp.float32),
 ):
-    """Assemble JMJT banded matrix with mass weighting matching C++ reference.
-    
-    The C++ reference (DirectElasticRod.cpp) uses:
-    - Segment mass = 1.0 (invMass = 1.0) for ALL segments
-    - Segment inertia = (0.1, 0.1, 0.1) (invInertia = (10, 10, 10)) for ALL segments
-    
-    The JMJT assembly computes J * M^-1 * J^T where M^-1 is block diagonal:
-    - Upper-left 3x3: 1.0 * I (unit mass)
-    - Lower-right 3x3: R * invInertiaLocal * R^T (world-frame inverse inertia)
-    
+    """Assemble JMJT banded matrix with proper mass weighting.
+
+    The JMJT assembly computes J * M^-1 * J^T where M^-1 is block diagonal.
+    Uses actual inverse masses to correctly handle locked particles (inv_mass=0).
+
     Constraint i involves particles i (segment 0) and i+1 (segment 1).
     """
     i = wp.tid()
@@ -557,26 +553,27 @@ def _warp_assemble_jmjt_banded(
     if block_start >= n_dofs:
         return
 
-    # C++ reference uses unit mass (1.0) for all segments
-    inv_m = 1.0
-    
+    # Use actual inverse masses from the array
+    inv_m0 = inv_masses[i]
+    inv_m1 = inv_masses[i + 1]
+
     # Diagonal block: J0 * M0_inv * J0^T + J1 * M1_inv * J1^T + compliance
     for row in range(6):
         for col in range(6):
             val = 0.0
-            
-            # Position contribution from segment 0: J_p0_r * inv_m * J_p0_c (unit mass)
+
+            # Position contribution from segment 0 (particle i)
             for k in range(3):
                 j_p0_r = jacobian_pos[_warp_jacobian_index(i, row, k)]
                 j_p0_c = jacobian_pos[_warp_jacobian_index(i, col, k)]
-                val += j_p0_r * inv_m * j_p0_c
-            
-            # Position contribution from segment 1: J_p1_r * inv_m * J_p1_c (unit mass)
+                val += j_p0_r * inv_m0 * j_p0_c
+
+            # Position contribution from segment 1 (particle i+1)
             for k in range(3):
                 j_p1_r = jacobian_pos[_warp_jacobian_index(i, row, k + 3)]
                 j_p1_c = jacobian_pos[_warp_jacobian_index(i, col, k + 3)]
-                val += j_p1_r * inv_m * j_p1_c
-            
+                val += j_p1_r * inv_m1 * j_p1_c
+
             # Rotation contribution from segment 0: J_t0_r^T * inv_I0 * J_t0_c
             j_t0_r_vec = wp.vec3(
                 jacobian_rot[_warp_jacobian_index(i, row, 0)],
@@ -590,7 +587,7 @@ def _warp_assemble_jmjt_banded(
             )
             inv_I0_j_t0_c = _inv_inertia_mul_vec(inv_inertia, i, j_t0_c_vec)
             val += wp.dot(j_t0_r_vec, inv_I0_j_t0_c)
-            
+
             # Rotation contribution from segment 1: J_t1_r^T * inv_I1 * J_t1_c
             j_t1_r_vec = wp.vec3(
                 jacobian_rot[_warp_jacobian_index(i, row, 3)],
@@ -604,7 +601,7 @@ def _warp_assemble_jmjt_banded(
             )
             inv_I1_j_t1_c = _inv_inertia_mul_vec(inv_inertia, i + 1, j_t1_c_vec)
             val += wp.dot(j_t1_r_vec, inv_I1_j_t1_c)
-            
+
             # Add compliance to diagonal
             if row == col:
                 val += compliance[i * 6 + row]
@@ -621,17 +618,17 @@ def _warp_assemble_jmjt_banded(
     if i > 0:
         prev = i - 1
         prev_block = block_start - 6
-        
+
         for row in range(6):
             for col in range(6):
                 val = 0.0
-                
-                # Position contribution: J_p1_prev * inv_m * J_p0_cur (unit mass)
+
+                # Position contribution using shared particle's inverse mass
                 for k in range(3):
                     j_p1_prev = jacobian_pos[_warp_jacobian_index(prev, row, k + 3)]
                     j_p0_cur = jacobian_pos[_warp_jacobian_index(i, col, k)]
-                    val += j_p1_prev * inv_m * j_p0_cur
-                
+                    val += j_p1_prev * inv_m0 * j_p0_cur
+
                 # Rotation contribution: J_t1_prev^T * inv_I_shared * J_t0_cur
                 j_t1_prev_vec = wp.vec3(
                     jacobian_rot[_warp_jacobian_index(prev, row, 3)],
@@ -1050,11 +1047,10 @@ def _warp_assemble_jmjt_blocks(
     diag_blocks: wp.array(dtype=wp.float32),
     offdiag_blocks: wp.array(dtype=wp.float32),
 ):
-    """Assemble JMJT blocks with mass weighting matching C++ reference for block Thomas solver.
-    
-    The C++ reference uses:
-    - Segment mass = 1.0 (invMass = 1.0) for ALL segments
-    - Segment inertia from inv_inertia array (world-frame)
+    """Assemble JMJT blocks with proper mass weighting for block Thomas solver.
+
+    Uses actual inverse masses to correctly handle locked particles (inv_mass=0).
+    Constraint i involves particles i (segment 0) and i+1 (segment 1).
     """
     i = wp.tid()
     if i >= n_edges:
@@ -1062,26 +1058,27 @@ def _warp_assemble_jmjt_blocks(
     regularization = 1.0e-6
     block_start = 6 * i
 
-    # C++ reference uses unit mass (1.0) for all segments
-    inv_m = 1.0
+    # Use actual inverse masses from the array
+    inv_m0 = inv_masses[i]
+    inv_m1 = inv_masses[i + 1]
 
     # Diagonal block
     for row in range(6):
         for col in range(6):
             val = 0.0
-            
-            # Position contribution from segment 0 (unit mass)
+
+            # Position contribution from segment 0 (particle i)
             for k in range(3):
                 j_p0_r = jacobian_pos[_warp_jacobian_index(i, row, k)]
                 j_p0_c = jacobian_pos[_warp_jacobian_index(i, col, k)]
-                val += j_p0_r * inv_m * j_p0_c
-            
-            # Position contribution from segment 1 (unit mass)
+                val += j_p0_r * inv_m0 * j_p0_c
+
+            # Position contribution from segment 1 (particle i+1)
             for k in range(3):
                 j_p1_r = jacobian_pos[_warp_jacobian_index(i, row, k + 3)]
                 j_p1_c = jacobian_pos[_warp_jacobian_index(i, col, k + 3)]
-                val += j_p1_r * inv_m * j_p1_c
-            
+                val += j_p1_r * inv_m1 * j_p1_c
+
             # Rotation contribution from segment 0
             j_t0_r_vec = wp.vec3(
                 jacobian_rot[_warp_jacobian_index(i, row, 0)],
@@ -1095,7 +1092,7 @@ def _warp_assemble_jmjt_blocks(
             )
             inv_I0_j_t0_c = _inv_inertia_mul_vec(inv_inertia, i, j_t0_c_vec)
             val += wp.dot(j_t0_r_vec, inv_I0_j_t0_c)
-            
+
             # Rotation contribution from segment 1
             j_t1_r_vec = wp.vec3(
                 jacobian_rot[_warp_jacobian_index(i, row, 3)],
@@ -1109,7 +1106,7 @@ def _warp_assemble_jmjt_blocks(
             )
             inv_I1_j_t1_c = _inv_inertia_mul_vec(inv_inertia, i + 1, j_t1_c_vec)
             val += wp.dot(j_t1_r_vec, inv_I1_j_t1_c)
-            
+
             if row == col:
                 val += compliance[i * 6 + row] + regularization
             diag_blocks[_block_index(i, row, col)] = val
@@ -1122,17 +1119,17 @@ def _warp_assemble_jmjt_blocks(
         return
 
     prev = i - 1
-    
+
     for row in range(6):
         for col in range(6):
             val = 0.0
-            
-            # Position contribution (unit mass)
+
+            # Position contribution using shared particle's inverse mass
             for k in range(3):
                 j_p1_prev = jacobian_pos[_warp_jacobian_index(prev, row, k + 3)]
                 j_p0_cur = jacobian_pos[_warp_jacobian_index(i, col, k)]
-                val += j_p1_prev * inv_m * j_p0_cur
-            
+                val += j_p1_prev * inv_m0 * j_p0_cur
+
             # Rotation contribution
             j_t1_prev_vec = wp.vec3(
                 jacobian_rot[_warp_jacobian_index(prev, row, 3)],
@@ -1146,7 +1143,7 @@ def _warp_assemble_jmjt_blocks(
             )
             inv_I_shared_j_t0_cur = _inv_inertia_mul_vec(inv_inertia, i, j_t0_cur_vec)
             val += wp.dot(j_t1_prev_vec, inv_I_shared_j_t0_cur)
-            
+
             offdiag_blocks[_block_index(i, row, col)] = val
 
 

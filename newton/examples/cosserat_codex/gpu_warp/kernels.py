@@ -84,13 +84,11 @@ def _warp_apply_direct_corrections(
     max_corr_out: wp.array(dtype=wp.float32),
 ):
     """Apply position and rotation corrections from deltaLambda.
-    
-    The C++ reference (DirectElasticRod.cpp) uses:
-    - Segment mass = 1.0 (invMass = 1.0) for position corrections
-    - Segment inertia from inv_inertia array (world-frame) for rotation corrections
-    
-    Position correction: 1.0 * J_pos^T * deltaLambda (unit mass, masked by inv_masses for static particles)
-    Rotation correction: inv_inertia * J_rot^T * deltaLambda (with proper 3x3 matrix multiplication)
+
+    Position correction: inv_mass * J_pos^T * deltaLambda
+    Rotation correction: inv_inertia * J_rot^T * deltaLambda
+
+    Uses actual inverse masses to correctly handle locked particles (inv_mass=0).
     """
     tid = wp.tid()
     if tid != 0:
@@ -98,9 +96,6 @@ def _warp_apply_direct_corrections(
 
     max_delta = float(0.0)
     max_corr = float(0.0)
-    
-    # C++ reference uses unit mass (1.0) for corrections
-    inv_m = 1.0
 
     for edge in range(n_edges):
         base_idx = edge * 6
@@ -137,24 +132,27 @@ def _warp_apply_direct_corrections(
         if abs_dl > max_delta:
             max_delta = abs_dl
 
-        # Position correction for particle 0: inv_m * J_p0^T * deltaLambda (unit mass, masked)
-        # Use inv_masses only as a mask (> 0 means dynamic, == 0 means static)
-        if inv_masses[edge] > 0.0:
+        # Use actual inverse masses from the array
+        inv_m0 = inv_masses[edge]
+        inv_m1 = inv_masses[edge + 1]
+
+        # Position correction for particle 0: inv_m0 * J_p0^T * deltaLambda
+        if inv_m0 > 0.0:
             dp0_x = _warp_jacobian_dot(jacobian_pos, edge, 0, dl0, dl1, dl2, dl3, dl4, dl5)
             dp0_y = _warp_jacobian_dot(jacobian_pos, edge, 1, dl0, dl1, dl2, dl3, dl4, dl5)
             dp0_z = _warp_jacobian_dot(jacobian_pos, edge, 2, dl0, dl1, dl2, dl3, dl4, dl5)
-            dp0 = wp.vec3(dp0_x * inv_m, dp0_y * inv_m, dp0_z * inv_m)
+            dp0 = wp.vec3(dp0_x * inv_m0, dp0_y * inv_m0, dp0_z * inv_m0)
             predicted_positions[edge] = predicted_positions[edge] + dp0
             corr = wp.sqrt(dp0.x * dp0.x + dp0.y * dp0.y + dp0.z * dp0.z)
             if corr > max_corr:
                 max_corr = corr
 
-        # Position correction for particle 1: inv_m * J_p1^T * deltaLambda (unit mass, masked)
-        if inv_masses[edge + 1] > 0.0:
+        # Position correction for particle 1: inv_m1 * J_p1^T * deltaLambda
+        if inv_m1 > 0.0:
             dp1_x = _warp_jacobian_dot(jacobian_pos, edge, 3, dl0, dl1, dl2, dl3, dl4, dl5)
             dp1_y = _warp_jacobian_dot(jacobian_pos, edge, 4, dl0, dl1, dl2, dl3, dl4, dl5)
             dp1_z = _warp_jacobian_dot(jacobian_pos, edge, 5, dl0, dl1, dl2, dl3, dl4, dl5)
-            dp1 = wp.vec3(dp1_x * inv_m, dp1_y * inv_m, dp1_z * inv_m)
+            dp1 = wp.vec3(dp1_x * inv_m1, dp1_y * inv_m1, dp1_z * inv_m1)
             predicted_positions[edge + 1] = predicted_positions[edge + 1] + dp1
             corr = wp.sqrt(dp1.x * dp1.x + dp1.y * dp1.y + dp1.z * dp1.z)
             if corr > max_corr:
