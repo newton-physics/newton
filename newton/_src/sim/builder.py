@@ -1610,7 +1610,7 @@ class ModelBuilder:
         collider_classes: Sequence[str] = ("collision",),
         no_class_as_colliders: bool = True,
         force_show_colliders: bool = False,
-        enable_self_collisions: bool = False,
+        enable_self_collisions: bool = True,
         ignore_inertial_definitions: bool = True,
         ensure_nonstatic_links: bool = True,
         static_link_mass: float = 1e-2,
