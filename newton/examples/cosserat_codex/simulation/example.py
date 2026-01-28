@@ -209,15 +209,16 @@ class Example:
         self._update_offsets()
 
         models_dir = _resolve_models_dir()
-        usd_path = os.path.join(models_dir, "DynamicAorta.usdc")
+        usd_path = os.path.join(models_dir, "AortaWithVesselsStatic.usdc")
         if not os.path.isfile(usd_path):
             raise FileNotFoundError(
-                "Unable to find DynamicAorta.usdc. "
+                "Unable to find AortaWithVessels.usdc. "
                 f"Expected at '{usd_path}'. If you're using a pointer file at "
                 "'cosserat_codex/gpu_warp/models', ensure it targets the cosserat models folder."
             )
         usd_stage = Usd.Stage.Open(usd_path)
-        mesh_prim = usd_stage.GetPrimAtPath("/root/A4009/A4007/Xueguan_rudong/Dynamic_vessels/Mesh")
+        #mesh_prim = usd_stage.GetPrimAtPath("/root/A4009/A4007/Xueguan_rudong/Dynamic_vessels/Mesh")
+        mesh_prim = usd_stage.GetPrimAtPath("/root/Mesh/Mesh_004")
         vessel_mesh = newton.usd.get_mesh(mesh_prim)
 
         self.vessel_vertices_np = np.array(vessel_mesh.vertices, dtype=np.float32)
