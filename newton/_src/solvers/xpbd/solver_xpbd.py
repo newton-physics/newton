@@ -262,7 +262,10 @@ class SolverXPBD(SolverBase):
 
                 body_deltas = wp.empty_like(state_out.body_qd)
 
+                body_f_tmp = state_in.body_f
                 if model.joint_count:
+                    # Avoid accumulating joint_f into the persistent state body_f buffer.
+                    body_f_tmp = wp.clone(state_in.body_f)
                     wp.launch(
                         kernel=apply_joint_forces,
                         dim=model.joint_count,
@@ -278,11 +281,17 @@ class SolverXPBD(SolverBase):
                             model.joint_axis,
                             control.joint_f,
                         ],
-                        outputs=[state_in.body_f],
+                        outputs=[body_f_tmp],
                         device=model.device,
                     )
 
-                self.integrate_bodies(model, state_in, state_out, dt, self.angular_damping)
+                if body_f_tmp is state_in.body_f:
+                    self.integrate_bodies(model, state_in, state_out, dt, self.angular_damping)
+                else:
+                    body_f_prev = state_in.body_f
+                    state_in.body_f = body_f_tmp
+                    self.integrate_bodies(model, state_in, state_out, dt, self.angular_damping)
+                    state_in.body_f = body_f_prev
 
             spring_constraint_lambdas = None
             if model.spring_count:

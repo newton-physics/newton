@@ -23,6 +23,7 @@ Utilities for working with the Universal Scene Description (USD) format.
 from ._src.usd.utils import (
     convert_warp_type,
     convert_warp_value,
+    from_gfquat,
     get_attribute,
     get_attributes_in_namespace,
     get_custom_attribute_declarations,
@@ -39,6 +40,7 @@ from ._src.usd.utils import (
 __all__ = [
     "convert_warp_type",
     "convert_warp_value",
+    "from_gfquat",
     "get_attribute",
     "get_attributes_in_namespace",
     "get_custom_attribute_declarations",

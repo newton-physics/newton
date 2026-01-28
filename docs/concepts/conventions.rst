@@ -4,6 +4,26 @@ Conventions
 
 This document covers the various conventions used across physics engines and graphics frameworks when working with Newton and other simulation systems.
 
+Primer: Reference Points for Rigid-Body Spatial Force and Velocity
+------------------------------------------------------------------
+
+Newton uses rigid-body spatial forces (wrenches) and velocities (twists) in its API. These spatial vectors are defined with respect to a **reference point**.
+When shifting the reference point, the force and velocity are updated in order to preserve the effect of the wrench, and the velocity field described by the twist, with respect to the new reference point.
+The 6D wrench and twist are composed of a linear and an angular 3D-vector component, and in the context of these spatial vectors, their reference-point dependence is as follows:
+
+- **Point-independent components**: linear force :math:`\mathbf{f}`, angular velocity :math:`\boldsymbol{\omega}`.
+- **Point-dependent components**: angular torque (moment) :math:`\boldsymbol{\tau}`, linear velocity :math:`\mathbf{v}`.
+
+Shifting the reference point by :math:`\mathbf{r} = (\mathbf{p}_{\text{new}} - \mathbf{p}_{\text{old}})` changes the point-dependent vector components as follows:
+
+.. math::
+
+   \boldsymbol{\tau}_{\text{new}} = \boldsymbol{\tau} + \mathbf{r} \times \mathbf{f}, \qquad
+   \mathbf{v}_{\text{new}} = \mathbf{v} + \boldsymbol{\omega} \times \mathbf{r}.
+
+Keep this distinction in mind below: In addition to the coordinate frame that wrenches and twists are expressed in,
+Newton documentation states the **reference point** that it expects. If you compute e.g. a wrench with respect to a different reference point, you must shift it to the expected reference point.
+
 Spatial Twist Conventions
 --------------------------
 
@@ -62,10 +82,14 @@ world frame, though details vary:
 
 * **MuJoCo**  
   MuJoCo employs a *mixed-frame* format for free bodies:  
-  the linear part :math:`(v_x,v_y,v_z)` is in the world frame, while the
+  the linear part :math:`(v_x,v_y,v_z)` is the velocity of the **body frame
+  origin** (i.e., where ``qpos[0:3]`` is located) in the world frame, while the
   angular part :math:`(\omega_x,\omega_y,\omega_z)` is expressed in the **body
   frame**.  The choice follows from quaternion integration (angular velocities
-  "live" in the quaternion's tangent space, a local frame).
+  "live" in the quaternion's tangent space, a local frame).  Note that when the
+  body's center of mass (``body_ipos``) is offset from the body frame origin,
+  the linear velocity is *not* the CoM velocity—see :ref:`MuJoCo conversion <MuJoCo conversion>`
+  below for the relationship.
 
 * **Isaac Lab / Isaac Gym**  
   NVIDIA's Isaac tools provide **both** linear and angular velocities in the
@@ -80,11 +104,30 @@ Newton Conventions
 
 **Newton** follows the standard physics engine convention for most solvers,
 aligning with Isaac Lab's approach.
-Newton's :attr:`State.body_qd` stores **both** linear and angular velocities
-in the world frame. The linear velocity represents the COM velocity in world
+Newton's :attr:`State.body_qd <newton.State.body_qd>` stores **both** linear and angular velocities
+in the world frame.
+
+.. code-block:: python
+
+  @wp.kernel
+  def get_body_twist(body_qd: wp.array(dtype=wp.spatial_vector)):
+    body_id = wp.tid()
+    # body_qd is a 6D wp.spatial_vector in world frame
+    twist = body_qd[body_id]
+    # linear velocity is the velocity of the body's center of mass in world frame
+    linear_velocity = twist[0:3]
+    # angular velocity is the angular velocity of the body in world frame
+    angular_velocity = twist[3:6]
+
+  wp.launch(get_body_twist, dim=model.body_count, inputs=[state.body_qd])
+
+
+The linear velocity represents the COM velocity in world
 coordinates, while the angular velocity is also expressed in world coordinates.
 This matches the Isaac Lab convention exactly. Note that Newton will automatically
-convert from this convention to MuJoCo's mixed-frame format when using the SolverMuJoCo.
+convert from this convention to MuJoCo's mixed-frame format when using the
+SolverMuJoCo, including both the angular velocity frame conversion (world ↔ body)
+and the linear velocity reference point conversion (CoM ↔ body frame origin).
 
 
 Summary of Conventions
@@ -92,36 +135,48 @@ Summary of Conventions
 
 .. list-table::
    :header-rows: 1
-   :widths: 28 33 27 22
+   :widths: 28 27 27 18
 
    * - **System**
-     - **Linear velocity** (translation)
-     - **Angular velocity** (rotation)
+     - **Linear velocity (translation)**
+     - **Angular velocity (rotation)**
      - **Twist term**
-   * - *Modern Robotics* — **body twist**
-     - Body origin (e.g. COM), **body frame**
-     - **Body frame**
+   * - *Modern Robotics* — **Body twist**
+     - Body origin (chosen point; often COM), body frame
+     - Body frame
      - "Body twist" (:math:`V_b`)
-   * - *Modern Robotics* — **spatial twist**
-     - World origin, **world frame**
-     - **World frame**
+   * - *Modern Robotics* — **Spatial twist**
+     - World origin, world frame
+     - World frame
      - "Spatial twist" (:math:`V_s`)
    * - **Drake**
-     - Body origin (COM), **world frame**
-     - **World frame**
+     - Body-frame origin :math:`B_o` (not necessarily COM), world frame
+     - World frame
      - Spatial velocity :math:`V_{WB}^{W}`
    * - **MuJoCo**
-     - COM, **world frame**
-     - **Body frame**
+     - Body-frame origin, world frame
+     - Body frame
      - Mixed-frame 6-vector
    * - **Isaac Gym / Sim**
-     - COM, **world frame**
-     - **World frame**
-     - "Root" linear / angular velocity
-   * - **Newton**
-     - COM, **world frame**
-     - **World frame**
-     - Physics engine convention
+     - COM, world frame
+     - World frame
+     - "Root" linear/angular velocity
+   * - **PhysX**
+     - COM, world frame
+     - World frame
+     - Not named "twist"; typically treated as :math:`[\mathbf{v}_{com}^W;\ \boldsymbol{\omega}^W]`
+   * - **Newton** (except Featherstone solver, see below)
+     - COM, world frame
+     - World frame
+     - :attr:`~newton.State.body_qd`
+
+.. warning::
+
+  :class:`~newton.solvers.SolverFeatherstone` does not correctly handle angular velocity
+  for free-floating bodies with **non-zero center of mass offsets**. The body may not
+  rotate purely about its CoM.
+
+  We will fix this issue with https://github.com/newton-physics/newton/issues/1366.
 
 Mapping Between Representations
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -156,14 +211,85 @@ Given engine values :math:`(v_{\text{com}}^{W},\;\omega^{W})`
    :math:`v_{\text{origin}}^{W} = v_{\text{com}}^{W} + \omega^{W}\times r^{W}`,
    where :math:`r^{W}=R\,r`.
 
+.. _MuJoCo conversion:
+
 **MuJoCo conversion**  
-Rotate its local angular velocity by :math:`R` to world frame
-(or rotate a world-frame twist back into the body frame for MuJoCo).
+Two conversions are needed between Newton and MuJoCo:
+
+1. **Angular velocity frame**: Rotate MuJoCo's body-frame angular velocity by
+   :math:`R` to obtain the world-frame angular velocity (or vice versa):
+
+   .. math::
+
+      \omega^{W} = R\,\omega^{B}, \qquad \omega^{B} = R^{\mathsf T}\omega^{W}
+
+2. **Linear velocity reference point**: MuJoCo's linear velocity is at the
+   body frame origin, while Newton uses the CoM velocity.  When the body has a
+   non-zero CoM offset :math:`r` (``body_ipos`` in MuJoCo, ``body_com`` in
+   Newton), convert using:
+
+   .. math::
+
+      v_{\text{origin}}^{W} = v_{\text{com}}^{W} - \omega^{W} \times r^{W},
+      \qquad
+      v_{\text{com}}^{W} = v_{\text{origin}}^{W} + \omega^{W} \times r^{W}
+
+   where :math:`r^{W} = R\,r^{B}` is the CoM offset expressed in world coordinates.
 
 In all cases the conversion boils down to the **reference point**
 (COM vs. another point) and the **frame** (world vs. body) used for each
 component.  Physics is unchanged; any linear velocity at one point follows
 :math:`v_{\text{new}} = v + \omega\times r`.
+
+
+Spatial Wrench Conventions
+--------------------------
+
+Newton represents external rigid-body forces as **spatial wrenches** in
+:attr:`State.body_f <newton.State.body_f>`. The 6D wrench is stored in world
+frame as:
+
+.. math::
+
+   \mathbf{w} = \begin{bmatrix} \mathbf{f} \\ \boldsymbol{\tau} \end{bmatrix},
+
+where :math:`\mathbf{f}` is the **linear force** and :math:`\boldsymbol{\tau}`
+is the **moment about the body's center of mass (COM)**, both expressed in
+world coordinates. The reference point matters for the moment term, so shifting
+the wrench to a point offset by :math:`\mathbf{r}` changes the torque as:
+
+.. math::
+
+   \boldsymbol{\tau}_{\text{new}} = \boldsymbol{\tau} + \mathbf{r} \times \mathbf{f}.
+
+This convention is used in all Newton solvers, except for :class:`~newton.solvers.SolverFeatherstone` which does not correctly handle torque application for free-floating bodies with **non-zero center of mass offsets**.
+
+.. warning::
+
+  :class:`~newton.solvers.SolverFeatherstone` does not correctly handle torque application
+  for free-floating bodies with **non-zero center of mass offsets**. A pure torque will
+  incorrectly cause the CoM to translate instead of remaining stationary.
+
+  We will fix this issue with https://github.com/newton-physics/newton/issues/1366.
+
+The array of joint forces (torques) in generalized coordinates is stored in :attr:`Control.joint_f <newton.Control.joint_f>`.
+For free joints, the corresponding 6 dimensions in this array are the spatial wrench applied at the body's center of mass (COM)
+in world frame, following exactly the same convention as :attr:`State.body_f <newton.State.body_f>`.
+
+.. note::
+
+  MuJoCo represents free-joint generalized forces in a mixed-frame convention in ``qfrc_applied``. To preserve Newton's
+  COM-wrench semantics, :class:`~newton.solvers.SolverMuJoCo` applies free-joint
+  :attr:`Control.joint_f <newton.Control.joint_f>` through ``xfrc_applied`` (world-frame wrench at the COM) and
+  uses ``qfrc_applied`` only for non-free joints. This keeps free-joint ``joint_f`` behavior aligned with
+  :attr:`State.body_f <newton.State.body_f>`.
+
+  We avoid converting free-joint wrenches into ``qfrc_applied`` directly because ``qfrc_applied`` is **generalized-force
+  space**, not a physical wrench. For free joints the 6-DOF basis depends on the current ``cdof`` (subtree COM frame),
+  and the rotational components are expressed in the body frame. A naive world-to-body rotation is insufficient because
+  the correct mapping is the Jacobian-transpose operation used internally by MuJoCo (the same path as ``xfrc_applied``).
+  Routing through ``xfrc_applied`` ensures the wrench is interpreted at the COM in world coordinates and then mapped to
+  generalized forces consistently with MuJoCo's own dynamics.
 
 Quaternion Ordering Conventions
 --------------------------------
@@ -509,36 +635,3 @@ Import Handling
 ~~~~~~~~~~~~~~~
 
 Newton's importers automatically handle convention differences when loading assets. No manual conversion is required when using these importers—they automatically transform shapes to Newton's conventions.
-
-Practical Considerations
-~~~~~~~~~~~~~~~~~~~~~~~~
-
-**Creating Shapes Programmatically**
-
-When using ModelBuilder to create shapes:
-
-.. code-block:: python
-
-   # Sphere - simple radius parameter
-   builder.add_shape_sphere(body=0, radius=1.0)
-   
-   # Box uses half-extents
-   builder.add_shape_box(body=0, hx=1.0, hy=0.5, hz=0.25)
-   
-   # Capsule half_height excludes caps
-   # Total length = 2 * (radius + half_height) = 2 * (0.5 + 1.0) = 3.0
-   builder.add_shape_capsule(body=0, radius=0.5, half_height=1.0)
-   
-   # Cylinder extends along Z-axis
-   builder.add_shape_cylinder(body=0, radius=0.5, half_height=1.0)
-   
-   # Cone - note the COM offset affects dynamics
-   # Base at z=-1.0, apex at z=+1.0, COM at z=-0.5
-   builder.add_shape_cone(body=0, radius=0.5, half_height=1.0)
-   
-   # Plane normal points along +Z of shape frame
-   builder.add_shape_plane(width=10.0, length=10.0)  # Bounded plane
-   builder.add_shape_plane(width=0.0, length=0.0)    # Infinite plane
-   
-   # Mesh - general triangle mesh (can be non-convex)
-   builder.add_shape_mesh(body=0, mesh=my_mesh)

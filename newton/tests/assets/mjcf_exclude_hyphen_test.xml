@@ -1,0 +1,29 @@
+<!-- Test file for <exclude> tag with hyphenated body names -->
+<mujoco>
+  <worldbody>
+    <!-- Body with hyphens in name -->
+    <body name="body-with-hyphens" pos="0 0 1">
+      <freejoint/>
+      <geom name="hyphen_geom1" type="box" size="0.1 0.1 0.1" pos="0 0 0"/>
+      <geom name="hyphen_geom2" type="sphere" size="0.05" pos="0.1 0 0"/>
+    </body>
+
+    <!-- Another body with hyphens -->
+    <body name="another-hyphen-body" pos="0 0 2">
+      <freejoint/>
+      <geom name="another_geom1" type="box" size="0.1 0.1 0.1" pos="0 0 0"/>
+      <geom name="another_geom2" type="sphere" size="0.05" pos="0.1 0 0"/>
+    </body>
+
+    <!-- Body without hyphens (should still collide with hyphenated bodies) -->
+    <body name="normal_body" pos="0 0 3">
+      <freejoint/>
+      <geom name="normal_geom1" type="box" size="0.1 0.1 0.1" pos="0 0 0"/>
+    </body>
+  </worldbody>
+
+  <contact>
+    <!-- Exclude collisions between the two hyphenated bodies -->
+    <exclude body1="body-with-hyphens" body2="another-hyphen-body"/>
+  </contact>
+</mujoco>

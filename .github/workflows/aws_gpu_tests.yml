@@ -72,6 +72,8 @@ jobs:
           github-token: ${{ secrets.GH_PERSONAL_ACCESS_TOKEN }}
           ec2-image-id: ${{ env.LATEST_AMI_ID }}
           ec2-instance-type: ${{ env.AWS_INSTANCE_TYPE }}
+          ec2-volume-size: ${{ env.AWS_VOLUME_SIZE }}
+          ec2-volume-type: ${{ env.AWS_VOLUME_TYPE }}
           subnet-id: subnet-051b9d2e71acf8047
           security-group-id: ${{ env.AWS_SECURITY_GROUP_IDS }}
           aws-resource-tags: >
@@ -101,8 +103,15 @@ jobs:
       - name: Set up Python
         run: uv python install
 
+      - name: Check disk space
+        run: df -h
+
       - name: Run Tests
         run: uv run --extra dev --extra torch-cu12 -m newton.tests --junit-report-xml rspec.xml --coverage --coverage-xml coverage.xml
+
+      - name: Check disk space (post-test)
+        if: always()
+        run: df -h
 
       - name: Test Summary
         if: ${{ !cancelled() }}

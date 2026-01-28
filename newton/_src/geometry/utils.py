@@ -568,7 +568,7 @@ def remesh_convex_hull(vertices, maxhullvert: int = 0):
     return verts, faces
 
 
-RemeshingMethod = Literal["ftetwild", "alphashape", "quadratic", "convex_hull"]
+RemeshingMethod = Literal["ftetwild", "alphashape", "quadratic", "convex_hull", "poisson"]
 
 
 def remesh(
@@ -580,7 +580,8 @@ def remesh(
     Args:
         vertices: A numpy array of shape (N, 3) containing the vertex positions.
         faces: A numpy array of shape (M, 3) containing the vertex indices of the faces.
-        method: The remeshing method to use. One of "ftetwild", "quadratic", "convex_hull", or "alphashape".
+        method: The remeshing method to use. One of "ftetwild", "quadratic", "convex_hull",
+            "alphashape", or "poisson".
         visualize: Whether to render the input and output meshes using matplotlib.
         **remeshing_kwargs: Additional keyword arguments passed to the remeshing function.
 
@@ -595,6 +596,10 @@ def remesh(
         new_vertices, new_faces = remesh_quadratic(vertices, faces, **remeshing_kwargs)
     elif method == "convex_hull":
         new_vertices, new_faces = remesh_convex_hull(vertices, **remeshing_kwargs)
+    elif method == "poisson":
+        from newton._src.geometry.remesh import remesh_poisson  # noqa: PLC0415
+
+        new_vertices, new_faces = remesh_poisson(vertices, faces, **remeshing_kwargs)
     else:
         raise ValueError(f"Unknown remeshing method: {method}")
 
@@ -623,7 +628,7 @@ def remesh_mesh(
     Args:
         mesh (Mesh): The mesh to be remeshed.
         method (RemeshingMethod, optional): The remeshing method to use.
-            One of "ftetwild", "quadratic", "convex_hull", or "alphashape".
+            One of "ftetwild", "quadratic", "convex_hull", "alphashape", or "poisson".
             Defaults to "quadratic".
         recompute_inertia (bool, optional): If True, recompute the mass, center of mass,
             and inertia tensor of the mesh after remeshing. Defaults to False.

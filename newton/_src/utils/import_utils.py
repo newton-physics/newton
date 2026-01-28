@@ -164,3 +164,18 @@ def sanitize_xml_content(source: str) -> str:
             break
     xml_content = xml_content.strip()
     return xml_content
+
+
+def is_xml_content(source: str) -> bool:
+    """Check if a string appears to be XML content rather than a file path.
+
+    Uses the presence of XML angle brackets which are required for any XML
+    content and practically never appear in file paths.
+
+    Args:
+        source: String to check
+
+    Returns:
+        True if the string appears to be XML content, False if it looks like a file path
+    """
+    return any(char in source for char in "<>")
