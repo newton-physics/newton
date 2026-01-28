@@ -190,7 +190,6 @@ class Example:
         gpu_configs = build_rod_configs(args)
         self.gpu_batch = RodBatch(gpu_configs)
         self.gpu_state = self.gpu_batch.create_state(
-            self.lib,
             device=wp.get_device(),
             use_banded=self.use_banded,
             use_cuda_graph=self.use_cuda_graph,

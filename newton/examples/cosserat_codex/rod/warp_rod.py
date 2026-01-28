@@ -62,10 +62,10 @@ from newton.examples.cosserat_codex.kernels import (
     _warp_zero_root_velocities,
 )
 
-from .dll_rod import DefKitDirectRodState
+from .base import RodStateBase
 
 
-class WarpResidentRodState(DefKitDirectRodState):
+class WarpResidentRodState(RodStateBase):
     """Warp-resident direct rod state that stays on device.
     
     This implementation keeps all simulation state on the GPU to avoid
@@ -80,17 +80,64 @@ class WarpResidentRodState(DefKitDirectRodState):
         orientations_wp: GPU-resident orientations.
     """
 
-    def __init__(self, *args, device: wp.Device | None = None, **kwargs):
+    def __init__(
+        self,
+        num_points: int,
+        segment_length: float,
+        mass: float,
+        particle_height: float,
+        rod_radius: float,
+        bend_stiffness: float,
+        twist_stiffness: float,
+        rest_bend_d1: float,
+        rest_bend_d2: float,
+        rest_twist: float,
+        young_modulus: float,
+        torsion_modulus: float,
+        gravity: np.ndarray,
+        lock_root_rotation: bool,
+        use_banded: bool = False,
+        device: wp.Device | None = None,
+    ):
         """Initialize the GPU-resident rod state.
         
         Args:
-            *args: Positional arguments passed to parent.
+            num_points: Number of particles in the rod.
+            segment_length: Rest length of each segment.
+            mass: Mass of each particle.
+            particle_height: Initial Z height of particles.
+            rod_radius: Radius of the rod for collision detection.
+            bend_stiffness: Bending stiffness coefficient.
+            twist_stiffness: Twist stiffness coefficient.
+            rest_bend_d1: Rest curvature in d1 direction.
+            rest_bend_d2: Rest curvature in d2 direction.
+            rest_twist: Rest twist angle.
+            young_modulus: Young's modulus for stretch stiffness.
+            torsion_modulus: Torsion modulus for twist stiffness.
+            gravity: 3D gravity vector.
+            lock_root_rotation: Whether to lock root particle rotation.
+            use_banded: Whether to use banded solver.
             device: Warp device for GPU arrays.
-            **kwargs: Keyword arguments passed to parent.
         """
         self._warp_ready = False
-        super().__init__(*args, **kwargs)
+        super().__init__(
+            num_points=num_points,
+            segment_length=segment_length,
+            mass=mass,
+            particle_height=particle_height,
+            rod_radius=rod_radius,
+            bend_stiffness=bend_stiffness,
+            twist_stiffness=twist_stiffness,
+            rest_bend_d1=rest_bend_d1,
+            rest_bend_d2=rest_bend_d2,
+            rest_twist=rest_twist,
+            young_modulus=young_modulus,
+            torsion_modulus=torsion_modulus,
+            gravity=gravity,
+            lock_root_rotation=lock_root_rotation,
+        )
         self.device = device or wp.get_device()
+        self.use_banded = use_banded
         self.direct_solve_backend = DIRECT_SOLVE_WARP_BLOCK_THOMAS
         self.supports_non_banded = True
 
@@ -330,7 +377,19 @@ class WarpResidentRodState(DefKitDirectRodState):
 
     def reset(self):
         """Reset to initial state."""
-        super().reset()
+        # Reset host arrays
+        self.positions[:] = self._initial_positions
+        self.predicted_positions[:] = self._initial_positions
+        self.velocities.fill(0.0)
+        self.forces.fill(0.0)
+
+        self.orientations[:] = self._initial_orientations
+        self.predicted_orientations[:] = self._initial_orientations
+        self.prev_orientations[:] = self._initial_orientations
+        self.angular_velocities.fill(0.0)
+        self.torques.fill(0.0)
+
+        # Sync to device
         self._sync_from_host_all()
 
     def apply_root_translation(self, dx: float, dy: float, dz: float):
