@@ -3194,6 +3194,59 @@ class TestMuJoCoSolverEqualityConstraintProperties(TestMuJoCoSolverPropertiesBas
                     f"Re-enabled eq_active mismatch at World {w}, MuJoCo eq {mjc_eq}: expected True, got {actual}",
                 )
 
+    def test_eq_data_connect_preserves_second_anchor(self):
+        """
+        Test that updating CONNECT constraint properties does not reset
+        data[3:6] (second anchor) to zero.
+        """
+        # Create template with a CONNECT constraint
+        template_builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(template_builder)
+
+        # Articulation 1: free joint from world
+        b1 = template_builder.add_link(mass=1.0, com=wp.vec3(0.0), I_m=wp.mat33(np.eye(3)))
+        j1 = template_builder.add_joint_free(child=b1)
+        template_builder.add_shape_box(body=b1, hx=0.1, hy=0.1, hz=0.1)
+        template_builder.add_articulation([j1])
+
+        # Articulation 2: free joint from world (separate chain)
+        b2 = template_builder.add_link(mass=1.0, com=wp.vec3(0.0), I_m=wp.mat33(np.eye(3)))
+        j2 = template_builder.add_joint_free(child=b2)
+        template_builder.add_shape_box(body=b2, hx=0.1, hy=0.1, hz=0.1)
+        template_builder.add_articulation([j2])
+
+        # Add a CONNECT constraint between the two bodies
+        template_builder.add_equality_constraint_connect(
+            body1=b1,
+            body2=b2,
+            anchor=wp.vec3(0.1, 0.2, 0.3),
+        )
+
+        # Create main builder
+        num_worlds = 2
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.replicate(template_builder, num_worlds)
+        model = builder.finalize()
+
+        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
+
+        # Capture the initial eq_data values computed by MuJoCo
+        initial_eq_data = solver.mjw_model.eq_data.numpy().copy()
+
+        # Notify solver to trigger the update kernel
+        solver.notify_model_changed(SolverNotifyFlags.EQUALITY_CONSTRAINT_PROPERTIES)
+
+        # Verify data[3:6] (second anchor) was NOT overwritten
+        updated_eq_data = solver.mjw_model.eq_data.numpy()
+        for w in range(num_worlds):
+            np.testing.assert_allclose(
+                updated_eq_data[w, 0, 3:6],
+                initial_eq_data[w, 0, 3:6],
+                rtol=1e-5,
+                err_msg=f"World {w}: CONNECT second anchor (data[3:6]) was incorrectly overwritten",
+            )
+
 
 class TestMuJoCoSolverFixedTendonProperties(TestMuJoCoSolverPropertiesBase):
     """Test fixed tendon property replication and runtime updates across multiple worlds."""
@@ -4782,6 +4835,138 @@ class TestMuJoCoAttributes(unittest.TestCase):
             # Compare quaternions (sign-invariant since q and -q represent the same rotation)
             quat_dist = min(np.linalg.norm(newton_quat - mj_quat), np.linalg.norm(newton_quat + mj_quat))
             assert quat_dist < 0.01, f"Quaternion mismatch for {body_name}: Newton={newton_quat}, MuJoCo={mj_quat}"
+
+
+class TestMuJoCoOptions(unittest.TestCase):
+    """Tests for MuJoCo solver options (impratio, etc.) with WORLD frequency."""
+
+    def test_impratio_multiworld_conversion(self):
+        """
+        Verify that impratio custom attribute with WORLD frequency:
+        1. Is properly registered and exists on the model.
+        2. The array has correct shape (one value per world).
+        3. Different per-world values are stored correctly in the Newton model.
+        4. Solver expands per-world values to MuJoCo Warp.
+        """
+        # Create template builder
+        template_builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(template_builder)
+
+        pendulum = template_builder.add_link(mass=1.0, com=wp.vec3(0.0, 0.0, 0.0), I_m=wp.mat33(np.eye(3)))
+        template_builder.add_shape_box(body=pendulum, hx=0.05, hy=0.05, hz=0.05)
+        joint = template_builder.add_joint_revolute(parent=-1, child=pendulum, axis=(0.0, 0.0, 1.0))
+        template_builder.add_articulation([joint])
+
+        # Create multi-world model
+        num_worlds = 3
+        builder = newton.ModelBuilder()
+        builder.replicate(template_builder, num_worlds)
+        model = builder.finalize()
+
+        # Verify the custom attribute is registered and exists on the model
+        self.assertTrue(hasattr(model, "mujoco"))
+        self.assertTrue(hasattr(model.mujoco, "impratio"))
+
+        # Verify the array has correct shape (one value per world)
+        impratio = model.mujoco.impratio.numpy()
+        self.assertEqual(len(impratio), num_worlds, "impratio array should have one entry per world")
+
+        # Set different impratio values per world
+        initial_impratio = np.array([1.5, 2.5, 3.5], dtype=np.float32)
+        model.mujoco.impratio.assign(initial_impratio)
+
+        # Verify all per-world values are stored correctly in Newton model
+        updated_impratio = model.mujoco.impratio.numpy()
+        for world_idx in range(num_worlds):
+            self.assertAlmostEqual(
+                updated_impratio[world_idx],
+                initial_impratio[world_idx],
+                places=4,
+                msg=f"Newton model impratio[{world_idx}] should be {initial_impratio[world_idx]}",
+            )
+
+        # Create solver without constructor override
+        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
+
+        # Verify MuJoCo Warp model has per-world impratio_invsqrt values
+        mjw_impratio_invsqrt = solver.mjw_model.opt.impratio_invsqrt.numpy()
+        self.assertEqual(
+            len(mjw_impratio_invsqrt),
+            num_worlds,
+            f"MuJoCo Warp opt.impratio_invsqrt should have {num_worlds} values (one per world)",
+        )
+
+        # Verify each world has the correct impratio_invsqrt value (1/sqrt(impratio))
+        for world_idx in range(num_worlds):
+            expected_invsqrt = 1.0 / np.sqrt(initial_impratio[world_idx])
+            self.assertAlmostEqual(
+                mjw_impratio_invsqrt[world_idx],
+                expected_invsqrt,
+                places=4,
+                msg=f"MuJoCo Warp impratio_invsqrt[{world_idx}] should be {expected_invsqrt}",
+            )
+
+    def test_impratio_constructor_override(self):
+        """
+        Verify that passing impratio to the SolverMuJoCo constructor
+        overrides any per-world values from custom attributes.
+        """
+        # Create template builder
+        template_builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(template_builder)
+
+        pendulum = template_builder.add_link(mass=1.0, com=wp.vec3(0.0, 0.0, 0.0), I_m=wp.mat33(np.eye(3)))
+        template_builder.add_shape_box(body=pendulum, hx=0.05, hy=0.05, hz=0.05)
+        joint = template_builder.add_joint_revolute(parent=-1, child=pendulum, axis=(0.0, 0.0, 1.0))
+        template_builder.add_articulation([joint])
+
+        # Create multi-world model
+        num_worlds = 2
+        builder = newton.ModelBuilder()
+        builder.replicate(template_builder, num_worlds)
+        model = builder.finalize()
+
+        # Verify the custom attribute exists
+        self.assertTrue(hasattr(model, "mujoco"))
+        self.assertTrue(hasattr(model.mujoco, "impratio"))
+
+        # Set impratio values per world
+        initial_impratio = np.array([1.5, 1.5], dtype=np.float32)
+        model.mujoco.impratio.assign(initial_impratio)
+
+        # Verify model has the assigned values
+        impratio = model.mujoco.impratio.numpy()
+        self.assertAlmostEqual(impratio[0], 1.5, places=4)
+        self.assertAlmostEqual(impratio[1], 1.5, places=4)
+
+        # Create solver WITH constructor override - should use 3.0
+        solver = SolverMuJoCo(model, impratio=3.0, iterations=1, disable_contacts=True)
+
+        # Verify MuJoCo model uses the constructor-provided value
+        # mj_model (regular MuJoCo) stores impratio directly
+        self.assertAlmostEqual(
+            solver.mj_model.opt.impratio,
+            3.0,
+            places=4,
+            msg="Constructor impratio=3.0 should override custom attribute value 1.5",
+        )
+
+        # Verify that mjw_model (mujoco_warp) also has the correct value for all worlds
+        # mjw_model stores impratio_invsqrt = 1/sqrt(impratio), tiled to all worlds
+        expected_invsqrt = 1.0 / np.sqrt(3.0)
+        mjw_impratio_invsqrt = solver.mjw_model.opt.impratio_invsqrt.numpy()
+        self.assertEqual(
+            len(mjw_impratio_invsqrt),
+            num_worlds,
+            f"MuJoCo Warp opt.impratio_invsqrt should have {num_worlds} values (one per world)",
+        )
+        for world_idx in range(num_worlds):
+            self.assertAlmostEqual(
+                mjw_impratio_invsqrt[world_idx],
+                expected_invsqrt,
+                places=4,
+                msg=f"MuJoCo Warp impratio_invsqrt[{world_idx}] should be {expected_invsqrt} (constructor override)",
+            )
 
 
 class TestMuJoCoArticulationConversion(unittest.TestCase):

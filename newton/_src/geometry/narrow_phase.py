@@ -46,6 +46,7 @@ from ..geometry.contact_reduction import (
     NUM_SPATIAL_DIRECTIONS,
     ContactReductionFunctions,
     ContactStruct,
+    compute_voxel_index,
     create_betas_array,
     synchronize,
 )
@@ -817,6 +818,9 @@ def create_narrow_phase_process_mesh_plane_contacts_kernel(
         shape_transform: wp.array(dtype=wp.transform),
         shape_source: wp.array(dtype=wp.uint64),
         shape_contact_margin: wp.array(dtype=float),
+        _shape_local_aabb_lower: wp.array(dtype=wp.vec3),  # Unused but kept for API compatibility
+        _shape_local_aabb_upper: wp.array(dtype=wp.vec3),  # Unused but kept for API compatibility
+        _shape_voxel_resolution: wp.array(dtype=wp.vec3i),  # Unused but kept for API compatibility
         shape_pairs_mesh_plane: wp.array(dtype=wp.vec2i),
         shape_pairs_mesh_plane_count: wp.array(dtype=int),
         _betas: wp.array(dtype=wp.float32),  # Unused but kept for API compatibility
@@ -927,6 +931,9 @@ def create_narrow_phase_process_mesh_plane_contacts_kernel(
         shape_transform: wp.array(dtype=wp.transform),
         shape_source: wp.array(dtype=wp.uint64),
         shape_contact_margin: wp.array(dtype=float),
+        shape_local_aabb_lower: wp.array(dtype=wp.vec3),
+        shape_local_aabb_upper: wp.array(dtype=wp.vec3),
+        shape_voxel_resolution: wp.array(dtype=wp.vec3i),
         shape_pairs_mesh_plane: wp.array(dtype=wp.vec2i),
         shape_pairs_mesh_plane_count: wp.array(dtype=int),
         betas: wp.array(dtype=wp.float32),
@@ -975,6 +982,12 @@ def create_narrow_phase_process_mesh_plane_contacts_kernel(
 
             # Get mesh world transform
             X_mesh_ws = shape_transform[mesh_shape]
+            X_ws_mesh = wp.transform_inverse(X_mesh_ws)  # World to mesh local
+
+            # Load voxel binning data for mesh
+            aabb_lower_mesh = shape_local_aabb_lower[mesh_shape]
+            aabb_upper_mesh = shape_local_aabb_upper[mesh_shape]
+            voxel_res_mesh = shape_voxel_resolution[mesh_shape]
 
             # Get plane world transform
             X_plane_ws = shape_transform[plane_shape]
@@ -1045,9 +1058,15 @@ def create_narrow_phase_process_mesh_plane_contacts_kernel(
                         c.feature = vertex_idx
                         c.projection = empty_marker
 
+                # Compute voxel index for contact position in mesh's local space
+                voxel_idx = int(0)
+                if has_contact:
+                    point_mesh_local = wp.transform_point(X_ws_mesh, contact_pos)
+                    voxel_idx = compute_voxel_index(point_mesh_local, aabb_lower_mesh, aabb_upper_mesh, voxel_res_mesh)
+
                 # Apply contact reduction
                 store_reduced_contact_func(
-                    t, has_contact, c, contacts_shared_mem, active_contacts_shared_mem, betas, empty_marker
+                    t, has_contact, c, contacts_shared_mem, active_contacts_shared_mem, betas, empty_marker, voxel_idx
                 )
 
             # Write reduced contacts to output (store_reduced_contact ends with sync)
@@ -1083,6 +1102,7 @@ def create_narrow_phase_process_mesh_plane_contacts_kernel(
 class NarrowPhase:
     def __init__(
         self,
+        *,
         max_candidate_pairs: int,
         max_triangle_pairs: int = 1000000,
         reduce_contacts: bool = True,
@@ -1090,7 +1110,6 @@ class NarrowPhase:
         shape_aabb_lower: wp.array(dtype=wp.vec3) | None = None,
         shape_aabb_upper: wp.array(dtype=wp.vec3) | None = None,
         contact_writer_warp_func: Any | None = None,
-        contact_reduction_betas: tuple = (1000000.0, 0.0001),
         sdf_hydroelastic: SDFHydroelastic | None = None,
         has_meshes: bool = True,
     ):
@@ -1107,24 +1126,6 @@ class NarrowPhase:
             shape_aabb_lower: Optional external AABB lower bounds array (if provided, AABBs won't be computed internally)
             shape_aabb_upper: Optional external AABB upper bounds array (if provided, AABBs won't be computed internally)
             contact_writer_warp_func: Optional custom contact writer function (first arg: ContactData, second arg: custom struct type)
-            contact_reduction_betas: Tuple of depth thresholds for contact reduction. When colliding complex meshes,
-                thousands of triangle pairs may generate contacts. Contact reduction efficiently reduces them to a
-                manageable set while preserving contacts that are important for stable simulation.
-
-                Contacts are binned by normal direction (20 bins) and compete for slots using a scoring function.
-                Contacts are filtered by depth threshold, then compete with pure spatial score:
-                ``score = dot(position, scan_direction)`` when ``depth < beta``.
-
-                The ``beta`` parameter controls which contacts participate:
-
-                - ``beta = inf`` (or large value like 1000000): All contacts participate
-                - ``beta = 0``: Only penetrating contacts (depth < 0) participate
-                - ``beta = -0.01``: Only contacts with at least 1cm penetration participate
-
-                Multiple betas can be specified to keep contacts at different depth thresholds.
-                Each beta adds 6 slots per normal bin (one per spatial direction).
-                Default is ``(1000000.0, 0.0001)`` which keeps both all spatial extremes and
-                near-penetrating spatial extremes. The number of reduction slots is ``20 * (6 * len(betas) + 1)``.
             sdf_hydroelastic: Optional SDF hydroelastic instance. Set is_hydroelastic=True on shapes to enable hydroelastic collisions.
             has_meshes: Whether the scene contains any mesh shapes (GeoType.MESH). When False, mesh-related
                 kernel launches are skipped, improving performance for scenes with only primitive shapes.
@@ -1133,7 +1134,6 @@ class NarrowPhase:
         self.max_candidate_pairs = max_candidate_pairs
         self.max_triangle_pairs = max_triangle_pairs
         self.device = device
-        self.betas_tuple = contact_reduction_betas
         self.reduce_contacts = reduce_contacts
         self.has_meshes = has_meshes
 
@@ -1141,7 +1141,7 @@ class NarrowPhase:
         # Contact reduction requires GPU for shared memory operations and is only used for mesh contacts
         is_gpu_device = wp.get_device(device).is_cuda
         if reduce_contacts and is_gpu_device and has_meshes:
-            self.contact_reduction_funcs = ContactReductionFunctions(contact_reduction_betas)
+            self.contact_reduction_funcs = ContactReductionFunctions()
             self.num_reduction_slots = self.contact_reduction_funcs.num_reduction_slots
         else:
             self.contact_reduction_funcs = None
@@ -1198,20 +1198,18 @@ class NarrowPhase:
 
         # Create global contact reduction kernels for mesh-triangle contacts (only if has_meshes and reduce_contacts)
         if self.reduce_contacts and has_meshes:
-            beta0 = self.betas_tuple[0]
-            beta1 = self.betas_tuple[1]
-            num_betas = len(self.betas_tuple)
+            # Global contact reducer uses single beta threshold (same as shared-memory reduction)
+            # Slot layout: 6 spatial direction slots + 1 max-depth slot = 7 slots per key
+            beta_threshold = ContactReductionFunctions.BETA_THRESHOLD
 
-            self.mesh_triangle_to_reducer_kernel = create_mesh_triangle_contacts_to_reducer_kernel(
-                beta0=beta0, beta1=beta1
-            )
-            self.reduce_buffered_contacts_kernel = create_reduce_buffered_contacts_kernel(beta0=beta0, beta1=beta1)
+            self.mesh_triangle_to_reducer_kernel = create_mesh_triangle_contacts_to_reducer_kernel()
+            self.reduce_buffered_contacts_kernel = create_reduce_buffered_contacts_kernel(beta=beta_threshold)
             self.export_reduced_contacts_kernel = create_export_reduced_contacts_kernel(
-                writer_func, values_per_key=NUM_SPATIAL_DIRECTIONS * num_betas + 1
+                writer_func, values_per_key=NUM_SPATIAL_DIRECTIONS + 1
             )
             # Global contact reducer for mesh-triangle contacts
             # Capacity is based on max_triangle_pairs since that's the max contacts we might generate
-            self.global_contact_reducer = GlobalContactReducer(max_triangle_pairs, device=device, num_betas=num_betas)
+            self.global_contact_reducer = GlobalContactReducer(max_triangle_pairs, device=device)
         else:
             self.mesh_triangle_to_reducer_kernel = None
             self.reduce_buffered_contacts_kernel = None
@@ -1257,8 +1255,8 @@ class NarrowPhase:
                 self.shape_pairs_mesh_plane = wp.zeros(max_candidate_pairs, dtype=wp.vec2i, device=device)
                 self.shape_pairs_mesh_plane_cumsum = wp.zeros(max_candidate_pairs, dtype=wp.int32, device=device)
                 self.shape_pairs_mesh_mesh = wp.zeros(max_candidate_pairs, dtype=wp.vec2i, device=device)
-                # Betas array for contact reduction (using the configured contact_reduction_betas tuple)
-                self.betas = create_betas_array(betas=self.betas_tuple, device=device)
+                # Betas array for contact reduction (single fixed threshold)
+                self.betas = create_betas_array(betas=(ContactReductionFunctions.BETA_THRESHOLD,), device=device)
             else:
                 self.shape_pairs_mesh = None
                 self.triangle_pairs = None
@@ -1299,6 +1297,7 @@ class NarrowPhase:
 
     def launch_custom_write(
         self,
+        *,
         candidate_pair: wp.array(dtype=wp.vec2i, ndim=1),  # Maybe colliding pairs
         num_candidate_pair: wp.array(dtype=wp.int32, ndim=1),  # Size one array
         shape_types: wp.array(dtype=wp.int32, ndim=1),  # All shape types, pairs index into it
@@ -1309,6 +1308,9 @@ class NarrowPhase:
         shape_contact_margin: wp.array(dtype=wp.float32, ndim=1),  # per-shape contact margin
         shape_collision_radius: wp.array(dtype=wp.float32, ndim=1),  # per-shape collision radius for AABB fallback
         shape_flags: wp.array(dtype=wp.int32, ndim=1),  # per-shape flags (includes ShapeFlags.HYDROELASTIC)
+        shape_local_aabb_lower: wp.array(dtype=wp.vec3, ndim=1),  # Local-space AABB lower bounds
+        shape_local_aabb_upper: wp.array(dtype=wp.vec3, ndim=1),  # Local-space AABB upper bounds
+        shape_voxel_resolution: wp.array(dtype=wp.vec3i, ndim=1),  # Voxel grid resolution per shape
         writer_data: Any,
         device=None,  # Device to launch on
     ):
@@ -1326,6 +1328,9 @@ class NarrowPhase:
             shape_contact_margin: Array of contact margins for each shape
             shape_collision_radius: Array of collision radii for each shape (for AABB fallback for planes/meshes)
             shape_flags: Array of shape flags for each shape (includes ShapeFlags.HYDROELASTIC)
+            shape_local_aabb_lower: Local-space AABB lower bounds for each shape (for voxel binning)
+            shape_local_aabb_upper: Local-space AABB upper bounds for each shape (for voxel binning)
+            shape_voxel_resolution: Voxel grid resolution for each shape (for voxel binning)
             writer_data: Custom struct instance for contact writing (type must match the custom writer function)
             device: Device to launch on
         """
@@ -1404,6 +1409,9 @@ class NarrowPhase:
                 shape_transform,
                 shape_source,
                 shape_contact_margin,
+                shape_local_aabb_lower,
+                shape_local_aabb_upper,
+                shape_voxel_resolution,
                 self.shape_pairs_mesh_plane,
                 self.shape_pairs_mesh_plane_count,
                 self.betas,
@@ -1486,6 +1494,10 @@ class NarrowPhase:
                     dim=self.total_num_threads,
                     inputs=[
                         reducer_data,
+                        shape_transform,
+                        shape_local_aabb_lower,
+                        shape_local_aabb_upper,
+                        shape_voxel_resolution,
                         self.total_num_threads,
                     ],
                     device=device,
@@ -1543,6 +1555,9 @@ class NarrowPhase:
                         shape_source,
                         shape_sdf_data,
                         shape_contact_margin,
+                        shape_local_aabb_lower,
+                        shape_local_aabb_upper,
+                        shape_voxel_resolution,
                         self.shape_pairs_mesh_mesh,
                         self.shape_pairs_mesh_mesh_count,
                         self.betas,
@@ -1565,6 +1580,7 @@ class NarrowPhase:
 
     def launch(
         self,
+        *,
         candidate_pair: wp.array(dtype=wp.vec2i, ndim=1),  # Maybe colliding pairs
         num_candidate_pair: wp.array(dtype=wp.int32, ndim=1),  # Size one array
         shape_types: wp.array(dtype=wp.int32, ndim=1),  # All shape types, pairs index into it
@@ -1575,6 +1591,9 @@ class NarrowPhase:
         shape_contact_margin: wp.array(dtype=wp.float32, ndim=1),  # per-shape contact margin
         shape_collision_radius: wp.array(dtype=wp.float32, ndim=1),  # per-shape collision radius for AABB fallback
         shape_flags: wp.array(dtype=wp.int32, ndim=1),  # per-shape flags (includes ShapeFlags.HYDROELASTIC)
+        shape_local_aabb_lower: wp.array(dtype=wp.vec3, ndim=1),  # Local-space AABB lower bounds
+        shape_local_aabb_upper: wp.array(dtype=wp.vec3, ndim=1),  # Local-space AABB upper bounds
+        shape_voxel_resolution: wp.array(dtype=wp.vec3i, ndim=1),  # Voxel grid resolution per shape
         # Outputs
         contact_pair: wp.array(dtype=wp.vec2i),
         contact_position: wp.array(dtype=wp.vec3),
@@ -1600,6 +1619,9 @@ class NarrowPhase:
             shape_sdf_data: Array of SDFData structs for mesh shapes
             shape_contact_margin: Array of contact margins for each shape
             shape_collision_radius: Array of collision radii for each shape (for AABB fallback for planes/meshes)
+            shape_local_aabb_lower: Local-space AABB lower bounds for each shape (for voxel binning)
+            shape_local_aabb_upper: Local-space AABB upper bounds for each shape (for voxel binning)
+            shape_voxel_resolution: Voxel grid resolution for each shape (for voxel binning)
             contact_pair: Output array for contact shape pairs
             contact_position: Output array for contact positions (center point)
             contact_normal: Output array for contact normals
@@ -1632,16 +1654,19 @@ class NarrowPhase:
 
         # Delegate to launch_custom_write
         self.launch_custom_write(
-            candidate_pair,
-            num_candidate_pair,
-            shape_types,
-            shape_data,
-            shape_transform,
-            shape_source,
-            shape_sdf_data,
-            shape_contact_margin,
-            shape_collision_radius,
-            shape_flags,
-            writer_data,
-            device,
+            candidate_pair=candidate_pair,
+            num_candidate_pair=num_candidate_pair,
+            shape_types=shape_types,
+            shape_data=shape_data,
+            shape_transform=shape_transform,
+            shape_source=shape_source,
+            shape_sdf_data=shape_sdf_data,
+            shape_contact_margin=shape_contact_margin,
+            shape_collision_radius=shape_collision_radius,
+            shape_flags=shape_flags,
+            shape_local_aabb_lower=shape_local_aabb_lower,
+            shape_local_aabb_upper=shape_local_aabb_upper,
+            shape_voxel_resolution=shape_voxel_resolution,
+            writer_data=writer_data,
+            device=device,
         )

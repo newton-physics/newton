@@ -1485,7 +1485,6 @@ class ModelBuilder:
         joint_drive_gains_scaling: float = 1.0,
         verbose: bool = False,
         ignore_paths: list[str] | None = None,
-        cloned_world: str | None = None,
         collapse_fixed_joints: bool = False,
         enable_self_collisions: bool = True,
         apply_up_axis_from_stage: bool = False,
@@ -1496,6 +1495,7 @@ class ModelBuilder:
         load_sites: bool = True,
         load_visual_shapes: bool = True,
         hide_collision_shapes: bool = False,
+        parse_mujoco_options: bool = True,
         mesh_maxhullvert: int = MESH_MAXHULLVERT,
         schema_resolvers: list[SchemaResolver] | None = None,
         force_position_velocity_actuation: bool = False,
@@ -1514,7 +1514,6 @@ class ModelBuilder:
             joint_drive_gains_scaling (float): The default scaling of the PD control gains (stiffness and damping), if not set in the PhysicsScene with as "newton:joint_drive_gains_scaling".
             verbose (bool): If True, print additional information about the parsed USD file. Default is False.
             ignore_paths (List[str]): A list of regular expressions matching prim paths to ignore.
-            cloned_world (str): The prim path of a world which is cloned within this USD file. Siblings of this world prim will not be parsed but instead be replicated via `ModelBuilder.add_world(builder, xform)` to speed up the loading of many instantiated worlds.
             collapse_fixed_joints (bool): If True, fixed joints are removed and the respective bodies are merged. Only considered if not set on the PhysicsScene as "newton:collapse_fixed_joints".
             enable_self_collisions (bool): Determines the default behavior of whether self-collisions are enabled for all shapes within an articulation. If an articulation has the attribute ``physxArticulation:enabledSelfCollisions`` defined, this attribute takes precedence.
             apply_up_axis_from_stage (bool): If True, the up axis of the stage will be used to set :attr:`newton.ModelBuilder.up_axis`. Otherwise, the stage will be rotated such that its up axis aligns with the builder's up axis. Default is False.
@@ -1525,6 +1524,7 @@ class ModelBuilder:
             load_sites (bool): If True, sites (prims with MjcSiteAPI) are loaded as non-colliding reference points. If False, sites are ignored. Default is True.
             load_visual_shapes (bool): If True, non-physics visual geometry is loaded. If False, visual-only shapes are ignored (sites are still controlled by ``load_sites``). Default is True.
             hide_collision_shapes (bool): If True, collision shapes are hidden. Default is False.
+            parse_mujoco_options (bool): Whether MuJoCo solver options from the PhysicsScene should be parsed. If False, solver options are not loaded and custom attributes retain their default values. Default is True.
             mesh_maxhullvert (int): Maximum vertices for convex hull approximation of meshes. Note that an authored ``newton:maxHullVertices`` attribute on any shape with a ``NewtonMeshCollisionAPI`` will take priority over this value.
             schema_resolvers (list[SchemaResolver]): Resolver instances in priority order. Default is to only parse Newton-specific attributes.
                 Schema resolvers collect per-prim "solver-specific" attributes, see :ref:`schema_resolvers` for more information.
@@ -1591,7 +1591,6 @@ class ModelBuilder:
             joint_drive_gains_scaling=joint_drive_gains_scaling,
             verbose=verbose,
             ignore_paths=ignore_paths,
-            cloned_world=cloned_world,
             collapse_fixed_joints=collapse_fixed_joints,
             enable_self_collisions=enable_self_collisions,
             apply_up_axis_from_stage=apply_up_axis_from_stage,
@@ -1602,6 +1601,7 @@ class ModelBuilder:
             load_sites=load_sites,
             load_visual_shapes=load_visual_shapes,
             hide_collision_shapes=hide_collision_shapes,
+            parse_mujoco_options=parse_mujoco_options,
             mesh_maxhullvert=mesh_maxhullvert,
             schema_resolvers=schema_resolvers,
             force_position_velocity_actuation=force_position_velocity_actuation,
@@ -1621,6 +1621,7 @@ class ModelBuilder:
         parse_meshes: bool = True,
         parse_sites: bool = True,
         parse_visuals: bool = True,
+        parse_mujoco_options: bool = True,
         up_axis: AxisType = Axis.Z,
         ignore_names: Sequence[str] = (),
         ignore_classes: Sequence[str] = (),
@@ -1655,6 +1656,7 @@ class ModelBuilder:
             parse_meshes (bool): Whether geometries of type `"mesh"` should be parsed. If False, geometries of type `"mesh"` are ignored.
             parse_sites (bool): Whether sites (non-colliding reference points) should be parsed. If False, sites are ignored.
             parse_visuals (bool): Whether visual geometries (non-collision shapes) should be loaded. If False, visual shapes are not loaded (different from `hide_visuals` which loads but hides them). Default is True.
+            parse_mujoco_options (bool): Whether solver options from the MJCF `<option>` tag should be parsed. If False, solver options are not loaded and custom attributes retain their default values. Default is True.
             up_axis (AxisType): The up axis of the MuJoCo scene. The default is Z up.
             ignore_names (Sequence[str]): A list of regular expressions. Bodies and joints with a name matching one of the regular expressions will be ignored.
             ignore_classes (Sequence[str]): A list of regular expressions. Bodies and joints with a class matching one of the regular expressions will be ignored.
@@ -1692,6 +1694,7 @@ class ModelBuilder:
             parse_meshes=parse_meshes,
             parse_sites=parse_sites,
             parse_visuals=parse_visuals,
+            parse_mujoco_options=parse_mujoco_options,
             up_axis=up_axis,
             ignore_names=ignore_names,
             ignore_classes=ignore_classes,
@@ -6478,6 +6481,78 @@ class ModelBuilder:
 
             m.shape_collision_filter_pairs = set(self.shape_collision_filter_pairs)
             m.shape_collision_group = wp.array(self.shape_collision_group, dtype=wp.int32)
+
+            # ---------------------
+            # Compute local AABBs and voxel resolutions for contact reduction
+            local_aabb_lower = []
+            local_aabb_upper = []
+            voxel_resolution = []
+            voxel_budget = 100  # Maximum voxels per shape for contact reduction
+
+            # Cache per unique (mesh_id, scale) to avoid redundant AABB computation
+            # for instanced meshes (e.g., 256 robots sharing the same mesh sources)
+            mesh_aabb_cache = {}
+
+            for shape_type, shape_src, shape_scale in zip(
+                self.shape_type, self.shape_source, self.shape_scale, strict=True
+            ):
+                if shape_type == GeoType.MESH and shape_src is not None:
+                    # Use mesh id and scale as cache key
+                    cache_key = (id(shape_src), tuple(shape_scale))
+
+                    if cache_key in mesh_aabb_cache:
+                        # Reuse cached result
+                        aabb_lower, aabb_upper, nx, ny, nz = mesh_aabb_cache[cache_key]
+                    else:
+                        # Compute local AABB from mesh vertices
+                        vertices = shape_src.vertices
+                        aabb_lower = vertices.min(axis=0)
+                        aabb_upper = vertices.max(axis=0)
+
+                        # Apply scale to get the actual local-space bounds
+                        aabb_lower = aabb_lower * np.array(shape_scale)
+                        aabb_upper = aabb_upper * np.array(shape_scale)
+
+                        # Compute voxel resolution
+                        size = aabb_upper - aabb_lower
+                        size = np.maximum(size, 1e-6)  # Avoid division by zero
+
+                        # Target voxel size for approximately cubic voxels
+                        volume = size[0] * size[1] * size[2]
+                        v = (volume / voxel_budget) ** (1.0 / 3.0)
+                        v = max(v, 1e-6)
+
+                        # Initial resolution
+                        nx = max(1, round(size[0] / v))
+                        ny = max(1, round(size[1] / v))
+                        nz = max(1, round(size[2] / v))
+
+                        # Reduce until under budget (reduce largest axis first for more cubic voxels)
+                        while nx * ny * nz > voxel_budget:
+                            if nx >= ny and nx >= nz and nx > 1:
+                                nx -= 1
+                            elif ny >= nz and ny > 1:
+                                ny -= 1
+                            elif nz > 1:
+                                nz -= 1
+                            else:
+                                break
+
+                        # Cache the result
+                        mesh_aabb_cache[cache_key] = (aabb_lower, aabb_upper, nx, ny, nz)
+                else:
+                    # Non-mesh shapes: use a default 1x1x1 voxel grid (effectively no voxel binning)
+                    aabb_lower = np.array([-1.0, -1.0, -1.0])
+                    aabb_upper = np.array([1.0, 1.0, 1.0])
+                    nx, ny, nz = 1, 1, 1
+
+                local_aabb_lower.append(aabb_lower)
+                local_aabb_upper.append(aabb_upper)
+                voxel_resolution.append([nx, ny, nz])
+
+            m.shape_local_aabb_lower = wp.array(local_aabb_lower, dtype=wp.vec3, device=device)
+            m.shape_local_aabb_upper = wp.array(local_aabb_upper, dtype=wp.vec3, device=device)
+            m.shape_voxel_resolution = wp.array(voxel_resolution, dtype=wp.vec3i, device=device)
 
             # ---------------------
             # Compute SDFs for mesh shapes (per-shape opt-in via sdf_max_resolution, sdf_target_voxel_size or is_hydroelastic)
