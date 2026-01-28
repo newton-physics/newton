@@ -1303,6 +1303,165 @@ class SolverMuJoCo(SolverBase):
 
         return selected_tendons
 
+    def _init_actuators(
+        self,
+        model: Model,
+        spec,
+        template_world: int,
+        actuator_args: dict,
+        mjc_actuator_ctrl_source_list: list[int],
+        mjc_actuator_to_newton_idx_list: list[int],
+        dof_to_mjc_joint: np.ndarray,
+        mjc_joint_names: list[str],
+    ) -> int:
+        """Initialize MuJoCo general actuators from custom attributes.
+
+        Only processes CTRL_DIRECT actuators (motor, general, etc.) from the
+        mujoco:actuator custom attributes. JOINT_TARGET actuators (position/velocity)
+        are handled separately in the joint iteration loop.
+
+        For CTRL_DIRECT actuators targeting joints, this method uses the DOF index
+        stored in actuator_trnid (see import_mjcf.py) to look up the correct MuJoCo
+        joint name. This is necessary because Newton may combine multiple MJCF joints
+        into one, but MuJoCo needs the specific joint name (e.g., "joint_ang1" not "joint").
+
+        Args:
+            model: The Newton model.
+            spec: The MuJoCo spec to add actuators to.
+            template_world: The world index to use as the template.
+            actuator_args: Default actuator arguments.
+            mjc_actuator_ctrl_source_list: List to append control sources to.
+            mjc_actuator_to_newton_idx_list: List to append Newton indices to.
+            dof_to_mjc_joint: Mapping from Newton DOF index to MuJoCo joint index.
+                Used to resolve CTRL_DIRECT joint actuators to their MuJoCo targets.
+            mjc_joint_names: List of MuJoCo joint names indexed by MuJoCo joint index.
+                Used together with dof_to_mjc_joint to get the correct joint name.
+
+        Returns:
+            int: Number of actuators added.
+        """
+        import mujoco  # noqa: PLC0415
+
+        mujoco_attrs = getattr(model, "mujoco", None)
+        mujoco_actuator_count = model.custom_frequency_counts.get("mujoco:actuator", 0)
+
+        if mujoco_actuator_count == 0 or mujoco_attrs is None or not hasattr(mujoco_attrs, "actuator_trnid"):
+            return 0
+
+        actuator_count = 0
+
+        # actuator_trnid[:,0] is the target index, actuator_trntype determines its meaning
+        actuator_trnid = mujoco_attrs.actuator_trnid.numpy()
+        trntype_arr = mujoco_attrs.actuator_trntype.numpy() if hasattr(mujoco_attrs, "actuator_trntype") else None
+        ctrl_source_arr = mujoco_attrs.ctrl_source.numpy() if hasattr(mujoco_attrs, "ctrl_source") else None
+        actuator_world_arr = mujoco_attrs.actuator_world.numpy() if hasattr(mujoco_attrs, "actuator_world") else None
+
+        for mujoco_act_idx in range(mujoco_actuator_count):
+            # Skip JOINT_TARGET actuators - they're already added via joint_act_mode path
+            if ctrl_source_arr is not None:
+                ctrl_source = int(ctrl_source_arr[mujoco_act_idx])
+                if ctrl_source == CtrlSource.JOINT_TARGET:
+                    continue  # Already handled in joint iteration
+
+            # Only include actuators from the first world (template) or global actuators
+            if actuator_world_arr is not None:
+                actuator_world = int(actuator_world_arr[mujoco_act_idx])
+                if actuator_world != template_world and actuator_world != -1:
+                    continue  # Skip actuators from other worlds
+
+            target_idx = int(actuator_trnid[mujoco_act_idx, 0])
+
+            # Determine target type from trntype (0=JOINT, 1=TENDON, 2=SITE, etc.)
+            trntype = int(trntype_arr[mujoco_act_idx]) if trntype_arr is not None else 0
+
+            if trntype == 0:  # TrnType.JOINT
+                # For CTRL_DIRECT joint actuators, actuator_trnid stores a DOF index
+                # (not a Newton joint index). This allows us to find the specific MuJoCo
+                # joint when Newton has combined multiple MJCF joints into one.
+                dof_idx = target_idx
+                dofs_per_world = len(dof_to_mjc_joint)
+                if dof_idx < 0 or dof_idx >= dofs_per_world:
+                    if wp.config.verbose:
+                        print(f"Warning: MuJoCo actuator {mujoco_act_idx} has invalid DOF target {dof_idx}")
+                    continue
+                mjc_joint_idx = dof_to_mjc_joint[dof_idx]
+                if mjc_joint_idx < 0 or mjc_joint_idx >= len(mjc_joint_names):
+                    if wp.config.verbose:
+                        print(f"Warning: MuJoCo actuator {mujoco_act_idx} DOF {dof_idx} not mapped to MuJoCo joint")
+                    continue
+                target_name = mjc_joint_names[mjc_joint_idx]
+            elif trntype == 4:  # TrnType.BODY
+                if target_idx < 0 or target_idx >= len(model.body_key):
+                    if wp.config.verbose:
+                        print(f"Warning: MuJoCo actuator {mujoco_act_idx} has invalid body target {target_idx}")
+                    continue
+                target_name = model.body_key[target_idx]
+            else:
+                # TODO: Support tendon, site, slidercrank, and jointinparent transmission types
+                if wp.config.verbose:
+                    print(f"Warning: MuJoCo actuator {mujoco_act_idx} has unsupported trntype {trntype}")
+                continue
+
+            general_args = dict(actuator_args)
+
+            # Get custom attributes for this MuJoCo actuator
+            if hasattr(mujoco_attrs, "actuator_gainprm"):
+                gainprm = mujoco_attrs.actuator_gainprm.numpy()[mujoco_act_idx]
+                general_args["gainprm"] = list(gainprm)  # All 10 elements
+            if hasattr(mujoco_attrs, "actuator_biasprm"):
+                biasprm = mujoco_attrs.actuator_biasprm.numpy()[mujoco_act_idx]
+                general_args["biasprm"] = list(biasprm)  # All 10 elements
+            if hasattr(mujoco_attrs, "actuator_dynprm"):
+                dynprm = mujoco_attrs.actuator_dynprm.numpy()[mujoco_act_idx]
+                general_args["dynprm"] = list(dynprm)  # All 10 elements
+            if hasattr(mujoco_attrs, "actuator_gear"):
+                gear_arr = mujoco_attrs.actuator_gear.numpy()[mujoco_act_idx]
+                general_args["gear"] = list(gear_arr)
+            if hasattr(mujoco_attrs, "actuator_ctrlrange"):
+                ctrlrange = mujoco_attrs.actuator_ctrlrange.numpy()[mujoco_act_idx]
+                general_args["ctrlrange"] = (ctrlrange[0], ctrlrange[1])
+            if hasattr(mujoco_attrs, "actuator_ctrllimited"):
+                ctrllimited = mujoco_attrs.actuator_ctrllimited.numpy()[mujoco_act_idx]
+                general_args["ctrllimited"] = bool(ctrllimited)
+            if hasattr(mujoco_attrs, "actuator_forcerange"):
+                forcerange = mujoco_attrs.actuator_forcerange.numpy()[mujoco_act_idx]
+                general_args["forcerange"] = (forcerange[0], forcerange[1])
+            if hasattr(mujoco_attrs, "actuator_forcelimited"):
+                forcelimited = mujoco_attrs.actuator_forcelimited.numpy()[mujoco_act_idx]
+                general_args["forcelimited"] = bool(forcelimited)
+            if hasattr(mujoco_attrs, "actuator_actrange"):
+                actrange = mujoco_attrs.actuator_actrange.numpy()[mujoco_act_idx]
+                general_args["actrange"] = (actrange[0], actrange[1])
+            if hasattr(mujoco_attrs, "actuator_actlimited"):
+                actlimited = mujoco_attrs.actuator_actlimited.numpy()[mujoco_act_idx]
+                general_args["actlimited"] = bool(actlimited)
+            if hasattr(mujoco_attrs, "actuator_actearly"):
+                actearly = mujoco_attrs.actuator_actearly.numpy()[mujoco_act_idx]
+                general_args["actearly"] = bool(actearly)
+            if hasattr(mujoco_attrs, "actuator_actdim"):
+                actdim = mujoco_attrs.actuator_actdim.numpy()[mujoco_act_idx]
+                if actdim >= 0:  # -1 means auto
+                    general_args["actdim"] = int(actdim)
+
+            # Map trntype integer to MuJoCo enum and override default in general_args
+            trntype_enum = {
+                0: mujoco.mjtTrn.mjTRN_JOINT,
+                1: mujoco.mjtTrn.mjTRN_JOINTINPARENT,
+                2: mujoco.mjtTrn.mjTRN_TENDON,
+                3: mujoco.mjtTrn.mjTRN_SITE,
+                4: mujoco.mjtTrn.mjTRN_BODY,
+                5: mujoco.mjtTrn.mjTRN_SLIDERCRANK,
+            }.get(trntype, mujoco.mjtTrn.mjTRN_JOINT)
+            general_args["trntype"] = trntype_enum
+            spec.add_actuator(target=target_name, **general_args)
+            # CTRL_DIRECT actuators - store MJCF-order index into control.mujoco.ctrl
+            # mujoco_act_idx is the index in Newton's mujoco:actuator frequency (MJCF order)
+            mjc_actuator_ctrl_source_list.append(1)  # CTRL_DIRECT
+            mjc_actuator_to_newton_idx_list.append(mujoco_act_idx)
+            actuator_count += 1
+
+        return actuator_count
+
     def __init__(
         self,
         model: Model,
@@ -2511,6 +2670,9 @@ class SolverMuJoCo(SolverBase):
         # Needed because jnt_solimp/jnt_solref are per-joint (not per-DOF) in MuJoCo
         dof_to_mjc_joint = np.full(model.joint_dof_count // model.num_worlds, -1, dtype=np.int32)
 
+        # This is needed for CTRL_DIRECT actuators targeting joints within combined Newton joints.
+        mjc_joint_names: list[str] = []
+
         # need to keep track of current dof and joint counts to make the indexing above correct
         num_dofs = 0
         num_mjc_joints = 0
@@ -2585,6 +2747,7 @@ class SolverMuJoCo(SolverBase):
                     damping=0.0,
                     limited=False,
                 )
+                mjc_joint_names.append(name)
                 # For free joints, all 6 DOFs map to the same MuJoCo joint
                 for i in range(6):
                     dof_to_mjc_joint[qd_start + i] = num_mjc_joints
@@ -2601,6 +2764,7 @@ class SolverMuJoCo(SolverBase):
                     armature=joint_armature[qd_start],
                     frictionloss=joint_friction[qd_start],
                 )
+                mjc_joint_names.append(name)
                 # For ball joints, all 3 DOFs map to the same MuJoCo joint
                 for i in range(3):
                     dof_to_mjc_joint[qd_start + i] = num_mjc_joints
@@ -2717,6 +2881,7 @@ class SolverMuJoCo(SolverBase):
                         axis=axis,
                         **joint_params,
                     )
+                    mjc_joint_names.append(axname)
                     # Map this DOF to the current MuJoCo joint index
                     dof_to_mjc_joint[ai] = num_mjc_joints
                     num_mjc_joints += 1
@@ -2822,6 +2987,7 @@ class SolverMuJoCo(SolverBase):
                         axis=axis,
                         **joint_params,
                     )
+                    mjc_joint_names.append(axname)
                     # Map this DOF to the current MuJoCo joint index
                     dof_to_mjc_joint[ai] = num_mjc_joints
                     num_mjc_joints += 1
@@ -2956,120 +3122,17 @@ class SolverMuJoCo(SolverBase):
         # add explicit contact pairs from custom attributes
         self._init_pairs(model, spec, shape_mapping, first_world)
 
-        # Process MuJoCo general actuators (motor, general, etc.)
-        # These use custom attributes with "mujoco:actuator" frequency
-        # Note: JOINT_TARGET actuators (position/velocity) are skipped here as they're
-        # already added by the joint iteration loop above via joint_act_mode
-        # Only process actuators belonging to the first world (template model)
-        mujoco_attrs = getattr(model, "mujoco", None)
-        mujoco_actuator_mapping = {}  # mujoco_act_idx -> mjc_actuator_idx
-
-        mujoco_actuator_count = model.custom_frequency_counts.get("mujoco:actuator", 0)
-        if mujoco_actuator_count > 0 and mujoco_attrs is not None and hasattr(mujoco_attrs, "actuator_trnid"):
-            # actuator_trnid[:,0] is the target index, actuator_trntype determines its meaning
-            actuator_trnid = mujoco_attrs.actuator_trnid.numpy()
-            trntype_arr = mujoco_attrs.actuator_trntype.numpy() if hasattr(mujoco_attrs, "actuator_trntype") else None
-            ctrl_source_arr = mujoco_attrs.ctrl_source.numpy() if hasattr(mujoco_attrs, "ctrl_source") else None
-            actuator_world_arr = (
-                mujoco_attrs.actuator_world.numpy() if hasattr(mujoco_attrs, "actuator_world") else None
-            )
-
-            for mujoco_act_idx in range(mujoco_actuator_count):
-                # Skip JOINT_TARGET actuators - they're already added via joint_act_mode path
-                if ctrl_source_arr is not None:
-                    ctrl_source = int(ctrl_source_arr[mujoco_act_idx])
-                    if ctrl_source == CtrlSource.JOINT_TARGET:
-                        continue  # Already handled in joint iteration
-
-                # Only include actuators from the first world (template) or global actuators
-                if actuator_world_arr is not None:
-                    actuator_world = int(actuator_world_arr[mujoco_act_idx])
-                    if actuator_world != first_world and actuator_world != -1:
-                        continue  # Skip actuators from other worlds
-
-                target_idx = int(actuator_trnid[mujoco_act_idx, 0])
-
-                # Determine target type from trntype (0=JOINT, 1=TENDON, 2=SITE, etc.)
-                # Currently only JOINT targets are supported
-                trntype = int(trntype_arr[mujoco_act_idx]) if trntype_arr is not None else 0
-
-                if trntype == 0:  # TrnType.JOINT
-                    if target_idx < 0 or target_idx >= len(model.joint_key):
-                        if wp.config.verbose:
-                            print(f"Warning: MuJoCo actuator {mujoco_act_idx} has invalid joint target {target_idx}")
-                        continue
-                    target_name = model.joint_key[target_idx]
-                elif trntype == 4:  # TrnType.BODY
-                    if target_idx < 0 or target_idx >= len(model.body_key):
-                        if wp.config.verbose:
-                            print(f"Warning: MuJoCo actuator {mujoco_act_idx} has invalid body target {target_idx}")
-                        continue
-                    target_name = model.body_key[target_idx]
-                else:
-                    # TODO: Support tendon, site, slidercrank, and jointinparent transmission types
-                    if wp.config.verbose:
-                        print(f"Warning: MuJoCo actuator {mujoco_act_idx} has unsupported trntype {trntype}")
-                    continue
-
-                general_args = dict(actuator_args)
-
-                # Get custom attributes for this MuJoCo actuator
-                if mujoco_attrs is not None:
-                    if hasattr(mujoco_attrs, "actuator_gainprm"):
-                        gainprm = mujoco_attrs.actuator_gainprm.numpy()[mujoco_act_idx]
-                        general_args["gainprm"] = list(gainprm)  # All 10 elements
-                    if hasattr(mujoco_attrs, "actuator_biasprm"):
-                        biasprm = mujoco_attrs.actuator_biasprm.numpy()[mujoco_act_idx]
-                        general_args["biasprm"] = list(biasprm)  # All 10 elements
-                    if hasattr(mujoco_attrs, "actuator_dynprm"):
-                        dynprm = mujoco_attrs.actuator_dynprm.numpy()[mujoco_act_idx]
-                        general_args["dynprm"] = list(dynprm)  # All 10 elements
-                    if hasattr(mujoco_attrs, "actuator_gear"):
-                        gear_arr = mujoco_attrs.actuator_gear.numpy()[mujoco_act_idx]
-                        general_args["gear"] = list(gear_arr)
-                    if hasattr(mujoco_attrs, "actuator_ctrlrange"):
-                        ctrlrange = mujoco_attrs.actuator_ctrlrange.numpy()[mujoco_act_idx]
-                        general_args["ctrlrange"] = (ctrlrange[0], ctrlrange[1])
-                    if hasattr(mujoco_attrs, "actuator_ctrllimited"):
-                        ctrllimited = mujoco_attrs.actuator_ctrllimited.numpy()[mujoco_act_idx]
-                        general_args["ctrllimited"] = bool(ctrllimited)
-                    if hasattr(mujoco_attrs, "actuator_forcerange"):
-                        forcerange = mujoco_attrs.actuator_forcerange.numpy()[mujoco_act_idx]
-                        general_args["forcerange"] = (forcerange[0], forcerange[1])
-                    if hasattr(mujoco_attrs, "actuator_forcelimited"):
-                        forcelimited = mujoco_attrs.actuator_forcelimited.numpy()[mujoco_act_idx]
-                        general_args["forcelimited"] = bool(forcelimited)
-                    if hasattr(mujoco_attrs, "actuator_actrange"):
-                        actrange = mujoco_attrs.actuator_actrange.numpy()[mujoco_act_idx]
-                        general_args["actrange"] = (actrange[0], actrange[1])
-                    if hasattr(mujoco_attrs, "actuator_actlimited"):
-                        actlimited = mujoco_attrs.actuator_actlimited.numpy()[mujoco_act_idx]
-                        general_args["actlimited"] = bool(actlimited)
-                    if hasattr(mujoco_attrs, "actuator_actearly"):
-                        actearly = mujoco_attrs.actuator_actearly.numpy()[mujoco_act_idx]
-                        general_args["actearly"] = bool(actearly)
-                    if hasattr(mujoco_attrs, "actuator_actdim"):
-                        actdim = mujoco_attrs.actuator_actdim.numpy()[mujoco_act_idx]
-                        if actdim >= 0:  # -1 means auto
-                            general_args["actdim"] = int(actdim)
-
-                # Map trntype integer to MuJoCo enum and override default in general_args
-                trntype_enum = {
-                    0: mujoco.mjtTrn.mjTRN_JOINT,
-                    1: mujoco.mjtTrn.mjTRN_JOINTINPARENT,
-                    2: mujoco.mjtTrn.mjTRN_TENDON,
-                    3: mujoco.mjtTrn.mjTRN_SITE,
-                    4: mujoco.mjtTrn.mjTRN_BODY,
-                    5: mujoco.mjtTrn.mjTRN_SLIDERCRANK,
-                }.get(trntype, mujoco.mjtTrn.mjTRN_JOINT)
-                general_args["trntype"] = trntype_enum
-                spec.add_actuator(target=target_name, **general_args)
-                mujoco_actuator_mapping[mujoco_act_idx] = actuator_count
-                # CTRL_DIRECT actuators - store MJCF-order index into control.mujoco.ctrl
-                # mujoco_act_idx is the index in Newton's mujoco:actuator frequency (MJCF order)
-                mjc_actuator_ctrl_source_list.append(1)  # CTRL_DIRECT
-                mjc_actuator_to_newton_idx_list.append(mujoco_act_idx)
-                actuator_count += 1
+        # Process MuJoCo general actuators (motor, general, etc.) from custom attributes
+        actuator_count += self._init_actuators(
+            model,
+            spec,
+            first_world,
+            actuator_args,
+            mjc_actuator_ctrl_source_list,
+            mjc_actuator_to_newton_idx_list,
+            dof_to_mjc_joint,
+            mjc_joint_names,
+        )
 
         # Convert actuator mapping lists to warp arrays
         if mjc_actuator_ctrl_source_list:

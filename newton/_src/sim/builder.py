@@ -2217,9 +2217,7 @@ class ModelBuilder:
                     mapped_values = [transform_value(value) for value in attr.values]
                 else:
                     # Enum frequency: remap dict indices with offset
-                    mapped_values = {
-                        index_offset + idx: transform_value(value) for idx, value in attr.values.items()
-                    }
+                    mapped_values = {index_offset + idx: transform_value(value) for idx, value in attr.values.items()}
                 self.custom_attributes[full_key] = replace(attr, values=mapped_values)
                 continue
 

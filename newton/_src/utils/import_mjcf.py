@@ -943,6 +943,8 @@ def parse_mjcf(
         else:
             # DOF index relative to the joint being created (multiple MJCF joints in a body are combined into one Newton joint)
             current_dof_index = 0
+            # Track MJCF joint names and their DOF offsets within the combined Newton joint
+            mjcf_joint_dof_offsets: list[tuple[str, int]] = []
             joints = body.findall("joint")
             for i, joint in enumerate(joints):
                 joint_defaults = defaults
@@ -1021,6 +1023,8 @@ def parse_mjcf(
                         dof_custom_attributes[key] = {}
                     dof_custom_attributes[key][current_dof_index] = value
 
+                # Track this MJCF joint's name and DOF offset within the combined Newton joint
+                mjcf_joint_dof_offsets.append((joint_name[-1], current_dof_index))
                 current_dof_index += 1
 
         body_custom_attributes = parse_custom_attributes(body_attrib, builder_custom_attr_body, parsing_mode="mjcf")
@@ -1112,19 +1116,25 @@ def parse_mjcf(
                     rotated_joint_pos = wp.quat_rotate(body_ori_for_joints, joint_pos)
                     parent_xform_for_joint = wp.transform(body_pos_for_joints + rotated_joint_pos, body_ori_for_joints)
 
-                joint_indices.append(
-                    builder.add_joint(
-                        joint_type,
-                        parent=parent,
-                        child=link,
-                        linear_axes=linear_axes,
-                        angular_axes=angular_axes,
-                        key="_".join(joint_name),
-                        parent_xform=parent_xform_for_joint,
-                        child_xform=wp.transform(joint_pos, wp.quat_identity()),
-                        custom_attributes=joint_custom_attributes | dof_custom_attributes,
-                    )
+                joint_idx = builder.add_joint(
+                    joint_type,
+                    parent=parent,
+                    child=link,
+                    linear_axes=linear_axes,
+                    angular_axes=angular_axes,
+                    key="_".join(joint_name),
+                    parent_xform=parent_xform_for_joint,
+                    child_xform=wp.transform(joint_pos, wp.quat_identity()),
+                    custom_attributes=joint_custom_attributes | dof_custom_attributes,
                 )
+                joint_indices.append(joint_idx)
+
+                # Populate per-MJCF-joint DOF mapping for actuator resolution
+                # This allows actuators to target specific DOFs when multiple MJCF joints are combined
+                if mjcf_joint_dof_offsets:
+                    qd_start = builder.joint_qd_start[joint_idx]
+                    for mjcf_name, dof_offset in mjcf_joint_dof_offsets:
+                        mjcf_joint_name_to_dof[mjcf_name] = qd_start + dof_offset
 
         # -----------------
         # add shapes (using shared helper for visual/collider partitioning)
@@ -1420,6 +1430,11 @@ def parse_mjcf(
     visual_shapes = []
     start_shape_count = len(builder.shape_type)
     joint_indices = []  # Collect joint indices as we create them
+    # Mapping from individual MJCF joint name to (qd_start, dof_count) for actuator resolution
+    # This allows actuators to target specific DOFs when multiple MJCF joints are combined into one Newton joint
+    # Maps individual MJCF joint names to their specific DOF index.
+    # Used to resolve actuators targeting specific joints within combined Newton joints.
+    mjcf_joint_name_to_dof: dict[str, int] = {}
 
     world = root.find("worldbody")
     world_class = get_class(world)
@@ -1645,17 +1660,26 @@ def parse_mjcf(
 
             if joint_name:
                 # Joint transmission (trntype=0)
-                if joint_name not in builder.joint_key:
+                # First check per-MJCF-joint mapping (for targeting specific DOFs in combined joints)
+                if joint_name in mjcf_joint_name_to_dof:
+                    qd_start = mjcf_joint_name_to_dof[joint_name]
+                    total_dofs = 1  # Individual MJCF joints always map to exactly 1 DOF
+                    target_idx = qd_start  # DOF index for joint actuators
+                    target_name_for_log = joint_name
+                    trntype = 0  # TrnType.JOINT
+                elif joint_name in builder.joint_key:
+                    # Fallback: combined Newton joint (applies to all DOFs)
+                    joint_idx = builder.joint_key.index(joint_name)
+                    qd_start = builder.joint_qd_start[joint_idx]
+                    lin_dofs, ang_dofs = builder.joint_dof_dim[joint_idx]
+                    total_dofs = lin_dofs + ang_dofs
+                    target_idx = qd_start  # DOF index for joint actuators
+                    target_name_for_log = joint_name
+                    trntype = 0  # TrnType.JOINT
+                else:
                     if verbose:
                         print(f"Warning: {actuator_type} actuator references unknown joint '{joint_name}'")
                     continue
-                joint_idx = builder.joint_key.index(joint_name)
-                target_idx = joint_idx
-                target_name_for_log = joint_name
-                trntype = 0  # TrnType.JOINT
-                qd_start = builder.joint_qd_start[joint_idx]
-                lin_dofs, ang_dofs = builder.joint_dof_dim[joint_idx]
-                total_dofs = lin_dofs + ang_dofs
             elif body_name:
                 # Body transmission (trntype=4)
                 if body_name not in builder.body_key:
@@ -1721,14 +1745,7 @@ def parse_mjcf(
             elif actuator_type == "motor":
                 gainprm = vec10(1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
                 biasprm = vec10(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
-                if trntype != 0 or total_dofs == 0 or ctrl_direct:
-                    ctrl_source_val = CtrlSource.CTRL_DIRECT
-                else:
-                    ctrl_source_val = CtrlSource.JOINT_TARGET
-                if ctrl_source_val == CtrlSource.JOINT_TARGET:
-                    for i in range(total_dofs):
-                        dof_idx = qd_start + i
-                        builder.joint_act_mode[dof_idx] = int(ActuatorMode.EFFORT)
+                ctrl_source_val = CtrlSource.CTRL_DIRECT
 
             elif actuator_type == "general":
                 gainprm_str = actuator_elem.attrib.get("gainprm", "1 0 0 0 0 0 0 0 0 0")

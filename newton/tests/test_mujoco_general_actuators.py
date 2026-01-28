@@ -81,7 +81,7 @@ class TestMuJoCoActuators(unittest.TestCase):
         self.assertEqual(len(builder.joint_act_mode), 11)
         for i in range(6):
             self.assertEqual(builder.joint_act_mode[i], int(ActuatorMode.NONE))
-        self.assertEqual(builder.joint_act_mode[get_qd_start(builder, "joint_motor")], int(ActuatorMode.EFFORT))
+        self.assertEqual(builder.joint_act_mode[get_qd_start(builder, "joint_motor")], int(ActuatorMode.NONE))
         self.assertEqual(
             builder.joint_act_mode[get_qd_start(builder, "joint_pos_vel")], int(ActuatorMode.POSITION_VELOCITY)
         )
@@ -104,7 +104,7 @@ class TestMuJoCoActuators(unittest.TestCase):
 
         for i in range(6):
             self.assertEqual(joint_act_mode[i], int(ActuatorMode.NONE))
-        self.assertEqual(joint_act_mode[get_qd_start(builder, "joint_motor")], int(ActuatorMode.EFFORT))
+        self.assertEqual(joint_act_mode[get_qd_start(builder, "joint_motor")], int(ActuatorMode.NONE))
         self.assertEqual(joint_act_mode[get_qd_start(builder, "joint_pos_vel")], int(ActuatorMode.POSITION_VELOCITY))
         self.assertEqual(joint_act_mode[get_qd_start(builder, "joint_position")], int(ActuatorMode.POSITION))
         self.assertEqual(joint_act_mode[get_qd_start(builder, "joint_velocity")], int(ActuatorMode.VELOCITY))
@@ -116,7 +116,8 @@ class TestMuJoCoActuators(unittest.TestCase):
         self.assertEqual(joint_target_kd[get_qd_start(builder, "joint_velocity")], 20.0)
 
         ctrl_source = model.mujoco.ctrl_source.numpy()
-        for i in range(5):
+        self.assertEqual(ctrl_source[0], CtrlSource.CTRL_DIRECT)
+        for i in range(1, 5):
             self.assertEqual(ctrl_source[i], CtrlSource.JOINT_TARGET)
         self.assertEqual(ctrl_source[5], CtrlSource.CTRL_DIRECT)
         self.assertEqual(ctrl_source[6], CtrlSource.CTRL_DIRECT)
@@ -143,7 +144,7 @@ class TestMuJoCoActuators(unittest.TestCase):
         solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
         mj_model = solver.mj_model
 
-        self.assertEqual(mj_model.nu, 6)
+        self.assertEqual(mj_model.nu, 7)
         self.assertEqual(mj_model.nq, 12)
         self.assertEqual(mj_model.nv, 11)
 
@@ -255,7 +256,8 @@ class TestMuJoCoActuators(unittest.TestCase):
         ctrl_source = model.mujoco.ctrl_source.numpy()
         for w in range(2):
             offset = w * 7
-            for i in range(5):
+            self.assertEqual(ctrl_source[offset + 0], CtrlSource.CTRL_DIRECT)
+            for i in range(1, 5):
                 self.assertEqual(ctrl_source[offset + i], CtrlSource.JOINT_TARGET)
             self.assertEqual(ctrl_source[offset + 5], CtrlSource.CTRL_DIRECT)
             self.assertEqual(ctrl_source[offset + 6], CtrlSource.CTRL_DIRECT)
@@ -263,7 +265,7 @@ class TestMuJoCoActuators(unittest.TestCase):
         solver = SolverMuJoCo(model, iterations=1, disable_contacts=True, separate_worlds=True)
         mj_model = solver.mj_model
 
-        self.assertEqual(mj_model.nu, 6)
+        self.assertEqual(mj_model.nu, 7)
         self.assertEqual(mj_model.nq, 12)
         self.assertEqual(mj_model.nv, 11)
 
@@ -279,9 +281,10 @@ class TestMuJoCoActuators(unittest.TestCase):
             np.testing.assert_allclose(mjw_biasprm[world, 2, 1], -200.0, atol=1e-5)
             np.testing.assert_allclose(mjw_gainprm[world, 3, 0], 20.0, atol=1e-5)
             np.testing.assert_allclose(mjw_biasprm[world, 3, 2], -20.0, atol=1e-5)
-            np.testing.assert_allclose(mjw_gainprm[world, 4, 0], 50.0, atol=1e-5)
-            np.testing.assert_allclose(mjw_biasprm[world, 4, 1], -50.0, atol=1e-5)
-            np.testing.assert_allclose(mjw_gainprm[world, 5, 0], 30.0, atol=1e-5)
+            np.testing.assert_allclose(mjw_gainprm[world, 4, 0], 1.0, atol=1e-5)
+            np.testing.assert_allclose(mjw_gainprm[world, 5, 0], 50.0, atol=1e-5)
+            np.testing.assert_allclose(mjw_biasprm[world, 5, 1], -50.0, atol=1e-5)
+            np.testing.assert_allclose(mjw_gainprm[world, 6, 0], 30.0, atol=1e-5)
 
     def test_multiworld_ctrl_direct_true(self):
         """Test multiworld with ctrl_direct=True."""
@@ -451,9 +454,10 @@ class TestMuJoCoActuators(unittest.TestCase):
         initial_biasprm = solver.mjw_model.actuator_biasprm.numpy().copy()
 
         for world in range(2):
-            np.testing.assert_allclose(initial_gainprm[world, 4, 0], 50.0, atol=1e-5)
-            np.testing.assert_allclose(initial_biasprm[world, 4, 1], -50.0, atol=1e-5)
-            np.testing.assert_allclose(initial_gainprm[world, 5, 0], 30.0, atol=1e-5)
+            np.testing.assert_allclose(initial_gainprm[world, 4, 0], 1.0, atol=1e-5)
+            np.testing.assert_allclose(initial_gainprm[world, 5, 0], 50.0, atol=1e-5)
+            np.testing.assert_allclose(initial_biasprm[world, 5, 1], -50.0, atol=1e-5)
+            np.testing.assert_allclose(initial_gainprm[world, 6, 0], 30.0, atol=1e-5)
 
         new_gainprm = model.mujoco.actuator_gainprm.numpy()
         new_biasprm = model.mujoco.actuator_biasprm.numpy()
@@ -474,21 +478,89 @@ class TestMuJoCoActuators(unittest.TestCase):
         updated_gainprm = solver.mjw_model.actuator_gainprm.numpy()
         updated_biasprm = solver.mjw_model.actuator_biasprm.numpy()
 
-        np.testing.assert_allclose(updated_gainprm[0, 4, 0], 150.0, atol=1e-5)
-        np.testing.assert_allclose(updated_biasprm[0, 4, 1], -150.0, atol=1e-5)
-        np.testing.assert_allclose(updated_biasprm[0, 4, 2], -15.0, atol=1e-5)
-        np.testing.assert_allclose(updated_gainprm[0, 5, 0], 90.0, atol=1e-5)
+        np.testing.assert_allclose(updated_gainprm[0, 5, 0], 150.0, atol=1e-5)
+        np.testing.assert_allclose(updated_biasprm[0, 5, 1], -150.0, atol=1e-5)
+        np.testing.assert_allclose(updated_biasprm[0, 5, 2], -15.0, atol=1e-5)
+        np.testing.assert_allclose(updated_gainprm[0, 6, 0], 90.0, atol=1e-5)
 
-        np.testing.assert_allclose(updated_gainprm[1, 4, 0], 200.0, atol=1e-5)
-        np.testing.assert_allclose(updated_biasprm[1, 4, 1], -200.0, atol=1e-5)
-        np.testing.assert_allclose(updated_biasprm[1, 4, 2], -20.0, atol=1e-5)
-        np.testing.assert_allclose(updated_gainprm[1, 5, 0], 120.0, atol=1e-5)
+        np.testing.assert_allclose(updated_gainprm[1, 5, 0], 200.0, atol=1e-5)
+        np.testing.assert_allclose(updated_biasprm[1, 5, 1], -200.0, atol=1e-5)
+        np.testing.assert_allclose(updated_biasprm[1, 5, 2], -20.0, atol=1e-5)
+        np.testing.assert_allclose(updated_gainprm[1, 6, 0], 120.0, atol=1e-5)
 
         for world in range(2):
             np.testing.assert_allclose(updated_gainprm[world, 0, 0], initial_gainprm[world, 0, 0], atol=1e-5)
             np.testing.assert_allclose(updated_gainprm[world, 1, 0], initial_gainprm[world, 1, 0], atol=1e-5)
             np.testing.assert_allclose(updated_gainprm[world, 2, 0], initial_gainprm[world, 2, 0], atol=1e-5)
             np.testing.assert_allclose(updated_gainprm[world, 3, 0], initial_gainprm[world, 3, 0], atol=1e-5)
+
+    def test_combined_joint_per_dof_actuators(self):
+        """Test that actuators targeting individual MJCF joints apply gains only to specific DOFs.
+
+        When a body has multiple MJCF joints, Newton combines them into one joint.
+        This test verifies that actuators targeting individual MJCF joint names
+        correctly apply gains to only the corresponding DOF, not all DOFs.
+        """
+        # MJCF with multiple joints in one body - will be combined into a single Newton joint
+        mjcf_combined_joints = """<?xml version="1.0" encoding="utf-8"?>
+        <mujoco model="test_combined_joints">
+            <option gravity="0 0 0"/>
+            <worldbody>
+                <body name="base" pos="0 0 1">
+                    <freejoint name="root"/>
+                    <geom type="sphere" size="0.1" mass="1"/>
+                    <body name="arm" pos="0.2 0 0">
+                        <!-- Three joints in one body - combined into one Newton D6 joint -->
+                        <joint name="shoulder_x" type="hinge" axis="1 0 0"/>
+                        <joint name="shoulder_y" type="hinge" axis="0 1 0"/>
+                        <joint name="shoulder_z" type="hinge" axis="0 0 1"/>
+                        <geom type="box" size="0.1 0.1 0.1" mass="1"/>
+                    </body>
+                </body>
+            </worldbody>
+            <actuator>
+                <!-- Target individual MJCF joints with different gains -->
+                <position name="pos_x" joint="shoulder_x" kp="100"/>
+                <position name="pos_y" joint="shoulder_y" kp="200"/>
+                <velocity name="vel_z" joint="shoulder_z" kv="30"/>
+            </actuator>
+        </mujoco>
+        """
+
+        builder = ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_mjcf(mjcf_combined_joints, ctrl_direct=False)
+
+        # Verify the combined joint was created
+        self.assertIn("shoulder_x_shoulder_y_shoulder_z", builder.joint_key)
+
+        # Get the qd_start for the combined joint
+        combined_joint_idx = builder.joint_key.index("shoulder_x_shoulder_y_shoulder_z")
+        qd_start = builder.joint_qd_start[combined_joint_idx]
+
+        # The free joint has 6 DOFs (0-5), so the combined joint DOFs start at 6
+        # shoulder_x -> DOF 6, shoulder_y -> DOF 7, shoulder_z -> DOF 8
+        self.assertEqual(qd_start, 6)
+
+        # Verify gains are applied to specific DOFs, not all DOFs
+        # DOF 6 (shoulder_x): kp=100, kv=0 -> POSITION mode
+        self.assertEqual(builder.joint_target_ke[6], 100.0)
+        self.assertEqual(builder.joint_target_kd[6], 0.0)
+        self.assertEqual(builder.joint_act_mode[6], int(ActuatorMode.POSITION))
+
+        # DOF 7 (shoulder_y): kp=200, kv=0 -> POSITION mode
+        self.assertEqual(builder.joint_target_ke[7], 200.0)
+        self.assertEqual(builder.joint_target_kd[7], 0.0)
+        self.assertEqual(builder.joint_act_mode[7], int(ActuatorMode.POSITION))
+
+        # DOF 8 (shoulder_z): kp=0, kv=30 -> VELOCITY mode
+        self.assertEqual(builder.joint_target_ke[8], 0.0)
+        self.assertEqual(builder.joint_target_kd[8], 30.0)
+        self.assertEqual(builder.joint_act_mode[8], int(ActuatorMode.VELOCITY))
+
+        # Verify freejoint DOFs (0-5) are not affected
+        for i in range(6):
+            self.assertEqual(builder.joint_act_mode[i], int(ActuatorMode.NONE))
 
 
 if __name__ == "__main__":
