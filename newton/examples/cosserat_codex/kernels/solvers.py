@@ -28,6 +28,7 @@ import warp as wp
 from newton.examples.cosserat_codex.constants import BAND_KD, TILE
 
 from .math import (
+    _block_column,
     _block_mul,
     _block_mul_vec,
     _block_row,
@@ -36,6 +37,7 @@ from .math import (
     _block_sub,
     _load_block,
     _load_vec,
+    _mat33_transpose,
     _store_vec,
 )
 
@@ -98,7 +100,7 @@ def _warp_block_thomas_solve(
 
     if n_edges > 1:
         for col in range(6):
-            u0, u1 = _block_row(offdiag_blocks, 1, col)
+            u0, u1 = _block_column(offdiag_blocks, 1, col)
             x0, x1 = _block_solve(A0, B0, C0, D0, u0, u1)
             _block_set_column(c_blocks, 0, col, x0, x1)
     else:
@@ -111,12 +113,21 @@ def _warp_block_thomas_solve(
 
     for i in range(1, n_edges):
         DiA, DiB, DiC, DiD = _load_block(diag_blocks, i)
-        LiA, LiB, LiC, LiD = _load_block(offdiag_blocks, i)
+        # Load L_i^T (super-diagonal stored in offdiag_blocks)
+        LtA, LtB, LtC, LtD = _load_block(offdiag_blocks, i)
         CpA, CpB, CpC, CpD = _load_block(c_blocks, i - 1)
 
+        # Transpose to get L_i: [A B; C D]^T = [A^T C^T; B^T D^T]
+        LiA = _mat33_transpose(LtA)
+        LiB = _mat33_transpose(LtC)  # Swapped: B position gets C^T
+        LiC = _mat33_transpose(LtB)  # Swapped: C position gets B^T
+        LiD = _mat33_transpose(LtD)
+
+        # Schur complement: T_i = D_i - L_i * C_{i-1}
         LCA, LCB, LCC, LCD = _block_mul(LiA, LiB, LiC, LiD, CpA, CpB, CpC, CpD)
         TiA, TiB, TiC, TiD = _block_sub(DiA, DiB, DiC, DiD, LCA, LCB, LCC, LCD)
 
+        # RHS update: b'_i = b_i - L_i * d'_{i-1}
         bi0, bi1 = _load_vec(rhs, i)
         dp0, dp1 = _load_vec(d_prime, i - 1)
         ld0, ld1 = _block_mul_vec(LiA, LiB, LiC, LiD, dp0, dp1)
@@ -125,7 +136,7 @@ def _warp_block_thomas_solve(
 
         if i < n_edges - 1:
             for col in range(6):
-                u0, u1 = _block_row(offdiag_blocks, i + 1, col)
+                u0, u1 = _block_column(offdiag_blocks, i + 1, col)
                 x0, x1 = _block_solve(TiA, TiB, TiC, TiD, u0, u1)
                 _block_set_column(c_blocks, i, col, x0, x1)
         else:

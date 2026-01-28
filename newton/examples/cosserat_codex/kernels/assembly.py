@@ -105,7 +105,7 @@ def _warp_assemble_jmjt_dense(
             val += wp.dot(j_t1_r_vec, inv_I1_j_t1_c)
 
             if row == col:
-                val += compliance[i * 6 + row]
+                val += compliance[i * 6 + row] + 1.0e-6
             row_idx = block_start + row
             col_idx = block_start + col
             if row_idx < n_dofs and col_idx < n_dofs:
@@ -231,9 +231,9 @@ def _warp_assemble_jmjt_banded(
             inv_I1_j_t1_c = _inv_inertia_mul_vec(inv_inertia, i + 1, j_t1_c_vec)
             val += wp.dot(j_t1_r_vec, inv_I1_j_t1_c)
 
-            # Add compliance to diagonal
+            # Add compliance and regularization to diagonal
             if row == col:
-                val += compliance[i * 6 + row]
+                val += compliance[i * 6 + row] + 1.0e-6
 
             row_idx = block_start + row
             col_idx = block_start + col
