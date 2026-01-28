@@ -1532,6 +1532,10 @@ def parse_mjcf(
                     print("Warning: <exclude> element missing body1 or body2 attribute, skipping")
                 continue
 
+            # Normalize body names the same way parse_body() does (replace '-' with '_')
+            body1_name = body1_name.replace("-", "_")
+            body2_name = body2_name.replace("-", "_")
+
             # Look up body indices by body name
             try:
                 body1_idx = builder.body_key.index(body1_name)

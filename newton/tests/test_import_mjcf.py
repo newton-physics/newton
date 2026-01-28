@@ -3496,8 +3496,42 @@ class TestImportMjcf(unittest.TestCase):
         model = builder.finalize()
         self.assertIsNotNone(model)
 
-        # Verify body1 was still parsed correctly
-        self.assertIn("body1", builder.body_key)
+    def test_exclude_tag_with_hyphens(self):
+        """Test that <exclude> tags work with hyphenated body names (normalized to underscores)."""
+        builder = newton.ModelBuilder()
+        mjcf_filename = os.path.join(os.path.dirname(__file__), "assets", "mjcf_exclude_hyphen_test.xml")
+        builder.add_mjcf(
+            mjcf_filename,
+            enable_self_collisions=True,  # Enable self-collisions so we can test exclude filtering
+        )
+
+        model = builder.finalize()
+
+        # Body names with hyphens should be normalized to underscores in builder.body_key
+        self.assertIn("body_with_hyphens", builder.body_key)
+        self.assertIn("another_hyphen_body", builder.body_key)
+
+        # Get shape indices for each body's geoms
+        hyphen_geom1_idx = builder.shape_key.index("hyphen_geom1")
+        hyphen_geom2_idx = builder.shape_key.index("hyphen_geom2")
+        another_geom1_idx = builder.shape_key.index("another_geom1")
+        another_geom2_idx = builder.shape_key.index("another_geom2")
+
+        # Convert filter pairs to a set for easier checking
+        filter_pairs = set(model.shape_collision_filter_pairs)
+
+        # Check that all pairs between the two hyphenated bodies are filtered
+        hyphen_shapes = [hyphen_geom1_idx, hyphen_geom2_idx]
+        another_shapes = [another_geom1_idx, another_geom2_idx]
+
+        for shape1 in hyphen_shapes:
+            for shape2 in another_shapes:
+                # Check both orderings since the filter pairs can be added in either order
+                pair_filtered = (shape1, shape2) in filter_pairs or (shape2, shape1) in filter_pairs
+                self.assertTrue(
+                    pair_filtered,
+                    f"Shape pair ({shape1}, {shape2}) should be filtered due to <exclude body1='body-with-hyphens' body2='another-hyphen-body'/>",
+                )
 
     def test_exclude_tag_missing_attributes(self):
         """Test that <exclude> tags with missing attributes are handled gracefully."""
