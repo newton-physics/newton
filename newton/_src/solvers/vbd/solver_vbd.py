@@ -1247,9 +1247,8 @@ class SolverVBD(SolverBase):
         if model.particle_count == 0:
             return
 
-        if self.particle_enable_self_contact:
-            # Collision detection before initialization to compute conservative bounds
-             self.collision_detection_penetration_free(state_in)
+        # Collision detection before initialization to compute conservative bounds
+        self.collision_detection_penetration_free(state_in)
 
         model = self.model
 
@@ -1556,34 +1555,6 @@ class SolverVBD(SolverBase):
                 )
 
             if self.particle_enable_self_contact:
-                # wp.launch(
-                #     kernel=accumulate_self_contact_force_and_hessian_tile,
-                #     dim=self.model.particle_color_groups[color].size * TILE_SIZE_SELF_CONTACT_SOLVE,
-                #     block_dim=TILE_SIZE_SELF_CONTACT_SOLVE,
-                #     inputs=[
-                #         dt,
-                #         self.model.particle_color_groups[color],
-                #         self.particle_q_prev,
-                #         state_in.particle_q,
-                #         self.model.particle_flags,
-                #         self.model.tri_indices,
-                #         self.model.edge_indices,
-                #         self.particle_adjacency,
-                #         # self contact
-                #         self.trimesh_collision_info,
-                #         self.particle_self_contact_radius,
-                #         self.model.soft_contact_ke,
-                #         self.model.soft_contact_kd,
-                #         self.model.soft_contact_mu,
-                #         self.friction_epsilon,
-                #         self.trimesh_collision_detector.edge_edge_parallel_epsilon,
-                #         # outputs: particle force and hessian
-                #         self.particle_forces,
-                #         self.particle_hessians,
-                #     ],
-                #     device=self.device,
-                #     max_blocks=self.model.device.sm_count,
-                # )
                 wp.launch(
                     kernel=accumulate_self_contact_force_and_hessian,
                     dim=self.particle_self_contact_evaluation_kernel_launch_size,
@@ -1674,7 +1645,6 @@ class SolverVBD(SolverBase):
                     ],
                     device=self.device,
                 )
-
             self.penetration_free_truncation(state_in.particle_q)
 
 
@@ -2029,50 +1999,3 @@ class SolverVBD(SolverBase):
         """
         if self.particle_enable_self_contact:
             self.trimesh_collision_detector.rebuild(state.particle_q)
-
-    def resize_collision_buffers(self, shrink_to_fit: bool = False, growth_ratio: float = 1.5) -> bool:
-        """Resize collision buffers based on actual collision counts from the last detection pass.
-
-        This function analyzes the collision counts and resizes buffers that overflowed
-        (or shrinks oversized buffers if shrink_to_fit=True). Use this after collision
-        detection if you observe buffer overflow warnings or want to optimize memory usage.
-
-        Buffer sizes are:
-        - Multiplied by growth_ratio to provide headroom and reduce resize frequency
-        - Rounded up to the next multiple of 4 for memory alignment
-        - Clamped between pre_alloc and max_alloc settings
-
-        Note:
-            After resizing, you should re-run collision detection before the next simulation
-            step to populate the new buffers.
-
-        Args:
-            shrink_to_fit: If True, also shrink buffers that are larger than needed.
-                          If False (default), only grow buffers that overflowed.
-            growth_ratio: Multiplier for collision counts to provide headroom. Default is 1.5
-                         (50% extra space). Set to 1.0 for exact fit (no headroom).
-
-        Returns:
-            True if any buffer was resized, False otherwise.
-
-        Example:
-            .. code-block:: python
-
-                # After running simulation and observing overflow
-                if solver.resize_collision_buffers():
-                    # Buffers were resized, re-run collision detection
-                    solver.rebuild_bvh(state)
-
-                # To reclaim memory after simulation settles
-                solver.resize_collision_buffers(shrink_to_fit=True)
-        """
-        if not self.particle_enable_self_contact:
-            return False
-        resized = self.trimesh_collision_detector.resize_collision_buffer_to_fit(shrink_to_fit, growth_ratio)
-        if resized:
-            # Update the collision_info array with new buffer references
-            # This is critical - the old array contains stale pointers to deallocated memory
-            self.trimesh_collision_info = wp.array(
-                [self.trimesh_collision_detector.collision_info], dtype=TriMeshCollisionInfo, device=self.device
-            )
-        return resized
