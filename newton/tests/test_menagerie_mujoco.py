@@ -519,6 +519,9 @@ DEFAULT_MODEL_SKIP_FIELDS: set[str] = {
     # principal axis ordering and orientation. Compare via compare_inertia_tensors() instead.
     "body_inertia",
     "body_iquat",
+    # Collision filtering: Newton uses different representation but equivalent behavior
+    "geom_conaffinity",
+    "geom_contype",
 }
 
 
@@ -1244,9 +1247,6 @@ class TestMenagerie_UniversalRobotsUr5e(TestMenagerieBase):
         "actuator_cranklength",
         "actuator_acc0",
         "actuator_lengthrange",
-        # Collision filtering: Newton uses different defaults
-        "geom_conaffinity",
-        "geom_contype",
         # Solver reference params: Newton uses different defaults
         "geom_solref",
         # Joint actuator force limiting: Newton enables by default
