@@ -22,7 +22,7 @@ from typing import List
 
 import numpy as np
 
-from newton.examples.cosserat_codex import warp_cosserat_codex as base
+import newton.examples
 
 from .rod import RodConfig
 
@@ -38,11 +38,78 @@ class SolverConfig:
     use_cuda_graph: bool
 
 
+def create_base_parser():
+    """Create the base argument parser with rod simulation options."""
+    import argparse  # noqa: PLC0415
+
+    parser = newton.examples.create_parser()
+    parser.add_argument(
+        "--dll-path",
+        type=str,
+        default=None,
+        help="Path to DefKitAdv.dll. If omitted, attempts to load from PATH.",
+    )
+    parser.add_argument(
+        "--calling-convention",
+        type=str,
+        choices=["cdecl", "stdcall"],
+        default="cdecl",
+        help="Calling convention used by the DLL (cdecl or stdcall).",
+    )
+    parser.add_argument("--num-points", type=int, default=64, help="Number of rod points.")
+    parser.add_argument("--segment-length", type=float, default=0.025, help="Rest length per segment.")
+    parser.add_argument("--particle-mass", type=float, default=1.0, help="Mass per particle (root fixed).")
+    parser.add_argument("--particle-radius", type=float, default=0.02, help="Particle visualization radius.")
+    parser.add_argument("--particle-height", type=float, default=1.0, help="Initial rod height (z).")
+    parser.add_argument(
+        "--rod-radius",
+        type=float,
+        default=None,
+        help="Physical rod radius for direct solver (defaults to particle-radius).",
+    )
+    parser.add_argument(
+        "--compare-offset",
+        type=float,
+        default=0.0,
+        help="Y-offset separating reference and NumPy rods.",
+    )
+    parser.add_argument("--substeps", type=int, default=4, help="Integration substeps per frame.")
+    parser.add_argument("--bend-stiffness", type=float, default=1.0, help="Per-edge bend stiffness.")
+    parser.add_argument("--twist-stiffness", type=float, default=1.0, help="Per-edge twist stiffness.")
+    parser.add_argument("--rest-bend-d1", type=float, default=0.0, help="Rest bend around d1 axis (rad/segment).")
+    parser.add_argument("--rest-bend-d2", type=float, default=0.0, help="Rest bend around d2 axis (rad/segment).")
+    parser.add_argument("--rest-twist", type=float, default=0.0, help="Rest twist around d3 axis (rad/segment).")
+    parser.add_argument("--young-modulus", type=float, default=1.0e6, help="Young's modulus multiplier.")
+    parser.add_argument("--torsion-modulus", type=float, default=1.0e6, help="Torsion modulus multiplier.")
+    parser.add_argument(
+        "--use-banded",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Use banded direct solver (disable to use non-banded if available).",
+    )
+    parser.add_argument("--linear-damping", type=float, default=0.001, help="Linear damping coefficient.")
+    parser.add_argument("--angular-damping", type=float, default=0.001, help="Angular damping coefficient.")
+    parser.add_argument(
+        "--gravity",
+        type=float,
+        nargs=3,
+        default=[0.0, 0.0, -9.81],
+        help="Gravity vector (x y z).",
+    )
+    parser.add_argument(
+        "--lock-root-rotation",
+        action="store_true",
+        default=False,
+        help="Lock root rotation by zeroing quaternion inverse mass.",
+    )
+    return parser
+
+
 def create_parser():
     """Create argument parser with GPU-specific options."""
     import argparse  # noqa: PLC0415
 
-    parser = base.create_parser()
+    parser = create_base_parser()
     parser.add_argument(
         "--use-cuda-graph",
         action=argparse.BooleanOptionalAction,
@@ -103,4 +170,4 @@ def build_solver_config(args) -> SolverConfig:
     )
 
 
-__all__ = ["SolverConfig", "build_rod_configs", "build_solver_config", "create_parser"]
+__all__ = ["SolverConfig", "build_rod_configs", "build_solver_config", "create_base_parser", "create_parser"]

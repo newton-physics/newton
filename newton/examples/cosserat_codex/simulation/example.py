@@ -147,6 +147,8 @@ class Example:
         self.simulate_reference = True
         self.simulate_gpu = True
         self.use_cuda_graph = args.use_cuda_graph
+        self.use_iterative_refinement = False
+        self.iterative_refinement_iters = 2
         self._force_sync_reference = True
         self._force_sync_gpu = True
         self._perf_window = 90
@@ -1124,6 +1126,17 @@ class Example:
                 n_dofs = self.gpu_state.rods[0].n_dofs
                 if current_gpu_backend == DIRECT_SOLVE_WARP_BANDED_CHOLESKY:
                     ui.text("  Using Warp banded Cholesky (spbsv_u11_1rhs-style)")
+                    changed_iter_ref, self.use_iterative_refinement = ui.checkbox(
+                        "Iterative Refinement", self.use_iterative_refinement
+                    )
+                    changed_iter_count, self.iterative_refinement_iters = ui.slider_int(
+                        "Refinement Iterations", self.iterative_refinement_iters, 1, 10
+                    )
+                    if changed_iter_ref or changed_iter_count:
+                        for rod in self.gpu_state.rods:
+                            rod.set_iterative_refinement(
+                                self.use_iterative_refinement, self.iterative_refinement_iters
+                            )
                 elif n_dofs <= TILE:
                     ui.text(f"  Using Warp dense tiled Cholesky (n_dofs={n_dofs} <= TILE={TILE})")
                 else:
