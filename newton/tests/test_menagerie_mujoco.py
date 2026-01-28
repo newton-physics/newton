@@ -41,6 +41,18 @@ These are changes/workarounds made to get tests passing that should be revisited
      mu=1.0, torsional_friction=0.005, rolling_friction=0.0001
    - TODO: Should these be Newton's actual defaults? Or parsed from MJCF?
 
+1b. INERTIA FRAME (body_iquat, body_inertia)
+    - Newton stores full inertia tensor in body frame, then re-diagonalizes
+    - MuJoCo expects principal moments + orientation quaternion
+    - Result: same inertia values but different principal axes orientation
+    - This causes small simulation divergence even with matching masses
+    - TODO: Store inertia in MuJoCo-compatible format when targeting MuJoCo solver
+
+1c. INERTIAL DEFINITIONS (ignore_inertial_definitions)
+    - Now using ignore_inertial_definitions=False to use MJCF-defined inertials
+    - This matches body masses correctly
+    - TODO: Verify this is the right default for all robots
+
 2. SELF-COLLISIONS (create_newton_model_from_mjcf)
    - Enabled enable_self_collisions=True to match MuJoCo behavior
    - TODO: Verify this is the correct default for all robots
@@ -77,9 +89,9 @@ These are changes/workarounds made to get tests passing that should be revisited
      * qM_tiles, qLD_tiles, qLDiagInv_tiles: Matrix tile decomposition
      * opt_*: Solver options (Newton uses different defaults)
      * stat_*: Model statistics (derived from potentially different values)
-     * site_*, nsite: Site parsing differences
      * light_*, nlight: Newton doesn't parse lights
      * geom_group: Geometry grouping differences
+   - FIXED: site_size now correctly uses MuJoCo defaults for unspecified components
    - TODO: Review each skip and determine if Newton should be fixed
 
 10. PER-ROBOT SKIPS (model_skip_fields in test classes)
@@ -200,6 +212,7 @@ def create_newton_model_from_mjcf(
         floating=floating,
         parse_visuals=parse_visuals,
         enable_self_collisions=True,  # Match native MuJoCo behavior
+        ignore_inertial_definitions=False,  # Use MJCF-defined inertials to match MuJoCo
     )
 
     # Create main builder and replicate
@@ -1173,14 +1186,12 @@ class TestMenagerie_UniversalRobotsUr5e(TestMenagerieBase):
         "actuator_cranklength",
         "actuator_acc0",
         "actuator_lengthrange",
-        "body_inertia",  # also failing
-        "body_invweight0",  # also failing
-        "body_ipos",  # potentially connected to the 2 above
-        "body_iquat",  # completely wrong
-        "body_mass",  # completely wrong
-        "body_mocapid",  # expected because of the fixed base
-        "body_subtreemass",  # expected because of mass errors
-        "dof_invweight0",  # expected because of mass errors
+        # Inertia frame orientation: Newton may use different convention for principal axes
+        "body_inertia",
+        "body_invweight0",  # Derived from inertia
+        "body_ipos",  # Inertia frame position
+        "body_iquat",  # Inertia frame orientation
+        "body_mocapid",  # Fixed base handling differs
         # Collision filtering: Newton uses different defaults
         "geom_conaffinity",
         "geom_contype",
@@ -1194,10 +1205,7 @@ class TestMenagerie_UniversalRobotsUr5e(TestMenagerieBase):
         "jnt_solimp",
         # Options: solver/iterations differ between Newton defaults and MJCF
         "opt",
-        # Sites: Newton parses with different defaults
-        "site_",
-        "nsite",
-        # Statistics: derived from body masses/inertias which differ
+        # Statistics: small float precision differences from inertia calculations
         "stat",
     }
 
