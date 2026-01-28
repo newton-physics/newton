@@ -108,7 +108,8 @@ def parse_urdf(
         force_position_velocity_actuation (bool): If True and both position (stiffness) and velocity
             (damping) gains are non-zero, joints use POSITION_VELOCITY actuation mode. If False (default),
             actuator modes are inferred per joint via :func:`~newton._src.utils.import_utils.infer_actuator_mode`:
-            POSITION if stiffness > 0, VELOCITY if only damping > 0, or NONE if no gains.
+            POSITION if stiffness > 0, VELOCITY if only damping > 0, EFFORT if a drive is present but
+            both gains are zero (direct torque control), or NONE if no drive/actuation is applied.
     """
     axis_xform = wp.transform(wp.vec3(0.0), quat_between_axes(up_axis, builder.up_axis))
     if xform is None:

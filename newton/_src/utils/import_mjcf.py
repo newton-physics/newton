@@ -31,7 +31,7 @@ from ..sim import ActuatorMode, JointType, ModelBuilder
 from ..sim.model import ModelAttributeFrequency
 from ..solvers.mujoco import CtrlSource
 from ..usd.schemas import solref_to_stiffness_damping
-from .import_utils import parse_custom_attributes, sanitize_xml_content
+from .import_utils import parse_custom_attributes, sanitize_name, sanitize_xml_content
 
 
 def parse_mjcf(
@@ -808,7 +808,7 @@ def parse_mjcf(
         else:
             body_attrib = body.attrib
         body_name = body_attrib.get("name", f"body_{builder.body_count}")
-        body_name = body_name.replace("-", "_")  # ensure valid USD path
+        body_name = sanitize_name(body_name)
         body_pos = parse_vec(body_attrib, "pos", (0.0, 0.0, 0.0))
         body_ori = parse_orientation(body_attrib)
 
@@ -1167,9 +1167,9 @@ def parse_mjcf(
         for connect in equality.findall("connect"):
             common = parse_common_attributes(connect)
             custom_attrs = parse_custom_attributes(connect.attrib, builder_custom_attr_eq, parsing_mode="mjcf")
-            body1_name = connect.attrib.get("body1", "").replace("-", "_") if connect.attrib.get("body1") else None
+            body1_name = sanitize_name(connect.attrib.get("body1", "")) if connect.attrib.get("body1") else None
             body2_name = (
-                connect.attrib.get("body2", "worldbody").replace("-", "_") if connect.attrib.get("body2") else None
+                sanitize_name(connect.attrib.get("body2", "worldbody")) if connect.attrib.get("body2") else None
             )
             anchor = connect.attrib.get("anchor")
             site1 = connect.attrib.get("site1")
@@ -1225,8 +1225,8 @@ def parse_mjcf(
         for weld in equality.findall("weld"):
             common = parse_common_attributes(weld)
             custom_attrs = parse_custom_attributes(weld.attrib, builder_custom_attr_eq, parsing_mode="mjcf")
-            body1_name = weld.attrib.get("body1", "").replace("-", "_") if weld.attrib.get("body1") else None
-            body2_name = weld.attrib.get("body2", "worldbody").replace("-", "_") if weld.attrib.get("body2") else None
+            body1_name = sanitize_name(weld.attrib.get("body1", "")) if weld.attrib.get("body1") else None
+            body2_name = sanitize_name(weld.attrib.get("body2", "worldbody")) if weld.attrib.get("body2") else None
             anchor = weld.attrib.get("anchor", "0 0 0")
             relpose = weld.attrib.get("relpose", "0 1 0 0 0 0 0")
             torquescale = weld.attrib.get("torquescale")
@@ -1538,6 +1538,12 @@ def parse_mjcf(
             actuator_type = actuator_elem.tag  # position, velocity, motor, general
             joint_name = actuator_elem.attrib.get("joint")
             body_name = actuator_elem.attrib.get("body")
+
+            # Sanitize names to match how they were stored in the builder
+            if joint_name:
+                joint_name = sanitize_name(joint_name)
+            if body_name:
+                body_name = sanitize_name(body_name)
 
             # Determine transmission type and target
             trntype = 0  # Default: joint

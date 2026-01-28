@@ -168,6 +168,20 @@ def sanitize_xml_content(source: str) -> str:
     return xml_content
 
 
+def sanitize_name(name: str) -> str:
+    """Sanitize a name for use as a key in the ModelBuilder.
+
+    Replaces characters that are invalid in USD paths (e.g., "-") with underscores.
+
+    Args:
+        name: The name to sanitize.
+
+    Returns:
+        The sanitized name.
+    """
+    return name.replace("-", "_")
+
+
 def infer_actuator_mode(
     target_ke: float,
     target_kd: float,

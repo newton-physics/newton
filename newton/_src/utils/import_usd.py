@@ -103,7 +103,8 @@ def parse_usd(
         force_position_velocity_actuation (bool): If True and both stiffness (kp) and damping (kd)
             are non-zero, joints use POSITION_VELOCITY actuation mode. If False (default), actuator modes
             are inferred per joint via :func:`~newton._src.utils.import_utils.infer_actuator_mode`:
-            POSITION if stiffness > 0, VELOCITY if only damping > 0, or NONE if no gains.
+            POSITION if stiffness > 0, VELOCITY if only damping > 0, EFFORT if a drive is present but
+            both gains are zero (direct torque control), or NONE if no drive/actuation is applied.
 
     Returns:
         dict: Dictionary with the following entries:

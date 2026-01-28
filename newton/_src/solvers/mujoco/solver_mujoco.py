@@ -2635,7 +2635,7 @@ class SolverMuJoCo(SolverBase):
                             actuator_count += 1
                         elif mode == ActuatorMode.POSITION_VELOCITY:
                             args["gainprm"] = [kp, 0, 0, 0, 0, 0, 0, 0, 0, 0]
-                            args["biasprm"] = [0, -kp, -0, 0, 0, 0, 0, 0, 0, 0]
+                            args["biasprm"] = [0, -kp, 0, 0, 0, 0, 0, 0, 0, 0]
                             spec.add_actuator(target=name, **args)
                             axis_to_actuator[ai, 0] = actuator_count
                             mjc_actuator_ctrl_source_list.append(0)  # JOINT_TARGET
