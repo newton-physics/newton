@@ -119,6 +119,20 @@ class Example:
         self.mesh_resolution = 8
         self.mesh_smoothing = 3
 
+        # Per-rod mesh rendering settings
+        # Reference rod settings
+        self.ref_mesh_radius = args.rod_radius if args.rod_radius is not None else args.particle_radius
+        self.ref_mesh_color = [0.2, 0.6, 1.0]  # Blue for reference
+
+        # GPU rod settings (will be populated after rod creation)
+        self.gpu_mesh_radii = []
+        self.gpu_mesh_colors = [
+            [1.0, 0.6, 0.2],  # Orange
+            [0.2, 0.8, 0.4],  # Green
+            [0.8, 0.2, 0.8],  # Purple
+            [0.8, 0.8, 0.2],  # Yellow
+        ]
+
         # Track sliding constraint configuration
         self.track_enabled = True
         self.track_stiffness = 1.0
@@ -289,10 +303,13 @@ class Example:
         gpu_edge_count = sum(max(0, rod.num_points - 1) for rod in self.gpu_state.rods)
         self._gpu_segment_colors = np.tile(np.array([1.0, 0.6, 0.2], dtype=np.float32), (gpu_edge_count, 1))
 
+        # Initialize per-rod mesh radii from config
+        self.gpu_mesh_radii = [self.gpu_batch.configs[idx].rod_radius for idx in range(len(self.gpu_state.rods))]
+
         # Initialize rod meshers for tube visualization
         self._ref_mesher = RodMesher(
             num_points=self.ref_rod.num_points,
-            radius=rod_radius,
+            radius=self.ref_mesh_radius,
             resolution=self.mesh_resolution,
             smoothing=self.mesh_smoothing,
             device=wp.get_device(),
@@ -300,7 +317,7 @@ class Example:
         self._gpu_meshers = [
             RodMesher(
                 num_points=rod.num_points,
-                radius=self.gpu_batch.configs[idx].rod_radius,
+                radius=self.gpu_mesh_radii[idx],
                 resolution=self.mesh_resolution,
                 smoothing=self.mesh_smoothing,
                 device=wp.get_device(),
@@ -985,7 +1002,8 @@ class Example:
                 self.viewer.log_lines(f"/directors_gpu_{idx}", None, None, None)
 
         # Render rod tube meshes (always update, but set hidden flag based on show_rod_mesh)
-        # Update reference rod mesh
+        # Update reference rod mesh with current radius
+        self._ref_mesher.set_radius(self.ref_mesh_radius)
         ref_positions = self.ref_rod.positions[:, 0:3].astype(np.float32) + self.ref_offset
         self._ref_mesher.update_numpy(ref_positions)
         ref_verts_wp, ref_indices_wp, ref_normals_wp, ref_uvs_wp = self._ref_mesher.get_warp_arrays()
@@ -998,8 +1016,10 @@ class Example:
             hidden=not self.show_rod_mesh,
         )
 
-        # Update GPU rod meshes
+        # Update GPU rod meshes with current radii
         for idx, rod in enumerate(self.gpu_state.rods):
+            if idx < len(self.gpu_mesh_radii):
+                self._gpu_meshers[idx].set_radius(self.gpu_mesh_radii[idx])
             gpu_positions = rod.positions_numpy().astype(np.float32) + self.gpu_offsets[idx]
             self._gpu_meshers[idx].update_numpy(gpu_positions)
             gpu_verts_wp, gpu_indices_wp, gpu_normals_wp, gpu_uvs_wp = self._gpu_meshers[idx].get_warp_arrays()
@@ -1211,6 +1231,31 @@ class Example:
         _changed, self.show_directors = ui.checkbox("Show Directors", self.show_directors)
         _changed, self.director_scale = ui.slider_float("Director Scale", self.director_scale, 0.01, 0.3)
         _changed, self.show_rod_mesh = ui.checkbox("Show Rod Mesh", self.show_rod_mesh)
+
+        # Per-rod mesh rendering settings (only show when mesh is enabled)
+        if self.show_rod_mesh:
+            ui.separator()
+            ui.text("Rod Mesh Settings")
+
+            # Reference rod settings
+            ui.text("  Reference Rod (Blue)")
+            _changed, self.ref_mesh_radius = ui.slider_float("  Ref Radius", self.ref_mesh_radius, 0.001, 0.1)
+            # Color display (read-only for now, could add color picker if available)
+            ui.text(
+                f"    Color: ({self.ref_mesh_color[0]:.2f}, {self.ref_mesh_color[1]:.2f}, {self.ref_mesh_color[2]:.2f})"
+            )
+
+            # GPU rod settings
+            for idx in range(len(self.gpu_state.rods)):
+                color_name = ["Orange", "Green", "Purple", "Yellow"][idx % 4]
+                ui.text(f"  GPU Rod {idx} ({color_name})")
+                if idx < len(self.gpu_mesh_radii):
+                    _changed, self.gpu_mesh_radii[idx] = ui.slider_float(
+                        f"  GPU{idx} Radius", self.gpu_mesh_radii[idx], 0.001, 0.1
+                    )
+                if idx < len(self.gpu_mesh_colors):
+                    c = self.gpu_mesh_colors[idx]
+                    ui.text(f"    Color: ({c[0]:.2f}, {c[1]:.2f}, {c[2]:.2f})")
 
         ui.separator()
         ui.text("Root Control (Numpad, both rods)")

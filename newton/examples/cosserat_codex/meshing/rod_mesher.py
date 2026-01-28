@@ -256,6 +256,17 @@ class RodMesher:
                 self.indices[tri_idx * 3 + 2] = cur_index
                 tri_idx += 1
 
+    def set_radius(self, radius: float) -> None:
+        """Set uniform radius for the entire rod.
+
+        Args:
+            radius: Uniform radius value.
+        """
+        self.radius = radius
+        self._radii = np.full(self.num_rings, radius, dtype=np.float32)
+        # Invalidate GPU array
+        self._radii_wp = None
+
     def set_radii(self, radii: np.ndarray) -> None:
         """Set per-ring radii for varying radius along the rod.
 
