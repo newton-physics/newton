@@ -661,6 +661,11 @@ def compare_mjw_models(
         elif isinstance(native_val, (int, float, np.number)):
             assert newton_val is not None, f"{attr}: newton is None"
             assert abs(float(newton_val) - float(native_val)) < tol, f"{attr}: {newton_val} != {native_val}"
+        elif attr == "stat" and hasattr(native_val, "meaninertia"):
+            # Special case: Statistic object - compare meaninertia with tolerance
+            assert hasattr(newton_val, "meaninertia"), f"{attr}: newton missing meaninertia"
+            diff = abs(float(newton_val.meaninertia) - float(native_val.meaninertia))
+            assert diff < tol, f"{attr}.meaninertia: diff={diff:.2e} > tol={tol:.0e}"
         else:
             assert newton_val == native_val, f"{attr}: {newton_val} != {native_val}"
 
@@ -1257,8 +1262,6 @@ class TestMenagerie_UniversalRobotsUr5e(TestMenagerieBase):
         "jnt_solimp",
         # Options: solver/iterations differ between Newton defaults and MJCF
         "opt",
-        # Statistics: small float precision differences from inertia calculations
-        "stat",
     }
 
 
