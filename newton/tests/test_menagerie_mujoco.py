@@ -514,6 +514,7 @@ DEFAULT_MODEL_SKIP_FIELDS: set[str] = {
     # Mocap bodies: Newton handles fixed base differently
     "mocap_",
     "nmocap",
+    "body_mocapid",
     # Inertia representation: Newton re-diagonalizes, giving same physics but different
     # principal axis ordering and orientation. Compare via compare_inertia_tensors() instead.
     "body_inertia",
