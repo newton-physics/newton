@@ -33,7 +33,6 @@ from newton.examples.cosserat2.kernels.collision import (
     compute_static_tri_aabbs_kernel,
 )
 from newton.examples.cosserat_codex.cli import build_rod_configs
-from newton.examples.cosserat_codex.rod import DefKitDirectLibrary, DefKitDirectRodState
 from newton.examples.cosserat_codex.constants import (
     DIRECT_SOLVE_WARP_BANDED_CHOLESKY,
     DIRECT_SOLVE_WARP_BLOCK_THOMAS,
@@ -54,7 +53,8 @@ from newton.examples.cosserat_codex.math_utils import (
     quat_from_axis_angle,
     quat_multiply,
 )
-from newton.examples.cosserat_codex.rod import RodBatch
+from newton.examples.cosserat_codex.meshing import RodMesher
+from newton.examples.cosserat_codex.rod import DefKitDirectLibrary, DefKitDirectRodState, RodBatch
 from newton.examples.cosserat_codex.solver import CosseratXPBDSolver
 
 
@@ -66,7 +66,7 @@ def _resolve_models_dir() -> str:
         return models_path
 
     if os.path.isfile(models_path):
-        with open(models_path, "r", encoding="utf-8") as handle:
+        with open(models_path, encoding="utf-8") as handle:
             target = handle.read().strip()
         if target:
             resolved = os.path.abspath(os.path.join(base_dir, target))
@@ -115,6 +115,9 @@ class Example:
         self.show_segments = True
         self.show_directors = False
         self.director_scale = 0.1
+        self.show_rod_mesh = False
+        self.mesh_resolution = 8
+        self.mesh_smoothing = 3
 
         # Track sliding constraint configuration
         self.track_enabled = True
@@ -217,7 +220,7 @@ class Example:
                 "'cosserat_codex/gpu_warp/models', ensure it targets the cosserat models folder."
             )
         usd_stage = Usd.Stage.Open(usd_path)
-        #mesh_prim = usd_stage.GetPrimAtPath("/root/A4009/A4007/Xueguan_rudong/Dynamic_vessels/Mesh")
+        # mesh_prim = usd_stage.GetPrimAtPath("/root/A4009/A4007/Xueguan_rudong/Dynamic_vessels/Mesh")
         mesh_prim = usd_stage.GetPrimAtPath("/root/Mesh/Mesh_004")
         vessel_mesh = newton.usd.get_mesh(mesh_prim)
 
@@ -286,6 +289,25 @@ class Example:
         gpu_edge_count = sum(max(0, rod.num_points - 1) for rod in self.gpu_state.rods)
         self._gpu_segment_colors = np.tile(np.array([1.0, 0.6, 0.2], dtype=np.float32), (gpu_edge_count, 1))
 
+        # Initialize rod meshers for tube visualization
+        self._ref_mesher = RodMesher(
+            num_points=self.ref_rod.num_points,
+            radius=rod_radius,
+            resolution=self.mesh_resolution,
+            smoothing=self.mesh_smoothing,
+            device=wp.get_device(),
+        )
+        self._gpu_meshers = [
+            RodMesher(
+                num_points=rod.num_points,
+                radius=self.gpu_batch.configs[idx].rod_radius,
+                resolution=self.mesh_resolution,
+                smoothing=self.mesh_smoothing,
+                device=wp.get_device(),
+            )
+            for idx, rod in enumerate(self.gpu_state.rods)
+        ]
+
         device = self.model.device
         self._ref_positions_wp = wp.zeros(self.ref_rod.num_points, dtype=wp.vec3, device=device)
         self._ref_velocities_wp = wp.zeros(self.ref_rod.num_points, dtype=wp.vec3, device=device)
@@ -332,9 +354,7 @@ class Example:
         self._sync_state_from_rods(force=True)
         self._update_gravity()
         self._ref_root_base_orientation = self.ref_rod.orientations[0].copy()
-        self._gpu_root_base_orientations = [
-            rod.orientations[0].copy() for rod in self.gpu_state.rods
-        ]
+        self._gpu_root_base_orientations = [rod.orientations[0].copy() for rod in self.gpu_state.rods]
 
         # Initialize track start/end from rod first/last particle positions
         ref_first_pos = self.ref_rod.positions[0, 0:3].astype(np.float32)
@@ -537,9 +557,7 @@ class Example:
                 device=self.model.device,
             )
 
-            ref_offset_wp = wp.vec3(
-                float(self.ref_offset[0]), float(self.ref_offset[1]), float(self.ref_offset[2])
-            )
+            ref_offset_wp = wp.vec3(float(self.ref_offset[0]), float(self.ref_offset[1]), float(self.ref_offset[2]))
             wp.launch(
                 _warp_copy_from_offset,
                 dim=self.ref_rod.num_points,
@@ -706,9 +724,7 @@ class Example:
                 rod.rest_darboux[e, 2] = self.rest_twist
 
             if hasattr(rod, "rest_darboux_wp") and rod.num_edges > 0:
-                rod.rest_darboux_wp.assign(
-                    wp.array(rod.rest_darboux[:, 0:3], dtype=wp.vec3, device=rod.device)
-                )
+                rod.rest_darboux_wp.assign(wp.array(rod.rest_darboux[:, 0:3], dtype=wp.vec3, device=rod.device))
 
     def _handle_keyboard_input(self):
         if not hasattr(self.viewer, "is_key_down"):
@@ -759,8 +775,11 @@ class Example:
                 self.concentric_enabled = not self.concentric_enabled
         self._concentric_key_was_down = c_down
 
-        if (self.viewer.is_key_down(key.PLUS) or self.viewer.is_key_down(key.EQUAL) or
-                self.viewer.is_key_down(key.NUM_ADD)):
+        if (
+            self.viewer.is_key_down(key.PLUS)
+            or self.viewer.is_key_down(key.EQUAL)
+            or self.viewer.is_key_down(key.NUM_ADD)
+        ):
             self.tip_bend_angle += self.tip_bend_speed * self.frame_dt
             self._apply_tip_bend()
 
@@ -965,6 +984,34 @@ class Example:
             for idx in range(len(self.gpu_state.rods)):
                 self.viewer.log_lines(f"/directors_gpu_{idx}", None, None, None)
 
+        # Render rod tube meshes (always update, but set hidden flag based on show_rod_mesh)
+        # Update reference rod mesh
+        ref_positions = self.ref_rod.positions[:, 0:3].astype(np.float32) + self.ref_offset
+        self._ref_mesher.update_numpy(ref_positions)
+        ref_verts_wp, ref_indices_wp, ref_normals_wp, ref_uvs_wp = self._ref_mesher.get_warp_arrays()
+        self.viewer.log_mesh(
+            "/rod_mesh_reference",
+            ref_verts_wp,
+            ref_indices_wp,
+            ref_normals_wp,
+            ref_uvs_wp,
+            hidden=not self.show_rod_mesh,
+        )
+
+        # Update GPU rod meshes
+        for idx, rod in enumerate(self.gpu_state.rods):
+            gpu_positions = rod.positions_numpy().astype(np.float32) + self.gpu_offsets[idx]
+            self._gpu_meshers[idx].update_numpy(gpu_positions)
+            gpu_verts_wp, gpu_indices_wp, gpu_normals_wp, gpu_uvs_wp = self._gpu_meshers[idx].get_warp_arrays()
+            self.viewer.log_mesh(
+                f"/rod_mesh_gpu_{idx}",
+                gpu_verts_wp,
+                gpu_indices_wp,
+                gpu_normals_wp,
+                gpu_uvs_wp,
+                hidden=not self.show_rod_mesh,
+            )
+
         self.viewer.end_frame()
 
     def gui(self, ui):
@@ -996,9 +1043,7 @@ class Example:
 
         ui.separator()
         changed_bend_k, self.bend_stiffness = ui.slider_float("Bend Stiffness", self.bend_stiffness, 0.0, 1.0)
-        changed_twist_k, self.twist_stiffness = ui.slider_float(
-            "Twist Stiffness", self.twist_stiffness, 0.0, 1.0
-        )
+        changed_twist_k, self.twist_stiffness = ui.slider_float("Twist Stiffness", self.twist_stiffness, 0.0, 1.0)
         if changed_bend_k or changed_twist_k:
             self.ref_rod.set_bend_stiffness(self.bend_stiffness, self.twist_stiffness)
             self.gpu_state.set_bend_stiffness(self.bend_stiffness, self.twist_stiffness)
@@ -1012,7 +1057,9 @@ class Example:
             self.gpu_state.set_rest_darboux(self.rest_bend_d1, self.rest_bend_d2, self.rest_twist)
 
         ui.separator()
-        changed_E, self.young_modulus_scale = ui.slider_float("Young Modulus (1e6)", self.young_modulus_scale, 0.1, 1000.0)
+        changed_E, self.young_modulus_scale = ui.slider_float(
+            "Young Modulus (1e6)", self.young_modulus_scale, 0.1, 1000.0
+        )
         changed_G, self.torsion_modulus_scale = ui.slider_float(
             "Torsion Modulus (1e6)", self.torsion_modulus_scale, 0.1, 1000.0
         )
@@ -1029,9 +1076,7 @@ class Example:
             for rod in self.gpu_state.rods:
                 rod.rest_lengths[:] = self.segment_length
                 if hasattr(rod, "rest_lengths_wp") and rod.num_edges > 0:
-                    rod.rest_lengths_wp.assign(
-                        wp.array(rod.rest_lengths, dtype=wp.float32, device=rod.device)
-                    )
+                    rod.rest_lengths_wp.assign(wp.array(rod.rest_lengths, dtype=wp.float32, device=rod.device))
 
         ui.separator()
         _changed, self.gravity_scale = ui.slider_float("Gravity Scale", self.gravity_scale, 0.0, 2.0)
@@ -1050,13 +1095,9 @@ class Example:
         ui.text("Rod Insertion (PgUp/PgDn: Rod0, Home/End: Rod1)")
         _changed, self.insertion_speed = ui.slider_float("Insertion Speed", self.insertion_speed, 0.1, 2.0)
         if len(self.gpu_state.rods) >= 1:
-            _changed, self.rod_insertions[0] = ui.slider_float(
-                "Rod 0 Insertion", self.rod_insertions[0], 0.0, 5.0
-            )
+            _changed, self.rod_insertions[0] = ui.slider_float("Rod 0 Insertion", self.rod_insertions[0], 0.0, 5.0)
         if len(self.gpu_state.rods) >= 2:
-            _changed, self.rod_insertions[1] = ui.slider_float(
-                "Rod 1 Insertion", self.rod_insertions[1], 0.0, 5.0
-            )
+            _changed, self.rod_insertions[1] = ui.slider_float("Rod 1 Insertion", self.rod_insertions[1], 0.0, 5.0)
             insertion_diff = self.rod_insertions[0] - self.rod_insertions[1]
             ui.text(f"Insertion Diff: {insertion_diff:.3f}")
 
@@ -1084,16 +1125,12 @@ class Example:
 
         ui.separator()
         ui.text("Bendable Tip")
-        
-        changed_tip_angle, self.tip_bend_angle = ui.slider_float(
-            "Tip Bend Angle (rad)", self.tip_bend_angle, -1.5, 1.5
-        )
-        changed_tip_edges, self.tip_num_edges = ui.slider_int(
-            "Tip Edges Affected", self.tip_num_edges, 1, 10
-        )
+
+        changed_tip_angle, self.tip_bend_angle = ui.slider_float("Tip Bend Angle (rad)", self.tip_bend_angle, -1.5, 1.5)
+        changed_tip_edges, self.tip_num_edges = ui.slider_int("Tip Edges Affected", self.tip_num_edges, 1, 10)
         _changed, self.tip_bend_speed = ui.slider_float("Tip Bend Speed", self.tip_bend_speed, 0.1, 2.0)
         if changed_tip_angle or changed_tip_edges:
-                self._apply_tip_bend()
+            self._apply_tip_bend()
 
         ui.separator()
         ui.text("Collisions")
@@ -1101,7 +1138,7 @@ class Example:
         _changed, self.use_two_sided = ui.checkbox("Use Two-Sided Collisions", self.use_two_sided)
         ui.separator()
         ui.text("Rod Solver")
-        
+
         gpu_backend_labels = [
             "Block Thomas",
             "Banded Cholesky",
@@ -1135,9 +1172,7 @@ class Example:
                     )
                     if changed_iter_ref or changed_iter_count:
                         for rod in self.gpu_state.rods:
-                            rod.set_iterative_refinement(
-                                self.use_iterative_refinement, self.iterative_refinement_iters
-                            )
+                            rod.set_iterative_refinement(self.use_iterative_refinement, self.iterative_refinement_iters)
                 elif n_dofs <= TILE:
                     ui.text(f"  Using Warp dense tiled Cholesky (n_dofs={n_dofs} <= TILE={TILE})")
                 else:
@@ -1175,6 +1210,7 @@ class Example:
         _changed, self.show_segments = ui.checkbox("Show Rod Segments", self.show_segments)
         _changed, self.show_directors = ui.checkbox("Show Directors", self.show_directors)
         _changed, self.director_scale = ui.slider_float("Director Scale", self.director_scale, 0.01, 0.3)
+        _changed, self.show_rod_mesh = ui.checkbox("Show Rod Mesh", self.show_rod_mesh)
 
         ui.separator()
         ui.text("Root Control (Numpad, both rods)")
