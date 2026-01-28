@@ -1570,7 +1570,7 @@ def parse_mjcf(
             # Add all shape pairs from these bodies to collision filter
             for shape1_idx in body1_shapes:
                 for shape2_idx in body2_shapes:
-                    builder.shape_collision_filter_pairs.append((shape1_idx, shape2_idx))
+                    builder.add_shape_collision_filter_pair(shape1_idx, shape2_idx)
 
             if verbose:
                 print(
