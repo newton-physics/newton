@@ -101,8 +101,15 @@ jobs:
       - name: Set up Python
         run: uv python install
 
+      - name: Check disk space
+        run: df -h
+
       - name: Run Tests
         run: uv run --extra dev --extra torch-cu12 -m newton.tests --junit-report-xml rspec.xml --coverage --coverage-xml coverage.xml
+
+      - name: Check disk space (post-test)
+        if: always()
+        run: df -h
 
       - name: Test Summary
         if: ${{ !cancelled() }}

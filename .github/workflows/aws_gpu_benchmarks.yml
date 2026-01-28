@@ -111,6 +111,9 @@ jobs:
       - name: Set up Python
         run: uv python install
 
+      - name: Check disk space
+        run: df -h
+
       - name: Set up ASV environment
         run: uvx asv machine --yes
 
@@ -132,6 +135,10 @@ jobs:
         run: |
           uvx asv compare --split ${{ inputs.base_ref }} ${{ inputs.ref }}
           exit 2
+
+      - name: Check disk space (post-benchmark)
+        if: always()
+        run: df -h
 
       - name: Re-run instructions
         if: failure()
