@@ -1641,6 +1641,7 @@ class ModelBuilder:
         convert_3d_hinge_to_ball_joints: bool = False,
         mesh_maxhullvert: int = MESH_MAXHULLVERT,
         ctrl_direct: bool = False,
+        path_resolver: Callable[[str | None, str], str] | None = None,
     ):
         """
         Parses MuJoCo XML (MJCF) file and adds the bodies and joints to the given ModelBuilder.
@@ -1678,6 +1679,7 @@ class ModelBuilder:
             ctrl_direct (bool): If True, all actuators use CTRL_DIRECT mode where control comes directly
                 from control.mujoco.ctrl array (MuJoCo-native behavior). If False (default), position/velocity
                 actuators use JOINT_TARGET mode where control comes from joint_target_pos/vel.
+            path_resolver (Callable): Callback to resolve file paths. Takes (base_dir, file_path) and returns a resolved path. For <include> elements, can return either a file path or XML content directly. For asset elements (mesh, texture, etc.), must return an absolute file path. The default resolver joins paths and returns absolute file paths.
         """
         from ..solvers.mujoco.solver_mujoco import SolverMuJoCo  # noqa: PLC0415
         from ..utils.import_mjcf import parse_mjcf  # noqa: PLC0415
@@ -1714,6 +1716,7 @@ class ModelBuilder:
             convert_3d_hinge_to_ball_joints=convert_3d_hinge_to_ball_joints,
             mesh_maxhullvert=mesh_maxhullvert,
             ctrl_direct=ctrl_direct,
+            path_resolver=path_resolver,
         )
 
     # endregion

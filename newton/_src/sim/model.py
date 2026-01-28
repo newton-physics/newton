@@ -221,7 +221,7 @@ class Model:
         self.shape_collision_filter_pairs: set[tuple[int, int]] = set()
         """Pairs of shape indices that should not collide."""
         self.shape_collision_radius = None
-        """Collision radius for bounding sphere broadphase, shape [shape_count], float."""
+        """Collision radius for bounding sphere broadphase, shape [shape_count], float. Not supported by :class:`~newton.solvers.SolverMuJoCo`."""
         self.shape_contact_pairs = None
         """Pairs of shape indices that may collide, shape [contact_pair_count, 2], int."""
         self.shape_contact_pair_count = 0

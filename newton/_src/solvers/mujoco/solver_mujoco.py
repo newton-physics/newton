@@ -97,6 +97,8 @@ class SolverMuJoCo(SolverBase):
 
         - This solver requires `mujoco_warp`_ and its dependencies to be installed.
         - For installation instructions, see the `mujoco_warp`_ repository.
+        - ``shape_collision_radius`` from Newton models is not used by MuJoCo. Instead, MuJoCo computes
+          bounding sphere radii (``geom_rbound``) internally based on the geometry definition.
 
     Example
     -------
@@ -3724,7 +3726,6 @@ class SolverMuJoCo(SolverBase):
             update_geom_properties_kernel,
             dim=(num_worlds, num_geoms),
             inputs=[
-                self.model.shape_collision_radius,
                 self.model.shape_material_mu,
                 self.model.shape_material_ke,
                 self.model.shape_material_kd,
@@ -3743,7 +3744,6 @@ class SolverMuJoCo(SolverBase):
                 shape_geom_gap,
             ],
             outputs=[
-                self.mjw_model.geom_rbound,
                 self.mjw_model.geom_friction,
                 self.mjw_model.geom_solref,
                 self.mjw_model.geom_size,
