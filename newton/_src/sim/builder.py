@@ -559,6 +559,9 @@ class ModelBuilder:
         self.default_surface_mesh_tri_drag = 0.0
         self.default_surface_mesh_tri_lift = 0.0
 
+        self.default_surface_mesh_edge_ke = 0.0
+        self.default_surface_mesh_edge_kd = 0.0
+
         # Default distance constraint properties
         self.default_spring_ke = 100.0
         self.default_spring_kd = 0.0
@@ -5832,6 +5835,7 @@ class ModelBuilder:
         tri_kd: float | None = None,
         tri_drag: float | None = None,
         tri_lift: float | None = None,
+        particle_radius: float | None = None,
     ):
         """Helper to create a rectangular tetrahedral FEM grid
 
@@ -5857,12 +5861,15 @@ class ModelBuilder:
             fix_right: Make the right-most edge of particles kinematic
             fix_top: Make the top-most edge of particles kinematic
             fix_bottom: Make the bottom-most edge of particles kinematic
+            particle_radius: particle's contact radius (controls rigidbody-particle contact distance)
         """
         tri_ke = tri_ke if tri_ke is not None else self.default_surface_mesh_tri_ke
         tri_ka = tri_ka if tri_ka is not None else self.default_surface_mesh_tri_ka
         tri_kd = tri_kd if tri_kd is not None else self.default_surface_mesh_tri_kd
         tri_drag = tri_drag if tri_drag is not None else self.default_surface_mesh_tri_drag
         tri_lift = tri_lift if tri_lift is not None else self.default_surface_mesh_tri_lift
+        edge_ke = self.default_surface_mesh_edge_ke
+        edge_kd = self.default_surface_mesh_edge_kd
 
         start_vertex = len(self.particle_q)
 
@@ -5888,7 +5895,7 @@ class ModelBuilder:
 
                     p = wp.quat_rotate(rot, v) + pos
 
-                    self.add_particle(p, vel, m)
+                    self.add_particle(p, vel, m, particle_radius)
 
         # dict of open faces
         faces = {}
@@ -5938,9 +5945,23 @@ class ModelBuilder:
                         add_tet(v6, v5, v2, v7)
                         add_tet(v5, v2, v7, v0)
 
-        # add triangles
+# add surface triangles
+        start_tri = len(self.tri_indices)
         for _k, v in faces.items():
             self.add_triangle(v[0], v[1], v[2], tri_ke, tri_ka, tri_kd, tri_drag, tri_lift)
+        end_tri = len(self.tri_indices)
+
+        # add surface mesh edges (for collision)
+        if end_tri > start_tri:
+            adj = MeshAdjacency(self.tri_indices[start_tri:end_tri], end_tri - start_tri)
+            edge_indices = np.fromiter(
+                (x for e in adj.edges.values() for x in (e.o0, e.o1, e.v0, e.v1)),
+                int,
+            ).reshape(-1, 4)
+            if len(edge_indices) > 0:
+                # Add edges with zero stiffness by default (just for collision)
+                for o1, o2, v1, v2 in edge_indices:
+                    self.add_edge(o1, o2, v1, v2, None, edge_ke, edge_kd)
 
     def add_soft_mesh(
         self,
@@ -5973,12 +5994,15 @@ class ModelBuilder:
             k_mu: The first elastic Lame parameter
             k_lambda: The second elastic Lame parameter
             k_damp: The damping stiffness
+            particle_radius: particle's contact radius (controls rigidbody-particle contact distance)
         """
         tri_ke = tri_ke if tri_ke is not None else self.default_surface_mesh_tri_ke
         tri_ka = tri_ka if tri_ka is not None else self.default_surface_mesh_tri_ka
         tri_kd = tri_kd if tri_kd is not None else self.default_surface_mesh_tri_kd
         tri_drag = tri_drag if tri_drag is not None else self.default_surface_mesh_tri_drag
         tri_lift = tri_lift if tri_lift is not None else self.default_surface_mesh_tri_lift
+        edge_ke = self.default_surface_mesh_edge_ke
+        edge_kd = self.default_surface_mesh_edge_kd
 
         num_tets = int(len(indices) / 4)
 
@@ -6027,13 +6051,10 @@ class ModelBuilder:
         # add surface triangles
         start_tri = len(self.tri_indices)
         for _k, v in faces.items():
-            try:
-                self.add_triangle(v[0], v[1], v[2], tri_ke, tri_ka, tri_kd, tri_drag, tri_lift)
-            except np.linalg.LinAlgError:
-                continue
+            self.add_triangle(v[0], v[1], v[2], tri_ke, tri_ka, tri_kd, tri_drag, tri_lift)
         end_tri = len(self.tri_indices)
 
-        # add surface mesh edges (for graph coloring and optional bending)
+        # add surface mesh edges (for collision)
         if end_tri > start_tri:
             adj = MeshAdjacency(self.tri_indices[start_tri:end_tri], end_tri - start_tri)
             edge_indices = np.fromiter(
@@ -6041,10 +6062,9 @@ class ModelBuilder:
                 int,
             ).reshape(-1, 4)
             if len(edge_indices) > 0:
-                # Add edges with zero stiffness by default (just for graph coloring)
-                # User can enable bending by setting edge_ke/edge_kd in color() call
+                # Add edges with zero stiffness by default (just for collision)
                 for o1, o2, v1, v2 in edge_indices:
-                    self.add_edge(o1, o2, v1, v2, None, 0.0, 0.0)
+                    self.add_edge(o1, o2, v1, v2, None, edge_ke, edge_kd)
 
     # incrementally updates rigid body mass with additional mass and inertia expressed at a local to the body
     def _update_body_mass(self, i, m, I, p, q):
