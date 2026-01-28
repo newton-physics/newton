@@ -59,7 +59,7 @@ from ..geometry.utils import RemeshingMethod, compute_inertia_obb, remesh_mesh
 from ..usd.schema_resolver import SchemaResolver
 from ..utils import compute_world_offsets
 from ..utils.mesh import MeshAdjacency
-from .graph_coloring import ColoringAlgorithm, color_rigid_bodies, color_trimesh, combine_independent_particle_coloring
+from .graph_coloring import ColoringAlgorithm, color_rigid_bodies, combine_independent_particle_coloring, color_graph, construct_particle_graph
 from .joints import (
     ActuatorMode,
     EqType,
@@ -551,6 +551,13 @@ class ModelBuilder:
         self.default_tri_kd = 10.0
         self.default_tri_drag = 0.0
         self.default_tri_lift = 0.0
+
+        # Default triangle soft mesh settings for surficial mesh of a soft tetmesh
+        self.default_surface_mesh_tri_ke = 0.0
+        self.default_surface_mesh_tri_ka = 0.0
+        self.default_surface_mesh_tri_kd = 0.0
+        self.default_surface_mesh_tri_drag = 0.0
+        self.default_surface_mesh_tri_lift = 0.0
 
         # Default distance constraint properties
         self.default_spring_ke = 100.0
@@ -4067,9 +4074,10 @@ class ModelBuilder:
         if xform is None:
             assert plane is not None, "Either xform or plane must be provided"
             # compute position and rotation from plane equation
+            # For plane equation ax + by + cz + d = 0, the closest point to origin is -d * normal
             normal = np.array(plane[:3])
             normal /= np.linalg.norm(normal)
-            pos = plane[3] * normal
+            pos = -plane[3] * normal
             # compute rotation from local +Z axis to plane normal
             rot = wp.quat_between_vectors(wp.vec3(0.0, 0.0, 1.0), wp.vec3(*normal))
             xform = wp.transform(pos, rot)
@@ -4089,6 +4097,7 @@ class ModelBuilder:
 
     def add_ground_plane(
         self,
+        height=0.0,
         cfg: ShapeConfig | None = None,
         key: str | None = None,
     ) -> int:
@@ -4102,7 +4111,7 @@ class ModelBuilder:
             int: The index of the newly added shape.
         """
         return self.add_shape_plane(
-            plane=(*self.up_vector, 0.0),
+            plane=(*self.up_vector, -height),
             width=0.0,
             length=0.0,
             cfg=cfg,
@@ -5849,11 +5858,11 @@ class ModelBuilder:
             fix_top: Make the top-most edge of particles kinematic
             fix_bottom: Make the bottom-most edge of particles kinematic
         """
-        tri_ke = tri_ke if tri_ke is not None else self.default_tri_ke
-        tri_ka = tri_ka if tri_ka is not None else self.default_tri_ka
-        tri_kd = tri_kd if tri_kd is not None else self.default_tri_kd
-        tri_drag = tri_drag if tri_drag is not None else self.default_tri_drag
-        tri_lift = tri_lift if tri_lift is not None else self.default_tri_lift
+        tri_ke = tri_ke if tri_ke is not None else self.default_surface_mesh_tri_ke
+        tri_ka = tri_ka if tri_ka is not None else self.default_surface_mesh_tri_ka
+        tri_kd = tri_kd if tri_kd is not None else self.default_surface_mesh_tri_kd
+        tri_drag = tri_drag if tri_drag is not None else self.default_surface_mesh_tri_drag
+        tri_lift = tri_lift if tri_lift is not None else self.default_surface_mesh_tri_lift
 
         start_vertex = len(self.particle_q)
 
@@ -5950,6 +5959,7 @@ class ModelBuilder:
         tri_kd: float | None = None,
         tri_drag: float | None = None,
         tri_lift: float | None = None,
+        particle_radius: float | None = None,
     ) -> None:
         """Helper to create a tetrahedral model from an input tetrahedral mesh
 
@@ -5964,11 +5974,11 @@ class ModelBuilder:
             k_lambda: The second elastic Lame parameter
             k_damp: The damping stiffness
         """
-        tri_ke = tri_ke if tri_ke is not None else self.default_tri_ke
-        tri_ka = tri_ka if tri_ka is not None else self.default_tri_ka
-        tri_kd = tri_kd if tri_kd is not None else self.default_tri_kd
-        tri_drag = tri_drag if tri_drag is not None else self.default_tri_drag
-        tri_lift = tri_lift if tri_lift is not None else self.default_tri_lift
+        tri_ke = tri_ke if tri_ke is not None else self.default_surface_mesh_tri_ke
+        tri_ka = tri_ka if tri_ka is not None else self.default_surface_mesh_tri_ka
+        tri_kd = tri_kd if tri_kd is not None else self.default_surface_mesh_tri_kd
+        tri_drag = tri_drag if tri_drag is not None else self.default_surface_mesh_tri_drag
+        tri_lift = tri_lift if tri_lift is not None else self.default_surface_mesh_tri_lift
 
         num_tets = int(len(indices) / 4)
 
@@ -5990,7 +6000,7 @@ class ModelBuilder:
         for v in vertices:
             p = wp.quat_rotate(rot, wp.vec3(v[0], v[1], v[2]) * scale) + pos
 
-            self.add_particle(p, vel, 0.0)
+            self.add_particle(p, vel, 0.0, particle_radius)
 
         # add tetrahedra
         for t in range(num_tets):
@@ -6014,12 +6024,27 @@ class ModelBuilder:
                 add_face(v0, v1, v3)
                 add_face(v0, v3, v2)
 
-        # add triangles
+        # add surface triangles
+        start_tri = len(self.tri_indices)
         for _k, v in faces.items():
             try:
                 self.add_triangle(v[0], v[1], v[2], tri_ke, tri_ka, tri_kd, tri_drag, tri_lift)
             except np.linalg.LinAlgError:
                 continue
+        end_tri = len(self.tri_indices)
+
+        # add surface mesh edges (for graph coloring and optional bending)
+        if end_tri > start_tri:
+            adj = MeshAdjacency(self.tri_indices[start_tri:end_tri], end_tri - start_tri)
+            edge_indices = np.fromiter(
+                (x for e in adj.edges.values() for x in (e.o0, e.o1, e.v0, e.v1)),
+                int,
+            ).reshape(-1, 4)
+            if len(edge_indices) > 0:
+                # Add edges with zero stiffness by default (just for graph coloring)
+                # User can enable bending by setting edge_ke/edge_kd in color() call
+                for o1, o2, v1, v2 in edge_indices:
+                    self.add_edge(o1, o2, v1, v2, None, 0.0, 0.0)
 
     # incrementally updates rigid body mass with additional mass and inertia expressed at a local to the body
     def _update_body_mass(self, i, m, I, p, q):
@@ -6144,23 +6169,42 @@ class ModelBuilder:
             Ordered Greedy: Ton-That, Q. M., Kry, P. G., & Andrews, S. (2023). Parallel block Neo-Hookean XPBD using graph clustering. Computers & Graphics, 110, 1-10.
 
         """
-        # Color particles only if we have edges (cloth/soft bodies)
-        if len(self.edge_indices) > 0:
-            edge_indices = np.array(self.edge_indices)
-            self.particle_color_groups = color_trimesh(
-                len(self.particle_q),
-                edge_indices,
-                include_bending,
-                algorithm=coloring_algorithm,
-                balance_colors=balance_colors,
-                target_max_min_color_ratio=target_max_min_color_ratio,
+        num_nodes = self.particle_count
+        if num_nodes != 0:
+
+            tri_indices = np.array(self.tri_indices, dtype=np.int32) if self.tri_indices else None
+            tri_materials = np.array(self.tri_materials)
+            tet_indices = np.array(self.tet_indices, dtype=np.int32) if self.tet_indices else None
+            tet_materials = np.array(self.tet_materials)
+
+            bending_edge_indices = None
+            bending_edge_active_mask = None
+            if include_bending and self.edge_indices:
+                bending_edge_indices = np.array(self.edge_indices, dtype=np.int32)
+                bending_edge_active_mask = np.array(self.edge_bending_properties)[:, 1]
+
+            graph_edge_indices = construct_particle_graph(
+                tri_indices,
+                tri_materials[:, 0] * tri_materials[:, 1] if len(tri_materials) else None,
+                bending_edge_indices,
+                bending_edge_active_mask,
+                tet_indices,
+                tet_materials[:, 0] * tet_materials[:, 1] if len(tet_materials) else None,
             )
-        else:
-            # No edges to color - assign all particles to single color group
-            if len(self.particle_q) > 0:
-                self.particle_color_groups = [np.arange(len(self.particle_q), dtype=int)]
+
+            if len(graph_edge_indices) > 0:
+                self.particle_color_groups = color_graph(
+                    num_nodes,
+                    graph_edge_indices,
+                    balance_colors,
+                    target_max_min_color_ratio,
+                    coloring_algorithm,
+                )
+
             else:
-                self.particle_color_groups = []
+                # No edges to color - assign all particles to single color group
+                if len(self.particle_q) > 0:
+                    self.particle_color_groups = [np.arange(len(self.particle_q), dtype=int)]
 
         # Also color rigid bodies based on joint connectivity
         self.body_color_groups = color_rigid_bodies(
