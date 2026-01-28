@@ -18,13 +18,21 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import List
+from enum import Enum
 
 import numpy as np
 
 import newton.examples
 
 from .rod import RodConfig
+
+
+class SolverType(Enum):
+    """Solver types for rod simulation."""
+
+    NUMPY = "numpy"
+    WARP = "warp"
+    DLL = "dll"
 
 
 @dataclass
@@ -128,10 +136,52 @@ def create_parser():
         default=0.5,
         help="Spacing between GPU rods along the X axis.",
     )
+    parser.add_argument(
+        "--rod-solvers",
+        type=str,
+        default="numpy,warp",
+        help=(
+            "Comma-separated list of solver types for each rod. "
+            "Available types: numpy, warp, dll. "
+            "Example: --rod-solvers numpy,warp,dll creates 3 rods with different solvers. "
+            "If fewer solvers than --rod-count, the last solver type is repeated."
+        ),
+    )
     return parser
 
 
-def build_rod_configs(args) -> List[RodConfig]:
+def parse_solver_types(solver_str: str, rod_count: int) -> list[SolverType]:
+    """Parse solver types string into a list of SolverType enums.
+
+    Args:
+        solver_str: Comma-separated string of solver types (e.g., "numpy,warp,dll").
+        rod_count: Total number of rods to create.
+
+    Returns:
+        List of SolverType enums, one per rod.
+    """
+    solver_names = [s.strip().lower() for s in solver_str.split(",")]
+    solver_types = []
+
+    for name in solver_names:
+        if name == "numpy":
+            solver_types.append(SolverType.NUMPY)
+        elif name == "warp":
+            solver_types.append(SolverType.WARP)
+        elif name == "dll":
+            solver_types.append(SolverType.DLL)
+        else:
+            raise ValueError(f"Unknown solver type: {name}. Must be one of: numpy, warp, dll")
+
+    # Extend to match rod_count if needed
+    while len(solver_types) < rod_count:
+        solver_types.append(solver_types[-1] if solver_types else SolverType.WARP)
+
+    # Truncate if more solvers than rods
+    return solver_types[:rod_count]
+
+
+def build_rod_configs(args) -> list[RodConfig]:
     """Build rod configurations from parsed arguments."""
     rod_radius = args.rod_radius if args.rod_radius is not None else args.particle_radius
     gravity = np.array(args.gravity, dtype=np.float32)
@@ -170,4 +220,12 @@ def build_solver_config(args) -> SolverConfig:
     )
 
 
-__all__ = ["SolverConfig", "build_rod_configs", "build_solver_config", "create_base_parser", "create_parser"]
+__all__ = [
+    "SolverConfig",
+    "SolverType",
+    "build_rod_configs",
+    "build_solver_config",
+    "create_base_parser",
+    "create_parser",
+    "parse_solver_types",
+]

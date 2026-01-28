@@ -21,6 +21,7 @@ import math
 import os
 import time
 from collections import deque
+from dataclasses import dataclass
 
 import numpy as np
 import warp as wp
@@ -32,7 +33,7 @@ from newton.examples.cosserat2.kernels.collision import (
     collide_particles_vs_triangles_bvh_kernel,
     compute_static_tri_aabbs_kernel,
 )
-from newton.examples.cosserat_codex.cli import build_rod_configs
+from newton.examples.cosserat_codex.cli import SolverType, build_rod_configs, parse_solver_types
 from newton.examples.cosserat_codex.constants import (
     DIRECT_SOLVE_WARP_BANDED_CHOLESKY,
     DIRECT_SOLVE_WARP_BLOCK_THOMAS,
@@ -54,8 +55,27 @@ from newton.examples.cosserat_codex.math_utils import (
     quat_multiply,
 )
 from newton.examples.cosserat_codex.meshing import RodMesher
-from newton.examples.cosserat_codex.rod import DefKitDirectLibrary, DefKitDirectRodState, RodBatch
+from newton.examples.cosserat_codex.rod import (
+    DefKitDirectLibrary,
+    DefKitDirectRodState,
+    NumpyDirectRodState,
+    RodBatch,
+    RodConfig,
+)
+from newton.examples.cosserat_codex.rod.base import RodStateBase
 from newton.examples.cosserat_codex.solver import CosseratXPBDSolver
+
+
+@dataclass
+class RodInfo:
+    """Container for per-rod information."""
+
+    rod: RodStateBase  # The rod state instance (NumPy, Warp, or DLL)
+    solver_type: SolverType  # Type of solver used
+    config: RodConfig  # Rod configuration
+    offset: np.ndarray  # World offset for rendering
+    color: list  # RGB color for visualization
+    mesh_radius: float  # Radius for tube mesh rendering
 
 
 def _resolve_models_dir() -> str:
@@ -119,19 +139,25 @@ class Example:
         self.mesh_resolution = 8
         self.mesh_smoothing = 3
 
-        # Per-rod mesh rendering settings
-        # Reference rod settings
-        self.ref_mesh_radius = args.rod_radius if args.rod_radius is not None else args.particle_radius
-        self.ref_mesh_color = [0.2, 0.6, 1.0]  # Blue for reference
+        # Parse solver types from command line
+        self.solver_types = parse_solver_types(args.rod_solvers, args.rod_count)
 
-        # GPU rod settings (will be populated after rod creation)
-        self.gpu_mesh_radii = []
-        self.gpu_mesh_colors = [
-            [1.0, 0.6, 0.2],  # Orange
-            [0.2, 0.8, 0.4],  # Green
+        # Color palette for rods (indexed by solver type and rod index)
+        self._rod_colors = {
+            SolverType.NUMPY: [0.2, 0.6, 1.0],  # Blue for NumPy
+            SolverType.WARP: [1.0, 0.6, 0.2],  # Orange for Warp
+            SolverType.DLL: [0.2, 0.8, 0.4],  # Green for DLL
+        }
+        # Additional colors for multiple rods of same type
+        self._extra_colors = [
             [0.8, 0.2, 0.8],  # Purple
             [0.8, 0.8, 0.2],  # Yellow
+            [0.2, 0.8, 0.8],  # Cyan
+            [0.8, 0.4, 0.4],  # Coral
         ]
+
+        # Will be populated after rod creation
+        self.rod_infos: list[RodInfo] = []
 
         # Track sliding constraint configuration
         self.track_enabled = True
@@ -141,8 +167,9 @@ class Example:
         self.use_two_sided = False
 
         # Per-rod insertion values (arclength from track start)
+        # Will be initialized after rods are created to have one entry per rod
         self.insertion_speed = 0.5  # units per second
-        self.rod_insertions = [0.0, 0.0]  # insertion for rod 0 and rod 1
+        self.rod_insertions = []  # Populated after rod creation
 
         # Bendable tip configuration
         self.tip_bend_angle = 0.0  # radians
@@ -187,38 +214,158 @@ class Example:
             self.use_banded = True
 
         rod_radius = args.rod_radius if args.rod_radius is not None else args.particle_radius
-        self.ref_rod = DefKitDirectRodState(
-            lib=self.lib,
-            num_points=args.num_points,
-            segment_length=args.segment_length,
-            mass=args.particle_mass,
-            particle_height=args.particle_height,
-            rod_radius=rod_radius,
-            bend_stiffness=self.bend_stiffness,
-            twist_stiffness=self.twist_stiffness,
-            rest_bend_d1=self.rest_bend_d1,
-            rest_bend_d2=self.rest_bend_d2,
-            rest_twist=self.rest_twist,
-            young_modulus=args.young_modulus,
-            torsion_modulus=args.torsion_modulus,
-            gravity=self.base_gravity,
-            lock_root_rotation=args.lock_root_rotation,
-            use_banded=self.use_banded,
-        )
 
-        gpu_configs = build_rod_configs(args)
-        self.gpu_batch = RodBatch(gpu_configs)
-        self.gpu_state = self.gpu_batch.create_state(
-            device=wp.get_device(),
-            use_banded=self.use_banded,
-            use_cuda_graph=self.use_cuda_graph,
-        )
-        self.use_cuda_graph = self.gpu_state.set_use_cuda_graph(self.use_cuda_graph)
-        self.gpu_solver = CosseratXPBDSolver(
-            self.gpu_batch,
-            linear_damping=self.linear_damping,
-            angular_damping=self.angular_damping,
-        )
+        # Build configs for all rods
+        all_configs = build_rod_configs(args)
+
+        # Track color usage per solver type
+        solver_type_counts = {SolverType.NUMPY: 0, SolverType.WARP: 0, SolverType.DLL: 0}
+
+        # Create rods based on solver types
+        self.numpy_rods: list[NumpyDirectRodState] = []
+        self.dll_rods: list[DefKitDirectRodState] = []
+        warp_configs: list[RodConfig] = []
+        warp_indices: list[int] = []  # Track which indices are Warp rods
+
+        for idx, (solver_type, config) in enumerate(zip(self.solver_types, all_configs, strict=True)):
+            # Determine color for this rod
+            type_count = solver_type_counts[solver_type]
+            if type_count == 0:
+                color = self._rod_colors[solver_type]
+            else:
+                color = self._extra_colors[(type_count - 1) % len(self._extra_colors)]
+            solver_type_counts[solver_type] += 1
+
+            if solver_type == SolverType.NUMPY:
+                rod = NumpyDirectRodState(
+                    lib=self.lib,
+                    num_points=config.num_points,
+                    segment_length=config.segment_length,
+                    mass=config.particle_mass,
+                    particle_height=config.particle_height,
+                    rod_radius=config.rod_radius,
+                    bend_stiffness=config.bend_stiffness,
+                    twist_stiffness=config.twist_stiffness,
+                    rest_bend_d1=config.rest_bend_d1,
+                    rest_bend_d2=config.rest_bend_d2,
+                    rest_twist=config.rest_twist,
+                    young_modulus=config.young_modulus,
+                    torsion_modulus=config.torsion_modulus,
+                    gravity=config.gravity,
+                    lock_root_rotation=config.lock_root_rotation,
+                    use_banded=self.use_banded,
+                )
+                self.numpy_rods.append(rod)
+                self.rod_infos.append(
+                    RodInfo(
+                        rod=rod,
+                        solver_type=solver_type,
+                        config=config,
+                        offset=np.zeros(3, dtype=np.float32),  # Will be updated later
+                        color=color,
+                        mesh_radius=config.rod_radius,
+                    )
+                )
+            elif solver_type == SolverType.DLL:
+                rod = DefKitDirectRodState(
+                    lib=self.lib,
+                    num_points=config.num_points,
+                    segment_length=config.segment_length,
+                    mass=config.particle_mass,
+                    particle_height=config.particle_height,
+                    rod_radius=config.rod_radius,
+                    bend_stiffness=config.bend_stiffness,
+                    twist_stiffness=config.twist_stiffness,
+                    rest_bend_d1=config.rest_bend_d1,
+                    rest_bend_d2=config.rest_bend_d2,
+                    rest_twist=config.rest_twist,
+                    young_modulus=config.young_modulus,
+                    torsion_modulus=config.torsion_modulus,
+                    gravity=config.gravity,
+                    lock_root_rotation=config.lock_root_rotation,
+                    use_banded=self.use_banded,
+                )
+                self.dll_rods.append(rod)
+                self.rod_infos.append(
+                    RodInfo(
+                        rod=rod,
+                        solver_type=solver_type,
+                        config=config,
+                        offset=np.zeros(3, dtype=np.float32),
+                        color=color,
+                        mesh_radius=config.rod_radius,
+                    )
+                )
+            else:  # SolverType.WARP
+                warp_configs.append(config)
+                warp_indices.append(idx)
+                # Rod info will be added after GPU state creation
+                self.rod_infos.append(None)  # Placeholder
+
+        # Create Warp GPU rods if any
+        self.gpu_batch = None
+        self.gpu_state = None
+        self.gpu_solver = None
+        self.warp_rod_indices = warp_indices
+
+        if warp_configs:
+            self.gpu_batch = RodBatch(warp_configs)
+            self.gpu_state = self.gpu_batch.create_state(
+                device=wp.get_device(),
+                use_banded=self.use_banded,
+                use_cuda_graph=self.use_cuda_graph,
+            )
+            self.use_cuda_graph = self.gpu_state.set_use_cuda_graph(self.use_cuda_graph)
+            self.gpu_solver = CosseratXPBDSolver(
+                self.gpu_batch,
+                linear_damping=self.linear_damping,
+                angular_damping=self.angular_damping,
+            )
+
+            # Fill in Warp rod infos
+            for gpu_idx, global_idx in enumerate(warp_indices):
+                config = warp_configs[gpu_idx]
+                rod = self.gpu_state.rods[gpu_idx]
+                type_count = sum(1 for i in range(global_idx) if self.solver_types[i] == SolverType.WARP)
+                if type_count == 0:
+                    color = self._rod_colors[SolverType.WARP]
+                else:
+                    color = self._extra_colors[(type_count - 1) % len(self._extra_colors)]
+                self.rod_infos[global_idx] = RodInfo(
+                    rod=rod,
+                    solver_type=SolverType.WARP,
+                    config=config,
+                    offset=np.zeros(3, dtype=np.float32),
+                    color=color,
+                    mesh_radius=config.rod_radius,
+                )
+
+        # For backward compatibility, set ref_rod to first rod
+        if self.rod_infos:
+            self.ref_rod = self.rod_infos[0].rod
+        else:
+            # Fallback: create a default NumPy rod
+            self.ref_rod = NumpyDirectRodState(
+                lib=self.lib,
+                num_points=args.num_points,
+                segment_length=args.segment_length,
+                mass=args.particle_mass,
+                particle_height=args.particle_height,
+                rod_radius=rod_radius,
+                bend_stiffness=self.bend_stiffness,
+                twist_stiffness=self.twist_stiffness,
+                rest_bend_d1=self.rest_bend_d1,
+                rest_bend_d2=self.rest_bend_d2,
+                rest_twist=self.rest_twist,
+                young_modulus=args.young_modulus,
+                torsion_modulus=args.torsion_modulus,
+                gravity=self.base_gravity,
+                lock_root_rotation=args.lock_root_rotation,
+                use_banded=self.use_banded,
+            )
+
+        # Initialize per-rod insertion values (all start at 0)
+        self.rod_insertions = [0.0] * len(self.rod_infos)
 
         target_last_pos = np.array([-3.283308, -0.50000024, 1.6833224], dtype=np.float32)
         current_last_pos = self.ref_rod.positions[-1, 0:3].astype(np.float32)
@@ -266,30 +413,32 @@ class Example:
             cfg=vessel_cfg,
         )
 
-        for i in range(self.ref_rod.num_points):
-            mass = 0.0 if i == 0 else args.particle_mass
-            ref_pos = tuple(self.ref_rod.positions[i, 0:3] + self.ref_offset)
-            builder.add_particle(pos=ref_pos, vel=(0.0, 0.0, 0.0), mass=mass, radius=args.particle_radius)
-
-        self._gpu_point_starts = []
-        self._gpu_edge_starts = []
-        point_start = self.ref_rod.num_points
+        # Add particles for all rods
+        self._rod_point_starts = []
+        self._rod_edge_starts = []
+        point_start = 0
         edge_start = 0
-        for rod_index, rod in enumerate(self.gpu_state.rods):
-            config = self.gpu_batch.configs[rod_index]
+
+        for rod_info in self.rod_infos:
+            rod = rod_info.rod
+            config = rod_info.config
+            self._rod_point_starts.append(point_start)
+            self._rod_edge_starts.append(edge_start)
+
             for i in range(rod.num_points):
                 mass = 0.0 if i == 0 else config.particle_mass
-                gpu_pos = tuple(rod.positions[i, 0:3] + self.gpu_offsets[rod_index])
-                builder.add_particle(
-                    pos=gpu_pos,
-                    vel=(0.0, 0.0, 0.0),
-                    mass=mass,
-                    radius=args.particle_radius,
-                )
-            self._gpu_point_starts.append(point_start)
-            self._gpu_edge_starts.append(edge_start)
+                pos = tuple(rod.positions[i, 0:3] + rod_info.offset)
+                builder.add_particle(pos=pos, vel=(0.0, 0.0, 0.0), mass=mass, radius=args.particle_radius)
+
             point_start += rod.num_points
             edge_start += max(0, rod.num_points - 1)
+
+        # Backward compatibility: _gpu_point_starts and _gpu_edge_starts for Warp rods
+        self._gpu_point_starts = []
+        self._gpu_edge_starts = []
+        for global_idx in self.warp_rod_indices:
+            self._gpu_point_starts.append(self._rod_point_starts[global_idx])
+            self._gpu_edge_starts.append(self._rod_edge_starts[global_idx])
 
         self.model = builder.finalize()
         self.state = self.model.state()
@@ -297,42 +446,77 @@ class Example:
         self.viewer.set_model(self.model)
         self.viewer.show_particles = True
 
-        self._ref_segment_colors = np.tile(
-            np.array([0.2, 0.6, 1.0], dtype=np.float32), (self.ref_rod.num_points - 1, 1)
-        )
-        gpu_edge_count = sum(max(0, rod.num_points - 1) for rod in self.gpu_state.rods)
-        self._gpu_segment_colors = np.tile(np.array([1.0, 0.6, 0.2], dtype=np.float32), (gpu_edge_count, 1))
+        # Segment colors per rod (using rod_info colors)
+        self._segment_colors_per_rod = []
+        for rod_info in self.rod_infos:
+            num_edges = max(0, rod_info.rod.num_points - 1)
+            colors = np.tile(np.array(rod_info.color, dtype=np.float32), (num_edges, 1))
+            self._segment_colors_per_rod.append(colors)
 
-        # Initialize per-rod mesh radii from config
-        self.gpu_mesh_radii = [self.gpu_batch.configs[idx].rod_radius for idx in range(len(self.gpu_state.rods))]
+        # Backward compatibility: ref and gpu segment colors
+        if self.rod_infos:
+            self._ref_segment_colors = self._segment_colors_per_rod[0]
+        else:
+            self._ref_segment_colors = np.zeros((0, 3), dtype=np.float32)
 
-        # Initialize rod meshers for tube visualization
-        self._ref_mesher = RodMesher(
-            num_points=self.ref_rod.num_points,
-            radius=self.ref_mesh_radius,
-            resolution=self.mesh_resolution,
-            smoothing=self.mesh_smoothing,
-            device=wp.get_device(),
-        )
-        self._gpu_meshers = [
+        if self.gpu_state is not None:
+            gpu_edge_count = sum(max(0, rod.num_points - 1) for rod in self.gpu_state.rods)
+            self._gpu_segment_colors = np.tile(np.array([1.0, 0.6, 0.2], dtype=np.float32), (gpu_edge_count, 1))
+        else:
+            self._gpu_segment_colors = np.zeros((0, 3), dtype=np.float32)
+
+        # Initialize rod meshers for tube visualization (one per rod)
+        self._rod_meshers = [
             RodMesher(
-                num_points=rod.num_points,
-                radius=self.gpu_mesh_radii[idx],
+                num_points=rod_info.rod.num_points,
+                radius=rod_info.mesh_radius,
                 resolution=self.mesh_resolution,
                 smoothing=self.mesh_smoothing,
                 device=wp.get_device(),
             )
-            for idx, rod in enumerate(self.gpu_state.rods)
+            for rod_info in self.rod_infos
         ]
 
+        # Backward compatibility
+        self._ref_mesher = self._rod_meshers[0] if self._rod_meshers else None
+        self._gpu_meshers = [self._rod_meshers[idx] for idx in self.warp_rod_indices]
+        self.gpu_mesh_radii = [self.rod_infos[idx].mesh_radius for idx in self.warp_rod_indices]
+        self.ref_mesh_radius = self.rod_infos[0].mesh_radius if self.rod_infos else args.particle_radius
+        self.ref_mesh_color = self.rod_infos[0].color if self.rod_infos else [0.2, 0.6, 1.0]
+
         device = self.model.device
-        self._ref_positions_wp = wp.zeros(self.ref_rod.num_points, dtype=wp.vec3, device=device)
-        self._ref_velocities_wp = wp.zeros(self.ref_rod.num_points, dtype=wp.vec3, device=device)
-        self._ref_segment_starts_wp = wp.zeros(self.ref_rod.num_points - 1, dtype=wp.vec3, device=device)
-        self._ref_segment_ends_wp = wp.zeros(self.ref_rod.num_points - 1, dtype=wp.vec3, device=device)
-        self._gpu_segment_starts_wp = wp.zeros(gpu_edge_count, dtype=wp.vec3, device=device)
-        self._gpu_segment_ends_wp = wp.zeros(gpu_edge_count, dtype=wp.vec3, device=device)
-        self._ref_segment_colors_wp = wp.array(self._ref_segment_colors, dtype=wp.vec3, device=device)
+
+        # Allocate per-rod warp arrays for positions and segments
+        self._rod_positions_wp = []
+        self._rod_velocities_wp = []
+        self._rod_segment_starts_wp = []
+        self._rod_segment_ends_wp = []
+        self._rod_segment_colors_wp = []
+
+        for idx, rod_info in enumerate(self.rod_infos):
+            rod = rod_info.rod
+            num_edges = max(0, rod.num_points - 1)
+            self._rod_positions_wp.append(wp.zeros(rod.num_points, dtype=wp.vec3, device=device))
+            self._rod_velocities_wp.append(wp.zeros(rod.num_points, dtype=wp.vec3, device=device))
+            self._rod_segment_starts_wp.append(wp.zeros(num_edges, dtype=wp.vec3, device=device))
+            self._rod_segment_ends_wp.append(wp.zeros(num_edges, dtype=wp.vec3, device=device))
+            self._rod_segment_colors_wp.append(
+                wp.array(self._segment_colors_per_rod[idx], dtype=wp.vec3, device=device)
+            )
+
+        # Backward compatibility
+        self._ref_positions_wp = self._rod_positions_wp[0] if self._rod_positions_wp else None
+        self._ref_velocities_wp = self._rod_velocities_wp[0] if self._rod_velocities_wp else None
+        self._ref_segment_starts_wp = self._rod_segment_starts_wp[0] if self._rod_segment_starts_wp else None
+        self._ref_segment_ends_wp = self._rod_segment_ends_wp[0] if self._rod_segment_ends_wp else None
+        self._ref_segment_colors_wp = self._rod_segment_colors_wp[0] if self._rod_segment_colors_wp else None
+
+        # Compute total GPU edge count for backward compatibility
+        gpu_edge_count = 0
+        if self.gpu_state is not None:
+            gpu_edge_count = sum(max(0, rod.num_points - 1) for rod in self.gpu_state.rods)
+        self._gpu_segment_starts_wp = wp.zeros(max(1, gpu_edge_count), dtype=wp.vec3, device=device)
+        self._gpu_segment_ends_wp = wp.zeros(max(1, gpu_edge_count), dtype=wp.vec3, device=device)
         self._gpu_segment_colors_wp = wp.array(self._gpu_segment_colors, dtype=wp.vec3, device=device)
 
         scaled_vertices = self.vessel_vertices_np * self.mesh_scale
@@ -363,46 +547,76 @@ class Example:
         )
         self._collision_inv_masses_np = np.zeros(total_particles, dtype=np.float32)
         self._collision_inv_masses_wp = wp.zeros(total_particles, dtype=wp.float32, device=device)
-        self._ref_positions_prev = np.zeros((self.ref_rod.num_points, 3), dtype=np.float32)
-        self._gpu_positions_prev = [
-            wp.zeros(rod.num_points, dtype=wp.vec3, device=device) for rod in self.gpu_state.rods
+
+        # Previous positions for collision velocity update
+        self._rod_positions_prev = [
+            np.zeros((rod_info.rod.num_points, 3), dtype=np.float32) for rod_info in self.rod_infos
         ]
+        self._ref_positions_prev = (
+            self._rod_positions_prev[0] if self._rod_positions_prev else np.zeros((0, 3), dtype=np.float32)
+        )
+        self._gpu_positions_prev = []
+        if self.gpu_state is not None:
+            self._gpu_positions_prev = [
+                wp.zeros(rod.num_points, dtype=wp.vec3, device=device) for rod in self.gpu_state.rods
+            ]
 
         self._sync_state_from_rods(force=True)
         self._update_gravity()
-        self._ref_root_base_orientation = self.ref_rod.orientations[0].copy()
-        self._gpu_root_base_orientations = [rod.orientations[0].copy() for rod in self.gpu_state.rods]
 
-        # Initialize track start/end from rod first/last particle positions
-        ref_first_pos = self.ref_rod.positions[0, 0:3].astype(np.float32)
-        ref_last_pos = self.ref_rod.positions[-1, 0:3].astype(np.float32)
-        self._ref_track_start = ref_first_pos.copy()
-        self._ref_track_end = ref_last_pos.copy()
+        # Store root base orientations for all rods
+        self._rod_root_base_orientations = [rod_info.rod.orientations[0].copy() for rod_info in self.rod_infos]
+        self._ref_root_base_orientation = (
+            self._rod_root_base_orientations[0] if self._rod_root_base_orientations else None
+        )
+        self._gpu_root_base_orientations = []
+        if self.gpu_state is not None:
+            self._gpu_root_base_orientations = [rod.orientations[0].copy() for rod in self.gpu_state.rods]
 
-        # For GPU rods, store track per rod
-        self._gpu_track_starts = []
-        self._gpu_track_ends = []
-        for rod in self.gpu_state.rods:
-            gpu_positions = rod.positions_numpy()
-            self._gpu_track_starts.append(gpu_positions[0].copy())
-            self._gpu_track_ends.append(gpu_positions[-1].copy())
+        # Initialize track start/end from rod first/last particle positions (for all rods)
+        self._rod_track_starts = []
+        self._rod_track_ends = []
+        for rod_info in self.rod_infos:
+            positions = rod_info.rod.positions[:, 0:3].astype(np.float32)
+            self._rod_track_starts.append(positions[0].copy())
+            self._rod_track_ends.append(positions[-1].copy())
+
+        # Backward compatibility
+        self._ref_track_start = self._rod_track_starts[0] if self._rod_track_starts else np.zeros(3, dtype=np.float32)
+        self._ref_track_end = self._rod_track_ends[0] if self._rod_track_ends else np.zeros(3, dtype=np.float32)
+        self._gpu_track_starts = [self._rod_track_starts[idx] for idx in self.warp_rod_indices]
+        self._gpu_track_ends = [self._rod_track_ends[idx] for idx in self.warp_rod_indices]
 
     def __del__(self):
-        if hasattr(self, "ref_rod"):
-            self.ref_rod.destroy()
-        if hasattr(self, "gpu_state"):
+        # Clean up all rods
+        if hasattr(self, "rod_infos"):
+            for rod_info in self.rod_infos:
+                if rod_info and hasattr(rod_info.rod, "destroy"):
+                    rod_info.rod.destroy()
+        if hasattr(self, "gpu_state") and self.gpu_state is not None:
             self.gpu_state.destroy()
 
     def _update_offsets(self):
-        half_offset = 0.5 * self.compare_offset
-        self.ref_offset = self.mesh_offset + np.array([0.0, -half_offset, 0.0], dtype=np.float32)
-        self.gpu_base_offset = self.mesh_offset + np.array([0.0, half_offset, 0.0], dtype=np.float32)
+        """Update world offsets for all rods based on spacing."""
+        # Compute X offsets for spacing rods along X axis
+        x_offsets = compute_linear_offsets(len(self.rod_infos), self.rod_spacing)
+
+        for rod_info, x_offset in zip(self.rod_infos, x_offsets, strict=True):
+            rod_info.offset = self.mesh_offset + np.array([x_offset, 0.0, 0.0], dtype=np.float32)
+
+        # Backward compatibility: ref_offset is first rod's offset
+        self.ref_offset = self.rod_infos[0].offset if self.rod_infos else self.mesh_offset.copy()
+
+        # Backward compatibility: gpu_offsets for Warp rods only
+        self.gpu_base_offset = self.mesh_offset.copy()
         self.gpu_offsets = self._build_gpu_offsets()
 
     def _build_gpu_offsets(self):
+        """Build offsets list for Warp GPU rods (backward compatibility)."""
         offsets = []
-        for x_offset in compute_linear_offsets(self.rod_count, self.rod_spacing):
-            offsets.append(self.gpu_base_offset + np.array([x_offset, 0.0, 0.0], dtype=np.float32))
+        for idx in self.warp_rod_indices:
+            if idx < len(self.rod_infos):
+                offsets.append(self.rod_infos[idx].offset)
         return offsets
 
     def _update_gravity(self):
@@ -410,8 +624,14 @@ class Example:
             gravity = self.base_gravity * self.gravity_scale
         else:
             gravity = np.zeros(3, dtype=np.float32)
-        self.ref_rod.set_gravity(gravity)
-        self.gpu_state.set_gravity(gravity)
+
+        # Update gravity for all rods
+        for rod_info in self.rod_infos:
+            rod_info.rod.set_gravity(gravity)
+
+        # Also update GPU batch state if it exists
+        if self.gpu_state is not None:
+            self.gpu_state.set_gravity(gravity)
 
     def _sync_state_from_rods(self, force: bool = False):
         sync_ref = force or self.simulate_reference or self._force_sync_reference
@@ -459,9 +679,10 @@ class Example:
             self._force_sync_gpu = False
 
     def _update_collision_inv_masses(self):
-        self._collision_inv_masses_np[: self.ref_rod.num_points] = self.ref_rod.inv_masses
-        for idx, rod in enumerate(self.gpu_state.rods):
-            start = self._gpu_point_starts[idx]
+        # Update collision inverse masses for all rods
+        for idx, rod_info in enumerate(self.rod_infos):
+            rod = rod_info.rod
+            start = self._rod_point_starts[idx]
             end = start + rod.num_points
             self._collision_inv_masses_np[start:end] = rod.inv_masses
         self._collision_inv_masses_wp.assign(
@@ -472,9 +693,13 @@ class Example:
         if not hasattr(self, "vessel_bvh"):
             return
 
-        self._ref_positions_prev[:] = self.ref_rod.positions[:, 0:3]
-        for idx, rod in enumerate(self.gpu_state.rods):
-            wp.copy(self._gpu_positions_prev[idx], rod.positions_wp)
+        # Store previous positions for all rods
+        for idx, rod_info in enumerate(self.rod_infos):
+            rod = rod_info.rod
+            if rod_info.solver_type == SolverType.WARP:
+                wp.copy(self._gpu_positions_prev[self.warp_rod_indices.index(idx)], rod.positions_wp)
+            else:
+                self._rod_positions_prev[idx][:] = rod.positions[:, 0:3]
 
         self._update_collision_inv_masses()
         self._sync_state_from_rods(force=True)
@@ -496,110 +721,95 @@ class Example:
             device=self.model.device,
         )
 
-        ref_offset = wp.vec3(float(self.ref_offset[0]), float(self.ref_offset[1]), float(self.ref_offset[2]))
-        wp.launch(
-            _warp_copy_from_offset,
-            dim=self.ref_rod.num_points,
-            inputs=[self.state.particle_q, ref_offset, 0, self._ref_positions_wp],
-            device=self.model.device,
-        )
-        ref_positions = self._ref_positions_wp.numpy()
-        self.ref_rod.positions[:, 0:3] = ref_positions
-        self.ref_rod.predicted_positions[:, 0:3] = ref_positions
+        # Copy back to all rods
+        for idx, rod_info in enumerate(self.rod_infos):
+            rod = rod_info.rod
+            offset = rod_info.offset
+            offset_wp = wp.vec3(float(offset[0]), float(offset[1]), float(offset[2]))
+            start = self._rod_point_starts[idx]
 
-        ref_vel = (ref_positions - self._ref_positions_prev) / float(dt)
-        self.ref_rod.velocities[:, 0:3] = ref_vel
-        self.ref_rod.velocities[self.ref_rod.inv_masses == 0.0, 0:3] = 0.0
+            if rod_info.solver_type == SolverType.WARP:
+                warp_idx = self.warp_rod_indices.index(idx)
+                wp.launch(
+                    _warp_copy_from_offset,
+                    dim=rod.num_points,
+                    inputs=[self.state.particle_q, offset_wp, start, rod.positions_wp],
+                    device=self.model.device,
+                )
+                wp.launch(
+                    _warp_copy_from_offset,
+                    dim=rod.num_points,
+                    inputs=[self.state.particle_q, offset_wp, start, rod.predicted_positions_wp],
+                    device=self.model.device,
+                )
+                wp.launch(
+                    _warp_update_velocities_from_positions,
+                    dim=rod.num_points,
+                    inputs=[
+                        self._gpu_positions_prev[warp_idx],
+                        rod.positions_wp,
+                        rod.inv_masses_wp,
+                        float(dt),
+                        rod.velocities_wp,
+                    ],
+                    device=self.model.device,
+                )
+            else:
+                # For NumPy/DLL rods
+                wp.launch(
+                    _warp_copy_from_offset,
+                    dim=rod.num_points,
+                    inputs=[self.state.particle_q, offset_wp, start, self._rod_positions_wp[idx]],
+                    device=self.model.device,
+                )
+                new_positions = self._rod_positions_wp[idx].numpy()
+                rod.positions[:, 0:3] = new_positions
+                rod.predicted_positions[:, 0:3] = new_positions
 
-        for idx, rod in enumerate(self.gpu_state.rods):
-            gpu_offset = self.gpu_offsets[idx]
-            offset_wp = wp.vec3(float(gpu_offset[0]), float(gpu_offset[1]), float(gpu_offset[2]))
-            start = self._gpu_point_starts[idx]
-            wp.launch(
-                _warp_copy_from_offset,
-                dim=rod.num_points,
-                inputs=[self.state.particle_q, offset_wp, start, rod.positions_wp],
-                device=self.model.device,
-            )
-            wp.launch(
-                _warp_copy_from_offset,
-                dim=rod.num_points,
-                inputs=[self.state.particle_q, offset_wp, start, rod.predicted_positions_wp],
-                device=self.model.device,
-            )
-            wp.launch(
-                _warp_update_velocities_from_positions,
-                dim=rod.num_points,
-                inputs=[
-                    self._gpu_positions_prev[idx],
-                    rod.positions_wp,
-                    rod.inv_masses_wp,
-                    float(dt),
-                    rod.velocities_wp,
-                ],
-                device=self.model.device,
-            )
+                # Update velocities
+                vel = (new_positions - self._rod_positions_prev[idx]) / float(dt)
+                rod.velocities[:, 0:3] = vel
+                rod.velocities[rod.inv_masses == 0.0, 0:3] = 0.0
 
         self._force_sync_reference = True
         self._force_sync_gpu = True
 
     def _apply_track_constraint(self):
-        """Apply track sliding constraint to keep particles on a line segment."""
+        """Apply track sliding constraint to keep particles on a line segment.
+
+        This applies to all rods regardless of solver type. Each rod has:
+        - A track (line segment from first to last initial position)
+        - An insertion value (how far along the track the root is positioned)
+        """
         if not self.track_enabled:
             return
 
         self._update_collision_inv_masses()
         self._sync_state_from_rods(force=True)
 
-        ref_num_constrained = self.ref_rod.num_points - self.track_ignore_tip_count
-        if ref_num_constrained > 0:
-            track_start = self._ref_track_start + self.ref_offset
-            track_end = self._ref_track_end + self.ref_offset
-            track_start_wp = wp.vec3(float(track_start[0]), float(track_start[1]), float(track_start[2]))
-            track_end_wp = wp.vec3(float(track_end[0]), float(track_end[1]), float(track_end[2]))
-
-            wp.launch(
-                _warp_apply_track_sliding,
-                dim=ref_num_constrained,
-                inputs=[
-                    self.state.particle_q,
-                    self.state.particle_q,
-                    self._collision_inv_masses_wp,
-                    track_start_wp,
-                    track_end_wp,
-                    float(self.track_stiffness),
-                    0,
-                    ref_num_constrained,
-                ],
-                device=self.model.device,
-            )
-
-            ref_offset_wp = wp.vec3(float(self.ref_offset[0]), float(self.ref_offset[1]), float(self.ref_offset[2]))
-            wp.launch(
-                _warp_copy_from_offset,
-                dim=self.ref_rod.num_points,
-                inputs=[self.state.particle_q, ref_offset_wp, 0, self._ref_positions_wp],
-                device=self.model.device,
-            )
-            ref_positions = self._ref_positions_wp.numpy()
-            self.ref_rod.positions[:, 0:3] = ref_positions
-            self.ref_rod.predicted_positions[:, 0:3] = ref_positions
-
-        for idx, rod in enumerate(self.gpu_state.rods):
-            gpu_num_constrained = rod.num_points - self.track_ignore_tip_count
-            if gpu_num_constrained <= 0:
+        # Apply track constraint to all rods
+        for idx, rod_info in enumerate(self.rod_infos):
+            rod = rod_info.rod
+            offset = rod_info.offset
+            num_constrained = rod.num_points - self.track_ignore_tip_count
+            if num_constrained <= 0:
                 continue
 
-            track_start = self._gpu_track_starts[idx] + self.gpu_offsets[idx]
-            track_end = self._gpu_track_ends[idx] + self.gpu_offsets[idx]
+            # Get track endpoints for this rod
+            track_start = self._rod_track_starts[idx] + offset
+            track_end = self._rod_track_ends[idx] + offset
             track_start_wp = wp.vec3(float(track_start[0]), float(track_start[1]), float(track_start[2]))
             track_end_wp = wp.vec3(float(track_end[0]), float(track_end[1]), float(track_end[2]))
 
-            start = self._gpu_point_starts[idx]
-            end = start + gpu_num_constrained
+            # Get particle range in the global state
+            start = self._rod_point_starts[idx]
+            end = start + num_constrained
 
-            if idx < len(self.rod_insertions):
-                insertion = self.rod_insertions[idx]
+            # Apply insertion (set root position on track)
+            insertion = self.rod_insertions[idx] if idx < len(self.rod_insertions) else 0.0
+
+            if rod_info.solver_type == SolverType.WARP:
+                # For Warp rods, use GPU kernel
                 wp.launch(
                     _warp_set_root_on_track,
                     dim=1,
@@ -614,10 +824,23 @@ class Example:
                     ],
                     device=self.model.device,
                 )
+            else:
+                # For NumPy/DLL rods, apply insertion on CPU
+                track_dir = track_end - track_start
+                track_len = np.linalg.norm(track_dir)
+                if track_len > 1e-6:
+                    track_dir = track_dir / track_len
+                    # Clamp insertion to track length
+                    clamped_insertion = min(insertion, track_len)
+                    root_pos = track_start + track_dir * clamped_insertion
+                    rod.positions[0, 0:3] = root_pos - offset  # Store without offset
+                    rod.predicted_positions[0, 0:3] = root_pos - offset
+                    rod.velocities[0, 0:3] = 0.0
 
+            # Apply track sliding constraint via particle state
             wp.launch(
                 _warp_apply_track_sliding,
-                dim=gpu_num_constrained,
+                dim=num_constrained,
                 inputs=[
                     self.state.particle_q,
                     self.state.particle_q,
@@ -631,37 +854,56 @@ class Example:
                 device=self.model.device,
             )
 
-            gpu_offset = self.gpu_offsets[idx]
-            offset_wp = wp.vec3(float(gpu_offset[0]), float(gpu_offset[1]), float(gpu_offset[2]))
-            wp.launch(
-                _warp_copy_from_offset,
-                dim=rod.num_points,
-                inputs=[self.state.particle_q, offset_wp, start, rod.positions_wp],
-                device=self.model.device,
-            )
-            wp.launch(
-                _warp_copy_from_offset,
-                dim=rod.num_points,
-                inputs=[self.state.particle_q, offset_wp, start, rod.predicted_positions_wp],
-                device=self.model.device,
-            )
+            # Copy back to rod state
+            offset_wp = wp.vec3(float(offset[0]), float(offset[1]), float(offset[2]))
+
+            if rod_info.solver_type == SolverType.WARP:
+                wp.launch(
+                    _warp_copy_from_offset,
+                    dim=rod.num_points,
+                    inputs=[self.state.particle_q, offset_wp, start, rod.positions_wp],
+                    device=self.model.device,
+                )
+                wp.launch(
+                    _warp_copy_from_offset,
+                    dim=rod.num_points,
+                    inputs=[self.state.particle_q, offset_wp, start, rod.predicted_positions_wp],
+                    device=self.model.device,
+                )
+            else:
+                # For NumPy/DLL rods, copy via temp warp array
+                wp.launch(
+                    _warp_copy_from_offset,
+                    dim=rod.num_points,
+                    inputs=[self.state.particle_q, offset_wp, start, self._rod_positions_wp[idx]],
+                    device=self.model.device,
+                )
+                positions = self._rod_positions_wp[idx].numpy()
+                rod.positions[:, 0:3] = positions
+                rod.predicted_positions[:, 0:3] = positions
 
         self._force_sync_reference = True
         self._force_sync_gpu = True
 
     def _apply_concentric_constraint(self):
-        """Apply concentric constraint between GPU rods (guidewire inside catheter)."""
+        """Apply concentric constraint between GPU Warp rods (guidewire inside catheter).
+
+        Note: This only works with Warp rods. The first two Warp rods are used.
+        """
         if not self.concentric_enabled:
             return
 
-        if len(self.gpu_state.rods) < 2:
+        if self.gpu_state is None or len(self.gpu_state.rods) < 2:
             return
 
         rod_a = self.gpu_state.rods[0]
         rod_b = self.gpu_state.rods[1]
 
-        insertion_a = self.rod_insertions[0] if len(self.rod_insertions) > 0 else 0.0
-        insertion_b = self.rod_insertions[1] if len(self.rod_insertions) > 1 else 0.0
+        # Get insertion values for the Warp rods (using their global indices)
+        warp_idx_a = self.warp_rod_indices[0] if len(self.warp_rod_indices) > 0 else 0
+        warp_idx_b = self.warp_rod_indices[1] if len(self.warp_rod_indices) > 1 else 1
+        insertion_a = self.rod_insertions[warp_idx_a] if warp_idx_a < len(self.rod_insertions) else 0.0
+        insertion_b = self.rod_insertions[warp_idx_b] if warp_idx_b < len(self.rod_insertions) else 0.0
         insertion_diff = insertion_a - insertion_b
 
         if hasattr(rod_a, "rest_lengths_wp") and rod_a.rest_lengths_wp is not None:
@@ -761,7 +1003,7 @@ class Example:
         b_down = self.viewer.is_key_down(key.B)
         if b_down and not self._banded_key_was_down:
             gpu_backends = [DIRECT_SOLVE_WARP_BLOCK_THOMAS, DIRECT_SOLVE_WARP_BANDED_CHOLESKY]
-            if self.gpu_state.rods:
+            if self.gpu_state is not None and self.gpu_state.rods:
                 current_backend = self.gpu_state.rods[0].direct_solve_backend
                 try:
                     current_idx = gpu_backends.index(current_backend)
@@ -776,9 +1018,9 @@ class Example:
 
         l_down = self.viewer.is_key_down(key.L)
         if l_down and not self._lock_key_was_down:
-            self.ref_rod.toggle_root_lock()
-            for rod in self.gpu_state.rods:
-                rod.toggle_root_lock()
+            # Toggle root lock for all rods
+            for rod_info in self.rod_infos:
+                rod_info.rod.toggle_root_lock()
         self._lock_key_was_down = l_down
 
         t_down = self.viewer.is_key_down(key.T)
@@ -788,7 +1030,8 @@ class Example:
 
         c_down = self.viewer.is_key_down(key.C)
         if c_down and not self._concentric_key_was_down:
-            if len(self.gpu_state.rods) >= 2:
+            warp_rods = self.gpu_state.rods if self.gpu_state else []
+            if len(warp_rods) >= 2:
                 self.concentric_enabled = not self.concentric_enabled
         self._concentric_key_was_down = c_down
 
@@ -804,13 +1047,15 @@ class Example:
             self.tip_bend_angle -= self.tip_bend_speed * self.frame_dt
             self._apply_tip_bend()
 
-        if self.viewer.is_key_down(key.PAGEUP):
-            self.rod_insertions[0] += self.insertion_speed * self.frame_dt
-        if self.viewer.is_key_down(key.PAGEDOWN):
-            self.rod_insertions[0] -= self.insertion_speed * self.frame_dt
-            self.rod_insertions[0] = max(0.0, self.rod_insertions[0])
+        # Insertion controls for first two rods (any solver type)
+        if len(self.rod_insertions) >= 1:
+            if self.viewer.is_key_down(key.PAGEUP):
+                self.rod_insertions[0] += self.insertion_speed * self.frame_dt
+            if self.viewer.is_key_down(key.PAGEDOWN):
+                self.rod_insertions[0] -= self.insertion_speed * self.frame_dt
+                self.rod_insertions[0] = max(0.0, self.rod_insertions[0])
 
-        if len(self.gpu_state.rods) >= 2:
+        if len(self.rod_insertions) >= 2:
             if self.viewer.is_key_down(key.HOME):
                 self.rod_insertions[1] += self.insertion_speed * self.frame_dt
             if self.viewer.is_key_down(key.END):
@@ -819,11 +1064,15 @@ class Example:
 
         r_down = self.viewer.is_key_down(key.R)
         if r_down and not self._reset_key_was_down:
-            self.ref_rod.reset()
-            self.gpu_state.reset()
+            # Reset all rods
+            for rod_info in self.rod_infos:
+                rod_info.rod.reset()
+            if self.gpu_state is not None:
+                self.gpu_state.reset()
             self.root_rotation = 0.0
             self.tip_bend_angle = 0.0
-            self.rod_insertions = [0.0, 0.0]
+            # Reset all insertions to 0
+            self.rod_insertions = [0.0] * len(self.rod_infos)
             self._apply_root_rotation()
             self._apply_tip_bend()
             self.sim_time = 0.0
@@ -865,23 +1114,33 @@ class Example:
 
         sub_dt = self.frame_dt / max(self.substeps, 1)
         frame_start = time.perf_counter()
-        ref_time = 0.0
+        numpy_dll_time = 0.0
         gpu_time = 0.0
-        self.gpu_solver.linear_damping = self.linear_damping
-        self.gpu_solver.angular_damping = self.angular_damping
+
+        # Update GPU solver damping if it exists
+        if self.gpu_solver is not None:
+            self.gpu_solver.linear_damping = self.linear_damping
+            self.gpu_solver.angular_damping = self.angular_damping
+
         for _ in range(self.substeps):
+            # Step NumPy and DLL rods individually
             if self.simulate_reference:
                 t0 = time.perf_counter()
-                self.ref_rod.step(sub_dt, self.linear_damping, self.angular_damping)
-                if self.floor_collision_enabled:
-                    self.ref_rod.apply_floor_collisions(self.floor_height, self.floor_restitution)
-                ref_time += time.perf_counter() - t0
-            if self.simulate_gpu:
+                for rod_info in self.rod_infos:
+                    if rod_info.solver_type in (SolverType.NUMPY, SolverType.DLL):
+                        rod_info.rod.step(sub_dt, self.linear_damping, self.angular_damping)
+                        if self.floor_collision_enabled:
+                            rod_info.rod.apply_floor_collisions(self.floor_height, self.floor_restitution)
+                numpy_dll_time += time.perf_counter() - t0
+
+            # Step Warp GPU rods together
+            if self.simulate_gpu and self.gpu_solver is not None and self.gpu_state is not None:
                 t0 = time.perf_counter()
                 self.gpu_solver.step(self.gpu_state, self.gpu_state, None, None, sub_dt)
                 if self.floor_collision_enabled:
                     self.gpu_state.apply_floor_collisions(self.floor_height, self.floor_restitution)
                 gpu_time += time.perf_counter() - t0
+
             self._apply_mesh_collisions(sub_dt)
             self._apply_track_constraint()
             self._apply_concentric_constraint()
@@ -890,184 +1149,185 @@ class Example:
         self.sim_time += self.frame_dt
         frame_end = time.perf_counter()
         self._frame_times.append(frame_end - frame_start)
-        if self.simulate_reference:
-            self._ref_times.append(ref_time)
-        if self.simulate_gpu:
+
+        # Track timing for NumPy/DLL rods
+        has_numpy_dll = any(ri.solver_type in (SolverType.NUMPY, SolverType.DLL) for ri in self.rod_infos)
+        if self.simulate_reference and has_numpy_dll:
+            self._ref_times.append(numpy_dll_time)
+
+        # Track timing for Warp rods
+        has_warp = any(ri.solver_type == SolverType.WARP for ri in self.rod_infos)
+        if self.simulate_gpu and has_warp:
             self._gpu_times.append(gpu_time)
 
     def _apply_root_translation(self, dx: float, dy: float, dz: float):
         delta = np.array([dx, dy, dz], dtype=np.float32)
 
-        pos = self.ref_rod.positions[0, 0:3]
-        new_pos = pos + delta
-        self.ref_rod.positions[0, 0:3] = new_pos
-        self.ref_rod.predicted_positions[0, 0:3] = new_pos
-        self.ref_rod.velocities[0, 0:3] = 0.0
-        self._force_sync_reference = True
+        # Apply translation to all rods
+        for rod_info in self.rod_infos:
+            rod = rod_info.rod
+            if rod_info.solver_type in (SolverType.NUMPY, SolverType.DLL):
+                pos = rod.positions[0, 0:3]
+                new_pos = pos + delta
+                rod.positions[0, 0:3] = new_pos
+                rod.predicted_positions[0, 0:3] = new_pos
+                rod.velocities[0, 0:3] = 0.0
+            elif rod_info.solver_type == SolverType.WARP:
+                rod.apply_root_translation(dx, dy, dz)
 
-        for rod in self.gpu_state.rods:
-            rod.apply_root_translation(dx, dy, dz)
+        self._force_sync_reference = True
         self._force_sync_gpu = True
 
     def _apply_root_rotation(self):
         q_twist = quat_from_axis_angle(np.array([0.0, 0.0, 1.0], dtype=np.float32), self.root_rotation)
-        q_ref = quat_multiply(self._ref_root_base_orientation, q_twist)
-        self.ref_rod.orientations[0] = q_ref
-        self.ref_rod.predicted_orientations[0] = q_ref
-        self.ref_rod.prev_orientations[0] = q_ref
-        self._force_sync_reference = True
 
-        for idx, rod in enumerate(self.gpu_state.rods):
-            q_gpu = quat_multiply(self._gpu_root_base_orientations[idx], q_twist)
-            rod.apply_root_rotation(q_gpu)
+        # Apply rotation to all rods
+        for idx, rod_info in enumerate(self.rod_infos):
+            rod = rod_info.rod
+            base_orientation = self._rod_root_base_orientations[idx]
+            q_new = quat_multiply(base_orientation, q_twist)
+
+            if rod_info.solver_type in (SolverType.NUMPY, SolverType.DLL):
+                rod.orientations[0] = q_new
+                rod.predicted_orientations[0] = q_new
+                rod.prev_orientations[0] = q_new
+            elif rod_info.solver_type == SolverType.WARP:
+                rod.apply_root_rotation(q_new)
+
+        self._force_sync_reference = True
         self._force_sync_gpu = True
 
     def render(self):
         self.viewer.begin_frame(self.sim_time)
         self.viewer.log_state(self.state)
 
+        # Render rod segments for all rods
         if self.show_segments:
-            ref_offset = wp.vec3(float(self.ref_offset[0]), float(self.ref_offset[1]), float(self.ref_offset[2]))
-            wp.launch(
-                _warp_build_segment_lines,
-                dim=self.ref_rod.num_points - 1,
-                inputs=[
-                    self._ref_positions_wp,
-                    ref_offset,
-                    0,
-                    self._ref_segment_starts_wp,
-                    self._ref_segment_ends_wp,
-                ],
-                device=self.model.device,
-            )
-            for idx, rod in enumerate(self.gpu_state.rods):
-                gpu_offset = self.gpu_offsets[idx]
-                offset_wp = wp.vec3(float(gpu_offset[0]), float(gpu_offset[1]), float(gpu_offset[2]))
+            for idx, rod_info in enumerate(self.rod_infos):
+                rod = rod_info.rod
+                offset = rod_info.offset
+                offset_wp = wp.vec3(float(offset[0]), float(offset[1]), float(offset[2]))
+
+                # Get positions array (NumPy/DLL use numpy arrays, Warp has positions_wp)
+                if rod_info.solver_type == SolverType.WARP:
+                    positions_wp = rod.positions_wp
+                else:
+                    # Update warp array from numpy
+                    positions = rod.positions[:, 0:3].astype(np.float32)
+                    self._rod_positions_wp[idx].assign(wp.array(positions, dtype=wp.vec3, device=self.model.device))
+                    positions_wp = self._rod_positions_wp[idx]
+
+                # Build segment lines
                 wp.launch(
                     _warp_build_segment_lines,
                     dim=rod.num_points - 1,
                     inputs=[
-                        rod.positions_wp,
+                        positions_wp,
                         offset_wp,
-                        int(self._gpu_edge_starts[idx]),
-                        self._gpu_segment_starts_wp,
-                        self._gpu_segment_ends_wp,
+                        0,
+                        self._rod_segment_starts_wp[idx],
+                        self._rod_segment_ends_wp[idx],
                     ],
                     device=self.model.device,
                 )
-            self.viewer.log_lines(
-                "/rod_reference",
-                self._ref_segment_starts_wp,
-                self._ref_segment_ends_wp,
-                self._ref_segment_colors_wp,
-            )
-            self.viewer.log_lines(
-                "/rod_gpu",
-                self._gpu_segment_starts_wp,
-                self._gpu_segment_ends_wp,
-                self._gpu_segment_colors_wp,
-            )
-        else:
-            self.viewer.log_lines("/rod_reference", None, None, None)
-            self.viewer.log_lines("/rod_gpu", None, None, None)
 
-        if self.show_directors:
-            ref_positions = self.ref_rod.positions[:, 0:3].astype(np.float32)
-            ref_orientations = self.ref_rod.orientations.astype(np.float32)
-            ref_starts, ref_ends, ref_colors = build_director_lines(
-                ref_positions, ref_orientations, self.ref_offset, self.director_scale
-            )
-            self.viewer.log_lines(
-                "/directors_reference",
-                wp.array(ref_starts, dtype=wp.vec3, device=self.model.device),
-                wp.array(ref_ends, dtype=wp.vec3, device=self.model.device),
-                wp.array(ref_colors, dtype=wp.vec3, device=self.model.device),
-            )
-
-            for idx, rod in enumerate(self.gpu_state.rods):
-                gpu_positions = rod.positions_numpy().astype(np.float32)
-                gpu_orientations = rod.orientations_numpy().astype(np.float32)
-                gpu_starts, gpu_ends, gpu_colors = build_director_lines(
-                    gpu_positions, gpu_orientations, self.gpu_offsets[idx], self.director_scale
-                )
+                # Log lines for this rod
                 self.viewer.log_lines(
-                    f"/directors_gpu_{idx}",
-                    wp.array(gpu_starts, dtype=wp.vec3, device=self.model.device),
-                    wp.array(gpu_ends, dtype=wp.vec3, device=self.model.device),
-                    wp.array(gpu_colors, dtype=wp.vec3, device=self.model.device),
+                    f"/rod_{idx}",
+                    self._rod_segment_starts_wp[idx],
+                    self._rod_segment_ends_wp[idx],
+                    self._rod_segment_colors_wp[idx],
                 )
         else:
-            self.viewer.log_lines("/directors_reference", None, None, None)
-            for idx in range(len(self.gpu_state.rods)):
-                self.viewer.log_lines(f"/directors_gpu_{idx}", None, None, None)
+            for idx in range(len(self.rod_infos)):
+                self.viewer.log_lines(f"/rod_{idx}", None, None, None)
+
+        # Render directors for all rods
+        if self.show_directors:
+            for idx, rod_info in enumerate(self.rod_infos):
+                rod = rod_info.rod
+                offset = rod_info.offset
+
+                # Get positions and orientations as numpy
+                if rod_info.solver_type == SolverType.WARP:
+                    positions = rod.positions_numpy().astype(np.float32)
+                    orientations = rod.orientations_numpy().astype(np.float32)
+                else:
+                    positions = rod.positions[:, 0:3].astype(np.float32)
+                    orientations = rod.orientations.astype(np.float32)
+
+                starts, ends, colors = build_director_lines(positions, orientations, offset, self.director_scale)
+                self.viewer.log_lines(
+                    f"/directors_{idx}",
+                    wp.array(starts, dtype=wp.vec3, device=self.model.device),
+                    wp.array(ends, dtype=wp.vec3, device=self.model.device),
+                    wp.array(colors, dtype=wp.vec3, device=self.model.device),
+                )
+        else:
+            for idx in range(len(self.rod_infos)):
+                self.viewer.log_lines(f"/directors_{idx}", None, None, None)
 
         # Render rod tube meshes (only update when visible)
         if self.show_rod_mesh:
-            # Update reference rod mesh with current radius
-            self._ref_mesher.set_radius(self.ref_mesh_radius)
-            ref_positions = self.ref_rod.positions[:, 0:3].astype(np.float32) + self.ref_offset
-            self._ref_mesher.update_numpy(ref_positions)
-            ref_verts_wp, ref_indices_wp, ref_normals_wp, ref_uvs_wp = self._ref_mesher.get_warp_arrays()
-            self.viewer.log_mesh(
-                "/rod_mesh_reference",
-                ref_verts_wp,
-                ref_indices_wp,
-                ref_normals_wp,
-                ref_uvs_wp,
-                hidden=False,
-            )
+            for idx, rod_info in enumerate(self.rod_infos):
+                rod = rod_info.rod
+                offset = rod_info.offset
+                mesher = self._rod_meshers[idx]
 
-            # Update GPU rod meshes with current radii
-            for idx, rod in enumerate(self.gpu_state.rods):
-                if idx < len(self.gpu_mesh_radii):
-                    self._gpu_meshers[idx].set_radius(self.gpu_mesh_radii[idx])
-                gpu_positions = rod.positions_numpy().astype(np.float32) + self.gpu_offsets[idx]
-                self._gpu_meshers[idx].update_numpy(gpu_positions)
-                gpu_verts_wp, gpu_indices_wp, gpu_normals_wp, gpu_uvs_wp = self._gpu_meshers[idx].get_warp_arrays()
+                # Update mesher radius from rod_info
+                mesher.set_radius(rod_info.mesh_radius)
+
+                # Get positions as numpy
+                if rod_info.solver_type == SolverType.WARP:
+                    positions = rod.positions_numpy().astype(np.float32) + offset
+                else:
+                    positions = rod.positions[:, 0:3].astype(np.float32) + offset
+
+                mesher.update_numpy(positions)
+                verts_wp, indices_wp, normals_wp, uvs_wp = mesher.get_warp_arrays()
                 self.viewer.log_mesh(
-                    f"/rod_mesh_gpu_{idx}",
-                    gpu_verts_wp,
-                    gpu_indices_wp,
-                    gpu_normals_wp,
-                    gpu_uvs_wp,
+                    f"/rod_mesh_{idx}",
+                    verts_wp,
+                    indices_wp,
+                    normals_wp,
+                    uvs_wp,
                     hidden=False,
                 )
         else:
             # Hide meshes without updating them (use existing arrays)
-            ref_verts_wp, ref_indices_wp, ref_normals_wp, ref_uvs_wp = self._ref_mesher.get_warp_arrays()
-            self.viewer.log_mesh(
-                "/rod_mesh_reference",
-                ref_verts_wp,
-                ref_indices_wp,
-                ref_normals_wp,
-                ref_uvs_wp,
-                hidden=True,
-            )
-            for idx in range(len(self.gpu_state.rods)):
-                gpu_verts_wp, gpu_indices_wp, gpu_normals_wp, gpu_uvs_wp = self._gpu_meshers[idx].get_warp_arrays()
+            for idx, mesher in enumerate(self._rod_meshers):
+                verts_wp, indices_wp, normals_wp, uvs_wp = mesher.get_warp_arrays()
                 self.viewer.log_mesh(
-                    f"/rod_mesh_gpu_{idx}",
-                    gpu_verts_wp,
-                    gpu_indices_wp,
-                    gpu_normals_wp,
-                    gpu_uvs_wp,
+                    f"/rod_mesh_{idx}",
+                    verts_wp,
+                    indices_wp,
+                    normals_wp,
+                    uvs_wp,
                     hidden=True,
                 )
 
         self.viewer.end_frame()
 
     def gui(self, ui):
-        ui.text("Direct Cosserat Rod: Reference + GPU Warp")
-        ui.text(f"Particles per rod: {self.ref_rod.num_points}")
-        ui.text(f"GPU rods: {self.rod_count}")
-        ui.text("Reference: blue, GPU: orange")
+        ui.text("Direct Cosserat Rod Simulation")
+        ui.text(f"Rods: {len(self.rod_infos)}")
+
+        # Show solver types for each rod
+        solver_counts = {SolverType.NUMPY: 0, SolverType.WARP: 0, SolverType.DLL: 0}
+        for ri in self.rod_infos:
+            solver_counts[ri.solver_type] += 1
+        solver_summary = ", ".join(f"{st.value}: {cnt}" for st, cnt in solver_counts.items() if cnt > 0)
+        ui.text(f"Solvers: {solver_summary}")
         ui.separator()
 
-        changed_ref, self.simulate_reference = ui.checkbox("Simulate Reference (C++)", self.simulate_reference)
-        changed_gpu, self.simulate_gpu = ui.checkbox("Simulate GPU (Warp)", self.simulate_gpu)
-        changed_graph, self.use_cuda_graph = ui.checkbox("Use CUDA Graph (GPU rod)", self.use_cuda_graph)
-        if changed_graph:
-            self.use_cuda_graph = self.gpu_state.set_use_cuda_graph(self.use_cuda_graph)
+        changed_ref, self.simulate_reference = ui.checkbox("Simulate NumPy/DLL rods", self.simulate_reference)
+        changed_gpu, self.simulate_gpu = ui.checkbox("Simulate Warp rods", self.simulate_gpu)
+
+        # CUDA graph only available if we have Warp rods
+        if self.gpu_state is not None:
+            changed_graph, self.use_cuda_graph = ui.checkbox("Use CUDA Graph (Warp)", self.use_cuda_graph)
+            if changed_graph:
+                self.use_cuda_graph = self.gpu_state.set_use_cuda_graph(self.use_cuda_graph)
         if changed_ref or changed_gpu:
             self._frame_times.clear()
             self._ref_times.clear()
@@ -1087,16 +1347,20 @@ class Example:
         changed_bend_k, self.bend_stiffness = ui.slider_float("Bend Stiffness", self.bend_stiffness, 0.0, 1.0)
         changed_twist_k, self.twist_stiffness = ui.slider_float("Twist Stiffness", self.twist_stiffness, 0.0, 1.0)
         if changed_bend_k or changed_twist_k:
-            self.ref_rod.set_bend_stiffness(self.bend_stiffness, self.twist_stiffness)
-            self.gpu_state.set_bend_stiffness(self.bend_stiffness, self.twist_stiffness)
+            for rod_info in self.rod_infos:
+                rod_info.rod.set_bend_stiffness(self.bend_stiffness, self.twist_stiffness)
+            if self.gpu_state is not None:
+                self.gpu_state.set_bend_stiffness(self.bend_stiffness, self.twist_stiffness)
 
         ui.separator()
         changed_rest_d1, self.rest_bend_d1 = ui.slider_float("Rest Bend d1", self.rest_bend_d1, -0.5, 0.5)
         changed_rest_d2, self.rest_bend_d2 = ui.slider_float("Rest Bend d2", self.rest_bend_d2, -0.5, 0.5)
         changed_rest_twist, self.rest_twist = ui.slider_float("Rest Twist", self.rest_twist, -0.5, 0.5)
         if changed_rest_d1 or changed_rest_d2 or changed_rest_twist:
-            self.ref_rod.set_rest_darboux(self.rest_bend_d1, self.rest_bend_d2, self.rest_twist)
-            self.gpu_state.set_rest_darboux(self.rest_bend_d1, self.rest_bend_d2, self.rest_twist)
+            for rod_info in self.rod_infos:
+                rod_info.rod.set_rest_darboux(self.rest_bend_d1, self.rest_bend_d2, self.rest_twist)
+            if self.gpu_state is not None:
+                self.gpu_state.set_rest_darboux(self.rest_bend_d1, self.rest_bend_d2, self.rest_twist)
 
         ui.separator()
         changed_E, self.young_modulus_scale = ui.slider_float(
@@ -1106,16 +1370,14 @@ class Example:
             "Torsion Modulus (1e6)", self.torsion_modulus_scale, 0.1, 1000.0
         )
         if changed_E or changed_G:
-            self.ref_rod.young_modulus = self.young_modulus_scale * 1.0e6
-            self.ref_rod.torsion_modulus = self.torsion_modulus_scale * 1.0e6
-            for rod in self.gpu_state.rods:
-                rod.young_modulus = self.young_modulus_scale * 1.0e6
-                rod.torsion_modulus = self.torsion_modulus_scale * 1.0e6
+            for rod_info in self.rod_infos:
+                rod_info.rod.young_modulus = self.young_modulus_scale * 1.0e6
+                rod_info.rod.torsion_modulus = self.torsion_modulus_scale * 1.0e6
 
         changed_seg, self.segment_length = ui.slider_float("Segment Length", self.segment_length, 0.01, 0.2)
         if changed_seg:
-            self.ref_rod.rest_lengths[:] = self.segment_length
-            for rod in self.gpu_state.rods:
+            for rod_info in self.rod_infos:
+                rod = rod_info.rod
                 rod.rest_lengths[:] = self.segment_length
                 if hasattr(rod, "rest_lengths_wp") and rod.num_edges > 0:
                     rod.rest_lengths_wp.assign(wp.array(rod.rest_lengths, dtype=wp.float32, device=rod.device))
@@ -1136,16 +1398,25 @@ class Example:
         ui.separator()
         ui.text("Rod Insertion (PgUp/PgDn: Rod0, Home/End: Rod1)")
         _changed, self.insertion_speed = ui.slider_float("Insertion Speed", self.insertion_speed, 0.1, 2.0)
-        if len(self.gpu_state.rods) >= 1:
-            _changed, self.rod_insertions[0] = ui.slider_float("Rod 0 Insertion", self.rod_insertions[0], 0.0, 5.0)
-        if len(self.gpu_state.rods) >= 2:
-            _changed, self.rod_insertions[1] = ui.slider_float("Rod 1 Insertion", self.rod_insertions[1], 0.0, 5.0)
+
+        # Show insertion controls for first two rods (any solver type)
+        if len(self.rod_insertions) >= 1:
+            solver_0 = self.rod_infos[0].solver_type.value.upper() if self.rod_infos else "?"
+            _changed, self.rod_insertions[0] = ui.slider_float(
+                f"Rod 0 ({solver_0}) Insertion", self.rod_insertions[0], 0.0, 5.0
+            )
+        if len(self.rod_insertions) >= 2:
+            solver_1 = self.rod_infos[1].solver_type.value.upper() if len(self.rod_infos) > 1 else "?"
+            _changed, self.rod_insertions[1] = ui.slider_float(
+                f"Rod 1 ({solver_1}) Insertion", self.rod_insertions[1], 0.0, 5.0
+            )
             insertion_diff = self.rod_insertions[0] - self.rod_insertions[1]
             ui.text(f"Insertion Diff: {insertion_diff:.3f}")
 
         ui.separator()
         ui.text("Concentric Constraint (Guidewire/Catheter)")
-        if len(self.gpu_state.rods) >= 2:
+        warp_rods = self.gpu_state.rods if self.gpu_state else []
+        if len(warp_rods) >= 2:
             _changed, self.concentric_enabled = ui.checkbox("Enable Concentric", self.concentric_enabled)
             _changed, self.concentric_stiffness = ui.slider_float(
                 "Concentric Stiffness", self.concentric_stiffness, 0.0, 1.0
@@ -1163,7 +1434,7 @@ class Example:
                 "Use Inv Mass Squared", self.concentric_use_inv_mass_sq
             )
         else:
-            ui.text("(Requires 2+ GPU rods)")
+            ui.text("(Requires 2+ Warp rods)")
 
         ui.separator()
         ui.text("Bendable Tip")
@@ -1259,25 +1530,13 @@ class Example:
             ui.separator()
             ui.text("Rod Mesh Settings")
 
-            # Reference rod settings
-            ui.text("  Reference Rod (Blue)")
-            _changed, self.ref_mesh_radius = ui.slider_float("  Ref Radius", self.ref_mesh_radius, 0.001, 0.1)
-            # Color display (read-only for now, could add color picker if available)
-            ui.text(
-                f"    Color: ({self.ref_mesh_color[0]:.2f}, {self.ref_mesh_color[1]:.2f}, {self.ref_mesh_color[2]:.2f})"
-            )
-
-            # GPU rod settings
-            for idx in range(len(self.gpu_state.rods)):
-                color_name = ["Orange", "Green", "Purple", "Yellow"][idx % 4]
-                ui.text(f"  GPU Rod {idx} ({color_name})")
-                if idx < len(self.gpu_mesh_radii):
-                    _changed, self.gpu_mesh_radii[idx] = ui.slider_float(
-                        f"  GPU{idx} Radius", self.gpu_mesh_radii[idx], 0.001, 0.1
-                    )
-                if idx < len(self.gpu_mesh_colors):
-                    c = self.gpu_mesh_colors[idx]
-                    ui.text(f"    Color: ({c[0]:.2f}, {c[1]:.2f}, {c[2]:.2f})")
+            # Per-rod settings
+            for idx, rod_info in enumerate(self.rod_infos):
+                solver_name = rod_info.solver_type.value.upper()
+                ui.text(f"  Rod {idx} ({solver_name})")
+                _changed, rod_info.mesh_radius = ui.slider_float(f"  Rod{idx} Radius", rod_info.mesh_radius, 0.001, 0.1)
+                c = rod_info.color
+                ui.text(f"    Color: ({c[0]:.2f}, {c[1]:.2f}, {c[2]:.2f})")
 
         ui.separator()
         ui.text("Root Control (Numpad, both rods)")
@@ -1301,20 +1560,24 @@ class Example:
         ui.text("  R: Reset")
 
     def test_final(self):
-        ref_anchor = self.ref_rod.positions[0, 0:3]
-        ref_initial = self.ref_rod._initial_positions[0, 0:3]
-        ref_dist = float(np.linalg.norm(ref_anchor - ref_initial))
-        assert ref_dist < 1.0e-3, f"Reference anchor moved too far: {ref_dist}"
+        # Check all rods
+        for idx, rod_info in enumerate(self.rod_infos):
+            rod = rod_info.rod
+            solver_name = rod_info.solver_type.value
 
-        for rod in self.gpu_state.rods:
-            gpu_positions = rod.positions_numpy()
-            gpu_anchor = gpu_positions[0]
-            gpu_initial = rod._initial_positions[0, 0:3]
-            gpu_dist = float(np.linalg.norm(gpu_anchor - gpu_initial))
-            assert gpu_dist < 1.0e-3, f"GPU anchor moved too far: {gpu_dist}"
+            # Get positions (Warp rods need numpy conversion)
+            if rod_info.solver_type == SolverType.WARP:
+                positions = rod.positions_numpy()
+            else:
+                positions = rod.positions[:, 0:3]
 
-        if not np.all(np.isfinite(self.ref_rod.positions[:, 0:3])):
-            raise AssertionError("Non-finite reference positions detected")
+            anchor = positions[0]
+            initial = rod._initial_positions[0, 0:3]
+            dist = float(np.linalg.norm(anchor - initial))
+            assert dist < 1.0e-3, f"Rod {idx} ({solver_name}) anchor moved too far: {dist}"
+
+            if not np.all(np.isfinite(positions)):
+                raise AssertionError(f"Non-finite positions detected in rod {idx} ({solver_name})")
 
         for rod in self.gpu_state.rods:
             if not np.all(np.isfinite(rod.positions_numpy())):
