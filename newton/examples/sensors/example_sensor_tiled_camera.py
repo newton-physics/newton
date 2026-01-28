@@ -213,6 +213,7 @@ class Example:
         self.tiled_camera_sensor_depth_image = self.tiled_camera_sensor.create_depth_image_output()
         self.tiled_camera_sensor_normal_image = self.tiled_camera_sensor.create_normal_image_output()
         self.tiled_camera_sensor_shape_index_image = self.tiled_camera_sensor.create_shape_index_image_output()
+        self.tiled_camera_sensor_albedo_image = self.tiled_camera_sensor.create_albedo_image_output()
         self.depth_range = wp.array([1.0, 100.0], dtype=wp.float32)
 
         if isinstance(self.viewer, ViewerGL):
@@ -251,6 +252,7 @@ class Example:
             depth_image=self.tiled_camera_sensor_depth_image,
             normal_image=self.tiled_camera_sensor_normal_image,
             shape_index_image=self.tiled_camera_sensor_shape_index_image,
+            albedo_image=self.tiled_camera_sensor_albedo_image,
         )
         self.update_texture()
 
@@ -310,17 +312,21 @@ class Example:
                 self.tiled_camera_sensor_color_image, texture_buffer, self.num_worlds_per_row
             )
         elif self.image_output == 1:
+            self.tiled_camera_sensor.flatten_color_image_to_rgba(
+                self.tiled_camera_sensor_albedo_image, texture_buffer, self.num_worlds_per_row
+            )
+        elif self.image_output == 2:
             self.tiled_camera_sensor.flatten_depth_image_to_rgba(
                 self.tiled_camera_sensor_depth_image,
                 texture_buffer,
                 self.num_worlds_per_row,
                 self.depth_range,
             )
-        elif self.image_output == 2:
+        elif self.image_output == 3:
             self.tiled_camera_sensor.flatten_normal_image_to_rgba(
                 self.tiled_camera_sensor_normal_image, texture_buffer, self.num_worlds_per_row
             )
-        elif self.image_output == 3:
+        elif self.image_output == 4:
             wp.launch(
                 shape_index_to_semantic_rgb,
                 self.tiled_camera_sensor_shape_index_image.shape,
@@ -330,7 +336,7 @@ class Example:
             self.tiled_camera_sensor.flatten_color_image_to_rgba(
                 self.tiled_camera_sensor_shape_index_image, texture_buffer, self.num_worlds_per_row
             )
-        elif self.image_output == 4:
+        elif self.image_output == 5:
             wp.launch(
                 shape_index_to_random_rgb,
                 self.tiled_camera_sensor_shape_index_image.shape,
@@ -372,14 +378,16 @@ class Example:
     def gui(self, ui):
         if ui.radio_button("Show Color Output", self.image_output == 0):
             self.image_output = 0
-        if ui.radio_button("Show Depth Output", self.image_output == 1):
+        if ui.radio_button("Show Albedo Output", self.image_output == 1):
             self.image_output = 1
-        if ui.radio_button("Show Normal Output", self.image_output == 2):
+        if ui.radio_button("Show Depth Output", self.image_output == 2):
             self.image_output = 2
-        if ui.radio_button("Show Semantic Output", self.image_output == 3):
+        if ui.radio_button("Show Normal Output", self.image_output == 3):
             self.image_output = 3
-        if ui.radio_button("Show Shape Index Output", self.image_output == 4):
+        if ui.radio_button("Show Semantic Output", self.image_output == 4):
             self.image_output = 4
+        if ui.radio_button("Show Shape Index Output", self.image_output == 5):
+            self.image_output = 5
 
     def display(self, imgui):
         line_color = imgui.get_color_u32(imgui.Col_.window_bg)

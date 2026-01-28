@@ -221,7 +221,7 @@ class Model:
         self.shape_collision_filter_pairs: set[tuple[int, int]] = set()
         """Pairs of shape indices that should not collide."""
         self.shape_collision_radius = None
-        """Collision radius for bounding sphere broadphase, shape [shape_count], float."""
+        """Collision radius for bounding sphere broadphase, shape [shape_count], float. Not supported by :class:`~newton.solvers.SolverMuJoCo`."""
         self.shape_contact_pairs = None
         """Pairs of shape indices that may collide, shape [contact_pair_count, 2], int."""
         self.shape_contact_pair_count = 0
@@ -236,6 +236,20 @@ class Model:
         """List of sparse SDF volume references for mesh shapes, shape [shape_count]. None for non-mesh shapes. Empty if there are no colliding meshes. Kept for reference counting."""
         self.shape_sdf_coarse_volume = []
         """List of coarse SDF volume references for mesh shapes, shape [shape_count]. None for non-mesh shapes. Empty if there are no colliding meshes. Kept for reference counting."""
+
+        # Local AABB and voxel grid for contact reduction
+        # Note: These are stored in Model (not Contacts) because they are static geometry properties
+        # computed once during finalization, not per-frame contact data.
+        self.shape_local_aabb_lower = None
+        """Local-space AABB lower bound for each shape, shape [shape_count, 3], float.
+        Computed from base geometry only (excludes thickness - thickness is added during contact
+        margin calculations). Used for voxel-based contact reduction."""
+        self.shape_local_aabb_upper = None
+        """Local-space AABB upper bound for each shape, shape [shape_count, 3], float.
+        Computed from base geometry only (excludes thickness - thickness is added during contact
+        margin calculations). Used for voxel-based contact reduction."""
+        self.shape_voxel_resolution = None
+        """Voxel grid resolution (nx, ny, nz) for each shape, shape [shape_count, 3], int. Used for voxel-based contact reduction."""
 
         self.spring_indices = None
         """Particle spring indices, shape [spring_count*2], int."""

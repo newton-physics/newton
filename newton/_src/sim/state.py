@@ -79,25 +79,26 @@ class State:
 
         self.body_qd: wp.array | None = None
         """Rigid body velocities (spatial), shape (body_count,), dtype :class:`spatial_vector`.
-        First three entries: linear velocity; last three: angular velocity."""
+        First three entries: linear velocity relative to the body's center of mass in world frame; last three: angular velocity in world frame.
+        See :ref:`Twist conventions in Newton <Twist conventions>` for more information."""
 
         self.body_q_prev: wp.array | None = None
         """Previous rigid body transforms for finite-difference velocity computation."""
 
         self.body_qdd: wp.array | None = None
         """Rigid body accelerations (spatial), shape (body_count,), dtype :class:`spatial_vector`.
-        First three entries: linear acceleration; last three: angular acceleration.
+        First three entries: linear acceleration relative to the body's center of mass in world frame; last three: angular acceleration in world frame.
 
         This is an extended state attribute; see :ref:`extended_state_attributes` for more information.
         """
 
         self.body_f: wp.array | None = None
         """Rigid body forces (spatial), shape (body_count,), dtype :class:`spatial_vector`.
-        First three entries: linear force; last three: torque.
+        First three entries: linear force in world frame applied at the body's center of mass (COM).
+        Last three: torque (moment) in world frame.
 
         .. note::
-            :attr:`body_f` represents external wrenches in world frame, measured at the body's center of mass (COM).
-            The linear force component is applied at the COM, and the torque is about the COM.
+            :attr:`body_f` represents an external wrench in world frame with the body's center of mass (COM) as reference point.
         """
 
         self.body_parent_f: wp.array | None = None

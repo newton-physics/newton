@@ -45,6 +45,7 @@ from .kernels import (
     _create_inverse_shape_mapping_kernel,
     apply_mjc_body_f_kernel,
     apply_mjc_control_kernel,
+    apply_mjc_free_joint_f_to_body_f_kernel,
     apply_mjc_qfrc_kernel,
     convert_body_xforms_to_warp_kernel,
     convert_mj_coords_to_warp_kernel,
@@ -67,6 +68,7 @@ from .kernels import (
     update_mocap_transforms_kernel,
     update_model_properties_kernel,
     update_shape_mappings_kernel,
+    update_solver_options_kernel,
     update_tendon_properties_kernel,
 )
 
@@ -92,6 +94,8 @@ class SolverMuJoCo(SolverBase):
 
         - This solver requires `mujoco_warp`_ and its dependencies to be installed.
         - For installation instructions, see the `mujoco_warp`_ repository.
+        - ``shape_collision_radius`` from Newton models is not used by MuJoCo. Instead, MuJoCo computes
+          bounding sphere radii (``geom_rbound``) internally based on the geometry definition.
 
     Example
     -------
@@ -364,6 +368,18 @@ class SolverMuJoCo(SolverBase):
                 namespace="mujoco",
                 usd_attribute_name="mjc:solimp",
                 mjcf_attribute_name="solimp",
+            )
+        )
+        # Solver options (frequency WORLD for per-world values)
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="impratio",
+                frequency=ModelAttributeFrequency.WORLD,
+                assignment=ModelAttributeAssignment.MODEL,
+                dtype=wp.float32,
+                default=1.0,
+                namespace="mujoco",
+                usd_attribute_name="mjc:option:impratio",
             )
         )
 
@@ -1040,7 +1056,7 @@ class SolverMuJoCo(SolverBase):
         solver: int | str = "cg",
         integrator: int | str = "implicitfast",
         cone: int | str = "pyramidal",
-        impratio: float = 1.0,
+        impratio: float | None = None,
         use_mujoco_cpu: bool = False,
         disable_contacts: bool = False,
         default_actuator_gear: float | None = None,
@@ -1054,6 +1070,12 @@ class SolverMuJoCo(SolverBase):
         include_sites: bool = True,
     ):
         """
+        Solver options (e.g., ``impratio``) follow this resolution priority:
+
+        1. **Constructor argument** - If provided, same value is used for all worlds.
+        2. **Newton model custom attribute** (``model.mujoco.<option>``) - Supports per-world values.
+        3. **MuJoCo default** - Used if neither of the above is set.
+
         Args:
             model (Model): the model to be simulated.
             mjw_model (MjWarpModel | None): Optional pre-existing MuJoCo Warp model. If provided with `mjw_data`, conversion from Newton model is skipped.
@@ -1066,7 +1088,7 @@ class SolverMuJoCo(SolverBase):
             solver (int | str): Solver type. Can be "cg" or "newton", or their corresponding MuJoCo integer constants.
             integrator (int | str): Integrator type. Can be "euler", "rk4", or "implicitfast", or their corresponding MuJoCo integer constants.
             cone (int | str): The type of contact friction cone. Can be "pyramidal", "elliptic", or their corresponding MuJoCo integer constants.
-            impratio (float): Frictional-to-normal constraint impedance ratio.
+            impratio (float | None): Frictional-to-normal constraint impedance ratio. Defaults to MuJoCo's default (1.0).
             use_mujoco_cpu (bool): If True, use the MuJoCo-C CPU backend instead of `mujoco_warp`.
             disable_contacts (bool): If True, disable contact computation in MuJoCo.
             register_collision_groups (bool): If True, register collision groups from the Newton model in MuJoCo.
@@ -1128,6 +1150,8 @@ class SolverMuJoCo(SolverBase):
         """Mapping from MuJoCo [world, tendon] to Newton tendon index.
 
         Shape [nworld, ntendon], dtype int32."""
+        self.body_free_qd_start: wp.array(dtype=wp.int32) | None = None
+        """Per-body mapping to the free-joint qd_start index (or -1 if not free)."""
 
         # --- Conditional/lazy mappings ---
         self.newton_shape_to_mjc_geom: wp.array(dtype=wp.int32) | None = None
@@ -1354,7 +1378,6 @@ class SolverMuJoCo(SolverBase):
             xfrc = wp.zeros((1, len(mj_data.xfrc_applied)), dtype=wp.spatial_vector, device=model.device)
             nworld = 1
         joints_per_world = model.joint_count // nworld
-        bodies_per_world = model.body_count // nworld
         if control is not None:
             # Launch over MuJoCo actuators
             nu = self.mjc_actuator_to_newton_axis.shape[1]
@@ -1375,16 +1398,11 @@ class SolverMuJoCo(SolverBase):
                 apply_mjc_qfrc_kernel,
                 dim=(nworld, joints_per_world),
                 inputs=[
-                    state.body_q,
                     control.joint_f,
                     model.joint_type,
-                    model.body_com,
-                    model.joint_child,
-                    model.joint_q_start,
                     model.joint_qd_start,
                     model.joint_dof_dim,
                     joints_per_world,
-                    bodies_per_world,
                 ],
                 outputs=[
                     qfrc,
@@ -1401,6 +1419,22 @@ class SolverMuJoCo(SolverBase):
                 inputs=[
                     self.mjc_body_to_newton,
                     state.body_f,
+                ],
+                outputs=[
+                    xfrc,
+                ],
+                device=model.device,
+            )
+        if control is not None and control.joint_f is not None:
+            # Free/DISTANCE joint forces are applied via xfrc_applied to preserve COM-wrench semantics.
+            nbody = self.mjc_body_to_newton.shape[1]
+            wp.launch(
+                apply_mjc_free_joint_f_to_body_f_kernel,
+                dim=(nworld, nbody),
+                inputs=[
+                    self.mjc_body_to_newton,
+                    self.body_free_qd_start,
+                    control.joint_f,
                 ],
                 outputs=[
                     xfrc,
@@ -1438,11 +1472,12 @@ class SolverMuJoCo(SolverBase):
                 joint_q,
                 joint_qd,
                 joints_per_world,
-                model.up_axis,
                 model.joint_type,
                 model.joint_q_start,
                 model.joint_qd_start,
                 model.joint_dof_dim,
+                model.joint_child,
+                model.body_com,
             ],
             outputs=[qpos, qvel],
             device=model.device,
@@ -1483,11 +1518,12 @@ class SolverMuJoCo(SolverBase):
                 qpos,
                 qvel,
                 joints_per_world,
-                int(model.up_axis),
                 model.joint_type,
                 model.joint_q_start,
                 model.joint_qd_start,
                 model.joint_dof_dim,
+                model.joint_child,
+                model.body_com,
             ],
             outputs=[state.joint_q, state.joint_qd],
             device=model.device,
@@ -1710,7 +1746,7 @@ class SolverMuJoCo(SolverBase):
         integrator: int | str = "implicitfast",
         disableflags: int = 0,
         disable_contacts: bool = False,
-        impratio: float = 1.0,
+        impratio: float | None = None,
         tolerance: float = 1e-6,
         ls_tolerance: float = 0.01,
         cone: int | str = "pyramidal",
@@ -1727,12 +1763,41 @@ class SolverMuJoCo(SolverBase):
         """
         Convert a Newton model and state to MuJoCo (Warp) model and data.
 
+        Solver options (e.g., ``impratio``) follow this resolution priority:
+
+        1. **Constructor argument** - If provided, same value is used for all worlds.
+        2. **Newton model custom attribute** (``model.mujoco.<option>``) - Supports per-world values.
+        3. **MuJoCo default** - Used if neither of the above is set.
+
         Args:
-            Model (newton.Model): The Newton model to convert.
-            State (newton.State): The Newton state to convert.
+            model: The Newton model to convert.
+            state: The Newton state to convert (optional).
+            separate_worlds: If True, each world is a separate MuJoCo simulation.
+            iterations: Maximum solver iterations.
+            ls_iterations: Maximum line search iterations.
+            njmax: Maximum number of constraints per world.
+            nconmax: Maximum number of contacts.
+            solver: Constraint solver type ("cg" or "newton").
+            integrator: Integration method ("euler", "rk4", "implicit", "implicitfast").
+            disableflags: MuJoCo disable flags bitmask.
+            disable_contacts: If True, disable contact computation.
+            impratio: Impedance ratio for contacts. Defaults to MuJoCo default.
+            tolerance: Solver tolerance.
+            ls_tolerance: Line search tolerance.
+            cone: Friction cone type ("pyramidal" or "elliptic").
+            target_filename: Optional path to save generated MJCF file.
+            default_actuator_args: Default actuator parameters.
+            default_actuator_gear: Default actuator gear ratio.
+            actuator_gears: Per-actuator gear ratios by name.
+            actuated_axes: List of DOF indices to actuate.
+            skip_visual_only_geoms: If True, skip geoms that are visual-only.
+            include_sites: If True, include sites in the model.
+            mesh_maxhullvert: Maximum vertices for convex hull meshes.
+            ls_parallel: If True, enable parallel line search.
 
         Returns:
-            tuple[MjWarpModel, MjWarpData, MjModel, MjData]: A tuple containing the model and data objects for ``mujoco_warp`` and MuJoCo.
+            tuple[MjWarpModel, MjWarpData, MjModel, MjData]: Model and data objects for
+                ``mujoco_warp`` and MuJoCo.
         """
 
         if not model.joint_count:
@@ -1815,6 +1880,16 @@ class SolverMuJoCo(SolverBase):
             else:
                 arr[tuple(keys.T)] = vals
 
+        # Solver option resolution priority (highest to lowest):
+        #   1. Constructor argument (e.g., impratio=5.0) - same value for all worlds
+        #   2. Newton model custom attribute (model.mujoco.<option>) - supports per-world values
+        #   3. MuJoCo default
+        impratio_overridden = impratio is not None
+        if impratio is None:
+            mujoco_attrs = getattr(model, "mujoco", None)
+            if mujoco_attrs and hasattr(mujoco_attrs, "impratio"):
+                impratio = float(mujoco_attrs.impratio.numpy()[0])
+
         spec = mujoco.MjSpec()
         spec.option.disableflags = disableflags
         spec.option.gravity = np.array([*model.gravity.numpy()[0]])
@@ -1823,7 +1898,8 @@ class SolverMuJoCo(SolverBase):
         spec.option.iterations = iterations
         spec.option.ls_iterations = ls_iterations
         spec.option.cone = cone
-        spec.option.impratio = impratio
+        if impratio is not None:
+            spec.option.impratio = impratio
         spec.option.tolerance = tolerance
         spec.option.ls_tolerance = ls_tolerance
         spec.option.jacobian = mujoco.mjtJacobian.mjJAC_AUTO
@@ -2640,6 +2716,28 @@ class SolverMuJoCo(SolverBase):
             joints_per_world = model.joint_count // model.num_worlds
             dofs_per_world = model.joint_dof_count // model.num_worlds
 
+            # Map each Newton body to the qd_start of its free/DISTANCE joint (or -1).
+            # Use selected_joints as the template and tile offsets across worlds.
+            joint_type_np = model.joint_type.numpy()
+            joint_child_np = model.joint_child.numpy()
+            joint_qd_start_np = model.joint_qd_start.numpy()
+
+            template_joint_types = joint_type_np[selected_joints]
+            free_mask = np.isin(template_joint_types, (JointType.FREE, JointType.DISTANCE))
+            body_free_qd_start_np = np.full(model.body_count, -1, dtype=np.int32)
+            if np.any(free_mask):
+                template_children = joint_child_np[selected_joints] % bodies_per_world
+                template_qd_start = joint_qd_start_np[selected_joints] % dofs_per_world
+                child_free = template_children[free_mask]
+                qd_start_free = template_qd_start[free_mask]
+                world_body_offsets = (np.arange(model.num_worlds, dtype=np.int32) * bodies_per_world)[:, None]
+                world_qd_offsets = (np.arange(model.num_worlds, dtype=np.int32) * dofs_per_world)[:, None]
+                body_indices = (child_free[None, :] + world_body_offsets).ravel()
+                qd_starts = (qd_start_free[None, :] + world_qd_offsets).ravel()
+                body_free_qd_start_np[body_indices] = qd_starts
+
+            self.body_free_qd_start = wp.array(body_free_qd_start_np, dtype=wp.int32)
+
             # Create mjc_mocap_to_newton_jnt: MuJoCo[world, mocap] -> Newton joint index
             # Mocap bodies are created from fixed-base articulations (FIXED joint to world)
             # In MuJoCo, they have body_mocapid >= 0 and no joint
@@ -2798,6 +2896,9 @@ class SolverMuJoCo(SolverBase):
             # expand model fields that can be expanded:
             self.expand_model_fields(self.mjw_model, nworld)
 
+            # update solver options from Newton model (only if not overridden by constructor)
+            self._update_solver_options(impratio_overridden=impratio_overridden)
+
             # so far we have only defined the first world,
             # now complete the data from the Newton model
             self.notify_model_changed(SolverNotifyFlags.ALL)
@@ -2888,9 +2989,18 @@ class SolverMuJoCo(SolverBase):
             # "mat_rgba",
         }
 
-        # Fields in mj_model.opt to expand
+        # Solver option fields to expand (nested in mj_model.opt)
         opt_fields_to_expand = {
+            # "timestep",
+            "impratio_invsqrt",
+            # "tolerance",
+            # "ls_tolerance",
+            # "ccd_tolerance",
+            # "density",
+            # "viscosity",
             "gravity",
+            # "wind",
+            # "magnetic",
         }
 
         def tile(x: wp.array):
@@ -2924,6 +3034,37 @@ class SolverMuJoCo(SolverBase):
             if field in opt_fields_to_expand:
                 array = getattr(mj_model.opt, field)
                 setattr(mj_model.opt, field, tile(array))
+
+    def _update_solver_options(self, impratio_overridden: bool = False):
+        """Update solver options from Newton model to MuJoCo Warp.
+
+        Copies per-world values from Newton custom attributes to the MuJoCo Warp model.
+        If a value was overridden by constructor, tile() already handled expansion so we skip it.
+
+        Args:
+            impratio_overridden: If True, impratio was set by constructor and tile() handled it.
+        """
+        mujoco_attrs = getattr(self.model, "mujoco", None)
+        nworld = self.model.num_worlds
+
+        # Get Newton arrays - pass None if overridden or not available (kernel checks for None)
+        if not impratio_overridden and mujoco_attrs and hasattr(mujoco_attrs, "impratio"):
+            newton_impratio = mujoco_attrs.impratio
+        else:
+            newton_impratio = None
+
+        # Skip kernel if all options are None (add more checks here as options are added)
+        all_none = newton_impratio is None  # and other_option is None and ...
+        if all_none:
+            return
+
+        wp.launch(
+            update_solver_options_kernel,
+            dim=nworld,
+            inputs=[newton_impratio],
+            outputs=[self.mjw_model.opt.impratio_invsqrt],
+            device=self.model.device,
+        )
 
     def update_model_inertial_properties(self):
         if self.model.body_count == 0:
