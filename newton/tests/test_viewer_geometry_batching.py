@@ -66,7 +66,7 @@ class _ViewerGeometryBatchingProbe(ViewerNull):
             ]
             batch.scales = wp.array(scales, dtype=wp.vec3, device=self.device)
 
-    def log_instances(self, name, mesh, xforms, scales, colors, materials, hidden=False):
+    def log_instances(self, *_args, **_kwargs):
         self.log_instances_calls += 1
 
     def log_capsules(self, name, mesh, xforms, scales, colors, materials, hidden=False):

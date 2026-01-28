@@ -55,7 +55,9 @@ def _capsule_build_body_scales(
     shape_indices: wp.array(dtype=wp.int32),
     out_scales: wp.array(dtype=wp.vec3),
 ):
-    # Build per-capsule body scales (r, r, half_height) from model.shape_scale
+    # model.shape_scale stores capsule params as (radius, half_height, _unused).
+    # ViewerGL instances scale meshes with a full (x, y, z) vector, so we expand to
+    # (radius, radius, half_height) for the cylinder body.
     tid = wp.tid()
     s = shape_indices[tid]
     scale = shape_scale[s]
@@ -196,7 +198,8 @@ class ViewerGL(ViewerBase):
 
     def _hash_geometry(self, geo_type: int, geo_scale, thickness: float, is_solid: bool, geo_src=None) -> int:
         # For capsules, ignore (radius, half_height) in the geometry hash so varying-length capsules batch together.
-        # The true per-instance (r, r, half_height) is recovered from model.shape_scale in set_model().
+        # Capsule dimensions are stored per-shape in model.shape_scale as (radius, half_height, _unused) and
+        # are remapped in set_model() to per-instance render scales (radius, radius, half_height).
         if geo_type == nt.GeoType.CAPSULE:
             geo_scale = (1.0, 1.0)
         return super()._hash_geometry(geo_type, geo_scale, thickness, is_solid, geo_src)
@@ -425,7 +428,7 @@ class ViewerGL(ViewerBase):
             name (str): Unique name for the capsule instancer group.
             mesh: Capsule prototype mesh path from ViewerBase (unused in this backend).
             xforms: Capsule instance transforms (wp.transform), length N.
-            scales: Capsule body scales, expected (r, r, half_height), length N.
+            scales: Capsule body instance scales, expected (radius, radius, half_height), length N.
             colors: Capsule instance colors (wp.vec3), length N or None (no update).
             materials: Capsule instance materials (wp.vec4), length N or None (no update).
             hidden (bool): Whether the instances are hidden.
@@ -439,7 +442,7 @@ class ViewerGL(ViewerBase):
         if cylinder_mesh not in self.objects:
             self.log_geo(cylinder_mesh, nt.GeoType.CYLINDER, (1.0, 1.0), 0.0, True, hidden=True)
 
-        # Cylinder body uses the capsule transforms and (r, r, half_height) scaling.
+        # Cylinder body uses the capsule transforms and (radius, radius, half_height) scaling.
         cyl_name = f"{name}/capsule_cylinder"
         cap_name = f"{name}/capsule_caps"
 
