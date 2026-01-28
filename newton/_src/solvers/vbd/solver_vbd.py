@@ -60,7 +60,6 @@ from .particle_vbd_kernels import (
     evaluate_volumetric_neo_hookean_force_and_hessian,
     # Solver kernels (particle VBD)
     forward_step,
-    forward_step_penetration_free,
     solve_trimesh_no_self_contact,
     solve_trimesh_no_self_contact_tile,
     solve_trimesh_with_self_contact_penetration_free,
@@ -1183,7 +1182,7 @@ class SolverVBD(SolverBase):
             self.solve_particle_iteration(state_in, state_out, contacts, dt, iter_num)
 
         self.finalize_rigid_bodies(state_out, dt)
-        self.finalize_particles(state_out, dt)
+        self.finalize_particles(state_in, state_out, dt)
 
     def initialize_particles(self, state_in: State, dt: float):
         """Initialize particle positions for the VBD iteration."""
@@ -1193,47 +1192,31 @@ class SolverVBD(SolverBase):
         if model.particle_count == 0:
             return
 
-        if self.particle_enable_self_contact:
-            # Collision detection before initialization to compute conservative bounds
-            self.collision_detection_penetration_free(state_in)
+        self.collision_detection_penetration_free(state_in)
 
-            wp.launch(
-                kernel=forward_step_penetration_free,
-                inputs=[
-                    dt,
-                    model.gravity,
-                    model.particle_world,
-                    self.particle_q_prev,
-                    state_in.particle_q,
-                    state_in.particle_qd,
-                    model.particle_inv_mass,
-                    state_in.particle_f,
-                    model.particle_flags,
-                    self.pos_prev_collision_detection,
-                    self.particle_conservative_bounds,
-                    self.inertia,
-                ],
-                dim=model.particle_count,
-                device=self.device,
-            )
-        else:
-            wp.launch(
-                kernel=forward_step,
-                inputs=[
-                    dt,
-                    model.gravity,
-                    model.particle_world,
-                    self.particle_q_prev,
-                    state_in.particle_q,
-                    state_in.particle_qd,
-                    model.particle_inv_mass,
-                    state_in.particle_f,
-                    model.particle_flags,
-                    self.inertia,
-                ],
-                dim=model.particle_count,
-                device=self.device,
-            )
+        model = self.model
+
+        wp.launch(
+            kernel=forward_step,
+            inputs=[
+                dt,
+                model.gravity,
+                self.particle_q_prev,
+                state_in.particle_q,
+                state_in.particle_qd,
+                self.model.particle_inv_mass,
+                state_in.particle_f,
+                self.model.particle_flags,
+            ],
+            outputs=[
+                self.inertia,
+                self.particle_displacements,
+            ],
+            dim=self.model.particle_count,
+            device=self.device,
+        )
+
+        self.apply_penetration_free_truncation(state_in.particle_q)
 
     def initialize_rigid_bodies(
         self,
@@ -1422,7 +1405,7 @@ class SolverVBD(SolverBase):
                 device=self.device,
             )
 
-    def apply_planar_truncation(self, particle_q_in: wp.array, particle_q_out: wp.array):
+    def apply_penetration_free_truncation(self, particle_q_out: wp.array | None = None):
         """Apply planar truncation to particle displacements and update positions.
 
         This critical operation ensures that displacements don't cause penetrations by:
@@ -1437,7 +1420,7 @@ class SolverVBD(SolverBase):
                 kernel=apply_truncation_ts,
                 dim=self.model.particle_count,
                 inputs=[
-                    particle_q_in,  # Use current positions, not pos_prev_collision_detection
+                    self.pos_prev_collision_detection,  # Use current positions, not pos_prev_collision_detection
                     self.particle_displacements,
                     self.truncation_ts,
                 ],
@@ -1519,11 +1502,11 @@ class SolverVBD(SolverBase):
                 and iter_num % self.particle_collision_detection_interval == 0
             ):
                 self.collision_detection_penetration_free(state_in)
-
+        
         # Zero out forces, hessians, and displacements
         self.particle_forces.zero_()
         self.particle_hessians.zero_()
-        self.particle_displacements.zero_()
+
 
         # Iterate over color groups
         for color in range(len(model.particle_color_groups)):
@@ -1674,16 +1657,12 @@ class SolverVBD(SolverBase):
                     device=self.device,
                 )
 
-            # Copy positions back
-            wp.launch(
-                kernel=copy_particle_positions_back,
-                inputs=[model.particle_color_groups[color], state_in.particle_q, state_out.particle_q],
-                dim=model.particle_color_groups[color].size,
-                device=self.device,
-            )
+            # Apply planar truncation to displacements and update positions
+            self.apply_penetration_free_truncation(state_in.particle_q)
 
-        # Apply planar truncation to displacements and update positions
-        self.apply_planar_truncation(state_in.particle_q, state_out.particle_q)
+
+
+
 
     def solve_rigid_body_iteration(self, state_in: State, state_out: State, contacts: Contacts | None, dt: float):
         """Solve one AVBD iteration for rigid bodies (per-iteration phase).
@@ -1942,12 +1921,14 @@ class SolverVBD(SolverBase):
             device=self.device,
         )
 
-    def finalize_particles(self, state_out: State, dt: float):
+    def finalize_particles(self, state_in, state_out: State, dt: float):
         """Finalize particle velocities after VBD iterations."""
         # Early exit if no particles
         if self.model.particle_count == 0:
             return
 
+        # TODO: remove this
+        wp.copy(state_out.particle_q, state_in.particle_q)
         wp.launch(
             kernel=update_velocity,
             inputs=[dt, self.particle_q_prev, state_out.particle_q, state_out.particle_qd],
@@ -2005,33 +1986,22 @@ class SolverVBD(SolverBase):
             )
 
     def collision_detection_penetration_free(self, current_state: State):
-        self.trimesh_collision_detector.refit(current_state.particle_q)
-        self.trimesh_collision_detector.vertex_triangle_collision_detection(
-            self.particle_self_contact_margin,
-            min_query_radius=self.particle_rest_shape_contact_exclusion_radius,
-            min_distance_filtering_ref_pos=self.particle_q_rest,
-        )
-        self.trimesh_collision_detector.edge_edge_collision_detection(
-            self.particle_self_contact_margin,
-            min_query_radius=self.particle_rest_shape_contact_exclusion_radius,
-            min_distance_filtering_ref_pos=self.particle_q_rest,
-        )
-
         self.pos_prev_collision_detection.assign(current_state.particle_q)
-        wp.launch(
-            kernel=compute_particle_conservative_bound,
-            inputs=[
-                self.particle_conservative_bound_relaxation,
+        self.particle_displacements.zero_()
+
+        if self.particle_enable_self_contact:
+            self.trimesh_collision_detector.refit(current_state.particle_q)
+            self.trimesh_collision_detector.vertex_triangle_collision_detection(
                 self.particle_self_contact_margin,
-                self.particle_adjacency,
-                self.trimesh_collision_detector.collision_info,
-            ],
-            outputs=[
-                self.particle_conservative_bounds,
-            ],
-            dim=self.model.particle_count,
-            device=self.device,
-        )
+                min_query_radius=self.particle_rest_shape_contact_exclusion_radius,
+                min_distance_filtering_ref_pos=self.particle_q_rest,
+            )
+            self.trimesh_collision_detector.edge_edge_collision_detection(
+                self.particle_self_contact_margin,
+                min_query_radius=self.particle_rest_shape_contact_exclusion_radius,
+                min_distance_filtering_ref_pos=self.particle_q_rest,
+            )
+
 
     def rebuild_bvh(self, state: State):
         """This function will rebuild the BVHs used for detecting self-contacts using the input `state`.

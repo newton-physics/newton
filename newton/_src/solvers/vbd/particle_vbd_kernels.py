@@ -1569,67 +1569,31 @@ def compute_friction(mu: float, normal_contact_force: float, T: mat32, u: wp.vec
 
     return force, hessian
 
-
 @wp.kernel
 def forward_step(
     dt: float,
     gravity: wp.array(dtype=wp.vec3),
-    particle_world: wp.array(dtype=wp.int32),
     pos_prev: wp.array(dtype=wp.vec3),
     pos: wp.array(dtype=wp.vec3),
     vel: wp.array(dtype=wp.vec3),
     inv_mass: wp.array(dtype=float),
     external_force: wp.array(dtype=wp.vec3),
     particle_flags: wp.array(dtype=wp.int32),
-    inertia: wp.array(dtype=wp.vec3),
+    inertia_out: wp.array(dtype=wp.vec3),
+    displacements_out: wp.array(dtype=wp.vec3),
 ):
     particle = wp.tid()
+
     pos_prev[particle] = pos[particle]
-
     if not particle_flags[particle] & ParticleFlags.ACTIVE:
-        inertia[particle] = pos[particle]
+        inertia_out[particle] = pos_prev[particle]
         return
-    world_idx = particle_world[particle]
-    world_g = gravity[wp.max(world_idx, 0)]
-    vel_new = vel[particle] + (world_g + external_force[particle] * inv_mass[particle]) * dt
-    pos[particle] = pos[particle] + vel_new * dt
-    inertia[particle] = pos[particle]
+    vel_new = vel[particle] + (gravity[0] + external_force[particle] * inv_mass[particle]) * dt
+    inertia = pos[particle] + vel_new * dt
+    inertia_out[particle] = inertia
+    if displacements_out:
+        displacements_out[particle] = vel_new * dt
 
-
-@wp.kernel
-def forward_step_penetration_free(
-    dt: float,
-    gravity: wp.array(dtype=wp.vec3),
-    particle_world: wp.array(dtype=wp.int32),
-    pos_prev: wp.array(dtype=wp.vec3),
-    pos: wp.array(dtype=wp.vec3),
-    vel: wp.array(dtype=wp.vec3),
-    inv_mass: wp.array(dtype=float),
-    external_force: wp.array(dtype=wp.vec3),
-    particle_flags: wp.array(dtype=wp.int32),
-    pos_prev_collision_detection: wp.array(dtype=wp.vec3),
-    particle_conservative_bounds: wp.array(dtype=float),
-    inertia: wp.array(dtype=wp.vec3),
-):
-    """
-    Forward integration step for particles (Penetration Free mode).
-    """
-    particle_index = wp.tid()
-    pos_prev[particle_index] = pos[particle_index]
-
-    if not particle_flags[particle_index] & ParticleFlags.ACTIVE:
-        inertia[particle_index] = pos[particle_index]
-        return
-
-    world_idx = particle_world[particle_index]
-    world_g = gravity[wp.max(world_idx, 0)]
-    vel_new = vel[particle_index] + (world_g + external_force[particle_index] * inv_mass[particle_index]) * dt
-    pos_inertia = pos[particle_index] + vel_new * dt
-    inertia[particle_index] = pos_inertia
-
-    pos[particle_index] = apply_conservative_bound_truncation(
-        particle_index, pos_inertia, pos_prev_collision_detection, particle_conservative_bounds
-    )
 
 
 @wp.kernel
