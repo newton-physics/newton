@@ -254,6 +254,97 @@ def damp_force_and_hessian(
     return force + f_d, hessian + h_d
 
 
+# @wp.func
+# def evaluate_volumetric_neo_hookean_force_and_hessian(
+#     tet_id: int,
+#     v_order: int,
+#     pos_prev: wp.array(dtype=wp.vec3),
+#     pos: wp.array(dtype=wp.vec3),
+#     tet_indices: wp.array(dtype=wp.int32, ndim=2),
+#     Dm_inv: wp.mat33,
+#     mu: float,
+#     lmbd: float,
+#     damping: float,
+#     dt: float,
+# ) -> tuple[wp.vec3, wp.mat33]:
+    
+#     # ============ Get Vertices ============
+#     v0 = pos[tet_indices[tet_id, 0]]
+#     v1 = pos[tet_indices[tet_id, 1]]
+#     v2 = pos[tet_indices[tet_id, 2]]
+#     v3 = pos[tet_indices[tet_id, 3]]
+
+#     # ============ Compute rest volume from Dm_inv ============
+#     rest_volume = 1.0 / (wp.determinant(Dm_inv) * 6.0)
+
+#     # ============ Deformation Gradient ============
+#     Ds = wp.mat33(v1 - v0, v2 - v0, v3 - v0)
+#     F = Ds * Dm_inv
+
+#     # ============ Flatten F to vec9 ============
+#     f = vec9(
+#         F[0,0], F[1,0], F[2,0],
+#         F[0,1], F[1,1], F[2,1],
+#         F[0,2], F[1,2], F[2,2],
+#     )
+
+#     # ============ Useful Quantities ============
+#     J = wp.determinant(F)
+#     alpha = 1.0 + mu / lmbd
+#     F_inv = wp.inverse(F)
+#     cof = J * wp.transpose(F_inv)
+    
+#     cof_vec = vec9(
+#         cof[0,0], cof[1,0], cof[2,0],
+#         cof[0,1], cof[1,1], cof[2,1],
+#         cof[0,2], cof[1,2], cof[2,2],
+#     )
+
+#     # ============ Stress ============
+#     P_vec = rest_volume * (mu * f + lmbd * (J - alpha) * cof_vec)
+
+#     # ============ Hessian ============
+#     H = (mu * wp.identity(n=9, dtype=float) 
+#          + lmbd * wp.outer(cof_vec, cof_vec) 
+#          + compute_cofactor_derivative(F, lmbd * (J - alpha)))
+#     H = rest_volume * H
+
+#     # ============ G_i ============
+#     G_i = compute_G_matrix(Dm_inv, v_order)
+
+#     # ============ Force & Hessian ============
+#     force = -wp.transpose(G_i) * P_vec
+#     hessian = wp.transpose(G_i) * H * G_i
+
+#     # ============ Damping ============
+#     if damping > 0.0:
+#         inv_dt = 1.0 / dt
+        
+#         v0_prev = pos_prev[tet_indices[tet_id, 0]]
+#         v1_prev = pos_prev[tet_indices[tet_id, 1]]
+#         v2_prev = pos_prev[tet_indices[tet_id, 2]]
+#         v3_prev = pos_prev[tet_indices[tet_id, 3]]
+        
+#         Ds_dot = wp.mat33(
+#             (v1 - v1_prev) - (v0 - v0_prev),
+#             (v2 - v2_prev) - (v0 - v0_prev),
+#             (v3 - v3_prev) - (v0 - v0_prev),
+#         ) * inv_dt
+#         F_dot = Ds_dot * Dm_inv
+        
+#         f_dot = vec9(
+#             F_dot[0,0], F_dot[1,0], F_dot[2,0],
+#             F_dot[0,1], F_dot[1,1], F_dot[2,1],
+#             F_dot[0,2], F_dot[1,2], F_dot[2,2],
+#         )
+        
+#         P_damp = damping * (H * f_dot)
+        
+#         force = force - wp.transpose(G_i) * P_damp
+#         hessian = hessian + (damping * inv_dt) * wp.transpose(G_i) * H * G_i
+
+#     return force, hessian
+
 @wp.func
 def evaluate_volumetric_neo_hookean_force_and_hessian(
     tet_id: int,
@@ -309,12 +400,21 @@ def evaluate_volumetric_neo_hookean_force_and_hessian(
          + compute_cofactor_derivative(F, lmbd * (J - alpha)))
     H = rest_volume * H
 
-    # ============ G_i ============
-    G_i = compute_G_matrix(Dm_inv, v_order)
+    # ============ Assemble Pointwise Force ============
+    if v_order == 0:
+        m = wp.vec3(
+            -(Dm_inv[0,0] + Dm_inv[1,0] + Dm_inv[2,0]),
+            -(Dm_inv[0,1] + Dm_inv[1,1] + Dm_inv[2,1]),
+            -(Dm_inv[0,2] + Dm_inv[1,2] + Dm_inv[2,2]),
+        )
+    elif v_order == 1:
+        m = wp.vec3(Dm_inv[0,0], Dm_inv[0,1], Dm_inv[0,2])
+    elif v_order == 2:
+        m = wp.vec3(Dm_inv[1,0], Dm_inv[1,1], Dm_inv[1,2])
+    else:
+        m = wp.vec3(Dm_inv[2,0], Dm_inv[2,1], Dm_inv[2,2])
 
-    # ============ Force & Hessian ============
-    force = -wp.transpose(G_i) * P_vec
-    hessian = wp.transpose(G_i) * H * G_i
+    force, hessian = assemble_tet_vertex_force_and_hessian(P_vec, H, m[0], m[1], m[2])
 
     # ============ Damping ============
     if damping > 0.0:
@@ -340,8 +440,14 @@ def evaluate_volumetric_neo_hookean_force_and_hessian(
         
         P_damp = damping * (H * f_dot)
         
-        force = force - wp.transpose(G_i) * P_damp
-        hessian = hessian + (damping * inv_dt) * wp.transpose(G_i) * H * G_i
+        f_damp =  wp.vec3(
+            -(P_damp[0] * m[0] + P_damp[3] * m[1] + P_damp[6] * m[2]),
+            -(P_damp[1] * m[0] + P_damp[4] * m[1] + P_damp[7] * m[2]),
+            -(P_damp[2] * m[0] + P_damp[5] * m[1] + P_damp[8] * m[2]),
+        )
+        force += f_damp
+        hessian +=  (damping * inv_dt * hessian) 
+
 
     return force, hessian
 
@@ -1594,7 +1700,7 @@ def forward_step(
     particle = wp.tid()
 
     pos_prev[particle] = pos[particle]
-    if not particle_flags[particle] & ParticleFlags.ACTIVE:
+    if not particle_flags[particle] & ParticleFlags.ACTIVE or inv_mass[particle] == 0:
         inertia_out[particle] = pos_prev[particle]
         return
     vel_new = vel[particle] + (gravity[0] + external_force[particle] * inv_mass[particle]) * dt
@@ -1692,18 +1798,6 @@ def apply_conservative_bound_truncation(
         return particle_pos_prev_collision_detection + accumulated_displacement
     else:
         return pos_new
-
-@wp.kernel
-def copy_particle_positions_back(
-    particle_ids_in_color: wp.array(dtype=wp.int32),
-    pos: wp.array(dtype=wp.vec3),
-    pos_new: wp.array(dtype=wp.vec3),
-):
-    tid = wp.tid()
-    particle = particle_ids_in_color[tid]
-
-    pos[particle] = pos_new[particle]
-
 
 @wp.kernel
 def update_velocity(
@@ -2792,7 +2886,7 @@ def solve_elasticity_tile(
     thread_idx = tid % TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE
     particle_index = particle_ids_in_color[block_idx]
 
-    if not particle_flags[particle_index] & ParticleFlags.ACTIVE:
+    if not particle_flags[particle_index] & ParticleFlags.ACTIVE or mass[particle_index] == 0:
         if thread_idx == 0:
             particle_displacements[particle_index] = wp.vec3(0.0)
         return
@@ -2953,7 +3047,7 @@ def solve_elasticity(
 
     particle_index = particle_ids_in_color[t_id]
 
-    if not particle_flags[particle_index] & ParticleFlags.ACTIVE:
+    if not particle_flags[particle_index] & ParticleFlags.ACTIVE or mass[particle_index] == 0:
         particle_displacements[particle_index] = wp.vec3(0.0)
         return
 
