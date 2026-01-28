@@ -16,9 +16,9 @@
 ###########################################################################
 # Example Softbody Hanging
 #
-# This simulation demonstrates a volumetric soft body (tetrahedral grid) hanging
-# from fixed particles on the left side. The soft grid uses Neo-Hookean
-# elasticity with the VBD solver.
+# This simulation demonstrates volumetric soft bodies (tetrahedral grids) hanging
+# from fixed particles on the left side. Four grids with different damping values
+# (1e-1 to 1e-4) showcase the effect of damping on Neo-Hookean elastic behavior.
 #
 # Command: python -m newton.examples softbody_hanging
 #
@@ -48,27 +48,33 @@ class Example:
         builder.add_ground_plane()
 
         # Grid dimensions
-        dim_x = 8
-        dim_y = 8
+        dim_x = 12
+        dim_y = 4
         dim_z = 4
         cell_size = 0.1
 
-        builder.add_soft_grid(
-            pos=wp.vec3(0.0, 1.0, 2.0),
-            rot=wp.quat_identity(),
-            vel=wp.vec3(0.0, 0.0, 0.0),
-            dim_x=dim_x,
-            dim_y=dim_y,
-            dim_z=dim_z,
-            cell_x=cell_size,
-            cell_y=cell_size,
-            cell_z=cell_size,
-            density=1.0e3,
-            k_mu=1.0e5,
-            k_lambda=1.0e5,
-            k_damp=0.0001,
-            fix_left=True,
-        )
+        # Create 4 grids with different damping values
+        damping_values = [1e-1, 1e-2, 1e-3, 1e-4]
+        spacing = 0.6  # Space between grids along Z-axis
+
+        for i, k_damp in enumerate(damping_values):
+            z_offset = i * spacing
+            builder.add_soft_grid(
+                pos=wp.vec3(0.0, 1.0 + z_offset, 1.0),
+                rot=wp.quat_identity(),
+                vel=wp.vec3(0.0, 0.0, 0.0),
+                dim_x=dim_x,
+                dim_y=dim_y,
+                dim_z=dim_z,
+                cell_x=cell_size,
+                cell_y=cell_size,
+                cell_z=cell_size,
+                density=1.0e3,
+                k_mu=1.0e5,
+                k_lambda=1.0e5,
+                k_damp=k_damp,
+                fix_left=True,
+            )
 
         # Color the mesh for VBD solver
         builder.color()
@@ -129,9 +135,9 @@ class Example:
     def test_final(self):
         # Test that particles are in a reasonable range (soft body may settle or deform)
         # We check that they haven't exploded or collapsed completely
-        # Grid is roughly 0.8 x 0.8 x 0.4 in size, positioned at (0, 1, 2)
+        # 4 grids, each roughly 1.2 x 0.4 x 0.4 in size, positioned along Z-axis starting at (0, 1, 2)
         p_lower = wp.vec3(-0.5, 0.0, 1.0)
-        p_upper = wp.vec3(1.5, 2.5, 3.0)
+        p_upper = wp.vec3(1.5, 2.5, 5.0)
         newton.examples.test_particle_state(
             self.state_0,
             "particles are within a reasonable volume",
