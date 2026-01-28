@@ -6986,19 +6986,11 @@ class ModelBuilder:
             if self.world_dt:
                 # Use per-world time-step from world_dt list
                 dt_vecs = self.world_dt
-                inv_dt_vecs = [1.0 / dt for dt in dt_vecs]
             else:
                 # Fallback: use single scalar time-step uniformly across all worlds
                 dt_vecs = [self.dt] * self.num_worlds
-                inv_dt_vecs = [1.0 / dt for dt in dt_vecs]
             m.dt = wp.array(
                 dt_vecs,
-                dtype=wp.float32,
-                device=device,
-                requires_grad=requires_grad,
-            )
-            m.inv_dt = wp.array(
-                inv_dt_vecs,
                 dtype=wp.float32,
                 device=device,
                 requires_grad=requires_grad,

@@ -419,8 +419,6 @@ class Model:
 
         self.dt = None
         """Simulation time step, shape [num_worlds], float."""
-        self.inv_dt = None
-        """Inverse simulation time step, shape [num_worlds], float."""
 
         self.equality_constraint_type = None
         """Type of equality constraint, shape [equality_constraint_count], int."""
@@ -720,20 +718,15 @@ class Model:
             dt_value = float(dt_array)
             if dt_value <= 0.0:
                 raise ValueError("Timestep must be positive")
-            inv_dt_value = 1.0 / dt_value
             dt_np = self.dt.numpy()
-            inv_dt_np = self.inv_dt.numpy()
             dt_np[world] = dt_value
-            inv_dt_np[world] = inv_dt_value
             self.dt.assign(dt_np)
-            self.inv_dt.assign(inv_dt_np)
         elif dt_array.ndim == 0:
             # setting uniformly for all worlds
             dt_value = float(dt_array)
             if dt_value <= 0.0:
                 raise ValueError("Timestep must be positive")
             self.dt.fill_(dt_value)
-            self.inv_dt.fill_(1.0 / dt_value)
         else:
             # setting per-world
             if len(dt_array) != self.num_worlds:
@@ -743,9 +736,7 @@ class Model:
                     raise ValueError(
                         f"Timestep must be positive, but got non-positive value {dt_array[w]} for world {w}"
                     )
-            inv_dt_array = 1.0 / dt_array
             self.dt.assign(dt_array)
-            self.inv_dt.assign(inv_dt_array)
 
     def collide(
         self: Model,

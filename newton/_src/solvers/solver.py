@@ -270,7 +270,8 @@ class SolverBase:
             contacts (Contacts): The contact information.
             dt (float, optional): The time step (typically in seconds).
                 If `float`, the time-step is applied uniformly to all worlds.
-                If `None`, the time-step from the :class:`Model` is used.
+                If `None`, the current values in the :attr:`newton.Model.dt` array will
+                be used, which can be set per-world using :meth:`newton.Model.set_timestep`.
         """
         raise NotImplementedError()
 
