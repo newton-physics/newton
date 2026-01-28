@@ -465,6 +465,11 @@ class TestMuJoCoSolverMassProperties(TestMuJoCoSolverPropertiesBase):
                         newton_eigvals = newton_eigvals[sort_indices]
                         newton_eigvecs = newton_eigvecs[:, sort_indices]
 
+                        # Ensure proper rotation (det=+1) before quaternion conversion
+                        # This mirrors the fix in update_body_inertia_kernel
+                        if np.linalg.det(newton_eigvecs) < 0:
+                            newton_eigvecs[:, 2] = -newton_eigvecs[:, 2]
+
                         newton_quat = wp.quat_from_matrix(
                             wp.matrix_from_cols(
                                 wp.vec3(newton_eigvecs[:, 0]),
@@ -518,6 +523,73 @@ class TestMuJoCoSolverMassProperties(TestMuJoCoSolverPropertiesBase):
 
         # Check updated inertia tensors
         check_inertias(updated_inertias, "Updated ")
+
+    def test_body_inertia_eigendecomposition_determinant(self):
+        """
+        Tests that the inertia eigendecomposition correctly handles cases where
+        wp.eig3() returns an eigenvector matrix with determinant -1 (a reflection).
+
+        The kernel must ensure det(V) = +1 before calling quat_from_matrix(),
+        otherwise the quaternion will be incorrect and the reconstructed inertia
+        tensor will not match the original.
+        """
+        # Create a specific inertia tensor that is known to trigger det=-1 from wp.eig3
+        # This is a diagonal tensor where eigendecomposition can return reflections
+        diagonal_inertia = np.diag([9.9086283e-05, 1.3213398e-04, 9.9086275e-05]).astype(np.float32)
+
+        # Assign this inertia to ALL bodies to ensure the mapped body gets it
+        new_inertias = np.zeros((self.model.body_count, 3, 3), dtype=np.float32)
+        for i in range(self.model.body_count):
+            new_inertias[i] = diagonal_inertia
+        self.model.body_inertia.assign(new_inertias)
+
+        # Initialize solver
+        solver = SolverMuJoCo(self.model, iterations=1, ls_iterations=1, disable_contacts=True)
+
+        # Get the mapping
+        mjc_body_to_newton = solver.mjc_body_to_newton.numpy()
+
+        # Helper to reconstruct full tensor from principal + iquat
+        def quat_to_rotmat(q_wxyz):
+            w, x, y, z = q_wxyz
+            return np.array(
+                [
+                    [1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
+                    [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
+                    [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)],
+                ]
+            )
+
+        # Check that all mapped bodies have correct reconstructed inertia
+        nworld = mjc_body_to_newton.shape[0]
+        nbody = mjc_body_to_newton.shape[1]
+        checked_count = 0
+
+        for world_idx in range(nworld):
+            for mjc_body in range(nbody):
+                newton_body = mjc_body_to_newton[world_idx, mjc_body]
+                if newton_body >= 0:
+                    # Get principal moments and iquat
+                    principal = solver.mjw_model.body_inertia.numpy()[world_idx, mjc_body]
+                    iquat = solver.mjw_model.body_iquat.numpy()[world_idx, mjc_body]  # wxyz
+
+                    # Reconstruct full tensor
+                    R = quat_to_rotmat(iquat)
+                    reconstructed = R @ np.diag(principal) @ R.T
+
+                    # Compare to original (should match within tolerance)
+                    # If determinant fix wasn't applied, this would fail
+                    np.testing.assert_allclose(
+                        reconstructed,
+                        diagonal_inertia,
+                        atol=1e-5,
+                        err_msg=f"Reconstructed inertia tensor does not match original for "
+                        f"mjc_body {mjc_body} (newton {newton_body}) in world {world_idx}. "
+                        "This may indicate the determinant fix in update_body_inertia_kernel is not working.",
+                    )
+                    checked_count += 1
+
+        self.assertGreater(checked_count, 0, "No bodies were checked")
 
     def test_body_gravcomp(self):
         """
