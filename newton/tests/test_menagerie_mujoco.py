@@ -430,6 +430,8 @@ DEFAULT_MODEL_SKIP_FIELDS: set[str] = {
     "qLDiagInv_tiles",
     # Visualization group: Newton defaults to 0, native may use other groups
     "geom_group",
+    # Collision exclusions: Newton needs to fix parent/child filtering to match MuJoCo
+    "nexclude",
 }
 
 
@@ -1113,8 +1115,6 @@ class TestMenagerie_UniversalRobotsUr5e(TestMenagerieBase):
         # Collision filtering: Newton uses different defaults
         "geom_conaffinity",
         "geom_contype",
-        # Bounding radius: small differences in computation
-        # "geom_rbound",
         # Solver reference params: Newton uses different defaults
         "geom_solref",
         # Joint actuator force limiting: Newton enables by default
@@ -1129,9 +1129,6 @@ class TestMenagerie_UniversalRobotsUr5e(TestMenagerieBase):
         # Mocap bodies: Newton handles fixed base differently
         "mocap_",
         "nmocap",
-        # Collision exclusions: Newton auto-generates self-collision exclusions
-        "nexclude",
-        "exclude_",
         # Collision pair handling: Newton does this differently
         "nxn_",
         # Options: solver/iterations differ between Newton defaults and MJCF
