@@ -3048,6 +3048,62 @@ class TestImportMjcf(unittest.TestCase):
         self.assertAlmostEqual(site_xform[1], 2.5, places=5)
         self.assertAlmostEqual(site_xform[2], 3.5, places=5)
 
+    def test_site_size_defaults(self):
+        """Test that site size uses MuJoCo's default [0.005, 0.005, 0.005].
+
+        Note: parse_vec replicates single values (size="0.001" → [0.001, 0.001, 0.001])
+        which differs from native MuJoCo (size="0.001" → [0.001, 0.005, 0.005]).
+        This is a known limitation, but at least the default matches MuJoCo.
+        """
+        mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test_site_size">
+    <worldbody>
+        <body name="body1">
+            <!-- Site with single size value - parse_vec replicates to all components -->
+            <site name="site_single" size="0.001"/>
+            <!-- Site with two size values -->
+            <site name="site_two" size="0.002 0.003"/>
+            <!-- Site with all three size values -->
+            <site name="site_three" size="0.004 0.005 0.006"/>
+            <!-- Site with no size - should use MuJoCo default [0.005, 0.005, 0.005] -->
+            <site name="site_default"/>
+        </body>
+    </worldbody>
+</mujoco>"""
+
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf_content, parse_sites=True)
+
+        # Helper to get site scale by name
+        def get_site_scale(name):
+            idx = builder.shape_key.index(name)
+            return builder.shape_scale[idx]
+
+        # Single value: parse_vec replicates → [0.001, 0.001, 0.001]
+        # (differs from MuJoCo's [0.001, 0.005, 0.005] but is internally consistent)
+        scale_single = get_site_scale("site_single")
+        self.assertAlmostEqual(scale_single[0], 0.001, places=6)
+        self.assertAlmostEqual(scale_single[1], 0.001, places=6)
+        self.assertAlmostEqual(scale_single[2], 0.001, places=6)
+
+        # Two values: [0.002, 0.003, 0.0] - parse_vec returns 2-element vec
+        # This might need fixing if 2-element sizes are common
+        scale_two = get_site_scale("site_two")
+        self.assertAlmostEqual(scale_two[0], 0.002, places=6)
+        self.assertAlmostEqual(scale_two[1], 0.003, places=6)
+
+        # Three values: [0.004, 0.005, 0.006]
+        scale_three = get_site_scale("site_three")
+        self.assertAlmostEqual(scale_three[0], 0.004, places=6)
+        self.assertAlmostEqual(scale_three[1], 0.005, places=6)
+        self.assertAlmostEqual(scale_three[2], 0.006, places=6)
+
+        # No size: should use MuJoCo default [0.005, 0.005, 0.005]
+        scale_default = get_site_scale("site_default")
+        self.assertAlmostEqual(scale_default[0], 0.005, places=6)
+        self.assertAlmostEqual(scale_default[1], 0.005, places=6)
+        self.assertAlmostEqual(scale_default[2], 0.005, places=6)
+
     def test_frame_childclass_propagation(self):
         """Test that frames correctly propagate childclass and merged defaults to geoms, sites, and nested frames."""
         mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
