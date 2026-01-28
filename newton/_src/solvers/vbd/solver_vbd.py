@@ -1171,15 +1171,15 @@ class SolverVBD(SolverBase):
         update_rigid_history = self.update_rigid_history
         self.update_rigid_history = True
 
-        self.initialize_rigid_bodies(state_in, contacts, dt, update_rigid_history)
-        self.initialize_particles(state_in, dt)
+        self.initialize_rigid_bodies(state_in, state_out, contacts, dt, update_rigid_history)
+        self.initialize_particles(state_in, state_out, dt)
 
         for iter_num in range(self.iterations):
             self.solve_rigid_body_iteration(state_in, state_out, contacts, dt)
             self.solve_particle_iteration(state_in, state_out, contacts, dt, iter_num)
 
         self.finalize_rigid_bodies(state_out, dt)
-        self.finalize_particles(state_in, state_out, dt)
+        self.finalize_particles(state_out, dt)
 
     def penetration_free_truncation(self, particle_q_out=None):
         """
@@ -1239,7 +1239,7 @@ class SolverVBD(SolverBase):
                 device=self.device,
             )
 
-    def initialize_particles(self, state_in: State, dt: float):
+    def initialize_particles(self, state_in: State, state_out: State, dt: float):
         """Initialize particle positions for the VBD iteration."""
         model = self.model
 
@@ -1272,12 +1272,13 @@ class SolverVBD(SolverBase):
             device=self.device,
         )
 
-        self.penetration_free_truncation(state_in.particle_q)
+        self.penetration_free_truncation(state_out.particle_q)
 
 
     def initialize_rigid_bodies(
         self,
         state_in: State,
+        state_out: State,
         contacts: Contacts | None,
         dt: float,
         update_rigid_history: bool,
@@ -1491,7 +1492,7 @@ class SolverVBD(SolverBase):
                 self.particle_collision_detection_interval >= 1
                 and iter_num % self.particle_collision_detection_interval == 0
             ):
-                self.collision_detection_penetration_free(state_in)
+                self.collision_detection_penetration_free(state_out)
 
         # Zero out forces and hessians
         self.particle_forces.zero_()
@@ -1507,7 +1508,7 @@ class SolverVBD(SolverBase):
                         dt,
                         color,
                         self.particle_q_prev,
-                        state_in.particle_q,
+                        state_out.particle_q,
                         self.model.particle_colors,
                         # body-particle contact
                         self.model.soft_contact_ke,
@@ -1520,9 +1521,9 @@ class SolverVBD(SolverBase):
                         contacts.soft_contact_max,
                         self.model.shape_material_mu,
                         self.model.shape_body,
-                        state_out.body_q if self.integrate_with_external_rigid_solver else state_in.body_q,
-                        state_in.body_q if self.integrate_with_external_rigid_solver else None,
-                        self.model.body_qd,
+                        body_q_for_particles,
+                        body_q_prev_for_particles,
+                        body_qd_for_particles,
                         self.model.body_com,
                         contacts.soft_contact_shape,
                         contacts.soft_contact_body_pos,
@@ -1531,7 +1532,6 @@ class SolverVBD(SolverBase):
                     ],
                     outputs=[self.particle_forces, self.particle_hessians],
                     device=self.device,
-                    # max_blocks=self.model.device.sm_count,
                 )
 
             if model.spring_count:
@@ -1541,7 +1541,7 @@ class SolverVBD(SolverBase):
                         dt,
                         color,
                         self.particle_q_prev,
-                        state_in.particle_q,
+                        state_out.particle_q,
                         self.model.particle_color_groups[color],
                         self.particle_adjacency,
                         self.model.spring_indices,
@@ -1562,7 +1562,7 @@ class SolverVBD(SolverBase):
                         dt,
                         color,
                         self.particle_q_prev,
-                        state_in.particle_q,
+                        state_out.particle_q,
                         self.model.particle_colors,
                         self.model.tri_indices,
                         self.model.edge_indices,
@@ -1588,7 +1588,7 @@ class SolverVBD(SolverBase):
                         dt,
                         self.model.particle_color_groups[color],
                         self.particle_q_prev,
-                        state_in.particle_q,
+                        state_out.particle_q,
                         self.model.particle_mass,
                         self.inertia,
                         self.model.particle_flags,
@@ -1621,7 +1621,7 @@ class SolverVBD(SolverBase):
                         dt,
                         self.model.particle_color_groups[color],
                         self.particle_q_prev,
-                        state_in.particle_q,
+                        state_out.particle_q,
                         self.model.particle_mass,
                         self.inertia,
                         self.model.particle_flags,
@@ -1645,7 +1645,7 @@ class SolverVBD(SolverBase):
                     ],
                     device=self.device,
                 )
-            self.penetration_free_truncation(state_in.particle_q)
+            self.penetration_free_truncation(state_out.particle_q)
 
 
     def solve_rigid_body_iteration(self, state_in: State, state_out: State, contacts: Contacts | None, dt: float):
@@ -1905,14 +1905,12 @@ class SolverVBD(SolverBase):
             device=self.device,
         )
 
-    def finalize_particles(self, state_in, state_out: State, dt: float):
+    def finalize_particles(self, state_out: State, dt: float):
         """Finalize particle velocities after VBD iterations."""
         # Early exit if no particles
         if self.model.particle_count == 0:
             return
             
-        # TODO: remove this
-        wp.copy(state_out.particle_q, state_in.particle_q)
         wp.launch(
             kernel=update_velocity,
             inputs=[dt, self.particle_q_prev, state_out.particle_q, state_out.particle_qd],
