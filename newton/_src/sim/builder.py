@@ -58,7 +58,6 @@ from ..geometry.inertia import validate_and_correct_inertia_kernel, verify_and_c
 from ..geometry.utils import RemeshingMethod, compute_inertia_obb, remesh_mesh
 from ..usd.schema_resolver import SchemaResolver
 from ..utils import compute_world_offsets
-from ..utils.import_utils import infer_actuator_mode
 from ..utils.mesh import MeshAdjacency
 from .graph_coloring import ColoringAlgorithm, color_rigid_bodies, color_trimesh, combine_independent_particle_coloring
 from .joints import (
@@ -67,6 +66,7 @@ from .joints import (
     JointType,
     get_joint_constraint_count,
     get_joint_dof_count,
+    infer_actuator_mode,
 )
 from .model import Model, ModelAttributeAssignment, ModelAttributeFrequency
 
@@ -1448,7 +1448,7 @@ class ModelBuilder:
             mesh_maxhullvert (int): Maximum vertices for convex hull approximation of meshes.
             force_position_velocity_actuation (bool): If True and both position (stiffness) and velocity
                 (damping) gains are non-zero, joints use POSITION_VELOCITY actuation mode. If False (default),
-                actuator modes are inferred per joint via :func:`~newton._src.utils.import_utils.infer_actuator_mode`:
+                actuator modes are inferred per joint via :func:`~newton._src.sim.joints.infer_actuator_mode`:
                 POSITION if stiffness > 0, VELOCITY if only damping > 0, EFFORT if a drive is present but
                 both gains are zero (direct torque control), or NONE if no drive/actuation is applied.
         """
@@ -1539,7 +1539,7 @@ class ModelBuilder:
                     Using the ``schema_resolvers`` argument is an experimental feature that may be removed or changed significantly in the future.
             force_position_velocity_actuation (bool): If True and both stiffness (kp) and damping (kd)
                 are non-zero, joints use POSITION_VELOCITY actuation mode. If False (default), actuator modes
-                are inferred per joint via :func:`~newton._src.utils.import_utils.infer_actuator_mode`:
+                are inferred per joint via :func:`~newton._src.sim.joints.infer_actuator_mode`:
                 POSITION if stiffness > 0, VELOCITY if only damping > 0, EFFORT if a drive is present but
                 both gains are zero (direct torque control), or NONE if no drive/actuation is applied.
 
@@ -2164,6 +2164,15 @@ class ModelBuilder:
             )
 
         for full_key, attr in builder.custom_attributes.items():
+            # Fast path: skip attributes with no values (avoids computing offsets/closures)
+            if not attr.values:
+                # Still need to declare empty attribute on first merge
+                if full_key not in self.custom_attributes:
+                    freq_key = attr.frequency_key
+                    mapped_values = [] if isinstance(freq_key, str) else {}
+                    self.custom_attributes[full_key] = replace(attr, values=mapped_values)
+                continue
+
             # Index offset based on frequency
             freq_key = attr.frequency_key
             if isinstance(freq_key, str):
@@ -2203,18 +2212,14 @@ class ModelBuilder:
             # Declare the attribute if it doesn't exist in the main builder
             merged = self.custom_attributes.get(full_key)
             if merged is None:
-                if attr.values:
-                    if isinstance(freq_key, str):
-                        # String frequency: copy list as-is (no offset for sequential data)
-                        mapped_values = [transform_value(value) for value in attr.values]
-                    else:
-                        # Enum frequency: remap dict indices with offset
-                        mapped_values = {
-                            index_offset + idx: transform_value(value) for idx, value in attr.values.items()
-                        }
+                if isinstance(freq_key, str):
+                    # String frequency: copy list as-is (no offset for sequential data)
+                    mapped_values = [transform_value(value) for value in attr.values]
                 else:
-                    # Initialize empty container based on frequency type
-                    mapped_values = [] if isinstance(freq_key, str) else {}
+                    # Enum frequency: remap dict indices with offset
+                    mapped_values = {
+                        index_offset + idx: transform_value(value) for idx, value in attr.values.items()
+                    }
                 self.custom_attributes[full_key] = replace(attr, values=mapped_values)
                 continue
 
@@ -2234,8 +2239,6 @@ class ModelBuilder:
                     f"Custom attribute '{full_key}' default mismatch when merging builders: "
                     f"existing={merged.default}, incoming={attr.default}"
                 )
-            if not attr.values:
-                continue
 
             # Remap indices and copy values
             if merged.values is None:

@@ -16,14 +16,11 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import TYPE_CHECKING, Any, Literal
+from typing import Any, Literal
 
 import warp as wp
 
-from ..sim.joints import ActuatorMode
-
-if TYPE_CHECKING:
-    from ..sim.builder import ModelBuilder
+from ..sim.builder import ModelBuilder
 
 
 def parse_warp_value_from_string(value: str, warp_dtype: Any, default: Any = None) -> Any:
@@ -171,14 +168,7 @@ def sanitize_xml_content(source: str) -> str:
 
 def sanitize_name(name: str) -> str:
     """Sanitize a name for use as a key in the ModelBuilder.
-
     Replaces characters that are invalid in USD paths (e.g., "-") with underscores.
-
-    Args:
-        name: The name to sanitize.
-
-    Returns:
-        The sanitized name.
     """
     return name.replace("-", "_")
 
@@ -196,41 +186,3 @@ def is_xml_content(source: str) -> bool:
         True if the string appears to be XML content, False if it looks like a file path
     """
     return any(char in source for char in "<>")
-
-
-def infer_actuator_mode(
-    target_ke: float,
-    target_kd: float,
-    force_position_velocity: bool = False,
-    has_drive: bool = False,
-) -> ActuatorMode:
-    """Infer actuator mode from position and velocity gains.
-
-    Args:
-        target_ke: Position gain (stiffness).
-        target_kd: Velocity gain (damping).
-        force_position_velocity: If True and both gains are non-zero,
-            forces POSITION_VELOCITY mode instead of just POSITION.
-        has_drive: If True, a drive/actuator is applied to the joint.
-            When True but both gains are 0, returns EFFORT mode.
-            When False, returns NONE regardless of gains.
-
-    Returns:
-        The inferred ActuatorMode based on which gains are non-zero:
-        - NONE: No drive applied
-        - EFFORT: Drive applied but both gains are 0 (direct torque control)
-        - POSITION: Only position gain is non-zero
-        - VELOCITY: Only velocity gain is non-zero
-        - POSITION_VELOCITY: Both gains non-zero (or forced)
-    """
-    if not has_drive:
-        return ActuatorMode.NONE
-
-    if force_position_velocity and (target_ke != 0.0 and target_kd != 0.0):
-        return ActuatorMode.POSITION_VELOCITY
-    elif target_ke != 0.0:
-        return ActuatorMode.POSITION
-    elif target_kd != 0.0:
-        return ActuatorMode.VELOCITY
-    else:
-        return ActuatorMode.EFFORT

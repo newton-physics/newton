@@ -30,12 +30,11 @@ from ..core import quat_between_axes
 from ..core.types import Axis, Transform
 from ..geometry import MESH_MAXHULLVERT, ShapeFlags, compute_sphere_inertia
 from ..sim.builder import ModelBuilder
-from ..sim.joints import ActuatorMode
+from ..sim.joints import ActuatorMode, infer_actuator_mode
 from ..sim.model import ModelAttributeFrequency
 from ..usd import utils as usd
 from ..usd.schema_resolver import PrimType, SchemaResolver, SchemaResolverManager
 from ..usd.schemas import SchemaResolverNewton
-from .import_utils import infer_actuator_mode
 
 
 def parse_usd(
