@@ -92,6 +92,73 @@ def rotate_vector_by_quaternion(v: np.ndarray, q: np.ndarray) -> np.ndarray:
     )
 
 
+def build_director_lines(
+    positions: np.ndarray,
+    orientations: np.ndarray,
+    offset: np.ndarray,
+    director_scale: float,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Build line segment endpoints for director visualization.
+    
+    Creates RGB-colored direction vectors (d1=red, d2=green, d3=blue)
+    at each segment midpoint for visualizing rod orientations.
+    
+    Args:
+        positions: Particle positions as (N, 3) array.
+        orientations: Particle orientations as (N, 4) quaternion array.
+        offset: 3D offset to apply to all positions.
+        director_scale: Scale factor for director visualization.
+    
+    Returns:
+        Tuple of (starts, ends, colors) arrays for line rendering.
+    """
+    num_edges = positions.shape[0] - 1
+    positions = positions + offset
+
+    starts = np.zeros((num_edges * 3, 3), dtype=np.float32)
+    ends = np.zeros((num_edges * 3, 3), dtype=np.float32)
+    colors = np.zeros((num_edges * 3, 3), dtype=np.float32)
+
+    for i in range(num_edges):
+        midpoint = 0.5 * (positions[i] + positions[i + 1])
+        q = orientations[i]
+
+        d1 = rotate_vector_by_quaternion(np.array([1.0, 0.0, 0.0], dtype=np.float32), q)
+        d2 = rotate_vector_by_quaternion(np.array([0.0, 1.0, 0.0], dtype=np.float32), q)
+        d3 = rotate_vector_by_quaternion(np.array([0.0, 0.0, 1.0], dtype=np.float32), q)
+
+        base_idx = i * 3
+        starts[base_idx] = midpoint
+        ends[base_idx] = midpoint + d1 * director_scale
+        colors[base_idx] = [1.0, 0.0, 0.0]
+
+        starts[base_idx + 1] = midpoint
+        ends[base_idx + 1] = midpoint + d2 * director_scale
+        colors[base_idx + 1] = [0.0, 1.0, 0.0]
+
+        starts[base_idx + 2] = midpoint
+        ends[base_idx + 2] = midpoint + d3 * director_scale
+        colors[base_idx + 2] = [0.0, 0.0, 1.0]
+
+    return starts, ends, colors
+
+
+def compute_linear_offsets(count: int, spacing: float) -> list[float]:
+    """Compute evenly spaced offsets centered around zero.
+    
+    Args:
+        count: Number of offsets to compute.
+        spacing: Spacing between adjacent offsets.
+    
+    Returns:
+        List of offset values centered around zero.
+    """
+    if count <= 1:
+        return [0.0]
+    center = 0.5 * float(count - 1)
+    return [(float(i) - center) * spacing for i in range(count)]
+
+
 # Backward compatibility aliases (prefixed with underscore)
 _quat_from_axis_angle = quat_from_axis_angle
 _quat_multiply = quat_multiply
@@ -100,6 +167,8 @@ _quat_multiply = quat_multiply
 __all__ = [
     "_quat_from_axis_angle",
     "_quat_multiply",
+    "build_director_lines",
+    "compute_linear_offsets",
     "quat_from_axis_angle",
     "quat_multiply",
     "rotate_vector_by_quaternion",

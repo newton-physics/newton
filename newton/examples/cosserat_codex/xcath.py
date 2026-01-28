@@ -30,8 +30,8 @@ import argparse
 import newton
 import newton.examples
 
-from newton.examples.cosserat_codex.gpu_warp.cli import create_parser as create_base_parser
-from newton.examples.cosserat_codex.gpu_warp.simulation import Example
+from newton.examples.cosserat_codex.cli import create_parser as create_base_parser
+from newton.examples.cosserat_codex.simulation import Example
 
 
 def create_parser():

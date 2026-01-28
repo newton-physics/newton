@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""CLI utilities for the GPU Cosserat example."""
+"""CLI utilities for the Cosserat rod simulation."""
 
 from __future__ import annotations
 
@@ -24,11 +24,13 @@ import numpy as np
 
 from newton.examples.cosserat_codex import warp_cosserat_codex as base
 
-from .model import RodConfig
+from .rod import RodConfig
 
 
 @dataclass
 class SolverConfig:
+    """Configuration for the XPBD solver."""
+
     substeps: int
     linear_damping: float
     angular_damping: float
@@ -37,6 +39,7 @@ class SolverConfig:
 
 
 def create_parser():
+    """Create argument parser with GPU-specific options."""
     import argparse  # noqa: PLC0415
 
     parser = base.create_parser()
@@ -62,6 +65,7 @@ def create_parser():
 
 
 def build_rod_configs(args) -> List[RodConfig]:
+    """Build rod configurations from parsed arguments."""
     rod_radius = args.rod_radius if args.rod_radius is not None else args.particle_radius
     gravity = np.array(args.gravity, dtype=np.float32)
     rod_count = max(int(args.rod_count), 1)
@@ -89,6 +93,7 @@ def build_rod_configs(args) -> List[RodConfig]:
 
 
 def build_solver_config(args) -> SolverConfig:
+    """Build solver configuration from parsed arguments."""
     return SolverConfig(
         substeps=args.substeps,
         linear_damping=args.linear_damping,

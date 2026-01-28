@@ -23,14 +23,12 @@ from .constraints import (
     apply_tip_bend,
     apply_track_constraint,
 )
-from .example import Example, SimulationConfig, TrackConfig
+from .example import Example
 from .input_handler import InputConfig, InputState, KeyboardInputHandler
 
 __all__ = [
     # Example
     "Example",
-    "SimulationConfig",
-    "TrackConfig",
     # Constraints
     "apply_concentric_constraint",
     "apply_floor_collision",
