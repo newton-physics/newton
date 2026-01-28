@@ -39,12 +39,10 @@ from .particle_vbd_kernels import (
     ParticleForceElementAdjacencyInfo,
     # Topological filtering helper functions
     _set_to_csr,
-    accumulate_contact_force_and_hessian,
     accumulate_spring_force_and_hessian,
+    accumulate_contact_force_and_hessian,
     build_edge_n_ring_edge_collision_filter,
     build_vertex_n_ring_tris_collision_filter,
-    compute_particle_conservative_bound,
-    copy_particle_positions_back,
     # Adjacency building kernels
     count_num_adjacent_edges,
     count_num_adjacent_faces,
@@ -54,9 +52,6 @@ from .particle_vbd_kernels import (
     fill_adjacent_faces,
     fill_adjacent_springs,
     fill_adjacent_tets,
-    get_vertex_num_adjacent_tets,
-    get_vertex_adjacent_tet_id_order,
-    evaluate_volumetric_neo_hookean_force_and_hessian,
     # Solver kernels (particle VBD)
     forward_step,
     update_velocity,
