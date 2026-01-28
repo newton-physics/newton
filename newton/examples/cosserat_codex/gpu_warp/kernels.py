@@ -57,12 +57,24 @@ def _warp_jacobian_dot(
     )
 
 
+@wp.func
+def _inv_inertia_mul_vec_kernels(inv_inertia: wp.array(dtype=wp.float32), particle_idx: int, v: wp.vec3) -> wp.vec3:
+    """Multiply inverse inertia tensor (3x3) by a vector."""
+    base_idx = particle_idx * 9
+    return wp.vec3(
+        inv_inertia[base_idx + 0] * v.x + inv_inertia[base_idx + 1] * v.y + inv_inertia[base_idx + 2] * v.z,
+        inv_inertia[base_idx + 3] * v.x + inv_inertia[base_idx + 4] * v.y + inv_inertia[base_idx + 5] * v.z,
+        inv_inertia[base_idx + 6] * v.x + inv_inertia[base_idx + 7] * v.y + inv_inertia[base_idx + 8] * v.z,
+    )
+
+
 @wp.kernel
 def _warp_apply_direct_corrections(
     predicted_positions: wp.array(dtype=wp.vec3),
     predicted_orientations: wp.array(dtype=wp.quat),
     inv_masses: wp.array(dtype=wp.float32),
     quat_inv_masses: wp.array(dtype=wp.float32),
+    inv_inertia: wp.array(dtype=wp.float32),
     jacobian_pos: wp.array(dtype=wp.float32),
     jacobian_rot: wp.array(dtype=wp.float32),
     delta_lambda: wp.array(dtype=wp.float32),
@@ -71,12 +83,24 @@ def _warp_apply_direct_corrections(
     max_delta_out: wp.array(dtype=wp.float32),
     max_corr_out: wp.array(dtype=wp.float32),
 ):
+    """Apply position and rotation corrections from deltaLambda.
+    
+    The C++ reference (DirectElasticRod.cpp) uses:
+    - Segment mass = 1.0 (invMass = 1.0) for position corrections
+    - Segment inertia from inv_inertia array (world-frame) for rotation corrections
+    
+    Position correction: 1.0 * J_pos^T * deltaLambda (unit mass, masked by inv_masses for static particles)
+    Rotation correction: inv_inertia * J_rot^T * deltaLambda (with proper 3x3 matrix multiplication)
+    """
     tid = wp.tid()
     if tid != 0:
         return
 
     max_delta = float(0.0)
     max_corr = float(0.0)
+    
+    # C++ reference uses unit mass (1.0) for corrections
+    inv_m = 1.0
 
     for edge in range(n_edges):
         base_idx = edge * 6
@@ -113,46 +137,54 @@ def _warp_apply_direct_corrections(
         if abs_dl > max_delta:
             max_delta = abs_dl
 
-        inv_m0 = inv_masses[edge]
-        inv_m1 = inv_masses[edge + 1]
-
-        if inv_m0 > 0.0:
+        # Position correction for particle 0: inv_m * J_p0^T * deltaLambda (unit mass, masked)
+        # Use inv_masses only as a mask (> 0 means dynamic, == 0 means static)
+        if inv_masses[edge] > 0.0:
             dp0_x = _warp_jacobian_dot(jacobian_pos, edge, 0, dl0, dl1, dl2, dl3, dl4, dl5)
             dp0_y = _warp_jacobian_dot(jacobian_pos, edge, 1, dl0, dl1, dl2, dl3, dl4, dl5)
             dp0_z = _warp_jacobian_dot(jacobian_pos, edge, 2, dl0, dl1, dl2, dl3, dl4, dl5)
-            dp0 = wp.vec3(dp0_x * inv_m0, dp0_y * inv_m0, dp0_z * inv_m0)
+            dp0 = wp.vec3(dp0_x * inv_m, dp0_y * inv_m, dp0_z * inv_m)
             predicted_positions[edge] = predicted_positions[edge] + dp0
             corr = wp.sqrt(dp0.x * dp0.x + dp0.y * dp0.y + dp0.z * dp0.z)
             if corr > max_corr:
                 max_corr = corr
 
-        if inv_m1 > 0.0:
+        # Position correction for particle 1: inv_m * J_p1^T * deltaLambda (unit mass, masked)
+        if inv_masses[edge + 1] > 0.0:
             dp1_x = _warp_jacobian_dot(jacobian_pos, edge, 3, dl0, dl1, dl2, dl3, dl4, dl5)
             dp1_y = _warp_jacobian_dot(jacobian_pos, edge, 4, dl0, dl1, dl2, dl3, dl4, dl5)
             dp1_z = _warp_jacobian_dot(jacobian_pos, edge, 5, dl0, dl1, dl2, dl3, dl4, dl5)
-            dp1 = wp.vec3(dp1_x * inv_m1, dp1_y * inv_m1, dp1_z * inv_m1)
+            dp1 = wp.vec3(dp1_x * inv_m, dp1_y * inv_m, dp1_z * inv_m)
             predicted_positions[edge + 1] = predicted_positions[edge + 1] + dp1
             corr = wp.sqrt(dp1.x * dp1.x + dp1.y * dp1.y + dp1.z * dp1.z)
             if corr > max_corr:
                 max_corr = corr
 
+        # Rotation correction for particle 0: inv_I0 * J_t0^T * deltaLambda
         if quat_inv_masses[edge] > 0.0:
-            dtheta0 = wp.vec3(
+            # Compute J_t0^T * deltaLambda
+            j_t0_delta = wp.vec3(
                 _warp_jacobian_dot(jacobian_rot, edge, 0, dl0, dl1, dl2, dl3, dl4, dl5),
                 _warp_jacobian_dot(jacobian_rot, edge, 1, dl0, dl1, dl2, dl3, dl4, dl5),
                 _warp_jacobian_dot(jacobian_rot, edge, 2, dl0, dl1, dl2, dl3, dl4, dl5),
             )
+            # Multiply by inverse inertia tensor
+            dtheta0 = _inv_inertia_mul_vec_kernels(inv_inertia, edge, j_t0_delta)
             corr = wp.sqrt(dtheta0.x * dtheta0.x + dtheta0.y * dtheta0.y + dtheta0.z * dtheta0.z)
             if corr > max_corr:
                 max_corr = corr
             predicted_orientations[edge] = _warp_quat_correction_g(predicted_orientations[edge], dtheta0)
 
+        # Rotation correction for particle 1: inv_I1 * J_t1^T * deltaLambda
         if quat_inv_masses[edge + 1] > 0.0:
-            dtheta1 = wp.vec3(
+            # Compute J_t1^T * deltaLambda
+            j_t1_delta = wp.vec3(
                 _warp_jacobian_dot(jacobian_rot, edge, 3, dl0, dl1, dl2, dl3, dl4, dl5),
                 _warp_jacobian_dot(jacobian_rot, edge, 4, dl0, dl1, dl2, dl3, dl4, dl5),
                 _warp_jacobian_dot(jacobian_rot, edge, 5, dl0, dl1, dl2, dl3, dl4, dl5),
             )
+            # Multiply by inverse inertia tensor
+            dtheta1 = _inv_inertia_mul_vec_kernels(inv_inertia, edge + 1, j_t1_delta)
             corr = wp.sqrt(dtheta1.x * dtheta1.x + dtheta1.y * dtheta1.y + dtheta1.z * dtheta1.z)
             if corr > max_corr:
                 max_corr = corr
@@ -629,6 +661,86 @@ def _warp_apply_concentric_constraint(
         predicted_b[j + 1] = new_pos_b1
 
 
+@wp.kernel
+def _warp_compute_inv_inertia_world(
+    orientations: wp.array(dtype=wp.quat),
+    quat_inv_masses: wp.array(dtype=wp.float32),
+    inv_inertia_local_diag: wp.vec3,
+    inv_inertia_out: wp.array(dtype=wp.float32),
+):
+    """Compute inverse inertia tensor in world frame from local frame diagonal.
+    
+    For a cylindrical rod segment, the local inertia tensor is diagonal:
+    I_local = diag(I_perp, I_perp, I_axial)
+    
+    The world-frame inverse inertia is: inv_I_world = R * inv_I_local * R^T
+    where R is the rotation matrix from the quaternion orientation.
+    
+    Args:
+        orientations: Quaternion orientations per particle
+        quat_inv_masses: Inverse rotational mass mask (0 for locked particles)
+        inv_inertia_local_diag: Diagonal of inverse inertia in local frame (vec3)
+        inv_inertia_out: Output array of 9 floats per particle (row-major 3x3 matrix)
+    """
+    i = wp.tid()
+    
+    # Start of this particle's 3x3 matrix in the flat array
+    base = i * 9
+    
+    if quat_inv_masses[i] <= 0.0:
+        # Locked particle - zero inverse inertia (infinite inertia)
+        for j in range(9):
+            inv_inertia_out[base + j] = 0.0
+        return
+    
+    q = orientations[i]
+    
+    # Extract rotation matrix from quaternion (column vectors)
+    # R = [r0 | r1 | r2] where r0, r1, r2 are column vectors
+    xx = q.x * q.x
+    yy = q.y * q.y
+    zz = q.z * q.z
+    xy = q.x * q.y
+    xz = q.x * q.z
+    yz = q.y * q.z
+    wx = q.w * q.x
+    wy = q.w * q.y
+    wz = q.w * q.z
+    
+    # Rotation matrix (row-major)
+    r00 = 1.0 - 2.0 * (yy + zz)
+    r01 = 2.0 * (xy - wz)
+    r02 = 2.0 * (xz + wy)
+    r10 = 2.0 * (xy + wz)
+    r11 = 1.0 - 2.0 * (xx + zz)
+    r12 = 2.0 * (yz - wx)
+    r20 = 2.0 * (xz - wy)
+    r21 = 2.0 * (yz + wx)
+    r22 = 1.0 - 2.0 * (xx + yy)
+    
+    # Compute R * diag(inv_I) * R^T
+    # Let d = inv_inertia_local_diag = (d0, d1, d2)
+    # Result[i,j] = sum_k R[i,k] * d[k] * R[j,k]
+    d0 = inv_inertia_local_diag.x
+    d1 = inv_inertia_local_diag.y
+    d2 = inv_inertia_local_diag.z
+    
+    # Row 0
+    inv_inertia_out[base + 0] = r00 * d0 * r00 + r01 * d1 * r01 + r02 * d2 * r02  # [0,0]
+    inv_inertia_out[base + 1] = r00 * d0 * r10 + r01 * d1 * r11 + r02 * d2 * r12  # [0,1]
+    inv_inertia_out[base + 2] = r00 * d0 * r20 + r01 * d1 * r21 + r02 * d2 * r22  # [0,2]
+    
+    # Row 1
+    inv_inertia_out[base + 3] = r10 * d0 * r00 + r11 * d1 * r01 + r12 * d2 * r02  # [1,0]
+    inv_inertia_out[base + 4] = r10 * d0 * r10 + r11 * d1 * r11 + r12 * d2 * r12  # [1,1]
+    inv_inertia_out[base + 5] = r10 * d0 * r20 + r11 * d1 * r21 + r12 * d2 * r22  # [1,2]
+    
+    # Row 2
+    inv_inertia_out[base + 6] = r20 * d0 * r00 + r21 * d1 * r01 + r22 * d2 * r02  # [2,0]
+    inv_inertia_out[base + 7] = r20 * d0 * r10 + r21 * d1 * r11 + r22 * d2 * r12  # [2,1]
+    inv_inertia_out[base + 8] = r20 * d0 * r20 + r21 * d1 * r21 + r22 * d2 * r22  # [2,2]
+
+
 __all__ = [
     "_warp_apply_concentric_constraint",
     "_warp_apply_direct_corrections",
@@ -636,6 +748,7 @@ __all__ = [
     "_warp_apply_root_translation",
     "_warp_apply_track_sliding",
     "_warp_build_segment_lines",
+    "_warp_compute_inv_inertia_world",
     "_warp_constraint_max",
     "_warp_copy_from_offset",
     "_warp_copy_with_offset",

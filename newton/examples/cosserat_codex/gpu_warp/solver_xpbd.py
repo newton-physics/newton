@@ -124,6 +124,23 @@ class WarpResidentRodState(base.DefKitDirectRodState):
         self.c_blocks_wp = wp.zeros(alloc_edges * 36, dtype=wp.float32, device=self.device)
         self.d_prime_wp = wp.zeros(alloc_edges * 6, dtype=wp.float32, device=self.device)
 
+        # Inverse inertia tensors in world frame (3x3 per particle, stored as flat array of 9 floats per particle)
+        # 
+        # NOTE: The original Python implementation used UNIT inertia (1.0) for JMJT assembly,
+        # which provides correct stiffness behavior with the Young's modulus and torsion modulus sliders.
+        # The actual C++ binary being compared against may use different values than the source code.
+        # 
+        # Using unit mass (1.0) and unit inertia (1.0) means:
+        #   - JMJT = J * J^T + compliance (effectively)
+        #   - Corrections: position uses unit mass, rotation uses unit inertia
+        #   - The stiffness is controlled entirely by the compliance terms (from Young's/torsion modulus)
+        #
+        alloc_points = max(1, self.num_points)
+        self.inv_inertia_wp = wp.zeros(alloc_points * 9, dtype=wp.float32, device=self.device)
+
+        # Use UNIT inertia (1.0, 1.0, 1.0) to match original behavior where sliders work correctly
+        self.inv_inertia_local_diag = np.array([1.0, 1.0, 1.0], dtype=np.float32)
+
         self._constraint_max_wp = wp.zeros(1, dtype=wp.float32, device=self.device)
         self._delta_lambda_max_wp = wp.zeros(1, dtype=wp.float32, device=self.device)
         self._correction_max_wp = wp.zeros(1, dtype=wp.float32, device=self.device)
@@ -298,6 +315,27 @@ class WarpResidentRodState(base.DefKitDirectRodState):
     def orientations_numpy(self) -> np.ndarray:
         return self.orientations_wp.numpy()
 
+    def _update_inv_inertia_world(self):
+        """Compute world-frame inverse inertia tensors from local frame and current orientations."""
+        if self.num_points == 0:
+            return
+        inv_inertia_local = wp.vec3(
+            float(self.inv_inertia_local_diag[0]),
+            float(self.inv_inertia_local_diag[1]),
+            float(self.inv_inertia_local_diag[2]),
+        )
+        wp.launch(
+            kernels._warp_compute_inv_inertia_world,
+            dim=self.num_points,
+            inputs=[
+                self.predicted_orientations_wp,
+                self.quat_inv_masses_wp,
+                inv_inertia_local,
+                self.inv_inertia_wp,
+            ],
+            device=self.device,
+        )
+
     def predict_positions(self, dt: float, linear_damping: float):
         if self.num_points == 0:
             return
@@ -438,6 +476,9 @@ class WarpResidentRodState(base.DefKitDirectRodState):
                 ],
                 device=self.device,
             )
+
+            # Compute world-frame inverse inertia tensors for mass-weighted JMJT assembly
+            self._update_inv_inertia_world()
         self._record_timing("constraints_assembly", time.perf_counter() - start)
 
         n_dofs = self.n_dofs
@@ -457,6 +498,8 @@ class WarpResidentRodState(base.DefKitDirectRodState):
                         self.jacobian_pos_wp,
                         self.jacobian_rot_wp,
                         self.compliance_wp,
+                        self.inv_masses_wp,
+                        self.inv_inertia_wp,
                         int(n_dofs),
                         self.ab_wp,
                     ],
@@ -520,6 +563,8 @@ class WarpResidentRodState(base.DefKitDirectRodState):
                         self.jacobian_pos_wp,
                         self.jacobian_rot_wp,
                         self.compliance_wp,
+                        self.inv_masses_wp,
+                        self.inv_inertia_wp,
                         int(n_dofs),
                         self.A_wp,
                     ],
@@ -567,6 +612,8 @@ class WarpResidentRodState(base.DefKitDirectRodState):
                         self.jacobian_pos_wp,
                         self.jacobian_rot_wp,
                         self.compliance_wp,
+                        self.inv_masses_wp,
+                        self.inv_inertia_wp,
                         int(self.num_edges),
                         self.diag_blocks_wp,
                         self.offdiag_blocks_wp,
@@ -615,6 +662,7 @@ class WarpResidentRodState(base.DefKitDirectRodState):
                     self.predicted_orientations_wp,
                     self.inv_masses_wp,
                     self.quat_inv_masses_wp,
+                    self.inv_inertia_wp,
                     self.jacobian_pos_wp,
                     self.jacobian_rot_wp,
                     delta_lambda,

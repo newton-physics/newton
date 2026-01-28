@@ -411,30 +411,68 @@ def _warp_assemble_jmjt_dense(
     jacobian_pos: wp.array(dtype=wp.float32),
     jacobian_rot: wp.array(dtype=wp.float32),
     compliance: wp.array(dtype=wp.float32),
+    inv_masses: wp.array(dtype=wp.float32),
+    inv_inertia: wp.array(dtype=wp.float32),
     n_dofs: int,
     A: wp.array2d(dtype=wp.float32),
 ):
+    """Assemble JMJT dense matrix with mass weighting matching C++ reference.
+    
+    The C++ reference uses:
+    - Segment mass = 1.0 (invMass = 1.0) for ALL segments
+    - Segment inertia from inv_inertia array (world-frame)
+    """
     i = wp.tid()
     block_start = 6 * i
 
+    # C++ reference uses unit mass (1.0) for all segments
+    inv_m = 1.0
+
+    # Diagonal block
     for row in range(6):
         for col in range(6):
             val = 0.0
+            
+            # Position contribution from segment 0 (unit mass)
             for k in range(3):
                 j_p0_r = jacobian_pos[_warp_jacobian_index(i, row, k)]
                 j_p0_c = jacobian_pos[_warp_jacobian_index(i, col, k)]
+                val += j_p0_r * inv_m * j_p0_c
+            
+            # Position contribution from segment 1 (unit mass)
+            for k in range(3):
                 j_p1_r = jacobian_pos[_warp_jacobian_index(i, row, k + 3)]
                 j_p1_c = jacobian_pos[_warp_jacobian_index(i, col, k + 3)]
-                j_t0_r = jacobian_rot[_warp_jacobian_index(i, row, k)]
-                j_t0_c = jacobian_rot[_warp_jacobian_index(i, col, k)]
-                j_t1_r = jacobian_rot[_warp_jacobian_index(i, row, k + 3)]
-                j_t1_c = jacobian_rot[_warp_jacobian_index(i, col, k + 3)]
-                val += (
-                    j_p0_r * j_p0_c
-                    + j_p1_r * j_p1_c
-                    + j_t0_r * j_t0_c
-                    + j_t1_r * j_t1_c
-                )
+                val += j_p1_r * inv_m * j_p1_c
+            
+            # Rotation contribution from segment 0
+            j_t0_r_vec = wp.vec3(
+                jacobian_rot[_warp_jacobian_index(i, row, 0)],
+                jacobian_rot[_warp_jacobian_index(i, row, 1)],
+                jacobian_rot[_warp_jacobian_index(i, row, 2)],
+            )
+            j_t0_c_vec = wp.vec3(
+                jacobian_rot[_warp_jacobian_index(i, col, 0)],
+                jacobian_rot[_warp_jacobian_index(i, col, 1)],
+                jacobian_rot[_warp_jacobian_index(i, col, 2)],
+            )
+            inv_I0_j_t0_c = _inv_inertia_mul_vec(inv_inertia, i, j_t0_c_vec)
+            val += wp.dot(j_t0_r_vec, inv_I0_j_t0_c)
+            
+            # Rotation contribution from segment 1
+            j_t1_r_vec = wp.vec3(
+                jacobian_rot[_warp_jacobian_index(i, row, 3)],
+                jacobian_rot[_warp_jacobian_index(i, row, 4)],
+                jacobian_rot[_warp_jacobian_index(i, row, 5)],
+            )
+            j_t1_c_vec = wp.vec3(
+                jacobian_rot[_warp_jacobian_index(i, col, 3)],
+                jacobian_rot[_warp_jacobian_index(i, col, 4)],
+                jacobian_rot[_warp_jacobian_index(i, col, 5)],
+            )
+            inv_I1_j_t1_c = _inv_inertia_mul_vec(inv_inertia, i + 1, j_t1_c_vec)
+            val += wp.dot(j_t1_r_vec, inv_I1_j_t1_c)
+            
             if row == col:
                 val += compliance[i * 6 + row]
             row_idx = block_start + row
@@ -442,18 +480,34 @@ def _warp_assemble_jmjt_dense(
             if row_idx < n_dofs and col_idx < n_dofs:
                 A[row_idx, col_idx] = val
 
+    # Off-diagonal block
     if i > 0:
         prev = i - 1
         prev_block = 6 * prev
+        
         for row in range(6):
             for col in range(6):
                 val = 0.0
+                
+                # Position contribution (unit mass)
                 for k in range(3):
                     j_p1_prev = jacobian_pos[_warp_jacobian_index(prev, row, k + 3)]
                     j_p0_cur = jacobian_pos[_warp_jacobian_index(i, col, k)]
-                    j_t1_prev = jacobian_rot[_warp_jacobian_index(prev, row, k + 3)]
-                    j_t0_cur = jacobian_rot[_warp_jacobian_index(i, col, k)]
-                    val += j_p1_prev * j_p0_cur + j_t1_prev * j_t0_cur
+                    val += j_p1_prev * inv_m * j_p0_cur
+                
+                # Rotation contribution
+                j_t1_prev_vec = wp.vec3(
+                    jacobian_rot[_warp_jacobian_index(prev, row, 3)],
+                    jacobian_rot[_warp_jacobian_index(prev, row, 4)],
+                    jacobian_rot[_warp_jacobian_index(prev, row, 5)],
+                )
+                j_t0_cur_vec = wp.vec3(
+                    jacobian_rot[_warp_jacobian_index(i, col, 0)],
+                    jacobian_rot[_warp_jacobian_index(i, col, 1)],
+                    jacobian_rot[_warp_jacobian_index(i, col, 2)],
+                )
+                inv_I_shared_j_t0_cur = _inv_inertia_mul_vec(inv_inertia, i, j_t0_cur_vec)
+                val += wp.dot(j_t1_prev_vec, inv_I_shared_j_t0_cur)
 
                 row_idx = prev_block + row
                 col_idx = block_start + col
@@ -465,37 +519,93 @@ def _warp_assemble_jmjt_dense(
                     A[row_idx, col_idx] = val
 
 
+@wp.func
+def _inv_inertia_mul_vec(inv_inertia: wp.array(dtype=wp.float32), particle_idx: int, v: wp.vec3) -> wp.vec3:
+    """Multiply inverse inertia tensor (3x3) by a vector."""
+    base = particle_idx * 9
+    return wp.vec3(
+        inv_inertia[base + 0] * v.x + inv_inertia[base + 1] * v.y + inv_inertia[base + 2] * v.z,
+        inv_inertia[base + 3] * v.x + inv_inertia[base + 4] * v.y + inv_inertia[base + 5] * v.z,
+        inv_inertia[base + 6] * v.x + inv_inertia[base + 7] * v.y + inv_inertia[base + 8] * v.z,
+    )
+
+
 @wp.kernel
 def _warp_assemble_jmjt_banded(
     jacobian_pos: wp.array(dtype=wp.float32),
     jacobian_rot: wp.array(dtype=wp.float32),
     compliance: wp.array(dtype=wp.float32),
+    inv_masses: wp.array(dtype=wp.float32),
+    inv_inertia: wp.array(dtype=wp.float32),
     n_dofs: int,
     ab: wp.array2d(dtype=wp.float32),
 ):
+    """Assemble JMJT banded matrix with mass weighting matching C++ reference.
+    
+    The C++ reference (DirectElasticRod.cpp) uses:
+    - Segment mass = 1.0 (invMass = 1.0) for ALL segments
+    - Segment inertia = (0.1, 0.1, 0.1) (invInertia = (10, 10, 10)) for ALL segments
+    
+    The JMJT assembly computes J * M^-1 * J^T where M^-1 is block diagonal:
+    - Upper-left 3x3: 1.0 * I (unit mass)
+    - Lower-right 3x3: R * invInertiaLocal * R^T (world-frame inverse inertia)
+    
+    Constraint i involves particles i (segment 0) and i+1 (segment 1).
+    """
     i = wp.tid()
     block_start = 6 * i
     if block_start >= n_dofs:
         return
 
+    # C++ reference uses unit mass (1.0) for all segments
+    inv_m = 1.0
+    
+    # Diagonal block: J0 * M0_inv * J0^T + J1 * M1_inv * J1^T + compliance
     for row in range(6):
         for col in range(6):
             val = 0.0
+            
+            # Position contribution from segment 0: J_p0_r * inv_m * J_p0_c (unit mass)
             for k in range(3):
                 j_p0_r = jacobian_pos[_warp_jacobian_index(i, row, k)]
                 j_p0_c = jacobian_pos[_warp_jacobian_index(i, col, k)]
+                val += j_p0_r * inv_m * j_p0_c
+            
+            # Position contribution from segment 1: J_p1_r * inv_m * J_p1_c (unit mass)
+            for k in range(3):
                 j_p1_r = jacobian_pos[_warp_jacobian_index(i, row, k + 3)]
                 j_p1_c = jacobian_pos[_warp_jacobian_index(i, col, k + 3)]
-                j_t0_r = jacobian_rot[_warp_jacobian_index(i, row, k)]
-                j_t0_c = jacobian_rot[_warp_jacobian_index(i, col, k)]
-                j_t1_r = jacobian_rot[_warp_jacobian_index(i, row, k + 3)]
-                j_t1_c = jacobian_rot[_warp_jacobian_index(i, col, k + 3)]
-                val += (
-                    j_p0_r * j_p0_c
-                    + j_p1_r * j_p1_c
-                    + j_t0_r * j_t0_c
-                    + j_t1_r * j_t1_c
-                )
+                val += j_p1_r * inv_m * j_p1_c
+            
+            # Rotation contribution from segment 0: J_t0_r^T * inv_I0 * J_t0_c
+            j_t0_r_vec = wp.vec3(
+                jacobian_rot[_warp_jacobian_index(i, row, 0)],
+                jacobian_rot[_warp_jacobian_index(i, row, 1)],
+                jacobian_rot[_warp_jacobian_index(i, row, 2)],
+            )
+            j_t0_c_vec = wp.vec3(
+                jacobian_rot[_warp_jacobian_index(i, col, 0)],
+                jacobian_rot[_warp_jacobian_index(i, col, 1)],
+                jacobian_rot[_warp_jacobian_index(i, col, 2)],
+            )
+            inv_I0_j_t0_c = _inv_inertia_mul_vec(inv_inertia, i, j_t0_c_vec)
+            val += wp.dot(j_t0_r_vec, inv_I0_j_t0_c)
+            
+            # Rotation contribution from segment 1: J_t1_r^T * inv_I1 * J_t1_c
+            j_t1_r_vec = wp.vec3(
+                jacobian_rot[_warp_jacobian_index(i, row, 3)],
+                jacobian_rot[_warp_jacobian_index(i, row, 4)],
+                jacobian_rot[_warp_jacobian_index(i, row, 5)],
+            )
+            j_t1_c_vec = wp.vec3(
+                jacobian_rot[_warp_jacobian_index(i, col, 3)],
+                jacobian_rot[_warp_jacobian_index(i, col, 4)],
+                jacobian_rot[_warp_jacobian_index(i, col, 5)],
+            )
+            inv_I1_j_t1_c = _inv_inertia_mul_vec(inv_inertia, i + 1, j_t1_c_vec)
+            val += wp.dot(j_t1_r_vec, inv_I1_j_t1_c)
+            
+            # Add compliance to diagonal
             if row == col:
                 val += compliance[i * 6 + row]
 
@@ -506,18 +616,35 @@ def _warp_assemble_jmjt_banded(
                 if band_row >= 0 and band_row <= BAND_KD:
                     ab[band_row, col_idx] = val
 
+    # Off-diagonal block: coupling between constraint i-1 and i
+    # Shared particle is i (segment 1 of constraint i-1 = segment 0 of constraint i)
     if i > 0:
         prev = i - 1
         prev_block = block_start - 6
+        
         for row in range(6):
             for col in range(6):
                 val = 0.0
+                
+                # Position contribution: J_p1_prev * inv_m * J_p0_cur (unit mass)
                 for k in range(3):
                     j_p1_prev = jacobian_pos[_warp_jacobian_index(prev, row, k + 3)]
                     j_p0_cur = jacobian_pos[_warp_jacobian_index(i, col, k)]
-                    j_t1_prev = jacobian_rot[_warp_jacobian_index(prev, row, k + 3)]
-                    j_t0_cur = jacobian_rot[_warp_jacobian_index(i, col, k)]
-                    val += j_p1_prev * j_p0_cur + j_t1_prev * j_t0_cur
+                    val += j_p1_prev * inv_m * j_p0_cur
+                
+                # Rotation contribution: J_t1_prev^T * inv_I_shared * J_t0_cur
+                j_t1_prev_vec = wp.vec3(
+                    jacobian_rot[_warp_jacobian_index(prev, row, 3)],
+                    jacobian_rot[_warp_jacobian_index(prev, row, 4)],
+                    jacobian_rot[_warp_jacobian_index(prev, row, 5)],
+                )
+                j_t0_cur_vec = wp.vec3(
+                    jacobian_rot[_warp_jacobian_index(i, col, 0)],
+                    jacobian_rot[_warp_jacobian_index(i, col, 1)],
+                    jacobian_rot[_warp_jacobian_index(i, col, 2)],
+                )
+                inv_I_shared_j_t0_cur = _inv_inertia_mul_vec(inv_inertia, i, j_t0_cur_vec)
+                val += wp.dot(j_t1_prev_vec, inv_I_shared_j_t0_cur)
 
                 row_idx = prev_block + row
                 col_idx = block_start + col
@@ -917,38 +1044,77 @@ def _warp_assemble_jmjt_blocks(
     jacobian_pos: wp.array(dtype=wp.float32),
     jacobian_rot: wp.array(dtype=wp.float32),
     compliance: wp.array(dtype=wp.float32),
+    inv_masses: wp.array(dtype=wp.float32),
+    inv_inertia: wp.array(dtype=wp.float32),
     n_edges: int,
     diag_blocks: wp.array(dtype=wp.float32),
     offdiag_blocks: wp.array(dtype=wp.float32),
 ):
+    """Assemble JMJT blocks with mass weighting matching C++ reference for block Thomas solver.
+    
+    The C++ reference uses:
+    - Segment mass = 1.0 (invMass = 1.0) for ALL segments
+    - Segment inertia from inv_inertia array (world-frame)
+    """
     i = wp.tid()
     if i >= n_edges:
         return
     regularization = 1.0e-6
     block_start = 6 * i
 
+    # C++ reference uses unit mass (1.0) for all segments
+    inv_m = 1.0
+
+    # Diagonal block
     for row in range(6):
         for col in range(6):
             val = 0.0
+            
+            # Position contribution from segment 0 (unit mass)
             for k in range(3):
                 j_p0_r = jacobian_pos[_warp_jacobian_index(i, row, k)]
                 j_p0_c = jacobian_pos[_warp_jacobian_index(i, col, k)]
+                val += j_p0_r * inv_m * j_p0_c
+            
+            # Position contribution from segment 1 (unit mass)
+            for k in range(3):
                 j_p1_r = jacobian_pos[_warp_jacobian_index(i, row, k + 3)]
                 j_p1_c = jacobian_pos[_warp_jacobian_index(i, col, k + 3)]
-                j_t0_r = jacobian_rot[_warp_jacobian_index(i, row, k)]
-                j_t0_c = jacobian_rot[_warp_jacobian_index(i, col, k)]
-                j_t1_r = jacobian_rot[_warp_jacobian_index(i, row, k + 3)]
-                j_t1_c = jacobian_rot[_warp_jacobian_index(i, col, k + 3)]
-                val += (
-                    j_p0_r * j_p0_c
-                    + j_p1_r * j_p1_c
-                    + j_t0_r * j_t0_c
-                    + j_t1_r * j_t1_c
-                )
+                val += j_p1_r * inv_m * j_p1_c
+            
+            # Rotation contribution from segment 0
+            j_t0_r_vec = wp.vec3(
+                jacobian_rot[_warp_jacobian_index(i, row, 0)],
+                jacobian_rot[_warp_jacobian_index(i, row, 1)],
+                jacobian_rot[_warp_jacobian_index(i, row, 2)],
+            )
+            j_t0_c_vec = wp.vec3(
+                jacobian_rot[_warp_jacobian_index(i, col, 0)],
+                jacobian_rot[_warp_jacobian_index(i, col, 1)],
+                jacobian_rot[_warp_jacobian_index(i, col, 2)],
+            )
+            inv_I0_j_t0_c = _inv_inertia_mul_vec(inv_inertia, i, j_t0_c_vec)
+            val += wp.dot(j_t0_r_vec, inv_I0_j_t0_c)
+            
+            # Rotation contribution from segment 1
+            j_t1_r_vec = wp.vec3(
+                jacobian_rot[_warp_jacobian_index(i, row, 3)],
+                jacobian_rot[_warp_jacobian_index(i, row, 4)],
+                jacobian_rot[_warp_jacobian_index(i, row, 5)],
+            )
+            j_t1_c_vec = wp.vec3(
+                jacobian_rot[_warp_jacobian_index(i, col, 3)],
+                jacobian_rot[_warp_jacobian_index(i, col, 4)],
+                jacobian_rot[_warp_jacobian_index(i, col, 5)],
+            )
+            inv_I1_j_t1_c = _inv_inertia_mul_vec(inv_inertia, i + 1, j_t1_c_vec)
+            val += wp.dot(j_t1_r_vec, inv_I1_j_t1_c)
+            
             if row == col:
                 val += compliance[i * 6 + row] + regularization
             diag_blocks[_block_index(i, row, col)] = val
 
+    # Off-diagonal block
     if i == 0:
         for row in range(6):
             for col in range(6):
@@ -956,15 +1122,31 @@ def _warp_assemble_jmjt_blocks(
         return
 
     prev = i - 1
+    
     for row in range(6):
         for col in range(6):
             val = 0.0
+            
+            # Position contribution (unit mass)
             for k in range(3):
                 j_p1_prev = jacobian_pos[_warp_jacobian_index(prev, row, k + 3)]
                 j_p0_cur = jacobian_pos[_warp_jacobian_index(i, col, k)]
-                j_t1_prev = jacobian_rot[_warp_jacobian_index(prev, row, k + 3)]
-                j_t0_cur = jacobian_rot[_warp_jacobian_index(i, col, k)]
-                val += j_p1_prev * j_p0_cur + j_t1_prev * j_t0_cur
+                val += j_p1_prev * inv_m * j_p0_cur
+            
+            # Rotation contribution
+            j_t1_prev_vec = wp.vec3(
+                jacobian_rot[_warp_jacobian_index(prev, row, 3)],
+                jacobian_rot[_warp_jacobian_index(prev, row, 4)],
+                jacobian_rot[_warp_jacobian_index(prev, row, 5)],
+            )
+            j_t0_cur_vec = wp.vec3(
+                jacobian_rot[_warp_jacobian_index(i, col, 0)],
+                jacobian_rot[_warp_jacobian_index(i, col, 1)],
+                jacobian_rot[_warp_jacobian_index(i, col, 2)],
+            )
+            inv_I_shared_j_t0_cur = _inv_inertia_mul_vec(inv_inertia, i, j_t0_cur_vec)
+            val += wp.dot(j_t1_prev_vec, inv_I_shared_j_t0_cur)
+            
             offdiag_blocks[_block_index(i, row, col)] = val
 
 
