@@ -2837,7 +2837,6 @@ class SolverMuJoCo(SolverBase):
             "geom_solref",
             "geom_solimp",
             "geom_size",
-            "geom_rbound",
             "geom_pos",
             "geom_quat",
             "geom_friction",
@@ -3124,7 +3123,6 @@ class SolverMuJoCo(SolverBase):
             update_geom_properties_kernel,
             dim=(num_worlds, num_geoms),
             inputs=[
-                self.model.shape_collision_radius,
                 self.model.shape_material_mu,
                 self.model.shape_material_ke,
                 self.model.shape_material_kd,
@@ -3143,7 +3141,6 @@ class SolverMuJoCo(SolverBase):
                 shape_geom_gap,
             ],
             outputs=[
-                self.mjw_model.geom_rbound,
                 self.mjw_model.geom_friction,
                 self.mjw_model.geom_solref,
                 self.mjw_model.geom_size,

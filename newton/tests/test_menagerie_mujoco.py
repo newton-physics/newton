@@ -136,6 +136,7 @@ def create_newton_model_from_mjcf(
         str(mjcf_path),
         floating=floating,
         parse_visuals=parse_visuals,
+        enable_self_collisions=True,  # Match native MuJoCo behavior
     )
 
     # Create main builder and replicate
@@ -421,6 +422,7 @@ DEFAULT_MODEL_SKIP_FIELDS: set[str] = {
     "__",
     "ptr",
     "body_conaffinity",
+    "body_contype",
     "exclude_signature",
     # TileSet types: comparison function doesn't handle these
     "qM_tiles",
@@ -1111,10 +1113,8 @@ class TestMenagerie_UniversalRobotsUr5e(TestMenagerieBase):
         # Collision filtering: Newton uses different defaults
         "geom_conaffinity",
         "geom_contype",
-        # Collision pair type counts: differs due to collision setup
-        "geom_pair_type_count",
         # Bounding radius: small differences in computation
-        "geom_rbound",
+        # "geom_rbound",
         # Solver reference params: Newton uses different defaults
         "geom_solref",
         # Joint actuator force limiting: Newton enables by default
