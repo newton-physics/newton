@@ -528,16 +528,15 @@ def compare_inertia_tensors(
 ) -> None:
     """Compare inertia by reconstructing full 3x3 tensors from principal moments + iquat.
 
-    MuJoCo stores inertia as:
-    - body_inertia: principal moments (diagonal values in principal frame)
-    - body_iquat: rotation from body frame to principal axes frame
-
-    Newton may store different eigenvalue ordering and iquat orientation, but the
-    reconstructed full tensor I = R @ diag(principal) @ R.T should match.
+    MuJoCo stores inertia as principal moments + orientation quaternion. The eig3
+    determinant fix ensures both produce valid quaternions, but eigenvalue ordering
+    may differ. Reconstruction verifies physics equivalence: I = R @ diag(d) @ R.T
     """
-    newton_inertia = newton_mjw.body_inertia.numpy()  # shape: (nworld, nbody, 3)
+    from scipy.spatial.transform import Rotation  # noqa: PLC0415
+
+    newton_inertia = newton_mjw.body_inertia.numpy()  # (nworld, nbody, 3)
     native_inertia = native_mjw.body_inertia.numpy()
-    newton_iquat = newton_mjw.body_iquat.numpy()  # shape: (nworld, nbody, 4) - wxyz
+    newton_iquat = newton_mjw.body_iquat.numpy()  # (nworld, nbody, 4) wxyz
     native_iquat = native_mjw.body_iquat.numpy()
 
     assert newton_inertia.shape == native_inertia.shape, (
@@ -546,48 +545,29 @@ def compare_inertia_tensors(
 
     nworld, nbody, _ = newton_inertia.shape
 
-    def quat_to_rotmat(q: np.ndarray) -> np.ndarray:
-        """Convert wxyz quaternion to 3x3 rotation matrix."""
-        w, x, y, z = q
-        return np.array(
-            [
-                [1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
-                [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
-                [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)],
-            ]
-        )
+    # Vectorized reconstruction: I = R @ diag(d) @ R.T for all bodies at once
+    def reconstruct_all(principal: np.ndarray, iquat_wxyz: np.ndarray) -> np.ndarray:
+        """Reconstruct full tensors from principal moments and wxyz quaternions."""
+        # scipy uses xyzw, convert from wxyz
+        iquat_xyzw = np.roll(iquat_wxyz, -1, axis=-1)
+        flat_quats = iquat_xyzw.reshape(-1, 4)
+        R = Rotation.from_quat(flat_quats).as_matrix()  # (n, 3, 3)
+        flat_principal = principal.reshape(-1, 3)
+        # I = R @ diag(d) @ R.T, vectorized
+        D = np.einsum("ni,nij->nij", flat_principal, np.eye(3)[None, :, :].repeat(len(flat_principal), axis=0))
+        tensors = np.einsum("nij,njk,nlk->nil", R, D, R)
+        return tensors.reshape(nworld, nbody, 3, 3)
 
-    def reconstruct_inertia(principal: np.ndarray, iquat: np.ndarray) -> np.ndarray:
-        """Reconstruct full 3x3 inertia tensor from principal moments and iquat."""
-        R = quat_to_rotmat(iquat)
-        diag = np.diag(principal)
-        return R @ diag @ R.T
+    newton_tensors = reconstruct_all(newton_inertia, newton_iquat)
+    native_tensors = reconstruct_all(native_inertia, native_iquat)
 
-    for world_idx in range(nworld):
-        for body_idx in range(nbody):
-            newton_I = reconstruct_inertia(
-                newton_inertia[world_idx, body_idx],
-                newton_iquat[world_idx, body_idx],
-            )
-            native_I = reconstruct_inertia(
-                native_inertia[world_idx, body_idx],
-                native_iquat[world_idx, body_idx],
-            )
-
-            # Compare full tensors
-            diff = np.abs(newton_I - native_I)
-            max_diff = float(np.max(diff))
-            if max_diff > tol:
-                raise AssertionError(
-                    f"Inertia tensor mismatch at world={world_idx}, body={body_idx}:\n"
-                    f"  max_diff={max_diff:.6e} (tol={tol:.0e})\n"
-                    f"  newton_principal={newton_inertia[world_idx, body_idx]}\n"
-                    f"  native_principal={native_inertia[world_idx, body_idx]}\n"
-                    f"  newton_iquat={newton_iquat[world_idx, body_idx]}\n"
-                    f"  native_iquat={native_iquat[world_idx, body_idx]}\n"
-                    f"  newton_tensor:\n{newton_I}\n"
-                    f"  native_tensor:\n{native_I}"
-                )
+    np.testing.assert_allclose(
+        newton_tensors,
+        native_tensors,
+        rtol=0,
+        atol=tol,
+        err_msg="Inertia tensor mismatch (reconstructed from principal + iquat)",
+    )
 
 
 def compare_mjdata_field(
