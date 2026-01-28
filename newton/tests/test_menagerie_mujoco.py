@@ -953,10 +953,9 @@ class TestMenagerieBase(unittest.TestCase):
         # Compare mjw_model structures
         compare_mjw_models(newton_solver.mjw_model, native_mjw_model, skip_fields=self.model_skip_fields)
 
-        # NOTE: Inertia tensor comparison available via compare_inertia_tensors() but
-        # skipped for now since other model differences cause simulation divergence.
-        # The eig3 determinant fix ensures reconstructed tensors match.
-        # compare_inertia_tensors(newton_solver.mjw_model, native_mjw_model)
+        # Compare reconstructed inertia tensors (principal + iquat -> full 3x3)
+        # The eig3 determinant fix ensures these match even if iquat orientation differs
+        compare_inertia_tensors(newton_solver.mjw_model, native_mjw_model)
 
         # Get number of actuators from native model (for control generation)
         num_actuators = native_mjw_data.ctrl.shape[1] if native_mjw_data.ctrl.shape[1] > 0 else 0
