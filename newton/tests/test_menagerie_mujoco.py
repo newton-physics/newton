@@ -435,6 +435,9 @@ DEFAULT_MODEL_SKIP_FIELDS: set[str] = {
     # Lights: Newton doesn't parse lights from MJCF
     "light_",
     "nlight",
+    # Mocap bodies: Newton handles fixed base differently
+    "mocap_",
+    "nmocap",
 }
 
 
@@ -1126,9 +1129,6 @@ class TestMenagerie_UniversalRobotsUr5e(TestMenagerieBase):
         # Joint solver params: Newton uses different defaults
         "jnt_solref",
         "jnt_solimp",
-        # Mocap bodies: Newton handles fixed base differently
-        "mocap_",
-        "nmocap",
         # Options: solver/iterations differ between Newton defaults and MJCF
         "opt",
         # Sites: Newton parses with different defaults
