@@ -1001,36 +1001,58 @@ class Example:
             for idx in range(len(self.gpu_state.rods)):
                 self.viewer.log_lines(f"/directors_gpu_{idx}", None, None, None)
 
-        # Render rod tube meshes (always update, but set hidden flag based on show_rod_mesh)
-        # Update reference rod mesh with current radius
-        self._ref_mesher.set_radius(self.ref_mesh_radius)
-        ref_positions = self.ref_rod.positions[:, 0:3].astype(np.float32) + self.ref_offset
-        self._ref_mesher.update_numpy(ref_positions)
-        ref_verts_wp, ref_indices_wp, ref_normals_wp, ref_uvs_wp = self._ref_mesher.get_warp_arrays()
-        self.viewer.log_mesh(
-            "/rod_mesh_reference",
-            ref_verts_wp,
-            ref_indices_wp,
-            ref_normals_wp,
-            ref_uvs_wp,
-            hidden=not self.show_rod_mesh,
-        )
-
-        # Update GPU rod meshes with current radii
-        for idx, rod in enumerate(self.gpu_state.rods):
-            if idx < len(self.gpu_mesh_radii):
-                self._gpu_meshers[idx].set_radius(self.gpu_mesh_radii[idx])
-            gpu_positions = rod.positions_numpy().astype(np.float32) + self.gpu_offsets[idx]
-            self._gpu_meshers[idx].update_numpy(gpu_positions)
-            gpu_verts_wp, gpu_indices_wp, gpu_normals_wp, gpu_uvs_wp = self._gpu_meshers[idx].get_warp_arrays()
+        # Render rod tube meshes (only update when visible)
+        if self.show_rod_mesh:
+            # Update reference rod mesh with current radius
+            self._ref_mesher.set_radius(self.ref_mesh_radius)
+            ref_positions = self.ref_rod.positions[:, 0:3].astype(np.float32) + self.ref_offset
+            self._ref_mesher.update_numpy(ref_positions)
+            ref_verts_wp, ref_indices_wp, ref_normals_wp, ref_uvs_wp = self._ref_mesher.get_warp_arrays()
             self.viewer.log_mesh(
-                f"/rod_mesh_gpu_{idx}",
-                gpu_verts_wp,
-                gpu_indices_wp,
-                gpu_normals_wp,
-                gpu_uvs_wp,
-                hidden=not self.show_rod_mesh,
+                "/rod_mesh_reference",
+                ref_verts_wp,
+                ref_indices_wp,
+                ref_normals_wp,
+                ref_uvs_wp,
+                hidden=False,
             )
+
+            # Update GPU rod meshes with current radii
+            for idx, rod in enumerate(self.gpu_state.rods):
+                if idx < len(self.gpu_mesh_radii):
+                    self._gpu_meshers[idx].set_radius(self.gpu_mesh_radii[idx])
+                gpu_positions = rod.positions_numpy().astype(np.float32) + self.gpu_offsets[idx]
+                self._gpu_meshers[idx].update_numpy(gpu_positions)
+                gpu_verts_wp, gpu_indices_wp, gpu_normals_wp, gpu_uvs_wp = self._gpu_meshers[idx].get_warp_arrays()
+                self.viewer.log_mesh(
+                    f"/rod_mesh_gpu_{idx}",
+                    gpu_verts_wp,
+                    gpu_indices_wp,
+                    gpu_normals_wp,
+                    gpu_uvs_wp,
+                    hidden=False,
+                )
+        else:
+            # Hide meshes without updating them (use existing arrays)
+            ref_verts_wp, ref_indices_wp, ref_normals_wp, ref_uvs_wp = self._ref_mesher.get_warp_arrays()
+            self.viewer.log_mesh(
+                "/rod_mesh_reference",
+                ref_verts_wp,
+                ref_indices_wp,
+                ref_normals_wp,
+                ref_uvs_wp,
+                hidden=True,
+            )
+            for idx in range(len(self.gpu_state.rods)):
+                gpu_verts_wp, gpu_indices_wp, gpu_normals_wp, gpu_uvs_wp = self._gpu_meshers[idx].get_warp_arrays()
+                self.viewer.log_mesh(
+                    f"/rod_mesh_gpu_{idx}",
+                    gpu_verts_wp,
+                    gpu_indices_wp,
+                    gpu_normals_wp,
+                    gpu_uvs_wp,
+                    hidden=True,
+                )
 
         self.viewer.end_frame()
 
