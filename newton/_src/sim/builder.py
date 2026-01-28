@@ -910,7 +910,7 @@ class ModelBuilder:
 
     def _process_custom_attributes(
         self,
-        entity_index: int,
+        entity_index: int | list[int],
         custom_attrs: dict[str, Any],
         expected_frequency: ModelAttributeFrequency,
     ) -> None:
@@ -924,10 +924,10 @@ class ModelBuilder:
         If no namespace prefix is provided, the attribute is assumed to be in the default namespace (None).
 
         Args:
-            entity_index: Index of the entity (body, shape, joint, etc.)
+            entity_index: Index of the entity (body, shape, joint, etc.). Can be a single index or a list of indices.
             custom_attrs: Dictionary of custom attribute names to values.
-                Keys can be "attr_name" or "namespace:attr_name"
-            expected_frequency: Expected frequency for these attributes
+                Keys can be "attr_name" or "namespace:attr_name". Values can be a single value or a list of values.
+            expected_frequency: Expected frequency for these attributes.
         """
         for attr_key, value in custom_attrs.items():
             # Parse namespace prefix if present (format: "namespace:attr_name" or "attr_name")
@@ -951,7 +951,17 @@ class ModelBuilder:
             # Set the value for this specific entity
             if custom_attr.values is None:
                 custom_attr.values = {}
-            custom_attr.values[entity_index] = value
+
+            # Fill in the value(s)
+            if isinstance(entity_index, list):
+                if isinstance(value, (list, tuple)):
+                    if len(value) != len(entity_index):
+                        raise ValueError(f"Expected {len(entity_index)} values, got {len(value)}")
+                    custom_attr.values.update(zip(entity_index, value, strict=False))
+                else:
+                    custom_attr.values.update((idx, value) for idx in entity_index)
+            else:
+                custom_attr.values[entity_index] = value
 
     def _process_joint_custom_attributes(
         self,
@@ -3686,7 +3696,7 @@ class ModelBuilder:
     # muscles
     def add_muscle(
         self, bodies: list[int], positions: list[Vec3], f0: float, lm: float, lt: float, lmax: float, pen: float
-    ) -> float:
+    ) -> int:
         """Adds a muscle-tendon activation unit.
 
         Args:
@@ -3696,6 +3706,7 @@ class ModelBuilder:
             lm: Muscle length
             lt: Tendon length
             lmax: Maximally efficient muscle length
+            pen: Penalty factor
 
         Returns:
             The index of the muscle in the model
@@ -4842,6 +4853,7 @@ class ModelBuilder:
         mass: float,
         radius: float | None = None,
         flags: int = ParticleFlags.ACTIVE,
+        custom_attributes: dict[str, Any] | None = None,
     ) -> int:
         """Adds a single particle to the model.
 
@@ -4850,7 +4862,8 @@ class ModelBuilder:
             vel: The initial velocity of the particle.
             mass: The mass of the particle.
             radius: The radius of the particle used in collision handling. If None, the radius is set to the default value (:attr:`default_particle_radius`).
-            flags: The flags that control the dynamical behavior of the particle, see PARTICLE_FLAG_* constants.
+            flags: The flags that control the dynamical behavior of the particle, see :class:`newton.ParticleFlags`.
+            custom_attributes: Dictionary of custom attribute names to values.
 
         Note:
             Set the mass equal to zero to create a 'kinematic' particle that is not subject to dynamics.
@@ -4869,6 +4882,14 @@ class ModelBuilder:
 
         particle_id = self.particle_count - 1
 
+        # Process custom attributes
+        if custom_attributes:
+            self._process_custom_attributes(
+                entity_index=particle_id,
+                custom_attrs=custom_attributes,
+                expected_frequency=ModelAttributeFrequency.PARTICLE,
+            )
+
         return particle_id
 
     def add_particles(
@@ -4877,7 +4898,8 @@ class ModelBuilder:
         vel: list[Vec3],
         mass: list[float],
         radius: list[float] | None = None,
-        flags: list[wp.uint32] | None = None,
+        flags: list[int] | None = None,
+        custom_attributes: dict[str, Any] | None = None,
     ):
         """Adds a group particles to the model.
 
@@ -4886,11 +4908,15 @@ class ModelBuilder:
             vel: The initial velocities of the particle.
             mass: The mass of the particles.
             radius: The radius of the particles used in collision handling. If None, the radius is set to the default value (:attr:`default_particle_radius`).
-            flags: The flags that control the dynamical behavior of the particles, see PARTICLE_FLAG_* constants.
+            flags: The flags that control the dynamical behavior of the particles, see :class:`newton.ParticleFlags`.
+            custom_attributes: Dictionary of custom attribute names to lists of values (one value for each particle).
 
         Note:
             Set the mass equal to zero to create a 'kinematic' particle that is not subject to dynamics.
         """
+        particle_start = self.particle_count
+        particle_count = len(pos)
+
         self.particle_q.extend(pos)
         self.particle_qd.extend(vel)
         self.particle_mass.extend(mass)
@@ -4903,7 +4929,24 @@ class ModelBuilder:
         # Maintain world assignment for bulk particle creation
         self.particle_world.extend([self.current_world] * len(pos))
 
-    def add_spring(self, i: int, j, ke: float, kd: float, control: float):
+        # Process custom attributes
+        if custom_attributes and particle_count:
+            particle_indices = list(range(particle_start, particle_start + particle_count))
+            self._process_custom_attributes(
+                entity_index=particle_indices,
+                custom_attrs=custom_attributes,
+                expected_frequency=ModelAttributeFrequency.PARTICLE,
+            )
+
+    def add_spring(
+        self,
+        i: int,
+        j: int,
+        ke: float,
+        kd: float,
+        control: float,
+        custom_attributes: dict[str, Any] | None = None,
+    ):
         """Adds a spring between two particles in the system
 
         Args:
@@ -4912,6 +4955,7 @@ class ModelBuilder:
             ke: The elastic stiffness of the spring
             kd: The damping stiffness of the spring
             control: The actuation level of the spring
+            custom_attributes: Dictionary of custom attribute names to values.
 
         Note:
             The spring is created with a rest-length based on the distance
@@ -4933,6 +4977,15 @@ class ModelBuilder:
 
         self.spring_rest_length.append(l)
 
+        # Process custom attributes
+        if custom_attributes:
+            spring_index = len(self.spring_rest_length) - 1
+            self._process_custom_attributes(
+                entity_index=spring_index,
+                custom_attrs=custom_attributes,
+                expected_frequency=ModelAttributeFrequency.SPRING,
+            )
+
     def add_triangle(
         self,
         i: int,
@@ -4943,16 +4996,23 @@ class ModelBuilder:
         tri_kd: float | None = None,
         tri_drag: float | None = None,
         tri_lift: float | None = None,
+        custom_attributes: dict[str, Any] | None = None,
     ) -> float:
         """Adds a triangular FEM element between three particles in the system.
 
         Triangles are modeled as viscoelastic elements with elastic stiffness and damping
-        parameters specified on the model. See model.tri_ke, model.tri_kd.
+        parameters specified on the model. See :attr:`~newton.Model.tri_ke`, :attr:`~newton.Model.tri_kd`.
 
         Args:
-            i: The index of the first particle
-            j: The index of the second particle
-            k: The index of the third particle
+            i: The index of the first particle.
+            j: The index of the second particle.
+            k: The index of the third particle.
+            tri_ke: The elastic stiffness of the triangle. If None, the default value (:attr:`default_tri_ke`) is used.
+            tri_ka: The area stiffness of the triangle. If None, the default value (:attr:`default_tri_ka`) is used.
+            tri_kd: The damping stiffness of the triangle. If None, the default value (:attr:`default_tri_kd`) is used.
+            tri_drag: The drag coefficient of the triangle. If None, the default value (:attr:`default_tri_drag`) is used.
+            tri_lift: The lift coefficient of the triangle. If None, the default value (:attr:`default_tri_lift`) is used.
+            custom_attributes: Dictionary of custom attribute names to values.
 
         Return:
             The area of the triangle
@@ -4961,7 +5021,6 @@ class ModelBuilder:
             The triangle is created with a rest-length based on the distance
             between the particles in their initial configuration.
         """
-        # TODO: Expose elastic parameters on a per-element basis
         tri_ke = tri_ke if tri_ke is not None else self.default_tri_ke
         tri_ka = tri_ka if tri_ka is not None else self.default_tri_ka
         tri_kd = tri_kd if tri_kd is not None else self.default_tri_kd
@@ -4999,6 +5058,15 @@ class ModelBuilder:
             self.tri_activations.append(0.0)
             self.tri_materials.append((tri_ke, tri_ka, tri_kd, tri_drag, tri_lift))
             self.tri_areas.append(area)
+
+            # Process custom attributes
+            if custom_attributes:
+                tri_index = len(self.tri_indices) - 1
+                self._process_custom_attributes(
+                    entity_index=tri_index,
+                    custom_attrs=custom_attributes,
+                    expected_frequency=ModelAttributeFrequency.TRIANGLE,
+                )
             return area
 
     def add_triangles(
@@ -5011,6 +5079,7 @@ class ModelBuilder:
         tri_kd: list[float] | None = None,
         tri_drag: list[float] | None = None,
         tri_lift: list[float] | None = None,
+        custom_attributes: dict[str, Any] | None = None,
     ) -> list[float]:
         """Adds triangular FEM elements between groups of three particles in the system.
 
@@ -5021,6 +5090,12 @@ class ModelBuilder:
             i: The indices of the first particle
             j: The indices of the second particle
             k: The indices of the third particle
+            tri_ke: The elastic stiffness of the triangles. If None, the default value (:attr:`default_tri_ke`) is used.
+            tri_ka: The area stiffness of the triangles. If None, the default value (:attr:`default_tri_ka`) is used.
+            tri_kd: The damping stiffness of the triangles. If None, the default value (:attr:`default_tri_kd`) is used.
+            tri_drag: The drag coefficient of the triangles. If None, the default value (:attr:`default_tri_drag`) is used.
+            tri_lift: The lift coefficient of the triangles. If None, the default value (:attr:`default_tri_lift`) is used.
+            custom_attributes: Dictionary of custom attribute names to values.
 
         Return:
             The areas of the triangles
@@ -5063,6 +5138,7 @@ class ModelBuilder:
 
         inds = np.concatenate((i[valid_inds, None], j[valid_inds, None], k[valid_inds, None]), axis=-1)
 
+        tri_start = len(self.tri_indices)
         self.tri_indices.extend(inds.tolist())
         self.tri_poses.extend(inv_D[valid_inds].tolist())
         self.tri_activations.extend([0.0] * len(valid_inds))
@@ -5090,10 +5166,27 @@ class ModelBuilder:
         )
         areas = areas.tolist()
         self.tri_areas.extend(areas)
+
+        # Process custom attributes
+        if custom_attributes and len(valid_inds) > 0:
+            tri_indices = list(range(tri_start, tri_start + len(valid_inds)))
+            self._process_custom_attributes(
+                entity_index=tri_indices,
+                custom_attrs=custom_attributes,
+                expected_frequency=ModelAttributeFrequency.TRIANGLE,
+            )
         return areas
 
     def add_tetrahedron(
-        self, i: int, j: int, k: int, l: int, k_mu: float = 1.0e3, k_lambda: float = 1.0e3, k_damp: float = 0.0
+        self,
+        i: int,
+        j: int,
+        k: int,
+        l: int,
+        k_mu: float = 1.0e3,
+        k_lambda: float = 1.0e3,
+        k_damp: float = 0.0,
+        custom_attributes: dict[str, Any] | None = None,
     ) -> float:
         """Adds a tetrahedral FEM element between four particles in the system.
 
@@ -5108,6 +5201,7 @@ class ModelBuilder:
             k_mu: The first elastic Lame parameter
             k_lambda: The second elastic Lame parameter
             k_damp: The element's damping stiffness
+            custom_attributes: Dictionary of custom attribute names to values.
 
         Return:
             The volume of the tetrahedron
@@ -5139,6 +5233,15 @@ class ModelBuilder:
             self.tet_activations.append(0.0)
             self.tet_materials.append((k_mu, k_lambda, k_damp))
 
+            # Process custom attributes
+            if custom_attributes:
+                tet_index = len(self.tet_indices) - 1
+                self._process_custom_attributes(
+                    entity_index=tet_index,
+                    custom_attrs=custom_attributes,
+                    expected_frequency=ModelAttributeFrequency.TETRAHEDRON,
+                )
+
         return volume
 
     def add_edge(
@@ -5150,7 +5253,8 @@ class ModelBuilder:
         rest: float | None = None,
         edge_ke: float | None = None,
         edge_kd: float | None = None,
-    ) -> None:
+        custom_attributes: dict[str, Any] | None = None,
+    ) -> int:
         """Adds a bending edge element between two adjacent triangles in the cloth mesh, defined by four vertices.
 
         The bending energy model follows the discrete shell formulation from [Grinspun et al. 2003].
@@ -5164,6 +5268,10 @@ class ModelBuilder:
             rest: The rest angle across the edge in radians, if not specified it will be computed
             edge_ke: The bending stiffness coefficient
             edge_kd: The bending damping coefficient
+            custom_attributes: Dictionary of custom attribute names to values.
+
+        Return:
+            The index of the edge.
 
         Note:
             The edge lies between the particles indexed by 'k' and 'l' parameters with the opposing
@@ -5195,16 +5303,28 @@ class ModelBuilder:
         self.edge_rest_angle.append(rest)
         self.edge_rest_length.append(wp.length(x4 - x3))
         self.edge_bending_properties.append((edge_ke, edge_kd))
+        edge_index = len(self.edge_indices) - 1
+
+        # Process custom attributes
+        if custom_attributes:
+            self._process_custom_attributes(
+                entity_index=edge_index,
+                custom_attrs=custom_attributes,
+                expected_frequency=ModelAttributeFrequency.EDGE,
+            )
+
+        return edge_index
 
     def add_edges(
         self,
-        i,
-        j,
-        k,
-        l,
+        i: list[int],
+        j: list[int],
+        k: list[int],
+        l: list[int],
         rest: list[float] | None = None,
         edge_ke: list[float] | None = None,
         edge_kd: list[float] | None = None,
+        custom_attributes: dict[str, Any] | None = None,
     ) -> None:
         """Adds bending edge elements between two adjacent triangles in the cloth mesh, defined by four vertices.
 
@@ -5212,13 +5332,14 @@ class ModelBuilder:
         The bending stiffness is controlled by the `edge_ke` parameter, and the bending damping by the `edge_kd` parameter.
 
         Args:
-            i: The index of the first particle, i.e., opposite vertex 0
-            j: The index of the second particle, i.e., opposite vertex 1
-            k: The index of the third particle, i.e., vertex 0
-            l: The index of the fourth particle, i.e., vertex 1
+            i: The indices of the first particles, i.e., opposite vertex 0
+            j: The indices of the second particles, i.e., opposite vertex 1
+            k: The indices of the third particles, i.e., vertex 0
+            l: The indices of the fourth particles, i.e., vertex 1
             rest: The rest angles across the edges in radians, if not specified they will be computed
-            edge_ke: The bending stiffness coefficient
-            edge_kd: The bending damping coefficient
+            edge_ke: The bending stiffness coefficients
+            edge_kd: The bending damping coefficients
+            custom_attributes: Dictionary of custom attribute names to values.
 
         Note:
             The edge lies between the particles indexed by 'k' and 'l' parameters with the opposing
@@ -5253,11 +5374,13 @@ class ModelBuilder:
             cos_theta = np.clip(dot(n1, n2), -1.0, 1.0)
             sin_theta = dot(np.cross(n1, n2), e)
             rest[valid_mask] = np.arctan2(sin_theta, cos_theta)
+            rest = rest.tolist()
 
         inds = np.concatenate((i[:, None], j[:, None], k[:, None], l[:, None]), axis=-1)
 
+        edge_start = len(self.edge_indices)
         self.edge_indices.extend(inds.tolist())
-        self.edge_rest_angle.extend(rest.tolist())
+        self.edge_rest_angle.extend(rest)
         self.edge_rest_length.extend(np.linalg.norm(x4 - x3, axis=1).tolist())
 
         def init_if_none(arr, defaultValue):
@@ -5269,6 +5392,15 @@ class ModelBuilder:
         edge_kd = init_if_none(edge_kd, self.default_edge_kd)
 
         self.edge_bending_properties.extend(zip(edge_ke, edge_kd, strict=False))
+
+        # Process custom attributes
+        if custom_attributes and len(i) > 0:
+            edge_indices = list(range(edge_start, edge_start + len(i)))
+            self._process_custom_attributes(
+                entity_index=edge_indices,
+                custom_attrs=custom_attributes,
+                expected_frequency=ModelAttributeFrequency.EDGE,
+            )
 
     def add_cloth_grid(
         self,
@@ -5296,6 +5428,9 @@ class ModelBuilder:
         spring_ke: float | None = None,
         spring_kd: float | None = None,
         particle_radius: float | None = None,
+        custom_attributes_particles: dict[str, Any] | None = None,
+        custom_attributes_edges: dict[str, Any] | None = None,
+        custom_attributes_triangle: dict[str, Any] | None = None,
     ):
         """Helper to create a regular planar cloth grid
 
@@ -5365,6 +5500,9 @@ class ModelBuilder:
             spring_ke=spring_ke,
             spring_kd=spring_kd,
             particle_radius=particle_radius,
+            custom_attributes_particles=custom_attributes_particles,
+            custom_attributes_triangle=custom_attributes_triangle,
+            custom_attributes_edges=custom_attributes_edges,
         )
 
         vertex_id = 0
@@ -5408,6 +5546,10 @@ class ModelBuilder:
         spring_ke: float | None = None,
         spring_kd: float | None = None,
         particle_radius: float | None = None,
+        custom_attributes_particles: dict[str, Any] | None = None,
+        custom_attributes_edges: dict[str, Any] | None = None,
+        custom_attributes_triangles: dict[str, Any] | None = None,
+        custom_attributes_springs: dict[str, Any] | None = None,
     ) -> None:
         """Helper to create a cloth model from a regular triangle mesh
 
@@ -5424,9 +5566,13 @@ class ModelBuilder:
             edge_callback: A user callback when an edge is created
             face_callback: A user callback when a face is created
             particle_radius: The particle_radius which controls particle based collisions.
-        Note:
+            custom_attributes_particles: Dictionary of custom attribute names to values for the particles.
+            custom_attributes_edges: Dictionary of custom attribute names to values for the edges.
+            custom_attributes_triangles: Dictionary of custom attribute names to values for the triangles.
+            custom_attributes_springs: Dictionary of custom attribute names to values for the springs.
 
-            The mesh should be two manifold.
+        Note:
+            The mesh should be two-manifold.
         """
         tri_ke = tri_ke if tri_ke is not None else self.default_tri_ke
         tri_ka = tri_ka if tri_ka is not None else self.default_tri_ka
@@ -5453,7 +5599,11 @@ class ModelBuilder:
         rot_mat_np = np.array(wp.quat_to_matrix(rot), dtype=np.float32).reshape(3, 3)
         verts_3d_np = np.dot(vertices_np, rot_mat_np.T) + pos
         self.add_particles(
-            verts_3d_np.tolist(), [vel] * num_verts, mass=[0.0] * num_verts, radius=[particle_radius] * num_verts
+            verts_3d_np.tolist(),
+            [vel] * num_verts,
+            mass=[0.0] * num_verts,
+            radius=[particle_radius] * num_verts,
+            custom_attributes=custom_attributes_particles,
         )
 
         # triangles
@@ -5468,6 +5618,7 @@ class ModelBuilder:
             [tri_kd] * num_tris,
             [tri_drag] * num_tris,
             [tri_lift] * num_tris,
+            custom_attributes=custom_attributes_triangles,
         )
         for t in range(num_tris):
             area = areas[t]
@@ -5491,6 +5642,7 @@ class ModelBuilder:
             edge_indices[:, 3],
             edge_ke=[edge_ke] * len(edge_indices),
             edge_kd=[edge_kd] * len(edge_indices),
+            custom_attributes=custom_attributes_edges,
         )
 
         if add_springs:
@@ -5507,7 +5659,7 @@ class ModelBuilder:
                     spring_indices.add((min(i, j), max(i, j)))
 
             for i, j in spring_indices:
-                self.add_spring(i, j, spring_ke, spring_kd, control=0.0)
+                self.add_spring(i, j, spring_ke, spring_kd, control=0.0, custom_attributes=custom_attributes_springs)
 
     def add_particle_grid(
         self,
@@ -5524,7 +5676,8 @@ class ModelBuilder:
         jitter: float,
         radius_mean: float | None = None,
         radius_std: float = 0.0,
-        flags: int | None = None,
+        flags: list[int] | int | None = None,
+        custom_attributes: dict[str, Any] | None = None,
     ):
         """
         Adds a regular 3D grid of particles to the model.
@@ -5548,6 +5701,7 @@ class ModelBuilder:
             radius_mean (float, optional): Mean radius for particles. If None, uses the builder's default.
             radius_std (float, optional): Standard deviation for particle radii. If > 0, radii are sampled from a normal distribution.
             flags (int, optional): Flags to assign to each particle. If None, uses the builder's default.
+            custom_attributes: Dictionary of custom attribute names to values for the particles.
 
         Returns:
             None
@@ -5585,6 +5739,7 @@ class ModelBuilder:
             mass=masses,
             radius=radii.tolist(),
             flags=flags,
+            custom_attributes=custom_attributes,
         )
 
     def add_soft_grid(
@@ -6728,6 +6883,8 @@ class ModelBuilder:
                     count = m.num_worlds
                 elif freq_key == ModelAttributeFrequency.EQUALITY_CONSTRAINT:
                     count = m.equality_constraint_count
+                elif freq_key == ModelAttributeFrequency.PARTICLE:
+                    count = m.particle_count
                 else:
                     continue
 

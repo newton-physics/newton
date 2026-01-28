@@ -37,13 +37,13 @@ class ModelAttributeAssignment(IntEnum):
     """
 
     MODEL = 0
-    """Model attributes are attached to the Model object."""
+    """Model attributes are attached to the :class:`~newton.Model` object."""
     STATE = 1
-    """State attributes are attached to the State object."""
+    """State attributes are attached to the :class:`~newton.State` object."""
     CONTROL = 2
-    """Control attributes are attached to the Control object."""
+    """Control attributes are attached to the :class:`~newton.Control` object."""
     CONTACT = 3
-    """Contact attributes are attached to the Contacts object."""
+    """Contact attributes are attached to the :class:`~newton.Contacts` object."""
 
 
 class ModelAttributeFrequency(IntEnum):
@@ -70,7 +70,17 @@ class ModelAttributeFrequency(IntEnum):
     """Attribute frequency follows the number of articulations (see :attr:`~newton.Model.articulation_count`)."""
     EQUALITY_CONSTRAINT = 7
     """Attribute frequency follows the number of equality constraints (see :attr:`~newton.Model.equality_constraint_count`)."""
-    WORLD = 8
+    PARTICLE = 8
+    """Attribute frequency follows the number of particles (see :attr:`~newton.Model.particle_count`)."""
+    EDGE = 9
+    """Attribute frequency follows the number of edges (see :attr:`~newton.Model.edge_count`)."""
+    TRIANGLE = 10
+    """Attribute frequency follows the number of triangles (see :attr:`~newton.Model.tri_count`)."""
+    TETRAHEDRON = 11
+    """Attribute frequency follows the number of tetrahedra (see :attr:`~newton.Model.tet_count`)."""
+    SPRING = 12
+    """Attribute frequency follows the number of springs (see :attr:`~newton.Model.spring_count`)."""
+    WORLD = 13
     """Attribute frequency follows the number of worlds (see :attr:`~newton.Model.num_worlds`)."""
 
 
