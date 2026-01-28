@@ -346,6 +346,10 @@ class TestModel(unittest.TestCase):
 
     def test_world_grouping(self):
         """Test world grouping functionality for Model entities."""
+        # Optionally enable debug printing
+        verbose = False  # Set to True to enable debug output
+
+        # Create builder with a mix of global and world-specific entities
         main_builder = ModelBuilder()
 
         # Create global entities (world -1)
@@ -493,6 +497,18 @@ class TestModel(unittest.TestCase):
             model.world_joint_constraint_start.numpy() if model.world_joint_constraint_start is not None else []
         )
 
+        # Optional console-output for debugging
+        if verbose:
+            print(f"world_particle_start: {world_particle_start}")
+            print(f"world_body_start: {world_body_start}")
+            print(f"world_shape_start: {world_shape_start}")
+            print(f"world_joint_start: {world_joint_start}")
+            print(f"world_articulation_start: {world_articulation_start}")
+            print(f"world_equality_constraint_start: {world_equality_constraint_start}")
+            print(f"world_joint_dof_start: {world_joint_dof_start}")
+            print(f"world_joint_coord_start: {world_joint_coord_start}")
+            print(f"world_joint_constraint_start: {world_joint_constraint_start}")
+
         # Check that sizes match num_worlds + 2, i.e. conforms to spec
         self.assertEqual(world_particle_start.size, model.num_worlds + 2)
         self.assertEqual(world_body_start.size, model.num_worlds + 2)
@@ -526,6 +542,17 @@ class TestModel(unittest.TestCase):
             self.assertLessEqual(world_joint_dof_start[i], world_joint_dof_start[i + 1])
             self.assertLessEqual(world_joint_coord_start[i], world_joint_coord_start[i + 1])
             self.assertLessEqual(world_joint_constraint_start[i], world_joint_constraint_start[i + 1])
+
+        # Check exact values of world starts for this specific case
+        self.assertTrue(np.array_equal(world_particle_start, np.array([1, 3, 5, 7, 9])))
+        self.assertTrue(np.array_equal(world_body_start, np.array([1, 4, 7, 10, 12])))
+        self.assertTrue(np.array_equal(world_shape_start, np.array([1, 4, 7, 10, 12])))
+        self.assertTrue(np.array_equal(world_joint_start, np.array([1, 3, 5, 7, 9])))
+        self.assertTrue(np.array_equal(world_articulation_start, np.array([1, 2, 3, 4, 6])))
+        self.assertTrue(np.array_equal(world_equality_constraint_start, np.array([0, 0, 0, 0, 0])))
+        self.assertTrue(np.array_equal(world_joint_dof_start, np.array([6, 8, 10, 12, 24])))
+        self.assertTrue(np.array_equal(world_joint_coord_start, np.array([7, 9, 11, 13, 27])))
+        self.assertTrue(np.array_equal(world_joint_constraint_start, np.array([0, 10, 20, 30, 30])))
 
     def test_num_worlds_tracking(self):
         """Test that num_worlds is properly tracked when using add_world."""
@@ -652,6 +679,10 @@ class TestModel(unittest.TestCase):
 
     def test_collapse_fixed_joints_with_groups(self):
         """Test that collapse_fixed_joints correctly preserves world groups."""
+        # Optionally enable debug printing
+        verbose = False  # Set to True to enable debug output
+
+        # Create builder with multiple worlds and fixed joints
         builder = ModelBuilder()
 
         # World 0: Chain with fixed joints
@@ -724,7 +755,7 @@ class TestModel(unittest.TestCase):
         self.assertEqual(builder.joint_world, [0, 0, 0, 1, 1, -1])  # 6 joints now (includes free joint from add_body)
 
         # Collapse fixed joints
-        builder.collapse_fixed_joints(verbose=False)
+        builder.collapse_fixed_joints(verbose=verbose)
 
         # After collapse:
         # - b0_0 and b0_1 are merged (b0_1 removed)
@@ -775,6 +806,18 @@ class TestModel(unittest.TestCase):
         world_joint_constraint_start = (
             model.world_joint_constraint_start.numpy() if model.world_joint_constraint_start is not None else []
         )
+
+        # Optional console-output for debugging
+        if verbose:
+            print(f"world_particle_start: {world_particle_start}")
+            print(f"world_body_start: {world_body_start}")
+            print(f"world_shape_start: {world_shape_start}")
+            print(f"world_joint_start: {world_joint_start}")
+            print(f"world_articulation_start: {world_articulation_start}")
+            print(f"world_equality_constraint_start: {world_equality_constraint_start}")
+            print(f"world_joint_dof_start: {world_joint_dof_start}")
+            print(f"world_joint_coord_start: {world_joint_coord_start}")
+            print(f"world_joint_constraint_start: {world_joint_constraint_start}")
 
         # Verify total counts
         self.assertEqual(builder.particle_count, 0)
@@ -829,6 +872,17 @@ class TestModel(unittest.TestCase):
             self.assertLessEqual(world_joint_dof_start[i], world_joint_dof_start[i + 1])
             self.assertLessEqual(world_joint_coord_start[i], world_joint_coord_start[i + 1])
             self.assertLessEqual(world_joint_constraint_start[i], world_joint_constraint_start[i + 1])
+
+        # Check exact values of world starts for this specific case
+        self.assertTrue(np.array_equal(world_particle_start, np.array([0, 0, 0, 0])))
+        self.assertTrue(np.array_equal(world_body_start, np.array([0, 2, 4, 5])))
+        self.assertTrue(np.array_equal(world_shape_start, np.array([0, 0, 0, 0])))
+        self.assertTrue(np.array_equal(world_joint_start, np.array([0, 2, 4, 5])))
+        self.assertTrue(np.array_equal(world_articulation_start, np.array([0, 1, 2, 3])))
+        self.assertTrue(np.array_equal(world_equality_constraint_start, np.array([0, 0, 0, 0])))
+        self.assertTrue(np.array_equal(world_joint_dof_start, np.array([0, 2, 4, 10])))
+        self.assertTrue(np.array_equal(world_joint_coord_start, np.array([0, 2, 4, 11])))
+        self.assertTrue(np.array_equal(world_joint_constraint_start, np.array([0, 10, 20, 20])))
 
     def test_add_world(self):
         orig_xform = wp.transform(wp.vec3(1.0, 2.0, 3.0), wp.quat_rpy(0.5, 0.6, 0.7))
