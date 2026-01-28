@@ -145,7 +145,11 @@ class Example:
                 iterations=self.iterations,
             )
         else:  # self.solver_type == "vbd"
-            self.solver = newton.solvers.SolverVBD(model=self.model, iterations=self.iterations)
+            self.solver = newton.solvers.SolverVBD(model=self.model, iterations=self.iterations, 
+            particle_enable_self_contact=True,
+            particle_self_contact_radius=0.02,
+            particle_self_contact_margin=0.03
+            )
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
