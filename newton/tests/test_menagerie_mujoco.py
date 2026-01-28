@@ -1243,12 +1243,9 @@ class TestMenagerie_UniversalRobotsUr5e(TestMenagerieBase):
         "actuator_cranklength",
         "actuator_acc0",
         "actuator_lengthrange",
-        # Inertia frame orientation: Newton may use different convention for principal axes
-        "body_inertia",
+        # Inertia-derived fields (body_inertia/body_iquat already in global skip)
         "body_invweight0",  # Derived from inertia
         "body_ipos",  # Inertia frame position
-        "body_iquat",  # Inertia frame orientation
-        "body_mocapid",  # Fixed base handling differs
         # Collision filtering: Newton uses different defaults
         "geom_conaffinity",
         "geom_contype",
