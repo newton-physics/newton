@@ -432,6 +432,9 @@ DEFAULT_MODEL_SKIP_FIELDS: set[str] = {
     "geom_group",
     # Collision exclusions: Newton needs to fix parent/child filtering to match MuJoCo
     "nexclude",
+    # Lights: Newton doesn't parse lights from MJCF
+    "light_",
+    "nlight",
 }
 
 
@@ -1123,9 +1126,6 @@ class TestMenagerie_UniversalRobotsUr5e(TestMenagerieBase):
         # Joint solver params: Newton uses different defaults
         "jnt_solref",
         "jnt_solimp",
-        # Lights: Newton doesn't parse lights from MJCF
-        "light_",
-        "nlight",
         # Mocap bodies: Newton handles fixed base differently
         "mocap_",
         "nmocap",
