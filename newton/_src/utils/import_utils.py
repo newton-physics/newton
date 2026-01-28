@@ -20,9 +20,10 @@ from typing import TYPE_CHECKING, Any, Literal
 
 import warp as wp
 
+from ..sim.joints import ActuatorMode
+
 if TYPE_CHECKING:
     from ..sim.builder import ModelBuilder
-    from ..sim.joints import ActuatorMode
 
 
 def parse_warp_value_from_string(value: str, warp_dtype: Any, default: Any = None) -> Any:
@@ -222,8 +223,6 @@ def infer_actuator_mode(
         - VELOCITY: Only velocity gain is non-zero
         - POSITION_VELOCITY: Both gains non-zero (or forced)
     """
-    from ..sim.joints import ActuatorMode  # noqa: PLC0415
-
     if not has_drive:
         return ActuatorMode.NONE
 
