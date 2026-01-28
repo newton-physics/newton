@@ -19,6 +19,7 @@ import math
 import os
 import re
 import xml.etree.ElementTree as ET
+from collections.abc import Callable
 from typing import Any
 
 import numpy as np
@@ -30,7 +31,96 @@ from ..geometry import MESH_MAXHULLVERT, Mesh, ShapeFlags
 from ..sim import JointType, ModelBuilder
 from ..sim.model import ModelAttributeFrequency
 from ..usd.schemas import solref_to_stiffness_damping
-from .import_utils import parse_custom_attributes, sanitize_xml_content
+from .import_utils import is_xml_content, parse_custom_attributes, sanitize_xml_content
+
+
+def _default_path_resolver(base_dir: str | None, file_path: str) -> str:
+    """Default path resolver - joins base_dir with file_path.
+
+    Args:
+        base_dir: Base directory for resolving relative paths (None for XML string input)
+        file_path: The 'file' attribute value to resolve
+
+    Returns:
+        Resolved absolute file path
+
+    Raises:
+        ValueError: If file_path is relative and base_dir is None
+    """
+    if os.path.isabs(file_path):
+        return os.path.normpath(file_path)
+    elif base_dir:
+        return os.path.normpath(os.path.join(base_dir, file_path))
+    else:
+        raise ValueError(f"Cannot resolve relative path '{file_path}' without base directory")
+
+
+def _load_and_expand_mjcf(
+    source: str,
+    path_resolver: Callable[[str | None, str], str] = _default_path_resolver,
+    included_files: set[str] | None = None,
+) -> tuple[ET.Element, str | None]:
+    """Load MJCF source and recursively expand <include> elements.
+
+    Args:
+        source: File path or XML string
+        path_resolver: Callback to resolve file paths. Takes (base_dir, file_path) and returns:
+            - For <include> elements: either an absolute file path or XML content directly
+            - For asset elements (mesh, texture, etc.): must return an absolute file path
+            Default resolver joins paths and returns absolute file paths.
+        included_files: Set of already-included file paths for cycle detection
+
+    Returns:
+        Tuple of (root element, base directory or None for XML string input)
+
+    Raises:
+        ValueError: If a circular include is detected
+    """
+    if included_files is None:
+        included_files = set()
+
+    # Load source
+    if is_xml_content(source):
+        base_dir = None  # No base directory for XML strings
+        root = ET.fromstring(sanitize_xml_content(source))
+    else:
+        # Treat as file path
+        base_dir = os.path.dirname(source) or "."
+        root = ET.parse(source).getroot()
+
+    # Find all (parent, include) pairs in a single pass
+    include_pairs = [(parent, child) for parent in root.iter() for child in parent if child.tag == "include"]
+
+    for parent, include in include_pairs:
+        file_attr = include.get("file")
+        if not file_attr:
+            continue
+
+        resolved = path_resolver(base_dir, file_attr)
+
+        if not is_xml_content(resolved):
+            # Cycle detection for file paths
+            if resolved in included_files:
+                raise ValueError(f"Circular include detected: {resolved}")
+            included_files.add(resolved)
+
+        # Recursive call - handles both file paths and XML content
+        included_root, included_base_dir = _load_and_expand_mjcf(resolved, path_resolver, included_files)
+
+        # Resolve all file attributes in included content to absolute paths
+        # This ensures assets from included files are resolved relative to their source
+        for elem in included_root.iter():
+            file_attr = elem.get("file")
+            if file_attr and not os.path.isabs(file_attr):
+                elem.set("file", path_resolver(included_base_dir, file_attr))
+
+        # Replace include element with children of included root
+        idx = list(parent).index(include)
+        parent.remove(include)
+        for i, child in enumerate(included_root):
+            parent.insert(idx + i, child)
+
+    return root, base_dir
 
 
 def parse_mjcf(
@@ -64,6 +154,7 @@ def parse_mjcf(
     skip_equality_constraints: bool = False,
     convert_3d_hinge_to_ball_joints: bool = False,
     mesh_maxhullvert: int = MESH_MAXHULLVERT,
+    path_resolver: Callable[[str | None, str], str] | None = None,
 ):
     """
     Parses MuJoCo XML (MJCF) file and adds the bodies and joints to the given ModelBuilder.
@@ -99,20 +190,21 @@ def parse_mjcf(
         skip_equality_constraints (bool): Whether <equality> tags should be parsed. If True, equality constraints are ignored.
         convert_3d_hinge_to_ball_joints (bool): If True, series of three hinge joints are converted to a single ball joint. Default is False.
         mesh_maxhullvert (int): Maximum vertices for convex hull approximation of meshes.
+        path_resolver (Callable): Callback to resolve file paths. Takes (base_dir, file_path) and returns a resolved path. For <include> elements, can return either a file path or XML content directly. For asset elements (mesh, texture, etc.), must return an absolute file path. The default resolver joins paths and returns absolute file paths.
     """
     if xform is None:
         xform = wp.transform_identity()
     else:
         xform = wp.transform(*xform)
 
-    if os.path.isfile(source):
-        mjcf_dirname = os.path.dirname(source)
-        file = ET.parse(source)
-        root = file.getroot()
-    else:
-        xml_content = sanitize_xml_content(source)
-        root = ET.fromstring(xml_content)
-        mjcf_dirname = "."
+    if path_resolver is None:
+        path_resolver = _default_path_resolver
+
+    # Convert Path objects to string
+    source = os.fspath(source) if hasattr(source, "__fspath__") else source
+
+    root, base_dir = _load_and_expand_mjcf(source, path_resolver)
+    mjcf_dirname = base_dir or "."  # Backward compatible fallback for mesh paths
 
     use_degrees = True  # angles are in degrees by default
     euler_seq = [0, 1, 2]  # XYZ by default
@@ -542,7 +634,19 @@ def parse_mjcf(
 
             # Parse site type (defaults to sphere if not specified)
             site_type = site_attrib.get("type", "sphere")
-            site_size = parse_vec(site_attrib, "size", [0.01, 0.01, 0.01]) * scale
+
+            # Parse site size matching MuJoCo behavior:
+            # - Default is [0.005, 0.005, 0.005]
+            # - Partial values fill remaining with defaults (NOT replicating first value)
+            # - size="0.001" → [0.001, 0.005, 0.005] (matches MuJoCo)
+            # Note: This differs from parse_vec which would replicate single values
+            site_size = np.array([0.005, 0.005, 0.005], dtype=np.float32)
+            if "size" in site_attrib:
+                size_values = np.fromstring(site_attrib["size"], sep=" ", dtype=np.float32)
+                for i, val in enumerate(size_values):
+                    if i < 3:
+                        site_size[i] = val
+            site_size = wp.vec3(site_size * scale)
 
             # Map MuJoCo site types to Newton GeoType
             type_map = {
@@ -557,7 +661,7 @@ def parse_mjcf(
             # Sites are typically hidden by default
             visible = False
 
-            # Expand to 3-element vector
+            # Expand to 3-element vector if needed
             if len(site_size) == 2:
                 # Two values (e.g., capsule/cylinder: radius, half-height)
                 radius = site_size[0]
@@ -1428,6 +1532,51 @@ def parse_mjcf(
 
             if verbose:
                 print(f"Parsed contact pair: {geom1_name} ({geom1_idx}) <-> {geom2_name} ({geom2_idx})")
+
+    # Parse <exclude> elements - body pairs to exclude from collision detection
+    if contact is not None:
+        for exclude in contact.findall("exclude"):
+            body1_name = exclude.attrib.get("body1")
+            body2_name = exclude.attrib.get("body2")
+
+            if not body1_name or not body2_name:
+                if verbose:
+                    print("Warning: <exclude> element missing body1 or body2 attribute, skipping")
+                continue
+
+            # Normalize body names the same way parse_body() does (replace '-' with '_')
+            body1_name = body1_name.replace("-", "_")
+            body2_name = body2_name.replace("-", "_")
+
+            # Look up body indices by body name
+            try:
+                body1_idx = builder.body_key.index(body1_name)
+            except ValueError:
+                if verbose:
+                    print(f"Warning: <exclude> references unknown body '{body1_name}', skipping")
+                continue
+
+            try:
+                body2_idx = builder.body_key.index(body2_name)
+            except ValueError:
+                if verbose:
+                    print(f"Warning: <exclude> references unknown body '{body2_name}', skipping")
+                continue
+
+            # Find all shapes belonging to body1 and body2
+            body1_shapes = [i for i, body in enumerate(builder.shape_body) if body == body1_idx]
+            body2_shapes = [i for i, body in enumerate(builder.shape_body) if body == body2_idx]
+
+            # Add all shape pairs from these bodies to collision filter
+            for shape1_idx in body1_shapes:
+                for shape2_idx in body2_shapes:
+                    builder.shape_collision_filter_pairs.append((shape1_idx, shape2_idx))
+
+            if verbose:
+                print(
+                    f"Parsed collision exclude: {body1_name} ({len(body1_shapes)} shapes) <-> "
+                    f"{body2_name} ({len(body2_shapes)} shapes), added {len(body1_shapes) * len(body2_shapes)} filter pairs"
+                )
 
     # -----------------
     # Parse all fixed tendons in a single tendon section.
