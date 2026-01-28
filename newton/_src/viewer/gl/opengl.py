@@ -334,9 +334,9 @@ class MeshGL:
     def update_texture(self, texture_image=None, texture_path=None):
         gl = RendererGL.gl
         if texture_image is None and texture_path:
-            from ...utils.mesh import load_texture_image  # noqa: PLC0415
+            from ...utils.mesh import load_texture  # noqa: PLC0415
 
-            texture_image = load_texture_image(texture_path)
+            texture_image = load_texture(texture_path)
 
         if texture_image is None:
             if self.texture_id is not None:
@@ -1671,9 +1671,9 @@ class RendererGL:
 
     def set_environment_map(self, path: str, intensity: float = 1.0) -> None:
         gl = RendererGL.gl
-        from ...utils.mesh import load_texture_image  # noqa: PLC0415
+        from ...utils.mesh import load_texture  # noqa: PLC0415
 
-        image = load_texture_image(path)
+        image = load_texture(path)
         if image is None:
             return
         if self._env_texture is not None:

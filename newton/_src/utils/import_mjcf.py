@@ -31,7 +31,7 @@ from ..sim import JointType, ModelBuilder
 from ..sim.model import ModelAttributeFrequency
 from ..usd.schemas import solref_to_stiffness_damping
 from .import_utils import parse_custom_attributes, sanitize_xml_content
-from .mesh import load_texture_image, load_trimesh_meshes
+from .mesh import load_texture, load_trimesh_meshes
 
 
 def parse_mjcf(
@@ -383,7 +383,7 @@ def parse_mjcf(
                 if texture_asset and "file" in texture_asset:
                     texture_path = texture_asset["file"]
                     if os.path.exists(texture_path):
-                        texture_image = load_texture_image(texture_path)
+                        texture_image = load_texture(texture_path)
                     else:
                         texture_path = None
 

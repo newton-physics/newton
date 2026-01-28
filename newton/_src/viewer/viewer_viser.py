@@ -24,7 +24,7 @@ import newton
 from newton.utils import create_plane_mesh
 
 from ..core.types import override
-from ..utils.mesh import load_texture_image
+from ..utils.mesh import load_texture
 from .viewer import ViewerBase, is_jupyter_notebook
 
 
@@ -198,7 +198,7 @@ class ViewerViser(ViewerBase):
         indices_np = self._to_numpy(indices).astype(np.uint32)
         uvs_np = self._to_numpy(uvs).astype(np.float32) if uvs is not None else None
         if texture_image is None and texture_path:
-            texture_image = load_texture_image(texture_path)
+            texture_image = load_texture(texture_path)
         texture_image = self._normalize_texture_image(texture_image)
 
         # Viser expects indices as (N, 3) for triangles
@@ -266,7 +266,7 @@ class ViewerViser(ViewerBase):
         texture_image = mesh_data.get("texture_image")
         texture_path = mesh_data.get("texture_path")
         if texture_image is None and texture_path:
-            texture_image = load_texture_image(texture_path)
+            texture_image = load_texture(texture_path)
         texture_image = self._normalize_texture_image(texture_image)
 
         if hidden:

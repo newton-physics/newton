@@ -403,7 +403,7 @@ def _download_texture_bytes(url: str) -> bytes | None:
         return None
 
 
-def load_texture_image(texture_path: str | None) -> np.ndarray | None:
+def load_texture(texture_path: str | None) -> np.ndarray | None:
     """Load a texture image from disk or URL into a numpy array.
 
     Args:
