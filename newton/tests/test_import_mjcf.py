@@ -13,7 +13,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import io
 import os
+import sys
 import tempfile
 import unittest
 
@@ -3423,7 +3425,6 @@ class TestImportMjcf(unittest.TestCase):
         body1_geom2_idx = builder.shape_key.index("body1_geom2")
         body2_geom1_idx = builder.shape_key.index("body2_geom1")
         body2_geom2_idx = builder.shape_key.index("body2_geom2")
-        body3_geom1_idx = builder.shape_key.index("body3_geom1")
 
         # Convert filter pairs to a set for easier checking
         filter_pairs = set(model.shape_collision_filter_pairs)
@@ -3441,21 +3442,9 @@ class TestImportMjcf(unittest.TestCase):
                     f"Shape pair ({shape1}, {shape2}) should be filtered due to <exclude body1='body1' body2='body2'/>",
                 )
 
-        # Check that body3 is NOT filtered with body1 or body2
-        # (We can't directly verify they WOULD collide without running simulation,
-        # but we can verify they're not in the filter list)
-        for body1_shape in body1_shapes:
-            pair_in_filter = (body1_shape, body3_geom1_idx) in filter_pairs or (
-                body3_geom1_idx,
-                body1_shape,
-            ) in filter_pairs
-            # body3 and body1 should be allowed to collide (not filtered)
-            # Unless they're filtered by the enable_self_collisions logic
-            # Since all bodies are in the same articulation added via add_mjcf,
-            # and enable_self_collisions=True, they should NOT be automatically filtered
-            # So body3 vs body1 should NOT be in the filter list (unless explicitly excluded)
-            # Let's just verify the exclude worked for body1-body2
-            pass  # We'll focus on the positive assertion above
+        # The test above verifies that body1-body2 pairs are correctly filtered.
+        # We don't need to verify body3 interactions as that would require running
+        # a full simulation to observe collision behavior.
 
     def test_exclude_tag_with_verbose(self):
         """Test that <exclude> tag parsing produces verbose output when requested."""
@@ -3463,9 +3452,6 @@ class TestImportMjcf(unittest.TestCase):
         mjcf_filename = os.path.join(os.path.dirname(__file__), "assets", "mjcf_exclude_test.xml")
 
         # Capture verbose output
-        import io
-        import sys
-
         captured_output = io.StringIO()
         old_stdout = sys.stdout
         sys.stdout = captured_output
@@ -3561,9 +3547,6 @@ class TestImportMjcf(unittest.TestCase):
         builder = newton.ModelBuilder()
 
         # Capture verbose output
-        import io
-        import sys
-
         captured_output = io.StringIO()
         old_stdout = sys.stdout
         sys.stdout = captured_output
