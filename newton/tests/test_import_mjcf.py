@@ -3049,19 +3049,18 @@ class TestImportMjcf(unittest.TestCase):
         self.assertAlmostEqual(site_xform[2], 3.5, places=5)
 
     def test_site_size_defaults(self):
-        """Test that site size uses MuJoCo's default [0.005, 0.005, 0.005].
+        """Test that site size matches MuJoCo behavior for partial values.
 
-        Note: parse_vec replicates single values (size="0.001" → [0.001, 0.001, 0.001])
-        which differs from native MuJoCo (size="0.001" → [0.001, 0.005, 0.005]).
-        This is a known limitation, but at least the default matches MuJoCo.
+        MuJoCo fills unspecified components with its default (0.005), NOT by
+        replicating the first value. This ensures MJCF compatibility.
         """
         mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
 <mujoco model="test_site_size">
     <worldbody>
         <body name="body1">
-            <!-- Site with single size value - parse_vec replicates to all components -->
+            <!-- Site with single size value - should fill with MuJoCo defaults -->
             <site name="site_single" size="0.001"/>
-            <!-- Site with two size values -->
+            <!-- Site with two size values - should fill third with default -->
             <site name="site_two" size="0.002 0.003"/>
             <!-- Site with all three size values -->
             <site name="site_three" size="0.004 0.005 0.006"/>
@@ -3079,18 +3078,17 @@ class TestImportMjcf(unittest.TestCase):
             idx = builder.shape_key.index(name)
             return builder.shape_scale[idx]
 
-        # Single value: parse_vec replicates → [0.001, 0.001, 0.001]
-        # (differs from MuJoCo's [0.001, 0.005, 0.005] but is internally consistent)
+        # Single value: [0.001, 0.005, 0.005] (matches MuJoCo behavior)
         scale_single = get_site_scale("site_single")
         self.assertAlmostEqual(scale_single[0], 0.001, places=6)
-        self.assertAlmostEqual(scale_single[1], 0.001, places=6)
-        self.assertAlmostEqual(scale_single[2], 0.001, places=6)
+        self.assertAlmostEqual(scale_single[1], 0.005, places=6)
+        self.assertAlmostEqual(scale_single[2], 0.005, places=6)
 
-        # Two values: [0.002, 0.003, 0.0] - parse_vec returns 2-element vec
-        # This might need fixing if 2-element sizes are common
+        # Two values: [0.002, 0.003, 0.005]
         scale_two = get_site_scale("site_two")
         self.assertAlmostEqual(scale_two[0], 0.002, places=6)
         self.assertAlmostEqual(scale_two[1], 0.003, places=6)
+        self.assertAlmostEqual(scale_two[2], 0.005, places=6)
 
         # Three values: [0.004, 0.005, 0.006]
         scale_three = get_site_scale("site_three")
