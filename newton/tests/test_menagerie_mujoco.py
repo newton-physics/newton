@@ -1244,8 +1244,6 @@ class TestMenagerie_UniversalRobotsUr5e(TestMenagerieBase):
         "actuator_cranklength",
         "actuator_acc0",
         "actuator_lengthrange",
-        # Inertia-derived fields (body_inertia/body_iquat already in global skip)
-        "body_invweight0",  # Derived from inertia
         # Collision filtering: Newton uses different defaults
         "geom_conaffinity",
         "geom_contype",
