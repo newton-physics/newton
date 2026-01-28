@@ -950,6 +950,16 @@ def update_body_mass_ipos_kernel(
         body_gravcomp_out[world, mjc_body] = body_gravcomp[newton_body]
 
 
+@wp.func
+def det33(m: wp.mat33f) -> wp.float32:
+    """Compute the determinant of a 3x3 matrix."""
+    return (
+        m[0, 0] * (m[1, 1] * m[2, 2] - m[1, 2] * m[2, 1])
+        - m[0, 1] * (m[1, 0] * m[2, 2] - m[1, 2] * m[2, 0])
+        + m[0, 2] * (m[1, 0] * m[2, 1] - m[1, 1] * m[2, 0])
+    )
+
+
 @wp.kernel
 def update_body_inertia_kernel(
     mjc_body_to_newton: wp.array2d(dtype=wp.int32),
@@ -971,10 +981,10 @@ def update_body_inertia_kernel(
     # Get inertia tensor
     I = body_inertia[newton_body]
 
-    # Calculate eigenvalues and eigenvectors
+    # Calculate eigenvalues and eigenvectors (eigenvectors as columns)
     eigenvectors, eigenvalues = wp.eig3(I)
 
-    # transpose eigenvectors to allow reshuffling by indexing rows.
+    # Transpose eigenvectors to allow reshuffling by indexing rows
     vecs_transposed = wp.transpose(eigenvectors)
 
     # Bubble sort for 3 elements in descending order
@@ -990,8 +1000,27 @@ def update_body_inertia_kernel(
                 vecs_transposed[j] = vecs_transposed[j + 1]
                 vecs_transposed[j + 1] = temp_vec
 
+    # Transpose back to get eigenvectors as columns
+    V = wp.transpose(vecs_transposed)
+
+    # Ensure V is a proper rotation (det=+1), not a reflection (det=-1).
+    # wp.eig3 can return eigenvectors with det=-1, which can't be converted
+    # to a valid quaternion. Fix by negating one column if det < 0.
+    if det33(V) < 0.0:
+        V = wp.mat33(
+            V[0, 0],
+            V[0, 1],
+            -V[0, 2],
+            V[1, 0],
+            V[1, 1],
+            -V[1, 2],
+            V[2, 0],
+            V[2, 1],
+            -V[2, 2],
+        )
+
     # Convert eigenvectors to quaternion (xyzw format)
-    q = wp.quat_from_matrix(wp.transpose(vecs_transposed))
+    q = wp.quat_from_matrix(V)
     q = wp.normalize(q)
 
     # Convert from xyzw to wxyz format
