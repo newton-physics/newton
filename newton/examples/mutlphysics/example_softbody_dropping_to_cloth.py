@@ -16,67 +16,18 @@
 ###########################################################################
 # Example Softbody Dropping to Cloth
 #
-# This simulation demonstrates a volumetric soft body (pyramid tet mesh)
-# dropping onto a cloth sheet. The mesh data mirrors `newton.tests.test_softbody.py`
-# to keep the example self-contained.
+# This simulation demonstrates a volumetric soft body (tetrahedral grid)
+# dropping onto a cloth sheet. The soft body uses Neo-Hookean elasticity
+# and deforms on impact with the cloth.
 #
 # Command: python -m newton.examples.mutlphysics.example_softbody_dropping_to_cloth
 #
 ###########################################################################
 
-import numpy as np
 import warp as wp
 
 import newton
 import newton.examples
-
-# Pyramid tet mesh data (2x2x1 grid of particles forming 20 tets)
-PYRAMID_TET_INDICES = np.array(
-    [
-        [0, 1, 3, 9],
-        [1, 4, 3, 13],
-        [1, 3, 9, 13],
-        [3, 9, 13, 12],
-        [1, 9, 10, 13],
-        [1, 2, 4, 10],
-        [2, 5, 4, 14],
-        [2, 4, 10, 14],
-        [4, 10, 14, 13],
-        [2, 10, 11, 14],
-        [3, 4, 6, 12],
-        [4, 7, 6, 16],
-        [4, 6, 12, 16],
-        [6, 12, 16, 15],
-        [4, 12, 13, 16],
-        [4, 5, 7, 13],
-        [5, 8, 7, 17],
-        [5, 7, 13, 17],
-        [7, 13, 17, 16],
-        [5, 13, 14, 17],
-    ],
-    dtype=np.int32,
-)
-
-PYRAMID_PARTICLES = [
-    (0.0, 0.0, 0.0),  # 0
-    (1.0, 0.0, 0.0),  # 1
-    (2.0, 0.0, 0.0),  # 2
-    (0.0, 1.0, 0.0),  # 3
-    (1.0, 1.0, 0.0),  # 4
-    (2.0, 1.0, 0.0),  # 5
-    (0.0, 2.0, 0.0),  # 6
-    (1.0, 2.0, 0.0),  # 7
-    (2.0, 2.0, 0.0),  # 8
-    (0.0, 0.0, 1.0),  # 9
-    (1.0, 0.0, 1.0),  # 10
-    (2.0, 0.0, 1.0),  # 11
-    (0.0, 1.0, 1.0),  # 12
-    (1.0, 1.0, 1.0),  # 13
-    (2.0, 1.0, 1.0),  # 14
-    (0.0, 2.0, 1.0),  # 15
-    (1.0, 2.0, 1.0),  # 16
-    (2.0, 2.0, 1.0),  # 17
-]
 
 
 class Example:
@@ -96,25 +47,28 @@ class Example:
         builder = newton.ModelBuilder()
         builder.add_ground_plane()
 
-        # Add soft body (pyramid tet mesh) at elevated position
-        builder.add_soft_mesh(
-            pos=(0.0, 0.0, 2.0),
+        # Add soft body (tetrahedral grid) at elevated position
+        builder.add_soft_grid(
+            pos=wp.vec3(0.0, 0.0, 2.0),
             rot=wp.quat_identity(),
-            scale=0.2,
-            vel=(0.0, 0.0, 0.0),
-            vertices=PYRAMID_PARTICLES,
-            indices=PYRAMID_TET_INDICES.flatten().tolist(),
+            vel=wp.vec3(0.0, 0.0, 0.0),
+            dim_x=6,
+            dim_y=6,
+            dim_z=3,
+            cell_x=0.1,
+            cell_y=0.1,
+            cell_z=0.1,
             density=1.0e3,
             k_mu=1.0e5,
             k_lambda=1.0e5,
-            k_damp=1e-5,
+            k_damp=1e-3,
         )
 
         # Add cloth grid below the soft body
         builder.add_cloth_grid(
-            pos=(-1.0, -1.0, 1.0),
+            pos=wp.vec3(-1.0, -1.0, 1.0),
             rot=wp.quat_identity(),
-            vel=(0.0, 0.0, 0.0),
+            vel=wp.vec3(0.0, 0.0, 0.0),
             fix_left=True,
             fix_right=True,
             dim_x=40,
