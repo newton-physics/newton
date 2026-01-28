@@ -2415,6 +2415,19 @@ class NumpyDirectRodState(DefKitDirectRodState):
         lambda_sum_flat = np.ascontiguousarray(self.lambda_sum.reshape(-1))
         lambda_sum_wp = wp.array(lambda_sum_flat, dtype=wp.float32, device=device)
 
+        # Create inv_masses and inv_inertia arrays for JMJT assembly
+        inv_masses_wp = wp.array(self.inv_masses, dtype=wp.float32, device=device)
+        # Compute inv_inertia: zero for locked particles (quat_inv_masses=0), unit inertia otherwise
+        inv_inertia_flat = np.zeros(self.num_points * 9, dtype=np.float32)
+        for i in range(self.num_points):
+            if self.quat_inv_masses[i] > 0.0:
+                # Unit inertia (identity matrix) for unlocked particles
+                inv_inertia_flat[i * 9 + 0] = 1.0  # [0,0]
+                inv_inertia_flat[i * 9 + 4] = 1.0  # [1,1]
+                inv_inertia_flat[i * 9 + 8] = 1.0  # [2,2]
+            # else: zeros (locked particle - infinite inertia)
+        inv_inertia_wp = wp.array(inv_inertia_flat, dtype=wp.float32, device=device)
+
         constraint_values = constraint_values_wp.numpy().reshape(n_edges, 6)
         self.constraint_values[:, :] = constraint_values
         if constraint_values.size > 0:
@@ -2430,7 +2443,7 @@ class NumpyDirectRodState(DefKitDirectRodState):
             wp.launch(
                 _warp_assemble_jmjt_banded,
                 dim=n_edges,
-                inputs=[jacobian_pos_wp, jacobian_rot_wp, compliance_wp, int(n_dofs), ab_wp],
+                inputs=[jacobian_pos_wp, jacobian_rot_wp, compliance_wp, inv_masses_wp, inv_inertia_wp, int(n_dofs), ab_wp],
                 device=device,
             )
             rhs_wp = wp.zeros(n_dofs, dtype=wp.float32, device=device)
@@ -2473,7 +2486,7 @@ class NumpyDirectRodState(DefKitDirectRodState):
             wp.launch(
                 _warp_assemble_jmjt_dense,
                 dim=n_edges,
-                inputs=[jacobian_pos_wp, jacobian_rot_wp, compliance_wp, int(n_dofs), A_wp],
+                inputs=[jacobian_pos_wp, jacobian_rot_wp, compliance_wp, inv_masses_wp, inv_inertia_wp, int(n_dofs), A_wp],
                 device=device,
             )
             rhs_wp = wp.zeros(TILE, dtype=wp.float32, device=device)
@@ -2510,6 +2523,8 @@ class NumpyDirectRodState(DefKitDirectRodState):
                     jacobian_pos_wp,
                     jacobian_rot_wp,
                     compliance_wp,
+                    inv_masses_wp,
+                    inv_inertia_wp,
                     int(n_edges),
                     diag_blocks_wp,
                     offdiag_blocks_wp,
