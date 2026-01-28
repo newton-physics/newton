@@ -1639,7 +1639,6 @@ def parse_mjcf(
 
             # Determine transmission type and target
             trntype = 0  # Default: joint
-            target_idx = -1
             target_name_for_log = ""
             joint_idx = -1
             qd_start = -1
