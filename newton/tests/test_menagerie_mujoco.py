@@ -1129,8 +1129,6 @@ class TestMenagerie_UniversalRobotsUr5e(TestMenagerieBase):
         # Mocap bodies: Newton handles fixed base differently
         "mocap_",
         "nmocap",
-        # Collision pair handling: Newton does this differently
-        "nxn_",
         # Options: solver/iterations differ between Newton defaults and MJCF
         "opt",
         # Sites: Newton parses with different defaults
