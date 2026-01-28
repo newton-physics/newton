@@ -1143,11 +1143,17 @@ class Example:
 
         b_down = self.viewer.is_key_down(key.B)
         if b_down and not self._banded_key_was_down:
-            if self.supports_non_banded:
-                self.use_banded = not self.use_banded
-                self.ref_rod.set_solver_mode(self.use_banded)
-                self.gpu_rod.set_solver_mode(self.use_banded)
-                self.use_banded = self.ref_rod.use_banded
+            # Cycle through GPU solver backends
+            gpu_backends = [DIRECT_SOLVE_WARP_BLOCK_THOMAS, DIRECT_SOLVE_WARP_BANDED_CHOLESKY]
+            try:
+                current_idx = gpu_backends.index(self.gpu_rod.direct_solve_backend)
+                next_idx = (current_idx + 1) % len(gpu_backends)
+            except ValueError:
+                next_idx = 0
+            self.gpu_rod.set_direct_solve_backend(gpu_backends[next_idx])
+            # Clear CUDA graph when backend changes
+            self.gpu_rod._graph = None
+            self.gpu_rod._graph_params = None
         self._banded_key_was_down = b_down
 
         l_down = self.viewer.is_key_down(key.L)
@@ -1432,11 +1438,41 @@ class Example:
         )
 
         ui.separator()
+        ui.text("GPU Solver Backend")
+        gpu_backend_labels = [
+            "Block Thomas",
+            "Banded Cholesky",
+        ]
+        gpu_backend_values = [
+            DIRECT_SOLVE_WARP_BLOCK_THOMAS,
+            DIRECT_SOLVE_WARP_BANDED_CHOLESKY,
+        ]
+        current_gpu_backend = self.gpu_rod.direct_solve_backend
+        try:
+            current_gpu_idx = gpu_backend_values.index(current_gpu_backend)
+        except ValueError:
+            current_gpu_idx = 0
+        changed_gpu_backend, new_gpu_idx = ui.combo("GPU Solver", current_gpu_idx, gpu_backend_labels)
+        if changed_gpu_backend:
+            self.gpu_rod.set_direct_solve_backend(gpu_backend_values[new_gpu_idx])
+            # Clear CUDA graph when backend changes
+            self.gpu_rod._graph = None
+            self.gpu_rod._graph_params = None
+
+        # Show solver info based on current backend and n_dofs
+        n_dofs = self.gpu_rod.n_dofs
+        if self.gpu_rod.direct_solve_backend == DIRECT_SOLVE_WARP_BANDED_CHOLESKY:
+            ui.text("  Using Warp banded Cholesky (spbsv_u11_1rhs-style)")
+        elif n_dofs <= base.TILE:
+            ui.text(f"  Using Warp dense tiled Cholesky (n_dofs={n_dofs} <= TILE={base.TILE})")
+        else:
+            ui.text(f"  Using Warp block Thomas (n_dofs={n_dofs} > TILE={base.TILE})")
+
+        ui.separator()
         if self.supports_non_banded:
-            changed_banded, self.use_banded = ui.checkbox("Use Banded Solver", self.use_banded)
+            changed_banded, self.use_banded = ui.checkbox("Use Banded Solver (Ref)", self.use_banded)
             if changed_banded:
                 self.ref_rod.set_solver_mode(self.use_banded)
-                self.gpu_rod.set_solver_mode(self.use_banded)
                 self.use_banded = self.ref_rod.use_banded
         else:
             ui.text("Non-banded solver not available in this DLL build.")
@@ -1476,7 +1512,7 @@ class Example:
         ui.separator()
         ui.text("Controls:")
         ui.text("  G: Toggle gravity")
-        ui.text("  B: Toggle banded solver")
+        ui.text("  B: Cycle GPU solver (Thomas/Banded)")
         ui.text("  L: Toggle root lock (position + rotation)")
         ui.text("  R: Reset")
 

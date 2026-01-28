@@ -37,7 +37,12 @@ from newton.examples.cosserat_codex import warp_cosserat_codex as base
 from . import kernels, utils
 from .cli import build_rod_configs
 from .model import RodBatch
-from .solver_xpbd import CosseratXPBDSolver
+from .solver_xpbd import (
+    CosseratXPBDSolver,
+    DIRECT_SOLVE_WARP_BLOCK_THOMAS,
+    DIRECT_SOLVE_WARP_BANDED_CHOLESKY,
+    TILE,
+)
 
 
 def _resolve_models_dir() -> str:
@@ -738,10 +743,20 @@ class Example:
 
         b_down = self.viewer.is_key_down(key.B)
         if b_down and not self._banded_key_was_down:
-            if self.supports_non_banded:
-                self.use_banded = not self.use_banded
-                self.ref_rod.set_solver_mode(self.use_banded)
-                self.use_banded = self.gpu_state.set_solver_mode(self.use_banded)
+            # Cycle through GPU solver backends
+            gpu_backends = [DIRECT_SOLVE_WARP_BLOCK_THOMAS, DIRECT_SOLVE_WARP_BANDED_CHOLESKY]
+            if self.gpu_state.rods:
+                current_backend = self.gpu_state.rods[0].direct_solve_backend
+                try:
+                    current_idx = gpu_backends.index(current_backend)
+                    next_idx = (current_idx + 1) % len(gpu_backends)
+                except ValueError:
+                    next_idx = 0
+                for rod in self.gpu_state.rods:
+                    rod.set_direct_solve_backend(gpu_backends[next_idx])
+                    # Clear CUDA graph when backend changes
+                    rod._graph = None
+                    rod._graph_params = None
         self._banded_key_was_down = b_down
 
         l_down = self.viewer.is_key_down(key.L)
@@ -763,11 +778,13 @@ class Example:
         self._concentric_key_was_down = c_down
 
         # +/- keys to adjust tip bend angle (continuous while held)
-        if self.viewer.is_key_down(key.PLUS) or self.viewer.is_key_down(key.EQUAL):
+        # Supports both regular +/- and numpad +/-
+        if (self.viewer.is_key_down(key.PLUS) or self.viewer.is_key_down(key.EQUAL) or
+                self.viewer.is_key_down(key.NUM_ADD)):
             self.tip_bend_angle += self.tip_bend_speed * self.frame_dt
             self._apply_tip_bend()
 
-        if self.viewer.is_key_down(key.MINUS):
+        if self.viewer.is_key_down(key.MINUS) or self.viewer.is_key_down(key.NUM_SUBTRACT):
             self.tip_bend_angle -= self.tip_bend_speed * self.frame_dt
             self._apply_tip_bend()
 
@@ -1108,11 +1125,45 @@ class Example:
         _changed, self.use_two_sided = ui.checkbox("Use Two-Sided Collisions", self.use_two_sided)
         ui.separator()
         ui.text("Rod Solver")
+        
+        # GPU solver backend dropdown
+        gpu_backend_labels = [
+            "Block Thomas",
+            "Banded Cholesky",
+        ]
+        gpu_backend_values = [
+            DIRECT_SOLVE_WARP_BLOCK_THOMAS,
+            DIRECT_SOLVE_WARP_BANDED_CHOLESKY,
+        ]
+        if self.gpu_state.rods:
+            current_gpu_backend = self.gpu_state.rods[0].direct_solve_backend
+            try:
+                current_gpu_idx = gpu_backend_values.index(current_gpu_backend)
+            except ValueError:
+                current_gpu_idx = 0
+            changed_gpu_backend, new_gpu_idx = ui.combo("GPU Solver", current_gpu_idx, gpu_backend_labels)
+            if changed_gpu_backend:
+                for rod in self.gpu_state.rods:
+                    rod.set_direct_solve_backend(gpu_backend_values[new_gpu_idx])
+                    # Clear CUDA graph when backend changes
+                    rod._graph = None
+                    rod._graph_params = None
+
+            # Show solver info based on current backend and n_dofs
+            if self.gpu_state.rods:
+                n_dofs = self.gpu_state.rods[0].n_dofs
+                if current_gpu_backend == DIRECT_SOLVE_WARP_BANDED_CHOLESKY:
+                    ui.text("  Using Warp banded Cholesky (spbsv_u11_1rhs-style)")
+                elif n_dofs <= TILE:
+                    ui.text(f"  Using Warp dense tiled Cholesky (n_dofs={n_dofs} <= TILE={TILE})")
+                else:
+                    ui.text(f"  Using Warp block Thomas (n_dofs={n_dofs} > TILE={TILE})")
+
         if self.supports_non_banded:
-            changed_banded, self.use_banded = ui.checkbox("Use Banded Solver", self.use_banded)
+            changed_banded, self.use_banded = ui.checkbox("Use Banded Solver (Ref)", self.use_banded)
             if changed_banded:
                 self.ref_rod.set_solver_mode(self.use_banded)
-                self.use_banded = self.gpu_state.set_solver_mode(self.use_banded)
+                self.use_banded = self.ref_rod.use_banded
         else:
             ui.text("Non-banded solver not available in this DLL build.")
 
@@ -1152,12 +1203,12 @@ class Example:
         ui.separator()
         ui.text("Controls:")
         ui.text("  G: Toggle gravity")
-        ui.text("  B: Toggle banded solver")
+        ui.text("  B: Cycle GPU solver (Thomas/Banded)")
         ui.text("  L: Toggle root lock (position + rotation)")
         ui.text("  T: Toggle track sliding constraint")
         ui.text("  C: Toggle concentric constraint")
         ui.text("  P: Toggle bendable tip")
-        ui.text("  +/-: Adjust tip bend angle")
+        ui.text("  +/- or Numpad +/-: Adjust tip bend angle")
         ui.text("  PgUp/PgDn: Rod 0 insertion +/-")
         ui.text("  Home/End: Rod 1 insertion +/-")
         ui.text("  R: Reset")
