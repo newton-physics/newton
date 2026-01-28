@@ -27,8 +27,7 @@ from __future__ import annotations
 import numpy as np
 import warp as wp
 
-from newton._src.math import build_orthonormal_basis
-
+from newton._src.math import orthonormal_basis
 from newton._src.solvers.vbd.rigid_vbd_kernels import evaluate_body_particle_contact
 
 from ...geometry import ParticleFlags
@@ -750,7 +749,7 @@ def evaluate_edge_edge_contact(
         c2_prev = pos_anchor[e2_v1] + (pos_anchor[e2_v2] - pos_anchor[e2_v1]) * t
 
         dx = (c1 - c1_prev) - (c2 - c2_prev)
-        axis_1, axis_2 = build_orthonormal_basis(collision_normal)
+        axis_1, axis_2 = orthonormal_basis(collision_normal)
 
         T = mat32(
             axis_1[0],
@@ -875,7 +874,7 @@ def evaluate_edge_edge_contact_2_vertices(
         c2_prev = pos_anchor[e2_v1] + (pos_anchor[e2_v2] - pos_anchor[e2_v1]) * t
 
         dx = (c1 - c1_prev) - (c2 - c2_prev)
-        axis_1, axis_2 = build_orthonormal_basis(collision_normal)
+        axis_1, axis_2 = orthonormal_basis(collision_normal)
 
         T = mat32(
             axis_1[0],
@@ -993,7 +992,7 @@ def evaluate_vertex_triangle_collision_force_hessian(
 
         dx = dx_v - (closest_p - closest_p_prev)
 
-        e0, e1 = build_orthonormal_basis(collision_normal)
+        e0, e1 = orthonormal_basis(collision_normal)
 
         T = mat32(e0[0], e1[0], e0[1], e1[1], e0[2], e1[2])
 
@@ -1081,7 +1080,7 @@ def evaluate_vertex_triangle_collision_force_hessian_4_vertices(
 
         dx = dx_v - (closest_p - closest_p_prev)
 
-        e0, e1 = build_orthonormal_basis(collision_normal)
+        e0, e1 = orthonormal_basis(collision_normal)
 
         T = mat32(e0[0], e1[0], e0[1], e1[1], e0[2], e1[2])
 

@@ -15,8 +15,6 @@
 
 import warp as wp
 
-from newton._src.math import build_orthonormal_basis
-
 from newton._src.core.types import MAXVAL
 
 from . import collision_primitive as primitive

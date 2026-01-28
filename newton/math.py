@@ -16,9 +16,11 @@
 
 from ._src.math import (
     boltzmann,
-    build_orthonormal_basis,
     leaky_max,
     leaky_min,
+    normalize_with_norm,
+    orthonormal_basis,
+    safe_div,
     smooth_max,
     smooth_min,
     vec_abs,
@@ -32,9 +34,11 @@ from ._src.math import (
 
 __all__ = [
     "boltzmann",
-    "build_orthonormal_basis",
     "leaky_max",
     "leaky_min",
+    "normalize_with_norm",
+    "orthonormal_basis",
+    "safe_div",
     "smooth_max",
     "smooth_min",
     "vec_abs",
