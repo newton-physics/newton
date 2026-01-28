@@ -163,7 +163,6 @@ class RodBatch:
 
     def create_state(
         self,
-        lib,
         device=None,
         use_banded: bool = False,
         use_cuda_graph: bool = False,
@@ -171,7 +170,6 @@ class RodBatch:
         """Create a RodState containing all rods in the batch.
         
         Args:
-            lib: DefKitDirectLibrary instance for native functions.
             device: Warp device for GPU arrays.
             use_banded: Whether to use banded solver.
             use_cuda_graph: Whether to use CUDA graph capture.
@@ -184,7 +182,6 @@ class RodBatch:
         rods = []
         for config in self.configs:
             rod = WarpResidentRodState(
-                lib=lib,
                 num_points=config.num_points,
                 segment_length=config.segment_length,
                 mass=config.particle_mass,
