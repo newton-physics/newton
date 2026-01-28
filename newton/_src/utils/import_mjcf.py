@@ -634,7 +634,19 @@ def parse_mjcf(
 
             # Parse site type (defaults to sphere if not specified)
             site_type = site_attrib.get("type", "sphere")
-            site_size = parse_vec(site_attrib, "size", [0.01, 0.01, 0.01]) * scale
+
+            # Parse site size matching MuJoCo behavior:
+            # - Default is [0.005, 0.005, 0.005]
+            # - Partial values fill remaining with defaults (NOT replicating first value)
+            # - size="0.001" → [0.001, 0.005, 0.005] (matches MuJoCo)
+            # Note: This differs from parse_vec which would replicate single values
+            site_size = np.array([0.005, 0.005, 0.005], dtype=np.float32)
+            if "size" in site_attrib:
+                size_values = np.fromstring(site_attrib["size"], sep=" ", dtype=np.float32)
+                for i, val in enumerate(size_values):
+                    if i < 3:
+                        site_size[i] = val
+            site_size = wp.vec3(site_size * scale)
 
             # Map MuJoCo site types to Newton GeoType
             type_map = {
@@ -649,7 +661,7 @@ def parse_mjcf(
             # Sites are typically hidden by default
             visible = False
 
-            # Expand to 3-element vector
+            # Expand to 3-element vector if needed
             if len(site_size) == 2:
                 # Two values (e.g., capsule/cylinder: radius, half-height)
                 radius = site_size[0]

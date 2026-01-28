@@ -3048,6 +3048,60 @@ class TestImportMjcf(unittest.TestCase):
         self.assertAlmostEqual(site_xform[1], 2.5, places=5)
         self.assertAlmostEqual(site_xform[2], 3.5, places=5)
 
+    def test_site_size_defaults(self):
+        """Test that site size matches MuJoCo behavior for partial values.
+
+        MuJoCo fills unspecified components with its default (0.005), NOT by
+        replicating the first value. This ensures MJCF compatibility.
+        """
+        mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test_site_size">
+    <worldbody>
+        <body name="body1">
+            <!-- Site with single size value - should fill with MuJoCo defaults -->
+            <site name="site_single" size="0.001"/>
+            <!-- Site with two size values - should fill third with default -->
+            <site name="site_two" size="0.002 0.003"/>
+            <!-- Site with all three size values -->
+            <site name="site_three" size="0.004 0.005 0.006"/>
+            <!-- Site with no size - should use MuJoCo default [0.005, 0.005, 0.005] -->
+            <site name="site_default"/>
+        </body>
+    </worldbody>
+</mujoco>"""
+
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf_content, parse_sites=True)
+
+        # Helper to get site scale by name
+        def get_site_scale(name):
+            idx = builder.shape_key.index(name)
+            return builder.shape_scale[idx]
+
+        # Single value: [0.001, 0.005, 0.005] (matches MuJoCo behavior)
+        scale_single = get_site_scale("site_single")
+        self.assertAlmostEqual(scale_single[0], 0.001, places=6)
+        self.assertAlmostEqual(scale_single[1], 0.005, places=6)
+        self.assertAlmostEqual(scale_single[2], 0.005, places=6)
+
+        # Two values: [0.002, 0.003, 0.005]
+        scale_two = get_site_scale("site_two")
+        self.assertAlmostEqual(scale_two[0], 0.002, places=6)
+        self.assertAlmostEqual(scale_two[1], 0.003, places=6)
+        self.assertAlmostEqual(scale_two[2], 0.005, places=6)
+
+        # Three values: [0.004, 0.005, 0.006]
+        scale_three = get_site_scale("site_three")
+        self.assertAlmostEqual(scale_three[0], 0.004, places=6)
+        self.assertAlmostEqual(scale_three[1], 0.005, places=6)
+        self.assertAlmostEqual(scale_three[2], 0.006, places=6)
+
+        # No size: should use MuJoCo default [0.005, 0.005, 0.005]
+        scale_default = get_site_scale("site_default")
+        self.assertAlmostEqual(scale_default[0], 0.005, places=6)
+        self.assertAlmostEqual(scale_default[1], 0.005, places=6)
+        self.assertAlmostEqual(scale_default[2], 0.005, places=6)
+
     def test_frame_childclass_propagation(self):
         """Test that frames correctly propagate childclass and merged defaults to geoms, sites, and nested frames."""
         mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
