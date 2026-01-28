@@ -1429,6 +1429,47 @@ def parse_mjcf(
             if verbose:
                 print(f"Parsed contact pair: {geom1_name} ({geom1_idx}) <-> {geom2_name} ({geom2_idx})")
 
+    # Parse <exclude> elements - body pairs to exclude from collision detection
+    if contact is not None:
+        for exclude in contact.findall("exclude"):
+            body1_name = exclude.attrib.get("body1")
+            body2_name = exclude.attrib.get("body2")
+
+            if not body1_name or not body2_name:
+                if verbose:
+                    print("Warning: <exclude> element missing body1 or body2 attribute, skipping")
+                continue
+
+            # Look up body indices by body name
+            try:
+                body1_idx = builder.body_key.index(body1_name)
+            except ValueError:
+                if verbose:
+                    print(f"Warning: <exclude> references unknown body '{body1_name}', skipping")
+                continue
+
+            try:
+                body2_idx = builder.body_key.index(body2_name)
+            except ValueError:
+                if verbose:
+                    print(f"Warning: <exclude> references unknown body '{body2_name}', skipping")
+                continue
+
+            # Find all shapes belonging to body1 and body2
+            body1_shapes = [i for i, body in enumerate(builder.shape_body) if body == body1_idx]
+            body2_shapes = [i for i, body in enumerate(builder.shape_body) if body == body2_idx]
+
+            # Add all shape pairs from these bodies to collision filter
+            for shape1_idx in body1_shapes:
+                for shape2_idx in body2_shapes:
+                    builder.shape_collision_filter_pairs.append((shape1_idx, shape2_idx))
+
+            if verbose:
+                print(
+                    f"Parsed collision exclude: {body1_name} ({len(body1_shapes)} shapes) <-> "
+                    f"{body2_name} ({len(body2_shapes)} shapes), added {len(body1_shapes) * len(body2_shapes)} filter pairs"
+                )
+
     # -----------------
     # Parse all fixed tendons in a single tendon section.
 
