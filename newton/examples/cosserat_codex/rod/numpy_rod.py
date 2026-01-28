@@ -103,6 +103,27 @@ class NumpyDirectRodState(DefKitDirectRodState):
         self.last_delta_lambda_max = 0.0
         self.last_correction_max = 0.0
 
+        # Initialize cross-section properties for physical calculations
+        self._update_cross_section_properties()
+
+    def _update_cross_section_properties(self) -> None:
+        """Compute cross-section geometric properties from rod radius."""
+        radius = np.float32(self.rod_radius)
+        self.cross_section_area = np.float32(np.pi) * radius * radius
+        self.second_moment_area = np.float32(np.pi) * radius**4 / np.float32(4.0)
+        self.polar_moment = np.float32(np.pi) * radius**4 / np.float32(2.0)
+
+    def _requires_native_constraint_pipeline(self) -> bool:
+        """Check if native DLL is required for constraint projection."""
+        if not self.use_banded:
+            return not self.numpy_enabled.get("project_direct", False)
+        return not (
+            self.numpy_enabled.get("update_constraints_banded", False)
+            and self.numpy_enabled.get("compute_jacobians_banded", False)
+            and self.numpy_enabled.get("assemble_jmjt_banded", False)
+            and self.numpy_enabled.get("project_jmjt_banded", False)
+        )
+
     def set_numpy_override(self, step_name: str, enabled: bool) -> bool:
         """Enable or disable NumPy implementation for a specific step.
         
@@ -175,7 +196,7 @@ class NumpyDirectRodState(DefKitDirectRodState):
         result[:, 3] = w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2
         return result
 
-    def _numpy_quat_normalize(self, q: np.ndarray, mask: np.ndarray = None) -> np.ndarray:
+    def _numpy_quat_normalize(self, q: np.ndarray, mask: np.ndarray | None = None) -> np.ndarray:
         """Normalize quaternion array."""
         norm = np.linalg.norm(q, axis=1, keepdims=True)
         norm = np.where(norm < 1e-8, 1.0, norm)
@@ -184,11 +205,114 @@ class NumpyDirectRodState(DefKitDirectRodState):
             result[~mask] = q[~mask]
         return result
 
+    @staticmethod
+    def _numpy_quat_mul_single(q1: np.ndarray, q2: np.ndarray) -> np.ndarray:
+        """Multiply two single quaternions."""
+        x1, y1, z1, w1 = q1
+        x2, y2, z2, w2 = q2
+        return np.array(
+            [
+                w1 * x2 + x1 * w2 + y1 * z2 - z1 * y2,
+                w1 * y2 - x1 * z2 + y1 * w2 + z1 * x2,
+                w1 * z2 + x1 * y2 - y1 * x2 + z1 * w2,
+                w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2,
+            ],
+            dtype=np.float32,
+        )
+
+    @staticmethod
+    def _numpy_quat_conjugate(q: np.ndarray) -> np.ndarray:
+        """Return conjugate of a single quaternion."""
+        return np.array([-q[0], -q[1], -q[2], q[3]], dtype=np.float32)
+
+    @staticmethod
+    def _numpy_quat_rotate_vector(q: np.ndarray, v: np.ndarray) -> np.ndarray:
+        """Rotate a vector by a quaternion."""
+        x, y, z, w = q
+        vx, vy, vz = v
+
+        tx = np.float32(2.0) * (y * vz - z * vy)
+        ty = np.float32(2.0) * (z * vx - x * vz)
+        tz = np.float32(2.0) * (x * vy - y * vx)
+
+        return np.array(
+            [
+                vx + w * tx + y * tz - z * ty,
+                vy + w * ty + z * tx - x * tz,
+                vz + w * tz + x * ty - y * tx,
+            ],
+            dtype=np.float32,
+        )
+
+    @staticmethod
+    def _numpy_skew_symmetric(v: np.ndarray) -> np.ndarray:
+        """Return 3x3 skew-symmetric matrix from vector."""
+        return np.array(
+            [
+                [0.0, -v[2], v[1]],
+                [v[2], 0.0, -v[0]],
+                [-v[1], v[0], 0.0],
+            ],
+            dtype=np.float32,
+        )
+
+    @staticmethod
+    def _numpy_compute_bending_torsion_jacobians(
+        q0: np.ndarray, q1: np.ndarray
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Compute Jacobians for bending/torsion constraints."""
+        x0, y0, z0, w0 = q0
+        x1, y1, z1, w1 = q1
+        jomega0 = np.array(
+            [
+                [-w1, -z1, y1, x1],
+                [z1, -w1, -x1, y1],
+                [-y1, x1, -w1, z1],
+            ],
+            dtype=np.float32,
+        )
+        jomega1 = np.array(
+            [
+                [w0, z0, -y0, -x0],
+                [-z0, w0, x0, -y0],
+                [y0, -x0, w0, -z0],
+            ],
+            dtype=np.float32,
+        )
+        return jomega0, jomega1
+
+    @staticmethod
+    def _numpy_compute_matrix_g(q: np.ndarray) -> np.ndarray:
+        """Compute G matrix for quaternion angular velocity mapping."""
+        x, y, z, w = q
+        return np.array(
+            [
+                [0.5 * w, 0.5 * z, -0.5 * y],
+                [-0.5 * z, 0.5 * w, 0.5 * x],
+                [0.5 * y, -0.5 * x, 0.5 * w],
+                [-0.5 * x, -0.5 * y, -0.5 * z],
+            ],
+            dtype=np.float32,
+        )
+
+    def _apply_quaternion_correction_g(
+        self, orientations: np.ndarray, idx: int, dtheta: np.ndarray
+    ) -> None:
+        """Apply quaternion correction using G matrix."""
+        if np.linalg.norm(dtheta) < 1.0e-10:
+            return
+        q = orientations[idx]
+        g = self._numpy_compute_matrix_g(q)
+        corr_q = (g @ dtheta).astype(np.float32)
+        q_new = q + corr_q
+        q_new /= np.linalg.norm(q_new)
+        orientations[idx] = q_new
+
     # NumPy implementations of simulation steps
     
     def _numpy_predict_positions(self, dt: float, linear_damping: float) -> None:
         """NumPy implementation of position prediction."""
-        dt = np.float32(dt)
+        dt_f32 = np.float32(dt)
         damp = np.float32(1.0 - linear_damping)
 
         inv_mass = self.inv_masses[:, None]
@@ -197,10 +321,10 @@ class NumpyDirectRodState(DefKitDirectRodState):
         forces = self.forces[:, 0:3]
         gravity = self.gravity[0, 0:3]
 
-        velocities[:] = velocities + (forces * inv_mass + gravity) * dt
+        velocities[:] = velocities + (forces * inv_mass + gravity) * dt_f32
         velocities[:] = velocities * damp
 
-        predicted = positions + velocities * dt
+        predicted = positions + velocities * dt_f32
 
         static_mask = self.inv_masses == 0.0
         velocities[static_mask] = 0.0
@@ -226,8 +350,8 @@ class NumpyDirectRodState(DefKitDirectRodState):
 
     def _numpy_predict_rotations(self, dt: float, angular_damping: float) -> None:
         """NumPy implementation of rotation prediction."""
-        dt = np.float32(dt)
-        half_dt = np.float32(0.5 * dt)
+        dt_f32 = np.float32(dt)
+        half_dt = np.float32(0.5 * dt_f32)
         damp = np.float32(1.0 - angular_damping)
 
         inv_mass = self.quat_inv_masses[:, None]
@@ -236,7 +360,7 @@ class NumpyDirectRodState(DefKitDirectRodState):
         orientations = self.orientations
 
         dynamic_mask = self.quat_inv_masses != 0.0
-        ang_vel[dynamic_mask] = (ang_vel[dynamic_mask] + torques[dynamic_mask] * inv_mass[dynamic_mask] * dt) * damp
+        ang_vel[dynamic_mask] = (ang_vel[dynamic_mask] + torques[dynamic_mask] * inv_mass[dynamic_mask] * dt_f32) * damp
         ang_vel[~dynamic_mask] = 0.0
 
         ang_vel_q = np.zeros_like(orientations)
@@ -270,24 +394,351 @@ class NumpyDirectRodState(DefKitDirectRodState):
 
     def _numpy_prepare_constraints(self, dt: float) -> None:
         """NumPy implementation of constraint preparation."""
+        self.lambdas.fill(0.0)
         self.lambda_sum.fill(0.0)
         self.current_rest_lengths[:] = self.rest_lengths
         self.current_rest_darboux[:] = self.rest_darboux[:, 0:3]
-        
-        # Compute compliance
-        dt2 = dt * dt
-        eps = 1.0e-10
-        
+
+        dt2 = np.float32(dt * dt)
+        eps = np.float32(1.0e-10)
+
+        E = np.float32(self.young_modulus)
+        G = np.float32(self.torsion_modulus)
+
+        L = self.current_rest_lengths.astype(np.float32)
+
+        k_bend1_eff = E * self.bend_stiffness[:, 0] * L
+        k_bend2_eff = E * self.bend_stiffness[:, 1] * L
+        k_twist_eff = G * self.bend_stiffness[:, 2] * L
+
+        stretch_compliance_val = np.float32(1.0e-10)
+
+        self.compliance[:, 0] = stretch_compliance_val
+        self.compliance[:, 1] = stretch_compliance_val
+        self.compliance[:, 2] = stretch_compliance_val
+        self.compliance[:, 3] = np.float32(1.0) / (k_bend1_eff * dt2 + eps)
+        self.compliance[:, 4] = np.float32(1.0) / (k_bend2_eff * dt2 + eps)
+        self.compliance[:, 5] = np.float32(1.0) / (k_twist_eff * dt2 + eps)
+
+    def _numpy_update_constraints_banded(self) -> None:
+        """NumPy implementation of constraint value update."""
+        positions = self.predicted_positions[:, 0:3]
+        orientations = self.predicted_orientations
+        rest_lengths = self.current_rest_lengths
+        rest_darboux = self.current_rest_darboux
+
+        max_constraint = 0.0
         for i in range(self.num_edges):
-            L = self.rest_lengths[i]
-            k_bend1 = self.young_modulus * self.bend_stiffness[i, 0] * L
-            k_bend2 = self.young_modulus * self.bend_stiffness[i, 1] * L
-            k_twist = self.torsion_modulus * self.bend_stiffness[i, 2] * L
-            
-            self.compliance[i, 0:3] = 1.0e-10  # Stretch compliance
-            self.compliance[i, 3] = 1.0 / (k_bend1 * dt2 + eps)
-            self.compliance[i, 4] = 1.0 / (k_bend2 * dt2 + eps)
-            self.compliance[i, 5] = 1.0 / (k_twist * dt2 + eps)
+            p0 = positions[i]
+            p1 = positions[i + 1]
+            q0 = orientations[i]
+            q1 = orientations[i + 1]
+
+            L = rest_lengths[i]
+            half_L = np.float32(0.5) * L
+
+            # Local offsets to midpoint (assuming rod aligns with local Z)
+            r0_local = np.array([0.0, 0.0, half_L], dtype=np.float32)
+            r1_local = np.array([0.0, 0.0, -half_L], dtype=np.float32)
+
+            r0_world = self._numpy_quat_rotate_vector(q0, r0_local)
+            r1_world = self._numpy_quat_rotate_vector(q1, r1_local)
+
+            c0 = p0 + r0_world
+            c1 = p1 + r1_world
+
+            # Stretch violation
+            stretch_error = c0 - c1
+            self.constraint_values[i, 0:3] = stretch_error
+
+            # Bending/torsion violation
+            q_rel = self._numpy_quat_mul_single(self._numpy_quat_conjugate(q0), q1)
+            omega = q_rel[:3]
+            darboux_error = omega - rest_darboux[i]
+            self.constraint_values[i, 3:6] = darboux_error
+            max_constraint = max(max_constraint, float(np.linalg.norm(self.constraint_values[i])))
+
+        self.last_constraint_max = max_constraint
+
+    def _numpy_compute_jacobians_direct(self) -> None:
+        """NumPy implementation of Jacobian computation."""
+        n_edges = self.num_edges
+        if n_edges == 0:
+            return
+
+        if not hasattr(self, "jacobian_pos") or self.jacobian_pos.shape[0] != n_edges:
+            self.jacobian_pos = np.zeros((n_edges, 6, 6), dtype=np.float32)
+            self.jacobian_rot = np.zeros((n_edges, 6, 6), dtype=np.float32)
+
+        orientations = self.predicted_orientations
+        rest_lengths = self.current_rest_lengths
+
+        for i in range(n_edges):
+            q0 = orientations[i]
+            q1 = orientations[i + 1]
+            L = rest_lengths[i]
+            half_L = np.float32(0.5) * L
+
+            r0_local = np.array([0.0, 0.0, half_L], dtype=np.float32)
+            r1_local = np.array([0.0, 0.0, -half_L], dtype=np.float32)
+
+            r0_world = self._numpy_quat_rotate_vector(q0, r0_local)
+            r1_world = self._numpy_quat_rotate_vector(q1, r1_local)
+
+            I3 = np.eye(3, dtype=np.float32)
+
+            self.jacobian_pos[i, 0:3, 0:3] = I3
+            self.jacobian_pos[i, 0:3, 3:6] = -I3
+
+            r0_skew = self._numpy_skew_symmetric(r0_world)
+            r1_skew = self._numpy_skew_symmetric(r1_world)
+
+            self.jacobian_rot[i, 0:3, 0:3] = -r0_skew
+            self.jacobian_rot[i, 0:3, 3:6] = r1_skew
+
+            jomega0, jomega1 = self._numpy_compute_bending_torsion_jacobians(q0, q1)
+            g0 = self._numpy_compute_matrix_g(q0)
+            g1 = self._numpy_compute_matrix_g(q1)
+            self.jacobian_rot[i, 3:6, 0:3] = (jomega0 @ g0).astype(np.float32)
+            self.jacobian_rot[i, 3:6, 3:6] = (jomega1 @ g1).astype(np.float32)
+
+            self.jacobian_pos[i, 3:6, 0:3] = 0.0
+            self.jacobian_pos[i, 3:6, 3:6] = 0.0
+
+    def _numpy_assemble_jmjt_banded(self) -> None:
+        """NumPy implementation of banded JMJT assembly."""
+        n_edges = self.num_edges
+        if n_edges == 0:
+            return
+        n_dofs = 6 * n_edges
+        bandwidth = 6
+        self.bandwidth = bandwidth
+
+        if not hasattr(self, "A_banded") or self.A_banded.shape[1] != n_dofs:
+            self.A_banded = np.zeros((2 * bandwidth + 1, n_dofs), dtype=np.float32)
+            self.rhs = np.zeros(n_dofs, dtype=np.float32)
+
+        self.A_banded.fill(0.0)
+
+        # Use unit mass/inertia for LHS assembly (matching C++ reference)
+        inv_masses = np.ones(self.num_points, dtype=np.float32)
+        inv_I = np.ones(self.num_points, dtype=np.float32)
+
+        for i in range(n_edges):
+            J_pos = self.jacobian_pos[i]
+            J_rot = self.jacobian_rot[i]
+            J_p0 = J_pos[:, 0:3]
+            J_p1 = J_pos[:, 3:6]
+            J_t0 = J_rot[:, 0:3]
+            J_t1 = J_rot[:, 3:6]
+
+            inv_m0 = inv_masses[i]
+            inv_m1 = inv_masses[i + 1]
+            inv_I0 = inv_I[i]
+            inv_I1 = inv_I[i + 1]
+
+            JMJT = (
+                inv_m0 * (J_p0 @ J_p0.T)
+                + inv_m1 * (J_p1 @ J_p1.T)
+                + inv_I0 * (J_t0 @ J_t0.T)
+                + inv_I1 * (J_t1 @ J_t1.T)
+            )
+            JMJT += np.diag(self.compliance[i])
+
+            block_start = 6 * i
+            for row in range(6):
+                for col in range(6):
+                    global_row = block_start + row
+                    global_col = block_start + col
+                    band_row = bandwidth + global_row - global_col
+                    if 0 <= band_row < 2 * bandwidth + 1:
+                        self.A_banded[band_row, global_col] += JMJT[row, col]
+
+            if i > 0:
+                J_pos_prev = self.jacobian_pos[i - 1]
+                J_rot_prev = self.jacobian_rot[i - 1]
+                J_p1_prev = J_pos_prev[:, 3:6]
+                J_t1_prev = J_rot_prev[:, 3:6]
+                coupling = inv_m0 * (J_p1_prev @ J_p0.T) + inv_I0 * (J_t1_prev @ J_t0.T)
+
+                prev_block = 6 * (i - 1)
+                for row in range(6):
+                    for col in range(6):
+                        global_row = prev_block + row
+                        global_col = block_start + col
+                        band_row = bandwidth + global_row - global_col
+                        if 0 <= band_row < 2 * bandwidth + 1:
+                            self.A_banded[band_row, global_col] += coupling[row, col]
+
+                        global_row = block_start + col
+                        global_col = prev_block + row
+                        band_row = bandwidth + global_row - global_col
+                        if 0 <= band_row < 2 * bandwidth + 1:
+                            self.A_banded[band_row, global_col] += coupling[row, col]
+
+    def _numpy_project_jmjt_banded(self) -> None:
+        """NumPy implementation of banded constraint projection."""
+        n_edges = self.num_edges
+        if n_edges == 0:
+            return
+
+        n_dofs = 6 * n_edges
+        self.rhs[:n_dofs] = (-self.constraint_values).reshape(n_dofs)
+
+        # Regularization for stability
+        regularization = np.float32(1.0e-6)
+        self.A_banded[self.bandwidth, :n_dofs] += regularization
+
+        try:
+            from scipy.linalg import solve_banded
+
+            delta_lambda = solve_banded(
+                (self.bandwidth, self.bandwidth),
+                self.A_banded,
+                self.rhs[:n_dofs],
+                overwrite_ab=False,
+                overwrite_b=False,
+            )
+        except Exception:
+            A_dense = np.zeros((n_dofs, n_dofs), dtype=np.float32)
+            for col in range(n_dofs):
+                for band_row in range(2 * self.bandwidth + 1):
+                    row = col + band_row - self.bandwidth
+                    if 0 <= row < n_dofs:
+                        A_dense[row, col] = self.A_banded[band_row, col]
+            delta_lambda = np.linalg.solve(A_dense, self.rhs[:n_dofs])
+
+        inv_masses = self.inv_masses
+
+        self.last_delta_lambda_max = float(np.max(np.abs(delta_lambda))) if delta_lambda.size > 0 else 0.0
+        corr_max = 0.0
+        for i in range(n_edges):
+            dl = delta_lambda[6 * i : 6 * i + 6]
+            J_pos = self.jacobian_pos[i]
+            J_rot = self.jacobian_rot[i]
+            J_p0 = J_pos[:, 0:3]
+            J_p1 = J_pos[:, 3:6]
+            J_t0 = J_rot[:, 0:3]
+            J_t1 = J_rot[:, 3:6]
+
+            inv_m0 = inv_masses[i]
+            inv_m1 = inv_masses[i + 1]
+
+            if inv_m0 > 0.0:
+                dp0 = inv_m0 * (J_p0.T @ dl)
+                self.predicted_positions[i, 0:3] += dp0
+                corr_max = max(corr_max, float(np.linalg.norm(dp0)))
+            if inv_m1 > 0.0:
+                dp1 = inv_m1 * (J_p1.T @ dl)
+                self.predicted_positions[i + 1, 0:3] += dp1
+                corr_max = max(corr_max, float(np.linalg.norm(dp1)))
+
+            if self.quat_inv_masses[i] > 0.0:
+                dtheta0 = 1.0 * (J_t0.T @ dl)
+                self._apply_quaternion_correction_g(self.predicted_orientations, i, dtheta0)
+                corr_max = max(corr_max, float(np.linalg.norm(dtheta0)))
+            if self.quat_inv_masses[i + 1] > 0.0:
+                dtheta1 = 1.0 * (J_t1.T @ dl)
+                self._apply_quaternion_correction_g(self.predicted_orientations, i + 1, dtheta1)
+                corr_max = max(corr_max, float(np.linalg.norm(dtheta1)))
+
+        self.last_correction_max = corr_max
+
+    def _numpy_project_direct(self) -> None:
+        """NumPy implementation of non-banded direct constraint projection."""
+        n_edges = self.num_edges
+        if n_edges == 0:
+            return
+
+        self._numpy_update_constraints_banded()
+        self._numpy_compute_jacobians_direct()
+
+        n_dofs = 6 * n_edges
+        A = np.zeros((n_dofs, n_dofs), dtype=np.float32)
+        rhs = (-self.constraint_values).reshape(n_dofs)
+        rhs -= (self.compliance * self.lambda_sum).reshape(n_dofs)
+
+        inv_masses = self.inv_masses
+
+        # Use unit mass/inertia for LHS (matching C++ reference)
+        inv_masses_lhs = np.ones_like(inv_masses)
+        inv_I_lhs = np.ones_like(self.quat_inv_masses)
+
+        for i in range(n_edges):
+            J_pos = self.jacobian_pos[i]
+            J_rot = self.jacobian_rot[i]
+            J_p0 = J_pos[:, 0:3]
+            J_p1 = J_pos[:, 3:6]
+            J_t0 = J_rot[:, 0:3]
+            J_t1 = J_rot[:, 3:6]
+
+            inv_m0 = inv_masses_lhs[i]
+            inv_m1 = inv_masses_lhs[i + 1]
+            inv_I0 = inv_I_lhs[i]
+            inv_I1 = inv_I_lhs[i + 1]
+
+            JMJT = (
+                inv_m0 * (J_p0 @ J_p0.T)
+                + inv_m1 * (J_p1 @ J_p1.T)
+                + inv_I0 * (J_t0 @ J_t0.T)
+                + inv_I1 * (J_t1 @ J_t1.T)
+            )
+            JMJT += np.diag(self.compliance[i])
+
+            block = slice(6 * i, 6 * i + 6)
+            A[block, block] += JMJT
+
+            if i > 0:
+                J_pos_prev = self.jacobian_pos[i - 1]
+                J_rot_prev = self.jacobian_rot[i - 1]
+                J_p1_prev = J_pos_prev[:, 3:6]
+                J_t1_prev = J_rot_prev[:, 3:6]
+
+                coupling = inv_m0 * (J_p1_prev @ J_p0.T) + inv_I0 * (J_t1_prev @ J_t0.T)
+                prev_block = slice(6 * (i - 1), 6 * (i - 1) + 6)
+                A[prev_block, block] += coupling
+                A[block, prev_block] += coupling.T
+
+        try:
+            delta_lambda = np.linalg.solve(A, rhs)
+        except np.linalg.LinAlgError:
+            delta_lambda = np.linalg.lstsq(A, rhs, rcond=None)[0]
+
+        self.last_delta_lambda_max = float(np.max(np.abs(delta_lambda))) if delta_lambda.size > 0 else 0.0
+        self.lambda_sum += delta_lambda.reshape(n_edges, 6)
+
+        corr_max = 0.0
+        for i in range(n_edges):
+            dl = delta_lambda[6 * i : 6 * i + 6]
+            J_pos = self.jacobian_pos[i]
+            J_rot = self.jacobian_rot[i]
+            J_p0 = J_pos[:, 0:3]
+            J_p1 = J_pos[:, 3:6]
+            J_t0 = J_rot[:, 0:3]
+            J_t1 = J_rot[:, 3:6]
+
+            inv_m0 = inv_masses[i]
+            inv_m1 = inv_masses[i + 1]
+
+            if inv_m0 > 0.0:
+                dp0 = inv_m0 * (J_p0.T @ dl)
+                self.predicted_positions[i, 0:3] += dp0
+                corr_max = max(corr_max, float(np.linalg.norm(dp0)))
+            if inv_m1 > 0.0:
+                dp1 = inv_m1 * (J_p1.T @ dl)
+                self.predicted_positions[i + 1, 0:3] += dp1
+                corr_max = max(corr_max, float(np.linalg.norm(dp1)))
+
+            if self.quat_inv_masses[i] > 0.0:
+                dtheta0 = 1.0 * (J_t0.T @ dl)
+                self._apply_quaternion_correction_g(self.predicted_orientations, i, dtheta0)
+                corr_max = max(corr_max, float(np.linalg.norm(dtheta0)))
+            if self.quat_inv_masses[i + 1] > 0.0:
+                dtheta1 = 1.0 * (J_t1.T @ dl)
+                self._apply_quaternion_correction_g(self.predicted_orientations, i + 1, dtheta1)
+                corr_max = max(corr_max, float(np.linalg.norm(dtheta1)))
+
+        self.last_correction_max = corr_max
 
     # Override parent methods to use NumPy/Warp when enabled
     
@@ -332,7 +783,51 @@ class NumpyDirectRodState(DefKitDirectRodState):
         """Prepare constraints using selected implementation."""
         if self.numpy_enabled["prepare_constraints"]:
             self._numpy_prepare_constraints(dt)
-        super().prepare_constraints(dt)
+            if self._requires_native_constraint_pipeline():
+                super().prepare_constraints(dt)
+        else:
+            super().prepare_constraints(dt)
+
+    def update_constraints_banded(self) -> None:
+        """Update constraints using selected implementation."""
+        if self.numpy_enabled["update_constraints_banded"]:
+            self._numpy_update_constraints_banded()
+            if self._requires_native_constraint_pipeline():
+                super().update_constraints_banded()
+        else:
+            super().update_constraints_banded()
+
+    def compute_jacobians_banded(self) -> None:
+        """Compute Jacobians using selected implementation."""
+        if self.numpy_enabled["compute_jacobians_banded"]:
+            self._numpy_compute_jacobians_direct()
+            if self._requires_native_constraint_pipeline():
+                super().compute_jacobians_banded()
+        else:
+            super().compute_jacobians_banded()
+
+    def assemble_jmjt_banded(self) -> None:
+        """Assemble JMJT using selected implementation."""
+        if self.numpy_enabled["assemble_jmjt_banded"]:
+            self._numpy_assemble_jmjt_banded()
+            if self._requires_native_constraint_pipeline():
+                super().assemble_jmjt_banded()
+        else:
+            super().assemble_jmjt_banded()
+
+    def project_jmjt_banded(self) -> None:
+        """Project constraints using banded solver."""
+        if self.numpy_enabled["project_jmjt_banded"]:
+            self._numpy_project_jmjt_banded()
+        else:
+            super().project_jmjt_banded()
+
+    def project_direct(self) -> None:
+        """Project constraints using direct solver."""
+        if self.numpy_enabled["project_direct"]:
+            self._numpy_project_direct()
+        else:
+            super().project_direct()
 
 
 __all__ = ["NumpyDirectRodState"]
