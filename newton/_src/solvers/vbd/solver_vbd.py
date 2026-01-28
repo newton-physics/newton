@@ -40,7 +40,6 @@ from .particle_vbd_kernels import (
     # Topological filtering helper functions
     _set_to_csr,
     accumulate_contact_force_and_hessian,
-    accumulate_contact_force_and_hessian_no_self_contact,
     accumulate_spring_force_and_hessian,
     build_edge_n_ring_edge_collision_filter,
     build_vertex_n_ring_tris_collision_filter,
@@ -60,19 +59,24 @@ from .particle_vbd_kernels import (
     evaluate_volumetric_neo_hookean_force_and_hessian,
     # Solver kernels (particle VBD)
     forward_step,
+    forward_step_penetration_free,
     solve_trimesh_no_self_contact,
     solve_trimesh_no_self_contact_tile,
     solve_trimesh_with_self_contact_penetration_free,
     solve_trimesh_with_self_contact_penetration_free_tile,
     update_velocity,
-    # Soft body specific kernels
+    # Planar DAT (Divide and Truncate) kernels
+    apply_planar_truncation,
+    apply_planar_truncation_tile,
+    apply_planar_truncation_parallel_by_collision,
+    apply_truncation_ts,
+    apply_conservative_bound_truncation_kernel,
+    calculate_vertex_collision_buffer,
+    hessian_weighted_projection_onto_halfspace,
     accumulate_particle_body_contact_force_and_hessian,
     accumulate_self_contact_force_and_hessian,
     solve_elasticity_tile,
-    solve_elasticity,
-    # Truncation kernels
-    apply_planar_truncation_parallel_by_collision,
-    apply_truncation_ts,
+    solve_elasticity
 )
 from .rigid_vbd_kernels import (
     _NUM_CONTACT_THREADS_PER_BODY,
@@ -165,7 +169,7 @@ class SolverVBD(SolverBase):
         particle_enable_self_contact: bool = False,
         particle_self_contact_radius: float = 0.2,
         particle_self_contact_margin: float = 0.2,
-        particle_conservative_bound_relaxation: float = 0.42,
+        particle_conservative_bound_relaxation: float = 0.85,
         particle_vertex_contact_buffer_size: int = 32,
         particle_edge_contact_buffer_size: int = 64,
         particle_collision_detection_interval: int = 0,
@@ -373,6 +377,7 @@ class SolverVBD(SolverBase):
 
         self.use_particle_tile_solve = particle_enable_tile_solve and model.device.is_cuda
 
+
         soft_contact_max = model.shape_count * model.particle_count
         if particle_enable_self_contact:
             if particle_self_contact_margin < particle_self_contact_radius:
@@ -382,8 +387,9 @@ class SolverVBD(SolverBase):
                 )
 
             self.particle_conservative_bound_relaxation = particle_conservative_bound_relaxation
-            self.pos_prev_collision_detection = wp.zeros_like(model.particle_q, device=self.device)
             self.particle_conservative_bounds = wp.zeros((model.particle_count,), dtype=float, device=self.device)
+            # CCD safety margin: 2x the conservative bound relaxation (e.g., 0.42 -> 0.84)
+            self.ccd_safety_margin = 2.0 * self.particle_conservative_bound_relaxation
 
             self.trimesh_collision_detector = TriMeshCollisionDetector(
                 self.model,
@@ -418,16 +424,17 @@ class SolverVBD(SolverBase):
         self.particle_forces = wp.zeros(self.model.particle_count, dtype=wp.vec3, device=self.device)
         self.particle_hessians = wp.zeros(self.model.particle_count, dtype=wp.mat33, device=self.device)
 
-        # Displacement-based solver buffers for truncation
-        self.particle_displacements = wp.zeros(self.model.particle_count, dtype=wp.vec3, device=self.device)
-        self.truncation_ts = wp.zeros(self.model.particle_count, dtype=float, device=self.device)
-
         # Validation
         if len(self.model.particle_color_groups) == 0:
             raise ValueError(
                 "model.particle_color_groups is empty! When using the SolverVBD you must call ModelBuilder.color() "
                 "or ModelBuilder.set_coloring() before calling ModelBuilder.finalize()."
             )
+
+        self.pos_prev_collision_detection = wp.zeros_like(model.particle_q, device=self.device)
+        self.particle_displacements = wp.zeros(self.model.particle_count, dtype=wp.vec3, device=self.device)
+        self.truncation_ts = wp.zeros(self.model.particle_count, dtype=float, device=self.device)
+
 
     def _init_rigid_system(
         self,
@@ -1184,6 +1191,64 @@ class SolverVBD(SolverBase):
         self.finalize_rigid_bodies(state_out, dt)
         self.finalize_particles(state_in, state_out, dt)
 
+    def penetration_free_truncation(self, particle_q_out=None):
+        """
+        Modify displacements_in in-place, also modify particle_q if its not None
+
+        """
+        if not self.particle_enable_self_contact:
+            self.truncation_ts.fill_(1.0)
+            wp.launch(
+                kernel=apply_truncation_ts,
+                dim=self.model.particle_count,
+                inputs=[
+                    self.pos_prev_collision_detection,  # pos: wp.array(dtype=wp.vec3),
+                    self.particle_displacements,  # displacement_in: wp.array(dtype=wp.vec3),
+                    self.truncation_ts,  # truncation_ts: wp.array(dtype=float),
+                ],
+                outputs=[
+                    self.particle_displacements,  # displacement_out: wp.array(dtype=wp.vec3),
+                    particle_q_out,  # pos_out: wp.array(dtype=wp.vec3),
+                    wp.inf,  # max_displacement: float
+                ],
+                device=self.device,
+            )
+
+        else:
+            ##  parallel by collision and atomic operation
+            self.truncation_ts.fill_(1.0)
+            wp.launch(
+                kernel=apply_planar_truncation_parallel_by_collision,
+                inputs=[
+                    self.pos_prev_collision_detection,  # pos_prev_collision_detection: wp.array(dtype=wp.vec3),
+                    self.particle_displacements,  # particle_displacements: wp.array(dtype=wp.vec3),
+                    self.model.tri_indices,
+                    self.model.edge_indices,
+                    self.trimesh_collision_info,
+                    self.trimesh_collision_detector.edge_edge_parallel_epsilon,
+                    self.particle_conservative_bound_relaxation * 2,
+                ],
+                outputs=[
+                    self.truncation_ts,
+                ],
+                dim=self.particle_self_contact_evaluation_kernel_launch_size,
+                device=self.device,
+            )
+
+            wp.launch(
+                kernel=apply_truncation_ts,
+                dim=self.model.particle_count,
+                inputs=[
+                    self.pos_prev_collision_detection,  # pos: wp.array(dtype=wp.vec3),
+                    self.particle_displacements,  # displacement_in: wp.array(dtype=wp.vec3),
+                    self.truncation_ts,  # truncation_ts: wp.array(dtype=float),
+                    self.particle_displacements,  # displacement_out: wp.array(dtype=wp.vec3),
+                    particle_q_out,  # pos_out: wp.array(dtype=wp.vec3),
+                    self.particle_self_contact_margin * self.particle_conservative_bound_relaxation,  # max_displacement: float
+                ],
+                device=self.device,
+            )
+
     def initialize_particles(self, state_in: State, dt: float):
         """Initialize particle positions for the VBD iteration."""
         model = self.model
@@ -1192,7 +1257,9 @@ class SolverVBD(SolverBase):
         if model.particle_count == 0:
             return
 
-        self.collision_detection_penetration_free(state_in)
+        if self.particle_enable_self_contact:
+            # Collision detection before initialization to compute conservative bounds
+             self.collision_detection_penetration_free(state_in)
 
         model = self.model
 
@@ -1216,7 +1283,8 @@ class SolverVBD(SolverBase):
             device=self.device,
         )
 
-        self.apply_penetration_free_truncation(state_in.particle_q)
+        self.penetration_free_truncation(state_in.particle_q)
+
 
     def initialize_rigid_bodies(
         self,
@@ -1405,73 +1473,6 @@ class SolverVBD(SolverBase):
                 device=self.device,
             )
 
-    def apply_penetration_free_truncation(self, particle_q_out: wp.array | None = None):
-        """Apply planar truncation to particle displacements and update positions.
-
-        This critical operation ensures that displacements don't cause penetrations by:
-        1. Computing truncation factors (t values) for each particle based on collision planes
-        2. Scaling displacements by these factors
-        3. Updating output positions based on truncated displacements
-        """
-        if not self.particle_enable_self_contact:
-            # No self-contact: just apply displacements without truncation
-            self.truncation_ts.fill_(1.0)
-            wp.launch(
-                kernel=apply_truncation_ts,
-                dim=self.model.particle_count,
-                inputs=[
-                    self.pos_prev_collision_detection,  # Use current positions, not pos_prev_collision_detection
-                    self.particle_displacements,
-                    self.truncation_ts,
-                ],
-                outputs=[
-                    self.particle_displacements,
-                    particle_q_out,
-                    wp.inf,
-                ],
-                device=self.device,
-            )
-        else:
-            # Self-contact enabled: use planar truncation
-            # Initialize truncation factors to 1.0 (no truncation)
-            self.truncation_ts.fill_(1.0)
-
-            # Compute truncation factors based on collision geometry
-            wp.launch(
-                kernel=apply_planar_truncation_parallel_by_collision,
-                inputs=[
-                    self.pos_prev_collision_detection,
-                    self.particle_displacements,
-                    self.model.tri_indices,
-                    self.model.edge_indices,
-                    self.trimesh_collision_info,
-                    self.trimesh_collision_detector.edge_edge_parallel_epsilon,
-                    self.particle_conservative_bound_relaxation * 2,
-                ],
-                outputs=[
-                    self.truncation_ts,
-                ],
-                dim=self.particle_self_contact_evaluation_kernel_launch_size,
-                device=self.device,
-            )
-
-            # Apply truncation factors to displacements and update positions
-            wp.launch(
-                kernel=apply_truncation_ts,
-                dim=self.model.particle_count,
-                inputs=[
-                    self.pos_prev_collision_detection,
-                    self.particle_displacements,
-                    self.truncation_ts,
-                ],
-                outputs=[
-                    self.particle_displacements,
-                    particle_q_out,
-                    wp.inf,
-                ],
-                device=self.device,
-            )
-
     def solve_particle_iteration(
         self, state_in: State, state_out: State, contacts: Contacts | None, dt: float, iter_num: int
     ):
@@ -1502,14 +1503,13 @@ class SolverVBD(SolverBase):
                 and iter_num % self.particle_collision_detection_interval == 0
             ):
                 self.collision_detection_penetration_free(state_in)
-        
-        # Zero out forces, hessians, and displacements
+
+        # Zero out forces and hessians
         self.particle_forces.zero_()
         self.particle_hessians.zero_()
 
-
         # Iterate over color groups
-        for color in range(len(model.particle_color_groups)):
+        for color in range(len(self.model.particle_color_groups)):
             if contacts is not None:
                 wp.launch(
                     kernel=accumulate_particle_body_contact_force_and_hessian,
@@ -1545,7 +1545,6 @@ class SolverVBD(SolverBase):
                     # max_blocks=self.model.device.sm_count,
                 )
 
-            # Accumulate spring forces
             if model.spring_count:
                 wp.launch(
                     kernel=accumulate_spring_force_and_hessian,
@@ -1567,6 +1566,34 @@ class SolverVBD(SolverBase):
                 )
 
             if self.particle_enable_self_contact:
+                # wp.launch(
+                #     kernel=accumulate_self_contact_force_and_hessian_tile,
+                #     dim=self.model.particle_color_groups[color].size * TILE_SIZE_SELF_CONTACT_SOLVE,
+                #     block_dim=TILE_SIZE_SELF_CONTACT_SOLVE,
+                #     inputs=[
+                #         dt,
+                #         self.model.particle_color_groups[color],
+                #         self.particle_q_prev,
+                #         state_in.particle_q,
+                #         self.model.particle_flags,
+                #         self.model.tri_indices,
+                #         self.model.edge_indices,
+                #         self.particle_adjacency,
+                #         # self contact
+                #         self.trimesh_collision_info,
+                #         self.particle_self_contact_radius,
+                #         self.model.soft_contact_ke,
+                #         self.model.soft_contact_kd,
+                #         self.model.soft_contact_mu,
+                #         self.friction_epsilon,
+                #         self.trimesh_collision_detector.edge_edge_parallel_epsilon,
+                #         # outputs: particle force and hessian
+                #         self.particle_forces,
+                #         self.particle_hessians,
+                #     ],
+                #     device=self.device,
+                #     max_blocks=self.model.device.sm_count,
+                # )
                 wp.launch(
                     kernel=accumulate_self_contact_force_and_hessian,
                     dim=self.particle_self_contact_evaluation_kernel_launch_size,
@@ -1625,6 +1652,7 @@ class SolverVBD(SolverBase):
                     device=self.device,
                 )
             else:
+                
                 wp.launch(
                     kernel=solve_elasticity,
                     dim=self.model.particle_color_groups[color].size,
@@ -1657,11 +1685,7 @@ class SolverVBD(SolverBase):
                     device=self.device,
                 )
 
-            # Apply planar truncation to displacements and update positions
-            self.apply_penetration_free_truncation(state_in.particle_q)
-
-
-
+            self.penetration_free_truncation(state_in.particle_q)
 
 
     def solve_rigid_body_iteration(self, state_in: State, state_out: State, contacts: Contacts | None, dt: float):
@@ -1926,7 +1950,7 @@ class SolverVBD(SolverBase):
         # Early exit if no particles
         if self.model.particle_count == 0:
             return
-
+            
         # TODO: remove this
         wp.copy(state_out.particle_q, state_in.particle_q)
         wp.launch(
@@ -1935,6 +1959,8 @@ class SolverVBD(SolverBase):
             dim=self.model.particle_count,
             device=self.device,
         )
+
+        
 
     def finalize_rigid_bodies(self, state_out: State, dt: float):
         """Finalize rigid body velocities and Dahl friction state after AVBD iterations (post-iteration phase).
@@ -2002,7 +2028,6 @@ class SolverVBD(SolverBase):
                 min_distance_filtering_ref_pos=self.particle_q_rest,
             )
 
-
     def rebuild_bvh(self, state: State):
         """This function will rebuild the BVHs used for detecting self-contacts using the input `state`.
 
@@ -2014,3 +2039,50 @@ class SolverVBD(SolverBase):
         """
         if self.particle_enable_self_contact:
             self.trimesh_collision_detector.rebuild(state.particle_q)
+
+    def resize_collision_buffers(self, shrink_to_fit: bool = False, growth_ratio: float = 1.5) -> bool:
+        """Resize collision buffers based on actual collision counts from the last detection pass.
+
+        This function analyzes the collision counts and resizes buffers that overflowed
+        (or shrinks oversized buffers if shrink_to_fit=True). Use this after collision
+        detection if you observe buffer overflow warnings or want to optimize memory usage.
+
+        Buffer sizes are:
+        - Multiplied by growth_ratio to provide headroom and reduce resize frequency
+        - Rounded up to the next multiple of 4 for memory alignment
+        - Clamped between pre_alloc and max_alloc settings
+
+        Note:
+            After resizing, you should re-run collision detection before the next simulation
+            step to populate the new buffers.
+
+        Args:
+            shrink_to_fit: If True, also shrink buffers that are larger than needed.
+                          If False (default), only grow buffers that overflowed.
+            growth_ratio: Multiplier for collision counts to provide headroom. Default is 1.5
+                         (50% extra space). Set to 1.0 for exact fit (no headroom).
+
+        Returns:
+            True if any buffer was resized, False otherwise.
+
+        Example:
+            .. code-block:: python
+
+                # After running simulation and observing overflow
+                if solver.resize_collision_buffers():
+                    # Buffers were resized, re-run collision detection
+                    solver.rebuild_bvh(state)
+
+                # To reclaim memory after simulation settles
+                solver.resize_collision_buffers(shrink_to_fit=True)
+        """
+        if not self.particle_enable_self_contact:
+            return False
+        resized = self.trimesh_collision_detector.resize_collision_buffer_to_fit(shrink_to_fit, growth_ratio)
+        if resized:
+            # Update the collision_info array with new buffer references
+            # This is critical - the old array contains stale pointers to deallocated memory
+            self.trimesh_collision_info = wp.array(
+                [self.trimesh_collision_detector.collision_info], dtype=TriMeshCollisionInfo, device=self.device
+            )
+        return resized
