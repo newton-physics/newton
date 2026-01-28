@@ -50,9 +50,14 @@ from .particle_vbd_kernels import (
     count_num_adjacent_edges,
     count_num_adjacent_faces,
     count_num_adjacent_springs,
+    count_num_adjacent_tets,
     fill_adjacent_edges,
     fill_adjacent_faces,
     fill_adjacent_springs,
+    fill_adjacent_tets,
+    get_vertex_num_adjacent_tets,
+    get_vertex_adjacent_tet_id_order,
+    evaluate_volumetric_neo_hookean_force_and_hessian,
     # Solver kernels (particle VBD)
     forward_step,
     forward_step_penetration_free,
@@ -61,6 +66,11 @@ from .particle_vbd_kernels import (
     solve_trimesh_with_self_contact_penetration_free,
     solve_trimesh_with_self_contact_penetration_free_tile,
     update_velocity,
+    # Soft body specific kernels
+    accumulate_particle_body_contact_force_and_hessian,
+    accumulate_self_contact_force_and_hessian,
+    solve_elasticity_tile,
+    solve_elasticity,
 )
 from .rigid_vbd_kernels import (
     _NUM_CONTACT_THREADS_PER_BODY,
@@ -347,7 +357,7 @@ class SolverVBD(SolverBase):
         self.inertia = wp.zeros_like(model.particle_q, device=self.device)  # inertial target positions
 
         # Particle adjacency info
-        self.particle_adjacency = self.compute_particle_force_element_adjacency(model).to(self.device)
+        self.particle_adjacency = self.compute_particle_force_element_adjacency().to(self.device)
 
         # Self-contact settings
         self.particle_enable_self_contact = particle_enable_self_contact
@@ -395,13 +405,12 @@ class SolverVBD(SolverBase):
                 [self.trimesh_collision_detector.collision_info], dtype=TriMeshCollisionInfo, device=self.device
             )
 
-            self.collision_evaluation_kernel_launch_size = max(
+            self.particle_self_contact_evaluation_kernel_launch_size = max(
                 self.model.particle_count * NUM_THREADS_PER_COLLISION_PRIMITIVE,
                 self.model.edge_count * NUM_THREADS_PER_COLLISION_PRIMITIVE,
-                soft_contact_max,
             )
         else:
-            self.collision_evaluation_kernel_launch_size = soft_contact_max
+            self.particle_self_contact_evaluation_kernel_launch_size = self.model.particle_count * NUM_THREADS_PER_COLLISION_PRIMITIVE
 
         # Particle force and hessian storage
         self.particle_forces = wp.zeros(self.model.particle_count, dtype=wp.vec3, device=self.device)
@@ -839,15 +848,13 @@ class SolverVBD(SolverBase):
     # Adjacency Building Methods
     # =====================================================
 
-    def compute_particle_force_element_adjacency(self, model):
-        adjacency = ParticleForceElementAdjacencyInfo()
-        edges_array = model.edge_indices.to("cpu")
-        spring_array = model.spring_indices.to("cpu")
-        face_indices = model.tri_indices.to("cpu")
+    def compute_particle_force_element_adjacency(self):
+        particle_adjacency = ParticleForceElementAdjacencyInfo()
 
         with wp.ScopedDevice("cpu"):
-            if edges_array.size:
-                # Build vertex-edge adjacency data.
+            if self.model.edge_indices:
+                edges_array = self.model.edge_indices.to("cpu")
+                # build vertex-edge particle_adjacency data
                 num_vertex_adjacent_edges = wp.zeros(shape=(self.model.particle_count,), dtype=wp.int32)
 
                 wp.launch(
@@ -860,65 +867,102 @@ class SolverVBD(SolverBase):
                 vertex_adjacent_edges_offsets = np.empty(shape=(self.model.particle_count + 1,), dtype=wp.int32)
                 vertex_adjacent_edges_offsets[1:] = np.cumsum(2 * num_vertex_adjacent_edges)[:]
                 vertex_adjacent_edges_offsets[0] = 0
-                adjacency.v_adj_edges_offsets = wp.array(vertex_adjacent_edges_offsets, dtype=wp.int32)
+                particle_adjacency.v_adj_edges_offsets = wp.array(vertex_adjacent_edges_offsets, dtype=wp.int32)
 
-                # Temporal variables to record how much adjacent edges has been filled to each vertex.
+                # temporal variables to record how much adjacent edges has been filled to each vertex
                 vertex_adjacent_edges_fill_count = wp.zeros(shape=(self.model.particle_count,), dtype=wp.int32)
 
-                edge_adjacency_array_size = 2 * num_vertex_adjacent_edges.sum()
+                edge_particle_adjacency_array_size = 2 * num_vertex_adjacent_edges.sum()
                 # vertex order: o0: 0, o1: 1, v0: 2, v1: 3,
-                adjacency.v_adj_edges = wp.empty(shape=(edge_adjacency_array_size,), dtype=wp.int32)
+                particle_adjacency.v_adj_edges = wp.empty(shape=(edge_particle_adjacency_array_size,), dtype=wp.int32)
 
                 wp.launch(
                     kernel=fill_adjacent_edges,
                     inputs=[
                         edges_array,
-                        adjacency.v_adj_edges_offsets,
+                        particle_adjacency.v_adj_edges_offsets,
                         vertex_adjacent_edges_fill_count,
-                        adjacency.v_adj_edges,
+                        particle_adjacency.v_adj_edges,
                     ],
                     dim=1,
                 )
             else:
-                adjacency.v_adj_edges_offsets = wp.empty(shape=(0,), dtype=wp.int32)
-                adjacency.v_adj_edges = wp.empty(shape=(0,), dtype=wp.int32)
+                particle_adjacency.v_adj_edges_offsets = wp.empty(shape=(0,), dtype=wp.int32)
+                particle_adjacency.v_adj_edges = wp.empty(shape=(0,), dtype=wp.int32)
 
-            if face_indices.size:
-                # Compute adjacent triangles.
-                # Count number of adjacent faces for each vertex.
+            if self.model.tri_indices:
+                face_indices = self.model.tri_indices.to("cpu")
+                # compute adjacent triangles
+                # count number of adjacent faces for each vertex
                 num_vertex_adjacent_faces = wp.zeros(shape=(self.model.particle_count,), dtype=wp.int32)
                 wp.launch(kernel=count_num_adjacent_faces, inputs=[face_indices, num_vertex_adjacent_faces], dim=1)
 
-                # Preallocate memory based on counting results.
+                # preallocate memory based on counting results
                 num_vertex_adjacent_faces = num_vertex_adjacent_faces.numpy()
                 vertex_adjacent_faces_offsets = np.empty(shape=(self.model.particle_count + 1,), dtype=wp.int32)
                 vertex_adjacent_faces_offsets[1:] = np.cumsum(2 * num_vertex_adjacent_faces)[:]
                 vertex_adjacent_faces_offsets[0] = 0
-                adjacency.v_adj_faces_offsets = wp.array(vertex_adjacent_faces_offsets, dtype=wp.int32)
+                particle_adjacency.v_adj_faces_offsets = wp.array(vertex_adjacent_faces_offsets, dtype=wp.int32)
 
                 vertex_adjacent_faces_fill_count = wp.zeros(shape=(self.model.particle_count,), dtype=wp.int32)
 
-                face_adjacency_array_size = 2 * num_vertex_adjacent_faces.sum()
+                face_particle_adjacency_array_size = 2 * num_vertex_adjacent_faces.sum()
                 # (face, vertex_order) * num_adj_faces * num_particles
                 # vertex order: v0: 0, v1: 1, o0: 2, v2: 3
-                adjacency.v_adj_faces = wp.empty(shape=(face_adjacency_array_size,), dtype=wp.int32)
+                particle_adjacency.v_adj_faces = wp.empty(shape=(face_particle_adjacency_array_size,), dtype=wp.int32)
 
                 wp.launch(
                     kernel=fill_adjacent_faces,
                     inputs=[
                         face_indices,
-                        adjacency.v_adj_faces_offsets,
+                        particle_adjacency.v_adj_faces_offsets,
                         vertex_adjacent_faces_fill_count,
-                        adjacency.v_adj_faces,
+                        particle_adjacency.v_adj_faces,
                     ],
                     dim=1,
                 )
             else:
-                adjacency.v_adj_faces_offsets = wp.empty(shape=(0,), dtype=wp.int32)
-                adjacency.v_adj_faces = wp.empty(shape=(0,), dtype=wp.int32)
+                particle_adjacency.v_adj_faces_offsets = wp.empty(shape=(0,), dtype=wp.int32)
+                particle_adjacency.v_adj_faces = wp.empty(shape=(0,), dtype=wp.int32)
 
-            if spring_array.size:
-                # Build vertex-springs adjacency data.
+            if self.model.tet_indices:
+                tet_indices = self.model.tet_indices.to("cpu")
+                num_vertex_adjacent_tets = wp.zeros(shape=(self.model.particle_count,), dtype=wp.int32)
+
+                wp.launch(
+                    kernel=count_num_adjacent_tets,
+                    inputs=[tet_indices, num_vertex_adjacent_tets],
+                    dim=1,
+                )
+
+                num_vertex_adjacent_tets = num_vertex_adjacent_tets.numpy()
+                vertex_adjacent_tets_offsets = np.empty(shape=(self.model.particle_count + 1,), dtype=wp.int32)
+                vertex_adjacent_tets_offsets[1:] = np.cumsum(2 * num_vertex_adjacent_tets)[:]
+                vertex_adjacent_tets_offsets[0] = 0
+                particle_adjacency.v_adj_tets_offsets = wp.array(vertex_adjacent_tets_offsets, dtype=wp.int32)
+
+                vertex_adjacent_tets_fill_count = wp.zeros(shape=(self.model.particle_count,), dtype=wp.int32)
+
+                tet_particle_adjacency_array_size = 2 * num_vertex_adjacent_tets.sum()
+                particle_adjacency.v_adj_tets = wp.empty(shape=(tet_particle_adjacency_array_size,), dtype=wp.int32)
+
+                wp.launch(
+                    kernel=fill_adjacent_tets,
+                    inputs=[
+                        tet_indices,
+                        particle_adjacency.v_adj_tets_offsets,
+                        vertex_adjacent_tets_fill_count,
+                        particle_adjacency.v_adj_tets,
+                    ],
+                    dim=1,
+                )
+            else:
+                particle_adjacency.v_adj_tets_offsets = wp.empty(shape=(0,), dtype=wp.int32)
+                particle_adjacency.v_adj_tets = wp.empty(shape=(0,), dtype=wp.int32)
+
+            if self.model.spring_indices:
+                spring_array = self.model.spring_indices.to("cpu")
+                # build vertex-springs particle_adjacency data
                 num_vertex_adjacent_spring = wp.zeros(shape=(self.model.particle_count,), dtype=wp.int32)
 
                 wp.launch(
@@ -931,28 +975,28 @@ class SolverVBD(SolverBase):
                 vertex_adjacent_springs_offsets = np.empty(shape=(self.model.particle_count + 1,), dtype=wp.int32)
                 vertex_adjacent_springs_offsets[1:] = np.cumsum(num_vertex_adjacent_spring)[:]
                 vertex_adjacent_springs_offsets[0] = 0
-                adjacency.v_adj_springs_offsets = wp.array(vertex_adjacent_springs_offsets, dtype=wp.int32)
+                particle_adjacency.v_adj_springs_offsets = wp.array(vertex_adjacent_springs_offsets, dtype=wp.int32)
 
-                # Temporal variables to record how much adjacent springs has been filled to each vertex.
+                # temporal variables to record how much adjacent springs has been filled to each vertex
                 vertex_adjacent_springs_fill_count = wp.zeros(shape=(self.model.particle_count,), dtype=wp.int32)
-                adjacency.v_adj_springs = wp.empty(shape=(num_vertex_adjacent_spring.sum(),), dtype=wp.int32)
+                particle_adjacency.v_adj_springs = wp.empty(shape=(num_vertex_adjacent_spring.sum(),), dtype=wp.int32)
 
                 wp.launch(
                     kernel=fill_adjacent_springs,
                     inputs=[
                         spring_array,
-                        adjacency.v_adj_springs_offsets,
+                        particle_adjacency.v_adj_springs_offsets,
                         vertex_adjacent_springs_fill_count,
-                        adjacency.v_adj_springs,
+                        particle_adjacency.v_adj_springs,
                     ],
                     dim=1,
                 )
 
             else:
-                adjacency.v_adj_springs_offsets = wp.empty(shape=(0,), dtype=wp.int32)
-                adjacency.v_adj_springs = wp.empty(shape=(0,), dtype=wp.int32)
+                particle_adjacency.v_adj_springs_offsets = wp.empty(shape=(0,), dtype=wp.int32)
+                particle_adjacency.v_adj_springs = wp.empty(shape=(0,), dtype=wp.int32)
 
-        return adjacency
+        return particle_adjacency
 
     def compute_particle_contact_filtering_list(
         self, external_vertex_contact_filtering_map, external_edge_contact_filtering_map
@@ -1408,88 +1452,39 @@ class SolverVBD(SolverBase):
 
         # Iterate over color groups
         for color in range(len(model.particle_color_groups)):
-            # Accumulate contact forces
-            if self.particle_enable_self_contact:
+            if contacts is not None:
                 wp.launch(
-                    kernel=accumulate_contact_force_and_hessian,
-                    dim=self.collision_evaluation_kernel_launch_size,
+                    kernel=accumulate_particle_body_contact_force_and_hessian,
+                    dim=contacts.soft_contact_max,
                     inputs=[
                         dt,
                         color,
                         self.particle_q_prev,
                         state_in.particle_q,
-                        model.particle_colors,
-                        model.tri_indices,
-                        model.edge_indices,
-                        # self-contact
-                        self.trimesh_collision_info,
-                        self.particle_self_contact_radius,
-                        model.soft_contact_ke,
-                        model.soft_contact_kd,
-                        model.soft_contact_mu,
-                        self.friction_epsilon,
-                        self.trimesh_collision_detector.edge_edge_parallel_epsilon,
+                        self.model.particle_colors,
                         # body-particle contact
-                        model.particle_radius,
+                        self.model.soft_contact_ke,
+                        self.model.soft_contact_kd,
+                        self.model.soft_contact_mu,
+                        self.friction_epsilon,
+                        self.model.particle_radius,
                         contacts.soft_contact_particle,
                         contacts.soft_contact_count,
                         contacts.soft_contact_max,
-                        self.body_particle_contact_penalty_k,
-                        self.body_particle_contact_material_kd,
-                        self.body_particle_contact_material_mu,
-                        model.shape_material_mu,
-                        model.shape_body,
-                        body_q_for_particles,
-                        body_q_prev_for_particles,
-                        body_qd_for_particles,
-                        model.body_com,
+                        self.model.shape_material_mu,
+                        self.model.shape_body,
+                        state_out.body_q if self.integrate_with_external_rigid_solver else state_in.body_q,
+                        state_in.body_q if self.integrate_with_external_rigid_solver else None,
+                        self.model.body_qd,
+                        self.model.body_com,
                         contacts.soft_contact_shape,
                         contacts.soft_contact_body_pos,
                         contacts.soft_contact_body_vel,
                         contacts.soft_contact_normal,
                     ],
-                    outputs=[
-                        self.particle_forces,
-                        self.particle_hessians,
-                    ],
+                    outputs=[self.particle_forces, self.particle_hessians],
                     device=self.device,
-                    max_blocks=model.device.sm_count,
-                )
-            else:
-                wp.launch(
-                    kernel=accumulate_contact_force_and_hessian_no_self_contact,
-                    dim=self.collision_evaluation_kernel_launch_size,
-                    inputs=[
-                        dt,
-                        color,
-                        self.particle_q_prev,
-                        state_in.particle_q,
-                        model.particle_colors,
-                        # body-particle contact
-                        self.friction_epsilon,
-                        model.particle_radius,
-                        contacts.soft_contact_particle,
-                        contacts.soft_contact_count,
-                        contacts.soft_contact_max,
-                        self.body_particle_contact_penalty_k,
-                        self.body_particle_contact_material_kd,
-                        self.body_particle_contact_material_mu,
-                        model.shape_material_mu,
-                        model.shape_body,
-                        body_q_for_particles,
-                        body_q_prev_for_particles,
-                        body_qd_for_particles,
-                        model.body_com,
-                        contacts.soft_contact_shape,
-                        contacts.soft_contact_body_pos,
-                        contacts.soft_contact_body_vel,
-                        contacts.soft_contact_normal,
-                    ],
-                    outputs=[
-                        self.particle_forces,
-                        self.particle_hessians,
-                    ],
-                    device=self.device,
+                    # max_blocks=self.model.device.sm_count,
                 )
 
             # Accumulate spring forces
@@ -1498,144 +1493,111 @@ class SolverVBD(SolverBase):
                     kernel=accumulate_spring_force_and_hessian,
                     inputs=[
                         dt,
+                        color,
                         self.particle_q_prev,
                         state_in.particle_q,
-                        model.particle_color_groups[color],
+                        self.model.particle_color_groups[color],
                         self.particle_adjacency,
-                        model.spring_indices,
-                        model.spring_rest_length,
-                        model.spring_stiffness,
-                        model.spring_damping,
+                        self.model.spring_indices,
+                        self.model.spring_rest_length,
+                        self.model.spring_stiffness,
+                        self.model.spring_damping,
                     ],
-                    outputs=[
-                        self.particle_forces,
-                        self.particle_hessians,
-                    ],
-                    dim=model.particle_color_groups[color].size,
+                    outputs=[self.particle_forces, self.particle_hessians],
+                    dim=self.model.particle_color_groups[color].size,
                     device=self.device,
                 )
 
-            # Solve for this color group
             if self.particle_enable_self_contact:
-                if self.use_particle_tile_solve:
-                    wp.launch(
-                        kernel=solve_trimesh_with_self_contact_penetration_free_tile,
-                        dim=model.particle_color_groups[color].size * TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE,
-                        block_dim=TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE,
-                        inputs=[
-                            dt,
-                            model.particle_color_groups[color],
-                            self.particle_q_prev,
-                            state_in.particle_q,
-                            state_in.particle_qd,
-                            model.particle_mass,
-                            self.inertia,
-                            model.particle_flags,
-                            model.tri_indices,
-                            model.tri_poses,
-                            model.tri_materials,
-                            model.tri_areas,
-                            model.edge_indices,
-                            model.edge_rest_angle,
-                            model.edge_rest_length,
-                            model.edge_bending_properties,
-                            self.particle_adjacency,
-                            self.particle_forces,
-                            self.particle_hessians,
-                            self.pos_prev_collision_detection,
-                            self.particle_conservative_bounds,
-                        ],
-                        outputs=[state_out.particle_q],
-                        device=self.device,
-                    )
-                else:
-                    wp.launch(
-                        kernel=solve_trimesh_with_self_contact_penetration_free,
-                        dim=model.particle_color_groups[color].size,
-                        inputs=[
-                            dt,
-                            model.particle_color_groups[color],
-                            self.particle_q_prev,
-                            state_in.particle_q,
-                            state_in.particle_qd,
-                            model.particle_mass,
-                            self.inertia,
-                            model.particle_flags,
-                            model.tri_indices,
-                            model.tri_poses,
-                            model.tri_materials,
-                            model.tri_areas,
-                            model.edge_indices,
-                            model.edge_rest_angle,
-                            model.edge_rest_length,
-                            model.edge_bending_properties,
-                            self.particle_adjacency,
-                            self.particle_forces,
-                            self.particle_hessians,
-                            self.pos_prev_collision_detection,
-                            self.particle_conservative_bounds,
-                        ],
-                        outputs=[state_out.particle_q],
-                        device=self.device,
-                    )
+                wp.launch(
+                    kernel=accumulate_self_contact_force_and_hessian,
+                    dim=self.particle_self_contact_evaluation_kernel_launch_size,
+                    inputs=[
+                        dt,
+                        color,
+                        self.particle_q_prev,
+                        state_in.particle_q,
+                        self.model.particle_colors,
+                        self.model.tri_indices,
+                        self.model.edge_indices,
+                        # self-contact
+                        self.trimesh_collision_info,
+                        self.particle_self_contact_radius,
+                        self.model.soft_contact_ke,
+                        self.model.soft_contact_kd,
+                        self.model.soft_contact_mu,
+                        self.friction_epsilon,
+                        self.trimesh_collision_detector.edge_edge_parallel_epsilon,
+                    ],
+                    outputs=[self.particle_forces, self.particle_hessians],
+                    device=self.device,
+                    max_blocks=self.model.device.sm_count,
+                )
+            if self.use_particle_tile_solve:
+                wp.launch(
+                    kernel=solve_elasticity_tile,
+                    dim=self.model.particle_color_groups[color].size * TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE,
+                    block_dim=TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE,
+                    inputs=[
+                        dt,
+                        self.model.particle_color_groups[color],
+                        self.particle_q_prev,
+                        state_in.particle_q,
+                        self.model.particle_mass,
+                        self.inertia,
+                        self.model.particle_flags,
+                        self.model.tri_indices,
+                        self.model.tri_poses,
+                        self.model.tri_materials,
+                        self.model.tri_areas,
+                        self.model.edge_indices,
+                        self.model.edge_rest_angle,
+                        self.model.edge_rest_length,
+                        self.model.edge_bending_properties,
+                        self.model.tet_indices,
+                        self.model.tet_poses,
+                        self.model.tet_materials,
+                        self.particle_adjacency,
+                        self.particle_forces,
+                        self.particle_hessians,
+                    ],
+                    outputs=[
+                        state_out.particle_q,
+                    ],
+                    device=self.device,
+                )
             else:
-                if self.use_particle_tile_solve:
-                    wp.launch(
-                        kernel=solve_trimesh_no_self_contact_tile,
-                        inputs=[
-                            dt,
-                            model.particle_color_groups[color],
-                            self.particle_q_prev,
-                            state_in.particle_q,
-                            state_in.particle_qd,
-                            model.particle_mass,
-                            self.inertia,
-                            model.particle_flags,
-                            model.tri_indices,
-                            model.tri_poses,
-                            model.tri_materials,
-                            model.tri_areas,
-                            model.edge_indices,
-                            model.edge_rest_angle,
-                            model.edge_rest_length,
-                            model.edge_bending_properties,
-                            self.particle_adjacency,
-                            self.particle_forces,
-                            self.particle_hessians,
-                        ],
-                        outputs=[state_out.particle_q],
-                        dim=model.particle_color_groups[color].size * TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE,
-                        block_dim=TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE,
-                        device=self.device,
-                    )
-                else:
-                    wp.launch(
-                        kernel=solve_trimesh_no_self_contact,
-                        inputs=[
-                            dt,
-                            model.particle_color_groups[color],
-                            self.particle_q_prev,
-                            state_in.particle_q,
-                            state_in.particle_qd,
-                            model.particle_mass,
-                            self.inertia,
-                            model.particle_flags,
-                            model.tri_indices,
-                            model.tri_poses,
-                            model.tri_materials,
-                            model.tri_areas,
-                            model.edge_indices,
-                            model.edge_rest_angle,
-                            model.edge_rest_length,
-                            model.edge_bending_properties,
-                            self.particle_adjacency,
-                            self.particle_forces,
-                            self.particle_hessians,
-                        ],
-                        outputs=[state_out.particle_q],
-                        dim=model.particle_color_groups[color].size,
-                        device=self.device,
-                    )
+                wp.launch(
+                    kernel=solve_elasticity,
+                    dim=self.model.particle_color_groups[color].size,
+                    inputs=[
+                        dt,
+                        self.model.particle_color_groups[color],
+                        self.particle_q_prev,
+                        state_in.particle_q,
+                        self.model.particle_mass,
+                        self.inertia,
+                        self.model.particle_flags,
+                        self.model.tri_indices,
+                        self.model.tri_poses,
+                        self.model.tri_materials,
+                        self.model.tri_areas,
+                        self.model.edge_indices,
+                        self.model.edge_rest_angle,
+                        self.model.edge_rest_length,
+                        self.model.edge_bending_properties,
+                        self.model.tet_indices,
+                        self.model.tet_poses,
+                        self.model.tet_materials,
+                        self.particle_adjacency,
+                        self.particle_forces,
+                        self.particle_hessians,
+                    ],
+                    outputs=[
+                        state_out.particle_q,
+                    ],
+                    device=self.device,
+                )
 
             # Copy positions back
             wp.launch(
