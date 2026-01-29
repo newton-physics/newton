@@ -1,0 +1,6 @@
+﻿newton.get\_joint\_constraint\_count
+====================================
+
+.. currentmodule:: newton
+
+.. autofunction:: get_joint_constraint_count

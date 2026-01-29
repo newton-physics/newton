@@ -1,0 +1,476 @@
+{
+ "cells": [
+  {
+   "cell_type": "raw",
+   "metadata": {
+    "nbsphinx": "hidden",
+    "vscode": {
+     "languageId": "raw"
+    }
+   },
+   "source": [
+    "SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers\n",
+    "SPDX-License-Identifier: Apache-2.0\n",
+    "\n",
+    "Licensed under the Apache License, Version 2.0 (the \"License\");\n",
+    "you may not use this file except in compliance with the License.\n",
+    "You may obtain a copy of the License at\n",
+    "\n",
+    "http://www.apache.org/licenses/LICENSE-2.0\n",
+    "\n",
+    "Unless required by applicable law or agreed to in writing, software\n",
+    "distributed under the License is distributed on an \"AS IS\" BASIS,\n",
+    "WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.\n",
+    "See the License for the specific language governing permissions and\n",
+    "limitations under the License."
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "# Introduction to Newton Physics\n",
+    "\n",
+    "The main components for a Newton simulation are:\n",
+    "\n",
+    "1. **Model**: Encapsulates the physical structure, parameters, and configuration.\n",
+    "2. **State**: Represents the dynamic state (positions, velocities, etc.).\n",
+    "3. **Solver**: Steps the simulation by integrating physics and resolving contact, joint, and other constraints on the simulated objects.\n",
+    "\n",
+    "See also the [Overview page](https://newton-physics.github.io/newton/guide/overview.html).\n",
+    "\n",
+    "In this tutorial, we show how to set up the model and state for a simple scene of a few rigid bodies with different collision geometries falling on a ground plane, and how to step the simulation. We'll also show how to visualize the resulting simulation."
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "## Setup and Imports\n",
+    "\n",
+    "First, let's import the necessary libraries:\n"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "from pathlib import Path\n",
+    "\n",
+    "import warp as wp\n",
+    "from pxr import Usd\n",
+    "\n",
+    "import newton\n",
+    "\n",
+    "# these dependencies are needed to load example assets and ingest meshes from USD\n",
+    "import newton.examples\n",
+    "import newton.usd"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "## Building a Model with ModelBuilder\n",
+    "\n",
+    "The `ModelBuilder` is the primary way to construct simulation scenes. Newton provides multiple approaches for building models:\n",
+    "\n",
+    "1. **Programmatic construction**: Add bodies, shapes, joints, and constraints directly using `add_body()`, `add_shape_*()`, `add_joint_*()` methods\n",
+    "2. **Import from asset files**: Load complete models from URDF, MJCF (MuJoCo XML), or USD files using `add_urdf()`, `add_mjcf()`, and `add_usd()`\n",
+    "3. **Parallel environments for RL**: Use `replicate()` to create multiple copies of an environment for parallel training, or combine different models with `add_builder()` for modular scene construction\n",
+    "\n",
+    "In this tutorial, we'll focus on programmatic construction to understand the fundamentals. For examples showing asset import and parallelization, see `newton/examples/basic/example_basic_urdf.py` and `newton/examples/robot/`.\n",
+    "\n",
+    "Let's create a simple scene with various collision shapes falling onto a ground plane.\n",
+    "\n",
+    "### Step 1: Create the ModelBuilder\n"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# Create a new model builder\n",
+    "builder = newton.ModelBuilder()"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "### Step 2: Add Rigid Bodies with Collision Shapes\n",
+    "\n",
+    "Bodies are the fundamental dynamic entities in Newton. Each body can have one or more collision shapes attached to it.\n",
+    "\n",
+    "The workflow is:\n",
+    "1. Create a body with `add_body()` - returns a body index\n",
+    "2. Attach shapes to the body using `add_shape_*()` methods\n",
+    "3. Shapes contribute to the body's mass/inertia\n"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# Add a ground plane (infinite static plane at z=0)\n",
+    "builder.add_ground_plane()\n",
+    "\n",
+    "# Height from which to drop shapes\n",
+    "drop_z = 2.0\n",
+    "\n",
+    "# SPHERE\n",
+    "sphere_pos = wp.vec3(0.0, -4.0, drop_z)\n",
+    "body_sphere = builder.add_body(\n",
+    "    xform=wp.transform(p=sphere_pos, q=wp.quat_identity()),\n",
+    "    key=\"sphere\",  # Optional: human-readable identifier\n",
+    ")\n",
+    "builder.add_shape_sphere(body_sphere, radius=0.5)\n",
+    "\n",
+    "# CAPSULE\n",
+    "capsule_pos = wp.vec3(0.0, -2.0, drop_z)\n",
+    "body_capsule = builder.add_body(xform=wp.transform(p=capsule_pos, q=wp.quat_identity()), key=\"capsule\")\n",
+    "builder.add_shape_capsule(body_capsule, radius=0.3, half_height=0.7)\n",
+    "\n",
+    "# CYLINDER\n",
+    "cylinder_pos = wp.vec3(0.0, 0.0, drop_z)\n",
+    "body_cylinder = builder.add_body(xform=wp.transform(p=cylinder_pos, q=wp.quat_identity()), key=\"cylinder\")\n",
+    "builder.add_shape_cylinder(body_cylinder, radius=0.4, half_height=0.6)\n",
+    "\n",
+    "# Multi-Shape Collider\n",
+    "multi_shape_pos = wp.vec3(0.0, 2.0, drop_z)\n",
+    "body_multi_shape = builder.add_body(xform=wp.transform(p=multi_shape_pos, q=wp.quat_identity()), key=\"multi_shape\")\n",
+    "\n",
+    "# Now attach both a sphere and a box to the multi-shape body\n",
+    "# body-local shape offsets, offset sphere in x so the body will topple over\n",
+    "sphere_offset = wp.vec3(0.1, 0.0, -0.3)\n",
+    "box_offset = wp.vec3(0.0, 0.0, 0.3)\n",
+    "builder.add_shape_sphere(body_multi_shape, wp.transform(p=sphere_offset, q=wp.quat_identity()), radius=0.25)\n",
+    "builder.add_shape_box(body_multi_shape, wp.transform(p=box_offset, q=wp.quat_identity()), hx=0.25, hy=0.25, hz=0.25)\n",
+    "\n",
+    "print(f\"Added {builder.body_count} bodies with collision shapes\")"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "### Step 3: Add a Mesh Body\n",
+    "\n",
+    "Newton can also simulate bodies with triangle-mesh collision shapes. Let's load a mesh from a USD file:\n"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# Load a mesh from a USD file\n",
+    "usd_stage = Usd.Stage.Open(newton.examples.get_asset(\"bunny.usd\"))\n",
+    "demo_mesh = newton.usd.get_mesh(usd_stage.GetPrimAtPath(\"/root/bunny\"))\n",
+    "\n",
+    "# Add the mesh as a rigid body\n",
+    "mesh_pos = wp.vec3(0.0, 4.0, drop_z - 0.5)\n",
+    "body_mesh = builder.add_body(xform=wp.transform(p=mesh_pos, q=wp.quat(0.5, 0.5, 0.5, 0.5)), key=\"bunny\")\n",
+    "builder.add_shape_mesh(body_mesh, mesh=demo_mesh)\n",
+    "\n",
+    "print(f\"Added mesh body with {demo_mesh.vertices.shape[0]} vertices\")"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "### Step 4: Finalize the Model\n",
+    "\n",
+    "Once all bodies and shapes are added, we finalize the model. This converts the Python data structures into GPU-optimized arrays and makes the model ready for simulation.\n",
+    "\n",
+    "Newton runs on GPU by default (if a GPU is available); you may force the compute device to CPU by setting `use_cpu` to `True` below."
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# Optional: Run the simulation on CPU\n",
+    "use_cpu = False\n",
+    "if use_cpu:\n",
+    "    wp.set_device(\"cpu\")  # alternatively, pass device=\"cpu\" to the finalize method\n",
+    "\n",
+    "# Finalize the model - this creates the simulation-ready Model object\n",
+    "model = builder.finalize()\n",
+    "\n",
+    "print(f\"Model finalized for device {model.device}:\")\n",
+    "print(f\"  Bodies: {model.body_count}\")\n",
+    "print(f\"  Shapes: {model.shape_count}\")\n",
+    "print(f\"  Joints: {model.joint_count}\")"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "## Creating States and Control\n",
+    "\n",
+    "After finalizing the model, we can create the objects that hold time-varying data, i.e. the data that is changing with each simulation step.\n",
+    "\n",
+    "- **State**: Holds positions, velocities, and forces\n",
+    "- **Control**: Holds user-set control inputs (joint torques, motor commands, etc.)\n",
+    "- **Contacts**: Holds contacts generated by the [collision pipeline](https://newton-physics.github.io/newton/concepts/collisions.html) for processing in the solver\n",
+    "\n",
+    "Some solvers rely on input and output state to be separated in memory when running the `solver.step()` method, including XPBD.\n",
+    "The MuJoCo solver, on the other hand, can be run with just a single state passed in as both input and output states.\n",
+    "\n",
+    "Note that for differentiable simulations you may need to allocate a new state for every substep of the simulation.\n",
+    "To accommodate these different use cases, we leave the memory management of the `State` and `Control` objects up to the user."
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# Create two state objects for time integration\n",
+    "state_0 = model.state()  # Current state\n",
+    "state_1 = model.state()  # Next state\n",
+    "\n",
+    "# The control object is not used in this example, but we create it for completeness\n",
+    "control = model.control()\n",
+    "\n",
+    "# Perform initial collision detection\n",
+    "contacts = model.collide(state_0)\n",
+    "\n",
+    "print(\"State and control objects created\")"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "## Setting Up the Solver\n",
+    "\n",
+    "Newton provides multiple solver implementations. For this example, we use **XPBD** (Extended Position-Based Dynamics).\n",
+    "\n",
+    "For other available solvers and their features/strengths, please refer to the [Solvers feature overview](https://newton-physics.github.io/newton/api/newton_solvers.html#supported-features).\n"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# Create the XPBD solver with 10 constraint iterations\n",
+    "solver = newton.solvers.SolverXPBD(model, iterations=10)\n",
+    "\n",
+    "print(f\"Solver created: {type(solver).__name__}\")"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "## Configuring the Simulation Loop\n",
+    "\n",
+    "Let's set up the simulation parameters and create a simulation function:\n"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# Simulation parameters\n",
+    "fps = 60  # Frames per second for visualization\n",
+    "frame_dt = 1.0 / fps  # Time step per frame\n",
+    "sim_substeps = 10  # Number of physics substeps per frame\n",
+    "sim_dt = frame_dt / sim_substeps  # Physics time step\n",
+    "\n",
+    "print(\"Simulation configured:\")\n",
+    "print(f\"  Frame rate: {fps} Hz\")\n",
+    "print(f\"  Frame dt: {frame_dt:.4f} s\")\n",
+    "print(f\"  Physics substeps: {sim_substeps}\")\n",
+    "print(f\"  Physics dt: {sim_dt:.4f} s\")"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "### The Simulation Function\n",
+    "\n",
+    "The core simulation loop executed for each substep follows this pattern:\n",
+    "\n",
+    "1. Clear forces in `State` that may have been set by the solver or user in the previous step\n",
+    "2. Apply external forces\n",
+    "3. Detect collisions\n",
+    "4. Step the solver forward in time\n",
+    "5. Swap state buffers\n"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "def simulate():\n",
+    "    \"\"\"Run multiple physics substeps for one frame.\"\"\"\n",
+    "    global state_0, state_1\n",
+    "\n",
+    "    for _ in range(sim_substeps):\n",
+    "        # 1. Clear forces in input state\n",
+    "        state_0.clear_forces()\n",
+    "\n",
+    "        # 2. Apply control targets/forces, and viewer picking forces if using the OpenGL viewer\n",
+    "        # update_control(state_0, control)\n",
+    "        # viewer.apply_forces(state_0)\n",
+    "\n",
+    "        # 3. Detect collisions\n",
+    "        contacts = model.collide(state_0)\n",
+    "\n",
+    "        # 4. Step the simulation by one physics timestep\n",
+    "        solver.step(state_in=state_0, state_out=state_1, control=control, contacts=contacts, dt=sim_dt)\n",
+    "\n",
+    "        # 5. Swap states (next becomes current)\n",
+    "        state_0, state_1 = state_1, state_0"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "## GPU Acceleration with CUDA Graphs\n",
+    "\n",
+    "For maximum performance on CUDA devices, we can capture the simulation loop as a CUDA graph. This reduces kernel launch overhead significantly:\n"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# Capture the simulation as a CUDA graph (if running on GPU)\n",
+    "if wp.get_device().is_cuda:\n",
+    "    with wp.ScopedCapture() as capture:\n",
+    "        simulate()\n",
+    "    graph = capture.graph\n",
+    "    print(\"CUDA graph captured for optimized execution\")\n",
+    "else:\n",
+    "    graph = None\n",
+    "    print(\"Running on CPU (no CUDA graph)\")"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "## Visualization\n",
+    "\n",
+    "There are several viewer types available in Newton that can be used to display and/or debug simulations, see the [Visualization section in the docs](https://newton-physics.github.io/newton/guide/visualization.html).\n",
+    "\n",
+    "In this example, we use the [Viser](https://github.com/nerfstudio-project/viser) viewer, which launches a web server and can be embedded in Jupyter notebooks or viewed in a browser."
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# Create the Viser viewer with a path to save the recording\n",
+    "recording_path = Path(\"../_static/recordings/00_introduction.viser\").resolve()\n",
+    "recording_path.parent.mkdir(parents=True, exist_ok=True)\n",
+    "viewer = newton.viewer.ViewerViser(verbose=False, record_to_viser=str(recording_path))\n",
+    "\n",
+    "# Set the model (this logs the static geometry)\n",
+    "viewer.set_model(model)"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "## Running the Simulation\n",
+    "\n",
+    "Now let's run the simulation and visualize it! We'll simulate 500 frames (about 8 seconds at 60 fps).\n"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# Run the simulation\n",
+    "num_frames = 500\n",
+    "sim_time = 0.0  # Current simulation time in seconds\n",
+    "for _ in range(num_frames):\n",
+    "    # Execute the simulation (use CUDA graph if available)\n",
+    "    if graph:\n",
+    "        wp.capture_launch(graph)\n",
+    "    else:\n",
+    "        simulate()\n",
+    "\n",
+    "    # Log the current state to the viewer\n",
+    "    viewer.begin_frame(sim_time)\n",
+    "    viewer.log_state(state_0)\n",
+    "\n",
+    "    # Log contacts to the viewer (not supported by the Viser viewer)\n",
+    "    viewer.log_contacts(contacts, state_0)\n",
+    "    viewer.end_frame()\n",
+    "\n",
+    "    # Advance simulation time\n",
+    "    sim_time += frame_dt\n",
+    "\n",
+    "print(f\"\\nSimulation complete! Total time: {sim_time:.2f} seconds\")\n",
+    "\n",
+    "viewer"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "## Next Steps\n",
+    "\n",
+    "To learn more about Newton:\n",
+    "\n",
+    "- **Examples**: Explore the `newton/examples/` directory for more complex scenarios\n",
+    "- **Documentation**: Visit [newton-physics.github.io](https://newton-physics.github.io/newton/)\n"
+   ]
+  }
+ ],
+ "metadata": {
+  "kernelspec": {
+   "display_name": ".venv",
+   "language": "python",
+   "name": "python3"
+  },
+  "language_info": {
+   "codemirror_mode": {
+    "name": "ipython",
+    "version": 3
+   },
+   "file_extension": ".py",
+   "mimetype": "text/x-python",
+   "name": "python",
+   "nbconvert_exporter": "python",
+   "pygments_lexer": "ipython3",
+   "version": "3.11.12"
+  }
+ },
+ "nbformat": 4,
+ "nbformat_minor": 4
+}

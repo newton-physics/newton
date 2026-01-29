@@ -1,0 +1,8 @@
+﻿newton.ik.IKLMOptimizer
+=======================
+
+.. autoclass:: newton.ik.IKLMOptimizer
+   :members:
+   :undoc-members:
+   :show-inheritance:
+   :member-order: groupwise
