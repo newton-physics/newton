@@ -39,8 +39,12 @@ from .particle_vbd_kernels import (
     ParticleForceElementAdjacencyInfo,
     # Topological filtering helper functions
     _set_to_csr,
+    accumulate_particle_body_contact_force_and_hessian,
+    accumulate_self_contact_force_and_hessian,
     accumulate_spring_force_and_hessian,
-    accumulate_contact_force_and_hessian,
+    # Planar DAT (Divide and Truncate) kernels
+    apply_planar_truncation_parallel_by_collision,
+    apply_truncation_ts,
     build_edge_n_ring_edge_collision_filter,
     build_vertex_n_ring_tris_collision_filter,
     # Adjacency building kernels
@@ -54,14 +58,9 @@ from .particle_vbd_kernels import (
     fill_adjacent_tets,
     # Solver kernels (particle VBD)
     forward_step,
-    update_velocity,
-    # Planar DAT (Divide and Truncate) kernels
-    apply_planar_truncation_parallel_by_collision,
-    apply_truncation_ts,
-    accumulate_particle_body_contact_force_and_hessian,
-    accumulate_self_contact_force_and_hessian,
+    solve_elasticity,
     solve_elasticity_tile,
-    solve_elasticity
+    update_velocity,
 )
 from .rigid_vbd_kernels import (
     _NUM_CONTACT_THREADS_PER_BODY,
@@ -362,8 +361,6 @@ class SolverVBD(SolverBase):
 
         self.use_particle_tile_solve = particle_enable_tile_solve and model.device.is_cuda
 
-
-        soft_contact_max = model.shape_count * model.particle_count
         if particle_enable_self_contact:
             if particle_self_contact_margin < particle_self_contact_radius:
                 raise ValueError(
@@ -403,7 +400,9 @@ class SolverVBD(SolverBase):
                 self.model.edge_count * NUM_THREADS_PER_COLLISION_PRIMITIVE,
             )
         else:
-            self.particle_self_contact_evaluation_kernel_launch_size = self.model.particle_count * NUM_THREADS_PER_COLLISION_PRIMITIVE
+            self.particle_self_contact_evaluation_kernel_launch_size = (
+                self.model.particle_count * NUM_THREADS_PER_COLLISION_PRIMITIVE
+            )
 
         # Particle force and hessian storage
         self.particle_forces = wp.zeros(self.model.particle_count, dtype=wp.vec3, device=self.device)
@@ -419,7 +418,6 @@ class SolverVBD(SolverBase):
         self.pos_prev_collision_detection = wp.zeros_like(model.particle_q, device=self.device)
         self.particle_displacements = wp.zeros(self.model.particle_count, dtype=wp.vec3, device=self.device)
         self.truncation_ts = wp.zeros(self.model.particle_count, dtype=float, device=self.device)
-
 
     def _init_rigid_system(
         self,
@@ -1229,7 +1227,8 @@ class SolverVBD(SolverBase):
                     self.truncation_ts,  # truncation_ts: wp.array(dtype=float),
                     self.particle_displacements,  # displacement_out: wp.array(dtype=wp.vec3),
                     particle_q_out,  # pos_out: wp.array(dtype=wp.vec3),
-                    self.particle_self_contact_margin * self.particle_conservative_bound_relaxation,  # max_displacement: float
+                    self.particle_self_contact_margin
+                    * self.particle_conservative_bound_relaxation,  # max_displacement: float
                 ],
                 device=self.device,
             )
@@ -1268,7 +1267,6 @@ class SolverVBD(SolverBase):
         )
 
         self.penetration_free_truncation(state_out.particle_q)
-
 
     def initialize_rigid_bodies(
         self,
@@ -1608,7 +1606,6 @@ class SolverVBD(SolverBase):
                     device=self.device,
                 )
             else:
-                
                 wp.launch(
                     kernel=solve_elasticity,
                     dim=self.model.particle_color_groups[color].size,
@@ -1641,7 +1638,6 @@ class SolverVBD(SolverBase):
                     device=self.device,
                 )
             self.penetration_free_truncation(state_out.particle_q)
-
 
     def solve_rigid_body_iteration(self, state_in: State, state_out: State, contacts: Contacts | None, dt: float):
         """Solve one AVBD iteration for rigid bodies (per-iteration phase).
@@ -1905,15 +1901,13 @@ class SolverVBD(SolverBase):
         # Early exit if no particles
         if self.model.particle_count == 0:
             return
-            
+
         wp.launch(
             kernel=update_velocity,
             inputs=[dt, self.particle_q_prev, state_out.particle_q, state_out.particle_qd],
             dim=self.model.particle_count,
             device=self.device,
         )
-
-        
 
     def finalize_rigid_bodies(self, state_out: State, dt: float):
         """Finalize rigid body velocities and Dahl friction state after AVBD iterations (post-iteration phase).
