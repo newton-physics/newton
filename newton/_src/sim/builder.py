@@ -986,6 +986,52 @@ class ModelBuilder:
             joint_index: Index of the joint
             custom_attrs: Dictionary of custom attribute names to values
         """
+
+        def apply_indexed_values(
+            *,
+            value: Any,
+            attr_key: str,
+            expected_frequency: ModelAttributeFrequency,
+            index_start: int,
+            index_count: int,
+            index_label: str,
+            count_label: str,
+            length_error_template: str,
+        ) -> None:
+            if isinstance(value, dict):
+                for offset, offset_value in value.items():
+                    if not isinstance(offset, int):
+                        raise TypeError(
+                            f"{expected_frequency.name} attribute '{attr_key}' dict keys must be integers "
+                            f"({index_label} indices), got {type(offset)}"
+                        )
+                    if offset < 0 or offset >= index_count:
+                        raise ValueError(
+                            f"{expected_frequency.name} attribute '{attr_key}' has invalid {index_label} index "
+                            f"{offset} (joint has {index_count} {count_label})"
+                        )
+                    self._process_custom_attributes(
+                        entity_index=index_start + offset,
+                        custom_attrs={attr_key: offset_value},
+                        expected_frequency=expected_frequency,
+                    )
+                return
+
+            value_sanitized = value
+            if not isinstance(value_sanitized, (list, tuple)) and index_count == 1:
+                value_sanitized = [value_sanitized]
+
+            actual = len(value_sanitized)
+            if actual != index_count:
+                raise ValueError(length_error_template.format(attr_key=attr_key, actual=actual, expected=index_count))
+
+            for i, indexed_value in enumerate(value_sanitized):
+                self._process_custom_attributes(
+                    entity_index=index_start + i,
+                    custom_attrs={attr_key: indexed_value},
+                    expected_frequency=expected_frequency,
+                )
+
         for attr_key, value in custom_attrs.items():
             # Look up the attribute to determine its frequency
             custom_attr = self.custom_attributes.get(attr_key)
@@ -1013,43 +1059,16 @@ class ModelBuilder:
                     dof_end = self.joint_dof_count
 
                 dof_count = dof_end - dof_start
-
-                # Check if value is a dict (mapping DOF index to value)
-                if isinstance(value, dict):
-                    # Dict format: only specified DOF indices have values, rest use defaults
-                    for dof_offset, dof_value in value.items():
-                        if not isinstance(dof_offset, int):
-                            raise TypeError(
-                                f"JOINT_DOF attribute '{attr_key}' dict keys must be integers (DOF indices), got {type(dof_offset)}"
-                            )
-                        if dof_offset < 0 or dof_offset >= dof_count:
-                            raise ValueError(
-                                f"JOINT_DOF attribute '{attr_key}' has invalid DOF index {dof_offset} (joint has {dof_count} DOFs)"
-                            )
-                        single_attr = {attr_key: dof_value}
-                        self._process_custom_attributes(
-                            entity_index=dof_start + dof_offset,
-                            custom_attrs=single_attr,
-                            expected_frequency=ModelAttributeFrequency.JOINT_DOF,
-                        )
-                else:
-                    # List format or single value for single-DOF joints
-                    value_sanitized = value
-                    if not isinstance(value_sanitized, (list, tuple)) and dof_count == 1:
-                        value_sanitized = [value_sanitized]
-
-                    actual = len(value_sanitized)
-                    if actual != dof_count:
-                        raise ValueError(f"JOINT_DOF '{attr_key}': got {actual}, expected {dof_count}")
-
-                    # Apply each value to its corresponding DOF
-                    for i, dof_value in enumerate(value_sanitized):
-                        single_attr = {attr_key: dof_value}
-                        self._process_custom_attributes(
-                            entity_index=dof_start + i,
-                            custom_attrs=single_attr,
-                            expected_frequency=ModelAttributeFrequency.JOINT_DOF,
-                        )
+                apply_indexed_values(
+                    value=value,
+                    attr_key=attr_key,
+                    expected_frequency=ModelAttributeFrequency.JOINT_DOF,
+                    index_start=dof_start,
+                    index_count=dof_count,
+                    index_label="DOF",
+                    count_label="DOFs",
+                    length_error_template="JOINT_DOF '{attr_key}': got {actual}, expected {expected}",
+                )
 
             elif custom_attr.frequency == ModelAttributeFrequency.JOINT_COORD:
                 # Values per coordinate - can be list or dict
@@ -1060,44 +1079,18 @@ class ModelBuilder:
                     coord_end = self.joint_coord_count
 
                 coord_count = coord_end - coord_start
-
-                # Check if value is a dict (mapping coord index to value)
-                if isinstance(value, dict):
-                    # Dict format: only specified coord indices have values, rest use defaults
-                    for coord_offset, coord_value in value.items():
-                        if not isinstance(coord_offset, int):
-                            raise TypeError(
-                                f"JOINT_COORD attribute '{attr_key}' dict keys must be integers (coord indices), got {type(coord_offset)}"
-                            )
-                        if coord_offset < 0 or coord_offset >= coord_count:
-                            raise ValueError(
-                                f"JOINT_COORD attribute '{attr_key}' has invalid coord index {coord_offset} (joint has {coord_count} coordinates)"
-                            )
-                        single_attr = {attr_key: coord_value}
-                        self._process_custom_attributes(
-                            entity_index=coord_start + coord_offset,
-                            custom_attrs=single_attr,
-                            expected_frequency=ModelAttributeFrequency.JOINT_COORD,
-                        )
-                else:
-                    # List format or single value for single-coordinate joints
-                    value_sanitized = value
-                    if not isinstance(value_sanitized, (list, tuple)) and coord_count == 1:
-                        value_sanitized = [value_sanitized]
-
-                    if len(value_sanitized) != coord_count:
-                        raise ValueError(
-                            f"JOINT_COORD attribute '{attr_key}' has {len(value_sanitized)} values but joint has {coord_count} coordinates"
-                        )
-
-                    # Apply each value to its corresponding coordinate
-                    for i, coord_value in enumerate(value_sanitized):
-                        single_attr = {attr_key: coord_value}
-                        self._process_custom_attributes(
-                            entity_index=coord_start + i,
-                            custom_attrs=single_attr,
-                            expected_frequency=ModelAttributeFrequency.JOINT_COORD,
-                        )
+                apply_indexed_values(
+                    value=value,
+                    attr_key=attr_key,
+                    expected_frequency=ModelAttributeFrequency.JOINT_COORD,
+                    index_start=coord_start,
+                    index_count=coord_count,
+                    index_label="coord",
+                    count_label="coordinates",
+                    length_error_template=(
+                        "JOINT_COORD attribute '{attr_key}' has {actual} values but joint has {expected} coordinates"
+                    ),
+                )
 
             else:
                 raise ValueError(
