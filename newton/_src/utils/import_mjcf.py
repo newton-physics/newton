@@ -1119,42 +1119,21 @@ def parse_mjcf(
                 # after the base joint itself to not rotate its axis
                 base_parent_xform = wp.transform(_xform.p, wp.quat_identity())
                 base_child_xform = wp.transform((0.0, 0.0, 0.0), wp.quat_inverse(_xform.q))
-                if isinstance(base_joint, str):
-                    axes = base_joint.lower().split(",")
-                    axes = [ax.strip() for ax in axes]
-                    linear_axes = [ax[-1] for ax in axes if ax[0] in {"l", "p"}]
-                    angular_axes = [ax[-1] for ax in axes if ax[0] in {"a", "r"}]
-                    axes = {
-                        "x": [1.0, 0.0, 0.0],
-                        "y": [0.0, 1.0, 0.0],
-                        "z": [0.0, 0.0, 1.0],
-                    }
-                    joint_indices.append(
-                        builder.add_joint_d6(
-                            linear_axes=[ModelBuilder.JointDofConfig(axis=axes[a]) for a in linear_axes],
-                            angular_axes=[ModelBuilder.JointDofConfig(axis=axes[a]) for a in angular_axes],
-                            parent_xform=base_parent_xform,
-                            child_xform=base_child_xform,
-                            parent=-1,
-                            child=link,
-                            key="base_joint",
-                        )
+                joint_indices.append(
+                    builder.add_base_joint(
+                        child=link,
+                        base_joint=base_joint,
+                        key="base_joint",
+                        parent_xform=base_parent_xform,
+                        child_xform=base_child_xform,
                     )
-                elif isinstance(base_joint, dict):
-                    base_joint["parent"] = -1
-                    base_joint["child"] = link
-                    base_joint["parent_xform"] = base_parent_xform
-                    base_joint["child_xform"] = base_child_xform
-                    base_joint["key"] = "base_joint"
-                    joint_indices.append(builder.add_joint(**base_joint))
-                else:
-                    raise ValueError(
-                        "base_joint must be a comma-separated string of joint axes or a dict with joint parameters"
-                    )
+                )
             elif floating is not None and floating:
-                joint_indices.append(builder.add_joint_free(link, key="floating_base"))
+                joint_indices.append(builder.add_base_joint(child=link, floating=True, key="floating_base"))
             else:
-                joint_indices.append(builder.add_joint_fixed(-1, link, parent_xform=world_xform, key="fixed_base"))
+                joint_indices.append(
+                    builder.add_base_joint(child=link, floating=False, key="fixed_base", parent_xform=world_xform)
+                )
 
         else:
             joint_pos = joint_pos[0] if len(joint_pos) > 0 else wp.vec3(0.0, 0.0, 0.0)

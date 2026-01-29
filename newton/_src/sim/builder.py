@@ -6818,12 +6818,14 @@ class ModelBuilder:
         floating: bool | None = None,
         base_joint: dict | str | None = None,
         key: str | None = None,
+        parent_xform: Transform | None = None,
+        child_xform: Transform | None = None,
     ) -> int:
         """
         Adds a base joint connecting a body to the world based on the ``floating`` and ``base_joint`` parameters.
 
         This method is used to attach a floating body to the world frame with the appropriate joint type.
-        The body's current transform is used as the parent transform for the joint.
+        By default, the body's current transform is used as the parent transform for the joint.
 
         Args:
             child (int): The body index to connect to the world.
@@ -6840,15 +6842,22 @@ class ModelBuilder:
                 When specified, this takes precedence over the ``floating`` parameter.
             key (str or None, optional): A unique key for the joint. If not provided, a default
                 key is generated based on the body index.
+            parent_xform (Transform or None, optional): The transform of the joint in the parent (world) frame.
+                If None, defaults to the body's current transform (``body_q[child]``).
+            child_xform (Transform or None, optional): The transform of the joint in the child frame.
+                If None, defaults to identity transform.
 
         Returns:
             int: The index of the created joint.
 
         Note:
-            The body's current transform (``body_q[child]``) is used as the parent transform,
-            effectively placing the joint at the body's current position.
+            When ``parent_xform`` is not provided, the body's current transform (``body_q[child]``)
+            is used as the parent transform, effectively placing the joint at the body's current position.
         """
-        body_xform = self.body_q[child]
+        if parent_xform is None:
+            parent_xform = self.body_q[child]
+        if child_xform is None:
+            child_xform = wp.transform_identity()
 
         if base_joint is not None:
             # Handle base_joint parameter
@@ -6866,8 +6875,8 @@ class ModelBuilder:
                 joint_id = self.add_joint_d6(
                     linear_axes=[ModelBuilder.JointDofConfig(axis=axes_vec[a]) for a in linear_axes_str],
                     angular_axes=[ModelBuilder.JointDofConfig(axis=axes_vec[a]) for a in angular_axes_str],
-                    parent_xform=body_xform,
-                    child_xform=wp.transform_identity(),
+                    parent_xform=parent_xform,
+                    child_xform=child_xform,
                     parent=-1,
                     child=child,
                     key=key,
@@ -6877,8 +6886,8 @@ class ModelBuilder:
                 joint_params = base_joint.copy()
                 joint_params["parent"] = -1
                 joint_params["child"] = child
-                joint_params["parent_xform"] = body_xform
-                joint_params["child_xform"] = wp.transform_identity()
+                joint_params["parent_xform"] = parent_xform
+                joint_params["child_xform"] = child_xform
                 if "key" not in joint_params and key is not None:
                     joint_params["key"] = key
                 joint_id = self.add_joint(**joint_params)
@@ -6888,7 +6897,7 @@ class ModelBuilder:
                 )
         elif floating is not None and not floating:
             # floating=False means fixed joints
-            joint_id = self.add_joint_fixed(-1, child, parent_xform=body_xform, key=key)
+            joint_id = self.add_joint_fixed(-1, child, parent_xform=parent_xform, child_xform=child_xform, key=key)
         else:
             # Default: floating=None or floating=True means free joints
             joint_id = self.add_joint_free(child, key=key)

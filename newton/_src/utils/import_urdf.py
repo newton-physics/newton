@@ -595,45 +595,22 @@ def parse_urdf(
     else:
         base_link_name = next(iter(link_index.keys()))
     root = link_index[base_link_name]
+
     if base_joint is not None:
         # in case of a given base joint, the position is applied first, the rotation only
         # after the base joint itself to not rotate its axis
         base_parent_xform = wp.transform(xform.p, wp.quat_identity())
         base_child_xform = wp.transform((0.0, 0.0, 0.0), wp.quat_inverse(xform.q))
-        if isinstance(base_joint, str):
-            axes = base_joint.lower().split(",")
-            axes = [ax.strip() for ax in axes]
-            linear_axes = [ax[-1] for ax in axes if ax[0] in {"l", "p"}]
-            angular_axes = [ax[-1] for ax in axes if ax[0] in {"a", "r"}]
-            axes = {
-                "x": [1.0, 0.0, 0.0],
-                "y": [0.0, 1.0, 0.0],
-                "z": [0.0, 0.0, 1.0],
-            }
-            joint_indices.append(
-                builder.add_joint_d6(
-                    linear_axes=[ModelBuilder.JointDofConfig(axes[a]) for a in linear_axes],
-                    angular_axes=[ModelBuilder.JointDofConfig(axes[a]) for a in angular_axes],
-                    parent_xform=base_parent_xform,
-                    child_xform=base_child_xform,
-                    parent=-1,
-                    child=root,
-                    key="base_joint",
-                )
-            )
-        elif isinstance(base_joint, dict):
-            base_joint["parent"] = -1
-            base_joint["child"] = root
-            base_joint["parent_xform"] = base_parent_xform
-            base_joint["child_xform"] = base_child_xform
-            base_joint["key"] = "base_joint"
-            joint_indices.append(builder.add_joint(**base_joint))
-        else:
-            raise ValueError(
-                "base_joint must be a comma-separated string of joint axes or a dict with joint parameters"
-            )
+        base_joint_id = builder.add_base_joint(
+            child=root,
+            base_joint=base_joint,
+            key="base_joint",
+            parent_xform=base_parent_xform,
+            child_xform=base_child_xform,
+        )
+        joint_indices.append(base_joint_id)
     elif floating:
-        floating_joint_id = builder.add_joint_free(root, key="floating_base")
+        floating_joint_id = builder.add_base_joint(child=root, floating=True, key="floating_base", parent_xform=xform)
         joint_indices.append(floating_joint_id)
 
         # set dofs to transform for the floating base joint
@@ -648,7 +625,7 @@ def parse_urdf(
         builder.joint_q[start + 5] = xform.q[2]
         builder.joint_q[start + 6] = xform.q[3]
     else:
-        joint_indices.append(builder.add_joint_fixed(-1, root, parent_xform=xform, key="fixed_base"))
+        joint_indices.append(builder.add_base_joint(child=root, floating=False, key="fixed_base", parent_xform=xform))
 
     # add joints, in the desired order starting from root body
     # Track only joints that are actually created (some may be skipped if their child body wasn't inserted).
