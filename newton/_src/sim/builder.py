@@ -59,7 +59,13 @@ from ..geometry.utils import RemeshingMethod, compute_inertia_obb, remesh_mesh
 from ..usd.schema_resolver import SchemaResolver
 from ..utils import compute_world_offsets
 from ..utils.mesh import MeshAdjacency
-from .graph_coloring import ColoringAlgorithm, color_rigid_bodies, combine_independent_particle_coloring, color_graph, construct_particle_graph
+from .graph_coloring import (
+    ColoringAlgorithm,
+    color_graph,
+    color_rigid_bodies,
+    combine_independent_particle_coloring,
+    construct_particle_graph,
+)
 from .joints import (
     ActuatorMode,
     EqType,
@@ -4100,13 +4106,14 @@ class ModelBuilder:
 
     def add_ground_plane(
         self,
-        height=0.0,
+        height: float = 0.0,
         cfg: ShapeConfig | None = None,
         key: str | None = None,
     ) -> int:
         """Adds a ground plane collision shape to the model.
 
         Args:
+            height (float): The vertical offset of the ground plane along the up-vector axis. Positive values raise the plane, negative values lower it. Defaults to `0.0`.
             cfg (ShapeConfig | None): The configuration for the shape's physical and collision properties. If `None`, :attr:`default_shape_cfg` is used. Defaults to `None`.
             key (str | None): An optional unique key for identifying the shape. If `None`, a default key is automatically generated. Defaults to `None`.
 
@@ -5945,7 +5952,7 @@ class ModelBuilder:
                         add_tet(v6, v5, v2, v7)
                         add_tet(v5, v2, v7, v0)
 
-# add surface triangles
+        # add surface triangles
         start_tri = len(self.tri_indices)
         for _k, v in faces.items():
             self.add_triangle(v[0], v[1], v[2], tri_ke, tri_ka, tri_kd, tri_drag, tri_lift)
@@ -6191,7 +6198,6 @@ class ModelBuilder:
         """
         num_nodes = self.particle_count
         if num_nodes != 0:
-
             tri_indices = np.array(self.tri_indices, dtype=np.int32) if self.tri_indices else None
             tri_materials = np.array(self.tri_materials)
             tet_indices = np.array(self.tet_indices, dtype=np.int32) if self.tet_indices else None
@@ -6794,7 +6800,7 @@ class ModelBuilder:
                 m.shape_sdf_block_coords = wp.array([], dtype=wp.vec3us)
                 m.shape_sdf_shape2blocks = wp.array([], dtype=wp.vec2i)
 
-                        # ---------------------
+                # ---------------------
             # springs
 
             m.spring_indices = _to_wp_array(self.spring_indices, wp.int32, requires_grad=False)
