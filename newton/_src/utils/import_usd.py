@@ -1350,6 +1350,7 @@ def parse_usd(
 
     if no_articulations and has_joints:
         # parse external joints that are not part of any articulation
+        orphan_joints = []
         for joint_key, joint_desc in joint_descriptions.items():
             if any(re.match(p, joint_key) for p in ignore_paths):
                 continue
@@ -1360,6 +1361,14 @@ def parse_usd(
             except ValueError as exc:
                 if verbose:
                     print(f"Skipping joint {joint_key}: {exc}")
+            orphan_joints.append(joint_key)
+
+        if len(orphan_joints) > 0:
+            warn_str = f"No articulation was found but {len(orphan_joints)} joints were parsed: [{', '.join(orphan_joints)}]. "
+            warn_str += "Make sure your USD asset includes an articulation root prim with the PhysicsArticulationRootAPI.\n"
+            warn_str += "If you want to proceed with these orphan joints, make sure to call ModelBuilder.finalize(skip_validation_joints=False) "
+            warn_str += "to avoid raising a ValueError. Note that not all solvers will support such a configuration."
+            warnings.warn(warn_str, stacklevel=2)
 
     # parse shapes attached to the rigid bodies
     path_collision_filters = set()

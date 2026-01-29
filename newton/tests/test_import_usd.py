@@ -84,7 +84,9 @@ def Xform "Root" (
         builder = newton.ModelBuilder()
 
         asset_path = newton.examples.get_asset("boxes_fourbar.usda")
-        builder.add_usd(asset_path)
+        with self.assertWarns(UserWarning) as cm:
+            builder.add_usd(asset_path)
+        self.assertIn("No articulation was found but 4 joints were parsed", str(cm.warning))
 
         self.assertEqual(builder.body_count, 4)
         self.assertEqual(builder.joint_type.count(newton.JointType.REVOLUTE), 4)
@@ -99,6 +101,7 @@ def Xform "Root" (
         self.assertEqual(model.joint_type.list().count(newton.JointType.REVOLUTE), 4)
         self.assertEqual(model.joint_type.list().count(newton.JointType.FREE), 0)
         self.assertTrue(all(art_id == -1 for art_id in model.joint_articulation.numpy()))
+
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_import_disabled_joints_create_free_joints(self):
