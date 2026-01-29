@@ -1358,10 +1358,10 @@ def parse_usd(
                 continue
             try:
                 parse_joint(joint_desc, incoming_xform=incoming_world_xform)
+                orphan_joints.append(joint_key)
             except ValueError as exc:
                 if verbose:
                     print(f"Skipping joint {joint_key}: {exc}")
-            orphan_joints.append(joint_key)
 
         if len(orphan_joints) > 0:
             warn_str = (
