@@ -689,6 +689,7 @@ class ModelBuilder:
         self.joint_X_c = []  # frame of child com (in child coordinates)     (constant)
         self.joint_q = []
         self.joint_qd = []
+        self.joint_cts = []
         self.joint_f = []
 
         self.joint_type = []
@@ -758,6 +759,17 @@ class ModelBuilder:
         self.equality_constraint_key = []
         self.equality_constraint_enabled = []
         self.equality_constraint_world = []
+
+        # per-world entity start indices
+        self.world_particle_start = []
+        self.world_body_start = []
+        self.world_shape_start = []
+        self.world_joint_start = []
+        self.world_articulation_start = []
+        self.world_equality_constraint_start = []
+        self.world_joint_dof_start = []
+        self.world_joint_coord_start = []
+        self.world_joint_constraint_start = []
 
         # Custom attributes (user-defined per-frequency arrays)
         self.custom_attributes: dict[str, ModelBuilder.CustomAttribute] = {}
@@ -1890,6 +1902,7 @@ class ModelBuilder:
         start_joint_idx = self.joint_count
         start_joint_dof_idx = self.joint_dof_count
         start_joint_coord_idx = self.joint_coord_count
+        start_joint_constraint_idx = self.joint_constraint_count
         start_articulation_idx = self.articulation_count
         start_equality_constraint_idx = len(self.equality_constraint_type)
 
@@ -2055,6 +2068,7 @@ class ModelBuilder:
             "joint_dof_dim",
             "joint_key",
             "joint_qd",
+            "joint_cts",
             "joint_f",
             "joint_target_pos",
             "joint_target_vel",
@@ -2113,6 +2127,7 @@ class ModelBuilder:
 
         self.joint_dof_count += builder.joint_dof_count
         self.joint_coord_count += builder.joint_coord_count
+        self.joint_constraint_count += builder.joint_constraint_count
 
         # Merge custom attributes from the sub-builder
         # Shared offset map for both frequency and references
@@ -2123,6 +2138,7 @@ class ModelBuilder:
             "joint": start_joint_idx,
             "joint_dof": start_joint_dof_idx,
             "joint_coord": start_joint_coord_idx,
+            "joint_constraint": start_joint_constraint_idx,
             "articulation": start_articulation_idx,
             "equality_constraint": start_equality_constraint_idx,
         }
@@ -2538,6 +2554,8 @@ class ModelBuilder:
         for _ in range(dof_count):
             self.joint_qd.append(0.0)
             self.joint_f.append(0.0)
+        for _ in range(cts_count):
+            self.joint_cts.append(0.0)
 
         if joint_type == JointType.FREE or joint_type == JointType.DISTANCE or joint_type == JointType.BALL:
             # ensure that a valid quaternion is used for the angular dofs
@@ -3460,14 +3478,17 @@ class ModelBuilder:
             if i < self.joint_count - 1:
                 q_dim = self.joint_q_start[i + 1] - q_start
                 qd_dim = self.joint_qd_start[i + 1] - qd_start
+                cts_dim = self.joint_cts_start[i + 1] - cts_start
             else:
                 q_dim = len(self.joint_q) - q_start
                 qd_dim = len(self.joint_qd) - qd_start
+                cts_dim = len(self.joint_cts) - cts_start
 
             data = {
                 "type": self.joint_type[i],
                 "q": self.joint_q[q_start : q_start + q_dim],
                 "qd": self.joint_qd[qd_start : qd_start + qd_dim],
+                "cts": self.joint_cts[cts_start : cts_start + cts_dim],
                 "armature": self.joint_armature[qd_start : qd_start + qd_dim],
                 "q_start": q_start,
                 "qd_start": qd_start,
@@ -3689,8 +3710,10 @@ class ModelBuilder:
         self.joint_child.clear()
         self.joint_q.clear()
         self.joint_qd.clear()
+        self.joint_cts.clear()
         self.joint_q_start.clear()
         self.joint_qd_start.clear()
+        self.joint_cts_start.clear()
         self.joint_enabled.clear()
         self.joint_armature.clear()
         self.joint_X_p.clear()
@@ -3715,8 +3738,10 @@ class ModelBuilder:
             self.joint_child.append(body_remap[joint["child"]])
             self.joint_q_start.append(len(self.joint_q))
             self.joint_qd_start.append(len(self.joint_qd))
+            self.joint_cts_start.append(len(self.joint_cts))
             self.joint_q.extend(joint["q"])
             self.joint_qd.extend(joint["qd"])
+            self.joint_cts.extend(joint["cts"])
             self.joint_armature.extend(joint["armature"])
             self.joint_enabled.append(joint["enabled"])
             self.joint_X_p.append(joint["parent_xform"])
@@ -3744,6 +3769,9 @@ class ModelBuilder:
                 self.joint_target_pos.append(axis["target_pos"])
                 self.joint_target_vel.append(axis["target_vel"])
                 self.joint_effort_limit.append(axis["effort_limit"])
+
+        # Reset the constraint count based on the retained joints
+        self.joint_constraint_count = len(self.joint_cts)
 
         # Remap equality constraint body/joint indices and transform anchors for merged bodies
         for i in range(len(self.equality_constraint_body1)):
@@ -6296,6 +6324,206 @@ class ModelBuilder:
             )
         return len(shapes_with_bad_margin) == 0
 
+    def _build_world_starts(self):
+        """
+        Constructs the per-world entity start indices.
+
+        This method validates that the per-world start index lists for various entities
+        (particles, bodies, shapes, joints, articulations, equality constraints and joint
+        coordinates/DOFs/constraints) are cumulative and match the total counts of those
+        entities. Moreover, it appends the start of tail-end global entities and the
+        overall total counts to the end of each start index lists.
+
+        The format of the start index lists is as follows (where `*` can be `body`, `shape`, `joint`, etc.):
+            .. code-block:: python
+
+                world_*_start = [ start_world_0, start_world_1, ..., start_world_N , start_global_tail, total_count]
+
+        This allows retrieval of per-world counts using:
+            .. code-block:: python
+
+                global_*_count = start_world_0 + (total_count - start_global_tail)
+                world_*_count[w] = world_*_start[w + 1] - world_*_start[w]
+
+        e.g.
+            .. code-block:: python
+
+                body_world = [-1, -1, 0, 0, ..., 1, 1, ..., N - 1, N - 1, ..., -1, -1, -1, ...]
+                world_body_start = [2, 15, 25, ..., 50, 60, 72]
+                #          world :  -1 |  0 |  1   ... |  N-1 | -1 |  total
+        """
+        # List of all world starts of entities
+        world_entity_start_arrays = [
+            (self.world_particle_start, self.particle_count, self.particle_world, "particle"),
+            (self.world_body_start, self.body_count, self.body_world, "body"),
+            (self.world_shape_start, self.shape_count, self.shape_world, "shape"),
+            (self.world_joint_start, self.joint_count, self.joint_world, "joint"),
+            (self.world_articulation_start, self.articulation_count, self.articulation_world, "articulation"),
+            (
+                self.world_equality_constraint_start,
+                len(self.equality_constraint_type),
+                self.equality_constraint_world,
+                "equality constraint",
+            ),
+        ]
+
+        def build_entity_start_array(
+            entity_count: int, entity_world: list[int], world_entity_start: list[int], name: str
+        ):
+            # Ensure that entity_world has length equal to entity_count
+            if len(entity_world) != entity_count:
+                raise ValueError(
+                    f"World array for {name}s has incorrect length: expected {entity_count}, found {len(entity_world)}."
+                )
+
+            # Initialize world_entity_start with zeros
+            world_entity_start.clear()
+            world_entity_start.extend([0] * (self.num_worlds + 2))
+
+            # Count global entities at the front of the entity_world array
+            front_global_entity_count = 0
+            for w in entity_world:
+                if w == -1:
+                    front_global_entity_count += 1
+                else:
+                    break
+            world_entity_start[0] = front_global_entity_count
+
+            # Compute per-world cumulative counts
+            entity_world_np = np.asarray(entity_world, dtype=np.int32)
+            world_counts = np.bincount(entity_world_np[entity_world_np >= 0], minlength=self.num_worlds)
+            for w in range(self.num_worlds):
+                world_entity_start[w + 1] = world_entity_start[w] + int(world_counts[w])
+
+            # Set the last element to the total entity counts over all worlds in the model
+            world_entity_start[-1] = entity_count
+
+        # Check that all world offset indices are cumulative and match counts
+        for world_start_array, total_count, entity_world_array, name in world_entity_start_arrays:
+            # First build the start lists by appending tail-end global and total entity counts
+            build_entity_start_array(total_count, entity_world_array, world_start_array, name)
+
+            # Ensure the world_start array has length num_worlds + 2 (for global entities at start/end)
+            expected_length = self.num_worlds + 2
+            if len(world_start_array) != expected_length:
+                raise ValueError(
+                    f"World start indices for {name}s have incorrect length: "
+                    f"expected {expected_length}, found {len(world_start_array)}."
+                )
+
+            # Ensure that per-world start indices are non-decreasing and compute sum of per-world counts
+            sum_of_counts = world_start_array[0]
+            for w in range(self.num_worlds + 1):
+                start_idx = world_start_array[w]
+                end_idx = world_start_array[w + 1]
+                count = end_idx - start_idx
+                if count < 0:
+                    raise ValueError(
+                        f"Invalid world start indices for {name}s: world {w} has negative count ({count}). "
+                        f"Start index: {start_idx}, end index: {end_idx}."
+                    )
+                sum_of_counts += count
+
+            # Ensure the sum of per-world counts equals the total count
+            if sum_of_counts != total_count:
+                raise ValueError(
+                    f"Sum of per-world {name} counts does not equal total count: "
+                    f"expected {total_count}, found {sum_of_counts}."
+                )
+
+            # Ensure that the last entry equals the total count
+            if world_start_array[-1] != total_count:
+                raise ValueError(
+                    f"World start indices for {name}s do not match total count: "
+                    f"expected final index {total_count}, found {world_start_array[-1]}."
+                )
+
+        # List of world starts of joints spaces, i.e. coords/DOFs/constraints
+        world_joint_space_start_arrays = [
+            (self.world_joint_dof_start, self.joint_qd_start, self.joint_dof_count, "joint DOF"),
+            (self.world_joint_coord_start, self.joint_q_start, self.joint_coord_count, "joint coordinate"),
+            (self.world_joint_constraint_start, self.joint_cts_start, self.joint_constraint_count, "joint constraint"),
+        ]
+
+        def build_joint_space_start_array(
+            space_count: int, joint_space_start: list[int], world_space_start: list[int], name: str
+        ):
+            # Ensure that joint_space_start has length equal to self.joint_count
+            if len(joint_space_start) != self.joint_count:
+                raise ValueError(
+                    f"Joint start array for {name}s has incorrect length: "
+                    f"expected {self.joint_count}, found {len(joint_space_start)}."
+                )
+
+            # Initialize world_space_start with zeros
+            world_space_start.clear()
+            world_space_start.extend([0] * (self.num_worlds + 2))
+
+            # Extend joint_space_start with total count to enable computing per-world counts
+            joint_space_start_ext = copy.copy(joint_space_start)
+            joint_space_start_ext.append(space_count)
+
+            # Count global entities at the front of the entity_world array
+            front_global_space_count = 0
+            for j, w in enumerate(self.joint_world):
+                if w == -1:
+                    front_global_space_count += joint_space_start_ext[j + 1] - joint_space_start_ext[j]
+                else:
+                    break
+
+            # Compute per-world cumulative joint space counts to initialize world_space_start
+            for j, w in enumerate(self.joint_world):
+                if w >= 0:
+                    world_space_start[w + 1] += joint_space_start_ext[j + 1] - joint_space_start_ext[j]
+
+            # Convert per-world counts to cumulative start indices
+            world_space_start[0] += front_global_space_count
+            for w in range(self.num_worlds):
+                world_space_start[w + 1] += world_space_start[w]
+
+            # Add total (i.e. final) entity counts to the per-world start indices
+            world_space_start[-1] = space_count
+
+        # Check that all world offset indices are cumulative and match counts
+        for world_start_array, space_start_array, total_count, name in world_joint_space_start_arrays:
+            # First finalize the start array by appending tail-end global and total entity counts
+            build_joint_space_start_array(total_count, space_start_array, world_start_array, name)
+
+            # Ensure the world_start array has length num_worlds + 2 (for global entities at start/end)
+            expected_length = self.num_worlds + 2
+            if len(world_start_array) != expected_length:
+                raise ValueError(
+                    f"World start indices for {name}s have incorrect length: "
+                    f"expected {expected_length}, found {len(world_start_array)}."
+                )
+
+            # Ensure that per-world start indices are non-decreasing and compute sum of per-world counts
+            sum_of_counts = world_start_array[0]
+            for w in range(self.num_worlds + 1):
+                start_idx = world_start_array[w]
+                end_idx = world_start_array[w + 1]
+                count = end_idx - start_idx
+                if count < 0:
+                    raise ValueError(
+                        f"Invalid world start indices for {name}s: world {w} has negative count ({count}). "
+                        f"Start index: {start_idx}, end index: {end_idx}."
+                    )
+                sum_of_counts += count
+
+            # Ensure the sum of per-world counts equals the total count
+            if sum_of_counts != total_count:
+                raise ValueError(
+                    f"Sum of per-world {name} counts does not equal total count: "
+                    f"expected {total_count}, found {sum_of_counts}."
+                )
+
+            # Ensure that the last entry equals the total count
+            if world_start_array[-1] != total_count:
+                raise ValueError(
+                    f"World start indices for {name}s do not match total count: "
+                    f"expected final index {total_count}, found {world_start_array[-1]}."
+                )
+
     def finalize(
         self,
         device: Devicelike | None = None,
@@ -6343,6 +6571,11 @@ class ModelBuilder:
         # validate shapes have valid contact margins
         if not skip_validation_shapes:
             self._validate_shapes()
+
+        # construct world starts by ensuring they are cumulative and appending
+        # tail-end global counts and sum total counts over the entire model.
+        # This method also performs relevant validation checks on the start.
+        self._build_world_starts()
 
         # construct particle inv masses
         ms = np.array(self.particle_mass, dtype=np.float32)
@@ -6879,6 +7112,7 @@ class ModelBuilder:
             m.articulation_world = wp.array(self.articulation_world, dtype=wp.int32)
             m.max_joints_per_articulation = max_joints_per_articulation
 
+            # ---------------------
             # equality constraints
             m.equality_constraint_type = wp.array(self.equality_constraint_type, dtype=wp.int32)
             m.equality_constraint_body1 = wp.array(self.equality_constraint_body1, dtype=wp.int32)
@@ -6895,6 +7129,19 @@ class ModelBuilder:
             m.equality_constraint_enabled = wp.array(self.equality_constraint_enabled, dtype=wp.bool)
             m.equality_constraint_world = wp.array(self.equality_constraint_world, dtype=wp.int32)
 
+            # ---------------------
+            # per-world start indices
+            m.world_particle_start = wp.array(self.world_particle_start, dtype=wp.int32)
+            m.world_body_start = wp.array(self.world_body_start, dtype=wp.int32)
+            m.world_shape_start = wp.array(self.world_shape_start, dtype=wp.int32)
+            m.world_joint_start = wp.array(self.world_joint_start, dtype=wp.int32)
+            m.world_articulation_start = wp.array(self.world_articulation_start, dtype=wp.int32)
+            m.world_equality_constraint_start = wp.array(self.world_equality_constraint_start, dtype=wp.int32)
+            m.world_joint_dof_start = wp.array(self.world_joint_dof_start, dtype=wp.int32)
+            m.world_joint_coord_start = wp.array(self.world_joint_coord_start, dtype=wp.int32)
+            m.world_joint_constraint_start = wp.array(self.world_joint_constraint_start, dtype=wp.int32)
+
+            # ---------------------
             # counts
             m.joint_count = self.joint_count
             m.joint_dof_count = self.joint_dof_count
