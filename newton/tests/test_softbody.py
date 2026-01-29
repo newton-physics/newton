@@ -4,12 +4,12 @@ import numpy as np
 import warp as wp
 
 from newton._src.sim.builder import ModelBuilder
-from newton._src.solvers.vbd.solver_vbd import SolverVBD
 from newton._src.solvers.vbd.particle_vbd_kernels import (
     evaluate_volumetric_neo_hookean_force_and_hessian,
     mat43,
     vec9,
 )
+from newton._src.solvers.vbd.solver_vbd import SolverVBD
 from newton.tests.unittest_utils import add_function_test, get_test_devices
 
 
@@ -49,8 +49,10 @@ def compute_neo_hookean_energy_and_force_and_hessian(
         pos,  # dont need damping
         pos,
         tet_indices,
-        tet_poses,
-        tet_materials,
+        tet_poses[tet_id],
+        tet_materials[tet_id, 0],  # k_mu
+        tet_materials[tet_id, 1],  # k_lambda
+        tet_materials[tet_id, 2],  # k_damp (was incorrectly [0,3] which is out of bounds!)
         dt,
     )
 
@@ -91,17 +93,7 @@ def compute_neo_hookean_energy_and_force(
     diff_1 = v1 - v0
     diff_2 = v2 - v0
     diff_3 = v3 - v0
-    Ds = wp.mat33(
-        diff_1[0],
-        diff_2[0],
-        diff_3[0],
-        diff_1[1],
-        diff_2[1],
-        diff_3[1],
-        diff_1[2],
-        diff_2[2],
-        diff_3[2],
-    )
+    Ds = wp.matrix_from_cols(diff_1, diff_2, diff_3)
 
     F = Ds * Dm_inv
 
@@ -345,7 +337,7 @@ def test_tet_adjacency_complex_pyramid(test, device):
 
     solver = SolverVBD(model)
 
-    adjacency = solver.compute_force_element_adjacency(model)
+    adjacency = solver.compute_particle_force_element_adjacency()
 
     exp_offsets, exp_flat = _expected_tet_adjacency(len(PYRAMID_PARTICLES), PYRAMID_TET_INDICES)
     np.testing.assert_array_equal(adjacency.v_adj_tets_offsets.numpy(), exp_offsets)
@@ -446,7 +438,16 @@ def test_tet_energy(test, device):
 
         particle_force_auto_diff = -state.particle_q.grad.numpy()
         particle_forces_analytical_1 = particle_forces.numpy().copy().reshape(4, -1)
-        test.assertTrue(np.isclose(particle_force_auto_diff, particle_forces_analytical_1, rtol=1.0e-4, atol=0.1).all())
+
+        force_autodiff_comparison = np.isclose(
+            particle_force_auto_diff, particle_forces_analytical_1, rtol=1.0e-4, atol=0.1
+        )
+        if not force_autodiff_comparison.all():
+            print("\n=== Autodiff Force vs Analytical Force Mismatch ===")
+            print("autodiff force:\n", particle_force_auto_diff)
+            print("\nanalytical force:\n", particle_forces_analytical_1)
+            print("\ndifference:\n", particle_force_auto_diff - particle_forces_analytical_1)
+        test.assertTrue(force_autodiff_comparison.all())
 
         # calculate hessians using auto diff
         particle_hessian_auto_diff = np.zeros((4, 3, 3), dtype=np.float32)
@@ -482,17 +483,16 @@ def test_tet_energy(test, device):
         )
         particle_forces_analytical_2 = particle_forces_vec3.numpy()
         particle_hessian_analytical = particle_hessian.numpy()
-        test.assertTrue(
-            np.isclose(particle_forces_analytical_2, particle_forces_analytical_1, rtol=1.0e-4, atol=0.1).all()
-        )
+
+        force_comparison = np.isclose(particle_forces_analytical_2, particle_forces_analytical_1, rtol=1.0e-4, atol=0.1)
+        if not force_comparison.all():
+            print("\n=== Force Mismatch ===")
+            print("force from compute_neo_hookean_energy_and_force:\n", particle_forces_analytical_1)
+            print("\nforce from compute_neo_hookean_energy_and_force_and_hessian:\n", particle_forces_analytical_2)
+            print("\ndifference:\n", particle_forces_analytical_2 - particle_forces_analytical_1)
+        test.assertTrue(force_comparison.all())
 
         for i in range(4):
-            # print(
-            #     "autodiff hessian:\n",
-            #     particle_hessian_auto_diff[i],
-            #     "\nanalytical hessian: \n",
-            #     particle_hessian_analytical[i],
-            # )
             test.assertTrue(
                 np.isclose(particle_hessian_auto_diff[i], particle_hessian_analytical[i], rtol=1.0e-2, atol=0.1).all()
             )
