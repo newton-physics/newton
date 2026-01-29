@@ -2047,15 +2047,11 @@ class TestImportMjcf(unittest.TestCase):
         MuJoCo solref format: [timeconst, dampratio]
         - Standard mode (timeconst > 0): ke = 1/(tc^2 * dr^2), kd = 2/tc
         - Direct mode (both negative): ke = -tc, kd = -dr
-
-        Note: solref is only parsed when explicitly specified in MJCF.
-        If not specified, Newton's ShapeConfig defaults (ke=1000, kd=100) are used.
         """
         mjcf_content = """
         <mujoco>
             <worldbody>
                 <body name="test_body">
-                    <!-- No solref -> uses Newton defaults: ke=1000, kd=100 -->
                     <geom name="geom_default" type="box" size="0.1 0.1 0.1"/>
                     <!-- Custom solref [0.04, 1.0] -> ke=625, kd=50 -->
                     <geom name="geom_custom" type="sphere" size="0.1" solref="0.04 1.0"/>
