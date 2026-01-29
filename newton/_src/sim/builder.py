@@ -65,7 +65,7 @@ from .joints import (
     JointType,
     get_joint_dof_count,
 )
-from .model import Model, ModelAttributeAssignment, ModelAttributeFrequency
+from .model import Model
 
 
 class ModelBuilder:
@@ -357,7 +357,7 @@ class ModelBuilder:
         """
         Represents a custom attribute definition for the ModelBuilder.
         This is used to define custom attributes that are not part of the standard ModelBuilder API.
-        Custom attributes can be defined for the :class:`~newton.Model`, :class:`~newton.State`, :class:`~newton.Control`, or :class:`~newton.Contacts` objects, depending on the :class:`ModelAttributeAssignment` category.
+        Custom attributes can be defined for the :class:`~newton.Model`, :class:`~newton.State`, :class:`~newton.Control`, or :class:`~newton.Contacts` objects, depending on the :class:`Model.AttributeAssignment` category.
         Custom attributes must be declared before use via the :meth:`newton.ModelBuilder.add_custom_attribute` method.
 
         See :ref:`custom_attributes` for more information.
@@ -369,18 +369,18 @@ class ModelBuilder:
         dtype: type
         """Warp dtype (e.g., wp.float32, wp.int32, wp.bool, wp.vec3) that is compatible with Warp arrays."""
 
-        frequency: ModelAttributeFrequency | str
+        frequency: Model.AttributeFrequency | str
         """Frequency category that determines how the attribute is indexed in the Model.
 
         Can be either:
-            - A :class:`ModelAttributeFrequency` enum value for built-in frequencies (BODY, SHAPE, JOINT, etc.)
+            - A :class:`Model.AttributeFrequency` enum value for built-in frequencies (BODY, SHAPE, JOINT, etc.)
               Uses dict-based storage where keys are entity indices, allowing sparse assignment.
             - A string for custom frequencies (e.g., ``"mujoco:pair"``). Uses list-based storage for
               sequential data appended via :meth:`add_custom_values`. All attributes sharing the same
               custom frequency must have the same count, validated at finalize time."""
 
-        assignment: ModelAttributeAssignment = ModelAttributeAssignment.MODEL
-        """Assignment category (see :class:`ModelAttributeAssignment`), defaults to :attr:`ModelAttributeAssignment.MODEL`"""
+        assignment: Model.AttributeAssignment = Model.AttributeAssignment.MODEL
+        """Assignment category (see :class:`Model.AttributeAssignment`), defaults to :attr:`Model.AttributeAssignment.MODEL`"""
 
         namespace: str | None = None
         """Namespace for the attribute. If None, the attribute is added directly to the assigned object without a namespace."""
@@ -470,7 +470,7 @@ class ModelBuilder:
             return f"{self.namespace}:{self.name}" if self.namespace else self.name
 
         @property
-        def frequency_key(self) -> ModelAttributeFrequency | str:
+        def frequency_key(self) -> Model.AttributeFrequency | str:
             """Return the resolved frequency, with namespace prepended for custom string frequencies.
 
             For string frequencies: returns "namespace:frequency" if namespace is set, otherwise just "frequency".
@@ -490,7 +490,7 @@ class ModelBuilder:
 
             Returns:
                 True if the frequency is a string (custom frequency), False if it's a
-                ModelAttributeFrequency enum (built-in frequency like BODY, SHAPE, etc.).
+                Model.AttributeFrequency enum (built-in frequency like BODY, SHAPE, etc.).
             """
             return isinstance(self.frequency, str)
 
@@ -772,10 +772,10 @@ class ModelBuilder:
                 builder.add_custom_attribute(
                     newton.ModelBuilder.CustomAttribute(
                         name="my_attribute",
-                        frequency=newton.ModelAttributeFrequency.BODY,
+                        frequency=newton.Model.AttributeFrequency.BODY,
                         dtype=wp.float32,
                         default=20.0,
-                        assignment=newton.ModelAttributeAssignment.MODEL,
+                        assignment=newton.Model.AttributeAssignment.MODEL,
                         namespace="my_namespace",
                     )
                 )
@@ -814,7 +814,7 @@ class ModelBuilder:
         return key in self.custom_attributes
 
     def get_custom_attributes_by_frequency(
-        self, frequencies: Sequence[ModelAttributeFrequency]
+        self, frequencies: Sequence[Model.AttributeFrequency]
     ) -> list[CustomAttribute]:
         """
         Get custom attributes by frequency.
@@ -912,7 +912,7 @@ class ModelBuilder:
         self,
         entity_index: int | list[int],
         custom_attrs: dict[str, Any],
-        expected_frequency: ModelAttributeFrequency,
+        expected_frequency: Model.AttributeFrequency,
     ) -> None:
         """Process custom attributes from kwargs and assign them to an entity.
 
@@ -991,7 +991,7 @@ class ModelBuilder:
             *,
             value: Any,
             attr_key: str,
-            expected_frequency: ModelAttributeFrequency,
+            expected_frequency: Model.AttributeFrequency,
             index_start: int,
             index_count: int,
             index_label: str,
@@ -1042,15 +1042,15 @@ class ModelBuilder:
                 )
 
             # Process based on declared frequency
-            if custom_attr.frequency == ModelAttributeFrequency.JOINT:
+            if custom_attr.frequency == Model.AttributeFrequency.JOINT:
                 # Single value per joint
                 self._process_custom_attributes(
                     entity_index=joint_index,
                     custom_attrs={attr_key: value},
-                    expected_frequency=ModelAttributeFrequency.JOINT,
+                    expected_frequency=Model.AttributeFrequency.JOINT,
                 )
 
-            elif custom_attr.frequency == ModelAttributeFrequency.JOINT_DOF:
+            elif custom_attr.frequency == Model.AttributeFrequency.JOINT_DOF:
                 # Values per DOF - can be list or dict
                 dof_start = self.joint_qd_start[joint_index]
                 if joint_index + 1 < len(self.joint_qd_start):
@@ -1062,7 +1062,7 @@ class ModelBuilder:
                 apply_indexed_values(
                     value=value,
                     attr_key=attr_key,
-                    expected_frequency=ModelAttributeFrequency.JOINT_DOF,
+                    expected_frequency=Model.AttributeFrequency.JOINT_DOF,
                     index_start=dof_start,
                     index_count=dof_count,
                     index_label="DOF",
@@ -1070,7 +1070,7 @@ class ModelBuilder:
                     length_error_template="JOINT_DOF '{attr_key}': got {actual}, expected {expected}",
                 )
 
-            elif custom_attr.frequency == ModelAttributeFrequency.JOINT_COORD:
+            elif custom_attr.frequency == Model.AttributeFrequency.JOINT_COORD:
                 # Values per coordinate - can be list or dict
                 coord_start = self.joint_q_start[joint_index]
                 if joint_index + 1 < len(self.joint_q_start):
@@ -1082,7 +1082,7 @@ class ModelBuilder:
                 apply_indexed_values(
                     value=value,
                     attr_key=attr_key,
-                    expected_frequency=ModelAttributeFrequency.JOINT_COORD,
+                    expected_frequency=Model.AttributeFrequency.JOINT_COORD,
                     index_start=coord_start,
                     index_count=coord_count,
                     index_label="coord",
@@ -1339,7 +1339,7 @@ class ModelBuilder:
             self._process_custom_attributes(
                 entity_index=articulation_idx,
                 custom_attrs=custom_attributes,
-                expected_frequency=ModelAttributeFrequency.ARTICULATION,
+                expected_frequency=Model.AttributeFrequency.ARTICULATION,
             )
 
     # region importers
@@ -2055,9 +2055,9 @@ class ModelBuilder:
             if isinstance(freq_key, str):
                 # Custom frequency: offset by pre-merge count
                 index_offset = custom_frequency_offsets.get(freq_key, 0)
-            elif attr.frequency == ModelAttributeFrequency.ONCE:
+            elif attr.frequency == Model.AttributeFrequency.ONCE:
                 index_offset = 0
-            elif attr.frequency == ModelAttributeFrequency.WORLD:
+            elif attr.frequency == Model.AttributeFrequency.WORLD:
                 # WORLD frequency: indices are keyed by world index, not by offset
                 # When called via add_world(), current_world is the world being added
                 index_offset = 0 if self.current_world == -1 else self.current_world
@@ -2245,7 +2245,7 @@ class ModelBuilder:
             self._process_custom_attributes(
                 entity_index=body_id,
                 custom_attrs=custom_attributes,
-                expected_frequency=ModelAttributeFrequency.BODY,
+                expected_frequency=Model.AttributeFrequency.BODY,
             )
 
         return body_id
@@ -2342,7 +2342,7 @@ class ModelBuilder:
             child_xform (Transform): The transform of the joint in the child body's local frame. If None, the identity transform is used.
             collision_filter_parent (bool): Whether to filter collisions between shapes of the parent and child bodies.
             enabled (bool): Whether the joint is enabled (not considered by :class:`SolverFeatherstone`).
-            custom_attributes: Dictionary of custom attribute keys (see :attr:`CustomAttribute.key`) to values. Note that custom attributes with frequency :attr:`ModelAttributeFrequency.JOINT_DOF` or :attr:`ModelAttributeFrequency.JOINT_COORD` can be provided as: (1) lists with length equal to the joint's DOF or coordinate count, (2) dicts mapping DOF/coordinate indices to values, or (3) scalar values for single-DOF/single-coordinate joints (automatically expanded to lists). Custom attributes with frequency :attr:`ModelAttributeFrequency.JOINT` require a single value to be defined.
+            custom_attributes: Dictionary of custom attribute keys (see :attr:`CustomAttribute.key`) to values. Note that custom attributes with frequency :attr:`Model.AttributeFrequency.JOINT_DOF` or :attr:`Model.AttributeFrequency.JOINT_COORD` can be provided as: (1) lists with length equal to the joint's DOF or coordinate count, (2) dicts mapping DOF/coordinate indices to values, or (3) scalar values for single-DOF/single-coordinate joints (automatically expanded to lists). Custom attributes with frequency :attr:`Model.AttributeFrequency.JOINT` require a single value to be defined.
 
         Returns:
             The index of the added joint.
@@ -3048,7 +3048,7 @@ class ModelBuilder:
             self._process_custom_attributes(
                 entity_index=constraint_idx,
                 custom_attrs=custom_attributes,
-                expected_frequency=ModelAttributeFrequency.EQUALITY_CONSTRAINT,
+                expected_frequency=Model.AttributeFrequency.EQUALITY_CONSTRAINT,
             )
 
         return constraint_idx
@@ -3848,7 +3848,7 @@ class ModelBuilder:
             self._process_custom_attributes(
                 entity_index=shape,
                 custom_attrs=custom_attributes,
-                expected_frequency=ModelAttributeFrequency.SHAPE,
+                expected_frequency=Model.AttributeFrequency.SHAPE,
             )
 
         return shape
@@ -4880,7 +4880,7 @@ class ModelBuilder:
             self._process_custom_attributes(
                 entity_index=particle_id,
                 custom_attrs=custom_attributes,
-                expected_frequency=ModelAttributeFrequency.PARTICLE,
+                expected_frequency=Model.AttributeFrequency.PARTICLE,
             )
 
         return particle_id
@@ -4928,7 +4928,7 @@ class ModelBuilder:
             self._process_custom_attributes(
                 entity_index=particle_indices,
                 custom_attrs=custom_attributes,
-                expected_frequency=ModelAttributeFrequency.PARTICLE,
+                expected_frequency=Model.AttributeFrequency.PARTICLE,
             )
 
     def add_spring(
@@ -4976,7 +4976,7 @@ class ModelBuilder:
             self._process_custom_attributes(
                 entity_index=spring_index,
                 custom_attrs=custom_attributes,
-                expected_frequency=ModelAttributeFrequency.SPRING,
+                expected_frequency=Model.AttributeFrequency.SPRING,
             )
 
     def add_triangle(
@@ -5058,7 +5058,7 @@ class ModelBuilder:
                 self._process_custom_attributes(
                     entity_index=tri_index,
                     custom_attrs=custom_attributes,
-                    expected_frequency=ModelAttributeFrequency.TRIANGLE,
+                    expected_frequency=Model.AttributeFrequency.TRIANGLE,
                 )
             return area
 
@@ -5166,7 +5166,7 @@ class ModelBuilder:
             self._process_custom_attributes(
                 entity_index=tri_indices,
                 custom_attrs=custom_attributes,
-                expected_frequency=ModelAttributeFrequency.TRIANGLE,
+                expected_frequency=Model.AttributeFrequency.TRIANGLE,
             )
         return areas
 
@@ -5232,7 +5232,7 @@ class ModelBuilder:
                 self._process_custom_attributes(
                     entity_index=tet_index,
                     custom_attrs=custom_attributes,
-                    expected_frequency=ModelAttributeFrequency.TETRAHEDRON,
+                    expected_frequency=Model.AttributeFrequency.TETRAHEDRON,
                 )
 
         return volume
@@ -5303,7 +5303,7 @@ class ModelBuilder:
             self._process_custom_attributes(
                 entity_index=edge_index,
                 custom_attrs=custom_attributes,
-                expected_frequency=ModelAttributeFrequency.EDGE,
+                expected_frequency=Model.AttributeFrequency.EDGE,
             )
 
         return edge_index
@@ -5392,7 +5392,7 @@ class ModelBuilder:
             self._process_custom_attributes(
                 entity_index=edge_indices,
                 custom_attrs=custom_attributes,
-                expected_frequency=ModelAttributeFrequency.EDGE,
+                expected_frequency=Model.AttributeFrequency.EDGE,
             )
 
     def add_cloth_grid(
@@ -6858,25 +6858,25 @@ class ModelBuilder:
                 if isinstance(freq_key, str):
                     # Custom frequency: count determined by validated frequency count
                     count = custom_frequency_counts.get(freq_key, 0)
-                elif freq_key == ModelAttributeFrequency.ONCE:
+                elif freq_key == Model.AttributeFrequency.ONCE:
                     count = 1
-                elif freq_key == ModelAttributeFrequency.BODY:
+                elif freq_key == Model.AttributeFrequency.BODY:
                     count = m.body_count
-                elif freq_key == ModelAttributeFrequency.SHAPE:
+                elif freq_key == Model.AttributeFrequency.SHAPE:
                     count = m.shape_count
-                elif freq_key == ModelAttributeFrequency.JOINT:
+                elif freq_key == Model.AttributeFrequency.JOINT:
                     count = m.joint_count
-                elif freq_key == ModelAttributeFrequency.JOINT_DOF:
+                elif freq_key == Model.AttributeFrequency.JOINT_DOF:
                     count = m.joint_dof_count
-                elif freq_key == ModelAttributeFrequency.JOINT_COORD:
+                elif freq_key == Model.AttributeFrequency.JOINT_COORD:
                     count = m.joint_coord_count
-                elif freq_key == ModelAttributeFrequency.ARTICULATION:
+                elif freq_key == Model.AttributeFrequency.ARTICULATION:
                     count = m.articulation_count
-                elif freq_key == ModelAttributeFrequency.WORLD:
+                elif freq_key == Model.AttributeFrequency.WORLD:
                     count = m.num_worlds
-                elif freq_key == ModelAttributeFrequency.EQUALITY_CONSTRAINT:
+                elif freq_key == Model.AttributeFrequency.EQUALITY_CONSTRAINT:
                     count = m.equality_constraint_count
-                elif freq_key == ModelAttributeFrequency.PARTICLE:
+                elif freq_key == Model.AttributeFrequency.PARTICLE:
                     count = m.particle_count
                 else:
                     continue

@@ -30,9 +30,11 @@ from ..core import quat_between_axes
 from ..core.types import Axis, Transform
 from ..geometry import MESH_MAXHULLVERT, ShapeFlags, compute_sphere_inertia
 from ..sim.builder import ModelBuilder
-from ..sim.model import ModelAttributeFrequency
+from ..sim.model import Model
 from ..usd import utils as usd
 from ..usd.schema_resolver import PrimType, SchemaResolver, SchemaResolverManager
+
+AttributeFrequency = Model.AttributeFrequency
 
 
 def parse_usd(
@@ -967,22 +969,22 @@ def parse_usd(
     # Note that at this time we may have more custom attributes than before since they may have been
     # declared on the PhysicsScene prim.
     builder_custom_attr_shape: list[ModelBuilder.CustomAttribute] = builder.get_custom_attributes_by_frequency(
-        [ModelAttributeFrequency.SHAPE]
+        [AttributeFrequency.SHAPE]
     )
     builder_custom_attr_body: list[ModelBuilder.CustomAttribute] = builder.get_custom_attributes_by_frequency(
-        [ModelAttributeFrequency.BODY]
+        [AttributeFrequency.BODY]
     )
     builder_custom_attr_joint: list[ModelBuilder.CustomAttribute] = builder.get_custom_attributes_by_frequency(
-        [ModelAttributeFrequency.JOINT, ModelAttributeFrequency.JOINT_DOF, ModelAttributeFrequency.JOINT_COORD]
+        [AttributeFrequency.JOINT, AttributeFrequency.JOINT_DOF, AttributeFrequency.JOINT_COORD]
     )
     builder_custom_attr_articulation: list[ModelBuilder.CustomAttribute] = builder.get_custom_attributes_by_frequency(
-        [ModelAttributeFrequency.ARTICULATION]
+        [AttributeFrequency.ARTICULATION]
     )
 
     if physics_scene_prim is not None:
         # Extract custom attributes for model (ONCE) frequency from the PhysicsScene prim
         builder_custom_attr_model: list[ModelBuilder.CustomAttribute] = [
-            attr for attr in builder.custom_attributes.values() if attr.frequency == ModelAttributeFrequency.ONCE
+            attr for attr in builder.custom_attributes.values() if attr.frequency == AttributeFrequency.ONCE
         ]
         scene_custom_attrs = usd.get_custom_attribute_values(physics_scene_prim, builder_custom_attr_model)
         scene_attributes.update(scene_custom_attrs)

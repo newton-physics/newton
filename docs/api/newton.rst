@@ -30,8 +30,6 @@ newton
    JointType
    Mesh
    Model
-   ModelAttributeAssignment
-   ModelAttributeFrequency
    ModelBuilder
    ParticleFlags
    SAPSortType

@@ -27,7 +27,7 @@ from .joints import (
     JointType,
     get_joint_dof_count,
 )
-from .model import Model, ModelAttributeAssignment, ModelAttributeFrequency
+from .model import Model
 from .state import State
 from .style3d import Style3DModel, Style3DModelBuilder
 
@@ -41,8 +41,6 @@ __all__ = [
     "EqType",
     "JointType",
     "Model",
-    "ModelAttributeAssignment",
-    "ModelAttributeFrequency",
     "ModelBuilder",
     "State",
     "Style3DModel",
