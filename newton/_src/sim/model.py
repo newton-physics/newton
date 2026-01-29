@@ -586,8 +586,9 @@ class Model:
             requires_grad = self.requires_grad
 
         # time-keeping
-        s.step = wp.zeros((self.num_worlds,), dtype=wp.int32)
-        s.time = wp.zeros((self.num_worlds,), dtype=wp.float32)
+        with wp.ScopedDevice(self.device):
+            s.step = wp.zeros((self.num_worlds,), dtype=wp.int32)
+            s.time = wp.zeros((self.num_worlds,), dtype=wp.float32)
 
         # particles
         if self.particle_count:
