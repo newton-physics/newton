@@ -39,6 +39,7 @@ from ...sim import (
 )
 from ...utils import topological_sort
 from ...utils.benchmark import event_scope
+from ...utils.import_utils import parse_warp_value_from_string
 from ..flags import SolverNotifyFlags
 from ..solver import SolverBase
 from .kernels import (
@@ -163,32 +164,36 @@ class SolverMuJoCo(SolverBase):
         return cls._mujoco, cls._mujoco_warp
 
     @staticmethod
-    def _convert_angle_value(value: Any, context: dict[str, Any]) -> Any:
-        """Convert angle values (deg to rad) for angular joints.
+    def _angle_value_transformer(value: str, context: dict[str, Any] | None) -> float:
+        """Transform angle values from MJCF, converting deg to rad for angular joints.
 
         For attributes like springref and ref that represent angles,
-        multiply by pi/180 when use_degrees=True and joint is angular.
+        parses the string value and multiplies by pi/180 when use_degrees=True and joint is angular.
         """
-        joint_type = context.get("joint_type")
-        use_degrees = context.get("use_degrees", False)
-        is_angular = joint_type in ["hinge", "ball"]
-        if is_angular and use_degrees:
-            return value * (np.pi / 180)
-        return value
+        parsed = parse_warp_value_from_string(value, wp.float32, 0.0)
+        if context is not None:
+            joint_type = context.get("joint_type")
+            use_degrees = context.get("use_degrees", False)
+            is_angular = joint_type in ["hinge", "ball"]
+            if is_angular and use_degrees:
+                return parsed * (np.pi / 180)
+        return parsed
 
     @staticmethod
-    def _convert_per_angle_value(value: Any, context: dict[str, Any]) -> Any:
-        """Convert per-angle values (Nm/deg to Nm/rad) for angular joints.
+    def _per_angle_value_transformer(value: str, context: dict[str, Any] | None) -> float:
+        """Transform per-angle values from MJCF, converting Nm/deg to Nm/rad for angular joints.
 
-        For attributes like stiffness and damping that have angle in the denominator,
-        multiply by 180/pi when use_degrees=True and joint is angular.
+        For attributes like stiffness (Nm/rad) and damping (Nm·s/rad) that have angle in the denominator,
+        parses the string value and multiplies by 180/pi when use_degrees=True and joint is angular.
         """
-        joint_type = context.get("joint_type")
-        use_degrees = context.get("use_degrees", False)
-        is_angular = joint_type in ["hinge", "ball"]
-        if is_angular and use_degrees:
-            return value * (180 / np.pi)
-        return value
+        parsed = parse_warp_value_from_string(value, wp.float32, 0.0)
+        if context is not None:
+            joint_type = context.get("joint_type")
+            use_degrees = context.get("use_degrees", False)
+            is_angular = joint_type in ["hinge", "ball"]
+            if is_angular and use_degrees:
+                return parsed * (180 / np.pi)
+        return parsed
 
     @override
     @classmethod
@@ -324,7 +329,7 @@ class SolverMuJoCo(SolverBase):
                 namespace="mujoco",
                 usd_attribute_name="mjc:stiffness",
                 mjcf_attribute_name="stiffness",
-                value_converter=cls._convert_per_angle_value,
+                mjcf_value_transformer=cls._per_angle_value_transformer,
             )
         )
         builder.add_custom_attribute(
@@ -337,7 +342,7 @@ class SolverMuJoCo(SolverBase):
                 namespace="mujoco",
                 usd_attribute_name="mjc:damping",
                 mjcf_attribute_name="damping",
-                value_converter=cls._convert_per_angle_value,
+                mjcf_value_transformer=cls._per_angle_value_transformer,
             )
         )
         builder.add_custom_attribute(
@@ -350,7 +355,7 @@ class SolverMuJoCo(SolverBase):
                 namespace="mujoco",
                 usd_attribute_name="mjc:springref",
                 mjcf_attribute_name="springref",
-                value_converter=cls._convert_angle_value,
+                mjcf_value_transformer=cls._angle_value_transformer,
             )
         )
         builder.add_custom_attribute(
@@ -363,7 +368,7 @@ class SolverMuJoCo(SolverBase):
                 namespace="mujoco",
                 usd_attribute_name="mjc:ref",
                 mjcf_attribute_name="ref",
-                value_converter=cls._convert_angle_value,
+                mjcf_value_transformer=cls._angle_value_transformer,
             )
         )
         builder.add_custom_attribute(

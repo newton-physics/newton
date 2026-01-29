@@ -421,17 +421,14 @@ class ModelBuilder:
         urdf_attribute_name: str | None = None
         """Name of the attribute in the URDF definition. If None, the attribute name is used."""
 
-        usd_value_transformer: Callable[[Any], Any] | None = None
-        """Transformer function that converts a USD attribute value to a valid Warp dtype. If undefined, the generic converter from :func:`newton.usd.convert_warp_value` is used."""
+        usd_value_transformer: Callable[[Any, dict[str, Any] | None], Any] | None = None
+        """Transformer function that converts a USD attribute value to a valid Warp dtype. If undefined, the generic converter from :func:`newton.usd.convert_warp_value` is used. Receives an optional context dict with parsing-time information."""
 
-        mjcf_value_transformer: Callable[[str], Any] | None = None
-        """Transformer function that converts a MJCF attribute value string to a valid Warp dtype. If undefined, the generic converter from :func:`newton.utils.parse_warp_value_from_string` is used."""
+        mjcf_value_transformer: Callable[[str, dict[str, Any] | None], Any] | None = None
+        """Transformer function that converts a MJCF attribute value string to a valid Warp dtype. If undefined, the generic converter from :func:`newton.utils.parse_warp_value_from_string` is used. Receives an optional context dict with parsing-time information (e.g., use_degrees, joint_type)."""
 
-        urdf_value_transformer: Callable[[str], Any] | None = None
-        """Transformer function that converts a URDF attribute value string to a valid Warp dtype. If undefined, the generic converter from :func:`newton.utils.parse_warp_value_from_string` is used."""
-
-        value_converter: Callable[[Any, dict[str, Any]], Any] | None = None
-        """Converter function that transforms the parsed value using a context dict. Called after the value transformer with signature ``value_converter(value, context) -> converted_value``. If None, no conversion is applied."""
+        urdf_value_transformer: Callable[[str, dict[str, Any] | None], Any] | None = None
+        """Transformer function that converts a URDF attribute value string to a valid Warp dtype. If undefined, the generic converter from :func:`newton.utils.parse_warp_value_from_string` is used. Receives an optional context dict with parsing-time information."""
 
         def __post_init__(self):
             """Initialize default values and validate dtype compatibility."""
