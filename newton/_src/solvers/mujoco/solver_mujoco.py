@@ -530,7 +530,7 @@ class SolverMuJoCo(SolverBase):
             )
 
         def parse_dyntype(s: str) -> int:
-            return {"none": 0, "integrator": 1, "filter": 2, "filterexact": 3, "muscle": 4}.get(s.lower(), 0)
+            return {"none": 0, "integrator": 1, "filter": 2, "filterexact": 3, "muscle": 4, "user": 5}.get(s.lower(), 0)
 
         def parse_gaintype(s: str) -> int:
             return {"fixed": 0, "affine": 1, "muscle": 2, "user": 3}.get(s.lower(), 0)

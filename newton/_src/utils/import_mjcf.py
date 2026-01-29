@@ -1818,7 +1818,7 @@ def parse_mjcf(
                 source_name = (
                     "CTRL_DIRECT" if ctrl_source_val == SolverMuJoCo.CtrlSource.CTRL_DIRECT else "JOINT_TARGET"
                 )
-                trn_name = {0: "joint", 1: "tendon", 4: "body"}.get(trntype, "unknown")
+                trn_name = {0: "joint", 2: "tendon", 4: "body"}.get(trntype, "unknown")
                 print(
                     f"{actuator_type.capitalize()} actuator '{act_name}' on {trn_name} '{target_name_for_log}': "
                     f"trntype={trntype}, source={source_name}"
