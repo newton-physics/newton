@@ -1164,7 +1164,9 @@ class SolverMuJoCo(SolverBase):
 
         return tendon_count, joint_entry_count
 
-    def _init_tendons(self, model: Model, spec, joint_mapping: dict[int, str], template_world: int) -> list[int]:
+    def _init_tendons(
+        self, model: Model, spec, joint_mapping: dict[int, str], template_world: int
+    ) -> tuple[list[int], list[str]]:
         """
         Initialize MuJoCo fixed tendons from custom attributes.
 
@@ -1178,14 +1180,14 @@ class SolverMuJoCo(SolverBase):
             template_world: The world index to use as the template (typically first_group).
 
         Returns:
-            list[int]: List of Newton tendon indices that were added to MuJoCo (in order).
+            tuple[list[int], list[str]]: Tuple of (Newton tendon indices, MuJoCo tendon names).
         """
 
         # Count the number of tendons (tendon_count)
         # Count the length of the arrays that contains the joint indices of all tendons (joint_entry_count)
         tendon_count, joint_entry_count = self._validate_tendon_attributes(model)
         if tendon_count == 0:
-            return []
+            return [], []
 
         mujoco_attrs = model.mujoco
 
@@ -1232,8 +1234,9 @@ class SolverMuJoCo(SolverBase):
 
         model_joint_type_np = model.joint_type.numpy()
 
-        # Track which Newton tendon indices are added to MuJoCo
+        # Track which Newton tendon indices are added to MuJoCo and their names
         selected_tendons: list[int] = []
+        tendon_names: list[str] = []
 
         for i in range(tendon_count):
             # Only include tendons from the template world or global tendons (world < 0)
@@ -1244,8 +1247,11 @@ class SolverMuJoCo(SolverBase):
             # Track this tendon
             selected_tendons.append(i)
 
-            # Create tendon
+            # Create tendon with a unique name
+            tendon_name = f"tendon_{i}"
+            tendon_names.append(tendon_name)
             t = spec.add_tendon()
+            t.name = tendon_name
 
             # Set tendon properties
             if tendon_stiffness_np is not None:
@@ -1329,7 +1335,7 @@ class SolverMuJoCo(SolverBase):
 
                 t.wrap_joint(joint_name, coef)
 
-        return selected_tendons
+        return selected_tendons, tendon_names
 
     def _init_actuators(
         self,
@@ -1341,6 +1347,8 @@ class SolverMuJoCo(SolverBase):
         mjc_actuator_to_newton_idx_list: list[int],
         dof_to_mjc_joint: np.ndarray,
         mjc_joint_names: list[str],
+        selected_tendons: list[int],
+        mjc_tendon_names: list[str],
     ) -> int:
         """Initialize MuJoCo general actuators from custom attributes.
 
@@ -1418,6 +1426,14 @@ class SolverMuJoCo(SolverBase):
                         print(f"Warning: MuJoCo actuator {mujoco_act_idx} DOF {dof_idx} not mapped to MuJoCo joint")
                     continue
                 target_name = mjc_joint_names[mjc_joint_idx]
+            elif trntype == 2:  # TrnType.TENDON
+                try:
+                    mjc_tendon_idx = selected_tendons.index(target_idx)
+                    target_name = mjc_tendon_names[mjc_tendon_idx]
+                except (ValueError, IndexError):
+                    if wp.config.verbose:
+                        print(f"Warning: MuJoCo actuator {mujoco_act_idx} references tendon {target_idx} not in MuJoCo")
+                    continue
             elif trntype == 4:  # TrnType.BODY
                 if target_idx < 0 or target_idx >= len(model.body_key):
                     if wp.config.verbose:
@@ -1425,7 +1441,7 @@ class SolverMuJoCo(SolverBase):
                     continue
                 target_name = model.body_key[target_idx]
             else:
-                # TODO: Support tendon, site, slidercrank, and jointinparent transmission types
+                # TODO: Support site, slidercrank, and jointinparent transmission types
                 if wp.config.verbose:
                     print(f"Warning: MuJoCo actuator {mujoco_act_idx} has unsupported trntype {trntype}")
                 continue
@@ -3159,6 +3175,8 @@ class SolverMuJoCo(SolverBase):
         # add explicit contact pairs from custom attributes
         self._init_pairs(model, spec, shape_mapping, first_world)
 
+        selected_tendons, mjc_tendon_names = self._init_tendons(model, spec, joint_mapping, first_world)
+
         # Process MuJoCo general actuators (motor, general, etc.) from custom attributes
         actuator_count += self._init_actuators(
             model,
@@ -3169,6 +3187,8 @@ class SolverMuJoCo(SolverBase):
             mjc_actuator_to_newton_idx_list,
             dof_to_mjc_joint,
             mjc_joint_names,
+            selected_tendons,
+            mjc_tendon_names,
         )
 
         # Convert actuator mapping lists to warp arrays
@@ -3186,9 +3206,6 @@ class SolverMuJoCo(SolverBase):
         else:
             self.mjc_actuator_ctrl_source = None
             self.mjc_actuator_to_newton_idx = None
-
-        # add fixed tendons from custom attributes
-        selected_tendons = self._init_tendons(model, spec, joint_mapping, first_world)
 
         self.mj_model = spec.compile()
         self.mj_data = mujoco.MjData(self.mj_model)

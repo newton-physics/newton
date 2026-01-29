@@ -51,6 +51,12 @@ MJCF_ACTUATORS = """<?xml version="1.0" encoding="utf-8"?>
             </body>
         </body>
     </worldbody>
+    <tendon>
+        <fixed name="tendon1">
+            <joint joint="joint_motor" coef="1.0"/>
+            <joint joint="joint_general" coef="-0.5"/>
+        </fixed>
+    </tendon>
     <actuator>
         <motor name="motor1" joint="joint_motor"/>
         <position name="pos1" joint="joint_pos_vel" kp="100"/>
@@ -59,6 +65,7 @@ MJCF_ACTUATORS = """<?xml version="1.0" encoding="utf-8"?>
         <velocity name="vel2" joint="joint_velocity" kv="20"/>
         <general name="gen1" joint="joint_general" gainprm="50 0 0" biasprm="0 -50 -5" ctrlrange="-1 1" ctrllimited="true"/>
         <general name="body1" body="floating" gainprm="30 0 0" biasprm="0 0 0"/>
+        <motor name="tendon_motor1" tendon="tendon1" gear="2.0"/>
     </actuator>
 </mujoco>
 """
@@ -95,7 +102,7 @@ class TestMuJoCoActuators(unittest.TestCase):
 
         model = builder.finalize()
 
-        self.assertEqual(model.custom_frequency_counts.get("mujoco:actuator", 0), 7)
+        self.assertEqual(model.custom_frequency_counts.get("mujoco:actuator", 0), 8)
 
         joint_act_mode = model.joint_act_mode.numpy()
         joint_target_ke = model.joint_target_ke.numpy()
@@ -120,12 +127,14 @@ class TestMuJoCoActuators(unittest.TestCase):
             self.assertEqual(ctrl_source[i], SolverMuJoCo.CtrlSource.JOINT_TARGET)
         self.assertEqual(ctrl_source[5], SolverMuJoCo.CtrlSource.CTRL_DIRECT)
         self.assertEqual(ctrl_source[6], SolverMuJoCo.CtrlSource.CTRL_DIRECT)
+        self.assertEqual(ctrl_source[7], SolverMuJoCo.CtrlSource.CTRL_DIRECT)  # tendon actuator
 
         newton_gainprm = model.mujoco.actuator_gainprm.numpy()
         newton_biasprm = model.mujoco.actuator_biasprm.numpy()
         newton_ctrllimited = model.mujoco.actuator_ctrllimited.numpy()
         newton_ctrlrange = model.mujoco.actuator_ctrlrange.numpy()
         newton_trntype = model.mujoco.actuator_trntype.numpy()
+        newton_gear = model.mujoco.actuator_gear.numpy()
 
         self.assertEqual(joint_target_ke[get_qd_start(builder, "joint_pos_vel")], 100.0)
         self.assertEqual(joint_target_kd[get_qd_start(builder, "joint_pos_vel")], 10.0)
@@ -138,12 +147,16 @@ class TestMuJoCoActuators(unittest.TestCase):
         np.testing.assert_allclose(newton_ctrlrange[5], [-1.0, 1.0], atol=1e-5)
         self.assertEqual(newton_trntype[5], 0)
         np.testing.assert_allclose(newton_gainprm[6, :3], [30.0, 0.0, 0.0], atol=1e-5)
-        self.assertEqual(newton_trntype[6], 4)
+        self.assertEqual(newton_trntype[6], 4)  # body
+        # Tendon actuator
+        np.testing.assert_allclose(newton_gainprm[7, :3], [1.0, 0.0, 0.0], atol=1e-5)  # motor default
+        self.assertEqual(newton_trntype[7], 2)  # tendon
+        np.testing.assert_allclose(newton_gear[7], [2.0, 0.0, 0.0, 0.0, 0.0, 0.0], atol=1e-5)
 
         solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
         mj_model = solver.mj_model
 
-        self.assertEqual(mj_model.nu, 7)
+        self.assertEqual(mj_model.nu, 8)
         self.assertEqual(mj_model.nq, 12)
         self.assertEqual(mj_model.nv, 11)
 
@@ -161,6 +174,11 @@ class TestMuJoCoActuators(unittest.TestCase):
                 np.testing.assert_allclose(
                     mj_model.actuator_biasprm[mj_idx, :3],
                     newton_biasprm[newton_idx, :3],
+                    atol=1e-5,
+                )
+                np.testing.assert_allclose(
+                    mj_model.actuator_gear[mj_idx],
+                    newton_gear[newton_idx],
                     atol=1e-5,
                 )
             else:
@@ -195,7 +213,7 @@ class TestMuJoCoActuators(unittest.TestCase):
 
         model = builder.finalize()
 
-        self.assertEqual(model.custom_frequency_counts.get("mujoco:actuator", 0), 7)
+        self.assertEqual(model.custom_frequency_counts.get("mujoco:actuator", 0), 8)
 
         joint_act_mode = model.joint_act_mode.numpy()
         self.assertEqual(joint_act_mode[get_qd_start(builder, "joint_motor")], int(ActuatorMode.NONE))
@@ -205,16 +223,20 @@ class TestMuJoCoActuators(unittest.TestCase):
         self.assertEqual(joint_act_mode[get_qd_start(builder, "joint_general")], int(ActuatorMode.NONE))
 
         ctrl_source = model.mujoco.ctrl_source.numpy()
-        for i in range(7):
+        for i in range(8):
             self.assertEqual(ctrl_source[i], SolverMuJoCo.CtrlSource.CTRL_DIRECT)
 
         newton_gainprm = model.mujoco.actuator_gainprm.numpy()
         newton_biasprm = model.mujoco.actuator_biasprm.numpy()
 
+        # Verify tendon actuator trntype
+        newton_trntype = model.mujoco.actuator_trntype.numpy()
+        self.assertEqual(newton_trntype[7], 2)  # tendon
+
         solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
         mj_model = solver.mj_model
 
-        self.assertEqual(mj_model.nu, 7)
+        self.assertEqual(mj_model.nu, 8)
         self.assertEqual(mj_model.nq, 12)
         self.assertEqual(mj_model.nv, 11)
 
@@ -243,28 +265,29 @@ class TestMuJoCoActuators(unittest.TestCase):
         main_builder.add_world(robot_builder)
         model = main_builder.finalize()
 
-        self.assertEqual(model.custom_frequency_counts.get("mujoco:actuator", 0), 14)
+        self.assertEqual(model.custom_frequency_counts.get("mujoco:actuator", 0), 16)
 
         actuator_world = model.mujoco.actuator_world.numpy()
-        self.assertEqual(len(actuator_world), 14)
-        for i in range(7):
+        self.assertEqual(len(actuator_world), 16)
+        for i in range(8):
             self.assertEqual(actuator_world[i], 0)
-        for i in range(7, 14):
+        for i in range(8, 16):
             self.assertEqual(actuator_world[i], 1)
 
         ctrl_source = model.mujoco.ctrl_source.numpy()
         for w in range(2):
-            offset = w * 7
+            offset = w * 8
             self.assertEqual(ctrl_source[offset + 0], SolverMuJoCo.CtrlSource.CTRL_DIRECT)
             for i in range(1, 5):
                 self.assertEqual(ctrl_source[offset + i], SolverMuJoCo.CtrlSource.JOINT_TARGET)
             self.assertEqual(ctrl_source[offset + 5], SolverMuJoCo.CtrlSource.CTRL_DIRECT)
             self.assertEqual(ctrl_source[offset + 6], SolverMuJoCo.CtrlSource.CTRL_DIRECT)
+            self.assertEqual(ctrl_source[offset + 7], SolverMuJoCo.CtrlSource.CTRL_DIRECT)  # tendon
 
         solver = SolverMuJoCo(model, iterations=1, disable_contacts=True, separate_worlds=True)
         mj_model = solver.mj_model
 
-        self.assertEqual(mj_model.nu, 7)
+        self.assertEqual(mj_model.nu, 8)
         self.assertEqual(mj_model.nq, 12)
         self.assertEqual(mj_model.nv, 11)
 
@@ -295,10 +318,10 @@ class TestMuJoCoActuators(unittest.TestCase):
         main_builder.add_world(robot_builder)
         model = main_builder.finalize()
 
-        self.assertEqual(model.custom_frequency_counts.get("mujoco:actuator", 0), 14)
+        self.assertEqual(model.custom_frequency_counts.get("mujoco:actuator", 0), 16)
 
         ctrl_source = model.mujoco.ctrl_source.numpy()
-        for i in range(14):
+        for i in range(16):
             self.assertEqual(ctrl_source[i], SolverMuJoCo.CtrlSource.CTRL_DIRECT)
 
         newton_gainprm = model.mujoco.actuator_gainprm.numpy()
@@ -307,7 +330,7 @@ class TestMuJoCoActuators(unittest.TestCase):
         solver = SolverMuJoCo(model, iterations=1, disable_contacts=True, separate_worlds=True)
         mj_model = solver.mj_model
 
-        self.assertEqual(mj_model.nu, 7)
+        self.assertEqual(mj_model.nu, 8)
         self.assertEqual(mj_model.nq, 12)
         self.assertEqual(mj_model.nv, 11)
 
@@ -332,7 +355,7 @@ class TestMuJoCoActuators(unittest.TestCase):
         for world in range(2):
             for mj_idx in range(mj_model.nu):
                 newton_idx = mjc_to_newton[mj_idx]
-                world_newton_idx = world * 7 + newton_idx
+                world_newton_idx = world * 8 + newton_idx
                 np.testing.assert_allclose(
                     mjw_gainprm[world, mj_idx, :3],
                     newton_gainprm[world_newton_idx, :3],
@@ -461,7 +484,7 @@ class TestMuJoCoActuators(unittest.TestCase):
         new_gainprm = model.mujoco.actuator_gainprm.numpy()
         new_biasprm = model.mujoco.actuator_biasprm.numpy()
 
-        actuators_per_world = 7
+        actuators_per_world = 8
         for world in range(2):
             offset = world * actuators_per_world
             new_gainprm[offset + 5, 0] = 150.0 + world * 50

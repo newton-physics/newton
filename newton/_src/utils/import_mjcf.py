@@ -1437,6 +1437,9 @@ def parse_mjcf(
     # Maps individual MJCF joint names to their specific DOF index.
     # Used to resolve actuators targeting specific joints within combined Newton joints.
     mjcf_joint_name_to_dof: dict[str, int] = {}
+    # Maps tendon names to their index in the tendon custom attributes.
+    # Used to resolve actuators targeting tendons.
+    tendon_name_to_idx: dict[str, int] = {}
 
     world = root.find("worldbody")
     world_class = get_class(world)
@@ -1564,6 +1567,7 @@ def parse_mjcf(
     def parse_tendons(tendon_section):
         for fixed in tendon_section.findall("fixed"):
             tendon_name = fixed.attrib.get("name", "")
+            tendon_idx = len(tendon_name_to_idx)
 
             # Parse joint elements within this fixed tendon
             joint_entries = []
@@ -1622,6 +1626,10 @@ def parse_mjcf(
 
             builder.add_custom_values(**tendon_values)
 
+            # Track tendon name for actuator resolution
+            if tendon_name:
+                tendon_name_to_idx[sanitize_name(tendon_name)] = tendon_idx
+
             if verbose:
                 joint_names_str = ", ".join(f"{builder.joint_key[j]}*{c}" for j, c in joint_entries)
                 print(f"Parsed fixed tendon: {tendon_name} ({joint_names_str})")
@@ -1647,12 +1655,15 @@ def parse_mjcf(
             actuator_type = actuator_elem.tag  # position, velocity, motor, general
             joint_name = actuator_elem.attrib.get("joint")
             body_name = actuator_elem.attrib.get("body")
+            tendon_name = actuator_elem.attrib.get("tendon")
 
             # Sanitize names to match how they were stored in the builder
             if joint_name:
                 joint_name = sanitize_name(joint_name)
             if body_name:
                 body_name = sanitize_name(body_name)
+            if tendon_name:
+                tendon_name = sanitize_name(tendon_name)
 
             # Determine transmission type and target
             trntype = 0  # Default: joint
@@ -1692,9 +1703,19 @@ def parse_mjcf(
                 target_idx = body_idx
                 target_name_for_log = body_name
                 trntype = 4  # TrnType.BODY
+            elif tendon_name:
+                # Tendon transmission (trntype=2 in MuJoCo)
+                if tendon_name not in tendon_name_to_idx:
+                    if verbose:
+                        print(f"Warning: {actuator_type} actuator references unknown tendon '{tendon_name}'")
+                    continue
+                tendon_idx = tendon_name_to_idx[tendon_name]
+                target_idx = tendon_idx
+                target_name_for_log = tendon_name
+                trntype = 2  # TrnType.TENDON
             else:
                 if verbose:
-                    print(f"Warning: {actuator_type} actuator has no joint or body target, skipping")
+                    print(f"Warning: {actuator_type} actuator has no joint, body, or tendon target, skipping")
                 continue
 
             act_name = actuator_elem.attrib.get("name", f"{actuator_type}_{target_name_for_log}")
@@ -1794,8 +1815,10 @@ def parse_mjcf(
             builder.add_custom_values(**actuator_values)
 
             if verbose:
-                source_name = "CTRL_DIRECT" if ctrl_source_val == SolverMuJoCo.CtrlSource.CTRL_DIRECT else "JOINT_TARGET"
-                trn_name = "body" if trntype == 4 else "joint"
+                source_name = (
+                    "CTRL_DIRECT" if ctrl_source_val == SolverMuJoCo.CtrlSource.CTRL_DIRECT else "JOINT_TARGET"
+                )
+                trn_name = {0: "joint", 1: "tendon", 4: "body"}.get(trntype, "unknown")
                 print(
                     f"{actuator_type.capitalize()} actuator '{act_name}' on {trn_name} '{target_name_for_log}': "
                     f"trntype={trntype}, source={source_name}"
