@@ -800,6 +800,168 @@ def compare_mjdata_field(
         )
 
 
+# Fields in MjWarpModel.opt with (nworld, ...) dimension that can be batched.
+# From mujoco_warp/_src/types.py Option class: fields marked with array("*", ...)
+MJWARP_OPT_BATCHED_FIELDS: list[str] = [
+    "timestep",
+    "tolerance",
+    "ls_tolerance",
+    "ccd_tolerance",
+    "density",
+    "viscosity",
+    "gravity",
+    "wind",
+    "magnetic",
+    "impratio_invsqrt",
+]
+
+# Fields in MjWarpModel with (nworld, ...) dimension that can be batched/randomized.
+# From mujoco_warp/_src/types.py: fields marked with (*, ...) in their dimension specs.
+MJWARP_MODEL_BATCHED_FIELDS: list[str] = [
+    # qpos
+    "qpos0",
+    "qpos_spring",
+    # body
+    "body_pos",
+    "body_quat",
+    "body_ipos",
+    "body_iquat",
+    "body_mass",
+    "body_subtreemass",
+    "body_inertia",
+    "body_invweight0",
+    "body_gravcomp",
+    # joint
+    "jnt_solref",
+    "jnt_solimp",
+    "jnt_pos",
+    "jnt_axis",
+    "jnt_stiffness",
+    "jnt_range",
+    "jnt_actfrcrange",
+    "jnt_margin",
+    # dof
+    "dof_solref",
+    "dof_solimp",
+    "dof_frictionloss",
+    "dof_armature",
+    "dof_damping",
+    "dof_invweight0",
+    # geom
+    "geom_matid",
+    "geom_solmix",
+    "geom_solref",
+    "geom_solimp",
+    "geom_size",
+    "geom_aabb",
+    "geom_rbound",
+    "geom_pos",
+    "geom_quat",
+    "geom_friction",
+    "geom_margin",
+    "geom_gap",
+    "geom_rgba",
+    # site
+    "site_pos",
+    "site_quat",
+    # camera
+    "cam_pos",
+    "cam_quat",
+    "cam_poscom0",
+    "cam_pos0",
+    "cam_mat0",
+    # light
+    "light_type",
+    "light_castshadow",
+    "light_active",
+    "light_pos",
+    "light_dir",
+    "light_poscom0",
+    "light_pos0",
+    "light_dir0",
+    # material
+    "mat_texrepeat",
+    "mat_rgba",
+    # pair
+    "pair_solref",
+    "pair_solreffriction",
+    "pair_solimp",
+    "pair_margin",
+    "pair_gap",
+    "pair_friction",
+    # equality constraint
+    "eq_solref",
+    "eq_solimp",
+    "eq_data",
+    # tendon
+    "tendon_solref_lim",
+    "tendon_solimp_lim",
+    "tendon_solref_fri",
+    "tendon_solimp_fri",
+    "tendon_range",
+    "tendon_actfrcrange",
+    "tendon_margin",
+    "tendon_stiffness",
+    "tendon_damping",
+    "tendon_armature",
+    "tendon_frictionloss",
+    "tendon_lengthspring",
+    "tendon_length0",
+    "tendon_invweight0",
+    # actuator
+    "actuator_dynprm",
+    "actuator_gainprm",
+    "actuator_biasprm",
+    "actuator_ctrlrange",
+    "actuator_forcerange",
+    "actuator_actrange",
+    "actuator_gear",
+]
+
+
+def _expand_batched_fields(target_obj: Any, reference_obj: Any, field_names: list[str]) -> None:
+    """Helper to expand batched fields in target to match reference shapes."""
+    for field_name in field_names:
+        ref_arr = getattr(reference_obj, field_name, None)
+        tgt_arr = getattr(target_obj, field_name, None)
+
+        if ref_arr is None or tgt_arr is None:
+            continue
+        if not hasattr(ref_arr, "numpy") or not hasattr(tgt_arr, "numpy"):
+            continue
+
+        ref_nworld = ref_arr.shape[0]
+        tgt_nworld = tgt_arr.shape[0]
+
+        # Only expand if reference has more worlds than target
+        if ref_nworld > tgt_nworld and tgt_nworld == 1:
+            # Tile to match reference: (1, ...) -> (ref_nworld, ...)
+            arr_np = tgt_arr.numpy()
+            tiled = np.tile(arr_np, (ref_nworld,) + (1,) * (arr_np.ndim - 1))
+            new_arr = wp.array(tiled, dtype=tgt_arr.dtype, device=tgt_arr.device)
+            setattr(target_obj, field_name, new_arr)
+
+
+def expand_mjw_model_to_match(target_mjw: Any, reference_mjw: Any) -> None:
+    """Expand batched fields in target MjWarpModel to match reference model's shapes.
+
+    mujoco_warp.put_model() creates arrays with nworld=1 by default, using
+    modulo indexing for batch access. This function tiles target arrays to
+    match the reference model's nworld dimension where the reference has
+    already been expanded.
+
+    Args:
+        target_mjw: The model to expand (typically native mujoco_warp)
+        reference_mjw: The reference model (typically Newton's mjw_model)
+    """
+    # Expand main model fields
+    _expand_batched_fields(target_mjw, reference_mjw, MJWARP_MODEL_BATCHED_FIELDS)
+
+    # Expand opt fields (nested Option object)
+    if hasattr(target_mjw, "opt") and hasattr(reference_mjw, "opt"):
+        _expand_batched_fields(target_mjw.opt, reference_mjw.opt, MJWARP_OPT_BATCHED_FIELDS)
+
+
 def compare_mjw_models(
     newton_mjw: Any,
     native_mjw: Any,
@@ -1120,6 +1282,7 @@ class TestMenagerieBase(unittest.TestCase):
         _mujoco.mj_forward(mj_model, mj_data)
 
         # Create mujoco_warp model/data with multiple worlds
+        # Note: put_model creates arrays with nworld=1, expansion happens in test_simulation_equivalence
         mjw_model = _mujoco_warp.put_model(mj_model)
         mjw_data = _mujoco_warp.put_data(mj_model, mj_data, nworld=self.num_worlds)
 
@@ -1153,6 +1316,10 @@ class TestMenagerieBase(unittest.TestCase):
         )
 
         mj_model, mj_data_native, native_mjw_model, native_mjw_data = self._create_native_mujoco_warp()
+
+        # Expand native model's batched arrays to match Newton's shapes
+        # Newton is the reference - only expand fields that Newton has expanded
+        expand_mjw_model_to_match(native_mjw_model, newton_solver.mjw_model)
 
         # Extract timestep from native model (Newton doesn't parse <option timestep="..."/> yet)
         # TODO: Remove this workaround once Newton's MJCF parser supports timestep extraction
@@ -1466,7 +1633,7 @@ class TestMenagerie_UniversalRobotsUr5e(TestMenagerieBase):
     robot_xml = "scene.xml"
     floating = False
     control_strategy = ZeroControlStrategy()
-    num_worlds = 1  # For debugging
+    num_worlds = 16
     debug_visual = False  # Enable viewer
     debug_view_newton = False  # False=Native, True=Newton
     model_skip_fields = DEFAULT_MODEL_SKIP_FIELDS | {
