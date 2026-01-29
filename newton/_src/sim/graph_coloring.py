@@ -148,6 +148,7 @@ def construct_trimesh_graph_edges(
     tri_active_mask=None,
     bending_edge_indices=None,
     bending_edge_active_mask=None,
+    return_wp_array=True,
 ):
     """
     A function that generates vertex coloring for a trimesh, which is represented by the number of vertices and edges of the mesh.
@@ -170,7 +171,7 @@ def construct_trimesh_graph_edges(
 
         if tri_indices.size > 0:
             if tri_active_mask is not None:
-                mask = np.asarray(tri_active_mask, dtype=bool)
+                mask = np.atleast_1d(np.asarray(tri_active_mask, dtype=bool))
                 tri_indices = tri_indices[np.where(mask)]
             if tri_indices.size > 0:
                 v0 = tri_indices[:, 0]
@@ -224,6 +225,10 @@ def construct_trimesh_graph_edges(
         edges_np = np.empty((0, 2), dtype=np.int32)
 
     edges = _canonicalize_edges_np(edges_np)
+
+    if return_wp_array:
+        edges = wp.array(edges, dtype=int, device="cpu")
+
     return edges
 
 
@@ -240,6 +245,7 @@ def construct_particle_graph(
         tri_active_mask,
         bending_edge_indices,
         bending_edge_active_mask,
+        return_wp_array=False,
     )
     tet_graph_edges = construct_tetmesh_graph_edges(tet_graph_edges_np, tet_active_mask)
 

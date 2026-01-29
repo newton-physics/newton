@@ -39,6 +39,7 @@ from .particle_vbd_kernels import (
     ParticleForceElementAdjacencyInfo,
     # Topological filtering helper functions
     _set_to_csr,
+    accumulate_contact_force_and_hessian,  # Legacy export for collision_legacy.py
     accumulate_particle_body_contact_force_and_hessian,
     accumulate_self_contact_force_and_hessian,
     accumulate_spring_force_and_hessian,
@@ -92,6 +93,9 @@ from .tri_mesh_collision import (
     TriMeshCollisionDetector,
     TriMeshCollisionInfo,
 )
+
+# Export accumulate_contact_force_and_hessian for legacy collision_legacy.py compatibility
+__all__ = ["NUM_THREADS_PER_COLLISION_PRIMITIVE", "SolverVBD", "accumulate_contact_force_and_hessian"]
 
 
 class SolverVBD(SolverBase):
