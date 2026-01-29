@@ -18,7 +18,8 @@ import warnings
 import warp as wp
 
 from newton import Contacts, Model, State
-from newton._src.solvers.vbd.solver_vbd import NUM_THREADS_PER_COLLISION_PRIMITIVE, accumulate_contact_force_and_hessian
+from newton._src.solvers.vbd.particle_vbd_kernels import accumulate_contact_force_and_hessian
+from newton._src.solvers.vbd.solver_vbd import NUM_THREADS_PER_COLLISION_PRIMITIVE
 from newton._src.solvers.vbd.tri_mesh_collision import TriMeshCollisionDetector, TriMeshCollisionInfo
 
 ########################################################################################################################
