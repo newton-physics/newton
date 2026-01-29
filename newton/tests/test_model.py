@@ -197,6 +197,43 @@ class TestModel(unittest.TestCase):
         assert builder2.articulation_count == 2 * builder.articulation_count
         assert builder2.articulation_start == [0, 1, 2, 3]
 
+    def test_lock_inertia_on_shape_addition(self):
+        builder = ModelBuilder()
+        shape_cfg = ModelBuilder.ShapeConfig(density=1000.0)
+        base_com = wp.vec3(0.1, 0.2, 0.3)
+        base_inertia = wp.mat33(0.2, 0.0, 0.0, 0.0, 0.3, 0.0, 0.0, 0.0, 0.4)
+
+        locked_body = builder.add_link(mass=2.0, com=base_com, I_m=base_inertia, lock_inertia=True)
+        unlocked_body = builder.add_link(mass=2.0, com=base_com, I_m=base_inertia, lock_inertia=False)
+
+        locked_mass = builder.body_mass[locked_body]
+        locked_com = builder.body_com[locked_body]
+        locked_inertia = builder.body_inertia[locked_body]
+
+        unlocked_mass = builder.body_mass[unlocked_body]
+
+        builder.add_shape_box(body=locked_body, hx=0.5, hy=0.5, hz=0.5, cfg=shape_cfg)
+        builder.add_shape_box(body=unlocked_body, hx=0.5, hy=0.5, hz=0.5, cfg=shape_cfg)
+
+        self.assertEqual(builder.body_mass[locked_body], locked_mass)
+        assert_np_equal(np.array(builder.body_com[locked_body]), np.array(locked_com))
+        assert_np_equal(np.array(builder.body_inertia[locked_body]), np.array(locked_inertia))
+        self.assertNotEqual(builder.body_mass[unlocked_body], unlocked_mass)
+
+    def test_collapse_fixed_joints_with_locked_inertia(self):
+        builder = ModelBuilder()
+        b0 = builder.add_link(mass=1.0, lock_inertia=True)
+        j0 = builder.add_joint_free(b0)
+        b1 = builder.add_link(mass=2.0, lock_inertia=True)
+        j1 = builder.add_joint_fixed(parent=b0, child=b1)
+        builder.add_articulation([j0, j1])
+
+        builder.collapse_fixed_joints()
+
+        self.assertEqual(builder.body_count, 1)
+        self.assertAlmostEqual(builder.body_mass[0], 3.0)
+        self.assertTrue(builder.body_lock_inertia[0])
+
     def test_add_world_with_open_edges(self):
         builder = ModelBuilder()
 
@@ -254,6 +291,7 @@ class TestModel(unittest.TestCase):
         builder.approximate_meshes(method="bounding_sphere", shape_indices=[s2])
         # convex hull
         self.assertEqual(len(builder.shape_source[s0].vertices), 5)
+        self.assertEqual(builder.shape_type[s0], newton.GeoType.CONVEX_MESH)
         # the convex hull maintains the original transform
         assert_np_equal(np.array(builder.shape_transform[s0]), np.array(wp.transform_identity()), tol=1.0e-4)
         # bounding box
@@ -273,6 +311,7 @@ class TestModel(unittest.TestCase):
         builder.approximate_meshes(method="convex_hull", shape_indices=[s3], keep_visual_shapes=True)
         # approximation is created, but not visible
         self.assertEqual(len(builder.shape_source[s3].vertices), 5)
+        self.assertEqual(builder.shape_type[s3], newton.GeoType.CONVEX_MESH)
         self.assertEqual(builder.shape_flags[s3] & newton.ShapeFlags.VISIBLE, 0)
         # a new visual shape is created
         self.assertIs(builder.shape_source[s3 + 1], mesh)
@@ -930,6 +969,33 @@ class TestModel(unittest.TestCase):
         self.assertIn("sphere1", warning_msg)
         self.assertIn("box1", warning_msg)
         self.assertNotIn("good_capsule", warning_msg)
+
+    def test_collision_filter_pairs_canonical_order(self):
+        """Test that collision filter pairs are stored in canonical order (s1 < s2)."""
+        builder = ModelBuilder()
+
+        # Create a body with multiple shapes
+        body = builder.add_body()
+        shape0 = builder.add_shape_sphere(body=body, radius=0.5)
+        shape1 = builder.add_shape_box(body=body, hx=1.0, hy=1.0, hz=1.0)
+        shape2 = builder.add_shape_capsule(body=body, radius=0.3, half_height=1.0)
+
+        # Add collision filter pairs in non-canonical order to test normalization
+        builder.shape_collision_filter_pairs.append((shape1, shape0))  # reversed order
+        builder.shape_collision_filter_pairs.append((shape0, shape2))  # correct order
+        builder.shape_collision_filter_pairs.append((shape2, shape1))  # reversed order
+
+        # Finalize the model
+        model = builder.finalize()
+
+        # Verify all collision filter pairs are in canonical order (s1 < s2)
+        for s1, s2 in model.shape_collision_filter_pairs:
+            self.assertLess(s1, s2, f"Collision filter pair ({s1}, {s2}) is not in canonical order")
+
+        # Verify we have the expected pairs (should be normalized to canonical order)
+        self.assertIn((shape0, shape1), model.shape_collision_filter_pairs)
+        self.assertIn((shape0, shape2), model.shape_collision_filter_pairs)
+        self.assertIn((shape1, shape2), model.shape_collision_filter_pairs)
 
 
 if __name__ == "__main__":

@@ -48,6 +48,7 @@ newton
    eval_fk
    eval_ik
    get_joint_dof_count
+   get_joint_constraint_count
 
 .. rubric:: Constants
 
@@ -56,7 +57,7 @@ newton
 
    * - Name
      - Value
-   * - JOINT_LIMIT_UNLIMITED
+   * - MAXVAL
      - 10000000000.0
    * - __version__
      - 0.2.0

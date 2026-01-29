@@ -35,7 +35,7 @@ from newton.utils import (
     solidify_mesh,
 )
 
-from ..core.types import nparray
+from ..core.types import MAXVAL, nparray
 from .kernels import compute_hydro_contact_surface_lines, estimate_world_extents
 
 
@@ -239,8 +239,8 @@ class ViewerBase:
         num_worlds = self.model.num_worlds
 
         # Initialize bounds arrays for all worlds
-        world_bounds_min = wp.full((num_worlds, 3), wp.inf, dtype=wp.float32, device=self.device)
-        world_bounds_max = wp.full((num_worlds, 3), -wp.inf, dtype=wp.float32, device=self.device)
+        world_bounds_min = wp.full((num_worlds, 3), MAXVAL, dtype=wp.float32, device=self.device)
+        world_bounds_max = wp.full((num_worlds, 3), -MAXVAL, dtype=wp.float32, device=self.device)
 
         # Get initial state for body transforms
         state = self.model.state()
@@ -317,15 +317,32 @@ class ViewerBase:
             if visible:
                 shapes.update(state, world_offsets=self.world_offsets)
 
-            self.log_instances(
-                shapes.name,
-                shapes.mesh,
-                shapes.world_xforms,
-                shapes.scales,  # Always pass scales - needed for transform matrix calculation
-                shapes.colors if self.model_changed or shapes.colors_changed else None,
-                shapes.materials if self.model_changed else None,
-                hidden=not visible,
-            )
+            colors = shapes.colors if self.model_changed or shapes.colors_changed else None
+            materials = shapes.materials if self.model_changed else None
+
+            # Capsules may be rendered via a specialized path by the concrete viewer/backend
+            # (e.g., instanced cylinder body + instanced sphere end caps for better batching).
+            # The base implementation of log_capsules() falls back to log_instances().
+            if shapes.geo_type == newton.GeoType.CAPSULE:
+                self.log_capsules(
+                    shapes.name,
+                    shapes.mesh,
+                    shapes.world_xforms,
+                    shapes.scales,
+                    colors,
+                    materials,
+                    hidden=not visible,
+                )
+            else:
+                self.log_instances(
+                    shapes.name,
+                    shapes.mesh,
+                    shapes.world_xforms,
+                    shapes.scales,  # Always pass scales - needed for transform matrix calculation
+                    colors,
+                    materials,
+                    hidden=not visible,
+                )
 
             shapes.colors_changed = False
 
@@ -709,6 +726,10 @@ class ViewerBase:
     def log_instances(self, name, mesh, xforms, scales, colors, materials, hidden=False):
         pass
 
+    # Optional specialized capsule path. Backends can override.
+    def log_capsules(self, name, mesh, xforms, scales, colors, materials, hidden=False):
+        self.log_instances(name, mesh, xforms, scales, colors, materials, hidden=hidden)
+
     @abstractmethod
     def log_lines(self, name, starts, ends, colors, width: float = 0.01, hidden=False):
         pass
@@ -744,6 +765,9 @@ class ViewerBase:
             self.flags = flags
             self.mesh = mesh
             self.device = device
+            # Optional geometry type for specialized rendering paths (e.g., capsules).
+            # -1 means "unknown / not set".
+            self.geo_type = -1
 
             self.parents = []
             self.xforms = []
@@ -966,6 +990,7 @@ class ViewerBase:
             if shape_hash not in self._shape_instances:
                 shape_name = f"/model/shapes/shape_{len(self._shape_instances)}"
                 batch = ViewerBase.ShapeInstances(shape_name, static, flags, mesh_name, self.device)
+                batch.geo_type = geo_type
                 self._shape_instances[shape_hash] = batch
             else:
                 batch = self._shape_instances[shape_hash]
@@ -993,7 +1018,15 @@ class ViewerBase:
                 material = wp.vec4(0.5, 0.5, 1.0, 0.0)
 
             # add render instance
-            batch.add(parent, xform, scale, color, material, s, shape_world[s])
+            batch.add(
+                parent=parent,
+                xform=xform,
+                scale=scale,
+                color=color,
+                material=material,
+                shape_index=s,
+                world=shape_world[s],
+            )
 
         # each shape instance object (batch) is associated with one slice
         batches = list(self._shape_instances.values())
@@ -1098,6 +1131,7 @@ class ViewerBase:
             if geo_hash not in self._sdf_isomesh_instances:
                 shape_name = f"/model/sdf_isomesh/isomesh_{len(self._sdf_isomesh_instances)}"
                 batch = ViewerBase.ShapeInstances(shape_name, static, flags, mesh_name, self.device)
+                batch.geo_type = geo_type
                 self._sdf_isomesh_instances[geo_hash] = batch
             else:
                 batch = self._sdf_isomesh_instances[geo_hash]
@@ -1113,7 +1147,15 @@ class ViewerBase:
             color = wp.vec3(self._collision_color_map(s))
             material = wp.vec4(0.3, 0.0, 0.0, 0.0)  # roughness, metallic, checker, unused
 
-            batch.add(parent, xform, scale, color, material, s, shape_world[s])
+            batch.add(
+                parent=parent,
+                xform=xform,
+                scale=scale,
+                color=color,
+                material=material,
+                shape_index=s,
+                world=shape_world[s],
+            )
 
         # Finalize all SDF isomesh batches
         for batch in self._sdf_isomesh_instances.values():
@@ -1195,7 +1237,15 @@ class ViewerBase:
             material = wp.vec4(0.5, 0.0, 0.0, 0.0)  # roughness, metallic, checker, unused
 
             # add render instance
-            batch.add(parent, xform, scale, color, material, body_world[body])
+            batch.add(
+                parent=parent,
+                xform=xform,
+                scale=scale,
+                color=color,
+                material=material,
+                shape_index=body,
+                world=body_world[body],
+            )
 
         # batch to the GPU
         batch.finalize()

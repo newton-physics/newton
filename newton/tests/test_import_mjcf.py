@@ -13,7 +13,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import io
 import os
+import sys
 import tempfile
 import unittest
 
@@ -722,6 +724,929 @@ class TestImportMjcf(unittest.TestCase):
         self.assertAlmostEqual(joint_limit_ke[2], expected_ke_3, places=2)
         self.assertAlmostEqual(joint_limit_kd[2], expected_kd_3, places=2)
 
+    def test_single_mujoco_fixed_tendon_parsing(self):
+        """Test that tendon parameters can be parsed from mjcf"""
+        mjcf = """<?xml version="1.0" ?>
+<mujoco>
+    <worldbody>
+    <!-- Root body (fixed to world) -->
+    <body name="root" pos="0 0 0">
+      <geom type="box" size="0.1 0.1 0.1" rgba="0.5 0.5 0.5 1"/>
+
+      <!-- First child link with prismatic joint along x -->
+      <body name="link1" pos="0.0 -0.5 0">
+        <joint name="joint1" type="slide" axis="1 0 0" range="-50.5 50.5"/>
+        <geom solmix="1.0" type="cylinder" size="0.05 0.025" rgba="1 0 0 1" euler="0 90 0"/>
+        <inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/>
+      </body>
+
+      <!-- Second child link with prismatic joint along x -->
+      <body name="link2" pos="-0.0 -0.7 0">
+        <joint name="joint2" type="slide" axis="1 0 0" range="-50.5 50.5"/>
+        <geom type="cylinder" size="0.05 0.025" rgba="0 0 1 1" euler="0 90 0"/>
+        <inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/>
+      </body>
+
+    </body>
+  </worldbody>
+
+  <!-- Fixed tendon coupling joint1 and joint2 -->
+  <tendon>
+    <fixed
+		name="coupling_tendon"
+        limited="false"
+		stiffness="1.0"
+		damping="2.0"
+        margin="0.1"
+        frictionloss="2.6"
+        solreflimit="0.04 1.1"
+        solimplimit="0.7 0.85 0.002 0.3 1.8"
+        solreffriction="0.055 1.2"
+        solimpfriction="0.3 0.4 0.006 0.5 1.4"
+        actuatorfrcrange="-2.2 2.2"
+        actuatorfrclimited="true"
+        armature="0.13"
+        springlength="3.0 3.5">
+      <joint joint="joint1" coef="8"/>
+      <joint joint="joint2" coef="-8"/>
+    </fixed>
+
+    <!-- Fixed tendon coupling joint1 and joint2 -->
+    <fixed
+		name="coupling_tendon_reversed"
+        limited="true"
+        solreflimit="0.05 1.2"
+        solreffriction="0.07 1.5"
+        range="-10.0 11.0"
+        stiffness="4.0"
+		damping="5.0"
+        margin="0.3"
+        frictionloss="2.8"
+        solimplimit="0.8 0.85 0.003 0.4 1.9"
+        solimpfriction="0.35 0.45 0.004 0.5 1.2"
+        actuatorfrclimited="false"
+        actuatorfrcrange="-3.3 3.3"
+        armature="0.23"
+        springlength="6.0">
+      <joint joint="joint1" coef="9"/>
+      <joint joint="joint2" coef="9"/>
+    </fixed>
+  </tendon>
+
+</mujoco>
+"""
+
+        nbBuilders = 2
+        nbTendonsPerBuilder = 2
+
+        individual_builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(individual_builder)
+        individual_builder.add_mjcf(mjcf)
+        builder = newton.ModelBuilder()
+        for _i in range(0, nbBuilders):
+            builder.add_world(individual_builder)
+        model = builder.finalize()
+        solver = SolverMuJoCo(model, iterations=10, ls_iterations=10)
+
+        expected_damping = [[2.0, 5.0]]
+        expected_stiffness = [[1.0, 4.0]]
+        expected_frictionloss = [[2.6, 2.8]]
+        expected_range = [[wp.vec2(0.0, 0.0), wp.vec2(-10.0, 11.0)]]
+        expected_margin = [[0.1, 0.3]]
+        expected_solreflimit = [[wp.vec2(0.04, 1.1), wp.vec2(0.05, 1.2)]]
+        expected_solreffriction = [[wp.vec2(0.055, 1.2), wp.vec2(0.07, 1.5)]]
+        vec5 = wp.types.vector(5, wp.float32)
+        expected_solimplimit = [[vec5(0.7, 0.85, 0.002, 0.3, 1.8), vec5(0.8, 0.85, 0.003, 0.4, 1.9)]]
+        expected_solimpfriction = [[vec5(0.3, 0.4, 0.006, 0.5, 1.4), vec5(0.35, 0.45, 0.004, 0.5, 1.2)]]
+        expected_actuator_force_range = [[wp.vec2(-2.2, 2.2), wp.vec2(-3.3, 3.3)]]
+        expected_armature = [[0.13, 0.23]]
+
+        # We parse the 2nd tendon rest length as (6, -1) and store that in model.mujoco.
+        # When we create the mujoco tendon in the mujoco solver we apply the dead zone rule.
+        # If the user has authored a dead zone (2nd number > 1st number) then we honour that
+        # but if they have not authored a dead zone (2nd number <= 1st number) then we create
+        # the tendon with dead zone bounds that have zero extent. In our example, we create the
+        # dead zone (6,6).
+        expected_model_springlength = [[wp.vec2(3.0, 3.5), wp.vec2(6.0, -1.0)]]
+        expected_solver_springlength = [[wp.vec2(3.0, 3.5), wp.vec2(6.0, 6.0)]]
+
+        # Check every parameter in solver.mjw_model and in model.mujoco.
+        # It is worthwhile checking model.mujoco in case we wish to use
+        # the parameterisation in model.mujoco with a solver other than SolverMujoco.
+
+        for i in range(0, nbBuilders):
+            for j in range(0, nbTendonsPerBuilder):
+                # Check the solver stiffness
+                expected = expected_stiffness[0][j]
+                measured = solver.mjw_model.tendon_stiffness.numpy()[i][j]
+                self.assertAlmostEqual(
+                    expected,
+                    measured,
+                    places=4,
+                    msg=f"Expected stiffness value: {expected}, Measured value: {measured}",
+                )
+
+                # Check the model stiffness
+                expected = expected_stiffness[0][j]
+                measured = model.mujoco.tendon_stiffness.numpy()[nbTendonsPerBuilder * i + j]
+                self.assertAlmostEqual(
+                    expected,
+                    measured,
+                    places=4,
+                    msg=f"Expected stiffness value: {expected}, Measured value: {measured}",
+                )
+
+                # Check the solver damping
+                expected = expected_damping[0][j]
+                measured = solver.mjw_model.tendon_damping.numpy()[i][j]
+                self.assertAlmostEqual(
+                    measured,
+                    expected,
+                    places=4,
+                    msg=f"Expected damping value: {expected}, Measured value: {measured}",
+                )
+
+                # Check the model damping
+                expected = expected_damping[0][j]
+                measured = model.mujoco.tendon_damping.numpy()[nbTendonsPerBuilder * i + j]
+                self.assertAlmostEqual(
+                    measured,
+                    expected,
+                    places=4,
+                    msg=f"Expected damping value: {expected}, Measured value: {measured}",
+                )
+
+                # Check the solver spring length
+                for k in range(0, 2):
+                    expected = expected_solver_springlength[0][j][k]
+                    measured = solver.mjw_model.tendon_lengthspring.numpy()[i][j][k]
+                    self.assertAlmostEqual(
+                        measured,
+                        expected,
+                        places=4,
+                        msg=f"Expected springlength[{k}] value: {expected}, Measured value: {measured}",
+                    )
+
+                # Check the model spring length
+                for k in range(0, 2):
+                    expected = expected_model_springlength[0][j][k]
+                    measured = model.mujoco.tendon_springlength.numpy()[nbTendonsPerBuilder * i + j][k]
+                    self.assertAlmostEqual(
+                        measured,
+                        expected,
+                        places=4,
+                        msg=f"Expected springlength[{k}] value: {expected}, Measured value: {measured}",
+                    )
+
+                # Check the solver frictionloss
+                expected = expected_frictionloss[0][j]
+                measured = solver.mjw_model.tendon_frictionloss.numpy()[i][j]
+                self.assertAlmostEqual(
+                    measured,
+                    expected,
+                    places=4,
+                    msg=f"Expected tendon frictionloss value: {expected}, Measured value: {measured}",
+                )
+
+                # Check the model frictionloss
+                expected = expected_frictionloss[0][j]
+                measured = model.mujoco.tendon_frictionloss.numpy()[nbTendonsPerBuilder * i + j]
+                self.assertAlmostEqual(
+                    measured,
+                    expected,
+                    places=4,
+                    msg=f"Expected tendon frictionloss value: {expected}, Measured value: {measured}",
+                )
+
+                # Check the solver range
+                for k in range(0, 2):
+                    expected = expected_range[0][j][k]
+                    measured = solver.mjw_model.tendon_range.numpy()[i][j][k]
+                    self.assertAlmostEqual(
+                        measured,
+                        expected,
+                        places=4,
+                        msg=f"Expected range[{k}] value: {expected}, Measured value: {measured}",
+                    )
+
+                # Check the model range
+                for k in range(0, 2):
+                    expected = expected_range[0][j][k]
+                    measured = model.mujoco.tendon_range.numpy()[nbTendonsPerBuilder * i + j][k]
+                    self.assertAlmostEqual(
+                        measured,
+                        expected,
+                        places=4,
+                        msg=f"Expected range[{k}] value: {expected}, Measured value: {measured}",
+                    )
+
+                # Check the solver margin
+                expected = expected_margin[0][j]
+                measured = solver.mjw_model.tendon_margin.numpy()[i][j]
+                self.assertAlmostEqual(
+                    measured,
+                    expected,
+                    places=4,
+                    msg=f"Expected margin value: {expected}, Measured value: {measured}",
+                )
+
+                # Check the model margin
+                expected = expected_margin[0][j]
+                measured = model.mujoco.tendon_margin.numpy()[nbTendonsPerBuilder * i + j]
+                self.assertAlmostEqual(
+                    measured,
+                    expected,
+                    places=4,
+                    msg=f"Expected margin value: {expected}, Measured value: {measured}",
+                )
+
+                # Check solver solreflimit
+                for k in range(0, 2):
+                    expected = expected_solreflimit[0][j][k]
+                    measured = solver.mjw_model.tendon_solref_lim.numpy()[i][j][k]
+                    self.assertAlmostEqual(
+                        measured,
+                        expected,
+                        places=4,
+                        msg=f"Expected solreflimit[{k}] value: {expected}, Measured value: {measured}",
+                    )
+
+                # Check model solreflimit
+                for k in range(0, 2):
+                    expected = expected_solreflimit[0][j][k]
+                    measured = model.mujoco.tendon_solref_limit.numpy()[nbTendonsPerBuilder * i + j][k]
+                    self.assertAlmostEqual(
+                        measured,
+                        expected,
+                        places=4,
+                        msg=f"Expected solreflimit[{k}] value: {expected}, Measured value: {measured}",
+                    )
+
+                # Check solver solimplimit
+                for k in range(0, 5):
+                    expected = expected_solimplimit[0][j][k]
+                    measured = solver.mjw_model.tendon_solimp_lim.numpy()[i][j][k]
+                    self.assertAlmostEqual(
+                        measured,
+                        expected,
+                        places=4,
+                        msg=f"Expected solimplimit[{k}] value: {expected}, Measured value: {measured}",
+                    )
+
+                # Check model solimplimit
+                for k in range(0, 5):
+                    expected = expected_solimplimit[0][j][k]
+                    measured = model.mujoco.tendon_solimp_limit.numpy()[nbTendonsPerBuilder * i + j][k]
+                    self.assertAlmostEqual(
+                        measured,
+                        expected,
+                        places=4,
+                        msg=f"Expected solimplimit[{k}] value: {expected}, Measured value: {measured}",
+                    )
+
+                # Check solver solreffriction
+                for k in range(0, 2):
+                    expected = expected_solreffriction[0][j][k]
+                    measured = solver.mjw_model.tendon_solref_fri.numpy()[i][j][k]
+                    self.assertAlmostEqual(
+                        measured,
+                        expected,
+                        places=4,
+                        msg=f"Expected solreffriction[{k}] value: {expected}, Measured value: {measured}",
+                    )
+
+                # Check model solreffriction
+                for k in range(0, 2):
+                    expected = expected_solreffriction[0][j][k]
+                    measured = model.mujoco.tendon_solref_friction.numpy()[nbTendonsPerBuilder * i + j][k]
+                    self.assertAlmostEqual(
+                        measured,
+                        expected,
+                        places=4,
+                        msg=f"Expected solreffriction[{k}] value: {expected}, Measured value: {measured}",
+                    )
+
+                # Check solver solimplimit
+                for k in range(0, 5):
+                    expected = expected_solimpfriction[0][j][k]
+                    measured = solver.mjw_model.tendon_solimp_fri.numpy()[i][j][k]
+                    self.assertAlmostEqual(
+                        measured,
+                        expected,
+                        places=4,
+                        msg=f"Expected solimpfriction[{k}] value: {expected}, Measured value: {measured}",
+                    )
+
+                # Check model solimpfriction
+                for k in range(0, 5):
+                    expected = expected_solimpfriction[0][j][k]
+                    measured = model.mujoco.tendon_solimp_friction.numpy()[nbTendonsPerBuilder * i + j][k]
+                    self.assertAlmostEqual(
+                        measured,
+                        expected,
+                        places=4,
+                        msg=f"Expected solimpfriction[{k}] value: {expected}, Measured value: {measured}",
+                    )
+
+                # Check the solver actuator force range
+                for k in range(0, 2):
+                    expected = expected_actuator_force_range[0][j][k]
+                    measured = solver.mjw_model.tendon_actfrcrange.numpy()[i][j][k]
+                    self.assertAlmostEqual(
+                        measured,
+                        expected,
+                        places=4,
+                        msg=f"Expected range[{k}] value: {expected}, Measured value: {measured}",
+                    )
+
+                # Check the model actuator force range
+                for k in range(0, 2):
+                    expected = expected_actuator_force_range[0][j][k]
+                    measured = model.mujoco.tendon_actuator_force_range.numpy()[nbTendonsPerBuilder * i + j][k]
+                    self.assertAlmostEqual(
+                        measured,
+                        expected,
+                        places=4,
+                        msg=f"Expected range[{k}] value: {expected}, Measured value: {measured}",
+                    )
+
+                # Check solver armature
+                expected = expected_armature[0][j]
+                measured = solver.mjw_model.tendon_armature.numpy()[i][j]
+                self.assertAlmostEqual(
+                    measured,
+                    expected,
+                    places=4,
+                    msg=f"Expected armature value: {expected}, Measured value: {measured}",
+                )
+
+                # Check model armature
+                expected = expected_armature[0][j]
+                measured = model.mujoco.tendon_armature.numpy()[nbTendonsPerBuilder * i + j]
+                self.assertAlmostEqual(
+                    measured,
+                    expected,
+                    places=4,
+                    msg=f"Expected armature value: {expected}, Measured value: {measured}",
+                )
+
+        expected_solver_num = [2, 2]
+        expected_solver_limited = [0, 1]
+        expected_solver_actfrc_limited = [1, 0]
+        for i in range(0, nbTendonsPerBuilder):
+            # Check the offsets that determine where the joint list starts for each tendon
+            expected = expected_solver_num[i]
+            measured = solver.mjw_model.tendon_num.numpy()[i]
+            self.assertEqual(
+                measured,
+                expected,
+                msg=f"Expected tendon_num value: {expected}, Measured value: {measured}",
+            )
+
+            # Check the limited attribute
+            expected = expected_solver_limited[i]
+            measured = solver.mjw_model.tendon_limited.numpy()[i]
+            self.assertEqual(
+                measured,
+                expected,
+                msg=f"Expected tendon limited value: {expected}, Measured value: {measured}",
+            )
+
+            # Check the actuation force limited attribute
+            expected = expected_solver_actfrc_limited[i]
+            measured = solver.mjw_model.tendon_actfrclimited.numpy()[i]
+            self.assertEqual(
+                measured,
+                expected,
+                msg=f"Expected tendon actuator force limited value: {expected}, Measured value: {measured}",
+            )
+
+        expected_model_num = [2, 2, 2, 2]
+        expected_model_limited = [0, 1, 0, 1]
+        expected_model_actfrc_limited = [1, 0, 1, 0]
+        expected_model_joint_adr = [0, 2, 4, 6]
+        for i in range(0, nbBuilders):
+            for j in range(0, nbTendonsPerBuilder):
+                # Check the offsets that determine where the joint list starts for each tendon
+                expected = expected_model_num[nbTendonsPerBuilder * i + j]
+                measured = model.mujoco.tendon_joint_num.numpy()[nbTendonsPerBuilder * i + j]
+                self.assertEqual(
+                    measured,
+                    expected,
+                    msg=f"Expected joint num value: {expected}, Measured value: {measured}",
+                )
+
+                # Check the limited attribute
+                expected = expected_model_limited[nbTendonsPerBuilder * i + j]
+                measured = model.mujoco.tendon_limited.numpy()[nbTendonsPerBuilder * i + j]
+                self.assertEqual(
+                    measured,
+                    expected,
+                    msg=f"Expected tendon limited value: {expected}, Measured value: {measured}",
+                )
+
+                # Check the actuation force limited attribute
+                expected = expected_model_actfrc_limited[nbTendonsPerBuilder * i + j]
+                measured = model.mujoco.tendon_actuator_force_limited.numpy()[nbTendonsPerBuilder * i + j]
+                self.assertEqual(
+                    measured,
+                    expected,
+                    msg=f"Expected tendon actuator force limited value: {expected}, Measured value: {measured}",
+                )
+
+                # Check the joint_adr attribute
+                expected = expected_model_joint_adr[nbTendonsPerBuilder * i + j]
+                measured = model.mujoco.tendon_joint_adr.numpy()[nbTendonsPerBuilder * i + j]
+                self.assertEqual(
+                    measured,
+                    expected,
+                    msg=f"Expected tendon joint_adr value: {expected}, Measured value: {measured}",
+                )
+
+        # Check that joint coefficients are correctly parsed
+        # Tendon 1: joint1 coef=8, joint2 coef=-8
+        # Tendon 2: joint1 coef=9, joint2 coef=9
+        expected_wrap_prm = [8.0, -8.0, 9.0, 9.0]
+        wrap_prm = solver.mj_model.wrap_prm
+        self.assertEqual(len(wrap_prm), len(expected_wrap_prm), "wrap_prm length mismatch")
+        for i, expected_coef in enumerate(expected_wrap_prm):
+            self.assertAlmostEqual(
+                wrap_prm[i],
+                expected_coef,
+                places=4,
+                msg=f"wrap_prm[{i}] expected {expected_coef}, got {wrap_prm[i]}",
+            )
+
+        # Check that we made copies of the joint coefs in the model.
+        expected_model_joint_coef = [8.0, -8.0, 9.0, 9.0, 8.0, -8.0, 9.0, 9.0]
+        for i in range(0, nbBuilders):
+            for j in range(0, nbTendonsPerBuilder):
+                for k in range(0, 2):
+                    idx = nbTendonsPerBuilder * 2 * i + 2 * j + k
+                    expected = expected_model_joint_coef[idx]
+                    measured = model.mujoco.tendon_coef.numpy()[idx]
+                    self.assertEqual(
+                        measured,
+                        expected,
+                        msg=f"Expected coef value: {expected}, Measured value: {measured}",
+                    )
+
+        # Check tendon_invweight0 is computed correctly
+        # tendon_invweight0 is computed by MuJoCo based on the mass matrix and tendon geometry.
+        # The formula accounts for: sum(coef^2 * effective_dof_inv_weight) / (1 + armature)
+        # where effective_dof_inv_weight depends on the full articulated body inertia.
+        # These expected values are verified against the Newton -> MuJoCo pipeline.
+        expected_invweight0 = [4.6796, 5.9226]  # Values after Newton's inertia processing
+        invweight0 = solver.mj_model.tendon_invweight0
+        for i, expected in enumerate(expected_invweight0):
+            self.assertAlmostEqual(
+                invweight0[i],
+                expected,
+                places=2,
+                msg=f"tendon_invweight0[{i}] expected {expected:.4f}, got {invweight0[i]:.4f}",
+            )
+
+    def test_single_mujoco_fixed_tendon_defaults(self):
+        """Test that tendon parsing uses the correct mujoco default values."""
+        mjcf = """<?xml version="1.0" ?>
+<mujoco>
+    <worldbody>
+    <!-- Root body (fixed to world) -->
+    <body name="root" pos="0 0 0">
+      <geom type="box" size="0.1 0.1 0.1" rgba="0.5 0.5 0.5 1"/>
+
+      <!-- First child link with prismatic joint along x -->
+      <body name="link1" pos="0.0 -0.5 0">
+        <joint name="joint1" type="slide" axis="1 0 0" range="-50.5 50.5"/>
+        <geom solmix="1.0" type="cylinder" size="0.05 0.025" rgba="1 0 0 1" euler="0 90 0"/>
+        <inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/>
+      </body>
+
+      <!-- Second child link with prismatic joint along x -->
+      <body name="link2" pos="-0.0 -0.7 0">
+        <joint name="joint2" type="slide" axis="1 0 0" range="-50.5 50.5"/>
+        <geom type="cylinder" size="0.05 0.025" rgba="0 0 1 1" euler="0 90 0"/>
+        <inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/>
+      </body>
+
+    </body>
+  </worldbody>
+
+  <tendon>
+    <!-- Fixed tendon coupling joint1 and joint2 -->
+	<fixed
+		name="coupling_tendon">
+      <joint joint="joint1" coef="1"/>
+      <joint joint="joint2" coef="-1"/>
+    </fixed>
+  </tendon>
+
+  <tendon>
+    <!-- Fixed tendon coupling joint1 and joint2 -->
+	<fixed
+		name="coupling_tendon_reversed">
+      <joint joint="joint1" coef="1"/>
+      <joint joint="joint2" coef="1"/>
+    </fixed>
+  </tendon>
+</mujoco>
+"""
+
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_mjcf(mjcf)
+        model = builder.finalize()
+        solver = SolverMuJoCo(model, iterations=10, ls_iterations=10)
+
+        nbBuilders = 1
+        nbTendonsPerBuilder = 2
+        nbTendons = nbBuilders * nbTendonsPerBuilder
+
+        # Note default spring length is -1 but ends up being 0.
+
+        expected_damping = [[0.0, 0.0]]
+        expected_stiffness = [[0.0, 0.0]]
+        expected_frictionloss = [[0, 0]]
+        expected_springlength = [[wp.vec2(0.0, 0.0), wp.vec2(0.0, 0.0)]]
+        expected_range = [[wp.vec2(0.0, 0.0), wp.vec2(0.0, 0.0)]]
+        expected_margin = [[0.0, 0.0]]
+        expected_solreflimit = [[wp.vec2(0.02, 1.0), wp.vec2(0.02, 1.0)]]
+        expected_solreffriction = [[wp.vec2(0.02, 1.0), wp.vec2(0.02, 1.0)]]
+        vec5 = wp.types.vector(5, wp.float32)
+        expected_solimplimit = [[vec5(0.9, 0.95, 0.001, 0.5, 2.0), vec5(0.9, 0.95, 0.001, 0.5, 2.0)]]
+        expected_solimpfriction = [[vec5(0.9, 0.95, 0.001, 0.5, 2.0), vec5(0.9, 0.95, 0.001, 0.5, 2.0)]]
+        expected_actuator_force_range = [[wp.vec2(0.0, 0.0), wp.vec2(0.0, 0.0)]]
+        expected_armature = [[0.0, 0.0]]
+        for i in range(0, nbBuilders):
+            for j in range(0, nbTendonsPerBuilder):
+                # Check the stiffness
+                expected = expected_stiffness[i][j]
+                measured = solver.mjw_model.tendon_stiffness.numpy()[i][j]
+                self.assertAlmostEqual(
+                    measured,
+                    expected,
+                    places=4,
+                    msg=f"Expected stiffness value: {expected}, Measured value: {measured}",
+                )
+
+                # Check the damping
+                expected = expected_damping[i][j]
+                measured = solver.mjw_model.tendon_damping.numpy()[i][j]
+                self.assertAlmostEqual(
+                    measured,
+                    expected,
+                    places=4,
+                    msg=f"Expected damping value: {expected}, Measured value: {measured}",
+                )
+
+                # Check the spring length
+                for k in range(0, 2):
+                    expected = expected_springlength[i][j][k]
+                    measured = solver.mjw_model.tendon_lengthspring.numpy()[i][j][k]
+                    self.assertAlmostEqual(
+                        measured,
+                        expected,
+                        places=4,
+                        msg=f"Expected springlength[{k}] value: {expected}, Measured value: {measured}",
+                    )
+
+                # Check the frictionloss
+                expected = expected_frictionloss[i][j]
+                measured = solver.mjw_model.tendon_frictionloss.numpy()[i][j]
+                self.assertAlmostEqual(
+                    measured,
+                    expected,
+                    places=4,
+                    msg=f"Expected tendon frictionloss value: {expected}, Measured value: {measured}",
+                )
+
+                # Check the range
+                for k in range(0, 2):
+                    expected = expected_range[i][j][k]
+                    measured = solver.mjw_model.tendon_range.numpy()[i][j][k]
+                    self.assertAlmostEqual(
+                        measured,
+                        expected,
+                        places=4,
+                        msg=f"Expected range[{k}] value: {expected}, Measured value: {measured}",
+                    )
+
+                # Check the margin
+                expected = expected_margin[i][j]
+                measured = solver.mjw_model.tendon_margin.numpy()[i][j]
+                self.assertAlmostEqual(
+                    measured,
+                    expected,
+                    places=4,
+                    msg=f"Expected margin value: {expected}, Measured value: {measured}",
+                )
+
+                # Check solreflimit
+                for k in range(0, 2):
+                    expected = expected_solreflimit[i][j][k]
+                    measured = solver.mjw_model.tendon_solref_lim.numpy()[i][j][k]
+                    self.assertAlmostEqual(
+                        measured,
+                        expected,
+                        places=4,
+                        msg=f"Expected solreflimit[{k}] value: {expected}, Measured value: {measured}",
+                    )
+
+                # Check solimplimit
+                for k in range(0, 5):
+                    expected = expected_solimplimit[i][j][k]
+                    measured = solver.mjw_model.tendon_solimp_lim.numpy()[i][j][k]
+                    self.assertAlmostEqual(
+                        measured,
+                        expected,
+                        places=4,
+                        msg=f"Expected solimplimit[{k}] value: {expected}, Measured value: {measured}",
+                    )
+
+                # Check solreffriction
+                for k in range(0, 2):
+                    expected = expected_solreffriction[i][j][k]
+                    measured = solver.mjw_model.tendon_solref_fri.numpy()[i][j][k]
+                    self.assertAlmostEqual(
+                        measured,
+                        expected,
+                        places=4,
+                        msg=f"Expected solreffriction[{k}] value: {expected}, Measured value: {measured}",
+                    )
+
+                # Check solimplimit
+                for k in range(0, 5):
+                    expected = expected_solimpfriction[i][j][k]
+                    measured = solver.mjw_model.tendon_solimp_fri.numpy()[i][j][k]
+                    self.assertAlmostEqual(
+                        measured,
+                        expected,
+                        places=4,
+                        msg=f"Expected solimpfriction[{k}] value: {expected}, Measured value: {measured}",
+                    )
+
+                # Check the actuator force range
+                for k in range(0, 2):
+                    expected = expected_actuator_force_range[i][j][k]
+                    measured = solver.mjw_model.tendon_actfrcrange.numpy()[i][j][k]
+                    self.assertAlmostEqual(
+                        measured,
+                        expected,
+                        places=4,
+                        msg=f"Expected range[{k}] value: {expected}, Measured value: {measured}",
+                    )
+
+                # Check armature
+                expected = expected_armature[i][j]
+                measured = solver.mjw_model.tendon_armature.numpy()[i][j]
+                self.assertAlmostEqual(
+                    measured,
+                    expected,
+                    places=4,
+                    msg=f"Expected armature value: {expected}, Measured value: {measured}",
+                )
+
+        expected_num = [2, 2]
+        expected_limited = [0, 0]
+        expected_actfrc_limited = [0, 0]
+        for i in range(0, nbTendons):
+            # Check the offsets that determine where the joint list starts for each tendon
+            expected = expected_num[i]
+            measured = solver.mjw_model.tendon_num.numpy()[i]
+            self.assertEqual(
+                measured,
+                expected,
+                msg=f"Expected springlength[0] value: {expected}, Measured value: {measured}",
+            )
+
+            # Check the limited attribute
+            expected = expected_limited[i]
+            measured = solver.mjw_model.tendon_limited.numpy()[i]
+            self.assertEqual(
+                measured,
+                expected,
+                msg=f"Expected tendon limited value: {expected}, Measured value: {measured}",
+            )
+
+            # Check the actuation force limited attribute
+            expected = expected_actfrc_limited[i]
+            measured = solver.mjw_model.tendon_actfrclimited.numpy()[i]
+            self.assertEqual(
+                measured,
+                expected,
+                msg=f"Expected tendon actuator force limited value: {expected}, Measured value: {measured}",
+            )
+
+    def test_single_mujoco_fixed_tendon_limit_parsing(self):
+        """Test that tendon limits are correctly parsed."""
+        mjcf = """<?xml version="1.0" ?>
+<mujoco>
+    <worldbody>
+    <!-- Root body (fixed to world) -->
+    <body name="root" pos="0 0 0">
+      <geom type="box" size="0.1 0.1 0.1" rgba="0.5 0.5 0.5 1"/>
+
+      <!-- First child link with prismatic joint along x -->
+      <body name="link1" pos="0.0 -0.5 0">
+        <joint name="joint1" type="slide" axis="1 0 0" range="-50.5 50.5"/>
+        <geom solmix="1.0" type="cylinder" size="0.05 0.025" rgba="1 0 0 1" euler="0 90 0"/>
+        <inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/>
+      </body>
+
+      <!-- Second child link with prismatic joint along x -->
+      <body name="link2" pos="-0.0 -0.7 0">
+        <joint name="joint2" type="slide" axis="1 0 0" range="-50.5 50.5"/>
+        <geom type="cylinder" size="0.05 0.025" rgba="0 0 1 1" euler="0 90 0"/>
+        <inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/>
+      </body>
+
+    </body>
+  </worldbody>
+
+  <tendon>
+    <!-- Fixed tendon coupling joint1 and joint2 -->
+	<fixed
+       range="-10.0 11.0"
+       actuatorfrcrange="-2.2 2.2"
+       name="coupling_tendon1">
+      <joint joint="joint1" coef="1"/>
+      <joint joint="joint2" coef="-1"/>
+    </fixed>
+  </tendon>
+
+  <tendon>
+    <!-- Fixed tendon coupling joint1 and joint2 -->
+	<fixed
+        limited="true"
+        range="-12.0 13.0"
+        actuatorfrclimited="true"
+        actuatorfrcrange="-3.3 3.3"
+        name="coupling_tendon2">
+      <joint joint="joint1" coef="1"/>
+      <joint joint="joint2" coef="1"/>
+    </fixed>
+  </tendon>
+
+  <tendon>
+    <!-- Fixed tendon coupling joint1 and joint2 -->
+	<fixed
+        limited="false"
+        range="-14.0 15.0"
+        actuatorfrclimited="false"
+        actuatorfrcrange="-4.4 4.4"
+		name="coupling_tendon3">
+      <joint joint="joint1" coef="2"/>
+      <joint joint="joint2" coef="3"/>
+    </fixed>
+  </tendon>
+
+</mujoco>
+"""
+
+        # Newton hard-codes spec.compiler.automlimits=1.
+        # 1) With automlimits=1 we should not have to specify limited="true" on each tendon. It should be sufficient
+        # just to set the range. coupling_tendon1 is the test for this.
+        # 2) With compiler.autolimits=1 it shouldn't matter if we do specify limited="true.  We should still end up
+        # with an active limit with limited="true". coupling_tendon2 is the test for this.
+        # 3) With compiler.autolimits=1  and limited="false" we should end up with an inactive limit. coupling_tendon3
+        # is the test for this.
+        # 4) repeat the test with actuatorfrclimited.
+
+        nbBuilders = 1
+        nbTendonsPerBuilder = 3
+        nbTendons = nbBuilders * nbTendonsPerBuilder
+
+        individual_builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(individual_builder)
+        individual_builder.add_mjcf(mjcf)
+        builder = newton.ModelBuilder()
+        for _i in range(0, nbBuilders):
+            builder.add_world(individual_builder)
+        model = builder.finalize()
+        solver = SolverMuJoCo(model, iterations=10, ls_iterations=10)
+
+        # Note default spring length is -1 but ends up being 0.
+
+        expected_range = [[wp.vec2(-10.0, 11.0), wp.vec2(-12.0, 13.0), wp.vec2(-14.0, 15.0)]]
+        expected_actuator_force_range = [[wp.vec2(-2.2, 2.2), wp.vec2(-3.3, 3.3), wp.vec2(-4.4, 4.4)]]
+        for i in range(0, nbBuilders):
+            for j in range(0, nbTendonsPerBuilder):
+                # Check the range
+                for k in range(0, 2):
+                    expected = expected_range[i][j][k]
+                    measured = solver.mjw_model.tendon_range.numpy()[i][j][k]
+                    self.assertAlmostEqual(
+                        measured,
+                        expected,
+                        places=4,
+                        msg=f"Expected range[{k}] value: {expected}, Measured value: {measured}",
+                    )
+
+                # Check the actuator force range
+                for k in range(0, 2):
+                    expected = expected_actuator_force_range[i][j][k]
+                    measured = solver.mjw_model.tendon_actfrcrange.numpy()[i][j][k]
+                    self.assertAlmostEqual(
+                        measured,
+                        expected,
+                        places=4,
+                        msg=f"Expected range[{k}] value: {expected}, Measured value: {measured}",
+                    )
+
+        expected_limited = [1, 1, 0]
+        expected_actfrc_limited = [1, 1, 0]
+        for i in range(0, nbTendons):
+            # Check the limited attribute
+            expected = expected_limited[i]
+            measured = solver.mjw_model.tendon_limited.numpy()[i]
+            self.assertEqual(
+                measured,
+                expected,
+                msg=f"Expected tendon limited value: {expected}, Measured value: {measured}",
+            )
+
+            # Check the actuation force limited attribute
+            expected = expected_actfrc_limited[i]
+            measured = solver.mjw_model.tendon_actfrclimited.numpy()[i]
+            self.assertEqual(
+                measured,
+                expected,
+                msg=f"Expected tendon actuator force limited value: {expected}, Measured value: {measured}",
+            )
+
+    def test_single_mujoco_fixed_tendon_auto_springlength(self):
+        """Test that springlength=-1 auto-computes the spring length from initial joint positions.
+
+        When springlength first param is -1, MuJoCo auto-computes the spring length from
+        the initial joint state (qpos0) using: tendon_length = coeff0 * q0 + coeff1 * q1.
+        The computed value is stored in tendon_length0.
+
+        We set qpos0 using joint "ref" values in mjcf.
+        """
+        mjcf = """<?xml version="1.0" ?>
+<mujoco>
+    <worldbody>
+    <!-- Root body (fixed to world) -->
+    <body name="root" pos="0 0 0">
+      <geom type="box" size="0.1 0.1 0.1" rgba="0.5 0.5 0.5 1"/>
+
+      <!-- First child link with prismatic joint along x -->
+      <body name="link1" pos="0.0 -0.5 0">
+        <joint name="joint1" type="slide" axis="1 0 0" ref="0.5" range="-50.5 50.5"/>
+        <geom solmix="1.0" type="cylinder" size="0.05 0.025" rgba="1 0 0 1" euler="0 90 0"/>
+        <inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/>
+      </body>
+
+      <!-- Second child link with prismatic joint along x -->
+      <body name="link2" pos="-0.0 -0.7 0">
+        <joint name="joint2" type="slide" axis="1 0 0" ref="0.7" range="-50.5 50.5"/>
+        <geom type="cylinder" size="0.05 0.025" rgba="0 0 1 1" euler="0 90 0"/>
+        <inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/>
+      </body>
+
+    </body>
+  </worldbody>
+
+  <tendon>
+    <!-- Fixed tendon with auto-computed spring length (springlength=-1) -->
+    <fixed
+        name="auto_length_tendon"
+        stiffness="1.0"
+        damping="0.5"
+        springlength="-1">
+      <joint joint="joint1" coef="2"/>
+      <joint joint="joint2" coef="3"/>
+    </fixed>
+  </tendon>
+
+</mujoco>
+"""
+
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_mjcf(mjcf)
+        model = builder.finalize()
+
+        # Taken from joint.ref values in mjcf.
+        q0 = 0.5
+        q1 = 0.7
+
+        solver = SolverMuJoCo(model, iterations=10, ls_iterations=10)
+
+        # Expected tendon length from initial joint positions: coef0*q0 + coef1*q1
+        coef0 = 2.0
+        coef1 = 3.0
+        expected_tendon_length0 = coef0 * q0 + coef1 * q1  # 2*0.5 + 3*0.7 = 3.1
+
+        # Verify tendon_length0 is computed from initial joint positions
+        measured_tendon_length0 = solver.mj_model.tendon_length0[0]
+        self.assertAlmostEqual(
+            measured_tendon_length0,
+            expected_tendon_length0,
+            places=4,
+            msg=f"Expected tendon_length0: {expected_tendon_length0}, Measured: {measured_tendon_length0}",
+        )
+
     def test_solimplimit_parsing(self):
         """Test that solimplimit attribute is parsed correctly from MJCF."""
         mjcf = """<?xml version="1.0" ?>
@@ -742,7 +1667,6 @@ class TestImportMjcf(unittest.TestCase):
 
         builder = newton.ModelBuilder()
 
-        SolverMuJoCo.register_custom_attributes(builder)
         builder.add_mjcf(mjcf)
         model = builder.finalize()
 
@@ -815,7 +1739,6 @@ class TestImportMjcf(unittest.TestCase):
         </mujoco>
         """
         builder = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(builder)
         builder.add_mjcf(mjcf)
         model = builder.finalize()
 
@@ -843,7 +1766,6 @@ class TestImportMjcf(unittest.TestCase):
 
         builder = newton.ModelBuilder()
 
-        SolverMuJoCo.register_custom_attributes(builder)
         builder.add_mjcf(mjcf)
         model = builder.finalize()
 
@@ -917,7 +1839,6 @@ class TestImportMjcf(unittest.TestCase):
 
         builder = newton.ModelBuilder()
 
-        SolverMuJoCo.register_custom_attributes(builder)
         builder.add_mjcf(mjcf)
         model = builder.finalize()
 
@@ -1136,7 +2057,6 @@ class TestImportMjcf(unittest.TestCase):
 
         builder = newton.ModelBuilder()
         # Register gravcomp
-        SolverMuJoCo.register_custom_attributes(builder)
         builder.add_mjcf(mjcf_content)
         model = builder.finalize()
 
@@ -1181,7 +2101,6 @@ class TestImportMjcf(unittest.TestCase):
 </mujoco>
 """
         builder = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(builder)
         builder.add_mjcf(mjcf_content)
         model = builder.finalize()
 
@@ -1232,7 +2151,6 @@ class TestImportMjcf(unittest.TestCase):
 </mujoco>
 """
         builder = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(builder)
         builder.add_mjcf(mjcf_content)
         model = builder.finalize()
 
@@ -1331,6 +2249,53 @@ class TestImportMjcf(unittest.TestCase):
             f"Expected: {expected_quat}\nActual: {body_quat}",
         )
 
+    def test_joint_type_free_with_floating_false(self):
+        """Test that <joint type="free"> respects floating=False parameter.
+
+        MuJoCo supports two syntaxes for free joints:
+        1. <freejoint/>
+        2. <joint type="free"/>
+
+        Both should be treated identically when the floating parameter is set.
+        """
+        # MJCF using <joint type="free"> instead of <freejoint>
+        mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test_joint_type_free">
+    <worldbody>
+        <body name="floating_body" pos="1 2 3">
+            <joint name="free_joint" type="free"/>
+            <geom type="sphere" size="0.1"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        # Test with floating=False - should create a fixed joint
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf_content, floating=False)
+        model = builder.finalize()
+
+        self.assertEqual(model.joint_count, 1)
+        joint_type = model.joint_type.numpy()[0]
+        self.assertEqual(joint_type, newton.JointType.FIXED)
+
+        # Test with floating=True - should create a free joint
+        builder2 = newton.ModelBuilder()
+        builder2.add_mjcf(mjcf_content, floating=True)
+        model2 = builder2.finalize()
+
+        self.assertEqual(model2.joint_count, 1)
+        joint_type2 = model2.joint_type.numpy()[0]
+        self.assertEqual(joint_type2, newton.JointType.FREE)
+
+        # Test with floating=None (default) - should preserve the free joint from MJCF
+        builder3 = newton.ModelBuilder()
+        builder3.add_mjcf(mjcf_content, floating=None)
+        model3 = builder3.finalize()
+
+        self.assertEqual(model3.joint_count, 1)
+        joint_type3 = model3.joint_type.numpy()[0]
+        self.assertEqual(joint_type3, newton.JointType.FREE)
+
     def test_geom_priority_parsing(self):
         """Test parsing of geom priority from MJCF"""
         mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
@@ -1353,7 +2318,6 @@ class TestImportMjcf(unittest.TestCase):
 """
 
         builder = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(builder)
         builder.add_mjcf(mjcf_content)
         model = builder.finalize()
 
@@ -1389,7 +2353,6 @@ class TestImportMjcf(unittest.TestCase):
 """
 
         builder = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(builder)
         builder.add_mjcf(mjcf)
         model = builder.finalize()
 
@@ -1410,6 +2373,79 @@ class TestImportMjcf(unittest.TestCase):
             actual = geom_solimp[shape_idx].tolist()
             for i, (a, e) in enumerate(zip(actual, expected, strict=False)):
                 self.assertAlmostEqual(a, e, places=4, msg=f"geom_solimp[{shape_idx}][{i}] should be {e}, got {a}")
+
+    def test_option_impratio_parsing(self):
+        """Test parsing of impratio from MJCF option tag."""
+        mjcf = """<?xml version="1.0" ?>
+<mujoco>
+    <option impratio="1.5"/>
+    <worldbody>
+        <body name="body1" pos="0 0 1">
+            <joint type="hinge" axis="0 0 1"/>
+            <geom type="sphere" size="0.1"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf)
+        model = builder.finalize()
+
+        self.assertTrue(hasattr(model, "mujoco"))
+        self.assertTrue(hasattr(model.mujoco, "impratio"))
+
+        impratio = model.mujoco.impratio.numpy()
+
+        # Single world should have single value
+        self.assertEqual(len(impratio), 1)
+        self.assertAlmostEqual(impratio[0], 1.5, places=4)
+
+    def test_option_impratio_per_world(self):
+        """Test that impratio is correctly remapped per world when merging builders."""
+        # Robot A with impratio=1.5
+        robot_a = newton.ModelBuilder()
+        robot_a.add_mjcf("""
+<mujoco>
+    <option impratio="1.5"/>
+    <worldbody>
+        <body name="a" pos="0 0 1">
+            <joint type="hinge" axis="0 0 1"/>
+            <geom type="sphere" size="0.1"/>
+        </body>
+    </worldbody>
+</mujoco>
+""")
+
+        # Robot B with impratio=2.0
+        robot_b = newton.ModelBuilder()
+        robot_b.add_mjcf("""
+<mujoco>
+    <option impratio="2.0"/>
+    <worldbody>
+        <body name="b" pos="0 0 1">
+            <joint type="hinge" axis="0 0 1"/>
+            <geom type="sphere" size="0.1"/>
+        </body>
+    </worldbody>
+</mujoco>
+""")
+
+        # Merge into main builder
+        main = newton.ModelBuilder()
+        main.add_world(robot_a)
+        main.add_world(robot_b)
+        model = main.finalize()
+
+        self.assertTrue(hasattr(model, "mujoco"))
+        self.assertTrue(hasattr(model.mujoco, "impratio"))
+
+        impratio = model.mujoco.impratio.numpy()
+
+        # Should have 2 worlds with different impratio values
+        self.assertEqual(len(impratio), 2)
+        self.assertAlmostEqual(impratio[0], 1.5, places=4, msg="World 0 should have impratio=1.5")
+        self.assertAlmostEqual(impratio[1], 2.0, places=4, msg="World 1 should have impratio=2.0")
 
     def test_geom_solmix_parsing(self):
         """Test that geom_solmix attribute is parsed correctly from MJCF."""
@@ -1433,7 +2469,6 @@ class TestImportMjcf(unittest.TestCase):
 """
 
         builder = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(builder)
         builder.add_mjcf(mjcf)
         model = builder.finalize()
 
@@ -1476,7 +2511,6 @@ class TestImportMjcf(unittest.TestCase):
 """
 
         builder = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(builder)
         builder.add_mjcf(mjcf)
         model = builder.finalize()
 
@@ -1518,7 +2552,6 @@ class TestImportMjcf(unittest.TestCase):
 """
 
         builder = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(builder)
         builder.add_mjcf(mjcf_content)
         model = builder.finalize()
 
@@ -1642,7 +2675,6 @@ class TestImportMjcf(unittest.TestCase):
 """
 
         builder = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(builder)
         builder.add_mjcf(mjcf)
         model = builder.finalize()
 
@@ -1665,6 +2697,26 @@ class TestImportMjcf(unittest.TestCase):
             for i, (a, e) in enumerate(zip(actual, expected, strict=False)):
                 self.assertAlmostEqual(a, e, places=4, msg=f"eq_solref[{eq_idx}][{i}] should be {e}, got {a}")
 
+    def test_parse_mujoco_options_disabled(self):
+        """Test that solver options from <option> tag are not parsed when parse_mujoco_options=False."""
+        mjcf = """<?xml version="1.0" ?>
+<mujoco>
+    <option impratio="99.0"/>
+    <worldbody>
+        <body name="body1" pos="0 0 1">
+            <joint type="hinge" axis="0 0 1"/>
+            <geom type="sphere" size="0.1"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf, parse_mujoco_options=False)
+        model = builder.finalize()
+
+        # impratio should remain at default (1.0), not the MJCF value (99.0)
+        self.assertAlmostEqual(model.mujoco.impratio.numpy()[0], 1.0, places=4)
+
     def test_ref_attribute_parsing(self):
         """Test that 'ref' attribute is parsed"""
         mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
@@ -1685,7 +2737,6 @@ class TestImportMjcf(unittest.TestCase):
 </mujoco>"""
 
         builder = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(builder)
         builder.add_mjcf(mjcf_content)
         model = builder.finalize()
 
@@ -1719,7 +2770,6 @@ class TestImportMjcf(unittest.TestCase):
 </mujoco>"""
 
         builder = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(builder)
         builder.add_mjcf(mjcf_content)
         model = builder.finalize()
         springref = model.mujoco.dof_springref.numpy()
@@ -1785,6 +2835,1262 @@ class TestImportMjcf(unittest.TestCase):
         self.assertAlmostEqual(geom_xform[0], 0.5, places=5)
         self.assertAlmostEqual(geom_xform[1], 5.0, places=5)
         self.assertAlmostEqual(geom_xform[2], 0.0, places=5)
+
+    def test_frame_transform_composition_geoms(self):
+        """Test that frame transforms are correctly composed with child geom positions.
+
+        Based on MuJoCo documentation example:
+        - A frame with pos="0 1 0" containing a geom with pos="0 1 0" should result
+          in the geom having pos="0 2 0" (transforms are accumulated).
+        """
+        mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test_frame">
+    <worldbody>
+        <frame pos="0 1 0">
+            <geom name="Bob" pos="0 1 0" size="1" type="sphere"/>
+        </frame>
+    </worldbody>
+</mujoco>"""
+
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf_content)
+
+        # Find the geom named "Bob"
+        bob_idx = builder.shape_key.index("Bob")
+        bob_xform = builder.shape_transform[bob_idx]
+
+        # Position should be (0, 2, 0) = frame pos + geom pos
+        self.assertAlmostEqual(bob_xform[0], 0.0, places=5)
+        self.assertAlmostEqual(bob_xform[1], 2.0, places=5)
+        self.assertAlmostEqual(bob_xform[2], 0.0, places=5)
+
+    def test_frame_transform_composition_rotation(self):
+        """Test that frame quaternion rotations are correctly composed.
+
+        Based on MuJoCo documentation example:
+        - A frame with quat="0 0 1 0" (180 deg around Y) containing a geom with quat="0 1 0 0" (180 deg around X)
+          should result in quat="0 0 0 1" (180 deg around Z).
+        """
+        mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test_frame_rotation">
+    <worldbody>
+        <frame quat="0 0 1 0">
+            <geom name="Alice" quat="0 1 0 0" size="1" type="sphere"/>
+        </frame>
+    </worldbody>
+</mujoco>"""
+
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf_content)
+
+        # Find the geom named "Alice"
+        alice_idx = builder.shape_key.index("Alice")
+        alice_xform = builder.shape_transform[alice_idx]
+
+        # The resulting quaternion should be approximately (0, 0, 0, 1) in xyzw format
+        # or equivalently (1, 0, 0, 0) in wxyz MuJoCo format (representing 180 deg around Z)
+        # In Newton's xyzw format: (x, y, z, w) = (0, 0, 1, 0) for 180 deg around Z
+        # But we need to check the actual composed result
+        quat = wp.quat(alice_xform[3], alice_xform[4], alice_xform[5], alice_xform[6])
+        # The expected result from MuJoCo docs: quat="0 0 0 1" in wxyz = (0, 0, 1, 0) in xyzw after normalization
+        # Actually the doc says result is "0 0 0 1" which is wxyz format meaning w=0, x=0, y=0, z=1
+        # In Newton xyzw: x=0, y=0, z=1, w=0
+        self.assertAlmostEqual(abs(quat[0]), 0.0, places=4)  # x
+        self.assertAlmostEqual(abs(quat[1]), 0.0, places=4)  # y
+        self.assertAlmostEqual(abs(quat[2]), 1.0, places=4)  # z
+        self.assertAlmostEqual(abs(quat[3]), 0.0, places=4)  # w
+
+    def test_frame_transform_composition_body(self):
+        """Test that frame transforms are correctly composed with child body positions.
+
+        A frame with pos="1 0 0" containing a body with pos="1 0 0" should result
+        in the body having position (2, 0, 0) relative to parent.
+        """
+        mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test_frame_body">
+    <worldbody>
+        <frame pos="1 0 0">
+            <body name="Carl" pos="1 0 0">
+                <geom name="carl_geom" size="0.1" type="sphere"/>
+            </body>
+        </frame>
+    </worldbody>
+</mujoco>"""
+
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf_content)
+        model = builder.finalize()
+
+        # Find the body named "Carl"
+        _carl_idx = model.body_key.index("Carl")
+
+        # Get the joint transform for Carl's joint (which connects Carl to world)
+        # The joint_X_p contains the parent frame transform
+        joint_idx = 0  # First joint should be Carl's
+        joint_X_p = model.joint_X_p.numpy()[joint_idx]
+
+        # Position should be (2, 0, 0) = frame pos + body pos
+        self.assertAlmostEqual(joint_X_p[0], 2.0, places=5)
+        self.assertAlmostEqual(joint_X_p[1], 0.0, places=5)
+        self.assertAlmostEqual(joint_X_p[2], 0.0, places=5)
+
+    def test_nested_frames(self):
+        """Test that nested frames correctly compose their transforms."""
+        mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test_nested_frames">
+    <worldbody>
+        <frame pos="1 0 0">
+            <frame pos="0 1 0">
+                <frame pos="0 0 1">
+                    <geom name="nested_geom" pos="0 0 0" size="0.1" type="sphere"/>
+                </frame>
+            </frame>
+        </frame>
+    </worldbody>
+</mujoco>"""
+
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf_content)
+
+        # Find the nested geom
+        geom_idx = builder.shape_key.index("nested_geom")
+        geom_xform = builder.shape_transform[geom_idx]
+
+        # Position should be (1, 1, 1) from accumulated frame positions
+        self.assertAlmostEqual(geom_xform[0], 1.0, places=5)
+        self.assertAlmostEqual(geom_xform[1], 1.0, places=5)
+        self.assertAlmostEqual(geom_xform[2], 1.0, places=5)
+
+    def test_frame_inside_body(self):
+        """Test that frames inside bodies correctly transform their children."""
+        mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test_frame_in_body">
+    <worldbody>
+        <body name="parent" pos="0 0 0">
+            <geom name="parent_geom" size="0.1" type="sphere"/>
+            <frame pos="0 0 1">
+                <body name="child" pos="0 0 1">
+                    <geom name="child_geom" size="0.1" type="sphere"/>
+                </body>
+            </frame>
+        </body>
+    </worldbody>
+</mujoco>"""
+
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf_content)
+        model = builder.finalize()
+
+        # Find the child body's joint
+        child_idx = model.body_key.index("child")
+
+        # The child's joint_X_p should have z=2 (frame z=1 + body z=1)
+        # Find the joint that has child as its child body
+        joint_child = model.joint_child.numpy()
+        joint_idx = np.where(joint_child == child_idx)[0][0]
+        joint_X_p = model.joint_X_p.numpy()[joint_idx]
+
+        self.assertAlmostEqual(joint_X_p[0], 0.0, places=5)
+        self.assertAlmostEqual(joint_X_p[1], 0.0, places=5)
+        self.assertAlmostEqual(joint_X_p[2], 2.0, places=5)
+
+    def test_frame_geom_inside_body_is_body_relative(self):
+        """Test that geoms inside frames inside bodies have body-relative transforms.
+
+        This tests a critical distinction: geom transforms should be relative to
+        their parent body, NOT world transforms. A bug would cause the geom to be
+        positioned at the body's world position + frame offset + geom offset,
+        instead of just frame offset + geom offset relative to the body.
+        """
+        mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test_frame_geom_body_relative">
+    <worldbody>
+        <body name="parent" pos="10 20 30">
+            <geom name="parent_geom" size="0.1" type="sphere"/>
+            <frame pos="1 2 3">
+                <geom name="frame_geom" pos="0.1 0.2 0.3" size="0.1" type="sphere"/>
+            </frame>
+        </body>
+    </worldbody>
+</mujoco>"""
+
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf_content)
+
+        # Find the frame_geom - its transform should be body-relative
+        geom_idx = builder.shape_key.index("frame_geom")
+        geom_xform = builder.shape_transform[geom_idx]
+
+        # Position should be frame pos + geom pos = (1.1, 2.2, 3.3)
+        # NOT body world pos + frame pos + geom pos = (11.1, 22.2, 33.3)
+        self.assertAlmostEqual(geom_xform[0], 1.1, places=5)
+        self.assertAlmostEqual(geom_xform[1], 2.2, places=5)
+        self.assertAlmostEqual(geom_xform[2], 3.3, places=5)
+
+    def test_frame_with_sites(self):
+        """Test that frames correctly transform site positions."""
+        mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test_frame_sites">
+    <worldbody>
+        <frame pos="1 2 3">
+            <site name="test_site" pos="0.5 0.5 0.5" size="0.01"/>
+        </frame>
+    </worldbody>
+</mujoco>"""
+
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf_content, parse_sites=True)
+
+        # Find the site
+        site_idx = builder.shape_key.index("test_site")
+        site_xform = builder.shape_transform[site_idx]
+
+        # Position should be (1.5, 2.5, 3.5) = frame pos + site pos
+        self.assertAlmostEqual(site_xform[0], 1.5, places=5)
+        self.assertAlmostEqual(site_xform[1], 2.5, places=5)
+        self.assertAlmostEqual(site_xform[2], 3.5, places=5)
+
+    def test_site_size_defaults(self):
+        """Test that site size matches MuJoCo behavior for partial values.
+
+        MuJoCo fills unspecified components with its default (0.005), NOT by
+        replicating the first value. This ensures MJCF compatibility.
+        """
+        mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test_site_size">
+    <worldbody>
+        <body name="body1">
+            <!-- Site with single size value - should fill with MuJoCo defaults -->
+            <site name="site_single" size="0.001"/>
+            <!-- Site with two size values - should fill third with default -->
+            <site name="site_two" size="0.002 0.003"/>
+            <!-- Site with all three size values -->
+            <site name="site_three" size="0.004 0.005 0.006"/>
+            <!-- Site with no size - should use MuJoCo default [0.005, 0.005, 0.005] -->
+            <site name="site_default"/>
+        </body>
+    </worldbody>
+</mujoco>"""
+
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf_content, parse_sites=True)
+
+        # Helper to get site scale by name
+        def get_site_scale(name):
+            idx = builder.shape_key.index(name)
+            return builder.shape_scale[idx]
+
+        # Single value: [0.001, 0.005, 0.005] (matches MuJoCo behavior)
+        scale_single = get_site_scale("site_single")
+        self.assertAlmostEqual(scale_single[0], 0.001, places=6)
+        self.assertAlmostEqual(scale_single[1], 0.005, places=6)
+        self.assertAlmostEqual(scale_single[2], 0.005, places=6)
+
+        # Two values: [0.002, 0.003, 0.005]
+        scale_two = get_site_scale("site_two")
+        self.assertAlmostEqual(scale_two[0], 0.002, places=6)
+        self.assertAlmostEqual(scale_two[1], 0.003, places=6)
+        self.assertAlmostEqual(scale_two[2], 0.005, places=6)
+
+        # Three values: [0.004, 0.005, 0.006]
+        scale_three = get_site_scale("site_three")
+        self.assertAlmostEqual(scale_three[0], 0.004, places=6)
+        self.assertAlmostEqual(scale_three[1], 0.005, places=6)
+        self.assertAlmostEqual(scale_three[2], 0.006, places=6)
+
+        # No size: should use MuJoCo default [0.005, 0.005, 0.005]
+        scale_default = get_site_scale("site_default")
+        self.assertAlmostEqual(scale_default[0], 0.005, places=6)
+        self.assertAlmostEqual(scale_default[1], 0.005, places=6)
+        self.assertAlmostEqual(scale_default[2], 0.005, places=6)
+
+    def test_frame_childclass_propagation(self):
+        """Test that frames correctly propagate childclass and merged defaults to geoms, sites, and nested frames."""
+        mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test_frame_childclass">
+    <default>
+        <default class="red_class">
+            <geom rgba="1 0 0 1" size="0.1"/>
+            <site rgba="1 0 0 1" size="0.05"/>
+        </default>
+        <default class="blue_class">
+            <geom rgba="0 0 1 1" size="0.2"/>
+            <site rgba="0 0 1 1" size="0.08"/>
+        </default>
+        <default class="green_class">
+            <geom rgba="0 1 0 1" size="0.3"/>
+            <site rgba="0 1 0 1" size="0.12"/>
+        </default>
+    </default>
+    <worldbody>
+        <!-- Frame with childclass should apply defaults to its children -->
+        <frame name="red_frame" childclass="red_class" pos="1 0 0">
+            <geom name="geom_in_red_frame" type="sphere"/>
+            <site name="site_in_red_frame"/>
+
+            <!-- Nested frame inherits parent's childclass -->
+            <frame name="nested_in_red" pos="0 1 0">
+                <geom name="geom_in_nested_red" type="sphere"/>
+                <site name="site_in_nested_red"/>
+            </frame>
+
+            <!-- Nested frame with its own childclass overrides -->
+            <frame name="blue_nested_in_red" childclass="blue_class" pos="0 0 1">
+                <geom name="geom_in_blue_nested" type="sphere"/>
+                <site name="site_in_blue_nested"/>
+
+                <!-- Double-nested frame inherits blue_class -->
+                <frame name="double_nested" pos="0.5 0 0">
+                    <geom name="geom_double_nested" type="sphere"/>
+                    <site name="site_double_nested"/>
+                </frame>
+            </frame>
+        </frame>
+
+        <!-- Geom outside any frame (uses global defaults) -->
+        <geom name="geom_no_frame" type="sphere" size="0.5"/>
+    </worldbody>
+</mujoco>"""
+
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf_content, parse_sites=True, up_axis="Z")
+
+        def get_shape_size(name):
+            idx = builder.shape_key.index(name)
+            geo_type = builder.shape_type[idx]
+            if geo_type == GeoType.SPHERE:
+                return builder.shape_scale[idx][0]  # radius
+            return None
+
+        def get_shape_pos(name):
+            idx = builder.shape_key.index(name)
+            return builder.shape_transform[idx][:3]
+
+        # Geom in red_frame should have red_class size (0.1)
+        self.assertAlmostEqual(get_shape_size("geom_in_red_frame"), 0.1, places=5)
+
+        # Geom in nested frame (inherits red_class) should also have size 0.1
+        self.assertAlmostEqual(get_shape_size("geom_in_nested_red"), 0.1, places=5)
+
+        # Geom in blue_nested_in_red (overrides to blue_class) should have size 0.2
+        self.assertAlmostEqual(get_shape_size("geom_in_blue_nested"), 0.2, places=5)
+
+        # Double-nested geom (inherits blue_class from parent frame) should have size 0.2
+        self.assertAlmostEqual(get_shape_size("geom_double_nested"), 0.2, places=5)
+
+        # Geom outside frames should use explicit size (0.5)
+        self.assertAlmostEqual(get_shape_size("geom_no_frame"), 0.5, places=5)
+
+        # Verify transforms are still correctly composed
+        # geom_in_red_frame: frame pos (1,0,0) + geom pos (0,0,0) = (1,0,0)
+        pos = get_shape_pos("geom_in_red_frame")
+        self.assertAlmostEqual(pos[0], 1.0, places=5)
+        self.assertAlmostEqual(pos[1], 0.0, places=5)
+        self.assertAlmostEqual(pos[2], 0.0, places=5)
+
+        # geom_in_nested_red: (1,0,0) + (0,1,0) = (1,1,0)
+        pos = get_shape_pos("geom_in_nested_red")
+        self.assertAlmostEqual(pos[0], 1.0, places=5)
+        self.assertAlmostEqual(pos[1], 1.0, places=5)
+        self.assertAlmostEqual(pos[2], 0.0, places=5)
+
+        # geom_in_blue_nested: (1,0,0) + (0,0,1) = (1,0,1)
+        pos = get_shape_pos("geom_in_blue_nested")
+        self.assertAlmostEqual(pos[0], 1.0, places=5)
+        self.assertAlmostEqual(pos[1], 0.0, places=5)
+        self.assertAlmostEqual(pos[2], 1.0, places=5)
+
+        # geom_double_nested: (1,0,0) + (0,0,1) + (0.5,0,0) = (1.5,0,1)
+        pos = get_shape_pos("geom_double_nested")
+        self.assertAlmostEqual(pos[0], 1.5, places=5)
+        self.assertAlmostEqual(pos[1], 0.0, places=5)
+        self.assertAlmostEqual(pos[2], 1.0, places=5)
+
+        # Verify sites also receive the correct defaults
+        # site_in_red_frame should have red_class size (0.05)
+        site_idx = builder.shape_key.index("site_in_red_frame")
+        self.assertAlmostEqual(builder.shape_scale[site_idx][0], 0.05, places=5)
+
+        # site_in_blue_nested should have blue_class size (0.08)
+        site_idx = builder.shape_key.index("site_in_blue_nested")
+        self.assertAlmostEqual(builder.shape_scale[site_idx][0], 0.08, places=5)
+
+        # site_double_nested should inherit blue_class size (0.08)
+        site_idx = builder.shape_key.index("site_double_nested")
+        self.assertAlmostEqual(builder.shape_scale[site_idx][0], 0.08, places=5)
+
+    def test_joint_anchor_with_rotated_body(self):
+        """Test that joint anchor position is correctly computed when body has rotation.
+
+        This is a regression test for a bug where the joint position offset was added
+        directly to the body position without being rotated by the body's orientation.
+
+        Setup:
+        - Parent body at (0,0,0) with 90° rotation around Z
+        - Child body at (1,0,0) relative to parent (becomes (0,1,0) in world due to rotation)
+        - Joint with pos="0.5 0 0" in child's local frame
+
+        The joint anchor (in parent frame) should be:
+        - body_pos_relative_to_parent + rotate(joint_pos, body_orientation)
+        - = (1,0,0) + rotate_90z(0.5,0,0)
+        - = (1,0,0) + (0,0.5,0)
+        - = (1, 0.5, 0)
+
+        Bug would compute: (1,0,0) + (0.5,0,0) = (1.5, 0, 0) - WRONG
+        """
+        # Parent rotated 90° around Z axis
+        # MJCF quat format is [w, x, y, z]
+        mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test_joint_anchor_rotation">
+    <worldbody>
+        <body name="parent" pos="0 0 0" quat="0.7071068 0 0 0.7071068">
+            <geom type="box" size="0.1 0.1 0.1"/>
+            <body name="child" pos="1 0 0">
+                <joint name="child_joint" type="hinge" axis="0 0 1" pos="0.5 0 0"/>
+                <geom type="box" size="0.1 0.1 0.1"/>
+            </body>
+        </body>
+    </worldbody>
+</mujoco>"""
+
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf_content)
+        model = builder.finalize()
+
+        # Find the child's joint
+        joint_idx = model.joint_key.index("child_joint")
+        joint_X_p = model.joint_X_p.numpy()[joint_idx]
+
+        # The joint anchor position (in parent's frame) should be:
+        # child_body_pos + rotate(joint_pos, child_body_orientation)
+        #
+        # Since child has no explicit rotation, it inherits parent's orientation.
+        # child_body_pos relative to parent = (1, 0, 0)
+        # child orientation relative to parent = identity (no additional rotation)
+        # joint_pos = (0.5, 0, 0) in child's local frame
+        #
+        # But wait - the joint_X_p is the parent_xform which includes the body transform.
+        # In the parent >= 0 case:
+        #   relative_xform = inverse(parent_world) * child_world
+        #   body_pos_for_joints = relative_xform.p = (1, 0, 0)
+        #   body_ori_for_joints = relative_xform.q = identity (child has no local rotation)
+        #
+        # So joint anchor = (1, 0, 0) + rotate(identity, (0.5, 0, 0)) = (1.5, 0, 0)
+        #
+        # Actually, this test case doesn't trigger the bug because child has no
+        # rotation relative to parent!
+
+        # Let me verify the position - with identity rotation, the anchor should be (1.5, 0, 0)
+        np.testing.assert_allclose(joint_X_p[:3], [1.5, 0.0, 0.0], atol=1e-5)
+
+    def test_joint_anchor_with_rotated_child_body(self):
+        """Test joint anchor when child body itself has rotation relative to parent.
+
+        This specifically tests the case where joint_pos needs to be rotated by
+        the child body's orientation (relative to parent) before being added.
+
+        Setup:
+        - Parent body at origin with no rotation
+        - Child body at (2,0,0) with 90° Z rotation relative to parent
+        - Joint with pos="1 0 0" in child's local frame
+
+        The joint anchor (in parent frame) should be:
+        - child_pos + rotate(joint_pos, child_orientation)
+        - = (2,0,0) + rotate_90z(1,0,0)
+        - = (2,0,0) + (0,1,0)
+        - = (2, 1, 0)
+
+        Bug would compute: (2,0,0) + (1,0,0) = (3, 0, 0) - WRONG
+        """
+        # Child has 90° rotation around Z relative to parent
+        mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test_joint_anchor_child_rotation">
+    <worldbody>
+        <body name="parent" pos="0 0 0">
+            <geom type="box" size="0.1 0.1 0.1"/>
+            <body name="child" pos="2 0 0" quat="0.7071068 0 0 0.7071068">
+                <joint name="rotated_joint" type="hinge" axis="0 0 1" pos="1 0 0"/>
+                <geom type="box" size="0.1 0.1 0.1"/>
+            </body>
+        </body>
+    </worldbody>
+</mujoco>"""
+
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf_content)
+        model = builder.finalize()
+
+        # Find the child's joint
+        joint_idx = model.joint_key.index("rotated_joint")
+        joint_X_p = model.joint_X_p.numpy()[joint_idx]
+
+        # The joint anchor position should be:
+        # child_body_pos (2,0,0) + rotate_90z(joint_pos (1,0,0))
+        # = (2,0,0) + (0,1,0) = (2, 1, 0)
+        #
+        # With the bug it would be: (2,0,0) + (1,0,0) = (3, 0, 0)
+        np.testing.assert_allclose(
+            joint_X_p[:3],
+            [2.0, 1.0, 0.0],
+            atol=1e-5,
+            err_msg="Joint anchor should be rotated by child body orientation",
+        )
+
+        # Also verify the orientation is correct (90° Z rotation)
+        # In xyzw format: [0, 0, sin(45°), cos(45°)] = [0, 0, 0.7071, 0.7071]
+        np.testing.assert_allclose(joint_X_p[3:7], [0, 0, 0.7071068, 0.7071068], atol=1e-5)
+
+    def test_base_joint_respects_import_xform(self):
+        """Test that base joints (parent == -1) correctly use the import xform.
+
+        This is a regression test for a bug where root bodies with base_joint
+        ignored the import xform parameter, using raw body pos/ori instead of
+        the composed world_xform.
+
+        Setup:
+        - Root body at (1, 0, 0) with no rotation
+        - Import xform: translate by (10, 20, 30) and rotate 90° around Z
+        - Using base_joint="lx,ly,lz" (D6 joint with linear axes)
+
+        Expected final body transform after FK:
+        - world_xform = import_xform * body_local_xform
+        - = transform((10,20,30), rot_90z) * transform((1,0,0), identity)
+        - Position: (10,20,30) + rotate_90z(1,0,0) = (10,20,30) + (0,1,0) = (10, 21, 30)
+        - Orientation: 90° Z rotation
+
+        Bug would give: position = (1, 0, 0), orientation = identity (ignoring import xform)
+        """
+        mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test_base_joint_xform">
+    <worldbody>
+        <body name="floating_body" pos="1 0 0">
+            <freejoint/>
+            <geom type="box" size="0.1 0.1 0.1"/>
+        </body>
+    </worldbody>
+</mujoco>"""
+
+        # Create import xform: translate + 90° Z rotation
+        import_pos = wp.vec3(10.0, 20.0, 30.0)
+        import_quat = wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), np.pi / 2)  # 90° Z
+        import_xform = wp.transform(import_pos, import_quat)
+
+        # Use base_joint to convert freejoint to a D6 joint
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf_content, xform=import_xform, base_joint="lx,ly,lz")
+        model = builder.finalize()
+
+        # Verify body transform after forward kinematics
+        # Note: base_joint splits position and rotation between parent_xform and child_xform
+        # to preserve joint axis directions, so we check the final body transform instead
+        state = model.state()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+
+        body_idx = model.body_key.index("floating_body")
+        body_q = state.body_q.numpy()[body_idx]
+
+        # Expected position: import_pos + rotate_90z(body_pos)
+        # = (10, 20, 30) + rotate_90z(1, 0, 0) = (10, 20, 30) + (0, 1, 0) = (10, 21, 30)
+        np.testing.assert_allclose(
+            body_q[:3],
+            [10.0, 21.0, 30.0],
+            atol=1e-5,
+            err_msg="Body position should include import xform",
+        )
+
+        # Expected orientation: 90° Z rotation
+        # In xyzw format: [0, 0, sin(45°), cos(45°)] = [0, 0, 0.7071, 0.7071]
+        expected_quat = np.array([0, 0, 0.7071068, 0.7071068])
+        actual_quat = body_q[3:7]
+        quat_match = np.allclose(actual_quat, expected_quat, atol=1e-5) or np.allclose(
+            actual_quat, -expected_quat, atol=1e-5
+        )
+        self.assertTrue(quat_match, f"Body orientation should include import xform. Got {actual_quat}")
+
+    def test_base_joint_in_frame_respects_frame_xform(self):
+        """Test that base joints inside frames correctly use the frame transform.
+
+        Setup:
+        - Frame at (5, 0, 0) with 90° Z rotation
+        - Root body inside frame at (1, 0, 0) local position
+        - Using base_joint
+
+        Expected final body transform:
+        - frame_xform * body_local_xform
+        - = transform((5,0,0), rot_90z) * transform((1,0,0), identity)
+        - Position: (5,0,0) + rotate_90z(1,0,0) = (5,0,0) + (0,1,0) = (5, 1, 0)
+        - Orientation: 90° Z rotation
+
+        Bug would give: position = (1, 0, 0), orientation = identity (ignoring frame transform)
+        """
+        mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test_base_joint_frame">
+    <worldbody>
+        <frame pos="5 0 0" quat="0.7071068 0 0 0.7071068">
+            <body name="body_in_frame" pos="1 0 0">
+                <freejoint/>
+                <geom type="box" size="0.1 0.1 0.1"/>
+            </body>
+        </frame>
+    </worldbody>
+</mujoco>"""
+
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf_content, base_joint="lx,ly,lz")
+        model = builder.finalize()
+
+        # Verify body transform after forward kinematics
+        state = model.state()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+
+        body_idx = model.body_key.index("body_in_frame")
+        body_q = state.body_q.numpy()[body_idx]
+
+        # Expected position: frame_pos + rotate_90z(body_pos)
+        # = (5, 0, 0) + rotate_90z(1, 0, 0) = (5, 0, 0) + (0, 1, 0) = (5, 1, 0)
+        np.testing.assert_allclose(
+            body_q[:3],
+            [5.0, 1.0, 0.0],
+            atol=1e-5,
+            err_msg="Body position should include frame transform",
+        )
+
+        # Expected orientation: 90° Z rotation (from frame)
+        expected_quat = np.array([0, 0, 0.7071068, 0.7071068])
+        actual_quat = body_q[3:7]
+        quat_match = np.allclose(actual_quat, expected_quat, atol=1e-5) or np.allclose(
+            actual_quat, -expected_quat, atol=1e-5
+        )
+        self.assertTrue(quat_match, f"Body orientation should include frame rotation. Got {actual_quat}")
+
+    def test_exclude_tag(self):
+        """Test that <exclude> tags properly filter collisions between specified body pairs."""
+        builder = newton.ModelBuilder()
+        mjcf_filename = os.path.join(os.path.dirname(__file__), "assets", "mjcf_exclude_test.xml")
+        builder.add_mjcf(
+            mjcf_filename,
+            enable_self_collisions=True,  # Enable self-collisions so we can test exclude filtering
+        )
+
+        model = builder.finalize()
+
+        # Get shape indices for each body's geoms
+        body1_geom1_idx = builder.shape_key.index("body1_geom1")
+        body1_geom2_idx = builder.shape_key.index("body1_geom2")
+        body2_geom1_idx = builder.shape_key.index("body2_geom1")
+        body2_geom2_idx = builder.shape_key.index("body2_geom2")
+
+        # Convert filter pairs to a set for easier checking
+        filter_pairs = set(model.shape_collision_filter_pairs)
+
+        # Check that all pairs between body1 and body2 are filtered (in both directions)
+        body1_shapes = [body1_geom1_idx, body1_geom2_idx]
+        body2_shapes = [body2_geom1_idx, body2_geom2_idx]
+
+        for shape1 in body1_shapes:
+            for shape2 in body2_shapes:
+                # Check both orderings since the filter pairs can be added in either order
+                pair_filtered = (shape1, shape2) in filter_pairs or (shape2, shape1) in filter_pairs
+                self.assertTrue(
+                    pair_filtered,
+                    f"Shape pair ({shape1}, {shape2}) should be filtered due to <exclude body1='body1' body2='body2'/>",
+                )
+
+        # The test above verifies that body1-body2 pairs are correctly filtered.
+        # We don't need to verify body3 interactions as that would require running
+        # a full simulation to observe collision behavior.
+
+    def test_exclude_tag_with_verbose(self):
+        """Test that <exclude> tag parsing produces verbose output when requested."""
+        builder = newton.ModelBuilder()
+        mjcf_filename = os.path.join(os.path.dirname(__file__), "assets", "mjcf_exclude_test.xml")
+
+        # Capture verbose output
+        captured_output = io.StringIO()
+        old_stdout = sys.stdout
+        sys.stdout = captured_output
+
+        try:
+            builder.add_mjcf(
+                mjcf_filename,
+                enable_self_collisions=True,
+                verbose=True,
+            )
+        finally:
+            sys.stdout = old_stdout
+
+        output = captured_output.getvalue()
+
+        # Check that the verbose output includes information about the exclude
+        self.assertIn("Parsed collision exclude", output)
+        self.assertIn("body1", output)
+        self.assertIn("body2", output)
+
+    def test_exclude_tag_missing_bodies(self):
+        """Test that <exclude> tags with missing body references are handled gracefully."""
+        mjcf_content = """
+<mujoco>
+  <worldbody>
+    <body name="body1" pos="0 0 1">
+      <freejoint/>
+      <geom type="box" size="0.1 0.1 0.1"/>
+    </body>
+  </worldbody>
+  <contact>
+    <!-- Reference to non-existent body -->
+    <exclude body1="body1" body2="nonexistent_body"/>
+  </contact>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        # Should not raise an error, just skip the invalid exclude and continue parsing
+        builder.add_mjcf(mjcf_content, enable_self_collisions=True, verbose=False)
+
+        # Verify the model can still be finalized successfully
+        model = builder.finalize()
+        self.assertIsNotNone(model)
+
+    def test_exclude_tag_with_hyphens(self):
+        """Test that <exclude> tags work with hyphenated body names (normalized to underscores)."""
+        builder = newton.ModelBuilder()
+        mjcf_filename = os.path.join(os.path.dirname(__file__), "assets", "mjcf_exclude_hyphen_test.xml")
+        builder.add_mjcf(
+            mjcf_filename,
+            enable_self_collisions=True,  # Enable self-collisions so we can test exclude filtering
+        )
+
+        model = builder.finalize()
+
+        # Body names with hyphens should be normalized to underscores in builder.body_key
+        self.assertIn("body_with_hyphens", builder.body_key)
+        self.assertIn("another_hyphen_body", builder.body_key)
+
+        # Get shape indices for each body's geoms
+        hyphen_geom1_idx = builder.shape_key.index("hyphen_geom1")
+        hyphen_geom2_idx = builder.shape_key.index("hyphen_geom2")
+        another_geom1_idx = builder.shape_key.index("another_geom1")
+        another_geom2_idx = builder.shape_key.index("another_geom2")
+
+        # Convert filter pairs to a set for easier checking
+        filter_pairs = set(model.shape_collision_filter_pairs)
+
+        # Check that all pairs between the two hyphenated bodies are filtered
+        hyphen_shapes = [hyphen_geom1_idx, hyphen_geom2_idx]
+        another_shapes = [another_geom1_idx, another_geom2_idx]
+
+        for shape1 in hyphen_shapes:
+            for shape2 in another_shapes:
+                # Check both orderings since the filter pairs can be added in either order
+                pair_filtered = (shape1, shape2) in filter_pairs or (shape2, shape1) in filter_pairs
+                self.assertTrue(
+                    pair_filtered,
+                    f"Shape pair ({shape1}, {shape2}) should be filtered due to <exclude body1='body-with-hyphens' body2='another-hyphen-body'/>",
+                )
+
+    def test_exclude_tag_missing_attributes(self):
+        """Test that <exclude> tags with missing attributes are handled gracefully."""
+        mjcf_content = """
+<mujoco>
+  <worldbody>
+    <body name="body1" pos="0 0 1">
+      <freejoint/>
+      <geom type="box" size="0.1 0.1 0.1"/>
+    </body>
+  </worldbody>
+  <contact>
+    <!-- Missing body2 attribute -->
+    <exclude body1="body1"/>
+  </contact>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        # Should not raise an error, just skip the invalid exclude and continue parsing
+        builder.add_mjcf(mjcf_content, enable_self_collisions=True, verbose=False)
+
+        # Verify the model can still be finalized successfully
+        model = builder.finalize()
+        self.assertIsNotNone(model)
+
+        # Verify body1 was still parsed correctly
+        self.assertIn("body1", builder.body_key)
+
+    def test_exclude_tag_warnings_verbose(self):
+        """Test that warnings are printed for invalid exclude tags when verbose=True."""
+        mjcf_content = """
+<mujoco>
+  <worldbody>
+    <body name="body1" pos="0 0 1">
+      <freejoint/>
+      <geom type="box" size="0.1 0.1 0.1"/>
+    </body>
+  </worldbody>
+  <contact>
+    <!-- Multiple invalid excludes to test different error cases -->
+    <exclude body1="body1" body2="nonexistent"/>
+    <exclude body1="body1"/>
+    <exclude/>
+  </contact>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+
+        # Capture verbose output
+        captured_output = io.StringIO()
+        old_stdout = sys.stdout
+        sys.stdout = captured_output
+
+        try:
+            builder.add_mjcf(mjcf_content, enable_self_collisions=True, verbose=True)
+        finally:
+            sys.stdout = old_stdout
+
+        output = captured_output.getvalue()
+
+        # Check that warnings were printed for invalid exclude entries
+        self.assertIn("Warning", output)
+        self.assertIn("<exclude>", output)
+
+
+class TestMjcfInclude(unittest.TestCase):
+    """Tests for MJCF <include> tag support."""
+
+    def test_basic_include_same_directory(self):
+        """Test including a file from the same directory."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Create the included file
+            included_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco>
+    <worldbody>
+        <body name="included_body">
+            <geom type="sphere" size="0.1"/>
+        </body>
+    </worldbody>
+</mujoco>"""
+            included_path = os.path.join(tmpdir, "included.xml")
+            with open(included_path, "w") as f:
+                f.write(included_content)
+
+            # Create the main file that includes it
+            main_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test">
+    <include file="included.xml"/>
+</mujoco>"""
+            main_path = os.path.join(tmpdir, "main.xml")
+            with open(main_path, "w") as f:
+                f.write(main_content)
+
+            # Parse and verify
+            builder = newton.ModelBuilder()
+            builder.add_mjcf(main_path)
+            self.assertEqual(builder.body_count, 1)
+
+    def test_include_subdirectory(self):
+        """Test including a file from a subdirectory."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Create subdirectory
+            subdir = os.path.join(tmpdir, "models")
+            os.makedirs(subdir)
+
+            # Create the included file in subdirectory
+            included_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco>
+    <worldbody>
+        <body name="subdir_body">
+            <geom type="box" size="0.1 0.1 0.1"/>
+        </body>
+    </worldbody>
+</mujoco>"""
+            included_path = os.path.join(subdir, "robot.xml")
+            with open(included_path, "w") as f:
+                f.write(included_content)
+
+            # Create the main file
+            main_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test">
+    <include file="models/robot.xml"/>
+</mujoco>"""
+            main_path = os.path.join(tmpdir, "scene.xml")
+            with open(main_path, "w") as f:
+                f.write(main_content)
+
+            # Parse and verify
+            builder = newton.ModelBuilder()
+            builder.add_mjcf(main_path)
+            self.assertEqual(builder.body_count, 1)
+
+    def test_include_absolute_path(self):
+        """Test including a file using absolute path."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Create the included file
+            included_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco>
+    <worldbody>
+        <body name="absolute_body">
+            <geom type="capsule" size="0.05 0.1"/>
+        </body>
+    </worldbody>
+</mujoco>"""
+            included_path = os.path.join(tmpdir, "absolute.xml")
+            with open(included_path, "w") as f:
+                f.write(included_content)
+
+            # Create the main file with absolute path
+            main_content = f"""<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test">
+    <include file="{included_path}"/>
+</mujoco>"""
+            main_path = os.path.join(tmpdir, "main.xml")
+            with open(main_path, "w") as f:
+                f.write(main_content)
+
+            # Parse and verify
+            builder = newton.ModelBuilder()
+            builder.add_mjcf(main_path)
+            self.assertEqual(builder.body_count, 1)
+
+    def test_include_multiple_sections(self):
+        """Test including content that goes into different sections (asset, default, worldbody)."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Create included file with defaults
+            defaults_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco>
+    <default>
+        <geom rgba="1 0 0 1"/>
+    </default>
+</mujoco>"""
+            defaults_path = os.path.join(tmpdir, "defaults.xml")
+            with open(defaults_path, "w") as f:
+                f.write(defaults_content)
+
+            # Create included file with worldbody
+            body_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco>
+    <worldbody>
+        <body name="red_body">
+            <geom type="sphere" size="0.1"/>
+        </body>
+    </worldbody>
+</mujoco>"""
+            body_path = os.path.join(tmpdir, "body.xml")
+            with open(body_path, "w") as f:
+                f.write(body_content)
+
+            # Create main file that includes both
+            main_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test">
+    <include file="defaults.xml"/>
+    <include file="body.xml"/>
+</mujoco>"""
+            main_path = os.path.join(tmpdir, "main.xml")
+            with open(main_path, "w") as f:
+                f.write(main_content)
+
+            # Parse and verify
+            builder = newton.ModelBuilder()
+            builder.add_mjcf(main_path)
+            self.assertEqual(builder.body_count, 1)
+
+    def test_include_resolves_asset_paths(self):
+        """Test that asset paths in included files are resolved relative to the included file."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Create robot subdirectory with mesh subdirectory
+            robot_dir = os.path.join(tmpdir, "robot")
+            mesh_dir = os.path.join(robot_dir, "meshes")
+            os.makedirs(mesh_dir)
+
+            # Create a simple OBJ mesh file
+            mesh_content = """# Simple cube
+v -0.5 -0.5 -0.5
+v  0.5 -0.5 -0.5
+v  0.5  0.5 -0.5
+v -0.5  0.5 -0.5
+v -0.5 -0.5  0.5
+v  0.5 -0.5  0.5
+v  0.5  0.5  0.5
+v -0.5  0.5  0.5
+f 1 2 3 4
+f 5 6 7 8
+f 1 2 6 5
+f 2 3 7 6
+f 3 4 8 7
+f 4 1 5 8
+"""
+            mesh_path = os.path.join(mesh_dir, "cube.obj")
+            with open(mesh_path, "w") as f:
+                f.write(mesh_content)
+
+            # Create robot.xml that references mesh relative to its location
+            robot_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco>
+    <asset>
+        <mesh name="cube_mesh" file="meshes/cube.obj"/>
+    </asset>
+    <worldbody>
+        <body name="robot_body">
+            <geom type="mesh" mesh="cube_mesh"/>
+        </body>
+    </worldbody>
+</mujoco>"""
+            robot_path = os.path.join(robot_dir, "robot.xml")
+            with open(robot_path, "w") as f:
+                f.write(robot_content)
+
+            # Create main scene.xml that includes robot/robot.xml
+            main_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="scene">
+    <include file="robot/robot.xml"/>
+</mujoco>"""
+            main_path = os.path.join(tmpdir, "scene.xml")
+            with open(main_path, "w") as f:
+                f.write(main_content)
+
+            # Parse - this should work because mesh path is resolved relative to robot.xml
+            builder = newton.ModelBuilder()
+            builder.add_mjcf(main_path)
+            self.assertEqual(builder.body_count, 1)
+            self.assertEqual(builder.shape_count, 1)  # Verify mesh shape was created
+
+            # Verify mesh vertices were actually loaded (cube has 8 vertices)
+            model = builder.finalize()
+            mesh = model.shape_source[0]
+            self.assertEqual(len(mesh.vertices), 8)
+
+
+class TestMjcfIncludeNested(unittest.TestCase):
+    """Tests for nested includes and cycle detection."""
+
+    def test_nested_includes(self):
+        """Test that nested includes work correctly."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Create the deepest included file
+            deep_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco>
+    <worldbody>
+        <body name="deep_body">
+            <geom type="sphere" size="0.05"/>
+        </body>
+    </worldbody>
+</mujoco>"""
+            deep_path = os.path.join(tmpdir, "deep.xml")
+            with open(deep_path, "w") as f:
+                f.write(deep_content)
+
+            # Create middle file that includes deep file
+            middle_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco>
+    <include file="deep.xml"/>
+</mujoco>"""
+            middle_path = os.path.join(tmpdir, "middle.xml")
+            with open(middle_path, "w") as f:
+                f.write(middle_content)
+
+            # Create main file that includes middle file
+            main_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test">
+    <include file="middle.xml"/>
+</mujoco>"""
+            main_path = os.path.join(tmpdir, "main.xml")
+            with open(main_path, "w") as f:
+                f.write(main_content)
+
+            # Parse and verify
+            builder = newton.ModelBuilder()
+            builder.add_mjcf(main_path)
+            self.assertEqual(builder.body_count, 1)
+
+    def test_circular_include_detection(self):
+        """Test that circular includes are detected and raise an error."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Create file A that includes file B
+            file_a_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco>
+    <include file="b.xml"/>
+</mujoco>"""
+            file_a_path = os.path.join(tmpdir, "a.xml")
+            with open(file_a_path, "w") as f:
+                f.write(file_a_content)
+
+            # Create file B that includes file A (circular)
+            file_b_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco>
+    <include file="a.xml"/>
+</mujoco>"""
+            file_b_path = os.path.join(tmpdir, "b.xml")
+            with open(file_b_path, "w") as f:
+                f.write(file_b_content)
+
+            # Attempt to parse should raise ValueError
+            builder = newton.ModelBuilder()
+            with self.assertRaises(ValueError) as context:
+                builder.add_mjcf(file_a_path)
+            self.assertIn("Circular include", str(context.exception))
+
+    def test_include_without_file_attribute(self):
+        """Test that include elements without file attribute are skipped."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Create main file with an include that has no file attribute
+            main_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test">
+    <include/>
+    <worldbody>
+        <body name="body1">
+            <geom type="sphere" size="0.1"/>
+        </body>
+    </worldbody>
+</mujoco>"""
+            main_path = os.path.join(tmpdir, "main.xml")
+            with open(main_path, "w") as f:
+                f.write(main_content)
+
+            # Should parse successfully, ignoring the empty include
+            builder = newton.ModelBuilder()
+            builder.add_mjcf(main_path)
+            self.assertEqual(builder.body_count, 1)
+
+    def test_self_include_detection(self):
+        """Test that a file including itself is detected."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Create a file that includes itself
+            self_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco>
+    <include file="self.xml"/>
+</mujoco>"""
+            self_path = os.path.join(tmpdir, "self.xml")
+            with open(self_path, "w") as f:
+                f.write(self_content)
+
+            # Attempt to parse should raise ValueError
+            builder = newton.ModelBuilder()
+            with self.assertRaises(ValueError) as context:
+                builder.add_mjcf(self_path)
+            self.assertIn("Circular include", str(context.exception))
+
+    def test_missing_include_file(self):
+        """Test that missing include files raise FileNotFoundError."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Create main file that includes a non-existent file
+            main_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test">
+    <include file="does_not_exist.xml"/>
+</mujoco>"""
+            main_path = os.path.join(tmpdir, "main.xml")
+            with open(main_path, "w") as f:
+                f.write(main_content)
+
+            builder = newton.ModelBuilder()
+            with self.assertRaises(FileNotFoundError):
+                builder.add_mjcf(main_path)
+
+    def test_relative_include_without_base_dir(self):
+        """Test that relative includes from XML string input raise ValueError with default resolver."""
+        # XML string with relative include - default resolver can't resolve without base_dir
+        main_xml = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test">
+    <include file="relative.xml"/>
+</mujoco>"""
+
+        builder = newton.ModelBuilder()
+        with self.assertRaises(ValueError) as context:
+            builder.add_mjcf(main_xml)
+        self.assertIn("Cannot resolve relative path", str(context.exception))
+        self.assertIn("without base directory", str(context.exception))
+
+    def test_invalid_source_not_file_not_xml(self):
+        """Test that invalid source (not a file path, not XML) raises FileNotFoundError."""
+        builder = newton.ModelBuilder()
+        with self.assertRaises(FileNotFoundError):
+            builder.add_mjcf("this_is_not_a_file_and_not_xml")
+
+
+class TestMjcfIncludeCallback(unittest.TestCase):
+    """Tests for custom path_resolver callback."""
+
+    def test_custom_path_resolver_returns_xml(self):
+        """Test custom callback that returns XML content directly for includes."""
+        # XML content to be "included"
+        included_xml = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco>
+    <worldbody>
+        <body name="virtual_body">
+            <geom type="sphere" size="0.1"/>
+        </body>
+    </worldbody>
+</mujoco>"""
+
+        def custom_resolver(_base_dir, file_path):
+            if file_path == "virtual.xml":
+                return included_xml
+            raise ValueError(f"Unknown file: {file_path}")
+
+        # Main MJCF as string
+        main_xml = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test">
+    <include file="virtual.xml"/>
+</mujoco>"""
+
+        # Parse with custom resolver
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(main_xml, path_resolver=custom_resolver)
+        self.assertEqual(builder.body_count, 1)
+
+    def test_custom_path_resolver_with_base_dir(self):
+        """Test that custom callback receives correct base_dir."""
+        received_args = []
+
+        def tracking_resolver(base_dir, file_path):
+            received_args.append((base_dir, file_path))
+            return """<?xml version="1.0" encoding="utf-8"?>
+<mujoco>
+    <worldbody>
+        <body name="tracked_body">
+            <geom type="sphere" size="0.1"/>
+        </body>
+    </worldbody>
+</mujoco>"""
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            main_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test">
+    <include file="test.xml"/>
+</mujoco>"""
+            main_path = os.path.join(tmpdir, "main.xml")
+            with open(main_path, "w") as f:
+                f.write(main_content)
+
+            builder = newton.ModelBuilder()
+            builder.add_mjcf(main_path, path_resolver=tracking_resolver)
+
+            # Verify callback received correct arguments
+            self.assertEqual(len(received_args), 1)
+            self.assertEqual(received_args[0][0], tmpdir)
+            self.assertEqual(received_args[0][1], "test.xml")
+
+    def test_xml_string_input_with_custom_resolver(self):
+        """Test that XML string input works with custom resolver (base_dir is None)."""
+        received_base_dirs = []
+
+        def tracking_resolver(base_dir, _file_path):
+            received_base_dirs.append(base_dir)
+            return """<?xml version="1.0" encoding="utf-8"?>
+<mujoco>
+    <worldbody>
+        <body name="string_body">
+            <geom type="sphere" size="0.1"/>
+        </body>
+    </worldbody>
+</mujoco>"""
+
+        main_xml = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test">
+    <include file="any.xml"/>
+</mujoco>"""
+
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(main_xml, path_resolver=tracking_resolver)
+
+        # base_dir should be None for XML string input
+        self.assertEqual(len(received_base_dirs), 1)
+        self.assertIsNone(received_base_dirs[0])
 
 
 if __name__ == "__main__":

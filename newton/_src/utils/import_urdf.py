@@ -654,12 +654,12 @@ def parse_urdf(
 
     for i in range(start_shape_count, end_shape_count):
         for j in visual_shapes:
-            builder.shape_collision_filter_pairs.append((i, j))
+            builder.add_shape_collision_filter_pair(i, j)
 
     if not enable_self_collisions:
         for i in range(start_shape_count, end_shape_count):
             for j in range(i + 1, end_shape_count):
-                builder.shape_collision_filter_pairs.append((i, j))
+                builder.add_shape_collision_filter_pair(i, j)
 
     if collapse_fixed_joints:
         builder.collapse_fixed_joints()

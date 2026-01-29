@@ -270,6 +270,52 @@ def prepare_geom_data_kernel(
         geom_transform[idx] = shape_transform[idx]
 
 
+def _estimate_rigid_contact_max_unified(model: Model) -> int:
+    """
+    Estimate the maximum number of rigid contacts for the unified collision pipeline.
+
+    Unlike the standard collision pipeline which uses per-vertex contact counting,
+    the unified pipeline uses SDF-based collision with contact reduction for mesh-mesh
+    pairs. This function provides a linear estimate assuming each shape contacts
+    only a limited number of neighbors (due to spatial locality).
+
+    Args:
+        model: The simulation model.
+
+    Returns:
+        Estimated maximum number of rigid contacts.
+    """
+    # Get shape types
+    if not hasattr(model, "shape_type") or model.shape_type is None:
+        return 1000  # Fallback
+
+    shape_types = model.shape_type.numpy()
+
+    # Constants for contact estimation
+    CONTACTS_PER_PAIR = 20
+    # Assume each shape contacts at most this many other shapes (spatial locality)
+    MAX_NEIGHBORS_PER_SHAPE = 20
+
+    # Count shapes by type
+    mesh_types = {int(GeoType.MESH), int(GeoType.CONVEX_MESH)}
+    num_meshes = sum(1 for t in shape_types if t in mesh_types)
+    num_planes = sum(1 for t in shape_types if t == int(GeoType.PLANE))
+    num_other = len(shape_types) - num_meshes - num_planes
+
+    # Linear estimate: each shape contacts up to MAX_NEIGHBORS_PER_SHAPE others
+    # Divide by 2 to avoid double-counting pairs
+    num_shapes = num_meshes + num_other
+    estimated_pairs = (num_shapes * MAX_NEIGHBORS_PER_SHAPE) // 2
+
+    # Add plane contacts (each plane can contact all shapes)
+    plane_contacts = num_planes * (num_meshes + num_other) * CONTACTS_PER_PAIR
+
+    total_contacts = estimated_pairs * CONTACTS_PER_PAIR + plane_contacts
+
+    # Ensure minimum allocation
+    return max(1000, total_contacts)
+
+
 class CollisionPipelineUnified:
     """
     Full-featured collision pipeline with GJK/MPR narrow phase and pluggable broad phase.
@@ -458,7 +504,7 @@ class CollisionPipelineUnified:
             model (Model): The simulation model.
             reduce_contacts (bool, optional): Whether to reduce contacts for mesh-mesh collisions. Defaults to True.
             rigid_contact_max (int | None, optional): Maximum number of rigid contacts to allocate.
-                If None, uses model.rigid_contact_max.
+                If None, automatically estimated based on shape types and contact reduction.
             soft_contact_max (int | None, optional): Maximum number of soft contacts to allocate.
             soft_contact_margin (float, optional): Margin for soft contact generation. Defaults to 0.01.
             edge_sdf_iter (int, optional): Number of iterations for edge SDF collision. Defaults to 10.
@@ -474,9 +520,9 @@ class CollisionPipelineUnified:
         Returns:
             CollisionPipelineUnified: The constructed collision pipeline.
         """
-        # Use provided rigid_contact_max or fall back to model.rigid_contact_max
+        # Estimate rigid_contact_max for unified pipeline (accounts for contact reduction)
         if rigid_contact_max is None:
-            rigid_contact_max = model.rigid_contact_max
+            rigid_contact_max = _estimate_rigid_contact_max_unified(model)
         if requires_grad is None:
             requires_grad = model.requires_grad
 
@@ -663,6 +709,9 @@ class CollisionPipelineUnified:
             shape_contact_margin=model.shape_contact_margin,
             shape_collision_radius=model.shape_collision_radius,
             shape_flags=model.shape_flags,
+            shape_local_aabb_lower=model.shape_local_aabb_lower,
+            shape_local_aabb_upper=model.shape_local_aabb_upper,
+            shape_voxel_resolution=model.shape_voxel_resolution,
             writer_data=writer_data,
             device=self.device,
         )

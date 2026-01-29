@@ -84,25 +84,27 @@ class Model:
         """Attribute frequency follows the number of joint degrees of freedom (see :attr:`~newton.Model.joint_dof_count`)."""
         JOINT_COORD = 3
         """Attribute frequency follows the number of joint positional coordinates (see :attr:`~newton.Model.joint_coord_count`)."""
-        BODY = 4
+        JOINT_CONSTRAINT = 4
+        """Attribute frequency follows the number of joint constraints (see :attr:`~newton.Model.joint_constraint_count`)."""
+        BODY = 5
         """Attribute frequency follows the number of bodies (see :attr:`~newton.Model.body_count`)."""
-        SHAPE = 5
+        SHAPE = 6
         """Attribute frequency follows the number of shapes (see :attr:`~newton.Model.shape_count`)."""
-        ARTICULATION = 6
+        ARTICULATION = 7
         """Attribute frequency follows the number of articulations (see :attr:`~newton.Model.articulation_count`)."""
-        EQUALITY_CONSTRAINT = 7
+        EQUALITY_CONSTRAINT = 8
         """Attribute frequency follows the number of equality constraints (see :attr:`~newton.Model.equality_constraint_count`)."""
-        PARTICLE = 8
+        PARTICLE = 9
         """Attribute frequency follows the number of particles (see :attr:`~newton.Model.particle_count`)."""
-        EDGE = 9
+        EDGE = 10
         """Attribute frequency follows the number of edges (see :attr:`~newton.Model.edge_count`)."""
-        TRIANGLE = 10
+        TRIANGLE = 11
         """Attribute frequency follows the number of triangles (see :attr:`~newton.Model.tri_count`)."""
-        TETRAHEDRON = 11
+        TETRAHEDRON = 12
         """Attribute frequency follows the number of tetrahedra (see :attr:`~newton.Model.tet_count`)."""
-        SPRING = 12
+        SPRING = 13
         """Attribute frequency follows the number of springs (see :attr:`~newton.Model.spring_count`)."""
-        WORLD = 13
+        WORLD = 14
         """Attribute frequency follows the number of worlds (see :attr:`~newton.Model.num_worlds`)."""
 
     class AttributeNamespace:
@@ -224,9 +226,9 @@ class Model:
         self.shape_collision_group = None
         """Collision group of each shape, shape [shape_count], int. Array populated during finalization."""
         self.shape_collision_filter_pairs: set[tuple[int, int]] = set()
-        """Pairs of shape indices that should not collide."""
+        """Pairs of shape indices (s1, s2) that should not collide. Pairs are in canonical order: s1 < s2."""
         self.shape_collision_radius = None
-        """Collision radius for bounding sphere broadphase, shape [shape_count], float."""
+        """Collision radius for bounding sphere broadphase, shape [shape_count], float. Not supported by :class:`~newton.solvers.SolverMuJoCo`."""
         self.shape_contact_pairs = None
         """Pairs of shape indices that may collide, shape [contact_pair_count, 2], int."""
         self.shape_contact_pair_count = 0
@@ -241,6 +243,20 @@ class Model:
         """List of sparse SDF volume references for mesh shapes, shape [shape_count]. None for non-mesh shapes. Empty if there are no colliding meshes. Kept for reference counting."""
         self.shape_sdf_coarse_volume = []
         """List of coarse SDF volume references for mesh shapes, shape [shape_count]. None for non-mesh shapes. Empty if there are no colliding meshes. Kept for reference counting."""
+
+        # Local AABB and voxel grid for contact reduction
+        # Note: These are stored in Model (not Contacts) because they are static geometry properties
+        # computed once during finalization, not per-frame contact data.
+        self.shape_local_aabb_lower = None
+        """Local-space AABB lower bound for each shape, shape [shape_count, 3], float.
+        Computed from base geometry only (excludes thickness - thickness is added during contact
+        margin calculations). Used for voxel-based contact reduction."""
+        self.shape_local_aabb_upper = None
+        """Local-space AABB upper bound for each shape, shape [shape_count, 3], float.
+        Computed from base geometry only (excludes thickness - thickness is added during contact
+        margin calculations). Used for voxel-based contact reduction."""
+        self.shape_voxel_resolution = None
+        """Voxel grid resolution (nx, ny, nz) for each shape, shape [shape_count, 3], int. Used for voxel-based contact reduction."""
 
         self.spring_indices = None
         """Particle spring indices, shape [spring_count*2], int."""
@@ -457,6 +473,8 @@ class Model:
         """Total number of velocity degrees of freedom of all joints. Equals the number of joint axes."""
         self.joint_coord_count = 0
         """Total number of position degrees of freedom of all joints."""
+        self.joint_constraint_count = 0
+        """Total number of joint constraints of all joints."""
         self.equality_constraint_count = 0
         """Total number of equality constraints in the system."""
 
@@ -927,3 +945,8 @@ class Model:
 
         attributes.extend(self._requested_state_attributes.difference(attributes))
         return attributes
+
+
+ModelAttributeAssignment = Model.AttributeAssignment
+ModelAttributeFrequency = Model.AttributeFrequency
+AttributeNamespace = Model.AttributeNamespace

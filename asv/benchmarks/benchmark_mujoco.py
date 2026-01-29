@@ -110,6 +110,7 @@ def _setup_humanoid(articulation_builder):
         ignore_names=["floor", "ground"],
         up_axis="Z",
         parse_sites=False,  # AD: remove once asset is fixed
+        enable_self_collisions=False,  # Keep False for consistent benchmark performance
     )
 
     # Setting root pose
@@ -257,6 +258,7 @@ def _setup_kitchen(articulation_builder):
     articulation_builder.add_mjcf(
         asset_file,
         collapse_fixed_joints=True,
+        enable_self_collisions=False,  # Keep False for consistent benchmark performance
     )
 
     # Change pose of the robot to minimize overlap
@@ -267,7 +269,6 @@ def _setup_tabletop(articulation_builder):
     articulation_builder.add_mjcf(
         newton.examples.get_asset("tabletop.xml"),
         collapse_fixed_joints=True,
-        enable_self_collisions=True,
     )
 
 
