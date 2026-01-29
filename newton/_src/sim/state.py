@@ -65,6 +65,12 @@ class State:
         To ensure that the attributes are properly allocated create the State object via :meth:`newton.Model.state` instead.
         """
 
+        self.step: wp.array | None = None
+        """Current discrete simulation step of each world, shape (num_worlds,), dtype :class:`int32`."""
+
+        self.time: wp.array | None = None
+        """Current physical time of each world, shape (num_worlds,), dtype float."""
+
         self.particle_q: wp.array | None = None
         """3D positions of particles, shape (particle_count,), dtype :class:`vec3`."""
 
