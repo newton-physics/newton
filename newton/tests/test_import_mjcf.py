@@ -2043,12 +2043,15 @@ class TestImportMjcf(unittest.TestCase):
         MuJoCo solref format: [timeconst, dampratio]
         - Standard mode (timeconst > 0): ke = 1/(tc^2 * dr^2), kd = 2/tc
         - Direct mode (both negative): ke = -tc, kd = -dr
+
+        Note: solref is only parsed when explicitly specified in MJCF.
+        If not specified, Newton's ShapeConfig defaults (ke=1000, kd=100) are used.
         """
         mjcf_content = """
         <mujoco>
             <worldbody>
                 <body name="test_body">
-                    <!-- Default solref [0.02, 1.0] -> ke=2500, kd=100 -->
+                    <!-- No solref -> uses Newton defaults: ke=1000, kd=100 -->
                     <geom name="geom_default" type="box" size="0.1 0.1 0.1"/>
                     <!-- Custom solref [0.04, 1.0] -> ke=625, kd=50 -->
                     <geom name="geom_custom" type="sphere" size="0.1" solref="0.04 1.0"/>
@@ -2064,8 +2067,8 @@ class TestImportMjcf(unittest.TestCase):
 
         self.assertEqual(builder.shape_count, 3)
 
-        # Default solref [0.02, 1.0]: ke = 1/(0.02^2 * 1^2) = 2500, kd = 2/0.02 = 100
-        self.assertAlmostEqual(builder.shape_material_ke[0], 2500.0, places=1)
+        # No solref specified -> Newton defaults: ke=1000 (ShapeConfig.ke), kd=100 (ShapeConfig.kd)
+        self.assertAlmostEqual(builder.shape_material_ke[0], 1000.0, places=1)
         self.assertAlmostEqual(builder.shape_material_kd[0], 100.0, places=1)
 
         # Custom solref [0.04, 1.0]: ke = 1/(0.04^2 * 1^2) = 625, kd = 2/0.04 = 50
