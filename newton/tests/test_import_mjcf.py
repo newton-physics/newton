@@ -46,8 +46,12 @@ class TestImportMjcf(unittest.TestCase):
         )
         # Filter out sites when checking shape material properties (sites don't have these attributes)
         non_site_indices = [i for i, flags in enumerate(builder.shape_flags) if not (flags & ShapeFlags.SITE)]
-        self.assertTrue(all(np.array(builder.shape_material_ke)[non_site_indices] == 123.0))
-        self.assertTrue(all(np.array(builder.shape_material_kd)[non_site_indices] == 456.0))
+
+        # Check ke/kd from nv_humanoid.xml: solref=".015 1"
+        # ke = 1/(0.015^2 * 1^2) ≈ 4444.4, kd = 2/0.015 ≈ 133.3
+        # MJCF-specified solref overrides user defaults (like friction does)
+        self.assertTrue(np.allclose(np.array(builder.shape_material_ke)[non_site_indices], 4444.4, rtol=0.01))
+        self.assertTrue(np.allclose(np.array(builder.shape_material_kd)[non_site_indices], 133.3, rtol=0.01))
 
         # Check friction values from nv_humanoid.xml: friction="1.0 0.05 0.05"
         # mu = 1.0, torsional = 0.05, rolling = 0.05
