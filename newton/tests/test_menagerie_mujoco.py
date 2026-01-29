@@ -77,8 +77,7 @@ These are changes/workarounds made to get tests passing that should be revisited
    - TODO: Newton handles fixed base differently; align mocap body handling
 
 7. GROUND PLANE
-   - Removed from tests (add_ground=False) since native MJCF doesn't have it
-   - TODO: Add scene.xml support with proper ground planes
+   - Now using scene.xml which includes ground plane in the MJCF
 
 8. CONTROL STRATEGY
    - Using ZeroControlStrategy for initial debugging
@@ -1215,7 +1214,7 @@ class TestMenagerie_AgilexPiper(TestMenagerieBase):
     """AgileX PIPER bimanual arm."""
 
     robot_folder = "agilex_piper"
-    robot_xml = "piper.xml"
+    robot_xml = "scene.xml"
     floating = False
     skip_reason = "Not yet implemented"
 
@@ -1224,7 +1223,7 @@ class TestMenagerie_ArxL5(TestMenagerieBase):
     """ARX L5 arm."""
 
     robot_folder = "arx_l5"
-    robot_xml = "arx_l5.xml"
+    robot_xml = "scene.xml"
     floating = False
     skip_reason = "Not yet implemented"
 
@@ -1233,7 +1232,7 @@ class TestMenagerie_Dynamixel2r(TestMenagerieBase):
     """Dynamixel 2R simple arm."""
 
     robot_folder = "dynamixel_2r"
-    robot_xml = "2r.xml"
+    robot_xml = "scene.xml"
     floating = False
     skip_reason = "Not yet implemented"
 
@@ -1242,7 +1241,7 @@ class TestMenagerie_FrankaEmikaPanda(TestMenagerieBase):
     """Franka Emika Panda arm."""
 
     robot_folder = "franka_emika_panda"
-    robot_xml = "panda.xml"
+    robot_xml = "scene.xml"
     floating = False
     skip_reason = "Not yet implemented"
 
@@ -1251,7 +1250,7 @@ class TestMenagerie_FrankaFr3(TestMenagerieBase):
     """Franka FR3 arm."""
 
     robot_folder = "franka_fr3"
-    robot_xml = "fr3.xml"
+    robot_xml = "scene.xml"
     floating = False
     skip_reason = "Not yet implemented"
 
@@ -1260,7 +1259,7 @@ class TestMenagerie_FrankaFr3V2(TestMenagerieBase):
     """Franka FR3 v2 arm."""
 
     robot_folder = "franka_fr3_v2"
-    robot_xml = "fr3.xml"
+    robot_xml = "scene.xml"
     floating = False
     skip_reason = "Not yet implemented"
 
@@ -1269,7 +1268,7 @@ class TestMenagerie_KinovaGen3(TestMenagerieBase):
     """Kinova Gen3 arm."""
 
     robot_folder = "kinova_gen3"
-    robot_xml = "gen3.xml"
+    robot_xml = "scene.xml"
     floating = False
     skip_reason = "Not yet implemented"
 
@@ -1278,7 +1277,7 @@ class TestMenagerie_KukaIiwa14(TestMenagerieBase):
     """KUKA iiwa 14 arm."""
 
     robot_folder = "kuka_iiwa_14"
-    robot_xml = "iiwa14.xml"
+    robot_xml = "scene.xml"
     floating = False
     skip_reason = "Not yet implemented"
 
@@ -1287,7 +1286,7 @@ class TestMenagerie_LowCostRobotArm(TestMenagerieBase):
     """Low-cost robot arm."""
 
     robot_folder = "low_cost_robot_arm"
-    robot_xml = "low_cost_robot_arm.xml"
+    robot_xml = "scene.xml"
     floating = False
     skip_reason = "Not yet implemented"
 
@@ -1296,7 +1295,7 @@ class TestMenagerie_RethinkSawyer(TestMenagerieBase):
     """Rethink Robotics Sawyer arm."""
 
     robot_folder = "rethink_robotics_sawyer"
-    robot_xml = "sawyer.xml"
+    robot_xml = "scene.xml"
     floating = False
     skip_reason = "Not yet implemented"
 
@@ -1305,7 +1304,7 @@ class TestMenagerie_TrossenVx300s(TestMenagerieBase):
     """Trossen Robotics ViperX 300 S arm."""
 
     robot_folder = "trossen_vx300s"
-    robot_xml = "vx300s.xml"
+    robot_xml = "scene.xml"
     floating = False
     skip_reason = "Not yet implemented"
 
@@ -1314,7 +1313,7 @@ class TestMenagerie_TrossenWx250s(TestMenagerieBase):
     """Trossen Robotics WidowX 250 S arm."""
 
     robot_folder = "trossen_wx250s"
-    robot_xml = "wx250s.xml"
+    robot_xml = "scene.xml"
     floating = False
     skip_reason = "Not yet implemented"
 
@@ -1323,7 +1322,7 @@ class TestMenagerie_TrossenWxai(TestMenagerieBase):
     """Trossen Robotics WidowX AI arm."""
 
     robot_folder = "trossen_wxai"
-    robot_xml = "wxai.xml"
+    robot_xml = "scene.xml"
     floating = False
     skip_reason = "Not yet implemented"
 
@@ -1332,7 +1331,7 @@ class TestMenagerie_TrsSoArm100(TestMenagerieBase):
     """TRS SO-ARM100 arm."""
 
     robot_folder = "trs_so_arm100"
-    robot_xml = "so_arm100.xml"
+    robot_xml = "scene.xml"
     floating = False
     skip_reason = "Not yet implemented"
 
@@ -1341,7 +1340,7 @@ class TestMenagerie_UfactoryLite6(TestMenagerieBase):
     """UFACTORY Lite 6 arm."""
 
     robot_folder = "ufactory_lite6"
-    robot_xml = "lite6.xml"
+    robot_xml = "scene.xml"
     floating = False
     skip_reason = "Not yet implemented"
 
@@ -1350,7 +1349,7 @@ class TestMenagerie_UfactoryXarm7(TestMenagerieBase):
     """UFACTORY xArm 7 arm."""
 
     robot_folder = "ufactory_xarm7"
-    robot_xml = "xarm7.xml"
+    robot_xml = "scene.xml"
     floating = False
     skip_reason = "Not yet implemented"
 
@@ -1359,7 +1358,7 @@ class TestMenagerie_UniversalRobotsUr5e(TestMenagerieBase):
     """Universal Robots UR5e arm."""
 
     robot_folder = "universal_robots_ur5e"
-    robot_xml = "ur5e.xml"
+    robot_xml = "scene.xml"
     floating = False
     control_strategy = ZeroControlStrategy()
     num_worlds = 1  # For debugging
@@ -1399,7 +1398,7 @@ class TestMenagerie_UniversalRobotsUr10e(TestMenagerieBase):
     """Universal Robots UR10e arm."""
 
     robot_folder = "universal_robots_ur10e"
-    robot_xml = "ur10e.xml"
+    robot_xml = "scene.xml"
     floating = False
     skip_reason = "Not yet implemented"
 
@@ -1413,7 +1412,7 @@ class TestMenagerie_LeapHand(TestMenagerieBase):
     """LEAP Hand."""
 
     robot_folder = "leap_hand"
-    robot_xml = "left_hand.xml"
+    robot_xml = "scene.xml"
     floating = False
     skip_reason = "Not yet implemented"
 
@@ -1422,7 +1421,7 @@ class TestMenagerie_Robotiq2f85(TestMenagerieBase):
     """Robotiq 2F-85 gripper."""
 
     robot_folder = "robotiq_2f85"
-    robot_xml = "2f85.xml"
+    robot_xml = "scene.xml"
     floating = False
     skip_reason = "Not yet implemented"
 
@@ -1431,7 +1430,7 @@ class TestMenagerie_Robotiq2f85V4(TestMenagerieBase):
     """Robotiq 2F-85 gripper v4."""
 
     robot_folder = "robotiq_2f85_v4"
-    robot_xml = "2f85.xml"
+    robot_xml = "scene.xml"
     floating = False
     skip_reason = "HIGH PRIORITY - Not yet implemented"
 
@@ -1440,7 +1439,7 @@ class TestMenagerie_ShadowDexee(TestMenagerieBase):
     """Shadow DEX-EE hand."""
 
     robot_folder = "shadow_dexee"
-    robot_xml = "shadow_dexee.xml"
+    robot_xml = "scene.xml"
     floating = False
     skip_reason = "Not yet implemented"
 
@@ -1449,7 +1448,7 @@ class TestMenagerie_ShadowHand(TestMenagerieBase):
     """Shadow Hand."""
 
     robot_folder = "shadow_hand"
-    robot_xml = "left_hand.xml"
+    robot_xml = "scene.xml"
     floating = False
     skip_reason = "HIGH PRIORITY - Not yet implemented"
 
@@ -1458,7 +1457,7 @@ class TestMenagerie_TetheriaAeroHandOpen(TestMenagerieBase):
     """Tetheria Aero Hand (open)."""
 
     robot_folder = "tetheria_aero_hand_open"
-    robot_xml = "aero_hand_open.xml"
+    robot_xml = "scene.xml"
     floating = False
     skip_reason = "Not yet implemented"
 
@@ -1467,7 +1466,7 @@ class TestMenagerie_UmiGripper(TestMenagerieBase):
     """UMI Gripper."""
 
     robot_folder = "umi_gripper"
-    robot_xml = "umi_gripper.xml"
+    robot_xml = "scene.xml"
     floating = False
     skip_reason = "Not yet implemented"
 
@@ -1476,7 +1475,7 @@ class TestMenagerie_WonikAllegro(TestMenagerieBase):
     """Wonik Allegro Hand."""
 
     robot_folder = "wonik_allegro"
-    robot_xml = "left_hand.xml"
+    robot_xml = "scene.xml"
     floating = False
     skip_reason = "HIGH PRIORITY - Not yet implemented"
 
@@ -1485,7 +1484,7 @@ class TestMenagerie_IitSoftfoot(TestMenagerieBase):
     """IIT Softfoot biomechanical gripper."""
 
     robot_folder = "iit_softfoot"
-    robot_xml = "softfoot.xml"
+    robot_xml = "scene.xml"
     floating = False
     skip_reason = "Not yet implemented"
 
@@ -1499,7 +1498,7 @@ class TestMenagerie_Aloha(TestMenagerieBase):
     """ALOHA bimanual system."""
 
     robot_folder = "aloha"
-    robot_xml = "aloha.xml"
+    robot_xml = "scene.xml"
     floating = False
     skip_reason = "Not yet implemented"
 
@@ -1508,7 +1507,7 @@ class TestMenagerie_GoogleRobot(TestMenagerieBase):
     """Google Robot (bimanual)."""
 
     robot_folder = "google_robot"
-    robot_xml = "robot.xml"
+    robot_xml = "scene.xml"
     floating = False
     skip_reason = "Not yet implemented"
 
@@ -1522,7 +1521,7 @@ class TestMenagerie_HelloRobotStretch(TestMenagerieBase):
     """Hello Robot Stretch."""
 
     robot_folder = "hello_robot_stretch"
-    robot_xml = "stretch.xml"
+    robot_xml = "scene.xml"
     floating = True
     skip_reason = "Not yet implemented"
 
@@ -1531,7 +1530,7 @@ class TestMenagerie_HelloRobotStretch3(TestMenagerieBase):
     """Hello Robot Stretch 3."""
 
     robot_folder = "hello_robot_stretch_3"
-    robot_xml = "stretch.xml"
+    robot_xml = "scene.xml"
     floating = True
     skip_reason = "Not yet implemented"
 
@@ -1540,7 +1539,7 @@ class TestMenagerie_PalTiago(TestMenagerieBase):
     """PAL Robotics TIAGo."""
 
     robot_folder = "pal_tiago"
-    robot_xml = "tiago.xml"
+    robot_xml = "scene.xml"
     floating = True
     skip_reason = "Not yet implemented"
 
@@ -1549,7 +1548,7 @@ class TestMenagerie_PalTiagoDual(TestMenagerieBase):
     """PAL Robotics TIAGo Dual."""
 
     robot_folder = "pal_tiago_dual"
-    robot_xml = "tiago_dual.xml"
+    robot_xml = "scene.xml"
     floating = True
     skip_reason = "Not yet implemented"
 
@@ -1558,7 +1557,7 @@ class TestMenagerie_StanfordTidybot(TestMenagerieBase):
     """Stanford Tidybot mobile manipulator."""
 
     robot_folder = "stanford_tidybot"
-    robot_xml = "tidybot.xml"
+    robot_xml = "scene.xml"
     floating = True
     skip_reason = "Not yet implemented"
 
@@ -1572,7 +1571,7 @@ class TestMenagerie_ApptronikApollo(TestMenagerieBase):
     """Apptronik Apollo humanoid."""
 
     robot_folder = "apptronik_apollo"
-    robot_xml = "apollo.xml"
+    robot_xml = "scene.xml"
     floating = True
     skip_reason = "HIGH PRIORITY - Not yet implemented"
 
@@ -1581,7 +1580,7 @@ class TestMenagerie_BerkeleyHumanoid(TestMenagerieBase):
     """Berkeley Humanoid."""
 
     robot_folder = "berkeley_humanoid"
-    robot_xml = "berkeley_humanoid.xml"
+    robot_xml = "scene.xml"
     floating = True
     skip_reason = "Not yet implemented"
 
@@ -1590,7 +1589,7 @@ class TestMenagerie_BoosterT1(TestMenagerieBase):
     """Booster Robotics T1 humanoid."""
 
     robot_folder = "booster_t1"
-    robot_xml = "t1.xml"
+    robot_xml = "scene.xml"
     floating = True
     skip_reason = "HIGH PRIORITY - Not yet implemented"
 
@@ -1599,7 +1598,7 @@ class TestMenagerie_FourierN1(TestMenagerieBase):
     """Fourier N1 humanoid."""
 
     robot_folder = "fourier_n1"
-    robot_xml = "n1.xml"
+    robot_xml = "scene.xml"
     floating = True
     skip_reason = "Not yet implemented"
 
@@ -1608,7 +1607,7 @@ class TestMenagerie_PalTalos(TestMenagerieBase):
     """PAL Robotics TALOS humanoid."""
 
     robot_folder = "pal_talos"
-    robot_xml = "talos.xml"
+    robot_xml = "scene.xml"
     floating = True
     skip_reason = "Not yet implemented"
 
@@ -1617,7 +1616,7 @@ class TestMenagerie_PndboticsAdamLite(TestMenagerieBase):
     """PNDbotics Adam Lite humanoid."""
 
     robot_folder = "pndbotics_adam_lite"
-    robot_xml = "adam_lite.xml"
+    robot_xml = "scene.xml"
     floating = True
     skip_reason = "Not yet implemented"
 
@@ -1626,7 +1625,7 @@ class TestMenagerie_RobotisOp3(TestMenagerieBase):
     """Robotis OP3 humanoid."""
 
     robot_folder = "robotis_op3"
-    robot_xml = "op3.xml"
+    robot_xml = "scene.xml"
     floating = True
     skip_reason = "Not yet implemented"
 
@@ -1635,7 +1634,7 @@ class TestMenagerie_ToddlerBot2xc(TestMenagerieBase):
     """ToddlerBot 2XC humanoid."""
 
     robot_folder = "toddlerbot_2xc"
-    robot_xml = "toddlerbot_2xc.xml"
+    robot_xml = "scene.xml"
     floating = True
     skip_reason = "Not yet implemented"
 
@@ -1644,7 +1643,7 @@ class TestMenagerie_ToddlerBot2xm(TestMenagerieBase):
     """ToddlerBot 2XM humanoid."""
 
     robot_folder = "toddlerbot_2xm"
-    robot_xml = "toddlerbot_2xm.xml"
+    robot_xml = "scene.xml"
     floating = True
     skip_reason = "Not yet implemented"
 
@@ -1653,7 +1652,7 @@ class TestMenagerie_UnitreeG1(TestMenagerieBase):
     """Unitree G1 humanoid."""
 
     robot_folder = "unitree_g1"
-    robot_xml = "g1.xml"
+    robot_xml = "scene.xml"
     floating = True
     skip_reason = "HIGH PRIORITY - Not yet implemented"
 
@@ -1662,7 +1661,7 @@ class TestMenagerie_UnitreeH1(TestMenagerieBase):
     """Unitree H1 humanoid."""
 
     robot_folder = "unitree_h1"
-    robot_xml = "h1.xml"
+    robot_xml = "scene.xml"
     floating = True
     skip_reason = "HIGH PRIORITY - Not yet implemented"
 
@@ -1676,7 +1675,7 @@ class TestMenagerie_AgilityCassie(TestMenagerieBase):
     """Agility Robotics Cassie biped."""
 
     robot_folder = "agility_cassie"
-    robot_xml = "cassie.xml"
+    robot_xml = "scene.xml"
     floating = True
     skip_reason = "Not yet implemented"
 
@@ -1690,7 +1689,7 @@ class TestMenagerie_AnyboticsAnymalB(TestMenagerieBase):
     """ANYbotics ANYmal B quadruped."""
 
     robot_folder = "anybotics_anymal_b"
-    robot_xml = "anymal_b.xml"
+    robot_xml = "scene.xml"
     floating = True
     skip_reason = "Not yet implemented"
 
@@ -1699,7 +1698,7 @@ class TestMenagerie_AnyboticsAnymalC(TestMenagerieBase):
     """ANYbotics ANYmal C quadruped."""
 
     robot_folder = "anybotics_anymal_c"
-    robot_xml = "anymal_c.xml"
+    robot_xml = "scene.xml"
     floating = True
     skip_reason = "Not yet implemented"
 
@@ -1708,7 +1707,7 @@ class TestMenagerie_BostonDynamicsSpot(TestMenagerieBase):
     """Boston Dynamics Spot quadruped."""
 
     robot_folder = "boston_dynamics_spot"
-    robot_xml = "spot.xml"
+    robot_xml = "scene.xml"
     floating = True
     skip_reason = "Not yet implemented"
 
@@ -1717,7 +1716,7 @@ class TestMenagerie_GoogleBarkourV0(TestMenagerieBase):
     """Google Barkour v0 quadruped."""
 
     robot_folder = "google_barkour_v0"
-    robot_xml = "barkour_v0.xml"
+    robot_xml = "scene.xml"
     floating = True
     skip_reason = "Not yet implemented"
 
@@ -1726,7 +1725,7 @@ class TestMenagerie_GoogleBarkourVb(TestMenagerieBase):
     """Google Barkour vB quadruped."""
 
     robot_folder = "google_barkour_vb"
-    robot_xml = "barkour_vb.xml"
+    robot_xml = "scene.xml"
     floating = True
     skip_reason = "Not yet implemented"
 
@@ -1735,7 +1734,7 @@ class TestMenagerie_UnitreeA1(TestMenagerieBase):
     """Unitree A1 quadruped."""
 
     robot_folder = "unitree_a1"
-    robot_xml = "a1.xml"
+    robot_xml = "scene.xml"
     floating = True
     skip_reason = "Not yet implemented"
 
@@ -1744,7 +1743,7 @@ class TestMenagerie_UnitreeGo1(TestMenagerieBase):
     """Unitree Go1 quadruped."""
 
     robot_folder = "unitree_go1"
-    robot_xml = "go1.xml"
+    robot_xml = "scene.xml"
     floating = True
     skip_reason = "Not yet implemented"
 
@@ -1753,7 +1752,7 @@ class TestMenagerie_UnitreeGo2(TestMenagerieBase):
     """Unitree Go2 quadruped."""
 
     robot_folder = "unitree_go2"
-    robot_xml = "go2.xml"
+    robot_xml = "scene.xml"
     floating = True
     skip_reason = "Not yet implemented"
 
@@ -1767,7 +1766,7 @@ class TestMenagerie_UnitreeZ1(TestMenagerieBase):
     """Unitree Z1 arm."""
 
     robot_folder = "unitree_z1"
-    robot_xml = "z1.xml"
+    robot_xml = "scene.xml"
     floating = False
     skip_reason = "Not yet implemented"
 
@@ -1781,7 +1780,7 @@ class TestMenagerie_BitcrazeCrazyflie2(TestMenagerieBase):
     """Bitcraze Crazyflie 2 quadrotor."""
 
     robot_folder = "bitcraze_crazyflie_2"
-    robot_xml = "cf2.xml"
+    robot_xml = "scene.xml"
     floating = True
     skip_reason = "Not yet implemented"
 
@@ -1790,7 +1789,7 @@ class TestMenagerie_SkydioX2(TestMenagerieBase):
     """Skydio X2 drone."""
 
     robot_folder = "skydio_x2"
-    robot_xml = "x2.xml"
+    robot_xml = "scene.xml"
     floating = True
     skip_reason = "Not yet implemented"
 
@@ -1804,7 +1803,7 @@ class TestMenagerie_RobotSoccerKit(TestMenagerieBase):
     """Robot Soccer Kit omniwheel base."""
 
     robot_folder = "robot_soccer_kit"
-    robot_xml = "robot_soccer_kit.xml"
+    robot_xml = "scene.xml"
     floating = True
     skip_reason = "Not yet implemented"
 
@@ -1813,7 +1812,7 @@ class TestMenagerie_RobotstudioSo101(TestMenagerieBase):
     """RobotStudio SO-101."""
 
     robot_folder = "robotstudio_so101"
-    robot_xml = "so101.xml"
+    robot_xml = "scene.xml"
     floating = True
     skip_reason = "Not yet implemented"
 
@@ -1827,7 +1826,7 @@ class TestMenagerie_Flybody(TestMenagerieBase):
     """Flybody fruit fly model."""
 
     robot_folder = "flybody"
-    robot_xml = "fruitfly.xml"
+    robot_xml = "scene.xml"
     floating = True
     skip_reason = "Not yet implemented"
 
@@ -1841,7 +1840,7 @@ class TestMenagerie_I2rtYam(TestMenagerieBase):
     """i2rt YAM (Yet Another Manipulator)."""
 
     robot_folder = "i2rt_yam"
-    robot_xml = "yam.xml"
+    robot_xml = "scene.xml"
     floating = False
     skip_reason = "Not yet implemented"
 
