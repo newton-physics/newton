@@ -30,9 +30,11 @@ import numpy as np
 import warp as wp
 
 from newton.examples.cosserat_codex.kernels import (
-    _warp_apply_concentric_constraint,
+    ConcentricConstraint,
+    _warp_apply_concentric_constraint_v2,
     _warp_apply_track_sliding,
     _warp_set_root_on_track,
+    warp_concentric_constraint_direct,
 )
 
 if TYPE_CHECKING:
@@ -102,54 +104,130 @@ def apply_track_constraint(
 
 
 def apply_concentric_constraint(
-    inner_rod: "WarpResidentRodState",
     outer_rod: "WarpResidentRodState",
+    inner_rod: "WarpResidentRodState",
     insertion_diff: float,
     stiffness: float = 1.0,
     weight_inner: float = 1.0,
     weight_outer: float = 1.0,
-    use_inv_mass_sq: bool = True,
     start_particle: int = 0,
+    end_particle: int = -1,
 ) -> None:
-    """Constrain two rods to be concentric (e.g., guidewire inside catheter).
+    """Constrain inner rod to stay on outer rod's centerline.
     
-    For each particle in the inner rod, computes its corresponding point
-    on the outer rod's centerline using arclength-based parametrization
-    and applies bilateral corrections.
+    For each particle in the inner rod (e.g., guidewire), computes its exact
+    corresponding point on the outer rod's centerline (e.g., catheter) using
+    arc-length parametrization and applies PBD-style bilateral corrections.
+    
+    The correspondence uses the insertion difference to map inner rod particles
+    to outer rod centerline positions. This models a guidewire sliding through
+    a catheter based on their relative insertion depths.
     
     Args:
-        inner_rod: The inner rod (e.g., guidewire).
-        outer_rod: The outer rod (e.g., catheter).
-        insertion_diff: Difference in insertion depth (inner - outer).
+        outer_rod: The outer rod (e.g., catheter) - provides the centerline.
+        inner_rod: The inner rod (e.g., guidewire) - constrained to centerline.
+        insertion_diff: insertion_inner - insertion_outer. Positive when inner
+            rod is more inserted (its root is ahead of outer rod's root).
         stiffness: Constraint stiffness [0, 1].
         weight_inner: Weight for inner rod corrections.
         weight_outer: Weight for outer rod corrections.
-        use_inv_mass_sq: Whether to use squared weights in denominator.
-        start_particle: First particle to apply constraint to.
+        start_particle: First inner particle index to constrain.
+        end_particle: Last inner particle index to constrain (-1 = all).
     """
     if inner_rod.num_points == 0 or outer_rod.num_points == 0:
         return
 
     wp.launch(
-        _warp_apply_concentric_constraint,
+        _warp_apply_concentric_constraint_v2,
         dim=inner_rod.num_points,
         inputs=[
-            inner_rod.positions_wp,
-            inner_rod.predicted_positions_wp,
-            inner_rod.inv_masses_wp,
-            int(inner_rod.num_points),
+            # Outer rod (catheter) - centerline we constrain to
             outer_rod.positions_wp,
             outer_rod.predicted_positions_wp,
             outer_rod.inv_masses_wp,
             int(outer_rod.num_points),
-            inner_rod.rest_lengths_wp,
             outer_rod.rest_lengths_wp,
+            # Inner rod (guidewire) - constrained to stay on outer centerline
+            inner_rod.positions_wp,
+            inner_rod.predicted_positions_wp,
+            inner_rod.inv_masses_wp,
+            int(inner_rod.num_points),
+            inner_rod.rest_lengths_wp,
+            # Constraint parameters
             float(insertion_diff),
             float(stiffness),
             float(weight_inner),
             float(weight_outer),
-            int(1 if use_inv_mass_sq else 0),
             int(start_particle),
+            int(end_particle),
+        ],
+        device=inner_rod.device,
+    )
+
+
+def apply_concentric_constraint_v3(
+    outer_rod: "WarpResidentRodState",
+    inner_rod: "WarpResidentRodState",
+    insertion_diff: float,
+    stiffness: float = 1.0,
+    weight_inner: float = 1.0,
+    weight_outer: float = 1.0,
+    start_particle: int = 0,
+    end_particle: int = -1,
+) -> None:
+    """Constrain inner rod to stay on outer rod's centerline (v3 implementation).
+    
+    This is an improved version of the concentric constraint that uses cleaner
+    arc-length parametrization to compute exact correspondences between inner
+    rod particles and outer rod centerline points.
+    
+    For each inner particle at arc-length s_inner from its root:
+        1. Compute corresponding outer arc-length: s_outer = s_inner + insertion_diff
+        2. Find segment j and t-value where: cumsum[j] <= s_outer < cumsum[j+1]
+        3. Compute target point: P = outer[j]*(1-t) + outer[j+1]*t
+        4. Apply PBD bilateral correction to minimize ||inner - P||
+    
+    The insertion_diff parameter models the relative insertion depths:
+        - Positive: inner rod is more inserted (extends further into vessel)
+        - Negative: outer rod is more inserted
+        - Zero: both rods have equal insertion (roots aligned)
+    
+    Args:
+        outer_rod: The outer rod (e.g., catheter/sheath) - provides centerline.
+        inner_rod: The inner rod (e.g., guidewire) - constrained to centerline.
+        insertion_diff: insertion_inner - insertion_outer.
+        stiffness: Constraint stiffness [0, 1].
+        weight_inner: Weight multiplier for inner rod corrections.
+        weight_outer: Weight multiplier for outer rod corrections.
+        start_particle: First inner particle index to constrain.
+        end_particle: Last inner particle index to constrain (-1 = all).
+    """
+    if inner_rod.num_points == 0 or outer_rod.num_points == 0:
+        return
+
+    wp.launch(
+        warp_concentric_constraint_direct,
+        dim=inner_rod.num_points,
+        inputs=[
+            # Outer rod (catheter) - provides centerline
+            outer_rod.positions_wp,
+            outer_rod.predicted_positions_wp,
+            outer_rod.inv_masses_wp,
+            outer_rod.rest_lengths_wp,
+            int(outer_rod.num_points),
+            # Inner rod (guidewire) - constrained to centerline
+            inner_rod.positions_wp,
+            inner_rod.predicted_positions_wp,
+            inner_rod.inv_masses_wp,
+            inner_rod.rest_lengths_wp,
+            int(inner_rod.num_points),
+            # Constraint parameters
+            float(insertion_diff),
+            float(stiffness),
+            float(weight_inner),
+            float(weight_outer),
+            int(start_particle),
+            int(end_particle),
         ],
         device=inner_rod.device,
     )
@@ -210,7 +288,9 @@ def apply_floor_collision(
 
 __all__ = [
     "apply_concentric_constraint",
+    "apply_concentric_constraint_v3",
     "apply_floor_collision",
     "apply_tip_bend",
     "apply_track_constraint",
+    "ConcentricConstraint",
 ]

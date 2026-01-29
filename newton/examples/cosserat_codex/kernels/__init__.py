@@ -26,6 +26,7 @@ from .assembly import (
 )
 from .collision import (
     _warp_apply_concentric_constraint,
+    _warp_apply_concentric_constraint_v2,
     _warp_apply_direct_corrections,
     _warp_apply_floor_collisions,
     _warp_apply_root_translation,
@@ -41,6 +42,13 @@ from .collision import (
     _warp_zero_2d,
     _warp_zero_float,
     _warp_zero_root_velocities,
+)
+from .concentric import (
+    ConcentricConstraint,
+    warp_apply_corrections,
+    warp_concentric_constraint,
+    warp_concentric_constraint_direct,
+    warp_zero_vec3_array,
 )
 from .constraints import (
     _warp_build_rhs,
@@ -157,5 +165,12 @@ __all__ = [
     "_warp_apply_track_sliding",
     "_warp_set_root_on_track",
     "_warp_apply_concentric_constraint",
+    "_warp_apply_concentric_constraint_v2",
     "_warp_compute_inv_inertia_world",
+    # New concentric constraint kernels
+    "warp_concentric_constraint",
+    "warp_concentric_constraint_direct",
+    "warp_apply_corrections",
+    "warp_zero_vec3_array",
+    "ConcentricConstraint",
 ]

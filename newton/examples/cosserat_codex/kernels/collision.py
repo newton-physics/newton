@@ -713,6 +713,230 @@ def _warp_apply_concentric_constraint(
 
 
 # ==============================================================================
+# Concentric constraint v2 - Inner rod stays on outer rod centerline
+# ==============================================================================
+
+
+@wp.func
+def _compute_arclength_to_segment(
+    target_arclength: float,
+    rest_lengths: wp.array(dtype=wp.float32),
+    num_segments: int,
+) -> wp.vec2:
+    """Find segment index and local t-value for a given arc-length.
+
+    Given a target arc-length along a rod, find which segment contains that point
+    and the parametric t-value within that segment.
+
+    Args:
+        target_arclength: Arc-length from rod root.
+        rest_lengths: Array of rest lengths for each segment.
+        num_segments: Total number of segments.
+
+    Returns:
+        vec2(segment_index, t_value). If target is past end, returns (num_segments-1, 1.0).
+        If target is negative, returns (-1, 0.0).
+    """
+    if target_arclength < 0.0:
+        return wp.vec2(-1.0, 0.0)
+
+    cumulative = float(0.0)
+    for seg in range(num_segments):
+        seg_len = rest_lengths[seg]
+        next_cumulative = cumulative + seg_len
+
+        if target_arclength <= next_cumulative:
+            # Found the segment
+            if seg_len > 1.0e-10:
+                t = (target_arclength - cumulative) / seg_len
+            else:
+                t = 0.0
+            return wp.vec2(float(seg), t)
+
+        cumulative = next_cumulative
+
+    # Past the end of the rod
+    return wp.vec2(float(num_segments - 1), 1.0)
+
+
+@wp.kernel
+def _warp_apply_concentric_constraint_v2(
+    # Outer rod (catheter) - the centerline we constrain to
+    outer_positions: wp.array(dtype=wp.vec3),
+    outer_predicted: wp.array(dtype=wp.vec3),
+    outer_inv_masses: wp.array(dtype=wp.float32),
+    outer_num_points: int,
+    outer_rest_lengths: wp.array(dtype=wp.float32),
+    # Inner rod (guidewire) - constrained to stay on outer centerline
+    inner_positions: wp.array(dtype=wp.vec3),
+    inner_predicted: wp.array(dtype=wp.vec3),
+    inner_inv_masses: wp.array(dtype=wp.float32),
+    inner_num_points: int,
+    inner_rest_lengths: wp.array(dtype=wp.float32),
+    # Constraint parameters
+    insertion_diff: float,  # insertion_inner - insertion_outer
+    stiffness: float,
+    weight_inner: float,  # weight for inner rod corrections
+    weight_outer: float,  # weight for outer rod corrections
+    start_particle: int,  # first particle to apply constraint to
+    end_particle: int,  # last particle to apply constraint to (-1 for all)
+):
+    """Constrain inner rod to stay on outer rod's centerline.
+
+    For each particle on the inner rod (e.g., guidewire), compute the exact
+    corresponding point on the outer rod's centerline (e.g., catheter) using
+    arc-length parametrization and apply PBD-style corrections.
+
+    The correspondence uses the insertion difference to map inner rod particles
+    to outer rod centerline positions. This models a guidewire sliding through
+    a catheter based on their relative insertion depths.
+
+    Math:
+        For inner particle i at arc-length s_inner from inner rod root:
+        - Corresponding outer arc-length: s_outer = s_inner + insertion_diff
+        - Find segment j on outer rod containing s_outer
+        - Compute t = (s_outer - cumsum[j]) / segment_length
+        - Target point P = outer[j] * (1-t) + outer[j+1] * t
+        - Apply PBD correction to minimize |inner[i] - P|
+
+    Args:
+        outer_positions: Current positions of outer rod particles.
+        outer_predicted: Predicted positions of outer rod particles.
+        outer_inv_masses: Inverse masses of outer rod particles.
+        outer_num_points: Number of particles in outer rod.
+        outer_rest_lengths: Rest lengths of outer rod segments.
+        inner_positions: Current positions of inner rod particles.
+        inner_predicted: Predicted positions of inner rod particles.
+        inner_inv_masses: Inverse masses of inner rod particles.
+        inner_num_points: Number of particles in inner rod.
+        inner_rest_lengths: Rest lengths of inner rod segments.
+        insertion_diff: insertion_inner - insertion_outer.
+        stiffness: Constraint stiffness [0, 1].
+        weight_inner: Weight for inner rod corrections.
+        weight_outer: Weight for outer rod corrections.
+        start_particle: First inner particle index to constrain.
+        end_particle: Last inner particle index to constrain (-1 = all).
+    """
+    tid = wp.tid()
+    i = tid  # inner rod particle index
+
+    if i >= inner_num_points:
+        return
+
+    if i < start_particle:
+        return
+
+    effective_end = inner_num_points
+    if end_particle >= 0 and end_particle < inner_num_points:
+        effective_end = end_particle + 1
+    if i >= effective_end:
+        return
+
+    # Skip fixed particles (root)
+    w_i = inner_inv_masses[i]
+    if w_i <= 0.0:
+        return
+
+    # Compute arc-length from root for inner particle i
+    inner_arclength = float(0.0)
+    for k in range(i):
+        inner_arclength = inner_arclength + inner_rest_lengths[k]
+
+    # Compute corresponding arc-length on outer rod
+    # insertion_diff = insertion_inner - insertion_outer
+    # If inner is more inserted (positive), the corresponding outer point is further along
+    outer_arclength = inner_arclength + insertion_diff
+
+    # Skip if outside outer rod
+    if outer_arclength < 0.0:
+        return
+
+    num_outer_segments = outer_num_points - 1
+    if num_outer_segments <= 0:
+        return
+
+    # Find segment and t-value on outer rod
+    seg_t = _compute_arclength_to_segment(outer_arclength, outer_rest_lengths, num_outer_segments)
+    j = int(seg_t[0])
+    t = seg_t[1]
+
+    # Check bounds
+    if j < 0 or j >= num_outer_segments:
+        return
+
+    # Skip if at very tip of outer rod (ease out)
+    if j == num_outer_segments - 1 and t > 0.99:
+        return
+
+    # Clamp t
+    t = wp.clamp(t, 0.0, 1.0)
+
+    # Compute target point on outer rod centerline
+    p_out_0 = outer_predicted[j]
+    p_out_1 = outer_predicted[j + 1]
+    target = p_out_0 * (1.0 - t) + p_out_1 * t
+
+    # Current inner particle position
+    p_inner = inner_predicted[i]
+
+    # Constraint violation: distance from centerline
+    delta = p_inner - target
+    delta_len = wp.length(delta)
+
+    # Skip tiny violations
+    if delta_len < 1.0e-8:
+        return
+
+    delta_norm = delta / delta_len
+
+    # Barycentric weights for outer rod vertices
+    b0 = 1.0 - t
+    b1 = t
+
+    # Get inverse masses for outer rod vertices
+    w_out_0 = outer_inv_masses[j]
+    w_out_1 = outer_inv_masses[j + 1]
+
+    # Effective inverse mass (PBD-style)
+    # Inner contributes w_i * weight_inner
+    # Outer vertex 0 contributes w_out_0 * b0^2 * weight_outer
+    # Outer vertex 1 contributes w_out_1 * b1^2 * weight_outer
+    w_eff = w_i * weight_inner + w_out_0 * b0 * b0 * weight_outer + w_out_1 * b1 * b1 * weight_outer
+
+    if w_eff < 1.0e-10:
+        return
+
+    # PBD correction magnitude
+    lambda_val = delta_len / w_eff * stiffness
+
+    # Ease out constraint at outer rod tip
+    if j == num_outer_segments - 1:
+        lambda_val = lambda_val * (1.0 - t)
+
+    # Apply corrections
+    # Inner rod moves toward target (negative direction along delta)
+    if w_i > 0.0:
+        correction_inner = delta_norm * lambda_val * w_i * weight_inner
+        new_inner = p_inner - correction_inner
+        inner_positions[i] = new_inner
+        inner_predicted[i] = new_inner
+
+    # Outer rod moves away from target (positive direction along delta)
+    # Distributed between vertices based on barycentric weights
+    if w_out_0 > 0.0:
+        correction_0 = delta_norm * lambda_val * w_out_0 * b0 * weight_outer
+        new_out_0 = p_out_0 + correction_0
+        outer_positions[j] = new_out_0
+        outer_predicted[j] = new_out_0
+
+    if w_out_1 > 0.0:
+        correction_1 = delta_norm * lambda_val * w_out_1 * b1 * weight_outer
+        new_out_1 = p_out_1 + correction_1
+        outer_positions[j + 1] = new_out_1
+        outer_predicted[j + 1] = new_out_1
+
+
+# ==============================================================================
 # Inverse inertia computation
 # ==============================================================================
 

@@ -133,8 +133,8 @@ def create_parser():
     parser.add_argument(
         "--rod-spacing",
         type=float,
-        default=0.5,
-        help="Spacing between GPU rods along the X axis.",
+        default=0.0,
+        help="Spacing between GPU rods along the X axis. Default 0 for concentric rods.",
     )
     parser.add_argument(
         "--rod-solvers",

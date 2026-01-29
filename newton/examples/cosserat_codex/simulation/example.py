@@ -40,13 +40,13 @@ from newton.examples.cosserat_codex.constants import (
     TILE,
 )
 from newton.examples.cosserat_codex.kernels import (
-    _warp_apply_concentric_constraint,
     _warp_apply_track_sliding,
     _warp_build_segment_lines,
     _warp_copy_from_offset,
     _warp_copy_with_offset,
     _warp_set_root_on_track,
     _warp_update_velocities_from_positions,
+    warp_concentric_constraint_direct,
 )
 from newton.examples.cosserat_codex.math_utils import (
     build_director_lines,
@@ -920,7 +920,14 @@ class Example:
         self._force_sync_gpu = True
 
     def _apply_concentric_constraint(self):
-        """Apply concentric constraint between GPU Warp rods (guidewire inside catheter).
+        """Apply concentric constraint between GPU Warp rods (inner rod stays on outer rod centerline).
+
+        Convention:
+          - rods[0] = OUTER rod (catheter) - provides the centerline
+          - rods[1] = INNER rod (guidewire) - constrained to stay on outer rod's centerline
+
+        The constraint uses arc-length parametrization with insertion difference to compute
+        the exact corresponding point on the outer rod's centerline for each inner rod particle.
 
         Note: This only works with Warp rods. The first two Warp rods are used.
         """
@@ -930,54 +937,64 @@ class Example:
         if self.gpu_state is None or len(self.gpu_state.rods) < 2:
             return
 
-        rod_a = self.gpu_state.rods[0]
-        rod_b = self.gpu_state.rods[1]
+        # rod[0] = outer (catheter), rod[1] = inner (guidewire)
+        outer_rod = self.gpu_state.rods[0]
+        inner_rod = self.gpu_state.rods[1]
 
         # Get insertion values for the Warp rods (using their global indices)
-        warp_idx_a = self.warp_rod_indices[0] if len(self.warp_rod_indices) > 0 else 0
-        warp_idx_b = self.warp_rod_indices[1] if len(self.warp_rod_indices) > 1 else 1
-        insertion_a = self.rod_insertions[warp_idx_a] if warp_idx_a < len(self.rod_insertions) else 0.0
-        insertion_b = self.rod_insertions[warp_idx_b] if warp_idx_b < len(self.rod_insertions) else 0.0
-        insertion_diff = insertion_a - insertion_b
+        warp_idx_outer = self.warp_rod_indices[0] if len(self.warp_rod_indices) > 0 else 0
+        warp_idx_inner = self.warp_rod_indices[1] if len(self.warp_rod_indices) > 1 else 1
+        insertion_outer = self.rod_insertions[warp_idx_outer] if warp_idx_outer < len(self.rod_insertions) else 0.0
+        insertion_inner = self.rod_insertions[warp_idx_inner] if warp_idx_inner < len(self.rod_insertions) else 0.0
 
-        if hasattr(rod_a, "rest_lengths_wp") and rod_a.rest_lengths_wp is not None:
-            rest_lengths_a = rod_a.rest_lengths_wp
+        # insertion_diff = insertion_inner - insertion_outer
+        # Positive when inner rod is more inserted (ahead of outer rod)
+        insertion_diff = insertion_inner - insertion_outer
+
+        # Get rest lengths arrays
+        if hasattr(outer_rod, "rest_lengths_wp") and outer_rod.rest_lengths_wp is not None:
+            outer_rest_lengths = outer_rod.rest_lengths_wp
         else:
-            if not hasattr(self, "_concentric_rest_lengths_a"):
-                self._concentric_rest_lengths_a = wp.array(
-                    rod_a.rest_lengths, dtype=wp.float32, device=self.model.device
+            if not hasattr(self, "_concentric_outer_rest_lengths"):
+                self._concentric_outer_rest_lengths = wp.array(
+                    outer_rod.rest_lengths, dtype=wp.float32, device=self.model.device
                 )
-            rest_lengths_a = self._concentric_rest_lengths_a
+            outer_rest_lengths = self._concentric_outer_rest_lengths
 
-        if hasattr(rod_b, "rest_lengths_wp") and rod_b.rest_lengths_wp is not None:
-            rest_lengths_b = rod_b.rest_lengths_wp
+        if hasattr(inner_rod, "rest_lengths_wp") and inner_rod.rest_lengths_wp is not None:
+            inner_rest_lengths = inner_rod.rest_lengths_wp
         else:
-            if not hasattr(self, "_concentric_rest_lengths_b"):
-                self._concentric_rest_lengths_b = wp.array(
-                    rod_b.rest_lengths, dtype=wp.float32, device=self.model.device
+            if not hasattr(self, "_concentric_inner_rest_lengths"):
+                self._concentric_inner_rest_lengths = wp.array(
+                    inner_rod.rest_lengths, dtype=wp.float32, device=self.model.device
                 )
-            rest_lengths_b = self._concentric_rest_lengths_b
+            inner_rest_lengths = self._concentric_inner_rest_lengths
 
+        # Launch kernel - iterates over INNER rod particles
+        # Uses new v3 implementation with cleaner arc-length parametrization
         wp.launch(
-            _warp_apply_concentric_constraint,
-            dim=rod_a.num_points,
+            warp_concentric_constraint_direct,
+            dim=inner_rod.num_points,
             inputs=[
-                rod_a.positions_wp,
-                rod_a.predicted_positions_wp,
-                rod_a.inv_masses_wp,
-                rod_a.num_points,
-                rod_b.positions_wp,
-                rod_b.predicted_positions_wp,
-                rod_b.inv_masses_wp,
-                rod_b.num_points,
-                rest_lengths_a,
-                rest_lengths_b,
+                # Outer rod (catheter) - provides the centerline
+                outer_rod.positions_wp,
+                outer_rod.predicted_positions_wp,
+                outer_rod.inv_masses_wp,
+                outer_rest_lengths,
+                int(outer_rod.num_points),
+                # Inner rod (guidewire) - constrained to stay on outer centerline
+                inner_rod.positions_wp,
+                inner_rod.predicted_positions_wp,
+                inner_rod.inv_masses_wp,
+                inner_rest_lengths,
+                int(inner_rod.num_points),
+                # Constraint parameters
                 float(insertion_diff),
                 float(self.concentric_stiffness),
                 float(self.concentric_weight_inner),
                 float(self.concentric_weight_outer),
-                int(1 if self.concentric_use_inv_mass_sq else 0),
                 int(self.concentric_start_particle),
+                int(-1),  # end_particle: -1 = all particles
             ],
             device=self.model.device,
         )
@@ -1467,7 +1484,7 @@ class Example:
             self._gpu_times.clear()
 
         _changed, self.substeps = ui.slider_int("Substeps", self.substeps, 1, 16)
-        _changed, self.collision_iterations = ui.slider_int("Collision Iterations", self.collision_iterations, 1, 8)
+        _changed, self.collision_iterations = ui.slider_int("Collision Iterations", self.collision_iterations, 0, 8)
         _changed, self.linear_damping = ui.slider_float("Linear Damping", self.linear_damping, 0.0, 0.05)
         _changed, self.angular_damping = ui.slider_float("Angular Damping", self.angular_damping, 0.0, 0.05)
 
@@ -1548,7 +1565,8 @@ class Example:
             ui.text(f"Insertion Diff: {insertion_diff:.3f}")
 
         ui.separator()
-        ui.text("Concentric Constraint (Guidewire/Catheter)")
+        ui.text("Concentric Constraint (Inner stays on Outer centerline)")
+        ui.text("  Rod 0 = Outer (catheter), Rod 1 = Inner (guidewire)")
         warp_rods = self.gpu_state.rods if self.gpu_state else []
         if len(warp_rods) >= 2:
             _changed, self.concentric_enabled = ui.checkbox("Enable Concentric", self.concentric_enabled)
@@ -1556,17 +1574,20 @@ class Example:
                 "Concentric Stiffness", self.concentric_stiffness, 0.0, 1.0
             )
             _changed, self.concentric_weight_inner = ui.slider_float(
-                "Inner Rod Weight", self.concentric_weight_inner, 0.0, 1.0
+                "Inner Weight (Rod 1)", self.concentric_weight_inner, 0.0, 1.0
             )
             _changed, self.concentric_weight_outer = ui.slider_float(
-                "Outer Rod Weight", self.concentric_weight_outer, 0.0, 1.0
+                "Outer Weight (Rod 0)", self.concentric_weight_outer, 0.0, 1.0
             )
             _changed, self.concentric_start_particle = ui.slider_int(
-                "Start Particle", self.concentric_start_particle, 0, 20
+                "Start Particle (Inner)", self.concentric_start_particle, 0, 20
             )
-            _changed, self.concentric_use_inv_mass_sq = ui.checkbox(
-                "Use Inv Mass Squared", self.concentric_use_inv_mass_sq
-            )
+            # Show insertion diff for debugging
+            warp_idx_outer = self.warp_rod_indices[0] if len(self.warp_rod_indices) > 0 else 0
+            warp_idx_inner = self.warp_rod_indices[1] if len(self.warp_rod_indices) > 1 else 1
+            ins_outer = self.rod_insertions[warp_idx_outer] if warp_idx_outer < len(self.rod_insertions) else 0.0
+            ins_inner = self.rod_insertions[warp_idx_inner] if warp_idx_inner < len(self.rod_insertions) else 0.0
+            ui.text(f"  Insertion diff (inner-outer): {ins_inner - ins_outer:.3f}")
         else:
             ui.text("(Requires 2+ Warp rods)")
 
